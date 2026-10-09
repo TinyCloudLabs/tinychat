@@ -181,7 +181,8 @@ export function App() {
   const [captureFailClosed, setCaptureFailClosed] = useState(false);
   const [captureReadyTcw, setCaptureReadyTcw] = useState<TinyCloudWeb | null>(null);
   const voiceNotePipeline = useMemo(() => tcw ? createVoiceNotePipeline(tcw) : null, [tcw]);
-  const captureHandoff = useCallback(async () => {
+  const captureHandoffInFlight = useRef<Promise<boolean> | null>(null);
+  const performCaptureHandoff = useCallback(async () => {
     if (!captureEngineAvailable() || LOCAL_VALIDATION) return true;
     try {
       const native = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
@@ -218,6 +219,14 @@ export function App() {
       return false;
     }
   }, [did, tcw, voiceNotePipeline]);
+  const captureHandoff = useCallback((): Promise<boolean> => {
+    if (captureHandoffInFlight.current) return captureHandoffInFlight.current;
+    const task = performCaptureHandoff();
+    captureHandoffInFlight.current = task;
+    void task.finally(() => { if (captureHandoffInFlight.current === task) captureHandoffInFlight.current = null; })
+      .catch(() => undefined);
+    return task;
+  }, [performCaptureHandoff]);
   useEffect(() => registerSessionSignedOutHook(sessionStoreRef.current, captureHandoff), [captureHandoff]);
   const restoreCaptureAfterAuthAbort = useCallback(async () => {
     if (!did || !tcw || !captureEngineAvailable()) return;

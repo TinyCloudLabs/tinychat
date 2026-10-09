@@ -1,8 +1,8 @@
 import type { SessionStore } from "@tinyboilerplate/client";
-import { captureEngineAvailable } from "./voiceNotes/captureEngine";
 
 type ClearableSession = Pick<SessionStore, "clear">;
 const hooks = new WeakMap<object, () => Promise<boolean>>();
+const pending = new WeakMap<object, Promise<boolean>>();
 
 /** Auth clients share the app's durable native handoff before discarding a bearer session. */
 export function registerSessionSignedOutHook(session: object, hook: () => Promise<boolean>): () => void {
@@ -12,7 +12,15 @@ export function registerSessionSignedOutHook(session: object, hook: () => Promis
 
 export async function clearSessionAfterHandoff(session: ClearableSession): Promise<void> {
   const handoff = hooks.get(session);
-  if (!handoff && captureEngineAvailable()) throw new Error("Recording account handoff is not ready. Session was kept.");
-  if (handoff && !await handoff()) throw new Error("Couldn't update this phone's recording account. Session was kept.");
+  if (handoff) {
+    let transition = pending.get(session);
+    if (!transition) {
+      transition = handoff();
+      pending.set(session, transition);
+      void transition.finally(() => { if (pending.get(session) === transition) pending.delete(session); })
+        .catch(() => undefined);
+    }
+    if (!await transition) throw new Error("Couldn't update this phone's recording account. Session was kept.");
+  }
   session.clear();
 }

@@ -18,3 +18,20 @@ test("a failed native handoff leaves the bearer session intact", async () => {
   expect(cleared).toBe(false);
   dispose();
 });
+
+test("simultaneous 401 responses share one durable handoff", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let handoffs = 0;
+  let clears = 0;
+  const session = { clear: () => { clears++; } };
+  const dispose = registerSessionSignedOutHook(session, async () => { handoffs++; await gate; return true; });
+  const first = clearSessionAfterHandoff(session);
+  const second = clearSessionAfterHandoff(session);
+  expect(handoffs).toBe(1);
+  expect(clears).toBe(0);
+  release();
+  await Promise.all([first, second]);
+  expect(clears).toBe(2);
+  dispose();
+});
