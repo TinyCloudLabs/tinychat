@@ -1,5 +1,6 @@
 const RECOVERY_FAILED = "Couldn't recover this recording";
 const WRITE_FAILED = "Couldn't save all of this recording";
+const PARTIAL_AUDIO = "Part of this recording couldn't be written";
 
 /** Every line of text on the Soft Capture home that the library's own rows do not already say (TC-871). */
 export const HOME_COPY = {
@@ -32,6 +33,16 @@ export const HOME_COPY = {
     body: "Kept on this phone. Exo will finish it automatically.",
   },
   writeFailedMeta: WRITE_FAILED,
+  /** Shared with the desktop follow-ups: the informational line under a saved recording that is missing some audio. */
+  partialAudioMeta: "Saved — part of this recording couldn't be written",
+  partialAudioSheet: {
+    title: PARTIAL_AUDIO,
+    body: "The recording was saved, but this phone couldn't write all of the audio. The part that couldn't be written is missing.",
+  },
+  partialAudioMissing: (formatted: string) => `About ${formatted} is missing`,
+  partialAudioMissingBrief: "Less than a second is missing",
+  dismiss: "Dismiss",
+  dismissFailed: "Couldn't dismiss this notice. It is still shown.",
   needsAttention: "Needs attention",
   opensDetails: "Opens details",
   scanFailure:

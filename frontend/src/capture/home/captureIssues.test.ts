@@ -1,11 +1,15 @@
 // What the recorder's capture issues become on Capture home (TC-871).
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 
 import type { RecorderCaptureIssue } from "../recorder/recorderReducer";
 import type { LibraryItem } from "../library/LibraryRow";
 import { FINALIZATION_PENDING } from "../recorder/recorderCopy";
 import {
   type HomeIssue,
+  dismissNotice,
+  issueIsFailure,
+  issueIsInformational,
+  partialAudioMissingLine,
   issueIsRecoverable,
   recoveryFailedKey,
   withQuarantine,
@@ -87,12 +91,58 @@ describe("issue copy", () => {
     expect(issueHasSheet(writeFailed)).toBe(true);
   });
 
-  test("partial audio stays available to the recorder without becoming an error row or sheet", () => {
-    expect(issueHasSheet(partial)).toBe(false);
-    expect(sheetIssue("rec-1", { "rec-1": partial }, true)).toBeNull();
-    expect(issueForItem(note(1), { "rec-1": partial })).toBeUndefined();
+  test("partial audio is informational: a saved recording's row marker and sheet, never a failure", () => {
+    expect(issueIsInformational(partial)).toBe(true);
+    expect(issueIsFailure(partial)).toBe(false);
+    expect(issueIsFailure(timedOut)).toBe(false);
+    expect(issueIsFailure(failed)).toBe(true);
+    expect(issueMeta(partial)).toBe("Saved — part of this recording couldn't be written");
+    expect(issueHasSheet(partial)).toBe(false); // the row still opens the note; Details opens the sheet
+    expect(sheetIssue("rec-1", { "rec-1": partial }, true)).toBe(partial);
+    expect(sheetIssue("rec-1", { "rec-1": partial }, false)).toBeNull();
+    expect(issueForItem(note(1), { "rec-1": partial })).toBe(partial);
     expect(orphanIssues([], { "rec-1": partial })).toEqual([]);
+    expect(recentEntries([note(1)], { "rec-1": partial }, 5)).toEqual([
+      { type: "item", item: note(1), issue: partial },
+    ]);
     expect(cardNote({ "rec-1": partial }, null)).toBe(HOME_COPY.notInSpace);
+  });
+
+  test("the partial-audio sheet: a title, one honest line, and what is missing only when known", () => {
+    expect(issueSheetCopy(partial)).toEqual({
+      title: "Part of this recording couldn't be written",
+      body: "The recording was saved, but this phone couldn't write all of the audio. The part that couldn't be written is missing.",
+    });
+    expect(partialAudioMissingLine({ kind: "partial_audio", missingMs: 12_000 })).toBe("About 0:12 is missing");
+    expect(partialAudioMissingLine({ kind: "partial_audio", missingMs: 72_400 })).toBe("About 1:12 is missing");
+    expect(partialAudioMissingLine({ kind: "partial_audio", missingMs: 400 })).toBe("Less than a second is missing");
+    expect(partialAudioMissingLine({ kind: "partial_audio" })).toBeNull();
+    expect(partialAudioMissingLine({ kind: "partial_audio", missingMs: 0 })).toBeNull();
+    expect(partialAudioMissingLine({ kind: "partial_audio", missingMs: Number.NaN })).toBeNull();
+    expect(partialAudioMissingLine(failed)).toBeNull();
+    // Spans are not rendered in this slice.
+    expect(JSON.stringify([issueSheetCopy(partial), partialAudioMissingLine(partial)])).not.toMatch(/writer_stalled|2000|5000/);
+  });
+
+  test("a failure outranks a partial-audio notice for the same recording", () => {
+    const merged = withQuarantine({ a: partial, b: partial }, [{ id: "a", reason: "corrupt_journal" }], new Set());
+    expect(merged.a).toEqual({ kind: "quarantined" });
+    expect(merged.b).toBe(partial);
+    expect(cardNote({ a: partial, b: failed }, null)).toBe("Not in your space yet · Exo will retry when it next opens");
+  });
+
+  test("Dismiss: gone on success; otherwise the failure is logged and a line is returned", () => {
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(dismissNotice("rec-1", () => true)).toBeNull();
+      expect(error).not.toHaveBeenCalled();
+      expect(dismissNotice("rec-1", () => false)).toBe(HOME_COPY.dismissFailed);
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(dismissNotice("rec-1", () => { throw new Error("boom"); })).toBe(HOME_COPY.dismissFailed);
+      expect(error).toHaveBeenCalledTimes(2);
+    } finally {
+      error.mockRestore();
+    }
   });
 
   test("an open sheet follows the provider's current issue: it changes with it and is gone once it clears", () => {

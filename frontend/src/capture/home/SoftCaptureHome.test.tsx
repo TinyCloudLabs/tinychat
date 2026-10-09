@@ -40,7 +40,7 @@ function home(
 ) {
   return renderToStaticMarkup(
     <MemoryRouter>
-      <SoftHomeProvider enabled issues={issues}>
+      <SoftHomeProvider enabled issues={issues} onDismissIssue={() => true}>
         <SoftCaptureHome
           inProgress={idle}
           recent={{ status: "ready", items: [] }}
@@ -179,6 +179,70 @@ describe("capture-issue rows", () => {
     expect(html).toContain("Couldn&#x27;t recover this recording");
   });
 
+  describe("partial audio: saved, with part of it missing", () => {
+    const partial = { kind: "partial_audio", missingMs: 12_000 } as const;
+    const recent = () => home({ recent: { status: "ready", items: [note(1)] } }, { "rec-1": partial });
+
+    test("keeps its normal row, a link to the note, with a quiet informational line under it", () => {
+      const html = recent();
+      expect(html.match(/data-testid="recent-item"/g)).toHaveLength(1);
+      expect(html).toContain('href="/chat/capture/library/row-1"');
+      expect(html).toContain("Voice note · Oct 9, 1:49 AM");
+      expect(html).toContain("1:05");
+      expect(html).toContain("<svg"); // the normal kind tile, not the "!" one
+      expect(html).not.toContain("soft-tile-bang");
+      expect(html).not.toContain("data-failed");
+      expect(html).toContain('data-notice="true"');
+      expect(html).toContain(
+        'class="soft-row-notice" aria-label="Saved — part of this recording couldn&#x27;t be written. Opens details"',
+      );
+      expect(html).toContain(">Saved — part of this recording couldn&#x27;t be written</button>");
+    });
+
+    test("the row's accessible label includes the state, and is not marked as needing attention", () => {
+      const html = recent();
+      expect(html).toMatch(
+        /aria-label="Voice note · Oct 9, 1:49 AM\. [^"]*\. 1 min[^"]*\. Saved — part of this recording couldn&#x27;t be written"/,
+      );
+      expect(html).not.toContain("Needs attention");
+    });
+
+    test("is not in the way of the other rows or the on-this-phone card", () => {
+      const html = home({ inProgress: voice(2), recent: { status: "ready", items: [note(1), note(2)] } }, { "rec-1": partial });
+      expect(html.match(/data-notice="true"/g)).toHaveLength(1);
+      expect(html).toContain(">Not in your space yet<");
+      expect(html).not.toContain("automatically");
+    });
+
+    test("a recording with no row yet shows no row of its own", () => {
+      const html = home({}, { "rec-9": partial });
+      expect(html).not.toContain("recent-item");
+      expect(html).toContain("Your recordings appear here");
+    });
+
+    test("a real failure on the same recording wins: the failure row, no informational line", () => {
+      const html = home(
+        { recent: { status: "ready", items: [note(1)] } },
+        { "rec-1": { kind: "write_failed", detail: "EIO" } },
+      );
+      expect(html).toContain('data-issue="write_failed"');
+      expect(html).not.toContain("soft-row-notice");
+      expect(html).not.toContain("Saved — part of");
+    });
+
+    test("the Library list marks the row the same way; with no notice there is no marker", () => {
+      const html = renderToStaticMarkup(
+        <MemoryRouter>
+          <SoftHomeProvider enabled issues={{ "rec-1": partial }} onDismissIssue={() => true}>
+            <LibraryListView status="ready" items={[note(1), note(2)]} filter="all" onFilterChange={noop} onRetry={noop} now={NOW} />
+          </SoftHomeProvider>
+        </MemoryRouter>,
+      );
+      expect(html.match(/class="soft-row-notice"/g)).toHaveLength(1);
+      expect(home({ recent: { status: "ready", items: [note(1)] } })).not.toContain("soft-row-notice");
+    });
+  });
+
   test("an issue row replaces the empty line", () => {
     expect(home({}, { "rec-9": timedOut })).not.toContain(
       "Your recordings appear here",
@@ -208,7 +272,7 @@ describe("LibraryRow", () => {
     renderToStaticMarkup(
       <MemoryRouter>
         {provider ? (
-          <SoftHomeProvider enabled issues={{}}>
+          <SoftHomeProvider enabled issues={{}} onDismissIssue={() => true}>
             <LibraryRow item={note(1)} now={NOW} grouped />
           </SoftHomeProvider>
         ) : (
@@ -226,7 +290,7 @@ describe("LibraryRow", () => {
   test("a disabled provider is the row it was", () => {
     const html = renderToStaticMarkup(
       <MemoryRouter>
-        <SoftHomeProvider enabled={false} issues={{}}>
+        <SoftHomeProvider enabled={false} issues={{}} onDismissIssue={() => true}>
           <LibraryRow item={note(1)} now={NOW} grouped />
         </SoftHomeProvider>
       </MemoryRouter>,
@@ -290,7 +354,7 @@ describe("Library list", () => {
         {options.soft === false ? (
           list
         ) : (
-          <SoftHomeProvider enabled issues={issues}>
+          <SoftHomeProvider enabled issues={issues} onDismissIssue={() => true}>
             {list}
           </SoftHomeProvider>
         )}

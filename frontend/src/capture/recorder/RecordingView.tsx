@@ -8,7 +8,8 @@ import { LevelTrace } from "./LevelTrace";
 import { MicrophoneAccessOff } from "./MicrophoneAccessOff";
 import { micWarning, micWarningSentence, recorderMetaText, recorderStatusText } from "./recorderCopy";
 import { RecorderControls } from "./RecorderControls";
-import { honestRecorderError } from "./final/honestRecorderError";
+import { honestRecorderError, receiptPartialNotice } from "./final/honestRecorderError";
+import { softHomeEnabled } from "../home/softHome";
 import type { RecorderValue } from "./RecorderProvider";
 import { RecorderTimer, useAudioElapsed } from "./RecorderTimer";
 import { voiceNoteRoute } from "./RouteLine";
@@ -96,7 +97,7 @@ export function RecordingView({ recorder, onOpenNote, consentAsking, discardAski
 
         <div className="flex min-h-0 flex-col justify-end land:col-start-2 land:row-start-1">
           {receipt ? (
-            <SavedReceipt outcome={outcome} localUpload={recorder.localUpload} saved={lastSaved} route={voiceNoteRoute(savedRoute)} transcriber={savedTranscriber} sttHint={savedNote.stt} transcribing={transcribing} error={honestRecorderError(recorder)} retrying={recorder.pending.running}
+            <SavedReceipt outcome={outcome} localUpload={recorder.localUpload} saved={lastSaved} route={voiceNoteRoute(savedRoute)} transcriber={savedTranscriber} sttHint={savedNote.stt} transcribing={transcribing} error={honestRecorderError(recorder)} notice={softHomeEnabled() ? receiptPartialNotice(recorder, lastSaved?.id) : null} retrying={recorder.pending.running}
               onOpen={onOpenNote && lastSaved ? () => { recorder.dismissOutcome(); onOpenNote(lastSaved.id); } : undefined}
               onDone={recorder.dismissOutcome} onSaveNow={recorder.retryPending} onPlayingChange={recorder.setReceiptPlaying} onReady={recorder.setReceiptReady} />
           ) : (

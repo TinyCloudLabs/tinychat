@@ -8,6 +8,8 @@
 //   5. An open sheet closes when the provider clears its issue, and focus lands on the list's heading (Recent or Library), never <body>.
 //   6. Save now on the "on this phone" card calls retryPending.
 //   7. The couldn't-recover sheet's Try again and Delete (TC-868), for a failed recording and a quarantined one.
+//   8. A saved note missing some audio (partial_audio, TC-886): the row still opens the note, its quiet line opens a sheet,
+//      Close returns focus to the line, Dismiss removes the marker (focus lands on the row), and a Dismiss that fails says so.
 //
 // SOFT_HOME_ENGINE=webkit runs it in WebKit (the phone app's engine); Chromium by default (CI).
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -368,5 +370,73 @@ describe("Soft Capture home interactions (phone)", () => {
       await page.waitForFunction((before) => window.exoUiFailed!.listCalls() > before, appeared);
       await page.context().close();
     });
+  });
+  describe("partial-audio notice (TC-886)", () => {
+    const LI = '[data-testid="capture-recent"] li[data-issue="partial_audio"]';
+    const NOTICE = `${LI} [data-testid="soft-row-notice"]`;
+    const sheetOf = (page: Page) => page.getByRole("dialog", { name: "Part of this recording couldn't be written" });
+
+    test("the row still opens the note; its quiet line opens the sheet, and Close returns focus to the line", async () => {
+      const page = await open("capture-soft-partial-audio");
+      const link = page.locator(`${LI} a`);
+      expect(await link.getAttribute("aria-label")).toContain("Saved — part of this recording couldn't be written");
+      expect(await link.getAttribute("aria-label")).not.toContain("Needs attention");
+      expect(await page.locator(NOTICE).innerText()).toBe("Saved — part of this recording couldn't be written");
+
+      await page.locator(NOTICE).tap();
+      const sheet = sheetOf(page);
+      await sheet.waitFor({ timeout: 5_000 });
+      expect(await sheet.innerText()).toContain("About 0:12 is missing");
+      expect(await page.locator('[data-testid="capture-issue-dismiss"]').innerText()).toBe("Dismiss");
+      await page.locator('[data-testid="capture-issue-close"]').tap();
+      await sheet.waitFor({ state: "detached", timeout: 5_000 });
+      await hasFocus(page.locator(NOTICE));
+      expect(await page.locator(NOTICE).count()).toBe(1);
+
+      await link.tap();
+      await page.waitForSelector(
+        '[data-testid="note-detail"], [data-testid="note-loading"], [data-testid="note-failed"], [data-testid="note-absent"]',
+        { timeout: 5_000 },
+      );
+      await page.context().close();
+    });
+
+    test("without missingMs the sheet omits the missing line", async () => {
+      const page = await open("capture-soft-sheet-partial-unknown");
+      const sheet = sheetOf(page);
+      await sheet.waitFor({ timeout: 5_000 });
+      expect(await page.locator('[data-testid="capture-issue-missing"]').count()).toBe(0);
+      await page.context().close();
+    });
+
+    test("Dismiss removes the marker and focus lands on the row", async () => {
+      const page = await open("capture-soft-partial-actions");
+      await page.locator(NOTICE).tap();
+      await sheetOf(page).waitFor({ timeout: 5_000 });
+      await page.locator('[data-testid="capture-issue-dismiss"]').tap();
+      await sheetOf(page).waitFor({ state: "detached", timeout: 5_000 });
+      expect(await page.evaluate(() => window.exoUiDismiss!.calls)).toEqual(["rec-0928"]);
+      expect(await page.locator(NOTICE).count()).toBe(0);
+      expect(await page.locator(LI).count()).toBe(0);
+      await hasFocus(page.locator('[data-testid="capture-recent"] [data-testid="recent-item"] a').first());
+      await page.context().close();
+    });
+
+    for (const how of ["false", "throw"] as const) {
+      test(`a Dismiss that fails (${how}) says so inline and leaves the marker`, async () => {
+        const page = await open("capture-soft-partial-actions");
+        await page.evaluate((mode) => { window.exoUiDismiss!.fail = mode; }, how);
+        await page.locator(NOTICE).tap();
+        await sheetOf(page).waitFor({ timeout: 5_000 });
+        await page.locator('[data-testid="capture-issue-dismiss"]').tap();
+        const error = page.locator('[data-testid="capture-issue-error"]');
+        await error.waitFor({ timeout: 5_000 });
+        expect(await error.getAttribute("role")).toBe("alert");
+        expect(await error.innerText()).toBe("Couldn't dismiss this notice. It is still shown.");
+        expect(await sheetOf(page).count()).toBe(1);
+        expect(await page.locator(NOTICE).count()).toBe(1);
+        await page.context().close();
+      });
+    }
   });
 });

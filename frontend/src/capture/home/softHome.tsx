@@ -2,7 +2,8 @@
 // recorder-final flag, on a phone only (the tab bar nav, compact width), the
 // home and every Library row (Recent and the Library share one row) draw in
 // the Soft skin. SoftHomeProvider carries what the rows need: the recorder's
-// capture issues and the sheet a tap on a failed row opens.
+// capture issues, the sheet a tap on a failed row (or on a partial-audio row's
+// line) opens, and how that sheet dismisses a notice.
 import {
   createContext,
   useCallback,
@@ -45,7 +46,7 @@ export interface SoftHomeValue {
   issues: CaptureIssues;
   /** Reading the sessions native parked failed (not for lack of support). */
   quarantineFailed: boolean;
-  /** A tap on a row whose issue has a sheet: the recording's id, and the row to return focus to (or, if it is gone, its list's heading). */
+  /** A tap on a row whose issue has a sheet: the recording's id, and the control to return focus to (or, if it is gone, the row, else its list's heading). */
   openIssue: (id: string, opener: HTMLElement) => void;
 }
 
@@ -61,6 +62,8 @@ export function SoftHomeProvider(props: {
   enabled: boolean;
   /** The recorder's `captureIssues`. */
   issues: Readonly<Record<string, RecorderCaptureIssue>>;
+  /** The recorder's `dismissCaptureIssue`: whether the notice is dismissed (false: it could not be saved, and still shows). */
+  onDismissIssue: (id: string) => boolean;
   children: ReactNode;
 }) {
   const [sheetId, setSheetId] = useState<string | null>(null);
@@ -97,8 +100,14 @@ export function SoftHomeProvider(props: {
   const openIssue = useCallback((id: string, row: HTMLElement) => {
     opener.current = row;
     const scope = row.closest<HTMLElement>("[data-return-focus]");
+    // A notice's line goes when it is dismissed, but its row stays: focus lands there.
+    const noticeRow = row.classList.contains("soft-row-notice")
+      ? row.closest("li")?.querySelector<HTMLElement>(".soft-row")
+      : null;
     fallback.current =
-      scope?.querySelector<HTMLElement>("[data-return-focus-target]") ?? scope;
+      noticeRow ??
+      scope?.querySelector<HTMLElement>("[data-return-focus-target]") ??
+      scope;
     setSheetId(id);
   }, []);
   const value = useMemo<SoftHomeValue | null>(
@@ -115,6 +124,7 @@ export function SoftHomeProvider(props: {
         id={sheetId}
         issue={issue}
         refresh={quarantine.refresh}
+        onDismiss={props.onDismissIssue}
         onGone={markGone}
         returnFocusTo={opener}
         fallbackFocusTo={fallback}
