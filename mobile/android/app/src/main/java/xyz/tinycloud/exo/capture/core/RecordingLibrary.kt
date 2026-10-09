@@ -343,8 +343,14 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
             staging.listFiles().orEmpty().any { it.name.startsWith("$id.") }) return
         ops.unlink(tombstone(id), "tombstone.retire"); ops.syncDir(tombstones)
     }
-    fun recoverOnce(mux: (String, File) -> Unit, probe: (File) -> JSONObject?, exitReason: String? = null) = recoveryLock.withLock {
+    fun recoverOnce(mux: (String, File) -> Unit, probe: (File) -> JSONObject?, exitReason: String? = null,
+                    onFailure: (String, String) -> Unit = { _, _ -> }) = recoveryLock.withLock {
         val failures = mutableListOf<String>()
+        fun failed(id: String, error: Exception) {
+            val detail = error.message ?: "recovery_failed"
+            failures.add("$id: $detail")
+            onFailure(id, detail)
+        }
         // This lock makes later plugin calls await bootstrap recovery. It is separate
         // from the short publication lock, so mux and probe still run outside it.
         for (file in root.listFiles().orEmpty().filter { it.name.endsWith(".json") && it.name.removeSuffix(".json").isNoteId() }) {
@@ -352,7 +358,7 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
                 val id = file.name.removeSuffix(".json")
                 try { lock.withLock {
                     if (!tombstone(id).exists()) ops.rename(file, File(quarantine, "$id.sidecar.json"), "import.sidecar")
-                } } catch (e: Exception) { failures.add("$id: ${e.message}") }
+                } } catch (e: Exception) { failed(id, e) }
             }
         }
         for (dir in sessions.listFiles().orEmpty().filter { it.isDirectory && it.name.isNoteId() }) {
@@ -373,7 +379,7 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
                 }
                 commit(id, { mux(id, it) }, recovered = true, exitReason = exitReason)
             }
-            catch (e: Exception) { failures.add("$id: ${e.message}") /* session remains durable for retry */ }
+            catch (e: Exception) { failed(id, e) /* session remains durable for retry */ }
         }
         for (file in root.listFiles().orEmpty().filter { it.name.endsWith(".m4a") && it.name.removeSuffix(".m4a").isNoteId() }) {
             val id = file.name.removeSuffix(".m4a")
@@ -411,12 +417,12 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
                         ops.rename(tmp, sidecar(id), "import.sidecar")
                     }
                 }
-            } catch (e: Exception) { failures.add("$id: ${e.message}") }
+            } catch (e: Exception) { failed(id, e) }
             finally { end(id) }
         }
         for (marker in tombstones.listFiles().orEmpty()) if (marker.name.isNoteId()) lock.withLock {
             try { enqueueOutbox(marker.name); gcArtifacts(marker.name); retire(marker.name) }
-            catch (e: IOException) { failures.add("${marker.name}: ${e.message}") }
+            catch (e: IOException) { failed(marker.name, e) }
         }
         if (failures.isNotEmpty()) throw IOException("Recovery needs retry: ${failures.joinToString()}")
     }

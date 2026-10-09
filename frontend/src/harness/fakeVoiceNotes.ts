@@ -11,6 +11,8 @@ import type {
   MicStateEvent,
   VoiceNoteAutoStopEvent,
   VoiceNoteRecording,
+  RecoveryFailedEvent,
+  WriteFailureEvent,
   VoiceNotesPlugin,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
 
@@ -22,6 +24,9 @@ export interface FakeVoiceNotes {
   stats(): { adds: number; active: number; recording: boolean; deleted: string[] };
   emit(event: "level", payload: { level: number }): void;
   emit(event: "micState", payload: MicStateEvent): void;
+  emit(event: "recoveryFailed", payload: RecoveryFailedEvent): void;
+  emit(event: "writeFailure", payload: WriteFailureEvent): void;
+  emit(event: "recovered" | "committed", payload: { id: string }): void;
   emit(event: "autoStopped", payload: VoiceNoteAutoStopEvent): void;
   /** Capacitor hands a retained presentRecorder event to the first listener only. */
   retainPresentRecorder(payload: { id: string | null; reason?: string }): void;

@@ -146,9 +146,9 @@ async function attached() {
 }
 
 describe("voice-note recorder controller", () => {
-  test("listeners: four while attached, none after teardown", async () => {
+  test("listeners: eight while attached, none after teardown", async () => {
     const { detach } = await attached();
-    expect(fake.stats().active).toBe(4);
+    expect(fake.stats().active).toBe(8);
     detach();
     await tick();
     expect(fake.stats().active).toBe(0);
@@ -175,7 +175,7 @@ describe("voice-note recorder controller", () => {
 
     const second = await attached();
     expect(second.recorder.getState()).toMatchObject({ phase: "recording", recordingId: id });
-    expect(fake.stats().adds).toBe(8);
+    expect(fake.stats().adds).toBe(16);
   });
 
   test("Stop shows a phone receipt before cloud upload resolves", async () => {
@@ -495,7 +495,85 @@ describe("voice-note recorder controller", () => {
     expect(recorder.getState()).toMatchObject({
       phase: "idle", error: "Recording kept on this phone. Exo will finish it automatically.",
     });
+    expect(recorder.getState().captureIssues[currentId ?? onPhone[0].id]).toEqual({ kind: "finalization_timed_out" });
     expect(onPhone).toHaveLength(1);
+  });
+
+  test("native recovery and write failures stay attached to their recording until recovery succeeds", async () => {
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    const id = recorder.getState().recordingId!;
+    fake.emit("writeFailure", { id, error: "AAC write failed" });
+    expect(recorder.getState().captureIssues[id]).toEqual({ kind: "write_failed", detail: "AAC write failed" });
+    fake.emit("recoveryFailed", { id, reason: "mux failed" });
+    expect(recorder.getState().captureIssues[id]).toEqual({ kind: "recoveryFailed", detail: "mux failed" });
+    fake.emit("recovered", { id });
+    expect(recorder.getState().captureIssues[id]).toBeUndefined();
+    fake.emit("recoveryFailed", { error: "scan failed" });
+    expect(recorder.getState().recoveryScanFailure).toBe("scan failed");
+    detach();
+  });
+
+  test("retained failure events replay before retained success after a WebView reload", async () => {
+    const committed = earlier().id;
+    const recovered = earlier().id;
+    fake.emit("writeFailure", { id: committed, error: "AAC write failed" });
+    fake.emit("recoveryFailed", { id: recovered, reason: "mux failed" });
+    fake.emit("recovered", { id: recovered });
+    fake.emit("committed", { id: committed });
+
+    const { recorder, detach } = await attached();
+    expect(recorder.getState().captureIssues[committed]).toBeUndefined();
+    expect(recorder.getState().captureIssues[recovered]).toBeUndefined();
+    detach();
+  });
+
+  test("iOS writer failure followed by an auto-stop carrying the saved note clears its issue", async () => {
+    const { recorder } = await attached();
+    await recorder.record();
+    const id = recorder.getState().recordingId!;
+    fake.emit("writeFailure", { id, error: "writer.finish failed" });
+    expect(recorder.getState().captureIssues[id]?.kind).toBe("write_failed");
+    const recording = await stopNatively();
+    fake.emit("autoStopped", { id, reason: "write_failed", maxDurationMs: 10_800_000, at: Date.now(), recording });
+    expect(recorder.getState().captureIssues[id]).toBeUndefined();
+    await tick();
+    expect(saves).toEqual([id]);
+  });
+
+  test("Android writer failure followed by committed and autoStopped clears its issue", async () => {
+    const { recorder } = await attached();
+    await recorder.record();
+    const id = recorder.getState().recordingId!;
+    fake.emit("writeFailure", { id, error: "write_failed: storage full" });
+    const recording = await stopNatively();
+    fake.emit("committed", { id });
+    expect(recorder.getState().captureIssues[id]).toBeUndefined();
+    fake.emit("autoStopped", { id, reason: "write_failed", maxDurationMs: 10_800_000, at: Date.now(), recording });
+    await tick();
+    expect(saves).toEqual([id]);
+  });
+
+  test("Android Stop failure followed by a successful second Stop clears its issue", async () => {
+    let stops = 0;
+    __setVoiceNotesForTests({ ...plugin, async stop() {
+      if (++stops === 1) {
+        fake.emit("writeFailure", { id: currentId!, error: "AAC drain failed" });
+        throw new Error("Stop failed");
+      }
+      const recording = await stopNatively();
+      fake.emit("committed", { id: recording.id });
+      return recording;
+    } }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    const id = recorder.getState().recordingId!;
+    await recorder.stop();
+    expect(recorder.getState().captureIssues[id]?.kind).toBe("write_failed");
+    expect(recorder.getState().phase).toBe("recording");
+    await recorder.stop();
+    expect(recorder.getState().captureIssues[id]).toBeUndefined();
+    expect(stops).toBe(2);
   });
 
   test("a timed-out limit auto-stop explains recovery instead of saying no audio", async () => {
