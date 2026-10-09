@@ -1,17 +1,12 @@
-// Test doubles for the web engine: IndexedDB (fake-indexeddb), getUserMedia, MediaRecorder
+// Test doubles for the web engine: IndexedDB (testing/idb.ts), getUserMedia, MediaRecorder
 // and AudioContext. Test-only; nothing imports this file outside *.test.ts.
 
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { newIdbEnv } from "./testing/idb";
 import type { CaptureEnv } from "./webCapture";
 import type { LevelMeterEnv } from "./webLevels";
 import { createWebVoiceNotes, type WebVoiceNotes } from "./webVoiceNotes";
 import { memoryLocks, openWebStore, type WebStore, type WebStoreOptions } from "./webStore";
 import type { IdbEnv } from "./idb";
-
-export const newIdbEnv = (): IdbEnv => ({
-  factory: new IDBFactory() as unknown as IDBFactory,
-  keyRange: IDBKeyRange as unknown as typeof globalThis.IDBKeyRange,
-});
 
 export class FakeClock {
   t = 1_000_000;

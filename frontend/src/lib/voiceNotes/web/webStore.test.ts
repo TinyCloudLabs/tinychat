@@ -3,7 +3,8 @@ import type { RemoteOpReceipt } from "../nativeVoiceNotes";
 import { base64ToBytes } from "../voiceNoteAudio";
 import { createIdbAudioBlobStore } from "./audioBlobStore";
 import { openWebDb } from "./idb";
-import { FakeClock, newIdbEnv, slowTest } from "./webTestKit";
+import { newIdbEnv } from "./testing/idb";
+import { FakeClock, slowTest } from "./webTestKit";
 import {
   MAX_READ_CHUNK_BYTES, MAX_RECOVERY_ATTEMPTS, memoryLocks, openWebStore, recordingFromSession, sessionLock, type StoreOp,
   type WebStore, type WebStoreOptions,
