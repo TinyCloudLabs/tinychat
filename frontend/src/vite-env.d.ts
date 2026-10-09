@@ -33,6 +33,8 @@ interface ImportMetaEnv {
    * prototype, and only debug builds of the app have the location permissions it needs.
    */
   readonly VITE_EXO_LOCATION_SPIKE?: string;
+  /** "true" shows the Soft-skin phone recorder (TC-862); "false" or unset keeps the current recorder. */
+  readonly VITE_EXO_RECORDER_FINAL?: string;
   /** "true" registers the PWA service worker under `vite dev` too (src/lib/pwa.ts); off by default. */
   readonly VITE_PWA_DEV?: string;
 }
@@ -46,4 +48,6 @@ interface ImportMeta {
  * product version, the commit being built and the release channel when the
  * pipeline names one. `undefined` outside a Vite build (bun tests).
  */
-declare const __EXO_BUILD_INFO__: { version?: string; commit?: string; build?: string; channel?: string } | undefined;
+declare const __EXO_BUILD_INFO__:
+  | { version?: string; commit?: string; build?: string; channel?: string }
+  | undefined;

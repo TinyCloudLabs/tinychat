@@ -2,31 +2,16 @@ import { describe, expect, test } from "bun:test";
 import type { OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import {
   availableStops,
-  defaultMode,
   identifySpeakersControl,
   MODE_STOPS,
   modeAvailability,
   modeShortLabel,
   moveMode,
-  readIdentifySpeakers,
-  readMode,
   scaleStops,
   SKIP_ENABLED,
-  writeIdentifySpeakers,
-  writeMode,
   type ModeFeatures,
   type ModeShell,
 } from "./transcriptionModes";
-
-function storage(initial: Record<string, string> = {}) {
-  const data = new Map(Object.entries(initial));
-  return {
-    getItem: (key: string) => data.get(key) ?? null,
-    setItem: (key: string, value: string) => {
-      data.set(key, value);
-    },
-  };
-}
 
 function model(
   state: OnDeviceSttStatus["models"][number]["state"],
@@ -82,9 +67,14 @@ describe("transcription modes availability", () => {
     }
   });
 
-  test("scaleStops includes disabled rows but removes Skip when the flag is off", () => {
+  test("scaleStops includes disabled rows and removes Skip only when the flag is off", () => {
     const stops = scaleStops("web");
-    expect(stops.map(({ id }) => id)).toEqual(["local", "private", "powerful"]);
+    expect(stops.map(({ id }) => id)).toEqual([
+      "skip",
+      "local",
+      "private",
+      "powerful",
+    ]);
     expect(stops.find(({ id }) => id === "powerful")?.availability).toEqual({
       available: false,
       reason: "Coming with the next update",
@@ -95,10 +85,10 @@ describe("transcription modes availability", () => {
     });
     expect(
       scaleStops("web", null, false, {
-        skipEnabled: true,
+        skipEnabled: false,
         powerfulEnabled: false,
       }).map(({ id }) => id),
-    ).toEqual(["skip", "local", "private", "powerful"]);
+    ).toEqual(["local", "private", "powerful"]);
   });
 
   test("Skip availability follows the feature flag", () => {
@@ -232,15 +222,15 @@ describe("transcription modes availability", () => {
     );
     expect(
       availableStops("desktop", null, false).map((stop) => stop.id),
-    ).toEqual(["private"]);
+    ).toEqual(["skip", "private"]);
     expect(
       availableStops("desktop", null, true).map((stop) => stop.id),
-    ).toEqual(["local", "private"]);
-    expect(scaleStops("desktop", null, false)[0]?.availability).toEqual({
+    ).toEqual(["skip", "local", "private"]);
+    expect(scaleStops("desktop", null, false)[1]?.availability).toEqual({
       available: false,
       reason: "Get Whisper for this Mac",
     });
-    expect(scaleStops("desktop", null, true)[0]?.availability).toEqual({
+    expect(scaleStops("desktop", null, true)[1]?.availability).toEqual({
       available: true,
     });
   });
@@ -289,39 +279,8 @@ describe("transcription modes availability", () => {
   });
 });
 
-describe("transcription mode defaults and storage", () => {
-  test("phone and web default to Private; desktop defaults depend on Whisper", () => {
-    expect(defaultMode("phone", model("ready"))).toBe("private");
-    expect(defaultMode("web")).toBe("private");
-    expect(defaultMode("desktop", null, true)).toBe("local");
-    expect(defaultMode("desktop", null, false)).toBe("private");
-    for (const shell of shells) {
-      expect(defaultMode(shell, model("ready"), true)).not.toBe("powerful");
-      expect(defaultMode(shell, model("ready"), true)).toBe(
-        shell === "desktop" ? "local" : "private",
-      );
-    }
-  });
-
-  test("sticky selections round-trip and unavailable stored modes fall back to the shell default", () => {
-    const selected = storage();
-    writeMode("local", "desktop", selected, null, true);
-    expect(readMode("desktop", null, selected, true)).toBe("local");
-    expect(readMode("desktop", null, selected, false)).toBe("private");
-
-    const privateChoice = storage();
-    writeMode("private", "phone", privateChoice, model("absent"));
-    expect(readMode("phone", model("absent"), privateChoice)).toBe("private");
-  });
-});
-
 describe("Identify speakers", () => {
-  test("is sticky, off by default, enabled only for selected Powerful, and changes its short label", () => {
-    const selected = storage();
-    expect(readIdentifySpeakers(selected)).toBe(false);
-    writeIdentifySpeakers(true, selected);
-    expect(readIdentifySpeakers(selected)).toBe(true);
-
+  test("is enabled only for selected Powerful, and changes its short label", () => {
     expect(identifySpeakersControl("private", true, true)).toMatchObject({
       checked: true,
       disabled: true,

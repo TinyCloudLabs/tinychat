@@ -10,7 +10,9 @@ function available(): boolean {
 
 function quietly(feedback: () => Promise<void>): void {
   if (!available()) return;
-  feedback().catch((error: unknown) => console.warn("[Haptics] Feedback failed", error));
+  feedback().catch((error: unknown) =>
+    console.warn("[Haptics] Feedback failed", error),
+  );
 }
 
 /** A recording started. */
@@ -31,4 +33,14 @@ export function hapticWarning(): void {
 /** A segment of a control changed. */
 export function hapticSelection(): void {
   quietly(() => Haptics.selectionChanged());
+}
+
+/** A light tap: pause, resume, a mode change. */
+export function hapticLight(): void {
+  quietly(() => Haptics.impact({ style: ImpactStyle.Light }));
+}
+
+/** A firm tap: Done, discard. */
+export function hapticMedium(): void {
+  quietly(() => Haptics.impact({ style: ImpactStyle.Medium }));
 }

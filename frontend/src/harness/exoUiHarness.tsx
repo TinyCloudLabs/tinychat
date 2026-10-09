@@ -26,6 +26,8 @@ import { primitivesScreens } from "./screens/primitives";
 import { recorderScreens } from "./screens/recorder";
 import { recorderFinalHaloScreen } from "./screens/recorderFinalHalo";
 import { recorderFinalRibbonScreens } from "./screens/recorderFinalRibbon";
+import { recorderFinalPhoneScreens } from "./screens/recorderFinalPhone";
+import { recorderFinalPhoneInteractiveScreens } from "./screens/recorderFinalPhoneInteractive";
 import { sheetsScreens } from "./screens/sheets";
 import { shellScreens } from "./screens/shell";
 import { FROZEN_NOW, freezeClock } from "./stubs";
@@ -46,6 +48,8 @@ const SCREENS: HarnessScreen[] = [
   ...recorderScreens,
   recorderFinalHaloScreen,
   ...recorderFinalRibbonScreens,
+  ...recorderFinalPhoneScreens,
+  ...recorderFinalPhoneInteractiveScreens,
   ...captureScreens,
   ...libraryScreens,
 ];

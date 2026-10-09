@@ -338,3 +338,74 @@ export async function nativeHttpFileUploadSupported(
     return false;
   }
 }
+
+export type AudioInputsSnapshot = {
+  inputs: AudioInput[];
+  selectedId: string | null;
+  activeId: string | null;
+};
+
+const inputSubscribers = new Map<
+  (snapshot: AudioInputsSnapshot) => void,
+  ((caught: unknown) => void) | undefined
+>();
+let nativeInputsHandle: PluginListenerHandle | null = null;
+let nativeInputsQueue: Promise<void> = Promise.resolve();
+
+const fanOutInputs = (snapshot: AudioInputsSnapshot) => {
+  for (const subscriber of [...inputSubscribers.keys()]) subscriber(snapshot);
+};
+
+/** Brings the one native listener in line with whether anyone is subscribed. */
+async function reconcileNativeInputs(): Promise<void> {
+  if (inputSubscribers.size > 0 && !nativeInputsHandle) {
+    nativeInputsHandle = await VoiceNotes.addListener("inputs", fanOutInputs);
+  } else if (inputSubscribers.size === 0 && nativeInputsHandle) {
+    await nativeInputsHandle.remove();
+    nativeInputsHandle = null;
+  }
+}
+
+/**
+ * Add and remove run one at a time, so a resubscribe straight after the last
+ * unsubscribe (React StrictMode does it) waits for the removal and never
+ * leaves two native listeners. A failure is logged and goes to every current
+ * subscriber's `onError`; the state is left as the plugin left it, and the next
+ * change retries.
+ */
+function syncNativeInputs(): void {
+  nativeInputsQueue = nativeInputsQueue
+    .then(reconcileNativeInputs)
+    .catch((caught: unknown) => {
+      console.error(
+        "[VoiceNotes] Could not update the audio input listener",
+        caught,
+      );
+      for (const onError of [...inputSubscribers.values()]) onError?.(caught);
+    });
+}
+
+/**
+ * Subscribe to input-list changes. Capacitor delivers a retained event to the
+ * first native listener only, so this keeps one native listener for all
+ * subscribers: attached with the first, removed with the last.
+ */
+export function onInputsChanged(
+  listener: (snapshot: AudioInputsSnapshot) => void,
+  onError?: (caught: unknown) => void,
+): () => void {
+  inputSubscribers.set(listener, onError);
+  syncNativeInputs();
+  return () => {
+    inputSubscribers.delete(listener);
+    syncNativeInputs();
+  };
+}
+
+export function listInputs(): Promise<AudioInputsSnapshot> {
+  return VoiceNotes.listInputs();
+}
+
+export function selectInput(id: string | null): Promise<void> {
+  return VoiceNotes.selectInput({ id });
+}
