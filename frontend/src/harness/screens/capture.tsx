@@ -185,7 +185,12 @@ declare global {
 }
 
 /** Wraps the harness's fake plugin so the failed-recording calls are driven by `window.exoUiFailed`. */
-function installFailedNative(parked: string[], reasons: Record<string, string>) {
+export function installFailedNative(
+  parked: string[],
+  reasons: Record<string, string>,
+  /** The plugin to wrap. */
+  base: typeof VoiceNotes = VoiceNotes,
+) {
   const waiting: (() => void)[] = [];
   const control: NonNullable<Window["exoUiFailed"]> = {
     calls: [],
@@ -201,7 +206,6 @@ function installFailedNative(parked: string[], reasons: Record<string, string>) 
     const code = control.fail[name];
     if (code) throw Object.assign(new Error(`native says ${code}`), { code });
   };
-  const base = VoiceNotes;
   __setVoiceNotesForTests(
     {
       ...base,

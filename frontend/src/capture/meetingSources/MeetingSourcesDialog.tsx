@@ -46,7 +46,7 @@ import { useSourceSync } from "./useSourceSync";
 
 export { meetingSourceActionBusy, meetingSourceStatus };
 
-const SOURCE_IDS: readonly ConnectorId[] = ["fireflies", "google-meet", "granola"];
+export const SOURCE_IDS: readonly ConnectorId[] = ["fireflies", "google-meet", "granola"];
 const DESCRIPTIONS: Readonly<Record<string, string>> = {
   fireflies: "Meeting transcripts from Fireflies.ai.",
   "google-meet": "Google Meet transcripts and Notes by Gemini.",
