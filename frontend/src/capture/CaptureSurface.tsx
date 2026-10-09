@@ -40,6 +40,7 @@ import { CaptureActions } from "./CaptureActions";
 import { CaptureHomeView, FirstUse } from "./CaptureHomeView";
 import { captureEvents } from "./captureEvents";
 import { LocalRecorderCard } from "./desktop/LocalRecorderCard";
+import { localRecorderCardShown } from "./desktop/localRecorderGate";
 import { HOME_COPY } from "./home/homeCopy";
 import { SoftActions } from "./home/SoftActions";
 import { SoftCaptureHome } from "./home/SoftCaptureHome";
@@ -136,9 +137,13 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
     if (!homeShown) setSheet(null);
   }, [homeShown]);
   const sheetChange = (which: Sheet) => (open: boolean) => setSheet(open ? which : null);
-  const localRecorder = isDesktopLocalTranscriptionAvailable();
   // The phone app's recorder: notes still on this phone and a stop at the limit are In progress rows.
   const recorder = useRecorder();
+  const localRecorder = localRecorderCardShown({
+    tauri: isDesktopLocalTranscriptionAvailable(),
+    flag: softHomeEnabled(),
+    recorderAvailable: recorder.available,
+  });
 
   // Recent, the Library and the open note: one reader, through the per-space queue.
   const library = useLibrary(tcw, {
