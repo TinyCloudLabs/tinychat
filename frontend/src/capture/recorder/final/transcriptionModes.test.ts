@@ -74,7 +74,7 @@ describe("transcription modes availability", () => {
     }
   });
 
-  test("scaleStops includes disabled rows and removes Skip only when the flag is off", () => {
+  test("scaleStops includes disabled rows and removes the Audio only stop only when the flag is off", () => {
     const stops = scaleStops("web");
     expect(stops.map(({ id }) => id)).toEqual([
       "skip",
@@ -98,7 +98,7 @@ describe("transcription modes availability", () => {
     ).toEqual(["local", "private", "powerful"]);
   });
 
-  test("Skip availability follows the feature flag", () => {
+  test("Audio only availability follows the feature flag", () => {
     expect(modeAvailability("skip", "phone")).toEqual(
       SKIP_ENABLED
         ? { available: true }
@@ -117,17 +117,17 @@ describe("transcription modes availability", () => {
       skip: {
         phone: [
           "Just the recording, kept on this phone.",
-          "audio only",
+          "no transcript",
           "Only the audio is saved. Transcribe it later if you like.",
         ],
         desktop: [
           "Just the recording, saved to your space.",
-          "audio only",
+          "no transcript",
           "Only the audio is saved. Transcribe it later if you like.",
         ],
         web: [
           "Just the recording, saved to your space.",
-          "audio only",
+          "no transcript",
           "Only the audio is saved. Transcribe it later if you like.",
         ],
       },

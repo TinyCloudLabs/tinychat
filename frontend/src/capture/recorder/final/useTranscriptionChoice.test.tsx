@@ -3,12 +3,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import type { VoiceNoteTranscriptionProps } from "../transcriptionProps";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
+import type { SetTranscriberResult } from "../voiceNoteRecorderController";
 import {
   PRIVATE_UNAVAILABLE,
   SIGNED_OUT,
   SPEAKERS_NEEDS_CONSENT,
   unavailableNow,
-  type SetTranscriberResult,
   type TranscriberApi,
   TRANSCRIBER_FOR,
   useTranscriptionChoice,
@@ -96,7 +96,7 @@ function choice(
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("useTranscriptionChoice", () => {
-  test("the scale has Skip, Local, Private and Powerful; Powerful is disabled", () => {
+  test("the scale has Audio only, Local, Private and Powerful; Powerful is disabled", () => {
     const { result } = choice(transcription(), fakeApi("private-cloud").api);
     expect(result.stops.map((s) => s.stop.id)).toEqual([
       "skip",
@@ -167,7 +167,7 @@ describe("useTranscriptionChoice", () => {
     ]);
   });
 
-  test("Skip is the provider's off, and never the legacy route's onTurnOff", async () => {
+  test("Audio only is the provider's off, and never the legacy route's onTurnOff", async () => {
     let off = 0;
     const { api, calls } = fakeApi("private-cloud");
     const { result } = choice(
@@ -276,7 +276,7 @@ describe("useTranscriptionChoice", () => {
 
     test("unavailable: a toast naming the mode asked for, a log, and the selection stays with the provider", async () => {
       const skip = await failure("unavailable", "skip");
-      expect(skip.notices).toEqual([unavailableNow("Skip")]);
+      expect(skip.notices).toEqual([unavailableNow("Audio only")]);
       expect(skip.errors).toHaveLength(1);
       const priv = await failure("unavailable", "private");
       expect(priv.notices).toEqual([unavailableNow("Private")]);

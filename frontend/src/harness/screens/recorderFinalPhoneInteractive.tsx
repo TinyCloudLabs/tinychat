@@ -4,10 +4,8 @@
 // recorder's state, and the flags that make its plugins fail.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PhoneRecorder } from "@/capture/recorder/final/PhoneRecorder";
-import type {
-  SetTranscriberResult,
-  TranscriberApi,
-} from "@/capture/recorder/final/useTranscriptionChoice";
+import type { TranscriberApi } from "@/capture/recorder/final/useTranscriptionChoice";
+import type { SetTranscriberResult } from "@/capture/recorder/voiceNoteRecorderController";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { AudioInputsSnapshot } from "@/capture/recorder/final/useAudioInputs";
 import {

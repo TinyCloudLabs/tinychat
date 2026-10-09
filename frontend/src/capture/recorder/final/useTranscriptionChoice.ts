@@ -3,7 +3,10 @@ import {
   OnDeviceStt,
   type OnDeviceSttStatus,
 } from "@/lib/voiceNotes/onDeviceStt";
-import { nativeVoiceNotesAvailable } from "@/lib/voiceNotes/nativeVoiceNotes";
+import {
+  nativeVoiceNotesAvailable,
+  type TranscriberId,
+} from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { VoiceNoteTranscriptionProps } from "../transcriptionProps";
 import {
   MODE_STOPS,
@@ -12,17 +15,13 @@ import {
   type ModeShell,
   type ModeStop,
 } from "./transcriptionModes";
-import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { RecorderValue } from "../RecorderProvider";
+import type { SetTranscriberResult } from "../voiceNoteRecorderController";
 
 export type TranscriberApi = Pick<
   RecorderValue,
   "transcriber" | "setTranscriber" | "setIdentifySpeakers"
 >;
-export type SetTranscriberResult = Awaited<
-  ReturnType<TranscriberApi["setTranscriber"]>
->;
-
 export const PRIVATE_UNAVAILABLE = "Not available right now";
 export const SIGNED_OUT = "Sign in to choose another mode";
 export const unavailableNow = (what: string) =>

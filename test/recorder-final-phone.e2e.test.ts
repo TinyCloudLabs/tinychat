@@ -193,21 +193,21 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await page.mouse.down();
     await page.mouse.move(box.x + 12, y, { steps: 6 });
     await page.mouse.up();
-    await modeIs(page, "Skip");
+    await modeIs(page, "Audio only");
     expect(await calls()).toEqual(["transcriber:off:recording"]);
 
     await page.mouse.move(box.x + 12, y);
     await page.mouse.down();
     await page.mouse.move(box.x + box.width - 12, y, { steps: 6 });
     await page.mouse.up();
-    await modeIs(page, "Skip");
+    await modeIs(page, "Audio only");
     await shown(page.getByText("Coming with the next update").first());
     await page.context().close();
   });
 
   test("first run: the scale shows the provider's mode; Private waits on consent, then asks again", async () => {
     const { page, calls, activeName } = await open("first-run");
-    await modeIs(page, "Skip");
+    await modeIs(page, "Audio only");
     await shown(page.getByText("Just the recording, kept on this phone."));
 
     await slider(page).focus();
@@ -270,7 +270,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     const { page, calls } = await open("consented");
     await modeIs(page, "Private");
     for (const [id, label] of [
-      ["off", "Skip"],
+      ["off", "Audio only"],
       ["on-device", "Local"],
       ["private-cloud", "Private"],
     ] as const) {

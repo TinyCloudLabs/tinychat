@@ -51,9 +51,9 @@ export const MODE_STOPS: readonly ModeStop[] = [
     transcriber: null,
     shortName: COPY.skipName,
     subLabel: {
-      phone: COPY.audioOnly,
-      desktop: COPY.audioOnly,
-      web: COPY.audioOnly,
+      phone: COPY.noTranscript,
+      desktop: COPY.noTranscript,
+      web: COPY.noTranscript,
     },
     captions: COPY.skipCaption,
     explanations: {
