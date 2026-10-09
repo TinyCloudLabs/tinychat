@@ -143,7 +143,7 @@ export function ribbonBarScale(value: number, act: number): number {
 }
 
 export function dockBarScale(value: number, act: number): number {
-  return 0.2 + 0.8 * value * act;
+  return 0.2 + 0.8 * Math.min(1, value * act * 1.25);
 }
 
 function spectrumBarScale(value: number, act: number, bars: number): number {
@@ -172,8 +172,9 @@ export function MirroredSpectrumBars({
   const root = useRef<HTMLDivElement>(null);
   const heights = useRef<number[]>([]);
   const lastPainted = useRef<number[]>([]);
+  const rest = spectrumBarScale(0, 0, bars);
   if (heights.current.length !== bars) {
-    heights.current = Array.from({ length: bars }, () => 0.12);
+    heights.current = Array.from({ length: bars }, () => rest);
     lastPainted.current = Array.from({ length: bars }, () => -1);
   }
 
@@ -223,7 +224,7 @@ export function MirroredSpectrumBars({
               source.act,
               bars,
             )
-          : 0.12;
+          : rest;
         return (
           <span
             key={index}

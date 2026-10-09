@@ -285,21 +285,20 @@ describe("selectRecorderView: live, paused and transient phases", () => {
     });
   });
 
-  test("raw Android reasons log as contract violations without throwing in dev", () => {
+  test("raw Android reasons throw as contract violations in dev", () => {
     const consoleError = spyOn(console, "error").mockImplementation(() => {});
     try {
       for (const reason of [
         "read_failed:9",
         "write_failed: disk unavailable",
       ]) {
-        const view = recordingView("recording", reason as MicStateReason, {
-          isDevelopmentOrTest: true,
-        });
-        expect(view.statusLine).toBe(
-          "The microphone state is unexpected. Check the recording.",
-        );
+        expect(() =>
+          recordingView("recording", reason as MicStateReason, {
+            isDevelopmentOrTest: true,
+          }),
+        ).toThrow(`Unexpected recorder mic combination: recording/${reason}`);
       }
-      expect(consoleError).toHaveBeenCalledTimes(2);
+      expect(consoleError).not.toHaveBeenCalled();
     } finally {
       consoleError.mockRestore();
     }
@@ -330,7 +329,7 @@ describe("selectRecorderView: live, paused and transient phases", () => {
         { state: "recording", reason: "call" },
       );
       expect(consoleError).toHaveBeenCalledWith(
-        "Native mic reason violates the contract: recording/read_failed:9",
+        "Unexpected recorder mic combination: recording/read_failed:9",
         { state: "recording", reason: "read_failed:9" },
       );
     } finally {

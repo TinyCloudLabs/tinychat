@@ -61,15 +61,8 @@ function unexpectedCombination(
   isDevelopmentOrTest: boolean,
 ): MicPresentation {
   const reasonText = String(reason);
-  const rawAndroidReason =
-    reasonText.startsWith("read_failed:") ||
-    reasonText.startsWith("write_failed:");
-  const message = rawAndroidReason
-    ? `Native mic reason violates the contract: ${state}/${reasonText}`
-    : `Unexpected recorder mic combination: ${state}/${reasonText}`;
-  if (isDevelopmentOrTest && !rawAndroidReason) {
-    throw new Error(message);
-  }
+  const message = `Unexpected recorder mic combination: ${state}/${reasonText}`;
+  if (isDevelopmentOrTest) throw new Error(message);
 
   console.error(message, { state, reason });
   return {

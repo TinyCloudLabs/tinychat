@@ -179,7 +179,7 @@ describe("recorderReducer", () => {
     });
     expect(stopped).toMatchObject({
       phase: "idle",
-      error: "Recording kept on this phone. Exo will finish it automatically.",
+      error: "Kept on this phone. Exo will finish it automatically.",
     });
     expect(stopped.error).not.toContain("captured no audio");
   });

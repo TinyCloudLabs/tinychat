@@ -20,6 +20,7 @@ on:
       - "package.json"
       - "bun.lock"
       - ".github/workflows/frontend.yml"
+      - "test/exo-ui/**"
 
 permissions:
   contents: read
@@ -75,6 +76,10 @@ jobs:
       # nine-viewport matrix, WebKit included, runs locally.
       - name: Exo UI screens (Chromium)
         run: EXO_UI_ENGINE=chromium EXO_UI_VIEWPORTS=phone,phone-land,desktop,text200-phone bun run --cwd test exo-ui:screens
+
+      - name: Recorder halo forced Canvas 2D checks (Linux Chromium)
+        if: ${{ !cancelled() }}
+        run: EXO_UI_ENGINE=chromium EXO_UI_VIEWPORTS=phone-halo-review EXO_UI_HALO_FORCE_CANVAS=1 bun run --cwd test exo-ui:screens
 
       - name: Upload the Exo UI screenshots
         if: ${{ !cancelled() }}
