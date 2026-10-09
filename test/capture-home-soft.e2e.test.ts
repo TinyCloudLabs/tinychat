@@ -16,6 +16,7 @@ import {
   webkit,
   type Browser,
   type BrowserType,
+  type Locator,
   type Page,
 } from "playwright";
 import { buildHarness, serveHarness } from "./exo-ui/harness-server";
@@ -37,6 +38,15 @@ afterAll(async () => {
   await browser?.close();
   running?.stop(true);
 }, 30_000);
+
+// Radix hands focus back as the sheet unmounts, which can land just after the sheet is gone.
+async function hasFocus(locator: Locator): Promise<void> {
+  const end = Date.now() + 5_000;
+  while (!(await locator.evaluate((el) => el === document.activeElement))) {
+    if (Date.now() > end) throw new Error(`${locator} never took focus`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
 
 async function open(screen: string): Promise<Page> {
   const context = await browser.newContext({
@@ -91,9 +101,7 @@ describe("Soft Capture home interactions (phone)", () => {
 
     await page.locator('[data-testid="capture-issue-close"]').tap();
     await sheet.waitFor({ state: "detached", timeout: 5_000 });
-    expect(await row.evaluate((el) => el === document.activeElement)).toBe(
-      true,
-    );
+    await hasFocus(row);
     await page.context().close();
   });
 
@@ -107,9 +115,7 @@ describe("Soft Capture home interactions (phone)", () => {
     await sheet.waitFor({ timeout: 5_000 });
     await page.locator('[data-testid="capture-issue-close"]').tap();
     await sheet.waitFor({ state: "detached", timeout: 5_000 });
-    expect(await row.evaluate((el) => el === document.activeElement)).toBe(
-      true,
-    );
+    await hasFocus(row);
     await page.context().close();
   });
 
@@ -129,9 +135,7 @@ describe("Soft Capture home interactions (phone)", () => {
     expect(await sheet.innerText()).not.toMatch(/Try again|Delete/);
     await page.keyboard.press("Escape");
     await sheet.waitFor({ state: "detached", timeout: 5_000 });
-    expect(await row.evaluate((el) => el === document.activeElement)).toBe(
-      true,
-    );
+    await hasFocus(row);
     await page.context().close();
   });
 
