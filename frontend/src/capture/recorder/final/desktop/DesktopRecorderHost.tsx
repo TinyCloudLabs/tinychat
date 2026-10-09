@@ -1,7 +1,9 @@
 import { useEffect, useRef } from "react";
 import { useRecorder } from "../../RecorderProvider";
 import { finishRecording, type DoneGate } from "../doneGate";
-import { recordingKey, updateNotesUi, useNotesUi, warmRenderer } from "../notes";
+import { updateNotesUi, useNotesUi } from "../notes/notesUiState";
+import { recordingKey } from "../notes/recordingKey";
+import { warmRenderer } from "../notes/renderMarkdown";
 import { useNoteSaver } from "../useNoteSaver";
 import type { RecorderLayout } from "../shellCapabilities";
 import {
