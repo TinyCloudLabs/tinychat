@@ -34,10 +34,35 @@ async function open(theme: "dark" | "light", screen = "meeting-sources-interacti
   return page;
 }
 
-const activeText = (page: Page) =>
-  page.evaluate(() => (document.activeElement as HTMLElement | null)?.textContent?.trim() ?? "");
-const activeLabel = (page: Page) =>
-  page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? "");
+type FocusKind = "text" | "label" | "class";
+
+// Radix moves focus after the DOM changes: it focuses the sheet in a mount effect, and returns focus
+// from a setTimeout after the sheet unmounts. A read straight after waitFor() can land in between.
+async function expectFocus(page: Page, kind: FocusKind, expected: string): Promise<void> {
+  const read = ([k]: [FocusKind]) => {
+    const el = document.activeElement as HTMLElement | null;
+    if (!el) return "";
+    if (k === "label") return el.getAttribute("aria-label") ?? "";
+    if (k === "class") return typeof el.className === "string" ? el.className : "";
+    return el.textContent?.trim() ?? "";
+  };
+  try {
+    await page.waitForFunction(
+      ([k, want]) => {
+        const el = document.activeElement as HTMLElement | null;
+        if (!el) return false;
+        if (k === "label") return el.getAttribute("aria-label") === want;
+        if (k === "class") return typeof el.className === "string" && el.className.includes(want);
+        return el.textContent?.trim() === want;
+      },
+      [kind, expected] as const,
+      { timeout: 5_000 },
+    );
+  } catch (cause) {
+    const actual = await page.evaluate(read, [kind]);
+    throw new Error(`focus never reached ${kind} "${expected}"; the focused element's ${kind} is "${actual.slice(0, 80)}"`, { cause });
+  }
+}
 
 for (const theme of ["dark", "light"] as const) {
   describe(`Meeting sources window (${theme})`, () => {
@@ -47,7 +72,7 @@ for (const theme of ["dark", "light"] as const) {
       await entry.click();
       const window = page.getByRole("dialog", { name: "Meeting sources" });
       await window.waitFor();
-      expect(await activeLabel(page)).toBe("Close");
+      await expectFocus(page, "label", "Close");
 
       const manage = window.locator('[data-source="fireflies"] button[aria-controls="msx-fireflies"]');
       expect(await manage.getAttribute("aria-expanded")).toBe("false");
@@ -68,7 +93,7 @@ for (const theme of ["dark", "light"] as const) {
 
       await page.keyboard.press("Escape");
       await window.waitFor({ state: "hidden" });
-      expect(await page.evaluate(() => document.activeElement?.className)).toContain("ms-entry");
+      await expectFocus(page, "class", "ms-entry");
       await page.close();
     }, TEST_TIMEOUT_MS);
 
@@ -83,19 +108,19 @@ for (const theme of ["dark", "light"] as const) {
       await rotate.click();
       const confirm = page.getByRole("alertdialog", { name: "Rotate the webhook secret?" });
       await confirm.waitFor();
-      expect(await activeText(page)).toBe("Keep the current one");
+      await expectFocus(page, "text", "Keep the current one");
 
       await page.keyboard.press("Escape");
       await confirm.waitFor({ state: "hidden" });
       // The window under it is still open, and focus is back on what opened the sheet.
       expect(await window.isVisible()).toBe(true);
-      expect(await activeText(page)).toBe("Rotate the webhook secret");
+      await expectFocus(page, "text", "Rotate the webhook secret");
 
       await rotate.click();
       await confirm.waitFor();
       await page.getByRole("button", { name: "Keep the current one" }).click();
       await confirm.waitFor({ state: "hidden" });
-      expect(await activeText(page)).toBe("Rotate the webhook secret");
+      await expectFocus(page, "text", "Rotate the webhook secret");
       await page.close();
     }, TEST_TIMEOUT_MS);
 
@@ -110,11 +135,11 @@ for (const theme of ["dark", "light"] as const) {
       const confirm = page.getByRole("alertdialog", { name: "Disconnect Fireflies?" });
       await confirm.waitFor();
       expect(await confirm.textContent()).toContain("Meetings already in your space stay.");
-      expect(await activeText(page)).toBe("Keep connected");
+      await expectFocus(page, "text", "Keep connected");
 
       await page.keyboard.press("Escape");
       await confirm.waitFor({ state: "hidden" });
-      expect(await activeText(page)).toBe("Disconnect Fireflies");
+      await expectFocus(page, "text", "Disconnect Fireflies");
       // Nothing was disconnected.
       expect(await window.locator('[data-source="fireflies"] .ms-btn1').count()).toBe(0);
       await page.close();

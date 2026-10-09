@@ -36,6 +36,7 @@ import { recorderFinalPhoneScreens } from "./screens/recorderFinalPhone";
 import { recorderFinalPhoneInteractiveScreens } from "./screens/recorderFinalPhoneInteractive";
 import { sheetsScreens } from "./screens/sheets";
 import { shellScreens } from "./screens/shell";
+import { waitUntilReady } from "./readiness";
 import { FROZEN_NOW, freezeClock } from "./stubs";
 
 type ScreenInfo = Omit<HarnessScreen, "render">;
@@ -113,14 +114,9 @@ window.exoUi = {
 function Ready(props: { scrollTo?: string; readyWhen?: string }) {
   useEffect(() => {
     let cancelled = false;
-    const until = Date.now() + 5_000;
     const arrived = () =>
-      new Promise<void>((resolve) => {
-        const check = () => {
-          if (cancelled || !props.readyWhen || document.querySelector(props.readyWhen) || Date.now() > until) resolve();
-          else setTimeout(check, 50);
-        };
-        check();
+      waitUntilReady(() => !props.readyWhen || document.querySelector(props.readyWhen) !== null, {
+        isCancelled: () => cancelled,
       });
     void Promise.all([document.fonts.ready, arrived()]).then(() => {
       if (props.scrollTo) document.querySelector(props.scrollTo)?.scrollIntoView({ block: "center" });
