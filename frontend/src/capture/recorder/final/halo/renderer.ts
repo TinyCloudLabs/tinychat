@@ -9,6 +9,10 @@ const RA = 1 / BLEED;
 const compareByPixelSize = (a: HaloEntry, b: HaloEntry) =>
   b.pixelSize - a.pixelSize;
 
+const L = (...a: unknown[]) => {
+  const w = window as unknown as { __hl?: unknown[] };
+  (w.__hl ??= []).push([Math.round(performance.now()), ...a]);
+};
 export interface HaloConfig {
   size: number;
   ticks: number;
@@ -440,11 +444,13 @@ class SharedHaloRenderer {
     const intersection = new IntersectionObserver(
       ([item]) => {
         entry.visible = item.isIntersecting;
+        L("IO", entry.config.size, entry.pixelSize, item.isIntersecting);
         if (entry.visible) this.frameLoop.start();
       },
       { rootMargin: "80px" },
     );
     const resize = new ResizeObserver(() => {
+      L("RO", entry.config.size, entry.visible);
       this.resize(entry);
       if (entry.visible) this.frameLoop.start();
     });
@@ -688,6 +694,7 @@ class SharedHaloRenderer {
       Math.round(entry.config.size * BLEED * dpr),
     );
     if (entry.pixelSize > 0) {
+      L("resize-clear", entry.config.size, entry.pixelSize, entry.visible);
       entry.canvas.width = entry.canvas.height = entry.pixelSize;
       entry.lastDraw = 0;
     }
@@ -750,6 +757,7 @@ class SharedHaloRenderer {
     let y = 0;
     let shelfHeight = 0;
     this.todo.sort(compareByPixelSize);
+    L("drawWebgl", this.todo.map((e) => e.pixelSize));
     for (const entry of this.todo) {
       const size = entry.pixelSize;
       if (x + size > ATLAS_SIZE) {
@@ -787,6 +795,7 @@ class SharedHaloRenderer {
     const bitmap =
       this.path === "webgl-atlas" ? offscreen.transferToImageBitmap() : null;
     const source = bitmap ?? (this.canvas as HTMLCanvasElement);
+    L("flush", this.batch.map((e) => [e.pixelSize, e.atlasX, e.atlasY]), bitmap?.width, bitmap?.height);
     for (const entry of this.batch) {
       const size = entry.pixelSize;
       entry.context.clearRect(0, 0, size, size);
@@ -802,6 +811,7 @@ class SharedHaloRenderer {
         size,
       );
       entry.lastDraw = now;
+      L("drawn", size);
     }
     bitmap?.close();
     this.batch.length = 0;
@@ -847,6 +857,11 @@ class SharedHaloRenderer {
     gl.uniform1f(uniforms.light, config.theme === "day" ? 1 : 0);
     gl.uniform1f(uniforms.reduced, entry.reduced ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    if (size === 413) {
+      const px = new Uint8Array(4);
+      gl.readPixels(x + (size >> 1), y + (size >> 1), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      L("gl-centre", x, y, Array.from(px), "err", gl.getError(), "fb", gl.checkFramebufferStatus(gl.FRAMEBUFFER), "avatar", !!entry.avatarTexture, "data", !!entry.dataTexture);
+    }
   }
   private drawCanvas(now: number) {
     for (const entry of this.todo) {
