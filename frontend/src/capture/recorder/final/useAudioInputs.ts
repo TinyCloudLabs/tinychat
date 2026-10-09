@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { captureEngineKind } from "@/lib/voiceNotes/captureEngine";
 import {
   listInputs,
   nativeVoiceNotesAvailable,
@@ -7,6 +8,7 @@ import {
   type AudioInput,
   type AudioInputsSnapshot,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { browserAudioInputs } from "./shell/browserAudioInputs";
 
 export type { AudioInputsSnapshot };
 
@@ -30,6 +32,12 @@ const isUnsupported = (caught: unknown) =>
   typeof caught === "object" &&
   caught !== null &&
   (caught as { code?: unknown }).code === "unsupported";
+
+/** The shell's own source: the native plugin's, a browser's enumerateDevices(), or none. */
+export function shellAudioInputs(): AudioInputsSource | null {
+  if (nativeVoiceNotesAvailable()) return nativeAudioInputs;
+  return captureEngineKind() === "web" ? browserAudioInputs : null;
+}
 
 export const NO_INPUTS: AudioInputsSnapshot = {
   inputs: [],
@@ -114,9 +122,7 @@ export async function chooseAudioInput(
 }
 
 export function useAudioInputs(
-  source: AudioInputsSource | null = nativeVoiceNotesAvailable()
-    ? nativeAudioInputs
-    : null,
+  source: AudioInputsSource | null = shellAudioInputs(),
 ) {
   const [snapshot, setSnapshot] = useState<AudioInputsSnapshot>(NO_INPUTS);
   const [error, setError] = useState<{
