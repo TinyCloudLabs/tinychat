@@ -727,6 +727,27 @@ const RECORDING = {
 describe("transcribeVoiceNote (one note end to end)", () => {
   beforeEach(() => _resetConnectorSchemaMemoForTests());
 
+  test("manual Retry obeys the committed v2 choice after the native sidecar is gone", async () => {
+    for (const transcriber of ["off", "on-device", "private-cloud"] as const) {
+      _resetConnectorSchemaMemoForTests();
+      const space = sqliteSpace();
+      expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+      space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata,
+        '$.capture.version', 2, '$.capture.options.transcriber', ?) WHERE source_id = 'rec-1'`).run(transcriber);
+      VoiceNotes.listPending = async () => ({ recordings: [] });
+      const h = harness({});
+      const attempt = transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS,
+        sourceId: "rec-1", report: () => {} });
+      if (transcriber === "private-cloud") {
+        expect(await attempt).toBe("transcribed");
+        expect(h.creates).toHaveLength(1);
+      } else {
+        expect((await attempt.catch((error: unknown) => error) as PrivateCloudError).code).toBe("transcription_off");
+        expect(h.calls).toEqual([]);
+      }
+    }
+  });
+
   test("a note owned by another account is rejected before contacting private cloud", async () => {
     const space = sqliteSpace();
     expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android")).ok).toBe(true);

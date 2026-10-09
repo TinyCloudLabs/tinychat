@@ -14,11 +14,14 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Button } from "@/components/ui/button";
 import { hapticRecordStarted, hapticSaved, hapticWarning } from "@/lib/haptics";
 import { VOICE_NOTE_MAX_DURATION_MS, VoiceNotes, nativeVoiceNotesAvailable, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { effectiveCaptureOptions, readTranscriberPreference } from "@/lib/voiceNotes/transcriberPreference";
 import type { PendingSnapshot } from "@/lib/voiceNotes/recorderSaves";
 import { liveCapture } from "./liveCapture";
 import { DISCARDED, micWarning, recorderStatusText, RECEIPT_KEPT } from "./recorderCopy";
 import type { RecorderCaptureIssue, RecorderMic, RecorderPhase, RecorderState } from "./recorderReducer";
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
+import type { RecorderTranscriberChoice, TranscriberChoiceResult, TranscriberChoiceScope } from "./voiceNoteRecorderController";
+import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { useVoiceNoteRecorder } from "./useVoiceNoteRecorder";
 
 /** How long a saved receipt stays before the sheet closes and the island lets go. */
@@ -53,6 +56,13 @@ export interface RecorderValue {
   lastSaved: RecorderState["lastSaved"];
   pending: PendingSnapshot;
   transcription: VoiceNoteTranscriptionProps | undefined;
+  /** Native options while recording; otherwise the signed-in effective JS default. */
+  transcriber: RecorderTranscriberChoice;
+  setTranscriber(id: TranscriberId, options: { scope: TranscriberChoiceScope; waitForModel?: boolean }): Promise<TranscriberChoiceResult>;
+  setIdentifySpeakers(on: boolean, scope: "recording" | "default"): Promise<"ok" | "needs_consent" | "locked_signed_out" | "unavailable">;
+  /** Capture always forces on-device while signed out (CaptureEngine), so the transcription route
+   * must too — never offer "Off" or "Private cloud" without an account. */
+  signedIn: boolean;
   sheetOpen: boolean;
   record(): void;
   stop(): void;
@@ -118,8 +128,12 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
         if (!active) return;
         const key = "exo.capture.transitionGen";
         const local = Number(globalThis.localStorage?.getItem(key) ?? 0) || 0;
-        const transitionGen = Math.max(native.transitionGen, local) + 1;
-        await VoiceNotes.setCaptureDefaults({ ...native, accountDid: tcw.did ?? null, transitionGen });
+        // A preference sync is not an account transition. Only an owner change advances the generation.
+        const transitionGen = native.accountDid === (tcw.did ?? null)
+          ? native.transitionGen : Math.max(native.transitionGen, local) + 1;
+        await VoiceNotes.setCaptureDefaults({ ...native,
+          ...effectiveCaptureOptions(readTranscriberPreference(), tcw.did != null),
+          accountDid: tcw.did ?? null, transitionGen });
         globalThis.localStorage?.setItem(key, String(transitionGen));
         if (active) { setDefaultsError(null); setConfigured({ tcw, did: tcw.did ?? null }); }
       } catch (caught) {
@@ -228,6 +242,10 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       lastSaved: state.lastSaved,
       pending: recorder.pending,
       transcription: recorder.transcription,
+      transcriber: recorder.transcriber,
+      setTranscriber: recorder.setTranscriber,
+      setIdentifySpeakers: recorder.setIdentifySpeakers,
+      signedIn: tcw.did != null,
       sheetOpen,
       record,
       stop: recorder.stop,
@@ -256,10 +274,14 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       recorder.pause,
       recorder.resume,
       recorder.transcription,
+      recorder.transcriber,
+      recorder.setTranscriber,
+      recorder.setIdentifySpeakers,
       defaultsError,
       sheetOpen,
       state,
       subscribeLevel,
+      tcw.did,
     ],
   );
 
@@ -308,6 +330,10 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       lastSaved: null,
       pending: NO_PENDING,
       transcription: undefined,
+      transcriber: { id: "on-device", identifySpeakers: false, source: "default" },
+      setTranscriber: async () => "unavailable",
+      setIdentifySpeakers: async () => "unavailable",
+      signedIn: true,
       sheetOpen: false,
       record: noop,
       stop: noop,

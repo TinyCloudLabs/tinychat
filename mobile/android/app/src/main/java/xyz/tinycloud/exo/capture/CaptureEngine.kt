@@ -10,6 +10,7 @@ import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import xyz.tinycloud.exo.capture.core.*
+import xyz.tinycloud.exo.stt.TranscriptionQueue
 import java.io.File
 import java.util.UUID
 import java.util.Locale
@@ -286,12 +287,17 @@ class CaptureEngine private constructor(private val context: Context) {
         noSignalAt = 0; lastPeakAt = System.currentTimeMillis()
         source = startSource; transitions.start(); setMicState("idle", null)
         spans = JSONArray(); openSpan = null
+        // Capture priority (plan §2.5, round-2 finding 3 override): this never waits for STT.
+        // Push the signal and open the mic immediately; the queue releases at its next checkpoint
+        // (between windows/segments, never mid-recognize()) and stays idle until `captureEnded()`.
+        TranscriptionQueue.get(context).captureStarted()
         try { acquire(releaseLockDuringStart = false, beforeStart = {
             sequence!!.firstInput(gen)
         }) } catch (e: Exception) {
             if (id == newId && intent == "recording") {
                 library.closeSession(newId)
                 id = null; transitions.send(TransitionMachine.Event.STOP); setMicState("idle", null)
+                TranscriptionQueue.get(context).captureEnded()
             }
             throw e
         }
@@ -315,7 +321,7 @@ class CaptureEngine private constructor(private val context: Context) {
                 if (recordedElapsedMs() >= maxMs) scheduleAutoStop(MicStateContract.MAX_DURATION)
             }
         }
-        val localInput = try { AudioCapture({ pcm -> localEncoder.offer(pcm, pcm.size) }, { level, peak ->
+        val localInput = try { AudioCapture(context, { pcm -> localEncoder.offer(pcm, pcm.size) }, { level, peak ->
             emit("level", JSONObject().put("level", level).put("peak", peak))
             val now = System.currentTimeMillis()
             if (peak > 0) {
@@ -512,6 +518,7 @@ class CaptureEngine private constructor(private val context: Context) {
         autoStop(MicStateContract.WRITE_FAILED)
         if (id != null) {
             transitions.writeFailed(); setMicState("needs_user", MicStateContract.WRITE_FAILED); publishState()
+            TranscriptionQueue.get(context).captureEnded()
         }
         throw IllegalStateException("pause_failed", failure)
     }
@@ -593,6 +600,7 @@ class CaptureEngine private constructor(private val context: Context) {
         val current = id ?: throw IllegalStateException("not_recording")
         if (input == null) library.read(current)?.let { saved ->
             id = null; setMicState("idle", null); transitions.send(TransitionMachine.Event.STOP)
+            TranscriptionQueue.get(context).captureEnded()
             main.removeCallbacks(limitTick)
             publishState(); emit("committed", saved)
             return@withLock saved
@@ -621,6 +629,7 @@ class CaptureEngine private constructor(private val context: Context) {
             closeSilence(current)
             closeOmitted(current, System.currentTimeMillis())
             transitions.send(TransitionMachine.Event.STOP); CaptureNotifications.cancelAlert(context); main.removeCallbacks(retry)
+            TranscriptionQueue.get(context).captureEnded()
             if (pausedAt > 0) { pausedMs += System.currentTimeMillis() - pausedAt; pausedAt = 0 }
             val at = System.currentTimeMillis()
             finalReason = if (captureFailure != null) MicStateContract.WRITE_FAILED else reason
@@ -634,6 +643,7 @@ class CaptureEngine private constructor(private val context: Context) {
             try { encoder?.abort() } catch (abort: Exception) { Log.e("ExoCapture", "AAC abort after failed Stop", abort) }
             encoder = null
             transitions.writeFailed(); CaptureNotifications.cancelAlert(context); main.removeCallbacks(retry)
+            TranscriptionQueue.get(context).captureEnded()
             library.closeSession(current)
             setMicState("needs_user", MicStateContract.WRITE_FAILED)
             main.removeCallbacks(limitTick)
@@ -649,6 +659,7 @@ class CaptureEngine private constructor(private val context: Context) {
         val current = id ?: return@withLock null
         if (library.sidecar(current).exists()) throw IllegalStateException("already_committed")
         transitions.send(TransitionMachine.Event.DISCARD); CaptureNotifications.cancelAlert(context); main.removeCallbacks(retry)
+        TranscriptionQueue.get(context).captureEnded()
         val captured = input
         try { captured?.drain() } catch (e: Exception) { Log.e("ExoCapture", "Discard input drain failed", e) }
         finally {

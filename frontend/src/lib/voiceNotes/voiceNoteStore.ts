@@ -296,6 +296,9 @@ export interface VoiceNoteForTranscription {
   transcript: VoiceNoteTranscriptState;
   /** From the row (or its capture metadata); null when neither says. */
   durationSeconds: number | null;
+  /** A v2 choice is durable in the space row even after native deletes its sidecar. */
+  captureVersion: number | null;
+  captureTranscriber: string | null;
 }
 
 export async function readVoiceNoteForTranscription(
@@ -314,15 +317,22 @@ export async function readVoiceNoteForTranscription(
   const row = res.data.rows[0];
   if (!row) return { ok: true, data: null };
   let durationSeconds: number | null = typeof row[0] === "number" ? row[0] : null;
-  if (durationSeconds === null && typeof row[1] === "string") {
-    try {
-      const ms = (JSON.parse(row[1]) as { capture?: { duration_ms?: unknown } }).capture?.duration_ms;
-      if (typeof ms === "number") durationSeconds = ms / 1000;
-    } catch {
-      // Unknown length: the audio's own size is checked before it is decoded.
+  let captureVersion: number | null = null;
+  let captureTranscriber: string | null = null;
+  try {
+    const metadata = typeof row[1] === "string" ? JSON.parse(row[1]) as unknown : row[1];
+    const capture = metadata && typeof metadata === "object" ? (metadata as { capture?: unknown }).capture : null;
+    if (capture && typeof capture === "object") {
+      const saved = capture as { duration_ms?: unknown; version?: unknown; options?: { transcriber?: unknown } };
+      if (durationSeconds === null && typeof saved.duration_ms === "number") durationSeconds = saved.duration_ms / 1000;
+      if (typeof saved.version === "number") captureVersion = saved.version;
+      if (typeof saved.options?.transcriber === "string") captureTranscriber = saved.options.transcriber;
     }
+  } catch {
+    // Legacy metadata may be malformed; the audio's size is checked before decoding.
   }
-  return { ok: true, data: { transcript: await readVoiceNoteTranscriptState(tcw, sourceId), durationSeconds } };
+  return { ok: true, data: { transcript: await readVoiceNoteTranscriptState(tcw, sourceId),
+    durationSeconds, captureVersion, captureTranscriber } };
 }
 
 /** What a transcription adds to a note: the sentences for its transcript key and row metadata. */
@@ -385,8 +395,10 @@ export async function saveVoiceNoteTranscript(
 
 /** T22's on-device lane sends this directly to the commit-table writer. */
 export function localTranscriptToSave(local: LocalTranscript): VoiceNoteTranscriptSave {
+  // local.segments' start/end are milliseconds (the native sidecar's canonical-JSON writer only
+  // accepts integers); start_time/end_time follow every other transcript source's seconds.
   const sentences: FirefliesSentence[] = local.segments.map((segment, index) => ({
-    index, text: segment.text, start_time: segment.start, end_time: segment.end, speaker_name: segment.speaker ?? "You",
+    index, text: segment.text, start_time: segment.start / 1000, end_time: segment.end / 1000, speaker_name: segment.speaker ?? "You",
   }));
   return { rev: local.rev, sentences, speakers: [...new Set(local.segments.map((s) => s.speaker ?? "You"))],
     metadata: { transcription_outcome: local.outcome, transcript_text: local.outcome === "transcribed"

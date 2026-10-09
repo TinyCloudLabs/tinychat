@@ -90,6 +90,26 @@ function setup(opts: { consented?: boolean; cloud?: VoiceNoteCloud | null; pendi
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
 describe("availability and consent", () => {
+  test("committed Off and on-device notes never enter private cloud; private-cloud and legacy notes do", async () => {
+    const s = setup({ consented: true });
+    await s.transcriber.check();
+    const note = (id: string, transcriber?: "off" | "on-device" | "private-cloud") => ({
+      id, durationMs: 5_000,
+      ...(transcriber ? { options: { transcriber, identifySpeakers: false } } : {}),
+    });
+    s.transcriber.noteSaved(note("off", "off"), AUDIO);
+    s.transcriber.noteSaved(note("local", "on-device"), AUDIO);
+    s.transcriber.noteSaved(note("cloud", "private-cloud"), AUDIO);
+    s.transcriber.noteSaved(note("legacy"), AUDIO);
+    await tick();
+    expect(s.job("off")).toBeUndefined();
+    expect(s.job("local")).toBeUndefined();
+    expect(s.runs.map((run) => run.sourceId)).toEqual(["cloud"]);
+    s.runs[0]!.resolve("transcribed");
+    await tick();
+    expect(s.runs.map((run) => run.sourceId)).toEqual(["cloud", "legacy"]);
+  });
+
   test("no PTX origin in this build: hidden, never checked, nothing queued", async () => {
     const s = setup({ cloud: null, consented: true });
     await s.transcriber.check();

@@ -13,9 +13,33 @@ import { useEffect } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import { nativeVoiceNotesAvailable } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { nativeVoiceNotesAvailable, VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
+import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { voiceNoteTranscriberFor, type VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { savePendingRecordings, type PendingRun } from "@/lib/voiceNotes/recorderSaves";
+
+/**
+ * An on-device transcription that finishes after its note is already saved (the common case: the
+ * space save is quick, on-device decode is not) has nothing left to trigger `saveRecording`'s own
+ * sync, so this listens for it directly. `saveRecording` covers the opposite ordering.
+ */
+function installOnDeviceTranscriptSync(tcw: TinyCloudWeb): () => void {
+  let disposed = false;
+  const handle = OnDeviceStt.addListener("transcribed", ({ id }) => {
+    if (disposed) return;
+    void VoiceNotes.listPending()
+      .then(({ recordings }) => {
+        const recording = recordings.find((note) => note.id === id);
+        if (recording) return syncOnDeviceTranscript(tcw, recording);
+      })
+      .catch((err: unknown) => console.warn("[OnDeviceStt] Could not sync a finished transcription", err));
+  });
+  return () => {
+    disposed = true;
+    void handle.then((h) => h.remove());
+  };
+}
 
 /**
  * Save what is on the phone, and hand each saved note to transcription. The availability check
@@ -27,6 +51,7 @@ export async function savePendingVoiceNotes(deps: {
   transcriber: Pick<VoiceNoteTranscriber, "check" | "noteSaved"> | null;
 }): Promise<PendingRun> {
   const [run] = await Promise.all([deps.save(), deps.transcriber?.check()]);
+  // noteSaved uses each committed sidecar's options, including Off; legacy notes have none.
   for (const recording of run.saved) deps.transcriber?.noteSaved(recording);
   return run;
 }
@@ -40,6 +65,11 @@ export function PendingVoiceNotesSaver({
   backendUrl: string;
   sessionStore: SessionStore;
 }) {
+  useEffect(() => {
+    if (!nativeVoiceNotesAvailable()) return;
+    return installOnDeviceTranscriptSync(tcw);
+  }, [tcw]);
+
   useEffect(() => {
     if (!nativeVoiceNotesAvailable()) return;
     void savePendingVoiceNotes({

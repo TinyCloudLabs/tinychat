@@ -11,18 +11,26 @@ export interface RouteNode {
   kind: "source" | "processing" | "destination";
 }
 
-/** A voice note from the phone app: straight to the space, or through private cloud for its transcript. */
-export function voiceNoteRoute(privateCloud: boolean): RouteNode[] {
-  return privateCloud
-    ? [
-        { label: "This phone", kind: "source" },
-        { label: "Private cloud", kind: "processing" },
-        { label: "Your space", kind: "destination" },
-      ]
-    : [
-        { label: "This phone", kind: "source" },
-        { label: "Your space", kind: "destination" },
-      ];
+/** A voice note from the phone app: straight to the space, through private cloud for its
+ * transcript, or transcribed on this phone before either ever leaves it. */
+export function voiceNoteRoute(route: "off" | "on-device" | "private-cloud"): RouteNode[] {
+  if (route === "private-cloud") {
+    return [
+      { label: "This phone", kind: "source" },
+      { label: "Private cloud", kind: "processing" },
+      { label: "Your space", kind: "destination" },
+    ];
+  }
+  if (route === "on-device") {
+    return [
+      { label: "This phone (transcribed here)", kind: "source" },
+      { label: "Your space", kind: "destination" },
+    ];
+  }
+  return [
+    { label: "This phone", kind: "source" },
+    { label: "Your space", kind: "destination" },
+  ];
 }
 
 function Node(props: { kind: RouteNode["kind"]; landed: boolean }) {

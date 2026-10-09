@@ -28,6 +28,7 @@ function value(patch: Partial<RecorderValue> = {}): RecorderValue {
     lastSaved: null,
     pending: { listing: { state: "ok", count: 0 }, running: false, lastError: null },
     transcription: undefined,
+    signedIn: true,
     sheetOpen: false,
     record: noop,
     stop: noop,

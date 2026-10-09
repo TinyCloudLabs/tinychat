@@ -24,7 +24,7 @@ export type MicStateReason = "os_silenced" | "no_signal" | "input_muted" | "call
   | "resume_blocked" | "resume_not_allowed" | "mic_unavailable" | "pause_timeout"
   | "max_duration" | "disk_full" | "write_failed" | "permission_revoked" | null;
 
-export type TranscriberId = "on-device" | "private-cloud" | "assemblyai";
+export type TranscriberId = "off" | "on-device" | "private-cloud" | "assemblyai";
 export type CaptureSource = "in_app" | "quick_action" | "app_shortcut" | "intent" | "control" | "tile" | "widget" | "notification";
 export interface CaptureOptions { transcriber: TranscriberId; identifySpeakers: boolean }
 export interface CaptureDefaults extends CaptureOptions { accountDid: string | null; transitionGen: number }
@@ -73,6 +73,7 @@ export interface LocalTranscript {
   version: 1; noteId: string; transcriber: TranscriberId; rev: number;
   engine: "parakeet-tdt-0.6b-v3" | "parakeet-tdt-110m-en" | "apple-speech" | "assemblyai" | "tinycloud-private-transcription";
   model: string | null; language: string | null; outcome: "transcribed" | "no_speech"; diarized: boolean;
+  /** start/end are milliseconds: the native sidecar's canonical-JSON writer only accepts integers. */
   segments: { start: number; end: number; text: string; speaker: string | null }[]; createdAt: string;
   provider?: Record<string, unknown>;
 }
@@ -113,6 +114,7 @@ export interface MicStateEvent {
   state: MicState;
   reason: MicStateReason;
   detail?: string;
+  options?: CaptureOptions;
   input?: AudioInput | null;
   at: number;
   id?: string | null;
