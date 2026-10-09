@@ -563,6 +563,25 @@ final class RecordingLibraryTests: XCTestCase {
             accountDid: "did:old", transitionGen: 4)))
     }
 
+    func testCompensationFailpointLeavesDurableAccountTransitioning() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let key = "exo.debug.failAccountState"
+        defer { UserDefaults.standard.removeObject(forKey: key) }
+        try library.setAccountState(CaptureAccountState(status: "signed_in", accountDid: "did:test", transitionGen: 1))
+        try library.setAccountState(CaptureAccountState(status: "transitioning", accountDid: "did:test", transitionGen: 2))
+
+        UserDefaults.standard.set("compensation", forKey: key)
+        XCTAssertThrowsError(try library.setAccountState(CaptureAccountState(status: "signed_out", transitionGen: 3)))
+        let relaunched = try RecordingLibrary(root: root)
+        XCTAssertEqual(try relaunched.accountState().status, "transitioning")
+        XCTAssertEqual(try relaunched.accountState().accountDid, "did:test")
+        XCTAssertEqual(try relaunched.accountState().transitionGen, 2)
+
+        UserDefaults.standard.removeObject(forKey: key)
+        try library.setAccountState(CaptureAccountState(status: "signed_out", transitionGen: 3))
+        XCTAssertEqual(try RecordingLibrary(root: root).accountState().status, "signed_out")
+    }
+
     func testLateRemoteResultAfterDeleteKeepsDeterministicOutboxEntry() throws {
         let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
         let id = UUID().uuidString.lowercased(), opId = "submit-1"
