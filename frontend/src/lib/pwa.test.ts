@@ -60,7 +60,7 @@ describe("PWA build config", () => {
   const config = readFileSync(path.join(import.meta.dir, "../../vite.config.ts"), "utf8");
 
   test("the worker caches only the notes renderer's WASM at runtime: API and cross-origin traffic stays network-only", () => {
-    const rules = config.match(/runtimeCaching: \[([\s\S]*?)\n        \],/)![1];
+    const rules = config.match(/runtimeCaching: \[([\s\S]*?)\n {8}\],/)![1];
     expect(rules.match(/urlPattern/g)).toHaveLength(1);
     expect(rules).toContain("sameOrigin &&");
     expect(rules).toContain("franken_markdown_bg");
