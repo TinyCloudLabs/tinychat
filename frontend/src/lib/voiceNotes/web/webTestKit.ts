@@ -54,7 +54,7 @@ export class FakeMediaRecorder {
   pending: number[] = [];
   /** What requestData() does: deliver at once, hold the slice until releaseRequestedData(), or never deliver it. */
   requestDataMode: "immediate" | "deferred" | "never" = "immediate";
-  private parked = false;
+  private parked = 0;
   constructor(readonly stream: unknown, options: { mimeType: string }) {
     this.mimeType = options.mimeType;
     FakeMediaRecorder.instances.push(this);
@@ -64,12 +64,12 @@ export class FakeMediaRecorder {
   resume() { this.state = "recording"; }
   requestData() {
     if (this.requestDataMode === "immediate") this.deliver();
-    else if (this.requestDataMode === "deferred") this.parked = true;
+    else if (this.requestDataMode === "deferred") this.parked++;
   }
-  /** The browser finally fires the dataavailable that requestData() asked for. */
+  /** The browser finally fires the oldest dataavailable that requestData() asked for. */
   releaseRequestedData() {
-    if (!this.parked) return;
-    this.parked = false;
+    if (this.parked === 0) return;
+    this.parked--;
     this.deliver();
   }
   stop() {
@@ -196,7 +196,7 @@ export async function createRig(options: RigOptions = {}): Promise<Rig> {
   const locks = options.locks ?? memoryLocks();
   const fake = createFakeEnv(clock);
   const { idb: _i, clock: _c, locks: _l, ...storeOptions } = options;
-  const store = await openWebStore({ env: idb, locks, now: clock.now, ...storeOptions });
+  const store = await openWebStore({ env: idb, locks, now: clock.now, decodeCheck: null, ...storeOptions });
   let counter = 0;
   const engine = createWebVoiceNotes({ store, captureEnv: () => fake.env, now: clock.now,
     newId: () => `00000000-0000-4000-8000-${String(++counter).padStart(12, "0")}` });

@@ -7,8 +7,9 @@ import { newIdbEnv } from "./testing/idb";
 import { FakeClock, memoryAudioBlobs, slowTest } from "./webTestKit";
 import {
   durableBytesOf, MAX_READ_CHUNK_BYTES, MAX_RECOVERY_ATTEMPTS, memoryLocks, openWebStore, recordingFromSession, sessionLock,
-  UNDECODABLE_REASON, type DecodeCheck, type StoreOp, type WebStore, type WebStoreOptions,
+  DECODER_UNAVAILABLE_REASON, DecodeCheckError, UNDECODABLE_REASON, type DecodeCheck, type StoreOp, type WebStore, type WebStoreOptions,
 } from "./webStore";
+import { browserDecodeCheck, DECODE_WINDOW_MAX_BYTES } from "./decodeCheck";
 
 const test = slowTest(bunTest);
 
@@ -26,7 +27,8 @@ function harness(initial: Partial<WebStoreOptions> = {}) {
   const env = newIdbEnv();
   const clock = new FakeClock();
   const locks = memoryLocks();
-  const open = (options: Partial<WebStoreOptions> = {}) => openWebStore({ env, locks, now: clock.now, ...initial, ...options });
+  // bun has no Web Audio; tests that care about the decode check pass their own.
+  const open = (options: Partial<WebStoreOptions> = {}) => openWebStore({ env, locks, now: clock.now, decodeCheck: null, ...initial, ...options });
   return { env, clock, locks, open };
 }
 
@@ -463,40 +465,97 @@ describe("interrupted-session recovery", () => {
   });
 });
 
-describe("recovered prefixes must decode", () => {
-  test("a prefix the checker accepts is published with its bytes", async () => {
+const invalid = (message: string) => new DecodeCheckError("invalid_media", message);
+const resource = (message: string) => new DecodeCheckError("resource", message);
+
+async function quietly<T>(fn: () => Promise<T>): Promise<{ result: T; logged: unknown[][] }> {
+  const log = console.error;
+  const logged: unknown[][] = [];
+  console.error = (...args: unknown[]) => { logged.push(args); };
+  try {
+    return { result: await fn(), logged };
+  } finally {
+    console.error = log;
+  }
+}
+
+describe("recovered recordings must decode, within a bounded window", () => {
+  test("a short recording is checked whole and published with its bytes", async () => {
     const h = harness();
     const sent = await record(await h.open(), "n", [bytesOf(30), bytesOf(30, 2)]);
     h.locks.releaseAll();
-    const seen: { size: number; mimeType: string; total: number }[] = [];
-    const decodeCheck: DecodeCheck = async (head, mimeType, total) => { seen.push({ size: head.byteLength, mimeType, total }); return { durationMs: 2000 }; };
+    const seen: { size: number; mimeType: string }[] = [];
+    const decodeCheck: DecodeCheck = async (window, mimeType) => { seen.push({ size: window.byteLength, mimeType }); return { durationMs: 2000 }; };
     const tab = await h.open({ decodeCheck });
     const { recovered, failed } = await tab.recoverInterruptedSessions();
     expect(failed).toEqual([]);
     expect(recovered).toMatchObject([{ id: "n", recovered: true, sizeBytes: 60, durationMs: 2000 }]);
-    expect(seen).toEqual([{ size: 60, mimeType: "audio/webm;codecs=opus", total: 60 }]);
+    expect(seen).toEqual([{ size: 60, mimeType: "audio/webm;codecs=opus" }]);
     expect(Array.from(await readAll(tab, "n"))).toEqual(Array.from(sent));
   });
 
-  test("a prefix the checker rejects is quarantined, never published, and keeps its audio; Try again re-checks and Delete removes it", async () => {
+  test("a long note is never decoded beyond the window: header plus the first 10 s, cut at a chunk boundary, duration from the journal", async () => {
+    const chunks = Array.from({ length: 70 }, (_, i) => bytesOf(100, i));
+    for (const transactional of [true, false]) {
+      const blobs = memoryAudioBlobs();
+      const reads: number[] = [];
+      const tracked = (db: IDBDatabase, env: Parameters<typeof createIdbAudioBlobStore>[1]) => {
+        const base = transactional ? createIdbAudioBlobStore(db, env) : blobs.create();
+        return { ...base, read: async (id: string, offset: number, length: number) => { reads.push(offset + length); return base.read(id, offset, length); } };
+      };
+      const h = harness({ audio: tracked });
+      const sent = await record(await h.open(), "long", chunks);
+      expect(await (await h.open({ locks: memoryLocks() })).getSession("long")).toMatchObject({ audioMs: 70_000, bytes: 7000, decodeWindow: { bytes: 1000, audioMs: 10_000 } });
+      h.locks.releaseAll();
+      const seen: Uint8Array[] = [];
+      const tab = await h.open({ decodeCheck: async (window) => { seen.push(window); return { durationMs: 10_000 }; } });
+      const { recovered } = await tab.recoverInterruptedSessions();
+      expect(seen).toHaveLength(1);
+      expect(Array.from(seen[0]!)).toEqual(Array.from(sent.subarray(0, 1000)));
+      expect(reads.length).toBeGreaterThan(0);
+      expect(Math.max(...reads)).toBeLessThanOrEqual(1000);
+      expect(recovered).toMatchObject([{ id: "long", sizeBytes: 7000, durationMs: 70_000, recovered: true }]);
+    }
+  });
+
+  test("a very high bitrate closes the window by size, so 10 s of audio cannot become a huge decode", async () => {
+    const h = harness();
+    const loud = [bytesOf(600 * 1024), bytesOf(600 * 1024, 2), bytesOf(600 * 1024, 3)];
+    await record(await h.open(), "loud", loud);
+    h.locks.releaseAll();
+    const sizes: number[] = [];
+    const tab = await h.open({ decodeCheck: async (window) => { sizes.push(window.byteLength); return { durationMs: 2000 }; } });
+    await tab.recoverInterruptedSessions();
+    expect(sizes).toEqual([1200 * 1024]);
+  });
+
+  test("a recording with no journaled window that is too large to bound fails visibly and is not decoded", async () => {
+    const blobs = memoryAudioBlobs();
+    const h = harness({ audio: blobs.create });
+    const store = await h.open();
+    await store.beginSession(init("big"));
+    await blobs.create().append("big", bytesOf(5 * 1024 * 1024));
+    h.locks.releaseAll();
+    let called = false;
+    const tab = await h.open({ decodeCheck: async () => { called = true; return { durationMs: 1 }; } });
+    const { result } = await quietly(() => tab.recoverInterruptedSessions());
+    expect(called).toBe(false);
+    expect(result.recovered).toEqual([]);
+    expect(result.failed).toMatchObject([{ id: "big", reason: "recovery_failed" }]);
+    expect(await tab.audio.size("big")).toBe(5 * 1024 * 1024);
+  });
+
+  test("invalid media is quarantined, never published, and keeps its audio; Try again re-checks and Delete removes it", async () => {
     const h = harness();
     const sent = await record(await h.open(), "n", [bytesOf(30)]);
     h.locks.releaseAll();
     let decodable = false;
     const decodeCheck: DecodeCheck = async () => {
-      if (!decodable) throw new Error("no moov atom");
+      if (!decodable) throw invalid("no moov atom");
       return { durationMs: 1000 };
     };
     const tab = await h.open({ decodeCheck });
-    const log = console.error;
-    const logged: unknown[][] = [];
-    console.error = (...args: unknown[]) => { logged.push(args); };
-    let result;
-    try {
-      result = await tab.recoverInterruptedSessions();
-    } finally {
-      console.error = log;
-    }
+    const { result, logged } = await quietly(() => tab.recoverInterruptedSessions());
     expect(result.recovered).toEqual([]);
     expect(result.failed).toEqual([{ id: "n", reason: UNDECODABLE_REASON, error: "no moov atom" }]);
     expect(logged).toHaveLength(1);
@@ -515,25 +574,86 @@ describe("recovered prefixes must decode", () => {
 
     decodable = false;
     await record(tab, "d", [bytesOf(5)]);
-    console.error = () => {};
-    try {
-      await tab.recoverInterruptedSessions();
-    } finally {
-      console.error = log;
-    }
+    await quietly(() => tab.recoverInterruptedSessions());
     await tab.deleteQuarantined({ id: "d" });
     expect((await tab.listQuarantine()).items).toEqual([]);
     expect(await tab.audio.size("d")).toBe(0);
   });
 
-  test("only the head is handed to the checker, with the full size alongside", async () => {
+  test("a decoder that cannot run is not a verdict on the media: the session stays recoverable, visibly, and a later retry succeeds", async () => {
     const h = harness();
-    await record(await h.open(), "n", [bytesOf(3 * 1024 * 1024), bytesOf(3 * 1024 * 1024, 2), bytesOf(3 * 1024 * 1024, 3)]);
+    const sent = await record(await h.open(), "n", [bytesOf(30), bytesOf(30, 2)]);
     h.locks.releaseAll();
-    const seen: number[][] = [];
-    const tab = await h.open({ decodeCheck: async (head, _type, total) => { seen.push([head.byteLength, total]); return { durationMs: 3000 }; } });
-    await tab.recoverInterruptedSessions();
-    expect(seen).toEqual([[8 * 1024 * 1024, 9 * 1024 * 1024]]);
+    let broken: DecodeCheckError | null = resource("NotSupportedError: out of memory");
+    const tab = await h.open({ decodeCheck: async () => { if (broken) throw broken; return { durationMs: 2000 }; } });
+    for (let boot = 0; boot < MAX_RECOVERY_ATTEMPTS + 2; boot++) {
+      const { result } = await quietly(() => tab.recoverInterruptedSessions());
+      expect(result.recovered).toEqual([]);
+      expect(result.failed).toEqual([{ id: "n", reason: DECODER_UNAVAILABLE_REASON, error: "NotSupportedError: out of memory" }]);
+    }
+    expect((await tab.listQuarantine()).items).toEqual([]);
+    expect(await tab.getSession("n")).toMatchObject({ recoveryAttempts: 0 });
+    expect((await tab.listPending()).recordings).toEqual([]);
+    expect(await tab.audio.size("n")).toBe(60);
+
+    broken = null;
+    await tab.rearmQuarantined("n");
+    const retried = await tab.recoverInterruptedSessions();
+    expect(retried.failed).toEqual([]);
+    expect(retried.recovered).toMatchObject([{ id: "n", sizeBytes: 60, durationMs: 2000, recovered: true }]);
+    expect(Array.from(await readAll(tab, "n"))).toEqual(Array.from(sent));
+  });
+
+  test("a failure that is not a decode verdict (the read, a thrown surprise) is a recovery failure, not undecodable audio", async () => {
+    const h = harness();
+    await record(await h.open(), "n", [bytesOf(30)]);
+    h.locks.releaseAll();
+    const tab = await h.open({ decodeCheck: async () => { throw new Error("worker crashed"); } });
+    const { result } = await quietly(() => tab.recoverInterruptedSessions());
+    expect(result.failed).toEqual([{ id: "n", reason: "recovery_failed", error: "worker crashed" }]);
+    expect((await tab.listQuarantine()).items).toEqual([]);
+  });
+});
+
+describe("browserDecodeCheck", () => {
+  const decoding = (outcome: () => Promise<{ length: number; duration: number }>, closed: { n: number } = { n: 0 }) => {
+    class Context {
+      async decodeAudioData() { return outcome() as unknown as AudioBuffer; }
+      async close() { closed.n++; }
+    }
+    return { OfflineAudioContext: Context as unknown as typeof OfflineAudioContext };
+  };
+  const failureOf = async (check: DecodeCheck, window = new Uint8Array(8)) => check(window, "audio/webm").catch((e: unknown) => e);
+
+  test("a decoded window reports its own duration", async () => {
+    const closed = { n: 0 };
+    const check = browserDecodeCheck(decoding(async () => ({ length: 441_000, duration: 10 }), closed));
+    expect(await check(new Uint8Array(8), "audio/webm")).toEqual({ durationMs: 10_000 });
+    expect(closed.n).toBe(1);
+  });
+
+  test("an EncodingError, or a window that decodes to nothing, is invalid media", async () => {
+    const encoding = await failureOf(browserDecodeCheck(decoding(async () => { throw new DOMException("bad", "EncodingError"); })));
+    expect(encoding).toMatchObject({ kind: "invalid_media" });
+    const empty = await failureOf(browserDecodeCheck(decoding(async () => ({ length: 0, duration: 0 }))));
+    expect(empty).toMatchObject({ kind: "invalid_media" });
+  });
+
+  test("NotSupportedError, out of memory, an unknown error and a missing Web Audio are resource failures", async () => {
+    for (const thrown of [new DOMException("no codec", "NotSupportedError"), new RangeError("Array buffer allocation failed"), new TypeError("x")]) {
+      expect(await failureOf(browserDecodeCheck(decoding(async () => { throw thrown; })))).toMatchObject({ kind: "resource" });
+    }
+    expect(await failureOf(browserDecodeCheck({}))).toMatchObject({ kind: "resource" });
+    class Throws { constructor() { throw new Error("context limit"); } }
+    expect(await failureOf(browserDecodeCheck({ OfflineAudioContext: Throws as unknown as typeof OfflineAudioContext }))).toMatchObject({ kind: "resource" });
+  });
+
+  test("a window larger than the hard bound is refused before any decode starts", async () => {
+    let started = false;
+    const check = browserDecodeCheck(decoding(async () => { started = true; return { length: 1, duration: 1 }; }));
+    const refused = await failureOf(check, new Uint8Array(DECODE_WINDOW_MAX_BYTES + 1));
+    expect(refused).toBeInstanceOf(RangeError);
+    expect(started).toBe(false);
   });
 });
 
@@ -574,7 +694,7 @@ describe("a claim by another tab is never overwritten", () => {
     const claimer = await h.open({ locks: memoryLocks() });
     let decodable = false;
     const tab = await h.open({
-      decodeCheck: async () => { if (!decodable) throw new Error("bad"); return { durationMs: 1000 }; },
+      decodeCheck: async () => { if (!decodable) throw invalid("bad"); return { durationMs: 1000 }; },
       hooks: { beforeOp: async (op) => { if (op === "quarantine:write") await signIn(claimer, "did:A"); } },
     });
     const log = console.error;

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test as bunTest } from "bun:test";
 import { base64ToBytes } from "../voiceNoteAudio";
 import { VOICE_NOTE_MAX_DURATION_MS, VOICE_NOTE_MIN_DURATION_LIMIT_MS, type VoiceNoteRecording } from "../nativeVoiceNotes";
 import { FakeMediaRecorder, createRig, memoryAudioBlobs, slowTest, type Rig, type RigOptions } from "./webTestKit";
-import { memoryLocks, openWebStore } from "./webStore";
+import { DecodeCheckError, memoryLocks, openWebStore, type DecodeCheck } from "./webStore";
 import {
   UNSUPPORTED_METHODS, WEB_CAPABILITIES, WEB_MAX_DURATION_MS, WEB_MIN_DURATION_LIMIT_MS,
 } from "./webVoiceNotes";
@@ -407,8 +407,64 @@ describe("failures while recording", () => {
       rig.fake.recorder().requestDataMode = "never";
       await quiet(() => plugin.pause());
       expect(rig.fake.mic.liveTracks()).toEqual([]);
-      expect(await plugin.status()).toMatchObject({ state: "paused", reason: "user" });
+      expect(await plugin.status()).toMatchObject({ state: "needs_user", reason: "write_failed", intent: "paused" });
       expect(events.writeFailure).toEqual([{ id, error: "pause_flush_timeout" }]);
+    });
+
+    test("a slice delivered after the timeout keeps its pre-pause duration, and the recorder shows the problem until it lands", async () => {
+      const rig = await createRig();
+      const { plugin } = rig.engine;
+      const { micStates, events } = await listen(rig);
+      const { id } = await plugin.start();
+      await rig.chunk([1, 2, 3]);
+      expect(await plugin.status()).toMatchObject({ audioMs: 1000 });
+      rig.fake.recorder().requestDataMode = "deferred";
+      rig.fake.recorder().encode([4, 5]);
+      rig.clock.advance(1000);
+      micStates.length = 0;
+      await quiet(() => plugin.pause());
+      expect(rig.fake.mic.liveTracks()).toEqual([]);
+      expect(micStates.at(-1)).toEqual({ state: "needs_user", reason: "write_failed" });
+      expect(await plugin.status()).toMatchObject({ state: "needs_user", reason: "write_failed", intent: "paused", audioMs: 1000 });
+      expect(events.writeFailure).toEqual([{ id, error: "pause_flush_timeout" }]);
+
+      rig.clock.advance(30_000);
+      rig.fake.recorder().releaseRequestedData();
+      await rig.settle();
+      expect(micStates.at(-1)).toEqual({ state: "paused", reason: "user" });
+      expect(await plugin.status()).toMatchObject({ state: "paused", reason: "user", audioMs: 2000 });
+      const note = await plugin.stop();
+      expect(note).toMatchObject({ sizeBytes: 5, durationMs: 2000 });
+    });
+
+    test("a late slice from an earlier pause does not satisfy the wait of a later pause", async () => {
+      const rig = await createRig();
+      const { plugin } = rig.engine;
+      await plugin.start();
+      await rig.chunk([1]);
+      const recorder = rig.fake.recorder();
+      recorder.requestDataMode = "deferred";
+      recorder.encode([2]);
+      rig.clock.advance(1000);
+      await quiet(() => plugin.pause());
+      await plugin.resume();
+      recorder.requestDataMode = "immediate";
+      recorder.encode([3]);
+      rig.clock.advance(1000);
+      // The first pause's slice finally arrives while the second pause is waiting for its own.
+      rig.fake.env.flushTimeoutMs = 60_000;
+      recorder.requestDataMode = "deferred";
+      const paused = plugin.pause();
+      await rig.settle();
+      recorder.releaseRequestedData();
+      await rig.settle();
+      let settled = false;
+      void paused.then(() => { settled = true; });
+      await rig.settle();
+      expect(settled).toBe(false);
+      recorder.releaseRequestedData();
+      await paused;
+      expect(settled).toBe(true);
     });
   });
 
@@ -610,6 +666,27 @@ describe("recovery after the tab died", () => {
     failing = false;
     await next.engine.plugin.retryRecovery({ id });
     expect((await next.engine.plugin.listQuarantine()).items).toEqual([]);
+    expect((await next.engine.plugin.listPending()).recordings.map((r) => r.id)).toEqual([id]);
+  });
+
+  test("a decoder that cannot run announces recoveryFailed, keeps the session, and retryRecovery recovers it later", async () => {
+    let usable = false;
+    const decodeCheck: DecodeCheck = async () => {
+      if (!usable) throw new DecodeCheckError("resource", "NotSupportedError: no decoder");
+      return { durationMs: 1000 };
+    };
+    const rig = await createRig();
+    const { id } = await rig.engine.plugin.start();
+    await rig.chunk([1, 2]);
+    const next = await rig.reopen({ decodeCheck });
+    const { events } = await listen(next);
+    const result = await quiet(() => next.engine.recoverInterrupted());
+    await next.settle();
+    expect(result.failed).toMatchObject([{ id, reason: "decoder_unavailable" }]);
+    expect(events.recoveryFailed).toMatchObject([{ id, reason: "decoder_unavailable" }]);
+    expect((await next.engine.plugin.listQuarantine()).items).toEqual([]);
+    usable = true;
+    await next.engine.plugin.retryRecovery({ id });
     expect((await next.engine.plugin.listPending()).recordings.map((r) => r.id)).toEqual([id]);
   });
 

@@ -14,10 +14,12 @@ import type {
 } from "../nativeVoiceNotes";
 import { bytesToBase64 } from "../voiceNoteAudio";
 import { createIdbAudioBlobStore, type AudioBlobStore } from "./audioBlobStore";
-import { browserDecodeCheck, DECODE_CHECK_MAX_BYTES, type DecodeCheck } from "./decodeCheck";
+import {
+  browserDecodeCheck, DECODE_WINDOW_MAX_BYTES, DECODE_WINDOW_MS, DECODE_WINDOW_SOFT_BYTES, DecodeCheckError, type DecodeCheck,
+} from "./decodeCheck";
 import { browserIdbEnv, failure, openWebDb, request, STORES, transact, type IdbEnv } from "./idb";
 
-export { failure };
+export { failure, DecodeCheckError };
 export type { AudioBlobStore, DecodeCheck };
 
 /** One native call never moves more than this much audio (matches the shells). */
@@ -25,6 +27,8 @@ export const MAX_READ_CHUNK_BYTES = 4 * 1024 * 1024;
 export const MAX_RECOVERY_ATTEMPTS = 3;
 /** Quarantine reason of a recovered prefix the browser cannot decode. */
 export const UNDECODABLE_REASON = "undecodable_audio";
+/** Recovery could not run its decoder; the recording is untouched and recovery is retried. */
+export const DECODER_UNAVAILABLE_REASON = "decoder_unavailable";
 export const RECORDING_LOCK = "exo-voice-note-recording";
 export const sessionLock = (id: string) => `exo-voice-note-session:${id}`;
 
@@ -55,10 +59,16 @@ export interface SessionRecord {
   firstAudioAt: number | null;
   lastHeartbeatAt: number;
   recoveryAttempts: number;
+  /**
+   * Where the recovery decode window ends: the first chunk boundary at which the recording reached
+   * DECODE_WINDOW_MS of audio (or DECODE_WINDOW_SOFT_BYTES). Set once, in the same transaction as the
+   * chunk that closes it. Absent while the recording is still shorter than that.
+   */
+  decodeWindow?: { bytes: number; audioMs: number };
 }
 
 export type SessionInit = Omit<SessionRecord, "audioMs" | "bytes" | "pausedMs" | "pauseStartedAt" | "spans" | "firstAudioAt"
-  | "lastHeartbeatAt" | "recoveryAttempts" | "intent">;
+  | "lastHeartbeatAt" | "recoveryAttempts" | "intent" | "decodeWindow">;
 
 /** Lets a tab mark a session live so another tab's recovery does not adopt it. */
 export interface SessionLocks {
@@ -98,7 +108,7 @@ export interface WebStoreOptions {
   /** Replaces the IndexedDB audio store (the Tauri build passes a file-backed one). */
   audio?: (db: IDBDatabase, env: IdbEnv) => AudioBlobStore;
   locks?: SessionLocks;
-  /** Validates a recovered prefix before it is published. Default: the browser's decoder; null skips validation. */
+  /** Validates a bounded window of a recovered recording before it is published. Default: the browser's decoder; null skips validation (tests). */
   decodeCheck?: DecodeCheck | null;
   now?: () => number;
   hooks?: { beforeOp?(op: StoreOp, id: string): void | Promise<void> };
@@ -153,7 +163,7 @@ export interface WebStore extends PluginProtocol {
   recoverInterruptedSessions(): Promise<RecoveryResult>;
   /** Finishes audio deletes a crash interrupted. */
   sweepTombstones(): Promise<void>;
-  /** Moves a quarantined recording back to the recovery queue; call recoverInterruptedSessions after. */
+  /** Moves a quarantined (or decoder_unavailable) recording back to the recovery queue; call recoverInterruptedSessions after. */
   rearmQuarantined(id: string): Promise<void>;
   close(): void;
 }
@@ -206,10 +216,18 @@ export const durableBytesOf = (error: unknown): number | null =>
   typeof (error as { durableBytes?: unknown } | null)?.durableBytes === "number" ? (error as { durableBytes: number }).durableBytes : null;
 
 /**
- * The duration of a recovered recording whose audio is `actualBytes` long. The journal's audioMs
- * describes `session.bytes`; when the blob store disagrees (a journal write failed or the tab died
- * between the append and the journal), scale it. A journal that never saw a byte has nothing to
- * scale, so the decoder's measurement is the only evidence.
+ * The duration of a recovered recording whose audio is `actualBytes` long. The duration is never
+ * measured by decoding the whole recording (recovery decodes only a bounded window); it comes from the
+ * session journal, which counted audioMs and bytes together.
+ *  - Transactional blob store (the IndexedDB one): bytes and journal commit as one transaction, so
+ *    `actualBytes === session.bytes` and the journal's audioMs is exact.
+ *  - A store that cannot join the journal's transaction (TC-880's files): the bytes can be ahead of the
+ *    journal by at most the last appended chunk (a failed journal write stops the recording, and the tab
+ *    dying between the two leaves one chunk). That tail's duration is estimated at the recording's own
+ *    average rate, audioMs * actualBytes / session.bytes. The only error is that chunk's bitrate
+ *    variance, at most one timeslice (about 1 s), and the estimate never moves a duration backwards.
+ *  - A journal that never saw a byte has nothing to scale. The recording is then one chunk, so the
+ *    decode window is the whole recording and the decoder's measurement is exact.
  */
 function reconciledDurationMs(session: SessionRecord, actualBytes: number, decodedMs: number): number {
   if (actualBytes === session.bytes) return session.audioMs;
@@ -346,7 +364,10 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
       const journalIn = async (tx: IDBTransaction, bytesNow: number) => {
         const row = await get<SessionRecord>(tx, STORES.sessions, id);
         if (!row) throw failure("not_found", `Session ${id} is gone.`);
-        await put(tx, STORES.sessions, { ...row, ...clone(progress), id, bytes: bytesNow, lastHeartbeatAt: now() });
+        const closesWindow = row.decodeWindow === undefined
+          && ((progress.audioMs ?? row.audioMs) >= DECODE_WINDOW_MS || bytesNow >= DECODE_WINDOW_SOFT_BYTES);
+        await put(tx, STORES.sessions, { ...row, ...clone(progress), id, bytes: bytesNow, lastHeartbeatAt: now(),
+          ...(closesWindow ? { decodeWindow: { bytes: bytesNow, audioMs: progress.audioMs ?? row.audioMs } } : {}) });
       };
       const joint = audio.transactional;
       if (joint) {
@@ -441,9 +462,15 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
     async rearmQuarantined(id) {
       await transact(db, [STORES.quarantine, STORES.sessions], "readwrite", async (tx) => {
         const row = await get<QuarantineRow>(tx, STORES.quarantine, id);
-        if (!row) throw failure("not_found");
-        await put(tx, STORES.sessions, { ...row.session, recoveryAttempts: 0 });
-        await del(tx, STORES.quarantine, id);
+        if (row) {
+          await put(tx, STORES.sessions, { ...row.session, recoveryAttempts: 0 });
+          await del(tx, STORES.quarantine, id);
+          return;
+        }
+        // A recording whose recovery could not run (decoder_unavailable) is still a session; retry resets its budget.
+        const session = await get<SessionRecord>(tx, STORES.sessions, id);
+        if (!session) throw failure("not_found");
+        await put(tx, STORES.sessions, { ...session, recoveryAttempts: 0 });
       });
     },
 
@@ -710,12 +737,21 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
       }
       let decodedMs = 0;
       if (decodeCheck) {
+        const windowBytes = decodeWindowBytes(attempt, size);
+        const window = await audio.read(id, 0, windowBytes);
         try {
-          const head = await audio.read(id, 0, Math.min(size, DECODE_CHECK_MAX_BYTES));
-          decodedMs = (await decodeCheck(head, attempt.mimeType, size)).durationMs;
+          decodedMs = (await decodeCheck(window, attempt.mimeType)).durationMs;
         } catch (error) {
+          if (!(error instanceof DecodeCheckError)) throw error;
+          if (error.kind === "resource") {
+            // The decoder could not run; that is not evidence about the bytes. Keep the session, give the
+            // attempt back (the budget is for recoveries that fail on the recording), and say so.
+            console.error("[webStore] The decoder could not check a recovered recording; it stays recoverable", id, error);
+            await refundAttempt(id);
+            return { failed: { id, reason: DECODER_UNAVAILABLE_REASON, error: error.message } };
+          }
           console.error("[webStore] A recovered recording does not decode; quarantining it", id, error);
-          return { failed: await quarantine(id, UNDECODABLE_REASON, error instanceof Error ? error.message : String(error)) };
+          return { failed: await quarantine(id, UNDECODABLE_REASON, error.message) };
         }
       }
       const recording = await store.commitSession(id, (session, sizeBytes) => recordingFromSession(session, sizeBytes, {
@@ -730,6 +766,26 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
       }
       return { failed: { id, reason: "recovery_failed", error: error instanceof Error ? error.message : String(error) } };
     }
+  }
+
+  /**
+   * How many leading bytes the decode check may see: through the journaled window boundary, or the
+   * whole recording while it is shorter than a window. A recording that is long but has no journaled
+   * boundary cannot be bounded, so it is an error (retried, visible), never a whole-file decode.
+   */
+  function decodeWindowBytes(session: SessionRecord, size: number): number {
+    const bytes = session.decodeWindow ? Math.min(session.decodeWindow.bytes, size) : size;
+    if (bytes > DECODE_WINDOW_MAX_BYTES) {
+      throw failure("decode_window_unbounded", `Recording ${session.id} has ${size} bytes and no journaled decode window.`);
+    }
+    return bytes;
+  }
+
+  async function refundAttempt(id: string) {
+    await transact(db, [STORES.sessions], "readwrite", async (tx) => {
+      const row = await get<SessionRecord>(tx, STORES.sessions, id);
+      if (row && row.recoveryAttempts > 0) await put(tx, STORES.sessions, { ...row, recoveryAttempts: row.recoveryAttempts - 1 });
+    });
   }
 
   /** Moves the session, as journaled right now, to the quarantine queue; its audio stays. */

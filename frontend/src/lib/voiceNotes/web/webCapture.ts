@@ -13,6 +13,12 @@
 // Releasing the mic never waits on the recorder. The last slice is requested first, the
 // tracks are stopped at once, and only then does pause wait (at most flushTimeoutMs) for
 // that slice; a stalled recorder is reported through onFlushStalled, not hidden.
+//
+// A slice requested by a pause is a flush request: its own token (the object) and the recorded
+// time it covers, both fixed when the request is made. The recorder answers requests (and timeslice
+// timers) in order, so each dataavailable consumes the oldest outstanding request: a slice that
+// arrives after the timeout still carries its real pre-pause duration, is flagged `late`, and can
+// never satisfy the wait of a later flush (that wait belongs to a later request).
 
 import { failure } from "./idb";
 import { startLevelMeter, type LevelMeter, type LevelMeterEnv, type LevelSample } from "./webLevels";
@@ -54,8 +60,11 @@ export const UNSUPPORTED_FORMAT_MESSAGE = "This browser cannot record audio in a
 export type InputLoss = { reason: "permission_revoked" | "mic_unavailable"; detail?: string };
 
 export interface CaptureCallbacks {
-  /** One recorder slice; `durationMs` is the recorded time since the previous slice (0 while paused). */
-  onChunk(chunk: { blob: Blob; durationMs: number }): void;
+  /**
+   * One recorder slice; `durationMs` is the recorded time since the previous slice (0 while paused).
+   * `late` marks the answer to a pause's flush request that arrived after onFlushStalled was reported.
+   */
+  onChunk(chunk: { blob: Blob; durationMs: number; late: boolean }): void;
   onLevel(sample: LevelSample): void;
   /** The mic tracks ended on their own (device unplugged, permission revoked). Capture is already held. */
   onInputLost(loss: InputLoss): void;
@@ -93,6 +102,15 @@ export function audioInputFromTrack(track: MediaStreamTrack): AudioInput {
   return { id: settings.deviceId ?? "default", name: track.label || "Microphone", kind: kindOf(track.label) };
 }
 
+interface FlushRequest {
+  /** Recorded time the requested slice covers, fixed when the request was made. */
+  durationMs: number;
+  /** Set once the wait gave up; the answer, if it ever comes, is late. */
+  expired: boolean;
+  /** Resolves this request's own wait; absent once it expired. */
+  answer: (() => void) | null;
+}
+
 export function createWebCapture(env: CaptureEnv, callbacks: CaptureCallbacks): WebCapture {
   const mimeType = pickRecorderMimeType(env.MediaRecorder);
   if (!mimeType) throw failure("unsupported_format", UNSUPPORTED_FORMAT_MESSAGE);
@@ -104,7 +122,8 @@ export function createWebCapture(env: CaptureEnv, callbacks: CaptureCallbacks): 
   let meter: LevelMeter | null = null;
   let current: { stream: MediaStream; source: MediaStreamAudioSourceNode; input: AudioInput } | null = null;
   let boundary: number | null = null;
-  let flushWaiter: (() => void) | null = null;
+  /** Flush requests the recorder has not answered yet, oldest first. */
+  const requests: FlushRequest[] = [];
   let delivering = true;
   let deviceId: string | null = null;
 
@@ -158,15 +177,19 @@ export function createWebCapture(env: CaptureEnv, callbacks: CaptureCallbacks): 
     return input;
   };
 
-  /** Resolves true when the recorder delivered the requested slice, false when it did not within the bound. */
+  /** Resolves true when the recorder answered this request, false when it did not within the bound. */
   const flush = () => new Promise<boolean>((resolve) => {
     if (!recorder || recorder.state !== "recording") return resolve(true);
+    const at = env.now();
+    const request: FlushRequest = { durationMs: boundary === null ? 0 : Math.max(0, at - boundary), expired: false, answer: null };
+    boundary = null;
     const timer = setTimeout(() => {
-      if (flushWaiter === delivered) flushWaiter = null;
+      request.expired = true;
+      request.answer = null;
       resolve(false);
     }, env.flushTimeoutMs ?? FLUSH_TIMEOUT_MS);
-    const delivered = () => { clearTimeout(timer); resolve(true); };
-    flushWaiter = delivered;
+    request.answer = () => { clearTimeout(timer); resolve(true); };
+    requests.push(request);
     recorder.requestData();
   });
 
@@ -178,7 +201,6 @@ export function createWebCapture(env: CaptureEnv, callbacks: CaptureCallbacks): 
     releaseInput();
     if (!(await flushed)) callbacks.onFlushStalled();
     if (recorder?.state === "recording") recorder.pause();
-    boundary = null;
   };
 
   const startMeter = () => {
@@ -190,6 +212,7 @@ export function createWebCapture(env: CaptureEnv, callbacks: CaptureCallbacks): 
     meter?.stop();
     meter = null;
     releaseInput();
+    requests.length = 0;
     destination?.disconnect();
     void context?.close();
     context = destination = analyser = null;
@@ -214,13 +237,16 @@ export function createWebCapture(env: CaptureEnv, callbacks: CaptureCallbacks): 
       }
       recorder = new env.MediaRecorder(destination.stream, { mimeType });
       recorder.ondataavailable = (event: BlobEvent) => {
-        const at = env.now();
-        const durationMs = boundary === null ? 0 : Math.max(0, at - boundary);
-        if (boundary !== null) boundary = at;
-        if (delivering && event.data.size > 0) callbacks.onChunk({ blob: event.data, durationMs });
-        const waiter = flushWaiter;
-        flushWaiter = null;
-        waiter?.();
+        const request = requests.shift();
+        let durationMs: number;
+        if (request) durationMs = request.durationMs;
+        else {
+          const at = env.now();
+          durationMs = boundary === null ? 0 : Math.max(0, at - boundary);
+          if (boundary !== null) boundary = at;
+        }
+        if (delivering && event.data.size > 0) callbacks.onChunk({ blob: event.data, durationMs, late: request?.expired ?? false });
+        request?.answer?.();
       };
       recorder.onerror = (event: Event) => callbacks.onRecorderError((event as ErrorEvent).error ?? event);
       recorder.start(TIMESLICE_MS);

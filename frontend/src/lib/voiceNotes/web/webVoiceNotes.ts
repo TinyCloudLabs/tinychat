@@ -54,6 +54,8 @@ interface Live {
   pendingDevice: string | null | undefined;
   releaseLocks: (() => void)[];
   finishing: boolean;
+  /** The recorder has not delivered the slice a pause asked for; the saved audio may lack the last moments before the pause. */
+  tailPending: boolean;
 }
 
 export interface WebVoiceNotesOptions {
@@ -147,7 +149,9 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
 
   const mic = (l: Live): { state: MicState; reason: MicStateReason } => {
     const span = openSpanOf(l.record);
-    if (l.record.intent === "paused") return { state: "paused", reason: "user" };
+    // recorderView renders needs_user/write_failed as "Interrupted - Stop and save what's recorded";
+    // a paused state with any other reason is not in the contract it renders.
+    if (l.record.intent === "paused") return l.tailPending ? { state: "needs_user", reason: "write_failed" } : { state: "paused", reason: "user" };
     if (l.availability === "interrupted") return { state: "interrupted", reason: l.reason };
     if (l.availability === "blocked") return { state: "needs_user", reason: l.reason };
     if (span?.kind === "silenced") return { state: "silenced", reason: "input_muted" };
@@ -187,7 +191,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
     });
   };
 
-  const enqueueChunk = (l: Live, blob: Blob, durationMs: number) => {
+  const enqueueChunk = (l: Live, blob: Blob, durationMs: number, late: boolean) => {
     if (l.writeFailed) return;
     l.queue = l.queue.then(async () => {
       if (l.writeFailed) return;
@@ -209,6 +213,10 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
         throw error;
       }
       count();
+      if (late && l.tailPending) {
+        l.tailPending = false;
+        emitMicState();
+      }
       if (audioMs >= l.record.maxDurationMs && !l.finishing) scheduleAutoStop(l, "max_duration");
     }).catch((error: unknown) => onWriteFailure(l, error));
   };
@@ -273,7 +281,9 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
   };
 
   const callbacksFor = (holder: { live: Live | null }) => ({
-    onChunk: ({ blob, durationMs }: { blob: Blob; durationMs: number }) => { if (holder.live) enqueueChunk(holder.live, blob, durationMs); },
+    onChunk: ({ blob, durationMs, late }: { blob: Blob; durationMs: number; late: boolean }) => {
+      if (holder.live) enqueueChunk(holder.live, blob, durationMs, late);
+    },
     onLevel: (sample: { level: number; peak: number; active: boolean }) => {
       const l = holder.live;
       if (l && live === l && l.record.intent === "recording") emit("level", sample);
@@ -311,6 +321,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
       const l = holder.live;
       if (!l) return;
       console.error("[webVoiceNotes] The recorder did not deliver its last slice before the microphone was released", l.id);
+      l.tailPending = true;
       emit("writeFailure", { id: l.id, error: "pause_flush_timeout" });
     },
   });
@@ -341,7 +352,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
             transitionGen: defaults.transitionGen, options: opts, mimeType: capture.mimeType, input: null, maxDurationMs });
           began = true;
           const l: Live = { id, record: begun, capture, availability: "available", reason: null, queue: Promise.resolve(),
-            writeFailed: null, lastDurableAt: now(), pendingDevice: undefined, releaseLocks: releases, finishing: false };
+            writeFailed: null, lastDurableAt: now(), pendingDevice: undefined, releaseLocks: releases, finishing: false, tailPending: false };
           holder.live = l;
           let input: AudioInput;
           try {
@@ -415,6 +426,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
         const wasPaused = l.record.intent === "paused";
         if (!wasPaused && l.availability === "available") return;
         const at = now();
+        l.tailPending = false;
         if (wasPaused) {
           l.record.pausedMs += at - (l.record.pauseStartedAt ?? at);
           l.record.pauseStartedAt = null;

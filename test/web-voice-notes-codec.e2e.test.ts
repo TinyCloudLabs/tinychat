@@ -117,6 +117,24 @@ describe("chromium: WebM/Opus", () => {
     await second.context.close();
   });
 
+  test("a 60 s+ recording is recovered by decoding only the first 10 s window; its duration comes from the journal", async () => {
+    const db = dbName("long");
+    const first = await openPage(chrome, "chromium");
+    const seeded = await call(first.page, "seedLong", db, 65_000, 3300);
+    expect(seeded.journaledMs).toBeGreaterThanOrEqual(60_000);
+    expect(seeded.windowBytes).toBeGreaterThan(0);
+    expect(seeded.totalBytes).toBeGreaterThan(seeded.windowBytes * 4);
+    await first.page.close({ runBeforeUnload: false });
+
+    const second = await openPage(chrome, "chromium", first.context);
+    const result = await call(second.page, "recoverLong", db);
+    expect(result.failed, JSON.stringify(result.failed)).toEqual([]);
+    expect(result.quarantine).toEqual([]);
+    expect(result.recovered).toMatchObject([{ id: seeded.id, sizeBytes: seeded.totalBytes, durationMs: seeded.journaledMs }]);
+    expect(result.decodedBytes).toEqual([seeded.windowBytes]);
+    await second.context.close();
+  });
+
   test("bytes that are not media are quarantined as undecodable, with the audio kept", async () => {
     const db = dbName("garbage");
     const first = await openPage(chrome, "chromium");
