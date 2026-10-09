@@ -14,7 +14,7 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
+import { captureCapabilities, captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import type { VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
@@ -80,7 +80,7 @@ export function PendingVoiceNotesSaver({
   sessionStore: SessionStore;
 }) {
   useEffect(() => {
-    if (!captureEngineAvailable()) return;
+    if (!captureEngineAvailable() || !captureCapabilities().localTranscription) return;
     return installOnDeviceTranscriptSync(tcw);
   }, [tcw]);
 
