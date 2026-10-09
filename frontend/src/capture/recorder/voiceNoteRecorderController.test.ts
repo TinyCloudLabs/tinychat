@@ -14,6 +14,7 @@ import { fakeVoiceNoteStore } from "@/harness/fakeVoiceNoteStore";
 import { __setVoiceNotesForTests, type VoiceNoteRecording, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { setDefaultTranscriber } from "@/lib/voiceNotes/transcriberPreference";
 import { createVoiceNoteTranscriber, type VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { VoiceNoteSaveDeferred, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { consentToRecordingPrivateCloud, setRecordingRoute } from "./TranscriptionRouteControl";
 
 const realStore = { ...(await import("@/lib/voiceNotes/voiceNoteStore")) };
@@ -63,9 +64,10 @@ let micDenied: boolean;
 let shortcutPending: boolean;
 let microphoneGranted: boolean;
 
-function controller(options: { tcw?: TinyCloudWeb; consented?: boolean | (() => boolean); onDeviceReady?: boolean; appleInterim?: boolean; transcriber?: VoiceNoteTranscriber } = {}) {
+function controller(options: { tcw?: TinyCloudWeb; pipeline?: VoiceNotePipeline; consented?: boolean | (() => boolean); onDeviceReady?: boolean; appleInterim?: boolean; transcriber?: VoiceNoteTranscriber } = {}) {
   return createVoiceNoteRecorderController({
     tcw: options.tcw ?? tcw,
+    pipeline: options.pipeline,
     available: true,
     transcriber: options.transcriber ?? { noteSaved: (recording) => noted.push(recording.id),
       snapshot: () => ({ availability: "available", consented: typeof options.consented === "function" ? options.consented() : options.consented ?? false,
@@ -357,6 +359,27 @@ describe("voice-note recorder controller", () => {
     expect(recorder.getState().outcome).toBe("saved");
     expect(onPhone).toHaveLength(1);
     expect(deleteCalls).toBe(0);
+  });
+
+  test("Stop during sign-out keeps the receipt held even when a cancelled save rejects after re-arm", async () => {
+    const account = { ...tcw, spaceId: "tinycloud:space" } as TinyCloudWeb;
+    let attempted = 0;
+    const pipeline: VoiceNotePipeline = {
+      process: async () => { attempted++; throw new VoiceNoteSaveDeferred(); },
+      reconcileAll: async () => {}, cancelAll: () => {}, resume: () => {},
+      isAccepting: () => true, quiescent: async () => true,
+    };
+    const recorder = controller({ tcw: account, pipeline });
+    const detach = recorder.attach();
+    await tick();
+    await recorder.record();
+    await recorder.stop();
+    await tick();
+    expect(attempted).toBe(1);
+    expect(recorder.getState()).toMatchObject({ phase: "idle", outcome: "local", localUpload: "held", error: null });
+    expect(onPhone).toHaveLength(1);
+    expect(saves).toEqual([]);
+    detach();
   });
 
   test("an upload already in flight cannot erase the phone receipt", async () => {

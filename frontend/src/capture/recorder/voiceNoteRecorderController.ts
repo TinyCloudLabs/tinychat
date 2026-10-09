@@ -37,7 +37,7 @@ import {
   savePendingRecordings,
 } from "@/lib/voiceNotes/recorderSaves";
 import type { VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
-import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
+import { saveDeferredForAccountTransition, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
 import { FINALIZATION_PENDING, limitNoticeText } from "./recorderCopy";
 import { autoStopIsCurrent, initialRecorderState, recorderReducer, type RecorderEvent, type RecorderMic, type RecorderState } from "./recorderReducer";
@@ -221,7 +221,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
         landed(recording);
       } catch (caught) {
-        if (!pipeline.isAccepting()) {
+        if (!pipeline.isAccepting() || saveDeferredForAccountTransition(caught)) {
           send({ type: "LOCAL_UPLOAD_HELD", id: recording.id });
           void pendingStore.refresh();
           return;
@@ -279,8 +279,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     if (!tcw || (pipeline && !pipeline.isAccepting())) { void pendingStore.refresh(); return; }
     if (pipeline) {
       if (recording.owner === tcw.did && tcw.did && tcw.spaceId) {
-        await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id);
-        landed(recording);
+        try {
+          await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id);
+          landed(recording);
+        } catch (caught) {
+          if (!saveDeferredForAccountTransition(caught) && pipeline.isAccepting()) throw caught;
+        }
       }
       void pendingStore.refresh();
       return;

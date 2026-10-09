@@ -1,5 +1,5 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { assertCurrent, type AccountContext } from "./accountContext";
+import { assertCurrent, StaleAccountContext, type AccountContext } from "./accountContext";
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
 import { VoiceNotes } from "./nativeVoiceNotes";
 import { isDiscarded, saveNoteForAccount } from "./recorderSaves";
@@ -15,6 +15,15 @@ export interface VoiceNotePipeline {
   quiescent(timeoutMs: number): Promise<boolean>;
 }
 
+export class VoiceNoteSaveDeferred extends Error {
+  readonly code = "account_transition";
+  constructor() { super("Voice-note save is suspended during account transition"); }
+}
+
+export function saveDeferredForAccountTransition(error: unknown): boolean {
+  return error instanceof VoiceNoteSaveDeferred || error instanceof StaleAccountContext;
+}
+
 /** T22 extends these lanes with transcription and cleanup, retaining this API. */
 export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
   let cancellation = 0;
@@ -27,9 +36,8 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
     return promise;
   };
   const checkFor = (ctx: AccountContext, epoch: number) => () => {
+    if (!accepting || epoch !== cancellation) throw new VoiceNoteSaveDeferred();
     assertCurrent(ctx);
-    if (!accepting) throw new Error("Voice-note save is suspended during account transition");
-    if (epoch !== cancellation) throw new Error("Voice-note save was cancelled");
     if (tcw.did !== ctx.did || tcw.spaceId !== ctx.spaceId) throw new Error("Voice-note space changed");
   };
   const processOne = async (ctx: AccountContext, id: string, epoch: number) => {
@@ -44,17 +52,17 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
     if (!note) return;
     check();
     const result = await saveNoteForAccount(tcw, ctx, note, check);
-    if (result.kind === "failed") throw new Error(result.failure);
+    if (result.kind === "failed") { check(); throw new Error(result.failure); }
     if (result.kind === "discarded" && result.cleanupError) throw new Error(result.cleanupError);
   };
   return {
     process(ctx, id) {
-      if (!accepting) return Promise.reject(new Error("Voice-note save is suspended during account transition"));
+      if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());
       const epoch = cancellation;
       return run(() => processOne(ctx, id, epoch));
     },
     reconcileAll(ctx) {
-      if (!accepting) return Promise.reject(new Error("Voice-note save is suspended during account transition"));
+      if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());
       const epoch = cancellation;
       return run(async () => {
         const check = checkFor(ctx, epoch);
