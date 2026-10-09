@@ -114,6 +114,11 @@ export function installCaptureEngine(): Promise<void> {
   return attempt;
 }
 
+/** Harness and tests: stand in for an installed engine of this kind, with no factory. */
+export function __setInstalledEngineForTests(kind: CaptureEngineKind, capabilities: CaptureCapabilities): void {
+  installed = { kind, capabilities };
+}
+
 /** Tests only: forget registrations and the installed engine. */
 export function __resetCaptureEngineForTests(): void {
   factories.clear();

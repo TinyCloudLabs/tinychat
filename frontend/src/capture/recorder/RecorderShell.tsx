@@ -10,6 +10,7 @@ import { MinimizedProvider } from "./final/MinimizedProvider";
 import { showsMinimizedError } from "./final/minimizedView";
 import { recorderFinalEnabled } from "./final/recorderFinalFlag";
 import { FloatingRibbon, Ribbon } from "./final/Ribbon";
+import { ShellChrome } from "./final/shell/ShellChrome";
 import { SidebarDock } from "./final/SidebarDock";
 import { Island, islandState } from "./Island";
 import { RailLiveButton } from "./RailLiveButton";
@@ -61,6 +62,7 @@ export function FinalRecorderShell({ onOpenNote, onOpenNotes, ...shell }: Record
   const sidebarAlert = minimized && showsMinimizedError(recorder);
   return (
     <MinimizedProvider>
+      <ShellChrome />
       <AppShell
         {...shell}
         island={island}

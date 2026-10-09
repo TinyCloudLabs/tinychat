@@ -3,10 +3,8 @@ import {
   OnDeviceStt,
   type OnDeviceSttStatus,
 } from "@/lib/voiceNotes/onDeviceStt";
-import {
-  nativeVoiceNotesAvailable,
-  type TranscriberId,
-} from "@/lib/voiceNotes/nativeVoiceNotes";
+import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
+import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { VoiceNoteTranscriptionProps } from "../transcriptionProps";
 import {
   MODE_STOPS,
@@ -61,7 +59,7 @@ export function useOnDeviceModel(): {
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    if (!nativeVoiceNotesAvailable()) return;
+    if (!captureCapabilities().localTranscription) return;
     let live = true;
     const failed = (what: string) => (caught: unknown) => {
       console.error(`[Recorder] Could not ${what}`, caught);
