@@ -21,12 +21,34 @@ export function trackModality(target: EventTarget): ModalityTracker {
   };
 }
 
-// Installed at import so the event that opens a dialog is already seen.
-const tracker = typeof document === "undefined" ? null : trackModality(document);
+// The app-wide tracker: one per page, installed at import so the event that
+// opens a dialog is already seen, and taken down when this module is replaced.
+let tracker: ModalityTracker | null = null;
 
-export const inputModality = (): Modality => tracker?.current() ?? "pointer";
+export function installModalityTracking(
+  target: EventTarget | undefined = globalThis.document,
+): void {
+  if (tracker || !target) return;
+  tracker = trackModality(target);
+}
+
+export function disposeModalityTracking(): void {
+  tracker?.dispose();
+  tracker = null;
+}
+
+installModalityTracking();
+import.meta.hot?.dispose(disposeModalityTracking);
+
+export function inputModality(): Modality {
+  installModalityTracking(); // a document that appeared after import
+  return tracker?.current() ?? "pointer";
+}
 
 /** A dialog opened from the keyboard shows its focus ring at once; any later key press turns it on too. */
-export function markKeyboardOpened(element: Pick<HTMLElement, "setAttribute"> | null, modality: Modality = inputModality()) {
+export function markKeyboardOpened(
+  element: Pick<HTMLElement, "setAttribute"> | null,
+  modality: Modality = inputModality(),
+) {
   if (element && modality === "keyboard") element.setAttribute("data-kbd", "");
 }

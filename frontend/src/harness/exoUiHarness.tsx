@@ -26,6 +26,7 @@ import { primitivesScreens } from "./screens/primitives";
 import { recorderScreens } from "./screens/recorder";
 import { recorderFinalHaloScreen } from "./screens/recorderFinalHalo";
 import { recorderFinalPhoneScreens } from "./screens/recorderFinalPhone";
+import { recorderFinalPhoneInteractiveScreens } from "./screens/recorderFinalPhoneInteractive";
 import { sheetsScreens } from "./screens/sheets";
 import { shellScreens } from "./screens/shell";
 import { FROZEN_NOW, freezeClock } from "./stubs";
@@ -46,6 +47,7 @@ const SCREENS: HarnessScreen[] = [
   ...recorderScreens,
   recorderFinalHaloScreen,
   ...recorderFinalPhoneScreens,
+  ...recorderFinalPhoneInteractiveScreens,
   ...captureScreens,
   ...libraryScreens,
 ];
@@ -56,7 +58,12 @@ const PLATFORMS: readonly AppPlatform[] = ["ios", "android", "tauri", "web"];
 // its failed state instead of depending on the network.
 const realFetch = window.fetch.bind(window);
 window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
-  const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  const href =
+    typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.href
+        : input.url;
   if (new URL(href, window.location.href).origin !== window.location.origin) {
     return Promise.reject(new TypeError("Failed to fetch"));
   }
@@ -73,12 +80,22 @@ initSizeClass();
 // fake App.getInfo() makes the build line resolve with the real native
 // segments (build number and bundle id), not just the web baseline (TC-840).
 if (platform === "ios" || platform === "android") {
-  __setBuildInfoForTests({ version: "", build: "160", id: "xyz.tinycloud.exo.dev" });
+  __setBuildInfoForTests({
+    version: "",
+    build: "160",
+    id: "xyz.tinycloud.exo.dev",
+  });
   const fake = createCaptureFakeVoiceNotes();
   if (params.get("screen")?.startsWith("recorder-")) {
     fake.controls.commitLegacy({
-      id: "rec-1", startedAt: FROZEN_NOW - 42_000, durationMs: 42_000,
-      mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+      id: "rec-1",
+      startedAt: FROZEN_NOW - 42_000,
+      durationMs: 42_000,
+      mimeType: "audio/mp4",
+      sizeBytes: 4,
+      silencedMs: 0,
+      silencedEvents: 0,
+      noSignalMs: 0,
     });
   }
   __setVoiceNotesForTests(fake.plugin, { available: true });
@@ -100,13 +117,22 @@ function Ready(props: { scrollTo?: string; readyWhen?: string }) {
     const arrived = () =>
       new Promise<void>((resolve) => {
         const check = () => {
-          if (cancelled || !props.readyWhen || document.querySelector(props.readyWhen) || Date.now() > until) resolve();
+          if (
+            cancelled ||
+            !props.readyWhen ||
+            document.querySelector(props.readyWhen) ||
+            Date.now() > until
+          )
+            resolve();
           else setTimeout(check, 50);
         };
         check();
       });
     void Promise.all([document.fonts.ready, arrived()]).then(() => {
-      if (props.scrollTo) document.querySelector(props.scrollTo)?.scrollIntoView({ block: "center" });
+      if (props.scrollTo)
+        document
+          .querySelector(props.scrollTo)
+          ?.scrollIntoView({ block: "center" });
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
           if (!cancelled && window.exoUi) window.exoUi.ready = true;
@@ -128,8 +154,18 @@ function Index() {
         {SCREENS.map((screen) => (
           <li key={screen.id} className="flex items-baseline gap-3">
             <span className="min-w-0 flex-1 truncate">{screen.id}</span>
-            <a className="text-primary underline underline-offset-4" href={`?screen=${screen.id}&theme=light&platform=${screen.platform ?? "web"}`}>Day</a>
-            <a className="text-primary underline underline-offset-4" href={`?screen=${screen.id}&theme=dark&platform=${screen.platform ?? "web"}`}>Night</a>
+            <a
+              className="text-primary underline underline-offset-4"
+              href={`?screen=${screen.id}&theme=light&platform=${screen.platform ?? "web"}`}
+            >
+              Day
+            </a>
+            <a
+              className="text-primary underline underline-offset-4"
+              href={`?screen=${screen.id}&theme=dark&platform=${screen.platform ?? "web"}`}
+            >
+              Night
+            </a>
           </li>
         ))}
       </ul>
@@ -139,7 +175,8 @@ function Index() {
 
 const screenId = params.get("screen");
 const screen = SCREENS.find((s) => s.id === screenId);
-if (screenId && !screen) throw new Error(`exo-ui harness: no screen "${screenId}"`);
+if (screenId && !screen)
+  throw new Error(`exo-ui harness: no screen "${screenId}"`);
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

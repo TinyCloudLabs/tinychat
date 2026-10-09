@@ -3,7 +3,11 @@
 // On the web and in the desktop app the plugin does not exist, and
 // `nativeVoiceNotesAvailable()` is the one gate every caller checks first.
 
-import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
+import {
+  Capacitor,
+  registerPlugin,
+  type PluginListenerHandle,
+} from "@capacitor/core";
 
 import { base64ToBytes } from "./voiceNoteAudio";
 
@@ -13,28 +17,80 @@ import { base64ToBytes } from "./voiceNoteAudio";
  *  - `silenced`: still "recording", but the OS is feeding this app silence
  *    (a call or another app took the mic, the mic privacy toggle is off).
  */
-export type MicState = "idle" | "recording" | "silenced" | "paused" | "interrupted" | "needs_user";
+export type MicState =
+  | "idle"
+  | "recording"
+  | "silenced"
+  | "paused"
+  | "interrupted"
+  | "needs_user";
 
 /**
  * Why the state is what it is; `no_signal` means live but zero input level,
  * `max_duration` (with `idle`) that the recording was stopped at its length limit.
  */
-export type MicStateReason = "os_silenced" | "no_signal" | "input_muted" | "call" | "user" | "interruption"
-  | "route_change" | "media_services_reset" | "read_error" | "stalled" | "app_suspended" | "writer_stalled"
-  | "resume_blocked" | "resume_not_allowed" | "mic_unavailable" | "pause_timeout"
-  | "max_duration" | "disk_full" | "write_failed" | "permission_revoked" | null;
+export type MicStateReason =
+  | "os_silenced"
+  | "no_signal"
+  | "input_muted"
+  | "call"
+  | "user"
+  | "interruption"
+  | "route_change"
+  | "media_services_reset"
+  | "read_error"
+  | "stalled"
+  | "app_suspended"
+  | "writer_stalled"
+  | "resume_blocked"
+  | "resume_not_allowed"
+  | "mic_unavailable"
+  | "pause_timeout"
+  | "max_duration"
+  | "disk_full"
+  | "write_failed"
+  | "permission_revoked"
+  | null;
 
 export type TranscriberId = "on-device" | "private-cloud" | "assemblyai";
-export type CaptureSource = "in_app" | "quick_action" | "app_shortcut" | "intent" | "control" | "tile" | "widget" | "notification";
-export interface CaptureOptions { transcriber: TranscriberId; identifySpeakers: boolean }
-export interface CaptureDefaults extends CaptureOptions { accountDid: string | null; transitionGen: number }
+export type CaptureSource =
+  | "in_app"
+  | "quick_action"
+  | "app_shortcut"
+  | "intent"
+  | "control"
+  | "tile"
+  | "widget"
+  | "notification";
+export interface CaptureOptions {
+  transcriber: TranscriberId;
+  identifySpeakers: boolean;
+}
+export interface CaptureDefaults extends CaptureOptions {
+  accountDid: string | null;
+  transitionGen: number;
+}
 export type AccountStatus = "signed_in" | "transitioning" | "signed_out";
 export interface RemoteOpReceipt {
-  id: string; did: string; opId: string; provider: "assemblyai" | "ptx"; mode: "hosted" | "own" | null;
-  kind: "hosted_create" | "hosted_submit" | "own_upload" | "own_create" | "ptx_create";
-  fingerprint: string; startedAt: number;
+  id: string;
+  did: string;
+  opId: string;
+  provider: "assemblyai" | "ptx";
+  mode: "hosted" | "own" | null;
+  kind:
+    | "hosted_create"
+    | "hosted_submit"
+    | "own_upload"
+    | "own_create"
+    | "ptx_create";
+  fingerprint: string;
+  startedAt: number;
 }
-export interface AudioInput { id: string; name: string; kind: "built_in" | "wired" | "bluetooth" | "usb" | "car" | "other" }
+export interface AudioInput {
+  id: string;
+  name: string;
+  kind: "built_in" | "wired" | "bluetooth" | "usb" | "car" | "other";
+}
 export interface MissingAudioSpan {
   kind: "omitted" | "silenced";
   reason: string;
@@ -44,36 +100,106 @@ export interface MissingAudioSpan {
   audioMs: number;
 }
 export interface OutboxEntry {
-  entryId: string; did: string; provider: "assemblyai" | "ptx"; mode: "hosted" | "own" | null;
-  kind: "transcript" | "hosted_upload" | "hosted_submit" | "ptx_job" | "own_upload_lookup" | "unknown";
-  handle: string | null; handleExpiresAt: number | null;
+  entryId: string;
+  did: string;
+  provider: "assemblyai" | "ptx";
+  mode: "hosted" | "own" | null;
+  kind:
+    | "transcript"
+    | "hosted_upload"
+    | "hosted_submit"
+    | "ptx_job"
+    | "own_upload_lookup"
+    | "unknown";
+  handle: string | null;
+  handleExpiresAt: number | null;
   state: "pending" | "lookup" | "unknown" | "authority_expired" | "done";
-  createdAt: number; attempts: number;
+  createdAt: number;
+  attempts: number;
 }
 export type ClaimOptions =
   | { id: string; did: string; evidence: "signed_out_v2" | "user_choice" }
   | { id: string; did: string; evidence: "space_row"; rowId: string };
 export interface NoteLedger {
   spaceId?: string | null;
-  audio: { state: "pending" | "saved"; rowId: string | null; at: number | null };
-  transcript: { state: "pending" | "running" | "retrying" | "blocked" | "needs_attention" | "cancelled" | "failed" | "done";
-    outcome: "transcribed" | "no_speech" | null; reason: string | null; attempts: number; nextAttemptAt: number | null };
-  transcriptSync: { state: "pending" | "saved"; rev: number; at: number | null };
+  audio: {
+    state: "pending" | "saved";
+    rowId: string | null;
+    at: number | null;
+  };
+  transcript: {
+    state:
+      | "pending"
+      | "running"
+      | "retrying"
+      | "blocked"
+      | "needs_attention"
+      | "cancelled"
+      | "failed"
+      | "done";
+    outcome: "transcribed" | "no_speech" | null;
+    reason: string | null;
+    attempts: number;
+    nextAttemptAt: number | null;
+  };
+  transcriptSync: {
+    state: "pending" | "saved";
+    rev: number;
+    at: number | null;
+  };
   landed: { state: "none" | "pending" | "emitted"; eventId: string | null };
-  remote: { provider: "assemblyai" | "ptx"; mode: "hosted" | "own" | null;
-    stage: "create_unknown" | "uploading" | "uploaded" | "submit_unknown" | "submitted" | "done";
-    uploadId: string | null; uploadUrl: string | null; jobId: string | null; cleanup: "none" | "pending" | "done" }[];
+  remote: {
+    provider: "assemblyai" | "ptx";
+    mode: "hosted" | "own" | null;
+    stage:
+      | "create_unknown"
+      | "uploading"
+      | "uploaded"
+      | "submit_unknown"
+      | "submitted"
+      | "done";
+    uploadId: string | null;
+    uploadUrl: string | null;
+    jobId: string | null;
+    cleanup: "none" | "pending" | "done";
+  }[];
 }
 export interface NoteSttState {
-  state: "waiting_for_model" | "queued" | "running" | "done" | "failed" | "cancelled";
-  pack: "full" | "small" | null; engine: "parakeet" | "apple-speech" | null;
-  segmentsDone: number; windowsDone: number; error: string | null;
+  state:
+    | "waiting_for_model"
+    | "queued"
+    | "running"
+    | "done"
+    | "failed"
+    | "cancelled";
+  pack: "full" | "small" | null;
+  engine: "parakeet" | "apple-speech" | null;
+  segmentsDone: number;
+  windowsDone: number;
+  error: string | null;
 }
 export interface LocalTranscript {
-  version: 1; noteId: string; transcriber: TranscriberId; rev: number;
-  engine: "parakeet-tdt-0.6b-v3" | "parakeet-tdt-110m-en" | "apple-speech" | "assemblyai" | "tinycloud-private-transcription";
-  model: string | null; language: string | null; outcome: "transcribed" | "no_speech"; diarized: boolean;
-  segments: { start: number; end: number; text: string; speaker: string | null }[]; createdAt: string;
+  version: 1;
+  noteId: string;
+  transcriber: TranscriberId;
+  rev: number;
+  engine:
+    | "parakeet-tdt-0.6b-v3"
+    | "parakeet-tdt-110m-en"
+    | "apple-speech"
+    | "assemblyai"
+    | "tinycloud-private-transcription";
+  model: string | null;
+  language: string | null;
+  outcome: "transcribed" | "no_speech";
+  diarized: boolean;
+  segments: {
+    start: number;
+    end: number;
+    text: string;
+    speaker: string | null;
+  }[];
+  createdAt: string;
   provider?: Record<string, unknown>;
 }
 
@@ -91,14 +217,21 @@ export const VOICE_NOTE_MIN_DURATION_LIMIT_MS = 1000;
  * auto-stop without recording three hours (clamped to [1 s, 3 h]; it can never
  * raise the limit).
  */
-export const VOICE_NOTE_MAX_DURATION_OVERRIDE_KEY = "exo.voiceNotes.maxDurationMs";
+export const VOICE_NOTE_MAX_DURATION_OVERRIDE_KEY =
+  "exo.voiceNotes.maxDurationMs";
 
 /** The limit to ask the recorder for: three hours unless a test override lowers it. */
-export function voiceNoteMaxDurationMs(storage: Pick<Storage, "getItem"> | null = safeLocalStorage()): number {
+export function voiceNoteMaxDurationMs(
+  storage: Pick<Storage, "getItem"> | null = safeLocalStorage(),
+): number {
   const raw = storage?.getItem(VOICE_NOTE_MAX_DURATION_OVERRIDE_KEY);
   const requested = raw ? Number(raw) : NaN;
-  if (!Number.isFinite(requested) || requested <= 0) return VOICE_NOTE_MAX_DURATION_MS;
-  return Math.min(VOICE_NOTE_MAX_DURATION_MS, Math.max(VOICE_NOTE_MIN_DURATION_LIMIT_MS, Math.round(requested)));
+  if (!Number.isFinite(requested) || requested <= 0)
+    return VOICE_NOTE_MAX_DURATION_MS;
+  return Math.min(
+    VOICE_NOTE_MAX_DURATION_MS,
+    Math.max(VOICE_NOTE_MIN_DURATION_LIMIT_MS, Math.round(requested)),
+  );
 }
 
 function safeLocalStorage(): Storage | null {
@@ -138,21 +271,47 @@ export interface VoiceNoteRecording {
   silencedEvents: number;
   /** Time the input level stayed at zero while the OS said we were live. */
   noSignalMs: number;
-  version?: 2; rev?: number; wallMs?: number; pausedMs?: number; spans?: MissingAudioSpan[];
-  recovered?: boolean; endedUnexpectedly?: boolean; lastHeartbeatAt?: number | null; exitReason?: string | null;
-  legacyImport?: boolean; ownerUnknown?: boolean;
-  source?: CaptureSource; owner?: string | null; transitionGen?: number;
-  options?: CaptureOptions; input?: AudioInput | null; sampleRate?: number; bitrate?: number;
-  ledger?: NoteLedger; stt?: NoteSttState;
+  version?: 2;
+  rev?: number;
+  wallMs?: number;
+  pausedMs?: number;
+  spans?: MissingAudioSpan[];
+  recovered?: boolean;
+  endedUnexpectedly?: boolean;
+  lastHeartbeatAt?: number | null;
+  exitReason?: string | null;
+  legacyImport?: boolean;
+  ownerUnknown?: boolean;
+  source?: CaptureSource;
+  owner?: string | null;
+  transitionGen?: number;
+  options?: CaptureOptions;
+  input?: AudioInput | null;
+  sampleRate?: number;
+  bitrate?: number;
+  ledger?: NoteLedger;
+  stt?: NoteSttState;
 }
 
 export interface CaptureStatus {
-  state: MicState; reason: MicStateReason; id: string | null;
-  intent: "recording" | "paused" | "stopped"; availability: "available" | "interrupted" | "blocked";
-  startedAt: number | null; elapsedMs: number; audioMs: number; pausedMs: number; maxDurationMs: number;
-  spans: MissingAudioSpan[]; openSpan: MissingAudioSpan | null;
-  source?: CaptureSource; options?: CaptureOptions; input?: AudioInput | null; owner?: string | null;
-  transitionGen: number; androidSdkInt?: number;
+  state: MicState;
+  reason: MicStateReason;
+  id: string | null;
+  intent: "recording" | "paused" | "stopped";
+  availability: "available" | "interrupted" | "blocked";
+  startedAt: number | null;
+  elapsedMs: number;
+  audioMs: number;
+  pausedMs: number;
+  maxDurationMs: number;
+  spans: MissingAudioSpan[];
+  openSpan: MissingAudioSpan | null;
+  source?: CaptureSource;
+  options?: CaptureOptions;
+  input?: AudioInput | null;
+  owner?: string | null;
+  transitionGen: number;
+  androidSdkInt?: number;
   /** Android shortcut recovery, queried without consuming a retained event. */
   micDeniedPresentation?: boolean;
   shortcutRecordPending?: boolean;
@@ -186,7 +345,9 @@ export interface VoiceNoteAudioChunk {
 
 export interface VoiceNotesPlugin {
   /** `maxDurationMs`: stop by itself after this much recorded time (clamped to [1 s, 3 h]). */
-  start(options?: { maxDurationMs?: number } & Partial<CaptureOptions>): Promise<{ id: string; startedAt: number; maxDurationMs?: number }>;
+  start(
+    options?: { maxDurationMs?: number } & Partial<CaptureOptions>,
+  ): Promise<{ id: string; startedAt: number; maxDurationMs?: number }>;
   stop(): Promise<VoiceNoteRecording>;
   /**
    * `maxDurationMs`: the current recording's limit (the default when idle).
@@ -199,7 +360,11 @@ export interface VoiceNotesPlugin {
    * Up to `length` bytes of a stopped recording from `offset` (the shells cap one
    * call at 4 MiB). The audio crosses the bridge a part at a time, never whole.
    */
-  readAudioChunk(options: { id: string; offset: number; length: number }): Promise<VoiceNoteAudioChunk>;
+  readAudioChunk(options: {
+    id: string;
+    offset: number;
+    length: number;
+  }): Promise<VoiceNoteAudioChunk>;
   /** Delete after a confirmed save: until then the recording stays on the device. */
   deleteAudio(options: { id: string }): Promise<void>;
   /** Stopped recordings still on the device, i.e. not yet confirmed saved. */
@@ -210,31 +375,91 @@ export interface VoiceNotesPlugin {
   setRecordingOptions(options: Partial<CaptureOptions>): Promise<void>;
   getCaptureDefaults(): Promise<CaptureDefaults & { status: AccountStatus }>;
   setCaptureDefaults(options: CaptureDefaults): Promise<{ claimed: string[] }>;
-  setAccountState(options: { status: AccountStatus; accountDid: string | null; transitionGen: number }): Promise<void>;
+  setAccountState(options: {
+    status: AccountStatus;
+    accountDid: string | null;
+    transitionGen: number;
+  }): Promise<void>;
   beginRemoteOp(receipt: RemoteOpReceipt): Promise<void>;
-  recordRemoteResult(options: { id: string; did: string; opId: string; result: {
-    handle?: string; uploadId?: string; uploadUrl?: string; jobId?: string; handleExpiresAt?: number;
-    outcome: "created" | "failed" | "unknown";
-  } }): Promise<{ destination: "ledger" | "outbox" }>;
+  recordRemoteResult(options: {
+    id: string;
+    did: string;
+    opId: string;
+    result: {
+      handle?: string;
+      uploadId?: string;
+      uploadUrl?: string;
+      jobId?: string;
+      handleExpiresAt?: number;
+      outcome: "created" | "failed" | "unknown";
+    };
+  }): Promise<{ destination: "ledger" | "outbox" }>;
   claim(options: ClaimOptions): Promise<{ owner: string | null }>;
-  updateLedger(options: { id: string; did: string; rev: number; patch: Partial<NoteLedger> }): Promise<{ rev: number }>;
+  updateLedger(options: {
+    id: string;
+    did: string;
+    rev: number;
+    patch: Partial<NoteLedger>;
+  }): Promise<{ rev: number }>;
   localAudioUrl(options: { id: string }): Promise<{ url: string }>;
-  putTranscript(options: { id: string; transcript: LocalTranscript }): Promise<void>;
-  getTranscript(options: { id: string }): Promise<{ transcript: LocalTranscript | null }>;
-  listInputs(): Promise<{ inputs: AudioInput[]; selectedId: string | null; activeId: string | null }>;
+  putTranscript(options: {
+    id: string;
+    transcript: LocalTranscript;
+  }): Promise<void>;
+  getTranscript(options: {
+    id: string;
+  }): Promise<{ transcript: LocalTranscript | null }>;
+  listInputs(): Promise<{
+    inputs: AudioInput[];
+    selectedId: string | null;
+    activeId: string | null;
+  }>;
   selectInput(options: { id: string | null }): Promise<void>;
-  listQuarantine(): Promise<{ items: { id: string; reason: string; sizeBytes: number }[] }>;
+  listQuarantine(): Promise<{
+    items: { id: string; reason: string; sizeBytes: number }[];
+  }>;
   deleteQuarantined(options: { id: string }): Promise<void>;
   listOutbox(options: { did: string }): Promise<{ entries: OutboxEntry[] }>;
-  completeOutbox(options: { entryId: string; result: "done" | "retry" | "lookup" | "unknown" | "authority_expired" }): Promise<void>;
-  addListener(event: "micState", listener: (event: MicStateEvent) => void): Promise<PluginListenerHandle>;
-  addListener(event: "captureAlert", listener: (event: CaptureAlertEvent) => void): Promise<PluginListenerHandle>;
+  completeOutbox(options: {
+    entryId: string;
+    result: "done" | "retry" | "lookup" | "unknown" | "authority_expired";
+  }): Promise<void>;
+  addListener(
+    event: "micState",
+    listener: (event: MicStateEvent) => void,
+  ): Promise<PluginListenerHandle>;
+  addListener(
+    event: "captureAlert",
+    listener: (event: CaptureAlertEvent) => void,
+  ): Promise<PluginListenerHandle>;
   openSettings(): Promise<void>;
-  addListener(event: "level", listener: (event: { level: number; peak?: number }) => void): Promise<PluginListenerHandle>;
-  addListener(event: "autoStopped", listener: (event: VoiceNoteAutoStopEvent) => void): Promise<PluginListenerHandle>;
-  addListener(event: "presentRecorder", listener: (event: { id: string | null; reason?: "permission_denied" | "permission_granted" | string }) => void): Promise<PluginListenerHandle>;
-  addListener(event: "recovered" | "committed", listener: (event: { id: string }) => void): Promise<PluginListenerHandle>;
-  addListener(event: "inputs", listener: (event: { inputs: AudioInput[]; selectedId: string | null; activeId: string | null }) => void): Promise<PluginListenerHandle>;
+  addListener(
+    event: "level",
+    listener: (event: { level: number; peak?: number }) => void,
+  ): Promise<PluginListenerHandle>;
+  addListener(
+    event: "autoStopped",
+    listener: (event: VoiceNoteAutoStopEvent) => void,
+  ): Promise<PluginListenerHandle>;
+  addListener(
+    event: "presentRecorder",
+    listener: (event: {
+      id: string | null;
+      reason?: "permission_denied" | "permission_granted" | string;
+    }) => void,
+  ): Promise<PluginListenerHandle>;
+  addListener(
+    event: "recovered" | "committed",
+    listener: (event: { id: string }) => void,
+  ): Promise<PluginListenerHandle>;
+  addListener(
+    event: "inputs",
+    listener: (event: {
+      inputs: AudioInput[];
+      selectedId: string | null;
+      activeId: string | null;
+    }) => void,
+  ): Promise<PluginListenerHandle>;
 }
 
 // `let`, so the browser harnesses can swap in a fake (below): every caller
@@ -245,7 +470,9 @@ let availableForTests: boolean | null = null;
 
 export function nativeVoiceNotesAvailable(): boolean {
   if (availableForTests !== null) return availableForTests;
-  return Capacitor.isNativePlatform() && Capacitor.isPluginAvailable("VoiceNotes");
+  return (
+    Capacitor.isNativePlatform() && Capacitor.isPluginAvailable("VoiceNotes")
+  );
 }
 
 /**
@@ -253,7 +480,10 @@ export function nativeVoiceNotesAvailable(): boolean {
  * and `nativeVoiceNotesAvailable()` answers `available` (null: ask Capacitor
  * again, to undo a swap). No call site changes.
  */
-export function __setVoiceNotesForTests(plugin: VoiceNotesPlugin, options: { available: boolean | null }): void {
+export function __setVoiceNotesForTests(
+  plugin: VoiceNotesPlugin,
+  options: { available: boolean | null },
+): void {
   VoiceNotes = plugin;
   availableForTests = options.available;
 }
@@ -271,12 +501,20 @@ export function nativePlatform(): string {
 export function nativeRecordingSource(
   recording: Pick<VoiceNoteRecording, "id" | "mimeType" | "sizeBytes">,
   plugin: Pick<VoiceNotesPlugin, "readAudioChunk"> = VoiceNotes,
-): { mimeType: string; size: number; readPart(offset: number, length: number): Promise<Uint8Array> } {
+): {
+  mimeType: string;
+  size: number;
+  readPart(offset: number, length: number): Promise<Uint8Array>;
+} {
   return {
     mimeType: recording.mimeType,
     size: recording.sizeBytes,
     async readPart(offset, length) {
-      const chunk = await plugin.readAudioChunk({ id: recording.id, offset, length });
+      const chunk = await plugin.readAudioChunk({
+        id: recording.id,
+        offset,
+        length,
+      });
       const bytes = base64ToBytes(chunk.base64);
       if (bytes.byteLength !== length || chunk.size !== recording.sizeBytes) {
         throw new Error(
@@ -308,33 +546,75 @@ export async function nativeHttpFileUploadSupported(
   if (platform !== "android") return false;
   try {
     const { androidSdkInt } = await status();
-    return typeof androidSdkInt === "number" && androidSdkInt >= MIN_ANDROID_SDK_FOR_FILE_UPLOAD;
+    return (
+      typeof androidSdkInt === "number" &&
+      androidSdkInt >= MIN_ANDROID_SDK_FOR_FILE_UPLOAD
+    );
   } catch {
     return false;
   }
 }
 
-export type AudioInputsSnapshot = { inputs: AudioInput[]; selectedId: string | null; activeId: string | null };
+export type AudioInputsSnapshot = {
+  inputs: AudioInput[];
+  selectedId: string | null;
+  activeId: string | null;
+};
 
-const inputSubscribers = new Set<(snapshot: AudioInputsSnapshot) => void>();
-let nativeInputsHandle: Promise<PluginListenerHandle> | null = null;
+const inputSubscribers = new Map<
+  (snapshot: AudioInputsSnapshot) => void,
+  ((caught: unknown) => void) | undefined
+>();
+let nativeInputsHandle: PluginListenerHandle | null = null;
+let nativeInputsQueue: Promise<void> = Promise.resolve();
+
+const fanOutInputs = (snapshot: AudioInputsSnapshot) => {
+  for (const subscriber of [...inputSubscribers.keys()]) subscriber(snapshot);
+};
+
+/** Brings the one native listener in line with whether anyone is subscribed. */
+async function reconcileNativeInputs(): Promise<void> {
+  if (inputSubscribers.size > 0 && !nativeInputsHandle) {
+    nativeInputsHandle = await VoiceNotes.addListener("inputs", fanOutInputs);
+  } else if (inputSubscribers.size === 0 && nativeInputsHandle) {
+    await nativeInputsHandle.remove();
+    nativeInputsHandle = null;
+  }
+}
+
+/**
+ * Add and remove run one at a time, so a resubscribe straight after the last
+ * unsubscribe (React StrictMode does it) waits for the removal and never
+ * leaves two native listeners. A failure is logged and goes to every current
+ * subscriber's `onError`; the state is left as the plugin left it, and the next
+ * change retries.
+ */
+function syncNativeInputs(): void {
+  nativeInputsQueue = nativeInputsQueue
+    .then(reconcileNativeInputs)
+    .catch((caught: unknown) => {
+      console.error(
+        "[VoiceNotes] Could not update the audio input listener",
+        caught,
+      );
+      for (const onError of [...inputSubscribers.values()]) onError?.(caught);
+    });
+}
 
 /**
  * Subscribe to input-list changes. Capacitor delivers a retained event to the
  * first native listener only, so this keeps one native listener for all
  * subscribers: attached with the first, removed with the last.
  */
-export function onInputsChanged(listener: (snapshot: AudioInputsSnapshot) => void): () => void {
-  inputSubscribers.add(listener);
-  nativeInputsHandle ??= VoiceNotes.addListener("inputs", (snapshot) => {
-    for (const subscriber of [...inputSubscribers]) subscriber(snapshot);
-  });
+export function onInputsChanged(
+  listener: (snapshot: AudioInputsSnapshot) => void,
+  onError?: (caught: unknown) => void,
+): () => void {
+  inputSubscribers.set(listener, onError);
+  syncNativeInputs();
   return () => {
     inputSubscribers.delete(listener);
-    if (inputSubscribers.size > 0 || !nativeInputsHandle) return;
-    const handle = nativeInputsHandle;
-    nativeInputsHandle = null;
-    void handle.then((h) => h.remove());
+    syncNativeInputs();
   };
 }
 

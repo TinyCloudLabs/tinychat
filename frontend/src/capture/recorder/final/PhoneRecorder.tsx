@@ -1,6 +1,13 @@
-import { useCallback, useContext, useEffect, useId, useRef, useState } from "react";
+import {
+  useCallback,
+  useContext,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
-import { hapticLight, hapticMedium } from "@/lib/haptics";
+import { hapticLight } from "@/lib/haptics";
 import { PlatformContext } from "@/lib/platform";
 import { useResolvedTheme } from "@/lib/theme";
 import { useRecorder, type RecorderValue } from "../RecorderProvider";
@@ -12,11 +19,26 @@ import { RecorderRing } from "./RecorderRing";
 import { selectRecorderView } from "./recorderView";
 import { shellForPlatform } from "./shellCapabilities";
 import { SheetDialog } from "./SheetDialog";
-import { CheckIcon, ChevronDownIcon, CloseIcon, InfoChevronIcon, PauseIcon, PlayIcon } from "./softIcons";
-import { modeShortLabel, identifySpeakersControl, MODE_STOPS } from "./transcriptionModes";
+import {
+  CheckIcon,
+  ChevronDownIcon,
+  CloseIcon,
+  InfoChevronIcon,
+  PauseIcon,
+  PlayIcon,
+} from "./softIcons";
+import {
+  modeShortLabel,
+  identifySpeakersControl,
+  MODE_STOPS,
+} from "./transcriptionModes";
 import { useAudioInputs, type AudioInputsSource } from "./useAudioInputs";
 import { useSilencedSince } from "./useSilencedSince";
-import { useOnDeviceModel, useTranscriptionChoice, type TranscriptionChoiceStorage } from "./useTranscriptionChoice";
+import {
+  useOnDeviceModel,
+  useTranscriptionChoice,
+  type TranscriptionChoiceStorage,
+} from "./useTranscriptionChoice";
 import { ViaMenu } from "./ViaMenu";
 import "./soft.css";
 import "./phone.css";
@@ -47,17 +69,6 @@ function recorderState(recorder: RecorderValue): RecorderState {
   };
 }
 
-export type Kind = "recording" | "paused" | "interrupted" | "discarded" | "other";
-
-export function announcement(previous: Kind, next: Kind): string | null {
-  if (previous === next) return null;
-  if (next === "recording") return previous === "paused" || previous === "interrupted" ? "Recording resumed" : "Recording";
-  if (next === "paused") return "Recording paused";
-  if (next === "interrupted") return "Recording interrupted";
-  if (next === "discarded") return "Recording discarded";
-  return null;
-}
-
 export interface PhoneRecorderProps {
   /** Where the microphone list comes from; the native plugin unless a harness says otherwise. */
   inputs?: AudioInputsSource | null;
@@ -68,20 +79,35 @@ export interface PhoneRecorderProps {
   defaultOpen?: "modes" | "via" | "discard";
 }
 
-export function PhoneRecorder({ inputs: inputsSource, silencedSinceMs: silencedSeed = null, storage, defaultOpen }: PhoneRecorderProps) {
+export function PhoneRecorder({
+  inputs: inputsSource,
+  silencedSinceMs: silencedSeed = null,
+  storage,
+  defaultOpen,
+}: PhoneRecorderProps) {
   const recorder = useRecorder();
   const shell = shellForPlatform(useContext(PlatformContext));
   const theme = useResolvedTheme() === "dark" ? "night" : "day";
   const { phase, mic } = recorder;
 
-  const running = phase === "recording" && (mic.state === "recording" || mic.state === "silenced");
+  const running =
+    phase === "recording" &&
+    (mic.state === "recording" || mic.state === "silenced");
   const elapsedMs = useRecordedElapsed(recorder.elapsedMs, running);
-  const silent = phase === "recording" && (mic.state === "silenced" || (mic.state === "recording" && mic.reason === "no_signal"));
+  const silent =
+    phase === "recording" &&
+    (mic.state === "silenced" ||
+      (mic.state === "recording" && mic.reason === "no_signal"));
   const silencedSinceMs = useSilencedSince(silent, silencedSeed);
 
   const audio = useAudioInputs(inputsSource);
-  const model = useOnDeviceModel();
-  const choice = useTranscriptionChoice({ shell, transcription: recorder.transcription, model, storage });
+  const onDevice = useOnDeviceModel();
+  const choice = useTranscriptionChoice({
+    shell,
+    transcription: recorder.transcription,
+    model: onDevice.model,
+    storage,
+  });
 
   const view = selectRecorderView(recorderState(recorder), {
     nowMs: Date.now(),
@@ -92,9 +118,16 @@ export function PhoneRecorder({ inputs: inputsSource, silencedSinceMs: silencedS
 
   const [modesOpen, setModesOpen] = useState(defaultOpen === "modes");
   const [discardOpen, setDiscardOpen] = useState(defaultOpen === "discard");
-  const [toast, setToast] = useState<{ message: string; key: number } | null>(null);
+  const [toast, setToast] = useState<{ message: string; key: number } | null>(
+    null,
+  );
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const opener = useRef<HTMLButtonElement>(null);
+  const scale = useRef<HTMLDivElement>(null);
+  const discardButton = useRef<HTMLButtonElement>(null);
+  const captionButton = useRef<HTMLButtonElement>(null);
+  // What opened the consent sheet: the scale, the caption link, or the modes card's button.
+  const consentOpener = useRef<HTMLElement | null>(null);
   const ids = useId();
 
   useEffect(() => {
@@ -104,14 +137,14 @@ export function PhoneRecorder({ inputs: inputsSource, silencedSinceMs: silencedS
   }, [toast]);
   const showToast = (message: string) => setToast({ message, key: Date.now() });
 
-  const kind: Kind = phase === "discarding" ? "discarded" : view.ring === "live" ? "recording" : view.ring === "paused" ? "paused" : phase === "recording" ? "interrupted" : "other";
+  // The recorder provider announces every recording transition; this region only says what is new in this screen.
   const [said, setSaid] = useState("");
-  const lastKind = useRef<Kind>("other");
+  const shownMode = useRef(choice.mode);
   useEffect(() => {
-    const message = announcement(lastKind.current, kind);
-    lastKind.current = kind;
-    if (message) setSaid(message);
-  }, [kind]);
+    if (shownMode.current === choice.mode) return;
+    shownMode.current = choice.mode;
+    setSaid(`${modeShortLabel(choice.mode, false)} selected`);
+  }, [choice.mode]);
 
   const closeModes = useCallback(() => {
     setModesOpen(false);
@@ -129,7 +162,13 @@ export function PhoneRecorder({ inputs: inputsSource, silencedSinceMs: silencedS
     return null;
   };
 
-  const ringKind = view.tapRingAction ?? (view.ring === "live" ? "pause" : view.ring === "paused" || view.ring === "still-resumable" ? "resume" : null);
+  const ringKind =
+    view.tapRingAction ??
+    (view.ring === "live"
+      ? "pause"
+      : view.ring === "paused" || view.ring === "still-resumable"
+        ? "resume"
+        : null);
   const ringAction =
     ringKind === null
       ? null
@@ -150,58 +189,165 @@ export function PhoneRecorder({ inputs: inputsSource, silencedSinceMs: silencedS
   const resume = view.controls.resume;
   const denied = view.micDenied;
   const idleDenied = denied && phase === "idle";
-  const speakers = identifySpeakersControl(choice.mode, choice.identifySpeakers);
+  const speakers = identifySpeakersControl(
+    choice.mode,
+    choice.identifySpeakers,
+  );
 
   const openSettings = () => {
     setSettingsError(null);
-    void recorder.openSettings().catch((error: unknown) => setSettingsError(error instanceof Error ? error.message : String(error)));
+    recorder.openSettings().catch((error: unknown) => {
+      console.error("[Recorder] Could not open Settings", error);
+      setSettingsError(
+        `Could not open Settings: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
   };
+  const alerts = [
+    settingsError ? { message: settingsError, retry: openSettings } : null,
+    audio.error ? { message: audio.error, retry: audio.retry } : null,
+    onDevice.error ? { message: onDevice.error, retry: onDevice.retry } : null,
+  ].filter((alert) => alert !== null);
 
   return (
-    <div className={`soft-skin soft-${theme === "night" ? "night" : "day"} pr`} data-layout="phone" data-testid="phone-recorder" data-ring={view.ring}>
+    <div
+      className={`soft-skin soft-${theme === "night" ? "night" : "day"} pr`}
+      data-layout="phone"
+      data-testid="phone-recorder"
+      data-ring={view.ring}
+    >
       <div className="pr-blob a" aria-hidden="true" />
       <div className="pr-blob b" aria-hidden="true" />
-      <p role="status" aria-live="polite" className="sr-only" data-testid="phone-recorder-announcer">{said}</p>
+      <p
+        role="status"
+        aria-live="polite"
+        className="sr-only"
+        data-testid="phone-recorder-announcer"
+      >
+        {said}
+      </p>
 
-      <div className="pr-main" inert={sheetOpen} style={{ display: "flex", flexDirection: "column", alignItems: "center", flex: 1, minHeight: 0, width: "100%" }}>
+      <div
+        className="pr-main"
+        inert={sheetOpen}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          flex: 1,
+          minHeight: 0,
+          width: "100%",
+        }}
+      >
         <div className="pr-top">
-          <button type="button" className="pr-ibtn" aria-label="Minimise recorder" onClick={() => void recorder.minimiseSheet()}>
+          <button
+            type="button"
+            className="pr-ibtn"
+            aria-label="Minimise recorder"
+            onClick={() => void recorder.minimiseSheet()}
+          >
             <ChevronDownIcon size={19} />
           </button>
           <div className="pr-pill" data-testid="phone-recorder-pill">
-            <span className="pr-dot" data-dot={view.pill.dot} aria-hidden="true" />
+            <span
+              className="pr-dot"
+              data-dot={view.pill.dot}
+              aria-hidden="true"
+            />
             <span>{view.pill.label}</span>
           </div>
         </div>
 
         <div className="pr-time-row">
-          <div className="pr-time soft-timer" role="timer" data-dim={view.ring === "paused"}>
+          <div
+            className="pr-time soft-timer"
+            role="timer"
+            data-dim={view.ring === "paused"}
+          >
             <span>{view.timer.text}</span>
             <span className="pr-time-slot" aria-hidden="true" />
           </div>
-          {view.timer.countdown && <div className="pr-countdown">{view.timer.countdown.text}</div>}
+          {view.timer.countdown && (
+            <div className="pr-countdown">{view.timer.countdown.text}</div>
+          )}
         </div>
-        <div className="pr-extra" data-emphasis={mustSave} data-testid="phone-recorder-status">{view.statusLine}</div>
+        <div
+          className="pr-extra"
+          data-emphasis={mustSave}
+          data-testid="phone-recorder-status"
+        >
+          {view.statusLine}
+        </div>
 
         <div className="pr-stage">
-          <RecorderRing ring={view.ring} flat={view.flat} theme={theme} subscribeLevel={recorder.subscribeLevel} action={ringAction} glyph={ringKind === "pause" ? "pause" : ringKind === "resume" ? "play" : null} />
+          <RecorderRing
+            ring={view.ring}
+            flat={view.flat}
+            theme={theme}
+            subscribeLevel={recorder.subscribeLevel}
+            action={ringAction}
+            glyph={
+              ringKind === "pause"
+                ? "pause"
+                : ringKind === "resume"
+                  ? "play"
+                  : null
+            }
+          />
         </div>
 
         <div className="pr-controls-wrap">
           <div className="pr-mrow">
-            <button ref={opener} type="button" className="pr-minfo" aria-label="About transcription modes" aria-expanded={modesOpen} aria-haspopup="true" aria-controls={`${ids}-modes`} onClick={() => (modesOpen ? closeModes() : setModesOpen(true))}>
+            <button
+              ref={opener}
+              type="button"
+              className="pr-minfo"
+              aria-label="Transcription modes: compare and choose"
+              aria-expanded={modesOpen}
+              aria-haspopup="dialog"
+              aria-controls={`${ids}-modes`}
+              onClick={() => (modesOpen ? closeModes() : setModesOpen(true))}
+            >
               <InfoChevronIcon />
             </button>
-            <span className="pr-mname soft-title">{modeShortLabel(choice.mode, choice.identifySpeakers && !speakers.disabled)}</span>
+            <span className="pr-mname soft-title">
+              {modeShortLabel(
+                choice.mode,
+                choice.identifySpeakers && !speakers.disabled,
+              )}
+            </span>
             <span className="pr-mshort">{stop.subLabel[shell]}</span>
           </div>
-          <PrivacyScale stops={choice.stops} mode={choice.mode} onChoose={choose} step={choice.step} onUnavailable={() => {}} />
+          <PrivacyScale
+            ref={scale}
+            stops={choice.stops}
+            mode={choice.mode}
+            onChoose={(id) => {
+              consentOpener.current = scale.current;
+              return choose(id);
+            }}
+            step={choice.step}
+            onUnavailable={() => {}}
+          />
           <div className="pr-ends" aria-hidden="true">
             <span>more private</span>
             <span>more capable</span>
           </div>
           <div className="pr-capline">
-            {choice.needsConsent ? <button type="button" onClick={() => choice.select("private")}>Turn on private transcription</button> : stop.captions[shell]}
+            {choice.needsConsent ? (
+              <button
+                ref={captionButton}
+                type="button"
+                onClick={() => {
+                  consentOpener.current = captionButton.current;
+                  choice.select("private");
+                }}
+              >
+                Turn on private transcription
+              </button>
+            ) : (
+              stop.captions[shell]
+            )}
           </div>
           {!idleDenied && !audio.unsupported && (
             <ViaMenu
@@ -227,6 +373,7 @@ export function PhoneRecorder({ inputs: inputsSource, silencedSinceMs: silencedS
                 opener={opener}
                 onClose={closeModes}
                 onChoose={(id) => {
+                  consentOpener.current = opener.current;
                   if (choose(id) === null) closeModes();
                 }}
                 onToggleSpeakers={choice.setIdentifySpeakers}
@@ -235,20 +382,48 @@ export function PhoneRecorder({ inputs: inputsSource, silencedSinceMs: silencedS
           )}
         </div>
 
-        {(settingsError ?? audio.error) && <p className="pr-alert" role="alert">{settingsError ?? audio.error}</p>}
+        {alerts.map(({ message, retry }) => (
+          <p key={message} className="pr-alert" role="alert">
+            {message}
+            {retry && (
+              <button type="button" className="pr-retry" onClick={retry}>
+                Try again
+              </button>
+            )}
+          </p>
+        ))}
         {idleDenied ? (
           <div className="pr-controls">
-            <button type="button" className="pr-b primary" onClick={openSettings}>Open Settings</button>
+            <button
+              type="button"
+              className="pr-b primary"
+              onClick={openSettings}
+            >
+              Open Settings
+            </button>
           </div>
         ) : (
           <>
             {view.controls.openSettings && (
               <div className="pr-controls" style={{ paddingBottom: 0 }}>
-                <button type="button" className="pr-b primary" onClick={openSettings}>Open Settings</button>
+                <button
+                  type="button"
+                  className="pr-b primary"
+                  onClick={openSettings}
+                >
+                  Open Settings
+                </button>
               </div>
             )}
             <div className="pr-controls">
-              <button type="button" className="pr-b" aria-label="Discard recording" disabled={!view.controls.discard} onClick={() => setDiscardOpen(true)}>
+              <button
+                ref={discardButton}
+                type="button"
+                className="pr-b"
+                aria-label="Discard recording"
+                disabled={!view.controls.discard}
+                onClick={() => setDiscardOpen(true)}
+              >
                 <CloseIcon />
               </button>
               {!denied && (
@@ -272,10 +447,7 @@ export function PhoneRecorder({ inputs: inputsSource, silencedSinceMs: silencedS
                 data-emphasis={mustSave}
                 data-secondary={view.controls.openSettings}
                 disabled={!view.controls.stop}
-                onClick={() => {
-                  hapticMedium();
-                  recorder.stop();
-                }}
+                onClick={() => recorder.stop()}
               >
                 <CheckIcon />
                 Done
@@ -286,13 +458,27 @@ export function PhoneRecorder({ inputs: inputsSource, silencedSinceMs: silencedS
       </div>
 
       {discardOpen && (
-        <SheetDialog role="alertdialog" titleId={`${ids}-dt`} descriptionId={`${ids}-dd`} title="Discard this recording?" description={`You'll lose ${view.timer.text} of audio. This can't be undone.`} onCancel={() => setDiscardOpen(false)}>
-          <button type="button" className="pr-keep" data-initial="" onClick={() => setDiscardOpen(false)}>Keep recording</button>
+        <SheetDialog
+          role="alertdialog"
+          titleId={`${ids}-dt`}
+          descriptionId={`${ids}-dd`}
+          title="Discard this recording?"
+          description={`You'll lose ${view.timer.text} of audio. This can't be undone.`}
+          onCancel={() => setDiscardOpen(false)}
+          returnFocus={discardButton}
+        >
+          <button
+            type="button"
+            className="pr-keep"
+            data-initial=""
+            onClick={() => setDiscardOpen(false)}
+          >
+            Keep recording
+          </button>
           <button
             type="button"
             className="pr-discard"
             onClick={() => {
-              hapticMedium();
               setDiscardOpen(false);
               recorder.discard();
             }}
@@ -309,15 +495,33 @@ export function PhoneRecorder({ inputs: inputsSource, silencedSinceMs: silencedS
           title="Use private cloud?"
           description={`After you stop, TinyCloud Private Transcription turns notes up to ${choice.maxMinutes} minutes into text.`}
           onCancel={choice.dismissConsent}
+          returnFocus={consentOpener}
+          fallbackFocus={scale}
         >
-          <button type="button" className="pr-keep" data-initial="" onClick={choice.confirmConsent}>Use private cloud</button>
-          <button type="button" className="pr-discard" style={{ color: "var(--dim)" }} onClick={choice.dismissConsent}>Not now</button>
+          <button
+            type="button"
+            className="pr-keep"
+            data-initial=""
+            onClick={choice.confirmConsent}
+          >
+            Use private cloud
+          </button>
+          <button
+            type="button"
+            className="pr-discard"
+            style={{ color: "var(--dim)" }}
+            onClick={choice.dismissConsent}
+          >
+            Not now
+          </button>
           <HowItWorksLink section="transcription" />
         </SheetDialog>
       )}
 
       {toast && (
-        <div key={toast.key} className="pr-toast" role="status">{toast.message}</div>
+        <div key={toast.key} className="pr-toast" role="status">
+          {toast.message}
+        </div>
       )}
     </div>
   );

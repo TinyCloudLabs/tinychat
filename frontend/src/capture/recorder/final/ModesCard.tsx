@@ -1,17 +1,32 @@
 import { useEffect, useRef, type KeyboardEvent, type RefObject } from "react";
 import { markKeyboardOpened } from "./inputModality";
 import { CloseIcon, CheckIcon, ModeIcon } from "./softIcons";
-import { identifySpeakersControl, type ModeId, type ModeShell } from "./transcriptionModes";
+import {
+  identifySpeakersControl,
+  type ModeId,
+  type ModeShell,
+} from "./transcriptionModes";
 import type { ScaleStop } from "./useTranscriptionChoice";
 
 const DOTS = 4;
 
 function Dots({ value, label }: { value: number; label: string }) {
-  if (value <= 0) return <span className="pr-dots-col" role="img" aria-label={`${label}: none`}><span className="none">—</span></span>;
+  if (value <= 0)
+    return (
+      <span className="pr-dots-col" role="img" aria-label={`${label}: none`}>
+        <span className="none">—</span>
+      </span>
+    );
   const shown = Math.min(DOTS, value);
   return (
-    <span className="pr-dots-col" role="img" aria-label={`${label}: ${shown} of ${DOTS}`}>
-      {Array.from({ length: DOTS }, (_, i) => <i key={i} className={i < shown ? "on" : undefined} />)}
+    <span
+      className="pr-dots-col"
+      role="img"
+      aria-label={`${label}: ${shown} of ${DOTS}`}
+    >
+      {Array.from({ length: DOTS }, (_, i) => (
+        <i key={i} className={i < shown ? "on" : undefined} />
+      ))}
     </span>
   );
 }
@@ -28,7 +43,16 @@ export interface ModesCardProps {
   opener: RefObject<HTMLElement | null>;
 }
 
-export function ModesCard({ stops, mode, shell, identifySpeakers, onChoose, onToggleSpeakers, onClose, opener }: ModesCardProps) {
+export function ModesCard({
+  stops,
+  mode,
+  shell,
+  identifySpeakers,
+  onChoose,
+  onToggleSpeakers,
+  onClose,
+  opener,
+}: ModesCardProps) {
   const root = useRef<HTMLDivElement>(null);
   const rows = useRef(new Map<ModeId, HTMLButtonElement>());
   const speakers = identifySpeakersControl(mode, identifySpeakers);
@@ -40,7 +64,8 @@ export function ModesCard({ stops, mode, shell, identifySpeakers, onChoose, onTo
   useEffect(() => {
     const outside = (event: globalThis.PointerEvent) => {
       const target = event.target as Node;
-      if (!root.current?.contains(target) && !opener.current?.contains(target)) onClose();
+      if (!root.current?.contains(target) && !opener.current?.contains(target))
+        onClose();
     };
     document.addEventListener("pointerdown", outside, true);
     return () => document.removeEventListener("pointerdown", outside, true);
@@ -54,18 +79,32 @@ export function ModesCard({ stops, mode, shell, identifySpeakers, onChoose, onTo
       onClose();
       return;
     }
-    const direction = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 0;
+    const direction =
+      event.key === "ArrowDown" || event.key === "ArrowRight"
+        ? 1
+        : event.key === "ArrowUp" || event.key === "ArrowLeft"
+          ? -1
+          : 0;
     if (direction === 0) return;
     event.preventDefault();
     const ids = stops.filter((s) => s.available).map((s) => s.stop.id);
-    const focused = [...rows.current].find(([, el]) => el === document.activeElement)?.[0] ?? mode;
+    const focused =
+      [...rows.current].find(([, el]) => el === document.activeElement)?.[0] ??
+      mode;
     const at = ids.indexOf(focused);
     const next = ids[Math.max(0, Math.min(ids.length - 1, at + direction))];
     if (next) rows.current.get(next)?.focus();
   };
 
   return (
-    <div ref={root} className="pr-modes" data-testid="modes-card" onKeyDown={key}>
+    <div
+      ref={root}
+      className="pr-modes"
+      role="dialog"
+      aria-label="Transcription modes"
+      data-testid="modes-card"
+      onKeyDown={key}
+    >
       <div className="pr-mphead">
         <span>More private → more capable</span>
         <button type="button" aria-label="Close" onClick={onClose}>
@@ -95,7 +134,9 @@ export function ModesCard({ stops, mode, shell, identifySpeakers, onChoose, onTo
               data-mode={stop.id}
               onClick={() => onChoose(stop.id)}
             >
-              <span className="pr-tile"><ModeIcon id={stop.id} size={14} /></span>
+              <span className="pr-tile">
+                <ModeIcon id={stop.id} size={14} />
+              </span>
               <span className="pr-mptitle">
                 <span className="n soft-title">{stop.shortName}</span>
                 <span className="s">{stop.subLabel[shell]}</span>
@@ -107,7 +148,12 @@ export function ModesCard({ stops, mode, shell, identifySpeakers, onChoose, onTo
               </span>
               <span className="pr-mpbody">
                 {stop.explanations[shell]({ modelName: "" })}
-                {!available && reason ? <><br />{reason}</> : null}
+                {!available && reason ? (
+                  <>
+                    <br />
+                    {reason}
+                  </>
+                ) : null}
               </span>
             </button>
           );
@@ -119,7 +165,9 @@ export function ModesCard({ stops, mode, shell, identifySpeakers, onChoose, onTo
         aria-checked={speakers.checked}
         aria-disabled={speakers.disabled}
         className="pr-spk"
-        onClick={() => !speakers.disabled && onToggleSpeakers(!speakers.checked)}
+        onClick={() =>
+          !speakers.disabled && onToggleSpeakers(!speakers.checked)
+        }
       >
         <span className="t">
           <span className="l">{speakers.label}</span>

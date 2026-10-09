@@ -1,4 +1,10 @@
-import { useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import {
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type PointerEvent,
+  type Ref,
+} from "react";
 import { ModeIcon } from "./softIcons";
 import type { ScaleStop } from "./useTranscriptionChoice";
 import type { ModeId } from "./transcriptionModes";
@@ -16,7 +22,8 @@ export function nearestStop(fraction: number, count: number): number {
   return Math.max(0, Math.min(count - 1, Math.round(fraction * (count - 1))));
 }
 
-const left = (fraction: number) => `calc(${EDGE}px + (100% - ${EDGE * 2}px) * ${fraction})`;
+const left = (fraction: number) =>
+  `calc(${EDGE}px + (100% - ${EDGE * 2}px) * ${fraction})`;
 
 export interface PrivacyScaleProps {
   stops: readonly ScaleStop[];
@@ -26,13 +33,24 @@ export interface PrivacyScaleProps {
   /** The next available stop in a direction. */
   step: (direction: -1 | 1) => ModeId;
   onUnavailable: (reason: string) => void;
+  ref?: Ref<HTMLDivElement>;
 }
 
-export function PrivacyScale({ stops, mode, onChoose, step, onUnavailable }: PrivacyScaleProps) {
-  const root = useRef<HTMLDivElement>(null);
+export function PrivacyScale({
+  stops,
+  mode,
+  onChoose,
+  step,
+  onUnavailable,
+  ref,
+}: PrivacyScaleProps) {
+  const root = useRef<HTMLDivElement | null>(null);
   const [drag, setDrag] = useState<number | null>(null);
   const count = stops.length;
-  const index = Math.max(0, stops.findIndex((s) => s.stop.id === mode));
+  const index = Math.max(
+    0,
+    stops.findIndex((s) => s.stop.id === mode),
+  );
   const selected = stops[index]!.stop;
 
   const choose = (id: ModeId) => {
@@ -61,7 +79,12 @@ export function PrivacyScale({ stops, mode, onChoose, step, onUnavailable }: Pri
   };
 
   const key = (event: KeyboardEvent) => {
-    const direction = event.key === "ArrowRight" || event.key === "ArrowUp" ? 1 : event.key === "ArrowLeft" || event.key === "ArrowDown" ? -1 : 0;
+    const direction =
+      event.key === "ArrowRight" || event.key === "ArrowUp"
+        ? 1
+        : event.key === "ArrowLeft" || event.key === "ArrowDown"
+          ? -1
+          : 0;
     if (direction === 0) return;
     event.preventDefault();
     choose(step(direction));
@@ -69,7 +92,11 @@ export function PrivacyScale({ stops, mode, onChoose, step, onUnavailable }: Pri
 
   return (
     <div
-      ref={root}
+      ref={(el) => {
+        root.current = el;
+        if (typeof ref === "function") ref(el);
+        else if (ref) ref.current = el;
+      }}
       className="pr-scale"
       role="slider"
       tabIndex={0}
@@ -88,9 +115,18 @@ export function PrivacyScale({ stops, mode, onChoose, step, onUnavailable }: Pri
     >
       <div className="pr-rail" />
       {stops.map((s, i) => (
-        <span key={s.stop.id} className="pr-stop" data-stop={s.stop.id} data-available={s.available} style={{ left: left(stopFraction(i, count)) }} />
+        <span
+          key={s.stop.id}
+          className="pr-stop"
+          data-stop={s.stop.id}
+          data-available={s.available}
+          style={{ left: left(stopFraction(i, count)) }}
+        />
       ))}
-      <span className="pr-knob" style={{ left: left(drag ?? stopFraction(index, count)) }}>
+      <span
+        className="pr-knob"
+        style={{ left: left(drag ?? stopFraction(index, count)) }}
+      >
         <ModeIcon id={selected.id} size={14} />
       </span>
     </div>
