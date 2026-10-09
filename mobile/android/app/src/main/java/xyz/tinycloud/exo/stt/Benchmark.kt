@@ -3,6 +3,7 @@ package xyz.tinycloud.exo.stt
 import android.os.SystemClock
 import com.getcapacitor.JSObject
 import com.k2fsa.sherpa.onnx.FastClusteringConfig
+import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
@@ -12,15 +13,17 @@ import com.k2fsa.sherpa.onnx.OfflineSpeakerSegmentationModelConfig
 import com.k2fsa.sherpa.onnx.OfflineSpeakerSegmentationPyannoteModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTransducerModelConfig
 import com.k2fsa.sherpa.onnx.SileroVadModelConfig
+import com.k2fsa.sherpa.onnx.SpeechSegment
 import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractorConfig
-import com.k2fsa.sherpa.onnx.Vad
 import com.k2fsa.sherpa.onnx.VadModelConfig
 import org.json.JSONArray
 import org.json.JSONObject
 import xyz.tinycloud.exo.stt.core.SpeakerAttribution
 import xyz.tinycloud.exo.stt.core.SpeakerTurn
+import xyz.tinycloud.exo.stt.core.SherpaVadSource
 import xyz.tinycloud.exo.stt.core.TimedWord
 import xyz.tinycloud.exo.stt.core.TokenWordAlignment
+import xyz.tinycloud.exo.stt.core.VadFrames
 import xyz.tinycloud.exo.stt.core.Wav16
 import xyz.tinycloud.exo.stt.core.WordErrorRate
 import java.io.File
@@ -126,6 +129,9 @@ internal object Benchmark {
         val emptyNonSilent: Int, val coverage: Double, val loadSeconds: Double, val coldLoad: Boolean,
         val vadCreationSeconds: Double, val vadProcessingSeconds: Double, val decodeSeconds: Double)
 
+    private data class DecodedSegment(val words: List<TimedWord>, val metrics: JSONObject,
+        val audioSeconds: Double, val nonSilent: Boolean)
+
     private fun recognize(directory: File, samples: FloatArray, threads: Int, options: Options): Recognition {
         val model = File(directory, "models/full")
         val required = listOf("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt")
@@ -134,6 +140,7 @@ internal object Benchmark {
         require(vadModel.isFile) { "Missing model: $vadModel" }
         val loadBegan = now()
         val recognizer = OfflineRecognizer(config = OfflineRecognizerConfig(
+            featConfig = FeatureConfig(sampleRate = RATE, featureDim = 80, dither = 0f),
             modelConfig = OfflineModelConfig(
                 transducer = OfflineTransducerModelConfig(
                     encoder = File(model, required[0]).path,
@@ -146,62 +153,50 @@ internal object Benchmark {
         val coldLoad = firstRecognizerLoad.getAndSet(false)
         try {
             val vadCreationBegan = now()
-            val vad = Vad(config = VadModelConfig(
+            val source = SherpaVadSource(config = VadModelConfig(
                 sileroVadModelConfig = SileroVadModelConfig(model = vadModel.path,
-                    minSilenceDuration = .4f, minSpeechDuration = .1f, maxSpeechDuration = 25f),
-                numThreads = threads, provider = "cpu"))
+                    minSilenceDuration = .4f, minSpeechDuration = .1f,
+                    windowSize = VadFrames.SIZE, maxSpeechDuration = 25f),
+                sampleRate = RATE, numThreads = threads, provider = "cpu"))
             val vadCreationSeconds = now() - vadCreationBegan
             try {
                 val decodeBegan = now()
-                val words = mutableListOf<TimedWord>()
-                val segments = JSONArray()
-                var empty = 0
-                var emptyNonSilent = 0
-                var coverage = 0.0
                 var vadProcessingSeconds = 0.0
-                fun drain() {
-                    while (!vad.empty()) {
-                        val segment = vad.front()
-                        vad.pop()
-                        val start = segment.start
-                        val chunk = segment.samples
-                        require(start >= 0 && start.toLong() + chunk.size <= samples.size) { "VAD returned audio outside fixture" }
-                        coverage += chunk.size.toDouble() / RATE
-                        val rms = if (chunk.isEmpty()) 0.0 else
-                            kotlin.math.sqrt(chunk.fold(0.0) { sum, sample -> sum + sample * sample } / chunk.size)
-                        val pad = (options.padSeconds * RATE).toInt()
-                        val padded = FloatArray(chunk.size + 2 * pad)
-                        chunk.copyInto(padded, pad)
-                        val stream = recognizer.createStream()
-                        try {
-                            stream.acceptWaveform(padded, RATE)
-                            recognizer.decode(stream)
-                            val result = recognizer.getResult(stream)
-                            val aligned = TokenWordAlignment.align(result.tokens, result.timestamps, result.durations,
-                                (start - pad).toDouble() / RATE)
-                            if (aligned.isEmpty()) empty++
-                            if (aligned.isEmpty() && rms > NON_SILENT_RMS) emptyNonSilent++
-                            segments.put(JSONObject().put("start", start.toDouble() / RATE)
-                                .put("end", (start + chunk.size).toDouble() / RATE)
-                                .put("decodedWords", aligned.size).put("rms", rms))
-                            words.addAll(aligned)
-                        } finally { stream.release() }
-                    }
-                }
-                // VAD's buffer is 30 seconds. Feeding 0.5 second blocks preserves the source sample origin.
-                for (start in samples.indices step RATE / 2) {
+                val decoded = VadFrames.decode(samples, source, decodeSegment = { segment: SpeechSegment ->
+                    val start = segment.start
+                    val chunk = segment.samples
+                    require(start >= 0 && start.toLong() + chunk.size <= samples.size) { "VAD returned audio outside fixture" }
+                    val rms = if (chunk.isEmpty()) 0.0 else
+                        kotlin.math.sqrt(chunk.fold(0.0) { sum, sample -> sum + sample * sample } / chunk.size)
+                    val pad = (options.padSeconds * RATE).toInt()
+                    val padded = FloatArray(chunk.size + 2 * pad)
+                    chunk.copyInto(padded, pad)
+                    val stream = recognizer.createStream()
+                    try {
+                        stream.acceptWaveform(padded, RATE)
+                        recognizer.decode(stream)
+                        val result = recognizer.getResult(stream)
+                        val aligned = TokenWordAlignment.align(result.tokens, result.timestamps, result.durations,
+                            (start - pad).toDouble() / RATE)
+                        val metrics = JSONObject().put("start", start.toDouble() / RATE)
+                            .put("end", (start + chunk.size).toDouble() / RATE)
+                            .put("decodedWords", aligned.size).put("rms", rms)
+                            .put("tokens", JSONArray(result.tokens))
+                        DecodedSegment(aligned, metrics, chunk.size.toDouble() / RATE, rms > NON_SILENT_RMS)
+                    } finally { stream.release() }
+                }, onVadCall = { call ->
                     val vadBegan = now()
-                    vad.acceptWaveform(samples.copyOfRange(start, minOf(start + RATE / 2, samples.size)))
+                    call()
                     vadProcessingSeconds += now() - vadBegan
-                    drain()
-                }
-                val flushBegan = now()
-                vad.flush()
-                vadProcessingSeconds += now() - flushBegan
-                drain()
+                })
+                val words = decoded.flatMap { it.words }
+                val segments = JSONArray().also { array -> decoded.forEach { array.put(it.metrics) } }
+                val empty = decoded.count { it.words.isEmpty() }
+                val emptyNonSilent = decoded.count { it.words.isEmpty() && it.nonSilent }
+                val coverage = decoded.sumOf { it.audioSeconds }
                 return Recognition(words.sortedBy { it.start }, segments, empty, emptyNonSilent, coverage,
                     loadSeconds, coldLoad, vadCreationSeconds, vadProcessingSeconds, now() - decodeBegan)
-            } finally { vad.release() }
+            } finally { source.close() }
         } finally { recognizer.release() }
     }
 
