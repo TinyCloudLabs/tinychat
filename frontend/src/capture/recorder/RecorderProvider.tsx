@@ -31,9 +31,11 @@ export interface RecorderValue {
   phase: RecorderPhase;
   permissionDenied: boolean;
   mic: RecorderMic;
-  /** Wall-clock start; views tick from native audioMs for recorded time. */
+  /** Wall-clock start of this recording. */
   startedAt: number | null;
   audioMs: number;
+  /** Native recorded-time checkpoint; useRecordedElapsed ticks it through interruptions and blocked resumes, except user Pause. */
+  elapsedMs: number;
   controlPending: RecorderState["controlPending"];
   maxDurationMs: number;
   limitNotice: string | null;
@@ -203,6 +205,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       mic: state.mic,
       startedAt: state.startedAt,
       audioMs: state.audioMs,
+      elapsedMs: state.elapsedMs,
       controlPending: state.controlPending,
       maxDurationMs: state.maxDurationMs,
       limitNotice: state.limitNotice,
@@ -280,6 +283,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       mic: { state: "idle", reason: null },
       startedAt: null,
       audioMs: 0,
+      elapsedMs: 0,
       controlPending: null,
       maxDurationMs: VOICE_NOTE_MAX_DURATION_MS,
       limitNotice: null,

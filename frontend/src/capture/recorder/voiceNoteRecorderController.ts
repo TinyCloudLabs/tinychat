@@ -87,7 +87,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
   const activePickup = (status: Awaited<ReturnType<typeof VoiceNotes.status>>): Extract<RecorderEvent, { type: "PICKED_UP" }> => {
     if (!status.id || status.startedAt === null) throw new Error("Native recording status has no active id or start time");
     return { type: "PICKED_UP", id: status.id, startedAt: status.startedAt,
-      maxDurationMs: status.maxDurationMs, audioMs: status.audioMs,
+      maxDurationMs: status.maxDurationMs, audioMs: status.audioMs, elapsedMs: status.elapsedMs,
       mic: micFromStatus(status) };
   };
 
@@ -100,7 +100,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
         void pendingStore.refresh();
       } else if (status.id === state.recordingId) {
         send({ type: "STOP_FAILED", status: "active", error,
-          mic: micFromStatus(status), audioMs: status.audioMs });
+          mic: micFromStatus(status), audioMs: status.audioMs, elapsedMs: status.elapsedMs });
       } else {
         send({ type: "STOP_FAILED", status: "idle", error: error ?? "Another recording is active on this phone." });
         send(activePickup(status));
@@ -120,7 +120,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
         void pendingStore.refresh();
       } else if (status.id === shown) {
         send({ type: "DISCARD_FAILED", id: shown, error });
-        send({ type: "MIC_STATE", mic: micFromStatus(status), audioMs: status.audioMs });
+        send({ type: "MIC_STATE", mic: micFromStatus(status), audioMs: status.audioMs, elapsedMs: status.elapsedMs });
       } else {
         send({ type: "DISCARD_FAILED", id: shown, committed: true, error });
         send(activePickup(status));
@@ -226,7 +226,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
       const handles = [
         VoiceNotes.addListener("micState", (event) => {
           if (event.id && state.recordingId && event.id !== state.recordingId) return;
-          send({ type: "MIC_STATE", mic: micFromStatus(event), audioMs: event.audioMs });
+          send({ type: "MIC_STATE", mic: micFromStatus(event), audioMs: event.audioMs, elapsedMs: event.elapsedMs });
         }),
         VoiceNotes.addListener("level", (event) => {
           for (const listener of levelListeners) listener(event.level);
@@ -361,7 +361,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
       }
       try {
         const status = await VoiceNotes.status();
-        send({ type: "MIC_STATE", mic: micFromStatus(status), audioMs: status.audioMs });
+        send({ type: "MIC_STATE", mic: micFromStatus(status), audioMs: status.audioMs, elapsedMs: status.elapsedMs });
       } catch (caught) {
         console.warn("[VoiceNotes] Pause succeeded, but status could not be read", caught);
         send({ type: "MIC_STATE", mic: { state: "paused", reason: "user" } });
@@ -379,7 +379,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
       }
       try {
         const status = await VoiceNotes.status();
-        send({ type: "MIC_STATE", mic: micFromStatus(status), audioMs: status.audioMs });
+        send({ type: "MIC_STATE", mic: micFromStatus(status), audioMs: status.audioMs, elapsedMs: status.elapsedMs });
       } catch (caught) {
         console.warn("[VoiceNotes] Resume succeeded, but status could not be read", caught);
         send({ type: "MIC_STATE", mic: { state: "recording", reason: null } });
