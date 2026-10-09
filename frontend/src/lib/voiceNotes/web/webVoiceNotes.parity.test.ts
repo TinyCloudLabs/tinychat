@@ -257,6 +257,67 @@ describe.each(makers)("VoiceNotes contract parity: %s", (_name, make) => {
     expect(await plugin.updateLedger({ id: saved.id, did: "did:A", rev: 2, patch: {} })).toEqual({ rev: 3 });
   });
 
+  test("T19 sign-out handoff: a transitioning account records unowned, is claimed by the next sign-in, and stale writes are refused", async () => {
+    const s = await make();
+    const { plugin } = s;
+    await plugin.setAccountState({ status: "transitioning", accountDid: "did:A", transitionGen: 1 });
+    expect(await plugin.getCaptureDefaults()).toMatchObject({ status: "transitioning", accountDid: null, transcriber: "on-device" });
+    await plugin.setCaptureDefaults({ accountDid: null, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: true });
+    expect(await plugin.getCaptureDefaults()).toMatchObject({ status: "transitioning", accountDid: null, transcriber: "on-device" });
+    const { id } = await plugin.start();
+    expect((await plugin.status()).owner).toBeNull();
+    await s.capture(1000);
+    expect((await plugin.stop()).owner).toBeNull();
+    await expect(plugin.setCaptureDefaults({ accountDid: "did:A", transitionGen: 1, transcriber: "private-cloud", identifySpeakers: true }))
+      .rejects.toEqual(code("stale_transition"));
+    const claimed = await plugin.setCaptureDefaults({ accountDid: "did:A", transitionGen: 2, transcriber: "private-cloud", identifySpeakers: false });
+    expect(claimed.claimed).toEqual([id]);
+    expect((await plugin.listPending()).recordings[0]?.owner).toBe("did:A");
+    await expect(plugin.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 1 })).rejects.toEqual(code("stale_transition"));
+    await plugin.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 3 });
+    expect(await plugin.getCaptureDefaults()).toMatchObject({ status: "signed_out", accountDid: null });
+  });
+
+  test("a recording in progress when the account is claimed becomes owned", async () => {
+    const s = await make();
+    const { plugin } = s;
+    await plugin.setAccountState({ status: "transitioning", accountDid: "did:A", transitionGen: 1 });
+    const { id } = await plugin.start();
+    await s.capture(1000);
+    expect((await plugin.setCaptureDefaults({ accountDid: "did:A", transitionGen: 2, transcriber: "on-device", identifySpeakers: false })).claimed).toEqual([id]);
+    expect((await plugin.status()).owner).toBe("did:A");
+    expect(await plugin.stop()).toMatchObject({ id, owner: "did:A" });
+  });
+
+  test("recovery actions: unknown ids are not_found, a healthy note is not_failed_recording", async () => {
+    const s = await make();
+    const { plugin } = s;
+    await expect(plugin.retryRecovery({ id: "missing" })).rejects.toEqual(code("not_found"));
+    await expect(plugin.discardFailedRecording({ id: "missing" })).rejects.toEqual(code("not_found"));
+    const healthy = await note(s);
+    await expect(plugin.discardFailedRecording({ id: healthy.id })).rejects.toEqual(code("not_failed_recording"));
+    expect((await plugin.listPending()).recordings.map((r) => r.id)).toEqual([healthy.id]);
+    const live = await plugin.start();
+    await expect(plugin.discardFailedRecording({ id: live.id })).rejects.toEqual(code("recording_in_progress"));
+    await plugin.discard();
+  });
+
+  test("own-key create keeps its receipt kind through a URL lookup and a late job handle, and a repeat result keeps the lookup", async () => {
+    const s = await make();
+    const { plugin } = s;
+    await signIn(plugin);
+    const { id } = await note(s);
+    await plugin.beginRemoteOp(receipt(id, { opId: "create", mode: "own", kind: "own_create", provider: "assemblyai" }));
+    await plugin.recordRemoteResult({ id, did: "did:A", opId: "create", result: { outcome: "unknown", uploadUrl: "https://example.test/audio" } });
+    await plugin.recordRemoteResult({ id, did: "did:A", opId: "create", result: { outcome: "unknown" } });
+    await plugin.deleteAudio({ id });
+    expect((await plugin.listOutbox({ did: "did:A" })).entries).toContainEqual(expect.objectContaining({
+      kind: "own_upload_lookup", receiptKind: "own_create", handle: "https://example.test/audio", state: "lookup" }));
+    await plugin.recordRemoteResult({ id, did: "did:A", opId: "create", result: { outcome: "created", handle: "job-42" } });
+    expect((await plugin.listOutbox({ did: "did:A" })).entries[0]).toMatchObject({
+      kind: "transcript", receiptKind: "own_create", handle: "job-42", state: "pending" });
+  });
+
   test("the quarantine API answers an empty queue and refuses unknown ids", async () => {
     const { plugin } = await make();
     expect(await plugin.listQuarantine()).toEqual({ items: [] });

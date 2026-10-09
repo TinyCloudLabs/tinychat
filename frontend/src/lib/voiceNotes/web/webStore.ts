@@ -244,9 +244,12 @@ function outboxEntryFor(
 ): OutboxEntry | null {
   if (result.outcome === "failed") return null;
   const entryId = `${receipt.id}:${receipt.opId}`;
-  const job = result.jobId ?? (receipt.kind === "hosted_submit" || receipt.kind === "own_create" || receipt.kind === "ptx_create" ? result.handle : undefined);
-  const upload = result.uploadId ?? (receipt.kind === "hosted_create" ? result.handle : undefined);
-  const url = result.uploadUrl ?? (receipt.kind === "own_upload" ? result.handle : undefined);
+  const job = result.jobId ?? (receipt.kind === "hosted_submit" || receipt.kind === "own_create" || receipt.kind === "ptx_create" ? result.handle : undefined)
+    ?? (old?.kind === "transcript" || old?.kind === "ptx_job" ? old.handle ?? undefined : undefined);
+  const upload = result.uploadId ?? (receipt.kind === "hosted_create" ? result.handle : undefined)
+    ?? (old?.kind === "hosted_upload" || old?.kind === "hosted_submit" ? old.handle ?? undefined : undefined);
+  const url = result.uploadUrl ?? (receipt.kind === "own_upload" ? result.handle : undefined)
+    ?? (old?.kind === "own_upload_lookup" ? old.handle ?? undefined : undefined);
   const kind: OutboxEntry["kind"] = receipt.kind === "ptx_create" ? "ptx_job"
     : receipt.kind === "hosted_create" ? "hosted_upload"
     : receipt.kind === "hosted_submit" ? job ? "transcript" : upload ? "hosted_submit" : "unknown"
@@ -258,7 +261,7 @@ function outboxEntryFor(
   const state: OutboxEntry["state"] = kind === "unknown" ? "unknown"
     : kind === "hosted_submit" || kind === "own_upload_lookup" ? handle ? "lookup" : "unknown"
     : handle ? "pending" : "unknown";
-  return { entryId, did: receipt.did, provider: receipt.provider, mode: receipt.mode, kind, handle,
+  return { entryId, did: receipt.did, provider: receipt.provider, mode: receipt.mode, kind, receiptKind: receipt.kind, handle,
     handleExpiresAt: result.handleExpiresAt ?? old?.handleExpiresAt ?? null, state, createdAt: receipt.startedAt,
     attempts: old?.attempts ?? 0 };
 }
@@ -501,7 +504,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
             const add = async (kind: OutboxEntry["kind"], handle: string) => {
               const settled = receipts.find((row) => row.result?.handle === handle)?.result;
               await enqueueOutbox(tx, { entryId: `${id}:cleanup:${kind}:${handle}`, did: note.owner!, provider: remote.provider,
-                mode: remote.mode, kind, handle, handleExpiresAt: settled?.handleExpiresAt ?? null, state: "pending",
+                mode: remote.mode, kind, receiptKind: null, handle, handleExpiresAt: settled?.handleExpiresAt ?? null, state: "pending",
                 createdAt: now(), attempts: 0 });
             };
             if (remote.provider === "ptx") {
@@ -522,9 +525,9 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
             if (outboxNow.some((entry) => entry.entryId === `${id}:${receipt.opId}`)) continue;
             if (result?.outcome === "failed") continue;
             if (result?.handle && outboxNow.some((entry) => entry.did === receipt.did && entry.handle === result.handle)) continue;
-            const handle = result?.handle ?? undefined;
+            const stored = note?.ledger?.remote.find((entry) => entry.opId === receipt.opId);
             const entry = outboxEntryFor(receipt, { outcome: result?.outcome ?? "unknown", handleExpiresAt: result?.handleExpiresAt ?? undefined,
-              ...(receipt.kind === "hosted_create" ? { uploadId: handle } : receipt.kind === "own_upload" ? { uploadUrl: handle } : { jobId: handle }) },
+              uploadId: stored?.uploadId ?? undefined, uploadUrl: stored?.uploadUrl ?? undefined, jobId: stored?.jobId ?? undefined },
             undefined);
             if (entry) { await enqueueOutbox(tx, entry); outboxNow.push(entry); }
           }
@@ -621,14 +624,18 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
         if (!row || row.receipt.did !== did) throw failure("receipt_not_found");
         const { receipt } = row;
         const tombstoned = !!(await get(tx, STORES.tombstones, id));
-        if (row.result) return { destination: (tombstoned ? "outbox" : row.result.destination) as "ledger" | "outbox" };
-        const note = await get<VoiceNoteRecording>(tx, STORES.notes, id);
         const handle = result.handle ?? result.jobId ?? result.uploadId ?? result.uploadUrl ?? null;
+        const previous = row.result;
+        if (previous?.outcome === result.outcome && previous.handle === handle &&
+            previous.handleExpiresAt === (result.handleExpiresAt ?? null)) {
+          return { destination: (tombstoned ? "outbox" : previous.destination) as "ledger" | "outbox" };
+        }
+        const note = await get<VoiceNoteRecording>(tx, STORES.notes, id);
         if (!note || tombstoned || note.owner !== did) {
           const old = await get<OutboxEntry>(tx, STORES.outbox, key);
           const entry = outboxEntryFor(receipt, result, old);
           if (entry) await enqueueOutbox(tx, entry); else await del(tx, STORES.outbox, key);
-          await put(tx, STORES.receipts, { ...row, result: { destination: "outbox", handle,
+          await put(tx, STORES.receipts, { ...row, result: { destination: "outbox", handle: handle ?? previous?.handle ?? null,
             handleExpiresAt: result.handleExpiresAt ?? null, outcome: result.outcome } } satisfies ReceiptRow);
           return { destination: "outbox" as const };
         }
@@ -648,7 +655,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
         }
         note.rev = (note.rev ?? 0) + 1;
         await put(tx, STORES.notes, note);
-        await put(tx, STORES.receipts, { ...row, result: { destination: "ledger", handle,
+        await put(tx, STORES.receipts, { ...row, result: { destination: "ledger", handle: handle ?? previous?.handle ?? null,
           handleExpiresAt: result.handleExpiresAt ?? null, outcome: result.outcome } } satisfies ReceiptRow);
         return { destination: "ledger" as const };
       });
@@ -687,8 +694,9 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
       })),
 
     async discardFailedRecording({ id }) {
-      const found = await transact(db, [STORES.quarantine], "readonly", (tx) => get(tx, STORES.quarantine, id));
-      if (!found) throw failure("not_found");
+      const { found, healthy } = await transact(db, [STORES.quarantine, STORES.notes], "readonly", async (tx) => ({
+        found: await get(tx, STORES.quarantine, id), healthy: await get(tx, STORES.notes, id) }));
+      if (!found) throw failure(healthy ? "not_failed_recording" : "not_found");
       await removeQuarantined(id);
     },
 
