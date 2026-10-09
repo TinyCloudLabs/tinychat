@@ -165,6 +165,7 @@ export interface VoiceNoteRecording {
   version?: 2; rev?: number; wallMs?: number; pausedMs?: number; spans?: MissingAudioSpan[];
   firstAudioAt?: number | null; captureStoppedAt?: number | null;
   recovered?: boolean; endedUnexpectedly?: boolean; lastHeartbeatAt?: number | null; exitReason?: string | null;
+  firstAudioAt?: number | null; captureStoppedAt?: number | null;
   legacyImport?: boolean; ownerUnknown?: boolean;
   source?: CaptureSource; owner?: string | null; transitionGen?: number;
   options?: CaptureOptions; input?: AudioInput | null; sampleRate?: number; bitrate?: number;

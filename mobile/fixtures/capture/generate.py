@@ -110,6 +110,9 @@ def fixture_for(script: dict) -> tuple[str, str]:
         "stt": {"state": "waiting_for_model", "pack": None, "engine": None, "segmentsDone": 0,
                 "windowsDone": 0, "error": None},
     }
+    if platform == "ios":
+        sidecar["firstAudioAt"] = None
+        sidecar["captureStoppedAt"] = None
     assert sidecar["durationMs"] == events[-1]["a"]
     assert sidecar["wallMs"] - sidecar["pausedMs"] == 6000
     return "".join(map(canonical, events)), canonical(sidecar)

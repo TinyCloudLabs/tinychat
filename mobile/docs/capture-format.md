@@ -40,7 +40,7 @@ voice-notes/
 
 **ADTS.** MPEG-4 (ID=0), layer 0, no CRC, profile LC; sampling-frequency index 3 (48 000, iOS) or 4 (44 100, Android); channel configuration 1; `frame_length` = 7 + payload; buffer fullness 0x7FF; one raw data block per frame.
 
-**Canonical encoding.** Journal records, v2 sidecars, outbox entries and quarantine records are UTF-8 without a BOM. Every JSON object has keys in ascending ASCII order at every nesting level; all contract keys are ASCII. There is no insignificant whitespace. Strings use `\"` and `\\` for quote and backslash, the short JSON escapes for backspace, tab, newline, form feed and carriage return, and lowercase `\u00xx` for other U+0000–U+001F controls. `/` is never escaped. Valid non-ASCII Unicode is written directly as UTF-8 without normalization; invalid surrogate sequences are rejected. Numbers are finite base-10 integers without leading zeros, `+`, exponent or `.0`; booleans and `null` are lowercase. Arrays preserve chronological order. Every journal object ends in exactly one LF (`\n`), including the last complete line. Every canonical single-object file also ends in one LF. Writers emit exactly the event fields in the table and the full key set shown by the v2 golden sidecar; a nullable field is written as `null`, not omitted. New fields require a format version change; readers distinguish absent from explicit `null` in older files. V1 sidecars are parsed as legacy JSON regardless of key order or spacing. A torn final journal line is ignored; an invalid complete line is an error. Byte comparison applies to canonical JSON and ADTS fixtures.
+**Canonical encoding.** Journal records, v2 sidecars, outbox entries and quarantine records are UTF-8 without a BOM. Every JSON object has keys in ascending ASCII order at every nesting level; all contract keys are ASCII. There is no insignificant whitespace. Strings use `\"` and `\\` for quote and backslash, the short JSON escapes for backspace, tab, newline, form feed and carriage return, and lowercase `\u00xx` for other U+0000–U+001F controls. `/` is never escaped. Valid non-ASCII Unicode is written directly as UTF-8 without normalization; invalid surrogate sequences are rejected. Numbers are finite base-10 integers without leading zeros, `+`, exponent or `.0`; booleans and `null` are lowercase. Arrays preserve chronological order. Every journal object ends in exactly one LF (`\n`), including the last complete line. Every canonical single-object file also ends in one LF. Writers emit exactly the event fields in the table and the full key set shown by the v2 golden sidecar; a nullable field is written as `null`, not omitted. New fields require a shared format and golden-fixture update; readers distinguish absent from explicit `null` in older files. V1 sidecars are parsed as legacy JSON regardless of key order or spacing. A torn final journal line is ignored; an invalid complete line is an error. Byte comparison applies to canonical JSON and ADTS fixtures.
 
 Swift can use `JSONEncoder` with `.sortedKeys` and `.withoutEscapingSlashes`, but must encode required nulls explicitly with `encodeNil`; a hand writer is also valid. Android must sort keys and leave `/` unescaped with a canonical writer. Swift `JSONSerialization` sorting and Android `org.json` output are not suitable as-is.
 
@@ -59,10 +59,14 @@ Swift can use `JSONEncoder` with `.sortedKeys` and `.withoutEscapingSlashes`, bu
 | `input` | `id, name, kind` | the input in use changes |
 | `options` | `transcriber, identifySpeakers` | per-recording options change |
 | `owner` | `did` | the live session is claimed |
+| `first_audio` | none | first delivered PCM buffer for this session; `t` is its delivery time |
+| `capture_stopped` | none | the engine/input stops; `t` is the stop time, journaled after in-flight tap callbacks drain |
 | `low_battery` | `level` (integer percent, 0–5) | ≤ 5 % and discharging |
 | `stop` | `reason` (`user`, `max_duration`, `disk_full`, `write_failed`, `discard`, `permission_revoked`) | before commit |
 
 `avail.reason` is `null` when `value=available`. For `interrupted`, it is one of `call`, `interruption`, `route_change`, `media_services_reset`, `read_error`, `stalled` or `app_suspended`; for `blocked`, it is `resume_blocked` or `permission_revoked`. An iOS `AVAudioSession` interruption alone maps to `interruption`, and maps to `call` only if `CXCallObserver` confirms a call. Android maps an ordinary focus/input interruption to `interruption`, and maps to `call` only with a positive telephony signal. Route, media-reset, read-error, stall and suspension events use their named reasons.
+
+`firstAudioAt` is the first `first_audio.t` and `captureStoppedAt` is the last `capture_stopped.t` in a session. Both are nullable for a session recovered before those events were durable. `low_battery.level` is an integer percent; canonical JSON rejects fractional numbers.
 
 **Missing-audio spans**, durable in the journal and sidecar, in live status, and in the space row's `capture.spans`:
 ```ts
@@ -118,6 +122,7 @@ For `outcome: "unknown"`, a known definitive job or upload handle still uses the
   "version": 2, "rev": 7,
   "wallMs": 2600000, "pausedMs": 60000, "spans": [ /* MissingAudioSpan */ ],
   "recovered": false, "endedUnexpectedly": false, "lastHeartbeatAt": null, "exitReason": null,
+  "firstAudioAt": null, "captureStoppedAt": null, // wall-ms journal times; null when no matching durable event
   "legacyImport": false, "ownerUnknown": false,          // true for every legacy note (§1.9)
   "source": "in_app", "owner": "did:pkh:eip155:1:0x…",   // null = recorded signed out, not claimed yet
   "transitionGen": 12,                                    // the account-transition generation at start (§2.1)
@@ -209,6 +214,7 @@ export interface VoiceNoteRecording {        // v1 fields unchanged; the rest mi
   silencedMs: number; silencedEvents: number; noSignalMs: number;
   version?: 2; rev?: number; wallMs?: number; pausedMs?: number; spans?: MissingAudioSpan[];
   recovered?: boolean; endedUnexpectedly?: boolean; lastHeartbeatAt?: number | null; exitReason?: string | null;
+  firstAudioAt?: number | null; captureStoppedAt?: number | null;
   legacyImport?: boolean; ownerUnknown?: boolean;            // native reports ownerUnknown: true for every v1 sidecar and legacy import
   source?: CaptureSource; owner?: string | null; transitionGen?: number;
   options?: CaptureOptions; input?: AudioInput | null; sampleRate?: number; bitrate?: number;
