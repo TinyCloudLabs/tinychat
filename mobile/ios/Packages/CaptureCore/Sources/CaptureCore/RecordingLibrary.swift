@@ -70,6 +70,12 @@ public final class RecordingLibrary {
         try queue.sync {
             let old = try accountStateUnlocked()
             guard state.transitionGen >= old.transitionGen else { throw CaptureError.staleTransition }
+            #if DEBUG
+            if state.status == "signed_out", old.status == "transitioning",
+               UserDefaults.standard.string(forKey: "exo.debug.failAccountState") == "compensation" {
+                throw CaptureError.io("debug account-state write failure")
+            }
+            #endif
             try writeAccountStateUnlocked(state)
         }
     }
