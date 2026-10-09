@@ -796,7 +796,7 @@ class SharedHaloRenderer {
     const bitmap =
       this.path === "webgl-atlas" ? offscreen.transferToImageBitmap() : null;
     const source = bitmap ?? (this.canvas as HTMLCanvasElement);
-    L("flush", this.batch.map((e) => [e.pixelSize, e.atlasX, e.atlasY]), bitmap?.width, bitmap?.height);
+    L("flush", this.batch.map((e) => [e.pixelSize, e.atlasX, e.atlasY, [...document.querySelectorAll(".halo-ring__canvas")].indexOf(e.canvas)]), bitmap?.width, bitmap?.height);
     for (const entry of this.batch) {
       const size = entry.pixelSize;
       entry.context.clearRect(0, 0, size, size);

@@ -18,6 +18,17 @@ for (let i = 0; i < N; i++) {
       colorScheme: theme, reducedMotion: "reduce",
     });
     const page = await context.newPage();
+    if (process.env.POLL) await page.addInitScript(() => {
+      let last = "";
+      const w = window as any;
+      w.__poll = [];
+      setInterval(() => {
+        const cs = [...document.querySelectorAll<HTMLCanvasElement>(".halo-ring__canvas")];
+        if (!cs.length) return;
+        const a = cs.map((c) => (c.width > 1 ? c.getContext("2d")!.getImageData(c.width >> 1, c.height >> 1, 1, 1).data[3] : -1)).join(",");
+        if (a !== last) { last = a; w.__poll.push([Math.round(performance.now()), a]); }
+      }, 8);
+    });
     await page.goto(`http://127.0.0.1:${server.port}/?screen=recorder-final-halo&theme=${theme}&platform=web&freeze=1`);
     await page.waitForFunction(() => (window as any).exoUi?.ready === true, undefined, { timeout: 20000 });
     await page.waitForTimeout(Number(process.env.SETTLE ?? 1500));
@@ -27,7 +38,7 @@ for (let i = 0; i < N; i++) {
         const d = c.getContext("2d")!.getImageData(c.width >> 1, c.height >> 1, 1, 1).data;
         out.push({ w: c.width, a: d[3] });
       }
-      return { out, log: (window as any).__hl ?? [] };
+      return { out, log: [...((window as any).__hl ?? []), ...((window as any).__poll ?? []).map((p: any) => ["POLL", ...p])].sort((x: any, y: any) => x[0] - y[0]) };
     });
     const blank = res.out.filter((o) => o.a === 0);
     if (blank.length) {
@@ -70,7 +81,7 @@ for (let i = 0; i < N; i++) {
       console.log("PROBE", JSON.stringify(probe));
       console.log(`FAIL run ${i} ${theme}`, JSON.stringify(res.out));
       if (process.env.LOG) console.log("LOGSTART\n" + res.log.map((l: any) => JSON.stringify(l)).join("\n") + "\nLOGEND");
-    } else if (i === 0 && theme === "light" && process.env.LOG) console.log("PASSLOG\n" + res.log.slice(0,60).map((l: any) => JSON.stringify(l)).join("\n"));
+    } else if (i === 0 && theme === "light" && process.env.LOG) console.log("PASSLOG\n" + res.log.filter((l: any) => l[1] !== "resize-clear" && l[1] !== "RO" && l[1] !== "IO").map((l: any) => JSON.stringify(l)).join("\n"));
     await context.close();
     if (process.env.STOP && fails) break;
   }
