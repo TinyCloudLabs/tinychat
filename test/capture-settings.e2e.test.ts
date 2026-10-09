@@ -1,6 +1,7 @@
 // The desktop ⚙︎ Capture settings popover (D4), driven in a real browser over a scripted DesktopCaptureExtras
 // (frontend/src/harness/screens/captureSettings.tsx): open and close, the model radiogroup's keys, a download
-// from Get to selectable (and a failed one), the two switches, and where focus goes.
+// from Get to selectable (and a failed one), a download already under way elsewhere, the two switches, and
+// where focus goes.
 //
 //   EXO_UI_ENGINE=webkit   run it in WebKit instead (default: chromium)
 import {
@@ -30,6 +31,7 @@ let server: ReturnType<typeof serveHarness>;
 type Harness = {
   exoCaptureSettings: {
     calls: string[];
+    startExternalDownload: (id: string, fraction?: number | null) => void;
     emitProgress: (id: string, fraction: number) => void;
     finishDownload: (id: string) => void;
     failDownload: (id: string, message: string) => void;
@@ -50,7 +52,9 @@ afterAll(async () => {
   server?.stop(true);
 });
 
-async function open() {
+// Console errors fail a test, except the ones it says it causes on purpose (a refused call is logged by the
+// component, as it should be). Nothing else is let through.
+async function open(expected: RegExp[] = []) {
   const page = await (
     await browser.newContext({
       viewport: { width: 1280, height: 800 },
@@ -63,8 +67,7 @@ async function open() {
       message.type() === "error" &&
       !message.text().startsWith("Failed to load resource") &&
       !message.text().startsWith("Viewport argument key") &&
-      // The failures the tests cause on purpose are logged by the component, as they should be.
-      !message.text().startsWith("[CaptureSettings] Could not")
+      !expected.some((pattern) => pattern.test(message.text()))
     )
       errors.push(message.text());
   });
@@ -108,7 +111,12 @@ const attr = (locator: Locator, name: string, value: string) =>
   );
 const script = <A extends unknown[]>(
   page: Page,
-  call: "emitProgress" | "finishDownload" | "failDownload" | "failNext",
+  call:
+    | "startExternalDownload"
+    | "emitProgress"
+    | "finishDownload"
+    | "failDownload"
+    | "failNext",
   ...args: A
 ) =>
   page.evaluate(
@@ -120,6 +128,9 @@ const script = <A extends unknown[]>(
       )(...(rest as unknown[])),
     [call, args] as const,
   );
+
+const CAUSED_DOWNLOAD_ERROR = /^\[CaptureSettings\] Could not download the model/;
+const CAUSED_SETTING_ERROR = /^\[CaptureSettings\] Could not change the setting/;
 
 const model = (dialog: Locator, label: string) =>
   dialog.getByRole("radio", {
@@ -145,8 +156,8 @@ describe.serial(`capture settings (${engine.name()})`, () => {
     await page.context().close();
   });
 
-  test("a click outside closes it; Tab stays inside it", async () => {
-    const { page, gear, dialog } = await open();
+  test("a click outside closes it and returns focus to the gear; Tab stays inside it", async () => {
+    const { page, errors, gear, dialog } = await open();
     await gear.click();
     await dialog.getByRole("radiogroup").waitFor();
     for (let i = 0; i < 30; i++) {
@@ -157,43 +168,90 @@ describe.serial(`capture settings (${engine.name()})`, () => {
     }
     await page.getByRole("heading", { name: "Capture" }).click();
     await dialog.waitFor({ state: "hidden" });
+    await attr(gear, "aria-expanded", "false");
+    await focused(gear);
+    expect(errors).toEqual([]);
     await page.context().close();
   });
 
-  test("the model radiogroup: arrow keys move through the models on disk, Enter chooses", async () => {
-    const { page, gear, dialog, calls } = await open();
+  test("a click outside on another control leaves focus on that control", async () => {
+    const { page, errors, gear, dialog } = await open();
     await gear.click();
     await dialog.getByRole("radiogroup").waitFor();
-    // Only Tiny (English) is on disk, so arrows have nowhere to go.
-    await page.keyboard.press("ArrowDown");
-    await focused(model(dialog, "Whisper Tiny (English)"));
+    const field = page.getByRole("textbox", { name: "Find a note" });
+    await field.click();
+    await dialog.waitFor({ state: "hidden" });
+    await focused(field);
+    expect(errors).toEqual([]);
+    await page.context().close();
+  });
 
-    // Get a second model; once it is on disk the arrows reach it.
-    await dialog
-      .getByRole("button", { name: "Get Whisper Base (English)" })
-      .click();
+  test("the model radiogroup: arrows move focus and select, wrapping; Space selects; models not on disk are never selected", async () => {
+    const { page, errors, gear, dialog, calls } = await open();
+    await gear.click();
+    await dialog.getByRole("radiogroup").waitFor();
+    const tiny = model(dialog, "Whisper Tiny (English)");
+    const base = model(dialog, "Whisper Base (English)");
+    const get = (label: string) =>
+      dialog.getByRole("button", { name: `Get ${label}` });
+    const selects = async () =>
+      (await calls()).filter((call) => call.startsWith("models.select"));
+
+    // Get Base (English); then Tiny (English) and Base (English) are on disk, the rest are not.
+    await get("Whisper Base (English)").click();
     await script(page, "finishDownload", "QuantizedBaseEn");
-    await attr(
-      model(dialog, "Whisper Base (English)"),
-      "aria-disabled",
-      "false",
-    );
-    await model(dialog, "Whisper Tiny (English)").focus();
+    await attr(base, "aria-disabled", "false");
+    await focused(tiny);
+    await attr(tiny, "tabindex", "0");
+    await attr(base, "tabindex", "-1");
+
+    // Arrow onto a model that is not on disk: its Get takes focus, nothing is selected, the tab stop stays.
     await page.keyboard.press("ArrowDown");
-    await focused(model(dialog, "Whisper Base (English)"));
+    await focused(get("Whisper Tiny (multilingual)"));
+    expect(await selects()).toEqual([]);
+    await attr(tiny, "aria-checked", "true");
+    await attr(tiny, "tabindex", "0");
+
+    // On to a model on disk: it takes focus and the selection, and the tab stop follows.
     await page.keyboard.press("ArrowDown");
-    await focused(model(dialog, "Whisper Base (English)"));
+    await focused(base);
+    await attr(base, "aria-checked", "true");
+    await attr(tiny, "aria-checked", "false");
+    await attr(base, "tabindex", "0");
+    await attr(tiny, "tabindex", "-1");
+    expect(await selects()).toEqual(["models.select:QuantizedBaseEn"]);
+
+    // Back up, through the Get, to Tiny (English).
     await page.keyboard.press("ArrowUp");
-    await focused(model(dialog, "Whisper Tiny (English)"));
+    await focused(get("Whisper Tiny (multilingual)"));
+    await page.keyboard.press("ArrowUp");
+    await focused(tiny);
+    await attr(tiny, "aria-checked", "true");
+    await attr(base, "aria-checked", "false");
+
+    // Wrapping: up from the first row reaches the last (Large Turbo, not on disk), down from there the first.
+    await page.keyboard.press("ArrowUp");
+    await focused(get("Whisper Large Turbo"));
     await page.keyboard.press("ArrowDown");
-    await page.keyboard.press("Enter");
-    await attr(model(dialog, "Whisper Base (English)"), "aria-checked", "true");
-    await attr(
-      model(dialog, "Whisper Tiny (English)"),
-      "aria-checked",
-      "false",
-    );
-    expect(await calls()).toContain("models.select:QuantizedBaseEn");
+    await focused(tiny);
+    await attr(tiny, "aria-checked", "true");
+
+    // Space selects the focused model; on one that is not on disk it goes to its Get instead.
+    await base.focus();
+    await page.keyboard.press("Space");
+    await attr(base, "aria-checked", "true");
+    await model(dialog, "Whisper Small (English)").focus();
+    await page.keyboard.press("Space");
+    await focused(get("Whisper Small (English)"));
+    expect(await selects()).not.toContain("models.select:QuantizedSmallEn");
+    await attr(base, "aria-checked", "true");
+
+    // Tab out and Shift+Tab back lands on the selected model.
+    await base.focus();
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Shift+Tab");
+    await focused(base);
+    expect(errors).toEqual([]);
     await page.context().close();
   });
 
@@ -231,7 +289,7 @@ describe.serial(`capture settings (${engine.name()})`, () => {
   });
 
   test("a failed download says so on its row, and Retry starts it again", async () => {
-    const { page, errors, gear, dialog } = await open();
+    const { page, errors, gear, dialog } = await open([CAUSED_DOWNLOAD_ERROR]);
     await gear.click();
     await dialog
       .getByRole("button", { name: "Get Whisper Tiny (multilingual)" })
@@ -255,8 +313,62 @@ describe.serial(`capture settings (${engine.name()})`, () => {
     await page.context().close();
   });
 
-  test("the two switches toggle through the extras; a refused one shows why and keeps its value", async () => {
+  test("opened during a download started elsewhere: progress, not Get; finished elsewhere, it becomes selectable", async () => {
     const { page, errors, gear, dialog, calls } = await open();
+    await script(page, "startExternalDownload", "QuantizedBase", 0.3);
+    await gear.click();
+    const bar = dialog.getByRole("progressbar", {
+      name: "Downloading Whisper Base (multilingual)",
+    });
+    await bar.waitFor();
+    await attr(bar, "aria-valuenow", "30");
+    expect(
+      await dialog
+        .getByRole("button", { name: "Get Whisper Base (multilingual)" })
+        .count(),
+    ).toBe(0);
+
+    await script(page, "emitProgress", "QuantizedBase", 0.7);
+    await attr(bar, "aria-valuenow", "70");
+    await script(page, "finishDownload", "QuantizedBase");
+    const base = model(dialog, "Whisper Base (multilingual)");
+    await attr(base, "aria-disabled", "false");
+    await bar.waitFor({ state: "hidden" });
+
+    await base.click();
+    await attr(base, "aria-checked", "true");
+    expect(await calls()).not.toContain("models.download:QuantizedBase");
+    expect(await calls()).toContain("models.select:QuantizedBase");
+    expect(errors).toEqual([]);
+    await page.context().close();
+  });
+
+  test("a download that fails elsewhere shows the error on its row, and Retry is offered", async () => {
+    const { page, errors, gear, dialog } = await open();
+    await script(page, "startExternalDownload", "QuantizedSmall", 0.2);
+    await gear.click();
+    await dialog
+      .getByRole("progressbar", {
+        name: "Downloading Whisper Small (multilingual)",
+      })
+      .waitFor();
+    await script(page, "failDownload", "QuantizedSmall", "The disk is full");
+    await dialog
+      .getByText(
+        "Could not download Whisper Small (multilingual): The disk is full",
+      )
+      .waitFor();
+    await dialog
+      .getByRole("button", { name: "Retry Whisper Small (multilingual)" })
+      .waitFor();
+    expect(errors).toEqual([]);
+    await page.context().close();
+  });
+
+  test("the two switches toggle through the extras; a refused one shows why and keeps its value", async () => {
+    const { page, errors, gear, dialog, calls } = await open([
+      CAUSED_SETTING_ERROR,
+    ]);
     await gear.click();
     const system = dialog.getByRole("switch", {
       name: "Also record this Mac’s audio",

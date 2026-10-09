@@ -22,6 +22,7 @@ declare global {
   interface Window {
     exoCaptureSettings?: {
       calls: string[];
+      startExternalDownload: (id: WhisperModelId, fraction?: number | null) => void;
       emitProgress: (id: WhisperModelId, fraction: number) => void;
       finishDownload: (id: WhisperModelId) => void;
       failDownload: (id: WhisperModelId, message: string) => void;
@@ -42,7 +43,13 @@ const MICROPHONE: AudioInputsSource = {
   subscribe: () => noop,
 };
 
-function Frame({ children }: { children: ReactNode }) {
+function Frame({
+  children,
+  outsideField = false,
+}: {
+  children: ReactNode;
+  outsideField?: boolean;
+}) {
   const theme = useResolvedTheme() === "dark" ? "night" : "day";
   return (
     <div
@@ -73,6 +80,12 @@ function Frame({ children }: { children: ReactNode }) {
         >
           Capture
         </h1>
+        {outsideField && (
+          <input
+            aria-label="Find a note"
+            style={{ font: "inherit", padding: "4px 8px" }}
+          />
+        )}
         {children}
       </header>
     </div>
@@ -97,6 +110,7 @@ function Settings({
     if (interactive)
       window.exoCaptureSettings = {
         calls: created.calls,
+        startExternalDownload: created.startExternalDownload,
         emitProgress: created.emitProgress,
         finishDownload: created.finishDownload,
         failDownload: created.failDownload,
@@ -105,7 +119,7 @@ function Settings({
     return created;
   });
   return (
-    <Frame>
+    <Frame outsideField={interactive}>
       <span style={{ fontWeight: 600, fontSize: 14, color: "var(--dim)" }}>
         Library
       </span>
@@ -153,12 +167,13 @@ export const captureSettingsScreens: HarnessScreen[] = [
   screen("app-downloading", () => (
     <Settings
       variant="app"
-      fake={{ downloaded: ["QuantizedTinyEn"], selected: "QuantizedTinyEn" }}
-      initialDownloads={{
-        QuantizedSmall: { status: "downloading", fraction: 0.4 },
+      fake={{
+        downloaded: ["QuantizedTinyEn"],
+        selected: "QuantizedTinyEn",
+        downloading: { QuantizedSmall: 0.4 },
       }}
     />
-  )),
+  ), { readyWhen: ".cs-progress" }),
   screen("app-selected", () => <Settings variant="app" fake={LARGE_TURBO} />),
   screen("app-error", () => (
     <Settings

@@ -11,6 +11,8 @@ import type {
 export interface FakeDesktopCaptureExtrasOptions {
   downloaded?: readonly WhisperModelId[];
   selected?: WhisperModelId | null;
+  /** Downloads already in flight, started elsewhere, with their progress (null: no byte yet). */
+  downloading?: Partial<Record<WhisperModelId, number | null>>;
   systemAudio?: boolean;
   autoSaveToSpace?: boolean;
 }
@@ -31,11 +33,13 @@ export interface FakeDesktopCaptureExtras {
   calls: string[];
   /** Makes the next call of that name reject with this message. */
   failNext(call: FakeCall, message: string): void;
+  /** Starts a download that nothing here asked for (another window, the app itself): `list()` reports it. */
+  startExternalDownload(id: WhisperModelId, fraction?: number | null): void;
   /** Sends a progress event, as the app's downloader would. */
   emitProgress(id: WhisperModelId, fraction: number): void;
-  /** Ends an in-flight `download` successfully; the model is then on disk. */
+  /** Ends an in-flight download successfully: the model is on disk, "done" is emitted, then `download` resolves. */
   finishDownload(id: WhisperModelId): void;
-  /** Ends an in-flight `download` with an error. */
+  /** Ends an in-flight download with an error: "error" is emitted, then `download` rejects. */
   failDownload(id: WhisperModelId, message: string): void;
 }
 
@@ -49,10 +53,20 @@ export function createFakeDesktopCaptureExtras(
   const calls: string[] = [];
   const failures = new Map<FakeCall, string>();
   const listeners = new Set<(progress: DownloadProgress) => void>();
+  // In-flight downloads and their progress; `downloads` holds the promise of those `download()` started.
+  const inFlight = new Map<WhisperModelId, number | null>(
+    Object.entries(options.downloading ?? {}) as [
+      WhisperModelId,
+      number | null,
+    ][],
+  );
   const downloads = new Map<
     WhisperModelId,
     { resolve(): void; reject(error: Error): void }
   >();
+  const emit = (progress: DownloadProgress) => {
+    for (const listener of [...listeners]) listener(progress);
+  };
 
   const enter = (call: FakeCall, argument?: string | boolean) => {
     calls.push(argument === undefined ? call : `${call}:${String(argument)}`);
@@ -69,6 +83,8 @@ export function createFakeDesktopCaptureExtras(
       sizeBytes: model.approxSizeMb * 1_000_000,
       downloaded: downloaded.has(model.id),
       selected: model.id === selected,
+      downloading: inFlight.has(model.id),
+      progress: inFlight.get(model.id) ?? null,
     }));
 
   const extras: DesktopCaptureExtras = {
@@ -95,6 +111,7 @@ export function createFakeDesktopCaptureExtras(
             reject(caught);
             return;
           }
+          inFlight.set(id, null);
           downloads.set(id, { resolve, reject });
         });
       },
@@ -126,24 +143,37 @@ export function createFakeDesktopCaptureExtras(
   };
 
   const settle = (id: WhisperModelId) => {
+    if (!inFlight.has(id)) throw new Error(`No download in flight for ${id}`);
+    const fraction = inFlight.get(id) ?? 0;
+    inFlight.delete(id);
     const pending = downloads.get(id);
-    if (!pending) throw new Error(`No download in flight for ${id}`);
     downloads.delete(id);
-    return pending;
+    return { fraction, pending };
   };
 
   return {
     extras,
     calls,
     failNext: (call, message) => void failures.set(call, message),
+    startExternalDownload: (id, fraction = null) => {
+      if (inFlight.has(id)) throw new Error(`${id} is already downloading`);
+      inFlight.set(id, fraction);
+    },
     emitProgress: (id, fraction) => {
-      for (const listener of [...listeners]) listener({ id, fraction });
+      if (!inFlight.has(id)) throw new Error(`No download in flight for ${id}`);
+      inFlight.set(id, fraction);
+      emit({ id, fraction, status: "downloading" });
     },
     finishDownload: (id) => {
-      const pending = settle(id);
+      const { pending } = settle(id);
       downloaded.add(id);
-      pending.resolve();
+      emit({ id, fraction: 1, status: "done" });
+      pending?.resolve();
     },
-    failDownload: (id, message) => settle(id).reject(new Error(message)),
+    failDownload: (id, message) => {
+      const { fraction, pending } = settle(id);
+      emit({ id, fraction, status: "error", error: message });
+      pending?.reject(new Error(message));
+    },
   };
 }

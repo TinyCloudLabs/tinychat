@@ -11,6 +11,8 @@ const models = (downloaded: string[], selected: string | null): WhisperModelInfo
     sizeBytes: m.approxSizeMb * 1_000_000,
     downloaded: downloaded.includes(m.id),
     selected: m.id === selected,
+    downloading: false,
+    progress: null,
   }));
 
 const IDLE = { pending: false, error: null };

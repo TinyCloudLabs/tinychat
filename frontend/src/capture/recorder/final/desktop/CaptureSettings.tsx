@@ -131,13 +131,26 @@ function ModelSection({
   onSelectModel: (id: WhisperModelId) => void;
   onGetModel: (id: WhisperModelId) => void;
 }) {
-  const radios = useRef(new Map<WhisperModelId, HTMLButtonElement>());
-  const selectable = data.models.filter((m) => m.downloaded).map((m) => m.id);
-  const tabStop =
-    data.selected !== null && selectable.includes(data.selected)
-      ? data.selected
-      : (selectable[0] ?? null);
+  const rows = useRef(new Map<WhisperModelId, HTMLElement>());
+  const tabStop = data.models.find((m) => m.id === data.selected && m.downloaded)
+    ?.id ?? data.models.find((m) => m.downloaded)?.id ?? null;
 
+  const getOf = (id: WhisperModelId) =>
+    rows.current.get(id)?.querySelector<HTMLElement>(".cs-get");
+  const radioOf = (id: WhisperModelId) =>
+    rows.current.get(id)?.querySelector<HTMLElement>('[role="radio"]');
+
+  // Choosing a model on disk selects it; choosing one that is not there selects nothing (select() would
+  // reject) and moves to its Get, or to the row itself while it downloads.
+  const choose = (model: WhisperModelInfo, via: "arrow" | "click") => {
+    if (model.downloaded) {
+      if (via === "arrow") radioOf(model.id)?.focus();
+      if (model.id !== data.selected) onSelectModel(model.id);
+    } else (getOf(model.id) ?? radioOf(model.id))?.focus();
+  };
+
+  // WAI-ARIA radio group: arrows move focus and select, wrapping. Rows that are not on disk cannot be
+  // selected, so an arrow onto one lands on its Get instead and the selection (and tab stop) stays put.
   const key = (event: KeyboardEvent) => {
     const direction =
       event.key === "ArrowDown" || event.key === "ArrowRight"
@@ -145,16 +158,17 @@ function ModelSection({
         : event.key === "ArrowUp" || event.key === "ArrowLeft"
           ? -1
           : 0;
-    if (direction === 0 || selectable.length === 0) return;
+    if (direction === 0) return;
+    const from = (event.target as HTMLElement)
+      .closest<HTMLElement>("[data-model]")
+      ?.getAttribute("data-model");
+    const at = data.models.findIndex((m) => m.id === from);
+    if (at < 0) return;
     event.preventDefault();
     event.stopPropagation();
-    const focused = [...radios.current].find(
-      ([, el]) => el === document.activeElement,
-    )?.[0];
-    const at = focused ? selectable.indexOf(focused) : -1;
     const next =
-      selectable[Math.max(0, Math.min(selectable.length - 1, at + direction))];
-    if (next) radios.current.get(next)?.focus();
+      data.models[(at + direction + data.models.length) % data.models.length];
+    if (next) choose(next, "arrow");
   };
 
   return (
@@ -169,22 +183,22 @@ function ModelSection({
           return (
             <div
               key={model.id}
+              ref={(el) => {
+                if (el) rows.current.set(model.id, el);
+                else rows.current.delete(model.id);
+              }}
               className="cs-row cs-model"
               data-model={model.id}
               data-on={checked}
             >
               <button
-                ref={(el) => {
-                  if (el) radios.current.set(model.id, el);
-                  else radios.current.delete(model.id);
-                }}
                 type="button"
                 role="radio"
                 aria-checked={checked}
                 aria-disabled={!model.downloaded}
                 tabIndex={model.id === tabStop ? 0 : -1}
                 className="cs-radio"
-                onClick={() => model.downloaded && onSelectModel(model.id)}
+                onClick={() => choose(model, "click")}
               >
                 <span className="cs-rb" data-on={checked} aria-hidden="true" />
                 <span className="cs-name">{model.label}</span>
@@ -422,11 +436,13 @@ export function CaptureSettings({
           extras.systemAudio.get(),
           extras.autoSaveToSpace.get(),
         ]);
-        if (mine === request.current)
+        if (mine === request.current) {
+          dispatch({ type: "sync", models });
           setLoad({
             status: "ready",
             data: { models, selected, systemAudio, autoSave },
           });
+        }
       } catch (caught) {
         console.error("[CaptureSettings] Could not load the settings", caught);
         if (mine === request.current)
@@ -448,16 +464,37 @@ export function CaptureSettings({
     };
   }, [open, extras, reload]);
 
+  // Every model's events count, including downloads this popover did not start. A terminal event re-reads
+  // list(): that, not the event, says whether the model is on disk and so selectable.
   useEffect(() => {
     if (!extras) return;
-    return extras.models.onProgress(({ id, fraction }) =>
-      dispatch({ type: "progress", id, fraction }),
-    );
-  }, [extras]);
+    return extras.models.onProgress(({ id, fraction, status, error }) => {
+      if (status === "error") {
+        dispatch({
+          type: "fail",
+          id,
+          message: error ?? "The download did not finish.",
+        });
+        void reload(false);
+      } else {
+        dispatch({ type: "progress", id, fraction });
+        if (status === "done") void reload(false);
+      }
+    });
+  }, [extras, reload]);
 
-  const close = useCallback((refocus: boolean) => {
+  // Escape closes with focus returned to ⚙︎ at once. A click outside goes the same way, after the click has
+  // finished moving focus: if it landed on another control, that control keeps it; if it landed nowhere,
+  // focus comes back to ⚙︎.
+  const close = useCallback((source: "key" | "pointer") => {
     setOpen(false);
-    if (refocus) button.current?.focus();
+    const restore = () => {
+      const active = document.activeElement;
+      if (!active || active === document.body || root.current?.contains(active))
+        button.current?.focus();
+    };
+    if (source === "key") restore();
+    else setTimeout(restore, 0);
   }, []);
 
   useEffect(() => {
@@ -467,11 +504,11 @@ export function CaptureSettings({
       panel.current
     )?.focus();
     const outside = (event: globalThis.PointerEvent) => {
-      if (!root.current?.contains(event.target as Node)) setOpen(false);
+      if (!root.current?.contains(event.target as Node)) close("pointer");
     };
     document.addEventListener("pointerdown", outside, true);
     return () => document.removeEventListener("pointerdown", outside, true);
-  }, [open]);
+  }, [open, close]);
 
   const radioReady = load.status === "ready";
   useEffect(() => {
@@ -485,7 +522,7 @@ export function CaptureSettings({
     if (event.key === "Escape") {
       event.stopPropagation();
       event.preventDefault();
-      close(true);
+      close("key");
       return;
     }
     if (event.key !== "Tab" || !panel.current) return;
@@ -525,10 +562,7 @@ export function CaptureSettings({
     if (!extras) return;
     dispatch({ type: "start", id });
     extras.models.download(id).then(
-      () => {
-        dispatch({ type: "done", id });
-        void reload(false);
-      },
+      () => void reload(false),
       (caught: unknown) => {
         console.error("[CaptureSettings] Could not download the model", caught);
         dispatch({ type: "fail", id, message: messageOf(caught) });

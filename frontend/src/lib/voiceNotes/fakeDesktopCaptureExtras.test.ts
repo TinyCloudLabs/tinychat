@@ -49,6 +49,11 @@ describe("the fake", () => {
     fake.finishDownload("QuantizedSmall");
     await done;
     expect(seen).toEqual([0.4]);
+    expect((await fake.extras.models.list()).find((m) => m.id === "QuantizedSmall")).toMatchObject({
+      downloaded: true,
+      downloading: false,
+      progress: null,
+    });
     await fake.extras.models.select("QuantizedSmall");
     expect(await fake.extras.models.get()).toBe("QuantizedSmall");
   });
@@ -68,5 +73,43 @@ describe("the fake", () => {
     await fake.extras.systemAudio.set(true);
     expect(await fake.extras.systemAudio.get()).toBe(true);
     expect(fake.calls).toEqual(["systemAudio.set:true", "systemAudio.set:true", "systemAudio.get"]);
+  });
+});
+
+describe("the fake, downloads", () => {
+  const row = async (fake: ReturnType<typeof createFakeDesktopCaptureExtras>, id: string) =>
+    (await fake.extras.models.list()).find((m) => m.id === id);
+
+  test("list reports a download in flight and its progress", async () => {
+    const fake = createFakeDesktopCaptureExtras({ downloading: { QuantizedBase: 0.25 } });
+    expect(await row(fake, "QuantizedBase")).toMatchObject({
+      downloaded: false,
+      downloading: true,
+      progress: 0.25,
+    });
+    fake.emitProgress("QuantizedBase", 0.5);
+    expect((await row(fake, "QuantizedBase"))?.progress).toBe(0.5);
+  });
+
+  test("an external download ends with a terminal event, and only then is the model on disk", async () => {
+    const fake = createFakeDesktopCaptureExtras();
+    const events: string[] = [];
+    fake.extras.models.onProgress((p) => events.push(`${p.id}:${p.status}`));
+    fake.startExternalDownload("QuantizedBase", 0.1);
+    expect((await row(fake, "QuantizedBase"))?.downloading).toBe(true);
+    fake.finishDownload("QuantizedBase");
+    expect(events).toEqual(["QuantizedBase:done"]);
+    expect(await row(fake, "QuantizedBase")).toMatchObject({ downloaded: true, downloading: false });
+  });
+
+  test("failDownload emits an error event carrying the message, then rejects download()", async () => {
+    const fake = createFakeDesktopCaptureExtras();
+    const events: { status: string; error?: string }[] = [];
+    fake.extras.models.onProgress((p) => events.push({ status: p.status, error: p.error }));
+    const done = fake.extras.models.download("QuantizedSmall");
+    fake.failDownload("QuantizedSmall", "Disk full");
+    await expect(done).rejects.toThrow("Disk full");
+    expect(events).toEqual([{ status: "error", error: "Disk full" }]);
+    expect(await row(fake, "QuantizedSmall")).toMatchObject({ downloaded: false, downloading: false });
   });
 });

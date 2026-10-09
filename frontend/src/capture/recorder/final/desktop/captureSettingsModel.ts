@@ -1,4 +1,7 @@
-import type { WhisperModelId } from "@/lib/voiceNotes/desktopCaptureExtras";
+import type {
+  WhisperModelId,
+  WhisperModelInfo,
+} from "@/lib/voiceNotes/desktopCaptureExtras";
 
 /** "44 MB", "874 MB", "1.2 GB": decimal units, as the downloads are quoted. */
 export function formatModelSize(bytes: number): string {
@@ -17,8 +20,9 @@ export type Downloads = Partial<Record<WhisperModelId, DownloadState>>;
 export type DownloadAction =
   | { type: "start"; id: WhisperModelId }
   | { type: "progress"; id: WhisperModelId; fraction: number }
-  | { type: "done"; id: WhisperModelId }
-  | { type: "fail"; id: WhisperModelId; message: string };
+  | { type: "fail"; id: WhisperModelId; message: string }
+  /** What `models.list()` says now: it is the truth for downloads under way and for models that finished. */
+  | { type: "sync"; models: readonly WhisperModelInfo[] };
 
 const clamp01 = (fraction: number) =>
   Number.isFinite(fraction) ? Math.min(1, Math.max(0, fraction)) : 0;
@@ -31,8 +35,7 @@ export function downloadsReducer(
     case "start":
       return { ...state, [action.id]: { status: "downloading", fraction: 0 } };
     case "progress":
-      // A failed row stays failed until Retry; a late event must not hide the error.
-      if (state[action.id]?.status === "error") return state;
+      // A "downloading" event after a failure is a new attempt (Retry, or another window); it replaces the error.
       return {
         ...state,
         [action.id]: {
@@ -40,15 +43,28 @@ export function downloadsReducer(
           fraction: clamp01(action.fraction),
         },
       };
-    case "done": {
-      const { [action.id]: _finished, ...rest } = state;
-      return rest;
-    }
     case "fail":
       return {
         ...state,
         [action.id]: { status: "error", message: action.message },
       };
+    case "sync": {
+      const next = { ...state };
+      for (const model of action.models) {
+        if (model.downloaded) delete next[model.id];
+        else if (model.downloading) {
+          const before = state[model.id];
+          next[model.id] = {
+            status: "downloading",
+            fraction: clamp01(
+              model.progress ??
+                (before?.status === "downloading" ? before.fraction : 0),
+            ),
+          };
+        }
+      }
+      return next;
+    }
   }
 }
 
