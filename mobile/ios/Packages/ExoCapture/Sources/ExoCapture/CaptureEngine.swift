@@ -547,17 +547,15 @@ public final class CaptureEngine {
         if let session = info, intent == "recording", !lowBatteryReported,
            UIDevice.current.batteryState == .unplugged {
             let level = UIDevice.current.batteryLevel
-            if level >= 0 {
+            if level >= 0, level <= 0.05 {
                 let percent = Int((level * 100).rounded())
-                if percent <= 5 {
-                    do {
-                        try library.appendJournal(session.id, ["e": "low_battery", "t": wallClock.nowMilliseconds(),
-                                                               "a": audioMs, "level": percent])
-                        lowBatteryReported = true
-                    } catch {
-                        writerFailed(error)
-                        return
-                    }
+                do {
+                    try library.appendJournal(session.id, ["e": "low_battery", "t": wallClock.nowMilliseconds(),
+                                                           "a": audioMs, "level": percent])
+                    lowBatteryReported = true
+                } catch {
+                    writerFailed(error)
+                    return
                 }
             }
         }
