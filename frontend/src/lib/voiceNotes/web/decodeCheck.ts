@@ -1,8 +1,9 @@
 // Checks that a recovered recording's bytes are playable media before recovery publishes them.
 // A killed tab never ran MediaRecorder.stop(), so the recording may lack what a decoder needs.
 //
-// decodeAudioData materializes its whole input as float PCM (about 10 MB per minute of 44.1 kHz
-// mono, double for stereo), so a decode is bounded by input size:
+// decodeAudioData materializes its whole input as float PCM at the context's sample rate. The check
+// decodes into an 8 kHz OfflineAudioContext (about 1.9 MB per minute per channel) and is bounded by
+// input size:
 //  - A recording of at most DECODE_WINDOW_MAX_BYTES is decoded whole. An EncodingError or an empty
 //    decode is then a verdict on every byte the recording has, and the caller may quarantine it.
 //  - A larger recording is decoded only as a prefix (the first DECODE_WINDOW_MS of audio, cut at a
@@ -20,7 +21,9 @@ export const DECODE_WINDOW_MS = 10_000;
 /** A prefix also closes at this many bytes, so a very high bitrate cannot make 10 s of audio large. */
 export const DECODE_WINDOW_SOFT_BYTES = 1024 * 1024;
 /** Hard bound, and the largest recording decoded whole: no decode is ever started on more bytes than this. */
-export const DECODE_WINDOW_MAX_BYTES = 4 * 1024 * 1024;
+export const DECODE_WINDOW_MAX_BYTES = 2 * 1024 * 1024;
+/** The check only needs a verdict, not fidelity; a low rate keeps the decoded PCM small. */
+export const DECODE_SAMPLE_RATE = 8000;
 
 export type DecodeFailureKind =
   /** The decoder looked at the bytes and says they are not media. Conclusive only when those were the whole recording. */
@@ -62,7 +65,7 @@ export function browserDecodeCheck(scope: DecodeScope = globalThis as DecodeScop
     if (!Offline && !Live) throw new DecodeCheckError("resource", "This browser has no Web Audio decoder.");
     let context: DecodeContext;
     try {
-      context = Offline ? new Offline(1, 1, 44100) : new Live!();
+      context = Offline ? new Offline(1, 1, DECODE_SAMPLE_RATE) : new Live!();
     } catch (error) {
       throw new DecodeCheckError("resource", `The audio decoder could not be created: ${explain(error)}`, { cause: error });
     }

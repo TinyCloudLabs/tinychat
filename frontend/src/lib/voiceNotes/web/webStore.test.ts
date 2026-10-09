@@ -566,13 +566,13 @@ describe("recovered recordings are decode-checked: whole up to the cap, a prefix
 
   test("a recording at or under the cap is decoded whole, past its journaled window, and a definite failure quarantines it", async () => {
     const h = harness();
-    // 40 s at 80 KiB/s = 3.1 MiB: the window closed at 10 s, but the whole recording is decoded.
-    const chunks = Array.from({ length: 40 }, (_, i) => bytesOf(80 * KIB, i));
+    // 20 s at 80 KiB/s = 1.6 MiB: the window closed at 10 s, but the whole recording is decoded.
+    const chunks = Array.from({ length: 20 }, (_, i) => bytesOf(80 * KIB, i));
     const sent = await record(await h.open(), "mid", chunks);
     h.locks.releaseAll();
     const seen: number[] = [];
     let decodable = true;
-    const tab = await h.open({ decodeCheck: async (window) => { seen.push(window.byteLength); if (!decodable) throw invalid("no moov atom"); return { durationMs: 40_000 }; } });
+    const tab = await h.open({ decodeCheck: async (window) => { seen.push(window.byteLength); if (!decodable) throw invalid("no moov atom"); return { durationMs: 20_000 }; } });
     expect(await tab.getSession("mid")).toMatchObject({ decodeWindow: { bytes: 10 * 80 * KIB } });
     decodable = false;
     const { result } = await quietly(() => tab.recoverInterruptedSessions());
