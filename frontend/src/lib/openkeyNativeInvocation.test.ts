@@ -8,7 +8,7 @@ import { NativeRenewal, guardNativeTinyCloudCalls } from "./openkeyNativeRenewal
 
 // This fake mirrors web-sdk 2.11's restoreSession graph retirement. Each
 // service signs real WASM proofs, and the fake HTTP node rejects an expired CID.
-test("held and in-flight TinyCloud calls use the renewed graph after the old CID expires", async () => {
+test("held calls and an in-flight audio-part overwrite use the renewed graph", async () => {
   await initialized;
   const account = privateKeyToAccount(`0x${"1".padStart(64, "0")}`);
   const issued = Date.now();
@@ -73,8 +73,8 @@ test("held and in-flight TinyCloud calls use the renewed graph after the old CID
       graph = {
         retire: () => { retired = true; },
         kv: { put: async (key: string, value: string) => {
-          if (signed === oldSigned && key.endsWith("/slow")) { oldEntered(); await oldPaused; }
-          if (retired) throw new Error("Service graph retired");
+          if (signed === oldSigned && key.endsWith("/p/000001")) { oldEntered(); await oldPaused; }
+          if (retired) throw new Error("Service graph has been retired by session replacement.");
           const proof = tinycloud.invoke(signed, "tinycloud.kv", key, "tinycloud.kv/put", []);
           return fetch(`${node.url}kv`, { method: "PUT", headers: proof, body: value });
         } },
@@ -99,7 +99,7 @@ test("held and in-flight TinyCloud calls use the renewed graph after the old CID
     const held = guardNativeTinyCloudCalls(raw, renewal).kv;
     expect((await held.put("app/threads/first", "before")).status).toBe(200);
     expect(seen.at(-1)).toBe(oldSigned.delegationCid);
-    const inFlight = held.put("app/threads/slow", "during");
+    const inFlight = held.put("app/threads/audio/p/000001", "during");
     await atOld;
     now = issued + 900;
     await renewal.check();

@@ -26,12 +26,15 @@ function harness(now: number, original = session("old"), onUnavailable?: (messag
     return {
       retire: () => { retired = true; },
       kv: {
-        put: async () => { if (retired) throw new Error("Service graph retired"); calls.push(installed!); return { ok: true }; },
-        list: async () => { if (retired) throw new Error("Service graph retired"); return { ok: true, data: { keys: [], truncated: false } }; },
+        put: async () => { if (retired) throw new Error("Service graph has been retired by session replacement."); calls.push(installed!); return { ok: true }; },
+        list: async () => { if (retired) throw new Error("Service graph has been retired by session replacement."); return { ok: true, data: { keys: [], truncated: false } }; },
         withPrefix(prefix: string) { const service = this; return { put: (key: string) => service.put(prefix + key) }; },
       },
       sql: {
-        db(_name: string) { return { query: async () => { if (retired) throw new Error("Service graph retired"); return installed; } }; },
+        db(_name: string) { return {
+          query: async () => { if (retired) throw new Error("Service graph has been retired by session replacement."); return installed; },
+          migrations: { apply: async () => { if (retired) throw new Error("Service graph has been retired by session replacement."); return installed; } },
+        }; },
       },
     };
   };
@@ -63,6 +66,38 @@ function harness(now: number, original = session("old"), onUnavailable?: (messag
 }
 
 describe("native renewal", () => {
+  test("retired in-flight parts replay, but uncertain SQL appends do not", async () => {
+    let finishPart!: (value: unknown) => void;
+    let finishBatch!: (value: unknown) => void;
+    let partStarted!: () => void;
+    let batchStarted!: () => void;
+    const atPart = new Promise<void>((resolve) => { partStarted = resolve; });
+    const atBatch = new Promise<void>((resolve) => { batchStarted = resolve; });
+    const old = {
+      kv: { put: () => { partStarted(); return new Promise((resolve) => { finishPart = resolve; }); } },
+      sql: { db: () => ({ batch: () => { batchStarted(); return new Promise((resolve) => { finishBatch = resolve; }); } }) },
+    };
+    let newPartCalls = 0;
+    let newBatchCalls = 0;
+    const next = {
+      kv: { put: async () => { newPartCalls++; return { ok: true }; } },
+      sql: { db: () => ({ batch: async () => { newBatchCalls++; return { ok: true }; } }) },
+    };
+    let live: typeof old | typeof next = old;
+    const raw = { get kv() { return live.kv; }, get sql() { return live.sql; } } as unknown as TinyCloudWeb;
+    const guarded = guardNativeTinyCloudCalls(raw, { check: async () => {} } as NativeRenewal);
+    const part = guarded.kv.put("audio/one/p/0", new Uint8Array([1]));
+    const batch = guarded.sql.db("notes").batch([{ sql: "INSERT INTO messages ..." }]);
+    await Promise.all([atPart, atBatch]);
+    live = next;
+    finishPart({ ok: false, error: { code: "ABORTED", message: "Request was aborted.", service: "kv" } });
+    finishBatch({ ok: false, error: { code: "NETWORK_ERROR", message: "Service graph has been retired by session replacement.", service: "sql" } });
+    expect((await part).ok).toBe(true);
+    expect(await batch).toMatchObject({ ok: false, error: { code: "NETWORK_ERROR" } });
+    expect(newPartCalls).toBe(1);
+    expect(newBatchCalls).toBe(0);
+  });
+
   test("lead is bounded by lifetime for 300 s and 3600 s grants", () => {
     expect(nativeRenewAt(session("short"), 0)).toBe(issue + 225_000);
     expect(nativeRenewAt(session("long", issue, 3_600_000), 0)).toBe(issue + 3_000_000);
@@ -74,12 +109,14 @@ describe("native renewal", () => {
     const heldKv = guarded.kv;
     const heldPrefix = guarded.kv.withPrefix("prefix/");
     const heldDb = (guarded.sql as unknown as { db(name: string): { query(): Promise<string> } }).db("notes");
+    const heldMigrations = (guarded.sql as unknown as { db(name: string): { migrations: { apply(): Promise<string> } } }).db("notes").migrations;
     await heldKv.put("key", "value");
     expect(h.events).toEqual(["renew", "swap", "jwt"]);
     h.setTime(issue + 301_000);
     await heldKv.put("key", "later");
     await heldPrefix.put("later", "value");
     expect(await heldDb.query()).toBe("new");
+    expect(await heldMigrations.apply()).toBe("new");
     expect(h.calls).toEqual(["new", "new", "new"]);
     h.renewal.stop();
     await expect(heldKv.put("key", "after sign-out")).rejects.toThrow("signed out");

@@ -222,32 +222,61 @@ export class NativeRenewal {
 export function guardNativeTinyCloudCalls(tcw: TinyCloudWeb, renewal: NativeRenewal): TinyCloudWeb {
   // Each handle is an accessor, including handles retained by putAudio or
   // returned by db()/withPrefix(). Never bind a service from a retired graph.
-  const wrap = (resolve: () => object): object => new Proxy({}, {
+  const wrap = (resolve: () => object, graph: () => object): object => new Proxy({}, {
     get(_target, key) {
       const target = resolve();
       const value = Reflect.get(target, key, target) as unknown;
+      if (value && typeof value === "object") return wrap(() => {
+        const current = resolve();
+        return Reflect.get(current, key, current) as object;
+      }, graph);
       if (typeof value !== "function") return value;
       if (key === "db" || key === "withPrefix") return (...args: unknown[]) => wrap(() => {
         const current = resolve();
         return (Reflect.get(current, key, current) as (...args: unknown[]) => object).apply(current, args);
-      });
+      }, graph);
       return async (...args: unknown[]) => {
         await renewal.check();
+        let invokedGraph = graph();
         const invoke = () => {
           const current = resolve();
           return (Reflect.get(current, key, current) as (...args: unknown[]) => unknown).apply(current, args);
         };
-        const retired = (value: unknown): boolean => {
-          const detail = value && typeof value === "object" && "error" in value ? value.error : value;
-          return detail instanceof Error ? /Service graph retired/i.test(detail.message)
-            : Boolean(detail && typeof detail === "object" && "message" in detail && /Service graph retired/i.test(String(detail.message)));
+        // The 2.11 context throws this exact message from assertActive().
+        // An in-flight fetch instead becomes an ABORTED service result when
+        // retire() aborts the graph's controller. A caller's own abort is not
+        // a session handoff, so require the root service to have changed.
+        const retired = (failure: unknown): boolean => {
+          if (graph() === invokedGraph) return false;
+          const detail = failure && typeof failure === "object" && "error" in failure ? failure.error : failure;
+          if (!detail || typeof detail !== "object") return false;
+          const candidate = detail as { message?: unknown; code?: unknown; name?: unknown; cause?: unknown };
+          return candidate.message === "Service graph has been retired by session replacement."
+            || candidate.code === "ABORTED"
+            || candidate.name === "AbortError"
+            || (candidate.cause !== undefined && retired(candidate.cause));
         };
+        const putOptions = args[2] && typeof args[2] === "object"
+          ? args[2] as { ifMatch?: unknown; ifNoneMatch?: unknown; prefix?: unknown; signal?: AbortSignal }
+          : undefined;
+        const callerAborted = () => args.some((arg) => {
+          if (!arg || typeof arg !== "object" || !("signal" in arg)) return false;
+          const signal = (arg as { signal?: AbortSignal }).signal;
+          return signal?.aborted === true;
+        });
+        const safeToReplay = key === "get" || key === "list" || key === "head"
+          || (key === "query" && typeof args[0] === "string" && /^\s*SELECT\b/i.test(args[0]))
+          || (key === "put" && typeof args[0] === "string" && /\/p\/\d+$/.test(args[0])
+            && !putOptions?.ifMatch && !putOptions?.ifNoneMatch && !putOptions?.prefix);
         for (let attempt = 0; attempt < 3; attempt++) {
+          invokedGraph = graph();
           try {
             const result = await invoke();
             if (!retired(result)) return result;
+            if (!safeToReplay || callerAborted()) return result;
           } catch (error) {
             if (!retired(error)) throw error;
+            if (!safeToReplay || callerAborted()) throw error;
           }
           await renewal.check();
         }
@@ -258,7 +287,10 @@ export function guardNativeTinyCloudCalls(tcw: TinyCloudWeb, renewal: NativeRene
   return new Proxy(tcw, {
     get(target, key) {
       const value = Reflect.get(target, key, target) as unknown;
-      if ((key === "kv" || key === "sql" || key === "capabilities") && value && typeof value === "object") return wrap(() => Reflect.get(target, key, target) as object);
+      if ((key === "kv" || key === "sql" || key === "capabilities") && value && typeof value === "object") {
+        const graph = () => Reflect.get(target, key, target) as object;
+        return wrap(graph, graph);
+      }
       return typeof value === "function" ? value.bind(target) : value;
     },
   });

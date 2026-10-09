@@ -18,6 +18,11 @@ import { voiceNoteTranscriberFor, type VoiceNoteTranscriber } from "@/lib/voiceN
 import { savePendingRecordings, whenVoiceNoteSavesIdle, type PendingRun } from "@/lib/voiceNotes/recorderSaves";
 
 let recovery: (() => Promise<void>) | null = null;
+/** Keep the mounted saver available to renewal without remounting the view. */
+export function registerPendingVoiceNotesRecovery(run: () => Promise<void>): () => void {
+  recovery = run;
+  return () => { if (recovery === run) recovery = null; };
+}
 /** A forced native session swap can abort a save without remounting this component. */
 export function schedulePendingVoiceNotesRecovery(): void {
   void whenVoiceNoteSavesIdle().then(() => recovery?.());
@@ -56,9 +61,9 @@ export function PendingVoiceNotesSaver({
         if (run.lastError) console.warn("[VoiceNotes] Some notes are still on this phone:", run.lastError);
       })
       .catch((error: unknown) => console.warn("[VoiceNotes] Saving notes left on this phone failed", error));
-    recovery = run;
+    const unregister = registerPendingVoiceNotesRecovery(run);
     void run();
-    return () => { if (recovery === run) recovery = null; };
+    return unregister;
   }, [backendUrl, sessionStore, tcw]);
   return null;
 }
