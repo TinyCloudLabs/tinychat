@@ -7,6 +7,20 @@ const legacy = (id: string): VoiceNoteRecording => ({ id, startedAt: 1, duration
   silencedMs: 0, silencedEvents: 0, noSignalMs: 0 });
 
 describe("VoiceNotes v2 fake public contract", () => {
+  test("mic-state detail is separate from the contract reason", async () => {
+    const { plugin, controls } = createFakeVoiceNotes();
+    const events: Array<{ state: string; reason: string | null; detail?: string }> = [];
+    await plugin.addListener("micState", (event) => events.push(event));
+    await plugin.start();
+    controls.interruptionBegins("read_error", "AudioRecord.read returned -2");
+    expect(events.at(-1)).toMatchObject({ state: "interrupted", reason: "read_error", detail: "AudioRecord.read returned -2" });
+    expect(await plugin.status()).toMatchObject({ state: "interrupted", reason: "read_error", detail: "AudioRecord.read returned -2" });
+    controls.interruptionEnds();
+    expect(await plugin.status()).toMatchObject({ state: "recording", reason: null });
+    expect((await plugin.status()).detail).toBeUndefined();
+    await plugin.discard();
+  });
+
   test("record, pause with mic off, resume in a new generation, and commit recorded time", async () => {
     let clock = 1000;
     const { plugin, controls } = createFakeVoiceNotes(() => clock);

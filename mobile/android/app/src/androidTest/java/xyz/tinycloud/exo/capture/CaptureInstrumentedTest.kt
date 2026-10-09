@@ -334,7 +334,8 @@ class CaptureInstrumentedTest {
                 pcm[i * 2] = value.toByte(); pcm[i * 2 + 1] = (value shr 8).toByte()
             }
             encoder.offer(pcm, pcm.size); encoder.finish()
-            assertTrue(packets > 40)
+            assertTrue("AAC packets=$packets for $samples PCM samples",
+                packets >= samples / 1024)
             val audioMs = packets * 1024L * 1000 / 44_100
             library.checkpoint(id, 0, audioMs, "recording", "available")
             library.stopJournal(id, audioMs, "user")
@@ -375,7 +376,7 @@ class CaptureInstrumentedTest {
                 releaseWriter.await(5, TimeUnit.SECONDS)
             }
             delivered.incrementAndGet()
-        }, { _, _ -> }, { _ -> }, { error -> throw AssertionError(error) })
+        }, { _, _ -> }, { _ -> }, { error, detail -> throw AssertionError("$error: $detail") })
         try {
             capture.start()
             assertTrue("writer never received the first buffer", entered.await(3, TimeUnit.SECONDS))
@@ -515,9 +516,10 @@ class CaptureInstrumentedTest {
             pause.actionIntent.send()
             awaitState(engine, "paused")
             val resume = awaitAction(context.getString(xyz.tinycloud.exo.R.string.capture_resume))
+            val stop = awaitAction(context.getString(xyz.tinycloud.exo.R.string.capture_stop))
             resume.actionIntent.send()
             awaitState(engine, "recording")
-            val stop = awaitAction(context.getString(xyz.tinycloud.exo.R.string.capture_stop))
+            // Stop remains valid while Android is still posting the new epoch's notification.
             stop.actionIntent.send()
             awaitState(engine, "idle", 15_000)
             assertNotNull(engine.library.read(id))

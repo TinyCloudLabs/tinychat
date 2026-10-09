@@ -39,6 +39,13 @@ describe("RecordingView", () => {
     expect(html).not.toContain('data-testid="voice-note-stop"');
   });
 
+  test("shows the routed microphone reported by native capture", () => {
+    const html = render({ mic: { state: "recording", reason: null,
+      input: { id: "15:Phone mic", name: "Phone mic", kind: "built_in" } } });
+    expect(html).toContain('data-testid="recorder-active-input"');
+    expect(html).toContain("Using Phone mic");
+  });
+
   test("paused freezes the trace and offers Resume; interrupted makes Resume prominent", () => {
     const paused = render({ mic: { state: "paused", reason: "user" } });
     expect(paused).toContain("Paused · microphone off");

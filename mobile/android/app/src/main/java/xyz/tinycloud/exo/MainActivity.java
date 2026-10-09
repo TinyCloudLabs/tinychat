@@ -56,7 +56,7 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         consumeIntent(intent);
-        main.post(this::handlePending);
+        main.post(() -> { CaptureEngine.get(this).onAppActive(); handlePending(); });
     }
     private void consumeIntent(Intent intent) {
         String action = intent.getAction();
@@ -79,6 +79,7 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
                     CaptureEngine.get(this).presentRecorder(null, "permission_denied");
                 }
             }
+            CaptureEngine.get(this).onAppActive();
             handlePending();
         });
     }

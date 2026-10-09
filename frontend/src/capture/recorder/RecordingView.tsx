@@ -46,6 +46,7 @@ export function RecordingView({ recorder, onOpenNote, consentAsking, discardAski
         <div className="flex min-w-0 flex-col items-center justify-center text-center land:col-start-1 land:row-start-1">
           <RecorderTimer audioMs={recorder.audioMs} running={active && (mic.state === "recording" || mic.state === "silenced")} fixedMs={receipt ? lastSaved?.durationMs ?? 0 : undefined} className="font-display text-[4.25rem] leading-tight tracking-[-0.025em] sm:text-[5rem]" />
           {!receipt && <p className="tnum text-meta text-muted-foreground" data-testid="recorder-meta">{recorderMetaText(recorder.startedAt, audioElapsed, recorder.maxDurationMs)}</p>}
+          {active && mic.input && <p className="mt-2 text-meta text-muted-foreground" data-testid="recorder-active-input">Using {mic.input.name}</p>}
           {!receipt && <LevelTrace subscribe={recorder.subscribeLevel} variant="waveform" tone={paused ? "muted" : warning ? "warning" : "live"} paused={!active || paused} className="mt-10 h-32 max-w-[36rem] land:mt-6" />}
           {warning && <p className="mt-5 flex items-start gap-2 text-callout text-warning"><MicOffIcon className="mt-0.5 size-4 shrink-0" aria-hidden />{warning}</p>}
           {paused && <p className="mt-5 text-callout text-warning">{mic.state === "paused" ? "Paused · microphone off" : mic.state === "interrupted" ? "Recording interrupted · trying to resume" : "Recording needs you · tap Resume to continue"}</p>}

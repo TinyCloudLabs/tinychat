@@ -2,12 +2,17 @@ package xyz.tinycloud.exo.capture
 
 import android.content.Context
 import android.os.Build
+import android.os.SystemClock
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import xyz.tinycloud.exo.capture.core.*
 import java.io.File
 import java.util.UUID
+import java.util.Locale
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -24,19 +29,21 @@ class CaptureEngine private constructor(private val context: Context) {
     private val controlLock = ReentrantLock()
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
     private val autoExecutor = Executors.newSingleThreadExecutor { task -> Thread(task, "ExoCaptureAutoStop") }
+    private val transitionExecutor = Executors.newSingleThreadExecutor { task -> Thread(task, "ExoCaptureTransitions") }
     private val autoStopPending = AtomicBoolean(false)
     private val limitTick = object : Runnable {
         override fun run() {
             if (id == null) return
             try {
-                if (context.filesDir.usableSpace < 100L * 1024 * 1024) scheduleAutoStop("disk_full")
-                else if (intent != "paused" && recordedElapsedMs() >= maxMs) scheduleAutoStop("max_duration")
+                if (context.filesDir.usableSpace < 100L * 1024 * 1024) scheduleAutoStop(MicStateContract.DISK_FULL)
+                else if (intent != "paused" && recordedElapsedMs() >= maxMs) scheduleAutoStop(MicStateContract.MAX_DURATION)
             } finally { if (id != null) main.postDelayed(this, 1000) }
         }
     }
     val library = RecordingLibrary(File(context.filesDir, "voice-notes"), AndroidFileOps())
     private val prefs = context.getSharedPreferences("exo.capture.defaults", Context.MODE_PRIVATE)
-    private var input: AudioCapture? = null
+    private val inputs = InputDevices(context)
+    @Volatile private var input: AudioCapture? = null
     private var encoder: AacAdtsEncoder? = null
     @Volatile private var id: String? = null
     private var startedAt = 0L
@@ -47,14 +54,24 @@ class CaptureEngine private constructor(private val context: Context) {
     private var pausedAt = 0L
     @Volatile private var state = "idle"
     @Volatile private var reason: String? = null
-    @Volatile private var intent = "stopped"
-    @Volatile private var availability = "available"
+    @Volatile private var reasonDetail: String? = null
+    private fun setMicState(nextState: String, nextReason: String?, detail: String? = null) = synchronized(this) {
+        state = nextState; reason = nextReason; reasonDetail = detail
+    }
+    private fun setMicReason(nextReason: String?, detail: String? = null) = synchronized(this) {
+        reason = nextReason; reasonDetail = detail
+    }
+    private fun setMicStateKeepingReason(nextState: String) = synchronized(this) { state = nextState }
+    private val transitions = TransitionMachine()
+    private val intent get() = transitions.intent.name.lowercase(Locale.ROOT)
+    private val availability get() = transitions.availability.name.lowercase(Locale.ROOT)
     private var maxMs = MAX_DURATION_MS
     private var source = "in_app"
     private var options = defaultOptions()
     private var owner: String? = null
     private var transitionGen = 0L
-    private var gen = 0L
+    private val gen get() = transitions.gen
+    private val epoch get() = transitions.epoch
     private var silencedAt = 0L
     private var silencedMs = 0L
     private var silencedEvents = 0
@@ -63,6 +80,103 @@ class CaptureEngine private constructor(private val context: Context) {
     private var lastPeakAt = System.currentTimeMillis()
     private var spans = JSONArray()
     private var openSpan: JSONObject? = null
+    @Volatile var startBeforeAttach: (() -> Unit)? = null // Instrumented suspension gate.
+    private class StaleStart : RuntimeException("stale_start")
+    @Volatile private var lastRoutedInputId: String? = null
+    private val retry: Runnable = object : Runnable {
+        override fun run() {
+            transitionExecutor.execute {
+                if (id == null || intent != "recording" || availability != "interrupted") return@execute
+                runCatching { resumeAttempt(TransitionMachine.Event.INTERRUPTION_ENDED, automatic = true) }
+                    .onFailure { if (availability == "interrupted") scheduleRetry() }
+            }
+        }
+    }
+    private val restartBackoff = RestartBackoff(
+        SystemClock::elapsedRealtime,
+        { main.removeCallbacks(retry); main.post(retry) },
+        { delay -> main.removeCallbacks(retry); main.postDelayed(retry, delay) },
+    )
+    private var retryFailureReason: String? = null
+    init {
+        context.getSystemService(AudioManager::class.java).registerAudioDeviceCallback(object : AudioDeviceCallback() {
+            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) = devicesChanged(addedDevices)
+            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) = devicesChanged(removedDevices)
+        }, main)
+        if (Build.VERSION.SDK_INT >= 31) context.getSystemService(AudioManager::class.java)
+            .addOnModeChangedListener(context.mainExecutor) { mode ->
+                transitionExecutor.execute {
+                    if (mode == AudioManager.MODE_NORMAL) interruptionEnded() else interruptionBegan(MicStateContract.CALL)
+                }
+            }
+    }
+    private fun devicesChanged(changed: Array<out AudioDeviceInfo>) {
+        if (changed.none { it.isSource }) return
+        emit("inputs", listInputs())
+        val selected = inputs.selectedId
+        val active = input?.activeInputId() ?: lastRoutedInputId
+        if (id != null && intent == "recording" && input != null &&
+            changed.any { inputs.id(it) == selected || inputs.id(it) == active })
+            transitionExecutor.execute { rebuild(MicStateContract.ROUTE_CHANGE) }
+    }
+    private fun routedInputChanged() {
+        val active = input?.activeInputId()
+        emit("inputs", listInputs())
+        if (active != lastRoutedInputId) {
+            lastRoutedInputId = active
+            if (id != null && state == "recording" && input != null)
+                transitionExecutor.execute { rebuild(MicStateContract.ROUTE_CHANGE) }
+        }
+    }
+    fun listInputs(): JSONObject = inputs.list(input?.activeInputId())
+    fun selectInput(selectedId: String?) {
+        inputs.select(selectedId)
+        emit("inputs", listInputs())
+        if (id != null && intent == "recording" && input != null)
+            transitionExecutor.execute { rebuild(MicStateContract.ROUTE_CHANGE) }
+    }
+    private fun scheduleRetry() {
+        if (!restartBackoff.failedAttempt()) {
+            if (availability != "interrupted" || id == null) return
+            transitions.send(TransitionMachine.Event.BACKOFF_EXHAUSTED)
+            val blockedReason = retryFailureReason ?: MicStateContract.MIC_UNAVAILABLE
+            setMicState("needs_user", blockedReason)
+            sequence?.resumeFailed(gen, reason = blockedReason)
+            publishState()
+            CaptureNotifications.showResumeAlert(context, status())
+            return
+        }
+    }
+    private fun interruptionBegan(why: String) = controlLock.withLock {
+        val current = id ?: return@withLock
+        if (intent != "recording" || availability != "available") return@withLock
+        val captured = input ?: return@withLock
+        sequence?.beginClose()
+        try { captured.drain(); encoder?.finish() }
+        catch (e: Exception) { Log.e("ExoCapture", "Interruption drain failed", e); encoder?.abort() }
+        finally { captured.release(); input = null; encoder = null }
+        closeSilence(current)
+        val at = System.currentTimeMillis()
+        transitions.send(when (why) {
+            MicStateContract.ROUTE_CHANGE -> TransitionMachine.Event.ROUTE_CHANGE
+            MicStateContract.STALLED -> TransitionMachine.Event.STALL
+            else -> TransitionMachine.Event.INTERRUPTION_BEGAN
+        })
+        sequence?.interrupt(why, why, gen, at)
+        openSpan = JSONObject().put("kind", "omitted").put("reason", why)
+            .put("startedAt", at).put("endedAt", JSONObject.NULL).put("atAudioMs", audioMs).put("audioMs", 0)
+        setMicState("interrupted", why)
+        restartBackoff.reset(); retryFailureReason = null
+        publishState()
+    }
+    private fun interruptionEnded() {
+        if (id != null && intent == "recording" && availability == "interrupted")
+            restartBackoff.interruptionEnded()
+    }
+    private fun rebuild(why: String) {
+        interruptionBegan(why)
+        interruptionEnded()
+    }
     fun addListener(listener: Listener) {
         listeners.add(listener)
         listener.event("micState", status())
@@ -148,7 +262,7 @@ class CaptureEngine private constructor(private val context: Context) {
         if (id != null) throw IllegalStateException("already_recording")
         if (context.filesDir.usableSpace < 300L * 1024 * 1024) throw IllegalStateException("insufficient_storage")
         recover() // Reports failed sessions, but never treats them as a prerequisite for this new id.
-        synchronized(this) { startAfterRecovery(requestedMs, requestedOptions, startSource, commandId) }
+        startAfterRecovery(requestedMs, requestedOptions, startSource, commandId)
     }
     private fun startAfterRecovery(requestedMs: Long?, requestedOptions: JSONObject?, startSource: String, commandId: String?): JSONObject {
         val defaults = defaults()
@@ -165,83 +279,123 @@ class CaptureEngine private constructor(private val context: Context) {
         id = newId
         pausedMs = 0; pausedAt = 0; silencedMs = 0; silencedEvents = 0; noSignalMs = 0
         noSignalAt = 0; lastPeakAt = System.currentTimeMillis()
-        source = startSource; intent = "recording"; availability = "available"; state = "recording"; reason = null; gen++
+        source = startSource; transitions.start(); setMicState("idle", null)
         spans = JSONArray(); openSpan = null
-        try { acquire {
+        try { acquire(releaseLockDuringStart = false, beforeStart = {
             sequence!!.firstInput(gen)
-        } } catch (e: Exception) {
-            library.closeSession(newId)
-            id = null; intent = "stopped"; state = "idle"; throw e
+        }) } catch (e: Exception) {
+            if (id == newId && intent == "recording") {
+                library.closeSession(newId)
+                id = null; transitions.send(TransitionMachine.Event.STOP); setMicState("idle", null)
+            }
+            throw e
         }
         main.removeCallbacks(limitTick); main.postDelayed(limitTick, 1000)
+        transitions.acquired(gen)
+        setMicStateKeepingReason(if (silencedAt != 0L) "silenced" else "recording")
+        lastRoutedInputId = input?.activeInputId()
+        journalActiveInput(newId)
         publishState()
         if (commandId != null) emit("started", JSONObject().put("commandId", commandId).put("id", newId))
         if (startSource != "in_app") presentRecorder()
         return JSONObject().put("id", newId).put("startedAt", startedAt).put("maxDurationMs", maxMs)
     }
-    private fun acquire(beforeStart: () -> Unit = {}, afterStart: () -> Unit = {}) {
+    private fun acquire(releaseLockDuringStart: Boolean = true, beforeStart: () -> Unit = {}, afterStart: () -> Unit = {}) {
         val current = id ?: return
         val attempt = gen
-        encoder = AacAdtsEncoder { frame ->
+        val localEncoder = AacAdtsEncoder { frame ->
             synchronized(this) {
                 if (id != current || gen != attempt || intent != "recording") return@synchronized
                 sequence!!.frame(frame)
-                if (recordedElapsedMs() >= maxMs) scheduleAutoStop("max_duration")
+                if (recordedElapsedMs() >= maxMs) scheduleAutoStop(MicStateContract.MAX_DURATION)
             }
         }
-        input = try { AudioCapture({ pcm -> encoder?.offer(pcm, pcm.size) }, { level, peak ->
+        val localInput = try { AudioCapture({ pcm -> localEncoder.offer(pcm, pcm.size) }, { level, peak ->
             emit("level", JSONObject().put("level", level).put("peak", peak))
             val now = System.currentTimeMillis()
             if (peak > 0) {
                 if (noSignalAt > 0) {
                     noSignalMs += now - noSignalAt; noSignalAt = 0
-                    if (reason == "no_signal") { reason = null; publishState() }
+                    if (reason == MicStateContract.NO_SIGNAL) { setMicReason(null); publishState() }
                 }
                 lastPeakAt = now
             } else if (now - lastPeakAt > 2000 && noSignalAt == 0L) {
-                noSignalAt = lastPeakAt; reason = "no_signal"; publishState()
+                noSignalAt = lastPeakAt; setMicReason(MicStateContract.NO_SIGNAL); publishState()
             }
         }, { silenced ->
-            synchronized(this) {
+            transitionExecutor.execute { synchronized(this) {
                 if (id != current || gen != attempt || intent != "recording") return@synchronized
                 if (silenced && silencedAt == 0L) {
+                    transitions.send(TransitionMachine.Event.SILENCED)
                     silencedAt = System.currentTimeMillis(); silencedEvents++
-                    openSpan = JSONObject().put("kind", "silenced").put("reason", "os_silenced")
+                    openSpan = JSONObject().put("kind", "silenced").put("reason", MicStateContract.OS_SILENCED)
                         .put("startedAt", silencedAt).put("endedAt", JSONObject.NULL).put("atAudioMs", audioMs).put("audioMs", 0)
-                    journalLiveTransition(current, "span_open", JSONObject().put("kind", "silenced").put("reason", "os_silenced"))
-                    state = "silenced"; reason = "os_silenced"; publishState()
+                    journalLiveTransition(current, "span_open", JSONObject().put("kind", "silenced").put("reason", MicStateContract.OS_SILENCED))
+                    setMicState("silenced", MicStateContract.OS_SILENCED); publishState()
                 }
-                if (!silenced && silencedAt != 0L) { closeSilence(current); state = "recording"; reason = null; publishState() }
-            }
-        }, { error ->
-            if (error.startsWith("read_") && input?.inputStopped == true) return@AudioCapture
-            if (error == "writer_stalled") {
-                journalLiveTransition(current, "span_open", JSONObject().put("kind", "omitted").put("reason", "writer_stalled"))
+                if (!silenced && silencedAt != 0L) {
+                    transitions.send(TransitionMachine.Event.UNSILENCED)
+                    closeSilence(current); setMicState("recording", null); publishState()
+                }
+            } }
+        }, { error, errorDetail ->
+            if (error == MicStateContract.READ_ERROR && localInputStopped(current, attempt)) return@AudioCapture
+            if (error == MicStateContract.WRITER_STALLED) {
+                journalLiveTransition(current, "span_open", JSONObject().put("kind", "omitted").put("reason", MicStateContract.WRITER_STALLED))
             } else if (error == "writer_resumed") {
-                journalLiveTransition(current, "span_close", JSONObject().put("kind", "omitted").put("reason", "writer_stalled"))
+                journalLiveTransition(current, "span_close", JSONObject().put("kind", "omitted").put("reason", MicStateContract.WRITER_STALLED))
             }
-            if (error != "writer_resumed") Log.e("ExoCapture", error)
-            reason = if (error == "writer_resumed") null else error; publishState()
-            if (error.startsWith("write_failed")) scheduleAutoStop("write_failed")
-            if (error == "read_error" || error.startsWith("read_failed"))
-                Thread { handleReadFailure(current, attempt) }.start()
-        }) } catch (e: Exception) { encoder?.abort(); encoder = null; throw e }
-        try { beforeStart(); input!!.start(afterStart) }
-        catch (e: Exception) {
-            input?.release(); input = null
-            encoder?.abort(); encoder = null
-            throw e
+            if (error != "writer_resumed") Log.e("ExoCapture", if (errorDetail == null) error else "$error: $errorDetail")
+            MicStateContract.dispatchCaptureError(error, errorDetail, publish = { nextReason, nextDetail ->
+                setMicReason(nextReason, nextDetail)
+                publishState()
+            }, interrupt = { detail ->
+                transitionExecutor.execute { handleReadFailure(current, attempt, detail) }
+            }, onViolation = { Log.e("ExoCapture", it) })
+            if (error == MicStateContract.WRITE_FAILED) scheduleAutoStop(MicStateContract.WRITE_FAILED)
+            if (error == MicStateContract.STALLED) transitionExecutor.execute { rebuild(MicStateContract.STALLED) }
+        }, inputs, { routedInputChanged() }) } catch (e: Exception) { localEncoder.abort(); throw e }
+        // Resume releases the lock while Android opens its input, so Pause,
+        // Stop and Discard can invalidate that attempt. First start keeps the
+        // lock until its first PCM; an empty session cannot be paused or saved.
+        check(controlLock.holdCount == 1)
+        if (releaseLockDuringStart) controlLock.unlock()
+        var failure: Exception? = null
+        try {
+            localInput.start {
+                startBeforeAttach?.invoke()
+                controlLock.withLock {
+                    if (id != current || gen != attempt || intent != "recording") throw StaleStart()
+                    input = localInput; encoder = localEncoder
+                    try { beforeStart(); afterStart(); localInput.startWorkers(); localInput.awaitFirstPcm() }
+                    catch (e: Exception) { input = null; encoder = null; throw e }
+                }
+            }
+        } catch (e: Exception) { failure = e }
+        finally { if (releaseLockDuringStart) controlLock.lock() }
+        failure?.let {
+            try { localInput.release() } catch (release: Exception) { Log.e("ExoCapture", "Stale input release failed", release) }
+            localEncoder.abort()
+            throw it
         }
     }
+    private fun localInputStopped(current: String, attempt: Long) =
+        id != current || gen != attempt || intent != "recording" || input?.inputStopped == true
     private fun journalLiveTransition(current: String, name: String, extra: JSONObject) = synchronized(this) {
         if (id != current || library.tombstone(current).exists()) return@synchronized
         sequence?.transition(name, extra)
+    }
+    private fun journalActiveInput(current: String) {
+        val device = input?.activeInput() ?: return
+        val active = device.getString("id")
+        journalLiveTransition(current, "input", device.copy())
+        emit("inputs", inputs.list(active))
     }
     private fun closeSilence(current: String) {
         if (silencedAt == 0L) return
         val now = System.currentTimeMillis()
         silencedMs += now - silencedAt; silencedAt = 0
-        journalLiveTransition(current, "span_close", JSONObject().put("kind", "silenced").put("reason", "os_silenced"))
+        journalLiveTransition(current, "span_close", JSONObject().put("kind", "silenced").put("reason", MicStateContract.OS_SILENCED))
         openSpan?.put("endedAt", now)?.put("audioMs", audioMs - openSpan!!.optLong("atAudioMs"))
         if (openSpan != null) spans.put(openSpan)
         openSpan = null
@@ -255,7 +409,7 @@ class CaptureEngine private constructor(private val context: Context) {
         spans.put(span)
         openSpan = null
     }
-    private fun handleReadFailure(current: String, attempt: Long) = controlLock.withLock {
+    private fun handleReadFailure(current: String, attempt: Long, detail: String? = null) = controlLock.withLock {
         if (id != current || gen != attempt || intent != "recording" || input == null) return@withLock
         val captured = input!!
         var teardownFailed = false
@@ -265,12 +419,13 @@ class CaptureEngine private constructor(private val context: Context) {
             encoder?.finish(); encoder = null
             closeSilence(current)
             val at = System.currentTimeMillis()
-            gen++
-            sequence!!.interrupt("read_error", "read_error", gen, at)
-            openSpan = JSONObject().put("kind", "omitted").put("reason", "read_error")
+            transitions.send(TransitionMachine.Event.INTERRUPTION_BEGAN)
+            sequence!!.interrupt(MicStateContract.READ_ERROR, MicStateContract.READ_ERROR, gen, at)
+            openSpan = JSONObject().put("kind", "omitted").put("reason", MicStateContract.READ_ERROR)
                 .put("startedAt", at).put("endedAt", JSONObject.NULL)
                 .put("atAudioMs", audioMs).put("audioMs", 0)
-            availability = "interrupted"; state = "interrupted"; reason = "read_error"
+            val readState = MicStateContract.readFailure(detail)
+            setMicState(readState.state, readState.reason, readState.detail)
             publishState()
         } catch (e: Exception) {
             Log.e("ExoCapture", "Read failure teardown failed", e)
@@ -280,16 +435,34 @@ class CaptureEngine private constructor(private val context: Context) {
             try { captured.release() } catch (e: Exception) { Log.e("ExoCapture", "Input release after read error", e) }
             input = null
         }
-        if (teardownFailed) autoStop("write_failed")
+        if (teardownFailed) autoStop(MicStateContract.WRITE_FAILED) else {
+            restartBackoff.reset(); retryFailureReason = null
+            interruptionEnded()
+        }
     }
+    internal fun injectReadErrorForTest() {
+        val current = id ?: throw IllegalStateException("not_recording")
+        check(input != null) { "input_not_attached" }
+        handleReadFailure(current, gen)
+    }
+    internal fun rebuildForTest() = rebuild(MicStateContract.ROUTE_CHANGE)
+    internal fun exhaustRetryForTest() {
+        restartBackoff.expireForTest()
+        scheduleRetry()
+    }
+    internal fun retryFailureForTest(): String? = retryFailureReason
+    internal fun hasAttachedInputForTest(): Boolean = input != null
     fun pause() = controlLock.withLock {
         val current = id ?: throw IllegalStateException("not_recording")
         if (intent == "paused") return@withLock
-        if (input == null && availability == "interrupted") {
+        if (input == null) {
             val at = System.currentTimeMillis()
             closeOmitted(current, at)
             sequence!!.pause(at)
-            gen++; intent = "paused"; state = "paused"; reason = "user"; pausedAt = at
+            transitions.send(TransitionMachine.Event.PAUSE)
+            setMicState("paused", MicStateContract.USER); pausedAt = at
+            CaptureNotifications.cancelAlert(context)
+            main.removeCallbacks(retry)
             publishState()
             return@withLock
         }
@@ -315,7 +488,10 @@ class CaptureEngine private constructor(private val context: Context) {
             Log.e("ExoCapture", "AudioRecord release failed after durable pause", e)
         }
         input = null
-        gen++; intent = "paused"; state = "paused"; reason = "user"
+        transitions.send(TransitionMachine.Event.PAUSE)
+        setMicState("paused", MicStateContract.USER)
+        CaptureNotifications.cancelAlert(context)
+        main.removeCallbacks(retry)
         publishState()
     }
     private fun failStoppedPause(current: String, captured: AudioCapture, failure: Exception): Nothing {
@@ -325,38 +501,78 @@ class CaptureEngine private constructor(private val context: Context) {
         encoder = null
         try { sequence?.closeSegment() }
         catch (e: Exception) { Log.e("ExoCapture", "Final checkpoint after failed Pause", e) }
-        autoStop("write_failed")
+        autoStop(MicStateContract.WRITE_FAILED)
         if (id != null) {
-            availability = "blocked"; state = "needs_user"; reason = "write_failed"; publishState()
+            transitions.writeFailed(); setMicState("needs_user", MicStateContract.WRITE_FAILED); publishState()
         }
         throw IllegalStateException("pause_failed", failure)
     }
-    fun resume() = controlLock.withLock {
+    fun resume() = resumeAttempt(TransitionMachine.Event.RESUME, automatic = false)
+    fun onAppActive() {
+        transitionExecutor.execute {
+            if (id == null || intent != "recording" || availability == "available") return@execute
+            val wasBlocked = availability == "blocked"
+            runCatching { resumeAttempt(TransitionMachine.Event.APP_ACTIVE, automatic = !wasBlocked,
+                alertOnFailure = false) }.onFailure {
+                if (availability == "interrupted") scheduleRetry()
+            }
+        }
+    }
+    private fun resumeAttempt(event: TransitionMachine.Event, automatic: Boolean,
+                              alertOnFailure: Boolean = true): Unit = controlLock.withLock {
         val current = id ?: throw IllegalStateException("not_recording")
         val wasPaused = intent == "paused"
         if (!wasPaused && !(intent == "recording" && availability != "available" && input == null)) return@withLock
         val at = System.currentTimeMillis()
         if (pausedAt > 0) { pausedMs += at - pausedAt; pausedAt = 0 }
-        gen++
-        intent = "recording"; state = "recording"; reason = null
+        if (!transitions.send(event)) return@withLock
+        val attempt = gen
         if (wasPaused) sequence!!.resumeIntent(at)
+        val omittedReason = openSpan?.takeIf { it.optString("kind") == "omitted" }?.optString("reason")
+        var spanClosed = false
         try {
             acquire(afterStart = {
-                availability = "available"
                 if (wasPaused) sequence!!.resumeAcquired(gen, at)
                 else {
-                    val omittedReason = openSpan?.takeIf { it.optString("kind") == "omitted" }?.optString("reason")
                     if (omittedReason != null) sequence!!.restartAfterInterruption(omittedReason, gen, at)
                     else sequence!!.resumeAcquired(gen, at)
                     closeOmittedInMemory(at)
+                    spanClosed = omittedReason != null
                 }
             })
         } catch (e: Exception) {
-            availability = "blocked"; state = "needs_user"; reason = "resume_blocked"
-            sequence!!.resumeFailed(gen, at)
+            if (id != current || gen != attempt || intent != "recording") return@withLock
+            val failureReason = when {
+                e is SecurityException -> MicStateContract.RESUME_NOT_ALLOWED
+                e is java.io.IOException -> MicStateContract.RESUME_BLOCKED
+                else -> MicStateContract.MIC_UNAVAILABLE
+            }
+            if (spanClosed && omittedReason != null) {
+                // Android may start a mic but return no PCM. Preserve the omitted
+                // interval until an attempt actually produces audio.
+                sequence!!.interrupt(omittedReason, omittedReason, gen, at)
+                openSpan = JSONObject().put("kind", "omitted").put("reason", omittedReason)
+                    .put("startedAt", at).put("endedAt", JSONObject.NULL)
+                    .put("atAudioMs", audioMs).put("audioMs", 0)
+            }
+            transitions.failed(attempt, automatic)
+            retryFailureReason = failureReason
+            if (automatic) setMicStateKeepingReason("interrupted")
+            else {
+                setMicState("needs_user", failureReason)
+                sequence!!.resumeFailed(gen, at, failureReason)
+            }
             publishState()
+            if (!automatic && alertOnFailure) CaptureNotifications.showResumeAlert(context, status())
             throw IllegalStateException("resume_failed", e)
         }
+        transitions.acquired(attempt)
+        setMicState(if (silencedAt != 0L) "silenced" else "recording",
+            if (silencedAt != 0L) MicStateContract.OS_SILENCED else null)
+        restartBackoff.reset(); retryFailureReason = null; main.removeCallbacks(retry)
+        lastRoutedInputId = input?.activeInputId()
+        journalActiveInput(current)
+        CaptureNotifications.cancelAlert(context)
         publishState()
     }
     private fun closeOmittedInMemory(at: Long) {
@@ -365,10 +581,10 @@ class CaptureEngine private constructor(private val context: Context) {
         spans.put(span)
         openSpan = null
     }
-    fun stop(reason: String = "user"): JSONObject = controlLock.withLock {
+    fun stop(reason: String = MicStateContract.USER): JSONObject = controlLock.withLock {
         val current = id ?: throw IllegalStateException("not_recording")
         if (input == null) library.read(current)?.let { saved ->
-            id = null; state = "idle"; this.reason = null; intent = "stopped"; availability = "available"
+            id = null; setMicState("idle", null); transitions.send(TransitionMachine.Event.STOP)
             main.removeCallbacks(limitTick)
             publishState(); emit("committed", saved)
             return@withLock saved
@@ -396,24 +612,24 @@ class CaptureEngine private constructor(private val context: Context) {
             encoder = null
             closeSilence(current)
             closeOmitted(current, System.currentTimeMillis())
-            gen++; intent = "stopped"
+            transitions.send(TransitionMachine.Event.STOP); CaptureNotifications.cancelAlert(context); main.removeCallbacks(retry)
             if (pausedAt > 0) { pausedMs += System.currentTimeMillis() - pausedAt; pausedAt = 0 }
             val at = System.currentTimeMillis()
-            finalReason = if (captureFailure != null) "write_failed" else reason
+            finalReason = if (captureFailure != null) MicStateContract.WRITE_FAILED else reason
             sequence!!.stop(finalReason, at)
             library.commit(current, { RecordingFinalizer.mux(library.session(current), it) },
                 metrics = JSONObject().put("silencedMs", silencedMs).put("silencedEvents", silencedEvents).put("noSignalMs", noSignalMs))
         } catch (e: Exception) {
             try { encoder?.abort() } catch (abort: Exception) { Log.e("ExoCapture", "AAC abort after failed Stop", abort) }
             encoder = null
-            gen++; intent = "stopped"
+            transitions.writeFailed(); CaptureNotifications.cancelAlert(context); main.removeCallbacks(retry)
             library.closeSession(current)
-            state = "needs_user"; this.reason = "write_failed"; availability = "blocked"
+            setMicState("needs_user", MicStateContract.WRITE_FAILED)
             main.removeCallbacks(limitTick)
             publishState()
             throw e
         }
-        id = null; state = "idle"; this.reason = if (finalReason == "user") null else finalReason
+        id = null; setMicState("idle", if (finalReason == MicStateContract.USER) null else finalReason)
         main.removeCallbacks(limitTick)
         publishState(); emit("committed", note)
         note
@@ -421,9 +637,16 @@ class CaptureEngine private constructor(private val context: Context) {
     fun discard(): String? = controlLock.withLock {
         val current = id ?: return@withLock null
         if (library.sidecar(current).exists()) throw IllegalStateException("already_committed")
-        gen++; intent = "stopped"; library.discardUncommitted(current)
-        input?.stop(); input = null; encoder?.finish(); encoder = null
-        id = null; state = "idle"; reason = null; publishState()
+        transitions.send(TransitionMachine.Event.DISCARD); CaptureNotifications.cancelAlert(context); main.removeCallbacks(retry)
+        val captured = input
+        try { captured?.drain() } catch (e: Exception) { Log.e("ExoCapture", "Discard input drain failed", e) }
+        finally {
+            try { captured?.release() } catch (e: Exception) { Log.e("ExoCapture", "Discard input release failed", e) }
+            input = null
+        }
+        encoder?.abort(); encoder = null
+        library.discardUncommitted(current)
+        id = null; setMicState("idle", null); publishState()
         main.removeCallbacks(limitTick)
         current
     }
@@ -447,17 +670,23 @@ class CaptureEngine private constructor(private val context: Context) {
         val now = System.currentTimeMillis()
         return now - startedAt - pausedMs - if (pausedAt > 0) now - pausedAt else 0
     }
-    @Synchronized fun status(): JSONObject = JSONObject().put("state", state).put("reason", reason ?: JSONObject.NULL)
-        .put("id", id ?: JSONObject.NULL).put("intent", intent).put("availability", availability)
-        .put("startedAt", if (id == null) JSONObject.NULL else startedAt)
-        .put("elapsedMs", recordedElapsedMs()).put("pausedMs", pausedMs + if (pausedAt > 0) System.currentTimeMillis() - pausedAt else 0)
-        .put("audioMs", durableAudioMs).put("maxDurationMs", maxMs)
-        .put("spans", JSONArray(spans.toString())).put("openSpan", openSpan?.copy() ?: JSONObject.NULL)
-        .put("source", source).put("options", options.copy())
-        .put("input", if (id == null) JSONObject.NULL else JSONObject().put("id", "built-in")
-            .put("name", "Built-in microphone").put("kind", "built_in"))
-        .put("owner", owner ?: JSONObject.NULL)
-        .put("transitionGen", transitionGen).put("gen", gen).put("androidSdkInt", Build.VERSION.SDK_INT)
+    @Synchronized fun status(): JSONObject {
+        val mic = MicStateContract.snapshot(state, reason, reasonDetail,
+            onViolation = { Log.e("ExoCapture", it) })
+        return JSONObject().put("state", mic.state).put("reason", mic.reason ?: JSONObject.NULL)
+            .apply { if (mic.detail != null) put("detail", mic.detail) }
+            .put("id", id ?: JSONObject.NULL).put("intent", intent).put("availability", availability)
+            .put("startedAt", if (id == null) JSONObject.NULL else startedAt)
+            .put("elapsedMs", recordedElapsedMs()).put("pausedMs", pausedMs + if (pausedAt > 0) System.currentTimeMillis() - pausedAt else 0)
+            .put("audioMs", durableAudioMs).put("maxDurationMs", maxMs)
+            .put("spans", JSONArray(spans.toString())).put("openSpan", openSpan?.copy() ?: JSONObject.NULL)
+            .put("source", source).put("options", options.copy())
+            .put("input", input?.activeInput() ?: JSONObject.NULL)
+            .put("owner", owner ?: JSONObject.NULL)
+            .put("transitionGen", transitionGen).put("gen", gen).put("epoch", epoch)
+            .put("activeId", input?.activeInputId() ?: JSONObject.NULL)
+            .put("androidSdkInt", Build.VERSION.SDK_INT)
+    }
     companion object {
         @Volatile private var instance: CaptureEngine? = null
         @JvmStatic fun get(context: Context): CaptureEngine = instance ?: synchronized(this) {
