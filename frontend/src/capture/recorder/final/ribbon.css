@@ -259,6 +259,13 @@
   transform: translateY(-50%);
 }
 
+/* On the rail the dot sits on the icon's corner, not the row's trailing edge. */
+[data-testid="nav-rail"] .capture-dot {
+  top: 2px;
+  right: 8px;
+  transform: none;
+}
+
 .capture-dot[data-dot="live"] {
   background: #ff6b62;
 }
