@@ -80,7 +80,7 @@ export function SoftHomeProvider(props: {
     () =>
       withQuarantine(
         props.issues,
-        quarantine.items.map((item) => item.id),
+        quarantine.items,
         gone,
       ),
     [props.issues, quarantine.items, gone],

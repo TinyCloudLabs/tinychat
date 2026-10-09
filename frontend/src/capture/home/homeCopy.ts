@@ -63,6 +63,10 @@ export const HOME_COPY = {
     title: RECOVERY_FAILED,
     body: "Exo tried several times and couldn't finish saving this recording. The audio is kept on this phone.",
   },
+  unplayableSheet: {
+    title: RECOVERY_FAILED,
+    body: "This recording can't be recovered. You can delete it.",
+  },
   writeFailedSheet: {
     title: WRITE_FAILED,
     body: "This phone stopped saving the recording partway through. What was recorded up to that point is kept; the rest was not recorded.",

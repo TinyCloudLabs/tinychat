@@ -2,9 +2,10 @@ import { HOME_COPY } from "../../home/homeCopy";
 import { FINALIZATION_PENDING } from "../recorderCopy";
 import type { RecorderState } from "../recorderReducer";
 
-/** `RecorderValue` carries `lastSaved` only; the reducer state also has `recordingId` and `failedRecording`. */
-type Source = Pick<RecorderState, "error" | "lastSaved" | "captureIssues"> &
-  Partial<Pick<RecorderState, "recordingId" | "failedRecording">>;
+type Source = Pick<
+  RecorderState,
+  "error" | "lastSaved" | "captureIssues" | "recordingId" | "failedRecording"
+>;
 
 /**
  * The recorder's error line. "Exo will finish it automatically" is only true

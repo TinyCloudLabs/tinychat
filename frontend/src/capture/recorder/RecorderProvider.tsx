@@ -59,6 +59,10 @@ export interface RecorderValue {
   outcome: "local" | "saved" | "failed" | null;
   localUpload: RecorderState["localUpload"];
   lastSaved: RecorderState["lastSaved"];
+  /** The recording in progress, or stopping: its capture issue and error belong to it. */
+  recordingId: RecorderState["recordingId"];
+  /** A recording that failed to finish, kept for its receipt. */
+  failedRecording: RecorderState["failedRecording"];
   pending: PendingSnapshot;
   transcription: VoiceNoteTranscriptionProps | undefined;
   /** Native options while recording; otherwise the signed-in effective JS default. */
@@ -271,6 +275,8 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       outcome: state.outcome,
       localUpload: state.localUpload,
       lastSaved: state.lastSaved,
+      recordingId: state.recordingId,
+      failedRecording: state.failedRecording,
       pending: recorder.pending,
       transcription: recorder.transcription,
       transcriber: recorder.transcriber,
@@ -362,6 +368,8 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       outcome: null,
       localUpload: null,
       lastSaved: null,
+      recordingId: null,
+      failedRecording: null,
       pending: NO_PENDING,
       transcription: undefined,
       transcriber: { id: "on-device", identifySpeakers: false, source: "default" },

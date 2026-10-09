@@ -11,6 +11,7 @@ import {
   withQuarantine,
   cardNote,
   issueForItem,
+  issueCanRetry,
   issueHasSheet,
   issueMeta,
   issueSheetCopy,
@@ -186,6 +187,7 @@ describe("the on-this-phone card's note", () => {
 
 describe("quarantined recordings", () => {
   const parked: HomeIssue = { kind: "quarantined" };
+  const q = (id: string, reason = "corrupt_journal") => ({ id, reason });
 
   test("its row and sheet say the audio is kept, and open the sheet", () => {
     expect(issueMeta(parked)).toBe("Couldn't recover this recording · audio kept");
@@ -201,19 +203,30 @@ describe("quarantined recordings", () => {
   });
 
   test("a quarantined session replaces recoveryFailed and adds a row of its own", () => {
-    const merged = withQuarantine({ a: failed, b: writeFailed }, ["a", "c", "b"], new Set());
+    const merged = withQuarantine({ a: failed, b: writeFailed }, [q("a"), q("c"), q("b")], new Set());
     expect(merged.a).toEqual({ kind: "quarantined" });
     expect(merged.c).toEqual({ kind: "quarantined" });
     expect(merged.b).toEqual(writeFailed);
   });
 
+  test("unplayable audio is Delete only, with an honest sheet", () => {
+    const merged = withQuarantine({}, [q("u", "unplayable"), q("v")], new Set());
+    expect(merged.u).toEqual({ kind: "quarantined", unplayable: true });
+    expect(issueCanRetry(merged.u!)).toBe(false);
+    expect(issueCanRetry(merged.v!)).toBe(true);
+    expect(issueCanRetry(failed)).toBe(true);
+    expect(issueIsRecoverable(merged.u!)).toBe(true);
+    expect(issueSheetCopy(merged.u!).body).toBe("This recording can't be recovered. You can delete it.");
+    expect(issueMeta(merged.u!)).toBe("Couldn't recover this recording · audio kept");
+  });
+
   test("a deleted recording drops out of both", () => {
-    const merged = withQuarantine({ a: failed }, ["a", "c"], new Set(["a", "c"]));
+    const merged = withQuarantine({ a: failed }, [q("a"), q("c")], new Set(["a", "c"]));
     expect(merged).toEqual({});
   });
 
   test("orphan quarantined sessions get a Recent row", () => {
-    const merged = withQuarantine({}, ["q"], new Set());
+    const merged = withQuarantine({}, [q("q")], new Set());
     expect(orphanIssues([], merged)).toEqual([{ id: "q", issue: { kind: "quarantined" } }]);
   });
 

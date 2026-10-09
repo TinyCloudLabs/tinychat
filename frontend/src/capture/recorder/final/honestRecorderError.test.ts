@@ -51,6 +51,17 @@ const cases: Case[] = [
     expected: "Couldn't recover this recording. Exo will try again when it next opens.",
   },
   {
+    name: "stop timeout: only recordingId names the recording (no lastSaved, no failedRecording)",
+    state: {
+      error: FINALIZATION_PENDING,
+      recordingId: "a",
+      lastSaved: null,
+      failedRecording: null,
+      captureIssues: { a: writeFailed },
+    },
+    expected: HOME_COPY.writeFailedError,
+  },
+  {
     name: "recoveryFailed on the failed recording",
     state: {
       error: FINALIZATION_PENDING,

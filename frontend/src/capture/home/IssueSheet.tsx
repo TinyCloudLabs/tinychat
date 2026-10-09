@@ -5,7 +5,12 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { useId, useRef, type RefObject } from "react";
 
-import { issueIsRecoverable, issueSheetCopy, type HomeIssue } from "./captureIssues";
+import {
+  issueCanRetry,
+  issueIsRecoverable,
+  issueSheetCopy,
+  type HomeIssue,
+} from "./captureIssues";
 import {
   useFailedActions,
   useFailedActionsAvailable,
@@ -18,6 +23,7 @@ import "../recorder/final/phone.css";
 
 function Actions(props: {
   actions: FailedActions;
+  canRetry: boolean;
   deleteRef: RefObject<HTMLButtonElement | null>;
 }) {
   const { actions } = props;
@@ -30,15 +36,17 @@ function Actions(props: {
         </p>
       )}
       {/* aria-disabled, not disabled: a busy button keeps focus. */}
-      <button
-        type="button"
-        className="soft-sheet-close"
-        aria-disabled={busy}
-        onClick={() => !busy && actions.tryAgain()}
-        data-testid="capture-issue-retry"
-      >
-        {actions.busy === "retry" ? HOME_COPY.tryingAgain : HOME_COPY.tryAgain}
-      </button>
+      {props.canRetry && (
+        <button
+          type="button"
+          className="soft-sheet-close"
+          aria-disabled={busy}
+          onClick={() => !busy && actions.tryAgain()}
+          data-testid="capture-issue-retry"
+        >
+          {actions.busy === "retry" ? HOME_COPY.tryingAgain : HOME_COPY.tryAgain}
+        </button>
+      )}
       <button
         ref={props.deleteRef}
         type="button"
@@ -111,7 +119,11 @@ export function IssueSheet(props: {
             <Dialog.Description className="soft-sheet-body">
               {copy?.body}
             </Dialog.Description>
-            {shown && <Actions actions={actions} deleteRef={deleteButton} />}
+            {shown && <Actions
+                actions={actions}
+                canRetry={props.issue !== null && issueCanRetry(props.issue)}
+                deleteRef={deleteButton}
+              />}
             <Dialog.Close
               className={shown ? "soft-sheet-quiet" : "soft-sheet-close"}
               data-testid="capture-issue-close"

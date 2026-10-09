@@ -9,7 +9,10 @@ import { FINALIZATION_PENDING } from "../recorder/recorderCopy";
 import { HOME_COPY } from "./homeCopy";
 
 /** The recorder's issues, plus a session native gave up on and parked with its audio kept (`listQuarantine`). */
-export type HomeIssue = RecorderCaptureIssue | { kind: "quarantined" };
+/** `unplayable`: native kept the audio but there is nothing to recover from, so only Delete applies. */
+export type HomeIssue =
+  | RecorderCaptureIssue
+  | { kind: "quarantined"; unplayable?: true };
 
 export type CaptureIssues = Readonly<Record<string, HomeIssue>>;
 
@@ -34,6 +37,11 @@ export function issueIsRecoverable(
   return issue.kind === "recoveryFailed" || issue.kind === "quarantined";
 }
 
+/** Whether Try again is offered: not for audio native could not play back. */
+export function issueCanRetry(issue: HomeIssue): boolean {
+  return !(issue.kind === "quarantined" && issue.unplayable);
+}
+
 /** Changes when a recording newly fails recovery (or stops failing): the cue to read what native has parked. */
 export function recoveryFailedKey(
   issues: Readonly<Record<string, RecorderCaptureIssue>>,
@@ -51,14 +59,17 @@ export function recoveryFailedKey(
  */
 export function withQuarantine(
   issues: Readonly<Record<string, RecorderCaptureIssue>>,
-  quarantinedIds: readonly string[],
+  quarantined: readonly { id: string; reason: string }[],
   deletedIds: ReadonlySet<string>,
 ): CaptureIssues {
   const merged: Record<string, HomeIssue> = { ...issues };
-  for (const id of quarantinedIds) {
+  for (const { id, reason } of quarantined) {
     const current = merged[id];
     if (current === undefined || current.kind === "recoveryFailed")
-      merged[id] = { kind: "quarantined" };
+      merged[id] =
+        reason === "unplayable"
+          ? { kind: "quarantined", unplayable: true }
+          : { kind: "quarantined" };
   }
   for (const id of deletedIds) delete merged[id];
   return merged;
@@ -79,7 +90,9 @@ export function issueSheetCopy(issue: HomeIssue): {
     case "recoveryFailed":
       return HOME_COPY.recoveryFailedSheet;
     case "quarantined":
-      return HOME_COPY.quarantinedSheet;
+      return issue.unplayable
+        ? HOME_COPY.unplayableSheet
+        : HOME_COPY.quarantinedSheet;
     case "write_failed":
       return HOME_COPY.writeFailedSheet;
   }

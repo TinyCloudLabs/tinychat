@@ -332,6 +332,21 @@ describe("Soft Capture home interactions (phone)", () => {
       await page.context().close();
     });
 
+    test("an unplayable quarantined recording offers Delete only, with an honest line", async () => {
+      const page = await open("capture-soft-failed-unplayable");
+      await page.locator(PARKED).tap();
+      await sheetOf(page).waitFor({ timeout: 5_000 });
+      expect(await sheetOf(page).innerText()).toContain("This recording can't be recovered. You can delete it.");
+      expect(await page.locator('[data-testid="capture-issue-retry"]').count()).toBe(0);
+      await page.locator('[data-testid="capture-issue-delete"]').tap();
+      await page.getByRole("alertdialog").waitFor({ timeout: 5_000 });
+      await page.locator('[data-testid="capture-issue-delete-confirm"]').tap();
+      await sheetOf(page).waitFor({ state: "detached", timeout: 5_000 });
+      expect(await calls(page)).toContain("deleteQuarantined:rec-unplayable");
+      expect(await page.locator('li[data-issue="quarantined"]').count()).toBe(0);
+      await page.context().close();
+    });
+
     test("Try again on a quarantined recording that fails again leaves it quarantined, with the error shown", async () => {
       const page = await open("capture-soft-failed-parked");
       await page.locator(PARKED).tap();

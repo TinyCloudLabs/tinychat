@@ -165,7 +165,7 @@ declare global {
 }
 
 /** Wraps the harness's fake plugin so the failed-recording calls are driven by `window.exoUiFailed`. */
-function installFailedNative(parked: string[]) {
+function installFailedNative(parked: string[], unplayable: string[]) {
   const waiting: (() => void)[] = [];
   const control: NonNullable<Window["exoUiFailed"]> = {
     calls: [],
@@ -187,7 +187,7 @@ function installFailedNative(parked: string[]) {
       ...base,
       listQuarantine: async () => {
         await call("list", "list");
-        return { items: control.parked.map((id) => ({ id, reason: "corrupt_journal", sizeBytes: 1024 })) };
+        return { items: control.parked.map((id) => ({ id, reason: unplayable.includes(id) ? "unplayable" : "corrupt_journal", sizeBytes: 1024 })) };
       },
       retryRecovery: async ({ id }) => {
         await call("retry", `retry:${id}`);
@@ -211,10 +211,11 @@ function installFailedNative(parked: string[]) {
 function FailedHome(props: {
   issues: NonNullable<RecorderValue["captureIssues"]>;
   parked?: string[];
+  unplayable?: string[];
   open?: string;
   confirm?: boolean;
 }) {
-  useState(() => installFailedNative(props.parked ?? []));
+  useState(() => installFailedNative(props.parked ?? [], props.unplayable ?? []));
   useEffect(() => {
     if (!props.open) return;
     const timer = setInterval(() => {
@@ -263,7 +264,9 @@ export const captureSoftScreens: HarnessScreen[] = [
   { ...SOFT, id: "capture-soft-override", render: () => <SoftHome recorder={ISSUES_WITH_CARD} /> },
   { ...SOFT, id: "capture-soft-failed-actions", interactive: true, render: () => <FailedHome issues={LOST} /> },
   { ...SOFT, id: "capture-soft-failed-parked", interactive: true, render: () => <FailedHome issues={{}} parked={["rec-parked"]} /> },
+  { ...SOFT, id: "capture-soft-failed-unplayable", interactive: true, render: () => <FailedHome issues={{}} parked={["rec-unplayable"]} unplayable={["rec-unplayable"]} /> },
   { ...SOFT, id: "capture-soft-sheet-actions", readyWhen: SHEET, render: () => <FailedHome issues={LOST} open={LOST_ROW} /> },
   { ...SOFT, id: "capture-soft-sheet-quarantined", readyWhen: SHEET, render: () => <FailedHome issues={{}} parked={["rec-parked"]} open={PARKED_ROW} /> },
+  { ...SOFT, id: "capture-soft-sheet-unplayable", readyWhen: SHEET, render: () => <FailedHome issues={{}} parked={["rec-unplayable"]} unplayable={["rec-unplayable"]} open={PARKED_ROW} /> },
   { ...SOFT, id: "capture-soft-sheet-confirm", readyWhen: CONFIRM, render: () => <FailedHome issues={LOST} open={LOST_ROW} confirm /> },
 ];
