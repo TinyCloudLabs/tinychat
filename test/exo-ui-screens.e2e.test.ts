@@ -41,7 +41,6 @@ const VIEWPORTS: Viewport[] = [
   { id: "tablet-land", width: 1180, height: 820, deviceScaleFactor: 2, hasTouch: true },
   { id: "desktop-min", width: 900, height: 600, deviceScaleFactor: 2 },
   { id: "desktop", width: 1280, height: 800, deviceScaleFactor: 2 },
-  { id: "halo-review", width: 1280, height: 1200, deviceScaleFactor: 2 },
   // 1280x800 at 200% browser zoom.
   { id: "zoom200", width: 640, height: 400, deviceScaleFactor: 2, zoom: true },
   { id: "text200-phone", group: "text200", width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true, textScale: 2, zoom: true },
@@ -386,42 +385,6 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
             await page.screenshot({ path: `${outDir}${file}`, fullPage: screen.layout === "document" });
             captures.push({ screen: screen.id, viewport: viewport.id, theme, file, findings });
 
-            if (screen.id === "recorder-final-halo" && viewport.id === "phone") {
-              for (const index of [4, 5, 6, 7]) {
-                await page.locator(".halo-ring__canvas").nth(index).scrollIntoViewIfNeeded();
-                await page.waitForFunction((canvasIndex) => {
-                  const canvas = document.querySelectorAll<HTMLCanvasElement>(".halo-ring__canvas")[canvasIndex];
-                  const context = canvas?.getContext("2d");
-                  if (!canvas || !context) return false;
-                  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-                  for (let y = 0; y < canvas.height; y += 16) {
-                    for (let x = 0; x < canvas.width; x += 16) {
-                      if (pixels[(y * canvas.width + x) * 4 + 3] > 0) return true;
-                    }
-                  }
-                  return false;
-                }, index, { timeout: 3_000 });
-              }
-            }
-
-            if (screen.id === "recorder-final-halo" && viewport.id === "halo-review") {
-              await page.waitForFunction(() => {
-                const canvases = document.querySelectorAll<HTMLCanvasElement>(".halo-ring__canvas");
-                if (canvases.length !== 8) return false;
-                return [...canvases].every((canvas) => {
-                  const context = canvas.getContext("2d");
-                  if (!context) return false;
-                  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-                  for (let y = 0; y < canvas.height; y += 16) {
-                    for (let x = 0; x < canvas.width; x += 16) {
-                      if (pixels[(y * canvas.width + x) * 4 + 3] > 0) return true;
-                    }
-                  }
-                  return false;
-                });
-              }, undefined, { timeout: 3_000 });
-            }
-
             for (const finding of findings) {
               failures.push(`${file}: ${finding.check}${finding.element ? ` ${finding.element}` : ""} (${finding.detail})`);
             }
@@ -435,6 +398,77 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
       // WebKit takes several seconds per page for the shell screens (they run the whole chat).
     }, 600_000);
   }
+
+  test("recorder halo in tall phone and eight-ring review captures", async () => {
+    const halo = screens.find((screen) => screen.id === "recorder-final-halo");
+    if (!halo) return;
+
+    const haloViewports: Viewport[] = [
+      { id: "phone-halo-review", width: 390, height: 4400, deviceScaleFactor: 2, isMobile: true, hasTouch: true },
+      { id: "halo-review", width: 1280, height: 2200, deviceScaleFactor: 2 },
+    ];
+    const forceCanvas = process.env.EXO_UI_HALO_FORCE_CANVAS === "1";
+    const haloBrowser = await engine.launch({ headless: true });
+    browsers.push(haloBrowser);
+
+    for (const viewport of haloViewports) {
+      for (const theme of themes) {
+        const context = await haloBrowser.newContext({
+          viewport: { width: viewport.width, height: viewport.height },
+          deviceScaleFactor: viewport.deviceScaleFactor,
+          isMobile: viewport.isMobile ?? false,
+          hasTouch: viewport.hasTouch ?? false,
+          colorScheme: theme,
+          reducedMotion: motion,
+        });
+        if (forceCanvas) {
+          await context.addInitScript(() => {
+            const constructors = [HTMLCanvasElement, window.OffscreenCanvas].filter(Boolean) as Array<typeof HTMLCanvasElement>;
+            for (const Canvas of constructors) {
+              const getContext = Canvas.prototype.getContext;
+              Canvas.prototype.getContext = function(type: string, ...args: unknown[]) {
+                if (/^(webgl|webgl2|experimental-webgl)$/.test(type)) return null;
+                return Reflect.apply(getContext, this, [type, ...args]);
+              } as typeof Canvas.prototype.getContext;
+            }
+          });
+        }
+        try {
+          const page = await context.newPage();
+          const rendererPaths: string[] = [];
+          page.on("console", (message) => {
+            if (message.type() === "info" && message.text().includes("[HaloRing] renderer:")) rendererPaths.push(message.text());
+          });
+          await page.goto(`http://127.0.0.1:${server.port}/?screen=${halo.id}&theme=${theme}&platform=web&freeze=1`);
+          await page.waitForFunction(() => window.exoUi?.ready === true, undefined, { timeout: 20_000 });
+          await page.waitForFunction((checkCorners) => {
+            const canvases = [...document.querySelectorAll<HTMLCanvasElement>(".halo-ring__canvas")];
+            if (canvases.length !== 8) return false;
+            return canvases.every((canvas) => {
+              const ctx = canvas.getContext("2d");
+              if (!ctx || canvas.width < 2) return false;
+              const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+              let centerVisible = false;
+              for (let y = Math.floor(canvas.height * 0.3); y < canvas.height * 0.7 && !centerVisible; y += 4) {
+                for (let x = Math.floor(canvas.width * 0.3); x < canvas.width * 0.7; x += 4) {
+                  if (pixels[(y * canvas.width + x) * 4 + 3] > 0) { centerVisible = true; break; }
+                }
+              }
+              const cornerAlpha = pixels[3] + pixels[(canvas.width - 1) * 4 + 3] + pixels[(canvas.height - 1) * canvas.width * 4 + 3] + pixels[(canvas.height * canvas.width - 1) * 4 + 3];
+              return centerVisible && (!checkCorners || cornerAlpha === 0);
+            });
+          }, forceCanvas, { timeout: 5_000 });
+          if (forceCanvas) expect(rendererPaths.some((path) => path.includes("canvas-2d"))).toBe(true);
+          const file = `${halo.id}__${viewport.id}__${theme}${forceCanvas ? "-canvas2d" : ""}.png`;
+          await page.screenshot({ path: `${outDir}${file}`, fullPage: false });
+          captures.push({ screen: halo.id, viewport: viewport.id, theme, file, findings: [] });
+          await page.close();
+        } finally {
+          await context.close();
+        }
+      }
+    }
+  }, 180_000);
 });
 
 function contactSheet(all: Capture[]): string {
