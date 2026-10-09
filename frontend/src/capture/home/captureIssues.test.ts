@@ -24,6 +24,8 @@ const writeFailed: RecorderCaptureIssue = {
   kind: "write_failed",
   detail: "EIO",
 };
+const partial: RecorderCaptureIssue = { kind: "partial_audio", missingMs: 3000,
+  spans: [{ startMs: 2000, endMs: 5000, reason: "writer_stalled" }] };
 
 const note = (i: number): LibraryItem => ({
   id: `row-${i}`,
@@ -77,6 +79,14 @@ describe("issue copy", () => {
     expect(issueHasSheet(timedOut)).toBe(false);
     expect(issueHasSheet(failed)).toBe(true);
     expect(issueHasSheet(writeFailed)).toBe(true);
+  });
+
+  test("partial audio stays available to the recorder without becoming an error row or sheet", () => {
+    expect(issueHasSheet(partial)).toBe(false);
+    expect(sheetIssue("rec-1", { "rec-1": partial }, true)).toBeNull();
+    expect(issueForItem(note(1), { "rec-1": partial })).toBeUndefined();
+    expect(orphanIssues([], { "rec-1": partial })).toEqual([]);
+    expect(cardNote({ "rec-1": partial }, null)).toBe(HOME_COPY.notInSpace);
   });
 
   test("an open sheet follows the provider's current issue: it changes with it and is gone once it clears", () => {

@@ -18,18 +18,20 @@ export function issueMeta(issue: RecorderCaptureIssue): string {
       return HOME_COPY.recoveryFailedMeta;
     case "write_failed":
       return HOME_COPY.writeFailedMeta;
+    case "partial_audio":
+      return ""; // Informational notice; the recorder-final UI supplies its copy.
   }
 }
 
 /** The issues whose Library row opens a sheet instead of its note; a timed-out one resolves itself, so its row still opens the note. */
 export function issueHasSheet(issue: RecorderCaptureIssue): boolean {
-  return issue.kind !== "finalization_timed_out";
+  return issue.kind !== "finalization_timed_out" && issue.kind !== "partial_audio";
 }
 
 export function issueSheetCopy(issue: RecorderCaptureIssue): {
   title: string;
   body: string;
-} {
+} | null {
   switch (issue.kind) {
     case "finalization_timed_out":
       return HOME_COPY.timedOutSheet;
@@ -37,6 +39,8 @@ export function issueSheetCopy(issue: RecorderCaptureIssue): {
       return HOME_COPY.recoveryFailedSheet;
     case "write_failed":
       return HOME_COPY.writeFailedSheet;
+    case "partial_audio":
+      return null; // Informational notices do not open an error sheet.
   }
 }
 
@@ -46,7 +50,8 @@ export function sheetIssue(
   issues: CaptureIssues,
   enabled: boolean,
 ): RecorderCaptureIssue | null {
-  return enabled && id !== null ? (issues[id] ?? null) : null;
+  const issue = enabled && id !== null ? issues[id] : undefined;
+  return issue?.kind === "partial_audio" ? null : issue ?? null;
 }
 
 /** The issue a Library item carries: a voice note whose recording id has one. */
@@ -54,7 +59,8 @@ export function issueForItem(
   item: LibraryItem,
   issues: CaptureIssues,
 ): RecorderCaptureIssue | undefined {
-  return item.source === VOICE_NOTE_SOURCE ? issues[item.sourceId] : undefined;
+  const issue = item.source === VOICE_NOTE_SOURCE ? issues[item.sourceId] : undefined;
+  return issue?.kind === "partial_audio" ? undefined : issue;
 }
 
 export interface OrphanIssue {
@@ -76,7 +82,7 @@ export function orphanIssues(
       .map((item) => item.sourceId),
   );
   return Object.keys(issues)
-    .filter((id) => !inLibrary.has(id))
+    .filter((id) => !inLibrary.has(id) && issues[id]?.kind !== "partial_audio")
     .reverse()
     .map((id) => ({ id, issue: issues[id]! }));
 }

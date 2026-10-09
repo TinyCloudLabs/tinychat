@@ -48,6 +48,7 @@ export interface VoiceNoteRecorder {
   dismissShortcutRecovery(): Promise<void>;
   /** The receipt was read. */
   dismissOutcome(): void;
+  dismissCaptureIssue(id: string): void;
   setOnPresent(onPresent: (() => void) | undefined): void;
   /** Input levels (0..1), fanned out without React state. */
   subscribeLevel(listener: (level: number) => void): () => void;
@@ -94,6 +95,7 @@ export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionS
       openSettings: () => controller.openSettings(),
       dismissShortcutRecovery: () => controller.dismissShortcutRecovery(),
       dismissOutcome: controller.dismissOutcome,
+      dismissCaptureIssue: controller.dismissCaptureIssue,
       setOnPresent: controller.setOnPresent,
       subscribeLevel: controller.subscribeLevel,
     }),
