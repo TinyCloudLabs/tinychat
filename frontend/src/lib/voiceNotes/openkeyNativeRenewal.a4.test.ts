@@ -7,9 +7,13 @@ import { __setVoiceNotesForTests, type VoiceNoteRecording, type VoiceNotesPlugin
 const manifestAndParts = new Map<string, unknown>();
 const records = new Map<string, unknown>();
 const store = { ...(await import("./voiceNoteStore")) };
+// bun keeps the first mock.module factory for a path for the whole process, so the
+// restore below cannot undo it: the mock hands back to the real save when it ends.
+let mockActive = true;
 mock.module("./voiceNoteStore", () => ({
   ...store,
   saveVoiceNote: async (tcw: TinyCloudWeb, recording: VoiceNoteRecording, source: Parameters<typeof store.saveVoiceNote>[2]) => {
+    if (!mockActive) return store.saveVoiceNote(tcw, recording, source);
     const base = store.voiceNoteAudioKvKey(recording.id);
     const manifest = await putAudio(tcw.kv, base, source, {
       partSize: 2, fileName: `${recording.id}.m4a`, mimeType: recording.mimeType,
@@ -18,7 +22,7 @@ mock.module("./voiceNoteStore", () => ({
     return { ok: true, data: { inserted: true } };
   },
 }));
-afterAll(() => mock.module("./voiceNoteStore", () => store));
+afterAll(() => { mockActive = false; });
 
 const { savePendingRecordings } = await import("./recorderSaves");
 const { NativeRenewal, guardNativeTinyCloudCalls } = await import("../openkeyNativeRenewal");

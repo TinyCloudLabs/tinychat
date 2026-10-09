@@ -118,6 +118,7 @@ function cloudWith(ptx: ReturnType<typeof fakePtx>, jobStatus: PrivateCloudJob["
 let rig: Rig;
 
 beforeEach(() => {
+  __resetCaptureEngineForTests();
   _resetConnectorSchemaMemoForTests();
   FakeMediaRecorder.instances = [];
 });
