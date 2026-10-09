@@ -4,17 +4,19 @@
 // re-listed from the phone, and the discard guard (PR5): a discarded recording
 // is deleted, never saved, even after a relaunch. The plugin is a scripted
 // fake; the store's save is swapped through harness/fakeVoiceNoteStore.
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { fakeVoiceNoteStore } from "@/harness/fakeVoiceNoteStore";
 import { __setVoiceNotesForTests, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
+import { currentAccountGeneration } from "./accountContext";
 
 const realStore = { ...(await import("./voiceNoteStore")) };
 mock.module("./voiceNoteStore", () => ({
   ...realStore,
   saveVoiceNote: (...args: Parameters<typeof realStore.saveVoiceNote>) => (fakeVoiceNoteStore.save ?? realStore.saveVoiceNote)(...args),
 }));
+afterAll(() => mock.module("./voiceNoteStore", () => realStore));
 const saves = await import("./recorderSaves");
 
 /** A fresh copy of the module, as after a WebView reload: its in-memory guards and store are new. */
@@ -152,6 +154,28 @@ describe("savePendingRecordings", () => {
 });
 
 describe("saveRecording", () => {
+  test("renewal's save-idle waiter resolves when an account pipeline save fails", async () => {
+    const note = recording("account-save-idle", 1);
+    const accountTcw = { ...tcw, spaceId: "space" } as TinyCloudWeb;
+    let finish!: () => void;
+    fakeVoiceNoteStore.save = async () => {
+      await new Promise<void>((resolve) => { finish = resolve; });
+      return fails();
+    };
+    const saving = saves.saveNoteForAccount(accountTcw,
+      { did: tcw.did, spaceId: "space", generation: currentAccountGeneration() }, note);
+    expect(saves.voiceNoteSaveBusy()).toBe(true);
+    let idle = false;
+    const waiting = saves.whenVoiceNoteSavesIdle().then(() => { idle = true; });
+    await Promise.resolve();
+    expect(idle).toBe(false);
+    finish();
+    expect(await saving).toEqual({ kind: "failed", failure: "The network connection was lost." });
+    await waiting;
+    expect(idle).toBe(true);
+    expect(saves.voiceNoteSaveBusy()).toBe(false);
+  });
+
   test("a save in the space leaves the device copy for local playback", async () => {
     const note = recording("one", 1);
     phone.pending = [note];

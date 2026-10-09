@@ -784,7 +784,7 @@ describe("I1 badge — App wiring (source-asserted)", () => {
     expect(body).toContain('openKeyOutcome.status === "unverified"');
     expect(body).toContain('openKeyOutcome.status === "cancelled"');
     expect(body).toContain("completeLocalSignOut(openKeyWarning");
-    expect(cleanup).toContain("if (address) clearPersistedSession(address);");
+    expect(cleanup).toContain("if (storedAddress) clearPersistedSession(storedAddress);");
     expect(cleanup).toContain("historyPrefetch.clear();");
     expect(cleanup).toContain("clearAgentSessionCache();");
     expect(cleanup).toContain("clearBackgroundDrainRecord();");
