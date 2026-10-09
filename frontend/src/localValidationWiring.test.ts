@@ -15,7 +15,7 @@ test("local login isolates both fresh and restored sessions before mounting cons
   expect(source).toContain("await prepareLocalSignIn(localTcw)");
   expect(source.indexOf("await prepareLocalSignIn(localTcw)") < source.indexOf("await localTcw.signIn")).toBe(true);
   for (const component of ["BackgroundDrainer", "GmeetSessionSync", "BackendReconciler"]) {
-    expect(source).toContain(`{!LOCAL_VALIDATION && state === "ready" && tcw && (\n        <${component}`);
+    expect(source).toContain(`{!LOCAL_VALIDATION && state === "ready" && tcw && secretsAvailable() && (\n        <${component}`);
   }
   expect(source).toContain("const showSettings = !LOCAL_VALIDATION &&");
   // Local validation gets Chat only: the shell has no other surface to show.
