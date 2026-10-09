@@ -22,6 +22,8 @@ export interface HarnessScreen {
   scrollTo?: string;
   /** Where it runs (default `web`). The phone app also gets the fake voice-notes plugin. */
   platform?: AppPlatform;
+  /** Skipped at viewports narrower than this many CSS px (a surface the phone layout never shows). */
+  minViewportWidth?: number;
   /** The capture waits until this selector matches (an opened sheet, a loaded model), up to 5 s. */
   readyWhen?: string;
   /** Only these viewport ids capture it (default: every viewport), for a surface drawn at some sizes only. */
