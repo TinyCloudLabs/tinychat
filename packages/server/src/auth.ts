@@ -1,5 +1,6 @@
 import { randomBytes } from "crypto";
 import { SignJWT, jwtVerify } from "jose";
+import { SESSION_EXPIRATION_MS } from "@tinyboilerplate/core";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -10,7 +11,8 @@ export interface NonceEntry {
 }
 
 export interface NonceStore {
-  generate(address: string): string;
+  /** Omit `address` for an unbound nonce: the /verify call binds it to the recovered signer. */
+  generate(address?: string): string;
   validate(address: string, nonce: string): boolean;
 }
 
@@ -27,7 +29,8 @@ const NONCE_TTL_MS = 5 * 60 * 1000; // 5 minutes
  *
  * Nonces are:
  * - Cryptographically random (32 bytes hex)
- * - Bound to a specific address
+ * - Bound to a specific address, or unbound (native sign-in: the delegation's
+ *   address isn't known until OpenKey signs; the nonce is bound at /verify)
  * - Single-use (deleted after validation)
  * - Short-lived (5 minute TTL)
  */
@@ -45,9 +48,17 @@ export function createNonceStore(): NonceStore {
   }, 60_000);
   cleanupInterval.unref();
 
+  const tryConsume = (key: string): boolean => {
+    const entry = store.get(key);
+    if (!entry) return false;
+    // Delete immediately — single use
+    store.delete(key);
+    return Date.now() - entry.createdAt <= NONCE_TTL_MS;
+  };
+
   return {
-    generate(address: string): string {
-      const normalizedAddress = address.toLowerCase();
+    generate(address?: string): string {
+      const normalizedAddress = address?.toLowerCase() ?? "";
       const nonce = randomBytes(32).toString("hex");
       const key = `${normalizedAddress}:${nonce}`;
 
@@ -62,20 +73,9 @@ export function createNonceStore(): NonceStore {
 
     validate(address: string, nonce: string): boolean {
       const normalizedAddress = address.toLowerCase();
-      const key = `${normalizedAddress}:${nonce}`;
-      const entry = store.get(key);
-
-      if (!entry) return false;
-
-      // Delete immediately — single use
-      store.delete(key);
-
-      // Check TTL
-      if (Date.now() - entry.createdAt > NONCE_TTL_MS) {
-        return false;
-      }
-
-      return true;
+      // An unbound nonce validates under the address the SIWE recovered; the
+      // address embedded in the message is what the backend session binds to.
+      return tryConsume(`${normalizedAddress}:${nonce}`) || tryConsume(`:${nonce}`);
     },
   };
 }
@@ -84,12 +84,12 @@ export function createNonceStore(): NonceStore {
 
 /**
  * Verify a SIWE message and signature using the `siwe` package.
- * Returns the recovered address and nonce from the message.
+ * Returns the signed address, nonce and optional expiration time.
  */
 export async function verifySIWE(
   message: string,
   signature: string,
-): Promise<{ address: string; nonce: string }> {
+): Promise<{ address: string; nonce: string; expirationTime?: string }> {
   // Dynamic import to avoid requiring siwe at module load time
   const { SiweMessage } = await import("siwe");
 
@@ -103,27 +103,37 @@ export async function verifySIWE(
   return {
     address: result.data.address,
     nonce: result.data.nonce,
+    expirationTime: result.data.expirationTime,
   };
 }
 
 // ── Session Token ───────────────────────────────────────────────────
 
 /**
- * Issue a session JWT signed with HS256.
- * Subject is the wallet address.
+ * Issue a session JWT signed with HS256. Subject is the wallet address.
+ * A new token lasts at most 30 days, and never beyond the signed SIWE expiry.
  */
 export async function issueSessionToken(
   address: string,
   privateKey: string,
+  options?: { notAfter?: Date },
 ): Promise<{ token: string; expiresIn: number }> {
-  const secret = new TextEncoder().encode(privateKey);
-  const expiresIn = 24 * 60 * 60; // 24 hours in seconds
+  const now = Math.floor(Date.now() / 1000);
+  let exp = now + SESSION_EXPIRATION_MS / 1000;
+  if (options?.notAfter) {
+    const notAfter = options.notAfter.getTime();
+    if (!Number.isFinite(notAfter)) throw new Error("Invalid session expiration");
+    exp = Math.min(exp, Math.floor(notAfter / 1000));
+  }
+  const expiresIn = exp - now;
+  if (expiresIn <= 0) throw new Error("Session expiration must be in the future");
 
+  const secret = new TextEncoder().encode(privateKey);
   const token = await new SignJWT({ address: address.toLowerCase() })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(address.toLowerCase())
-    .setIssuedAt()
-    .setExpirationTime("24h")
+    .setIssuedAt(now)
+    .setExpirationTime(exp)
     .sign(secret);
 
   return { token, expiresIn };

@@ -98,7 +98,7 @@ paths:
                   type: string
       responses:
         "200":
-          description: Backend session token
+          description: Fresh backend bearer token, expiring no later than 30 days or the signed SIWE expiration time
           content:
             application/json:
               schema:
@@ -109,6 +109,9 @@ paths:
                     type: string
                   expiresIn:
                     type: integer
+                    description: Seconds until the bearer JWT exp, at most 2592000 and no later than the SIWE Expiration Time
+                    minimum: 1
+                    maximum: 2592000
                   address:
                     type: string
         "400":

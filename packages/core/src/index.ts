@@ -115,7 +115,9 @@ export const DEFAULT_DELEGATION_EXPIRY_MS = 365 * 24 * 60 * 60 * 1000;
 /**
  * TinyCloud session lifetime for TinyChat: the backend's own node session, users' web
  * sessions, and the isolated sessions that mint agent delegations (a delegation cannot
- * outlive its parent session). 30 days, set explicitly until the SDK default matches.
+ * outlive its parent session). Also the maximum lifetime of newly issued backend bearer
+ * tokens, further capped by the signed SIWE expiration time. Existing bearers retain their
+ * embedded expiry. 30 days, set explicitly until the SDK default matches.
  */
 export const SESSION_EXPIRATION_MS = 30 * 24 * 60 * 60 * 1000;
 

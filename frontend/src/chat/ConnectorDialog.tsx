@@ -98,6 +98,7 @@ import {
   type NativeOAuthAttempt,
   type NativeOAuthPorts,
 } from "@/lib/connectors/googleOAuthNative";
+import { secretsAvailable, SECRETS_UNAVAILABLE_IN_APP_MESSAGE } from "@/lib/openkeyNative";
 import {
   syncGoogleMeet,
   type GmeetSyncError,
@@ -374,22 +375,34 @@ const ApiKeyConnectDialog: FC<ConnectorConnectDialogProps> = ({
           </DialogDescription>
         </DialogHeader>
 
-        {(phase === "key-entry" || phase === "validating") && (
-          <KeyEntryPanel
-            apiKey={apiKey}
-            onChange={setApiKey}
-            onSubmit={handleContinue}
-            validating={phase === "validating"}
-            error={error}
-          />
+        {!secretsAvailable() ? (
+          <p
+            data-testid="api-key-connect-unavailable-in-app"
+            className="flex items-start gap-2 rounded-md border border-border bg-muted/30 p-2 text-xs text-muted-foreground"
+          >
+            <InfoIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+            <span>{SECRETS_UNAVAILABLE_IN_APP_MESSAGE}</span>
+          </p>
+        ) : (
+          <>
+            {(phase === "key-entry" || phase === "validating") && (
+              <KeyEntryPanel
+                apiKey={apiKey}
+                onChange={setApiKey}
+                onSubmit={handleContinue}
+                validating={phase === "validating"}
+                error={error}
+              />
+            )}
+            {phase === "verified" && user && (
+              <VerifiedPanel user={user} error={error} />
+            )}
+            {phase === "saving" && <SavingPanel />}
+            {phase === "syncing" && <SyncingPanel progress={progress} />}
+            {phase === "done" && summary && <DonePanel summary={summary} />}
+            {phase === "error" && error && <SyncFailedPanel error={error} />}
+          </>
         )}
-        {phase === "verified" && user && (
-          <VerifiedPanel user={user} error={error} />
-        )}
-        {phase === "saving" && <SavingPanel />}
-        {phase === "syncing" && <SyncingPanel progress={progress} />}
-        {phase === "done" && summary && <DonePanel summary={summary} />}
-        {phase === "error" && error && <SyncFailedPanel error={error} />}
 
         <ConnectFooter
           phase={phase}
@@ -794,8 +807,12 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   const busy =
     phase === "exchange" || phase === "save-token" || phase === "initial-sync";
   // Inside the Exo app: the system browser, or (while this build keeps it off) an
-  // explanation in place of "Continue with Google". Never a popup there.
-  const authorizeSurface = googleAuthorizeSurface();
+  // explanation in place of "Continue with Google". Never a popup there. Native
+  // OpenKey sessions have no vault to hold the refresh token, so the surface is
+  // unavailable in the app even when native Google OAuth is enabled.
+  const authorizeSurface = secretsAvailable()
+    ? googleAuthorizeSurface()
+    : "unavailable-in-app";
   const consentCopy = autojoin ? GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY : GOOGLE_MEET_CONSENT_COPY;
 
   const handleOpenChange = useCallback(
@@ -1048,7 +1065,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     // once this build allows it (the private-use return needs a claimed https link first).
     const nativePorts = capacitorNativeOAuthPorts();
     if (nativePorts !== null) {
-      if (!nativeGoogleOAuthEnabled()) {
+      if (!secretsAvailable() || !nativeGoogleOAuthEnabled()) {
         setError({ kind: "native-unavailable", message: "" });
         return;
       }
