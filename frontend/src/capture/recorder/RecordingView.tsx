@@ -96,7 +96,7 @@ export function RecordingView({ recorder, onOpenNote, consentAsking, discardAski
 
         <div className="flex min-h-0 flex-col justify-end land:col-start-2 land:row-start-1">
           {receipt ? (
-            <SavedReceipt outcome={outcome} localUpload={recorder.localUpload} saved={lastSaved} route={voiceNoteRoute(savedRoute)} transcriber={savedTranscriber} sttHint={savedNote.stt} transcribing={transcribing} error={recorder.error} retrying={recorder.pending.running}
+            <SavedReceipt outcome={outcome} localUpload={recorder.localUpload} saved={lastSaved} route={voiceNoteRoute(savedRoute)} transcriber={savedTranscriber} sttHint={savedNote.stt} transcribing={transcribing} error={honestRecorderError(recorder)} retrying={recorder.pending.running}
               onOpen={onOpenNote && lastSaved ? () => { recorder.dismissOutcome(); onOpenNote(lastSaved.id); } : undefined}
               onDone={recorder.dismissOutcome} onSaveNow={recorder.retryPending} onPlayingChange={recorder.setReceiptPlaying} onReady={recorder.setReceiptReady} />
           ) : (
