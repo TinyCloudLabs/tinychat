@@ -72,7 +72,7 @@ export type RecorderEvent =
   | { type: "PICKED_UP"; id: string | null; startedAt: number; maxDurationMs: number; audioMs: number; elapsedMs: number; mic: RecorderMic }
   | { type: "MIC_STATE"; mic: RecorderMic; audioMs?: number; elapsedMs?: number }
   | { type: "CAPTURE_ISSUE"; id: string | null; issue: RecorderCaptureIssue }
-  | { type: "CAPTURE_RECOVERED"; id: string }
+  | { type: "CAPTURE_RESOLVED"; id: string }
   | { type: "PAUSE_REQUESTED" }
   | { type: "PAUSE_CONFIRMED" }
   | { type: "PAUSE_FAILED"; error: string }
@@ -214,7 +214,7 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
       if (event.id === null) return event.issue.kind === "recoveryFailed"
         ? { ...state, recoveryScanFailure: event.issue.detail } : state;
       return { ...state, captureIssues: { ...state.captureIssues, [event.id]: event.issue } };
-    case "CAPTURE_RECOVERED": {
+    case "CAPTURE_RESOLVED": {
       if (!(event.id in state.captureIssues)) return state;
       const captureIssues = { ...state.captureIssues };
       delete captureIssues[event.id];

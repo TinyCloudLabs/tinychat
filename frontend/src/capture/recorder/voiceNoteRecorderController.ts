@@ -193,8 +193,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
 
   const onAutoStopped = (event: VoiceNoteAutoStopEvent) => {
     const recording = event.recording;
-    if (event.error === "finalization_timed_out") {
-      send({ type: "CAPTURE_ISSUE", id: recording?.id ?? event.id ?? state.recordingId, issue: { kind: "finalization_timed_out" } });
+    if (recording) send({ type: "CAPTURE_RESOLVED", id: recording.id });
+    if (!recording && event.error === "finalization_timed_out") {
+      send({ type: "CAPTURE_ISSUE", id: event.id ?? state.recordingId, issue: { kind: "finalization_timed_out" } });
     }
     if (recording && state.phase === "idle" && state.lastSaved?.id === recording.id) return;
     if (!autoStopIsCurrent(state, recording?.id ?? null)) {
@@ -246,7 +247,11 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
         }),
         VoiceNotes.addListener("recovered", (event) => {
           const id = event.id ?? event.recording?.id;
-          if (id) send({ type: "CAPTURE_RECOVERED", id });
+          if (id) send({ type: "CAPTURE_RESOLVED", id });
+        }),
+        VoiceNotes.addListener("committed", (event) => {
+          const id = event.id ?? event.recording?.id;
+          if (id) send({ type: "CAPTURE_RESOLVED", id });
         }),
         VoiceNotes.addListener("presentRecorder", async (event) => {
           if (event.reason === "permission_denied" && event.id === null) {
@@ -364,6 +369,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
           : `Could not stop: ${messageOf(caught)}`);
         return;
       }
+      send({ type: "CAPTURE_RESOLVED", id: recording.id });
       void saveStopped(recording).catch((caught: unknown) =>
         send({ type: "SAVE_FAILED", error: messageOf(caught), recording: { id: recording.id, durationMs: recording.durationMs } }),
       );
