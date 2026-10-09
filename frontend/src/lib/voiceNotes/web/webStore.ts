@@ -60,9 +60,9 @@ export interface SessionRecord {
   lastHeartbeatAt: number;
   recoveryAttempts: number;
   /**
-   * Where the recovery decode window ends: the first chunk boundary at which the recording reached
-   * DECODE_WINDOW_MS of audio (or DECODE_WINDOW_SOFT_BYTES). Set once, in the same transaction as the
-   * chunk that closes it. Absent while the recording is still shorter than that.
+   * Where the prefix decode of a long recording ends: the first chunk boundary at which the recording
+   * reached DECODE_WINDOW_MS of audio (or DECODE_WINDOW_SOFT_BYTES). Set once, in the same transaction as
+   * the chunk that closes it. Absent while the recording is still shorter than that.
    */
   decodeWindow?: { bytes: number; audioMs: number };
 }
@@ -217,7 +217,7 @@ export const durableBytesOf = (error: unknown): number | null =>
 
 /**
  * The duration of a recovered recording whose audio is `actualBytes` long. The duration is never
- * measured by decoding the whole recording (recovery decodes only a bounded window); it comes from the
+ * measured by decoding (a long recording is decoded only as a prefix); it comes from the
  * session journal, which counted audioMs and bytes together.
  *  - Transactional blob store (the IndexedDB one): bytes and journal commit as one transaction, so
  *    `actualBytes === session.bytes` and the journal's audioMs is exact.
@@ -226,8 +226,8 @@ export const durableBytesOf = (error: unknown): number | null =>
  *    dying between the two leaves one chunk). That tail's duration is estimated at the recording's own
  *    average rate, audioMs * actualBytes / session.bytes. The only error is that chunk's bitrate
  *    variance, at most one timeslice (about 1 s), and the estimate never moves a duration backwards.
- *  - A journal that never saw a byte has nothing to scale. The recording is then one chunk, so the
- *    decode window is the whole recording and the decoder's measurement is exact.
+ *  - A journal that never saw a byte has nothing to scale. The recording is then one chunk, so it is
+ *    decoded whole and the decoder's measurement is exact.
  */
 function reconciledDurationMs(session: SessionRecord, actualBytes: number, decodedMs: number): number {
   if (actualBytes === session.bytes) return session.audioMs;
@@ -745,10 +745,14 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
       }
       let decodedMs = 0;
       if (decodeCheck) {
-        const windowBytes = decodeWindowBytes(attempt, size);
-        const window = await audio.read(id, 0, windowBytes);
+        // Up to the cap the whole recording is decoded, so a failure is a verdict on all of its bytes.
+        // Above it only a prefix is decoded, and a prefix is not a file (see decodeCheck.ts): its success
+        // proves the recording plays, its failure proves nothing.
+        const whole = size <= DECODE_WINDOW_MAX_BYTES;
+        const window = await audio.read(id, 0, whole ? size : decodePrefixBytes(attempt));
         try {
-          decodedMs = (await decodeCheck(window, attempt.mimeType)).durationMs;
+          const decoded = await decodeCheck(window, attempt.mimeType);
+          if (whole) decodedMs = decoded.durationMs;
         } catch (error) {
           if (!(error instanceof DecodeCheckError)) throw error;
           if (error.kind === "resource") {
@@ -758,8 +762,11 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
             await refundAttempt(id);
             return { failed: { id, reason: DECODER_UNAVAILABLE_REASON, error: error.message } };
           }
-          console.error("[webStore] A recovered recording does not decode; quarantining it", id, error);
-          return { failed: await quarantine(id, UNDECODABLE_REASON, error.message) };
+          if (whole) {
+            console.error("[webStore] A recovered recording does not decode; quarantining it", id, error);
+            return { failed: await quarantine(id, UNDECODABLE_REASON, error.message) };
+          }
+          console.warn("[webStore] The decoder rejected the leading bytes of a long recovered recording; that is inconclusive, publishing it as recovered", id, error);
         }
       }
       const recording = await store.commitSession(id, (session, sizeBytes) => recordingFromSession(session, sizeBytes, {
@@ -777,16 +784,11 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
   }
 
   /**
-   * How many leading bytes the decode check may see: through the journaled window boundary, or the
-   * whole recording while it is shorter than a window. A recording that is long but has no journaled
-   * boundary cannot be bounded, so it is an error (retried, visible), never a whole-file decode.
+   * The prefix of a recording larger than the decode cap that the check may see: through the journaled
+   * window boundary (a chunk boundary), never more than the cap.
    */
-  function decodeWindowBytes(session: SessionRecord, size: number): number {
-    const bytes = session.decodeWindow ? Math.min(session.decodeWindow.bytes, size) : size;
-    if (bytes > DECODE_WINDOW_MAX_BYTES) {
-      throw failure("decode_window_unbounded", `Recording ${session.id} has ${size} bytes and no journaled decode window.`);
-    }
-    return bytes;
+  function decodePrefixBytes(session: SessionRecord): number {
+    return Math.min(session.decodeWindow?.bytes ?? DECODE_WINDOW_MAX_BYTES, DECODE_WINDOW_MAX_BYTES);
   }
 
   async function refundAttempt(id: string) {

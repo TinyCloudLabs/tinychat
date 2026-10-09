@@ -17,8 +17,11 @@
 // A slice requested by a pause is a flush request: its own token (the object) and the recorded
 // time it covers, both fixed when the request is made. The recorder answers requests (and timeslice
 // timers) in order, so each dataavailable consumes the oldest outstanding request: a slice that
-// arrives after the timeout still carries its real pre-pause duration, is flagged `late`, and can
-// never satisfy the wait of a later flush (that wait belongs to a later request).
+// arrives after the timeout still carries its real pre-pause duration and can never satisfy the
+// wait of a later flush (that wait belongs to a later request).
+//
+// A timed-out request is a pending tail, not a loss: the audio exists in the recorder and the slice may
+// still arrive. Only stop() decides it is lost, after waiting STOP_TAIL_TIMEOUT_MS for it.
 
 import { failure } from "./idb";
 import { startLevelMeter, type LevelMeter, type LevelMeterEnv, type LevelSample } from "./webLevels";
@@ -26,6 +29,7 @@ import type { AudioInput } from "../nativeVoiceNotes";
 
 export const TIMESLICE_MS = 1000;
 export const FLUSH_TIMEOUT_MS = 2000;
+export const STOP_TAIL_TIMEOUT_MS = 5000;
 export const PREFERRED_MIME_TYPES = ["audio/webm;codecs=opus", "audio/mp4"] as const;
 
 export interface CaptureEnv {
@@ -37,6 +41,8 @@ export interface CaptureEnv {
   levelEnv?: LevelMeterEnv;
   /** How long a pause waits for the recorder's last slice. Default FLUSH_TIMEOUT_MS. */
   flushTimeoutMs?: number;
+  /** How long stop waits for a slice a pause asked for and never got. Default STOP_TAIL_TIMEOUT_MS. */
+  stopTailTimeoutMs?: number;
 }
 
 export function browserCaptureEnv(): CaptureEnv {
@@ -60,17 +66,14 @@ export const UNSUPPORTED_FORMAT_MESSAGE = "This browser cannot record audio in a
 export type InputLoss = { reason: "permission_revoked" | "mic_unavailable"; detail?: string };
 
 export interface CaptureCallbacks {
-  /**
-   * One recorder slice; `durationMs` is the recorded time since the previous slice (0 while paused).
-   * `late` marks the answer to a pause's flush request that arrived after onFlushStalled was reported.
-   */
-  onChunk(chunk: { blob: Blob; durationMs: number; late: boolean }): void;
+  /** One recorder slice; `durationMs` is the recorded time since the previous slice (0 while paused). */
+  onChunk(chunk: { blob: Blob; durationMs: number }): void;
   onLevel(sample: LevelSample): void;
   /** The mic tracks ended on their own (device unplugged, permission revoked). Capture is already held. */
   onInputLost(loss: InputLoss): void;
   onMute(muted: boolean): void;
   onRecorderError(error: unknown): void;
-  /** The recorder did not deliver its last slice in time; the mic is already released and the capture held. */
+  /** The recorder did not deliver its last slice in time; the mic is already released and the capture held. The slice may still arrive. */
   onFlushStalled(): void;
 }
 
@@ -84,8 +87,11 @@ export interface WebCapture {
   resume(deviceId?: string | null): Promise<AudioInput>;
   /** Moves the running recording to another device; the old one stays live if the new one cannot be opened. */
   switchInput(deviceId: string | null): Promise<AudioInput>;
-  /** Flushes the last slice, then stops, closes the graph and resolves when the final slice was delivered. */
-  stop(): Promise<void>;
+  /**
+   * Flushes the last slice, then stops, closes the graph and resolves when the final slice was delivered.
+   * A slice a pause asked for is awaited for at most STOP_TAIL_TIMEOUT_MS; `tailLost` says it never came.
+   */
+  stop(): Promise<{ tailLost: boolean }>;
   /** Tears everything down without delivering anything further. */
   abort(): void;
   readonly activeInput: AudioInput | null;
@@ -105,8 +111,6 @@ export function audioInputFromTrack(track: MediaStreamTrack): AudioInput {
 interface FlushRequest {
   /** Recorded time the requested slice covers, fixed when the request was made. */
   durationMs: number;
-  /** Set once the wait gave up; the answer, if it ever comes, is late. */
-  expired: boolean;
   /** Resolves this request's own wait; absent once it expired. */
   answer: (() => void) | null;
 }
@@ -181,10 +185,9 @@ export function createWebCapture(env: CaptureEnv, callbacks: CaptureCallbacks): 
   const flush = () => new Promise<boolean>((resolve) => {
     if (!recorder || recorder.state !== "recording") return resolve(true);
     const at = env.now();
-    const request: FlushRequest = { durationMs: boundary === null ? 0 : Math.max(0, at - boundary), expired: false, answer: null };
+    const request: FlushRequest = { durationMs: boundary === null ? 0 : Math.max(0, at - boundary), answer: null };
     boundary = null;
     const timer = setTimeout(() => {
-      request.expired = true;
       request.answer = null;
       resolve(false);
     }, env.flushTimeoutMs ?? FLUSH_TIMEOUT_MS);
@@ -245,7 +248,7 @@ export function createWebCapture(env: CaptureEnv, callbacks: CaptureCallbacks): 
           durationMs = boundary === null ? 0 : Math.max(0, at - boundary);
           if (boundary !== null) boundary = at;
         }
-        if (delivering && event.data.size > 0) callbacks.onChunk({ blob: event.data, durationMs, late: request?.expired ?? false });
+        if (delivering && event.data.size > 0) callbacks.onChunk({ blob: event.data, durationMs });
         request?.answer?.();
       };
       recorder.onerror = (event: Event) => callbacks.onRecorderError((event as ErrorEvent).error ?? event);
@@ -278,11 +281,24 @@ export function createWebCapture(env: CaptureEnv, callbacks: CaptureCallbacks): 
       const active = recorder;
       meter?.stop();
       meter = null;
+      let tailLost = false;
       if (active && active.state !== "inactive") {
-        await new Promise<void>((resolve) => { active.onstop = () => resolve(); active.stop(); });
+        // The recorder answers a pending flush request before it reports the stop, so a request still
+        // outstanding when the stop is reported (or when the bound runs out) was never answered.
+        const awaitingTail = requests.length > 0;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const stopped = new Promise<boolean>((resolve) => { active.onstop = () => resolve(true); active.stop(); });
+        const answered = awaitingTail
+          ? Promise.race([stopped, new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), env.stopTailTimeoutMs ?? STOP_TAIL_TIMEOUT_MS); })])
+          : stopped;
+        const reported = await answered;
+        clearTimeout(timer);
+        tailLost = awaitingTail && (!reported || requests.length > 0);
+        if (tailLost) delivering = false;
       }
       recorder = null;
       teardown();
+      return { tailLost };
     },
 
     abort() {

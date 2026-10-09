@@ -1,30 +1,29 @@
-// Proves that a recovered recording's bytes are playable media before recovery publishes
-// them. A killed tab never ran MediaRecorder.stop(), so its prefix may lack the container
-// metadata a decoder needs; such a prefix is quarantined instead of shown as a playable note.
+// Checks that a recovered recording's bytes are playable media before recovery publishes them.
+// A killed tab never ran MediaRecorder.stop(), so the recording may lack what a decoder needs.
 //
-// Only a bounded window is ever decoded. decodeAudioData materializes the whole input as float
-// PCM (about 10 MB per minute of 44.1 kHz mono, double for stereo), so a normal long note must
-// never be handed over whole. The window is the container header plus the first DECODE_WINDOW_MS of
-// audio, cut at a chunk boundary the session journal recorded while recording (webStore
-// appendChunk). Why a prefix is enough:
-//  - WebM (Chrome, Firefox): the first MediaRecorder chunk holds the EBML header, Segment, Info and
-//    Tracks, then the first Cluster; every later chunk continues clusters and has no header of its
-//    own. A prefix is therefore a decodable file; a slice from the middle is not.
-//  - MP4 (Safari, recent Chrome): fragmented. The first chunk is ftyp + moov (+ the first moof/mdat),
-//    later chunks are further moof/mdat fragments. A prefix is a shorter fragmented file.
-// A cut inside the last cluster or fragment is tolerated by the browsers' demuxers: they decode the
-// frames that are complete. The window cannot see corruption after it; the journal, not a decode,
-// supplies the duration (see reconciledDurationMs in webStore).
+// decodeAudioData materializes its whole input as float PCM (about 10 MB per minute of 44.1 kHz
+// mono, double for stereo), so a decode is bounded by input size:
+//  - A recording of at most DECODE_WINDOW_MAX_BYTES is decoded whole. An EncodingError or an empty
+//    decode is then a verdict on every byte the recording has, and the caller may quarantine it.
+//  - A larger recording is decoded only as a prefix (the first DECODE_WINDOW_MS of audio, cut at a
+//    chunk boundary the session journal recorded while recording; see webStore appendChunk). A prefix
+//    is NOT a file: MediaRecorder blob boundaries are not container boundaries (the spec guarantees
+//    playability only for the combined blobs of a completed recording), and decodeAudioData is
+//    specified for complete file data. Demuxers often tolerate a cut cluster or fragment, but that is
+//    implementation behavior. A prefix that decodes is therefore a positive signal; one that fails
+//    says nothing about the recording and the caller must not quarantine on it.
+// The check cannot see corruption beyond what it decodes; the journal, not a decode, supplies the
+// duration (see reconciledDurationMs in webStore).
 
-/** The audio a recovery decode may cover. */
+/** The audio a prefix decode of a long recording covers. */
 export const DECODE_WINDOW_MS = 10_000;
-/** A window also closes at this many bytes, so a very high bitrate cannot make 10 s of audio large. */
+/** A prefix also closes at this many bytes, so a very high bitrate cannot make 10 s of audio large. */
 export const DECODE_WINDOW_SOFT_BYTES = 1024 * 1024;
-/** Hard bound: no decode is ever started on more bytes than this, whatever a store reports. */
+/** Hard bound, and the largest recording decoded whole: no decode is ever started on more bytes than this. */
 export const DECODE_WINDOW_MAX_BYTES = 4 * 1024 * 1024;
 
 export type DecodeFailureKind =
-  /** The decoder looked at the bytes and says they are not media. The recording is quarantined. */
+  /** The decoder looked at the bytes and says they are not media. Conclusive only when those were the whole recording. */
   | "invalid_media"
   /** The decoder could not run (unsupported, out of memory, no Web Audio, ...). The bytes are not judged. */
   | "resource";
@@ -36,7 +35,7 @@ export class DecodeCheckError extends Error {
   }
 }
 
-/** Decodes `window` (a prefix of the recording) and resolves with the duration of that window; throws DecodeCheckError. */
+/** Decodes `window` (the recording, or a prefix of it) and resolves with the duration of that window; throws DecodeCheckError. */
 export type DecodeCheck = (window: Uint8Array, mimeType: string) => Promise<{ durationMs: number }>;
 
 type DecodeContext = { decodeAudioData(data: ArrayBuffer): Promise<AudioBuffer>; close?(): Promise<void> };

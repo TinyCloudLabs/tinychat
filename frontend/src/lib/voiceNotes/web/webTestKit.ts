@@ -55,6 +55,8 @@ export class FakeMediaRecorder {
   /** What requestData() does: deliver at once, hold the slice until releaseRequestedData(), or never deliver it. */
   requestDataMode: "immediate" | "deferred" | "never" = "immediate";
   private parked = 0;
+  private stalled = 0;
+  private stopHeld = false;
   constructor(readonly stream: unknown, options: { mimeType: string }) {
     this.mimeType = options.mimeType;
     FakeMediaRecorder.instances.push(this);
@@ -65,14 +67,22 @@ export class FakeMediaRecorder {
   requestData() {
     if (this.requestDataMode === "immediate") this.deliver();
     else if (this.requestDataMode === "deferred") this.parked++;
+    else this.stalled++;
   }
   /** The browser finally fires the oldest dataavailable that requestData() asked for. */
   releaseRequestedData() {
     if (this.parked === 0) return;
     this.parked--;
     this.deliver();
+    if (this.stopHeld && this.parked === 0 && this.stalled === 0) this.finishStop();
   }
+  /** Like a browser, answers every outstanding requestData() before it reports the stop; a stalled one holds the stop back. */
   stop() {
+    if (this.parked > 0 || this.stalled > 0) { this.stopHeld = true; return; }
+    this.finishStop();
+  }
+  private finishStop() {
+    this.stopHeld = false;
     this.deliver();
     this.state = "inactive";
     this.onstop?.();

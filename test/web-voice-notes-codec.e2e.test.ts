@@ -117,21 +117,25 @@ describe("chromium: WebM/Opus", () => {
     await second.context.close();
   });
 
-  test("a 60 s+ recording is recovered by decoding only the first 10 s window; its duration comes from the journal", async () => {
+  test("a real recording past the 10 s window, killed mid-stream, is decoded whole (it is under the cap) and recovered with its journaled duration", async () => {
     const db = dbName("long");
     const first = await openPage(chrome, "chromium");
-    const seeded = await call(first.page, "seedLong", db, 65_000, 3300);
-    expect(seeded.journaledMs).toBeGreaterThanOrEqual(60_000);
-    expect(seeded.windowBytes).toBeGreaterThan(0);
-    expect(seeded.totalBytes).toBeGreaterThan(seeded.windowBytes * 4);
+    const { audioMs } = await call(first.page, "recordUntil", db, 12_000);
+    expect(audioMs).toBeGreaterThanOrEqual(12_000);
     await first.page.close({ runBeforeUnload: false });
 
     const second = await openPage(chrome, "chromium", first.context);
-    const result = await call(second.page, "recoverLong", db);
+    let result = await call(second.page, "recoverCounting", db);
+    for (let attempt = 0; attempt < 20 && result.recovered.length + result.failed.length === 0; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      result = await call(second.page, "recoverCounting", db);
+    }
     expect(result.failed, JSON.stringify(result.failed)).toEqual([]);
     expect(result.quarantine).toEqual([]);
-    expect(result.recovered).toMatchObject([{ id: seeded.id, sizeBytes: seeded.totalBytes, durationMs: seeded.journaledMs }]);
-    expect(result.decodedBytes).toEqual([seeded.windowBytes]);
+    expect(result.recovered).toHaveLength(1);
+    const [note] = result.recovered;
+    expect(note!.durationMs).toBeGreaterThanOrEqual(12_000);
+    expect(result.decodedBytes).toEqual([note!.sizeBytes]);
     await second.context.close();
   });
 

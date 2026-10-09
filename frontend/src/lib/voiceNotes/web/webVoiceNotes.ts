@@ -54,8 +54,6 @@ interface Live {
   pendingDevice: string | null | undefined;
   releaseLocks: (() => void)[];
   finishing: boolean;
-  /** The recorder has not delivered the slice a pause asked for; the saved audio may lack the last moments before the pause. */
-  tailPending: boolean;
 }
 
 export interface WebVoiceNotesOptions {
@@ -149,9 +147,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
 
   const mic = (l: Live): { state: MicState; reason: MicStateReason } => {
     const span = openSpanOf(l.record);
-    // recorderView renders needs_user/write_failed as "Interrupted - Stop and save what's recorded";
-    // a paused state with any other reason is not in the contract it renders.
-    if (l.record.intent === "paused") return l.tailPending ? { state: "needs_user", reason: "write_failed" } : { state: "paused", reason: "user" };
+    if (l.record.intent === "paused") return { state: "paused", reason: "user" };
     if (l.availability === "interrupted") return { state: "interrupted", reason: l.reason };
     if (l.availability === "blocked") return { state: "needs_user", reason: l.reason };
     if (span?.kind === "silenced") return { state: "silenced", reason: "input_muted" };
@@ -191,7 +187,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
     });
   };
 
-  const enqueueChunk = (l: Live, blob: Blob, durationMs: number, late: boolean) => {
+  const enqueueChunk = (l: Live, blob: Blob, durationMs: number) => {
     if (l.writeFailed) return;
     l.queue = l.queue.then(async () => {
       if (l.writeFailed) return;
@@ -213,10 +209,6 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
         throw error;
       }
       count();
-      if (late && l.tailPending) {
-        l.tailPending = false;
-        emitMicState();
-      }
       if (audioMs >= l.record.maxDurationMs && !l.finishing) scheduleAutoStop(l, "max_duration");
     }).catch((error: unknown) => onWriteFailure(l, error));
   };
@@ -226,8 +218,9 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
     l.finishing = true;
     const s = l.record;
     let outcome: { recording: VoiceNoteRecording | null; error: string | null };
+    let tailLost: boolean;
     try {
-      await l.capture.stop();
+      ({ tailLost } = await l.capture.stop());
       await l.queue;
       // The blob store, not the in-memory count, says whether anything is durable: a write that
       // reported failure may still have landed, and durable audio is never dropped.
@@ -254,6 +247,11 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
     }
     releaseLive(l);
     if (outcome.recording) emit("committed", { id: outcome.recording.id, recording: outcome.recording });
+    // After the commit so the note's capture issue is not cleared by it: the audio before the pause is proven lost.
+    if (tailLost) {
+      console.error("[webVoiceNotes] The recorder never delivered the last slice before the pause", l.id);
+      emit("writeFailure", { id: l.id, error: "pause_flush_timeout" });
+    }
     emitMicState();
     if (reason !== "user") {
       emit("autoStopped", { id: l.id, reason, maxDurationMs: s.maxDurationMs, at: now(), recording: outcome.recording, error: outcome.error });
@@ -281,8 +279,8 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
   };
 
   const callbacksFor = (holder: { live: Live | null }) => ({
-    onChunk: ({ blob, durationMs, late }: { blob: Blob; durationMs: number; late: boolean }) => {
-      if (holder.live) enqueueChunk(holder.live, blob, durationMs, late);
+    onChunk: ({ blob, durationMs }: { blob: Blob; durationMs: number }) => {
+      if (holder.live) enqueueChunk(holder.live, blob, durationMs);
     },
     onLevel: (sample: { level: number; peak: number; active: boolean }) => {
       const l = holder.live;
@@ -320,9 +318,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
     onFlushStalled: () => {
       const l = holder.live;
       if (!l) return;
-      console.error("[webVoiceNotes] The recorder did not deliver its last slice before the microphone was released", l.id);
-      l.tailPending = true;
-      emit("writeFailure", { id: l.id, error: "pause_flush_timeout" });
+      console.warn("[webVoiceNotes] The recorder has not yet delivered the last slice before the pause; stop will wait for it", l.id);
     },
   });
 
@@ -352,7 +348,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
             transitionGen: defaults.transitionGen, options: opts, mimeType: capture.mimeType, input: null, maxDurationMs });
           began = true;
           const l: Live = { id, record: begun, capture, availability: "available", reason: null, queue: Promise.resolve(),
-            writeFailed: null, lastDurableAt: now(), pendingDevice: undefined, releaseLocks: releases, finishing: false, tailPending: false };
+            writeFailed: null, lastDurableAt: now(), pendingDevice: undefined, releaseLocks: releases, finishing: false };
           holder.live = l;
           let input: AudioInput;
           try {
@@ -426,7 +422,6 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
         const wasPaused = l.record.intent === "paused";
         if (!wasPaused && l.availability === "available") return;
         const at = now();
-        l.tailPending = false;
         if (wasPaused) {
           l.record.pausedMs += at - (l.record.pauseStartedAt ?? at);
           l.record.pauseStartedAt = null;

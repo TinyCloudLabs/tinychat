@@ -108,7 +108,7 @@ const api = {
   async recordUntil(dbName: string, audioMs: number) {
     const { plugin } = await engineOn(dbName);
     const { id } = await plugin.start();
-    for (let i = 0; i < 100; i++) {
+    for (let i = 0; i < 250; i++) {
       const status = await plugin.status();
       if (status.audioMs >= audioMs) return { id, audioMs: status.audioMs };
       await wait(100);
@@ -128,44 +128,8 @@ const api = {
     return { id };
   },
 
-  /**
-   * A recording the journal says is `totalMs` long: real WebM from the fake microphone for the start,
-   * then filler that is not media. Each chunk is journaled as `chunkMs`, so the decode window (the first
-   * 10 s of journaled audio) covers only real chunks, and anything that decoded past it would meet filler.
-   */
-  async seedLong(dbName: string, totalMs: number, chunkMs: number) {
-    const { store } = await engineOn(dbName);
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const recorder = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
-    const parts: Promise<Uint8Array>[] = [];
-    recorder.ondataavailable = (event) => { parts.push(event.data.arrayBuffer().then((buffer) => new Uint8Array(buffer))); };
-    const stopped = new Promise<void>((resolve) => { recorder.onstop = () => resolve(); });
-    recorder.start(500);
-    await wait(4200);
-    recorder.stop();
-    await stopped;
-    for (const track of stream.getTracks()) track.stop();
-    const real = (await Promise.all(parts)).filter((part) => part.length > 0);
-    const id = crypto.randomUUID();
-    await store.beginSession({
-      id, startedAt: Date.now(), source: "in_app", owner: null, transitionGen: 0,
-      options: { transcriber: "on-device", identifySpeakers: false }, mimeType: "audio/webm;codecs=opus", input: null, maxDurationMs: 3 * 60 * 60 * 1000,
-    });
-    const chunkCount = Math.ceil(totalMs / chunkMs);
-    if (chunkCount <= real.length) throw new Error("The fake microphone produced more chunks than the long recording needs.");
-    let audioMs = 0;
-    let windowBytes = 0;
-    for (let i = 0; i < chunkCount; i++) {
-      const chunk = real[i] ?? crypto.getRandomValues(new Uint8Array(64 * 1024));
-      audioMs += chunkMs;
-      if (windowBytes === 0 && audioMs >= 10_000) windowBytes = real.slice(0, i + 1).reduce((total, part) => total + part.length, 0);
-      await store.appendChunk(id, chunk, { audioMs, firstAudioAt: Date.now() });
-    }
-    return { id, journaledMs: audioMs, windowBytes, totalBytes: await store.audio.size(id), realChunks: real.length };
-  },
-
   /** Recovery in a fresh page, recording how many bytes each decodeAudioData call was given. */
-  async recoverLong(dbName: string) {
+  async recoverCounting(dbName: string) {
     const decodedBytes: number[] = [];
     for (const Context of [AudioContext, OfflineAudioContext]) {
       const original = Context.prototype.decodeAudioData;

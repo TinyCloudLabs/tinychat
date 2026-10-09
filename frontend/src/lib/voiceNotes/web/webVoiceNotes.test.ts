@@ -16,8 +16,10 @@ afterEach(() => { FakeMediaRecorder.supported = new Set(["audio/webm;codecs=opus
 
 function quiet<T>(fn: () => Promise<T>): Promise<T> {
   const log = console.error;
+  const warn = console.warn;
   console.error = () => {};
-  return fn().finally(() => { console.error = log; });
+  console.warn = () => {};
+  return fn().finally(() => { console.error = log; console.warn = warn; });
 }
 
 async function readAll(rig: Rig, id: string) {
@@ -398,24 +400,26 @@ describe("failures while recording", () => {
       expect(note.sizeBytes).toBe(5);
     });
 
-    test("a dataavailable that never arrives: pause completes after the flush timeout and says so", async () => {
-      const rig = await createRig();
-      const { plugin } = rig.engine;
-      const { events } = await listen(rig);
-      const { id } = await plugin.start();
-      await rig.chunk([1, 2, 3]);
-      rig.fake.recorder().requestDataMode = "never";
-      await quiet(() => plugin.pause());
-      expect(rig.fake.mic.liveTracks()).toEqual([]);
-      expect(await plugin.status()).toMatchObject({ state: "needs_user", reason: "write_failed", intent: "paused" });
-      expect(events.writeFailure).toEqual([{ id, error: "pause_flush_timeout" }]);
-    });
-
-    test("a slice delivered after the timeout keeps its pre-pause duration, and the recorder shows the problem until it lands", async () => {
+    test("a dataavailable that never arrives: pause completes after the flush timeout, still paused/user, and nothing is reported as failed", async () => {
       const rig = await createRig();
       const { plugin } = rig.engine;
       const { micStates, events } = await listen(rig);
-      const { id } = await plugin.start();
+      await plugin.start();
+      await rig.chunk([1, 2, 3]);
+      rig.fake.recorder().requestDataMode = "never";
+      micStates.length = 0;
+      await quiet(() => plugin.pause());
+      expect(rig.fake.mic.liveTracks()).toEqual([]);
+      expect(await plugin.status()).toMatchObject({ state: "paused", reason: "user", intent: "paused" });
+      expect(micStates.every((s) => s.state === "paused" && s.reason === "user")).toBe(true);
+      expect(events.writeFailure).toEqual([]);
+    });
+
+    test("a slice delivered after the timeout keeps its pre-pause duration; the state is paused/user throughout and nothing is reported as failed", async () => {
+      const rig = await createRig();
+      const { plugin } = rig.engine;
+      const { micStates, events } = await listen(rig);
+      await plugin.start();
       await rig.chunk([1, 2, 3]);
       expect(await plugin.status()).toMatchObject({ audioMs: 1000 });
       rig.fake.recorder().requestDataMode = "deferred";
@@ -424,17 +428,80 @@ describe("failures while recording", () => {
       micStates.length = 0;
       await quiet(() => plugin.pause());
       expect(rig.fake.mic.liveTracks()).toEqual([]);
-      expect(micStates.at(-1)).toEqual({ state: "needs_user", reason: "write_failed" });
-      expect(await plugin.status()).toMatchObject({ state: "needs_user", reason: "write_failed", intent: "paused", audioMs: 1000 });
-      expect(events.writeFailure).toEqual([{ id, error: "pause_flush_timeout" }]);
+      expect(await plugin.status()).toMatchObject({ state: "paused", reason: "user", intent: "paused", audioMs: 1000 });
 
       rig.clock.advance(30_000);
       rig.fake.recorder().releaseRequestedData();
       await rig.settle();
-      expect(micStates.at(-1)).toEqual({ state: "paused", reason: "user" });
       expect(await plugin.status()).toMatchObject({ state: "paused", reason: "user", audioMs: 2000 });
+      expect(micStates.every((s) => s.state === "paused" && s.reason === "user")).toBe(true);
+      expect(events.writeFailure).toEqual([]);
       const note = await plugin.stop();
       expect(note).toMatchObject({ sizeBytes: 5, durationMs: 2000 });
+      expect(events.writeFailure).toEqual([]);
+    });
+
+    test("resuming while the tail is pending is fine: the late slice still carries its pre-pause duration", async () => {
+      const rig = await createRig();
+      const { plugin } = rig.engine;
+      const { events } = await listen(rig);
+      await plugin.start();
+      await rig.chunk([1]);
+      const recorder = rig.fake.recorder();
+      recorder.requestDataMode = "deferred";
+      recorder.encode([2]);
+      rig.clock.advance(1000);
+      await quiet(() => plugin.pause());
+      await plugin.resume();
+      expect(await plugin.status()).toMatchObject({ state: "recording", reason: null });
+      recorder.releaseRequestedData();
+      await rig.settle();
+      expect(await plugin.status()).toMatchObject({ audioMs: 2000 });
+      const note = await plugin.stop();
+      expect(note).toMatchObject({ sizeBytes: 2, durationMs: 2000 });
+      expect(events.writeFailure).toEqual([]);
+    });
+
+    test("stop waits for a pending tail slice that arrives within the bound, then commits it with the right duration and no failure", async () => {
+      const rig = await createRig();
+      const { plugin } = rig.engine;
+      const { micStates, events } = await listen(rig);
+      await plugin.start();
+      await rig.chunk([1, 2, 3]);
+      rig.fake.env.stopTailTimeoutMs = 60_000;
+      rig.fake.recorder().requestDataMode = "deferred";
+      rig.fake.recorder().encode([4, 5]);
+      rig.clock.advance(1000);
+      await quiet(() => plugin.pause());
+      let stopped = false;
+      const stopping = plugin.stop().then((recording) => { stopped = true; return recording; });
+      await rig.settle();
+      expect(stopped).toBe(false);
+      rig.fake.recorder().releaseRequestedData();
+      const note = await stopping;
+      expect(note).toMatchObject({ sizeBytes: 5, durationMs: 2000 });
+      expect(events.writeFailure).toEqual([]);
+      expect(events.committed).toHaveLength(1);
+      expect(micStates.some((s) => s.state === "needs_user")).toBe(false);
+    });
+
+    test("stop with a tail slice that never arrives commits the durable part and reports write_failed", async () => {
+      const rig = await createRig();
+      const { plugin } = rig.engine;
+      const { events } = await listen(rig);
+      const { id } = await plugin.start();
+      await rig.chunk([1, 2, 3]);
+      rig.fake.env.stopTailTimeoutMs = 50;
+      rig.fake.recorder().requestDataMode = "never";
+      rig.fake.recorder().encode([4, 5]);
+      rig.clock.advance(1000);
+      await quiet(() => plugin.pause());
+      expect(events.writeFailure).toEqual([]);
+      const note = await quiet(() => plugin.stop());
+      expect(note).toMatchObject({ id, sizeBytes: 3, durationMs: 1000 });
+      expect(events.committed).toHaveLength(1);
+      expect(events.writeFailure).toEqual([{ id, error: "pause_flush_timeout" }]);
+      expect(await plugin.status()).toMatchObject({ state: "idle" });
     });
 
     test("a late slice from an earlier pause does not satisfy the wait of a later pause", async () => {

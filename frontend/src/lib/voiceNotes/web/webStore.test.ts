@@ -479,7 +479,7 @@ async function quietly<T>(fn: () => Promise<T>): Promise<{ result: T; logged: un
   }
 }
 
-describe("recovered recordings must decode, within a bounded window", () => {
+describe("recovered recordings are decode-checked: whole up to the cap, a prefix above it", () => {
   test("a short recording is checked whole and published with its bytes", async () => {
     const h = harness();
     const sent = await record(await h.open(), "n", [bytesOf(30), bytesOf(30, 2)]);
@@ -494,8 +494,12 @@ describe("recovered recordings must decode, within a bounded window", () => {
     expect(Array.from(await readAll(tab, "n"))).toEqual(Array.from(sent));
   });
 
-  test("a long note is never decoded beyond the window: header plus the first 10 s, cut at a chunk boundary, duration from the journal", async () => {
-    const chunks = Array.from({ length: 70 }, (_, i) => bytesOf(100, i));
+  const KIB = 1024;
+  // 70 s of audio at 80 KiB/s: about 5.5 MiB, over the 4 MiB cap; the journaled window closes at 10 s (800 KiB).
+  const longChunks = () => Array.from({ length: 70 }, (_, i) => bytesOf(80 * KIB, i));
+
+  test("a recording over the cap is only ever decoded as a prefix: the first 10 s, cut at a chunk boundary, duration from the journal", async () => {
+    const chunks = longChunks();
     for (const transactional of [true, false]) {
       const blobs = memoryAudioBlobs();
       const reads: number[] = [];
@@ -505,44 +509,104 @@ describe("recovered recordings must decode, within a bounded window", () => {
       };
       const h = harness({ audio: tracked });
       const sent = await record(await h.open(), "long", chunks);
-      expect(await (await h.open({ locks: memoryLocks() })).getSession("long")).toMatchObject({ audioMs: 70_000, bytes: 7000, decodeWindow: { bytes: 1000, audioMs: 10_000 } });
+      expect(await (await h.open({ locks: memoryLocks() })).getSession("long")).toMatchObject({ audioMs: 70_000, bytes: 70 * 80 * KIB, decodeWindow: { bytes: 10 * 80 * KIB, audioMs: 10_000 } });
       h.locks.releaseAll();
       const seen: Uint8Array[] = [];
       const tab = await h.open({ decodeCheck: async (window) => { seen.push(window); return { durationMs: 10_000 }; } });
-      const { recovered } = await tab.recoverInterruptedSessions();
+      const { recovered, failed } = await tab.recoverInterruptedSessions();
+      expect(failed).toEqual([]);
       expect(seen).toHaveLength(1);
-      expect(Array.from(seen[0]!)).toEqual(Array.from(sent.subarray(0, 1000)));
-      expect(reads.length).toBeGreaterThan(0);
-      expect(Math.max(...reads)).toBeLessThanOrEqual(1000);
-      expect(recovered).toMatchObject([{ id: "long", sizeBytes: 7000, durationMs: 70_000, recovered: true }]);
+      expect(same(seen[0]!, sent.subarray(0, 10 * 80 * KIB))).toBe(true);
+      expect(Math.max(...reads)).toBeLessThanOrEqual(10 * 80 * KIB);
+      expect(recovered).toMatchObject([{ id: "long", sizeBytes: 70 * 80 * KIB, durationMs: 70_000, recovered: true }]);
     }
   });
 
-  test("a very high bitrate closes the window by size, so 10 s of audio cannot become a huge decode", async () => {
+  test("a prefix the decoder rejects is inconclusive: a recording over the cap is published as recovered with a warning, never quarantined", async () => {
     const h = harness();
-    const loud = [bytesOf(600 * 1024), bytesOf(600 * 1024, 2), bytesOf(600 * 1024, 3)];
+    const sent = await record(await h.open(), "long", longChunks());
+    h.locks.releaseAll();
+    const tab = await h.open({ decodeCheck: async () => { throw invalid("EncodingError: cut inside a cluster"); } });
+    const warned: unknown[][] = [];
+    const warn = console.warn;
+    console.warn = (...args: unknown[]) => { warned.push(args); };
+    let result: Awaited<ReturnType<typeof tab.recoverInterruptedSessions>>;
+    try { result = await tab.recoverInterruptedSessions(); } finally { console.warn = warn; }
+    expect(result.failed).toEqual([]);
+    expect(result.recovered).toMatchObject([{ id: "long", recovered: true, endedUnexpectedly: true, sizeBytes: 70 * 80 * KIB, durationMs: 70_000 }]);
+    expect(warned).toHaveLength(1);
+    expect((await tab.listQuarantine()).items).toEqual([]);
+    expect(same(await readAll(tab, "long"), sent)).toBe(true);
+  });
+
+  test("an empty prefix decode is just as inconclusive over the cap", async () => {
+    const h = harness();
+    await record(await h.open(), "long", longChunks());
+    h.locks.releaseAll();
+    const tab = await h.open({ decodeCheck: async () => { throw invalid("The audio decoded to nothing."); } });
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      expect((await tab.recoverInterruptedSessions()).recovered).toMatchObject([{ id: "long", recovered: true }]);
+    } finally { console.warn = warn; }
+    expect((await tab.listQuarantine()).items).toEqual([]);
+  });
+
+  test("a recording over the cap whose decoder cannot run stays recoverable, like a short one", async () => {
+    const h = harness();
+    await record(await h.open(), "long", longChunks());
+    h.locks.releaseAll();
+    const tab = await h.open({ decodeCheck: async () => { throw resource("NotSupportedError: out of memory"); } });
+    const { result } = await quietly(() => tab.recoverInterruptedSessions());
+    expect(result.recovered).toEqual([]);
+    expect(result.failed).toEqual([{ id: "long", reason: DECODER_UNAVAILABLE_REASON, error: "NotSupportedError: out of memory" }]);
+    expect((await tab.listQuarantine()).items).toEqual([]);
+    expect(await tab.getSession("long")).toMatchObject({ recoveryAttempts: 0 });
+  });
+
+  test("a recording at or under the cap is decoded whole, past its journaled window, and a definite failure quarantines it", async () => {
+    const h = harness();
+    // 40 s at 80 KiB/s = 3.1 MiB: the window closed at 10 s, but the whole recording is decoded.
+    const chunks = Array.from({ length: 40 }, (_, i) => bytesOf(80 * KIB, i));
+    const sent = await record(await h.open(), "mid", chunks);
+    h.locks.releaseAll();
+    const seen: number[] = [];
+    let decodable = true;
+    const tab = await h.open({ decodeCheck: async (window) => { seen.push(window.byteLength); if (!decodable) throw invalid("no moov atom"); return { durationMs: 40_000 }; } });
+    expect(await tab.getSession("mid")).toMatchObject({ decodeWindow: { bytes: 10 * 80 * KIB } });
+    decodable = false;
+    const { result } = await quietly(() => tab.recoverInterruptedSessions());
+    expect(seen).toEqual([sent.byteLength]);
+    expect(result.recovered).toEqual([]);
+    expect(result.failed).toMatchObject([{ id: "mid", reason: UNDECODABLE_REASON }]);
+    expect((await tab.listQuarantine()).items).toMatchObject([{ id: "mid", reason: UNDECODABLE_REASON }]);
+  });
+
+  test("a very high bitrate closes the window by size, so a long prefix cannot become a huge decode", async () => {
+    const h = harness();
+    const loud = Array.from({ length: 8 }, (_, i) => bytesOf(600 * KIB, i));
     await record(await h.open(), "loud", loud);
     h.locks.releaseAll();
     const sizes: number[] = [];
     const tab = await h.open({ decodeCheck: async (window) => { sizes.push(window.byteLength); return { durationMs: 2000 }; } });
     await tab.recoverInterruptedSessions();
-    expect(sizes).toEqual([1200 * 1024]);
+    expect(sizes).toEqual([1200 * KIB]);
   });
 
-  test("a recording with no journaled window that is too large to bound fails visibly and is not decoded", async () => {
+  test("a recording over the cap with no journaled window is decoded as its first cap bytes", async () => {
     const blobs = memoryAudioBlobs();
     const h = harness({ audio: blobs.create });
     const store = await h.open();
     await store.beginSession(init("big"));
     await blobs.create().append("big", bytesOf(5 * 1024 * 1024));
     h.locks.releaseAll();
-    let called = false;
-    const tab = await h.open({ decodeCheck: async () => { called = true; return { durationMs: 1 }; } });
-    const { result } = await quietly(() => tab.recoverInterruptedSessions());
-    expect(called).toBe(false);
-    expect(result.recovered).toEqual([]);
-    expect(result.failed).toMatchObject([{ id: "big", reason: "recovery_failed" }]);
-    expect(await tab.audio.size("big")).toBe(5 * 1024 * 1024);
+    const sizes: number[] = [];
+    const tab = await h.open({ decodeCheck: async (window) => { sizes.push(window.byteLength); return { durationMs: 1 }; } });
+    const warn = console.warn;
+    console.warn = () => {};
+    const { recovered } = await tab.recoverInterruptedSessions().finally(() => { console.warn = warn; });
+    expect(sizes).toEqual([DECODE_WINDOW_MAX_BYTES]);
+    expect(recovered).toMatchObject([{ id: "big", sizeBytes: 5 * 1024 * 1024 }]);
   });
 
   test("invalid media is quarantined, never published, and keeps its audio; Try again re-checks and Delete removes it", async () => {
