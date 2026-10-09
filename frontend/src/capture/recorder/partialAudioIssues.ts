@@ -8,8 +8,11 @@ const MAX_NOTICES = 256;
 const UNKNOWN_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** Keep each account and space separate, including the signed-out local bucket. */
-export const partialAudioScope = (did: string | null | undefined, spaceId: string | null | undefined) =>
-  `${prefix}${encodeURIComponent(did ?? "signed-out")}.${encodeURIComponent(spaceId ?? "local")}`;
+export const partialAudioScope = (did: unknown, spaceId: unknown) => {
+  if (did != null && typeof did !== "string") throw new TypeError("Voice-note DID must be a string");
+  if (spaceId != null && typeof spaceId !== "string") throw new TypeError("Voice-note spaceId must be a string");
+  return `${prefix}${encodeURIComponent(did ?? "signed-out")}.${encodeURIComponent(spaceId ?? "local")}`;
+};
 
 function read(scope: string): StoredNotices {
   try {
