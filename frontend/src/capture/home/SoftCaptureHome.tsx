@@ -79,6 +79,8 @@ function InProgress(props: { inProgress: InProgressRowsViewProps }) {
   return (
     <section
       aria-labelledby="soft-in-progress-title"
+      className="soft-in-progress"
+      data-with-card={card ? "true" : undefined}
       data-testid="soft-in-progress"
     >
       {card && (
@@ -108,7 +110,11 @@ function Recent(props: SoftCaptureHomeProps) {
   const { status, items } = props.recent;
   const entries = recentEntries(items, soft?.issues ?? {}, RECENT_COUNT);
   return (
-    <section aria-labelledby="recent-title" data-testid="capture-recent">
+    <section
+      aria-labelledby="recent-title"
+      className="soft-recent"
+      data-testid="capture-recent"
+    >
       <div className="soft-sect-row">
         <h2 id="recent-title" className="soft-sect">
           {HOME_COPY.recent}

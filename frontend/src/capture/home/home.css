@@ -93,6 +93,13 @@
   font-weight: 600;
   line-height: 1.3;
 }
+/* Right under the In progress card: the page's 24px section gap plus the 44px "See all" row left the heading about 40px down; the design has about 28px to the heading's centre. */
+.soft-in-progress[data-with-card] + .soft-recent {
+  margin-top: -18px;
+}
+.soft-in-progress[data-with-card] + .soft-recent .soft-sect {
+  padding-top: 0;
+}
 .soft-sect-row {
   display: flex;
   align-items: baseline;
