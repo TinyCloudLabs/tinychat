@@ -52,6 +52,11 @@
 .dr-notes:active {
   transform: scale(0.95);
 }
+@media (pointer: coarse) {
+  .dr-notes {
+    min-height: 44px;
+  }
+}
 .dr .pr-ring {
   width: var(--dr-ring);
   height: var(--dr-ring);
@@ -70,9 +75,6 @@
 .dr .pr-mshort,
 .dr .pr-capline {
   font-size: 12.5px;
-}
-.dr .pr-ends {
-  font-size: 10.5px;
 }
 
 /* The modes card is a popover on ⓘ⌄, centred above it, not risen over the slider. */

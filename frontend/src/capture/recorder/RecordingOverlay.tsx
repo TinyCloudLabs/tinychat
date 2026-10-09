@@ -43,7 +43,7 @@ function MinimizeOnNavigate() {
 }
 
 export type RecordingOverlayProps = Omit<RecordingViewProps, "recorder"> & {
-  /** The app's main region (AppShell's recorder host), where the desktop view is drawn. */
+  /** The app's main region (AppShell's recorder host), where the desktop view is drawn; null until it mounts. Left out above the gate, where there is no shell, so the classic dialog stays. */
   desktopHost?: HTMLElement | null;
   /** Opens the note view from the desktop view's Write notes / View notes. */
   onOpenNotes?: () => void;
@@ -54,7 +54,7 @@ export type RecordingOverlayProps = Omit<RecordingViewProps, "recorder"> & {
 };
 
 export function RecordingOverlay({
-  desktopHost = null,
+  desktopHost,
   onOpenNotes,
   finalSkin = recorderFinalEnabled(),
   loadDesktopRecorder,
@@ -68,6 +68,7 @@ export function RecordingOverlay({
     shell,
     layout,
     available: recorder.available,
+    hosted: desktopHost !== undefined,
     receipt: recorder.phase === "idle" && recorder.outcome !== null,
   });
 

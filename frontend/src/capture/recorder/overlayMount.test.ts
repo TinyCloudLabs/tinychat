@@ -11,6 +11,7 @@ const mount = (input: Partial<OverlayMountInput>) =>
     shell: "web",
     layout: "desktop",
     available: true,
+    hosted: true,
     receipt: false,
     ...input,
   });
@@ -37,6 +38,13 @@ test("flag on, rail and desktop layouts: any shell with a recorder gets the desk
       expect(mount({ shell, layout })).toBe("desktop");
       expect(mount({ shell, layout, available: false })).toBe("legacy");
     }
+});
+
+test("above the gate there is no main region, so the rail and desktop layouts keep the classic dialog", () => {
+  for (const shell of SHELLS)
+    for (const layout of ["rail", "desktop"] as const)
+      expect(mount({ shell, layout, hosted: false })).toBe("legacy");
+  expect(mount({ shell: "phone", layout: "phone", hosted: false })).toBe("phone");
 });
 
 test("a receipt keeps the classic view at every layout", () => {

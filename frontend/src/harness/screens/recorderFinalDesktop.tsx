@@ -65,6 +65,11 @@ const LIVE: Partial<RecorderValue> = {
   audioMs: minutes(12, 48),
   elapsedMs: minutes(12, 48),
   transcription: PRIVATE_CLOUD_ON,
+  transcriber: {
+    id: "private-cloud",
+    identifySpeakers: false,
+    source: "recording",
+  },
   sheetOpen: true,
 };
 
@@ -226,7 +231,9 @@ export const recorderFinalDesktopScreens: HarnessScreen[] = [
   interactiveScreen,
   screen("recording", {}),
   screen("recording-web", {}, {}, "web"),
-  screen("recording-notes", { note: { md: "Ask Dana about the launch date." } } as Partial<RecorderValue>),
+  screen("recording-notes", {
+    note: { md: "Ask Dana about the launch date.", moments: [] },
+  }),
   screen("paused", { mic: { state: "paused", reason: "user" } }),
   screen("interrupted", {
     mic: { state: "needs_user", reason: "resume_not_allowed" },

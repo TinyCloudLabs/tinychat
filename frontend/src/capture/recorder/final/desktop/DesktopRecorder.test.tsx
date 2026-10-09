@@ -7,7 +7,20 @@ import {
   StaticRecorderProvider,
   type RecorderValue,
 } from "../../RecorderProvider";
+import type { VoiceNoteTranscriptionProps } from "../../transcriptionProps";
 import { DesktopRecorder, type DesktopRecorderProps } from "./DesktopRecorder";
+
+const noop = () => {};
+const PRIVATE_ON: VoiceNoteTranscriptionProps = {
+  availability: "available",
+  consented: true,
+  maxSeconds: 600,
+  jobs: new Map(),
+  onTranscribe: noop,
+  onConsent: noop,
+  onTurnOff: noop,
+  onRecheck: noop,
+};
 
 const LIVE: Partial<RecorderValue> = {
   phase: "recording",
@@ -15,11 +28,17 @@ const LIVE: Partial<RecorderValue> = {
   startedAt: 1,
   audioMs: 768_000,
   elapsedMs: 768_000,
+  transcription: PRIVATE_ON,
+  transcriber: {
+    id: "private-cloud",
+    identifySpeakers: false,
+    source: "recording",
+  },
   sheetOpen: true,
 };
 
 const render = (
-  patch: Partial<RecorderValue> & { note?: { md: string } | null } = {},
+  patch: Partial<RecorderValue> = {},
   props: Partial<DesktopRecorderProps> = {},
 ) =>
   renderToStaticMarkup(
@@ -46,8 +65,8 @@ describe("DesktopRecorder", () => {
 
   test("Write notes becomes View notes once the note has text", () => {
     expect(render({}, withNotes)).toContain("Write notes");
-    expect(render({ note: { md: "" } }, withNotes)).toContain("Write notes");
-    const html = render({ note: { md: "Ask Dana." } }, withNotes);
+    expect(render({ note: { md: "", moments: [] } }, withNotes)).toContain("Write notes");
+    const html = render({ note: { md: "Ask Dana.", moments: [] } }, withNotes);
     expect(html).toContain("View notes");
     expect(html).not.toContain("Write notes");
   });
@@ -90,5 +109,37 @@ describe("DesktopRecorder", () => {
     expect(html).toContain('role="region"');
     expect(html).toContain('aria-label="Recorder"');
     expect(html).toContain('class="pr-src-wrap"');
+  });
+
+  test("the scale shows the provider's transcriber, not a local stand-in", () => {
+    const html = render();
+    expect(html).toContain('aria-valuetext="Private"');
+    expect(render({
+      transcriber: { id: "off", identifySpeakers: false, source: "recording" },
+    })).toContain('aria-valuetext="Audio only"');
+  });
+
+  test("signed out, only Local is open on the scale, as on the phone", () => {
+    const stops = (patch: Partial<RecorderValue>) =>
+      [...render(patch).matchAll(/data-available="(true|false)"/g)].map(
+        (m) => m[1],
+      );
+    const local = {
+      id: "on-device" as const,
+      identifySpeakers: false,
+      source: "default" as const,
+    };
+    expect(stops({ signedIn: false, transcriber: local })).toEqual([
+      "false",
+      "true",
+      "false",
+      "false",
+    ]);
+    expect(stops({ signedIn: true, transcriber: local })).toEqual([
+      "true",
+      "false",
+      "true",
+      "false",
+    ]);
   });
 });
