@@ -137,7 +137,8 @@ describe("DesktopRecorder", () => {
     ]);
     const html = render({ signedIn: false, transcriber: local });
     expect(html).toContain('aria-valuetext="Audio only"');
-    expect(html).toContain("Sign in to transcribe it.");
+    expect(html).toContain("Just the recording, kept on this Mac.");
+    expect(html).not.toContain("transcribe it");
     expect(stops({ signedIn: true, transcriber: local })).toEqual([
       "true",
       "false",

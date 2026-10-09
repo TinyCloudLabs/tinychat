@@ -26,7 +26,7 @@ export const SIGNED_OUT = "Sign in to choose another mode";
 export const unavailableNow = (what: string) =>
   `${what} isn't available right now`;
 export const DESKTOP_SIGNED_OUT_CAPTION =
-  "Just the recording, kept on this Mac. Sign in to transcribe it.";
+  "Just the recording, kept on this Mac.";
 export const SPEAKERS_NEEDS_CONSENT = "Turn on private transcription first";
 
 export const TRANSCRIBER_FOR: Record<ModeId, TranscriberId> = {
