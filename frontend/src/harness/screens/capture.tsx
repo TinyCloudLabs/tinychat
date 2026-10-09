@@ -168,7 +168,7 @@ declare global {
 }
 
 /** Wraps the harness's fake plugin so the failed-recording calls are driven by `window.exoUiFailed`. */
-function installFailedNative(parked: string[], reasons: Record<string, string>) {
+export function installFailedNative(parked: string[], reasons: Record<string, string>) {
   const waiting: (() => void)[] = [];
   const control: NonNullable<Window["exoUiFailed"]> = {
     calls: [],

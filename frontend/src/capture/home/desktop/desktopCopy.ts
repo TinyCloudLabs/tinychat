@@ -38,3 +38,7 @@ export const DESKTOP_HOME_COPY = {
   scanFailure:
     "Exo couldn't check for unfinished recordings. It will try again when it next opens.",
 } as const;
+
+/** The failed-recording sheet's shared copy, which says "this phone", for the desktop home. */
+export const onThisMac = (text: string): string =>
+  text.replaceAll("this phone", "this Mac").replaceAll("This phone", "This Mac");

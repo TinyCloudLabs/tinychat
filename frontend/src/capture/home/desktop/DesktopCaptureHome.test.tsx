@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import type { InProgressRowsViewProps } from "../../InProgressRows";
+import type { RecorderCaptureIssue } from "../../recorder/recorderReducer";
 import type { LibraryItem } from "../../library/LibraryRow";
 import {
   StaticRecorderProvider,
@@ -202,6 +203,75 @@ describe("Recent", () => {
   });
 });
 
+describe("failed recordings", () => {
+  const lost: RecorderCaptureIssue = { kind: "recoveryFailed", detail: "ENOSPC /var/x" };
+  const rowsOf = (html: string) => html.split("<li ").slice(1);
+
+  test("a recording with no Library row yet is one button that opens its sheet, with the issue in its label", () => {
+    const html = home({ recorder: { captureIssues: { orphan: lost } } });
+    const row = rowsOf(html).find((li) => li.includes('data-source-id="orphan"'))!;
+    expect(row).toMatch(/<button type="button" class="soft-row"/);
+    expect(row).toContain("Couldn&#x27;t recover this recording. Needs attention. Opens details");
+    expect(row).not.toContain("<a ");
+    expect(row).not.toContain("ENOSPC");
+  });
+
+  test("a Library voice note whose recording failed is a button too, not a link to its note", () => {
+    const html = home({
+      recorder: { captureIssues: { "rec-1": lost } },
+      props: { recent: { status: "ready", items: [note(1), note(2)] } },
+    });
+    const failed = rowsOf(html).find((li) => li.includes('data-source-id="rec-1"'))!;
+    expect(failed).toMatch(/<button type="button" class="soft-row"/);
+    expect(failed).not.toContain('href="/chat/capture/library/row-1"');
+    const fine = rowsOf(html).find((li) => li.includes('data-source-id="rec-2"'))!;
+    expect(fine).toContain('href="/chat/capture/library/row-2"');
+  });
+
+  test("a write failure opens its sheet; a parked recording is a row with its audio kept", () => {
+    const html = home({ recorder: { captureIssues: { w: { kind: "write_failed", detail: "x" } } } });
+    expect(rowsOf(html).find((li) => li.includes('data-source-id="w"'))).toMatch(/<button /);
+    const parked = renderToStaticMarkup(
+      <MemoryRouter>
+        <ul>
+          <RecentRow
+            entry={{ type: "issue", id: "p", issue: { kind: "quarantined" } }}
+            now={NOW}
+            grouped={false}
+            onDismiss={noop}
+            onOpenIssue={noop}
+          />
+        </ul>
+      </MemoryRouter>,
+    );
+    expect(parked).toContain("Couldn&#x27;t recover this recording · audio kept");
+    expect(parked).toMatch(/<button /);
+  });
+
+  test("a timed-out save stays the saving row, and partial audio keeps Dismiss: neither opens a sheet", () => {
+    const html = home({
+      recorder: {
+        captureIssues: { saving: { kind: "finalization_timed_out" }, "rec-1": { kind: "partial_audio" } },
+      },
+      props: { recent: { status: "ready", items: [note(1)] } },
+    });
+    const saving = rowsOf(html).find((li) => li.includes('data-source-id="saving"'))!;
+    expect(saving).toContain("Saving… · kept on this Mac");
+    expect(saving).toContain('role="group"');
+    expect(saving).not.toMatch(/<button /);
+    expect(saving).not.toContain("Needs attention");
+    const partial = rowsOf(html).find((li) => li.includes('data-source-id="rec-1"'))!;
+    expect(partial).toContain('data-testid="capture-issue-dismiss"');
+    expect(partial).not.toContain("Opens details");
+  });
+
+  test("Recent is where focus lands when a failed row goes: its heading is focusable and marked", () => {
+    const html = home();
+    expect(html).toMatch(/<section[^>]*data-return-focus=""[^>]*data-testid="capture-recent"/);
+    expect(html).toMatch(/<h2 id="dch-recent-title"[^>]*tabindex="-1"[^>]*data-return-focus-target=""/);
+  });
+});
+
 describe("filter chips", () => {
   test("a toggle group: the active chip is pressed and checked", () => {
     const html = renderToStaticMarkup(<FilterChips value="note" onChange={noop} />);
@@ -222,6 +292,7 @@ describe("a row", () => {
             now={NOW}
             grouped
             onDismiss={noop}
+            onOpenIssue={noop}
           />
         </ul>
       </MemoryRouter>,

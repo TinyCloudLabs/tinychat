@@ -4,6 +4,9 @@ import { UPLOAD_MEETING_SOURCE } from "@/lib/audioUpload";
 import type { LibraryItem } from "../../library/LibraryRow";
 import { FINALIZATION_PENDING } from "../../recorder/recorderCopy";
 import type { RecorderCaptureIssue } from "../../recorder/recorderReducer";
+import { issueSheetCopy, type CaptureIssues, type HomeIssue } from "../captureIssues";
+import { HOME_COPY } from "../homeCopy";
+import { onThisMac } from "./desktopCopy";
 import {
   desktopIssueMeta,
   desktopRecent,
@@ -86,6 +89,49 @@ describe("capture issues in Recent", () => {
     expect(issueNeedsAttention({ kind: "finalization_timed_out" })).toBe(false);
     expect(issueNeedsAttention(failed)).toBe(true);
     expect(issueNeedsAttention({ kind: "write_failed", detail: "x" })).toBe(true);
+  });
+});
+
+describe("a recording native parked", () => {
+  const parked: CaptureIssues = { p: { kind: "quarantined" } };
+
+  test("is an issue row under All and Notes, with its audio kept", () => {
+    expect(desktopRecent(LIBRARY, parked, "all").attention).toEqual([
+      { type: "issue", id: "p", issue: { kind: "quarantined" } },
+    ]);
+    expect(desktopRecent(LIBRARY, parked, "meeting").attention).toHaveLength(0);
+    expect(desktopIssueMeta({ kind: "quarantined" })).toBe("Couldn't recover this recording · audio kept");
+    expect(issueNeedsAttention({ kind: "quarantined" })).toBe(true);
+  });
+
+  test("the card says so", () => {
+    expect(onMacNote(parked, null)).toBe("Not in your space yet · Couldn't recover · audio kept");
+  });
+});
+
+describe("the failed-recording sheet's copy on the desktop", () => {
+  const kinds: HomeIssue[] = [
+    { kind: "recoveryFailed", detail: "x" },
+    { kind: "quarantined" },
+    { kind: "quarantined", unplayable: true },
+    { kind: "write_failed", detail: "x" },
+  ];
+
+  test("names this Mac, never this phone", () => {
+    const lines = [
+      ...kinds.flatMap((issue) => {
+        const copy = issueSheetCopy(issue)!;
+        return [copy.title, copy.body];
+      }),
+      HOME_COPY.tryAgainFailed,
+      HOME_COPY.deleteFailed,
+      HOME_COPY.deleteConfirm.title,
+      HOME_COPY.deleteConfirm.body,
+    ];
+    for (const line of lines) expect(onThisMac(line)).not.toContain("phone");
+    expect(onThisMac(HOME_COPY.deleteConfirm.body)).toBe(
+      "The audio will be deleted from this Mac. This can't be undone.",
+    );
   });
 });
 

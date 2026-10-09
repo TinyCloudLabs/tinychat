@@ -5,7 +5,11 @@ import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import type { LibraryItem } from "../../library/LibraryRow";
 import { libraryKind } from "../../library/libraryKinds";
 import { FINALIZATION_PENDING } from "../../recorder/recorderCopy";
-import type { RecorderCaptureIssue } from "../../recorder/recorderReducer";
+import {
+  type CaptureIssues,
+  type HomeIssue,
+} from "../captureIssues";
+import { HOME_COPY } from "../homeCopy";
 import { DESKTOP_HOME_COPY as COPY } from "./desktopCopy";
 
 export type RecentFilter = "all" | "note" | "meeting";
@@ -21,8 +25,8 @@ export const RECENT_FILTERS: readonly { value: RecentFilter; label: string }[] =
 /** Recent shows this many rows at most, after the filter. */
 export const DESKTOP_RECENT_COUNT = 20;
 
-type Issues = Readonly<Record<string, RecorderCaptureIssue>>;
-type Failure = Exclude<RecorderCaptureIssue, { kind: "partial_audio" }>;
+type Issues = CaptureIssues;
+type Failure = Exclude<HomeIssue, { kind: "partial_audio" }>;
 
 export type DesktopEntry =
   | {
@@ -103,10 +107,13 @@ export function desktopIssueMeta(issue: Failure): string {
       return COPY.timedOut;
     case "recoveryFailed":
       return COPY.recoveryFailed;
+    case "quarantined":
+      return HOME_COPY.quarantinedMeta;
     case "write_failed":
       return COPY.writeFailed;
   }
 }
+
 
 /** Whether the row is a failure to flag with "!" and "Needs attention": a timed-out save resolves itself. */
 export function issueNeedsAttention(issue: Failure): boolean {
@@ -127,6 +134,8 @@ export function onMacNote(issues: Issues, lastError: string | null): string {
   const kinds = Object.values(issues).map((issue) => issue.kind);
   if (kinds.includes("recoveryFailed"))
     return `${COPY.notInSpace} · ${COPY.willRetry}`;
+  if (kinds.includes("quarantined"))
+    return `${COPY.notInSpace} · ${HOME_COPY.quarantinedCard}`;
   if (kinds.includes("write_failed"))
     return `${COPY.notInSpace} · ${COPY.writeFailed}`;
   if (lastError || kinds.includes("finalization_timed_out"))

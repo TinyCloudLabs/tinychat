@@ -42,12 +42,18 @@ import type { RecorderLayout } from "../../recorder/final/shellCapabilities";
 import { nativeAudioInputs } from "../../recorder/final/useAudioInputs";
 import { recorderActive, useRecorder } from "../../recorder/RecorderProvider";
 import { useRecordedElapsed } from "../../recorder/useRecordedElapsed";
-import type { RecorderCaptureIssue } from "../../recorder/recorderReducer";
+import {
+  issueHasSheet,
+  type CaptureIssues,
+  type HomeIssue,
+} from "../captureIssues";
 import { HOME_COPY } from "../homeCopy";
+import { IssueSheet } from "../IssueSheet";
 import { useSoftTheme } from "../softTheme";
+import { useIssueController } from "../useIssueController";
 import { desktopHomeCapabilities } from "./captureHomeKind";
 import { ConnectMeetingsLink } from "./ConnectMeetingsLink";
-import { DESKTOP_HOME_COPY as COPY } from "./desktopCopy";
+import { DESKTOP_HOME_COPY as COPY, onThisMac } from "./desktopCopy";
 import {
   desktopIssueMeta,
   desktopRecent,
@@ -191,8 +197,8 @@ export function OnThisMacCard(props: {
 function InProgress(props: {
   inProgress: InProgressRowsViewProps;
   macCard: boolean;
+  issues: CaptureIssues;
 }) {
-  const recorder = useRecorder();
   const { voice } = props.inProgress;
   const count = voice?.listing.state === "ok" ? voice.listing.count : 0;
   const card = props.macCard && voice !== undefined && count > 0;
@@ -219,7 +225,7 @@ function InProgress(props: {
           <OnThisMacCard
             count={count}
             saving={voice.saving}
-            note={onMacNote(recorder.captureIssues, voice.lastError)}
+            note={onMacNote(props.issues, voice.lastError)}
             onSaveNow={voice.onSaveNow}
           />
         </>
@@ -238,11 +244,13 @@ function rowLabel(parts: {
   meta: string;
   durationSecs: number | null;
   attention: boolean;
+  opensDetails: boolean;
 }): string {
   const label = [parts.title, parts.meta];
   if (parts.durationSecs !== null)
     label.push(formatSpokenDuration(parts.durationSecs));
   if (parts.attention) label.push(HOME_COPY.needsAttention);
+  if (parts.opensDetails) label.push(HOME_COPY.opensDetails);
   return label.filter(Boolean).join(". ");
 }
 
@@ -251,6 +259,8 @@ export function RecentRow(props: {
   now: Date;
   grouped: boolean;
   onDismiss: (id: string) => void;
+  /** A tap on a row whose failure has a sheet: the recording's id, and the row to return focus to. */
+  onOpenIssue: (id: string, row: HTMLElement) => void;
 }) {
   const { entry } = props;
   let icon: LucideIcon = MicIcon;
@@ -261,7 +271,8 @@ export function RecentRow(props: {
   let attention = false;
   let dismissId: string | undefined;
   let sourceId: string | undefined;
-  let issueKind: RecorderCaptureIssue["kind"] | undefined;
+  let issueKind: HomeIssue["kind"] | undefined;
+  let sheetId: string | undefined;
   if (entry.type === "item") {
     const { item } = entry;
     icon = KIND_ICON[libraryKind(item.source)];
@@ -278,6 +289,7 @@ export function RecentRow(props: {
       meta = desktopIssueMeta(entry.issue);
       attention = issueNeedsAttention(entry.issue);
       issueKind = entry.issue.kind;
+      if (issueHasSheet(entry.issue)) sheetId = item.sourceId;
     }
   } else if (entry.type === "partial") {
     meta = COPY.partialAudio;
@@ -289,6 +301,7 @@ export function RecentRow(props: {
     attention = issueNeedsAttention(entry.issue);
     sourceId = entry.id;
     issueKind = entry.issue.kind;
+    if (issueHasSheet(entry.issue)) sheetId = entry.id;
   }
   const Icon = icon;
   const body = (
@@ -316,17 +329,25 @@ export function RecentRow(props: {
           {meta}
         </span>
       </span>
-      {(durationSecs !== null || href !== undefined) && (
+      {(durationSecs !== null || href !== undefined || sheetId !== undefined) && (
         <span className="soft-row-aside" aria-hidden="true">
           {durationSecs !== null && (
             <span className="tnum">{formatClockDuration(durationSecs)}</span>
           )}
-          {href !== undefined && <ChevronRightIcon className="soft-chev" />}
+          {(href !== undefined || sheetId !== undefined) && (
+            <ChevronRightIcon className="soft-chev" />
+          )}
         </span>
       )}
     </>
   );
-  const label = rowLabel({ title, meta, durationSecs, attention });
+  const label = rowLabel({
+    title,
+    meta,
+    durationSecs,
+    attention,
+    opensDetails: sheetId !== undefined,
+  });
   return (
     <li
       className="soft-row-item dch-row-item"
@@ -334,7 +355,16 @@ export function RecentRow(props: {
       data-source-id={sourceId}
       data-issue={issueKind}
     >
-      {href !== undefined ? (
+      {sheetId !== undefined ? (
+        <button
+          type="button"
+          className="soft-row"
+          aria-label={label}
+          onClick={(event) => props.onOpenIssue(sheetId, event.currentTarget)}
+        >
+          {body}
+        </button>
+      ) : href !== undefined ? (
         <Link to={href} className="soft-row" aria-label={label}>
           {body}
         </Link>
@@ -387,11 +417,12 @@ export function FilterChips(props: {
 export function RecentView(props: {
   status: LibraryStatus;
   items: readonly LibraryItem[];
-  issues: Readonly<Record<string, RecorderCaptureIssue>>;
+  issues: CaptureIssues;
   filter: RecentFilter;
   onFilter: (value: RecentFilter) => void;
   onRetry: () => void;
   onDismiss: (id: string) => void;
+  onOpenIssue: (id: string, row: HTMLElement) => void;
   now: Date;
 }) {
   const { attention, items } = desktopRecent(
@@ -405,10 +436,16 @@ export function RecentView(props: {
     <section
       aria-labelledby="dch-recent-title"
       className="dch-recent"
+      data-return-focus=""
       data-testid="capture-recent"
     >
       <div className="dch-recent-head">
-        <h2 id="dch-recent-title" className="dch-recent-title soft-title">
+        <h2
+          id="dch-recent-title"
+          className="dch-recent-title soft-title"
+          tabIndex={-1}
+          data-return-focus-target=""
+        >
           {COPY.recent}
         </h2>
         <FilterChips value={props.filter} onChange={props.onFilter} />
@@ -444,6 +481,7 @@ export function RecentView(props: {
                   now={props.now}
                   grouped={false}
                   onDismiss={props.onDismiss}
+                  onOpenIssue={props.onOpenIssue}
                 />
               ))}
             </ul>
@@ -459,6 +497,7 @@ export function RecentView(props: {
                     now={props.now}
                     grouped
                     onDismiss={props.onDismiss}
+                    onOpenIssue={props.onOpenIssue}
                   />
                 ))}
               </ul>
@@ -477,6 +516,8 @@ export function DesktopCaptureHome(props: DesktopCaptureHomeProps) {
   const theme = softTheme === "soft-night" ? "night" : "day";
   const caps = desktopHomeCapabilities(platform, props.layout);
   const [filter, setFilter] = useState<RecentFilter>("all");
+  // The same issue state and sheet as the phone home, over the recorder's issues and what native parked.
+  const issues = useIssueController(true, recorder.captureIssues);
   return (
     <div
       className={`soft-skin soft-home ${softTheme} dch`}
@@ -534,7 +575,20 @@ export function DesktopCaptureHome(props: DesktopCaptureHomeProps) {
               sessionStore={props.sessionStore}
             />
           )}
-          <InProgress inProgress={props.inProgress} macCard={caps.onThisMac} />
+          <InProgress
+            inProgress={props.inProgress}
+            macCard={caps.onThisMac}
+            issues={issues.issues}
+          />
+          {issues.quarantineFailed && (
+            <p
+              role="alert"
+              className="soft-quiet"
+              data-testid="quarantine-failure"
+            >
+              {HOME_COPY.quarantineFailure}
+            </p>
+          )}
           {recorder.recoveryScanFailure !== null && (
             <p className="soft-quiet" data-testid="recovery-scan-failure">
               {COPY.scanFailure}
@@ -543,15 +597,17 @@ export function DesktopCaptureHome(props: DesktopCaptureHomeProps) {
           <RecentView
             status={props.recent.status}
             items={props.recent.items}
-            issues={recorder.captureIssues}
+            issues={issues.issues}
             filter={filter}
             onFilter={setFilter}
             onRetry={props.onRetryRecent}
             onDismiss={recorder.dismissCaptureIssue}
+            onOpenIssue={issues.openIssue}
             now={props.now}
           />
         </div>
       </div>
+      <IssueSheet {...issues.sheet} layout="desktop" text={onThisMac} />
     </div>
   );
 }

@@ -2,7 +2,7 @@
 // idle, docked, after a stop, with capture issues and empty, in the Tauri app and (idle) on the web. The
 // harness build has no env, so each screen turns the Soft skin on. The interactive screen runs the real
 // recorder over the fake native plugin on the Library fixture, for test/capture-home-desktop.e2e.test.ts.
-import { useContext, useEffect, useMemo, type ReactNode } from "react";
+import { useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { forceSoftHome } from "@/capture/home/softHome";
 import { showToast } from "@/capture/recorder/final/desktop/Toasts";
@@ -14,6 +14,7 @@ import { createRuntimeShim } from "../runtimeShim";
 import type { HarnessScreen } from "../screen";
 import { ShellApp } from "../ShellApp";
 import { FROZEN_NOW } from "../stubs";
+import { installFailedNative } from "./capture";
 import { installNativePlugin, ON_DEVICE_STT } from "./recorderFinalDesktop";
 
 const LISTED =
@@ -79,6 +80,47 @@ const ISSUES: Partial<RecorderValue> = {
   },
 };
 
+const LOST: NonNullable<RecorderValue["captureIssues"]> = {
+  "rec-lost": { kind: "recoveryFailed", detail: "native: segment unreadable" },
+  // A voice note already in the Library (rec-0802) whose recovery failed.
+  "rec-0802": { kind: "recoveryFailed", detail: "native: segment unreadable" },
+};
+const LOST_ROW = '[data-testid="capture-recent"] li[data-issue="recoveryFailed"] button';
+const SHEET = '[data-testid="capture-issue-sheet"]';
+const CONFIRM = '[role="alertdialog"]';
+
+/** The failed-recording actions over the fake native plugin (window.exoUiFailed); Try again clears the issues, as the recorder does. */
+function FailedHome(props: {
+  parked?: string[];
+  /** A row to click once it is there, and (confirm) the Delete to press after it. */
+  open?: string;
+  confirm?: boolean;
+}) {
+  useState(() => installFailedNative(props.parked ?? ["rec-parked"], {}));
+  const [issues, setIssues] = useState(LOST);
+  window.exoUiClearIssues = () => setIssues({});
+  const recorder = useMemo<Partial<RecorderValue>>(
+    () => ({ ...IDLE, captureIssues: issues }),
+    [issues],
+  );
+  useEffect(() => {
+    if (!props.open) return;
+    const timer = setInterval(() => {
+      const row = document.querySelector<HTMLElement>(props.open!);
+      if (!row) return;
+      row.click();
+      clearInterval(timer);
+      if (props.confirm)
+        setTimeout(
+          () => document.querySelector<HTMLElement>('[data-testid="capture-issue-delete"]')?.click(),
+          100,
+        );
+    }, 50);
+    return () => clearInterval(timer);
+  }, [props.open, props.confirm]);
+  return <Home recorder={recorder} />;
+}
+
 const screen = (
   id: string,
   render: () => ReactNode,
@@ -113,6 +155,15 @@ const interactiveScreen: HarnessScreen = {
 
 export const captureHomeDesktopScreens: HarnessScreen[] = [
   interactiveScreen,
+  {
+    ...screen("failed", () => <FailedHome />),
+    interactive: true,
+  },
+  { ...screen("failed-sheet", () => <FailedHome open={LOST_ROW} />), readyWhen: SHEET },
+  {
+    ...screen("failed-confirm", () => <FailedHome open={LOST_ROW} confirm />),
+    readyWhen: CONFIRM,
+  },
   screen("idle", () => <Home recorder={IDLE} />),
   screen("idle-web", () => <Home recorder={IDLE} />, "web"),
   screen("docked", () => <Home recorder={DOCKED} />),

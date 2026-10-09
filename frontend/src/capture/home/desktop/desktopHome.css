@@ -233,6 +233,31 @@
   inset: -4px;
 }
 
+/* The failed-recording sheet as a centred dialog. Centred with inset and auto margins, not a transform: the delete confirmation inside is position: fixed and would otherwise be placed against the dialog. */
+.soft-skin.soft-sheet[data-layout="desktop"] {
+  inset: 0;
+  width: min(420px, calc(100vw - 32px));
+  max-width: none;
+  height: fit-content;
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+  padding: 26px 24px 20px;
+  border-radius: 28px;
+  box-shadow:
+    inset 0 0 0 1px var(--gedge),
+    0 20px 60px rgba(0, 0, 0, 0.4);
+  animation: soft-fade 0.2s ease-out;
+}
+.soft-sheet[data-layout="desktop"] .pr-sheet {
+  inset: 0;
+  width: min(392px, calc(100vw - 32px));
+  height: fit-content;
+  margin: auto;
+  padding: 26px 24px 18px;
+  border-radius: 28px;
+  animation: soft-fade 0.2s ease-out;
+}
+
 @media (max-width: 899px) {
   .dch-col {
     padding: 20px 20px 48px;
