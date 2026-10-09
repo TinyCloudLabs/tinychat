@@ -28,6 +28,21 @@ export function limitNoticeText(maxDurationMs: number): string {
 const SILENCED_CLAUSE = "the system is blocking the microphone (a call, another app, or the mic privacy toggle)";
 const NO_SIGNAL_CLAUSE = "no sound is reaching the microphone";
 
+function interruptionText(reason: MicStateReason): string {
+  switch (reason) {
+    case "stalled": return "The microphone stopped sending sound. Reconnecting…";
+    case "interruption": return "Paused by a call or Siri. Resumes when it ends.";
+    case "call": return "Resumes when the call ends";
+    case "resume_blocked": return "The microphone could not resume because the audio session is blocked.";
+    case "mic_unavailable": return "The microphone is unavailable. Choose another input or reconnect it.";
+    case "route_change": return "The microphone input changed. Waiting for capture to recover.";
+    case "media_services_reset": return "Audio services restarted. Waiting for capture to recover.";
+    case "read_error": return "The microphone could not be read. Waiting for capture to recover.";
+    case "app_suspended": return "Recording was interrupted while the app was inactive.";
+    default: return "Interrupted";
+  }
+}
+
 /** Copy for what the OS is telling us about the microphone. */
 export function micStatusText(
   phase: RecorderPhase,
@@ -39,7 +54,7 @@ export function micStatusText(
   if (phase === "stopping" || phase === "saving") return "Saving to your TinyCloud space…";
   if (phase !== "recording") return "Not recording. The microphone is off.";
   if (mic.state === "paused") return `Paused at ${formatDuration(elapsedMs)}. The microphone is off.`;
-  if (mic.state === "interrupted") return `Recording interrupted at ${formatDuration(elapsedMs)}. Trying to resume.`;
+  if (mic.state === "interrupted") return interruptionText(mic.reason);
   if (mic.state === "needs_user") return `Recording needs you at ${formatDuration(elapsedMs)}. Tap to resume.`;
   const time = maxDurationMs !== undefined && elapsedMs >= maxDurationMs - LIMIT_WARNING_MS
     ? `${formatDuration(Math.min(elapsedMs, maxDurationMs))} of ${formatDuration(maxDurationMs)}`
@@ -65,6 +80,7 @@ export function recorderStatusText(
   phase: RecorderPhase,
   mic: { state: MicState; reason: MicStateReason },
   savePercent: number | null,
+  inputName = "the microphone",
 ): string {
   if (phase === "starting") return "Starting the microphone…";
   if (phase === "stopping") return "Saving to your space";
@@ -72,18 +88,18 @@ export function recorderStatusText(
   if (phase === "discarding") return "Discarding…";
   if (phase !== "recording") return "Not recording";
   if (mic.state === "paused") return "Paused · mic off";
-  if (mic.state === "interrupted") return "Interrupted · resuming";
+  if (mic.state === "interrupted") return interruptionText(mic.reason);
   if (mic.state === "needs_user") return "Tap to resume";
   const warning = micWarning(mic);
   if (warning === "silenced") return "Mic silenced";
-  if (warning === "no-signal") return "No sound";
+  if (warning === "no-signal") return `No sound from ${inputName}`;
   return "Recording";
 }
 
 /** The sentence under the timer while the mic has a problem (the card's own words). */
 export function micWarningSentence(mic: { state: MicState; reason: MicStateReason }): string | null {
   if (mic.state === "paused") return "Recording paused. The microphone is off.";
-  if (mic.state === "interrupted") return "Recording was interrupted. Exo is trying to resume.";
+  if (mic.state === "interrupted") return interruptionText(mic.reason);
   if (mic.state === "needs_user") return "Recording needs you to tap Resume.";
   const warning = micWarning(mic);
   if (warning === "silenced") return sentence(SILENCED_CLAUSE);
@@ -106,10 +122,10 @@ export function clockTime(at: number): string {
   return new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
-export const RECEIPT_SAVED = "Saved to your TinyCloud space";
-export const RECEIPT_KEPT = "Kept on this phone. Not in your space yet.";
-export const FINALIZATION_PENDING = "Recording kept on this phone. Exo will finish it automatically.";
-export const ISLAND_SAVED = "Saved to your space";
+export const RECEIPT_SAVED = "Saved on this phone";
+export const RECEIPT_KEPT = "Kept on this phone";
+export const FINALIZATION_PENDING = "Exo will finish it";
+export const ISLAND_SAVED = "Saved on this phone";
 export const ISLAND_KEPT = "Kept on this phone";
 export const DISCARD_PROMPT = "Discard?";
 /** The question as a screen reader hears it. */

@@ -602,7 +602,7 @@ describe("voice-note recorder controller", () => {
     await recorder.record();
     await recorder.stop();
     expect(recorder.getState()).toMatchObject({
-      phase: "idle", error: "Recording kept on this phone. Exo will finish it automatically.",
+      phase: "idle", error: "Exo will finish it",
     });
     expect(recorder.getState().captureIssues[currentId ?? onPhone[0].id]).toEqual({ kind: "finalization_timed_out" });
     expect(onPhone).toHaveLength(1);
@@ -693,7 +693,7 @@ describe("voice-note recorder controller", () => {
       recording: null, error: "finalization_timed_out",
     });
     expect(recorder.getState()).toMatchObject({
-      phase: "idle", error: "Recording kept on this phone. Exo will finish it automatically.",
+      phase: "idle", error: "Exo will finish it",
     });
     expect(saves).toEqual([]);
   });

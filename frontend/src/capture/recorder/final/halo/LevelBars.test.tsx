@@ -46,7 +46,10 @@ describe("level bars", () => {
     expect(ribbon).toContain("height:30px");
     expect(ribbonBarScale(0, 0)).toBeCloseTo(0.12);
     expect(dockBarScale(0, 0)).toBeCloseTo(0.2);
-    expect(dockBarScale(0.5, 0.4)).toBeCloseTo(0.36);
+    expect(dockBarScale(0.5, 0.4)).toBeCloseTo(0.4);
+    expect(dockBarScale(2, 1)).toBeCloseTo(1);
+    const dock = renderToStaticMarkup(<MirroredSpectrumBars bars={22} />);
+    expect(dock).toContain("scaleY(0.200)");
   });
 
   test("renders paused meters in neutral grey", () => {

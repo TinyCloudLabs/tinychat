@@ -324,15 +324,15 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
     }, 600_000);
   }
 
-  if (viewportFilter?.some((id) => ["phone", "phone-halo-review", "halo-review"].includes(id))) test("recorder halo in tall phone and eight-ring review captures", async () => {
+  if (!viewportFilter || viewportFilter.some((id) => ["phone", "phone-halo-review", "halo-review"].includes(id))) test("recorder halo in tall phone and eight-ring review captures", async () => {
     const halo = screens.find((screen) => screen.id === "recorder-final-halo");
     if (!halo) return;
 
     const haloViewports: Viewport[] = [
-      ...(viewportFilter!.some((id) => ["phone", "phone-halo-review"].includes(id))
+      ...(!viewportFilter || viewportFilter.some((id) => ["phone", "phone-halo-review"].includes(id))
         ? [{ id: "phone-halo-review", width: 390, height: 4400, deviceScaleFactor: 2, isMobile: true, hasTouch: true }]
         : []),
-      ...(viewportFilter!.includes("halo-review")
+      ...(viewportFilter?.includes("halo-review")
         ? [{ id: "halo-review", width: 1280, height: 2200, deviceScaleFactor: 2 }]
         : []),
     ];
