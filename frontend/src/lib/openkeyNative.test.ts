@@ -443,10 +443,12 @@ describe("native boot", () => {
   test("constructs the client even without a current session so pending revokes retry", async () => {
     const flow = makeFlow();
     let constructed = 0;
+    let handoffs = 0;
     expect(await retireNativeSessionAtBoot(config, {
       createOpenKeyNative: () => { constructed++; return flow.openkey; },
-    })).toBe(false);
+    }, async () => { handoffs++; })).toBe(false);
     expect(constructed).toBe(1);
+    expect(handoffs).toBe(0);
     expect(flow.order).toEqual([]);
   });
 
@@ -550,5 +552,6 @@ describe("platform routing (source)", () => {
     const boot = app.slice(app.indexOf("const restoreSession = useCallback"), app.indexOf("useEffect(() => {\n    if (restoredRef.current)"));
     expect(boot.indexOf("retireNativeSessionAtBoot(")).toBeLessThan(boot.indexOf("restorePersistedSession("));
     expect(boot).toContain("if (wasNative)");
+    expect(boot).toContain("wasNative && !retired && !await captureHandoff()");
   });
 });

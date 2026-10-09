@@ -378,15 +378,17 @@ export function App() {
           // Creating the SDK client retries any pending revocation. E1 retires
           // surviving native sessions at boot; E2 will restore and renew them.
           // Only an actual terminal native session reaches the handoff.
-          await retireNativeSessionAtBoot({
+          const retired = await retireNativeSessionAtBoot({
             tinycloudHost: TINYCLOUD_HOSTS?.[0] ?? "https://tee.node.tinycloud.xyz",
           }, undefined, async () => {
             if (!await captureHandoff()) { handoffRejected = true; throw new Error("Capture handoff failed"); }
           });
+          if (wasNative && !retired && !await captureHandoff()) { setState("recoverableError"); return; }
         } catch (caught) {
           if (handoffRejected) { setState("recoverableError"); return; }
           logNativeOpenKeyError("boot revoke", caught);
           if (wasNative) {
+            if (!await captureHandoff()) { setState("recoverableError"); return; }
             sessionStoreRef.current.clear();
             setError(isNativeStorageError(caught) ? NATIVE_SIGN_OUT_STORAGE_WARNING : NATIVE_SIGN_OUT_WARNING);
             setState("recoverableError");
