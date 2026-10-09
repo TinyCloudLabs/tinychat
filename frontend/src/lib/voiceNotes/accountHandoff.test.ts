@@ -106,6 +106,30 @@ test("quiescent may time out but cancellation precedes the durable signed-out re
   expect(order).toEqual(["transitioning", "cancel", "quiescent", "signed_out"]);
 });
 
+test("a never-resolving native account update aborts within the deadline and leaves credentials authorized", async () => {
+  const { fake, pipeline } = await setup();
+  fake.plugin.setAccountState = async (next) => {
+    if (next.status === "transitioning") return new Promise(() => {});
+  };
+  const result = await handoffBeforeCredentialClear(did, pipeline, 5);
+  expect(result).toMatchObject({ ok: false, failClosed: false });
+  expect((await fake.plugin.getCaptureDefaults()).status).toBe("signed_in");
+});
+
+test("a never-resolving pipeline quiescence cannot hold sign-out open", async () => {
+  const { fake, pipeline } = await setup();
+  pipeline.quiescent = async () => new Promise(() => {});
+  const result = await handoffBeforeCredentialClear(did, pipeline, 5);
+  expect(result.ok).toBe(true);
+  expect((await fake.plugin.getCaptureDefaults()).status).toBe("signed_out");
+});
+
+test("a never-resolving native defaults read aborts before any credential clear", async () => {
+  const { fake, pipeline } = await setup();
+  fake.plugin.getCaptureDefaults = async () => new Promise(() => {});
+  expect(await handoffBeforeCredentialClear(did, pipeline, 5)).toMatchObject({ ok: false, failClosed: false });
+});
+
 test("process death after each acknowledged step recovers without assigning a new account", async () => {
   for (const status of ["transitioning", "signed_out"] as const) {
     const { fake } = await setup();

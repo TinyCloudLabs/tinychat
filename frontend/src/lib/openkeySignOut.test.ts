@@ -3,6 +3,7 @@ import {
   signOutOpenKeySession,
   type OpenKeySignOutClient,
 } from "./openkeySignOut";
+import { AccountStateTimeout, withCaptureDeadline } from "./voiceNotes/accountHandoff";
 
 describe("signOutOpenKeySession", () => {
   test("uses the client that authenticated the current page", async () => {
@@ -67,5 +68,11 @@ describe("signOutOpenKeySession", () => {
       status: "unverified",
       reason: "OpenKey timed out",
     });
+  });
+
+  test("a sign-out widget that never acknowledges reaches the local sign-out deadline", async () => {
+    const current: OpenKeySignOutClient = { signOut: async () => new Promise(() => {}) };
+    await expect(withCaptureDeadline(signOutOpenKeySession(current, () => current), 5))
+      .rejects.toBeInstanceOf(AccountStateTimeout);
   });
 });

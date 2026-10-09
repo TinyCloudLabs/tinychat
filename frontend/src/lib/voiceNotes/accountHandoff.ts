@@ -4,7 +4,7 @@ import type { VoiceNotePipeline } from "./voiceNotePipeline";
 
 const TRANSITION_KEY = "exo.capture.transitionGen";
 const FAILURE = "Couldn't update this phone's recording settings. Try again.";
-class AccountStateTimeout extends Error {}
+export class AccountStateTimeout extends Error {}
 
 export function nextTransitionGen(nativeGen: number): number {
   const local = Number(globalThis.localStorage?.getItem(TRANSITION_KEY) ?? 0) || 0;
@@ -15,9 +15,14 @@ function remember(gen: number): void {
   globalThis.localStorage?.setItem(TRANSITION_KEY, String(gen));
 }
 
-function deadline<T>(operation: Promise<T>, ms: number): Promise<T> {
-  return Promise.race([operation, new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new AccountStateTimeout("Native account update timed out")), ms))]);
+export function withCaptureDeadline<T>(operation: Promise<T>, ms = 10_000): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new AccountStateTimeout("Account operation timed out")), ms);
+    operation.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
 }
 
 /** A failed handoff never authorizes a credential clear. */
@@ -28,13 +33,13 @@ export async function handoffBeforeCredentialClear(did: string | null, pipeline:
   if (!did) return { ok: true, failClosed: false, message: null };
   let gen: number;
   try {
-    gen = nextTransitionGen((await VoiceNotes.getCaptureDefaults()).transitionGen);
-    await deadline(VoiceNotes.setAccountState({ status: "transitioning", accountDid: did, transitionGen: gen }), timeoutMs);
+    gen = nextTransitionGen((await withCaptureDeadline(VoiceNotes.getCaptureDefaults(), timeoutMs)).transitionGen);
+    await withCaptureDeadline(VoiceNotes.setAccountState({ status: "transitioning", accountDid: did, transitionGen: gen }), timeoutMs);
     remember(gen);
   } catch (caught) {
     if (caught instanceof AccountStateTimeout && gen! > 0) {
       try {
-        await deadline(VoiceNotes.setAccountState({ status: "signed_in", accountDid: did, transitionGen: gen! + 1 }), timeoutMs);
+        await withCaptureDeadline(VoiceNotes.setAccountState({ status: "signed_in", accountDid: did, transitionGen: gen! + 1 }), timeoutMs);
         remember(gen! + 1);
       } catch {
         return { ok: false, failClosed: true, message: "Recordings are being kept unassigned until Exo can update this phone. Try again." };
@@ -44,14 +49,15 @@ export async function handoffBeforeCredentialClear(did: string | null, pipeline:
   }
   advanceAccountGeneration();
   pipeline?.cancelAll();
-  try { await pipeline?.quiescent(5_000); } catch { /* generation still bars new work */ }
+  try { if (pipeline) await withCaptureDeadline(pipeline.quiescent(5_000), Math.min(5_000, timeoutMs)); }
+  catch { /* generation still bars new work */ }
   try {
-    await deadline(VoiceNotes.setAccountState({ status: "signed_out", accountDid: null, transitionGen: gen + 1 }), timeoutMs);
+    await withCaptureDeadline(VoiceNotes.setAccountState({ status: "signed_out", accountDid: null, transitionGen: gen + 1 }), timeoutMs);
     remember(gen + 1);
     return { ok: true, failClosed: false, message: null };
   } catch {
     try {
-      await deadline(VoiceNotes.setAccountState({ status: "signed_in", accountDid: did, transitionGen: gen + 2 }), timeoutMs);
+      await withCaptureDeadline(VoiceNotes.setAccountState({ status: "signed_in", accountDid: did, transitionGen: gen + 2 }), timeoutMs);
       remember(gen + 2);
       return { ok: false, failClosed: false, message: FAILURE };
     } catch {

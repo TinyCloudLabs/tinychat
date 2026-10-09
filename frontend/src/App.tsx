@@ -114,7 +114,7 @@ import { PendingVoiceNotesSaver } from "./chat/PendingVoiceNotesSaver";
 import { VoiceNotes } from "./lib/voiceNotes/nativeVoiceNotes";
 import { captureEngineAvailable } from "./lib/voiceNotes/captureEngine";
 import { RecordingOverlay } from "./capture/recorder/RecordingOverlay";
-import { handoffBeforeCredentialClear } from "./lib/voiceNotes/accountHandoff";
+import { handoffBeforeCredentialClear, withCaptureDeadline } from "./lib/voiceNotes/accountHandoff";
 import { createVoiceNotePipeline } from "./lib/voiceNotes/voiceNotePipeline";
 import { nextTransitionGen } from "./lib/voiceNotes/accountHandoff";
 import { effectiveCaptureOptions, readTranscriberPreference } from "./lib/voiceNotes/transcriberPreference";
@@ -181,13 +181,13 @@ export function App() {
   const captureHandoff = useCallback(async () => {
     if (!captureEngineAvailable() || LOCAL_VALIDATION) return true;
     try {
-      const native = await VoiceNotes.getCaptureDefaults();
+      const native = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
       const storedAddress = sessionStoreRef.current.getAddress();
       const accountDid = did ?? native.accountDid ?? (native.status === "transitioning" && storedAddress
         ? `did:pkh:eip155:1:${storedAddress}` : null);
       if (!accountDid && native.status === "transitioning") {
-        await VoiceNotes.setAccountState({ status: "signed_out", accountDid: null,
-          transitionGen: nextTransitionGen(native.transitionGen) });
+        await withCaptureDeadline(VoiceNotes.setAccountState({ status: "signed_out", accountDid: null,
+          transitionGen: nextTransitionGen(native.transitionGen) }));
         return true;
       }
       const result = await handoffBeforeCredentialClear(accountDid, voiceNotePipeline);
@@ -206,10 +206,10 @@ export function App() {
   const restoreCaptureAfterAuthAbort = useCallback(async () => {
     if (!did || !tcw || !captureEngineAvailable()) return;
     try {
-      const current = await VoiceNotes.getCaptureDefaults();
+      const current = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
       const transitionGen = nextTransitionGen(current.transitionGen);
-      await VoiceNotes.setCaptureDefaults({ ...current, ...effectiveCaptureOptions(readTranscriberPreference(), true),
-        accountDid: did, transitionGen });
+      await withCaptureDeadline(VoiceNotes.setCaptureDefaults({ ...current, ...effectiveCaptureOptions(readTranscriberPreference(), true),
+        accountDid: did, transitionGen }));
       if (voiceNotePipeline && tcw.spaceId) {
         const generation = advanceAccountGeneration();
         void voiceNotePipeline.reconcileAll({ did, spaceId: tcw.spaceId, generation })
@@ -731,7 +731,7 @@ export function App() {
         // Native sign-out revokes the OpenKey delegation grant and clears the
         // secure-store session unless secure storage needs another attempt.
         try {
-          await signOutNative();
+          await withCaptureDeadline(signOutNative());
         } catch (caught) {
           logNativeOpenKeyError("sign-out revoke", caught);
           if (isNativeStorageError(caught)) {
@@ -753,10 +753,15 @@ export function App() {
           openKeyWarning = NATIVE_SIGN_OUT_WARNING;
         }
       } else {
-        const openKeyOutcome = await signOutOpenKeySession(
-          openkeyRef.current,
-          () => new OpenKey({ appName: APP_NAME, host: OPENKEY_HOST, passkeysSupported: openkeyPasskeysSupported() }),
-        );
+        let openKeyOutcome: Awaited<ReturnType<typeof signOutOpenKeySession>>;
+        try {
+          openKeyOutcome = await withCaptureDeadline(signOutOpenKeySession(
+            openkeyRef.current,
+            () => new OpenKey({ appName: APP_NAME, host: OPENKEY_HOST, passkeysSupported: openkeyPasskeysSupported() }),
+          ));
+        } catch {
+          openKeyOutcome = { status: "unverified", reason: "timed out" };
+        }
         // OpenKey clears this client's local auth before showing its widget, even
         // when the user cancels. Never retain that spent client for another flow.
         openkeyRef.current = null;
@@ -775,7 +780,7 @@ export function App() {
 
       if (tcw && !nativeSession) {
         try {
-          await tcw.signOut?.();
+          await withCaptureDeadline(Promise.resolve(tcw.signOut?.()));
         } catch (caught) {
           logNativeOpenKeyError("TinyCloud sign-out cleanup", caught);
         }
