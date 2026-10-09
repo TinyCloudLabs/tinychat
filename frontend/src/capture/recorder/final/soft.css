@@ -1,18 +1,24 @@
 @font-face {
   font-family: Fraunces;
   font-style: normal;
-  font-weight: 300 700;
+  font-weight: 100 900;
   font-display: swap;
   src: url("/fonts/fraunces/fraunces-latin-ext.woff2") format("woff2");
-  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB,
+    U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 @font-face {
   font-family: Fraunces;
   font-style: normal;
-  font-weight: 300 700;
+  font-weight: 100 900;
   font-display: swap;
   src: url("/fonts/fraunces/fraunces-latin.woff2") format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: Manrope;
@@ -20,7 +26,10 @@
   font-weight: 200 800;
   font-display: swap;
   src: url("/fonts/manrope/manrope-latin-ext.woff2") format("woff2");
-  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB,
+    U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 @font-face {
   font-family: Manrope;
@@ -28,61 +37,89 @@
   font-weight: 200 800;
   font-display: swap;
   src: url("/fonts/manrope/manrope-latin.woff2") format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
 .soft-skin {
-  --ink: #f6effa;
-  --dim: #a397ae;
-  --glass: rgba(255, 255, 255, .07);
-  --gedge: rgba(255, 255, 255, .12);
-  --solid: #2a2034;
-  --bgc: #17111f;
-  --side: #140f1b;
-  --line: rgba(255, 255, 255, .07);
-  --red: #ff6b62;
-  --ring-accent: #ff6b62;
-  --ring-accent-secondary: #e8475a;
   --soft-title-font: Fraunces, Georgia, serif;
   --soft-body-font: Manrope, sans-serif;
   color: var(--ink);
   background: var(--bgc);
   font-family: var(--soft-body-font);
 }
-.soft-skin.soft-day,
-.soft-skin:not(.soft-night) {
+
+.soft-skin.soft-night {
+  color-scheme: dark;
+}
+
+.soft-skin.soft-day {
+  color-scheme: light;
+}
+
+.soft-skin.soft-night[data-layout="phone"] {
+  --ink: #f6effa;
+  --dim: #a397ae;
+  --glass: rgba(255, 255, 255, 0.07);
+  --gedge: rgba(255, 255, 255, 0.12);
+  --solid: #2a2034;
+  --bgc: #17111f;
+  --side: #140f1b;
+  --line: rgba(255, 255, 255, 0.07);
+  --red: #ff6b62;
+  --ring-accent: #ff6b62;
+  --ring-accent-secondary: #e8475a;
+}
+
+.soft-skin.soft-night[data-layout="rail"],
+.soft-skin.soft-night[data-layout="desktop"] {
+  --ink: #f6effa;
+  --dim: #a397ae;
+  --glass: rgba(255, 255, 255, 0.06);
+  --gedge: rgba(255, 255, 255, 0.11);
+  --solid: #2a2034;
+  --bgc: #17111f;
+  --side: #140f1b;
+  --line: rgba(255, 255, 255, 0.07);
+  --red: #ff6b62;
+  --ring-accent: #ff6b62;
+  --ring-accent-secondary: #e8475a;
+}
+
+.soft-skin.soft-day[data-layout="phone"] {
   --ink: #3a2f36;
   --dim: #9a8c92;
-  --glass: rgba(255, 255, 255, .6);
-  --gedge: rgba(255, 255, 255, .95);
+  --glass: rgba(255, 255, 255, 0.6);
+  --gedge: rgba(255, 255, 255, 0.95);
   --solid: #fffaf5;
   --bgc: #fbf5ee;
   --side: #f5eee5;
-  --line: rgba(58, 47, 54, .08);
+  --line: rgba(58, 47, 54, 0.08);
   --red: #e5483f;
   --ring-accent: #e5483f;
   --ring-accent-secondary: #f07a72;
 }
-.dark .soft-skin,
-.soft-skin.dark {
-  --ink: #f6effa;
-  --dim: #a397ae;
-  --glass: rgba(255, 255, 255, .07);
-  --gedge: rgba(255, 255, 255, .12);
-  --solid: #2a2034;
-  --bgc: #17111f;
-  --side: #140f1b;
-  --line: rgba(255, 255, 255, .07);
-  --red: #ff6b62;
-  --ring-accent: #ff6b62;
-  --ring-accent-secondary: #e8475a;
-  color-scheme: dark;
+
+.soft-skin.soft-day[data-layout="rail"],
+.soft-skin.soft-day[data-layout="desktop"] {
+  --ink: #3a2f36;
+  --dim: #8f8288;
+  --glass: rgba(255, 255, 255, 0.66);
+  --gedge: rgba(58, 47, 54, 0.1);
+  --solid: #fffaf5;
+  --bgc: #fbf5ee;
+  --side: #f5eee5;
+  --line: rgba(58, 47, 54, 0.08);
+  --red: #e5483f;
+  --ring-accent: #e5483f;
+  --ring-accent-secondary: #f07a72;
 }
-.soft-skin.soft-night { color-scheme: dark; }
-.soft-skin.soft-day { color-scheme: light; }
-.soft-skin[data-layout="desktop"] { --dim: #8f8288; --glass: rgba(255, 255, 255, .06); --gedge: rgba(255, 255, 255, .11); }
-.soft-skin.soft-day[data-layout="desktop"] { --dim: #8f8288; --glass: rgba(255, 255, 255, .66); --gedge: rgba(58, 47, 54, .1); }
-.dark .soft-skin[data-layout="desktop"],
-.soft-skin.dark[data-layout="desktop"] { --dim: #a397ae; --glass: rgba(255, 255, 255, .06); --gedge: rgba(255, 255, 255, .11); }
+
 .soft-skin .soft-title,
-.soft-skin .soft-timer { font-family: var(--soft-title-font); font-variation-settings: "SOFT" 100, "opsz" 48; }
+.soft-skin .soft-timer,
+.soft-skin .soft-mode-name {
+  font-family: var(--soft-title-font);
+  font-optical-sizing: auto;
+  font-variation-settings: "SOFT" 100;
+}

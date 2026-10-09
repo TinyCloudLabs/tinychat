@@ -6,16 +6,12 @@ import { formatDuration } from "../recorderCopy";
 import type { RecorderState } from "../recorderReducer";
 import { FINAL_COPY } from "./finalCopy";
 
-export type FinalMicReason = MicStateReason;
-export type FinalMicState = MicState;
-
 export interface RecorderViewInput {
   nowMs: number;
   /** Native elapsed wall time less user-paused time. Never infer this from audioMs. */
   elapsedMs: number;
-  shell: "phone" | "desktop" | "web";
-  inputName?: string;
-  silencedSinceMs?: number | null;
+  inputName: string | null;
+  silencedSinceMs: number | null;
 }
 
 export interface RecorderView {
@@ -23,7 +19,10 @@ export interface RecorderView {
   flat: boolean;
   pill: { label: string; dot: "red" | "filled-grey" | "hollow" };
   statusLine: string | null;
-  timer: { text: string; countdown?: { text: string } };
+  timer: {
+    text: string;
+    countdown?: { text: string; remainingMs: number; remainingText: string };
+  };
   controls: {
     pause: boolean;
     resume: boolean;
@@ -40,168 +39,260 @@ interface MicPresentation {
   ring: RecorderView["ring"];
   pill: RecorderView["pill"];
   statusLine: string | null;
-  tapRingAction: RecorderView["tapRingAction"];
   flat: boolean;
+  busy?: boolean;
+  openSettings?: boolean;
+  stopEnabled?: boolean;
 }
 
-const LIMIT_MS = 3 * 60 * 60 * 1000;
-const WARNING_AT_MS = LIMIT_MS - 10 * 60 * 1000;
+const WARNING_WINDOW_MS = 10 * 60 * 1000;
 
 function unreachable(value: never): never {
   throw new Error(`Unhandled recorder state: ${String(value)}`);
 }
 
-function interruptedReasonPresentation(
+function unexpectedCombination(
+  state: MicState,
   reason: MicStateReason,
 ): MicPresentation {
+  const message = `Unexpected recorder mic combination: ${state}/${String(reason)}`;
+  if (
+    import.meta.env.DEV ||
+    import.meta.env.MODE === "test" ||
+    (typeof process !== "undefined" && process.env.NODE_ENV === "test")
+  ) {
+    throw new Error(message);
+  }
+
+  console.error(message, { state, reason });
+  return {
+    ring: "still",
+    flat: false,
+    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
+    statusLine: FINAL_COPY.unexpectedMicState,
+  };
+}
+
+function silenceLine(input: RecorderViewInput): string | null {
+  if (
+    input.silencedSinceMs === null ||
+    input.nowMs - input.silencedSinceMs < 5000
+  ) {
+    return null;
+  }
+
+  return input.inputName === null
+    ? FINAL_COPY.noSoundFromMicrophone
+    : FINAL_COPY.noSoundFrom(input.inputName);
+}
+
+function interruptedPresentation(reason: MicStateReason): MicPresentation {
   switch (reason) {
-    case "stalled":
     case "call":
       return {
         ring: "still",
+        flat: false,
         pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
         statusLine: FINAL_COPY.resumesWhenCallEnds,
-        tapRingAction: null,
-        flat: false,
       };
-    case "resume_not_allowed":
-      return {
-        ring: "still-resumable",
-        pill: { label: FINAL_COPY.tapToResume, dot: "hollow" },
-        statusLine: null,
-        tapRingAction: "resume",
-        flat: false,
-      };
-    case "resume_blocked":
+    case "stalled":
       return {
         ring: "still",
-        pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-        statusLine: FINAL_COPY.resumeBlockedReason,
-        tapRingAction: null,
         flat: false,
-      };
-    case "mic_unavailable":
-      return {
-        ring: "still",
         pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-        statusLine: FINAL_COPY.micUnavailable,
-        tapRingAction: null,
-        flat: false,
-      };
-    case null:
-    case "user":
-      return {
-        ring: "still",
-        pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-        statusLine: FINAL_COPY.interruptedUnknown,
-        tapRingAction: null,
-        flat: false,
-      };
-    case "os_silenced":
-    case "input_muted":
-      return {
-        ring: "still",
-        pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-        statusLine: FINAL_COPY.inputMuted,
-        tapRingAction: null,
-        flat: false,
-      };
-    case "no_signal":
-      return {
-        ring: "still",
-        pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-        statusLine: FINAL_COPY.noSignal,
-        tapRingAction: null,
-        flat: false,
+        statusLine: FINAL_COPY.stalledReconnecting,
       };
     case "interruption":
       return {
         ring: "still",
-        pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-        statusLine: FINAL_COPY.interruptionInProgress,
-        tapRingAction: null,
         flat: false,
+        pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
+        statusLine: FINAL_COPY.callOrSiriPause,
       };
     case "route_change":
       return {
         ring: "still",
+        flat: false,
         pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
         statusLine: FINAL_COPY.inputChanged,
-        tapRingAction: null,
-        flat: false,
       };
     case "media_services_reset":
       return {
         ring: "still",
+        flat: false,
         pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
         statusLine: FINAL_COPY.audioServicesReset,
-        tapRingAction: null,
-        flat: false,
       };
     case "read_error":
       return {
         ring: "still",
+        flat: false,
         pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
         statusLine: FINAL_COPY.microphoneReadFailed,
-        tapRingAction: null,
-        flat: false,
       };
     case "app_suspended":
       return {
         ring: "still",
+        flat: false,
         pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
         statusLine: FINAL_COPY.appSuspended,
-        tapRingAction: null,
-        flat: false,
       };
+    case null:
+    case "os_silenced":
+    case "no_signal":
+    case "input_muted":
+    case "user":
     case "writer_stalled":
-      return {
-        ring: "still",
-        pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-        statusLine: FINAL_COPY.audioWriterStalled,
-        tapRingAction: null,
-        flat: false,
-      };
+    case "resume_blocked":
+    case "mic_unavailable":
+    case "resume_not_allowed":
     case "pause_timeout":
-      return {
-        ring: "still",
-        pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-        statusLine: FINAL_COPY.pauseTimedOut,
-        tapRingAction: null,
-        flat: false,
-      };
     case "max_duration":
-      return {
-        ring: "still",
-        pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-        statusLine: FINAL_COPY.durationLimitReached,
-        tapRingAction: null,
-        flat: false,
-      };
     case "disk_full":
-      return {
-        ring: "still",
-        pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-        statusLine: FINAL_COPY.diskFull,
-        tapRingAction: null,
-        flat: false,
-      };
     case "write_failed":
+    case "permission_revoked":
+      return unexpectedCombination("interrupted", reason);
+    default:
+      return unreachable(reason);
+  }
+}
+
+function retryPresentation(statusLine: string | null): MicPresentation {
+  return {
+    ring: "still-resumable",
+    flat: false,
+    pill: { label: FINAL_COPY.tapToTryAgain, dot: "hollow" },
+    statusLine,
+  };
+}
+
+function livePresentation(
+  flat: boolean,
+  statusLine: string | null,
+): MicPresentation {
+  return {
+    ring: "live",
+    flat,
+    pill: { label: FINAL_COPY.listening, dot: "red" },
+    statusLine,
+  };
+}
+
+function needsUserPresentation(reason: MicStateReason): MicPresentation {
+  switch (reason) {
+    case "resume_blocked":
+      return retryPresentation(FINAL_COPY.resumeBlockedReason);
+    case "mic_unavailable":
+      return retryPresentation(FINAL_COPY.micUnavailable);
+    case "stalled":
+      return {
+        ring: "still-resumable",
+        flat: false,
+        pill: { label: FINAL_COPY.tapToResume, dot: "hollow" },
+        statusLine: FINAL_COPY.stalledNeedsUser,
+      };
+    case "resume_not_allowed":
       return {
         ring: "still",
-        pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-        statusLine: FINAL_COPY.audioWriteFailed,
-        tapRingAction: null,
         flat: false,
+        pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
+        statusLine: FINAL_COPY.resumeNotAllowed,
       };
     case "permission_revoked":
       return {
         ring: "still",
-        pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-        statusLine: FINAL_COPY.permissionRevoked,
-        tapRingAction: null,
         flat: false,
+        pill: { label: FINAL_COPY.microphoneOff, dot: "hollow" },
+        statusLine: FINAL_COPY.permissionRevoked,
+        openSettings: true,
       };
+    case "write_failed":
+      return {
+        ring: "still",
+        flat: false,
+        pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
+        statusLine: FINAL_COPY.stopAndSaveRecorded,
+        stopEnabled: true,
+      };
+    case null:
+    case "os_silenced":
+    case "no_signal":
+    case "input_muted":
+    case "call":
+    case "user":
+    case "interruption":
+    case "route_change":
+    case "media_services_reset":
+    case "read_error":
+    case "app_suspended":
+    case "writer_stalled":
+    case "pause_timeout":
+    case "max_duration":
+    case "disk_full":
+      return unexpectedCombination("needs_user", reason);
+    default:
+      return unreachable(reason);
+  }
+}
+
+function idlePresentation(reason: MicStateReason): MicPresentation {
+  switch (reason) {
+    case "max_duration":
+      return {
+        ring: "idle",
+        flat: false,
+        pill: { label: FINAL_COPY.saving, dot: "hollow" },
+        statusLine: FINAL_COPY.savingAtLimit,
+        busy: true,
+      };
+    case null:
+      return {
+        ring: "idle",
+        flat: false,
+        pill: { label: FINAL_COPY.saving, dot: "hollow" },
+        statusLine: null,
+        busy: true,
+      };
+    case "disk_full":
+      return {
+        ring: "idle",
+        flat: false,
+        pill: { label: FINAL_COPY.saving, dot: "hollow" },
+        statusLine: FINAL_COPY.savingAfterDiskFull,
+        busy: true,
+      };
+    case "write_failed":
+      return {
+        ring: "idle",
+        flat: false,
+        pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
+        statusLine: FINAL_COPY.writeFailed,
+      };
+    case "permission_revoked":
+      return {
+        ring: "idle",
+        flat: false,
+        pill: { label: FINAL_COPY.microphoneOff, dot: "hollow" },
+        statusLine: FINAL_COPY.permissionRevoked,
+        openSettings: true,
+      };
+    case "os_silenced":
+    case "no_signal":
+    case "input_muted":
+    case "call":
+    case "user":
+    case "interruption":
+    case "route_change":
+    case "media_services_reset":
+    case "read_error":
+    case "stalled":
+    case "app_suspended":
+    case "writer_stalled":
+    case "resume_blocked":
+    case "resume_not_allowed":
+    case "mic_unavailable":
+    case "pause_timeout":
+      return unexpectedCombination("idle", reason);
     default:
       return unreachable(reason);
   }
@@ -214,74 +305,76 @@ function micPresentation(
 ): MicPresentation {
   switch (micState) {
     case "idle":
-      // MIC_STATE may report native idle before its terminal event moves the reducer phase.
-      return {
-        ring: "still",
-        pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-        statusLine: FINAL_COPY.interruptedUnknown,
-        tapRingAction: null,
-        flat: false,
-      };
+      return idlePresentation(reason);
     case "recording":
-      if (reason === "no_signal") {
-        const showLine =
-          input.silencedSinceMs != null &&
-          input.nowMs - input.silencedSinceMs >= 5000;
-        return {
-          ring: "live",
-          pill: { label: FINAL_COPY.listening, dot: "red" },
-          statusLine: showLine
-            ? FINAL_COPY.noSoundFrom(input.inputName ?? "microphone")
-            : null,
-          tapRingAction: null,
-          flat: true,
-        };
+      switch (reason) {
+        case null:
+        case "writer_stalled":
+          return livePresentation(false, null);
+        case "no_signal":
+        case "os_silenced":
+        case "input_muted":
+          return livePresentation(true, silenceLine(input));
+        case "call":
+        case "user":
+        case "interruption":
+        case "route_change":
+        case "media_services_reset":
+        case "read_error":
+        case "stalled":
+        case "app_suspended":
+        case "resume_blocked":
+        case "resume_not_allowed":
+        case "mic_unavailable":
+        case "pause_timeout":
+        case "max_duration":
+        case "disk_full":
+        case "write_failed":
+        case "permission_revoked":
+          return unexpectedCombination("recording", reason);
+        default:
+          return unreachable(reason);
       }
-      return {
-        ring: "live",
-        pill: { label: FINAL_COPY.listening, dot: "red" },
-        statusLine: null,
-        tapRingAction: null,
-        flat: false,
-      };
-    case "silenced": {
-      const showLine =
-        input.silencedSinceMs != null &&
-        input.nowMs - input.silencedSinceMs >= 5000;
-      return {
-        ring: "live",
-        pill: { label: FINAL_COPY.listening, dot: "red" },
-        statusLine: showLine
-          ? FINAL_COPY.noSoundFrom(input.inputName ?? "microphone")
-          : null,
-        tapRingAction: null,
-        flat: true,
-      };
-    }
+    case "silenced":
+      switch (reason) {
+        case "os_silenced":
+        case "input_muted":
+        case "no_signal":
+          return livePresentation(true, silenceLine(input));
+        case null:
+        case "call":
+        case "user":
+        case "interruption":
+        case "route_change":
+        case "media_services_reset":
+        case "read_error":
+        case "stalled":
+        case "app_suspended":
+        case "writer_stalled":
+        case "resume_blocked":
+        case "resume_not_allowed":
+        case "mic_unavailable":
+        case "pause_timeout":
+        case "max_duration":
+        case "disk_full":
+        case "write_failed":
+        case "permission_revoked":
+          return unexpectedCombination("silenced", reason);
+        default:
+          return unreachable(reason);
+      }
     case "paused":
+      if (reason !== "user") return unexpectedCombination("paused", reason);
       return {
         ring: "paused",
+        flat: false,
         pill: { label: FINAL_COPY.resting, dot: "filled-grey" },
         statusLine: null,
-        tapRingAction: "resume",
-        flat: false,
       };
     case "interrupted":
-      return interruptedReasonPresentation(reason);
+      return interruptedPresentation(reason);
     case "needs_user":
-      if (reason === "resume_blocked" || reason === "mic_unavailable") {
-        return interruptedReasonPresentation(reason);
-      }
-      if (reason === "resume_not_allowed") {
-        return interruptedReasonPresentation(reason);
-      }
-      return {
-        ring: "still-resumable",
-        pill: { label: FINAL_COPY.tapToResume, dot: "hollow" },
-        statusLine: null,
-        tapRingAction: "resume",
-        flat: false,
-      };
+      return needsUserPresentation(reason);
     default:
       return unreachable(micState);
   }
@@ -294,26 +387,27 @@ export function selectRecorderView(
   if (!Number.isFinite(input.elapsedMs) || input.elapsedMs < 0) {
     throw new RangeError("elapsedMs must be a non-negative finite number");
   }
+  if (!Number.isFinite(state.maxDurationMs) || state.maxDurationMs <= 0) {
+    throw new RangeError("maxDurationMs must be a positive finite number");
+  }
 
-  const busy = ["starting", "stopping", "saving", "discarding"].includes(
-    state.phase,
-  );
-  const denied = state.phase === "idle" && state.permissionDenied;
   let presentation: MicPresentation = {
     ring: "idle",
     flat: false,
     pill: { label: FINAL_COPY.idle, dot: "hollow" },
     statusLine: null,
-    tapRingAction: null,
   };
+  let permissionDenied = false;
 
   switch (state.phase) {
     case "idle":
-      if (denied) {
+      if (state.permissionDenied) {
+        permissionDenied = true;
         presentation = {
           ...presentation,
           pill: { label: FINAL_COPY.microphoneOff, dot: "hollow" },
           statusLine: FINAL_COPY.denied,
+          openSettings: true,
         };
       }
       break;
@@ -325,6 +419,7 @@ export function selectRecorderView(
       break;
     case "recording":
       presentation = micPresentation(state.mic.state, state.mic.reason, input);
+      permissionDenied = presentation.openSettings ?? false;
       break;
     case "stopping":
     case "saving":
@@ -343,6 +438,9 @@ export function selectRecorderView(
       return unreachable(state.phase);
   }
 
+  const busy =
+    ["starting", "stopping", "saving", "discarding"].includes(state.phase) ||
+    presentation.busy === true;
   const controls = {
     pause: presentation.ring === "live" && !busy && !state.controlPending,
     resume:
@@ -350,24 +448,35 @@ export function selectRecorderView(
         presentation.ring === "still-resumable") &&
       !busy &&
       !state.controlPending,
-    stop: state.phase === "recording" && !busy,
+    stop:
+      (state.phase === "recording" || presentation.stopEnabled === true) &&
+      !busy,
     discard: state.phase === "recording" && !busy,
     busy,
-    openSettings: denied,
+    openSettings: presentation.openSettings ?? permissionDenied,
   };
+  const remainingMs = Math.max(0, state.maxDurationMs - input.elapsedMs);
+  const warningAtMs = Math.max(0, state.maxDurationMs - WARNING_WINDOW_MS);
   const countdown =
-    input.elapsedMs >= WARNING_AT_MS
-      ? { text: FINAL_COPY.stopAt(formatDuration(LIMIT_MS)) }
+    input.elapsedMs >= warningAtMs
+      ? {
+          text: FINAL_COPY.stopAt(formatDuration(state.maxDurationMs)),
+          remainingMs,
+          remainingText: formatDuration(remainingMs),
+        }
       : undefined;
 
   return {
-    ...presentation,
+    ring: presentation.ring,
+    flat: presentation.flat,
+    pill: presentation.pill,
+    statusLine: presentation.statusLine,
     timer: {
       text: formatDuration(input.elapsedMs),
       ...(countdown ? { countdown } : {}),
     },
     controls,
-    micDenied: denied,
+    micDenied: permissionDenied,
     tapRingAction: controls.resume ? "resume" : controls.pause ? "pause" : null,
   };
 }
