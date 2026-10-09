@@ -1,0 +1,158 @@
+/* The ring view inside the app's main region (rail and desktop layouts); the phone's pr-* styles carry the rest. */
+.soft-skin.pr.dr {
+  position: absolute;
+  inset: 0;
+  padding: 22px 40px 24px;
+  --dr-ring: 214px;
+  --dr-time: 76px;
+  outline: none;
+}
+.dr .pr-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+.dr .pr-top {
+  margin-top: 0;
+  padding: 0;
+}
+.dr .pr-ibtn {
+  left: 0;
+}
+.dr .pr-time-row {
+  margin-top: 16px;
+}
+.dr .pr-time {
+  font-size: var(--dr-time);
+}
+.dr .pr-extra {
+  margin-top: 4px;
+  min-height: 24px;
+}
+.dr[data-compact="true"] .pr-extra {
+  min-height: 20px;
+}
+.dr-notes {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  margin-top: 4px;
+  padding: 7px 14px 7px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--gedge);
+  transition: transform 0.2s cubic-bezier(0.3, 1.7, 0.4, 1);
+}
+.dr-notes:active {
+  transform: scale(0.95);
+}
+.dr .pr-ring {
+  width: var(--dr-ring);
+  height: var(--dr-ring);
+}
+.dr .pr-controls-wrap {
+  width: 100%;
+  max-width: 380px;
+  padding: 0;
+}
+.dr .pr-controls {
+  padding: 18px 0 4px;
+}
+.dr .pr-mname {
+  font-size: 21px;
+}
+.dr .pr-mshort,
+.dr .pr-capline {
+  font-size: 12.5px;
+}
+.dr .pr-ends {
+  font-size: 10.5px;
+}
+
+/* The modes card is a popover on ⓘ⌄, centred above it, not risen over the slider. */
+.dr-anchor {
+  position: relative;
+  display: inline-flex;
+  align-self: center;
+}
+.dr .pr-modes {
+  left: 50%;
+  right: auto;
+  bottom: calc(100% + 14px);
+  translate: -50% 0;
+  width: 352px;
+  max-width: calc(100vw - 32px);
+  max-height: min(560px, calc(100dvh - 240px));
+  padding-bottom: 0;
+}
+.dr .pr-menu {
+  min-width: 310px;
+}
+
+/* Centred dialog; the veil covers the whole window. */
+.dr-confirm .pr-sheet {
+  left: 50%;
+  right: auto;
+  top: 50%;
+  bottom: auto;
+  translate: -50% -50%;
+  width: min(392px, calc(100vw - 32px));
+  padding: 26px 24px 18px;
+  border-radius: 28px;
+  animation: dr-pop 0.3s cubic-bezier(0.3, 1.45, 0.5, 1);
+}
+@keyframes dr-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+/* Toasts sit at the top centre of the main area. */
+.dr-toasts {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  translate: -50% 0;
+  z-index: 50;
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  pointer-events: none;
+  max-width: calc(100% - 160px);
+}
+.dr-toast {
+  padding: 9px 16px;
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--bgc);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  animation: dr-toast 0.4s cubic-bezier(0.3, 1.6, 0.5, 1);
+}
+@keyframes dr-toast {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dr-confirm .pr-sheet,
+  .dr-toast {
+    animation: none;
+  }
+  .dr-notes {
+    transition: none;
+  }
+}

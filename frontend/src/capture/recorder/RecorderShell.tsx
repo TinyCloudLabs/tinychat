@@ -2,6 +2,7 @@
 // PR4): the island above the tab bar on a phone held upright, the live button
 // in the rail, the live card in the sidebar, and the full-page recorder. App and
 // the browser harnesses render this inside the one RecorderProvider.
+import { useState } from "react";
 import { useNavKind } from "@/shell/navItems";
 import { AppShell, type AppShellProps } from "@/shell/AppShell";
 import { MinimizedAlert } from "./final/MinimizedAlert";
@@ -34,6 +35,7 @@ export function RecorderShell(props: RecorderShellProps) {
 export function FinalRecorderShell({ onOpenNote, ...shell }: RecorderShellProps) {
   const recorder = useRecorder();
   const navKind = useNavKind();
+  const [recorderHost, setRecorderHost] = useState<HTMLElement | null>(null);
   const minimized = islandShown(recorder);
   const recording = islandState(recorder) === "live";
   let island = null;
@@ -60,6 +62,7 @@ export function FinalRecorderShell({ onOpenNote, ...shell }: RecorderShellProps)
       <AppShell
         {...shell}
         island={island}
+        recorderHost={setRecorderHost}
         railLive={recording ? null : <RailLiveButton />}
         sidebarLive={
           sidebarAlert || sidebarCard ? (
@@ -70,7 +73,7 @@ export function FinalRecorderShell({ onOpenNote, ...shell }: RecorderShellProps)
           ) : null
         }
       />
-      <RecordingOverlay onOpenNote={onOpenNote} />
+      <RecordingOverlay onOpenNote={onOpenNote} desktopHost={recorderHost} finalSkin />
     </MinimizedProvider>
   );
 }
