@@ -7,6 +7,7 @@ export interface OpenKeySignOutClient {
 export type OpenKeySignOutOutcome =
   | { status: "revoked" }
   | { status: "cancelled" }
+  | { status: "remote-unavailable" }
   | { status: "unverified"; reason: string | null };
 
 /**
@@ -24,11 +25,19 @@ export async function signOutOpenKeySession(
       ? { status: "revoked" }
       : { status: "unverified", reason: null };
   } catch (error) {
+    if (openKeyErrorCode(error) === "POPUP_BLOCKED" && openKeyErrorReason(error) === "embedded-webview") {
+      return { status: "remote-unavailable" };
+    }
     if (openKeyErrorCode(error) === "USER_CANCELLED") {
       return { status: "cancelled" };
     }
     return { status: "unverified", reason: openKeyErrorMessage(error) };
   }
+}
+
+function openKeyErrorReason(error: unknown): string | null {
+  if (typeof error !== "object" || error === null || !("reason" in error)) return null;
+  return typeof error.reason === "string" ? error.reason : null;
 }
 
 function openKeyErrorCode(error: unknown): string | null {
