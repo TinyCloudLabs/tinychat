@@ -22,6 +22,8 @@ export interface RecorderState {
   startedAt: number | null;
   /** Last native audio clock checkpoint; paused time is excluded. */
   audioMs: number;
+  /** Native recorded-time checkpoint: wall time minus user pauses, including interruptions. */
+  elapsedMs: number;
   maxDurationMs: number;
   mic: RecorderMic;
   /** A native Pause or Resume call is outstanding; repeat taps stay disabled. */
@@ -57,8 +59,8 @@ export type RecorderEvent =
   | { type: "STARTED"; id: string; startedAt: number; maxDurationMs: number }
   | { type: "START_FAILED"; error: string }
   /** A recording was already running (a WebView reload, or one started offline). */
-  | { type: "PICKED_UP"; id: string | null; startedAt: number; maxDurationMs: number; audioMs: number; mic: RecorderMic }
-  | { type: "MIC_STATE"; mic: RecorderMic; audioMs?: number }
+  | { type: "PICKED_UP"; id: string | null; startedAt: number; maxDurationMs: number; audioMs: number; elapsedMs: number; mic: RecorderMic }
+  | { type: "MIC_STATE"; mic: RecorderMic; audioMs?: number; elapsedMs?: number }
   | { type: "PAUSE_REQUESTED" }
   | { type: "PAUSE_CONFIRMED" }
   | { type: "PAUSE_FAILED"; error: string }
@@ -67,7 +69,7 @@ export type RecorderEvent =
   | { type: "RESUME_FAILED"; error: string }
   | { type: "STOP_REQUESTED" }
   /** A failed stop was checked against native status; unknown keeps the view in stopping. */
-  | { type: "STOP_FAILED"; error: string | null; status: "active"; mic: RecorderMic; audioMs: number }
+  | { type: "STOP_FAILED"; error: string | null; status: "active"; mic: RecorderMic; audioMs: number; elapsedMs: number }
   | { type: "STOP_FAILED"; error: string | null; status: "idle" | "unknown" }
   /** The save started (percent null) or moved on. */
   | { type: "SAVE_PROGRESS"; percent: number | null }
@@ -103,6 +105,7 @@ export const initialRecorderState: RecorderState = {
   recordingId: null,
   startedAt: null,
   audioMs: 0,
+  elapsedMs: 0,
   maxDurationMs: VOICE_NOTE_MAX_DURATION_MS,
   mic: IDLE_MIC,
   controlPending: null,
@@ -168,6 +171,7 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
         recordingId: event.id,
         startedAt: event.startedAt,
         audioMs: 0,
+        elapsedMs: 0,
         maxDurationMs: event.maxDurationMs,
         mic: { state: "recording", reason: null },
       };
@@ -183,6 +187,7 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
         recordingId: event.id,
         startedAt: event.startedAt,
         audioMs: event.audioMs,
+        elapsedMs: event.elapsedMs,
         maxDurationMs: event.maxDurationMs,
         mic: event.mic,
         outcome: null,
@@ -190,7 +195,7 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
       };
     case "MIC_STATE":
       if (state.phase !== "recording") return state;
-      return { ...state, mic: event.mic, audioMs: event.audioMs ?? state.audioMs };
+      return { ...state, mic: event.mic, audioMs: event.audioMs ?? state.audioMs, elapsedMs: event.elapsedMs ?? state.elapsedMs };
     case "PERMISSION_DENIED":
       if (state.phase === "recording" || state.phase === "stopping" || state.phase === "discarding") return state;
       return { ...state, permissionDenied: true, error: null };
@@ -222,7 +227,7 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
       if (state.autoSaving || state.phase === "discarding") return state;
       if (state.phase !== "stopping") return state;
       if (event.status === "unknown") return { ...state, error: event.error };
-      if (event.status === "active") return { ...state, phase: "recording", mic: event.mic, audioMs: event.audioMs, error: event.error };
+      if (event.status === "active") return { ...state, phase: "recording", mic: event.mic, audioMs: event.audioMs, elapsedMs: event.elapsedMs, error: event.error };
       return { ...toIdle(state), error: event.error ?? state.error };
     case "SAVE_PROGRESS":
       if (state.phase === "idle" && state.outcome === "local") return { ...state, savePercent: event.percent };

@@ -115,7 +115,16 @@ export interface MicStateEvent {
   at: number;
   id?: string | null;
   audioMs?: number;
+  elapsedMs?: number;
+  pausedMs?: number;
   openSpan?: MissingAudioSpan | null;
+}
+
+/** iOS emits this retained alert after a successful media-services restart. */
+export interface CaptureAlertEvent {
+  id: string;
+  reason: "media_services_reset";
+  message: string;
 }
 
 export interface VoiceNoteRecording {
@@ -219,6 +228,7 @@ export interface VoiceNotesPlugin {
   listOutbox(options: { did: string }): Promise<{ entries: OutboxEntry[] }>;
   completeOutbox(options: { entryId: string; result: "done" | "retry" | "lookup" | "unknown" | "authority_expired" }): Promise<void>;
   addListener(event: "micState", listener: (event: MicStateEvent) => void): Promise<PluginListenerHandle>;
+  addListener(event: "captureAlert", listener: (event: CaptureAlertEvent) => void): Promise<PluginListenerHandle>;
   openSettings(): Promise<void>;
   addListener(event: "level", listener: (event: { level: number; peak?: number }) => void): Promise<PluginListenerHandle>;
   addListener(event: "autoStopped", listener: (event: VoiceNoteAutoStopEvent) => void): Promise<PluginListenerHandle>;
