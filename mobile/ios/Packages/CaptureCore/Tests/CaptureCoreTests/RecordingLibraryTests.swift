@@ -658,13 +658,15 @@ final class RecordingLibraryTests: XCTestCase {
         try library.beginRemoteOp(receipt("wrong-owner", "did:other"))
         XCTAssertEqual(try library.recordRemoteResult(id: id, did: "did:other", opId: "wrong-owner",
             result: ["outcome": "created", "jobId": "job-other"]), "outbox")
+        try library.setAccountState(CaptureAccountState(status: "signed_out", transitionGen: 3))
+        try library.beginRemoteOp(receipt("signedout"))
         try library.delete(id)
         try library.beginRemoteOp(receipt("deleted"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: library.sidecarURL(id).path))
         _ = try RecordingLibrary(root: root).recoverableSessions()
         _ = try RecordingLibrary(root: root).recoverableSessions()
         let entries = try library.listOutbox(did: "did:test")
-        for op in ["live", "transition", "deleted"] {
+        for op in ["live", "transition", "signedout", "deleted"] {
             XCTAssertEqual(entries.filter { $0["entryId"] as? String == "\(id):\(op)" }.count, 1)
         }
         XCTAssertEqual(entries.first { $0["entryId"] as? String == "\(id):live" }?["kind"] as? String, "transcript")
