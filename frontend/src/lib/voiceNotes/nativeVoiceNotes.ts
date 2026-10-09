@@ -419,3 +419,21 @@ export function listInputs(): Promise<AudioInputsSnapshot> {
 export function selectInput(id: string | null): Promise<void> {
   return VoiceNotes.selectInput({ id });
 }
+
+export type QuarantinedRecording = { id: string; reason: string; sizeBytes: number };
+
+export function listQuarantine(): Promise<{ items: QuarantinedRecording[] }> {
+  return VoiceNotes.listQuarantine();
+}
+
+export function retryRecovery(id: string): Promise<void> {
+  return VoiceNotes.retryRecovery({ id });
+}
+
+export function discardFailedRecording(id: string): Promise<void> {
+  return VoiceNotes.discardFailedRecording({ id });
+}
+
+export function deleteQuarantined(id: string): Promise<void> {
+  return VoiceNotes.deleteQuarantined({ id });
+}

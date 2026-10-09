@@ -81,7 +81,9 @@
 .soft-link:focus-visible,
 .soft-pill:focus-visible,
 .soft-act:focus-visible,
-.soft-sheet-close:focus-visible {
+.soft-sheet-close:focus-visible,
+.soft-sheet-delete:focus-visible,
+.soft-sheet-quiet:focus-visible {
   outline: 2px solid var(--ink);
   outline-offset: 2px;
 }
@@ -451,6 +453,42 @@ button.soft-row:focus-visible {
   font-size: 14px;
   font-weight: 700;
   cursor: pointer;
+}
+.soft-sheet-close[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: default;
+}
+.soft-sheet-delete,
+.soft-sheet-quiet {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 50px;
+  margin-top: 6px;
+  border: 0;
+  border-radius: 18px;
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.soft-sheet-delete {
+  color: var(--red);
+}
+.soft-sheet-quiet {
+  color: var(--dim);
+}
+.soft-sheet-delete[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: default;
+}
+.soft-sheet-error {
+  margin: 12px 0 0;
+  color: var(--red);
+  font-size: 13px;
+  line-height: 1.4;
 }
 @keyframes soft-rise {
   from {

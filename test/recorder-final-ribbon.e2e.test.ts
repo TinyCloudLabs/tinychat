@@ -99,12 +99,19 @@ async function open(
       characterData: true,
     });
   });
+  const screenName = `recorder-final-minimized-${name}`;
   await page.goto(
-    `http://127.0.0.1:${server.port}/?screen=recorder-final-minimized-${name}&theme=dark&platform=ios`,
+    `http://127.0.0.1:${server.port}/?screen=${screenName}&theme=dark&platform=ios`,
   );
-  await page.waitForSelector(
-    "[data-testid=ribbon], [data-testid=sidebar-dock]",
-  );
+  // Fail inside bun's 30 s test timeout: past it bun kills the browser and every later test reports a closed context.
+  page.setDefaultTimeout(10_000);
+  await page
+    .waitForSelector("[data-testid=ribbon], [data-testid=sidebar-dock]")
+    .catch((caught) => {
+      throw new Error(
+        `${screenName} did not render: ${caught instanceof Error ? caught.message : String(caught)}\npage errors: ${JSON.stringify(errors)}`,
+      );
+    });
   return {
     page,
     errors,

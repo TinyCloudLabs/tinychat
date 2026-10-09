@@ -62,6 +62,12 @@ export interface RecorderValue {
   outcome: "local" | "saved" | "failed" | null;
   localUpload: RecorderState["localUpload"];
   lastSaved: RecorderState["lastSaved"];
+  /** The recording in progress, or stopping: its capture issue and error belong to it. */
+  recordingId: RecorderState["recordingId"];
+  /** A recording that failed to finish, kept for its receipt. */
+  failedRecording: RecorderState["failedRecording"];
+  /** The recording whose stop timed out finalizing while `error` is the finalizing promise. */
+  finalizationPendingId: RecorderState["finalizationPendingId"];
   pending: PendingSnapshot;
   transcription: VoiceNoteTranscriptionProps | undefined;
   /** Native options while recording; otherwise the signed-in effective JS default. */
@@ -282,6 +288,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       outcome: state.outcome,
       localUpload: state.localUpload,
       lastSaved: state.lastSaved,
+      ...recordingIdentity(state),
       pending: recorder.pending,
       transcription: recorder.transcription,
       transcriber: recorder.transcriber,
@@ -344,6 +351,17 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   );
 }
 
+/** The live provider's read-only passthrough of the ids that tie an error line to its recording. */
+export function recordingIdentity(
+  state: Pick<RecorderState, "recordingId" | "failedRecording" | "finalizationPendingId">,
+): Pick<RecorderValue, "recordingId" | "failedRecording" | "finalizationPendingId"> {
+  return {
+    recordingId: state.recordingId,
+    failedRecording: state.failedRecording,
+    finalizationPendingId: state.finalizationPendingId,
+  };
+}
+
 const NO_PENDING: PendingSnapshot = { listing: { state: "ok", count: 0 }, running: false, lastError: null };
 const noop = () => {};
 
@@ -375,6 +393,9 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       outcome: null,
       localUpload: null,
       lastSaved: null,
+      recordingId: null,
+      failedRecording: null,
+      finalizationPendingId: null,
       pending: NO_PENDING,
       transcription: undefined,
       transcriber: { id: "on-device", identifySpeakers: false, source: "default" },

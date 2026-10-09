@@ -1,5 +1,6 @@
 import { useResolvedTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
+import { honestRecorderError } from "./honestRecorderError";
 import { useMinimizedRecorder } from "./MinimizedProvider";
 import { showsMinimizedError } from "./minimizedView";
 import "./soft.css";
@@ -28,7 +29,7 @@ export function MinimizedAlert({
     >
       <div className="mini-alert">
         <p role="alert" className="mini-alert-text">
-          {recorder.error}
+          {honestRecorderError(recorder)}
         </p>
         {recorder.phase === "stopping" && (
           <button
