@@ -25,8 +25,11 @@ import { useSoftTheme } from "./softTheme";
 import { SheetDialog } from "../recorder/final/SheetDialog";
 import "../recorder/final/phone.css";
 
+const SAME = (text: string) => text;
+
 function Actions(props: {
   actions: FailedActions;
+  text: (text: string) => string;
   canRetry: boolean;
   deleteRef: RefObject<HTMLButtonElement | null>;
 }) {
@@ -36,7 +39,7 @@ function Actions(props: {
     <div className="soft-sheet-actions" data-busy={busy ? "true" : undefined}>
       {actions.error !== null && (
         <p role="alert" className="soft-sheet-error" data-testid="capture-issue-error">
-          {actions.error}
+          {props.text(actions.error)}
         </p>
       )}
       {/* aria-disabled, not disabled: a busy button keeps focus. */}
@@ -109,7 +112,13 @@ export function IssueSheet(props: {
   /** Dismisses a partial-audio notice: whether it is dismissed (false: it could not be saved). */
   onDismiss: (id: string) => boolean;
   onClose: () => void;
+  /** `desktop`: a centred dialog, not a bottom sheet. */
+  layout?: "phone" | "desktop";
+  /** Rewrites the shared copy for the device it names ("this phone"). */
+  text?: (text: string) => string;
 }) {
+  const layout = props.layout ?? "phone";
+  const text = props.text ?? SAME;
   const theme = useSoftTheme();
   const ids = useId();
   const deleteButton = useRef<HTMLButtonElement | null>(null);
@@ -143,7 +152,7 @@ export function IssueSheet(props: {
         <Dialog.Overlay className="soft-sheet-overlay" />
         <Dialog.Content
           className={`soft-skin ${theme} soft-sheet`}
-          data-layout="phone"
+          data-layout={layout}
           data-testid="capture-issue-sheet"
           data-kind={props.issue?.kind}
           onEscapeKeyDown={(event) => {
@@ -164,10 +173,10 @@ export function IssueSheet(props: {
         >
           <div inert={confirming}>
             <Dialog.Title className="soft-title soft-sheet-title">
-              {copy?.title}
+              {copy && text(copy.title)}
             </Dialog.Title>
             <Dialog.Description className="soft-sheet-body">
-              {copy?.body}
+              {copy && text(copy.body)}
             </Dialog.Description>
             {missing !== null && (
               <p className="soft-sheet-body" data-testid="capture-issue-missing">
@@ -176,6 +185,7 @@ export function IssueSheet(props: {
             )}
             {shown && <Actions
                 actions={actions}
+                text={text}
                 canRetry={props.issue !== null && issueCanRetry(props.issue)}
                 deleteRef={deleteButton}
               />}
@@ -195,8 +205,8 @@ export function IssueSheet(props: {
               role="alertdialog"
               titleId={`${ids}-dt`}
               descriptionId={`${ids}-dd`}
-              title={HOME_COPY.deleteConfirm.title}
-              description={HOME_COPY.deleteConfirm.body}
+              title={text(HOME_COPY.deleteConfirm.title)}
+              description={text(HOME_COPY.deleteConfirm.body)}
               onCancel={actions.keep}
               returnFocus={deleteButton}
             >

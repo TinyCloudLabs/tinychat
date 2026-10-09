@@ -1,0 +1,281 @@
+/* The desktop Capture home. Palette and tokens come from soft.css / home.css; the row, card and pill classes are home.css's. */
+.dch {
+  position: relative;
+  height: 100%;
+  color: var(--ink);
+}
+.dch-scroll {
+  height: 100%;
+  overflow-y: auto;
+}
+.dch-col {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  width: 100%;
+  max-width: 834px;
+  margin: 0 auto;
+  padding: 24px 32px 56px;
+}
+
+.dch-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 48px;
+}
+.dch-title {
+  margin: 0;
+  font-size: 34px;
+  font-weight: 400;
+  line-height: 1.1;
+  outline: none;
+}
+.dch-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dch-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding-top: 8px;
+}
+.dch-ring {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+.dch-ring:disabled {
+  cursor: default;
+}
+.dch-start {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 0 30px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--bgc);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.2s cubic-bezier(0.3, 1.7, 0.4, 1);
+}
+.dch-start:active {
+  transform: scale(0.97);
+}
+.dch-start:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.dch-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--red);
+}
+
+.dch-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+.dch-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 20px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--gedge);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dch-connect {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.dch-connect:hover {
+  background: var(--glass);
+}
+
+.dch-start:focus-visible,
+.dch-act:focus-visible,
+.dch-connect:focus-visible,
+.dch-chip:focus-visible,
+.dch-dismiss:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.dch-in-progress .soft-card {
+  margin-top: 0;
+}
+.dch-mac {
+  max-width: 100%;
+}
+
+.dch-recent-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding-bottom: 4px;
+}
+.dch-recent-title {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 400;
+  line-height: 1.2;
+}
+.dch-chips {
+  display: flex;
+  gap: 6px;
+}
+.dch-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--gedge);
+  color: var(--dim);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.dch-chip[aria-pressed="true"] {
+  background: var(--ink);
+  box-shadow: none;
+  color: var(--bgc);
+}
+.dch-chip-check {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.4;
+}
+
+.dch-day-label {
+  margin: 0;
+  padding: 14px 0 4px;
+  color: var(--dim);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.dch-recent .soft-list {
+  margin: 0 -12px;
+}
+.dch-row-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dch-row-item .soft-row {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+.dch-dismiss {
+  position: relative;
+  flex: none;
+  margin-right: 12px;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--gedge);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.dch-dismiss::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+}
+
+/* The failed-recording sheet as a centred dialog. Centred with inset and auto margins, not a transform: the delete confirmation inside is position: fixed and would otherwise be placed against the dialog. */
+.soft-skin.soft-sheet[data-layout="desktop"] {
+  inset: 0;
+  width: min(420px, calc(100vw - 32px));
+  max-width: none;
+  height: fit-content;
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+  padding: 26px 24px 20px;
+  border-radius: 28px;
+  box-shadow:
+    inset 0 0 0 1px var(--gedge),
+    0 20px 60px rgba(0, 0, 0, 0.4);
+  animation: soft-fade 0.2s ease-out;
+}
+/* Asking to delete: the confirmation is the only card on screen. */
+.soft-skin.soft-sheet[data-layout="desktop"]:has(.pr-sheet) {
+  background: transparent;
+  box-shadow: none;
+}
+.soft-sheet[data-layout="desktop"] > [inert] {
+  visibility: hidden;
+}
+.soft-sheet[data-layout="desktop"] .pr-sheet {
+  inset: 0;
+  width: min(392px, calc(100vw - 32px));
+  height: fit-content;
+  margin: auto;
+  padding: 26px 24px 18px;
+  border-radius: 28px;
+  animation: soft-fade 0.2s ease-out;
+}
+
+@media (max-width: 899px) {
+  .dch-col {
+    padding: 20px 20px 48px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dch-start {
+    transition: none;
+  }
+  .dch-start:active {
+    transform: none;
+  }
+}
