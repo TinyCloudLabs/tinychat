@@ -7,17 +7,29 @@ import SttCore
 
 /// Decodes a committed note's audio and produces a transcript with sherpa-onnx (plan §2.5), for
 /// notes whose `options.transcriber == "on-device"`. This slice runs the whole job in-process on a
-/// background queue: there is no `BGProcessingTask`/checkpoint persistence (T23 adds that), so a
+/// background queue: there is no `BGProcessingTask`/checkpoint persistence (T24 adds that), so a
 /// note interrupted by the app dying restarts its decode from the beginning next time the queue
 /// runs, instead of resuming mid-file. It never runs while a capture session is live: it checks
-/// `CaptureEngine.shared.isCapturing` before loading a model and again before every VAD segment,
-/// and releases the recognizer promptly instead of competing with capture for CPU/memory.
+/// `CaptureEngine.shared.isCapturing` before loading a model and again before every VAD window, and
+/// releases the recognizer promptly instead of competing with capture for CPU/memory. Audio is
+/// decoded and fed to the VAD and recognizer in fixed-size windows (`AudioDecoder.decodeWindows`),
+/// never as one in-memory array, so a note's memory use does not scale with its length: a note left
+/// recording for a long time once crashed every launch decoding itself whole (TC-836 incident).
+/// Before each attempt, `AttemptGuard` persists an incremented attempt count to the note's sidecar;
+/// after `AttemptGuard.maxAttempts` a note is marked `failed` instead of retried, so a note that
+/// reliably crashes the decode can never crash-loop the app at every launch again. `ReleaseHandoff`
+/// lets `CaptureEngine` wait, bounded, for the current decode to release before opening the mic
+/// (`awaitReleaseForCapture`, wired via `CaptureEngine.sttReleaseHandoff` in `ExoSttBootstrap`): a
+/// single VAD segment's recognize() call can't be interrupted mid-call, so capture never waits
+/// unboundedly — it proceeds regardless, and this queue's own per-window capture check is what
+/// actually abandons the attempt once it notices.
 public final class TranscriptionQueue {
     public static let shared = TranscriptionQueue(store: ModelDownloads.shared.store)
 
     private let store: ModelStore
     private let capture = CaptureEngine.shared
     private let runQueue = DispatchQueue(label: "xyz.tinycloud.exo.stt.queue")
+    private let releaseHandoff = ReleaseHandoff()
     private var pending: [String] = []
     private var running = false
     public var onQueueChanged: (() -> Void)?
@@ -49,12 +61,12 @@ public final class TranscriptionQueue {
         }
     }
 
-    /// Explicit enqueue: the UI's Retry for a `failed` note, or a fresh on-device recording. Reset
-    /// so a previous failure's error does not stick around once the note is queued again.
+    /// Explicit enqueue: the UI's Retry for a `failed` note, or a fresh on-device recording. Resets
+    /// the attempt count, since this is a deliberate retry, not an automatic one.
     public func enqueue(id: String) {
         runQueue.async { [self] in
             guard (try? capture.library.transcript(id)) == nil else { return } // already has one
-            try? capture.library.updateStt(id, patch: ["state": "queued", "error": NSNull()])
+            try? capture.library.updateStt(id, patch: ["state": "queued", "error": NSNull(), "attempts": 0])
             if !pending.contains(id) { pending.append(id) }
             onQueueChanged?()
             pump()
@@ -79,6 +91,14 @@ public final class TranscriptionQueue {
         }
     }
 
+    /// Called by `CaptureEngine` (via `sttReleaseHandoff`) before opening the mic (capture-priority
+    /// handoff, plan §2.5): returns as soon as the current decode has released its native engine,
+    /// or after `timeout` — whichever is first. Capture always proceeds either way; it must never
+    /// wait unboundedly.
+    public func awaitReleaseForCapture(timeout: TimeInterval) {
+        releaseHandoff.awaitRelease(timeout: timeout)
+    }
+
     private func pump() {
         guard !running, !pending.isEmpty else { return }
         guard !capture.isCapturing else { return } // Resumed by the next `committed` (capture ended).
@@ -90,6 +110,7 @@ public final class TranscriptionQueue {
             return
         }
         running = true
+        let releaseStarted = releaseHandoff.begin()
         let engine: Engine
         do {
             engine = try Engine(store: store, modelId: modelId)
@@ -97,19 +118,32 @@ public final class TranscriptionQueue {
             for id in pending { fail(id, code: "model_load_failed", message: String(describing: error)) }
             pending.removeAll()
             running = false
+            releaseHandoff.release(releaseStarted)
             onQueueChanged?()
             return
         }
-        defer { running = false }
+        defer { running = false; releaseHandoff.release(releaseStarted) }
         while let id = pending.first {
             guard !capture.isCapturing else { break } // Leave it queued; release happens via `defer`.
             pending.removeFirst()
-            try? capture.library.updateStt(id, patch: ["state": "running", "pack": modelId == ModelManifest.parakeetFull ? "full" : "small", "engine": "parakeet"])
+            let previousAttempts = ((try? capture.library.readSidecar(id))?["stt"] as? [String: Any])?["attempts"] as? Int ?? 0
+            switch AttemptGuard.next(previousAttempts: previousAttempts) {
+            case .giveUp:
+                fail(id, code: "too_many_attempts", message: "gave up after \(AttemptGuard.maxAttempts) attempts")
+                continue
+            case .proceed(let attempt):
+                // Persisted before the risky decode starts: a crash mid-attempt still counts
+                // against the cap next launch, instead of retrying the same note forever.
+                try? capture.library.updateStt(id, patch: ["state": "running", "attempts": attempt,
+                    "pack": modelId == ModelManifest.parakeetFull ? "full" : "small", "engine": "parakeet"])
+            }
             onQueueChanged?()
             do {
                 try process(id: id, engine: engine, modelId: modelId)
             } catch TranscriptionQueueError.captureStarted {
-                try? capture.library.updateStt(id, patch: ["state": "queued"])
+                // Not a failed attempt: an orderly yield to a resumed recording. Restore the
+                // attempt count so being interrupted repeatedly never burns the crash-loop budget.
+                try? capture.library.updateStt(id, patch: ["state": "queued", "attempts": previousAttempts])
                 pending.insert(id, at: 0)
                 break
             } catch {
@@ -128,25 +162,31 @@ public final class TranscriptionQueue {
 
     private func process(id: String, engine: Engine, modelId: String) throws {
         let audioURL = capture.library.audioURL(id)
-        let samples = try AudioDecoder.decode16kMono(audioURL)
-        let chunks = try engine.vadSegments(samples: samples)
+        let totalWindows = estimatedWindows(audioURL)
         var segments: [[String: Any]] = []
         var decodedAny = false
-        var done = 0
-        for chunk in chunks {
-            guard !capture.isCapturing else { throw TranscriptionQueueError.captureStarted }
-            let words = try engine.recognize(samples: chunk.samples, origin: Double(chunk.start) / 16_000)
-            if !words.isEmpty {
-                decodedAny = true
-                // Milliseconds, not fractional seconds: CanonicalJSON only accepts whole-integer
-                // NSNumbers (TC-836 — the only type every other timestamp in this schema already uses).
-                segments.append(["start": chunk.start * 1000 / 16_000, "end": chunk.end * 1000 / 16_000,
-                                  "text": words.map(\.text).joined(separator: " "), "speaker": NSNull()])
-            }
-            done += 1
-            try capture.library.updateStt(id, patch: ["segmentsDone": done])
-            onProgress?(id, chunks.isEmpty ? 100 : Int(Double(done) / Double(chunks.count) * 100))
-        }
+        var segmentsDone = 0
+        var windowsDone = 0
+        try engine.transcribe(
+            file: audioURL,
+            checkCapturing: { [self] in guard !capture.isCapturing else { throw TranscriptionQueueError.captureStarted } },
+            onWindow: { [self] in
+                windowsDone += 1
+                try? capture.library.updateStt(id, patch: ["windowsDone": windowsDone])
+                let percent = totalWindows.map { min(99, Int(Double(windowsDone) / Double($0) * 100)) } ?? 0
+                onProgress?(id, percent)
+            },
+            onSegment: { [self] chunk, words in
+                if !words.isEmpty {
+                    decodedAny = true
+                    // Milliseconds, not fractional seconds: CanonicalJSON only accepts whole-integer
+                    // NSNumbers (TC-836 — the only type every other timestamp in this schema already uses).
+                    segments.append(["start": chunk.start * 1000 / 16_000, "end": chunk.end * 1000 / 16_000,
+                                      "text": words.map(\.text).joined(separator: " "), "speaker": NSNull()])
+                }
+                segmentsDone += 1
+                try? capture.library.updateStt(id, patch: ["segmentsDone": segmentsDone])
+            })
         let outcome = decodedAny ? "transcribed" : "no_speech"
         let transcript: [String: Any] = [
             "version": 1, "noteId": id, "transcriber": "on-device", "rev": 1,
@@ -156,8 +196,18 @@ public final class TranscriptionQueue {
         ]
         try capture.library.putTranscript(id, object: transcript)
         try capture.library.updateStt(id, patch: ["state": "done", "error": NSNull()])
+        onProgress?(id, 100)
         onTranscribed?(id, outcome)
         onQueueChanged?()
+    }
+
+    /// A cheap upper-bound estimate of VAD windows for progress reporting, from the container's
+    /// duration; does not decode any audio. Nil if the file can't be opened.
+    private func estimatedWindows(_ url: URL) -> Int? {
+        guard let file = try? AVAudioFile(forReading: url), file.length > 0, file.processingFormat.sampleRate > 0 else { return nil }
+        let seconds = Double(file.length) / file.processingFormat.sampleRate
+        let totalSamples = Int(seconds * 16_000)
+        return max(1, totalSamples / 512)
     }
 }
 
@@ -167,12 +217,14 @@ enum TranscriptionQueueError: Error {
     case decodeFailed
 }
 
-/// One loaded recognizer + VAD, scoped to a single `pump()` pass, released at the end of it
-/// (ARC drops the sherpa-onnx wrappers when `Engine` deinits).
+/// One loaded recognizer + VAD config, scoped to a single `pump()` pass; ARC drops the
+/// sherpa-onnx wrappers when `Engine` deinits, before capture competes for memory.
 private final class Engine {
     private let recognizer: SherpaOnnxOfflineRecognizer
     private let vadModelPath: String
     private let threads: Int32
+
+    private static let windowSize = 512
 
     init(store: ModelStore, modelId: String) throws {
         let dir = store.root.appendingPathComponent(modelId, isDirectory: true)
@@ -200,30 +252,37 @@ private final class Engine {
 
     struct Chunk { let start: Int; let end: Int; let samples: [Float] }
 
-    func vadSegments(samples: [Float]) throws -> [Chunk] {
+    /// Streams `file` through the VAD and recognizer one `Engine.windowSize` window at a time
+    /// (`AudioDecoder.decodeWindows`), so memory never scales with the note's length.
+    /// `checkCapturing` is called before every window; `onWindow` after every window (progress);
+    /// `onSegment` for every VAD speech segment once its words are recognized.
+    func transcribe(file: URL, checkCapturing: @escaping () throws -> Void, onWindow: @escaping () -> Void,
+                    onSegment: @escaping (Chunk, [TimedWord]) throws -> Void) throws {
         var vadConfig = sherpaOnnxVadModelConfig(
             sileroVad: sherpaOnnxSileroVadModelConfig(model: vadModelPath, minSilenceDuration: 0.4,
                                                      minSpeechDuration: 0.1, maxSpeechDuration: 25),
             numThreads: Int(threads))
         let vad = SherpaOnnxVoiceActivityDetectorWrapper(config: &vadConfig, buffer_size_in_seconds: 30)
-        var chunks: [Chunk] = []
-        func drain() {
+        func drain() throws {
             while !vad.isEmpty() {
                 let segment = vad.front()
-                chunks.append(Chunk(start: segment.start, end: segment.start + segment.samples.count, samples: segment.samples))
+                let chunk = Chunk(start: segment.start, end: segment.start + segment.samples.count, samples: segment.samples)
+                let words = try recognize(samples: chunk.samples, origin: Double(chunk.start) / 16_000)
+                try onSegment(chunk, words)
                 vad.pop()
             }
         }
-        for offset in stride(from: 0, to: samples.count, by: 512) {
-            vad.acceptWaveform(samples: Array(samples[offset..<min(offset + 512, samples.count)]))
-            drain()
+        try AudioDecoder.decodeWindows(file, windowSize: Engine.windowSize) { window in
+            try checkCapturing()
+            vad.acceptWaveform(samples: window)
+            try drain()
+            onWindow()
         }
         vad.flush()
-        drain()
-        return chunks
+        try drain()
     }
 
-    func recognize(samples: [Float], origin: Double) throws -> [TimedWord] {
+    private func recognize(samples: [Float], origin: Double) throws -> [TimedWord] {
         let result = recognizer.decode(samples: samples)
         guard result.count > 0, let tokenPointers = result.result.pointee.tokens_arr else { return [] }
         var tokens: [String] = []
