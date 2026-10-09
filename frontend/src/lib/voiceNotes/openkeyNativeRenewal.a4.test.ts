@@ -1,4 +1,4 @@
-import { expect, mock, test } from "bun:test";
+import { afterAll, expect, mock, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { NativeSession, OpenKeyNative } from "@openkey/sdk-capacitor";
 import { putAudio } from "../audio/audioStore";
@@ -6,7 +6,7 @@ import { __setVoiceNotesForTests, type VoiceNoteRecording, type VoiceNotesPlugin
 
 const manifestAndParts = new Map<string, unknown>();
 const records = new Map<string, unknown>();
-const store = await import("./voiceNoteStore");
+const store = { ...(await import("./voiceNoteStore")) };
 mock.module("./voiceNoteStore", () => ({
   ...store,
   saveVoiceNote: async (tcw: TinyCloudWeb, recording: VoiceNoteRecording, source: Parameters<typeof store.saveVoiceNote>[2]) => {
@@ -18,6 +18,7 @@ mock.module("./voiceNoteStore", () => ({
     return { ok: true, data: { inserted: true } };
   },
 }));
+afterAll(() => mock.module("./voiceNoteStore", () => store));
 
 const { savePendingRecordings } = await import("./recorderSaves");
 const { NativeRenewal, guardNativeTinyCloudCalls } = await import("../openkeyNativeRenewal");
