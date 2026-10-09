@@ -4,39 +4,39 @@ import {
   type MomentField,
   type MomentFlow,
 } from "./momentController";
-import type { NotesApi } from "./notesApiStub";
 
-/** The moment flow over the notes API; `markMoment` runs in the tap that calls `flow.begin()`. */
+export interface MomentNotes {
+  /** The recording time in ms, taken now; may throw when nothing is recording. */
+  markMoment(): number | Promise<number>;
+  /** The note as it reads now: what is typed and unsaved, else what is saved. */
+  text: string;
+  /** Takes the new text; saving it and reporting a failure are the caller's. */
+  write(md: string): void;
+}
+
+/** The moment flow over the notes; `markMoment` runs in the tap that calls `flow.begin()`. */
 export function useMomentFlow(
-  api: NotesApi,
+  notes: MomentNotes,
   onError: (error: unknown) => void,
 ): { field: MomentField | null; flow: MomentFlow } {
   const [field, setField] = useState<MomentField | null>(null);
-  const latest = useRef({ api, onError });
-  latest.current = { api, onError };
-  // The text as last written here: a write lands before the next render reads it back from the provider.
-  const md = useRef(api.note?.md ?? "");
-  const lastRead = useRef(api.note?.md ?? "");
-  const read = api.note?.md ?? "";
-  if (read !== lastRead.current) {
-    lastRead.current = read;
-    md.current = read;
+  const latest = useRef({ notes, onError });
+  latest.current = { notes, onError };
+  // The text as last written here: a write lands before the next render reads it back.
+  const md = useRef(notes.text);
+  const lastRead = useRef(notes.text);
+  if (notes.text !== lastRead.current) {
+    lastRead.current = notes.text;
+    md.current = notes.text;
   }
   const flow = useRef<MomentFlow | null>(null);
   flow.current ??= createMomentFlow(
     {
-      markMoment: () => latest.current.api.markMoment(),
+      markMoment: () => latest.current.notes.markMoment(),
       readMd: () => md.current,
       writeMd: (next) => {
-        const before = md.current;
         md.current = next;
-        // A write the note refuses (not ready, or failed) is reported, and the text goes back to what is saved.
-        void (async () => latest.current.api.setNoteText(next))().catch(
-          (error: unknown) => {
-            if (md.current === next) md.current = before;
-            latest.current.onError(error);
-          },
-        );
+        latest.current.notes.write(next);
       },
       onError: (error) => latest.current.onError(error),
     },
@@ -45,3 +45,4 @@ export function useMomentFlow(
   useEffect(() => () => flow.current?.commit(), []);
   return { field, flow: flow.current };
 }
+

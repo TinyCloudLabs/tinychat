@@ -48,7 +48,13 @@ export function createMomentFlow(
   return {
     begin(): void {
       if (active) this.commit();
-      const marked = deps.markMoment();
+      let marked: number | Promise<number>;
+      try {
+        marked = deps.markMoment();
+      } catch (error) {
+        deps.onError(error);
+        return;
+      }
       const moment: Active = {
         atMs: typeof marked === "number" ? marked : null,
         draft: "",

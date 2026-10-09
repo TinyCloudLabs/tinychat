@@ -234,3 +234,23 @@
   font-size: 13px;
   color: var(--red);
 }
+
+.pr-nwait {
+  margin: 0;
+  padding: 12px 4px;
+  font-size: 15px;
+  color: var(--dim);
+}
+
+.pr-nsync {
+  margin: 0;
+  font-size: 12px;
+  color: var(--dim);
+}
+.pr-vnotes[data-failed="true"] {
+  color: var(--red);
+}
+.pr-notes {
+  flex-direction: column;
+  gap: 6px;
+}

@@ -20,6 +20,18 @@ function setup(mark: () => number | Promise<number>) {
 }
 
 describe("noting a moment", () => {
+  test("a markMoment that throws (nothing is recording) is reported, shows no field and writes nothing", async () => {
+    const t = setup(() => {
+      throw new Error("No live recording to mark");
+    });
+    t.flow.begin();
+    await t.flow.settled();
+    expect(t.errors).toHaveLength(1);
+    expect(t.fields).toEqual([]);
+    expect(t.md()).toBe("");
+    expect(t.flow.isOpen()).toBe(false);
+  });
+
   test("stamps the time at the tap, not at the save", async () => {
     let now = 42_000;
     const t = setup(() => now);

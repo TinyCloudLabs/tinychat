@@ -5,6 +5,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { TranscriptionRouteControl } from "@/capture/recorder/TranscriptionRouteControl";
 import { clearNotesUi } from "@/capture/recorder/final/notes";
+import { useHarnessNote } from "../harnessNote";
 import { PhoneRecorder } from "@/capture/recorder/final/PhoneRecorder";
 import type { TranscriberApi } from "@/capture/recorder/final/useTranscriptionChoice";
 import type { SetTranscriberResult } from "@/capture/recorder/voiceNoteRecorderController";
@@ -377,9 +378,10 @@ const routeControlScreen: HarnessScreen = {
   },
 };
 
-// 0:42 in, the note API in the screen's own memory (the stub), and a Discard that only logs.
+// 0:42 in, the note in the screen's own memory, and a Discard that only logs.
 function Notes() {
   useState(clearNotesUi);
+  const note = useHarnessNote(null, 42_000);
   const value = useMemo<Partial<RecorderValue>>(() => {
     const notes = (window.exoNotes ??= { calls: [] });
     return {
@@ -399,8 +401,10 @@ function Notes() {
       discard: () => void notes.calls.push("discard"),
     };
   }, []);
+  // The note half changes with every write; the rest is fixed.
+  const withNote = useMemo(() => ({ ...value, ...note }), [value, note]);
   return (
-    <StaticRecorderProvider value={value}>
+    <StaticRecorderProvider value={withNote}>
       <PhoneRecorder inputs={NOTES_INPUTS} />
     </StaticRecorderProvider>
   );

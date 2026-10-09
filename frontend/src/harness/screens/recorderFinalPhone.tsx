@@ -17,7 +17,7 @@ import {
   type OnDeviceSttStatus,
 } from "@/lib/voiceNotes/onDeviceStt";
 import { clearNotesUi } from "@/capture/recorder/final/notes";
-import { useNotesApi } from "@/capture/recorder/final/notesApiStub";
+import { useHarnessNote } from "../harnessNote";
 import { FROZEN_NOW } from "../stubs";
 import type { HarnessScreen } from "../screen";
 
@@ -179,8 +179,14 @@ const NOTE_MD = [
 function Noted(props: PhoneRecorderProps & { md: string | null }) {
   const { md, ...rest } = props;
   useState(clearNotesUi);
-  const notesApi = useNotesApi(() => 42_000, md);
-  return <PhoneRecorder inputs={INPUTS} notesApi={notesApi} {...rest} />;
+  const note = useHarnessNote(md, 42_000);
+  return (
+    <StaticRecorderProvider
+      value={{ ...LIVE, ...NOTED, ...note, subscribeLevel: steadyLevel }}
+    >
+      <PhoneRecorder inputs={INPUTS} {...rest} />
+    </StaticRecorderProvider>
+  );
 }
 
 function notesScreen(
@@ -193,13 +199,7 @@ function notesScreen(
     readyWhen,
     render: () => {
       __setOnDeviceSttForTests(ON_DEVICE_STT);
-      return (
-        <StaticRecorderProvider
-          value={{ ...LIVE, ...NOTED, subscribeLevel: steadyLevel }}
-        >
-          <Noted {...props} />
-        </StaticRecorderProvider>
-      );
+      return <Noted {...props} />;
     },
   };
 }

@@ -17,18 +17,19 @@ import { useRecordedElapsed } from "../useRecordedElapsed";
 import { useKeyboardInset } from "./keyboardInset";
 import { ModesCard } from "./ModesCard";
 import { MomentField } from "./MomentField";
-import { useNotesUi, warmRenderer } from "./notes";
+import { readNotesUi, recordingKey, updateNotesUi, useNotesUi, warmRenderer } from "./notes";
 import { NOTES_COPY } from "./notesCopy";
 import { NotesListIcon, PlusIcon } from "./notesIcons";
 import { NotesSheet } from "./NotesSheet";
-import { notesApiOver, type NotesApi } from "./notesApiStub";
 import {
   readNotesView,
   rememberNotesView,
   type NotesView,
 } from "./notesViewPreference";
 import { hasNote } from "./momentLines";
+import { finishWithNote, type DoneGate } from "./doneGate";
 import { useMomentFlow } from "./useMomentFlow";
+import { useNoteSaver } from "./useNoteSaver";
 import { PrivacyScale } from "./PrivacyScale";
 import { RecorderRing } from "./RecorderRing";
 import { selectRecorderView } from "./recorderView";
@@ -99,8 +100,6 @@ export interface PhoneRecorderProps {
   silencedSinceMs?: number | null;
   /** Replaces the provider's transcriber API (the harness passes a logging one). */
   transcriberApi?: TranscriberApi;
-  /** The provider's note API; the stand-in until the provider has it (the harness passes its own). */
-  notesApi?: NotesApi;
   /** Starts with one surface open (the harness). */
   defaultOpen?: "modes" | "via" | "discard" | "moment" | "notes";
   /** The notes view remembered from an earlier session (the harness). */
@@ -111,7 +110,6 @@ export function PhoneRecorder({
   inputs: inputsSource,
   silencedSinceMs: silencedSeed = null,
   transcriberApi,
-  notesApi,
   defaultOpen,
   notesViewSeed,
 }: PhoneRecorderProps) {
@@ -151,23 +149,37 @@ export function PhoneRecorder({
     silencedSinceMs,
   });
 
-  // TODO(TC-878): read the note from `recorder` once the provider has it.
-  const latestElapsed = useRef(elapsedMs);
-  latestElapsed.current = elapsedMs;
-  const ui = useNotesUi(recorder.startedAt, {
+  const key = recordingKey(recorder);
+  const ui = useNotesUi(key, {
     open: defaultOpen === "notes",
     view: notesViewSeed ?? "preview",
   });
-  const notes = notesApi ?? notesApiOver(ui, () => latestElapsed.current);
-  const { field: momentField, flow: moment } = useMomentFlow(notes, (error) => {
-    console.error("[Recorder] Could not mark this moment", error);
-    showToast(
-      NOTES_COPY.momentFailed(
-        error instanceof Error ? error.message : String(error),
-      ),
-    );
-  });
-  const noteMd = notes.note?.md ?? "";
+  const saving = useNoteSaver(key, recorder);
+  // What is typed and not yet saved is the note as far as the user is concerned.
+  const noteText = ui.draft ?? recorder.note?.md ?? "";
+  const { field: momentField, flow: moment } = useMomentFlow(
+    {
+      markMoment: () => recorder.markMoment(),
+      text: noteText,
+      write: (next) => {
+        if (key !== null) updateNotesUi(key, () => ({ draft: next }));
+        saving.change(next);
+        saving.saveNow();
+      },
+    },
+    (error) => {
+      console.error("[Recorder] Could not mark this moment", error);
+      showToast(
+        NOTES_COPY.momentFailed(
+          error instanceof Error ? error.message : String(error),
+        ),
+      );
+    },
+  );
+  const noteMd = noteText;
+  // TODO(TC-878b): `noteSyncError` (a short code) joins RecorderValue after T19; until then it is absent.
+  const noteSyncFailed =
+    (recorder as { noteSyncError?: string | null }).noteSyncError != null;
   const notesOpen = ui.open;
   const keyboardInset = useKeyboardInset();
   const markButton = useRef<HTMLButtonElement>(null);
@@ -243,6 +255,17 @@ export function PhoneRecorder({
     lastControl.current = null;
   }, [recorder.error]);
 
+  // Done never ends the recording over an unsaved note without the user knowing (doneGate.ts).
+  const doneGate = useRef<DoneGate>({ acknowledged: null });
+  const finish = () =>
+    finishWithNote(doneGate.current, {
+      flush: saving.flush,
+      unsaved: () => (key === null ? null : (readNotesUi(key)?.draft ?? null)),
+      stop: () => control("stop"),
+      onUnsaved: (error) =>
+        console.error("[Recorder] Finishing with an unsaved note", error),
+    });
+
   const ringKind =
     view.tapRingAction ??
     (view.ring === "live"
@@ -289,6 +312,9 @@ export function PhoneRecorder({
   const recorderError = honestRecorderError(recorder);
   const alerts = [
     recorderError ? { message: recorderError, retry: undefined } : null,
+    ui.saveFailed && !notesOpen
+      ? { message: NOTES_COPY.noteNotSavedAlert, retry: undefined }
+      : null,
     settingsError ? { message: settingsError, retry: openSettings } : null,
     audio.error ? { message: audio.error, retry: audio.retry } : null,
     onDevice.error ? { message: onDevice.error, retry: onDevice.retry } : null,
@@ -357,16 +383,16 @@ export function PhoneRecorder({
               type="button"
               className="pr-time-slot pr-mark"
               aria-label={
-                notes.noteStatus === "ready"
+                recorder.noteStatus === "ready"
                   ? NOTES_COPY.noteThisMoment
-                  : notes.noteStatus === "loading"
+                  : recorder.noteStatus === "loading"
                     ? NOTES_COPY.noteLoading
                     : NOTES_COPY.noteLoadFailed
               }
-              aria-disabled={notes.noteStatus !== "ready" || undefined}
+              aria-disabled={recorder.noteStatus !== "ready" || undefined}
               disabled={phase !== "recording"}
               onClick={() => {
-                if (notes.noteStatus !== "ready") return;
+                if (recorder.noteStatus !== "ready") return;
                 hapticLight();
                 moment.begin();
               }}
@@ -405,13 +431,19 @@ export function PhoneRecorder({
                 ref={viewNotesButton}
                 type="button"
                 className="pr-vnotes"
+                data-failed={ui.saveFailed || undefined}
                 onClick={() => {
                   ui.openNotes(readNotesView());
                 }}
               >
                 <NotesListIcon />
-                {NOTES_COPY.viewNotes}
+                {ui.saveFailed ? NOTES_COPY.noteNotSaved : NOTES_COPY.viewNotes}
               </button>
+            )}
+            {noteSyncFailed && !momentField && !ui.saveFailed && (
+              <p className="pr-nsync" role="status">
+                {NOTES_COPY.noteNotSynced}
+              </p>
             )}
           </div>
         )}
@@ -564,7 +596,7 @@ export function PhoneRecorder({
                 data-emphasis={mustSave}
                 data-secondary={view.controls.openSettings}
                 disabled={!(view.controls.stop || stopUnknown)}
-                onClick={() => control("stop")}
+                onClick={() => void finish()}
               >
                 <CheckIcon />
                 Done
@@ -576,20 +608,24 @@ export function PhoneRecorder({
 
       {notesOpen && (
         <NotesSheet
-          md={ui.draft ?? noteMd}
-          onDraft={ui.setDraft}
+          md={noteText}
+          onChange={(md) => {
+            if (key !== null) updateNotesUi(key, () => ({ draft: md }));
+            saving.change(md);
+          }}
           view={ui.view}
           onViewChange={(next) => {
+            saving.saveNow();
             rememberNotesView(next);
             ui.setView(next);
           }}
-          draft={ui.draft}
-          noteStatus={notes.noteStatus}
-          onSave={async (md) => {
-            await notes.setNoteText(md);
-            ui.settleDraft(md);
+          noteStatus={recorder.noteStatus}
+          pending={saving.pending}
+          saveFailed={ui.saveFailed}
+          onClose={() => {
+            saving.saveNow();
+            ui.closeNotes();
           }}
-          onClose={ui.closeNotes}
           recording={{
             timerText: view.timer.text,
             paused: view.ring === "paused",
