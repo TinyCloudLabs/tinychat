@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-recorder-whisper-stage-audio"
+description = "Enables the recorder_whisper_stage_audio command without any pre-configured scope."
+commands.allow = ["recorder_whisper_stage_audio"]
+
+[[permission]]
+identifier = "deny-recorder-whisper-stage-audio"
+description = "Denies the recorder_whisper_stage_audio command without any pre-configured scope."
+commands.deny = ["recorder_whisper_stage_audio"]

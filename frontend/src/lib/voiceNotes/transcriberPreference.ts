@@ -1,5 +1,5 @@
 // JS owns the user's default. Native owns a live session's journaled options.
-import { localTranscriptionUnavailable } from "./captureEngine";
+import { captureCapabilities, captureEngineAvailable, captureEngineKind, onDeviceTranscriptionAvailable } from "./captureEngine";
 import { VoiceNotes, type CaptureOptions, type TranscriberId } from "./nativeVoiceNotes";
 
 const TRANSCRIBER_KEY = "exo.voiceNotes.transcriber";
@@ -27,16 +27,19 @@ export function readTranscriberPreference(): CaptureOptions {
   } catch { return memoryPreference; }
 }
 
-/** An engine without on-device speech (the web recorder) maps on-device to private cloud here; the stored preference is untouched. */
+/** An installed engine without an on-device route maps the choice to private cloud; the stored preference is untouched. */
 export function effectiveTranscriber(pref: TranscriberId, signedIn: boolean): TranscriberId {
   const transcriber = signedIn ? pref : "on-device";
-  return transcriber === "on-device" && localTranscriptionUnavailable() ? "private-cloud" : transcriber;
+  if (transcriber === "on-device" && captureEngineAvailable() && !onDeviceTranscriptionAvailable())
+    return !signedIn && captureEngineKind() === "tauri" ? "off" : "private-cloud";
+  return transcriber;
 }
 
 /** Disabled speaker modes keep the preference but send false to native capture. */
 export function effectiveCaptureOptions(pref: CaptureOptions, signedIn: boolean): CaptureOptions {
   const transcriber = effectiveTranscriber(pref.transcriber, signedIn);
-  return { transcriber, identifySpeakers: transcriber === "on-device" || transcriber === "assemblyai" ? pref.identifySpeakers : false };
+  return { transcriber, identifySpeakers: transcriber === "assemblyai"
+    || transcriber === "on-device" && captureCapabilities().localTranscription ? pref.identifySpeakers : false };
 }
 
 export async function readDefaultTranscriber(): Promise<TranscriberId> {
