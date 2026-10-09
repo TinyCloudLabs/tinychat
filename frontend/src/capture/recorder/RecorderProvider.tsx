@@ -51,7 +51,7 @@ export interface RecorderValue {
   elapsedMs: number;
   elapsedAt: number | null;
   captureIssues: Record<string, RecorderCaptureIssue>;
-  dismissCaptureIssue(id: string): void;
+  dismissCaptureIssue(id: string): boolean;
   recoveryScanFailure: string | null;
   controlPending: RecorderState["controlPending"];
   maxDurationMs: number;
@@ -383,7 +383,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       elapsedMs: 0,
       elapsedAt: null,
       captureIssues: {},
-      dismissCaptureIssue: noop,
+      dismissCaptureIssue: () => false,
       recoveryScanFailure: null,
       controlPending: null,
       maxDurationMs: VOICE_NOTE_MAX_DURATION_MS,

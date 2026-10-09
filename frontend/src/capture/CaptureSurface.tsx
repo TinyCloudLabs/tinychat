@@ -83,7 +83,7 @@ export function CaptureSurface(props: CaptureSurfaceProps) {
   const soft = softHomeEnabled() && tabbar && compact;
   const recorder = useRecorder();
   return (
-    <SoftHomeProvider enabled={soft} issues={recorder.captureIssues}>
+    <SoftHomeProvider enabled={soft} issues={recorder.captureIssues} onDismissIssue={recorder.dismissCaptureIssue}>
       <CaptureSurfaceBody {...props} soft={soft} />
     </SoftHomeProvider>
   );

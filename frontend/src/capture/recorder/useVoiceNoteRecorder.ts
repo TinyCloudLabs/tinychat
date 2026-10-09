@@ -48,7 +48,7 @@ export interface VoiceNoteRecorder {
   dismissShortcutRecovery(): Promise<void>;
   /** The receipt was read. */
   dismissOutcome(): void;
-  dismissCaptureIssue(id: string): void;
+  dismissCaptureIssue(id: string): boolean;
   setOnPresent(onPresent: (() => void) | undefined): void;
   /** Input levels (0..1), fanned out without React state. */
   subscribeLevel(listener: (level: number) => void): () => void;

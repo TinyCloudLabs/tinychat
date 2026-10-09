@@ -293,6 +293,43 @@ button.soft-row:focus-visible {
 .soft-row-meta[data-failed] {
   color: var(--ink);
 }
+/* A saved recording that is missing some audio: its row, then one quiet line (never red, no "!") that opens the details. The line sits under the title column: 12px row padding + 38px tile + 12px gap. */
+.soft-row-item[data-notice] .soft-row {
+  min-height: 0;
+  padding-bottom: 0;
+}
+.soft-row-notice {
+  position: relative;
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 2px 12px 9px 62px;
+  border: 0;
+  border-radius: 0 0 16px 16px;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.3;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.soft-row-notice::after {
+  content: "";
+  position: absolute;
+  inset: -9px 0 -5px;
+}
+.soft-row-notice:hover,
+.soft-row-notice:active {
+  background: var(--glass);
+}
+.soft-row-notice:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+}
 .soft-row-aside {
   display: flex;
   flex: none;
@@ -479,6 +516,9 @@ button.soft-row:focus-visible {
 }
 .soft-sheet-quiet {
   color: var(--dim);
+}
+.soft-sheet-body + .soft-sheet-body {
+  margin-top: 6px;
 }
 .soft-sheet-delete[aria-disabled="true"] {
   opacity: 0.6;
