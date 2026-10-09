@@ -4,7 +4,7 @@ package xyz.tinycloud.exo.stt.core
 internal object VadFrames {
     const val SIZE = 512 // Silero's 16 kHz window, matching the iOS and Python benchmarks.
 
-    /** Small seam shared by the debug benchmark and the production transcription queue. */
+    /** Small seam available to the debug benchmark and future transcription queue. */
     interface Source<Segment> {
         fun acceptWaveform(samples: FloatArray)
         fun empty(): Boolean
@@ -13,14 +13,16 @@ internal object VadFrames {
         fun flush()
     }
 
-    /** Drain after every Silero window and once more after flush, preserving short pauses. */
-    fun <Segment> process(samples: FloatArray, source: Source<Segment>, onSegment: (Segment) -> Unit,
-                         onVadCall: ((() -> Unit) -> Unit) = { it() }) {
+    /** Drive VAD and decode each segment before accepting more audio. */
+    fun <Segment, Decoded> decode(samples: FloatArray, source: Source<Segment>,
+                                  decodeSegment: (Segment) -> Decoded,
+                                  onVadCall: ((() -> Unit) -> Unit) = { it() }): List<Decoded> {
+        val decoded = mutableListOf<Decoded>()
         fun drain() {
             while (!source.empty()) {
                 val segment = source.front()
                 source.pop()
-                onSegment(segment)
+                decoded.add(decodeSegment(segment))
             }
         }
         for (start in samples.indices step SIZE) {
@@ -30,5 +32,6 @@ internal object VadFrames {
         }
         onVadCall(source::flush)
         drain()
+        return decoded
     }
 }

@@ -44,6 +44,7 @@ The G1 Moto build fed Silero VAD 8,000 samples in each `acceptWaveform` call. Sh
 For a direct token comparison, Android's diagnostic `vadSegments` now includes the decoded BPE `tokens` for each cut. Reproduce the Mac side with:
 
 ```sh
+# Android parity call: blankPenalty: 1, padSeconds: 0; this Python decode uses the same zero padding.
 uv run --no-project --python 3.11 --with 'sherpa-onnx==1.13.8' --with numpy \
   python mobile/scripts/stt-fixtures/decode_segments.py \
   "$HOME/.cache/exo-stt-fixtures/ls-1089-10m.wav" \

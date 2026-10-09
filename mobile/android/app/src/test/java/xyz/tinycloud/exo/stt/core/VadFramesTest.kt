@@ -14,6 +14,7 @@ class VadFramesTest {
         var flushes = 0
 
         override fun acceptWaveform(samples: FloatArray) {
+            assertTrue("Oversized Silero VAD call: ${samples.size}", samples.size <= 512)
             frames.add(samples.copyOf())
             events.add("accept:${samples.size}")
             if (frames.size == 2) segments.addLast(7)
@@ -33,7 +34,7 @@ class VadFramesTest {
         val vad = FakeVad()
         val output = mutableListOf<Int>()
         var timedCalls = 0
-        VadFrames.process(input, vad, onSegment = { output.add(it); vad.events.add("segment:$it") },
+        val decoded = VadFrames.decode(input, vad, decodeSegment = { output.add(it); vad.events.add("segment:$it"); it },
             onVadCall = { call -> timedCalls++; call() })
 
         val frames = vad.frames
@@ -42,6 +43,7 @@ class VadFramesTest {
         assertArrayEquals(input, frames.flatMap { it.asList() }.toFloatArray(), 0f)
         assertEquals(listOf("accept:512", "accept:512", "segment:7", "accept:17", "flush", "segment:9"), vad.events)
         assertEquals(listOf(7, 9), output)
+        assertEquals(listOf(7, 9), decoded)
         assertEquals(1, vad.flushes)
         assertEquals(4, timedCalls)
     }
@@ -49,7 +51,7 @@ class VadFramesTest {
     @Test fun flushesEmptyInputAndDrainsItsFinalSegment() {
         val vad = FakeVad()
         val output = mutableListOf<Int>()
-        VadFrames.process(floatArrayOf(), vad, output::add)
+        VadFrames.decode(floatArrayOf(), vad, output::add)
         assertTrue(vad.frames.isEmpty())
         assertEquals(listOf(9), output)
         assertEquals(1, vad.flushes)
