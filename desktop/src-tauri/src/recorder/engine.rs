@@ -27,6 +27,7 @@ pub struct EngineState {
     segment_id: Option<String>,
     segment_started: Option<Instant>,
     recorded_ms: u64,
+    spans: Vec<journal::MissingAudioSpan>,
     paused_ms: u64,
     pause_started: Option<Instant>,
     selected_input: Option<String>,
@@ -52,6 +53,7 @@ struct AutoStopped {
     at: u64,
     elapsed_ms: u64,
     paused_ms: u64,
+    spans: Vec<journal::MissingAudioSpan>,
 }
 
 pub fn install(app: &tauri::App) {
@@ -103,6 +105,7 @@ pub fn install(app: &tauri::App) {
                                 at: now_ms(),
                                 elapsed_ms: result.elapsed_ms,
                                 paused_ms: result.paused_ms,
+                                spans: result.spans,
                             },
                         );
                     } else {
@@ -130,6 +133,7 @@ pub struct CaptureStatus {
     availability: &'static str,
     at: u64,
     elapsed_at: u64,
+    spans: Vec<journal::MissingAudioSpan>,
 }
 
 fn now_ms() -> u64 {
@@ -192,6 +196,7 @@ impl EngineState {
             },
             at,
             elapsed_at: at,
+            spans: self.spans.clone(),
         }
     }
 }
@@ -285,6 +290,7 @@ pub async fn recorder_start(
                 .unwrap_or(MAX_DURATION_MS)
                 .clamp(MIN_DURATION_MS, MAX_DURATION_MS),
             system_audio: app.state::<Arc<AtomicBool>>().load(Ordering::SeqCst),
+            spans: Vec::new(),
         },
     );
     if saved.is_err() {
@@ -318,6 +324,7 @@ pub async fn recorder_start(
         state.segment_id = Some(segment_id);
         state.segment_started = Some(Instant::now());
         state.recorded_ms = 0;
+        state.spans.clear();
         state.paused_ms = 0;
         state.limit_ms = max_duration_ms
             .unwrap_or(MAX_DURATION_MS)
@@ -411,6 +418,21 @@ fn empty_capture(error: &str) -> bool {
     matches!(error, "capture_audio_missing" | "capture_audio_empty")
 }
 
+fn recorded_after_segment(recorded_before: u64, elapsed: u64, empty: bool) -> u64 {
+    recorded_before.saturating_add(if empty { 0 } else { elapsed })
+}
+
+fn empty_segment_span(closed_at: u64, elapsed: u64, at_audio_ms: u64) -> journal::MissingAudioSpan {
+    journal::MissingAudioSpan {
+        kind: "omitted".into(),
+        reason: "stalled".into(),
+        started_at: closed_at.saturating_sub(elapsed),
+        ended_at: Some(closed_at),
+        at_audio_ms,
+        audio_ms: 0,
+    }
+}
+
 #[tauri::command]
 pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, String> {
     let (id, segment_id) = {
@@ -424,14 +446,14 @@ pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, Stri
         state.busy = true;
         (id, segment_id)
     };
-    let (elapsed, total_recorded) = {
+    let (elapsed, recorded_before, closed_at) = {
         let state = app.state::<Engine>();
         let state = state.0.lock().unwrap();
         let elapsed = state
             .segment_started
             .map(|at| at.elapsed().as_millis() as u64)
             .unwrap_or(0);
-        (elapsed, state.recorded_ms + elapsed)
+        (elapsed, state.recorded_ms, now_ms())
     };
     let stopped = end_segment(&app, &segment_id, elapsed).await;
     let current = match journal::load(&app) {
@@ -445,11 +467,11 @@ pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, Stri
             return Err(error);
         }
     };
-    let mut recorded_elapsed = elapsed;
+    let mut skipped_empty = false;
     let result = stopped.and_then(|_| {
         match import_finished_segment(&app, &segment_id, &id, current.system_audio) {
             Err(error) if empty_capture(&error) => {
-                recorded_elapsed = 0;
+                skipped_empty = true;
                 files::remove_source_session(&files::sessions_root(&app)?, &segment_id)
             }
             result => result,
@@ -481,11 +503,17 @@ pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, Stri
             return Err(error);
         }
     }
+    let recorded_ms = recorded_after_segment(recorded_before, elapsed, skipped_empty);
+    let mut spans = current.spans.clone();
+    if skipped_empty && elapsed > 0 {
+        spans.push(empty_segment_span(closed_at, elapsed, recorded_before));
+    }
     let saved = journal::save(
         &app,
         &journal::Journal {
             segment_id: None,
-            recorded_ms: total_recorded - elapsed + recorded_elapsed,
+            recorded_ms,
+            spans: spans.clone(),
             ..current
         },
     );
@@ -497,7 +525,8 @@ pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, Stri
         let state = app.state::<Engine>();
         let mut state = state.0.lock().unwrap();
         state.busy = false;
-        state.recorded_ms += recorded_elapsed;
+        state.recorded_ms = recorded_ms;
+        state.spans = spans;
         state.segment_id = None;
         state.segment_started = None;
         state.paused_ms += state
@@ -630,6 +659,7 @@ pub async fn recorder_stop(app: tauri::AppHandle) -> Result<CaptureStatus, Strin
         state.id = None;
         state.started_at = None;
         state.recorded_ms = 0;
+        state.spans.clear();
         state.blocked_reason = None;
         state.last_stop_reason = if state.auto_stop_requested {
             Some("max_duration")
@@ -909,5 +939,26 @@ mod tests {
         assert!(empty_capture(&source_mp3(&resumed).unwrap_err()));
         assert_eq!(std::fs::read(&note).unwrap(), b"earlier durable segment");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn empty_live_interval_keeps_recorded_time_and_marks_omission_position() {
+        let prior_audio_ms = 1_500;
+        let empty_interval_ms = 120_000;
+        assert_eq!(
+            recorded_after_segment(prior_audio_ms, empty_interval_ms, true),
+            prior_audio_ms
+        );
+        assert_eq!(recorded_after_segment(prior_audio_ms, 500, false), 2_000);
+        let ended_at = 500_000_u64;
+        let span = empty_segment_span(ended_at, empty_interval_ms, prior_audio_ms);
+        assert_eq!(span.kind, "omitted");
+        assert_eq!(span.reason, "stalled");
+        assert_eq!(span.ended_at.unwrap() - span.started_at, empty_interval_ms);
+        assert_eq!(serde_json::to_value(&span).unwrap()["atAudioMs"], 1_500);
+        assert_eq!(
+            span.at_audio_ms,
+            recorded_after_segment(prior_audio_ms, empty_interval_ms, true)
+        );
     }
 }

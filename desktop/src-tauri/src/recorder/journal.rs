@@ -7,6 +7,17 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MissingAudioSpan {
+    pub kind: String,
+    pub reason: String,
+    pub started_at: u64,
+    pub ended_at: Option<u64>,
+    pub at_audio_ms: u64,
+    pub audio_ms: u64,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Journal {
@@ -18,6 +29,8 @@ pub struct Journal {
     pub max_duration_ms: u64,
     #[serde(default)]
     pub system_audio: bool,
+    #[serde(default)]
+    pub spans: Vec<MissingAudioSpan>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -219,13 +232,23 @@ mod tests {
             paused_ms: 300,
             max_duration_ms: 1_000,
             system_audio: false,
+            spans: Vec::new(),
         };
         let value = serde_json::to_value(&journal).unwrap();
         assert_eq!(value["segmentId"], "segment");
+        assert_eq!(value["spans"], serde_json::json!([]));
         assert_eq!(
-            serde_json::from_value::<Journal>(value).unwrap().paused_ms,
+            serde_json::from_value::<Journal>(value.clone())
+                .unwrap()
+                .paused_ms,
             300
         );
+        let mut old_journal = value;
+        old_journal.as_object_mut().unwrap().remove("spans");
+        assert!(serde_json::from_value::<Journal>(old_journal)
+            .unwrap()
+            .spans
+            .is_empty());
     }
 
     #[test]
@@ -249,6 +272,7 @@ mod tests {
             paused_ms: 0,
             max_duration_ms: 10_000,
             system_audio: true,
+            spans: Vec::new(),
         };
         let failed = FailedSegment {
             id: "note".into(),
