@@ -2,7 +2,7 @@
 // place: the app variant (nothing downloaded, one downloading, Large Turbo selected, a failed download,
 // nothing registered) and the web variant. The interactive screen exposes `window.exoCaptureSettings` for
 // test/capture-settings.e2e.test.ts to drive the downloads and make calls fail.
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   CaptureSettings,
   type CaptureSettingsVariant,
@@ -108,19 +108,18 @@ function Settings({
   initialDownloads?: Downloads;
   interactive?: boolean;
 }) {
-  const [scripted] = useState(() => {
-    const created = createFakeDesktopCaptureExtras(fake);
-    if (interactive)
-      window.exoCaptureSettings = {
-        calls: created.calls,
-        startExternalDownload: created.startExternalDownload,
-        emitProgress: created.emitProgress,
-        finishDownload: created.finishDownload,
-        failDownload: created.failDownload,
-        failNext: created.failNext,
-      };
-    return created;
-  });
+  const [scripted] = useState(() => createFakeDesktopCaptureExtras(fake));
+  useEffect(() => {
+    if (!interactive) return;
+    window.exoCaptureSettings = {
+      calls: scripted.calls,
+      startExternalDownload: scripted.startExternalDownload,
+      emitProgress: scripted.emitProgress,
+      finishDownload: scripted.finishDownload,
+      failDownload: scripted.failDownload,
+      failNext: scripted.failNext,
+    };
+  }, [interactive, scripted]);
   return (
     <Frame outsideField={interactive}>
       <span style={{ fontWeight: 600, fontSize: 14, color: "var(--dim)" }}>

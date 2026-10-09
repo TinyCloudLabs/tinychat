@@ -169,7 +169,7 @@ describe.serial(`capture settings (${engine.name()})`, () => {
         await dialog.evaluate((el) => el.contains(document.activeElement)),
       ).toBe(true);
     }
-    await page.getByRole("heading", { name: "Capture" }).click();
+    await page.getByRole("heading", { name: "Capture", exact: true }).click();
     await dialog.waitFor({ state: "hidden" });
     await attr(gear, "aria-expanded", "false");
     await focused(gear);
