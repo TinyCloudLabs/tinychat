@@ -1852,7 +1852,7 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
 
         <AlertDialogFooter>
           <AlertDialogCancel disabled={running} className="h-8 px-3 text-xs">
-            {retry || progress?.done ? "Close" : "Cancel"}
+            {retry || progress?.done ? "Close" : `Keep ${descriptor.name}`}
           </AlertDialogCancel>
           <Button
             variant="destructive"

@@ -22,8 +22,25 @@
 .meeting-sources-close svg { width:22px; height:22px; }
 .meeting-sources-close:hover { background:hsl(var(--muted)); color:hsl(var(--foreground)); }
 .meeting-sources-content { padding:0 20px 20px; }
-.meeting-sources-content > section.rounded-lg { border:0; box-shadow:none; padding:0; }
-.meeting-sources-content > section.rounded-lg > div:first-child { display:none; }
+.meeting-source-row { padding:26px 14px; border-bottom:1px solid hsl(var(--border)); }
+.meeting-source-row:last-child { border-bottom:0; }
+.meeting-source-main { display:flex; align-items:flex-start; gap:20px; }
+.meeting-source-icon { display:grid; flex:none; width:60px; height:60px; place-items:center; border:1px solid hsl(var(--border)); border-radius:18px; background:hsl(var(--muted)/.45); }
+.meeting-source-icon svg { width:23px; height:23px; }
+.meeting-source-copy { min-width:0; flex:1; }
+.meeting-source-copy strong,.meeting-source-subrow strong { display:block; font-size:18px; font-weight:700; }
+.meeting-source-copy p,.meeting-source-subrow p { margin-top:3px; color:hsl(var(--muted-foreground)); font-size:16px; }
+.meeting-source-status { display:flex; align-items:center; gap:9px; margin-top:12px; color:hsl(var(--muted-foreground)); font-size:16px; }
+.meeting-source-status i { width:10px; height:10px; flex:none; border:1.5px solid currentColor; border-radius:50%; }
+.meeting-source-status i[data-connected] { background:currentColor; }
+.meeting-source-actions { display:flex; flex:none; align-items:center; gap:12px; }
+.meeting-source-actions button { height:52px; padding-inline:20px; border-radius:28px; font-size:16px; }
+.meeting-source-soon { padding:12px 16px; border:1px solid hsl(var(--border)); border-radius:24px; color:hsl(var(--muted-foreground)); font-size:13px; font-weight:700; letter-spacing:.04em; }
+.meeting-source-subrow { margin:24px 0 0 80px; padding-top:20px; border-top:1px solid hsl(var(--border)); }
+.meeting-source-subrow p { max-width:740px; }
+.meeting-source-subrow a { display:inline-block; margin-top:12px; color:hsl(var(--foreground)); font-weight:700; text-decoration:none; }
+.meeting-source-subrow button { margin-top:12px; }
+.meeting-source-row .meeting-source-subrow .rounded-md { margin-top:18px; }
 .meeting-sources-entry { display:flex; width:100%; align-items:center; gap:16px; padding:16px; border:1px solid hsl(var(--border)); border-radius:16px; background:hsl(var(--card)); color:hsl(var(--foreground)); text-align:left; cursor:pointer; }
 .meeting-sources-entry:hover { background:hsl(var(--muted)); }
 .meeting-sources-entry-icon { width:44px; height:44px; border-radius:14px; }
@@ -39,3 +56,5 @@
   .meeting-sources-title { font-size:30px; }
   .meeting-sources-description { font-size:14px; }
 }
+@media (prefers-reduced-motion: no-preference) { .meeting-source-status i[data-busy] { animation: meeting-source-pulse 1.2s ease-in-out infinite; } }
+@keyframes meeting-source-pulse { 50% { opacity:.3; transform:scale(.75); } }
