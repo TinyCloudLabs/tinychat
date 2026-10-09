@@ -1,10 +1,9 @@
-import { useContext, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useLocation } from "react-router-dom";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 
 import { PlatformContext } from "@/lib/platform";
-import { DesktopRecorder } from "./final/desktop/DesktopRecorder";
 import { PhoneRecorder } from "./final/PhoneRecorder";
 import { recorderFinalEnabled } from "./final/recorderFinalFlag";
 import {
@@ -15,6 +14,13 @@ import {
 import { overlayMount } from "./overlayMount";
 import { RecordingView, type RecordingViewProps } from "./RecordingView";
 import { useRecorder } from "./RecorderProvider";
+
+// Only the flag-on desktop branch renders this, so a flag-off build never fetches it.
+const DesktopRecorder = lazy(() =>
+  import("./final/desktop/DesktopRecorder").then((module) => ({
+    default: module.DesktopRecorder,
+  })),
+);
 
 function useRecorderLayout(): RecorderLayout {
   const [width, setWidth] = useState(() => window.innerWidth);
@@ -70,10 +76,9 @@ export function RecordingOverlay({
     return createPortal(
       <>
         <MinimizeOnNavigate />
-        <DesktopRecorder
-          layout={layout}
-          onOpenNotes={onOpenNotes}
-        />
+        <Suspense fallback={null}>
+          <DesktopRecorder layout={layout} onOpenNotes={onOpenNotes} />
+        </Suspense>
       </>,
       desktopHost,
     );

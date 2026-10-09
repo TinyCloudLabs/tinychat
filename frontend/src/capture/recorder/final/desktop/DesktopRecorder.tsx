@@ -43,16 +43,15 @@ import {
   useOnDeviceModel,
   useTranscriptionChoice,
 } from "../useTranscriptionChoice";
+// TODO(#191): delete the local stub; read `transcriber`, `setTranscriber` and `setIdentifySpeakers` from `useRecorder()`.
 import { useTranscriberApi, type TranscriberApi } from "../transcriberApiStub";
 import { ViaMenu } from "../ViaMenu";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DesktopRing } from "./DesktopRing";
-import { Toasts, useToasts } from "./Toasts";
+import { Toasts, showToast } from "./Toasts";
 import "../soft.css";
 import "../phone.css";
 import "./desktop.css";
-
-export const WEB_TAB_HINT = "Keep this tab open while you record";
 
 /** What the selector reads of the recorder; the fields it does not use are inert. */
 function recorderState(recorder: RecorderValue): RecorderState {
@@ -106,9 +105,8 @@ function PencilIcon() {
 
 /** The ring size and timer size for the room this view has: the main area's height, not the window's. */
 function useSizing(root: React.RefObject<HTMLElement | null>) {
-  const [sizing, setSizing] = useState(() =>
-    recorderSizing(window.innerWidth, window.innerHeight),
-  );
+  // The layout effect below measures the real height before the first paint.
+  const [sizing, setSizing] = useState(() => recorderSizing(1024, 700));
   useLayoutEffect(() => {
     const element = root.current;
     if (!element) return;
@@ -127,9 +125,6 @@ function useSizing(root: React.RefObject<HTMLElement | null>) {
   }, [root]);
   return sizing;
 }
-
-// The recording whose "keep this tab open" hint was shown, so a resize across 768 does not repeat it.
-let hintedRecording: number | null = null;
 
 export interface DesktopRecorderProps {
   /** The rail (768–1023) or the desktop layout (1024 and up); both use these sizes. */
@@ -174,15 +169,6 @@ export function DesktopRecorder({ layout, onOpenNotes }: DesktopRecorderProps) {
     (mic.state === "silenced" ||
       (mic.state === "recording" && mic.reason === "no_signal"));
   const silencedSinceMs = useSilencedSince(silent, silencedSeed);
-
-  const { toasts, show: showToast } = useToasts();
-  useEffect(() => {
-    if (shell !== "web" || phase !== "recording") return;
-    if (recorder.startedAt === null || hintedRecording === recorder.startedAt)
-      return;
-    hintedRecording = recorder.startedAt;
-    showToast(WEB_TAB_HINT);
-  }, [shell, phase, recorder.startedAt, showToast]);
 
   const audio = useAudioInputs(inputsSource);
   const input = mic.input ?? audio.current;
@@ -282,7 +268,6 @@ export function DesktopRecorder({ layout, onOpenNotes }: DesktopRecorderProps) {
   const stopUnknown = phase === "stopping" && recorder.error !== null;
   const discardUnknown = phase === "discarding" && recorder.error !== null;
   const denied = view.micDenied;
-  const idleDenied = denied && phase === "idle";
   const speakers = identifySpeakersControl(
     choice.mode,
     choice.identifySpeakers,
@@ -331,7 +316,7 @@ export function DesktopRecorder({ layout, onOpenNotes }: DesktopRecorderProps) {
       >
         {said}
       </p>
-      <Toasts toasts={toasts} />
+      <Toasts />
 
       <div className="pr-main dr-main" inert={dialogOpen}>
         <div className="pr-top">
@@ -454,7 +439,7 @@ export function DesktopRecorder({ layout, onOpenNotes }: DesktopRecorderProps) {
             <span>more capable</span>
           </div>
           <div className="pr-capline">{stop.captions[shell]}</div>
-          {!idleDenied && !audio.unsupported && (
+          {!denied && !audio.unsupported && (
             <ViaMenu
               inputs={audio.inputs}
               currentId={input?.id ?? null}
@@ -480,7 +465,7 @@ export function DesktopRecorder({ layout, onOpenNotes }: DesktopRecorderProps) {
             )}
           </p>
         ))}
-        {idleDenied ? (
+        {denied ? (
           <div className="pr-controls">
             <button
               type="button"
@@ -491,56 +476,40 @@ export function DesktopRecorder({ layout, onOpenNotes }: DesktopRecorderProps) {
             </button>
           </div>
         ) : (
-          <>
-            {view.controls.openSettings && (
-              <div className="pr-controls" style={{ paddingBottom: 0 }}>
-                <button
-                  type="button"
-                  className="pr-b primary"
-                  onClick={openSettings}
-                >
-                  Open Settings
-                </button>
-              </div>
-            )}
-            <div className="pr-controls">
-              <button
-                ref={discardButton}
-                type="button"
-                className="pr-b"
-                aria-label="Discard recording"
-                disabled={!(view.controls.discard || discardUnknown)}
-                onClick={() => setDiscardOpen(true)}
-              >
-                <CloseIcon />
-              </button>
-              {!denied && (
-                <button
-                  type="button"
-                  className="pr-b"
-                  aria-label={resume ? "Resume recording" : "Pause recording"}
-                  disabled={!(resume || view.controls.pause)}
-                  onClick={() => {
-                    hapticLight();
-                    control(resume ? "resume" : "pause");
-                  }}
-                >
-                  {resume ? <PlayIcon /> : <PauseIcon />}
-                </button>
-              )}
-              <button
-                type="button"
-                className="pr-b main"
-                data-emphasis={mustSave}
-                data-secondary={view.controls.openSettings}
-                disabled={!(view.controls.stop || stopUnknown)}
-                onClick={() => control("stop")}
-              >
-                <CheckIcon />
-                Done
-              </button>
-            </div>
-          </>
+          <div className="pr-controls">
+            <button
+              ref={discardButton}
+              type="button"
+              className="pr-b"
+              aria-label="Discard recording"
+              disabled={!(view.controls.discard || discardUnknown)}
+              onClick={() => setDiscardOpen(true)}
+            >
+              <CloseIcon />
+            </button>
+            <button
+              type="button"
+              className="pr-b"
+              aria-label={resume ? "Resume recording" : "Pause recording"}
+              disabled={!(resume || view.controls.pause)}
+              onClick={() => {
+                hapticLight();
+                control(resume ? "resume" : "pause");
+              }}
+            >
+              {resume ? <PlayIcon /> : <PauseIcon />}
+            </button>
+            <button
+              type="button"
+              className="pr-b main"
+              data-emphasis={mustSave}
+              disabled={!(view.controls.stop || stopUnknown)}
+              onClick={() => control("stop")}
+            >
+              <CheckIcon />
+              Done
+            </button>
+          </div>
         )}
       </div>
 

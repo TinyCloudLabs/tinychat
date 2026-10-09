@@ -6,6 +6,7 @@
 //   EXO_UI_ENGINE=chromium   webkit (default: Exo's WKWebView) or chromium
 import {
   afterAll,
+  afterEach,
   beforeAll,
   describe,
   expect,
@@ -16,6 +17,7 @@ import {
   chromium,
   webkit,
   type Browser,
+  type BrowserContext,
   type Locator,
   type Page,
 } from "playwright";
@@ -48,10 +50,19 @@ afterAll(async () => {
   server?.stop(true);
 });
 
+const contexts: BrowserContext[] = [];
+
+afterEach(async () => {
+  await Promise.all(contexts.splice(0).map((context) => context.close()));
+});
+
 async function open(size = DESKTOP) {
-  const page = await (
-    await browser.newContext({ viewport: size, reducedMotion: "reduce" })
-  ).newPage();
+  const context = await browser.newContext({
+    viewport: size,
+    reducedMotion: "reduce",
+  });
+  contexts.push(context);
+  const page = await context.newPage();
   const errors: string[] = [];
   page.on("console", (message) => {
     if (
@@ -107,6 +118,7 @@ const view = (page: Page) => page.getByTestId("desktop-recorder");
 const ring = (page: Page) => view(page).locator("button.pr-ring");
 const timer = (page: Page) => view(page).getByRole("timer");
 const dock = (page: Page) => page.getByTestId("sidebar-dock");
+const phone = (page: Page) => page.getByTestId("phone-recorder");
 
 describe.serial(`desktop recorder interactions (${engineName})`, () => {
   test("the ring view fills the main region and leaves the sidebar visible", async () => {
@@ -228,7 +240,14 @@ describe.serial(`desktop recorder interactions (${engineName})`, () => {
     await shown(view(page));
   });
 
-  test("resizing 1280 → 700 → 1280 keeps the timer running and the same recording", async () => {
+  test("Write notes calls the notes handler", async () => {
+    const { page } = await open();
+    expect(await page.getByTestId("notes-placeholder").count()).toBe(0);
+    await view(page).getByRole("button", { name: "Write notes" }).click();
+    await shown(page.getByTestId("notes-placeholder"));
+  });
+
+  test("resizing 1280 → 700 → 1280 swaps to the phone recorder and back, keeping the timer running and the same recording", async () => {
     const { page, calls, errors } = await open();
     await ring(page).click();
     await attr(view(page), "data-ring", "paused");
@@ -238,12 +257,21 @@ describe.serial(`desktop recorder interactions (${engineName})`, () => {
 
     await page.setViewportSize(PHONE);
     await gone(view(page));
-    await sleep(1300);
+    await shown(phone(page));
+    expect(await page.getByTestId("recording-overlay").count()).toBe(1);
+    const phoneTimer = phone(page).getByRole("timer");
+    await until(
+      "the phone timer to carry on from the desktop timer",
+      async () => (await clock(phoneTimer)) > started,
+    );
+    const atPhone = await clock(phoneTimer);
+
     await page.setViewportSize(DESKTOP);
     await shown(view(page));
+    await gone(phone(page));
     await until(
-      "the timer to have kept running",
-      async () => (await clock(timer(page))) > started,
+      "the desktop timer to have kept running",
+      async () => (await clock(timer(page))) > atPhone,
     );
     expect(await view(page).getAttribute("data-ring")).toBe("live");
     const log = await calls();

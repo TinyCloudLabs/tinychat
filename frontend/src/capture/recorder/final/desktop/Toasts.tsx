@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 
 const TOAST_MS = 2400;
 
@@ -8,35 +8,34 @@ export interface ToastItem {
 }
 
 let nextId = 0;
+let toasts: readonly ToastItem[] = [];
+const listeners = new Set<() => void>();
 
-/** Shows each message for a moment, then drops it. */
-export function useToasts(): {
-  toasts: readonly ToastItem[];
-  show: (message: string) => void;
-} {
-  const [toasts, setToasts] = useState<readonly ToastItem[]>([]);
-  const show = useCallback(
-    (message: string) =>
-      setToasts((current) => [...current, { id: nextId++, message }]),
-    [],
-  );
-  const oldest = toasts[0]?.id;
-  useEffect(() => {
-    if (oldest === undefined) return;
-    const timer = setTimeout(
-      () => setToasts((current) => current.filter((t) => t.id !== oldest)),
-      TOAST_MS,
-    );
-    return () => clearTimeout(timer);
-  }, [oldest]);
-  return { toasts, show };
+function publish(next: readonly ToastItem[]) {
+  toasts = next;
+  for (const listener of listeners) listener();
+}
+
+/** Shows a message at the top centre of the main area for a moment, then drops it. Callable from anywhere. */
+export function showToast(message: string): void {
+  const id = nextId++;
+  publish([...toasts, { id, message }]);
+  setTimeout(() => publish(toasts.filter((t) => t.id !== id)), TOAST_MS);
+}
+
+function subscribe(listener: () => void) {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
 }
 
 /** At the top centre of the main area, so they never cover the controls. */
-export function Toasts({ toasts }: { toasts: readonly ToastItem[] }) {
+export function Toasts() {
+  const items = useSyncExternalStore(subscribe, () => toasts, () => toasts);
   return (
     <div className="dr-toasts" role="status">
-      {toasts.map((toast) => (
+      {items.map((toast) => (
         <div key={toast.id} className="dr-toast">
           {toast.message}
         </div>

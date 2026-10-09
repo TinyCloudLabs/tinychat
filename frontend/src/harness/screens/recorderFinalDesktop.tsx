@@ -3,7 +3,7 @@
 // the frozen clock; the interactive one runs the real recorder over the fake native plugin, for
 // test/recorder-final-desktop.e2e.test.ts. The harness build has no env, so FinalRecorderShell stands in
 // for the flag, and DesktopRecorderSeedContext opens the surfaces that start closed.
-import { useContext, useEffect, useMemo, useRef } from "react";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   DesktopRecorderSeedContext,
@@ -124,6 +124,7 @@ function Frame({
 }) {
   const platform = useContext(PlatformContext);
   const shim = useMemo(() => createRuntimeShim(), []);
+  const [notesOpen, setNotesOpen] = useState(false);
   return (
     <DesktopRecorderSeedContext.Provider value={seed}>
       <ShellApp
@@ -132,7 +133,21 @@ function Frame({
         state="ready"
         recorder={recorder}
         finalRecorder
-        inside={start ? <StartRecording /> : null}
+        onOpenNotes={() => setNotesOpen(true)}
+        inside={
+          <>
+            {start ? <StartRecording /> : null}
+            {notesOpen ? (
+              <div
+                role="status"
+                data-testid="notes-placeholder"
+                className="fixed bottom-4 right-4 z-[60] rounded-md border bg-background px-3 py-2 text-sm shadow"
+              >
+                Notes view (placeholder)
+              </div>
+            ) : null}
+          </>
+        }
       />
     </DesktopRecorderSeedContext.Provider>
   );
@@ -211,6 +226,7 @@ export const recorderFinalDesktopScreens: HarnessScreen[] = [
   interactiveScreen,
   screen("recording", {}),
   screen("recording-web", {}, {}, "web"),
+  screen("recording-notes", { note: { md: "Ask Dana about the launch date." } } as Partial<RecorderValue>),
   screen("paused", { mic: { state: "paused", reason: "user" } }),
   screen("interrupted", {
     mic: { state: "needs_user", reason: "resume_not_allowed" },
@@ -224,6 +240,9 @@ export const recorderFinalDesktopScreens: HarnessScreen[] = [
     elapsedMs: minutes(170, 12),
     audioMs: minutes(170, 12),
     startedAt: FROZEN_NOW - minutes(170, 12),
+  }),
+  screen("mic-revoked", {
+    mic: { state: "needs_user", reason: "permission_revoked" },
   }),
   screen("mic-denied", {
     phase: "idle",

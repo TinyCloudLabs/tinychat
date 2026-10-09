@@ -22,11 +22,13 @@ test("flag off: every shell and layout keeps the classic view", () => {
         expect(mount({ flag: false, shell, layout, available })).toBe("legacy");
 });
 
-test("flag on, phone layout: the phone shell gets the phone recorder, the others the classic view", () => {
+test("flag on, phone layout: the phone shell, and any shell with a recorder, gets the phone recorder", () => {
   expect(mount({ shell: "phone", layout: "phone" })).toBe("phone");
   expect(mount({ shell: "phone", layout: "phone", available: false })).toBe("phone");
-  expect(mount({ shell: "desktop", layout: "phone" })).toBe("legacy");
-  expect(mount({ shell: "web", layout: "phone" })).toBe("legacy");
+  expect(mount({ shell: "desktop", layout: "phone" })).toBe("phone");
+  expect(mount({ shell: "web", layout: "phone" })).toBe("phone");
+  expect(mount({ shell: "desktop", layout: "phone", available: false })).toBe("legacy");
+  expect(mount({ shell: "web", layout: "phone", available: false })).toBe("legacy");
 });
 
 test("flag on, rail and desktop layouts: any shell with a recorder gets the desktop view", () => {

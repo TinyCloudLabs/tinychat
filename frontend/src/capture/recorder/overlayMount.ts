@@ -21,6 +21,6 @@ export function overlayMount({
   receipt,
 }: OverlayMountInput): OverlayMount {
   if (!flag || receipt) return "legacy";
-  if (layout === "phone") return shell === "phone" ? "phone" : "legacy";
+  if (layout === "phone") return shell === "phone" || available ? "phone" : "legacy";
   return available ? "desktop" : "legacy";
 }
