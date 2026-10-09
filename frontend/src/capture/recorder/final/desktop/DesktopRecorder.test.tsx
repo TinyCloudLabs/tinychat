@@ -8,7 +8,7 @@ import {
   type RecorderValue,
 } from "../../RecorderProvider";
 import type { VoiceNoteTranscriptionProps } from "../../transcriptionProps";
-import { DesktopRecorder, type DesktopRecorderProps } from "./DesktopRecorder";
+import { DesktopRecorder, DesktopRecorderSeedContext, type DesktopRecorderProps } from "./DesktopRecorder";
 
 const noop = () => {};
 const PRIVATE_ON: VoiceNoteTranscriptionProps = {
@@ -119,7 +119,7 @@ describe("DesktopRecorder", () => {
     })).toContain('aria-valuetext="Audio only"');
   });
 
-  test("signed out, only Local is open on the scale, as on the phone", () => {
+  test("signed out on the Mac, Audio only is selected and the rest are locked until desktop Whisper exists (TC-888)", () => {
     const stops = (patch: Partial<RecorderValue>) =>
       [...render(patch).matchAll(/data-available="(true|false)"/g)].map(
         (m) => m[1],
@@ -130,11 +130,29 @@ describe("DesktopRecorder", () => {
       source: "default" as const,
     };
     expect(stops({ signedIn: false, transcriber: local })).toEqual([
-      "false",
       "true",
       "false",
       "false",
+      "false",
     ]);
+    const html = render({ signedIn: false, transcriber: local });
+    expect(html).toContain('aria-valuetext="Audio only"');
+    expect(html).toContain("Just the recording, kept on this Mac.");
+    expect(html).not.toContain("transcribe it");
+    // TODO(TC-888): the open modes card says the same, not "Transcribe it later".
+    const card = renderToStaticMarkup(
+      <MemoryRouter>
+        <PlatformContext.Provider value="tauri">
+          <StaticRecorderProvider value={{ ...LIVE, signedIn: false, transcriber: local }}>
+            <DesktopRecorderSeedContext.Provider value={{ defaultOpen: "modes" }}>
+              <DesktopRecorder layout="desktop" />
+            </DesktopRecorderSeedContext.Provider>
+          </StaticRecorderProvider>
+        </PlatformContext.Provider>
+      </MemoryRouter>,
+    );
+    expect(card).toContain('role="radiogroup"');
+    expect(card).not.toContain("Transcribe it later");
     expect(stops({ signedIn: true, transcriber: local })).toEqual([
       "true",
       "false",
