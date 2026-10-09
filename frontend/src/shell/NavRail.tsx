@@ -5,6 +5,7 @@ import type { MouseEvent, ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { SettingsIcon } from "lucide-react";
 
+import { CaptureDot } from "@/capture/recorder/final/CaptureDot";
 import { cn } from "@/lib/utils";
 import { NavBadge } from "./NavBadge";
 import { tabTarget } from "./navigation";
@@ -58,6 +59,7 @@ export function NavRail({
                 >
                   <Icon aria-hidden className={cn("size-6", active ? "text-foreground [stroke-width:2.25]" : "text-muted-foreground")} />
                   <NavBadge count={item.badge} className="-right-1 -top-1" />
+                  {item.id === "capture" && <CaptureDot />}
                 </span>
                 <span className={cn("text-label", active ? "font-semibold text-foreground" : "font-medium text-muted-foreground")}>
                   {item.label}

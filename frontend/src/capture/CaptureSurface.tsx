@@ -43,6 +43,8 @@ import { LocalRecorderCard } from "./desktop/LocalRecorderCard";
 import { HOME_COPY } from "./home/homeCopy";
 import { SoftActions } from "./home/SoftActions";
 import { SoftCaptureHome } from "./home/SoftCaptureHome";
+import { captureHomeKind, layoutForNav } from "./home/desktop/captureHomeKind";
+import { LazyDesktopCaptureHome } from "./home/desktop/LazyDesktopCaptureHome";
 import { SoftHomeProvider, softHomeEnabled } from "./home/softHome";
 import { useSoftTheme } from "./home/softTheme";
 import { inProgressShown, type InProgressRowsViewProps } from "./InProgressRows";
@@ -77,19 +79,21 @@ const LIST_COLUMN = "w-full px-4";
 type Sheet = "upload" | "meeting";
 
 export function CaptureSurface(props: CaptureSurfaceProps) {
-  // The Soft skin (TC-862, behind the flag) is a phone's: the tab bar, compact width.
-  const tabbar = useNavKind() === "tabbar";
-  const compact = useSizeClass().size === "compact";
-  const soft = softHomeEnabled() && tabbar && compact;
+  // Behind the flag: the phone (the tab bar, compact width) has the Soft home (TC-862);
+  // a rail or sidebar at medium width and up, with a recorder, has the desktop home.
+  const nav = useNavKind();
+  const size = useSizeClass().size;
   const recorder = useRecorder();
+  const kind = captureHomeKind({ flag: softHomeEnabled(), available: recorder.available, nav, size });
+  const soft = kind === "phone";
   return (
     <SoftHomeProvider enabled={soft} issues={recorder.captureIssues}>
-      <CaptureSurfaceBody {...props} soft={soft} />
+      <CaptureSurfaceBody {...props} soft={soft} desktopHome={kind === "desktop"} />
     </SoftHomeProvider>
   );
 }
 
-function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, meetingsSlot, soft }: CaptureSurfaceProps & { soft: boolean }) {
+function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, meetingsSlot, soft, desktopHome }: CaptureSurfaceProps & { soft: boolean; desktopHome: boolean }) {
   const navigate = useNavigate();
   const nav = useNavKind();
   const softTheme = useSoftTheme();
@@ -97,6 +101,8 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
   const wide = useSizeClass().size !== "compact";
   const libraryScreen = screen.id === "library";
   const noteScreen = screen.id === "note";
+  // The desktop home fills the surface on its own; the Library and a note keep the two panes.
+  const homeOnly = desktopHome && !libraryScreen && !noteScreen;
   // The home is on screen: always beside the Library (wide); on a phone, only on its own screen.
   const homeShown = active && (wide || (!libraryScreen && !noteScreen));
   const column = wide ? LIST_COLUMN : PAGE_COLUMN;
@@ -170,13 +176,13 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
 
   return (
     <div
-      className={wide ? "grid h-full grid-cols-[minmax(0,22.5rem)_minmax(0,1fr)]" : "relative h-full"}
+      className={wide && !homeOnly ? "grid h-full grid-cols-[minmax(0,22.5rem)_minmax(0,1fr)]" : "relative h-full"}
       data-testid="capture-surface"
       data-layout={wide ? "panes" : "stack"}
     >
       <div
         className={cn(
-          wide ? `${SCROLLER} border-r border-border` : noteScreen ? "hidden" : "relative h-full",
+          homeOnly ? "relative h-full" : wide ? `${SCROLLER} border-r border-border` : noteScreen ? "hidden" : "relative h-full",
           soft && `soft-skin soft-home ${softTheme}`,
         )}
         data-layout={soft ? "phone" : undefined}
@@ -184,10 +190,25 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
         data-scroll-root={wide ? "" : undefined}
       >
         <div
-          className={wide ? "flex flex-col" : libraryScreen || noteScreen ? "hidden" : `${SCROLLER} flex flex-col`}
-          data-scroll-root={wide ? undefined : ""}
+          className={homeOnly ? "h-full" : desktopHome ? "hidden" : wide ? "flex flex-col" : libraryScreen || noteScreen ? "hidden" : `${SCROLLER} flex flex-col`}
+          data-scroll-root={wide || desktopHome ? undefined : ""}
           data-testid="capture-home"
         >
+          {desktopHome ? (
+            <LazyDesktopCaptureHome
+              tcw={tcw}
+              backendUrl={backendUrl}
+              sessionStore={sessionStore}
+              layout={layoutForNav(nav) === "rail" ? "rail" : "desktop"}
+              inProgress={inProgress}
+              recent={{ status: library.status, items: library.items }}
+              onRetryRecent={library.retry}
+              onUpload={() => setSheet("upload")}
+              {...(bot.listStatus === "dark" ? {} : { onMeeting: () => setSheet("meeting") })}
+              now={now}
+            />
+          ) : (
+            <>
           <PageHeader
             title="Capture"
             className={column}
@@ -249,17 +270,19 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
               />
             )}
           </div>
+            </>
+          )}
         </div>
         <div
           ref={libraryRef}
-          className={wide ? "border-t border-border pt-2" : libraryScreen ? SCROLLER : "hidden"}
+          className={homeOnly ? "hidden" : desktopHome ? SCROLLER : wide ? "border-t border-border pt-2" : libraryScreen ? SCROLLER : "hidden"}
           data-scroll-root={wide ? undefined : ""}
           data-testid="capture-library"
         >
           <LibraryScreen
             library={library}
             meetingsSlot={meetingsSlot}
-            pushed={!wide}
+            pushed={!wide || desktopHome}
             onBack={() => goUp(navigate, PATHS.capture)}
             selectedId={wide ? screen.noteId : null}
             now={now}
@@ -268,7 +291,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
         </div>
       </div>
       <div
-        className={wide || noteScreen ? SCROLLER : "hidden"}
+        className={homeOnly ? "hidden" : wide || noteScreen ? SCROLLER : "hidden"}
         data-scroll-root=""
         data-testid="capture-detail"
       >
