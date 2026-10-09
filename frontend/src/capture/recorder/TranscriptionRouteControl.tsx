@@ -19,10 +19,22 @@ import { VoiceNotes, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNote
 import { onDeviceSttStore, onDeviceModelLine } from "@/lib/voiceNotes/onDeviceSttStore";
 import { isOnDeviceReady, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { readDefaultTranscriber, setRecordingTranscriber } from "@/lib/voiceNotes/transcriberPreference";
+import type { RecorderValue } from "./RecorderProvider";
 import { RouteLine, voiceNoteRoute } from "./RouteLine";
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
 
 type Route = "off" | "on-device" | "private-cloud";
+type RecordingRoute = Pick<RecorderValue, "transcriber" | "setTranscriber">;
+
+/** The default recorder changes this note's journaled native options, not its JS default. */
+export function setRecordingRoute(recorder: RecordingRoute, id: Route) {
+  return recorder.setTranscriber(id, { scope: "recording", ...(id === "on-device" ? { waitForModel: true } : {}) });
+}
+
+export function consentToRecordingPrivateCloud(recorder: RecordingRoute, onConsent: () => void) {
+  onConsent();
+  return setRecordingRoute(recorder, "private-cloud");
+}
 
 function asRoute(transcriber: TranscriberId): Route {
   return transcriber === "private-cloud" ? "private-cloud" : transcriber === "on-device" ? "on-device" : "off";
@@ -81,11 +93,13 @@ export function TranscriptionRouteControl(props: {
   transcription: VoiceNoteTranscriptionProps | undefined;
   /** Native forces on-device while signed out, no matter what's selected (CaptureEngine). */
   signedIn: boolean;
+  /** Present in the recorder; the Library's standalone control has no live recording. */
+  recorder?: RecordingRoute;
   /** Start on the one-time question, as if Private cloud had just been chosen (the harness). */
   defaultAsking?: boolean;
   className?: string;
 }) {
-  const { transcription, signedIn } = props;
+  const { transcription, signedIn, recorder } = props;
   const headingId = useId();
   const offered = signedIn && transcription?.availability === "available";
   const consented = transcription?.consented ?? false;
@@ -95,8 +109,9 @@ export function TranscriptionRouteControl(props: {
   // set something else; seed from that instead of defaulting to Off until the native read
   // resolves, then correct from the real stored default once it lands. Already-consented private
   // cloud is a stronger, synchronously-known signal of intent than that still-loading default.
+  // The recorder below reads the controller's native choice instead of these local hints.
   const [onDevicePicked, setOnDevicePicked] = useState(!consented);
-  const { activeOverride: liveOverride, onDeviceDefault, offDefault } = useLiveRouteOverride(signedIn);
+  const { activeOverride: liveOverride, onDeviceDefault, offDefault } = useLiveRouteOverride(signedIn && !recorder);
   const [activeOverride, setActiveOverride] = useState<Route | null>(null);
   useEffect(() => { if (liveOverride) setActiveOverride(liveOverride); }, [liveOverride]);
   useEffect(() => { if (onDeviceDefault !== null) setOnDevicePicked(onDeviceDefault); }, [onDeviceDefault]);
@@ -104,6 +119,8 @@ export function TranscriptionRouteControl(props: {
   const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const askingNow = offered && !consented && asking;
   const route: Route = !signedIn ? "on-device"
+    : askingNow ? "private-cloud"
+    : recorder ? asRoute(recorder.transcriber.id)
     : activeOverride ?? (offPicked && !askingNow ? "off"
     : onDevicePicked && !askingNow ? "on-device"
     : offered && (consented || askingNow) ? "private-cloud" : "off");
@@ -111,6 +128,12 @@ export function TranscriptionRouteControl(props: {
   const choose = (next: Route) => {
     if (next === route || !signedIn) return;
     hapticSelection();
+    if (recorder) {
+      if (next === "private-cloud" && !consented) { setAsking(true); return; }
+      setAsking(false);
+      void setRecordingRoute(recorder, next);
+      return;
+    }
     if (next === "off") {
       setAsking(false);
       setOnDevicePicked(false);
@@ -160,7 +183,12 @@ export function TranscriptionRouteControl(props: {
             into text.
           </p>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-            <Button type="button" onClick={transcription!.onConsent} data-testid="voice-note-transcription-enable">
+            <Button type="button" onClick={() => {
+              if (!recorder) { transcription!.onConsent(); return; }
+              void consentToRecordingPrivateCloud(recorder, transcription!.onConsent).then((result) => {
+                if (result === "ok") setAsking(false);
+              });
+            }} data-testid="voice-note-transcription-enable">
               Use private cloud
             </Button>
             <HowItWorksLink section="transcription" />

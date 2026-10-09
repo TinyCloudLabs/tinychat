@@ -28,6 +28,8 @@ function value(patch: Partial<RecorderValue> = {}): RecorderValue {
     lastSaved: null,
     pending: { listing: { state: "ok", count: 0 }, running: false, lastError: null },
     transcription: undefined,
+    transcriber: { id: "on-device", identifySpeakers: false, source: "recording" },
+    setTranscriber: async () => "ok",
     signedIn: true,
     sheetOpen: true,
     record: noop,
