@@ -823,6 +823,8 @@ export async function transcribeVoiceNote(args: {
     await finish();
     throw new PrivateCloudError("voice_note_not_found", "The voice note no longer exists");
   }
+  if (note.data.captureVersion === 2 && note.data.captureTranscriber !== "private-cloud")
+    throw new PrivateCloudError("transcription_off", "This note was not recorded for private-cloud transcription");
   if (note.data.transcript.status !== "none") {
     await finish();
     return note.data.transcript.status;
