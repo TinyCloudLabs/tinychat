@@ -30,4 +30,26 @@ class AccountStateTest {
         state.write(signedIn)
         assertEquals("did:new", AccountState(dir, FileOps()) { JSONObject() }.read().getString("accountDid"))
     }
+
+    @Test fun compensationFailpointLeavesTheDurableAccountTransitioning() {
+        val dir = temp.newFolder()
+        val state = AccountState(dir, FileOps()) { JSONObject().put("hadLegacy", false) }
+        fun write(status: String, generation: Long, failure: String?) {
+            AccountStateDebugFailure.check(failure, status, state.read().getString("status"))
+            state.write(JSONObject().put("status", status).put("accountDid", "did:test")
+                .put("transitionGen", generation).put("options", defaultOptions()))
+        }
+        write("signed_in", 1, null)
+        write("transitioning", 2, "compensation")
+        for (status in listOf("signed_out", "signed_in")) {
+            try { write(status, 3, "compensation"); fail("$status write succeeded") }
+            catch (error: IllegalStateException) { assertEquals("account_state_write_failed", error.message) }
+            assertEquals("transitioning", AccountState(dir, FileOps()) { JSONObject() }.read().getString("status"))
+        }
+        // The isolated step-3 hook still permits compensation.
+        try { write("signed_out", 3, "3"); fail("step 3 write succeeded") }
+        catch (error: IllegalStateException) { assertEquals("account_state_write_failed", error.message) }
+        write("signed_in", 4, "3")
+        assertEquals("signed_in", state.read().getString("status"))
+    }
 }

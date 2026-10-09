@@ -20,6 +20,7 @@ import com.getcapacitor.annotation.PermissionCallback
 import org.json.JSONArray
 import org.json.JSONObject
 import xyz.tinycloud.exo.capture.core.MAX_DURATION_MS
+import xyz.tinycloud.exo.capture.core.AccountStateDebugFailure
 import java.io.RandomAccessFile
 import java.util.UUID
 
@@ -166,11 +167,8 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
             val failure = System.getProperty("exo.debug.failAccountState")
                 ?: prefs.getString("exo.debug.failAccountState", null)
                 ?: prefs.getString("failAccountState", null)
-            if (failure == "1" && call.getString("status") == "transitioning" ||
-                failure == "3" && call.getString("status") == "signed_out" ||
-                failure == "compensation" && call.getString("status") == "signed_in" &&
-                    engine.defaults().optString("status") == "transitioning")
-                throw IllegalStateException("account_state_write_failed")
+            AccountStateDebugFailure.check(failure, call.getString("status"),
+                engine.defaults().optString("status"))
         }
         engine.setAccountState(call.data); null
     }
