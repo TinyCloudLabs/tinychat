@@ -161,6 +161,21 @@ export function PhoneRecorder({
     return null;
   };
 
+  // The controller reports a rejected Pause, Resume, Stop or Discard only as `recorder.error`.
+  const lastControl = useRef<string | null>(null);
+  const control = (name: "pause" | "resume" | "stop" | "discard") => {
+    lastControl.current = name;
+    recorder[name]();
+  };
+  useEffect(() => {
+    if (!recorder.error) return;
+    console.error(
+      `[Recorder] ${lastControl.current ? `${lastControl.current} failed` : "Recorder error"}`,
+      { error: recorder.error, phase, mic },
+    );
+    lastControl.current = null;
+  }, [recorder.error]);
+
   const ringKind =
     view.tapRingAction ??
     (view.ring === "live"
@@ -176,8 +191,7 @@ export function PhoneRecorder({
           disabled: view.tapRingAction === null,
           onPress: () => {
             hapticLight();
-            if (ringKind === "pause") recorder.pause();
-            else recorder.resume();
+            control(ringKind);
           },
         };
 
@@ -186,6 +200,9 @@ export function PhoneRecorder({
   const mustSave = view.emphasis === "stop";
   const inputName = input?.name ?? "Microphone";
   const resume = view.controls.resume;
+  // A stop or discard whose outcome is unknown stays in its phase with the error; the same control checks again.
+  const stopUnknown = phase === "stopping" && recorder.error !== null;
+  const discardUnknown = phase === "discarding" && recorder.error !== null;
   const denied = view.micDenied;
   const idleDenied = denied && phase === "idle";
   const speakers = identifySpeakersControl(
@@ -203,6 +220,7 @@ export function PhoneRecorder({
     });
   };
   const alerts = [
+    recorder.error ? { message: recorder.error, retry: undefined } : null,
     settingsError ? { message: settingsError, retry: openSettings } : null,
     audio.error ? { message: audio.error, retry: audio.retry } : null,
     onDevice.error ? { message: onDevice.error, retry: onDevice.retry } : null,
@@ -405,7 +423,7 @@ export function PhoneRecorder({
                 type="button"
                 className="pr-b"
                 aria-label="Discard recording"
-                disabled={!view.controls.discard}
+                disabled={!(view.controls.discard || discardUnknown)}
                 onClick={() => setDiscardOpen(true)}
               >
                 <CloseIcon />
@@ -418,8 +436,7 @@ export function PhoneRecorder({
                   disabled={!(resume || view.controls.pause)}
                   onClick={() => {
                     hapticLight();
-                    if (resume) recorder.resume();
-                    else recorder.pause();
+                    control(resume ? "resume" : "pause");
                   }}
                 >
                   {resume ? <PlayIcon /> : <PauseIcon />}
@@ -430,8 +447,8 @@ export function PhoneRecorder({
                 className="pr-b main"
                 data-emphasis={mustSave}
                 data-secondary={view.controls.openSettings}
-                disabled={!view.controls.stop}
-                onClick={() => recorder.stop()}
+                disabled={!(view.controls.stop || stopUnknown)}
+                onClick={() => control("stop")}
               >
                 <CheckIcon />
                 Done
@@ -464,7 +481,7 @@ export function PhoneRecorder({
             className="pr-discard"
             onClick={() => {
               setDiscardOpen(false);
-              recorder.discard();
+              control("discard");
             }}
           >
             Discard recording

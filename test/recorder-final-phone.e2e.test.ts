@@ -28,6 +28,10 @@ setDefaultTimeout(30_000);
 let browser: Browser;
 let server: ReturnType<typeof serveHarness>;
 
+type NativeHarness = {
+  exoNative: { calls: string[]; fail: Record<string, boolean> };
+};
+
 type Harness = {
   exoRecorder: {
     calls: string[];
@@ -57,7 +61,7 @@ interface Opened {
 }
 
 async function open(
-  name: "consented" | "first-run" | "failing",
+  name: "consented" | "first-run" | "failing" | "native",
 ): Promise<Opened> {
   const page = await (
     await browser.newContext({
@@ -476,5 +480,134 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await gone(settingsAlert);
     expect(await calls()).toEqual(["openSettings", "openSettings"]);
     await page.context().close();
+  });
+  describe("a rejected recorder control is shown, logged, and retried (the real controller on the fake plugin)", () => {
+    const failing = (page: Page, name: string, on: boolean) =>
+      page.evaluate(
+        ([key, value]) => {
+          (window as unknown as NativeHarness).exoNative.fail[key as string] =
+            value as boolean;
+        },
+        [name, on],
+      );
+    const nativeCalls = (page: Page) =>
+      page.evaluate(() =>
+        (window as unknown as NativeHarness).exoNative.calls.slice(),
+      );
+    const recording = async (page: Page) => {
+      await control(page, "Pause recording").waitFor({
+        state: "visible",
+        timeout: 10_000,
+      });
+      await attr(page.getByTestId("phone-recorder"), "data-ring", "live");
+    };
+    const control = (page: Page, label: string) =>
+      page.locator(`.pr-controls button[aria-label="${label}"]`);
+    const enabled = (locator: Locator) =>
+      until(`${locator} to be enabled`, () => locator.isEnabled());
+    const logged = (errors: string[], what: string) =>
+      until(`console.error "${what}"`, async () =>
+        errors.some((text) => text.includes(what)),
+      );
+
+    test("Pause: the alert names the failure, Pause stays enabled, and retrying clears it", async () => {
+      const { page, errors } = await open("native");
+      await recording(page);
+      const alert = page.getByRole("alert");
+      const pause = control(page, "Pause recording");
+      await failing(page, "pause", true);
+      await pause.click();
+      await shown(
+        alert.filter({ hasText: "Could not pause: pause was refused" }),
+      );
+      await logged(errors, "[Recorder] pause failed");
+      await enabled(pause);
+      await attr(page.getByTestId("phone-recorder"), "data-ring", "live");
+      await failing(page, "pause", false);
+      await pause.click();
+      await gone(alert);
+      await shown(control(page, "Resume recording"));
+      await page.context().close();
+    });
+
+    test("Resume: the alert names the failure, Resume stays enabled, and retrying clears it", async () => {
+      const { page, errors } = await open("native");
+      await recording(page);
+      await control(page, "Pause recording").click();
+      const resume = control(page, "Resume recording");
+      await shown(resume);
+      const alert = page.getByRole("alert");
+      await failing(page, "resume", true);
+      await resume.click();
+      await shown(
+        alert.filter({ hasText: "Could not resume: resume was refused" }),
+      );
+      await logged(errors, "[Recorder] resume failed");
+      await enabled(resume);
+      await failing(page, "resume", false);
+      await resume.click();
+      await gone(alert);
+      await shown(control(page, "Pause recording"));
+      await page.context().close();
+    });
+
+    test("Done: the alert names the failure, the recording goes on, and Done tries again", async () => {
+      const { page, errors } = await open("native");
+      await recording(page);
+      const alert = page.getByRole("alert");
+      const done = page.getByRole("button", { name: "Done" });
+      await failing(page, "stop", true);
+      await done.click();
+      await shown(
+        alert.filter({ hasText: "Could not stop: stop was refused" }),
+      );
+      await logged(errors, "[Recorder] stop failed");
+      await enabled(done);
+      await attr(page.getByTestId("phone-recorder"), "data-ring", "live");
+      await failing(page, "stop", false);
+      await done.click();
+      await gone(alert.filter({ hasText: "Could not stop" }));
+      expect((await nativeCalls(page)).filter((c) => c === "stop")).toEqual([
+        "stop",
+        "stop",
+      ]);
+      await page.context().close();
+    });
+
+    test("Discard: the sheet closes, the alert shows, the recording clearly goes on, and Discard tries again", async () => {
+      const { page, errors } = await open("native");
+      await recording(page);
+      const alert = page.getByRole("alert");
+      const discard = control(page, "Discard recording");
+      await failing(page, "discard", true);
+      await discard.click();
+      await page
+        .getByRole("alertdialog")
+        .getByRole("button", { name: "Discard recording" })
+        .click();
+      await gone(page.getByRole("alertdialog"));
+      await shown(
+        alert.filter({
+          hasText: "Could not discard the recording: discard was refused",
+        }),
+      );
+      await logged(errors, "[Recorder] discard failed");
+      await attr(page.getByTestId("phone-recorder"), "data-ring", "live");
+      await enabled(page.getByRole("button", { name: "Done" }));
+      await enabled(control(page, "Pause recording"));
+      await enabled(discard);
+      await failing(page, "discard", false);
+      await discard.click();
+      await page
+        .getByRole("alertdialog")
+        .getByRole("button", { name: "Discard recording" })
+        .click();
+      await gone(alert);
+      expect((await nativeCalls(page)).filter((c) => c === "discard")).toEqual([
+        "discard",
+        "discard",
+      ]);
+      await page.context().close();
+    });
   });
 });

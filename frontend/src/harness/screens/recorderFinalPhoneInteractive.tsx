@@ -2,11 +2,13 @@
 // test/recorder-final-phone.e2e.test.ts to drive. Not captured: the states are the ones in
 // recorderFinalPhone.tsx. The page exposes `window.exoRecorder`: the calls in order, a patch for the
 // recorder's state, and the flags that make its plugins fail.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { PhoneRecorder } from "@/capture/recorder/final/PhoneRecorder";
 import type { AudioInputsSnapshot } from "@/capture/recorder/final/useAudioInputs";
 import {
+  RecorderProvider,
   StaticRecorderProvider,
+  useRecorder,
   type RecorderValue,
 } from "@/capture/recorder/RecorderProvider";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
@@ -15,7 +17,12 @@ import {
   type OnDeviceSttPlugin,
   type OnDeviceSttStatus,
 } from "@/lib/voiceNotes/onDeviceStt";
-import { FROZEN_NOW } from "../stubs";
+import { createFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
+import {
+  __setVoiceNotesForTests,
+  type VoiceNotesPlugin,
+} from "@/lib/voiceNotes/nativeVoiceNotes";
+import { FROZEN_NOW, harnessSessionStore, harnessTcw } from "../stubs";
 import type { HarnessScreen } from "../screen";
 
 declare global {
@@ -25,6 +32,11 @@ declare global {
       patch: (patch: Partial<RecorderValue>) => void;
       /** Plugin calls that reject while their flag is set (all of them on the failing screen). */
       fail: Record<"openSettings" | "listInputs" | "modelStatus", boolean>;
+    };
+    /** The real recorder over the fake native plugin: the control calls in order, and the ones that reject while flagged. */
+    exoNative?: {
+      calls: string[];
+      fail: Record<"pause" | "resume" | "stop" | "discard", boolean>;
     };
   }
 }
@@ -160,6 +172,59 @@ function Interactive({ consented: consentedAtStart, failing }: Setup) {
   );
 }
 
+// The real provider and controller on the fake native plugin, whose Pause, Resume, Stop and Discard
+// reject while window.exoNative.fail says so: the errors reach the screen as they do on a phone.
+function Starter() {
+  const recorder = useRecorder();
+  const started = useRef(false);
+  useEffect(() => {
+    if (!recorder.ready || recorder.phase !== "idle" || started.current) return;
+    started.current = true;
+    recorder.record();
+  }, [recorder]);
+  return null;
+}
+
+function Native() {
+  const inputs = useMemo(
+    () => ({
+      list: async () => SNAPSHOT,
+      select: async () => {},
+      subscribe: () => () => {},
+    }),
+    [],
+  );
+  return (
+    <RecorderProvider tcw={harnessTcw} sessionStore={harnessSessionStore}>
+      <Starter />
+      <PhoneRecorder inputs={inputs} />
+    </RecorderProvider>
+  );
+}
+
+function installNativePlugin() {
+  const native = (window.exoNative ??= {
+    calls: [],
+    fail: { pause: false, resume: false, stop: false, discard: false },
+  });
+  const fake = createFakeVoiceNotes();
+  const plugin: VoiceNotesPlugin = { ...fake.plugin };
+  for (const name of ["pause", "resume", "stop", "discard"] as const) {
+    const call = fake.plugin[name].bind(fake.plugin) as () => Promise<unknown>;
+    (plugin as unknown as Record<string, () => Promise<unknown>>)[name] =
+      async () => {
+        native.calls.push(name);
+        if (native.fail[name]) {
+          throw Object.assign(new Error(`${name} was refused`), {
+            code: `${name}_refused`,
+          });
+        }
+        return call();
+      };
+  }
+  __setVoiceNotesForTests(plugin, { available: true });
+}
+
 function screen(name: string, setup: Setup): HarnessScreen {
   return {
     id: `recorder-final-phone-interactive-${name}`,
@@ -188,7 +253,31 @@ function screen(name: string, setup: Setup): HarnessScreen {
   };
 }
 
+const nativeScreen: HarnessScreen = {
+  id: "recorder-final-phone-interactive-native",
+  group: "recorder",
+  layout: "pane",
+  platform: "ios",
+  displayTitle: false,
+  interactive: true,
+  render: () => {
+    installNativePlugin();
+    __setOnDeviceSttForTests({
+      status: async () => MODEL_READY,
+      setAutoDownload: async () => {},
+      downloadNow: async () => {},
+      cancelDownload: async () => {},
+      deleteModels: async () => {},
+      enqueue: async () => {},
+      cancel: async () => {},
+      addListener: async () => ({ remove: async () => {} }),
+    } satisfies OnDeviceSttPlugin);
+    return <Native />;
+  },
+};
+
 export const recorderFinalPhoneInteractiveScreens: HarnessScreen[] = [
+  nativeScreen,
   screen("consented", { consented: true, failing: false }),
   screen("first-run", { consented: false, failing: false }),
   screen("failing", { consented: true, failing: true }),

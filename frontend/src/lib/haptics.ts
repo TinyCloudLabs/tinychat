@@ -10,7 +10,9 @@ function available(): boolean {
 
 function quietly(feedback: () => Promise<void>): void {
   if (!available()) return;
-  feedback().catch((error: unknown) => console.warn("[Haptics] Feedback failed", error));
+  feedback().catch((error: unknown) =>
+    console.warn("[Haptics] Feedback failed", error),
+  );
 }
 
 /** A recording started. */

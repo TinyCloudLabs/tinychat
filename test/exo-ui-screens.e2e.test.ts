@@ -14,9 +14,19 @@
 // Exceptions a legacy screen still needs are in exo-ui/legacy-allowlist.json.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { chromium, webkit, type Browser, type BrowserContext, type BrowserType, type ConsoleMessage } from "playwright";
-import { buildHarness, serveHarness, type HarnessAssets } from "./exo-ui/harness-server";
-
+import {
+  chromium,
+  webkit,
+  type Browser,
+  type BrowserContext,
+  type BrowserType,
+  type ConsoleMessage,
+} from "playwright";
+import {
+  buildHarness,
+  serveHarness,
+  type HarnessAssets,
+} from "./exo-ui/harness-server";
 
 interface Viewport {
   id: string;
@@ -33,16 +43,60 @@ interface Viewport {
 }
 
 const VIEWPORTS: Viewport[] = [
-  { id: "phone", width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
-  { id: "phone-land", width: 844, height: 390, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
-  { id: "tablet", width: 820, height: 1180, deviceScaleFactor: 2, hasTouch: true },
-  { id: "tablet-land", width: 1180, height: 820, deviceScaleFactor: 2, hasTouch: true },
+  {
+    id: "phone",
+    width: 390,
+    height: 844,
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+  },
+  {
+    id: "phone-land",
+    width: 844,
+    height: 390,
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+  },
+  {
+    id: "tablet",
+    width: 820,
+    height: 1180,
+    deviceScaleFactor: 2,
+    hasTouch: true,
+  },
+  {
+    id: "tablet-land",
+    width: 1180,
+    height: 820,
+    deviceScaleFactor: 2,
+    hasTouch: true,
+  },
   { id: "desktop-min", width: 900, height: 600, deviceScaleFactor: 2 },
   { id: "desktop", width: 1280, height: 800, deviceScaleFactor: 2 },
   // 1280x800 at 200% browser zoom.
   { id: "zoom200", width: 640, height: 400, deviceScaleFactor: 2, zoom: true },
-  { id: "text200-phone", group: "text200", width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true, textScale: 2, zoom: true },
-  { id: "text200-desktop", group: "text200", width: 1280, height: 800, deviceScaleFactor: 2, textScale: 2, zoom: true },
+  {
+    id: "text200-phone",
+    group: "text200",
+    width: 390,
+    height: 844,
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    textScale: 2,
+    zoom: true,
+  },
+  {
+    id: "text200-desktop",
+    group: "text200",
+    width: 1280,
+    height: 800,
+    deviceScaleFactor: 2,
+    textScale: 2,
+    zoom: true,
+  },
 ];
 const THEMES = ["light", "dark"] as const;
 
@@ -71,24 +125,51 @@ interface Finding {
   detail: string;
 }
 
-const list = (value: string | undefined) => value?.split(",").map((part) => part.trim()).filter(Boolean);
+const list = (value: string | undefined) =>
+  value
+    ?.split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
 const only = list(process.env.EXO_UI_ONLY);
 const viewportFilter = list(process.env.EXO_UI_VIEWPORTS);
-const themes = THEMES.filter((theme) => !process.env.EXO_UI_THEMES || list(process.env.EXO_UI_THEMES)!.includes(theme));
-const viewports = VIEWPORTS.filter((v) => !viewportFilter || viewportFilter.includes(v.id) || (v.group !== undefined && viewportFilter.includes(v.group)));
-const motion = process.env.EXO_UI_MOTION === "no-preference" ? "no-preference" : "reduce";
+const themes = THEMES.filter(
+  (theme) =>
+    !process.env.EXO_UI_THEMES ||
+    list(process.env.EXO_UI_THEMES)!.includes(theme),
+);
+const viewports = VIEWPORTS.filter(
+  (v) =>
+    !viewportFilter ||
+    viewportFilter.includes(v.id) ||
+    (v.group !== undefined && viewportFilter.includes(v.group)),
+);
+const motion =
+  process.env.EXO_UI_MOTION === "no-preference" ? "no-preference" : "reduce";
 
 // One engine per process: launching two in one bun process intermittently
 // wedges the second (see connectors-scroll.e2e.test.ts).
 const engines: Record<string, BrowserType> = { webkit, chromium };
 const engineName = process.env.EXO_UI_ENGINE ?? "webkit";
 const engine = engines[engineName];
-if (!engine) throw new Error(`EXO_UI_ENGINE must be one of ${Object.keys(engines).join(", ")}`);
+if (!engine)
+  throw new Error(
+    `EXO_UI_ENGINE must be one of ${Object.keys(engines).join(", ")}`,
+  );
 
-const allowlist: AllowEntry[] = JSON.parse(readFileSync(new URL("./exo-ui/legacy-allowlist.json", import.meta.url), "utf8"));
+const allowlist: AllowEntry[] = JSON.parse(
+  readFileSync(
+    new URL("./exo-ui/legacy-allowlist.json", import.meta.url),
+    "utf8",
+  ),
+);
 
-const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
-const outDir = new URL(`../screenshots/exo-ui/${stamp}/`, import.meta.url).pathname;
+const stamp = new Date()
+  .toISOString()
+  .replace(/[-:]/g, "")
+  .replace("T", "-")
+  .slice(0, 15);
+const outDir = new URL(`../screenshots/exo-ui/${stamp}/`, import.meta.url)
+  .pathname;
 
 let assets: HarnessAssets;
 
@@ -104,20 +185,42 @@ function ignoredConsoleError(message: ConsoleMessage): boolean {
   const text = message.text();
   const url = message.location().url;
   // A fixture-less /api/ call answers 404; the screen shows its empty state.
-  if (text.startsWith("Failed to load resource") && url.includes("/api/")) return true;
+  if (text.startsWith("Failed to load resource") && url.includes("/api/"))
+    return true;
   // Another host: the page itself refuses those calls (exoUiHarness.tsx keeps it hermetic).
-  if (text.startsWith("Failed to load resource") && url !== "" && !url.startsWith("http://127.0.0.1:")) return true;
+  if (
+    text.startsWith("Failed to load resource") &&
+    url !== "" &&
+    !url.startsWith("http://127.0.0.1:")
+  )
+    return true;
   // WebKit does not know Chrome's interactive-widget viewport key (index.html) and reports it as an error.
-  if (text.includes('Viewport argument key "interactive-widget" not recognized')) return true;
+  if (
+    text.includes('Viewport argument key "interactive-widget" not recognized')
+  )
+    return true;
   return false;
 }
 
 // Runs in the page: the automated checks of plan §8.2 (TC-761).
-function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: boolean; displayTitle: boolean; allow: Array<{ selector: string; check: string }> }) {
-  const findings: Array<{ check: string; element?: string; detail: string }> = [];
-  const allowed = (el: Element, check: string) => args.allow.some((entry) => entry.check === check && el.matches(entry.selector));
+function inspectPage(args: {
+  layout: "pane" | "document";
+  touch: boolean;
+  zoom: boolean;
+  displayTitle: boolean;
+  allow: Array<{ selector: string; check: string }>;
+}) {
+  const findings: Array<{ check: string; element?: string; detail: string }> =
+    [];
+  const allowed = (el: Element, check: string) =>
+    args.allow.some(
+      (entry) => entry.check === check && el.matches(entry.selector),
+    );
   const describe = (el: Element) => {
-    const label = (el.getAttribute("aria-label") ?? el.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 40);
+    const label = (el.getAttribute("aria-label") ?? el.textContent ?? "")
+      .trim()
+      .replace(/\s+/g, " ")
+      .slice(0, 40);
     const testId = el.getAttribute("data-testid");
     return `${el.tagName.toLowerCase()}${testId ? `[data-testid=${testId}]` : ""}${label ? ` "${label}"` : ""}`;
   };
@@ -131,15 +234,23 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
 
   // 1. The shell stays pinned: a pane screen never scrolls the document; no screen scrolls sideways.
   if (args.layout === "pane" && doc.scrollHeight !== window.innerHeight) {
-    findings.push({ check: "shell-pinned", detail: `document ${doc.scrollHeight}px tall in a ${window.innerHeight}px window` });
+    findings.push({
+      check: "shell-pinned",
+      detail: `document ${doc.scrollHeight}px tall in a ${window.innerHeight}px window`,
+    });
   }
   if (doc.scrollWidth > window.innerWidth) {
-    findings.push({ check: "overflow-x", detail: `document ${doc.scrollWidth}px wide in a ${window.innerWidth}px window` });
+    findings.push({
+      check: "overflow-x",
+      detail: `document ${doc.scrollWidth}px wide in a ${window.innerWidth}px window`,
+    });
   }
 
   // 2. Touch targets: 44x44, or inside a label or [data-hit-area] at least that big.
   if (args.touch) {
-    for (const el of document.querySelectorAll("a, button, [role=radio], [role=tab], input, select, textarea")) {
+    for (const el of document.querySelectorAll(
+      "a, button, [role=radio], [role=tab], input, select, textarea",
+    )) {
       if (!shown(el) || el.closest("[data-inline-link]")) continue;
       const rect = el.getBoundingClientRect();
       if (rect.width >= 43.5 && rect.height >= 43.5) continue;
@@ -147,42 +258,79 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
       const area = wrapper?.getBoundingClientRect();
       if (area && area.width >= 43.5 && area.height >= 43.5) continue;
       if (allowed(el, "touch-target")) continue;
-      findings.push({ check: "touch-target", element: describe(el), detail: `${Math.round(rect.width)}x${Math.round(rect.height)}` });
+      findings.push({
+        check: "touch-target",
+        element: describe(el),
+        detail: `${Math.round(rect.width)}x${Math.round(rect.height)}`,
+      });
     }
   }
 
   // 3. Text: at least 11px; inputs at least 16px on touch (so iOS never zooms into them).
   for (const el of document.querySelectorAll("body *")) {
-    const hasText = [...el.childNodes].some((node) => node.nodeType === Node.TEXT_NODE && node.textContent!.trim() !== "");
+    const hasText = [...el.childNodes].some(
+      (node) =>
+        node.nodeType === Node.TEXT_NODE && node.textContent!.trim() !== "",
+    );
     if (!hasText || !shown(el)) continue;
     const size = Number.parseFloat(getComputedStyle(el).fontSize);
-    if (size < 11 && !allowed(el, "text-size")) findings.push({ check: "text-size", element: describe(el), detail: `${size}px` });
+    if (size < 11 && !allowed(el, "text-size"))
+      findings.push({
+        check: "text-size",
+        element: describe(el),
+        detail: `${size}px`,
+      });
   }
   if (args.touch) {
-    for (const el of document.querySelectorAll("input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=range]), select, textarea")) {
+    for (const el of document.querySelectorAll(
+      "input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=range]), select, textarea",
+    )) {
       if (!shown(el)) continue;
       const size = Number.parseFloat(getComputedStyle(el).fontSize);
-      if (size < 16 && !allowed(el, "input-size")) findings.push({ check: "input-size", element: describe(el), detail: `${size}px` });
+      if (size < 16 && !allowed(el, "input-size"))
+        findings.push({
+          check: "input-size",
+          element: describe(el),
+          detail: `${size}px`,
+        });
     }
   }
 
   // 5. The display face actually loaded (document.fonts.check() says yes even when the family is missing).
-  if (args.displayTitle && ![...document.fonts].some((face) => /Literata/.test(face.family) && face.status === "loaded")) {
+  if (
+    args.displayTitle &&
+    ![...document.fonts].some(
+      (face) => /Literata/.test(face.family) && face.status === "loaded",
+    )
+  ) {
     findings.push({ check: "font-loaded", detail: "Literata never loaded" });
   }
 
   // 6. Screen invariants.
   const dialogs = document.querySelectorAll("[role=dialog]").length;
-  if (dialogs > 1) findings.push({ check: "dialogs", detail: `${dialogs} dialogs` });
+  if (dialogs > 1)
+    findings.push({ check: "dialogs", detail: `${dialogs} dialogs` });
 
   // 7. Zoomed and scaled text: nothing cut off.
   if (args.zoom) {
     for (const el of document.querySelectorAll("body *")) {
-      const hasText = [...el.childNodes].some((node) => node.nodeType === Node.TEXT_NODE && node.textContent!.trim() !== "");
+      const hasText = [...el.childNodes].some(
+        (node) =>
+          node.nodeType === Node.TEXT_NODE && node.textContent!.trim() !== "",
+      );
       if (!hasText || !shown(el)) continue;
       const style = getComputedStyle(el);
-      if (!/hidden|clip/.test(style.overflowX) || el.scrollWidth <= el.clientWidth + 1) continue;
-      if (!allowed(el, "clipped-text")) findings.push({ check: "clipped-text", element: describe(el), detail: `${el.scrollWidth}px of text in ${el.clientWidth}px` });
+      if (
+        !/hidden|clip/.test(style.overflowX) ||
+        el.scrollWidth <= el.clientWidth + 1
+      )
+        continue;
+      if (!allowed(el, "clipped-text"))
+        findings.push({
+          check: "clipped-text",
+          element: describe(el),
+          detail: `${el.scrollWidth}px of text in ${el.clientWidth}px`,
+        });
     }
   }
   return findings;
@@ -214,7 +362,9 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
     await page.goto(`http://127.0.0.1:${server.port}/`);
     await page.waitForFunction(() => window.exoUi !== undefined);
     screens = (await page.evaluate(() => window.exoUi!.screens)).filter(
-      (screen) => !screen.interactive && (!only || only.includes(screen.group) || only.includes(screen.id)),
+      (screen) =>
+        !screen.interactive &&
+        (!only || only.includes(screen.group) || only.includes(screen.id)),
     );
     await page.close();
   }, 60_000);
@@ -222,26 +372,31 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
   afterAll(async () => {
     // A dead Chromium DevTools pipe can leave close() pending after every
     // capture passed. Bound cleanup so it cannot hide the screen results.
-    await Promise.all(browsers.map(async (browser) => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await Promise.race([
-          browser.close(),
-          new Promise<void>((resolve) => {
-            timer = setTimeout(() => {
-              console.warn("exo-ui: browser close timed out");
-              resolve();
-            }, 10_000);
-          }),
-        ]);
-      } catch (caught) {
-        console.warn("exo-ui: browser close failed", caught);
-      } finally {
-        if (timer) clearTimeout(timer);
-      }
-    }));
+    await Promise.all(
+      browsers.map(async (browser) => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            browser.close(),
+            new Promise<void>((resolve) => {
+              timer = setTimeout(() => {
+                console.warn("exo-ui: browser close timed out");
+                resolve();
+              }, 10_000);
+            }),
+          ]);
+        } catch (caught) {
+          console.warn("exo-ui: browser close failed", caught);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      }),
+    );
     server?.stop(true);
-    writeFileSync(`${outDir}report.json`, JSON.stringify({ engine: engineName, motion, captures }, null, 2));
+    writeFileSync(
+      `${outDir}report.json`,
+      JSON.stringify({ engine: engineName, motion, captures }, null, 2),
+    );
     writeFileSync(`${outDir}index.html`, contactSheet(captures));
     console.log(`exo-ui: ${captures.length} captures in ${outDir}`);
   }, 60_000);
@@ -269,28 +424,47 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
         if (viewport.textScale) {
           // Before the app's scripts run; <html> may not exist yet when init scripts start.
           await context.addInitScript((scale) => {
-            const apply = () => document.documentElement.style.setProperty("font-size", `${scale * 100}%`);
+            const apply = () =>
+              document.documentElement.style.setProperty(
+                "font-size",
+                `${scale * 100}%`,
+              );
             if (document.documentElement) apply();
-            else document.addEventListener("readystatechange", apply, { once: true });
+            else
+              document.addEventListener("readystatechange", apply, {
+                once: true,
+              });
           }, viewport.textScale);
         }
         try {
           for (const screen of screens) {
             const page = await context.newPage();
             const errors: string[] = [];
-            page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+            page.on("pageerror", (error) =>
+              errors.push(`pageerror: ${error.message}`),
+            );
             page.on("console", (message) => {
               if (message.type() === "error" && !ignoredConsoleError(message)) {
                 const url = message.location().url;
-                errors.push(`console.error: ${message.text()}${url ? ` (${url})` : ""}`);
+                errors.push(
+                  `console.error: ${message.text()}${url ? ` (${url})` : ""}`,
+                );
               }
             });
-            await page.goto(`http://127.0.0.1:${server.port}/?screen=${screen.id}&theme=${theme}&platform=${screen.platform ?? "web"}&freeze=1`);
-            await page.waitForFunction(() => window.exoUi?.ready === true, undefined, { timeout: 20_000 });
+            await page.goto(
+              `http://127.0.0.1:${server.port}/?screen=${screen.id}&theme=${theme}&platform=${screen.platform ?? "web"}&freeze=1`,
+            );
+            await page.waitForFunction(
+              () => window.exoUi?.ready === true,
+              undefined,
+              { timeout: 20_000 },
+            );
             await page.waitForLoadState("networkidle");
             await page.waitForTimeout(300);
 
-            const allow = allowlist.filter((entry) => entry.screen === screen.id).map(({ selector, check }) => ({ selector, check }));
+            const allow = allowlist
+              .filter((entry) => entry.screen === screen.id)
+              .map(({ selector, check }) => ({ selector, check }));
             const findings: Finding[] = await page.evaluate(inspectPage, {
               layout: screen.layout,
               touch: viewport.hasTouch ?? false,
@@ -299,20 +473,45 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
               allow,
             });
             // The native Capture home must finish recorder setup; generic layout checks missed a missing Record button.
-            if (["shell-capture", "capture-first-use", "capture-items", "capture-in-progress"].includes(screen.id)) {
+            if (
+              [
+                "shell-capture",
+                "capture-first-use",
+                "capture-items",
+                "capture-in-progress",
+              ].includes(screen.id)
+            ) {
               const record = page.locator('[data-testid="voice-note-record"]');
-              if (await record.count() === 0 || await record.first().isDisabled()) {
-                findings.push({ check: "native-record-ready", detail: "Capture has no enabled Record button" });
+              if (
+                (await record.count()) === 0 ||
+                (await record.first().isDisabled())
+              ) {
+                findings.push({
+                  check: "native-record-ready",
+                  detail: "Capture has no enabled Record button",
+                });
               }
             }
-            for (const error of errors) findings.push({ check: "errors", detail: error });
+            for (const error of errors)
+              findings.push({ check: "errors", detail: error });
 
             const file = `${screen.id}__${viewport.id}__${theme}.png`;
-            await page.screenshot({ path: `${outDir}${file}`, fullPage: screen.layout === "document" });
-            captures.push({ screen: screen.id, viewport: viewport.id, theme, file, findings });
+            await page.screenshot({
+              path: `${outDir}${file}`,
+              fullPage: screen.layout === "document",
+            });
+            captures.push({
+              screen: screen.id,
+              viewport: viewport.id,
+              theme,
+              file,
+              findings,
+            });
 
             for (const finding of findings) {
-              failures.push(`${file}: ${finding.check}${finding.element ? ` ${finding.element}` : ""} (${finding.detail})`);
+              failures.push(
+                `${file}: ${finding.check}${finding.element ? ` ${finding.element}` : ""} (${finding.detail})`,
+              );
             }
             await page.close();
           }
@@ -325,101 +524,196 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
     }, 600_000);
   }
 
-  if (viewportFilter?.some((id) => ["phone", "phone-halo-review", "halo-review"].includes(id))) test("recorder halo in tall phone and eight-ring review captures", async () => {
-    const halo = screens.find((screen) => screen.id === "recorder-final-halo");
-    if (!halo) return;
+  if (
+    viewportFilter?.some((id) =>
+      ["phone", "phone-halo-review", "halo-review"].includes(id),
+    )
+  )
+    test("recorder halo in tall phone and eight-ring review captures", async () => {
+      const halo = screens.find(
+        (screen) => screen.id === "recorder-final-halo",
+      );
+      if (!halo) return;
 
-    const haloViewports: Viewport[] = [
-      ...(viewportFilter!.some((id) => ["phone", "phone-halo-review"].includes(id))
-        ? [{ id: "phone-halo-review", width: 390, height: 4400, deviceScaleFactor: 2, isMobile: true, hasTouch: true }]
-        : []),
-      ...(viewportFilter!.includes("halo-review")
-        ? [{ id: "halo-review", width: 1280, height: 2200, deviceScaleFactor: 2 }]
-        : []),
-    ];
-    const forceCanvas = process.env.EXO_UI_HALO_FORCE_CANVAS === "1";
-    const haloBrowser = await engine.launch({ headless: true });
-    browsers.push(haloBrowser);
+      const haloViewports: Viewport[] = [
+        ...(viewportFilter!.some((id) =>
+          ["phone", "phone-halo-review"].includes(id),
+        )
+          ? [
+              {
+                id: "phone-halo-review",
+                width: 390,
+                height: 4400,
+                deviceScaleFactor: 2,
+                isMobile: true,
+                hasTouch: true,
+              },
+            ]
+          : []),
+        ...(viewportFilter!.includes("halo-review")
+          ? [
+              {
+                id: "halo-review",
+                width: 1280,
+                height: 2200,
+                deviceScaleFactor: 2,
+              },
+            ]
+          : []),
+      ];
+      const forceCanvas = process.env.EXO_UI_HALO_FORCE_CANVAS === "1";
+      const haloBrowser = await engine.launch({ headless: true });
+      browsers.push(haloBrowser);
 
-    for (const viewport of haloViewports) {
-      for (const theme of themes) {
-        const context = await haloBrowser.newContext({
-          viewport: { width: viewport.width, height: viewport.height },
-          deviceScaleFactor: viewport.deviceScaleFactor,
-          isMobile: viewport.isMobile ?? false,
-          hasTouch: viewport.hasTouch ?? false,
-          colorScheme: theme,
-          reducedMotion: motion,
-        });
-        if (forceCanvas) {
-          await context.addInitScript(() => {
-            const constructors = [HTMLCanvasElement, window.OffscreenCanvas].filter(Boolean) as Array<typeof HTMLCanvasElement>;
-            for (const Canvas of constructors) {
-              const getContext = Canvas.prototype.getContext;
-              Canvas.prototype.getContext = function(type: string, ...args: unknown[]) {
-                if (/^(webgl|webgl2|experimental-webgl)$/.test(type)) return null;
-                return Reflect.apply(getContext, this, [type, ...args]);
-              } as typeof Canvas.prototype.getContext;
-            }
+      for (const viewport of haloViewports) {
+        for (const theme of themes) {
+          const context = await haloBrowser.newContext({
+            viewport: { width: viewport.width, height: viewport.height },
+            deviceScaleFactor: viewport.deviceScaleFactor,
+            isMobile: viewport.isMobile ?? false,
+            hasTouch: viewport.hasTouch ?? false,
+            colorScheme: theme,
+            reducedMotion: motion,
           });
-        }
-        try {
-          const page = await context.newPage();
-          const rendererPaths: string[] = [];
-          page.on("console", (message) => {
-            if (message.type() === "info" && message.text().includes("[HaloRing] renderer:")) rendererPaths.push(message.text());
-          });
-          await page.goto(`http://127.0.0.1:${server.port}/?screen=${halo.id}&theme=${theme}&platform=web&freeze=1`);
-          await page.waitForFunction(() => window.exoUi?.ready === true, undefined, { timeout: 20_000 });
-          await page.waitForFunction((checkCorners) => {
-            const canvases = [...document.querySelectorAll<HTMLCanvasElement>(".halo-ring__canvas")];
-            if (canvases.length !== 8) return false;
-            return canvases.every((canvas) => {
-              const ctx = canvas.getContext("2d");
-              if (!ctx || canvas.width < 2) return false;
-              const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-              let centerVisible = false;
-              for (let y = Math.floor(canvas.height * 0.3); y < canvas.height * 0.7 && !centerVisible; y += 4) {
-                for (let x = Math.floor(canvas.width * 0.3); x < canvas.width * 0.7; x += 4) {
-                  if (pixels[(y * canvas.width + x) * 4 + 3] > 0) { centerVisible = true; break; }
-                }
+          if (forceCanvas) {
+            await context.addInitScript(() => {
+              const constructors = [
+                HTMLCanvasElement,
+                window.OffscreenCanvas,
+              ].filter(Boolean) as Array<typeof HTMLCanvasElement>;
+              for (const Canvas of constructors) {
+                const getContext = Canvas.prototype.getContext;
+                Canvas.prototype.getContext = function (
+                  type: string,
+                  ...args: unknown[]
+                ) {
+                  if (/^(webgl|webgl2|experimental-webgl)$/.test(type))
+                    return null;
+                  return Reflect.apply(getContext, this, [type, ...args]);
+                } as typeof Canvas.prototype.getContext;
               }
-              const cornerAlpha = pixels[3] + pixels[(canvas.width - 1) * 4 + 3] + pixels[(canvas.height - 1) * canvas.width * 4 + 3] + pixels[(canvas.height * canvas.width - 1) * 4 + 3];
-              return centerVisible && (!checkCorners || cornerAlpha === 0);
             });
-          }, forceCanvas, { timeout: 5_000 });
-          if (!forceCanvas && engineName === "webkit") {
-            const center = await page.locator(".halo-ring__canvas").nth(3).evaluate((canvas) => {
-              const element = canvas as HTMLCanvasElement;
-              const context = element.getContext("2d");
-              if (!context) throw new Error("Halo output canvas has no 2D context");
-              const x = Math.floor(element.width / 2);
-              const y = Math.floor(element.height / 2);
-              return {
-                size: element.width,
-                color: [...context.getImageData(x, y, 1, 1).data.slice(0, 3)],
-              };
-            });
-            expect(center.size % 2).toBe(1);
-            expect(center.color).toEqual(theme === "dark" ? [68, 59, 76] : [251, 248, 246]);
           }
-          if (forceCanvas) expect(rendererPaths.some((path) => path.includes("canvas-2d"))).toBe(true);
-          const file = `${halo.id}__${viewport.id}__${theme}${forceCanvas ? "-canvas2d" : ""}.png`;
-          await page.screenshot({ path: `${outDir}${file}`, fullPage: false });
-          captures.push({ screen: halo.id, viewport: viewport.id, theme, file, findings: [] });
-          await page.close();
-        } finally {
-          await context.close();
+          try {
+            const page = await context.newPage();
+            const rendererPaths: string[] = [];
+            page.on("console", (message) => {
+              if (
+                message.type() === "info" &&
+                message.text().includes("[HaloRing] renderer:")
+              )
+                rendererPaths.push(message.text());
+            });
+            await page.goto(
+              `http://127.0.0.1:${server.port}/?screen=${halo.id}&theme=${theme}&platform=web&freeze=1`,
+            );
+            await page.waitForFunction(
+              () => window.exoUi?.ready === true,
+              undefined,
+              { timeout: 20_000 },
+            );
+            await page.waitForFunction(
+              (checkCorners) => {
+                const canvases = [
+                  ...document.querySelectorAll<HTMLCanvasElement>(
+                    ".halo-ring__canvas",
+                  ),
+                ];
+                if (canvases.length !== 8) return false;
+                return canvases.every((canvas) => {
+                  const ctx = canvas.getContext("2d");
+                  if (!ctx || canvas.width < 2) return false;
+                  const pixels = ctx.getImageData(
+                    0,
+                    0,
+                    canvas.width,
+                    canvas.height,
+                  ).data;
+                  let centerVisible = false;
+                  for (
+                    let y = Math.floor(canvas.height * 0.3);
+                    y < canvas.height * 0.7 && !centerVisible;
+                    y += 4
+                  ) {
+                    for (
+                      let x = Math.floor(canvas.width * 0.3);
+                      x < canvas.width * 0.7;
+                      x += 4
+                    ) {
+                      if (pixels[(y * canvas.width + x) * 4 + 3] > 0) {
+                        centerVisible = true;
+                        break;
+                      }
+                    }
+                  }
+                  const cornerAlpha =
+                    pixels[3] +
+                    pixels[(canvas.width - 1) * 4 + 3] +
+                    pixels[(canvas.height - 1) * canvas.width * 4 + 3] +
+                    pixels[(canvas.height * canvas.width - 1) * 4 + 3];
+                  return centerVisible && (!checkCorners || cornerAlpha === 0);
+                });
+              },
+              forceCanvas,
+              { timeout: 5_000 },
+            );
+            if (!forceCanvas && engineName === "webkit") {
+              const center = await page
+                .locator(".halo-ring__canvas")
+                .nth(3)
+                .evaluate((canvas) => {
+                  const element = canvas as HTMLCanvasElement;
+                  const context = element.getContext("2d");
+                  if (!context)
+                    throw new Error("Halo output canvas has no 2D context");
+                  const x = Math.floor(element.width / 2);
+                  const y = Math.floor(element.height / 2);
+                  return {
+                    size: element.width,
+                    color: [
+                      ...context.getImageData(x, y, 1, 1).data.slice(0, 3),
+                    ],
+                  };
+                });
+              expect(center.size % 2).toBe(1);
+              expect(center.color).toEqual(
+                theme === "dark" ? [68, 59, 76] : [251, 248, 246],
+              );
+            }
+            if (forceCanvas)
+              expect(
+                rendererPaths.some((path) => path.includes("canvas-2d")),
+              ).toBe(true);
+            const file = `${halo.id}__${viewport.id}__${theme}${forceCanvas ? "-canvas2d" : ""}.png`;
+            await page.screenshot({
+              path: `${outDir}${file}`,
+              fullPage: false,
+            });
+            captures.push({
+              screen: halo.id,
+              viewport: viewport.id,
+              theme,
+              file,
+              findings: [],
+            });
+            await page.close();
+          } finally {
+            await context.close();
+          }
         }
       }
-    }
-  }, 180_000);
+    }, 180_000);
 });
 
 function contactSheet(all: Capture[]): string {
   const rows = all
     .map((capture) => {
-      const problems = capture.findings.map((f) => `<li>${escapeHtml(`${f.check}${f.element ? ` ${f.element}` : ""}: ${f.detail}`)}</li>`).join("");
+      const problems = capture.findings
+        .map(
+          (f) =>
+            `<li>${escapeHtml(`${f.check}${f.element ? ` ${f.element}` : ""}: ${f.detail}`)}</li>`,
+        )
+        .join("");
       return `<figure class="${capture.findings.length ? "bad" : ""}"><a href="${capture.file}"><img loading="lazy" src="${capture.file}" alt=""></a><figcaption>${escapeHtml(`${capture.screen} · ${capture.viewport} · ${capture.theme}`)}${problems ? `<ul>${problems}</ul>` : ""}</figcaption></figure>`;
     })
     .join("\n");
@@ -429,7 +723,10 @@ function contactSheet(all: Capture[]): string {
 }
 
 function escapeHtml(text: string): string {
-  return text.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+  return text.replace(
+    /[&<>"]/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!,
+  );
 }
 
 declare global {

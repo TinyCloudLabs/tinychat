@@ -1,10 +1,20 @@
 // The final phone recorder (TC-867) in each state, over a StaticRecorderProvider
 // on the frozen clock. Night and Day come from the harness theme.
-import { PhoneRecorder, type PhoneRecorderProps } from "@/capture/recorder/final/PhoneRecorder";
+import {
+  PhoneRecorder,
+  type PhoneRecorderProps,
+} from "@/capture/recorder/final/PhoneRecorder";
 import type { AudioInputsSnapshot } from "@/capture/recorder/final/useAudioInputs";
-import { StaticRecorderProvider, type RecorderValue } from "@/capture/recorder/RecorderProvider";
+import {
+  StaticRecorderProvider,
+  type RecorderValue,
+} from "@/capture/recorder/RecorderProvider";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
-import { __setOnDeviceSttForTests, type OnDeviceSttPlugin, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
+import {
+  __setOnDeviceSttForTests,
+  type OnDeviceSttPlugin,
+  type OnDeviceSttStatus,
+} from "@/lib/voiceNotes/onDeviceStt";
 import { FROZEN_NOW } from "../stubs";
 import type { HarnessScreen } from "../screen";
 
@@ -59,7 +69,15 @@ const INPUTS: NonNullable<PhoneRecorderProps["inputs"]> = {
 };
 
 const MODEL_READY: OnDeviceSttStatus = {
-  models: [{ id: "parakeet-tdt-0.6b-v3-int8", state: "ready", bytes: 1, totalBytes: 1, error: null }],
+  models: [
+    {
+      id: "parakeet-tdt-0.6b-v3-int8",
+      state: "ready",
+      bytes: 1,
+      totalBytes: 1,
+      error: null,
+    },
+  ],
   pack: "full",
   autoDownload: true,
   download: { policy: "wifi", state: "idle" },
@@ -94,7 +112,14 @@ function screen(
     render: () => {
       __setOnDeviceSttForTests(ON_DEVICE_STT);
       return (
-        <StaticRecorderProvider value={{ ...LIVE, ...(levels ? {} : { subscribeLevel: steadyLevel }), ...value }} levels={levels}>
+        <StaticRecorderProvider
+          value={{
+            ...LIVE,
+            ...(levels ? {} : { subscribeLevel: steadyLevel }),
+            ...value,
+          }}
+          levels={levels}
+        >
           <PhoneRecorder inputs={INPUTS} {...props} />
         </StaticRecorderProvider>
       );
@@ -108,18 +133,67 @@ export const recorderFinalPhoneScreens: HarnessScreen[] = [
   screen("modes", {}, { defaultOpen: "modes" }),
   screen("via", {}, { defaultOpen: "via" }),
   screen("discard", {}, { defaultOpen: "discard" }),
-  screen("stalled", { mic: { state: "interrupted", reason: "stalled" } }, {}, QUIET),
-  screen("needs-user", { mic: { state: "needs_user", reason: "resume_not_allowed" } }, {}, QUIET),
-  screen("mic-unavailable", { mic: { state: "needs_user", reason: "mic_unavailable" } }, {}, QUIET),
-  screen("write-failed", { mic: { state: "needs_user", reason: "write_failed" } }, {}, QUIET),
-  screen("revoked", { mic: { state: "needs_user", reason: "permission_revoked" }, permissionDenied: true }, {}, QUIET),
-  screen("silenced", { mic: { state: "silenced", reason: "no_signal" } }, { silencedSinceMs: FROZEN_NOW - 6000 }, QUIET),
-  screen("countdown", { elapsedMs: minutes(170, 12), audioMs: minutes(170, 12), startedAt: FROZEN_NOW - minutes(170, 12) }),
   screen(
-    "mic-denied",
-    { phase: "idle", mic: { state: "idle", reason: null }, permissionDenied: true, startedAt: null, audioMs: 0, elapsedMs: 0 },
+    "stalled",
+    { mic: { state: "interrupted", reason: "stalled" } },
     {},
     QUIET,
   ),
-  screen("saving", { phase: "saving", mic: { state: "idle", reason: null }, savePercent: 40 }, {}, QUIET),
+  screen(
+    "needs-user",
+    { mic: { state: "needs_user", reason: "resume_not_allowed" } },
+    {},
+    QUIET,
+  ),
+  screen(
+    "mic-unavailable",
+    { mic: { state: "needs_user", reason: "mic_unavailable" } },
+    {},
+    QUIET,
+  ),
+  screen(
+    "write-failed",
+    { mic: { state: "needs_user", reason: "write_failed" } },
+    {},
+    QUIET,
+  ),
+  screen(
+    "revoked",
+    {
+      mic: { state: "needs_user", reason: "permission_revoked" },
+      permissionDenied: true,
+    },
+    {},
+    QUIET,
+  ),
+  screen(
+    "silenced",
+    { mic: { state: "silenced", reason: "no_signal" } },
+    { silencedSinceMs: FROZEN_NOW - 6000 },
+    QUIET,
+  ),
+  screen("countdown", {
+    elapsedMs: minutes(170, 12),
+    audioMs: minutes(170, 12),
+    startedAt: FROZEN_NOW - minutes(170, 12),
+  }),
+  screen(
+    "mic-denied",
+    {
+      phase: "idle",
+      mic: { state: "idle", reason: null },
+      permissionDenied: true,
+      startedAt: null,
+      audioMs: 0,
+      elapsedMs: 0,
+    },
+    {},
+    QUIET,
+  ),
+  screen(
+    "saving",
+    { phase: "saving", mic: { state: "idle", reason: null }, savePercent: 40 },
+    {},
+    QUIET,
+  ),
 ];
