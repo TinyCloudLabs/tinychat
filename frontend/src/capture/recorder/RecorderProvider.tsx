@@ -208,16 +208,19 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   // The receipt clock starts once its content is actually visible — the local Play control, or
   // its load error (receiptReady) — not at commit: a native read slow enough to still be loading
   // must not let the sheet close before the user ever sees it. Playback keeps it open past that.
-  // A hard ceiling (RECEIPT_MAX_MS), independent of readiness, bounds a read that never resolves.
+  // A hard ceiling (RECEIPT_MAX_MS) bounds only the *wait* for that content: it stops counting the
+  // instant readiness arrives, so a read that lands late (even near the ceiling itself) still gets
+  // its own full, playback-aware RECEIPT_MS window below, not whatever was left of the ceiling.
   useEffect(() => {
     if (state.outcome !== "local" && state.outcome !== "saved") return;
     if (state.permissionDenied) return;
+    if (receiptReady) return;
     const ceiling = setTimeout(() => {
       setSheetOpen(false);
       dismissOutcome();
     }, RECEIPT_MAX_MS);
     return () => clearTimeout(ceiling);
-  }, [dismissOutcome, state.outcome, state.lastSaved, state.permissionDenied]);
+  }, [dismissOutcome, receiptReady, state.outcome, state.lastSaved, state.permissionDenied]);
 
   useEffect(() => {
     if (state.outcome !== "local" && state.outcome !== "saved") return;
