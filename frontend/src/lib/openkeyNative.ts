@@ -302,6 +302,18 @@ function withNativeFetchTimeout<T>(run: (signal: AbortSignal) => Promise<T>): Pr
   return run(controller.signal).finally(() => clearTimeout(timeout));
 }
 
+export const NATIVE_SIGN_OUT_DEADLINE_MS = 10_000;
+
+function withNativeDeadline<T>(run: Promise<T>, ms = NATIVE_SIGN_OUT_DEADLINE_MS): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("OpenKey sign-out timed out")), ms);
+    run.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
+
 /** Tests only: isolate the module-level SDK client between mocked flows. */
 export function resetNativeOpenKeyClientForTests(): void {
   defaultOpenKeyNative = null;
@@ -388,7 +400,7 @@ export type NativeBootOutcome =
   | { kind: "unavailable" }
   | { kind: "storage" }
   | { kind: "configuration" }
-  | { kind: "terminal" };
+  | { kind: "terminal"; revoke: () => Promise<void> };
 
 /** Restore before the backend JWT gate: a live native grant can mint a new JWT. */
 export async function restoreNativeAtBoot(
@@ -443,11 +455,11 @@ export async function restoreNativeAtBoot(
     if (error instanceof Error && error.message.startsWith("Native sign-in is not configured")) return { kind: "configuration" };
     if (nativeCode(error) === "STORAGE") return { kind: "storage" };
     if (!terminalRenewalError(error)) return { kind: "unavailable" };
-    try { await openkey?.signOut(); }
-    catch (signOutError) {
-      if (nativeCode(signOutError) === "STORAGE") return { kind: "storage" };
-    }
-    return { kind: "terminal" };
+    const client = openkey;
+    return { kind: "terminal", revoke: () => {
+      if (!client) return Promise.reject(new Error("Native OpenKey client unavailable during terminal revoke"));
+      return withNativeDeadline(client.signOut());
+    } };
   }
 }
 
@@ -564,5 +576,5 @@ export async function signOutNative(deps?: {
     nativeClientOptions(env, env.VITE_TINYCLOUD_HOST ?? "https://tee.node.tinycloud.xyz"),
     create,
   );
-  await openkey.signOut();
+  await withNativeDeadline(openkey.signOut());
 }

@@ -31,16 +31,18 @@ function signedOutSurface(error: string | null) {
 }
 
 test("live terminal renewal shows the session-ended message with working Sign in", () => {
-  const terminal = app.slice(app.indexOf("onTerminal: () =>"), app.indexOf("onStorage: () =>"));
-  expect(terminal).toContain("clearLocalSession(NATIVE_SESSION_ENDED_MESSAGE, rawTcw)");
-  expect(terminal).toContain('setState("unauthenticated")');
+  const terminal = app.slice(app.indexOf("onTerminal: (message) =>"), app.indexOf("onStorage: () =>"));
+  expect(terminal).toContain("signOutRef.current?.({ terminal: message })");
+  const signOut = app.slice(app.indexOf("const signOut = useCallback"), app.indexOf("const isReady"));
+  expect(signOut).toContain("clearLocalSession(openKeyWarning, tcw ?? undefined)");
+  expect(signOut).toContain('if (options.terminal) setState("unauthenticated")');
   expect(app).toMatch(/const signIn = useCallback\(async \(\) => \{\s+setError\(null\);/);
   expect(app).toContain('const authAction = state === "offline" ? restoreSession : signIn;');
   signedOutSurface(NATIVE_SESSION_ENDED_MESSAGE);
 });
 
 test("terminal boot restore shows the session-ended message with working Sign in", () => {
-  const terminal = app.slice(app.indexOf('if (boot.kind === "terminal" || wasNative)'), app.indexOf("return;", app.indexOf('if (boot.kind === "terminal" || wasNative)')));
+  const terminal = app.slice(app.indexOf('if (boot.kind === "terminal" || wasNative)'), app.indexOf("const restored = await restorePersistedSession"));
   expect(terminal).toContain('if (boot.kind === "terminal") setError(NATIVE_SESSION_ENDED_MESSAGE)');
   expect(terminal).toContain('setState("unauthenticated")');
   expect(app).toMatch(/const signIn = useCallback\(async \(\) => \{\s+setError\(null\);/);

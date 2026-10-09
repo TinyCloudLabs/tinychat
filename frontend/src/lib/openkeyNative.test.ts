@@ -34,6 +34,7 @@ import {
   setNativeSessionActive,
   signInNative,
   signOutNative,
+  NATIVE_SIGN_OUT_DEADLINE_MS,
   NATIVE_SIGN_IN_CANCELLED_MESSAGE,
   NATIVE_SIGN_IN_DENIED_MESSAGE,
   NATIVE_SIGN_IN_NETWORK_MESSAGE,
@@ -533,10 +534,42 @@ describe("native boot", () => {
     const flow = makeFlow();
     flow.openkey.current = async () => ({ tokens: { accessToken: "a", refreshToken: "r" }, delegation, sessionKey });
     flow.openkey.renew = async () => { throw new OpenKeyNativeError("CONSENT_REQUIRED", "withdrawn"); };
-    expect((await restoreNativeAtBoot(config, false, flow.deps)).kind).toBe("terminal");
+    const terminal = await restoreNativeAtBoot(config, false, flow.deps);
+    expect(terminal.kind).toBe("terminal");
+    expect(flow.order).not.toContain("signOut");
+    if (terminal.kind === "terminal") await terminal.revoke();
+    expect(flow.order).toContain("signOut");
+    resetNativeOpenKeyClientForTests();
     flow.openkey.current = async () => { throw new OpenKeyNativeError("STORAGE", "secure store failed"); };
     expect((await restoreNativeAtBoot(config, true, flow.deps)).kind).toBe("storage");
   });
+
+  test("deferred terminal revoke reports only secure-store failures as storage", async () => {
+    const flow = makeFlow();
+    flow.openkey.current = async () => { throw new OpenKeyNativeError("INVALID_GRANT", "expired"); };
+    flow.openkey.signOut = async () => { throw new OpenKeyNativeError("STORAGE", "secure store failed"); };
+    const boot = await restoreNativeAtBoot(config, true, flow.deps);
+    expect(boot.kind).toBe("terminal");
+    if (boot.kind === "terminal") {
+      await expect(boot.revoke()).rejects.toMatchObject({ code: "STORAGE" });
+    }
+  });
+
+  test("a deferred terminal revoke also has the native sign-out deadline", async () => {
+    const flow = makeFlow();
+    flow.openkey.current = async () => { throw new OpenKeyNativeError("INVALID_GRANT", "expired"); };
+    flow.openkey.signOut = () => new Promise<void>(() => {});
+    const boot = await restoreNativeAtBoot(config, true, flow.deps);
+    expect(boot.kind).toBe("terminal");
+    if (boot.kind === "terminal") {
+      const started = Date.now();
+      let caught: unknown;
+      try { await boot.revoke(); } catch (error) { caught = error; }
+      expect((caught as Error).message).toBe("OpenKey sign-out timed out");
+      expect(isNativeStorageError(caught)).toBe(false);
+      expect(Date.now() - started).toBeLessThan(NATIVE_SIGN_OUT_DEADLINE_MS + 2_000);
+    }
+  }, 13_000);
 });
 
 test("renewed handoff saves the new CID, activates it, then restores on the live client", async () => {
@@ -596,6 +629,25 @@ describe("error message mapping", () => {
 });
 
 describe("native sign-out", () => {
+  test("a sign-out whose SDK call never settles times out without becoming a storage error", async () => {
+    const openkey = { signOut: () => new Promise<void>(() => {}) } as unknown as OpenKeyNative;
+    const started = Date.now();
+    let caught: unknown;
+    try {
+      await signOutNative({
+        env: { VITE_OPENKEY_NATIVE_CLIENT_ID: "exo-native" },
+        createOpenKeyNative: () => openkey,
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toBe("OpenKey sign-out timed out");
+    expect(isNativeStorageError(caught)).toBe(false);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(NATIVE_SIGN_OUT_DEADLINE_MS);
+    expect(Date.now() - started).toBeLessThan(NATIVE_SIGN_OUT_DEADLINE_MS + 2_000);
+  }, 13_000);
+
   test("a transient SDK rejection reaches the app so it can show retry guidance", async () => {
     const error = new OpenKeyNativeError("SERVER", "revoke temporarily unavailable");
     const openkey = { signOut: async () => { throw error; } } as unknown as OpenKeyNative;
@@ -632,18 +684,28 @@ describe("platform routing (source)", () => {
     expect(signOut).toContain("signOutNative()");
     expect(signOut.indexOf("isNativeOpenKeySession()")).toBeLessThan(signOut.indexOf("signOutOpenKeySession("));
     expect(signOut.indexOf("if (isNativeStorageError(caught))")).toBeLessThan(signOut.indexOf("clearLocalSession(openKeyWarning, tcw ?? undefined)"));
-    expect(signOut.indexOf("nativeRenewalRef.current?.stop()")).toBeLessThan(signOut.indexOf("await signOutNative()"));
+    const body = signOut.slice(signOut.indexOf("try {"));
+    expect(body.match(/^try \{\s+nativeRenewalRef\.current\?\.stop\(\)/)?.[0]).toBeDefined();
+    expect(body.indexOf("nativeRenewalRef.current?.stop()")).toBeLessThan(body.indexOf("await "));
     const storageFailure = signOut.slice(signOut.indexOf("if (isNativeStorageError(caught))"), signOut.indexOf("if (caught instanceof Error"));
     expect(storageFailure).toContain('setState("ready")');
-    expect(storageFailure).toContain("await nativeRenewalRef.current?.resume()");
+    expect(storageFailure).toContain("void nativeRenewalRef.current?.resume()");
+    expect(signOut).not.toContain("await nativeRenewalRef.current?.resume()");
     expect(storageFailure).not.toContain("setNativeSessionActive(false)");
-    const terminal = app.slice(app.indexOf("onTerminal: () =>"), app.indexOf("onStorage: () =>"));
-    expect(terminal).toContain("clearLocalSession(NATIVE_SESSION_ENDED_MESSAGE, rawTcw)");
+    expect(signOut).toContain("openKeyWarning = NATIVE_SIGN_OUT_WARNING");
+    expect(signOut).toContain("if (nativeSession && !options.terminal)");
+    expect(signOut).toContain('if (options.terminal) setState("unauthenticated")');
+    const terminal = app.slice(app.indexOf("onTerminal: (message) =>"), app.indexOf("onStorage: () =>"));
+    expect(terminal).toContain("signOutRef.current?.({ terminal: message })");
+    expect(app).toContain("signOutInFlightRef.current = true");
   });
 
   test("boot restores native grants before trying the legacy widget restore", () => {
     const boot = app.slice(app.indexOf("const restoreSession = useCallback"), app.indexOf("useEffect(() => {\n    if (restoredRef.current)"));
     expect(boot.indexOf("restoreNativeAtBoot(")).toBeLessThan(boot.indexOf("restorePersistedSession("));
     expect(boot).toContain('boot.kind === "restored"');
+    const terminal = boot.slice(boot.indexOf('if (boot.kind === "terminal" || wasNative)'), boot.indexOf("sessionStoreRef.current.clear()", boot.indexOf('if (boot.kind === "terminal" || wasNative)')));
+    expect(terminal.indexOf("clearPersistedSession(storedAddress)")).toBeLessThan(terminal.indexOf("await boot.revoke()"));
+    expect(terminal).toContain('setError(NATIVE_STORAGE_MESSAGE)');
   });
 });

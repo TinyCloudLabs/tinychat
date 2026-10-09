@@ -159,6 +159,7 @@ export function App() {
   const restoredRef = useRef(false);
   const restoreInFlightRef = useRef(false);
   const nativeRenewalRef = useRef<NativeRenewal | null>(null);
+  const signOutRef = useRef<(options?: { terminal?: string }) => Promise<void>>(undefined);
   const selectionControllerRef = useRef<ModelSelectionController | null>(null);
   // Live ref the runtime reads at model-context request time. Initialized to
   // null and reconciled by useChatRuntime + MemoryPanel from the per-space
@@ -305,10 +306,7 @@ export function App() {
     const renewal = new NativeRenewal({
       openkey, tcw: rawTcw, session, sessionStore: sessionStoreRef.current,
       ...services,
-      onTerminal: () => {
-        clearLocalSession(NATIVE_SESSION_ENDED_MESSAGE, rawTcw);
-        setState("unauthenticated");
-      },
+      onTerminal: (message) => { void signOutRef.current?.({ terminal: message }); },
       onStorage: () => { setError(NATIVE_STORAGE_MESSAGE); setBillingNotice(NATIVE_STORAGE_MESSAGE); },
       onUnavailable: (message) => { setError(message); setBillingNotice(message); },
     });
@@ -382,6 +380,18 @@ export function App() {
         if (boot.kind === "terminal" || wasNative) {
           const storedAddress = sessionStoreRef.current.getAddress();
           if (storedAddress) clearPersistedSession(storedAddress);
+          if (boot.kind === "terminal") {
+            try {
+              await boot.revoke();
+            } catch (caught) {
+              logNativeOpenKeyError("boot sign-out revoke", caught);
+              if (isNativeStorageError(caught)) {
+                setError(NATIVE_STORAGE_MESSAGE);
+                setState("recoverableError");
+                return;
+              }
+            }
+          }
           sessionStoreRef.current.clear();
           setNativeSessionActive(false);
           if (boot.kind === "terminal") setError(NATIVE_SESSION_ENDED_MESSAGE);
@@ -742,17 +752,18 @@ export function App() {
     }
   }, []);
 
-  const signOut = useCallback(async () => {
+  const signOut = useCallback(async (options: { terminal?: string } = {}) => {
     if (signOutInFlightRef.current) return;
     signOutInFlightRef.current = true;
     setSigningOut(true);
     setError(null);
     try {
-      let openKeyWarning: string | null = null;
+      nativeRenewalRef.current?.stop();
+      let openKeyWarning: string | null = options.terminal ?? null;
       const nativeSession = isNativeOpenKeySession();
-      if (nativeSession) {
-        // Stop before the first await: an in-flight verify cannot republish a JWT.
-        nativeRenewalRef.current?.stop();
+      if (nativeSession && !options.terminal) {
+        // Renewal is stopped before the first await so an in-flight verify
+        // cannot republish a JWT while the session is being cleared.
         // Native sign-out revokes the OpenKey delegation grant and clears the
         // secure-store session unless secure storage needs another attempt.
         try {
@@ -764,7 +775,7 @@ export function App() {
             // Keep the native marker and current session for another attempt.
             setError(NATIVE_SIGN_OUT_STORAGE_WARNING);
             setState("ready");
-            await nativeRenewalRef.current?.resume();
+            void nativeRenewalRef.current?.resume();
             return;
           }
           if (caught instanceof Error && caught.message.startsWith("Native sign-in is not configured")) {
@@ -772,12 +783,12 @@ export function App() {
             // native client is configured again.
             setError(caught.message);
             setState("ready");
-            await nativeRenewalRef.current?.resume();
+            void nativeRenewalRef.current?.resume();
             return;
           }
           openKeyWarning = NATIVE_SIGN_OUT_WARNING;
         }
-      } else {
+      } else if (!options.terminal) {
         const openKeyOutcome = await signOutOpenKeySession(
           openkeyRef.current,
           () => new OpenKey({ appName: APP_NAME, host: OPENKEY_HOST, passkeysSupported: openkeyPasskeysSupported() }),
@@ -798,7 +809,7 @@ export function App() {
         }
       }
 
-      if (tcw && !nativeSession) {
+      if (tcw && !nativeSession && !options.terminal) {
         try {
           await tcw.signOut?.();
         } catch (caught) {
@@ -806,11 +817,14 @@ export function App() {
         }
       }
       clearLocalSession(openKeyWarning, tcw ?? undefined);
+      if (options.terminal) setState("unauthenticated");
     } finally {
       signOutInFlightRef.current = false;
       setSigningOut(false);
     }
   }, [address, tcw]);
+
+  useEffect(() => { signOutRef.current = signOut; }, [signOut]);
 
   const isReady = state === "ready" && tcw !== null;
   // The offline state still HOLDS a session, so its "Try again" re-runs the
