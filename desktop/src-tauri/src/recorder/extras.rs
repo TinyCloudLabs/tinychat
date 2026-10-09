@@ -163,11 +163,9 @@ pub fn install(app: &tauri::App) {
                 Progress {
                     id: id.into(),
                     fraction,
-                    status: if fraction >= 1.0 {
-                        "done"
-                    } else {
-                        "downloading"
-                    },
+                    // Upstream completion can precede the final on-disk check.
+                    // Only recorder_models_download emits terminal "done".
+                    status: "downloading",
                     error: None,
                 },
             );
