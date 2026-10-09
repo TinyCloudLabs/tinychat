@@ -69,6 +69,8 @@ public final class CaptureEngine {
     var debugInputRoute: (id: String?, sampleRate: Double?)?
     var debugNow: (() -> TimeInterval)?
     var debugMuxWaitTimeout: TimeInterval?
+    var debugMuxOperationTimeout: TimeInterval?
+    var debugMuxWaitSeam: RecordingFinalizer.WaitSeam?
     #endif
     private var isForeground: Bool {
         #if DEBUG
@@ -829,6 +831,13 @@ public final class CaptureEngine {
         let input = currentInput
         let noSignal = noSignalMs
         let muxWaitTimeout = self.muxWaitTimeout
+        #if DEBUG
+        let muxWaitSeam = debugMuxWaitSeam
+        let muxOperationTimeout = debugMuxOperationTimeout
+        #else
+        let muxWaitSeam: RecordingFinalizer.WaitSeam? = nil
+        let muxOperationTimeout: TimeInterval? = nil
+        #endif
         limitTimer?.invalidate(); limitTimer = nil
         writer = nil; info = nil; intent = "stopped"; availability = "available"; reason = stopReason
         emitState()
@@ -862,7 +871,9 @@ public final class CaptureEngine {
                 let committed = try library.commit(session.id, sidecar: sidecar) { staged in
                     try RecordingFinalizer.mux(segments: RecordingFinalizer.segments(in: library.sessionURL(session.id)),
                                                expectedAudioMs: duration, to: staged,
-                                               waitTimeout: muxWaitTimeout)
+                                               waitTimeout: muxWaitTimeout,
+                                               seam: muxWaitSeam ?? RecordingFinalizer.WaitSeam(),
+                                               operationTimeout: muxOperationTimeout)
                 }
                 log.notice("finalize stage=committed id=\(session.id, privacy: .public)")
                 let flushes = library.syncMetrics()
@@ -877,7 +888,29 @@ public final class CaptureEngine {
                 }
             } catch {
                 log.error("finalize stage=failed id=\(session.id, privacy: .public) error=\(String(describing: error), privacy: .public)")
-                DispatchQueue.main.async { completion(.failure(error)) }
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                    if let captureError = error as? CaptureError,
+                       case .finalizationTimedOut = captureError {
+                        self.retryTimedOutSession(session.id)
+                    }
+                }
+            }
+        }
+    }
+
+    private func retryTimedOutSession(_ id: String) {
+        log.notice("finalize stage=recovery_scheduled id=\(id, privacy: .public) delaySeconds=2")
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self else { return }
+            do {
+                try self.recoverSession(id)
+                self.log.notice("finalize stage=recovery_completed id=\(id, privacy: .public)")
+            } catch {
+                self.log.error("finalize stage=recovery_failed id=\(id, privacy: .public) error=\(String(describing: error), privacy: .public)")
+                DispatchQueue.main.async {
+                    self.emit("recoveryFailed", ["id": id, "reason": String(describing: error)], retained: true)
+                }
             }
         }
     }

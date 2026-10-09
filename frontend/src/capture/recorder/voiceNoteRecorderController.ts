@@ -29,7 +29,7 @@ import {
   savePendingRecordings,
 } from "@/lib/voiceNotes/recorderSaves";
 import type { VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { limitNoticeText } from "./recorderCopy";
+import { FINALIZATION_PENDING, limitNoticeText } from "./recorderCopy";
 import { autoStopIsCurrent, initialRecorderState, recorderReducer, type RecorderEvent, type RecorderState } from "./recorderReducer";
 
 export interface VoiceNoteRecorderControllerOptions {
@@ -191,7 +191,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
       if (recording) void saveInBackground(recording);
       return;
     }
-    send({ type: "AUTO_STOPPED", id: recording?.id ?? null, notice: limitNoticeText(event.maxDurationMs), captured: recording !== null });
+    send({ type: "AUTO_STOPPED", id: recording?.id ?? null, notice: limitNoticeText(event.maxDurationMs),
+      captured: recording !== null, error: event.error });
     if (!recording) return;
     void saveStopped(recording).catch((caught: unknown) =>
       send({ type: "SAVE_FAILED", error: messageOf(caught), recording: { id: recording.id, durationMs: recording.durationMs } }),
@@ -289,7 +290,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
         recording = await VoiceNotes.stop();
       } catch (caught) {
         // "not_recording": the limit stopped it first, and its "autoStopped" event saves it.
-        await reconcileFailedStop(errorCode(caught) === "not_recording" ? null : `Could not stop: ${messageOf(caught)}`);
+        const code = errorCode(caught);
+        await reconcileFailedStop(code === "not_recording" ? null
+          : code === "finalization_timed_out" ? FINALIZATION_PENDING
+          : `Could not stop: ${messageOf(caught)}`);
         return;
       }
       void saveStopped(recording).catch((caught: unknown) =>

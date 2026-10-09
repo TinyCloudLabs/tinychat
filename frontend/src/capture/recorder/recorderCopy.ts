@@ -108,6 +108,7 @@ export function clockTime(at: number): string {
 
 export const RECEIPT_SAVED = "Saved to your TinyCloud space";
 export const RECEIPT_KEPT = "Kept on this phone. Not in your space yet.";
+export const FINALIZATION_PENDING = "Recording kept on this phone. Exo will finish it automatically.";
 export const ISLAND_SAVED = "Saved to your space";
 export const ISLAND_KEPT = "Kept on this phone";
 export const DISCARD_PROMPT = "Discard?";

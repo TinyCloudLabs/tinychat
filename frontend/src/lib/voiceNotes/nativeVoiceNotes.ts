@@ -147,6 +147,8 @@ export interface VoiceNoteAutoStopEvent {
   maxDurationMs: number;
   at: number;
   recording: VoiceNoteRecording | null;
+  /** Native finalization error code when recording is null. */
+  error?: string | null;
 }
 
 /** One slice of a recording on the device. */
