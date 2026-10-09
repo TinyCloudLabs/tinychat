@@ -120,7 +120,9 @@ import XCTest
                 completed.fulfill()
             }
             wait(for: [entered], timeout: 5)
-            XCTAssertNoThrow(try engine.retryRecovery(id))
+            XCTAssertThrowsError(try engine.retryRecovery(id)) {
+                XCTAssertEqual($0 as? CaptureError, .recordingInProgress)
+            }
             release.signal()
             wait(for: [completed], timeout: 10)
             XCTAssertFalse(recovered)
@@ -159,6 +161,62 @@ import XCTest
         let saved = try expired.library.readSidecar(id)
         XCTAssertEqual(saved["exitReason"] as? String, "pause_timeout")
         XCTAssertEqual(saved["endedUnexpectedly"] as? Bool, false)
+    }
+
+    func testFirstAudioAndCaptureStoppedReachJournalAndSidecar() throws {
+        try withEngine { engine in
+            let id = try XCTUnwrap(engine.start()["id"] as? String)
+            try engine.debugFirstAudio()
+            try enqueueTone(engine)
+            var journal: [[String: Any]] = []
+            engine.library.gate = { point in
+                if point == "stage.begin" { journal = (try? engine.library.readJournal(id)) ?? [] }
+            }
+            let stopped = expectation(description: "stop committed")
+            engine.stop { result in
+                if case .failure(let error) = result { XCTFail("Stop failed: \(error)") }
+                stopped.fulfill()
+            }
+            wait(for: [stopped], timeout: 10)
+            let first = try XCTUnwrap(journal.first { $0["e"] as? String == "first_audio" }?["t"] as? Int64)
+            let end = try XCTUnwrap(journal.last { $0["e"] as? String == "capture_stopped" }?["t"] as? Int64)
+            XCTAssertGreaterThanOrEqual(end, first)
+            let sidecar = try engine.library.readSidecar(id)
+            XCTAssertEqual(sidecar["firstAudioAt"] as? Int64, first)
+            XCTAssertEqual(sidecar["captureStoppedAt"] as? Int64, end)
+        }
+    }
+
+    func testQuarantinedAudioIsNeverLegacyImportedOrReannounced() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("exo-quarantine-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let initial = try CaptureEngine(testRoot: root)
+        let id = UUID().uuidString.lowercased()
+        try initial.library.startSession(SessionInfo(id: id, source: "in_app", owner: nil,
+            transitionGen: 0, options: CaptureOptions(), startedAt: 1))
+        initial.library.endLiveCapture(id)
+        for _ in 0..<3 {
+            try initial.library.beginRecoveryAttempt(id)
+        }
+        try Data("orphan".utf8).write(to: initial.library.url("\(id).m4a"))
+        for launch in 0..<2 {
+            let engine = try CaptureEngine(testRoot: root)
+            var probes = 0
+            var failures = 0
+            let announced = expectation(description: "new quarantine announced")
+            if launch == 1 { announced.isInverted = true }
+            engine.library.gate = { if $0 == "probe.afterLoad" { probes += 1 } }
+            let token = engine.observe { name, _, _ in
+                if name == "recoveryFailed" { failures += 1; announced.fulfill() }
+            }
+            engine.recoverOnce()
+            try engine.awaitRecovery()
+            wait(for: [announced], timeout: launch == 0 ? 2 : 0.1)
+            XCTAssertEqual(probes, 0)
+            XCTAssertEqual(failures, launch == 0 ? 1 : 0)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: engine.library.sidecarURL(id).path))
+            engine.removeObserver(token)
+        }
     }
 
     func testBackgroundRefusalAndForegroundBlockedAttempt() throws {
@@ -325,6 +383,7 @@ import XCTest
             engine.debugNow = { clock }
             engine.debugSuppressTaps()
             let id = try XCTUnwrap(engine.start()["id"] as? String)
+            engine.debugDisableWatchdog()
             engine.debugAgeLastTap(by: 4)
             engine.debugWatchdogTick()
             XCTAssertEqual(engine.status()["state"] as? String, "recording")
@@ -357,7 +416,8 @@ import XCTest
             XCTAssertEqual(engine.status()["state"] as? String, "needs_user")
             XCTAssertEqual(engine.status()["reason"] as? String, "stalled")
             XCTAssertFalse(engine.debugRetryPending)
-            XCTAssertLessThanOrEqual(engine.debugSegmentOpenCount, 5)
+            // Initial capture, two stall rebuilds, one explicit configuration rebuild, two retries.
+            XCTAssertLessThanOrEqual(engine.debugSegmentOpenCount, 6)
             XCTAssertTrue(try events(engine, id).contains {
                 $0["e"] as? String == "avail" && $0["value"] as? String == "blocked" &&
                 $0["reason"] as? String == "stalled"

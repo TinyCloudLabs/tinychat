@@ -601,6 +601,7 @@ final class RecordingLibraryTests: XCTestCase {
         let id = UUID().uuidString.lowercased()
         try library.startSession(SessionInfo(id: id, source: "in_app", owner: nil,
                                              transitionGen: 0, options: CaptureOptions(), startedAt: 1))
+        library.endLiveCapture(id)
         for _ in 0..<3 {
             let launch = try RecordingLibrary(root: root)
             XCTAssertTrue(try launch.recoverableSessions().contains(id))
@@ -614,6 +615,23 @@ final class RecordingLibraryTests: XCTestCase {
         try library.prepareRecoveryRetry(id)
         XCTAssertTrue(FileManager.default.fileExists(atPath: library.sessionURL(id).path))
         try library.discardFailedRecording(id)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: library.sessionURL(id).path))
+    }
+
+    func testDiscardRequiresFailedRecoveryAndDeletesOrphanAudio() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try library.startSession(SessionInfo(id: id, source: "in_app", owner: nil,
+                                             transitionGen: 0, options: CaptureOptions(), startedAt: 1))
+        XCTAssertThrowsError(try library.discardFailedRecording(id))
+        library.endLiveCapture(id)
+        XCTAssertThrowsError(try library.discardFailedRecording(id))
+        try library.beginRecoveryAttempt(id)
+        XCTAssertThrowsError(try library.discardFailedRecording(id))
+        try library.noteRecoveryFailure(id, reason: "bad segment")
+        try Data("partial audio".utf8).write(to: library.url("\(id).m4a"))
+        try library.discardFailedRecording(id)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: library.url("\(id).m4a").path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: library.sessionURL(id).path))
     }
 
@@ -705,5 +723,38 @@ final class RecordingLibraryTests: XCTestCase {
             XCTAssertEqual(entry["handle"] as? String, fields.values.first as? String)
             XCTAssertNil(entry["opKind"])
         }
+    }
+
+    func testOutboxResultsUseOriginalReceiptKindForGenericHandle() throws {
+        let cases: [(kind: String, mode: String?, expectedKind: String, state: String)] = [
+            ("hosted_create", "hosted", "hosted_upload", "pending"),
+            ("hosted_submit", "hosted", "transcript", "pending"),
+            ("own_upload", "own", "own_upload_lookup", "lookup"),
+            ("own_create", "own", "transcript", "pending"),
+            ("ptx_create", nil, "ptx_job", "pending")]
+        for item in cases {
+            let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+            let id = UUID().uuidString.lowercased()
+            try library.beginRemoteOp(["id": id, "did": "did:test", "opId": "op",
+                "provider": item.kind == "ptx_create" ? "ptx" : "assemblyai",
+                "mode": item.mode as Any? ?? NSNull(), "kind": item.kind,
+                "fingerprint": "one", "startedAt": 100])
+            _ = try library.recordRemoteResult(id: id, did: "did:test", opId: "op",
+                result: ["outcome": "created", "handle": "generic-handle"])
+            let after = try XCTUnwrap(library.listOutbox(did: "did:test").first)
+            XCTAssertEqual(after["kind"] as? String, item.expectedKind)
+            XCTAssertEqual(after["state"] as? String, item.state)
+            XCTAssertEqual(after["handle"] as? String, "generic-handle")
+        }
+    }
+
+    func testJournalRecoveryCarriesCaptureIntervalMarkers() throws {
+        let recovered = try JournalRecovery(events: [
+            ["e": "session", "t": Int64(100), "a": Int64(0)],
+            ["e": "first_audio", "t": Int64(120), "a": Int64(0)],
+            ["e": "capture_stopped", "t": Int64(400), "a": Int64(200)],
+            ["e": "stop", "t": Int64(410), "a": Int64(200)]])
+        XCTAssertEqual(recovered.firstAudioAt, 120)
+        XCTAssertEqual(recovered.captureStoppedAt, 400)
     }
 }

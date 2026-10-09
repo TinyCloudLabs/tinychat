@@ -24,6 +24,9 @@ public final class CaptureEngine {
     private var lastTapEndSample: AVAudioFramePosition?
     private var lastTapAt: TimeInterval = 0
     private var tapDeliveryCount: UInt64 = 0
+    private var firstAudioAt: Int64?
+    private var captureStoppedAt: Int64?
+    private var lowBatteryReported = false
     private var observedTapDeliveryCount: UInt64 = 0
     private var consecutiveStalls = 0
     private var stallBackoffActive = false
@@ -118,6 +121,7 @@ public final class CaptureEngine {
         tapTimeLock.lock(); lastTapAt = retryNow - seconds; tapTimeLock.unlock()
     }
     func debugWatchdogTick() { checkDurationLimit() }
+    func debugDisableWatchdog() { limitTimer?.invalidate(); limitTimer = nil }
     func debugSuppressTaps() {
         tapTimeLock.lock(); debugSuppressTapDelivery = true; tapTimeLock.unlock()
     }
@@ -126,6 +130,14 @@ public final class CaptureEngine {
         tapDeliveryCount &+= 1
         lastTapAt = retryNow
         tapTimeLock.unlock()
+    }
+    func debugFirstAudio() throws {
+        guard let id = info?.id else { throw CaptureError.notRecording }
+        tapTimeLock.lock(); defer { tapTimeLock.unlock() }
+        guard firstAudioAt == nil else { return }
+        let at = wallClock.nowMilliseconds()
+        try library.appendJournal(id, ["e": "first_audio", "t": at, "a": Int64(0)])
+        firstAudioAt = at
     }
     func debugEnqueue(_ buffer: AVAudioPCMBuffer) throws {
         guard let writer, intent == "recording" else { throw CaptureError.notRecording }
@@ -193,7 +205,20 @@ public final class CaptureEngine {
         DispatchQueue.global(qos: .utility).async { [self] in
             defer { recovery.leave() }
             do {
+                let alreadyQuarantined = Set(try library.listRecoveryFailures().compactMap { failure -> String? in
+                    guard failure["quarantined"] as? Bool == true else { return nil }
+                    return failure["id"] as? String
+                })
                 let ids = try library.recoverableSessions()
+                for failure in try library.listRecoveryFailures() {
+                    guard failure["quarantined"] as? Bool == true,
+                          let id = failure["id"] as? String,
+                          !alreadyQuarantined.contains(id) else { continue }
+                    let message = failure["reason"] as? String ?? "recovery interrupted"
+                    DispatchQueue.main.async {
+                        self.emit("recoveryFailed", ["id": id, "reason": message], retained: true)
+                    }
+                }
                 CaptureRecoverySweep.run(ids: ids, recover: { id in
                     guard !library.isLiveCapture(id) else { return }
                     try library.beginRecoveryAttempt(id)
@@ -204,14 +229,6 @@ public final class CaptureEngine {
                         log.error("Recovery failed for \(id, privacy: .public): \(String(describing: error), privacy: .public)")
                         DispatchQueue.main.async { self.emit("recoveryFailed", ["id": id, "reason": String(describing: error)], retained: true) }
                 })
-                for failure in try library.listRecoveryFailures()
-                where failure["quarantined"] as? Bool == true {
-                    guard let id = failure["id"] as? String, !ids.contains(id) else { continue }
-                    let message = failure["reason"] as? String ?? "recovery failed"
-                    DispatchQueue.main.async {
-                        self.emit("recoveryFailed", ["id": id, "reason": message], retained: true)
-                    }
-                }
                 try importLegacyOrphans()
             } catch {
                 log.error("Recovery scan failed: \(String(describing: error), privacy: .public)")
@@ -309,6 +326,8 @@ public final class CaptureEngine {
         currentInput = nil; currentInputRate = nil
         consecutiveStalls = 0; stallBackoffActive = false
         tapTimeLock.lock(); observedTapDeliveryCount = tapDeliveryCount; tapTimeLock.unlock()
+        firstAudioAt = nil; captureStoppedAt = nil; lowBatteryReported = false
+        UIDevice.current.isBatteryMonitoringEnabled = true
         noSignalMs = 0; zeroSince = nil
         lastDiskCheck = Date()
         let ticket = attempts.startSession(session.id)
@@ -430,6 +449,15 @@ public final class CaptureEngine {
             #endif
             if let self {
                 if delivered {
+                    if self.firstAudioAt == nil, buffer.frameLength > 0 {
+                        let at = self.wallClock.nowMilliseconds()
+                        do {
+                            try self.library.appendJournal(session.id, ["e": "first_audio", "t": at, "a": Int64(0)])
+                            self.firstAudioAt = at
+                        } catch {
+                            DispatchQueue.main.async { self.writerFailed(error) }
+                        }
+                    }
                     self.lastTapAt = ProcessInfo.processInfo.systemUptime
                     self.tapDeliveryCount &+= 1
                     if when.isSampleTimeValid {
@@ -465,12 +493,21 @@ public final class CaptureEngine {
         let renderEnd = renderTime?.isSampleTimeValid == true ? renderTime?.sampleTime : nil
         engine.stop()
         guard !engine.isRunning else { return false }
+        let stoppedAt = wallClock.nowMilliseconds()
         engine.inputNode.removeTap(onBus: 0)
         tapCallbacks.wait()
         tapTimeLock.lock()
         let deliveredEnd = lastTapEndSample
         observedTapDeliveryCount = tapDeliveryCount
         tapTimeLock.unlock()
+        captureStoppedAt = stoppedAt
+        if let id = info?.id, !FileManager.default.fileExists(atPath: library.url("tombstones/\(id)").path) {
+            do { try library.appendJournal(id, ["e": "capture_stopped", "t": stoppedAt, "a": audioMs]) }
+            catch {
+                log.error("Capture-stop journal failed: \(String(describing: error), privacy: .public)")
+                emit("writeFailure", ["id": id, "error": String(describing: error)], retained: true)
+            }
+        }
         if let renderEnd, let deliveredEnd {
             log.notice("Pause/stop tap tail estimate samples=\(max(0, renderEnd - deliveredEnd)); bufferSize=1024")
         }
@@ -507,6 +544,23 @@ public final class CaptureEngine {
     }
 
     private func checkDurationLimit() {
+        if let session = info, intent == "recording", !lowBatteryReported,
+           UIDevice.current.batteryState == .unplugged {
+            let level = UIDevice.current.batteryLevel
+            if level >= 0 {
+                let percent = Int((level * 100).rounded())
+                if percent <= 5 {
+                    do {
+                        try library.appendJournal(session.id, ["e": "low_battery", "t": wallClock.nowMilliseconds(),
+                                                               "a": audioMs, "level": percent])
+                        lowBatteryReported = true
+                    } catch {
+                        writerFailed(error)
+                        return
+                    }
+                }
+            }
+        }
         if let session = info, intent == "recording",
            (status()["elapsedMs"] as? Int64 ?? 0) >= session.maxDurationMs {
             stop(reason: "max_duration") { [weak self] result in
@@ -894,6 +948,8 @@ public final class CaptureEngine {
         let spans = self.spans
         let input = currentInput
         let noSignal = noSignalMs
+        let firstAudio = firstAudioAt
+        let inputStopped = captureStoppedAt
         let muxWaitTimeout = self.muxWaitTimeout
         #if DEBUG
         let muxWaitSeam = debugMuxWaitSeam
@@ -931,7 +987,9 @@ public final class CaptureEngine {
                                           pausedMs: paused, spans: spans, recovered: false,
                                           endedUnexpectedly: false,
                                           lastHeartbeatAt: lastHeartbeat, input: input,
-                                          noSignalMs: noSignal)
+                                          noSignalMs: noSignal,
+                                          firstAudioAt: firstAudio,
+                                          captureStoppedAt: inputStopped)
                 log.notice("finalize stage=mux_start id=\(session.id, privacy: .public) durationMs=\(duration)")
                 let committed = try library.commit(session.id, sidecar: sidecar) { staged in
                     try RecordingFinalizer.mux(segments: RecordingFinalizer.segments(in: library.sessionURL(session.id)),
@@ -1184,11 +1242,13 @@ public final class CaptureEngine {
     private func makeSidecar(_ session: SessionInfo, duration: Int64, wallMs: Int64,
                              pausedMs: Int64, spans: [MissingAudioSpan], recovered: Bool,
                              endedUnexpectedly: Bool, lastHeartbeatAt: Int64?,
-                             input: [String: Any]?, noSignalMs: Int64 = 0) -> [String: Any] {
+                             input: [String: Any]?, noSignalMs: Int64 = 0,
+                             firstAudioAt: Int64? = nil, captureStoppedAt: Int64? = nil) -> [String: Any] {
         SidecarFactory.v2(session: session, durationMs: duration, wallMs: wallMs,
                           pausedMs: pausedMs, spans: spans, input: input,
                           recovered: recovered, endedUnexpectedly: endedUnexpectedly,
-                          lastHeartbeatAt: lastHeartbeatAt, noSignalMs: noSignalMs)
+                          lastHeartbeatAt: lastHeartbeatAt, noSignalMs: noSignalMs,
+                          firstAudioAt: firstAudioAt, captureStoppedAt: captureStoppedAt)
     }
 
     private func recoverSession(_ id: String) throws {
@@ -1240,7 +1300,9 @@ public final class CaptureEngine {
                                   wallMs: recovered.wallMs, pausedMs: recovered.pausedMs,
                                   spans: recovered.spans, recovered: true,
                                   endedUnexpectedly: recovered.endedUnexpectedly,
-                                  lastHeartbeatAt: recovered.lastHeartbeatAt, input: recovered.input)
+                                  lastHeartbeatAt: recovered.lastHeartbeatAt, input: recovered.input,
+                                  firstAudioAt: recovered.firstAudioAt,
+                                  captureStoppedAt: recovered.captureStoppedAt)
         if events.last(where: { $0["e"] as? String == "stop" })?["reason"] as? String == "pause_timeout" {
             sidecar["exitReason"] = "pause_timeout"
         }
@@ -1315,7 +1377,6 @@ public final class CaptureEngine {
     }
 
     public func discardFailedRecording(_ id: String) throws {
-        guard info?.id != id else { throw CaptureError.recordingInProgress }
         try library.discardFailedRecording(id)
     }
 
@@ -1325,6 +1386,8 @@ public final class CaptureEngine {
             let id = audio.deletingPathExtension().lastPathComponent
             guard RecordingLibrary.validID(id),
                   !FileManager.default.fileExists(atPath: library.sessionURL(id).path),
+                  !FileManager.default.fileExists(atPath: library.url("quarantine/\(id).session").path),
+                  !FileManager.default.fileExists(atPath: library.url("quarantine/\(id).recovery.json").path),
                   !FileManager.default.fileExists(atPath: library.url("tombstones/\(id)").path) else { continue }
             if FileManager.default.fileExists(atPath: library.sidecarURL(id).path),
                (try? library.readSidecar(id)) != nil { continue }

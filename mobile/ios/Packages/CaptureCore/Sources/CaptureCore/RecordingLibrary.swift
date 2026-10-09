@@ -508,11 +508,21 @@ public final class RecordingLibrary {
             }
             var open = receipt
             switch receipt["kind"] as? String {
-            case "hosted_upload": open["kind"] = "hosted_create"; open["uploadId"] = receipt["handle"]
-            case "hosted_submit": open["kind"] = "hosted_submit"; open["uploadId"] = receipt["handle"]
-            case "own_upload_lookup": open["kind"] = "own_create"; open["uploadUrl"] = receipt["handle"]
-            case "ptx_job": open["kind"] = "ptx_create"; open["jobId"] = receipt["handle"]
-            case "transcript": open["kind"] = "own_create"; open["jobId"] = receipt["handle"]
+            case "hosted_upload":
+                open["kind"] = "hosted_create"
+                if let handle = receipt["handle"] as? String { open["uploadId"] = handle }
+            case "hosted_submit":
+                open["kind"] = "hosted_submit"
+                if let handle = receipt["handle"] as? String { open["uploadId"] = handle }
+            case "own_upload_lookup":
+                open["kind"] = "own_upload"
+                if let handle = receipt["handle"] as? String { open["uploadUrl"] = handle }
+            case "ptx_job":
+                open["kind"] = "ptx_create"
+                if let handle = receipt["handle"] as? String { open["jobId"] = handle }
+            case "transcript":
+                open["kind"] = "own_create"
+                if let handle = receipt["handle"] as? String { open["jobId"] = handle }
             default:
                 open["kind"] = (receipt["provider"] as? String) == "ptx" ? "ptx_create" :
                     (receipt["mode"] as? String) == "hosted" ? "hosted_submit" : "own_create"
@@ -960,6 +970,13 @@ public final class RecordingLibrary {
     public func prepareRecoveryRetry(_ id: String) throws {
         guard Self.validID(id) else { throw CaptureError.invalidArgument }
         try queue.sync {
+            guard !liveSessions.contains(id), active[id, default: 0] == 0 else {
+                throw CaptureError.recordingInProgress
+            }
+            guard let data = try? Data(contentsOf: recoveryMarker(id)),
+                  let marker = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  marker["inFlight"] as? Bool == false,
+                  !FileManager.default.fileExists(atPath: sidecarURL(id).path) else { throw CaptureError.notFound }
             let parked = url("quarantine/\(id).session")
             if FileManager.default.fileExists(atPath: parked.path) {
                 try FileManager.default.moveItem(at: parked, to: sessionURL(id))
@@ -984,9 +1001,24 @@ public final class RecordingLibrary {
         try queue.sync {
             let parked = url("quarantine/\(id).session")
             let marker = url("quarantine/\(id).recovery.json")
-            guard FileManager.default.fileExists(atPath: marker.path) else { throw CaptureError.notFound }
+            guard !liveSessions.contains(id), active[id, default: 0] == 0 else {
+                throw CaptureError.recordingInProgress
+            }
+            guard let data = try? Data(contentsOf: marker),
+                  let record = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  record["inFlight"] as? Bool == false,
+                  !FileManager.default.fileExists(atPath: sidecarURL(id).path),
+                  FileManager.default.fileExists(atPath: parked.path) ||
+                    FileManager.default.fileExists(atPath: sessionURL(id).path) else { throw CaptureError.notFound }
+            let tombstone = url("tombstones/\(id)")
+            if !FileManager.default.fileExists(atPath: tombstone.path) {
+                guard FileManager.default.createFile(atPath: tombstone.path, contents: Data()) else {
+                    throw CaptureError.io("create recovery discard tombstone")
+                }
+                try sync(url("tombstones"))
+            }
             if FileManager.default.fileExists(atPath: parked.path) { try FileManager.default.removeItem(at: parked) }
-            if FileManager.default.fileExists(atPath: sessionURL(id).path) { try FileManager.default.removeItem(at: sessionURL(id)) }
+            try unlinkArtifactsUnlocked(id)
             try FileManager.default.removeItem(at: marker)
             try sync(url("quarantine")); try sync(url("sessions"))
         }
