@@ -67,6 +67,7 @@ describe("DesktopRecorder", () => {
     expect(html).not.toContain('aria-label="Discard recording"');
     expect(html).not.toContain('aria-label="Pause recording"');
     expect(html).not.toContain("Done");
+    expect(html).toContain('class="pr-src-wrap"');
   });
 
   test("a denied microphone at idle replaces the controls row with Open Settings", () => {
@@ -81,5 +82,13 @@ describe("DesktopRecorder", () => {
     expect(html).toContain("Open Settings");
     expect(html).not.toContain('aria-label="Discard recording"');
     expect(html).not.toContain("Done");
+    expect(html).not.toContain('class="pr-src-wrap"');
+  });
+
+  test("the recording view is a labelled Recorder region", () => {
+    const html = render();
+    expect(html).toContain('role="region"');
+    expect(html).toContain('aria-label="Recorder"');
+    expect(html).toContain('class="pr-src-wrap"');
   });
 });

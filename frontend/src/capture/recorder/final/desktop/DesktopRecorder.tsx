@@ -160,7 +160,7 @@ export function DesktopRecorder({ layout, onOpenNotes }: DesktopRecorderProps) {
   const { phase, mic } = recorder;
   const root = useRef<HTMLDivElement>(null);
   const { ringPx, timerPx } = useSizing(root);
-  // The view replaces a dock or ribbon that held focus, so focus moves into it.
+  // The view replaces a dock, a ribbon or the loading surface, which held focus, so focus moves into it.
   useEffect(() => root.current?.focus({ preventScroll: true }), []);
 
   const elapsedMs = useRecordedElapsed(recorder.elapsedMs, recorder);
@@ -268,6 +268,7 @@ export function DesktopRecorder({ layout, onOpenNotes }: DesktopRecorderProps) {
   const stopUnknown = phase === "stopping" && recorder.error !== null;
   const discardUnknown = phase === "discarding" && recorder.error !== null;
   const denied = view.micDenied;
+  const idleDenied = denied && phase === "idle";
   const speakers = identifySpeakersControl(
     choice.mode,
     choice.identifySpeakers,
@@ -293,6 +294,8 @@ export function DesktopRecorder({ layout, onOpenNotes }: DesktopRecorderProps) {
   return (
     <div
       ref={root}
+      role="region"
+      aria-label="Recorder"
       tabIndex={-1}
       className={`soft-skin soft-${theme} pr dr`}
       data-layout={layout}
@@ -439,7 +442,7 @@ export function DesktopRecorder({ layout, onOpenNotes }: DesktopRecorderProps) {
             <span>more capable</span>
           </div>
           <div className="pr-capline">{stop.captions[shell]}</div>
-          {!denied && !audio.unsupported && (
+          {!idleDenied && !audio.unsupported && (
             <ViaMenu
               inputs={audio.inputs}
               currentId={input?.id ?? null}

@@ -1,9 +1,13 @@
-import { lazy, Suspense, useContext, useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useLocation } from "react-router-dom";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 
 import { PlatformContext } from "@/lib/platform";
+import {
+  LazyDesktopRecorder,
+  type DesktopRecorderLoader,
+} from "./final/desktop/LazyDesktopRecorder";
 import { PhoneRecorder } from "./final/PhoneRecorder";
 import { recorderFinalEnabled } from "./final/recorderFinalFlag";
 import {
@@ -14,13 +18,6 @@ import {
 import { overlayMount } from "./overlayMount";
 import { RecordingView, type RecordingViewProps } from "./RecordingView";
 import { useRecorder } from "./RecorderProvider";
-
-// Only the flag-on desktop branch renders this, so a flag-off build never fetches it.
-const DesktopRecorder = lazy(() =>
-  import("./final/desktop/DesktopRecorder").then((module) => ({
-    default: module.DesktopRecorder,
-  })),
-);
 
 function useRecorderLayout(): RecorderLayout {
   const [width, setWidth] = useState(() => window.innerWidth);
@@ -52,12 +49,15 @@ export type RecordingOverlayProps = Omit<RecordingViewProps, "recorder"> & {
   onOpenNotes?: () => void;
   /** Whether the Soft skin is on. The flag decides unless the caller is the final shell, which only renders with it on (the browser harness builds with no env). */
   finalSkin?: boolean;
+  /** Where the desktop view is imported from; a test replaces it. */
+  loadDesktopRecorder?: DesktopRecorderLoader;
 };
 
 export function RecordingOverlay({
   desktopHost = null,
   onOpenNotes,
   finalSkin = recorderFinalEnabled(),
+  loadDesktopRecorder,
   ...props
 }: RecordingOverlayProps) {
   const recorder = useRecorder();
@@ -76,9 +76,11 @@ export function RecordingOverlay({
     return createPortal(
       <>
         <MinimizeOnNavigate />
-        <Suspense fallback={null}>
-          <DesktopRecorder layout={layout} onOpenNotes={onOpenNotes} />
-        </Suspense>
+        <LazyDesktopRecorder
+          layout={layout}
+          onOpenNotes={onOpenNotes}
+          load={loadDesktopRecorder}
+        />
       </>,
       desktopHost,
     );
