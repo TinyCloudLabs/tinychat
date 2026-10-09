@@ -125,7 +125,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     await store.updateSession(current.session.id, patch);
     Object.assign(current.session, patch);
   };
-  const commit = async (native: NativeStatus, reason: "user" | "max_duration", at = now()): Promise<VoiceNoteRecording | null> => {
+  const commit = async (native: NativeStatus, at = now()): Promise<VoiceNoteRecording | null> => {
     const current = live;
     if (!current) return null;
     const id = current.session.id;
@@ -155,7 +155,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
         const native = await bridge.invoke<NativeStatus>("recorder_status");
         const stopped = { ...native, id: event.id, state: "idle" as const, reason: event.reason,
           audioMs: event.elapsedMs, elapsedMs: event.elapsedMs, pausedMs: event.pausedMs };
-        const recording = await commit(stopped, "max_duration", event.at);
+        const recording = await commit(stopped, event.at);
         emit("autoStopped", { ...event, recording, error: recording ? null : "no_audio_captured" });
       } catch (error) {
         emit("autoStopped", { ...event, recording: null, error: errorText(error) });
@@ -250,7 +250,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       return run(async () => {
         if (!live) throw failure("not_recording");
         const native = await bridge.invoke<NativeStatus>("recorder_stop");
-        const recording = await commit(native, "user");
+        const recording = await commit(native);
         if (!recording) throw failure("no_audio_captured");
         return recording;
       });
