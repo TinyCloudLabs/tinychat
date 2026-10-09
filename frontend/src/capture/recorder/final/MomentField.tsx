@@ -3,6 +3,7 @@ import type {
   MomentField as MomentFieldState,
   MomentFlow,
 } from "./momentController";
+import { useAccessoryBarHidden } from "./keyboardInset";
 import { NOTES_COPY } from "./notesCopy";
 import { EnterIcon } from "./notesIcons";
 
@@ -16,6 +17,7 @@ export interface MomentFieldProps {
 /** The one-line field under the timer: Enter or ↵ saves, Escape cancels, blur saves. */
 export function MomentField({ field, flow, onClosed }: MomentFieldProps) {
   const { time } = field;
+  useAccessoryBarHidden();
   const save = (refocus: boolean) => {
     if (!flow.isOpen()) return;
     flow.commit();

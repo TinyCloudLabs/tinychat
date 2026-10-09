@@ -7,11 +7,12 @@ import { App } from "./App";
 import { CaptureEngineGate } from "./capture/recorder/CaptureEngineGate";
 import { PwaPrompts } from "./components/pwa-prompts";
 import { RootRoute } from "./landing/RootRoute";
-import { registerWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
+import { nativeKeyboard } from "./lib/nativeKeyboard";
 import { appPlatform } from "./lib/platform";
 import { setupPwa } from "./lib/pwa";
 import { initSizeClass } from "./lib/sizeClass";
 import { initTheme } from "./lib/theme";
+import { registerWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 
 // False on the web and in the desktop (Tauri) app; true only inside Exo mobile.
 const nativeShell = Capacitor.isNativePlatform();
@@ -21,6 +22,12 @@ const nativeShell = Capacitor.isNativePlatform();
 document.documentElement.dataset.platform = appPlatform();
 initSizeClass();
 initTheme();
+
+// @capacitor/keyboard hides the iOS accessory bar on every field once it loads; put it back (the notes sheet and
+// the moment field hide it while they are open).
+nativeKeyboard.restoreAccessoryBar().catch((error: unknown) => {
+  console.error("[Keyboard] Could not restore the accessory bar", error);
+});
 
 // Installable web app: registers the service worker on the web only — never in
 // the Capacitor or Tauri shells, and not under `vite dev` unless VITE_PWA_DEV.

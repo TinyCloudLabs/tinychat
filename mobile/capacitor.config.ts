@@ -1,4 +1,5 @@
 import type { CapacitorConfig } from "@capacitor/cli";
+import { KeyboardResize } from "@capacitor/keyboard";
 
 // Live reload: point the native shell at the frontend Vite dev server instead
 // of the bundled `frontend/dist`. On the Android emulator, forward the port
@@ -19,6 +20,17 @@ const config: CapacitorConfig = {
     },
   },
   plugins: {
+    // @capacitor/keyboard (the notes UI hides the iOS accessory bar while it is open). Installing it changes iOS
+    // app-wide: it takes over the keyboard from WKWebView, and `resize` picks what the web view does. Measured in
+    // the iOS simulator against a build without the plugin: "none" leaves the chat composer under the keyboard;
+    // "native" shrinks the web view to the room above the keyboard, which keeps the composer clear (and the notes
+    // sheet and moment field with it, so the keyboard's height is not needed in JS). The window behind the
+    // keyboard is tinted from the page so the resized web view shows no black strip. Android: the plugin only
+    // reports events; SystemBars already resizes the view.
+    Keyboard: {
+      resize: KeyboardResize.Native,
+      autoBackdropColor: "dom",
+    },
     // Edge-to-edge on both platforms (Android 15+ enforces it): the web view
     // runs under the status bar and gesture bar, and the frontend keeps its
     // chrome clear with env(safe-area-inset-*) padding (index.html sets

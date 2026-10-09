@@ -14,6 +14,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { __setBuildInfoForTests } from "@/lib/buildInfo";
 import { PlatformContext, type AppPlatform } from "@/lib/platform";
+import { nativeKeyboard } from "@/lib/nativeKeyboard";
 import { initSizeClass } from "@/lib/sizeClass";
 import { applyTheme } from "@/lib/theme";
 import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -86,6 +87,10 @@ if (params.get("freeze") === "1") freezeClock();
 applyTheme(params.get("theme") === "dark" ? "dark" : "light", false);
 document.documentElement.dataset.platform = platform;
 initSizeClass();
+// main.tsx's boot step: inside the iOS app (the simulator runs this page) the plugin hides the accessory bar until it is put back.
+nativeKeyboard.restoreAccessoryBar().catch((error: unknown) => {
+  console.error("[Keyboard] Could not restore the accessory bar", error);
+});
 // The phone app records through its native plugin; here a fake stands in. A
 // fake App.getInfo() makes the build line resolve with the real native
 // segments (build number and bundle id), not just the web baseline (TC-840).

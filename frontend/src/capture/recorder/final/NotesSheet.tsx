@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, type RefObject } from "react";
 import { LevelBars } from "./halo";
 import { trapTab } from "./focusTrap";
 import { markKeyboardOpened } from "./inputModality";
+import { useAccessoryBarHidden } from "./keyboardInset";
 import { NoteRenderer, NoteWriter } from "./notes";
 import { NOTES_COPY } from "./notesCopy";
 import type { NotesView } from "./notesViewPreference";
@@ -60,6 +61,7 @@ export function NotesSheet({
   const back = useRef({ returnFocus, fallbackFocus });
   back.current = { returnFocus, fallbackFocus };
   const mounted = useRef(false);
+  useAccessoryBarHidden();
 
   useEffect(() => {
     markKeyboardOpened(root.current);

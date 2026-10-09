@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { usePrimeAccessoryBarOnPress } from "./keyboardInset";
 import {
   createMomentFlow,
   type MomentField,
@@ -20,6 +21,7 @@ export function useMomentFlow(
   onError: (error: unknown) => void,
 ): { field: MomentField | null; flow: MomentFlow } {
   const [field, setField] = useState<MomentField | null>(null);
+  usePrimeAccessoryBarOnPress(".pr-mark, .pr-vnotes");
   const latest = useRef({ notes, onError });
   latest.current = { notes, onError };
   // The text as last written here: a write lands before the next render reads it back.

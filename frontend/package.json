@@ -16,6 +16,7 @@
     "@capacitor/browser": "^8.0.5",
     "@capacitor/core": "^8.5.2",
     "@capacitor/haptics": "^8.0.2",
+    "@capacitor/keyboard": "^8.0.6",
     "@franken-suite/franken-markdown": "0.5.0",
     "@openkey/sdk": "0.12.0-beta.1",
     "@openkey/sdk-capacitor": "0.1.0-beta.1",
