@@ -6,12 +6,11 @@
 import { ChevronRightIcon, type LucideIcon } from "lucide-react";
 import { Link } from "react-router-dom";
 
-import type { RecorderCaptureIssue } from "../recorder/recorderReducer";
 import {
   formatClockDuration,
   formatSpokenDuration,
 } from "../library/formatters";
-import { issueMeta } from "./captureIssues";
+import { issueMeta, type HomeIssue } from "./captureIssues";
 import { HOME_COPY } from "./homeCopy";
 
 export interface SoftRowProps {
@@ -20,7 +19,7 @@ export interface SoftRowProps {
   /** "Today 2:18 AM" (or the source and time). */
   meta: string;
   durationSecs?: number | null;
-  issue?: RecorderCaptureIssue;
+  issue?: HomeIssue;
   /** A destination: the row is a link. */
   href?: string;
   /** Otherwise a button (an issue's sheet); neither makes a plain, labelled row. */

@@ -18,6 +18,7 @@ import { PrivacyScale } from "./PrivacyScale";
 import { RecorderRing } from "./RecorderRing";
 import { selectRecorderView } from "./recorderView";
 import { shellForPlatform } from "./shellCapabilities";
+import { honestRecorderError } from "./honestRecorderError";
 import { SheetDialog } from "./SheetDialog";
 import {
   CheckIcon,
@@ -225,8 +226,9 @@ export function PhoneRecorder({
       );
     });
   };
+  const recorderError = honestRecorderError(recorder);
   const alerts = [
-    recorder.error ? { message: recorder.error, retry: undefined } : null,
+    recorderError ? { message: recorderError, retry: undefined } : null,
     settingsError ? { message: settingsError, retry: openSettings } : null,
     audio.error ? { message: audio.error, retry: audio.retry } : null,
     onDevice.error ? { message: onDevice.error, retry: onDevice.retry } : null,

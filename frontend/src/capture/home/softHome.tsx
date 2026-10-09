@@ -15,7 +15,14 @@ import {
 } from "react";
 
 import { recorderFinalEnabled } from "../recorder/final/recorderFinalFlag";
-import { sheetIssue, type CaptureIssues } from "./captureIssues";
+import type { RecorderCaptureIssue } from "../recorder/recorderReducer";
+import { useQuarantinedRecordings } from "@/lib/voiceNotes/quarantine";
+import {
+  recoveryFailedKey,
+  sheetIssue,
+  withQuarantine,
+  type CaptureIssues,
+} from "./captureIssues";
 import { IssueSheet } from "./IssueSheet";
 import "../recorder/final/soft.css";
 import "./home.css";
@@ -36,6 +43,8 @@ export function softHomeEnabled(): boolean {
 
 export interface SoftHomeValue {
   issues: CaptureIssues;
+  /** Reading the sessions native parked failed (not for lack of support). */
+  quarantineFailed: boolean;
   /** A tap on a row whose issue has a sheet: the recording's id, and the row to return focus to (or, if it is gone, its list's heading). */
   openIssue: (id: string, opener: HTMLElement) => void;
 }
@@ -50,11 +59,32 @@ export function useSoftHome(): SoftHomeValue | null {
 /** `enabled` false (any other layout, flag off) provides nothing, but stays in the tree: a resize never re-parents the pane. */
 export function SoftHomeProvider(props: {
   enabled: boolean;
-  issues: CaptureIssues;
+  /** The recorder's `captureIssues`. */
+  issues: Readonly<Record<string, RecorderCaptureIssue>>;
   children: ReactNode;
 }) {
   const [sheetId, setSheetId] = useState<string | null>(null);
-  const { enabled, issues } = props;
+  const { enabled } = props;
+  // Read the parked sessions again whenever a recording newly fails recovery.
+  const quarantine = useQuarantinedRecordings(
+    enabled,
+    recoveryFailedKey(props.issues),
+  );
+  // Recordings deleted (or found no longer failed) from the sheet: native has dropped them, the recorder's issue map has not.
+  const [gone, setGone] = useState<ReadonlySet<string>>(new Set());
+  const markGone = useCallback(
+    (id: string) => setGone((current) => new Set(current).add(id)),
+    [],
+  );
+  const issues = useMemo<CaptureIssues>(
+    () =>
+      withQuarantine(
+        props.issues,
+        quarantine.items.map((item) => item.id),
+        gone,
+      ),
+    [props.issues, quarantine.items, gone],
+  );
   // The sheet shows the provider's current issue for the recording: when it clears (a save went through), the sheet closes.
   const issue = sheetIssue(sheetId, issues, enabled);
   useEffect(() => {
@@ -72,14 +102,20 @@ export function SoftHomeProvider(props: {
     setSheetId(id);
   }, []);
   const value = useMemo<SoftHomeValue | null>(
-    () => (enabled ? { issues, openIssue } : null),
-    [enabled, issues, openIssue],
+    () =>
+      enabled
+        ? { issues, quarantineFailed: quarantine.error !== null, openIssue }
+        : null,
+    [enabled, issues, quarantine.error, openIssue],
   );
   return (
     <SoftHomeContext.Provider value={value}>
       {props.children}
       <IssueSheet
+        id={sheetId}
         issue={issue}
+        refresh={quarantine.refresh}
+        onGone={markGone}
         returnFocusTo={opener}
         fallbackFocusTo={fallback}
         onClose={() => setSheetId(null)}

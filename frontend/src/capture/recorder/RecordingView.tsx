@@ -8,6 +8,7 @@ import { LevelTrace } from "./LevelTrace";
 import { MicrophoneAccessOff } from "./MicrophoneAccessOff";
 import { micWarning, micWarningSentence, recorderMetaText, recorderStatusText } from "./recorderCopy";
 import { RecorderControls } from "./RecorderControls";
+import { honestRecorderError } from "./final/honestRecorderError";
 import type { RecorderValue } from "./RecorderProvider";
 import { RecorderTimer, useAudioElapsed } from "./RecorderTimer";
 import { voiceNoteRoute } from "./RouteLine";
@@ -90,7 +91,7 @@ export function RecordingView({ recorder, onOpenNote, consentAsking, discardAski
           {paused && <p className="mt-5 text-callout text-warning">{mic.state === "paused" ? "Paused · microphone off" : mic.state === "interrupted" ? "Recording interrupted · trying to resume" : "Recording needs you · tap Resume to continue"}</p>}
           {mic.state === "needs_user" && <Button type="button" size="lg" onClick={recorder.resume} disabled={recorder.controlPending !== null} className="mt-5 min-h-12 min-w-36" data-testid="voice-note-resume-main">Resume</Button>}
           {recorder.limitNotice && !active && <p data-testid="voice-note-limit" className="mt-4 text-callout text-warning">{recorder.limitNotice}</p>}
-          {recorder.error && !receipt && <p role="alert" className="mt-4 text-callout text-destructive">{recorder.error}</p>}
+          {recorder.error && !receipt && <p role="alert" className="mt-4 text-callout text-destructive">{honestRecorderError(recorder)}</p>}
         </div>
 
         <div className="flex min-h-0 flex-col justify-end land:col-start-2 land:row-start-1">

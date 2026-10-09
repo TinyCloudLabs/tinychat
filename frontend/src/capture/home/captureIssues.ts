@@ -5,28 +5,71 @@
 import type { RecorderCaptureIssue } from "../recorder/recorderReducer";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import type { LibraryItem } from "../library/LibraryRow";
+import { FINALIZATION_PENDING } from "../recorder/recorderCopy";
 import { HOME_COPY } from "./homeCopy";
 
-export type CaptureIssues = Readonly<Record<string, RecorderCaptureIssue>>;
+/** The recorder's issues, plus a session native gave up on and parked with its audio kept (`listQuarantine`). */
+export type HomeIssue = RecorderCaptureIssue | { kind: "quarantined" };
+
+export type CaptureIssues = Readonly<Record<string, HomeIssue>>;
 
 /** The row's state line for an issue. */
-export function issueMeta(issue: RecorderCaptureIssue): string {
+export function issueMeta(issue: HomeIssue): string {
   switch (issue.kind) {
     case "finalization_timed_out":
       return HOME_COPY.timedOutMeta;
     case "recoveryFailed":
       return HOME_COPY.recoveryFailedMeta;
+    case "quarantined":
+      return HOME_COPY.quarantinedMeta;
     case "write_failed":
       return HOME_COPY.writeFailedMeta;
   }
 }
 
+/** Whether Try again and Delete can apply: the recording could not be recovered, and its audio is still on the phone. */
+export function issueIsRecoverable(
+  issue: HomeIssue,
+): issue is Extract<HomeIssue, { kind: "recoveryFailed" | "quarantined" }> {
+  return issue.kind === "recoveryFailed" || issue.kind === "quarantined";
+}
+
+/** Changes when a recording newly fails recovery (or stops failing): the cue to read what native has parked. */
+export function recoveryFailedKey(
+  issues: Readonly<Record<string, RecorderCaptureIssue>>,
+): string {
+  return Object.keys(issues)
+    .filter((id) => issues[id]!.kind === "recoveryFailed")
+    .sort()
+    .join(",");
+}
+
+/**
+ * The recorder's issues with what native parked: a quarantined session
+ * replaces a `recoveryFailed` one (same recording, now with its audio kept),
+ * and a recording the user deleted drops out.
+ */
+export function withQuarantine(
+  issues: Readonly<Record<string, RecorderCaptureIssue>>,
+  quarantinedIds: readonly string[],
+  deletedIds: ReadonlySet<string>,
+): CaptureIssues {
+  const merged: Record<string, HomeIssue> = { ...issues };
+  for (const id of quarantinedIds) {
+    const current = merged[id];
+    if (current === undefined || current.kind === "recoveryFailed")
+      merged[id] = { kind: "quarantined" };
+  }
+  for (const id of deletedIds) delete merged[id];
+  return merged;
+}
+
 /** The issues whose Library row opens a sheet instead of its note; a timed-out one resolves itself, so its row still opens the note. */
-export function issueHasSheet(issue: RecorderCaptureIssue): boolean {
+export function issueHasSheet(issue: HomeIssue): boolean {
   return issue.kind !== "finalization_timed_out";
 }
 
-export function issueSheetCopy(issue: RecorderCaptureIssue): {
+export function issueSheetCopy(issue: HomeIssue): {
   title: string;
   body: string;
 } {
@@ -35,6 +78,8 @@ export function issueSheetCopy(issue: RecorderCaptureIssue): {
       return HOME_COPY.timedOutSheet;
     case "recoveryFailed":
       return HOME_COPY.recoveryFailedSheet;
+    case "quarantined":
+      return HOME_COPY.quarantinedSheet;
     case "write_failed":
       return HOME_COPY.writeFailedSheet;
   }
@@ -45,7 +90,7 @@ export function sheetIssue(
   id: string | null,
   issues: CaptureIssues,
   enabled: boolean,
-): RecorderCaptureIssue | null {
+): HomeIssue | null {
   return enabled && id !== null ? (issues[id] ?? null) : null;
 }
 
@@ -53,13 +98,13 @@ export function sheetIssue(
 export function issueForItem(
   item: LibraryItem,
   issues: CaptureIssues,
-): RecorderCaptureIssue | undefined {
+): HomeIssue | undefined {
   return item.source === VOICE_NOTE_SOURCE ? issues[item.sourceId] : undefined;
 }
 
 export interface OrphanIssue {
   id: string;
-  issue: RecorderCaptureIssue;
+  issue: HomeIssue;
 }
 
 /**
@@ -82,8 +127,8 @@ export function orphanIssues(
 }
 
 export type RecentEntry =
-  | { type: "item"; item: LibraryItem; issue?: RecorderCaptureIssue }
-  | { type: "issue"; id: string; issue: RecorderCaptureIssue };
+  | { type: "item"; item: LibraryItem; issue?: HomeIssue }
+  | { type: "issue"; id: string; issue: HomeIssue };
 
 /**
  * Recent's rows: the recordings with an issue and no Library row come first
@@ -109,19 +154,22 @@ export function recentEntries(
 }
 
 /**
- * The "on this phone" card's second line. A recording that could not be
- * recovered overrides "Exo will finish it automatically": the card never says
- * both. Nothing wrong with any of them keeps the plain line.
+ * The "on this phone" card's second line. A save error shows as it is, except
+ * the "Exo will finish it automatically" one (FINALIZATION_PENDING): a
+ * recording that could not be recovered or fully written outranks that, and
+ * the card never says both. Nothing wrong keeps the plain line.
  */
 export function cardNote(
   issues: CaptureIssues,
   lastError: string | null,
 ): string {
-  if (lastError) return lastError;
+  if (lastError && lastError !== FINALIZATION_PENDING) return lastError;
   const kinds = Object.values(issues).map((issue) => issue.kind);
-  if (kinds.includes("recoveryFailed"))
+  if (kinds.includes("recoveryFailed") || kinds.includes("quarantined"))
     return `${HOME_COPY.notInSpace} · ${HOME_COPY.willRetry}`;
-  if (kinds.includes("finalization_timed_out"))
+  if (kinds.includes("write_failed"))
+    return `${HOME_COPY.notInSpace} · ${HOME_COPY.writeFailedMeta}`;
+  if (lastError || kinds.includes("finalization_timed_out"))
     return HOME_COPY.willFinish;
   return HOME_COPY.notInSpace;
 }
