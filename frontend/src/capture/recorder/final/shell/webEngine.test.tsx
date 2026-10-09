@@ -32,7 +32,7 @@ import { installReactTestEnv, mount } from "./hookTestUtil";
 const global = globalThis as Record<string, unknown>;
 const WEB: CaptureCapabilities = {
   nativeShortcuts: false, presentRecorder: false, openSettings: false, micDeniedPresentation: false,
-  background: false, localTranscription: false, offlineRecorder: false,
+  background: false, localTranscription: false, desktopWhisper: false, offlineRecorder: false,
 };
 const noop = () => {};
 

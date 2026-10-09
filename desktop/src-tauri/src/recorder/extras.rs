@@ -343,7 +343,8 @@ pub async fn recorder_models_select(app: tauri::AppHandle, id: String) -> Result
     {
         return Err("model_not_downloaded".into());
     }
-    save_preferences(&app, |prefs| prefs.selected_model = Some(id)).await?;
+    save_preferences(&app, |prefs| prefs.selected_model = Some(id.clone())).await?;
+    let _ = app.emit("exo://recorder-model-selection", id);
     Ok(())
 }
 

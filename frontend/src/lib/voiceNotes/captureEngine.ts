@@ -17,6 +17,8 @@ export interface CaptureCapabilities {
   background: boolean;
   /** On-device speech to text (OnDeviceStt). */
   localTranscription: boolean;
+  /** Desktop Whisper on a saved note, after capture stops. Separate from mobile OnDeviceStt. */
+  desktopWhisper: boolean;
   /** The local-only home that records while offline or signed out. */
   offlineRecorder: boolean;
 }
@@ -31,6 +33,7 @@ const NATIVE_CAPABILITIES: CaptureCapabilities = {
   micDeniedPresentation: true,
   background: true,
   localTranscription: true,
+  desktopWhisper: false,
   offlineRecorder: true,
 };
 
@@ -41,6 +44,7 @@ const NO_CAPABILITIES: CaptureCapabilities = {
   micDeniedPresentation: false,
   background: false,
   localTranscription: false,
+  desktopWhisper: false,
   offlineRecorder: false,
 };
 
@@ -83,6 +87,12 @@ export function captureCapabilities(): CaptureCapabilities {
 /** True when an installed engine has no on-device speech to text; OnDeviceStt must not be touched then. */
 export function localTranscriptionUnavailable(): boolean {
   return installed !== null && !installed.capabilities.localTranscription;
+}
+
+/** A route can choose on-device when mobile STT or desktop Whisper is ready. */
+export function onDeviceTranscriptionAvailable(): boolean {
+  const capabilities = captureCapabilities();
+  return capabilities.localTranscription || capabilities.desktopWhisper;
 }
 
 /** True when an installed engine cannot open settings (a browser); denied-mic recovery is site guidance then. */

@@ -6,6 +6,8 @@ import { VOICE_NOTE_MAX_DURATION_MS, VOICE_NOTE_MIN_DURATION_LIMIT_MS } from "..
 import { registerCaptureEngine, type CaptureCapabilities, type CaptureEngine } from "../captureEngine";
 import { registerDesktopCaptureExtras } from "../desktopCaptureExtras";
 import { createFileAudioBlobStore, type CommandBridge } from "./fileAudioBlobStore";
+import { createDesktopWhisperQueue, getDesktopWhisperQueue, loadDesktopWhisperBridge, registerDesktopWhisperQueue,
+  type DesktopWhisperBridge, type DesktopWhisperQueue } from "./desktopWhisper";
 import { failure, memoryLocks, recordingFromSession, RECORDING_LOCK, sessionLock, type RecoveryResult, type SessionRecord,
   type WebStore, openWebStore, type WebStoreOptions } from "../web/webStore";
 
@@ -34,17 +36,26 @@ export const DESKTOP_CAPABILITIES: CaptureCapabilities = {
   // The shared note queue uses mobile OnDeviceStt (Parakeet). Desktop's
   // Whisper localStt bridge is a separate flow, exposed through D4 extras.
   localTranscription: false,
+  desktopWhisper: false,
   offlineRecorder: true,
 };
 
+let refreshSelectedWhisper: (() => Promise<void>) | null = null;
+/** D7b can await this after models.select; the controller also uses it before accepting Local. */
+export async function refreshDesktopWhisperCapability(): Promise<void> {
+  await refreshSelectedWhisper?.();
+}
+
 export interface DesktopVoiceNotes {
   plugin: CaptureEngine;
+  whisper: DesktopWhisperQueue | null;
   recoverInterrupted(): Promise<RecoveryResult>;
   dispose(): void;
 }
 
 export interface DesktopVoiceNotesOptions {
   bridge: DesktopBridge;
+  whisper?: DesktopWhisperBridge;
   store?: WebStore;
   storeOptions?: Omit<WebStoreOptions, "audio">;
   now?: () => number;
@@ -62,6 +73,21 @@ const mergeSpans = (existing: MissingAudioSpan[], native: MissingAudioSpan[] = [
 
 export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): Promise<DesktopVoiceNotes> {
   const { bridge } = options;
+  let desktopWhisper = false;
+  try {
+    const selected = await bridge.invoke<string | null>("recorder_models_get");
+    if (selected) {
+      const models = await bridge.invoke<{ id: string; downloaded: boolean }[]>("recorder_models_list");
+      desktopWhisper = models.some((model) => model.id === selected && model.downloaded);
+    }
+  } catch (error) { console.warn("[desktopVoiceNotes] Could not read the selected Whisper model", error); }
+  const capabilities: CaptureCapabilities = { ...DESKTOP_CAPABILITIES, desktopWhisper };
+  const refreshWhisperCapability = async () => {
+    const selected = await bridge.invoke<string | null>("recorder_models_get");
+    const models = selected ? await bridge.invoke<{ id: string; downloaded: boolean }[]>("recorder_models_list") : [];
+    capabilities.desktopWhisper = !!selected && models.some((model) => model.id === selected && model.downloaded);
+  };
+  refreshSelectedWhisper = refreshWhisperCapability;
   const now = options.now ?? (() => Date.now());
   const newId = options.newId ?? (() => crypto.randomUUID());
   const store = options.store ?? await openWebStore({ locks: memoryLocks(), ...options.storeOptions,
@@ -83,6 +109,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
   const urls = new Map<string, string>();
   const unlisten: (() => void)[] = [];
   let live: { session: SessionRecord; release: (() => void)[] } | null = null;
+  let whisperQueue: DesktopWhisperQueue | null = null;
   let chain: Promise<unknown> = Promise.resolve();
   let disposed = false;
 
@@ -98,7 +125,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
         const defaults = await store.getCaptureDefaults();
         session = await store.beginSession({ id: native.id, startedAt: native.startedAt ?? now(), source: "in_app",
           owner: null, transitionGen: defaults.transitionGen,
-          options: { transcriber: "on-device", identifySpeakers: false }, mimeType: "audio/mpeg",
+          options: { transcriber: capabilities.desktopWhisper ? "on-device" : "off", identifySpeakers: false }, mimeType: "audio/mpeg",
           input: null, maxDurationMs: native.maxDurationMs });
       }
       const spans = mergeSpans(session.spans, native.spans);
@@ -191,11 +218,16 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       const result = await store.commitSession(id, (session, sizeBytes) => recordingFromSession(session, sizeBytes, {
         endedAt: at, durationMs: native.audioMs, recovered: false, endedUnexpectedly: false, exitReason: null,
       }), { audioMs: native.audioMs, bytes: size, firstAudioAt: current.session.firstAudioAt });
-      if (result) emit("committed", { id, recording: result });
+      if (result) {
+        emit("committed", { id, recording: result });
+        try { await whisperQueue?.noteCommitted(result); }
+        catch (error) { console.error("[desktopWhisper] Could not queue a committed note; recovery will retry", error); }
+      }
       await bridge.invoke("recorder_acknowledge", { id });
       return result;
     } finally {
       releaseLive();
+      whisperQueue?.captureEnded();
       emitMic({ ...native, id: null, startedAt: null, elapsedMs: 0, audioMs: 0, pausedMs: 0 });
     }
   };
@@ -214,6 +246,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
           await quarantineFailures(failed);
           await bridge.invoke("recorder_acknowledge", { id: event.id });
           releaseLive();
+          whisperQueue?.captureEnded();
           emit("autoStopped", { ...event, recording: null, error: "write_failed" });
           return;
         }
@@ -230,6 +263,11 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     unlisten.push(await bridge.listen<NativeStatus>("exo://recorder-mic-state", emitMic));
     unlisten.push(await bridge.listen<{ level: number; peak: number }>("exo://recorder-level", (event) => emit("level", event)));
     unlisten.push(await bridge.listen<NativeAutoStop>("exo://recorder-auto-stopped", handleAutoStop));
+    unlisten.push(await bridge.listen<string>("exo://recorder-model-selection", () => {
+      void refreshWhisperCapability().then(() => {
+        if (capabilities.desktopWhisper) return whisperQueue?.modelAvailable();
+      }).catch((error: unknown) => console.warn("[desktopVoiceNotes] Could not refresh Whisper model", error));
+    }));
     if (initialNative.id) emitMic(initialNative);
   } catch (error) {
     clearInterval(heartbeat);
@@ -253,7 +291,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       if (!await store.getSession(item.id)) {
         const defaults = await store.getCaptureDefaults();
         await store.beginSession({ id: item.id, startedAt: item.journal.startedAt, source: "in_app", owner: null,
-          transitionGen: defaults.transitionGen, options: { transcriber: "on-device", identifySpeakers: false },
+          transitionGen: defaults.transitionGen, options: { transcriber: capabilities.desktopWhisper ? "on-device" : "off", identifySpeakers: false },
           mimeType: "audio/mpeg", input: null, maxDurationMs: item.journal.maxDurationMs });
       }
       await store.quarantineInterrupted(item.id, item.reason, item.error);
@@ -294,7 +332,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       // journal still knows its identity. Give it a conservative, unowned session.
       const defaults = await store.getCaptureDefaults();
       await store.beginSession({ id: imported.id, startedAt: imported.startedAt, source: "in_app", owner: null,
-        transitionGen: defaults.transitionGen, options: { transcriber: "on-device", identifySpeakers: false },
+        transitionGen: defaults.transitionGen, options: { transcriber: capabilities.desktopWhisper ? "on-device" : "off", identifySpeakers: false },
         mimeType: "audio/mpeg", input: null, maxDurationMs: imported.maxDurationMs });
     }
     if (imported) {
@@ -328,7 +366,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
   }
 
   const plugin: CaptureEngine = {
-    capabilities: DESKTOP_CAPABILITIES,
+    capabilities,
     async start(startOptions) {
       return run(async () => {
         if (live) throw failure("recording_in_progress");
@@ -339,12 +377,13 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
         let began = false;
         let nativeStarted = false;
         try {
+          await whisperQueue?.beforeCapture();
           const defaults = await store.getCaptureDefaults();
           const signedIn = defaults.status === "signed_in" && !!defaults.accountDid;
           const captureOptions: CaptureOptions = {
-            // TODO(TC-888): use on-device when desktopWhisper
-            transcriber: signedIn ? startOptions?.transcriber ?? defaults.transcriber : "off",
-            identifySpeakers: startOptions?.identifySpeakers ?? defaults.identifySpeakers,
+            transcriber: signedIn ? startOptions?.transcriber ?? defaults.transcriber : capabilities.desktopWhisper ? "on-device" : "off",
+            identifySpeakers: signedIn && (startOptions?.transcriber ?? defaults.transcriber) !== "on-device"
+              ? startOptions?.identifySpeakers ?? defaults.identifySpeakers : false,
           };
           id = newId();
           const releaseSession = await store.locks.hold(sessionLock(id));
@@ -366,6 +405,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
           emitMic(native);
           return { id, startedAt: session.startedAt, maxDurationMs };
         } catch (error) {
+          whisperQueue?.captureEnded();
           let cleanupError: unknown = null;
           if (nativeStarted) {
             try { await bridge.invoke("recorder_stop"); } catch (caught) { cleanupError = caught; }
@@ -391,6 +431,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
           await quarantineFailures(failed);
           await bridge.invoke("recorder_acknowledge", { id });
           releaseLive();
+          whisperQueue?.captureEnded();
           throw failure("write_failed", failed[0]!.error);
         }
         const recording = await commit(native);
@@ -411,6 +452,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
           await quarantineFailures(failed);
           await bridge.invoke("recorder_acknowledge", { id });
           releaseLive();
+          whisperQueue?.captureEnded();
           throw failure("write_failed", failed[0]!.error);
         }
         await syncDurable(native);
@@ -441,7 +483,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
         // finishes the Stop before sweeping the file and its sources.
         await bridge.invoke<NativeStatus>("recorder_stop");
         try { await store.discardSession(id); await bridge.invoke("recorder_acknowledge", { id }); }
-        finally { releaseLive(); }
+        finally { releaseLive(); whisperQueue?.captureEnded(); }
         const url = urls.get(id);
         if (url) { URL.revokeObjectURL(url); urls.delete(id); }
         emitMic(await bridge.invoke<NativeStatus>("recorder_status"));
@@ -452,7 +494,8 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       return run(async () => {
         if (!live) throw failure("not_recording");
         const options: CaptureOptions = { ...live.session.options, ...next };
-        if (!live.session.owner) options.transcriber = "on-device";
+        if (!live.session.owner) options.transcriber = capabilities.desktopWhisper ? "on-device" : "off";
+        if (options.transcriber === "on-device" || !live.session.owner) options.identifySpeakers = false;
         live.session.options = options;
         await store.updateSession(live.session.id, { options });
         emitMic(await bridge.invoke<NativeStatus>("recorder_status"));
@@ -550,8 +593,14 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     }) as VoiceNotesPlugin["addListener"],
   };
 
+  if (options.whisper) {
+    whisperQueue = createDesktopWhisperQueue({ store, files: bridge, whisper: options.whisper, captureLive: () => live !== null });
+    registerDesktopWhisperQueue(whisperQueue);
+  }
+
   return {
     plugin,
+    whisper: whisperQueue,
     recoverInterrupted,
     dispose() {
       disposed = true;
@@ -560,6 +609,9 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       for (const url of urls.values()) URL.revokeObjectURL(url);
       urls.clear();
       releaseLive();
+      whisperQueue?.dispose();
+      if (whisperQueue && whisperQueue === getDesktopWhisperQueue()) registerDesktopWhisperQueue(null);
+      if (refreshSelectedWhisper === refreshWhisperCapability) refreshSelectedWhisper = null;
       listeners.clear();
       retained.clear();
       if (!options.store) store.close();
@@ -578,15 +630,19 @@ async function tauriBridge(): Promise<DesktopBridge> {
 }
 
 /** Opens the desktop engine and registers the extras that bind the same bridge. */
-export async function installDesktopEngine(bridge: DesktopBridge, storeOptions?: DesktopVoiceNotesOptions["storeOptions"]): Promise<CaptureEngine> {
-  const engine = await openDesktopVoiceNotes({ bridge, storeOptions });
+export async function installDesktopEngine(bridge: DesktopBridge, storeOptions?: DesktopVoiceNotesOptions["storeOptions"],
+  whisper?: DesktopWhisperBridge): Promise<CaptureEngine> {
+  const engine = await openDesktopVoiceNotes({ bridge, storeOptions, whisper });
   registerDesktopCaptureExtras((await import("./tauriDesktopCaptureExtras")).createTauriDesktopCaptureExtras(bridge));
   try { await engine.recoverInterrupted(); }
   catch (error) { console.error("[desktopVoiceNotes] Recovery will retry; recorder stays available", error); }
+  try { await engine.whisper?.resume(); }
+  catch (error) { console.error("[desktopWhisper] Pending notes will retry on the next launch", error); }
   return engine.plugin;
 }
 
 /** Registration is the only desktop engine gate. The main entry imports this module once. */
 export function registerDesktopVoiceNotes(): void {
-  registerCaptureEngine("tauri", async () => installDesktopEngine(await tauriBridge()));
+  registerCaptureEngine("tauri", async () => installDesktopEngine(await tauriBridge(), undefined,
+    await loadDesktopWhisperBridge()));
 }

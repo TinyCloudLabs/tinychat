@@ -9,7 +9,7 @@
 
 import type {
   AccountStatus, AudioInput, CaptureDefaults, CaptureOptions, CaptureSource, ClaimOptions, LocalTranscript,
-  MissingAudioSpan, NoteLedger, OutboxEntry, RemoteOpReceipt, VoiceNoteAudioChunk, VoiceNoteRecording,
+  MissingAudioSpan, NoteLedger, NoteSttState, OutboxEntry, RemoteOpReceipt, VoiceNoteAudioChunk, VoiceNoteRecording,
   VoiceNotesPlugin,
 } from "../nativeVoiceNotes";
 import { bytesToBase64 } from "../voiceNoteAudio";
@@ -135,6 +135,8 @@ type PluginProtocol = Pick<VoiceNotesPlugin,
 export interface WebStore extends PluginProtocol {
   readonly audio: AudioBlobStore;
   readonly locks: SessionLocks;
+  /** Desktop Whisper job status stored with the note, including signed-out notes. */
+  updateStt(id: string, stt: NoteSttState): Promise<void>;
   beginSession(init: SessionInit): Promise<SessionRecord>;
   getSession(id: string): Promise<SessionRecord | null>;
   /**
@@ -710,6 +712,13 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
         await checkedNote(tx, id);
         const row = await get<{ id: string; transcript: LocalTranscript }>(tx, STORES.transcripts, id);
         return { transcript: row ? clone(row.transcript) : null };
+      }),
+
+    updateStt: (id, stt) =>
+      transact(db, [STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
+        const note = await checkedNote(tx, id);
+        note.stt = clone(stt);
+        await put(tx, STORES.notes, note);
       }),
 
     listQuarantine: () =>

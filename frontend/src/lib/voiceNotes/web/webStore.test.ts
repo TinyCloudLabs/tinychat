@@ -975,6 +975,20 @@ describe("ledger, receipts, outbox and transcripts (native parity)", () => {
     await expect(store.putTranscript({ id: "n", transcript })).rejects.toEqual(code("tombstoned"));
   });
 
+  test("desktop Whisper progress is durable without invalidating the note's ledger revision", async () => {
+    const h = harness();
+    const first = await h.open();
+    await noteWith(first, "whisper", [bytesOf(10)], "did:A");
+    const rev = (await first.listPending()).recordings[0]!.rev;
+    await first.updateStt("whisper", { state: "running", pack: null, engine: "whisper",
+      segmentsDone: 50, windowsDone: 0, error: null });
+    const reopened = await h.open();
+    expect((await reopened.listPending()).recordings[0]).toMatchObject({ rev,
+      stt: { state: "running", engine: "whisper", segmentsDone: 50 } });
+    await expect(reopened.updateStt("missing", { state: "queued", pack: null, engine: "whisper",
+      segmentsDone: 0, windowsDone: 0, error: null })).rejects.toEqual(code("not_found"));
+  });
+
   test("state persists across a reopen of the database", async () => {
     const h = harness();
     const first = await h.open();

@@ -34,6 +34,7 @@ const WEB_CAPABILITIES: CaptureCapabilities = {
   micDeniedPresentation: false,
   background: false,
   localTranscription: false,
+  desktopWhisper: false,
   offlineRecorder: false,
 };
 

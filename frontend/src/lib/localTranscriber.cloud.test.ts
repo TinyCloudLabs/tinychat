@@ -140,6 +140,7 @@ function makeBridge() {
         calls.push(`start_server:${m}`);
         return { status: "ok", data: "http://127.0.0.1:1/v1" };
       },
+      stopServer: async () => { calls.push("stop_server"); return { status: "ok", data: true }; },
       events: { downloadProgressPayload: { listen: async () => () => {} } },
     },
   };

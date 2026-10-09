@@ -32,6 +32,8 @@ fn main() {
             "audio_file_size",
             "read_audio_chunk",
             "finalize_audio_file",
+            "recorder_whisper_stage_audio",
+            "recorder_whisper_cleanup_stages",
             "delete_audio_file",
             "recorder_start",
             "recorder_pause",

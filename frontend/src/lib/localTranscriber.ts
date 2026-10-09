@@ -36,6 +36,7 @@ import type {
   TranscriptionEvent,
 } from "./anarlog/transcription.gen";
 import type { DownloadProgressPayload } from "./anarlog/localStt.gen";
+import { leaseWhisperServer, SHARED_WHISPER_SERVER_SCOPE, type WhisperServerLease } from "./whisperServerLease";
 import {
   createCloudJobPoller,
   legacyPendingCloudStore,
@@ -192,6 +193,7 @@ interface TranscriptionParamsWire {
 /** The slices of the two vendored plugins this module uses. Kept narrow on
  *  purpose: an injected fake of this interface is what the unit tests drive. */
 export interface LocalTranscriberBridge {
+  whisperServerScope?: object;
   transcription: {
     listMicrophoneDevices(): Promise<Result<string[]>>;
     startCapture(params: CaptureParamsWire): Promise<Result<null>>;
@@ -214,6 +216,7 @@ export interface LocalTranscriberBridge {
     isModelDownloaded(model: WhisperModel): Promise<Result<boolean>>;
     downloadModel(model: WhisperModel): Promise<Result<null>>;
     startServer(model: WhisperModel): Promise<Result<string>>;
+    stopServer(serverType: "internal"): Promise<Result<boolean>>;
     events: {
       downloadProgressPayload: {
         listen(cb: (e: { payload: DownloadProgressPayload }) => void): Promise<Unlisten>;
@@ -234,6 +237,7 @@ async function loadBridge(): Promise<LocalTranscriberBridge> {
     import("./anarlog/localStt.gen"),
   ]);
   return {
+    whisperServerScope: SHARED_WHISPER_SERVER_SCOPE,
     transcription: {
       listMicrophoneDevices: () => transcription.commands.listMicrophoneDevices(),
       startCapture: (params) => transcription.commands.startCapture(params),
@@ -246,6 +250,7 @@ async function loadBridge(): Promise<LocalTranscriberBridge> {
       isModelDownloaded: (model) => localStt.commands.isModelDownloaded(model),
       downloadModel: (model) => localStt.commands.downloadModel(model),
       startServer: (model) => localStt.commands.startServer(model),
+      stopServer: (serverType) => localStt.commands.stopServer(serverType),
       events: localStt.events,
     },
   };
@@ -1216,6 +1221,8 @@ export function createLocalTranscriber(
   let model: WhisperModel = DEFAULT_LOCAL_MODEL;
   let language = "en";
   let baseUrl: string | null = null;
+  let serverLease: WhisperServerLease | null = null;
+  const releaseServer = () => { serverLease?.release(); serverLease = null; };
   let startedAt: string | null = null;
   /** True from a successful start_capture until this session's `stopped` event. */
   let captureActive = false;
@@ -1243,6 +1250,7 @@ export function createLocalTranscriber(
   };
 
   const releaseSession = () => {
+    releaseServer();
     sessionId = null;
     startedAt = null;
     captureStopped = null;
@@ -1318,9 +1326,17 @@ export function createLocalTranscriber(
 
   /** Start (or reuse) the in-process Whisper server; returns its base URL. */
   const startWhisperServer = async (b: LocalTranscriberBridge, m: WhisperModel): Promise<string> => {
-    const server = await withTimeout(b.localStt.startServer(m), timeouts.serverStartMs, "the local Whisper server to start");
-    if (server.status === "error") throw new Error(`start_server: ${server.error}`);
-    return server.data;
+    const lease = serverLease ?? leaseWhisperServer(m, async () => {
+      const result = await b.localStt.startServer(m);
+      if (result.status === "error") throw new Error(`start_server: ${result.error}`);
+      return result.data;
+    }, async () => {
+      const result = await b.localStt.stopServer("internal");
+      if (result.status === "error") throw new Error(`stop_server: ${result.error}`);
+    }, b.whisperServerScope ?? b);
+    serverLease = lease;
+    try { return await withTimeout(lease.ready, timeouts.serverStartMs, "the local Whisper server to start"); }
+    catch (error) { if (serverLease === lease) releaseServer(); throw error; }
   };
 
   /** Batch-transcribe a stopped recording's audio file and wait for its terminal event. */
@@ -1837,6 +1853,7 @@ export function createLocalTranscriber(
         return { ok: false, error: err instanceof TranscriptionFailedError ? err : new TranscriptionFailedError(errorMessage(err)) };
       } finally {
         job.running = false;
+        if (job.recording.engine === "on-device") releaseServer();
       }
     })();
   };
