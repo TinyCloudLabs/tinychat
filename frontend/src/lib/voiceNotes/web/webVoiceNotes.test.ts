@@ -59,7 +59,7 @@ describe("capabilities and constants", () => {
     const rig = await createRig();
     expect(rig.engine.capabilities).toEqual({
       nativeShortcuts: false, presentRecorder: false, openSettings: false, micDeniedPresentation: false,
-      background: false, localTranscription: false, offlineRecorder: false,
+      background: false, localTranscription: false, desktopWhisper: false, offlineRecorder: false,
     });
     expect(WEB_CAPABILITIES).toEqual(rig.engine.capabilities);
   });

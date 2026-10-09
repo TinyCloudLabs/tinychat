@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import {
   __resetCaptureEngineForTests,
+  __setInstalledEngineForTests,
   captureCapabilities,
   captureEngineAvailable,
   captureEngineInstallPending,
@@ -15,10 +16,11 @@ import {
   type CaptureEngineKind,
 } from "./captureEngine";
 import { VoiceNotes, __setVoiceNotesForTests } from "./nativeVoiceNotes";
+import { effectiveTranscriber } from "./transcriberPreference";
 
 const none: CaptureCapabilities = {
   nativeShortcuts: false, presentRecorder: false, openSettings: false, micDeniedPresentation: false,
-  background: false, localTranscription: false, offlineRecorder: false,
+  background: false, localTranscription: false, desktopWhisper: false, offlineRecorder: false,
 };
 const engine = (): CaptureEngine => ({ ...createFakeVoiceNotes().plugin, capabilities: none });
 
@@ -93,7 +95,7 @@ describe("flag off is unchanged", () => {
   test("native stays native: available without an install, the binding untouched, every capability on", async () => {
     setShell({ flag: false, native: true, tauri: false, mediaRecorder: false, mediaDevices: false });
     expect(captureEngineAvailable()).toBe(true);
-    expect(Object.values(captureCapabilities()).every(Boolean)).toBe(true);
+    expect(captureCapabilities()).toMatchObject({ localTranscription: true, desktopWhisper: false });
     await installCaptureEngine();
     expect(captureEngineKind()).toBe("native");
     expect(VoiceNotes).toBe(saved.voiceNotes);
@@ -152,6 +154,17 @@ describe("installCaptureEngine", () => {
     expect(captureEngineKind()).toBe("tauri");
     expect(VoiceNotes).toBe(tauri);
   });
+});
+
+test("desktop Local follows its selected Whisper model while web routing is unchanged", () => {
+  __setInstalledEngineForTests("tauri", { ...none, offlineRecorder: true });
+  expect(effectiveTranscriber("on-device", false)).toBe("off");
+  expect(effectiveTranscriber("on-device", true)).toBe("private-cloud");
+  __setInstalledEngineForTests("tauri", { ...none, offlineRecorder: true, desktopWhisper: true });
+  expect(effectiveTranscriber("on-device", false)).toBe("on-device");
+  expect(effectiveTranscriber("on-device", true)).toBe("on-device");
+  __setInstalledEngineForTests("web", none);
+  expect(effectiveTranscriber("on-device", false)).toBe("private-cloud");
 });
 
 describe("App.tsx gates its native-only surfaces on capabilities", () => {

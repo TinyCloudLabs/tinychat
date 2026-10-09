@@ -151,6 +151,7 @@ function makeBridge(opts: {
         calls.push(`start_server:${model}`);
         return { status: "ok", data: "http://127.0.0.1:48732/v1" };
       },
+      stopServer: async () => { calls.push("stop_server"); return { status: "ok", data: true }; },
       events: {
         downloadProgressPayload: { listen: async (cb) => { downloads.add(cb); return () => downloads.delete(cb); } },
       },
@@ -382,6 +383,7 @@ describe("createLocalTranscriber", () => {
       "start_capture:batch:http://127.0.0.1:48732/v1:default",
       "stop_capture",
       "start_transcription:whispercpp:/vault/sessions/x/audio.mp3",
+      "stop_server",
     ]);
   });
 
@@ -613,7 +615,7 @@ describe("createLocalTranscriber", () => {
     await tick();
     bridge.emitTranscription(completedEvent(sessionId));
     await expect(transcribing).resolves.toMatchObject({ sessionId });
-    expect(bridge.calls.at(-1)).toBe("start_transcription:whispercpp:/vault/sessions/x/partial.mp3");
+    expect(bridge.calls.slice(-2)).toEqual(["start_transcription:whispercpp:/vault/sessions/x/partial.mp3", "stop_server"]);
 
     // "Discard recording" drops another partial one without transcribing it.
     const second = await t.start({ model: "QuantizedTinyEn", language: "en" });
@@ -797,8 +799,10 @@ describe("createLocalTranscriber", () => {
       "start_capture:batch:http://127.0.0.1:48701/v1:default",
       "stop_capture",
       "start_transcription:whispercpp:/vault/sessions/x/audio.mp3",
+      "stop_server",
       "start_server:QuantizedBaseEn",
       "start_transcription:whispercpp:/vault/sessions/x/audio.mp3",
+      "stop_server",
     ]);
     // Same session, file, model and language; only the freshly started server URL differs.
     expect(params[1]).toEqual({ ...params[0]!, base_url: "http://127.0.0.1:48702/v1" });
@@ -1227,6 +1231,7 @@ describe("kept on-device recordings across a relaunch", () => {
     expect(after.bridge.calls).toEqual([
       "start_server:QuantizedBaseEn",
       "start_transcription:whispercpp:/vault/sessions/x/audio.mp3",
+      "stop_server",
     ]);
     // Taken but not yet saved: a quit now would still offer it again.
     expect(kept.value?.sessionId).toBe(sessionId);

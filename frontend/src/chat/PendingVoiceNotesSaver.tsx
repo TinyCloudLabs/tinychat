@@ -17,6 +17,7 @@ import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { captureCapabilities, captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
+import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
 import type { VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { whenVoiceNoteSavesIdle, type PendingRun } from "@/lib/voiceNotes/recorderSaves";
 import { advanceAccountGeneration, currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
@@ -82,6 +83,18 @@ export function PendingVoiceNotesSaver({
   useEffect(() => {
     if (!captureEngineAvailable() || !captureCapabilities().localTranscription) return;
     return installOnDeviceTranscriptSync(tcw);
+  }, [tcw]);
+
+  useEffect(() => {
+    const queue = getDesktopWhisperQueue();
+    if (!queue) return;
+    const sync = (id: string) => {
+      void VoiceNotes.listPending().then(({ recordings }) => {
+        const recording = recordings.find((note) => note.id === id);
+        if (recording) return syncOnDeviceTranscript(tcw, recording);
+      }).catch((error: unknown) => console.warn("[desktopWhisper] Could not sync transcript", error));
+    };
+    return queue.onDone(sync);
   }, [tcw]);
 
   useEffect(() => {

@@ -22,7 +22,7 @@ const global = globalThis as Record<string, unknown>;
 
 const ALL: CaptureCapabilities = {
   nativeShortcuts: true, presentRecorder: true, openSettings: true, micDeniedPresentation: true,
-  background: true, localTranscription: true, offlineRecorder: true,
+  background: true, localTranscription: true, desktopWhisper: false, offlineRecorder: true,
 };
 const NONE: CaptureCapabilities = Object.fromEntries(Object.keys(ALL).map((key) => [key, false])) as unknown as CaptureCapabilities;
 

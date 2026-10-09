@@ -70,12 +70,12 @@ export interface NoteLedger {
 }
 export interface NoteSttState {
   state: "waiting_for_model" | "queued" | "running" | "done" | "failed" | "cancelled";
-  pack: "full" | "small" | null; engine: "parakeet" | "apple-speech" | null;
+  pack: "full" | "small" | null; engine: "parakeet" | "apple-speech" | "whisper" | null;
   segmentsDone: number; windowsDone: number; error: string | null;
 }
 export interface LocalTranscript {
   version: 1; noteId: string; transcriber: TranscriberId; rev: number;
-  engine: "parakeet-tdt-0.6b-v3" | "parakeet-tdt-110m-en" | "apple-speech" | "assemblyai" | "tinycloud-private-transcription";
+  engine: "parakeet-tdt-0.6b-v3" | "parakeet-tdt-110m-en" | "apple-speech" | "whispercpp" | "assemblyai" | "tinycloud-private-transcription";
   model: string | null; language: string | null; outcome: "transcribed" | "no_speech"; diarized: boolean;
   /** start/end are milliseconds: the native sidecar's canonical-JSON writer only accepts integers. */
   segments: { start: number; end: number; text: string; speaker: string | null }[]; createdAt: string;
