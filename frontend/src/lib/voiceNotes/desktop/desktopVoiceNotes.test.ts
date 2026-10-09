@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { base64ToBytes } from "../voiceNoteAudio";
 import { newIdbEnv } from "../web/testing/idb";
-import { memoryLocks, type WebStoreOptions } from "../web/webStore";
+import { memoryLocks, openWebStore, type WebStoreOptions } from "../web/webStore";
 import type { IdbEnv } from "../web/idb";
 import { createFileAudioBlobStore } from "./fileAudioBlobStore";
 import { openDesktopVoiceNotes, type DesktopBridge } from "./desktopVoiceNotes";
@@ -42,12 +42,13 @@ class FakeBridge implements DesktopBridge {
     const id = String(args.id ?? "");
     let result: unknown;
     switch (command) {
-      case "recorder_recover": result = { journal: this.recover, quarantined: this.failed }; this.recover = null; break;
-      case "recorder_acknowledge": result = null; break;
+      case "recorder_recover": result = { journal: this.recover, quarantined: this.failed }; break;
+      case "recorder_acknowledge": this.recover = null; result = null; break;
       case "recorder_failed_list": result = this.failed; break;
       case "recorder_failed_retry": this.failed = this.failed.filter((item) => item.id !== id); result = []; break;
       case "recorder_failed_delete": this.failed = this.failed.filter((item) => item.id !== id); result = null; break;
-      case "recorder_start": this.current = id; this.state = "recording"; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
+      case "recorder_start": if (this.recover) throw new Error("recovery_pending");
+        this.current = id; this.state = "recording"; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
       case "recorder_pause": this.state = "paused"; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
       case "recorder_resume": this.state = "recording"; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
       case "recorder_stop": if (this.stopError) throw this.stopError;
@@ -78,8 +79,8 @@ class FakeBridge implements DesktopBridge {
 }
 
 function rig(bridge = new FakeBridge(), dbName = crypto.randomUUID(), env: IdbEnv = newIdbEnv(),
-  storeOptions: Partial<WebStoreOptions> = {}) {
-  return openDesktopVoiceNotes({ bridge, now: () => bridge.now, newId: () => "note-1",
+  storeOptions: Partial<WebStoreOptions> = {}, id = "note-1") {
+  return openDesktopVoiceNotes({ bridge, now: () => bridge.now, newId: () => id,
     storeOptions: { env, dbName, locks: memoryLocks(), decodeCheck: null, now: () => bridge.now, ...storeOptions } });
 }
 
@@ -248,19 +249,89 @@ describe("desktop recorder adapter", () => {
 
   test("native interrupted segment imports before shared store recovery", async () => {
     const bridge = new FakeBridge();
-    const first = await rig(bridge);
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const first = await rig(bridge, dbName, env);
     await first.plugin.start();
     first.dispose();
     bridge.state = "idle"; bridge.current = null;
     bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
     bridge.recover = { id: "note-1", startedAt: bridge.now, recordedMs: 1000, pausedMs: 0, maxDurationMs: 10_000 };
-    const second = await rig(bridge);
+    const second = await rig(bridge, dbName, env);
     const result = await second.recoverInterrupted();
     expect(bridge.calls.indexOf("recorder_recover")).toBeLessThan(bridge.calls.lastIndexOf("finalize_audio_file"));
     expect(result.recovered).toHaveLength(1);
     expect(result.recovered[0]?.sizeBytes).toBe(3);
     expect((await second.plugin.listPending()).recordings).toHaveLength(1);
     second.dispose();
+    // Simulate the renderer dying after commit but before native ACK.
+    bridge.recover = { id: "note-1", startedAt: bridge.now, recordedMs: 1000,
+      pausedMs: 0, maxDurationMs: 10_000 };
+    const third = await rig(bridge, dbName, env);
+    expect((await third.recoverInterrupted()).recovered).toHaveLength(0);
+    expect((await third.plugin.listPending()).recordings).toHaveLength(1);
+    third.dispose();
+  });
+
+  test("quarantined native recovery acknowledges its journal so another note can start", async () => {
+    const bridge = new FakeBridge();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const first = await rig(bridge, dbName, env);
+    await first.plugin.start();
+    first.dispose();
+    bridge.state = "idle"; bridge.current = null;
+    const journal = { id: "note-1", startedAt: bridge.now, recordedMs: 1000, pausedMs: 0, maxDurationMs: 10_000 };
+    bridge.recover = journal;
+    bridge.failed = [{ id: "note-1", segmentId: "rec-broken", reason: "write_failed", error: "bad MP3", journal }];
+    const second = await rig(bridge, dbName, env, {}, "note-2");
+    expect((await second.recoverInterrupted()).failed).toMatchObject([{ id: "note-1" }]);
+    expect(bridge.recover).toBeNull();
+    expect((await second.plugin.start()).id).toBe("note-2");
+    second.dispose();
+  });
+
+  test("relaunch keeps original quarantine metadata and emits its failure only once", async () => {
+    const bridge = new FakeBridge();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const first = await rig(bridge, dbName, env);
+    await first.plugin.setAccountState({ status: "signed_in", accountDid: "did:owner", transitionGen: 1 });
+    await first.plugin.setCaptureDefaults({ accountDid: "did:owner", transitionGen: 1,
+      transcriber: "assemblyai", identifySpeakers: true });
+    await first.plugin.selectInput({ id: "mic-1" });
+    await first.plugin.start();
+    first.dispose();
+    const before = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+      audio: () => createFileAudioBlobStore(bridge) });
+    const span = { kind: "omitted" as const, reason: "input_unavailable", startedAt: bridge.now,
+      endedAt: bridge.now + 100, atAudioMs: 100, audioMs: 0 };
+    await before.updateSession("note-1", { spans: [span] });
+    before.close();
+    bridge.state = "idle"; bridge.current = null;
+    const journal = { id: "note-1", startedAt: bridge.now, recordedMs: 1000, pausedMs: 0, maxDurationMs: 10_000 };
+    bridge.recover = journal;
+    bridge.failed = [{ id: "note-1", segmentId: "rec-broken", reason: "write_failed", error: "bad MP3", journal }];
+    const second = await rig(bridge, dbName, env);
+    const firstFailures: unknown[] = [];
+    await second.plugin.addListener("recoveryFailed", (event) => firstFailures.push(event));
+    await second.recoverInterrupted();
+    expect(firstFailures).toHaveLength(1);
+    second.dispose();
+    const third = await rig(bridge, dbName, env);
+    const repeated: unknown[] = [];
+    await third.plugin.addListener("recoveryFailed", (event) => repeated.push(event));
+    await third.recoverInterrupted();
+    expect(repeated).toHaveLength(0);
+    expect((await third.plugin.listQuarantine()).items).toHaveLength(1);
+    third.dispose();
+    const stored = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+      audio: () => createFileAudioBlobStore(bridge) });
+    await stored.rearmQuarantined("note-1");
+    expect(await stored.getSession("note-1")).toMatchObject({ owner: "did:owner",
+      options: { transcriber: "assemblyai", identifySpeakers: true },
+      input: { id: "mic-1" }, spans: [span] });
+    stored.close();
   });
 
   test("a failed metadata commit leaves the durable native file for recovery", async () => {

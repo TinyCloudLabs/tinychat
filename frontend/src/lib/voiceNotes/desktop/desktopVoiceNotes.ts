@@ -228,7 +228,12 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
   };
   const quarantineFailures = async (failed: NativeFailed[]): Promise<RecoveryResult["failed"]> => {
     const results: RecoveryResult["failed"] = [];
+    const existing = new Set((await store.listQuarantine()).items.map((item) => item.id));
+    const committed = new Set((await store.listPending()).recordings.map((item) => item.id));
     for (const item of failed) {
+      // A relaunch must neither overwrite captured metadata nor repeat a
+      // failure notification for an already quarantined note.
+      if (existing.has(item.id) || committed.has(item.id)) continue;
       if (!await store.getSession(item.id)) {
         const defaults = await store.getCaptureDefaults();
         await store.beginSession({ id: item.id, startedAt: item.journal.startedAt, source: "in_app", owner: null,
@@ -240,6 +245,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       emit("writeFailure", { id: item.id, error: item.error });
       emit("recoveryFailed", event);
       results.push(event);
+      existing.add(item.id);
     }
     return results;
   };
@@ -264,7 +270,10 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       await bridge.invoke("recorder_acknowledge", { id: imported.id });
       imported = null;
     }
-    if (imported && !await store.getSession(imported.id)) {
+    const existingQuarantine = new Set((await store.listQuarantine()).items.map((item) => item.id));
+    const existingNotes = new Set((await store.listPending()).recordings.map((item) => item.id));
+    if (imported && !await store.getSession(imported.id)
+      && !existingQuarantine.has(imported.id) && !existingNotes.has(imported.id)) {
       // A crash between the native start and metadata creation can leave a file whose
       // journal still knows its identity. Give it a conservative, unowned session.
       const defaults = await store.getCaptureDefaults();
@@ -289,7 +298,11 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     const result = await store.recoverInterruptedSessions();
     for (const recording of result.recovered) emit("recovered", { id: recording.id, recording });
     for (const failed of result.failed) emit("recoveryFailed", failed);
-    if (imported && !result.failed.some((failed) => failed.id === imported.id)) {
+    if (imported && (await store.getSession(imported.id)
+      || (await store.listQuarantine()).items.some((item) => item.id === imported.id)
+      || (await store.listPending()).recordings.some((item) => item.id === imported.id))) {
+      // The renderer has durably taken responsibility, including quarantine
+      // or a decoder-unavailable session. The native pointer must not block Start.
       await bridge.invoke("recorder_acknowledge", { id: imported.id });
     }
     return { recovered: result.recovered, failed: [...quarantined, ...result.failed] };
