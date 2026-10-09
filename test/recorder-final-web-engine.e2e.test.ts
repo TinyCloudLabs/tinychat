@@ -74,7 +74,7 @@ describe("web engine boot recovery in Chromium", () => {
     expect(booted.pending[0]!.sizeBytes).toBeGreaterThan(0);
     expect(booted.capabilities).toEqual({
       nativeShortcuts: false, presentRecorder: false, openSettings: false, micDeniedPresentation: false,
-      background: false, localTranscription: false, offlineRecorder: false,
+      background: false, localTranscription: false, desktopWhisper: false, offlineRecorder: false,
     });
     await context.close();
   });
