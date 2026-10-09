@@ -1,0 +1,128 @@
+// The desktop Capture home (D2) in the real shell, wide layout (the rail from 768, the sidebar from 1024):
+// idle, docked, after a stop, with capture issues and empty, in the Tauri app and (idle) on the web. The
+// harness build has no env, so each screen turns the Soft skin on. The interactive screen runs the real
+// recorder over the fake native plugin on the Library fixture, for test/capture-home-desktop.e2e.test.ts.
+import { useContext, useEffect, useMemo, type ReactNode } from "react";
+
+import { forceSoftHome } from "@/capture/home/softHome";
+import { showToast } from "@/capture/recorder/final/desktop/Toasts";
+import type { RecorderValue } from "@/capture/recorder/RecorderProvider";
+import { PlatformContext } from "@/lib/platform";
+import { __setOnDeviceSttForTests } from "@/lib/voiceNotes/onDeviceStt";
+import { LIBRARY_ROWS, libraryTcw } from "../fixtures/library";
+import { createRuntimeShim } from "../runtimeShim";
+import type { HarnessScreen } from "../screen";
+import { ShellApp } from "../ShellApp";
+import { FROZEN_NOW } from "../stubs";
+import { installNativePlugin, ON_DEVICE_STT } from "./recorderFinalDesktop";
+
+const LISTED =
+  '[data-testid="recent-item"], [data-testid="capture-recent-empty"]';
+
+function Home(props: {
+  recorder?: Partial<RecorderValue>;
+  rows?: typeof LIBRARY_ROWS;
+  toast?: string;
+}) {
+  forceSoftHome(true);
+  const platform = useContext(PlatformContext);
+  const shim = useMemo(() => createRuntimeShim(), []);
+  const tcw = useMemo(() => libraryTcw({ rows: props.rows }), [props.rows]);
+  const { toast } = props;
+  useEffect(() => {
+    if (toast) showToast(toast);
+  }, [toast]);
+  return (
+    <ShellApp
+      platform={platform}
+      shim={shim}
+      state="ready"
+      captureTcw={tcw}
+      recorder={props.recorder}
+      finalRecorder
+    />
+  );
+}
+
+const IDLE: Partial<RecorderValue> = {
+  available: true,
+  ready: true,
+  phase: "idle",
+};
+
+const DOCKED: Partial<RecorderValue> = {
+  ...IDLE,
+  phase: "recording",
+  mic: { state: "recording", reason: null },
+  startedAt: FROZEN_NOW - 42_000,
+  audioMs: 42_000,
+  elapsedMs: 42_000,
+  elapsedAt: FROZEN_NOW,
+  sheetOpen: false,
+};
+
+const ISSUES: Partial<RecorderValue> = {
+  ...IDLE,
+  pending: {
+    listing: { state: "ok", count: 2 },
+    running: false,
+    lastError: null,
+  },
+  retryPending: () => {},
+  captureIssues: {
+    "rec-0928": { kind: "partial_audio", missingMs: 4000 },
+    "rec-saving": { kind: "finalization_timed_out" },
+    "rec-lost": {
+      kind: "recoveryFailed",
+      detail: "native: segment unreadable",
+    },
+  },
+};
+
+const screen = (
+  id: string,
+  render: () => ReactNode,
+  platform: HarnessScreen["platform"] = "tauri",
+): HarnessScreen => ({
+  id: `capture-home-desktop-${id}`,
+  group: "captureHomeDesktop",
+  layout: "pane",
+  displayTitle: false,
+  path: "/chat/capture",
+  platform,
+  minViewportWidth: 768,
+  readyWhen: LISTED,
+  render,
+});
+
+const interactiveScreen: HarnessScreen = {
+  id: "capture-home-desktop-interactive",
+  group: "captureHomeDesktop",
+  layout: "pane",
+  displayTitle: false,
+  path: "/chat/capture",
+  platform: "tauri",
+  minViewportWidth: 768,
+  interactive: true,
+  render: () => {
+    installNativePlugin();
+    __setOnDeviceSttForTests(ON_DEVICE_STT);
+    return <Home />;
+  },
+};
+
+export const captureHomeDesktopScreens: HarnessScreen[] = [
+  interactiveScreen,
+  screen("idle", () => <Home recorder={IDLE} />),
+  screen("idle-web", () => <Home recorder={IDLE} />, "web"),
+  screen("docked", () => <Home recorder={DOCKED} />),
+  screen("docked-web", () => <Home recorder={DOCKED} />, "web"),
+  screen("after-stop", () => (
+    <Home recorder={IDLE} toast="Saved to your space" />
+  )),
+  {
+    ...screen("issues", () => <Home recorder={ISSUES} />),
+    scrollTo: '[data-testid="capture-issue-dismiss"]',
+  },
+  screen("empty", () => <Home recorder={IDLE} rows={[]} />),
+];

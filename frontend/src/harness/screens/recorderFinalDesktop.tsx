@@ -107,7 +107,7 @@ const MODEL_READY: OnDeviceSttStatus = {
   queue: [],
 };
 
-const ON_DEVICE_STT: OnDeviceSttPlugin = {
+export const ON_DEVICE_STT: OnDeviceSttPlugin = {
   status: async () => MODEL_READY,
   setAutoDownload: async () => {},
   downloadNow: async () => {},
@@ -184,7 +184,7 @@ function screen(
 }
 
 // The real recorder over the fake native plugin, with each control call recorded for the test.
-function installNativePlugin() {
+export function installNativePlugin() {
   const log = (window.exoDesktop ??= { calls: [] });
   const fake = createFakeVoiceNotes();
   const plugin: VoiceNotesPlugin = { ...fake.plugin };

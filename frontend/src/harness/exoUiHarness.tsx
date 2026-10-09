@@ -20,6 +20,7 @@ import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { createFakeVoiceNotes as createCaptureFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
 import type { HarnessScreen } from "./screen";
 import { captureScreens, captureSoftScreens } from "./screens/capture";
+import { captureHomeDesktopScreens } from "./screens/captureHomeDesktop";
 import { captureSettingsScreens } from "./screens/captureSettings";
 import { legacyScreens } from "./screens/legacy";
 import { libraryScreens } from "./screens/library";
@@ -57,6 +58,7 @@ const SCREENS: HarnessScreen[] = [
   ...recorderFinalPhoneInteractiveScreens,
   ...captureScreens,
   ...captureSoftScreens,
+  ...captureHomeDesktopScreens,
   ...captureSettingsScreens,
   ...libraryScreens,
   ...localScreens,
