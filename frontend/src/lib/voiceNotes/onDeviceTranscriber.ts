@@ -7,45 +7,8 @@
 // does for its own source.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import { VOICE_NOTE_SPEAKER } from "./voiceNoteTranscription";
-import { saveVoiceNoteTranscript, type VoiceNoteTranscriptSave } from "./voiceNoteStore";
+import { localTranscriptToSave, saveVoiceNoteTranscript } from "./voiceNoteStore";
 import { VoiceNotes, type LocalTranscript } from "./nativeVoiceNotes";
-
-function engineMetadata(transcript: LocalTranscript) {
-  return {
-    transcription_engine: "on-device",
-    transcript_provider: transcript.engine,
-    transcribed_at: transcript.createdAt,
-  };
-}
-
-/** The on-device transcript as it is saved onto the note, in the same shape the private-cloud
- * path uses (`prepareVoiceNoteTranscript`/`noSpeechTranscript` in voiceNoteTranscription.ts). */
-export function prepareOnDeviceTranscript(transcript: LocalTranscript): VoiceNoteTranscriptSave {
-  if (transcript.outcome === "no_speech" || transcript.segments.length === 0) {
-    return { sentences: [], speakers: [], metadata: { ...engineMetadata(transcript), transcript_text: null, transcription_outcome: "no_speech" } };
-  }
-  const sentences = transcript.segments.map((segment, index) => ({
-    index,
-    speaker_name: segment.speaker ?? VOICE_NOTE_SPEAKER,
-    text: segment.text,
-    start_time: segment.start,
-    end_time: segment.end,
-  }));
-  return {
-    sentences,
-    speakers: [...new Set(sentences.map((s) => s.speaker_name))],
-    metadata: {
-      ...engineMetadata(transcript),
-      inference_provider: null,
-      model: transcript.model,
-      language: transcript.language,
-      transcript_text: sentences.map((s) => s.text).join("\n"),
-      transcription_outcome: "transcribed",
-      speaker_labels: transcript.diarized ? "diarized" : "single-speaker",
-    },
-  };
-}
 
 /**
  * If this note already has a local on-device transcript and a space row (`ledger.audio.state ===
@@ -67,7 +30,7 @@ export async function syncOnDeviceTranscript(
   }
   if (!transcript) return;
   try {
-    const result = await saveVoiceNoteTranscript(tcw, recording.id, prepareOnDeviceTranscript(transcript));
+    const result = await saveVoiceNoteTranscript(tcw, recording.id, localTranscriptToSave(transcript));
     if (!result.ok) console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", result.error);
   } catch (err) {
     console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", err);

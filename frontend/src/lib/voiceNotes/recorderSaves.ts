@@ -213,7 +213,6 @@ export async function saveRecording(
   }
   // Old localStorage markers are never authority: a lost marker must be safe,
   // and a stale marker must not suppress a note whose native ledger is pending.
-  if (cloudSaved.has(recording.id)) return { kind: "already-saved", cleanupError: null };
   if (savedThisSession.has(recording.id)) return { kind: "already-saved", cleanupError: null };
   savesInFlight.add(recording.id);
   try {
