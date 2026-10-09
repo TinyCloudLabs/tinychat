@@ -17,6 +17,9 @@ public final class RecordingLibrary {
     private var generations: [String: UInt64] = [:]
     private var active: [String: Int] = [:]
     private var liveSessions: Set<String> = []
+    // Launch recovery only owns sessions left by an earlier library instance.
+    // A session started here can finish while the asynchronous launch scan runs.
+    private var startedHere: Set<String> = []
     private var didRecover = false
     private let metricLock = NSLock()
     private var syncDurations: [String: (count: Int, totalMs: Double, maxMs: Double)] = [:]
@@ -114,6 +117,7 @@ public final class RecordingLibrary {
             }
             try check("start.mkdir")
             try FileManager.default.createDirectory(at: sessionURL(info.id), withIntermediateDirectories: false)
+            startedHere.insert(info.id)
             try sync(url("sessions"))
             try check("start.journal")
             try writeDurable(JournalCodec.line(info.journalEvent()), to: journalURL(info.id))
@@ -613,7 +617,9 @@ public final class RecordingLibrary {
                 } catch { /* Retain marker and retry next launch. */ }
             }
             return try FileManager.default.contentsOfDirectory(at: url("sessions"), includingPropertiesForKeys: nil)
-                .map(\.lastPathComponent).filter { $0 != liveID && !liveSessions.contains($0) && Self.validID($0) }
+                .map(\.lastPathComponent).filter {
+                    $0 != liveID && !liveSessions.contains($0) && !startedHere.contains($0) && Self.validID($0)
+                }
         }
     }
 

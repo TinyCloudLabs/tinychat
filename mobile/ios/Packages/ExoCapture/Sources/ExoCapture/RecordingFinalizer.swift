@@ -20,6 +20,11 @@ public enum RecordingFinalizer {
             lock.lock(); abandoned = true; lock.unlock()
         }
 
+        func isAbandoned() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            return abandoned
+        }
+
         func value() -> Result<Void, Error>? {
             lock.lock(); defer { lock.unlock() }
             return result
@@ -65,6 +70,10 @@ public enum RecordingFinalizer {
         let outcome = MuxOutcome()
         DispatchQueue.global(qos: .userInitiated).async {
             seam.beforeMuxWorker?()
+            if outcome.isAbandoned() {
+                finished.signal()
+                return
+            }
             let result = Result {
                 try muxWorker(segments: segments, expectedAudioMs: expectedAudioMs,
                               to: output, waitTimeout: waitTimeout, seam: seam)

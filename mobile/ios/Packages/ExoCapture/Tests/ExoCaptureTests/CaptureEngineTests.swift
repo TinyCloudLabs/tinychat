@@ -416,7 +416,7 @@ import XCTest
         XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - started, 0.05)
     }
 
-    func testSynchronousMuxStallTimesOutAndRecoversAudio() throws {
+    func testSynchronousMuxStallTimesOutAndPreservesAudio() throws {
         let clock = TestClock()
         try withEngine(clock: clock) { engine in
             engine.debugSuppressTaps()
@@ -424,34 +424,35 @@ import XCTest
             let muxGate = DispatchSemaphore(value: 0)
             defer { muxGate.signal() }
             let workerEntered = expectation(description: "mux worker entered")
+            let workerReleased = expectation(description: "abandoned mux worker released")
+            let retryScheduled = expectation(description: "timed-out recording scheduled for recovery")
+            engine.debugScheduleTimedOutRetry = { _ in retryScheduled.fulfill() }
             var seam = RecordingFinalizer.WaitSeam()
             seam.beforeMuxWorker = {
                 workerEntered.fulfill()
                 muxGate.wait()
+                workerReleased.fulfill()
             }
             engine.debugMuxWaitSeam = seam
             let id = try XCTUnwrap(engine.start(requestedLimitMs: 1_000)["id"] as? String)
             try enqueueTone(engine)
             let stopped = expectation(description: "mux deadline reports failure")
-            let recovered = expectation(description: "same-process retry publishes audio")
             var failure: [String: Any]?
             let token = engine.observe { name, data, _ in
                 if name == "autoStopped", data["reason"] as? String == "max_duration" {
                     failure = data
                     stopped.fulfill()
                 }
-                if name == "recovered", data["id"] as? String == id { recovered.fulfill() }
             }
             defer { engine.removeObserver(token) }
             clock.advance(by: 1_000)
             engine.debugWatchdogTick()
-            wait(for: [workerEntered, stopped], timeout: 15)
+            wait(for: [workerEntered, stopped, retryScheduled], timeout: 15)
             XCTAssertEqual(failure?["error"] as? String, "finalization_timed_out")
             XCTAssertGreaterThan(ADTS.fullFrameCount(try Data(contentsOf: engine.library.segmentURL(id, index: 0))), 0)
-            wait(for: [recovered], timeout: 30)
-            XCTAssertEqual(try engine.library.readSidecar(id)["recovered"] as? Bool, true)
-            XCTAssertTrue(FileManager.default.fileExists(atPath: engine.library.audioURL(id).path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: engine.library.sidecarURL(id).path))
             muxGate.signal()
+            wait(for: [workerReleased], timeout: 5)
         }
     }
 

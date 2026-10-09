@@ -70,6 +70,7 @@ public final class CaptureEngine {
     var debugNow: (() -> TimeInterval)?
     var debugMuxWaitTimeout: TimeInterval?
     var debugMuxOperationTimeout: TimeInterval?
+    var debugScheduleTimedOutRetry: ((String) -> Void)?
     var debugMuxWaitSeam: RecordingFinalizer.WaitSeam?
     #endif
     private var isForeground: Bool {
@@ -901,6 +902,12 @@ public final class CaptureEngine {
 
     private func retryTimedOutSession(_ id: String) {
         log.notice("finalize stage=recovery_scheduled id=\(id, privacy: .public) delaySeconds=2")
+        #if DEBUG
+        if let debugScheduleTimedOutRetry {
+            debugScheduleTimedOutRetry(id)
+            return
+        }
+        #endif
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) { [weak self] in
             guard let self else { return }
             do {
