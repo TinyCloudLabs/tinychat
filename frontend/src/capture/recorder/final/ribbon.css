@@ -1,0 +1,331 @@
+.mini-skin.soft-skin {
+  background: transparent;
+}
+
+/* ---------- the Ribbon: phone above the tab bar, floating on the rail ---------- */
+.ribbon {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 6px 6px 16px;
+  border-radius: 22px;
+  background: var(--solid);
+  box-shadow:
+    0 0 0 1px var(--gedge),
+    0 14px 34px rgba(0, 0, 0, 0.28);
+  color: var(--ink);
+}
+
+.ribbon-open,
+.dock-open {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
+.ribbon-open {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  align-items: center;
+  gap: 10px;
+  border-radius: 16px;
+}
+
+.ribbon-open:focus-visible,
+.dock-open:focus-visible,
+.mini-btn:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.ribbon-timer,
+.dock-timer {
+  font-family: var(--soft-title-font);
+  font-optical-sizing: auto;
+  font-variation-settings: "SOFT" 100;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.ribbon-timer {
+  font-size: 19px;
+}
+
+.ribbon-bars {
+  display: block;
+  flex: 1;
+  min-width: 0;
+}
+
+[data-live="false"] .ribbon-timer,
+[data-live="false"] .dock-timer {
+  opacity: 0.5;
+}
+
+/* A 44 px hit box around the visible disc; the disc keeps the reference size. */
+.mini-btn {
+  all: unset;
+  box-sizing: border-box;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.mini-btn:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.mini-disc {
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--gedge);
+  color: var(--ink);
+}
+
+.ribbon .mini-disc {
+  width: 40px;
+  height: 40px;
+}
+
+.mini-btn--stop .mini-disc {
+  background: var(--red);
+  box-shadow: none;
+}
+
+.ribbon .mini-btn--stop .mini-disc {
+  box-shadow: 0 6px 18px rgba(255, 90, 80, 0.35);
+}
+
+.mini-stop-glyph {
+  display: block;
+  background: #fff;
+}
+
+.ribbon .mini-stop-glyph {
+  width: 13px;
+  height: 13px;
+  border-radius: 3.5px;
+}
+
+/* Beside the tab bar the Ribbon fills the width; floating on the rail it sits centred. */
+.ribbon-float {
+  position: relative;
+  height: 0;
+  pointer-events: none;
+}
+
+.ribbon-float > .ribbon-float-inner {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  left: 14px;
+  z-index: 40;
+  max-width: 440px;
+  margin-inline: auto;
+  pointer-events: auto;
+}
+
+/* ---------- the dock: the sidebar's foot, above the build line ---------- */
+.dock {
+  position: relative;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 9px;
+  padding: 12px;
+  border-radius: 18px;
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--gedge);
+  color: var(--ink);
+}
+
+.dock:hover {
+  box-shadow: inset 0 0 0 1px var(--ink);
+}
+
+.dock-open {
+  position: absolute;
+  inset: 0;
+  border-radius: 18px;
+}
+
+.dock-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.dock-row > * {
+  pointer-events: auto;
+}
+
+.dock-timer {
+  flex: 1;
+  font-size: 21px;
+  pointer-events: none;
+}
+
+.dock .mini-btn {
+  width: 28px;
+  height: 28px;
+}
+
+.dock .mini-disc {
+  width: 28px;
+  height: 28px;
+}
+
+.dock .mini-stop-glyph {
+  width: 9px;
+  height: 9px;
+  border-radius: 2.5px;
+}
+
+.dock-bars,
+.dock-foot {
+  position: relative;
+  pointer-events: none;
+}
+
+.dock-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--dim);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.dock-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dock-foot-gap {
+  flex: 1;
+}
+
+@media (pointer: coarse) {
+  .dock .mini-btn {
+    width: 44px;
+    height: 44px;
+    margin-block: -8px;
+  }
+  .dock .mini-btn:last-child {
+    margin-inline-end: -8px;
+  }
+}
+
+/* ---------- the Capture item's dot ---------- */
+.capture-dot {
+  position: absolute;
+  top: 50%;
+  right: 14px;
+  box-sizing: border-box;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  transform: translateY(-50%);
+}
+
+.capture-dot[data-dot="live"] {
+  background: #ff6b62;
+}
+
+html:not(.dark) .capture-dot[data-dot="live"] {
+  background: #e5483f;
+}
+
+.capture-dot[data-dot="paused"] {
+  background: #8f8993;
+}
+
+.capture-dot[data-dot="hollow"] {
+  border: 1.5px solid #8f8993;
+}
+
+/* ---------- motion: only the recorder's own move, transform and opacity, never under reduced motion ---------- */
+@media (prefers-reduced-motion: no-preference) {
+  .ribbon-skin.is-entering,
+  .dock-skin.is-entering {
+    animation: mini-rise 0.4s cubic-bezier(0.3, 1.45, 0.5, 1);
+  }
+  .mini-disc {
+    transition: transform 0.2s cubic-bezier(0.3, 1.7, 0.4, 1);
+  }
+  .mini-btn:active .mini-disc {
+    transform: scale(0.88);
+  }
+  .ribbon-timer,
+  .dock-timer {
+    transition: opacity 0.2s;
+  }
+}
+
+@keyframes mini-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+}
+
+/* ---------- the error that Pause, Resume or Stop leaves behind while the sheet is closed ---------- */
+.mini-alert {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+  padding: 2px 4px 2px 14px;
+  border-radius: 16px;
+  background: var(--solid);
+  box-shadow: 0 0 0 1px var(--red);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.mini-alert-text {
+  flex: 1;
+  min-width: 0;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.mini-alert button {
+  all: unset;
+  box-sizing: border-box;
+  flex: none;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  cursor: pointer;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.mini-alert button:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+}

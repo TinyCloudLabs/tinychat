@@ -7,6 +7,7 @@ import { SettingsIcon, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { BuildInfoLine } from "@/components/BuildInfoLine";
+import { CaptureDot } from "@/capture/recorder/final/CaptureDot";
 import { NavBadge } from "./NavBadge";
 import { tabTarget } from "./navigation";
 import { PATHS } from "./routes";
@@ -71,6 +72,7 @@ export function Sidebar({
               >
                 <RowContent icon={item.icon} label={item.label} active={active} />
                 <NavBadge count={item.badge} className="right-2.5 top-1/2 -translate-y-1/2" />
+                {item.id === "capture" && <CaptureDot />}
               </Link>
             </li>
           );
