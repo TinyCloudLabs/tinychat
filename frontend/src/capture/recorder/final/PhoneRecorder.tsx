@@ -90,10 +90,7 @@ export function PhoneRecorder({
   const theme = useResolvedTheme() === "dark" ? "night" : "day";
   const { phase, mic } = recorder;
 
-  const running =
-    phase === "recording" &&
-    (mic.state === "recording" || mic.state === "silenced");
-  const elapsedMs = useRecordedElapsed(recorder.elapsedMs, running);
+  const elapsedMs = useRecordedElapsed(recorder.elapsedMs, recorder);
   const silent =
     phase === "recording" &&
     (mic.state === "silenced" ||

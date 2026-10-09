@@ -137,6 +137,13 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
   test("the ring pauses and resumes, and so does the control below it", async () => {
     const { page, calls } = await open("consented");
     await attr(ring(page), "aria-label", "Pause recording");
+    const disc = (await ring(page).boundingBox())!;
+    expect(Math.round(disc.width)).toBe(172);
+    expect(Math.round(disc.height)).toBe(172);
+    const canvas = (await page
+      .locator(".pr-ring .halo-ring__canvas")
+      .boundingBox())!;
+    expect(Math.round(canvas.width)).toBe(301);
     await ring(page).click();
     expect(await calls()).toEqual(["pause"]);
     await attr(ring(page), "aria-label", "Resume recording");
