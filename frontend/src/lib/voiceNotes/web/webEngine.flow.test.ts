@@ -19,6 +19,9 @@ import { DecodeCheckError } from "./decodeCheck";
 import { startWebCaptureEngine } from "./webEngine";
 import { createVoiceNoteRecorderController } from "@/capture/recorder/voiceNoteRecorderController";
 import { audioFileExtension } from "../voiceNoteStore";
+import { actionCall, runFailedAction } from "@/capture/home/failedActions";
+import { issueCanRetry, issueIsRecoverable, withQuarantine } from "@/capture/home/captureIssues";
+import { quarantinedFor, readQuarantine } from "../quarantine";
 import { createRig, FakeMediaRecorder, type Rig } from "./webTestKit";
 
 const original = VoiceNotes;
@@ -338,24 +341,118 @@ describe("boot recovery", () => {
 });
 
 describe("the controller receives boot recovery", () => {
-  test("a quarantined recording becomes a recoveryFailed capture issue, and a recovered one is not an issue", async () => {
+  const transcriber = { noteSaved: () => {}, snapshot: () => ({ availability: "available" as const, consented: false, capabilities: null, jobs: new Map() }) };
+  const controllerFor = (tcw: TinyCloudWeb | null) => createVoiceNoteRecorderController({
+    tcw, available: true, transcriber, onDeviceReady: () => true, appleInterim: () => false,
+  });
+  async function until(condition: () => boolean, label: string) {
+    for (let i = 0; i < 200 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    if (!condition()) throw new Error(`Timed out waiting for ${label}`);
+  }
+  /** What the soft home shows for `did`: the controller's issues merged with the parked recordings it may see. */
+  async function homeFor(issues: Parameters<typeof withQuarantine>[0], did: string | null) {
+    const read = await readQuarantine();
+    if (read.kind !== "items") throw read.caught;
+    return withQuarantine(issues, quarantinedFor(read.items, did), new Set());
+  }
+  /** A recording of `owner` (null: recorded signed out) whose tab died and that this boot cannot decode. */
+  async function bootWithParked(owner: string | null) {
     const first = await createRig();
-    await first.engine.plugin.setCaptureDefaults({ accountDid: A, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false });
+    if (owner) await first.engine.plugin.setCaptureDefaults({ accountDid: owner, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false });
     const { id } = await first.engine.plugin.start();
     await first.chunk([1, 2, 3]);
     rig = await first.reopen({ decodeCheck: undecodable });
     const engine = await quietly(() => startWebCaptureEngine({ store: rig.store, captureEnv: () => rig.fake.env, now: rig.clock.now }));
     __setVoiceNotesForTests(engine, { available: true });
-
-    const recorder = createVoiceNoteRecorderController({
-      tcw: null, available: true,
-      transcriber: { noteSaved: () => {}, snapshot: () => ({ availability: "available", consented: false, capabilities: null, jobs: new Map() }) },
-      onDeviceReady: () => true, appleInterim: () => false,
-    });
+    return id;
+  }
+  /** A controller attached for `tcw`, as App replaces it when authentication supplies an account. */
+  async function attach(tcw: TinyCloudWeb | null) {
+    const recorder = controllerFor(tcw);
     const detach = recorder.attach();
     await rig.settle();
-    expect(recorder.getState().captureIssues[id]).toMatchObject({ kind: "recoveryFailed" });
-    detach();
+    return { recorder, detach };
+  }
+
+  test("boot signed out → sign in: the issue is rehydrated for the replacement controller, with Try again and Delete", async () => {
+    const id = await bootWithParked(A);
+    // The first controller attaches with no account: A's recording is not for it.
+    const signedOut = await attach(null);
+    expect(signedOut.recorder.getState().captureIssues[id]).toBeUndefined();
+    expect(Object.keys(await homeFor(signedOut.recorder.getState().captureIssues, null))).toEqual([]);
+    signedOut.detach();
+
+    // A signs in; useVoiceNoteRecorder builds a new controller for the account.
+    const asA = await attach(space(A).tcw);
+    await until(() => asA.recorder.getState().captureIssues[id] !== undefined, "the recoveryFailed issue");
+    expect(asA.recorder.getState().captureIssues[id]).toMatchObject({ kind: "recoveryFailed" });
+    const rows = await homeFor(asA.recorder.getState().captureIssues, A);
+    expect(rows[id]).toEqual({ kind: "quarantined" });
+    expect(issueIsRecoverable(rows[id]!) && issueCanRetry(rows[id]!)).toBe(true);
+
+    // The sheet's Try again reaches the engine, and so does Delete; after Delete no controller is told again.
+    const retried = await quietly(() => runFailedAction(actionCall("retry", "quarantined", id)));
+    expect(retried.status).toBe("ok");
+    const deleted = await runFailedAction(actionCall("delete", "quarantined", id));
+    expect(deleted.status === "ok" || deleted.status === "gone").toBe(true);
+    asA.detach();
+    const again = await attach(space(A).tcw);
+    await rig.settle();
+    expect(again.recorder.getState().captureIssues[id]).toBeUndefined();
+    expect(Object.keys(await homeFor(again.recorder.getState().captureIssues, A))).toEqual([]);
+    again.detach();
+  });
+
+  test("A → B → A: B never sees A's recording; A sees it again", async () => {
+    const id = await bootWithParked(A);
+    const asA = await attach(space(A).tcw);
+    await until(() => asA.recorder.getState().captureIssues[id] !== undefined, "A's issue");
+    asA.detach();
+
+    const asB = await attach(space(B).tcw);
+    await rig.settle();
+    expect(asB.recorder.getState().captureIssues[id]).toBeUndefined();
+    expect(Object.keys(await homeFor(asB.recorder.getState().captureIssues, B))).toEqual([]);
+    asB.detach();
+
+    const backAsA = await attach(space(A).tcw);
+    await until(() => backAsA.recorder.getState().captureIssues[id] !== undefined, "A's issue after B");
+    expect((await homeFor(backAsA.recorder.getState().captureIssues, A))[id]).toEqual({ kind: "quarantined" });
+    backAsA.detach();
+  });
+
+  test("a recording made signed out is shown to anyone until the first sign-in claims it, then only to that account", async () => {
+    const id = await bootWithParked(null);
+    const signedOut = await attach(null);
+    await until(() => signedOut.recorder.getState().captureIssues[id] !== undefined, "the signed-out issue");
+    signedOut.detach();
+
+    await signIn(A, 1);
+    const asB = await attach(space(B).tcw);
+    await rig.settle();
+    expect(asB.recorder.getState().captureIssues[id]).toBeUndefined();
+    expect(Object.keys(await homeFor({}, B))).toEqual([]);
+    asB.detach();
+    const asA = await attach(space(A).tcw);
+    await until(() => asA.recorder.getState().captureIssues[id] !== undefined, "A's claimed issue");
+    expect((await homeFor({}, A))[id]).toEqual({ kind: "quarantined" });
+    asA.detach();
+  });
+
+  test("a decoder_unavailable recording that is not quarantined is announced to a later controller too", async () => {
+    const first = await createRig();
+    await first.engine.plugin.setCaptureDefaults({ accountDid: A, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false });
+    const { id } = await first.engine.plugin.start();
+    await first.chunk([1, 2, 3]);
+    rig = await first.reopen({ decodeCheck: async () => { throw new DecodeCheckError("resource", "no decoder"); } });
+    __setVoiceNotesForTests(await quietly(() => startWebCaptureEngine({ store: rig.store, captureEnv: () => rig.fake.env, now: rig.clock.now })), { available: true });
+
+    const signedOut = await attach(null);
+    signedOut.detach();
+    const asA = await attach(space(A).tcw);
+    await until(() => asA.recorder.getState().captureIssues[id] !== undefined, "the decoder_unavailable issue");
+    expect(asA.recorder.getState().captureIssues[id]).toMatchObject({ kind: "recoveryFailed", detail: "decoder_unavailable" });
+    asA.detach();
   });
 });
 

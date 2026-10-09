@@ -97,7 +97,7 @@ jobs:
       - name: Recorder-final interaction suites (Chromium)
         if: ${{ !cancelled() }}
         working-directory: test
-        run: EXO_UI_ENGINE=chromium SOFT_HOME_ENGINE=chromium bun test capture-home-soft.e2e.test.ts recorder-final-phone.e2e.test.ts recorder-final-ribbon.e2e.test.ts recorder-final-small-screen.e2e.test.ts
+        run: EXO_UI_ENGINE=chromium SOFT_HOME_ENGINE=chromium bun test capture-home-soft.e2e.test.ts recorder-final-phone.e2e.test.ts recorder-final-ribbon.e2e.test.ts recorder-final-small-screen.e2e.test.ts recorder-final-web-engine.e2e.test.ts web-voice-notes-codec.e2e.test.ts
 
       - name: Recorder halo forced Canvas 2D checks (Linux Chromium)
         if: ${{ !cancelled() }}

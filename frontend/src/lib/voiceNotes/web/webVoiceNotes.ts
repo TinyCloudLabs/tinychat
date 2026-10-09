@@ -110,6 +110,9 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
 
   const listeners = new Map<EventName, Set<Listener>>();
   const retained = new Map<EventName, unknown[]>();
+  // Recordings that failed recovery stay announced until they are retried, discarded or recovered, so a controller
+  // that attaches later (after sign-in, or on an account switch) is told again. Never one-shot.
+  const recoveryIssues = new Map<string, { id: string; reason: string; error: string }>();
   const objectUrls = new Map<string, string>();
   let live: Live | null = null;
   let selectedId: string | null = null;
@@ -543,18 +546,21 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
     async retryRecovery({ id }) {
       if (live?.id === id) throw failure("recording_in_progress");
       await store.rearmQuarantined(id);
+      recoveryIssues.delete(id);
       await recoverInterrupted();
     },
 
     async discardFailedRecording({ id }) {
       if (live?.id === id) throw failure("recording_in_progress");
       await store.discardFailedRecording({ id });
+      recoveryIssues.delete(id);
       revokeUrl(id);
     },
 
     async deleteQuarantined({ id }) {
       if (live?.id === id) throw failure("recording_in_progress");
       await store.deleteQuarantined({ id });
+      recoveryIssues.delete(id);
     },
 
     async dismissShortcutRecovery() { throw failure("unsupported", "App shortcuts do not exist on the web."); },
@@ -580,6 +586,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
       if (!set) { set = new Set(); listeners.set(event, set); }
       set.add(listener);
       if (event === "inputs") watchDevices();
+      if (event === "recoveryFailed") for (const issue of recoveryIssues.values()) deliverRecoveryIssue(issue, listener);
       if (retained.get(event)?.length) queueMicrotask(() => {
         if (!set?.has(listener)) return;
         for (const payload of retained.get(event) ?? []) listener(clone(payload));
@@ -622,11 +629,29 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
     };
   }
 
+  function announceRecoveryFailed(failed: { id: string; reason: string; error: string }) {
+    const issue = { ...failed };
+    recoveryIssues.set(issue.id, issue);
+    for (const listener of listeners.get("recoveryFailed") ?? []) deliverRecoveryIssue(issue, listener);
+  }
+
+  /** The owner is read when the listener is told, not when the failure was found: sign-in claims unowned recordings in between. */
+  function deliverRecoveryIssue(issue: { id: string; reason: string; error: string }, listener: Listener) {
+    store.recoveryOwner(issue.id).then((owner) => {
+      if (recoveryIssues.get(issue.id) !== issue) return;
+      if (owner === undefined) { recoveryIssues.delete(issue.id); return; }
+      if (listeners.get("recoveryFailed")?.has(listener)) listener({ ...issue, owner });
+    }).catch((error: unknown) => console.error("[webVoiceNotes] Could not announce a failed recovery", issue.id, error));
+  }
+
   async function recoverInterrupted(): Promise<RecoveryResult> {
     await store.sweepTombstones();
     const result = await store.recoverInterruptedSessions();
-    for (const recording of result.recovered) emit("recovered", { id: recording.id, recording });
-    for (const failed of result.failed) emit("recoveryFailed", failed);
+    for (const recording of result.recovered) {
+      recoveryIssues.delete(recording.id);
+      emit("recovered", { id: recording.id, recording });
+    }
+    for (const failed of result.failed) announceRecoveryFailed(failed);
     return result;
   }
 
@@ -635,7 +660,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
     const announced = new Set(result.failed.map((failed) => failed.id));
     const { items } = await store.listQuarantine();
     for (const item of items) {
-      if (!announced.has(item.id)) emit("recoveryFailed", { id: item.id, reason: item.reason });
+      if (!announced.has(item.id)) announceRecoveryFailed({ id: item.id, reason: item.reason, error: "" });
     }
     return result;
   }
@@ -652,6 +677,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
       for (const id of [...objectUrls.keys()]) revokeUrl(id);
       listeners.clear();
       retained.clear();
+      recoveryIssues.clear();
     },
   };
 }

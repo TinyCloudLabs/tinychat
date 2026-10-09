@@ -165,6 +165,8 @@ export interface WebStore extends PluginProtocol {
   sweepTombstones(): Promise<void>;
   /** Moves a quarantined (or decoder_unavailable) recording back to the recovery queue; call recoverInterruptedSessions after. */
   rearmQuarantined(id: string): Promise<void>;
+  /** Who owns a recording that failed recovery (a session or a quarantine row): its owner DID, null if unclaimed, undefined if it is gone. */
+  recoveryOwner(id: string): Promise<string | null | undefined>;
   close(): void;
 }
 
@@ -477,6 +479,11 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
       });
     },
 
+    recoveryOwner: (id) => transact(db, [STORES.sessions, STORES.quarantine], "readonly", async (tx) => {
+      const session = await get<SessionRecord>(tx, STORES.sessions, id) ?? (await get<QuarantineRow>(tx, STORES.quarantine, id))?.session;
+      return session ? session.owner : undefined;
+    }),
+
     close() { db.close(); },
 
     async readAudioChunk({ id, offset, length }): Promise<VoiceNoteAudioChunk> {
@@ -549,7 +556,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
     },
 
     async setCaptureDefaults(next) {
-      return transact(db, [STORES.kv, STORES.notes, STORES.sessions, STORES.tombstones], "readwrite", async (tx) => {
+      return transact(db, [STORES.kv, STORES.notes, STORES.sessions, STORES.tombstones, STORES.quarantine], "readwrite", async (tx) => {
         const row = await capture(tx);
         if (next.transitionGen < row.defaults.transitionGen) throw failure("stale_transition");
         const sameGeneration = next.transitionGen === row.defaults.transitionGen;
@@ -563,6 +570,9 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
         if (row.status === "signed_in" && next.accountDid) {
           for (const session of await all<SessionRecord>(tx, STORES.sessions)) {
             if (!session.owner) { await put(tx, STORES.sessions, { ...session, owner: next.accountDid }); claimed.push(session.id); }
+          }
+          for (const parked of await all<QuarantineRow>(tx, STORES.quarantine)) {
+            if (!parked.session.owner) await put(tx, STORES.quarantine, { ...parked, session: { ...parked.session, owner: next.accountDid } });
           }
           for (const note of await all<VoiceNoteRecording>(tx, STORES.notes)) {
             if (note.version === 2 && !note.owner && !note.ownerUnknown) {
@@ -690,7 +700,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
 
     listQuarantine: () =>
       transact(db, [STORES.quarantine], "readonly", async (tx) => ({
-        items: (await all<QuarantineRow>(tx, STORES.quarantine)).map(({ id, reason, sizeBytes }) => ({ id, reason, sizeBytes })),
+        items: (await all<QuarantineRow>(tx, STORES.quarantine)).map(({ id, reason, sizeBytes, session }) => ({ id, reason, sizeBytes, owner: session.owner })),
       })),
 
     async discardFailedRecording({ id }) {

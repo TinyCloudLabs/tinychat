@@ -12,8 +12,9 @@ const store = { ...(await import("./voiceNoteStore")) };
 let mockActive = true;
 mock.module("./voiceNoteStore", () => ({
   ...store,
-  saveVoiceNote: async (tcw: TinyCloudWeb, recording: VoiceNoteRecording, source: Parameters<typeof store.saveVoiceNote>[2]) => {
-    if (!mockActive) return store.saveVoiceNote(tcw, recording, source);
+  saveVoiceNote: async (...args: Parameters<typeof store.saveVoiceNote>) => {
+    if (!mockActive) return store.saveVoiceNote(...args);
+    const [tcw, recording, source] = args;
     const base = store.voiceNoteAudioKvKey(recording.id);
     const manifest = await putAudio(tcw.kv, base, source, {
       partSize: 2, fileName: `${recording.id}.m4a`, mimeType: recording.mimeType,

@@ -1,5 +1,8 @@
 // Page side of recorder-final-web-engine.e2e.test.ts: the web engine as the app starts it
 // (startWebCaptureEngine: real IndexedDB, real MediaRecorder, boot recovery) behind a few functions.
+// Imported first on purpose: Bun 1.3's bundler, run inside `bun test` from the repo root, otherwise fails to
+// resolve this module from webStore.ts ("Could not resolve: ../voiceNoteAudio"). web-voice-notes-codec.page.ts does the same.
+import "../frontend/src/lib/voiceNotes/voiceNoteAudio";
 import { startWebCaptureEngine } from "../frontend/src/lib/voiceNotes/web/webEngine";
 import { openWebStore } from "../frontend/src/lib/voiceNotes/web/webStore";
 

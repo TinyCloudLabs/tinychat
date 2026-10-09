@@ -153,7 +153,7 @@ describe("chromium: WebM/Opus", () => {
     }
     expect(result.recovered).toEqual([]);
     expect(result.failed).toMatchObject([{ id, reason: "undecodable_audio" }]);
-    expect(result.quarantine).toEqual([{ id, reason: "undecodable_audio", sizeBytes: 4096 }]);
+    expect(result.quarantine).toEqual([{ id, reason: "undecodable_audio", sizeBytes: 4096, owner: null }]);
     await second.context.close();
   });
 });
