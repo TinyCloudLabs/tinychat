@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-recorder-status"
+description = "Enables the recorder_status command without any pre-configured scope."
+commands.allow = ["recorder_status"]
+
+[[permission]]
+identifier = "deny-recorder-status"
+description = "Denies the recorder_status command without any pre-configured scope."
+commands.deny = ["recorder_status"]
