@@ -7,6 +7,7 @@ import { createFileAudioBlobStore } from "./fileAudioBlobStore";
 import { openDesktopVoiceNotes, refreshDesktopWhisperCapability, type DesktopBridge } from "./desktopVoiceNotes";
 import type { DesktopWhisperBridge } from "./desktopWhisper";
 import type { TranscriptionEvent, TranscriptionParams } from "@/lib/anarlog/transcription.gen";
+import { subscribeCaptureCapabilities } from "../captureEngine";
 import type { MissingAudioSpan } from "../nativeVoiceNotes";
 import { leaseWhisperServer } from "@/lib/whisperServerLease";
 
@@ -545,6 +546,24 @@ describe("desktop recorder adapter", () => {
     await waitFor(() => engine.plugin.capabilities.desktopWhisper);
     expect((await engine.plugin.start()).id).toBe("note-1");
     expect((await engine.plugin.status()).options?.transcriber).toBe("on-device");
+    engine.dispose();
+  });
+
+  test("a selection change tells capability listeners, and reports the flip once so the defaults can resync", async () => {
+    const bridge = new FakeBridge();
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const flips: number[] = [];
+    const engine = await openDesktopVoiceNotes({ bridge, now: () => bridge.now, onWhisperReadyChanged: async () => void flips.push(1),
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+    let notified = 0;
+    const stop = subscribeCaptureCapabilities(() => void notified++);
+    await bridge.invoke("recorder_models_select", { id: "QuantizedTinyEn" });
+    await waitFor(() => engine.plugin.capabilities.desktopWhisper);
+    expect(notified).toBeGreaterThan(0);
+    expect(flips).toEqual([1]);
+    await refreshDesktopWhisperCapability();
+    expect(flips).toEqual([1]);
+    stop();
     engine.dispose();
   });
 

@@ -55,6 +55,8 @@ import { useIssueController } from "../useIssueController";
 import { desktopHomeCapabilities } from "./captureHomeKind";
 import { ConnectMeetingsLink } from "./ConnectMeetingsLink";
 import { DESKTOP_HOME_COPY as COPY, onThisMac } from "./desktopCopy";
+import { whisperJobMeta } from "@/capture/library/DesktopWhisperStatus";
+import { useDesktopWhisperJob } from "@/lib/voiceNotes/desktop/useDesktopWhisperJob";
 import {
   desktopIssueMeta,
   desktopRecent,
@@ -299,6 +301,9 @@ export function RecentRow(props: {
 }) {
   const { entry } = props;
   const [dismissError, setDismissError] = useState<string | null>(null);
+  const whisperJob = useDesktopWhisperJob(
+    entry.type === "item" && libraryKind(entry.item.source) === "note" ? entry.item.sourceId : null,
+  );
   let icon: LucideIcon = MicIcon;
   let title: string = COPY.voiceNoteTitle;
   let meta: string;
@@ -326,6 +331,9 @@ export function RecentRow(props: {
       attention = issueNeedsAttention(entry.issue);
       issueKind = entry.issue.kind;
       if (issueHasSheet(entry.issue)) sheetId = item.sourceId;
+    } else if (whisperJob && whisperJobMeta(whisperJob) !== null) {
+      meta = whisperJobMeta(whisperJob)!;
+      attention = whisperJob.state === "failed";
     }
   } else if (entry.type === "partial") {
     meta = COPY.partialAudio;

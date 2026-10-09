@@ -1,5 +1,5 @@
 // The desktop Capture home: the markup of each state, rendered statically.
-import { describe, expect, spyOn, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -13,6 +13,7 @@ import {
   StaticRecorderProvider,
   type RecorderValue,
 } from "../../recorder/RecorderProvider";
+import { registerDesktopWhisperQueue, type DesktopWhisperJob, type DesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
 import { dismissNotice } from "../captureIssues";
 import { HOME_COPY } from "../homeCopy";
 import {
@@ -338,5 +339,48 @@ describe("a row", () => {
       </MemoryRouter>,
     );
     expect(html).toContain('data-source-id="rec-3"');
+  });
+});
+
+describe("a row with an after-stop Whisper job", () => {
+  afterEach(() => registerDesktopWhisperQueue(null));
+  const rowFor = (job: DesktopWhisperJob | null, entry = { type: "item" as const, item: note(3), startedAt: note(3).startedAt }) => {
+    const jobs = new Map(job ? [[job.id, job]] : []);
+    registerDesktopWhisperQueue({ snapshot: () => jobs, subscribe: () => noop } as unknown as DesktopWhisperQueue);
+    return renderToStaticMarkup(
+      <MemoryRouter>
+        <ul>
+          <RecentRow entry={entry} now={NOW} grouped onDismiss={() => true} onOpenIssue={noop} />
+        </ul>
+      </MemoryRouter>,
+    );
+  };
+  const job = (patch: Partial<DesktopWhisperJob>): DesktopWhisperJob => ({ id: "rec-3", state: "queued", error: null, progress: null, ...patch });
+
+  test("shows waiting, progress and a failure in the meta line, and links to the note", () => {
+    expect(rowFor(job({ state: "queued" }))).toContain("Waiting to transcribe on this Mac");
+    expect(rowFor(job({ state: "transcribing", progress: 61 }))).toContain("Transcribing on this Mac · 61%");
+    const failed = rowFor(job({ state: "failed", error: "raw detail" }));
+    expect(failed).toContain("Couldn’t transcribe on this Mac");
+    expect(failed).toContain('data-failed="true"');
+    expect(failed).not.toContain("raw detail");
+    expect(failed).toContain('href="/chat/capture/library/row-3"');
+  });
+
+  test("a finished job, another note's job, or no queue leaves the row as it was", () => {
+    const plain = rowFor(null);
+    expect(rowFor(job({ state: "done" }))).toBe(plain);
+    expect(rowFor(job({ id: "other", state: "failed" }))).toBe(plain);
+    registerDesktopWhisperQueue(null);
+    expect(renderToStaticMarkup(
+      <MemoryRouter><ul><RecentRow entry={{ type: "item", item: note(3), startedAt: note(3).startedAt }} now={NOW} grouped onDismiss={() => true} onOpenIssue={noop} /></ul></MemoryRouter>,
+    )).toBe(plain);
+  });
+
+  test("a recording failure keeps its own row, whatever the job says", () => {
+    const html = rowFor(job({ state: "transcribing", progress: 5 }), {
+      type: "item", item: note(3), startedAt: note(3).startedAt, issue: { kind: "write_failed", detail: "x" },
+    } as never);
+    expect(html).not.toContain("Transcribing on this Mac");
   });
 });

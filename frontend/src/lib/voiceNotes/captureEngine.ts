@@ -84,6 +84,20 @@ export function captureCapabilities(): CaptureCapabilities {
   return nativeVoiceNotesAvailable() ? NATIVE_CAPABILITIES : NO_CAPABILITIES;
 }
 
+const capabilityListeners = new Set<() => void>();
+
+/** An engine changes a capability while installed (a Whisper model finished downloading, the selection moved). */
+export function subscribeCaptureCapabilities(listener: () => void): () => void {
+  capabilityListeners.add(listener);
+  return () => { capabilityListeners.delete(listener); };
+}
+
+export function notifyCaptureCapabilitiesChanged(): void {
+  for (const listener of [...capabilityListeners]) {
+    try { listener(); } catch (error) { console.error("[captureEngine] A capability listener failed", error); }
+  }
+}
+
 /** True when an installed engine has no on-device speech to text; OnDeviceStt must not be touched then. */
 export function localTranscriptionUnavailable(): boolean {
   return installed !== null && !installed.capabilities.localTranscription;

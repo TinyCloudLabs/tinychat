@@ -46,18 +46,29 @@ export async function readDefaultTranscriber(): Promise<TranscriberId> {
   return readTranscriberPreference().transcriber;
 }
 
-/** Uses native's current generation; a preference change is never an account transition. */
-async function writePreference(pref: CaptureOptions): Promise<void> {
+/** Writes the effective default for the current account to the engine. Never during a sign-in or sign-out transition. */
+async function writeEffectiveDefaults(pref: CaptureOptions): Promise<void> {
   const current = await VoiceNotes.getCaptureDefaults();
   const effective = effectiveCaptureOptions(pref, current.accountDid !== null);
   // A preference write must not re-assign the previous DID during sign-out.
   if (current.status !== "transitioning")
     await VoiceNotes.setCaptureDefaults({ ...current, ...effective, transitionGen: current.transitionGen });
+}
+
+/** Uses native's current generation; a preference change is never an account transition. */
+async function writePreference(pref: CaptureOptions): Promise<void> {
+  await writeEffectiveDefaults(pref);
   memoryPreference = pref;
   try {
     storage()?.setItem(TRANSCRIBER_KEY, pref.transcriber);
     storage()?.setItem(SPEAKERS_KEY, pref.identifySpeakers ? "1" : "0");
   } catch { /* Keep the choice for this session when storage is unavailable. */ }
+  for (const listener of listeners) listener();
+}
+
+/** The effective choice changed under an unchanged preference (the Mac's Whisper became ready or went away): rewrite the engine's default and tell the listeners. */
+export async function refreshEffectiveTranscriber(): Promise<void> {
+  await writeEffectiveDefaults(readTranscriberPreference());
   for (const listener of listeners) listener();
 }
 

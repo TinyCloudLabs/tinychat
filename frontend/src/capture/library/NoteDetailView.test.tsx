@@ -4,12 +4,13 @@
 //   3. transcription is offered only when available to this build AND account, and only after
 //      the one-time private cloud consent; a hidden or still-checking engine offers nothing;
 //   4. a voice note shows its progress, "No speech", or its failure (with Retry when it can help).
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { aboutHref } from "@/lib/about";
+import { registerDesktopWhisperQueue, type DesktopWhisperJob, type DesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
 import type { NoteTranscriptionState } from "@/lib/voiceNotes/voiceNoteTranscription";
 import type { LibraryItem } from "./LibraryRow";
 import { NoteDetailView, transcriptBlocks, type NoteDetailViewProps } from "./NoteDetailView";
@@ -188,5 +189,28 @@ describe("a voice note's transcription", () => {
       expect(html).toContain("Book the venue.");
       expect(html).not.toContain('data-testid="voice-note-transcribe"');
     }
+  });
+});
+
+describe("a voice note with an after-stop Whisper job on the Mac", () => {
+  afterEach(() => registerDesktopWhisperQueue(null));
+  const withJob = (job: Partial<DesktopWhisperJob> | null, patch: Partial<NoteDetailViewProps> = {}) => {
+    const jobs = new Map(job ? [["rec-1", { id: "rec-1", state: "queued", error: null, progress: null, ...job } as DesktopWhisperJob]] : []);
+    registerDesktopWhisperQueue({ snapshot: () => jobs, subscribe: () => noop } as unknown as DesktopWhisperQueue);
+    return render(patch);
+  };
+
+  test("signed out (no private-cloud props): queued, progress and failure with Retry show on the page", () => {
+    expect(withJob({ state: "queued" })).toContain("Waiting to transcribe on this Mac");
+    expect(withJob({ state: "transcribing", progress: 33 })).toContain("Transcribing on this Mac · 33%");
+    const failed = withJob({ state: "failed", error: "raw detail" });
+    expect(failed).toContain('data-testid="whisper-job-retry"');
+    expect(failed).not.toContain("raw detail");
+    expect(failed).not.toContain("No transcript.");
+  });
+
+  test("without a job the page is unchanged", () => {
+    expect(withJob(null)).toBe(render());
+    expect(withJob(null)).toContain("No transcript.");
   });
 });
