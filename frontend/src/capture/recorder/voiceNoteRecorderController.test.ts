@@ -698,7 +698,7 @@ describe("voice-note recorder controller", () => {
     expect(onPhone).toHaveLength(1);
   });
 
-  test("native recovery and write failures stay attached to their recording until recovery succeeds", async () => {
+  test("writeFailure followed by recoveryFailed and recovered retains partial audio", async () => {
     const { recorder, detach } = await attached();
     await recorder.record();
     const id = recorder.getState().recordingId!;
@@ -709,9 +709,20 @@ describe("voice-note recorder controller", () => {
     recorder.dismissCaptureIssue(id);
     expect(recorder.getState().captureIssues[id]?.kind).toBe("recoveryFailed");
     fake.emit("recovered", { id });
-    expect(recorder.getState().captureIssues[id]).toBeUndefined();
+    expect(recorder.getState().captureIssues[id]).toEqual({ kind: "partial_audio" });
     fake.emit("recoveryFailed", { error: "scan failed" });
     expect(recorder.getState().recoveryScanFailure).toBe("scan failed");
+    detach();
+  });
+
+  test("iOS Stop-time writeFailure, recovered, committed ends with partial audio", async () => {
+    const { recorder, detach } = await attached();
+    const recording = earlier();
+    fake.emit("writeFailure", { id: recording.id, error: "writer.finish failed" });
+    fake.emit("recovered", { id: recording.id });
+    expect(recorder.getState().captureIssues[recording.id]).toEqual({ kind: "partial_audio" });
+    fake.emit("committed", { id: recording.id });
+    expect(recorder.getState().captureIssues[recording.id]).toEqual({ kind: "partial_audio" });
     detach();
   });
 
@@ -800,7 +811,28 @@ describe("voice-note recorder controller", () => {
     expect(recorder.getState().captureIssues[finalized]).toBeUndefined();
   });
 
-  test("committed sidecar missing spans survive reload and can be dismissed durably", async () => {
+  test("writer-stall spans alone re-derive partial audio but calls and interruptions do not", async () => {
+    const stalled = earlier();
+    stalled.startedAt = 100_000;
+    stalled.spans = [{ kind: "omitted", reason: "writer_stalled", startedAt: 102_000,
+      endedAt: 105_000, atAudioMs: 2_000, audioMs: 0 }];
+    const interrupted = earlier();
+    interrupted.spans = [{ kind: "omitted", reason: "call", startedAt: 102_000,
+      endedAt: 105_000, atAudioMs: 2_000, audioMs: 0 },
+    { kind: "omitted", reason: "interruption", startedAt: 106_000,
+      endedAt: 108_000, atAudioMs: 2_000, audioMs: 0 }];
+    const otherOwner = earlier();
+    otherOwner.owner = "did:example:bob";
+    otherOwner.spans = stalled.spans;
+    const { recorder, detach } = await attached();
+    expect(recorder.getState().captureIssues[stalled.id]).toEqual({ kind: "partial_audio",
+      missingMs: 3_000, spans: [{ startMs: 2_000, endMs: 5_000, reason: "writer_stalled" }] });
+    expect(recorder.getState().captureIssues[interrupted.id]).toBeUndefined();
+    expect(recorder.getState().captureIssues[otherOwner.id]).toBeUndefined();
+    detach();
+  });
+
+  test("Android launch recovery restores a real write failure across reload and scopes it to this account", async () => {
     const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
     const values = new Map<string, string>();
     Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
@@ -810,24 +842,30 @@ describe("voice-note recorder controller", () => {
     } });
     try {
       const recording = earlier();
-      recording.startedAt = 100_000;
-      recording.spans = [{ kind: "omitted", reason: "writer_stalled", startedAt: 102_000,
-        endedAt: 105_000, atAudioMs: 2_000, audioMs: 0 }];
       const first = await attached();
-      expect(first.recorder.getState().captureIssues[recording.id]).toEqual({ kind: "partial_audio",
-        missingMs: 3_000, spans: [{ startMs: 2_000, endMs: 5_000, reason: "writer_stalled" }] });
+      fake.emit("writeFailure", { id: recording.id, error: "AAC write failed" });
+      expect(first.recorder.getState().captureIssues[recording.id]?.kind).toBe("write_failed");
       first.detach();
-      onPhone = []; // Upload removed the native sidecar; the notice is still local.
       const second = await attached();
+      fake.emit("recovered", { id: recording.id, recording });
       expect(second.recorder.getState().captureIssues[recording.id]?.kind).toBe("partial_audio");
-      second.recorder.dismissCaptureIssue(recording.id);
-      expect(second.recorder.getState().captureIssues[recording.id]).toBeUndefined();
-      fake.emit("writeFailure", { id: recording.id, error: "late replay" });
-      expect(second.recorder.getState().captureIssues[recording.id]).toBeUndefined();
       second.detach();
+      onPhone = []; // Upload removed the native sidecar; the notice is still local.
+      const other = controller({ tcw: { did: "did:example:bob", spaceId: "space-b" } as TinyCloudWeb });
+      const detachOther = other.attach();
+      await tick();
+      expect(other.getState().captureIssues[recording.id]).toBeUndefined();
+      detachOther();
       const third = await attached();
+      expect(third.recorder.getState().captureIssues[recording.id]?.kind).toBe("partial_audio");
+      third.recorder.dismissCaptureIssue(recording.id);
+      expect(third.recorder.getState().captureIssues[recording.id]).toBeUndefined();
+      fake.emit("writeFailure", { id: recording.id, error: "late replay" });
       expect(third.recorder.getState().captureIssues[recording.id]).toBeUndefined();
       third.detach();
+      const fourth = await attached();
+      expect(fourth.recorder.getState().captureIssues[recording.id]).toBeUndefined();
+      fourth.detach();
     } finally {
       if (previous) Object.defineProperty(globalThis, "localStorage", previous);
       else Reflect.deleteProperty(globalThis, "localStorage");

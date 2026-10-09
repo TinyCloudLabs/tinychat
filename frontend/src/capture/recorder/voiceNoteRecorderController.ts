@@ -41,13 +41,13 @@ import { saveDeferredForAccountTransition, type VoiceNotePipeline } from "@/lib/
 import { currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
 import { FINALIZATION_PENDING, limitNoticeText } from "./recorderCopy";
 import { autoStopIsCurrent, initialRecorderState, recorderReducer, type RecorderCaptureIssue, type RecorderEvent, type RecorderMic, type RecorderState } from "./recorderReducer";
-import { clearPartialAudioIssue, dismissPartialAudioIssue, partialAudioDismissed,
-  savedPartialAudioIssues, savePartialAudioIssue } from "./partialAudioIssues";
+import { clearPartialAudioIssue, dismissPartialAudioIssue, partialAudioDismissed, partialAudioScope,
+  pendingAudioLossIds, prunePartialAudioIssues, savedPartialAudioIssues, savePartialAudioIssue,
+  savePendingAudioLoss } from "./partialAudioIssues";
 
 /** Sidecar spans are wall timestamps; the notice exposes offsets from recording start. */
 function partialFromSidecar(recording: VoiceNoteRecording): Extract<RecorderCaptureIssue, { kind: "partial_audio" }> | null {
-  const spans = recording.spans?.filter((span) => span.kind === "omitted"
-    && (span.reason === "write_failed" || span.reason === "writer_stalled"))
+  const spans = recording.spans?.filter((span) => span.kind === "omitted" && span.reason === "writer_stalled")
     .flatMap((span) => {
       const end = span.endedAt ?? recording.captureStoppedAt;
       return end !== null && end !== undefined && end >= span.startedAt
@@ -128,20 +128,24 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   let onPresent: (() => void) | undefined;
   const listeners = new Set<() => void>();
   const levelListeners = new Set<(level: number) => void>();
+  const issueScope = partialAudioScope(tcw?.did, tcw?.spaceId);
+  const belongsToAccount = (recording: VoiceNoteRecording) =>
+    (recording.owner == null || recording.owner === tcw?.did) &&
+    (!recording.ledger?.spaceId || !tcw?.spaceId || recording.ledger.spaceId === tcw.spaceId);
   const committedIds = new Set<string>();
-  const captureResolved = (id: string | undefined) => {
-    if (id && state.captureIssues[id]?.kind !== "partial_audio") send({ type: "CAPTURE_RESOLVED", id });
-  };
+  const lostAudioIds = new Set<string>();
   const captureCommitted = (id: string | undefined, recording?: VoiceNoteRecording) => {
     if (!id) return;
+    if (recording && !belongsToAccount(recording)) return;
     committedIds.add(id);
     const partial = recording ? partialFromSidecar(recording) : null;
-    if (partialAudioDismissed(id)) {
+    if (partialAudioDismissed(issueScope, id)) {
       send({ type: "CAPTURE_RESOLVED", id });
     } else {
-      send({ type: "CAPTURE_COMMITTED", id, ...(partial ? { partial } : {}) });
+      send({ type: "CAPTURE_COMMITTED", id, ...(partial ? { partial } :
+        lostAudioIds.has(id) ? { partial: { kind: "partial_audio" } as const } : {}) });
       const issue = state.captureIssues[id];
-      if (issue?.kind === "partial_audio") savePartialAudioIssue(id, issue);
+      if (issue?.kind === "partial_audio") savePartialAudioIssue(issueScope, id, issue);
     }
   };
 
@@ -404,15 +408,25 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     attach() {
       if (!available) return () => {};
       let attached = true;
-      for (const [id, issue] of Object.entries(savedPartialAudioIssues())) {
-        if (!partialAudioDismissed(id)) send({ type: "CAPTURE_ISSUE", id, issue });
+      for (const [id, issue] of Object.entries(savedPartialAudioIssues(issueScope))) {
+        if (!partialAudioDismissed(issueScope, id)) send({ type: "CAPTURE_ISSUE", id, issue });
         committedIds.add(id);
+        lostAudioIds.add(id);
       }
+      for (const id of pendingAudioLossIds(issueScope)) lostAudioIds.add(id);
       const onCaptureDeleted = (event: Event) => {
         const id = (event as CustomEvent<{ id: string }>).detail?.id;
-        if (id) { send({ type: "CAPTURE_RESOLVED", id }); committedIds.delete(id); }
+        if (id) { send({ type: "CAPTURE_RESOLVED", id }); committedIds.delete(id); lostAudioIds.delete(id); }
       };
       if (typeof window !== "undefined") window.addEventListener("exo:captureIssueDeleted", onCaptureDeleted);
+      const inspectSidecar = (id: string | undefined) => {
+        if (!id) return;
+        void VoiceNotes.listPending().then(({ recordings }) => {
+          if (!attached) return;
+          const sidecar = recordings.find((recording) => recording.id === id);
+          if (sidecar && belongsToAccount(sidecar)) captureCommitted(id, sidecar);
+        }).catch((caught: unknown) => console.warn("[VoiceNotes] Could not inspect committed capture spans", caught));
+      };
       const unsubscribePreference = subscribeTranscriberPreference(() => {
         preference = readTranscriberPreference();
         if (refreshChoice()) notify();
@@ -436,22 +450,24 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
             issue: { kind: "recoveryFailed", detail: event.reason ?? event.error ?? "recovery_failed" } });
         }),
         VoiceNotes.addListener("writeFailure", (event) => {
-          if (partialAudioDismissed(event.id)) return;
+          if (partialAudioDismissed(issueScope, event.id)) return;
+          lostAudioIds.add(event.id);
+          savePendingAudioLoss(issueScope, event.id);
           if (state.captureIssues[event.id]?.kind === "partial_audio") return;
           send({ type: "CAPTURE_ISSUE", id: event.id,
             issue: committedIds.has(event.id) ? { kind: "partial_audio" } : { kind: "write_failed", detail: event.error } });
           const issue = state.captureIssues[event.id];
-          if (issue?.kind === "partial_audio") savePartialAudioIssue(event.id, issue);
+          if (issue?.kind === "partial_audio") savePartialAudioIssue(issueScope, event.id, issue);
         }),
-        VoiceNotes.addListener("recovered", (event) => captureResolved(event.id ?? event.recording?.id)),
+        VoiceNotes.addListener("recovered", (event) => {
+          const id = event.id ?? event.recording?.id;
+          captureCommitted(id, event.recording);
+          if (!event.recording) inspectSidecar(id);
+        }),
         VoiceNotes.addListener("committed", (event) => {
           const id = event.id ?? event.recording?.id;
           captureCommitted(id, event.recording);
-          if (id && !event.recording) void VoiceNotes.listPending().then(({ recordings }) => {
-            if (!attached) return;
-            const sidecar = recordings.find((recording) => recording.id === id);
-            if (sidecar) captureCommitted(id, sidecar);
-          }).catch((caught: unknown) => console.warn("[VoiceNotes] Could not inspect committed capture spans", caught));
+          if (!event.recording) inspectSidecar(id);
         }),
         VoiceNotes.addListener("presentRecorder", async (event) => {
           if (event.reason === "permission_denied" && event.id === null) {
@@ -495,8 +511,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           // missing-audio notices even when the shell cannot replay old events.
           try {
             const { recordings } = await VoiceNotes.listPending();
-            if (attached) for (const recording of recordings) {
-              if (partialFromSidecar(recording)) captureCommitted(recording.id, recording);
+            if (attached) {
+              const visible = recordings.filter(belongsToAccount);
+              prunePartialAudioIssues(issueScope, new Set(visible.map((recording) => recording.id)));
+              for (const recording of visible) {
+                if (partialFromSidecar(recording)) captureCommitted(recording.id, recording);
+              }
             }
           } catch (caught) { console.warn("[VoiceNotes] Could not inspect committed capture spans", caught); }
           return VoiceNotes.status();
@@ -690,7 +710,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         if (shown && shown !== id) clearDiscarded(shown);
       }
       send({ type: "DISCARDED", id: shown });
-      if (id) { send({ type: "CAPTURE_RESOLVED", id }); clearPartialAudioIssue(id); committedIds.delete(id); }
+      if (id) { send({ type: "CAPTURE_RESOLVED", id }); clearPartialAudioIssue(issueScope, id); committedIds.delete(id); lostAudioIds.delete(id); }
     },
     async retryPending() {
       if (!available) return;
@@ -720,7 +740,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     },
     dismissCaptureIssue(id) {
       if (state.captureIssues[id]?.kind !== "partial_audio") return;
-      if (dismissPartialAudioIssue(id)) send({ type: "CAPTURE_DISMISSED", id });
+      if (dismissPartialAudioIssue(issueScope, id)) send({ type: "CAPTURE_DISMISSED", id });
     },
     subscribeLevel(listener) {
       levelListeners.add(listener);
