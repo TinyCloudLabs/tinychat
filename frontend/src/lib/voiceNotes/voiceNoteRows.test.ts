@@ -12,7 +12,9 @@ import { createVoiceNotePipeline } from "./voiceNotePipeline";
 import { handoffBeforeCredentialClear } from "./accountHandoff";
 import { currentAccountGeneration } from "./accountContext";
 import { runOnSpaceLane } from "../spaceWriteLane";
-import { associateLegacyNotes, markLegacyOwnerUnknown } from "./legacyMigration";
+import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
+import { loadNote, saveNote } from "./recordingNotes";
+import { readRecordingNoteFromSpace, syncRecordingNote, voiceNoteMarkdownKvKey } from "./voiceNoteStore";
 
 let count = 0;
 function space() {
@@ -61,6 +63,57 @@ function row(sqlite: Database, id: string) {
   return { metadata: JSON.parse(r.metadata) as Record<string, unknown>, updatedAt: r.updated_at };
 }
 const sentence = (text: string) => [{ index: 0, speaker_name: "You", text, start_time: 0, end_time: 1 }];
+
+test("a persisted discard marker removes Markdown even when native audio is already gone", async () => {
+  const original = VoiceNotes;
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  const id = `discarded-note-${++count}`;
+  try {
+    await saveNote(id, "was on this phone");
+    let marker = JSON.stringify([id]);
+    await migrateLegacyDiscardLedger({ getItem: () => marker, removeItem: () => { marker = ""; } });
+    expect(marker).toBe("");
+    expect(await loadNote(id)).toBeNull();
+  } finally { __setVoiceNotesForTests(original, { available: null }); }
+});
+
+test("a signed-out native note migrates its Markdown once with the T18 audio row", async () => {
+  const original = VoiceNotes;
+  const { tcw, sqlite, values } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await ensureSchema(tcw);
+    const { id } = await fake.plugin.start();
+    await fake.plugin.stop();
+    await saveNote(id, "# Unowned draft\n- **0:03** bookmark");
+    expect((await loadNote(id))?.moments).toEqual([{ atMs: 3_000, label: "bookmark" }]);
+    const key = voiceNoteMarkdownKvKey(id);
+    let notePuts = 0;
+    const put = tcw.kv.put.bind(tcw.kv);
+    tcw.kv.put = ((...args: Parameters<typeof put>) => {
+      if (args[0] === key) notePuts++;
+      return put(...args);
+    }) as typeof tcw.kv.put;
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false });
+    const pipeline = createVoiceNotePipeline(tcw);
+    const ctx = { did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() };
+    await pipeline.reconcileAll(ctx);
+    await pipeline.reconcileAll(ctx);
+    expect(notePuts).toBe(1);
+    expect(values.get(key)).toContain('recordingId: "' + id + '"');
+    const beforeEdit = await readRecordingNoteFromSpace(tcw, id);
+    expect(beforeEdit?.moments).toEqual([{ atMs: 3_000, label: "bookmark" }]);
+    expect(row(sqlite, `vn-${id}`).metadata.note_kv_key).toBe(key);
+    await saveNote(id, "# Edited later\n- **0:03** bookmark");
+    await syncRecordingNote(tcw, id);
+    expect(notePuts).toBe(2);
+    const afterEdit = await readRecordingNoteFromSpace(tcw, id);
+    expect(afterEdit!.editedAt > beforeEdit!.editedAt).toBe(true);
+  } finally { __setVoiceNotesForTests(original, { available: null }); }
+});
 
 describe("voice-note identity and transcript authority", () => {
   test("a reused SDK object checks identity again for a different account space", async () => {
