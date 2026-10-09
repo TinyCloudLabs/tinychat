@@ -24,7 +24,8 @@ import java.util.UUID
 
 @CapacitorPlugin(name = "VoiceNotes", permissions = [
     Permission(alias = "microphone", strings = [Manifest.permission.RECORD_AUDIO]),
-    Permission(alias = "notifications", strings = [Manifest.permission.POST_NOTIFICATIONS])
+    Permission(alias = "notifications", strings = [Manifest.permission.POST_NOTIFICATIONS]),
+    Permission(alias = "bluetooth", strings = [Manifest.permission.BLUETOOTH_CONNECT])
 ])
 class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
     private lateinit var engine: CaptureEngine
@@ -207,6 +208,21 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
     @PluginMethod fun completeOutbox(call: PluginCall) = async(call) {
         engine.library.completeOutbox(call.getString("entryId") ?: "", call.getString("result") == "done"); null
     }
-    @PluginMethod fun listInputs(call: PluginCall) { call.reject("Input selection arrives in T14", "unimplemented") }
-    @PluginMethod fun selectInput(call: PluginCall) { call.reject("Input selection arrives in T14", "unimplemented") }
+    @PluginMethod fun listInputs(call: PluginCall) = async(call) { engine.listInputs() }
+    @PluginMethod fun selectInput(call: PluginCall) {
+        val selected = call.getString("id")
+        val bluetooth = selected != null && (selected.startsWith("${android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO}:") ||
+            (Build.VERSION.SDK_INT >= 31 && selected.startsWith("${android.media.AudioDeviceInfo.TYPE_BLE_HEADSET}:")))
+        if (bluetooth && Build.VERSION.SDK_INT >= 31 &&
+            getPermissionState("bluetooth") != PermissionState.GRANTED) {
+            requestPermissionForAlias("bluetooth", call, "afterBluetooth")
+            return
+        }
+        async(call) { engine.selectInput(selected); null }
+    }
+    @PermissionCallback private fun afterBluetooth(call: PluginCall) {
+        if (getPermissionState("bluetooth") == PermissionState.GRANTED)
+            async(call) { engine.selectInput(call.getString("id")); null }
+        else call.reject("Bluetooth permission denied", "bluetooth_permission_required")
+    }
 }

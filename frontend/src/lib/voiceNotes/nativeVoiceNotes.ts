@@ -112,6 +112,7 @@ function safeLocalStorage(): Storage | null {
 export interface MicStateEvent {
   state: MicState;
   reason: MicStateReason;
+  input?: AudioInput | null;
   at: number;
   id?: string | null;
   audioMs?: number;
@@ -143,6 +144,7 @@ export interface CaptureStatus {
   startedAt: number | null; elapsedMs: number; audioMs: number; pausedMs: number; maxDurationMs: number;
   spans: MissingAudioSpan[]; openSpan: MissingAudioSpan | null;
   source?: CaptureSource; options?: CaptureOptions; input?: AudioInput | null; owner?: string | null;
+  activeId?: string | null;
   transitionGen: number; androidSdkInt?: number;
   /** Android shortcut recovery, queried without consuming a retained event. */
   micDeniedPresentation?: boolean;
