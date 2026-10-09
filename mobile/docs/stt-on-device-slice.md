@@ -73,9 +73,19 @@ Per the scoping discussion before this slice was built:
   decoders read their input almost a byte at a time). Both verification devices (Vonnegut,
   7.4 GiB; the Moto, 7.4 GiB) use the full pack regardless, so the full pack's path is the one
   that matters for G2; this path still needs a clean end-to-end emulator run once one is free.
-- **Decode holds the whole note in memory.** `AudioDecoder.decode16kMono` (both platforms) decodes
-  the full note before VAD/ASR, matching the existing T7/T8 benchmark harness's approach. A
-  multi-hour note can use several hundred MB doing this. T23/T24's blockwise decode bounds it.
+- **Decode holds the whole note in memory (iOS only).** iOS's decoder still decodes the full note
+  before VAD/ASR, matching the existing T7/T8 benchmark harness's approach; a multi-hour note can
+  use several hundred MB doing this. T23's blockwise decode bounds it. Android no longer has this
+  gap: a note left recording for a long time once OOM'd on launch, every launch, because the crash
+  never updated the note's `running` state and `reconcile()` requeued it unconditionally (TC-836
+  incident). Fixed by streaming the decode window by window (`AudioDecoder.decodeWindows`,
+  `stt/core/StreamResampler.kt`, `stt/core/WindowAccumulator.kt` — all unit-tested, including a
+  3-hour synthetic-note test, against a real decoder bug the tests caught: a downsampling ratio
+  could overshoot a buffer's end by more than one sample and throw), and by capping automatic
+  retries with a persisted attempt count (`stt/core/AttemptGuard.kt`, unit-tested): after
+  `AttemptGuard.MAX_ATTEMPTS` a note is marked `failed` instead of retried, and the first scan on
+  launch is deferred to the main looper's idle point so a bad note never competes with the UI
+  coming up.
 - **No capture-priority release-time budget.** The queue checks `isCapturing` before each VAD
   segment (so it still never transcribes while recording), but there is no measured ≤ 5 s release
   guarantee or diarization-case handling — those are T23/T24's capture-priority work, and there is
