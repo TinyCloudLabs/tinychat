@@ -15,10 +15,19 @@ import {
 } from "@/lib/voiceNotes/desktopCaptureExtras";
 import { useAudioInputs, type AudioInputsSource } from "../useAudioInputs";
 import {
+  adjacentRadio,
+  downloadedAnnouncement,
   downloadsReducer,
+  focusAfterFail,
+  focusAfterGet,
+  focusAfterSync,
   formatModelSize,
+  newlyDownloaded,
+  partitionModels,
   progressPercent,
+  progressText,
   type Downloads,
+  type FocusTarget,
 } from "./captureSettingsModel";
 import "../soft.css";
 import "./captureSettings.css";
@@ -131,26 +140,13 @@ function ModelSection({
   onSelectModel: (id: WhisperModelId) => void;
   onGetModel: (id: WhisperModelId) => void;
 }) {
-  const rows = useRef(new Map<WhisperModelId, HTMLElement>());
-  const tabStop = data.models.find((m) => m.id === data.selected && m.downloaded)
-    ?.id ?? data.models.find((m) => m.downloaded)?.id ?? null;
+  const radiosRef = useRef(new Map<WhisperModelId, HTMLElement>());
+  const { radios, available, tabStop } = partitionModels(
+    data.models,
+    data.selected,
+  );
 
-  const getOf = (id: WhisperModelId) =>
-    rows.current.get(id)?.querySelector<HTMLElement>(".cs-get");
-  const radioOf = (id: WhisperModelId) =>
-    rows.current.get(id)?.querySelector<HTMLElement>('[role="radio"]');
-
-  // Choosing a model on disk selects it; choosing one that is not there selects nothing (select() would
-  // reject) and moves to its Get, or to the row itself while it downloads.
-  const choose = (model: WhisperModelInfo, via: "arrow" | "click") => {
-    if (model.downloaded) {
-      if (via === "arrow") radioOf(model.id)?.focus();
-      if (model.id !== data.selected) onSelectModel(model.id);
-    } else (getOf(model.id) ?? radioOf(model.id))?.focus();
-  };
-
-  // WAI-ARIA radio group: arrows move focus and select, wrapping. Rows that are not on disk cannot be
-  // selected, so an arrow onto one lands on its Get instead and the selection (and tab stop) stays put.
+  // WAI-ARIA radio group over the models on disk: arrows move focus and select, wrapping.
   const key = (event: KeyboardEvent) => {
     const direction =
       event.key === "ArrowDown" || event.key === "ArrowRight"
@@ -159,16 +155,18 @@ function ModelSection({
           ? -1
           : 0;
     if (direction === 0) return;
-    const from = (event.target as HTMLElement)
-      .closest<HTMLElement>("[data-model]")
-      ?.getAttribute("data-model");
-    const at = data.models.findIndex((m) => m.id === from);
-    if (at < 0) return;
+    const next = adjacentRadio(
+      radios,
+      (event.target as HTMLElement)
+        .closest<HTMLElement>("[data-model]")
+        ?.getAttribute("data-model"),
+      direction,
+    );
+    if (!next) return;
     event.preventDefault();
     event.stopPropagation();
-    const next =
-      data.models[(at + direction + data.models.length) % data.models.length];
-    if (next) choose(next, "arrow");
+    radiosRef.current.get(next.id)?.focus();
+    if (next.id !== data.selected) onSelectModel(next.id);
   };
 
   return (
@@ -176,49 +174,80 @@ function ModelSection({
       <h3 id="cs-model-h" className="cs-h">
         Local model (Whisper on this Mac)
       </h3>
-      <div role="radiogroup" aria-labelledby="cs-model-h" onKeyDown={key}>
-        {data.models.map((model) => {
-          const download = downloads[model.id];
-          const checked = model.id === data.selected && model.downloaded;
-          return (
-            <div
-              key={model.id}
-              ref={(el) => {
-                if (el) rows.current.set(model.id, el);
-                else rows.current.delete(model.id);
-              }}
-              className="cs-row cs-model"
-              data-model={model.id}
-              data-on={checked}
-            >
-              <button
-                type="button"
-                role="radio"
-                aria-checked={checked}
-                aria-disabled={!model.downloaded}
-                tabIndex={model.id === tabStop ? 0 : -1}
-                className="cs-radio"
-                onClick={() => choose(model, "click")}
+      {radios.length > 0 ? (
+        <div role="radiogroup" aria-labelledby="cs-model-h" onKeyDown={key}>
+          {radios.map((model) => {
+            const checked = model.id === data.selected;
+            return (
+              <div
+                key={model.id}
+                className="cs-row cs-model"
+                data-model={model.id}
+                data-on={checked}
               >
-                <span className="cs-rb" data-on={checked} aria-hidden="true" />
-                <span className="cs-name">{model.label}</span>
-                <small>{formatModelSize(model.sizeBytes)}</small>
-              </button>
-              {!model.downloaded &&
-                (download?.status === "downloading" ? (
+                <button
+                  ref={(el) => {
+                    if (el) radiosRef.current.set(model.id, el);
+                    else radiosRef.current.delete(model.id);
+                  }}
+                  type="button"
+                  role="radio"
+                  aria-checked={checked}
+                  tabIndex={model.id === tabStop ? 0 : -1}
+                  className="cs-radio"
+                  onClick={() => {
+                    if (!checked) onSelectModel(model.id);
+                  }}
+                >
+                  <span className="cs-rb" data-on={checked} aria-hidden="true" />
+                  <span className="cs-name">{model.label}</span>
+                  <small>{formatModelSize(model.sizeBytes)}</small>
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="cs-note" data-testid="no-model">
+          No model on this Mac yet. Get one below.
+        </p>
+      )}
+      {available.length > 0 && (
+        <div role="group" aria-label="Available to download">
+          {available.map((model) => {
+            const download = downloads[model.id];
+            const percent =
+              download?.status === "downloading"
+                ? progressPercent(download.fraction)
+                : 0;
+            return (
+              <div
+                key={model.id}
+                className="cs-row cs-model"
+                data-model={model.id}
+                data-on="false"
+              >
+                <div className="cs-radio cs-plain">
+                  <span className="cs-rb" aria-hidden="true" />
+                  <span className="cs-name">{model.label}</span>
+                  <small>{formatModelSize(model.sizeBytes)}</small>
+                </div>
+                {download?.status === "downloading" ? (
                   <span
                     className="cs-progress"
                     role="progressbar"
-                    aria-label={`Downloading ${model.label}`}
+                    tabIndex={0}
+                    aria-label={`${model.label} download`}
                     aria-valuemin={0}
                     aria-valuemax={100}
-                    aria-valuenow={progressPercent(download.fraction)}
+                    aria-valuenow={percent}
+                    aria-valuetext={progressText(download.fraction)}
                   >
                     <span className="cs-bar" aria-hidden="true">
-                      <i style={{ width: `${progressPercent(download.fraction)}%` }} />
+                      <i style={{ width: `${percent}%` }} />
                     </span>
                     <span className="cs-pct" aria-hidden="true">
-                      {progressPercent(download.fraction)}%
+                      {percent}%
                     </span>
                   </span>
                 ) : (
@@ -231,16 +260,17 @@ function ModelSection({
                   >
                     {download?.status === "error" ? "Retry" : "Get"}
                   </button>
-                ))}
-              {download?.status === "error" && (
-                <p className="cs-error cs-rowerror" role="alert">
-                  Could not download {model.label}: {download.message}
-                </p>
-              )}
-            </div>
-          );
-        })}
-      </div>
+                )}
+                {download?.status === "error" && (
+                  <p className="cs-error cs-rowerror" role="alert">
+                    Could not download {model.label}: {download.message}
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
       {modelError && (
         <p className="cs-error" role="alert">
           {modelError}
@@ -420,9 +450,35 @@ export function CaptureSettings({
   const button = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   const request = useRef(0);
+  const focusTarget = useRef<FocusTarget | null>(null);
+  const loadedModels = useRef<WhisperModelInfo[] | null>(null);
+  const [announcement, setAnnouncement] = useState("");
   const titleId = useId();
   const panelId = useId();
   const audio = useAudioInputs(inputs);
+
+  // The model whose progress element has focus, if one does: read before a row changes shape under it.
+  const focusedProgress = useCallback((): WhisperModelId | null => {
+    const active = document.activeElement;
+    if (
+      !active ||
+      !panel.current?.contains(active) ||
+      active.getAttribute("role") !== "progressbar"
+    )
+      return null;
+    return active
+      .closest<HTMLElement>("[data-model]")
+      ?.getAttribute("data-model") as WhisperModelId | null;
+  }, []);
+
+  const fail = useCallback(
+    (id: WhisperModelId, message: string) => {
+      focusTarget.current =
+        focusAfterFail(focusedProgress(), id) ?? focusTarget.current;
+      dispatch({ type: "fail", id, message });
+    },
+    [focusedProgress],
+  );
 
   const reload = useCallback(
     async (showLoading: boolean) => {
@@ -437,6 +493,14 @@ export function CaptureSettings({
           extras.autoSaveToSpace.get(),
         ]);
         if (mine === request.current) {
+          focusTarget.current =
+            focusAfterSync(focusedProgress(), models) ?? focusTarget.current;
+          const finished = newlyDownloaded(loadedModels.current, models);
+          if (finished.length > 0)
+            setAnnouncement(
+              downloadedAnnouncement(finished.map((m) => m.label)),
+            );
+          loadedModels.current = models;
           dispatch({ type: "sync", models });
           setLoad({
             status: "ready",
@@ -452,12 +516,14 @@ export function CaptureSettings({
           });
       }
     },
-    [extras],
+    [extras, focusedProgress],
   );
 
   useEffect(() => {
     if (!open || !extras) return;
     setModelError(null);
+    loadedModels.current = null;
+    setAnnouncement("");
     void reload(true);
     return () => {
       request.current++;
@@ -470,18 +536,14 @@ export function CaptureSettings({
     if (!extras) return;
     return extras.models.onProgress(({ id, fraction, status, error }) => {
       if (status === "error") {
-        dispatch({
-          type: "fail",
-          id,
-          message: error ?? "The download did not finish.",
-        });
+        fail(id, error ?? "The download did not finish.");
         void reload(false);
       } else {
         dispatch({ type: "progress", id, fraction });
         if (status === "done") void reload(false);
       }
     });
-  }, [extras, reload]);
+  }, [extras, reload, fail]);
 
   // Escape closes with focus returned to ⚙︎ at once. A click outside goes the same way, after the click has
   // finished moving focus: if it landed on another control, that control keeps it; if it landed nowhere,
@@ -518,6 +580,24 @@ export function CaptureSettings({
         ?.focus();
   }, [open, radioReady]);
 
+  // Runs after every commit: a target set alongside the state change that moves focus lands on the element
+  // that state change just rendered, and is spent either way.
+  useEffect(() => {
+    const target = focusTarget.current;
+    if (!target) return;
+    focusTarget.current = null;
+    const row = panel.current?.querySelector<HTMLElement>(
+      `[data-model="${target.id}"]`,
+    );
+    const element =
+      target.to === "progress"
+        ? row?.querySelector<HTMLElement>('[role="progressbar"]')
+        : target.to === "retry"
+          ? row?.querySelector<HTMLElement>(".cs-get")
+          : row?.querySelector<HTMLElement>('[role="radio"]');
+    element?.focus();
+  });
+
   const key = (event: KeyboardEvent) => {
     if (event.key === "Escape") {
       event.stopPropagation();
@@ -528,7 +608,7 @@ export function CaptureSettings({
     if (event.key !== "Tab" || !panel.current) return;
     const stops = [
       ...panel.current.querySelectorAll<HTMLElement>(
-        'button:not(:disabled):not([tabindex="-1"])',
+        'button:not(:disabled):not([tabindex="-1"]), [role="progressbar"][tabindex="0"]',
       ),
     ];
     const first = stops[0];
@@ -560,12 +640,13 @@ export function CaptureSettings({
 
   const onGetModel = (id: WhisperModelId) => {
     if (!extras) return;
+    focusTarget.current = focusAfterGet(id);
     dispatch({ type: "start", id });
     extras.models.download(id).then(
       () => void reload(false),
       (caught: unknown) => {
         console.error("[CaptureSettings] Could not download the model", caught);
-        dispatch({ type: "fail", id, message: messageOf(caught) });
+        fail(id, messageOf(caught));
       },
     );
   };
@@ -644,6 +725,9 @@ export function CaptureSettings({
             onGetModel={onGetModel}
             onToggle={onToggle}
           />
+          <div className="cs-sr" role="status" aria-live="polite">
+            {announcement}
+          </div>
         </div>
       )}
     </div>

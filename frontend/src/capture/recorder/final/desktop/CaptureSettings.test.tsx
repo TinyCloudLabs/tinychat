@@ -58,6 +58,67 @@ describe("SettingsPanel, app", () => {
     expect((out.match(/role="radio"[^>]*tabindex="0"/g) ?? []).length).toBe(1);
   });
 
+  test("only models on disk are radios; the rest sit outside the radiogroup in a labelled group, each with Get", () => {
+    const out = html({
+      load: {
+        status: "ready",
+        data: {
+          models: models(["QuantizedTinyEn", "QuantizedBaseEn"], "QuantizedBaseEn"),
+          selected: "QuantizedBaseEn",
+          systemAudio: false,
+          autoSave: false,
+        },
+      },
+    });
+    const group = out.slice(out.indexOf('role="radiogroup"'), out.indexOf('role="group"'));
+    expect((group.match(/role="radio"/g) ?? []).length).toBe(2);
+    expect(group).not.toContain("cs-get");
+    expect(group).not.toContain("Whisper Small");
+    const rest = out.slice(out.indexOf('role="group"'));
+    expect(rest).toContain('aria-label="Available to download"');
+    expect(rest).not.toContain('role="radio"');
+    expect((rest.match(/class="cs-get"/g) ?? []).length).toBe(5);
+    expect(rest).toContain("Whisper Large Turbo");
+    expect(rest).toContain("874 MB");
+    expect(out).not.toContain("aria-disabled");
+  });
+
+  test("with a model on disk but none selected, the first radio is the tab stop", () => {
+    const out = html({
+      load: {
+        status: "ready",
+        data: {
+          models: models(["QuantizedBaseEn", "QuantizedSmall"], null),
+          selected: null,
+          systemAudio: false,
+          autoSave: false,
+        },
+      },
+    });
+    expect((out.match(/role="radio"[^>]*tabindex="0"/g) ?? []).length).toBe(1);
+    expect(out).toMatch(/role="radio" aria-checked="false" tabindex="0"[^>]*>.*?Whisper Base \(English\)/);
+  });
+
+  test("with nothing on disk there is no radio, no tab stop, and one line saying so; every model has Get", () => {
+    const out = html({
+      load: {
+        status: "ready",
+        data: { models: models([], null), selected: null, systemAudio: false, autoSave: false },
+      },
+    });
+    expect(out).toContain("No model on this Mac yet. Get one below.");
+    expect(out).not.toContain('role="radio"');
+    expect(out).not.toContain('role="radiogroup"');
+    expect((out.match(/class="cs-get"/g) ?? []).length).toBe(7);
+  });
+
+  test("a downloading row is a focusable progressbar with a label and spoken value text", () => {
+    const out = html({ downloads: { QuantizedSmall: { status: "downloading", fraction: 0.4 } } });
+    expect(out).toMatch(
+      /role="progressbar" tabindex="0" aria-label="Whisper Small \(multilingual\) download" aria-valuemin="0" aria-valuemax="100" aria-valuenow="40" aria-valuetext="Downloading, 40%"/,
+    );
+  });
+
   test("the microphone, the two switches with their copy, and no shortcuts", () => {
     const out = html({});
     expect(out).toContain("MacBook Pro Microphone");
@@ -129,6 +190,11 @@ describe("CaptureSettings", () => {
     expect(open).toContain('aria-expanded="true"');
     expect(open).toMatch(/role="dialog" aria-labelledby="([^"]+)"/);
     expect(open).toContain(">Capture settings</h2>");
+  });
+
+  test("the open popover has a polite live region for announcements", () => {
+    const open = renderToStaticMarkup(<CaptureSettings variant="microphone-only" inputs={null} defaultOpen />);
+    expect(open).toMatch(/role="status" aria-live="polite"/);
   });
 
   test("the app variant with no registered extras shows the unavailable state", () => {

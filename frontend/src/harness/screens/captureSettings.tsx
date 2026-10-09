@@ -194,7 +194,21 @@ export const captureSettingsScreens: HarnessScreen[] = [
       <Settings
         variant="app"
         interactive
-        fake={{ downloaded: ["QuantizedTinyEn"], selected: "QuantizedTinyEn" }}
+        fake={{
+          downloaded: ["QuantizedTinyEn", "QuantizedBaseEn"],
+          selected: "QuantizedTinyEn",
+        }}
+      />
+    ),
+    { interactive: true, readyWhen: "[data-testid=capture-settings-button]" },
+  ),
+  screen(
+    "interactive-none",
+    () => (
+      <Settings
+        variant="app"
+        interactive
+        fake={{ downloaded: [], selected: null }}
       />
     ),
     { interactive: true, readyWhen: "[data-testid=capture-settings-button]" },

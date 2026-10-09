@@ -1,9 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import type { WhisperModelInfo } from "@/lib/voiceNotes/desktopCaptureExtras";
 import {
+  adjacentRadio,
+  downloadedAnnouncement,
   downloadsReducer,
+  focusAfterFail,
+  focusAfterGet,
+  focusAfterSync,
   formatModelSize,
+  newlyDownloaded,
+  partitionModels,
   progressPercent,
+  progressText,
   type Downloads,
 } from "./captureSettingsModel";
 
@@ -153,4 +161,85 @@ test("progressPercent rounds to a whole percent", () => {
   expect(progressPercent(0.404)).toBe(40);
   expect(progressPercent(0.996)).toBe(100);
   expect(progressPercent(-1)).toBe(0);
+});
+
+describe("the model picker's keyboard model", () => {
+  const info = (
+    id: WhisperModelInfo["id"],
+    downloaded = false,
+  ): WhisperModelInfo => ({
+    id,
+    label: `Whisper ${id}`,
+    sizeBytes: 1,
+    downloaded,
+    selected: false,
+    downloading: false,
+    progress: null,
+  });
+  const models = [
+    info("QuantizedTinyEn", true),
+    info("QuantizedTiny"),
+    info("QuantizedBaseEn", true),
+    info("QuantizedBase"),
+    info("QuantizedSmallEn", true),
+  ];
+
+  test("partitionModels: radios are the downloaded models in order, the rest are available", () => {
+    const { radios, available } = partitionModels(models, null);
+    expect(radios.map((m) => m.id)).toEqual([
+      "QuantizedTinyEn",
+      "QuantizedBaseEn",
+      "QuantizedSmallEn",
+    ]);
+    expect(available.map((m) => m.id)).toEqual(["QuantizedTiny", "QuantizedBase"]);
+  });
+
+  test("the tab stop is the checked radio, else the first radio, else nothing", () => {
+    expect(partitionModels(models, "QuantizedBaseEn").tabStop).toBe("QuantizedBaseEn");
+    expect(partitionModels(models, null).tabStop).toBe("QuantizedTinyEn");
+    // A selection that is not on disk checks nothing, so the first radio holds the tab stop.
+    expect(partitionModels(models, "QuantizedBase").tabStop).toBe("QuantizedTinyEn");
+    expect(partitionModels(models.map((m) => ({ ...m, downloaded: false })), null).tabStop).toBeNull();
+  });
+
+  test("adjacentRadio moves among radios only and wraps both ways", () => {
+    const { radios } = partitionModels(models, null);
+    expect(adjacentRadio(radios, "QuantizedTinyEn", 1)?.id).toBe("QuantizedBaseEn");
+    expect(adjacentRadio(radios, "QuantizedSmallEn", 1)?.id).toBe("QuantizedTinyEn");
+    expect(adjacentRadio(radios, "QuantizedTinyEn", -1)?.id).toBe("QuantizedSmallEn");
+    expect(adjacentRadio(radios, "QuantizedTiny", 1)).toBeNull();
+    expect(adjacentRadio(radios, null, 1)).toBeNull();
+    expect(adjacentRadio([], "QuantizedTinyEn", 1)).toBeNull();
+  });
+
+  test("Get puts focus on the row's progress element", () => {
+    expect(focusAfterGet("QuantizedBase")).toEqual({ id: "QuantizedBase", to: "progress" });
+  });
+
+  test("a finished download moves focus to its radio only if focus was on its progress element", () => {
+    expect(focusAfterSync("QuantizedSmallEn", models)).toEqual({ id: "QuantizedSmallEn", to: "radio" });
+    expect(focusAfterSync(null, models)).toBeNull();
+    // Still not on disk (a sync during the download): focus stays where it is.
+    expect(focusAfterSync("QuantizedBase", models)).toBeNull();
+  });
+
+  test("a failed download moves focus to Retry only if focus was on that row's progress element", () => {
+    expect(focusAfterFail("QuantizedBase", "QuantizedBase")).toEqual({ id: "QuantizedBase", to: "retry" });
+    expect(focusAfterFail("QuantizedTiny", "QuantizedBase")).toBeNull();
+    expect(focusAfterFail(null, "QuantizedBase")).toBeNull();
+  });
+
+  test("newlyDownloaded names models that came onto disk since the last list, and nothing on the first", () => {
+    const before = models;
+    const after = models.map((m) => (m.id === "QuantizedBase" ? { ...m, downloaded: true } : m));
+    expect(newlyDownloaded(before, after).map((m) => m.id)).toEqual(["QuantizedBase"]);
+    expect(newlyDownloaded(null, after)).toEqual([]);
+    expect(newlyDownloaded(after, after)).toEqual([]);
+  });
+
+  test("the announcement and the progress text", () => {
+    expect(downloadedAnnouncement(["Whisper Base (English)"])).toBe("Whisper Base (English) downloaded");
+    expect(downloadedAnnouncement(["A", "B"])).toBe("A and B downloaded");
+    expect(progressText(0.4)).toBe("Downloading, 40%");
+  });
 });

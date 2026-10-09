@@ -71,3 +71,79 @@ export function downloadsReducer(
 export function progressPercent(fraction: number): number {
   return Math.round(clamp01(fraction) * 100);
 }
+
+/** The picker's two halves: models on disk are the radiogroup, the rest are plain rows with Get. */
+export function partitionModels(
+  models: readonly WhisperModelInfo[],
+  selected: WhisperModelId | null,
+): {
+  radios: WhisperModelInfo[];
+  available: WhisperModelInfo[];
+  /** The radio that holds the tab stop: the checked one, else the first. Null when there is no radio. */
+  tabStop: WhisperModelId | null;
+} {
+  const radios = models.filter((m) => m.downloaded);
+  return {
+    radios,
+    available: models.filter((m) => !m.downloaded),
+    tabStop: (radios.find((m) => m.id === selected) ?? radios[0])?.id ?? null,
+  };
+}
+
+/** The radio an arrow key reaches from `from`, wrapping. Null when `from` is not a radio. */
+export function adjacentRadio(
+  radios: readonly WhisperModelInfo[],
+  from: string | null | undefined,
+  direction: 1 | -1,
+): WhisperModelInfo | null {
+  const at = radios.findIndex((m) => m.id === from);
+  if (at < 0) return null;
+  return radios[(at + direction + radios.length) % radios.length] ?? null;
+}
+
+/** Where focus goes when a row changes shape under it. */
+export type FocusTarget = {
+  id: WhisperModelId;
+  to: "progress" | "radio" | "retry";
+};
+
+/** Activating Get or Retry: the button is replaced by the row's progress element. */
+export const focusAfterGet = (id: WhisperModelId): FocusTarget => ({
+  id,
+  to: "progress",
+});
+
+/** `focusedProgress`: the model whose progress element has focus right now, if any. */
+export function focusAfterSync(
+  focusedProgress: WhisperModelId | null,
+  models: readonly WhisperModelInfo[],
+): FocusTarget | null {
+  if (focusedProgress === null) return null;
+  return models.some((m) => m.id === focusedProgress && m.downloaded)
+    ? { id: focusedProgress, to: "radio" }
+    : null;
+}
+
+export function focusAfterFail(
+  focusedProgress: WhisperModelId | null,
+  failed: WhisperModelId,
+): FocusTarget | null {
+  return focusedProgress === failed ? { id: failed, to: "retry" } : null;
+}
+
+/** Models that were not on disk in `before` and are in `after`: what to announce. Nothing without a `before`. */
+export function newlyDownloaded(
+  before: readonly WhisperModelInfo[] | null,
+  after: readonly WhisperModelInfo[],
+): WhisperModelInfo[] {
+  if (before === null) return [];
+  return after.filter(
+    (m) => m.downloaded && before.some((b) => b.id === m.id && !b.downloaded),
+  );
+}
+
+export const downloadedAnnouncement = (labels: readonly string[]) =>
+  `${labels.join(" and ")} downloaded`;
+
+export const progressText = (fraction: number) =>
+  `Downloading, ${progressPercent(fraction)}%`;
