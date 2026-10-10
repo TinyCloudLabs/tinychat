@@ -12,6 +12,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { saveNote } from "@/lib/voiceNotes/recordingNotes";
+import { VoiceNotes, __setVoiceNotesForTests, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { clearDiscarded, markDiscarded, unmarkDiscarded, type PendingNote } from "@/lib/voiceNotes/recorderSaves";
 import { captureEvents } from "../captureEvents";
 import { RELIST_AFTER_MS, useLibrary, type Library } from "./useLibrary";
@@ -321,5 +322,61 @@ describe("useLibrary, notes still on this phone", () => {
     await saveNote("rec-ed", "just a note, no moments", { savedEdit: true });
     await render({ ...base, noteId: null });
     expect(seen.at(-1)!.items[0].snippet).toBeUndefined();
+  });
+});
+
+describe("useLibrary, which audio a note on the phone plays", () => {
+  const phoneNote: PendingNote = { id: "rec-play", startedAt: Date.parse("2026-10-06T10:00:00.000Z"), durationMs: 14_000 };
+  async function withLocalAudio(run: (counts: { local: () => number; remote: () => number }, space: ReturnType<typeof fakeSpace>) => Promise<void>) {
+    const space = fakeSpace();
+    let remoteReads = 0;
+    let localReads = 0;
+    space.tcw.kv.get = (async () => {
+      remoteReads++;
+      return { ok: false, error: { code: "KV_NOT_FOUND", message: "Upload is not finished" } };
+    }) as typeof space.tcw.kv.get;
+    const localUrl = URL.createObjectURL(new Blob(["local bytes"], { type: "audio/mp4" }));
+    const original = VoiceNotes;
+    __setVoiceNotesForTests({ localAudioUrl: async () => { localReads++; return { url: localUrl }; } } as VoiceNotesPlugin, { available: true });
+    try {
+      await run({ local: () => localReads, remote: () => remoteReads }, space);
+    } finally {
+      __setVoiceNotesForTests(original, { available: null });
+      URL.revokeObjectURL(localUrl);
+    }
+  }
+  const play = (library: Library) => library.note.loadAudio!(new AbortController().signal, () => {});
+
+  test("a note still on the phone plays from the phone's copy once its row exists, whatever the row's metadata holds", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      const base = { tcw: space.tcw, visible: true, now: () => 0, seen, onPhone: [phoneNote] };
+      await render({ ...base, noteId: "on-phone:rec-play" });
+      expect(await (await play(seen.at(-1)!))!.text()).toBe("local bytes");
+      // The row is made before the audio is uploaded; its metadata is empty or not yet read.
+      await space.answer("list", listed("play"));
+      expect(seen.at(-1)!.note.item).toMatchObject({ saving: true, sourceId: "rec-play" });
+      const before = { local: counts.local(), remote: counts.remote() };
+      expect(await (await play(seen.at(-1)!))!.text()).toBe("local bytes");
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      expect(await (await play(seen.at(-1)!))!.text()).toBe("local bytes");
+      expect({ local: counts.local() - before.local, remote: counts.remote() - before.remote }).toEqual({ local: 2, remote: 0 });
+    });
+  });
+
+  test("once the phone no longer lists the note, its row plays from the space", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      const base = { tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play" };
+      await render({ ...base, onPhone: [phoneNote] });
+      await space.answer("list", listed("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      await render({ ...base, onPhone: [] });
+      await space.answer("list", listed("play"));
+      expect(seen.at(-1)!.note.item?.saving).toBeUndefined();
+      const localBefore = counts.local();
+      await play(seen.at(-1)!).catch(() => null);
+      expect({ local: counts.local() - localBefore, remoteAsked: counts.remote() > 0 }).toEqual({ local: 0, remoteAsked: true });
+    });
   });
 });

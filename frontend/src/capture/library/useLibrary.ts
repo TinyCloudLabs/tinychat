@@ -375,7 +375,8 @@ export function useLibrary(
   const audioBase = audio?.status === "stored" ? audio.base : null;
   const voiceSourceId = item?.source === VOICE_NOTE_SOURCE ? item.sourceId : null;
   const pendingAudioRow = voiceSourceId !== null && meta !== null && Object.keys(meta).length === 0;
-  const onThisPhone = voiceSourceId !== null && (item?.onPhone === true || (item?.saving === true && pendingAudioRow));
+  // The row is made before the audio is uploaded: while the phone still lists the note, its own copy is the audio.
+  const onThisPhone = voiceSourceId !== null && (item?.onPhone === true || item?.saving === true);
   // The stored file is read only when the player asks, one part per queued
   // call; the player's signal stops it when the note closes.
   const loadAudio = useMemo<AudioLoad | null>(() => {
