@@ -11,6 +11,7 @@ import {
   setDefaultTimeout,
   test,
 } from "bun:test";
+import { mkdirSync } from "node:fs";
 import {
   chromium,
   webkit,
@@ -38,6 +39,7 @@ type Harness = {
     patch: (patch: object) => void;
     fail: Record<string, boolean>;
     transcriberResult: string | null;
+    downloadCalls?: number[];
     patchTranscriber: (patch: object) => void;
   };
 };
@@ -63,7 +65,14 @@ interface Opened {
 }
 
 async function open(
-  name: "consented" | "first-run" | "failing" | "native",
+  name:
+    | "consented"
+    | "first-run"
+    | "failing"
+    | "native"
+    | "model-unavailable"
+    | "permission-denied",
+  options: { clock?: boolean; theme?: "light" | "dark" } = {},
 ): Promise<Opened> {
   const page = await (
     await browser.newContext({
@@ -71,6 +80,7 @@ async function open(
       reducedMotion: "reduce",
     })
   ).newPage();
+  if (options.clock) await page.clock.install();
   const errors: string[] = [];
   page.on("console", (message) => {
     if (
@@ -82,7 +92,7 @@ async function open(
   page.on("pageerror", (error) => errors.push(error.message));
   const screenName = `recorder-final-phone-interactive-${name}`;
   await page.goto(
-    `http://127.0.0.1:${server.port}/?screen=${screenName}&theme=light&platform=ios`,
+    `http://127.0.0.1:${server.port}/?screen=${screenName}&theme=${options.theme ?? "light"}&platform=ios`,
   );
   // Fail inside bun's 30 s test timeout: past it bun kills the browser and every later test reports a closed context.
   page.setDefaultTimeout(10_000);
@@ -295,7 +305,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
   });
 
   test("the provider can refuse: a toast says why, the scale stays where the provider is, and the failure is logged", async () => {
-    const { page, errors } = await open("consented");
+    const { page, errors } = await open("consented", { clock: true });
     await page.evaluate(() => {
       (window as unknown as Harness).exoRecorder.transcriberResult =
         "unavailable";
@@ -307,25 +317,40 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     expect(errors.some((text) => text.includes("cannot use on-device"))).toBe(
       true,
     );
+    const toast = page.locator(".pr-toast");
+    expect(
+      await toast.getByRole("button", { name: "Use Private" }).count(),
+    ).toBe(0);
+    expect(await toast.getByRole("button", { name: "Get model" }).count()).toBe(
+      0,
+    );
+    const dismiss = toast.getByRole("button", { name: "Dismiss notification" });
+    await dismiss.focus();
+    await page.clock.fastForward(10_000);
+    await shown(dismiss);
+    const toastBox = (await toast.boundingBox())!;
+    await page.mouse.move(
+      toastBox.x + toastBox.width / 2,
+      toastBox.y + toastBox.height / 2,
+    );
+    await slider(page).focus();
+    await page.clock.fastForward(10_000);
+    await shown(dismiss);
+    await page.mouse.move(5, 5);
+    await page.clock.fastForward(4_200);
+    await gone(toast);
     await page.context().close();
   });
 
-  test("an unavailable mode toast stays actionable for four seconds without covering the privacy labels", async () => {
-    const { page } = await open("consented");
-    await page.evaluate(() => {
-      (window as unknown as Harness).exoRecorder.patchTranscriber({ id: "off" });
-    });
-    await modeIs(page, "Audio only");
-    await page.evaluate(() => {
-      (window as unknown as Harness).exoRecorder.transcriberResult =
-        "unavailable";
-    });
-    await slider(page).focus();
-    await page.keyboard.press("ArrowRight");
+  test("an unavailable mode toast stays actionable without covering the privacy labels", async () => {
+    const { page } = await open("model-unavailable", { clock: true });
+    await page.locator('.pr-stop[data-stop="local"]').click();
 
     const toast = page.locator(".pr-toast");
     const privateAction = toast.getByRole("button", { name: "Use Private" });
+    const getModelAction = toast.getByRole("button", { name: "Get model" });
     await shown(privateAction);
+    await shown(getModelAction);
     const toastBox = (await toast.boundingBox())!;
     const labelsBox = (await page.locator(".pr-ends").boundingBox())!;
     expect(
@@ -335,14 +360,167 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
         toastBox.y + toastBox.height > labelsBox.y,
     ).toBe(false);
 
-    await page.waitForTimeout(4_000);
+    await page.clock.fastForward(10_000);
     await shown(privateAction);
-    await page.evaluate(() => {
-      (window as unknown as Harness).exoRecorder.transcriberResult = null;
-    });
-    await privateAction.evaluate((button) => (button as HTMLButtonElement).click());
+    const evidenceDir = process.env.EXO_POLISH_EVIDENCE;
+    if (evidenceDir) {
+      mkdirSync(evidenceDir, { recursive: true });
+      await page.screenshot({
+        path: `${evidenceDir}/recorder-toast-phone.png`,
+        fullPage: true,
+      });
+    }
+    await page.setViewportSize({ width: 844, height: 390 });
+    const landscapeToast = await toast.boundingBox();
+    const landscapeLabels = await page.locator(".pr-ends").boundingBox();
+    expect(landscapeToast).not.toBeNull();
+    expect(landscapeLabels).not.toBeNull();
+    expect(
+      landscapeToast!.x < landscapeLabels!.x + landscapeLabels!.width &&
+        landscapeToast!.x + landscapeToast!.width > landscapeLabels!.x &&
+        landscapeToast!.y < landscapeLabels!.y + landscapeLabels!.height &&
+        landscapeToast!.y + landscapeToast!.height > landscapeLabels!.y,
+    ).toBe(false);
+    if (evidenceDir)
+      await page.screenshot({
+        path: `${evidenceDir}/recorder-toast-phone-land.png`,
+        fullPage: true,
+      });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await privateAction.click();
     await modeIs(page, "Private");
     await page.context().close();
+
+    const dark = await open("model-unavailable", {
+      clock: true,
+      theme: "dark",
+    });
+    await dark.page.locator('.pr-stop[data-stop="local"]').click();
+    await shown(dark.page.getByRole("button", { name: "Get model" }));
+    if (evidenceDir)
+      await dark.page.screenshot({
+        path: `${evidenceDir}/recorder-toast-phone-dark.png`,
+        fullPage: true,
+      });
+    await dark.page.setViewportSize({ width: 844, height: 390 });
+    if (evidenceDir)
+      await dark.page.screenshot({
+        path: `${evidenceDir}/recorder-toast-phone-land-dark.png`,
+        fullPage: true,
+      });
+    await dark.page.context().close();
+  });
+
+  test("Get model starts the shared Wi-Fi download and replaces the toast with its waiting state", async () => {
+    const { page } = await open("model-unavailable", { clock: true });
+    await page
+      .getByRole("button", { name: "Transcription modes: compare and choose" })
+      .click();
+    const localRow = page.locator('.pr-mprow[data-mode="local"]');
+    const localRowBox = (await localRow.boundingBox())!;
+    await page.mouse.click(
+      localRowBox.x + localRowBox.width / 2,
+      localRowBox.y + localRowBox.height / 2,
+    );
+    const toast = page.locator(".pr-toast");
+    const getModel = toast.getByRole("button", { name: "Get model" });
+    await shown(getModel);
+    await page
+      .locator(".pr-modes")
+      .getByRole("button", { name: "Close" })
+      .click();
+    await page.clock.fastForward(10_000);
+    await shown(getModel);
+    const evidenceDir = process.env.EXO_POLISH_EVIDENCE;
+    if (evidenceDir) {
+      mkdirSync(evidenceDir, { recursive: true });
+      await page.screenshot({
+        path: `${evidenceDir}/recorder-get-model-phone.png`,
+        fullPage: true,
+      });
+    }
+    await page.setViewportSize({ width: 844, height: 390 });
+    const toastBox = await toast.boundingBox();
+    const labelsBox = await page.locator(".pr-ends").boundingBox();
+    expect(toastBox).not.toBeNull();
+    expect(labelsBox).not.toBeNull();
+    expect(
+      toastBox!.x < labelsBox!.x + labelsBox!.width &&
+        toastBox!.x + toastBox!.width > labelsBox!.x &&
+        toastBox!.y < labelsBox!.y + labelsBox!.height &&
+        toastBox!.y + toastBox!.height > labelsBox!.y,
+    ).toBe(false);
+    if (evidenceDir)
+      await page.screenshot({
+        path: `${evidenceDir}/recorder-get-model-phone-land.png`,
+        fullPage: true,
+      });
+    await page.setViewportSize({ width: 390, height: 844 });
+
+    await getModel.click();
+    await shown(page.getByText(/Waiting for Wi-Fi to download the model/));
+    expect(
+      await page.evaluate(() => window.exoRecorder?.downloadCalls?.length),
+    ).toBe(1);
+    await focused(slider(page));
+    await page.context().close();
+  });
+
+  test("mic denied keeps the ring and scale in the recording layout positions", async () => {
+    const { page: recording } = await open("consented");
+    const recordingRing = await recording.locator(".pr-ring").boundingBox();
+    const recordingScale = await recording.locator(".pr-scale").boundingBox();
+    const { page: denied } = await open("permission-denied");
+    const deniedRing = await denied.locator(".pr-ring").boundingBox();
+    const deniedScale = await denied.locator(".pr-scale").boundingBox();
+    expect(recordingRing).not.toBeNull();
+    expect(recordingScale).not.toBeNull();
+    expect(deniedRing).not.toBeNull();
+    expect(deniedScale).not.toBeNull();
+    expect(Math.abs(recordingRing!.x - deniedRing!.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(recordingRing!.y - deniedRing!.y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(recordingScale!.x - deniedScale!.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(recordingScale!.y - deniedScale!.y)).toBeLessThanOrEqual(1);
+    const recordingVia = await recording.locator(".pr-src-wrap").boundingBox();
+    const deniedVia = await denied.locator(".pr-via-placeholder").boundingBox();
+    expect(recordingVia).not.toBeNull();
+    expect(deniedVia).not.toBeNull();
+    expect(Math.abs(recordingVia!.height - deniedVia!.height)).toBeLessThanOrEqual(1);
+    const deniedControls = denied.locator(".pr-controls[data-mic-denied=true]");
+    expect(await deniedControls.getByRole("button").count()).toBe(1);
+    expect(
+      await deniedControls
+        .getByRole("button", { name: "Open Settings" })
+        .count(),
+    ).toBe(1);
+    expect(
+      await denied
+        .locator(".pr-mark")
+        .evaluate((el) => getComputedStyle(el).visibility),
+    ).toBe("hidden");
+    expect(
+      await denied
+        .locator(".pr-ring")
+        .evaluate((el) => getComputedStyle(el).opacity),
+    ).toBe("0.35");
+    const evidenceDir = process.env.EXO_POLISH_EVIDENCE;
+    if (evidenceDir) {
+      mkdirSync(evidenceDir, { recursive: true });
+      await denied.screenshot({
+        path: `${evidenceDir}/recorder-mic-denied-phone.png`,
+        fullPage: true,
+      });
+    }
+    await recording.context().close();
+    await denied.context().close();
+
+    const darkDenied = await open("permission-denied", { theme: "dark" });
+    if (evidenceDir)
+      await darkDenied.page.screenshot({
+        path: `${evidenceDir}/recorder-mic-denied-phone-dark.png`,
+        fullPage: true,
+      });
+    await darkDenied.page.context().close();
   });
 
   test("signed out: Local is selected and the other stops say why they are off, from the account's state alone", async () => {
@@ -610,7 +788,9 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
       hasText: "Couldn't open Settings. Open Settings › Exo › Microphone.",
     });
     await shown(settingsAlert);
-    expect(await settingsAlert.textContent()).not.toContain("Settings would not open");
+    expect(await settingsAlert.textContent()).not.toContain(
+      "Settings would not open",
+    );
     expect(
       errors.some((text) => text.includes("Could not open Settings")),
     ).toBe(true);

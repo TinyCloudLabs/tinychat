@@ -99,6 +99,56 @@ describe("Soft Capture home interactions (phone)", () => {
     await page.context().close();
   });
 
+  test("in phone landscape an error alert and minimized Ribbon stay below Capture's action row", async () => {
+    const page = await open("capture-recording-minimised-error", {
+      width: 844,
+      height: 390,
+    });
+    const actions = page.locator('[data-testid="capture-actions"]');
+    const reservation = page.locator(".ribbon-float");
+    const alert = page.getByTestId("minimized-alert");
+    const actionBox = await actions.boundingBox();
+    const reservationBox = await reservation.boundingBox();
+    expect(await alert.isVisible()).toBe(true);
+    expect(actionBox).not.toBeNull();
+    expect(reservationBox).not.toBeNull();
+    expect(actionBox!.y + actionBox!.height).toBeLessThanOrEqual(
+      reservationBox!.y,
+    );
+    const ribbon = await page.locator(".ribbon-float .ribbon").boundingBox();
+    const alertBox = await alert.boundingBox();
+    expect(ribbon).not.toBeNull();
+    expect(alertBox).not.toBeNull();
+    expect(alertBox!.y + alertBox!.height).toBeLessThanOrEqual(ribbon!.y);
+    await page.context().close();
+  });
+
+  test("in phone landscape the minimized stop alert reserves only its own height", async () => {
+    const page = await open("capture-stopped-minimised-error", {
+      width: 844,
+      height: 390,
+    });
+    const actions = page.locator('[data-testid="capture-actions"]');
+    const reservation = page.locator(".ribbon-float");
+    const alert = page.getByTestId("minimized-alert");
+    const actionBox = await actions.boundingBox();
+    const reservationBox = await reservation.boundingBox();
+    const alertBox = await alert.boundingBox();
+    expect(actionBox).not.toBeNull();
+    expect(reservationBox).not.toBeNull();
+    expect(alertBox).not.toBeNull();
+    expect(await page.locator(".ribbon-float .ribbon").count()).toBe(0);
+    expect(reservationBox!.height).toBeLessThan(84);
+    expect(actionBox!.y + actionBox!.height).toBeLessThanOrEqual(
+      reservationBox!.y,
+    );
+    expect(alertBox!.y).toBeGreaterThanOrEqual(reservationBox!.y);
+    expect(alertBox!.y + alertBox!.height).toBeLessThanOrEqual(
+      reservationBox!.y + reservationBox!.height,
+    );
+    await page.context().close();
+  });
+
   test("tapping a Recent row opens its note", async () => {
     const page = await open("capture-soft-notes");
     const row = page

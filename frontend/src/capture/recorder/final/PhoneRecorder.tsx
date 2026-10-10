@@ -49,13 +49,13 @@ import {
   modeShortLabel,
   identifySpeakersControl,
   MODE_STOPS,
+  type ModeId,
 } from "./transcriptionModes";
 import { FINAL_COPY } from "./finalCopy";
 import { useAudioInputs, type AudioInputsSource } from "./useAudioInputs";
 import { useSilencedSince } from "./useSilencedSince";
 import { MicDeniedAction } from "./shell/MicDeniedAction";
 import { openSettingsFailedLine } from "./shell/micDeniedCopy";
-import { startOnDeviceModelDownload } from "../TranscriptionRouteControl";
 import {
   useOnDeviceModel,
   useTranscriptionChoice,
@@ -134,36 +134,73 @@ export function PhoneRecorder({
     key: number;
     actions: Array<{ label: string; run: () => void }>;
   } | null>(null);
+  const toastReturnFocus = useRef<HTMLElement | null>(null);
+  const toastKey = useRef(0);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toastStartedAt = useRef(0);
+  const toastRemaining = useRef(TOAST_MS);
+  const toastPauseReasons = useRef(new Set<"pointer" | "focus">());
+  const toastActionUsed = useRef(false);
+  const [modelDownloadRequested, setModelDownloadRequested] = useState(false);
   const showToast = (
     message: string,
     actions: Array<{ label: string; run: () => void }> = [],
-  ) => setToast({ message, key: Date.now(), actions });
+  ) => {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active !== document.body)
+      toastReturnFocus.current = active;
+    toastActionUsed.current = false;
+    toastPauseReasons.current.clear();
+    setToast({ message, key: ++toastKey.current, actions });
+  };
   const choiceForToast = useRef<{
     stops: ReturnType<typeof useTranscriptionChoice>["stops"];
     mode: ReturnType<typeof useTranscriptionChoice>["mode"];
   } | null>(null);
-  const unavailable = (reason: string) => {
+  const unavailable = (reason: string, modeId?: ModeId) => {
     const actions: Array<{ label: string; run: () => void }> = [];
+    const rejected = choiceForToast.current?.stops.find(
+      ({ stop }) => stop.id === modeId,
+    );
+    if (
+      modeId === "local" &&
+      rejected &&
+      !rejected.available &&
+      rejected.action
+    ) {
+      actions.push({
+        label:
+          rejected.action.label === FINAL_COPY.modelUnavailable
+            ? "Get model"
+            : rejected.action.label,
+        run: () => {
+          setModelDownloadRequested(true);
+          showToast("Checking Wi-Fi before downloading the model…");
+          rejected.action!.run();
+        },
+      });
+    } else if (
+      modeId !== undefined &&
+      rejected &&
+      !rejected.available &&
+      rejected.action
+    ) {
+      actions.push({ label: rejected.action.label, run: rejected.action.run });
+    }
     const privateAvailable = choiceForToast.current?.stops.some(
       ({ stop, available }) => stop.id === "private" && available,
     );
-    if (reason === FINAL_COPY.modelUnavailable) {
+    if (
+      modeId !== "private" &&
+      privateAvailable &&
+      choiceForToast.current?.mode !== "private"
+    ) {
       actions.push({
-        label: "Get model",
+        label: "Use Private",
         run: () => {
-          void startOnDeviceModelDownload().catch(
-            (error: unknown) => {
-              console.error("[Recorder] Could not start the on-device model download", error);
-              showToast(
-                `Could not start the on-device model download: ${error instanceof Error ? error.message : String(error)}`,
-              );
-            },
-          );
+          choose("private");
         },
       });
-    }
-    if (privateAvailable && choiceForToast.current?.mode !== "private") {
-      actions.push({ label: "Use Private", run: () => { choose("private"); } });
     }
     showToast(reason, actions);
   };
@@ -178,7 +215,7 @@ export function PhoneRecorder({
     download: onDevice.download,
     transcriber: transcriberApi ?? recorder,
     signedIn: recorder.signedIn,
-    notify: unavailable,
+    notify: (reason) => showToast(reason),
   });
   choiceForToast.current = choice;
 
@@ -243,10 +280,108 @@ export function PhoneRecorder({
   const ids = useId();
 
   useEffect(() => {
-    if (!toast) return;
-    const timer = setTimeout(() => setToast(null), TOAST_MS);
-    return () => clearTimeout(timer);
-  }, [toast]);
+    if (
+      !toast ||
+      toast.actions.length > 0 ||
+      toastPauseReasons.current.size > 0
+    )
+      return;
+    toastRemaining.current = TOAST_MS;
+    toastStartedAt.current = performance.now();
+    toastTimer.current = setTimeout(
+      () => setToast(null),
+      toastRemaining.current,
+    );
+    return () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+      toastTimer.current = null;
+    };
+  }, [toast?.key, toast?.actions.length]);
+
+  useEffect(() => {
+    if (!modelDownloadRequested) return;
+    const local = choice.stops.find(({ stop }) => stop.id === "local");
+    if (local?.available) {
+      setModelDownloadRequested(false);
+      setToast((current) =>
+        current
+          ? {
+              ...current,
+              message: "The on-device model is ready.",
+              key: ++toastKey.current,
+            }
+          : current,
+      );
+      return;
+    }
+    const message =
+      local?.reason ?? "Checking Wi-Fi before downloading the model…";
+    const usefulState =
+      /waiting|downloading|could not start|couldn't download|paused/i.test(
+        message,
+      );
+    const next = usefulState
+      ? message
+      : "Checking Wi-Fi before downloading the model…";
+    setToast((current) =>
+      current && current.message !== next
+        ? { ...current, message: next, key: ++toastKey.current }
+        : current,
+    );
+  }, [choice.stops, modelDownloadRequested]);
+
+  const pauseToast = (reason: "pointer" | "focus") => {
+    if (
+      !toast ||
+      toast.actions.length > 0 ||
+      toastPauseReasons.current.has(reason)
+    )
+      return;
+    const wasPaused = toastPauseReasons.current.size > 0;
+    toastPauseReasons.current.add(reason);
+    if (wasPaused) return;
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = null;
+    toastRemaining.current = Math.max(
+      0,
+      toastRemaining.current - (performance.now() - toastStartedAt.current),
+    );
+  };
+  const resumeToast = (reason: "pointer" | "focus") => {
+    if (
+      !toastPauseReasons.current.delete(reason) ||
+      toastPauseReasons.current.size > 0
+    )
+      return;
+    if (!toast || toast.actions.length > 0) return;
+    toastStartedAt.current = performance.now();
+    toastTimer.current = setTimeout(
+      () => setToast(null),
+      toastRemaining.current,
+    );
+  };
+  const runToastAction = (run: () => void) => {
+    if (toastActionUsed.current) return;
+    toastActionUsed.current = true;
+    setToast(null);
+    run();
+    requestAnimationFrame(() => {
+      if (!document.querySelector(".pr-sheet"))
+        (toastReturnFocus.current?.isConnected
+          ? toastReturnFocus.current
+          : scale.current
+        )?.focus({ preventScroll: true });
+    });
+  };
+  const dismissToast = () => {
+    setToast(null);
+    requestAnimationFrame(() =>
+      (toastReturnFocus.current?.isConnected
+        ? toastReturnFocus.current
+        : scale.current
+      )?.focus({ preventScroll: true }),
+    );
+  };
 
   // The recorder provider announces every recording transition; this region only says what is new in this screen.
   const [said, setSaid] = useState("");
@@ -270,10 +405,7 @@ export function PhoneRecorder({
   const choose = (id: Parameters<typeof choice.select>[0]) => {
     const changed = id !== choice.mode;
     const reason = choice.select(id);
-    if (reason !== null) {
-      showToast(reason);
-      return reason;
-    }
+    if (reason !== null) return reason;
     if (changed) hapticLight();
     return null;
   };
@@ -527,27 +659,32 @@ export function PhoneRecorder({
               return choose(id);
             }}
             step={choice.step}
-            onUnavailable={unavailable}
+            onUnavailable={(reason, id) => unavailable(reason, id)}
           />
           <div className="pr-ends" aria-hidden="true">
             <span>more private</span>
             <span>more capable</span>
           </div>
-          <div className="pr-capline">{choice.restingNote ?? stop.captions[shell]}</div>
-          {!idleDenied && !audio.unsupported && (
-            <ViaMenu
-              inputs={audio.inputs}
-              currentId={input?.id ?? null}
-              currentName={inputName}
-              recording={view.ring === "live"}
-              theme={theme}
-              subscribeLevel={recorder.subscribeLevel}
-              emphasis={view.emphasis === "input"}
-              disabled={view.controls.busy}
-              defaultOpen={defaultOpen === "via"}
-              onSelect={(id) => void audio.select(id)}
-            />
-          )}
+          <div className="pr-capline">
+            {choice.restingNote ?? stop.captions[shell]}
+          </div>
+          {!audio.unsupported &&
+            (idleDenied ? (
+              <div className="pr-via-placeholder" aria-hidden="true" />
+            ) : (
+              <ViaMenu
+                inputs={audio.inputs}
+                currentId={input?.id ?? null}
+                currentName={inputName}
+                recording={view.ring === "live"}
+                theme={theme}
+                subscribeLevel={recorder.subscribeLevel}
+                emphasis={view.emphasis === "input"}
+                disabled={view.controls.busy}
+                defaultOpen={defaultOpen === "via"}
+                onSelect={(id) => void audio.select(id)}
+              />
+            ))}
           {modesOpen && (
             <div id={`${ids}-modes`} style={{ display: "contents" }}>
               <ModesCard
@@ -559,7 +696,9 @@ export function PhoneRecorder({
                 onClose={closeModes}
                 onChoose={(id) => {
                   consentOpener.current = opener.current;
-                  if (choose(id) === null) closeModes();
+                  const reason = choose(id);
+                  if (reason === null) closeModes();
+                  else unavailable(reason, id);
                 }}
                 onToggleSpeakers={choice.setIdentifySpeakers}
               />
@@ -588,8 +727,12 @@ export function PhoneRecorder({
           </div>
         ) : phase === "idle" ? (
           <div className="pr-controls">
-            <button type="button" className="pr-b primary" disabled={!recorder.ready || recorder.outcome !== null}
-              onClick={() => void recorder.record()}>
+            <button
+              type="button"
+              className="pr-b primary"
+              disabled={!recorder.ready || recorder.outcome !== null}
+              onClick={() => void recorder.record()}
+            >
               Record
             </button>
           </div>
@@ -745,13 +888,43 @@ export function PhoneRecorder({
       )}
 
       {toast && (
-        <div key={toast.key} className="pr-toast" role="status">
-          {toast.message}
+        <div
+          key={toast.key}
+          className="pr-toast"
+          role="status"
+          onPointerEnter={() => pauseToast("pointer")}
+          onPointerLeave={(event) => {
+            if (
+              !event.currentTarget.contains(event.relatedTarget as Node | null)
+            )
+              resumeToast("pointer");
+          }}
+          onFocusCapture={() => pauseToast("focus")}
+          onBlurCapture={(event) => {
+            if (
+              !event.currentTarget.contains(event.relatedTarget as Node | null)
+            )
+              resumeToast("focus");
+          }}
+        >
+          <span className="pr-toast-message">{toast.message}</span>
           {toast.actions.map((action) => (
-            <button key={action.label} type="button" onClick={action.run}>
+            <button
+              key={action.label}
+              type="button"
+              onClick={() => runToastAction(action.run)}
+            >
               {action.label}
             </button>
           ))}
+          <button
+            type="button"
+            className="pr-toast-dismiss"
+            aria-label="Dismiss notification"
+            onClick={dismissToast}
+          >
+            ×
+          </button>
         </div>
       )}
     </div>

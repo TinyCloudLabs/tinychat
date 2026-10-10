@@ -40,6 +40,7 @@ declare global {
       fail: Record<"openSettings" | "listInputs" | "modelStatus", boolean>;
       /** What the provider answers to the next setTranscriber calls (null: decide as it would). */
       transcriberResult: SetTranscriberResult | null;
+      downloadCalls?: number[];
       /** The provider's transcriber changes from outside this screen. */
       patchTranscriber: (patch: Partial<RecorderValue["transcriber"]>) => void;
     };
@@ -86,6 +87,15 @@ const MODEL_READY: OnDeviceSttStatus = {
   appleSpeech: "ready",
   queue: [],
 };
+const MODEL_ABSENT: OnDeviceSttStatus = {
+  ...MODEL_READY,
+  models: MODEL_READY.models.map((model) => ({
+    ...model,
+    state: "absent",
+    bytes: 0,
+  })),
+  download: { policy: "wifi", state: "idle" },
+};
 
 const minutes = (m: number) => m * 60_000;
 
@@ -95,12 +105,15 @@ interface Setup {
   transcriber: TranscriberId;
   /** Starts with every plugin call rejecting. */
   failing: boolean;
+  permissionDenied?: boolean;
+  modelUnavailable?: boolean;
 }
 
 function Interactive({
   consented: consentedAtStart,
   transcriber: transcriberAtStart,
   failing,
+  permissionDenied = false,
 }: Setup) {
   const [consented, setConsented] = useState(consentedAtStart);
   const [transcriber, setTranscriber] = useState<RecorderValue["transcriber"]>({
@@ -111,13 +124,16 @@ function Interactive({
   const consentedNow = useRef(consented);
   consentedNow.current = consented;
   const [state, setState] = useState<Partial<RecorderValue>>({
-    phase: "recording",
-    mic: { state: "recording", reason: null },
+    phase: permissionDenied ? "idle" : "recording",
+    mic: permissionDenied
+      ? { state: "idle", reason: null }
+      : { state: "recording", reason: null },
     startedAt: FROZEN_NOW - minutes(12),
     recordingId: "rec-harness",
     audioMs: minutes(12),
     elapsedMs: minutes(12),
     sheetOpen: true,
+    permissionDenied,
   });
 
   const log = useMemo(() => {
@@ -286,6 +302,8 @@ function installNativePlugin() {
 }
 
 function screen(name: string, setup: Setup): HarnessScreen {
+  let modelStatus = setup.modelUnavailable ? MODEL_ABSENT : MODEL_READY;
+  const statusListeners = new Set<(status: OnDeviceSttStatus) => void>();
   return {
     id: `recorder-final-phone-interactive-${name}`,
     group: "recorder",
@@ -298,15 +316,39 @@ function screen(name: string, setup: Setup): HarnessScreen {
         status: async () => {
           if (window.exoRecorder?.fail.modelStatus)
             throw new Error("The model check failed");
-          return MODEL_READY;
+          return modelStatus;
         },
         setAutoDownload: async () => {},
-        downloadNow: async () => {},
+        downloadNow: async () => {
+          const harness = window.exoRecorder;
+          if (harness)
+            harness.downloadCalls = [
+              ...(harness.downloadCalls ?? []),
+              Date.now(),
+            ];
+          modelStatus = {
+            ...MODEL_ABSENT,
+            download: { policy: "wifi", state: "waiting_for_network" },
+          };
+          statusListeners.forEach((listener) => listener(modelStatus));
+        },
         cancelDownload: async () => {},
         deleteModels: async () => {},
         enqueue: async () => {},
         cancel: async () => {},
-        addListener: async () => ({ remove: async () => {} }),
+        addListener: async (event, listener) => {
+          if (event === "status")
+            statusListeners.add(
+              listener as (status: OnDeviceSttStatus) => void,
+            );
+          return {
+            remove: async () => {
+              statusListeners.delete(
+                listener as (status: OnDeviceSttStatus) => void,
+              );
+            },
+          };
+        },
       } satisfies OnDeviceSttPlugin);
       return <Interactive {...setup} />;
     },
@@ -483,5 +525,17 @@ export const recorderFinalPhoneInteractiveScreens: HarnessScreen[] = [
     consented: true,
     transcriber: "private-cloud",
     failing: true,
+  }),
+  screen("model-unavailable", {
+    consented: true,
+    transcriber: "off",
+    failing: false,
+    modelUnavailable: true,
+  }),
+  screen("permission-denied", {
+    consented: true,
+    transcriber: "private-cloud",
+    failing: false,
+    permissionDenied: true,
   }),
 ];

@@ -411,6 +411,10 @@
   max-width: 100%;
   justify-content: center;
 }
+.pr-via-placeholder {
+  width: 100%;
+  height: 28px;
+}
 .pr-srcbtn {
   display: inline-flex;
   align-items: center;
@@ -911,17 +915,21 @@
   justify-content: center;
   flex-wrap: wrap;
   gap: 8px 12px;
-  border-radius: 999px;
+  border-radius: 16px;
   background: var(--ink);
   color: var(--bgc);
   font-size: 12.5px;
   font-weight: 600;
   white-space: normal;
   max-width: calc(100vw - 32px);
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
   animation: pr-toast 0.4s cubic-bezier(0.3, 1.6, 0.5, 1);
   pointer-events: auto;
+}
+.pr-toast-message {
+  min-width: 0;
+  flex: 1 1 100%;
+  text-align: center;
 }
 .pr-toast button {
   min-height: 32px;
@@ -930,6 +938,41 @@
   box-shadow: inset 0 0 0 1px currentColor;
   font-size: 12px;
   font-weight: 700;
+}
+.pr-toast .pr-toast-dismiss {
+  min-width: 32px;
+  padding-inline: 6px;
+  box-shadow: none;
+  font-size: 18px;
+  line-height: 1;
+}
+@media (orientation: portrait) and (min-height: 700px) {
+  .pr-toast {
+    top: calc(env(safe-area-inset-top) + 130px);
+    bottom: auto;
+  }
+}
+@media (orientation: landscape) and (max-height: 500px) {
+  .pr-toast {
+    top: calc(env(safe-area-inset-top) + 58px);
+    right: auto;
+    bottom: auto;
+    left: 14px;
+    transform: none;
+    width: min(calc(100vw - 28px), 300px);
+    max-width: 300px;
+    animation-name: pr-toast-landscape;
+  }
+  .pr-toast-message {
+    flex-basis: 100%;
+    text-align: center;
+  }
+}
+@keyframes pr-toast-landscape {
+  from {
+    opacity: 0;
+    translate: 0 10px;
+  }
 }
 @keyframes pr-toast {
   from {
