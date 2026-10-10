@@ -146,7 +146,7 @@ function ignoredConsoleError(message: ConsoleMessage): boolean {
 }
 
 // Runs in the page: the automated checks of plan §8.2 (TC-761).
-function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: boolean; displayTitle: boolean; allow: Array<{ selector: string; check: string }> }) {
+function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: boolean; displayTitle: boolean; text200Phone: boolean; allow: Array<{ selector: string; check: string }> }) {
   const findings: Array<{ check: string; element?: string; detail: string }> = [];
   const allowed = (el: Element, check: string) => args.allow.some((entry) => entry.check === check && el.matches(entry.selector));
   const describe = (el: Element) => {
@@ -216,6 +216,53 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
       const style = getComputedStyle(el);
       if (!/hidden|clip/.test(style.overflowX) || el.scrollWidth <= el.clientWidth + 1) continue;
       if (!allowed(el, "clipped-text")) findings.push({ check: "clipped-text", element: describe(el), detail: `${el.scrollWidth}px of text in ${el.clientWidth}px` });
+    }
+  }
+
+  // The text200 phone captures exercise the six audited layouts plus the
+  // Android action row, tab bar, and Ribbon. Keep each target inside the
+  // viewport and verify its rendered text remains inside its own box.
+  if (args.text200Phone) {
+    const targets = [
+      "[data-route-line]",
+      '[data-testid="voice-note-receipt"]',
+      '[data-testid="recorder-island"]',
+      '[data-testid="chat-header"]',
+      '[data-testid="connector-row"]',
+      'button[role="switch"][aria-label="Enable Conversation Canvas"]',
+      '[data-testid="capture-actions"]',
+      '[data-testid="tab-bar"]',
+      '[data-testid="ribbon"]',
+    ];
+    for (const selector of targets) {
+      for (const el of document.querySelectorAll(selector)) {
+        const bounds = el.getBoundingClientRect();
+        const name = `${selector} (${Math.round(bounds.width)}x${Math.round(bounds.height)} at ${Math.round(bounds.left)},${Math.round(bounds.top)})`;
+        if (bounds.left < -1 || bounds.right > window.innerWidth + 1) {
+          findings.push({ check: "text200-bounds", element: name, detail: "component extends beyond the phone width" });
+        }
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          if (!node.textContent?.trim()) continue;
+          if (node.parentElement?.closest(".sr-only,[aria-hidden=true]")) continue;
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          const textBounds = range.getBoundingClientRect();
+          if (textBounds.width === 0 || textBounds.height === 0) continue;
+          if (textBounds.left < bounds.left - 1 || textBounds.right > bounds.right + 1) {
+            findings.push({ check: "text200-text-bounds", element: name, detail: `${node.textContent!.trim().slice(0, 48)} at ${Math.round(textBounds.left)},${Math.round(textBounds.top)} exceeds component width` });
+            break;
+          }
+        }
+      }
+    }
+    if (document.querySelector('[data-testid="ribbon"]')) {
+      for (const scroller of document.querySelectorAll<HTMLElement>("[data-scroll-root], .dch-scroll")) {
+        const paddingBottom = Number.parseFloat(getComputedStyle(scroller).paddingBottom);
+        if (paddingBottom < 64) {
+          findings.push({ check: "ribbon-scroll-padding", element: describe(scroller), detail: `${paddingBottom}px below a floating Ribbon` });
+        }
+      }
     }
   }
   return findings;
@@ -347,6 +394,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 touch: viewport.hasTouch ?? false,
                 zoom: viewport.zoom ?? false,
                 displayTitle: screen.displayTitle ?? false,
+                text200Phone: viewport.id === "text200-phone",
                 allow,
               });
               // The native Capture home must finish recorder setup; generic layout checks missed a missing Record button.

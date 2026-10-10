@@ -586,14 +586,14 @@ const ConnectorRow: FC<{
   const Icon = d.icon ?? PlugIcon;
 
   return (
-    <div className={containerCls} {...groupProps}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 items-start gap-2">
+    <div className={containerCls} data-testid="connector-row" {...groupProps}>
+      <div className="flex flex-col items-start gap-3 sm:flex-row sm:flex-wrap sm:justify-between">
+        <div className="flex w-full min-w-0 items-start gap-2 sm:flex-1 sm:w-auto">
           <Icon
             className={`mt-0.5 size-4 shrink-0 text-muted-foreground${comingSoon ? " opacity-50" : ""}`}
             aria-hidden
           />
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <span className="text-sm font-medium text-foreground">{d.name}</span>
             <p className="mt-0.5 text-xs text-muted-foreground">{d.description}</p>
             {status && (
@@ -608,7 +608,7 @@ const ConnectorRow: FC<{
           </div>
         </div>
         {!comingSoon && (
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex w-full shrink-0 items-center justify-end gap-2 sm:w-auto">
             {/* Withhold the action area until the persisted connection row has
                 loaded — avoids flashing "Connect" for an already-connected
                 connector before the SQL query resolves. */}

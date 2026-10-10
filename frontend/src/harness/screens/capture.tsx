@@ -267,6 +267,7 @@ const PHONE_VIEWPORTS = ["phone", "phone-small"];
 
 export const captureSoftScreens: HarnessScreen[] = [
   { ...SOFT, id: "capture-soft-notes", render: () => <SoftHome /> },
+  { ...SOFT, platform: "android", id: "capture-soft-android-text200", render: () => <SoftHome /> },
   {
     ...SOFT,
     id: "capture-soft-long-titles",

@@ -238,7 +238,7 @@ export function SettingsPage({
           {conversationCanvas.eligible && (
             <SectionCard icon={DatabaseIcon} title="Experimental Features">
               <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center">
+                <div className="flex min-w-0 flex-1 items-center">
                   <p className="text-sm font-medium">Conversation Canvas</p>
                   <InfoTip label="About Conversation Canvas" className="-my-3 fine:-my-1">
                     Explore branches and pin immutable Markdown context in a visual chat.

@@ -120,6 +120,16 @@ function newChatAfterOpeningSavedThread() {
 }
 
 const SHELL = { group: "shell", layout: "pane", displayTitle: true } as const;
+const RIBBON_RECORDING: Partial<RecorderValue> = {
+  available: true,
+  ready: true,
+  phase: "recording",
+  mic: { state: "recording", reason: null },
+  startedAt: Date.now() - 12 * 60_000,
+  audioMs: 12 * 60_000,
+  elapsedMs: 12 * 60_000,
+  sheetOpen: false,
+};
 
 export const shellScreens: HarnessScreen[] = [
   {
@@ -243,6 +253,13 @@ export const shellScreens: HarnessScreen[] = [
     path: "/chat/connectors",
     platform: "ios",
     render: () => <Shell />,
+  },
+  {
+    ...SHELL,
+    id: "shell-connectors-ribbon",
+    path: "/chat/connectors",
+    platform: "android",
+    render: () => <Shell recorder={RIBBON_RECORDING} />,
   },
   {
     ...SHELL,

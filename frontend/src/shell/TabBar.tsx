@@ -28,7 +28,7 @@ export function TabBar({ items, current, replace, onReselect }: NavProps) {
       data-testid="tab-bar"
       className="border-t border-border/70 bg-chrome pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] [html[data-keyboard=open]_&]:hidden"
     >
-      <ul className="mx-auto grid h-14 max-w-md grid-cols-3">
+      <ul className="mx-auto grid min-h-14 max-w-md grid-cols-3">
         {items.map((item) => {
           const active = item.id === current;
           const Icon = item.icon;
