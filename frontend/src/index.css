@@ -2,17 +2,6 @@
 @tailwind components;
 @tailwind utilities;
 
-/* A minimized recorder occupies the final 64 px of its shell; leave that
-   area clear when a rail screen uses a floating Ribbon over its scroller. */
-html[data-island] {
-  --ribbon-h: 64px;
-}
-
-[data-scroll-root],
-.dch-scroll {
-  padding-bottom: max(var(--ribbon-h, 0px), env(safe-area-inset-bottom));
-}
-
 /* Literata, for display roles only (font-display), vendored from
    @fontsource-variable/literata 5.3.0: latin and latin-ext, each with the opsz
    (7-72) and wght (200-900) axes. Licence: public/fonts/literata/OFL.txt. Other

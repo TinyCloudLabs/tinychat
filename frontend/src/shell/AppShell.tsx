@@ -129,7 +129,7 @@ export function AppShellView({
       <main
         ref={mainRef}
         className={cn(
-          "relative row-start-1 min-h-0 min-w-0 pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]",
+          "relative row-start-1 min-h-0 min-w-0 overflow-hidden pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]",
           beside ? "col-start-2" : "col-start-1 pl-[env(safe-area-inset-left)]",
         )}
       >

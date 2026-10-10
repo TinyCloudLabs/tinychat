@@ -386,11 +386,12 @@ button.soft-row:focus-visible {
 }
 
 .soft-actions {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 7rem), 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 .soft-act {
+  flex: 1 1 calc((100% - 16px) / 3.3);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -403,7 +404,7 @@ button.soft-row:focus-visible {
   box-shadow: inset 0 0 0 1px var(--gedge);
   color: var(--ink);
   font: inherit;
-  font-size: 13.5px;
+  font-size: 0.84375rem;
   font-weight: 700;
   transition: transform 0.2s cubic-bezier(0.3, 1.7, 0.4, 1);
   -webkit-tap-highlight-color: transparent;
@@ -415,20 +416,11 @@ button.soft-row:focus-visible {
   opacity: 0.6;
 }
 .soft-act-main {
+  flex-basis: calc((100% - 16px) * 1.3 / 3.3);
+  flex-grow: 1.3;
   background: var(--ink);
   box-shadow: none;
   color: var(--bgc);
-}
-/* On narrow phones each action gets its own row instead of clipping its label. */
-@media (max-width: 359px) {
-  .soft-actions {
-    grid-template-columns: 1fr;
-    gap: 6px;
-  }
-  .soft-act {
-    gap: 6px;
-    padding: 0 8px;
-  }
 }
 @media (prefers-reduced-motion: reduce) {
   .soft-act {

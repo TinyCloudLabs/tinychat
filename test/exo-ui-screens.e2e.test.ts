@@ -146,7 +146,7 @@ function ignoredConsoleError(message: ConsoleMessage): boolean {
 }
 
 // Runs in the page: the automated checks of plan §8.2 (TC-761).
-function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: boolean; displayTitle: boolean; text200Phone: boolean; allow: Array<{ selector: string; check: string }> }) {
+function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: boolean; displayTitle: boolean; largeText: boolean; normalCaptureRow: boolean; allow: Array<{ selector: string; check: string }> }) {
   const findings: Array<{ check: string; element?: string; detail: string }> = [];
   const allowed = (el: Element, check: string) => args.allow.some((entry) => entry.check === check && el.matches(entry.selector));
   const describe = (el: Element) => {
@@ -219,10 +219,11 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
     }
   }
 
-  // The text200 phone captures exercise the six audited layouts plus the
+  // Large-text phone captures exercise the six audited layouts plus the
   // Android action row, tab bar, and Ribbon. Keep each target inside the
-  // viewport and verify its rendered text remains inside its own box.
-  if (args.text200Phone) {
+  // viewport, check sibling line boxes for collisions, and reject line-by-letter
+  // wrapping that technically stays inside the component.
+  if (args.largeText) {
     const targets = [
       "[data-route-line]",
       '[data-testid="voice-note-receipt"]',
@@ -233,6 +234,10 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
       '[data-testid="capture-actions"]',
       '[data-testid="tab-bar"]',
       '[data-testid="ribbon"]',
+      '[data-testid="voice-note-recorder"] main',
+      '[data-recorder-timer]',
+      '[data-testid="canvas-setting-row"]',
+      '[data-testid="autojoin-control-row"]',
     ];
     for (const selector of targets) {
       for (const el of document.querySelectorAll(selector)) {
@@ -241,27 +246,87 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
         if (bounds.left < -1 || bounds.right > window.innerWidth + 1) {
           findings.push({ check: "text200-bounds", element: name, detail: "component extends beyond the phone width" });
         }
+        const textRects: Array<{ parent: Element; rect: DOMRect; text: string }> = [];
         const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
         for (let node = walker.nextNode(); node; node = walker.nextNode()) {
           if (!node.textContent?.trim()) continue;
           if (node.parentElement?.closest(".sr-only,[aria-hidden=true]")) continue;
           const range = document.createRange();
           range.selectNodeContents(node);
-          const textBounds = range.getBoundingClientRect();
-          if (textBounds.width === 0 || textBounds.height === 0) continue;
-          if (textBounds.left < bounds.left - 1 || textBounds.right > bounds.right + 1) {
-            findings.push({ check: "text200-text-bounds", element: name, detail: `${node.textContent!.trim().slice(0, 48)} at ${Math.round(textBounds.left)},${Math.round(textBounds.top)} exceeds component width` });
-            break;
+          const rects = [...range.getClientRects()].filter((rect) => rect.width > 0 && rect.height > 0);
+          const text = node.textContent!.trim();
+          for (const rect of rects) {
+            if (rect.left < bounds.left - 1 || rect.right > bounds.right + 1) {
+              findings.push({ check: "text200-text-bounds", element: name, detail: `${text.slice(0, 48)} at ${Math.round(rect.left)},${Math.round(rect.top)} exceeds component width` });
+              break;
+            }
+            textRects.push({ parent: node.parentElement!, rect, text });
+          }
+          const wordCount = text.split(/\s+/).filter(Boolean).length;
+          const longestWord = Math.max(1, ...text.split(/\s+/).map((word) => word.length));
+          const maxReasonableLines = wordCount + Math.max(1, Math.ceil(longestWord / 5));
+          if (rects.length > maxReasonableLines || getComputedStyle(node.parentElement!).wordBreak === "break-all") {
+            findings.push({ check: "text200-letter-wrap", element: name, detail: `"${text.slice(0, 48)}" occupies ${rects.length} lines for ${wordCount} word(s)` });
+          }
+        }
+        for (let i = 0; i < textRects.length; i++) {
+          const a = textRects[i]!;
+          for (const b of textRects.slice(i + 1)) {
+            if (a.parent === b.parent || a.parent.contains(b.parent) || b.parent.contains(a.parent)) continue;
+            const intersects = a.rect.left < b.rect.right - 1 && a.rect.right > b.rect.left + 1 && a.rect.top < b.rect.bottom - 1 && a.rect.bottom > b.rect.top + 1;
+            if (intersects) findings.push({ check: "text200-sibling-overlap", element: name, detail: `"${a.text.slice(0, 30)}" overlaps "${b.text.slice(0, 30)}"` });
           }
         }
       }
     }
+    const timer = document.querySelector('[data-recorder-timer]')?.getBoundingClientRect();
+    const receipt = document.querySelector('[data-testid="voice-note-receipt"]')?.getBoundingClientRect();
+    if (timer && receipt && receipt.top < timer.bottom - 1) {
+      findings.push({ check: "text200-receipt-timer", detail: `receipt top ${Math.round(receipt.top)} is above timer bottom ${Math.round(timer.bottom)}` });
+    }
+    const chatTitle = document.querySelector<HTMLElement>('[data-testid="chat-header"] h1');
+    if (chatTitle) {
+      const previous = chatTitle.textContent;
+      chatTitle.textContent = "https://example.com/a/very/long/unbroken/chat-title-that-must-wrap-at-large-text-size";
+      const titleBounds = chatTitle.getBoundingClientRect();
+      if (chatTitle.scrollWidth > chatTitle.clientWidth + 1 || titleBounds.right > window.innerWidth + 1) {
+        findings.push({ check: "text200-chat-url", element: describe(chatTitle), detail: "long URL title overflows its available width" });
+      }
+      chatTitle.textContent = previous;
+    }
     if (document.querySelector('[data-testid="ribbon"]')) {
+      const ribbon = document.querySelector('[data-testid="ribbon"]')!.getBoundingClientRect();
       for (const scroller of document.querySelectorAll<HTMLElement>("[data-scroll-root], .dch-scroll")) {
-        const paddingBottom = Number.parseFloat(getComputedStyle(scroller).paddingBottom);
-        if (paddingBottom < 64) {
-          findings.push({ check: "ribbon-scroll-padding", element: describe(scroller), detail: `${paddingBottom}px below a floating Ribbon` });
+        const initialTop = scroller.scrollTop;
+        scroller.scrollTop = scroller.scrollHeight;
+        const walker = document.createTreeWalker(scroller, NodeFilter.SHOW_TEXT);
+        let lastTextRect: DOMRect | null = null;
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          if (!node.textContent?.trim() || node.parentElement?.closest(".sr-only,[aria-hidden=true]")) continue;
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          for (const rect of range.getClientRects()) {
+            if (rect.width > 0 && rect.height > 0 && (!lastTextRect || rect.bottom > lastTextRect.bottom)) lastTextRect = rect;
+          }
         }
+        if (lastTextRect && lastTextRect.bottom > ribbon.top + 1) {
+          findings.push({ check: "ribbon-occlusion", element: describe(scroller), detail: `last content bottom ${Math.round(lastTextRect.bottom)} is below Ribbon top ${Math.round(ribbon.top)} at scroll end` });
+        }
+        scroller.scrollTop = initialTop;
+      }
+    }
+  }
+
+  if (args.normalCaptureRow) {
+    const actions = document.querySelector('[data-testid="capture-actions"]');
+    const upload = actions?.querySelector('[data-testid="capture-upload"]')?.getBoundingClientRect();
+    const recorder = actions?.querySelector('[data-testid="voice-note-record"]')?.getBoundingClientRect();
+    const meeting = actions?.querySelector('[data-testid="capture-meeting"]')?.getBoundingClientRect();
+    if (upload && recorder && meeting) {
+      const uploadRatio = recorder.width / upload.width;
+      const meetingRatio = recorder.width / meeting.width;
+      if (Math.abs(uploadRatio - 1.3) > 0.04 || Math.abs(meetingRatio - 1.3) > 0.04) {
+        findings.push({ check: "capture-normal-emphasis", detail: `Recorder width ratios are ${uploadRatio.toFixed(2)}× Upload and ${meetingRatio.toFixed(2)}× Meeting; expected 1.30×` });
       }
     }
   }
@@ -369,9 +434,9 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 viewport.screenPrefixes &&
                 !viewport.screenPrefixes.some((prefix) => screen.id.startsWith(prefix))
               ) continue;
+              if (viewport.textScale !== undefined && viewport.textScale !== 2 && screen.platform !== "ios") continue;
               if (screen.viewports && !screen.viewports.includes(viewport.id)) continue;
               if (screen.minViewportWidth !== undefined && viewport.width < screen.minViewportWidth) continue;
-              if (viewport.textScale !== undefined && viewport.textScale !== 2 && screen.platform !== "ios") continue;
               const page = await context.newPage();
               const errors: string[] = [];
               page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
@@ -394,7 +459,8 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 touch: viewport.hasTouch ?? false,
                 zoom: viewport.zoom ?? false,
                 displayTitle: screen.displayTitle ?? false,
-                text200Phone: viewport.id === "text200-phone",
+                largeText: (viewport.textScale ?? 1) >= 2,
+                normalCaptureRow: viewport.id === "phone",
                 allow,
               });
               // The native Capture home must finish recorder setup; generic layout checks missed a missing Record button.

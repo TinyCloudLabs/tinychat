@@ -74,7 +74,7 @@ export function RouteLine(props: { nodes: readonly RouteNode[]; landed?: boolean
               <Node kind={node.kind} landed={landed && last} />
               {!last && <span className="mx-1.5 h-[1.5px] flex-1 rounded-full bg-muted-foreground/40" />}
             </span>
-            <span className="min-w-0 text-xs text-muted-foreground [overflow-wrap:break-word]">
+            <span className="min-w-0 text-meta text-muted-foreground [overflow-wrap:break-word]">
               {node.label}
               {landed && last && <span className="sr-only"> (saved)</span>}
             </span>

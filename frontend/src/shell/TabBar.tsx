@@ -33,7 +33,7 @@ export function TabBar({ items, current, replace, onReselect }: NavProps) {
           const active = item.id === current;
           const Icon = item.icon;
           return (
-            <li key={item.id} className="flex">
+              <li key={item.id} className="flex min-w-0">
               <Link
                 to={tabTarget(item.id, active)}
                 replace={replace}
@@ -44,7 +44,7 @@ export function TabBar({ items, current, replace, onReselect }: NavProps) {
                   event.preventDefault();
                   onReselect(item.id);
                 }}
-                className="tap-transparent group flex flex-1 flex-col items-center justify-center gap-1"
+                className="tap-transparent group flex min-w-0 flex-1 flex-col items-center justify-center gap-1"
               >
                 <span
                   className={cn(
@@ -55,7 +55,7 @@ export function TabBar({ items, current, replace, onReselect }: NavProps) {
                   <Icon aria-hidden className={cn("size-6", active ? "text-foreground [stroke-width:2.25]" : "text-muted-foreground")} />
                   <NavBadge count={item.badge} className="-right-1 -top-1" />
                 </span>
-                <span className={cn("text-label", active ? "font-semibold text-foreground" : "font-medium text-muted-foreground")}>
+                <span className={cn("min-w-0 text-center [overflow-wrap:anywhere] text-label", active ? "font-semibold text-foreground" : "font-medium text-muted-foreground")}>
                   {item.label}
                 </span>
               </Link>

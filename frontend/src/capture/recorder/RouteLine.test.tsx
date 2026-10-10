@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { RouteLine, voiceNoteRoute } from "./RouteLine";
 
-const items = (html: string) => [...html.matchAll(/<li[^>]*data-node="([^"]+)"[^>]*>.*?<span class="[^"]*text-xs[^"]*">([^<]+)/g)].map((m) => [m[1], m[2]]);
+const items = (html: string) => [...html.matchAll(/<li[^>]*data-node="([^"]+)"[^>]*>.*?<span class="[^"]*text-meta[^"]*">([^<]+)/g)].map((m) => [m[1], m[2]]);
 
 describe("RouteLine", () => {
   test("an ordered list named for what it shows", () => {
