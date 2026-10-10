@@ -8,6 +8,7 @@ import {
   useEffect,
   useId,
   useRef,
+  useState,
   type KeyboardEvent,
   type ReactNode,
 } from "react";
@@ -47,9 +48,11 @@ function Notes({
   screen,
   layout,
   loadAudio,
+  toolbarHost,
   editButton,
   cancelButton,
 }: Pick<SavedNoteViewProps, "screen" | "layout" | "loadAudio"> & {
+  toolbarHost: HTMLElement | null | undefined;
   editButton: React.RefObject<HTMLButtonElement | null>;
   cancelButton: React.RefObject<HTMLButtonElement | null>;
 }) {
@@ -62,7 +65,7 @@ function Notes({
     wasEditing.current = editing;
   }, [editing, editButton]);
 
-  // On the phone sheet the writer comes into view when Edit opens, so its sticky formatting bar has the field to sit under.
+  // On the phone sheet the writer comes into view when Edit opens.
   const showWriter = useCallback(
     (element: HTMLElement | null) => {
       if (layout === "sheet") element?.scrollIntoView({ block: "start" });
@@ -186,6 +189,7 @@ function Notes({
               autoFocus
               disabled={note.saving}
               label={COPY.noteField}
+              toolbarHost={toolbarHost}
             />
             {layout === "page" && <p className="sn-hint">{COPY.shortcuts}</p>}
           </div>
@@ -227,14 +231,18 @@ const useRefs = (): Refs => ({
   cancelButton: useRef<HTMLButtonElement>(null),
 });
 
-function Body(props: SavedNoteViewProps & Refs) {
-  const { editButton, cancelButton } = props;
+function Body(
+  props: SavedNoteViewProps &
+    Refs & { toolbarHost: HTMLElement | null | undefined },
+) {
+  const { editButton, cancelButton, toolbarHost } = props;
   const { screen, layout, loadAudio, id } = props;
   const notes = (
     <Notes
       screen={screen}
       layout={layout}
       loadAudio={loadAudio}
+      toolbarHost={toolbarHost}
       editButton={editButton}
       cancelButton={cancelButton}
     />
@@ -345,7 +353,7 @@ export function SavedNotePage(props: SavedNoteViewProps) {
           {props.title}
         </h1>
         <p className="sn-meta">{props.meta}</p>
-        <Body {...props} {...refs} />
+        <Body {...props} {...refs} toolbarHost={undefined} />
       </div>
       <Confirm {...props} {...refs} />
     </div>
@@ -362,6 +370,7 @@ export function SavedNoteSheet(props: SavedNoteViewProps) {
   const confirming = screen.draft.confirming !== null;
   const keyboardInset = useKeyboardInset();
   const lifted = screen.editing && keyboardInset > 0;
+  const [toolbarHost, setToolbarHost] = useState<HTMLElement | null>(null);
   return (
     <Dialog.Root open onOpenChange={(open) => !open && close()}>
       <Dialog.Portal>
@@ -387,23 +396,30 @@ export function SavedNoteSheet(props: SavedNoteViewProps) {
             if (screen.editing) event.preventDefault();
           }}
         >
-          <div className="sn-sheet-body" inert={confirming}>
-            <div className="sn-sheet-head">
-              <Dialog.Title
-                className="soft-title sn-title"
-                data-testid="note-detail"
-              >
-                {props.title}
-              </Dialog.Title>
-              <Dialog.Close className="sn-x" aria-label={COPY.close}>
-                <span aria-hidden="true">✕</span>
-              </Dialog.Close>
+          <div className="sn-sheet-scroll">
+            <div className="sn-sheet-body" inert={confirming}>
+              <div className="sn-sheet-head">
+                <Dialog.Title
+                  className="soft-title sn-title"
+                  data-testid="note-detail"
+                >
+                  {props.title}
+                </Dialog.Title>
+                <Dialog.Close className="sn-x" aria-label={COPY.close}>
+                  <span aria-hidden="true">✕</span>
+                </Dialog.Close>
+              </div>
+              <Dialog.Description className="sn-meta">
+                {props.meta}
+              </Dialog.Description>
+              <Body {...props} {...refs} toolbarHost={toolbarHost} />
             </div>
-            <Dialog.Description className="sn-meta">
-              {props.meta}
-            </Dialog.Description>
-            <Body {...props} {...refs} />
           </div>
+          <div
+            ref={setToolbarHost}
+            className="sn-sheet-foot"
+            inert={confirming}
+          />
           <Confirm {...props} {...refs} />
         </Dialog.Content>
       </Dialog.Portal>

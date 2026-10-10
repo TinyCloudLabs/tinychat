@@ -216,22 +216,41 @@ describe.serial(`recorder-final saved note, ${engineName}`, () => {
     { width: 390, height: 480 },
     { width: 320, height: 380 },
   ]) {
-    test(`sheet ${size.width}x${size.height}: the formatting bar stays inside the visible sheet in Edit mode, also after scrolling to the end`, async () => {
+    test(`sheet ${size.width}x${size.height}: the formatting bar stays inside the visible sheet and off the field in Edit mode, at the top, middle and end of the scroll`, async () => {
       const { page, errors } = await open({ ...SHEET, ...size });
       await shown(rendered(page));
       await button(page, "Edit").click();
       await shown(field(page));
-      const bar = page.locator(".sn-sheet .nt-wtools");
-      const within = () =>
+      await shown(page.locator(".sn-sheet .nt-wtools"));
+      const check = () =>
         page.evaluate(() => {
-          const sheet = document.querySelector(".sn-sheet")!.getBoundingClientRect();
-          const bar = document.querySelector(".sn-sheet .nt-wtools")!.getBoundingClientRect();
-          return bar.top >= sheet.top && bar.bottom <= sheet.bottom + 0.5;
+          const rect = (selector: string) =>
+            document.querySelector(selector)!.getBoundingClientRect();
+          const sheet = rect(".sn-sheet");
+          const scroll = rect(".sn-sheet-scroll");
+          const bar = rect(".sn-sheet .nt-wtools");
+          const field = rect(".sn-sheet .nt-wta");
+          // The part of the field the scrolling body shows.
+          const top = Math.max(field.top, scroll.top);
+          const bottom = Math.min(field.bottom, scroll.bottom);
+          return {
+            inSheet:
+              bar.top >= sheet.top - 0.5 &&
+              bar.bottom <= sheet.bottom + 0.5 &&
+              bar.left >= sheet.left - 0.5 &&
+              bar.right <= sheet.right + 0.5,
+            overField: bottom > top && bar.top < bottom && bar.bottom > top,
+          };
         });
-      await shown(bar);
-      expect(await within()).toBe(true);
-      await page.locator(".sn-sheet").evaluate((el) => (el.scrollTop = el.scrollHeight));
-      expect(await within()).toBe(true);
+      const scrollTo = (at: "top" | "middle" | "end") =>
+        page.locator(".sn-sheet-scroll").evaluate((el, where) => {
+          const room = el.scrollHeight - el.clientHeight;
+          el.scrollTop = where === "top" ? 0 : where === "middle" ? room / 2 : room;
+        }, at);
+      for (const at of ["top", "middle", "end"] as const) {
+        await scrollTo(at);
+        expect({ at, ...(await check()) }).toEqual({ at, inSheet: true, overField: false });
+      }
       expect(errors).toEqual([]);
     });
   }
