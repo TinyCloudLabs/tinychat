@@ -180,4 +180,14 @@ export const shellScreens: HarnessScreen[] = [
     platform: "ios",
     render: () => <Shell state="offline" />,
   },
+  // The build line (TC-840) at the bottom of Settings — and, from 1024 px, at
+  // the sidebar's foot beside it.
+  {
+    ...SHELL,
+    id: "shell-settings-build-info",
+    path: "/chat/settings",
+    platform: "ios",
+    scrollTo: '[data-surface="settings"] [data-testid="build-info"]',
+    render: () => <Shell />,
+  },
 ];

@@ -3,7 +3,8 @@ import { describe, expect, test } from "bun:test";
 
 import { createChatModelAdapter, type AdapterDeps } from "../../chat/chatModelAdapter";
 import { createMeetingMessageRegistry } from "../../chat/pendingHandoff";
-import { CONNECTORS_KV_PREFIX, meetingKvKey, transcriptKvKey } from "../connectors/connectorStore";
+import { CONNECTORS_KV_PREFIX, CONNECTORS_SQL_DB_NAME, meetingKvKey, transcriptKvKey } from "../connectors/connectorStore";
+import { voiceNoteTranscriptLocator } from "../voiceNotes/voiceNoteCommits";
 import { readTranscript } from "../connectors/meetingExplorer";
 import { LOCAL_MEETING_SOURCE, prepareLocalTranscript, saveLocalTranscript } from "../localTranscriber";
 import {
@@ -66,7 +67,7 @@ function seededRetriever(seed: Seed) {
         db: () => ({
           query: (query: string): Promise<SqlReply> => serial(
             query.includes("WHERE id = ?") ? "sql:evidence" : "sql:discovery",
-            seed.sqlError === undefined
+            query.includes("sqlite_schema") ? { ok: true, data: { rows: [] } } : seed.sqlError === undefined
               ? { ok: true, data: { rows: query.includes("WHERE id = ?") ? (seed.sqlEvidenceRows ?? []) : (seed.sqlRows ?? []) } }
               : { ok: false, error: seed.sqlError },
           ),
@@ -245,7 +246,7 @@ describe("transcribed voice notes in meeting chat and Library", () => {
       ],
       text: "Speaker 1: VOICE_NOTE_CANARY remember to book the venue.\nSpeaker 1: And send the budget to Avery.",
     };
-    const saved = await saveVoiceNoteTranscript(space as never, "rec-voice-1", prepareVoiceNoteTranscript(transcript, NOW));
+    const saved = await saveVoiceNoteTranscript(space as never, "rec-voice-1", prepareVoiceNoteTranscript(transcript, NOW, 1));
     expect(saved.ok).toBe(true);
 
     // Library: the note's transcript key holds the sentences; the row keeps its title and gains the text.
@@ -279,6 +280,22 @@ describe("transcribed voice notes in meeting chat and Library", () => {
       meeting: expect.objectContaining({ source: VOICE_NOTE_SOURCE, sourceId: "rec-voice-1" }),
       systemMessage: expect.stringContaining("VOICE_NOTE_CANARY"),
     }));
+    // A pre-upgrade device can still rewrite the row and fixed key after the
+    // phone's local copy is gone. The commit table and versioned body win.
+    await space.sql.db(CONNECTORS_SQL_DB_NAME).execute(
+      "UPDATE connector_meeting SET metadata = ? WHERE source_id = ?",
+      [JSON.stringify({ transcription_outcome: "no_speech" }), "rec-voice-1"]);
+    await space.kv.put(transcriptKvKey(VOICE_NOTE_SOURCE, "rec-voice-1"),
+      JSON.stringify([{ index: 0, text: "STALE_WORDS", speaker_name: "You", start_time: 0, end_time: 1 }]));
+    const locator = await voiceNoteTranscriptLocator(space as never, "rec-voice-1");
+    expect(locator.committed).toBe(true);
+    expect((await readTranscript(space as never, VOICE_NOTE_SOURCE, "rec-voice-1", locator.bodyKey!)).status).toBe("ok");
+    const afterLegacy = await listVoiceNotes(space as never);
+    expect(afterLegacy.ok && afterLegacy.data[0]?.transcript.status).toBe("transcribed");
+    const again = await retriever.retrieve({ threadId: "voice-late", question: "What did you say in the latest meeting?" });
+    expect(again.status).toBe("grounded");
+    expect(again.status === "grounded" && again.systemMessage).toContain("VOICE_NOTE_CANARY");
+    expect(again.status === "grounded" && again.systemMessage).not.toContain("STALE_WORDS");
   });
 });
 
@@ -332,6 +349,7 @@ describe("untranscribed voice notes are not meetings", () => {
     await localMeeting(space);
     await saveVoiceNote(space as never, voiceNote("rec-silent", "2026-08-24T11:00:00.000Z"), voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "ios");
     await saveVoiceNoteTranscript(space as never, "rec-silent", {
+      rev: 1,
       sentences: [],
       speakers: [],
       metadata: { transcription_engine: "private-cloud", transcript_text: null, transcription_outcome: "no_speech" },
@@ -346,7 +364,7 @@ describe("untranscribed voice notes are not meetings", () => {
       model: "m",
       language: "en",
       provider: "tinfoil",
-    }, NOW));
+    }, NOW, 1));
     const after = await retrieve(space, "summarize my latest meeting");
     expect(after).toEqual(expect.objectContaining({
       status: "grounded",

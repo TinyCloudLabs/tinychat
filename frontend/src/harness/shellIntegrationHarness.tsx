@@ -11,6 +11,8 @@ import { BrowserRouter, useLocation, useNavigate } from "react-router-dom";
 import type { AppState } from "@/lib/appState";
 import { initSizeClass } from "@/lib/sizeClass";
 import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { __setOnDeviceSttForTests } from "@/lib/voiceNotes/onDeviceStt";
+import { createFakeOnDeviceStt } from "@/lib/voiceNotes/fakeOnDeviceStt";
 import { screenFor } from "@/shell/routes";
 import { useBack } from "@/shell/useAndroidBack";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
@@ -35,8 +37,19 @@ declare global {
 }
 
 initSizeClass();
-const fake = createFakeVoiceNotes();
+const params = new URLSearchParams(window.location.search);
+// ?nativeReadDelayMs=2500 on the page URL delays listPending/localAudioUrl that long, for tests
+// of the receipt's display-clock gating (TC-781) that an instant fake can't establish the timing
+// of. ?unownedNotes=1 reports every committed note as unowned, regardless of the harness's always
+// signed-in account (RecorderProvider here uses harnessTcw, not captureTcw below, and
+// harnessTcw's SQL stub can never satisfy the voice-note-identity schema check those tests would
+// otherwise race against): native holds an unowned note rather than attempting to save it, so
+// outcome stays "local" long enough to actually observe the display clock.
+const nativeReadDelayMs = Number(params.get("nativeReadDelayMs") ?? 0) || 0;
+const unownedNotes = params.get("unownedNotes") === "1";
+const fake = createFakeVoiceNotes({ nativeReadDelayMs, unownedNotes });
 __setVoiceNotesForTests(fake.plugin, { available: true });
+__setOnDeviceSttForTests(createFakeOnDeviceStt().plugin);
 const shim = createRuntimeShim();
 // Capture reads a space with captures in it, so a note can be opened.
 const captureTcw = libraryTcw();

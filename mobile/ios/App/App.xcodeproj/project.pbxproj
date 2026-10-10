@@ -7,25 +7,64 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		219F048CF1F2962F6CFA2223 /* ExoWidgets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32B737338B225E2FD38EB7AF /* ExoWidgets.swift */; };
 		2FAD9763203C412B000D30F8 /* config.xml in Resources */ = {isa = PBXBuildFile; fileRef = 2FAD9762203C412B000D30F8 /* config.xml */; };
 		4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */ = {isa = PBXBuildFile; productRef = 4D22ABE82AF431CB00220026 /* CapApp-SPM */; };
+		E0A1C0DE0000000000000021 /* ExoCapture in Frameworks */ = {isa = PBXBuildFile; productRef = E0A1C0DE0000000000000020 /* ExoCapture */; };
+		E0A1C0DE0000000000000023 /* AppLifecycleHooks.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000022 /* AppLifecycleHooks.swift */; };
+		E0A1C0DE0000000000000025 /* CaptureLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000024 /* CaptureLiveActivity.swift */; };
+		E0A1C0DE0000000000000201 /* OnDeviceSttPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000202 /* OnDeviceSttPlugin.swift */; };
+		E0A1C0DE0000000000000203 /* ExoStt in Frameworks */ = {isa = PBXBuildFile; productRef = E0A1C0DE0000000000000204 /* ExoStt */; };
 		50379B232058CBB4000EE86E /* capacitor.config.json in Resources */ = {isa = PBXBuildFile; fileRef = 50379B222058CBB4000EE86E /* capacitor.config.json */; };
 		504EC3081FED79650016851F /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 504EC3071FED79650016851F /* AppDelegate.swift */; };
 		504EC30D1FED79650016851F /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 504EC30B1FED79650016851F /* Main.storyboard */; };
 		504EC30F1FED79650016851F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 504EC30E1FED79650016851F /* Assets.xcassets */; };
 		504EC3121FED79650016851F /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 504EC3101FED79650016851F /* LaunchScreen.storyboard */; };
 		50B271D11FEDC1A000F3C39B /* public in Resources */ = {isa = PBXBuildFile; fileRef = 50B271D01FEDC1A000F3C39B /* public */; };
+		56695081B0687C0104C03BA6 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 8AF612048C1CC9E937950A64 /* PrivacyInfo.xcprivacy */; };
+		5F4365D8301E77464E17F896 /* RecordingActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3408D1A2610ACC4205CC2929 /* RecordingActivityAttributes.swift */; };
+		6795BE0FABB76795F96286F3 /* RecordingIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C5868305146708FEA086AE9 /* RecordingIntents.swift */; };
+		75D6730AECE62A308199639D /* RecordingActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3408D1A2610ACC4205CC2929 /* RecordingActivityAttributes.swift */; };
 		9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9582B6822FE993A50072D4E8 /* SceneDelegate.swift */; };
+		99A194B921AB5ED9AF18BA9B /* ExoWidgets.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 3D3CB2F6C0C19352C2C98217 /* ExoWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		E0A1C0DE0000000000000002 /* VoiceNotesPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000001 /* VoiceNotesPlugin.swift */; };
 		E0A1C0DE0000000000000004 /* ExoBridgeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000003 /* ExoBridgeViewController.swift */; };
 		E0A1C0DE0000000000000006 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000005 /* PrivacyInfo.xcprivacy */; };
 		E0A1C0DE0000000000000008 /* HealthPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000007 /* HealthPlugin.swift */; };
 		E0A1C0DE0000000000000011 /* LocationRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000010 /* LocationRecorder.swift */; };
 		E0A1C0DE0000000000000013 /* LocationPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000012 /* LocationPlugin.swift */; };
+		F6789E7D9DA4424EFBC3472F /* RecordingIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C5868305146708FEA086AE9 /* RecordingIntents.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		ED8C99EC9083183F02490FFF /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 504EC2FC1FED79650016851F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 882F9FF6BBE8870A5988DF29;
+			remoteInfo = ExoWidgets;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		B5A3EEA2B69C037E99CD2E49 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				99A194B921AB5ED9AF18BA9B /* ExoWidgets.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		2FAD9762203C412B000D30F8 /* config.xml */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = config.xml; sourceTree = "<group>"; };
+		32B737338B225E2FD38EB7AF /* ExoWidgets.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExoWidgets.swift; path = ExoWidgets.swift; sourceTree = "<group>"; };
+		3408D1A2610ACC4205CC2929 /* RecordingActivityAttributes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RecordingActivityAttributes.swift; path = RecordingActivityAttributes.swift; sourceTree = "<group>"; };
+		3D3CB2F6C0C19352C2C98217 /* ExoWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ExoWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		50379B222058CBB4000EE86E /* capacitor.config.json */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.json; path = capacitor.config.json; sourceTree = "<group>"; };
 		504EC3041FED79650016851F /* App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = App.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		504EC3071FED79650016851F /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
@@ -34,9 +73,15 @@
 		504EC3111FED79650016851F /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		504EC3131FED79650016851F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		50B271D01FEDC1A000F3C39B /* public */ = {isa = PBXFileReference; lastKnownFileType = folder; path = public; sourceTree = "<group>"; };
+		6C5868305146708FEA086AE9 /* RecordingIntents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RecordingIntents.swift; path = RecordingIntents.swift; sourceTree = "<group>"; };
+		74049D3C6499927DD5D1C462 /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; name = Info.plist; path = Info.plist; sourceTree = "<group>"; };
+		8AF612048C1CC9E937950A64 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; name = PrivacyInfo.xcprivacy; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		9582B6822FE993A50072D4E8 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
 		958DCC722DB07C7200EA8C5F /* debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = debug.xcconfig; path = ../debug.xcconfig; sourceTree = SOURCE_ROOT; };
 		E0A1C0DE0000000000000001 /* VoiceNotesPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceNotesPlugin.swift; sourceTree = "<group>"; };
+		E0A1C0DE0000000000000022 /* AppLifecycleHooks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLifecycleHooks.swift; sourceTree = "<group>"; };
+		E0A1C0DE0000000000000024 /* CaptureLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureLiveActivity.swift; sourceTree = "<group>"; };
+		E0A1C0DE0000000000000202 /* OnDeviceSttPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnDeviceSttPlugin.swift; sourceTree = "<group>"; };
 		E0A1C0DE0000000000000003 /* ExoBridgeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExoBridgeViewController.swift; sourceTree = "<group>"; };
 		E0A1C0DE0000000000000005 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		E0A1C0DE0000000000000007 /* HealthPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthPlugin.swift; sourceTree = "<group>"; };
@@ -51,6 +96,15 @@
 			buildActionMask = 2147483647;
 			files = (
 				4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */,
+				E0A1C0DE0000000000000021 /* ExoCapture in Frameworks */,
+				E0A1C0DE0000000000000203 /* ExoStt in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		797625C01C8DDCB2DC4B8289 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -63,6 +117,8 @@
 				958DCC722DB07C7200EA8C5F /* debug.xcconfig */,
 				504EC3061FED79650016851F /* App */,
 				504EC3051FED79650016851F /* Products */,
+				8ADDB0A4F3113EB2E15D3ACB /* Shared */,
+				DE1BC60006014B1DBEE3B099 /* ExoWidgets */,
 			);
 			sourceTree = "<group>";
 		};
@@ -70,6 +126,7 @@
 			isa = PBXGroup;
 			children = (
 				504EC3041FED79650016851F /* App.app */,
+				3D3CB2F6C0C19352C2C98217 /* ExoWidgets.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -82,6 +139,9 @@
 				504EC3071FED79650016851F /* AppDelegate.swift */,
 				E0A1C0DE0000000000000003 /* ExoBridgeViewController.swift */,
 				E0A1C0DE0000000000000001 /* VoiceNotesPlugin.swift */,
+				E0A1C0DE0000000000000022 /* AppLifecycleHooks.swift */,
+				E0A1C0DE0000000000000024 /* CaptureLiveActivity.swift */,
+				E0A1C0DE0000000000000202 /* OnDeviceSttPlugin.swift */,
 				E0A1C0DE0000000000000007 /* HealthPlugin.swift */,
 				E0A1C0DE0000000000000010 /* LocationRecorder.swift */,
 				E0A1C0DE0000000000000012 /* LocationPlugin.swift */,
@@ -97,6 +157,27 @@
 			path = App;
 			sourceTree = "<group>";
 		};
+		8ADDB0A4F3113EB2E15D3ACB /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				3408D1A2610ACC4205CC2929 /* RecordingActivityAttributes.swift */,
+				6C5868305146708FEA086AE9 /* RecordingIntents.swift */,
+			);
+			name = Shared;
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		DE1BC60006014B1DBEE3B099 /* ExoWidgets */ = {
+			isa = PBXGroup;
+			children = (
+				32B737338B225E2FD38EB7AF /* ExoWidgets.swift */,
+				74049D3C6499927DD5D1C462 /* Info.plist */,
+				8AF612048C1CC9E937950A64 /* PrivacyInfo.xcprivacy */,
+			);
+			name = ExoWidgets;
+			path = ExoWidgets;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -107,19 +188,40 @@
 				504EC3001FED79650016851F /* Sources */,
 				504EC3011FED79650016851F /* Frameworks */,
 				504EC3021FED79650016851F /* Resources */,
+				B5A3EEA2B69C037E99CD2E49 /* Embed App Extensions */,
 				E0A1C0DE000000000000000C /* Location spike Info.plist (Debug only) */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				E519F66EFE873508184DDA1F /* PBXTargetDependency */,
 			);
 			name = App;
 			packageProductDependencies = (
 				4D22ABE82AF431CB00220026 /* CapApp-SPM */,
+				E0A1C0DE0000000000000020 /* ExoCapture */,
+				E0A1C0DE0000000000000204 /* ExoStt */,
 			);
 			productName = App;
 			productReference = 504EC3041FED79650016851F /* App.app */;
 			productType = "com.apple.product-type.application";
+		};
+		882F9FF6BBE8870A5988DF29 /* ExoWidgets */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2A08415526F5A094DE13BE89 /* Build configuration list for PBXNativeTarget "ExoWidgets" */;
+			buildPhases = (
+				47F2A5012525239EE8896BAE /* Sources */,
+				797625C01C8DDCB2DC4B8289 /* Frameworks */,
+				5BDFAFE8211C6EE4A61B0804 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ExoWidgets;
+			productName = ExoWidgets;
+			productReference = 3D3CB2F6C0C19352C2C98217 /* ExoWidgets.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -135,6 +237,10 @@
 						LastSwiftMigration = 1100;
 						ProvisioningStyle = Automatic;
 					};
+					882F9FF6BBE8870A5988DF29 = {
+						CreatedOnToolsVersion = 16.0;
+						ProvisioningStyle = Automatic;
+					};
 				};
 			};
 			buildConfigurationList = 504EC2FF1FED79650016851F /* Build configuration list for PBXProject "App" */;
@@ -148,12 +254,15 @@
 			mainGroup = 504EC2FB1FED79650016851F;
 			packageReferences = (
 				D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */,
+				E0A1C0DE000000000000001F /* XCLocalSwiftPackageReference "ExoCapture" */,
+				E0A1C0DE0000000000000205 /* XCLocalSwiftPackageReference "ExoStt" */,
 			);
 			productRefGroup = 504EC3051FED79650016851F /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				504EC3031FED79650016851F /* App */,
+				882F9FF6BBE8870A5988DF29 /* ExoWidgets */,
 			);
 		};
 /* End PBXProject section */
@@ -170,6 +279,14 @@
 				504EC30D1FED79650016851F /* Main.storyboard in Resources */,
 				2FAD9763203C412B000D30F8 /* config.xml in Resources */,
 				E0A1C0DE0000000000000006 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5BDFAFE8211C6EE4A61B0804 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				56695081B0687C0104C03BA6 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -201,6 +318,16 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		47F2A5012525239EE8896BAE /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5F4365D8301E77464E17F896 /* RecordingActivityAttributes.swift in Sources */,
+				F6789E7D9DA4424EFBC3472F /* RecordingIntents.swift in Sources */,
+				219F048CF1F2962F6CFA2223 /* ExoWidgets.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		504EC3001FED79650016851F /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -209,13 +336,27 @@
 				9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */,
 				E0A1C0DE0000000000000004 /* ExoBridgeViewController.swift in Sources */,
 				E0A1C0DE0000000000000002 /* VoiceNotesPlugin.swift in Sources */,
+				E0A1C0DE0000000000000023 /* AppLifecycleHooks.swift in Sources */,
+				E0A1C0DE0000000000000025 /* CaptureLiveActivity.swift in Sources */,
+				E0A1C0DE0000000000000201 /* OnDeviceSttPlugin.swift in Sources */,
 				E0A1C0DE0000000000000008 /* HealthPlugin.swift in Sources */,
 				E0A1C0DE0000000000000011 /* LocationRecorder.swift in Sources */,
 				E0A1C0DE0000000000000013 /* LocationPlugin.swift in Sources */,
+				75D6730AECE62A308199639D /* RecordingActivityAttributes.swift in Sources */,
+				6795BE0FABB76795F96286F3 /* RecordingIntents.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		E519F66EFE873508184DDA1F /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = ExoWidgets;
+			target = 882F9FF6BBE8870A5988DF29 /* ExoWidgets */;
+			targetProxy = ED8C99EC9083183F02490FFF /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXVariantGroup section */
 		504EC30B1FED79650016851F /* Main.storyboard */ = {
@@ -237,6 +378,32 @@
 /* End PBXVariantGroup section */
 
 /* Begin XCBuildConfiguration section */
+		4DFB212E43D79E3E662C0521 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ExoWidgets/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(EXO_BUNDLE_ID).widgets";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG EXO_WIDGET_EXTENSION";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
 		504EC3141FED79650016851F /* Debug */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 958DCC722DB07C7200EA8C5F /* debug.xcconfig */;
@@ -272,6 +439,7 @@
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
+				EXO_BUNDLE_ID = xyz.tinycloud.exo;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -286,7 +454,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MTL_ENABLE_DEBUG_INFO = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
@@ -329,6 +497,7 @@
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				EXO_BUNDLE_ID = xyz.tinycloud.exo;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -337,7 +506,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -355,14 +524,14 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				INFOPLIST_FILE = App/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
 				OTHER_SWIFT_FLAGS = "$(inherited) \"-D\" \"COCOAPODS\" \"-DDEBUG\"";
-				PRODUCT_BUNDLE_IDENTIFIER = xyz.tinycloud.exo;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(EXO_BUNDLE_ID)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG EXO_HEALTH";
 				SWIFT_VERSION = 5.0;
@@ -377,13 +546,13 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				INFOPLIST_FILE = App/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = xyz.tinycloud.exo;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(EXO_BUNDLE_ID)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";
 				SWIFT_VERSION = 5.0;
@@ -391,9 +560,45 @@
 			};
 			name = Release;
 		};
+		5D019E9A92ACB203F5E5AD8A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ExoWidgets/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(EXO_BUNDLE_ID).widgets";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = EXO_WIDGET_EXTENSION;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		2A08415526F5A094DE13BE89 /* Build configuration list for PBXNativeTarget "ExoWidgets" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5D019E9A92ACB203F5E5AD8A /* Release */,
+				4DFB212E43D79E3E662C0521 /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		504EC2FF1FED79650016851F /* Build configuration list for PBXProject "App" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -415,6 +620,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
+		E0A1C0DE000000000000001F /* XCLocalSwiftPackageReference "ExoCapture" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "../Packages/ExoCapture";
+		};
+		E0A1C0DE0000000000000205 /* XCLocalSwiftPackageReference "ExoStt" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../Packages/ExoStt;
+		};
 		D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = "CapApp-SPM";
@@ -422,6 +635,16 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		E0A1C0DE0000000000000020 /* ExoCapture */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E0A1C0DE000000000000001F /* XCLocalSwiftPackageReference "ExoCapture" */;
+			productName = ExoCapture;
+		};
+		E0A1C0DE0000000000000204 /* ExoStt */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E0A1C0DE0000000000000205 /* XCLocalSwiftPackageReference "ExoStt" */;
+			productName = ExoStt;
+		};
 		4D22ABE82AF431CB00220026 /* CapApp-SPM */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */;

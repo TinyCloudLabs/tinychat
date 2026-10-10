@@ -4,8 +4,8 @@
 // here from the Voice notes card (TC-761, PR4). Never copy them into another
 // module; a second set would save a recording twice.
 //
-// `pendingStore` is what the recorder views show about recordings still only
-// on this phone: what the phone last listed (unknown, a count, or a listing
+// `pendingStore` is what the recorder views show about recordings awaiting a
+// space save: what the phone last listed (unknown, a count, or a listing
 // that failed), whether a save of them is running, and the last failure.
 // `savePendingRecordings` publishes to it when it starts and ends.
 //
@@ -21,7 +21,10 @@ import {
   type VoiceNoteRecording,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { bytesToBase64, VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS } from "@/lib/voiceNotes/voiceNoteAudio";
+import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { saveVoiceNote, type VoiceNoteAudio, type VoiceNoteAudioSource } from "@/lib/voiceNotes/voiceNoteStore";
+import { assertCurrent, type AccountContext } from "@/lib/voiceNotes/accountContext";
+import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 
 export function messageOf(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -56,15 +59,14 @@ function publishSaveIdle(): void {
   saveIdleListeners.clear();
 }
 /**
- * Recordings this app session saved and removed from the phone: a late "autoStopped"
+ * Recordings this app session saved to the space: a late "autoStopped"
  * event or a pending retry that still lists one must not save it again.
  */
 const savedThisSession = new Set<string>();
 
 /**
- * Recordings in the space whose device copy is not yet removed, kept across reloads
- * (localStorage): a pending run only removes their copy, never saves them again.
- * Marked before the copy is deleted, cleared once it is.
+ * Old bridge-reload marker. It is kept for migration, never used as evidence
+ * that the durable native ledger was updated.
  */
 export const VOICE_NOTE_CLOUD_SAVED_KEY = "exo.voiceNotes.cloudSaved";
 
@@ -144,19 +146,30 @@ export function clearDiscarded(id: string): void {
   if (ids.includes(id)) storeDiscarded(ids.filter((stored) => stored !== id));
 }
 
+const discardDeletes = new Map<string, Promise<string | null>>();
+
 /**
  * Delete a discarded recording's device copy, then forget it (both marks). A
  * failed delete leaves it marked, so the next save that meets it deletes it;
  * the error message when the phone kept it.
  */
 export async function deleteDiscarded(id: string): Promise<string | null> {
+  const existing = discardDeletes.get(id);
+  if (existing) return existing;
+  if (!isDiscarded(id)) return null;
+  const deleting = deleteDiscardedOnce(id).finally(() => discardDeletes.delete(id));
+  discardDeletes.set(id, deleting);
+  return deleting;
+}
+
+async function deleteDiscardedOnce(id: string): Promise<string | null> {
   try {
     await VoiceNotes.deleteAudio({ id });
   } catch (caught) {
     return `Discarded, but this phone kept its copy: ${messageOf(caught)}`;
   }
   clearDiscarded(id);
-  // Saved to the space before it was discarded: its copy is gone now, so that mark goes too.
+  // Saved to the space before it was discarded: the local copy is gone, so that mark goes too.
   if (cloudSaved.delete(id)) {
     persistCloudSaved();
     savedThisSession.add(id);
@@ -165,12 +178,11 @@ export async function deleteDiscarded(id: string): Promise<string | null> {
 }
 
 /**
- * What saving one recording came to. Saving to the space and removing the
- * device copy are separate steps: a note can be in the space while its copy is
- * still on the phone (`cleanupError`), and that copy is never hidden; the
- * pending count is always re-listed from the phone.
+ * What saving one recording came to. Saving to the space retains the local
+ * copy. `cleanupError` reports a native ledger update failure; the next run
+ * still avoids a duplicate upload.
  *  - `saved`: in the space now.
- *  - `already-saved`: saved earlier in this app session; only the device copy was left.
+ *  - `already-saved`: saved earlier; its device copy stays for playback.
  *  - `discarded`: the user discarded it; its device copy was deleted, not saved.
  *  - `in-flight`: another run is saving it right now.
  *  - `failed`: not in the space; it stays on the phone.
@@ -179,6 +191,7 @@ export type SaveOutcome =
   | { kind: "saved"; audio: VoiceNoteAudio | null; cleanupError: string | null }
   | { kind: "already-saved"; cleanupError: string | null }
   | { kind: "discarded"; cleanupError: string | null }
+  | { kind: "held"; reason: "legacy" | "unowned" | "other-account" }
   | { kind: "in-flight" }
   | { kind: "failed"; failure: string };
 
@@ -193,23 +206,8 @@ function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {
 }
 
 /**
- * Remove a saved recording's device copy; the error message when the phone kept it.
- * The durable marker goes only once the copy is gone.
- */
-async function removeDeviceCopy(id: string): Promise<string | null> {
-  try {
-    await VoiceNotes.deleteAudio({ id });
-  } catch (caught) {
-    return `Saved to your space, but this phone kept its copy: ${messageOf(caught)}`;
-  }
-  savedThisSession.add(id);
-  if (cloudSaved.delete(id)) persistCloudSaved();
-  return null;
-}
-
-/**
- * Upload one stopped recording, part by part from the device; the device copy is deleted
- * only after the save is confirmed. A saved note carries its audio when it is short enough
+ * Upload one committed recording, part by part from the device. The device copy
+ * stays for local playback. A saved note carries its audio when it is short enough
  * to transcribe and every part was read in this attempt (handed to transcription, so it is
  * not read back). The in-flight guard matters because upsertMeeting's select-then-insert is
  * not atomic: two concurrent saves of one recording would write two rows.
@@ -223,9 +221,15 @@ export async function saveRecording(
   // Discarded (a pending run, the limit's "autoStopped" or a relaunch met it): deleted, never
   // saved. Before the cloudSaved path, so a discarded note marked as in the space loses both marks.
   if (isDiscarded(recording.id)) return { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) };
-  // In the space, with its copy still on the phone (this session or an earlier one): remove the copy only.
-  if (cloudSaved.has(recording.id)) return { kind: "already-saved", cleanupError: await removeDeviceCopy(recording.id) };
-  // Saved and removed earlier in this session (a late "autoStopped" event).
+  if (isLegacyNote(recording)) return { kind: "held", reason: "legacy" };
+  if (!recording.owner) return { kind: "held", reason: "unowned" };
+  if (recording.owner !== tcw.did) return { kind: "held", reason: "other-account" };
+  if (recording.ledger?.audio.state === "saved") {
+    void syncOnDeviceTranscript(tcw, recording);
+    return { kind: "already-saved", cleanupError: null };
+  }
+  // Old localStorage markers are never authority: a lost marker must be safe,
+  // and a stale marker must not suppress a note whose native ledger is pending.
   if (savedThisSession.has(recording.id)) return { kind: "already-saved", cleanupError: null };
   savesInFlight.add(recording.id);
   try {
@@ -244,16 +248,83 @@ export async function saveRecording(
       : native;
     const saved = await saveVoiceNote(tcw, recording, source, nativePlatform(), { onProgress });
     if (!saved.ok) return { kind: "failed", failure: saved.error.message };
-    // Durable before the copy is deleted: a reload in between, or a delete that fails, never saves it twice.
+    // The device copy remains playable. This old marker is informational;
+    // the indexed row and the native ledger decide idempotence.
     cloudSaved.add(recording.id);
     persistCloudSaved();
-    const cleanupError = await removeDeviceCopy(recording.id);
+    let cleanupError: string | null = null;
+    if (recording.owner) {
+      try {
+        const patch = { audio: { state: "saved" as const, rowId: saved.data.id, at: Date.now() } };
+        try {
+          await VoiceNotes.updateLedger({ id: recording.id, did: recording.owner, rev: recording.rev ?? 0, patch });
+        } catch (caught) {
+          if (errorCode(caught) !== "rev_conflict") throw caught;
+          const fresh = (await VoiceNotes.listPending()).recordings.find((note) => note.id === recording.id);
+          if (!fresh || isLegacyNote(fresh) || fresh.owner !== recording.owner || fresh.rev === undefined) throw caught;
+          if (fresh.ledger?.audio?.state !== "saved") {
+            await VoiceNotes.updateLedger({ id: recording.id, did: recording.owner, rev: fresh.rev, patch });
+          }
+        }
+        savedThisSession.add(recording.id);
+      } catch (caught) {
+        cleanupError = `Saved to your space, but this phone could not update its note status: ${messageOf(caught)}`;
+      }
+      void syncOnDeviceTranscript(tcw, { id: recording.id, ledger: { audio: { state: "saved" } } });
+    }
     const whole = keep && kept.reduce((n, c) => n + c.byteLength, 0) === native.size;
     return {
       kind: "saved",
       audio: whole ? { mimeType: recording.mimeType, base64: bytesToBase64(concatBytes(kept)) } : null,
       cleanupError,
     };
+  } catch (caught) {
+    return { kind: "failed", failure: messageOf(caught) };
+  } finally {
+    savesInFlight.delete(recording.id);
+    publishSaveIdle();
+  }
+}
+
+/** The one owner-aware upload entry point used by the T18 pipeline. */
+export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
+  recording: VoiceNoteRecording, checkpoint: () => void = () => undefined): Promise<SaveOutcome> {
+  const check = () => { assertCurrent(ctx); checkpoint(); };
+  check();
+  if (isDiscarded(recording.id)) return { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) };
+  if (tcw.did !== ctx.did || tcw.spaceId !== ctx.spaceId) return { kind: "held", reason: "other-account" };
+  if (isLegacyNote(recording)) return { kind: "held", reason: "legacy" };
+  if (!recording.owner) return { kind: "held", reason: "unowned" };
+  if (recording.owner !== ctx.did) return { kind: "held", reason: "other-account" };
+  if (recording.ledger?.audio.state === "saved") return { kind: "already-saved", cleanupError: null };
+  if (savesInFlight.has(recording.id)) return { kind: "in-flight" };
+  savesInFlight.add(recording.id);
+  try {
+    const source = nativeRecordingSource(recording);
+    const checkedSource: VoiceNoteAudioSource = { ...source, readPart: async (offset, length) => {
+      check();
+      return source.readPart(offset, length);
+    } };
+    const saved = await saveVoiceNote(tcw, recording, checkedSource, nativePlatform(), { checkpoint: check });
+    if (!saved.ok) return { kind: "failed", failure: saved.error.message };
+    check();
+    const patch = { audio: { state: "saved" as const, rowId: saved.data.id, at: Date.now() } };
+    let fresh = recording;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      check();
+      try {
+        await VoiceNotes.updateLedger({ id: recording.id, did: ctx.did, rev: fresh.rev ?? 0, patch });
+        return { kind: "saved", audio: null, cleanupError: null };
+      } catch (caught) {
+        if (errorCode(caught) !== "rev_conflict") throw caught;
+        check();
+        const current = (await VoiceNotes.listPending()).recordings.find((note) => note.id === recording.id);
+        if (!current || current.owner !== ctx.did || isLegacyNote(current)) throw caught;
+        if (current.ledger?.audio.state === "saved") return { kind: "saved", audio: null, cleanupError: null };
+        fresh = current;
+      }
+    }
+    return { kind: "failed", failure: "Could not update this phone's saved-note status" };
   } catch (caught) {
     return { kind: "failed", failure: messageOf(caught) };
   } finally {
@@ -276,8 +347,7 @@ let pendingRunInFlight: Promise<PendingRun> | null = null;
 /**
  * Retry every recording still on the device, oldest first, one at a time. Single-flight: the
  * recorder and the app's save after sign-in (PendingVoiceNotesSaver) share it. Afterwards the
- * phone is listed again, so the pending count is what is really still there (a saved note
- * whose copy could not be removed included).
+ * phone is listed again and saved copies are excluded from the pending count.
  */
 export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
   if (pendingRunInFlight) return pendingRunInFlight;
@@ -302,6 +372,8 @@ export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
         if (outcome.cleanupError) lastError = outcome.cleanupError;
       } else if (outcome.kind === "already-saved" || outcome.kind === "discarded") {
         if (outcome.cleanupError) lastError = outcome.cleanupError;
+      } else if (outcome.kind === "held") {
+        left.push(recording);
       } else if (outcome.kind === "failed") {
         left.push(recording);
         lastError = outcome.failure;
@@ -320,7 +392,7 @@ export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
 /** What the phone last listed as pending: not yet asked, a count, or a listing that failed. */
 export type PendingListing = { state: "unknown" } | { state: "ok"; count: number } | { state: "error"; message: string };
 
-/** Recordings still only on this phone, as the recorder views show them. */
+/** Recordings awaiting a space save, as the recorder views show them. */
 export interface PendingSnapshot {
   listing: PendingListing;
   /** A save of them is running (savePendingRecordings). */
@@ -328,7 +400,7 @@ export interface PendingSnapshot {
   lastError: string | null;
 }
 
-/** How many notes the phone holds, as far as is known (0 when unknown or the listing failed). */
+/** How many notes await a space save (0 when unknown or the listing failed). */
 export function pendingCount(snapshot: Pick<PendingSnapshot, "listing">): number {
   return snapshot.listing.state === "ok" ? snapshot.listing.count : 0;
 }
@@ -352,7 +424,7 @@ export const pendingStore = {
       pendingListeners.delete(listener);
     };
   },
-  /** Count what is on the phone again (after a save, failed or not), with what went wrong, if anything. */
+  /** Count the phone's unsaved notes again, with what went wrong, if anything. */
   refresh(lastError: string | null = pendingSnapshot.lastError): Promise<void> {
     return relistPending(lastError);
   },
@@ -362,11 +434,13 @@ function listingFailure(caught: unknown): string {
   return `Could not check this phone for unsaved notes: ${messageOf(caught)}`;
 }
 
-/** The pending count is always what the phone lists; a listing that fails is an error state, never zero. */
+/** Re-list the phone and exclude retained copies already saved to the space. */
 async function relistPending(lastError: string | null): Promise<void> {
   try {
     const { recordings } = await VoiceNotes.listPending();
-    publishPending({ listing: { state: "ok", count: recordings.length }, lastError });
+    publishPending({ listing: { state: "ok", count: recordings.filter((recording) =>
+      isDiscarded(recording.id) || (recording.ledger?.audio.state !== "saved" && !savedThisSession.has(recording.id)),
+    ).length }, lastError });
   } catch (caught) {
     publishPending({ listing: { state: "error", message: listingFailure(caught) }, lastError });
   }

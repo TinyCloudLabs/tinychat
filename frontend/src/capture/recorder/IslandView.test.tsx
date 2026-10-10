@@ -19,6 +19,7 @@ function value(patch: Partial<RecorderValue> = {}): RecorderValue {
     phase: "recording",
     mic: { state: "recording", reason: null },
     startedAt: Date.now() - (12 * 60 + 48) * 1000,
+    audioMs: (12 * 60 + 48) * 1000,
     maxDurationMs: 3_600_000,
     limitNotice: null,
     savePercent: null,
@@ -27,14 +28,18 @@ function value(patch: Partial<RecorderValue> = {}): RecorderValue {
     lastSaved: null,
     pending: { listing: { state: "ok", count: 0 }, running: false, lastError: null },
     transcription: undefined,
+    signedIn: true,
     sheetOpen: false,
     record: noop,
     stop: noop,
+    pause: noop,
+    resume: noop,
     discard: noop,
     retryPending: noop,
     dismissOutcome: noop,
     openSheet: noop,
     minimiseSheet: noop,
+    setReceiptPlaying: noop,
     subscribeLevel: () => noop,
     ...patch,
   };
@@ -62,10 +67,10 @@ describe("IslandView", () => {
     expect(html).not.toContain("island-stop");
   });
 
-  test("landed: Saved to your space, with Open when a note can be opened", () => {
+  test("landed: Saved on this phone, with Open when a note can be opened", () => {
     const landed = value({ phase: "idle", outcome: "saved", lastSaved: { id: "rec-1", durationMs: 1, at: 1 } });
     const html = renderToStaticMarkup(<IslandView recorder={landed} onOpenNote={noop} />);
-    expect(html).toContain("Saved to your space");
+    expect(html).toContain("Saved on this phone");
     expect(html).toContain('data-testid="island-open"');
     expect(renderToStaticMarkup(<IslandView recorder={landed} />)).not.toContain("island-open");
   });

@@ -6,6 +6,7 @@
 //
 //   EXO_UI_ONLY=primitives,legacy    screen groups or ids
 //   EXO_UI_VIEWPORTS=phone,zoom200   viewport ids, or a group (zoom200, text200)
+//   EXO_UI_VIEWPORTS=phone,halo-review  also enables the halo-only review captures
 //   EXO_UI_THEMES=dark               light, dark
 //   EXO_UI_ENGINE=chromium           webkit (default: Exo's WKWebView) or chromium (CI)
 //   EXO_UI_MOTION=no-preference      reduce (default) or no-preference
@@ -13,11 +14,9 @@
 // Exceptions a legacy screen still needs are in exo-ui/legacy-allowlist.json.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { chromium, webkit, type Browser, type BrowserContext, type BrowserType, type ConsoleMessage } from "playwright";
-import { OFFERED_CHAT_MODELS } from "../packages/core/src/chatModels";
-
-const frontend = new URL("../frontend/", import.meta.url).pathname;
+import { buildHarness, serveHarness, type HarnessAssets } from "./exo-ui/harness-server";
+import { inspectHaloPixels, readHaloCenterPixel } from "./exo-ui/halo-pixels";
 
 interface Viewport {
   id: string;
@@ -31,6 +30,8 @@ interface Viewport {
   textScale?: number;
   /** Zoom and text-scale captures also check for clipped text. */
   zoom?: boolean;
+  /** Only the screens whose id starts with one of these run at this viewport (default: every screen). */
+  screenPrefixes?: string[];
 }
 
 const VIEWPORTS: Viewport[] = [
@@ -42,6 +43,20 @@ const VIEWPORTS: Viewport[] = [
   { id: "desktop", width: 1280, height: 800, deviceScaleFactor: 2 },
   // 1280x800 at 200% browser zoom.
   { id: "zoom200", width: 640, height: 400, deviceScaleFactor: 2, zoom: true },
+  // The smallest phone the recorder-final screens must fit (an Android emulator's 320x640), scoped to those screens.
+  {
+    id: "phone-small",
+    width: 320,
+    height: 640,
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    screenPrefixes: [
+      "recorder-final-phone-",
+      "recorder-final-minimized-",
+      "capture-soft-",
+    ],
+  },
   { id: "text200-phone", group: "text200", width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true, textScale: 2, zoom: true },
   { id: "text200-desktop", group: "text200", width: 1280, height: 800, deviceScaleFactor: 2, textScale: 2, zoom: true },
 ];
@@ -54,6 +69,8 @@ interface ScreenInfo {
   displayTitle?: boolean;
   /** Where the screen runs (default web); the phone app gets the fake recorder. */
   platform?: string;
+  /** Driven by its own test; not captured. */
+  interactive?: boolean;
 }
 
 interface AllowEntry {
@@ -86,79 +103,17 @@ if (!engine) throw new Error(`EXO_UI_ENGINE must be one of ${Object.keys(engines
 
 const allowlist: AllowEntry[] = JSON.parse(readFileSync(new URL("./exo-ui/legacy-allowlist.json", import.meta.url), "utf8"));
 
-// The backend as a signed-in account with nothing set up sees it. Every other
-// /api/ path is a 404.
-const API_FIXTURES: Record<string, { status?: number; body: unknown }> = {
-  // No agent delegation yet: "Disconnected", with Connect agent.
-  "GET /api/agent/session": { body: { status: "none", revision: "harness" } },
-  "GET /api/connectors/google/autojoin/status": {
-    body: { state: "off", enabled: false, lastScanAt: null, errorCode: null, outcomes: [] },
-  },
-  "GET /api/transcriber/meetings": { body: { meetings: [] } },
-  // The chat's automatic model choice (the shell screens run the real chat).
-  "GET /api/chat/model-selection": { body: { model: OFFERED_CHAT_MODELS[0].id, reason: "healthy" } },
-};
-
 const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
 const outDir = new URL(`../screenshots/exo-ui/${stamp}/`, import.meta.url).pathname;
 
-let bundle = "";
-let css = "";
-let html = "";
+let assets: HarnessAssets;
 
 beforeAll(async () => {
-  const built = await Bun.build({
-    entrypoints: [`${frontend}src/harness/exoUiHarness.tsx`],
-    root: frontend,
-    target: "browser",
-    minify: false,
-    define: { "import.meta.env": "{}" },
-    // index.css's @font-face URLs point into frontend/public (served below).
-    external: ["/fonts/*"],
-  });
-  if (!built.success) throw new Error(built.logs.join("\n"));
-  bundle = await built.outputs.find((output) => output.kind === "entry-point")!.text();
-
-  // The app's own stylesheet, compiled with its Tailwind config.
-  const requireFromFrontend = createRequire(`${frontend}package.json`);
-  const postcss = requireFromFrontend("postcss");
-  const tailwindcss = requireFromFrontend("tailwindcss");
-  const source = await Bun.file(`${frontend}src/index.css`).text();
-  // The config's content globs are relative; anchor them at frontend/.
-  const config = (await import(`${frontend}tailwind.config.js`)).default;
-  config.content = [`${frontend}index.html`, `${frontend}src/**/*.{js,ts,jsx,tsx}`];
-  css = (await postcss([tailwindcss(config)]).process(source, { from: `${frontend}src/index.css` })).css;
-
-  // The app's own index.html (metas, font preload, the pre-paint script), with the harness bundle.
-  const index = await Bun.file(`${frontend}index.html`).text();
-  const appScript = '<script type="module" src="/src/main.tsx"></script>';
-  if (!index.includes(appScript) || !index.includes("</head>")) throw new Error("index.html changed: update the exo-ui harness page");
-  html = index
-    .replace(appScript, '<script type="module" src="/bundle.js"></script>')
-    .replace("</head>", '<link rel="stylesheet" href="/app.css" />\n  </head>');
+  assets = await buildHarness();
   mkdirSync(outDir, { recursive: true });
 }, 120_000);
 
-function startServer() {
-  return Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    async fetch(request) {
-      const url = new URL(request.url);
-      if (url.pathname === "/bundle.js") return new Response(bundle, { headers: { "content-type": "text/javascript" } });
-      if (url.pathname === "/app.css") return new Response(css, { headers: { "content-type": "text/css" } });
-      if (url.pathname.startsWith("/fonts/")) {
-        const file = Bun.file(`${frontend}public${url.pathname}`);
-        return (await file.exists()) ? new Response(file) : new Response("not found", { status: 404 });
-      }
-      if (url.pathname.startsWith("/api/")) {
-        const fixture = API_FIXTURES[`${request.method} ${url.pathname}`];
-        return fixture === undefined ? new Response("not found", { status: 404 }) : Response.json(fixture.body, { status: fixture.status ?? 200 });
-      }
-      return new Response(html, { headers: { "content-type": "text/html" } });
-    },
-  });
-}
+const startServer = () => serveHarness(assets);
 
 /** Console errors that are not the screen's fault. */
 function ignoredConsoleError(message: ConsoleMessage): boolean {
@@ -275,13 +230,32 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
     await page.goto(`http://127.0.0.1:${server.port}/`);
     await page.waitForFunction(() => window.exoUi !== undefined);
     screens = (await page.evaluate(() => window.exoUi!.screens)).filter(
-      (screen) => !only || only.includes(screen.group) || only.includes(screen.id),
+      (screen) => !screen.interactive && (!only || only.includes(screen.group) || only.includes(screen.id)),
     );
     await page.close();
   }, 60_000);
 
   afterAll(async () => {
-    for (const browser of browsers) await browser.close();
+    // A dead Chromium DevTools pipe can leave close() pending after every
+    // capture passed. Bound cleanup so it cannot hide the screen results.
+    await Promise.all(browsers.map(async (browser) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          browser.close(),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(() => {
+              console.warn("exo-ui: browser close timed out");
+              resolve();
+            }, 10_000);
+          }),
+        ]);
+      } catch (caught) {
+        console.warn("exo-ui: browser close failed", caught);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }));
     server?.stop(true);
     writeFileSync(`${outDir}report.json`, JSON.stringify({ engine: engineName, motion, captures }, null, 2));
     writeFileSync(`${outDir}index.html`, contactSheet(captures));
@@ -295,69 +269,174 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
   for (const viewport of viewports) {
     test(`every screen at ${viewport.id} (${viewport.width}x${viewport.height})`, async () => {
       const failures: string[] = [];
-      // A fresh browser per viewport: WebKit stops loading pages after about
-      // sixty in one browser, and a full run loads several hundred.
-      const viewportBrowser = await engine.launch({ headless: true });
-      browsers.push(viewportBrowser);
       for (const theme of themes) {
-        const context: BrowserContext = await viewportBrowser.newContext({
-          viewport: { width: viewport.width, height: viewport.height },
-          deviceScaleFactor: viewport.deviceScaleFactor,
-          isMobile: viewport.isMobile ?? false,
-          hasTouch: viewport.hasTouch ?? false,
-          colorScheme: theme,
-          reducedMotion: motion,
-        });
-        if (viewport.textScale) {
-          // Before the app's scripts run; <html> may not exist yet when init scripts start.
-          await context.addInitScript((scale) => {
-            const apply = () => document.documentElement.style.setProperty("font-size", `${scale * 100}%`);
-            if (document.documentElement) apply();
-            else document.addEventListener("readystatechange", apply, { once: true });
-          }, viewport.textScale);
-        }
-        try {
-          for (const screen of screens) {
-            const page = await context.newPage();
-            const errors: string[] = [];
-            page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
-            page.on("console", (message) => {
-              if (message.type() === "error" && !ignoredConsoleError(message)) {
-                const url = message.location().url;
-                errors.push(`console.error: ${message.text()}${url ? ` (${url})` : ""}`);
-              }
-            });
-            await page.goto(`http://127.0.0.1:${server.port}/?screen=${screen.id}&theme=${theme}&platform=${screen.platform ?? "web"}&freeze=1`);
-            await page.waitForFunction(() => window.exoUi?.ready === true, undefined, { timeout: 20_000 });
-            await page.waitForLoadState("networkidle");
-            await page.waitForTimeout(300);
-
-            const allow = allowlist.filter((entry) => entry.screen === screen.id).map(({ selector, check }) => ({ selector, check }));
-            const findings: Finding[] = await page.evaluate(inspectPage, {
-              layout: screen.layout,
-              touch: viewport.hasTouch ?? false,
-              zoom: viewport.zoom ?? false,
-              displayTitle: screen.displayTitle ?? false,
-              allow,
-            });
-            for (const error of errors) findings.push({ check: "errors", detail: error });
-
-            const file = `${screen.id}__${viewport.id}__${theme}.png`;
-            await page.screenshot({ path: `${outDir}${file}`, fullPage: screen.layout === "document" });
-            captures.push({ screen: screen.id, viewport: viewport.id, theme, file, findings });
-            for (const finding of findings) {
-              failures.push(`${file}: ${finding.check}${finding.element ? ` ${finding.element}` : ""} (${finding.detail})`);
-            }
-            await page.close();
+        // WebKit stops loading after about 65 pages per browser. Recycle every
+        // 40 screens within each theme to stay below that limit.
+        for (let start = 0; start < screens.length; start += 40) {
+          const viewportBrowser = await engine.launch({ headless: true });
+          browsers.push(viewportBrowser);
+          const context: BrowserContext = await viewportBrowser.newContext({
+            viewport: { width: viewport.width, height: viewport.height },
+            deviceScaleFactor: viewport.deviceScaleFactor,
+            isMobile: viewport.isMobile ?? false,
+            hasTouch: viewport.hasTouch ?? false,
+            colorScheme: theme,
+            reducedMotion: motion,
+          });
+          if (viewport.textScale) {
+            // Before the app's scripts run; <html> may not exist yet when init scripts start.
+            await context.addInitScript((scale) => {
+              const apply = () => document.documentElement.style.setProperty("font-size", `${scale * 100}%`);
+              if (document.documentElement) apply();
+              else document.addEventListener("readystatechange", apply, { once: true });
+            }, viewport.textScale);
           }
-        } finally {
-          await context.close();
+          try {
+            for (const screen of screens.slice(start, start + 40)) {
+              if (
+                viewport.screenPrefixes &&
+                !viewport.screenPrefixes.some((prefix) => screen.id.startsWith(prefix))
+              ) continue;
+              if (screen.viewports && !screen.viewports.includes(viewport.id)) continue;
+              const page = await context.newPage();
+              const errors: string[] = [];
+              page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+              page.on("console", (message) => {
+                if (message.type() === "error" && !ignoredConsoleError(message)) {
+                  const url = message.location().url;
+                  errors.push(`console.error: ${message.text()}${url ? ` (${url})` : ""}`);
+                }
+              });
+              await page.goto(`http://127.0.0.1:${server.port}/?screen=${screen.id}&theme=${theme}&platform=${screen.platform ?? "web"}&freeze=1`);
+              await page.waitForFunction(() => window.exoUi?.ready === true, undefined, { timeout: 20_000 }).catch((error: unknown) => {
+                throw new Error(`${screen.id} at ${viewport.id}/${theme} never became ready: ${errors.join("; ") || "no page errors"}`, { cause: error });
+              });
+              await page.waitForLoadState("networkidle");
+              await page.waitForTimeout(300);
+
+              const allow = allowlist.filter((entry) => entry.screen === screen.id).map(({ selector, check }) => ({ selector, check }));
+              const findings: Finding[] = await page.evaluate(inspectPage, {
+                layout: screen.layout,
+                touch: viewport.hasTouch ?? false,
+                zoom: viewport.zoom ?? false,
+                displayTitle: screen.displayTitle ?? false,
+                allow,
+              });
+              // The native Capture home must finish recorder setup; generic layout checks missed a missing Record button.
+              if (["shell-capture", "capture-first-use", "capture-items", "capture-in-progress"].includes(screen.id)) {
+                const record = page.locator('[data-testid="voice-note-record"]');
+                if (await record.count() === 0 || await record.first().isDisabled()) {
+                  findings.push({ check: "native-record-ready", detail: "Capture has no enabled Record button" });
+                }
+              }
+              for (const error of errors) findings.push({ check: "errors", detail: error });
+
+              const file = `${screen.id}__${viewport.id}__${theme}.png`;
+              await page.screenshot({ path: `${outDir}${file}`, fullPage: screen.layout === "document" });
+              captures.push({ screen: screen.id, viewport: viewport.id, theme, file, findings });
+
+              for (const finding of findings) {
+                failures.push(`${file}: ${finding.check}${finding.element ? ` ${finding.element}` : ""} (${finding.detail})`);
+              }
+              await page.close();
+            }
+          } finally {
+            await context.close();
+          }
         }
       }
       expect(failures).toEqual([]);
       // WebKit takes several seconds per page for the shell screens (they run the whole chat).
     }, 600_000);
   }
+
+  const runsPhoneHaloReview =
+    !viewportFilter ||
+    viewportFilter.some((id) => ["phone", "phone-halo-review"].includes(id));
+  const runsHaloReview = viewportFilter?.includes("halo-review") ?? false;
+  if (runsPhoneHaloReview || runsHaloReview)
+    test("recorder halo in tall phone and eight-ring review captures", async () => {
+      const halo = screens.find((screen) => screen.id === "recorder-final-halo");
+      if (!halo) return;
+
+      const haloViewports: Viewport[] = [
+        ...(runsPhoneHaloReview
+          ? [{ id: "phone-halo-review", width: 390, height: 4400, deviceScaleFactor: 2, isMobile: true, hasTouch: true }]
+          : []),
+        ...(viewportFilter?.includes("halo-review")
+          ? [{ id: "halo-review", width: 1280, height: 2200, deviceScaleFactor: 2 }]
+          : []),
+      ];
+      const forceCanvas = process.env.EXO_UI_HALO_FORCE_CANVAS === "1";
+      const haloBrowser = await engine.launch({ headless: true });
+      browsers.push(haloBrowser);
+
+      for (const viewport of haloViewports) {
+        for (const theme of themes) {
+          const context = await haloBrowser.newContext({
+            viewport: { width: viewport.width, height: viewport.height },
+            deviceScaleFactor: viewport.deviceScaleFactor,
+            isMobile: viewport.isMobile ?? false,
+            hasTouch: viewport.hasTouch ?? false,
+            colorScheme: theme,
+            reducedMotion: motion,
+          });
+          if (forceCanvas) {
+            await context.addInitScript(() => {
+              const constructors = [HTMLCanvasElement, window.OffscreenCanvas].filter(Boolean) as Array<typeof HTMLCanvasElement>;
+              for (const Canvas of constructors) {
+                const getContext = Canvas.prototype.getContext;
+                Canvas.prototype.getContext = function(type: string, ...args: unknown[]) {
+                  if (/^(webgl|webgl2|experimental-webgl)$/.test(type)) return null;
+                  return Reflect.apply(getContext, this, [type, ...args]);
+                } as typeof Canvas.prototype.getContext;
+              }
+            });
+          }
+          try {
+            const page = await context.newPage();
+            const rendererPaths: string[] = [];
+            page.on("console", (message) => {
+              if (message.type() === "info" && message.text().includes("[HaloRing] renderer:")) rendererPaths.push(message.text());
+            });
+            try {
+              await page.goto(`http://127.0.0.1:${server.port}/?screen=${halo.id}&theme=${theme}&platform=web&freeze=1`);
+              await page.waitForFunction(() => window.exoUi?.ready === true, undefined, { timeout: 20_000 });
+              await page.waitForFunction(
+                inspectHaloPixels,
+                { checkCorners: forceCanvas },
+                { timeout: 5_000 },
+              );
+            } catch (caught) {
+              const { canvases: canvasStates } = (await page.evaluate(
+                inspectHaloPixels,
+                { diagnostics: true },
+              )) as { ready: boolean; canvases: unknown[] };
+              const diagnostic = { error: String(caught), rendererPaths, canvasCount: canvasStates.length, canvases: canvasStates };
+              console.error("Halo pixel check timed out", diagnostic);
+              const diagnosticFile = `${halo.id}__${viewport.id}__${theme}${forceCanvas ? "-canvas2d" : ""}-timeout.png`;
+              await page.screenshot({ path: `${outDir}${diagnosticFile}`, fullPage: false }).catch(() => {});
+              throw new Error(`Halo pixel check timed out: ${JSON.stringify(diagnostic)}`, { cause: caught });
+            }
+            if (!forceCanvas && engineName === "webkit") {
+              const center = await page
+                .locator(".halo-ring__canvas")
+                .nth(3)
+                .evaluate(readHaloCenterPixel);
+              expect(center.size % 2).toBe(1);
+              expect(center.color).toEqual(theme === "dark" ? [68, 59, 76] : [251, 248, 246]);
+            }
+            if (forceCanvas) expect(rendererPaths.some((path) => path.includes("canvas-2d"))).toBe(true);
+            const file = `${halo.id}__${viewport.id}__${theme}${forceCanvas ? "-canvas2d" : ""}.png`;
+            await page.screenshot({ path: `${outDir}${file}`, fullPage: false });
+            captures.push({ screen: halo.id, viewport: viewport.id, theme, file, findings: [] });
+            await page.close();
+          } finally {
+            await context.close();
+          }
+        }
+      }
+    }, 180_000);
 });
 
 function contactSheet(all: Capture[]): string {

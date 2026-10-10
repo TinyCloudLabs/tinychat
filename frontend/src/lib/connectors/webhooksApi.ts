@@ -1,3 +1,4 @@
+import { clearSessionAfterHandoff } from "../sessionSignedOut";
 import type { SessionStore } from "@tinyboilerplate/client";
 
 /**
@@ -286,7 +287,7 @@ export function createConnectorWebhooksClient(
     const token = sessionStore.getToken();
     if (!token) return { status: "unauthenticated" };
     if (sessionStore.isExpired()) {
-      sessionStore.clear();
+      await clearSessionAfterHandoff(sessionStore);
       return { status: "unauthenticated" };
     }
 
@@ -311,7 +312,7 @@ export function createConnectorWebhooksClient(
     // 401 clears the session, exactly as `createApiClient` does — SIWE has no
     // silent refresh, so the caller has to sign in again.
     if (response.status === 401) {
-      sessionStore.clear();
+      await clearSessionAfterHandoff(sessionStore);
       return { status: "unauthenticated" };
     }
     // The router is mounted only when the feature flag is on, and every path

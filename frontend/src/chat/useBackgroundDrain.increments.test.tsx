@@ -775,15 +775,16 @@ describe("I1 badge — App wiring (source-asserted)", () => {
     const from = app.indexOf("const signOut = useCallback");
     expect(from).toBeGreaterThan(0);
     const body = app.slice(from, app.indexOf("const isReady", from));
-    expect(body).toContain("await signOutOpenKeySession(");
-    expect(body.indexOf("await signOutOpenKeySession(")).toBeLessThan(
-      body.indexOf("await tcw.signOut?.();"),
+    const cleanup = app.slice(app.indexOf("const completeLocalSignOut = useCallback"),
+      app.indexOf("useEffect(() => registerSessionSignedOutHook"));
+    expect(body).toContain("signOutOpenKeySession(openKeyClient");
+    expect(body.indexOf("signOutOpenKeySession(openKeyClient")).toBeLessThan(
+      body.indexOf("tcw.signOut?.()"),
     );
     expect(body).toContain('openKeyOutcome.status === "unverified"');
     expect(body).toContain('openKeyOutcome.status === "cancelled"');
-    expect(body).toContain("clearLocalSession(openKeyWarning, tcw ?? undefined);");
-    const cleanup = app.slice(app.indexOf("const clearLocalSession ="), app.indexOf("const startNativeRenewal ="));
-    expect(cleanup).toContain("clearPersistedSession(storedAddress);");
+    expect(body).toContain("completeLocalSignOut(openKeyWarning");
+    expect(cleanup).toContain("if (storedAddress) clearPersistedSession(storedAddress);");
     expect(cleanup).toContain("historyPrefetch.clear();");
     expect(cleanup).toContain("clearAgentSessionCache();");
     expect(cleanup).toContain("clearBackgroundDrainRecord();");

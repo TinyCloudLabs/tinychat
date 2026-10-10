@@ -683,10 +683,8 @@ describe("platform routing (source)", () => {
     const signOut = app.slice(app.indexOf("const signOut = useCallback"), app.indexOf("const isReady"));
     expect(signOut).toContain("signOutNative()");
     expect(signOut.indexOf("isNativeOpenKeySession()")).toBeLessThan(signOut.indexOf("signOutOpenKeySession("));
-    expect(signOut.indexOf("if (isNativeStorageError(caught))")).toBeLessThan(signOut.indexOf("clearLocalSession(openKeyWarning, tcw ?? undefined)"));
-    const body = signOut.slice(signOut.indexOf("try {"));
-    expect(body.match(/^try \{\s+nativeRenewalRef\.current\?\.stop\(\)/)?.[0]).toBeDefined();
-    expect(body.indexOf("nativeRenewalRef.current?.stop()")).toBeLessThan(body.indexOf("await "));
+    expect(signOut.indexOf("if (isNativeStorageError(caught))")).toBeLessThan(signOut.indexOf("completeLocalSignOut(openKeyWarning"));
+    expect(signOut.indexOf("nativeRenewalRef.current?.stop()")).toBeLessThan(signOut.indexOf("await "));
     const storageFailure = signOut.slice(signOut.indexOf("if (isNativeStorageError(caught))"), signOut.indexOf("if (caught instanceof Error"));
     expect(storageFailure).toContain('setState("ready")');
     expect(storageFailure).toContain("void nativeRenewalRef.current?.resume()");
@@ -694,10 +692,22 @@ describe("platform routing (source)", () => {
     expect(storageFailure).not.toContain("setNativeSessionActive(false)");
     expect(signOut).toContain("openKeyWarning = NATIVE_SIGN_OUT_WARNING");
     expect(signOut).toContain("if (nativeSession && !options.terminal)");
-    expect(signOut).toContain('if (options.terminal) setState("unauthenticated")');
+    expect(signOut).toContain("completeLocalSignOut(openKeyWarning, Boolean(options.terminal))");
     const terminal = app.slice(app.indexOf("onTerminal: (message) =>"), app.indexOf("onStorage: () =>"));
     expect(terminal).toContain("signOutRef.current?.({ terminal: message })");
     expect(app).toContain("signOutInFlightRef.current = true");
+  });
+
+  test("terminal handoff failure keeps renewal stopped; manual sign-out failure resumes it", () => {
+    const signOut = app.slice(app.indexOf("const signOut = useCallback"), app.indexOf("const isReady"));
+    const stop = signOut.indexOf("nativeRenewalRef.current?.stop()");
+    const handoff = signOut.indexOf("if (!await captureHandoff())");
+    const failure = signOut.slice(handoff, signOut.indexOf("let openKeyWarning", handoff));
+    expect(stop).toBeGreaterThan(-1);
+    expect(stop).toBeLessThan(handoff);
+    expect(failure).toMatch(/if \(!options\.terminal\) void nativeRenewalRef\.current\?\.resume\(\);\s+return;/);
+    expect(failure).not.toMatch(/^\s*void nativeRenewalRef\.current\?\.resume\(\);/m);
+    expect(app).toContain("signOutRef.current?.({ terminal: message })");
   });
 
   test("boot restores native grants before trying the legacy widget restore", () => {
@@ -705,6 +715,7 @@ describe("platform routing (source)", () => {
     expect(boot.indexOf("restoreNativeAtBoot(")).toBeLessThan(boot.indexOf("restorePersistedSession("));
     expect(boot).toContain('boot.kind === "restored"');
     const terminal = boot.slice(boot.indexOf('if (boot.kind === "terminal" || wasNative)'), boot.indexOf("sessionStoreRef.current.clear()", boot.indexOf('if (boot.kind === "terminal" || wasNative)')));
+    expect(terminal.indexOf("await captureHandoff()")).toBeLessThan(terminal.indexOf("clearPersistedSession(storedAddress)"));
     expect(terminal.indexOf("clearPersistedSession(storedAddress)")).toBeLessThan(terminal.indexOf("await boot.revoke()"));
     expect(terminal).toContain('setError(NATIVE_STORAGE_MESSAGE)');
   });

@@ -10,7 +10,8 @@ import { Island } from "@/capture/recorder/Island";
 import { liveCapture } from "@/capture/recorder/liveCapture";
 import { LiveEdge } from "@/capture/recorder/LiveEdge";
 import { RailLiveButton } from "@/capture/recorder/RailLiveButton";
-import { RecorderSheet } from "@/capture/recorder/RecorderSheet";
+import { RecordingOverlay } from "@/capture/recorder/RecordingOverlay";
+import { forceSoftHome } from "@/capture/home/softHome";
 import { StaticRecorderProvider, type RecorderValue } from "@/capture/recorder/RecorderProvider";
 import { SidebarLiveCard } from "@/capture/recorder/SidebarLiveCard";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
@@ -20,7 +21,7 @@ import type { HarnessScreen } from "../screen";
 const noop = () => {};
 
 /** Seeded input levels: speech-like, the same on every run. */
-const LEVELS = Array.from({ length: 48 }, (_, i) =>
+const LEVELS = Array.from({ length: 96 }, (_, i) =>
   Math.min(1, Math.max(0, 0.32 + 0.24 * Math.sin(i * 0.61) + 0.18 * Math.sin(i * 1.73 + 1.1) + 0.08 * Math.cos(i * 3.1))),
 );
 const QUIET = LEVELS.map(() => 0);
@@ -42,6 +43,7 @@ const LIVE: Partial<RecorderValue> = {
   phase: "recording",
   mic: { state: "recording", reason: null },
   startedAt: FROZEN_NOW - minutes(12, 48),
+  audioMs: minutes(12, 48),
   transcription: PRIVATE_CLOUD_ON,
 };
 
@@ -62,21 +64,25 @@ function Backdrop(props: { children?: ReactNode }) {
 function sheet(
   id: string,
   value: Partial<RecorderValue>,
-  options: { levels?: readonly number[]; live?: boolean; warning?: boolean; consentAsking?: boolean; discardAsking?: boolean } = {},
+  options: { levels?: readonly number[]; live?: boolean; warning?: boolean; consentAsking?: boolean; discardAsking?: boolean; soft?: boolean } = {},
 ): HarnessScreen {
   return {
     id: `recorder-${id}`,
     group: "recorder",
     layout: "pane",
-    // The timer is the display face; a failed save shows none.
-    displayTitle: value.outcome !== "failed",
-    render: () => (
+    platform: "ios",
+    displayTitle: false,
+    render: () => {
+      // The receipt's informational line is behind the recorder-final flag, which the harness build does not set.
+      if (options.soft) forceSoftHome(true);
+      return (
       <StaticRecorderProvider value={{ ...value, sheetOpen: true }} levels={options.levels ?? LEVELS}>
         <Backdrop />
-        <RecorderSheet onOpenNote={noop} consentAsking={options.consentAsking} discardAsking={options.discardAsking} />
+        <RecordingOverlay onOpenNote={noop} consentAsking={options.consentAsking} discardAsking={options.discardAsking} />
         {options.live && <LiveMic warning={options.warning} />}
       </StaticRecorderProvider>
-    ),
+      );
+    },
   };
 }
 
@@ -85,6 +91,7 @@ function island(id: string, value: Partial<RecorderValue>, live = false): Harnes
     id: `recorder-island-${id}`,
     group: "recorder",
     layout: "pane",
+    platform: "ios",
     displayTitle: true,
     render: () => (
       <StaticRecorderProvider value={{ ...value, sheetOpen: false }} levels={LEVELS}>
@@ -149,13 +156,22 @@ function NavStandIn(props: { kind: "rail" | "sidebar" }) {
 const SAVED = { id: "rec-1", durationMs: 42_000, at: FROZEN_NOW };
 
 export const recorderScreens: HarnessScreen[] = [
+  { ...sheet("mic-denied", { phase: "idle", permissionDenied: true, startedAt: null, transcription: undefined }, { levels: QUIET }), platform: "android" },
   sheet("starting", { phase: "starting", startedAt: null, transcription: PRIVATE_CLOUD_ON }, { levels: QUIET }),
   sheet("live", LIVE, { live: true }),
   sheet("silenced", { ...LIVE, mic: { state: "silenced", reason: "os_silenced" } }, { levels: QUIET, live: true, warning: true }),
   sheet("no-signal", { ...LIVE, mic: { state: "recording", reason: "no_signal" } }, { levels: QUIET, live: true, warning: true }),
-  sheet("near-limit", { ...LIVE, startedAt: FROZEN_NOW - minutes(56, 12) }, { live: true }),
+  sheet("near-limit", { ...LIVE, startedAt: FROZEN_NOW - minutes(176, 12), audioMs: minutes(176, 12) }, { live: true }),
+  sheet("paused", { ...LIVE, mic: { state: "paused", reason: "user" }, audioMs: minutes(12, 48) }, { levels: QUIET }),
+  sheet("interrupted", { ...LIVE, mic: { state: "interrupted", reason: "call" } }, { levels: QUIET }),
   sheet("saving", { ...LIVE, phase: "saving", savePercent: 42 }),
   sheet("landed", { phase: "idle", outcome: "saved", lastSaved: SAVED, transcription: PRIVATE_CLOUD_ON }),
+  sheet(
+    "landed-partial",
+    { phase: "idle", outcome: "saved", lastSaved: SAVED, transcription: PRIVATE_CLOUD_ON, captureIssues: { "rec-1": { kind: "partial_audio", missingMs: 12_000 } } },
+    { soft: true },
+  ),
+  sheet("local", { phase: "idle", outcome: "local", localUpload: "uploading", lastSaved: SAVED, transcription: PRIVATE_CLOUD_ON }),
   sheet("failed", {
     phase: "idle",
     outcome: "failed",

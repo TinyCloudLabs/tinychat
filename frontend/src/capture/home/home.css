@@ -1,0 +1,544 @@
+/* Capture home and its rows in the Soft skin (TC-871). The palette (--ink,
+   --dim, --glass, --gedge, --solid, --bgc, --red) is soft.css's. .soft-home is
+   the whole list pane, so the Library, which shares the rows, wears it too:
+   the app's own tokens are remapped here (as HSL triples) to the Soft palette. */
+
+.soft-home.soft-night {
+  --background: 266 29% 9%;
+  --foreground: 278 52% 96%;
+  --card: 270 24% 16%;
+  --card-foreground: 278 52% 96%;
+  --popover: 270 24% 16%;
+  --popover-foreground: 278 52% 96%;
+  --chrome: 266 29% 9%;
+  --surface-2: 270 24% 16%;
+  --secondary: 270 24% 16%;
+  --secondary-foreground: 278 52% 96%;
+  --muted: 270 24% 16%;
+  --muted-foreground: 271 12% 64%;
+  --accent: 270 24% 16%;
+  --accent-foreground: 278 52% 96%;
+  --border: 270 13% 20%;
+  --input: 270 13% 20%;
+  --primary: 278 52% 96%;
+  --primary-foreground: 266 29% 9%;
+  --ring: 278 52% 96%;
+}
+
+.soft-home.soft-day {
+  --background: 32 62% 96%;
+  --foreground: 322 10% 21%;
+  --card: 30 100% 98%;
+  --card-foreground: 322 10% 21%;
+  --popover: 30 100% 98%;
+  --popover-foreground: 322 10% 21%;
+  --chrome: 32 62% 96%;
+  --surface-2: 30 100% 98%;
+  --secondary: 30 100% 98%;
+  --secondary-foreground: 322 10% 21%;
+  --muted: 30 100% 98%;
+  --muted-foreground: 334 7% 50%;
+  --accent: 30 100% 98%;
+  --accent-foreground: 322 10% 21%;
+  --border: 28 25% 90%;
+  --input: 28 25% 90%;
+  --primary: 322 10% 21%;
+  --primary-foreground: 32 62% 96%;
+  --ring: 322 10% 21%;
+}
+
+.soft-home .font-display {
+  font-family: var(--soft-title-font);
+  font-optical-sizing: auto;
+  font-variation-settings: "SOFT" 100;
+  font-weight: 400;
+}
+
+.soft-home .soft-ico {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  stroke-width: 1.8;
+}
+
+.soft-header-link {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: 999px;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.soft-header-link:hover,
+.soft-header-link:active {
+  background: var(--glass);
+}
+.soft-header-link:focus-visible,
+.soft-link:focus-visible,
+.soft-pill:focus-visible,
+.soft-act:focus-visible,
+.soft-sheet-close:focus-visible,
+.soft-sheet-delete:focus-visible,
+.soft-sheet-quiet:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.soft-sect {
+  margin: 0;
+  padding: 16px 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+/* Right under the In progress card: the page's 24px section gap plus the 44px "See all" row left the heading about 40px down; the design has about 28px to the heading's centre. */
+.soft-in-progress[data-with-card] + .soft-recent {
+  margin-top: -18px;
+}
+.soft-in-progress[data-with-card] + .soft-recent .soft-sect {
+  padding-top: 0;
+}
+.soft-sect:focus {
+  outline: none;
+}
+.soft-sect-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.soft-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 4px;
+  margin-right: -4px;
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 13px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.soft-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 12px 12px 14px;
+  border-radius: 20px;
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--gedge);
+}
+.soft-card-icon {
+  color: var(--dim);
+}
+.soft-card-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.3;
+}
+.soft-card-text b {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.soft-card-text span {
+  color: var(--dim);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.soft-pill {
+  position: relative;
+  flex: none;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--bgc);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.soft-pill::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+}
+.soft-pill:disabled {
+  opacity: 0.6;
+}
+.soft-pill-hit {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.soft-legacy {
+  margin-top: 8px;
+}
+.soft-legacy[data-with-card] #in-progress-title {
+  display: none;
+}
+
+.soft-quiet {
+  margin: 16px 0 0;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--gedge);
+  color: var(--dim);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.soft-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0 -10px;
+  padding: 0;
+  list-style: none;
+}
+.soft-row-item {
+  list-style: none;
+}
+.soft-row {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 56px;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 16px;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  transition: background 0.2s;
+  -webkit-tap-highlight-color: transparent;
+}
+a.soft-row,
+button.soft-row {
+  cursor: pointer;
+}
+a.soft-row:hover,
+button.soft-row:hover,
+a.soft-row:active,
+button.soft-row:active,
+.soft-row[data-selected="true"] {
+  background: var(--glass);
+}
+a.soft-row:focus-visible,
+button.soft-row:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+}
+.soft-tile {
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--gedge);
+  color: var(--dim);
+}
+.soft-tile[data-failed] {
+  color: var(--red);
+}
+.soft-tile-bang {
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1;
+}
+.soft-row-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.3;
+}
+.soft-row-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.soft-row-meta {
+  color: var(--dim);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.soft-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.soft-row-meta[data-failed] {
+  color: var(--ink);
+}
+/* A saved recording that is missing some audio: its row, then one quiet line (never red, no "!") that opens the details. The line sits under the title column: 12px row padding + 38px tile + 12px gap. */
+.soft-row-item[data-notice] .soft-row {
+  min-height: 0;
+  padding-bottom: 0;
+}
+.soft-row-notice {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 44px;
+  margin: 0;
+  padding: 0 12px 0 62px;
+  border: 0;
+  border-radius: 0 0 16px 16px;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.3;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.soft-row-notice:hover,
+.soft-row-notice:active {
+  background: var(--glass);
+}
+.soft-row-notice:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+}
+.soft-row-aside {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  color: var(--dim);
+  font-size: 12.5px;
+}
+.soft-chev {
+  width: 16px;
+  height: 16px;
+}
+
+.soft-spinner {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid var(--gedge);
+  border-top-color: var(--dim);
+  border-radius: 50%;
+  animation: soft-spin 0.9s linear infinite;
+}
+@keyframes soft-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .soft-spinner {
+    width: 6px;
+    height: 6px;
+    margin: 0 2px;
+    border: 0;
+    background: var(--dim);
+    animation: none;
+  }
+}
+
+.soft-empty {
+  margin: 4px 0 0;
+  padding: 8px 2px;
+  color: var(--dim);
+  font-size: 13px;
+}
+.soft-failed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 12px;
+  color: var(--dim);
+  font-size: 13px;
+}
+
+.soft-actions {
+  display: grid;
+  grid-template-columns: 1fr 1.3fr 1fr;
+  gap: 8px;
+}
+.soft-act {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 50px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 18px;
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--gedge);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 700;
+  transition: transform 0.2s cubic-bezier(0.3, 1.7, 0.4, 1);
+  -webkit-tap-highlight-color: transparent;
+}
+.soft-act:active {
+  transform: scale(0.95);
+}
+.soft-act:disabled {
+  opacity: 0.6;
+}
+.soft-act-main {
+  background: var(--ink);
+  box-shadow: none;
+  color: var(--bgc);
+}
+/* On a 320 px phone the three actions cannot keep 1fr 1.3fr 1fr and their 8 px gaps: size them to their labels and share the rest. */
+@media (max-width: 359px) {
+  .soft-actions {
+    grid-template-columns: repeat(3, auto);
+    gap: 6px;
+  }
+  .soft-act {
+    gap: 6px;
+    padding: 0 4px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .soft-act {
+    transition: none;
+  }
+  .soft-act:active {
+    transform: none;
+  }
+}
+
+.soft-sheet-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.5);
+  animation: soft-fade 0.2s ease-out;
+}
+.soft-skin.soft-sheet {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 51;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 28rem;
+  margin: 0 auto;
+  padding: 22px 22px max(20px, env(safe-area-inset-bottom));
+  border-radius: 28px 28px 0 0;
+  background: var(--solid);
+  box-shadow:
+    inset 0 0 0 1px var(--gedge),
+    0 -12px 40px rgba(0, 0, 0, 0.25);
+  outline: none;
+  animation: soft-rise 0.3s cubic-bezier(0.3, 1, 0.3, 1);
+}
+.soft-sheet-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 400;
+  line-height: 1.2;
+}
+.soft-sheet-body {
+  margin: 10px 0 0;
+  color: var(--dim);
+  font-size: 14px;
+  line-height: 1.45;
+}
+.soft-sheet-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 50px;
+  margin-top: 20px;
+  border: 0;
+  border-radius: 18px;
+  background: var(--ink);
+  color: var(--bgc);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.soft-sheet-close[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: default;
+}
+.soft-sheet-delete,
+.soft-sheet-quiet {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 50px;
+  margin-top: 6px;
+  border: 0;
+  border-radius: 18px;
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.soft-sheet-delete {
+  color: var(--red);
+}
+.soft-sheet-quiet {
+  color: var(--dim);
+}
+.soft-sheet-body + .soft-sheet-body {
+  margin-top: 6px;
+}
+.soft-sheet-delete[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: default;
+}
+.soft-sheet-error {
+  margin: 12px 0 0;
+  color: var(--red);
+  font-size: 13px;
+  line-height: 1.4;
+}
+@keyframes soft-rise {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+}
+@keyframes soft-fade {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .soft-skin.soft-sheet {
+    animation: soft-fade 0.15s ease-out;
+  }
+}

@@ -21,6 +21,9 @@ import {
   type RestoreDeps,
   type RestoreSessionStore,
 } from "./sessionRestore";
+import { handoffBeforeCredentialClear } from "./voiceNotes/accountHandoff";
+import { createFakeVoiceNotes } from "./voiceNotes/fakeVoiceNotes";
+import { __setVoiceNotesForTests, VoiceNotes } from "./voiceNotes/nativeVoiceNotes";
 
 const ADDRESS = "0x0000000000000000000000000000000000000001";
 
@@ -51,6 +54,31 @@ const MANIFEST = { app_id: "xyz.tinycloud.tinychat" };
 const TCW = { did: `did:pkh:eip155:1:${ADDRESS}`, spaceId: "tinycloud:space" };
 type Tcw = typeof TCW;
 
+test("a definitive restore verdict waits for capture handoff before clearing credentials", async () => {
+  const store = new FakeSessionStore({ token: "token", address: ADDRESS });
+  const order: string[] = [];
+  const originalClear = store.clear.bind(store);
+  store.clear = () => { order.push("clear"); originalClear(); };
+  await restorePersistedSession(store, {
+    isOffline: () => false,
+    loadManifest: async () => MANIFEST,
+    restore: async () => ({ status: "expired", tcw: null }),
+    beforeClear: async () => { order.push("handoff"); },
+  });
+  expect(order).toEqual(["handoff", "clear"]);
+});
+
+test("a failed capture handoff preserves the persisted session", async () => {
+  const store = new FakeSessionStore({ token: "token", address: ADDRESS });
+  await expect(restorePersistedSession(store, {
+    isOffline: () => false,
+    loadManifest: async () => MANIFEST,
+    restore: async () => ({ status: "expired", tcw: null }),
+    beforeClear: async () => { throw new Error("disk failed"); },
+  })).rejects.toThrow("disk failed");
+  expect(store.cleared).toBe(0);
+});
+
 function deps(over: Partial<RestoreDeps<typeof MANIFEST, Tcw>> = {}) {
   const calls = { manifest: 0, restore: [] as string[] };
   const d: RestoreDeps<typeof MANIFEST, Tcw> = {
@@ -73,6 +101,50 @@ function deps(over: Partial<RestoreDeps<typeof MANIFEST, Tcw>> = {}) {
 
 const signedIn = () => new FakeSessionStore({ token: "bearer", address: ADDRESS });
 const offlineFetch = () => Promise.reject(new TypeError("Failed to fetch"));
+
+test("Moto stale signed-in native state with no web session becomes unowned on cold shortcut", async () => {
+  const previous = VoiceNotes;
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: "did:example:old", transitionGen: 16,
+      transcriber: "private-cloud", identifySpeakers: false });
+    const store = new FakeSessionStore(null);
+    const outcome = await restorePersistedSession(store, {
+      isOffline: () => false, loadManifest: async () => MANIFEST,
+      restore: async () => ({ status: "missing", tcw: null }),
+      beforeClear: async () => {
+        const native = await fake.plugin.getCaptureDefaults();
+        const result = await handoffBeforeCredentialClear(native.accountDid, null);
+        if (!result.ok) throw new Error(result.message ?? "Native handoff failed");
+      },
+    });
+    expect(outcome.kind).toBe("signedOut");
+    expect((await fake.plugin.getCaptureDefaults()).status).toBe("signed_out");
+    await fake.plugin.start();
+    expect(await fake.plugin.status()).toMatchObject({ owner: null, options: { transcriber: "on-device" } });
+  } finally { __setVoiceNotesForTests(previous, { available: null }); }
+});
+
+test("offline boot keeps a held web session and native signed-in account untouched", async () => {
+  const previous = VoiceNotes;
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: "did:example:held", transitionGen: 2,
+      transcriber: "private-cloud", identifySpeakers: false });
+    let handoffs = 0;
+    const outcome = await restorePersistedSession(new FakeSessionStore({ token: "bearer", address: ADDRESS }), {
+      isOffline: () => true,
+      loadManifest: async () => { throw new TypeError("Failed to fetch"); },
+      restore: async () => ({ status: "restored", tcw: TCW }),
+      beforeClear: async () => { handoffs++; },
+    });
+    expect(outcome.kind).toBe("unavailable");
+    expect(handoffs).toBe(0);
+    expect((await fake.plugin.getCaptureDefaults()).status).toBe("signed_in");
+  } finally { __setVoiceNotesForTests(previous, { available: null }); }
+});
 
 describe("isTransientRestoreError", () => {
   test("network-level fetch failures from every engine are transient", () => {
@@ -280,7 +352,7 @@ describe("App wiring (TC-514)", () => {
 
   test("a held session lands in `offline`, a verdict in the old states", () => {
     expect(restoreRegion).toMatch(/case "unavailable":\s+setError\(restored\.message\);\s+setState\("offline"\);/);
-    expect(restoreRegion).toMatch(/case "signedOut":\s+setState\("unauthenticated"\);/);
+    expect(restoreRegion).toMatch(/case "signedOut":\s+if \(!await captureHandoff\(\)\).*setState\("unauthenticated"\);/s);
     expect(restoreRegion).toMatch(/case "failed":\s+setError\(restored\.message\);\s+setState\("recoverableError"\);/);
   });
 

@@ -6,6 +6,9 @@ import { ChevronRightIcon } from "lucide-react";
 import { ListRow } from "@/components/ui/list-row";
 import type { MeetingListItem } from "@/lib/connectors/meetingExplorer";
 import { notePath } from "@/shell/routes";
+import { issueForItem, issueHasSheet, issueIsInformational } from "../home/captureIssues";
+import { SoftRow } from "../home/SoftRow";
+import { useSoftHome } from "../home/softHome";
 import { formatClockDuration, rowWhen } from "./formatters";
 import { KIND_ICON, libraryKind, librarySourceLabel } from "./libraryKinds";
 
@@ -23,6 +26,24 @@ export function LibraryRow(props: { item: LibraryItem; now: Date; grouped: boole
   const { item } = props;
   const Icon = KIND_ICON[libraryKind(item.source)];
   const voiceNote = libraryKind(item.source) === "note";
+  const soft = useSoftHome();
+  if (soft) {
+    const issue = issueForItem(item, soft.issues);
+    return (
+      <SoftRow
+        icon={Icon}
+        title={item.title ?? "Untitled"}
+        meta={libraryRowMeta(item, props.now, props.grouped)}
+        durationSecs={item.durationSecs}
+        issue={issue}
+        onDetails={issue && issueIsInformational(issue) ? (opener: HTMLElement) => soft.openIssue(item.sourceId, opener) : undefined}
+        {...(issue && issueHasSheet(issue) ? { onActivate: (row: HTMLElement) => soft.openIssue(item.sourceId, row) } : { href: notePath(item.id) })}
+        selected={props.selected}
+        testId={props.testId ?? (voiceNote ? "voice-note-item" : "library-item")}
+        sourceId={voiceNote ? item.sourceId : undefined}
+      />
+    );
+  }
   return (
     <ListRow
       href={notePath(item.id)}

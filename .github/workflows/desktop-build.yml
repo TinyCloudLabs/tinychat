@@ -213,9 +213,13 @@ jobs:
 
       # tauri build runs the frontend production build itself
       # (beforeBuildCommand in desktop/src-tauri/tauri.conf.json).
+      # VITE_EXO_BUILD_NUMBER is the CFBundleVersion the overlay stamps
+      # (TC-840: the desktop line's build number); VITE_EXO_CHANNEL its channel.
       - name: Build Exo desktop app
         env:
           TAURI_BUNDLE_CONFIG: ${{ steps.bundle.outputs.config }}
+          VITE_EXO_BUILD_NUMBER: ${{ steps.bundle.outputs.bundle-version }}
+          VITE_EXO_CHANNEL: ${{ steps.bundle.outputs.prerelease == 'true' && 'beta' || 'stable' }}
         run: bun run --cwd desktop tauri build --no-bundle --config "$TAURI_BUNDLE_CONFIG"
 
       # Bundles the compiled app into Exo.app and the DMG without compiling anything, ad-hoc sealing the app.

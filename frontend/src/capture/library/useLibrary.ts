@@ -32,6 +32,7 @@ import {
 } from "@/lib/connectors/meetingExplorer";
 import { scheduledSpace } from "@/lib/spaceQueue";
 import { loadVoiceNoteAudioBlob, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
+import { voiceNoteTranscriptLocator } from "@/lib/voiceNotes/voiceNoteCommits";
 import { voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { captureEvents } from "../captureEvents";
 import type { LibraryFilter } from "./libraryKinds";
@@ -164,13 +165,23 @@ export function useLibrary(
       bump();
       void enqueue(async () => {
         try {
+          const locator = note.source === VOICE_NOTE_SOURCE
+            ? await voiceNoteTranscriptLocator(space, note.sourceId) : null;
           if (!settled(reads.current.get(note.id)?.metadata)) {
-            const metadata = await readMeetingMetadata(space, note.id);
+            let metadata = await readMeetingMetadata(space, note.id);
+            if (locator && metadata.status === "ok") metadata = { status: "ok", metadata: {
+              ...metadata.metadata, transcription_outcome: locator.outcome,
+              // The preview is bounded; only the body read may supply full transcript text.
+              transcript_text: locator.committed ? null : locator.expectedText,
+            } };
             reads.current.set(note.id, { ...reads.current.get(note.id), metadata });
             if (mounted.current) bump();
           }
           if (!settled(reads.current.get(note.id)?.transcript)) {
-            const transcript = await readTranscript(space, note.source, note.sourceId);
+            const transcript = locator
+              ? locator.bodyKey ? await readTranscript(space, note.source, note.sourceId, locator.bodyKey, locator.expectedText)
+                : { status: "absent" as const }
+              : await readTranscript(space, note.source, note.sourceId);
             reads.current.set(note.id, { ...reads.current.get(note.id), transcript });
             if (mounted.current) bump();
           }
@@ -211,10 +222,11 @@ export function useLibrary(
   const audio = item ? meetingAudioFrom(meta) : null;
   const audioBase = audio?.status === "stored" ? audio.base : null;
   const voiceSourceId = item?.source === VOICE_NOTE_SOURCE ? item.sourceId : null;
+  const pendingAudioRow = voiceSourceId !== null && meta !== null && Object.keys(meta).length === 0;
   // The stored file is read only when the player asks, one part per queued
   // call; the player's signal stops it when the note closes.
   const loadAudio = useMemo<AudioLoad | null>(() => {
-    if (voiceSourceId !== null) {
+    if (voiceSourceId !== null && !pendingAudioRow) {
       return async (signal, onProgress) => {
         const res = await loadVoiceNoteAudioBlob(space, voiceSourceId, { signal, onProgress });
         if (!res.ok) throw new Error(res.error.message);
@@ -223,7 +235,7 @@ export function useLibrary(
     }
     if (audioBase !== null) return (signal, onProgress) => getAudio(space.kv, audioBase, { signal, onProgress });
     return null;
-  }, [audioBase, space, voiceSourceId]);
+  }, [audioBase, pendingAudioRow, space, voiceSourceId]);
 
   const retry = useCallback(() => {
     if (list.status === "failed") refresh();

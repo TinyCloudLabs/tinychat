@@ -13,34 +13,92 @@ import { base64ToBytes } from "./voiceNoteAudio";
  *  - `silenced`: still "recording", but the OS is feeding this app silence
  *    (a call or another app took the mic, the mic privacy toggle is off).
  */
-export type MicState = "idle" | "recording" | "silenced";
+export type MicState = "idle" | "recording" | "silenced" | "paused" | "interrupted" | "needs_user";
 
 /**
  * Why the state is what it is; `no_signal` means live but zero input level,
  * `max_duration` (with `idle`) that the recording was stopped at its length limit.
  */
-export type MicStateReason = "os_silenced" | "no_signal" | "max_duration" | null;
+export type MicStateReason = "os_silenced" | "no_signal" | "input_muted" | "call" | "user" | "interruption"
+  | "route_change" | "media_services_reset" | "read_error" | "stalled" | "app_suspended" | "writer_stalled"
+  | "resume_blocked" | "resume_not_allowed" | "mic_unavailable" | "pause_timeout"
+  | "max_duration" | "disk_full" | "write_failed" | "permission_revoked" | null;
+
+export type TranscriberId = "off" | "on-device" | "private-cloud" | "assemblyai";
+export type CaptureSource = "in_app" | "quick_action" | "app_shortcut" | "intent" | "control" | "tile" | "widget" | "notification";
+export interface CaptureOptions { transcriber: TranscriberId; identifySpeakers: boolean }
+export interface CaptureDefaults extends CaptureOptions { accountDid: string | null; transitionGen: number }
+export type AccountStatus = "signed_in" | "transitioning" | "signed_out";
+export interface RemoteOpReceipt {
+  id: string; did: string; opId: string; provider: "assemblyai" | "ptx"; mode: "hosted" | "own" | null;
+  kind: "hosted_create" | "hosted_submit" | "own_upload" | "own_create" | "ptx_create";
+  fingerprint: string; startedAt: number;
+}
+export interface AudioInput { id: string; name: string; kind: "built_in" | "wired" | "bluetooth" | "usb" | "car" | "other" }
+export interface MissingAudioSpan {
+  kind: "omitted" | "silenced";
+  reason: string;
+  startedAt: number;
+  endedAt: number | null;
+  atAudioMs: number;
+  audioMs: number;
+}
+export interface OutboxEntry {
+  entryId: string; did: string; provider: "assemblyai" | "ptx"; mode: "hosted" | "own" | null;
+  kind: "transcript" | "hosted_upload" | "hosted_submit" | "ptx_job" | "own_upload_lookup" | "unknown";
+  /** Original receipt kind; absent on Android until its follow-up, null on standalone legacy cleanup. */
+  receiptKind?: RemoteOpReceipt["kind"] | null;
+  handle: string | null; handleExpiresAt: number | null;
+  state: "pending" | "lookup" | "unknown" | "authority_expired" | "done";
+  createdAt: number; attempts: number;
+}
+export type ClaimOptions =
+  | { id: string; did: string; evidence: "signed_out_v2" | "user_choice" }
+  | { id: string; did: string; evidence: "space_row"; rowId: string };
+export interface NoteLedger {
+  spaceId?: string | null;
+  audio: { state: "pending" | "saved"; rowId: string | null; at: number | null };
+  transcript: { state: "pending" | "running" | "retrying" | "blocked" | "needs_attention" | "cancelled" | "failed" | "done";
+    outcome: "transcribed" | "no_speech" | null; reason: string | null; attempts: number; nextAttemptAt: number | null };
+  transcriptSync: { state: "pending" | "saved"; rev: number; at: number | null };
+  landed: { state: "none" | "pending" | "emitted"; eventId: string | null };
+  remote: { opId?: string; provider: "assemblyai" | "ptx"; mode: "hosted" | "own" | null;
+    kind?: RemoteOpReceipt["kind"]; fingerprint?: string; startedAt?: number;
+    stage: "create_unknown" | "uploading" | "uploaded" | "submit_unknown" | "submitted" | "done";
+    uploadId: string | null; uploadUrl: string | null; jobId: string | null; handleExpiresAt?: number | null;
+    cleanup: "none" | "pending" | "done" }[];
+}
+export interface NoteSttState {
+  state: "waiting_for_model" | "queued" | "running" | "done" | "failed" | "cancelled";
+  pack: "full" | "small" | null; engine: "parakeet" | "apple-speech" | null;
+  segmentsDone: number; windowsDone: number; error: string | null;
+}
+export interface LocalTranscript {
+  version: 1; noteId: string; transcriber: TranscriberId; rev: number;
+  engine: "parakeet-tdt-0.6b-v3" | "parakeet-tdt-110m-en" | "apple-speech" | "assemblyai" | "tinycloud-private-transcription";
+  model: string | null; language: string | null; outcome: "transcribed" | "no_speech"; diarized: boolean;
+  /** start/end are milliseconds: the native sidecar's canonical-JSON writer only accepts integers. */
+  segments: { start: number; end: number; text: string; speaker: string | null }[]; createdAt: string;
+  provider?: Record<string, unknown>;
+}
 
 /**
- * The longest voice note: 60 minutes, enforced by the native recorder (which
- * stops itself there, through the same path as Stop). At the phone's 64 kbps
- * AAC that is about 29 MB, i.e. about 29 one-MiB parts in the user's space and
- * one Blob in the webview to play back. An unattended recording (6 h was
- * 188 MB) can no longer grow past that.
+ * The longest voice note: three hours of recorded time, excluding user pauses.
+ * Native capture enforces the same upper bound.
  */
-export const VOICE_NOTE_MAX_DURATION_MS = 60 * 60 * 1000;
+export const VOICE_NOTE_MAX_DURATION_MS = 3 * 60 * 60 * 1000;
 
 /** The shortest limit the recorder accepts (the shells clamp to the same range). */
 export const VOICE_NOTE_MIN_DURATION_LIMIT_MS = 1000;
 
 /**
  * localStorage key that LOWERS the limit for this device, for testing the
- * auto-stop without recording an hour (clamped to [1 s, 60 min]; it can never
+ * auto-stop without recording three hours (clamped to [1 s, 3 h]; it can never
  * raise the limit).
  */
 export const VOICE_NOTE_MAX_DURATION_OVERRIDE_KEY = "exo.voiceNotes.maxDurationMs";
 
-/** The limit to ask the recorder for: 60 minutes unless a test override lowers it. */
+/** The limit to ask the recorder for: three hours unless a test override lowers it. */
 export function voiceNoteMaxDurationMs(storage: Pick<Storage, "getItem"> | null = safeLocalStorage()): number {
   const raw = storage?.getItem(VOICE_NOTE_MAX_DURATION_OVERRIDE_KEY);
   const requested = raw ? Number(raw) : NaN;
@@ -59,7 +117,40 @@ function safeLocalStorage(): Storage | null {
 export interface MicStateEvent {
   state: MicState;
   reason: MicStateReason;
+  detail?: string;
+  options?: CaptureOptions;
+  input?: AudioInput | null;
   at: number;
+  id?: string | null;
+  audioMs?: number;
+  elapsedMs?: number;
+  pausedMs?: number;
+  openSpan?: MissingAudioSpan | null;
+}
+
+/** iOS emits this retained alert after a successful media-services restart. */
+export interface CaptureAlertEvent {
+  id: string;
+  reason: "media_services_reset";
+  message: string;
+}
+
+export interface RecoveryFailedEvent {
+  /** iOS supplies an ID for a failed session; a scan failure or Android sweep may not. */
+  id?: string;
+  reason?: string;
+  error?: string;
+}
+
+export interface WriteFailureEvent {
+  id: string;
+  error: string;
+}
+
+export interface RecoveryCompletedEvent {
+  /** iOS emits the committed note fields; Android wraps them in recording. */
+  id?: string;
+  recording?: VoiceNoteRecording;
 }
 
 export interface VoiceNoteRecording {
@@ -73,6 +164,28 @@ export interface VoiceNoteRecording {
   silencedEvents: number;
   /** Time the input level stayed at zero while the OS said we were live. */
   noSignalMs: number;
+  version?: 2; rev?: number; wallMs?: number; pausedMs?: number; spans?: MissingAudioSpan[];
+  firstAudioAt?: number | null; captureStoppedAt?: number | null;
+  recovered?: boolean; endedUnexpectedly?: boolean; lastHeartbeatAt?: number | null; exitReason?: string | null;
+  legacyImport?: boolean; ownerUnknown?: boolean;
+  source?: CaptureSource; owner?: string | null; transitionGen?: number;
+  options?: CaptureOptions; input?: AudioInput | null; sampleRate?: number; bitrate?: number;
+  ledger?: NoteLedger; stt?: NoteSttState;
+}
+
+export interface CaptureStatus {
+  state: MicState; reason: MicStateReason; id: string | null;
+  detail?: string;
+  intent: "recording" | "paused" | "stopped"; availability: "available" | "interrupted" | "blocked";
+  startedAt: number | null; elapsedMs: number; audioMs: number; pausedMs: number; maxDurationMs: number;
+  spans: MissingAudioSpan[]; openSpan: MissingAudioSpan | null;
+  source?: CaptureSource; options?: CaptureOptions; input?: AudioInput | null; owner?: string | null;
+  activeId?: string | null;
+  transitionGen: number; androidSdkInt?: number;
+  /** Android shortcut recovery, queried without consuming a retained event. */
+  micDeniedPresentation?: boolean;
+  shortcutRecordPending?: boolean;
+  microphonePermissionGranted?: boolean;
 }
 
 /**
@@ -81,10 +194,13 @@ export interface VoiceNoteRecording {
  * (listPending) until saved, so a missed event loses nothing.
  */
 export interface VoiceNoteAutoStopEvent {
-  reason: "max_duration";
+  id?: string;
+  reason: "max_duration" | "disk_full" | "write_failed" | "permission_revoked";
   maxDurationMs: number;
   at: number;
   recording: VoiceNoteRecording | null;
+  /** Native finalization error code when recording is null. */
+  error?: string | null;
 }
 
 /** One slice of a recording on the device. */
@@ -99,21 +215,16 @@ export interface VoiceNoteAudioChunk {
 }
 
 export interface VoiceNotesPlugin {
-  /** `maxDurationMs`: stop by itself after this long (clamped to [1 s, 60 min]; default 60 min). */
-  start(options?: { maxDurationMs?: number }): Promise<{ id: string; startedAt: number; maxDurationMs?: number }>;
+  /** `maxDurationMs`: stop by itself after this much recorded time (clamped to [1 s, 3 h]). */
+  start(options?: { maxDurationMs?: number } & Partial<CaptureOptions>): Promise<{ id: string; startedAt: number; maxDurationMs?: number }>;
   stop(): Promise<VoiceNoteRecording>;
   /**
    * `maxDurationMs`: the current recording's limit (the default when idle).
    * `androidSdkInt`: Android only, the OS API level (Build.VERSION.SDK_INT).
    */
-  status(): Promise<{
-    state: MicState;
-    reason: MicStateReason;
-    id: string | null;
-    elapsedMs: number;
-    maxDurationMs?: number;
-    androidSdkInt?: number;
-  }>;
+  status(): Promise<CaptureStatus>;
+  dismissShortcutRecovery(): Promise<void>;
+  consumeShortcutRecord(): Promise<void>;
   /**
    * Up to `length` bytes of a stopped recording from `offset` (the shells cap one
    * call at 4 MiB). The audio crosses the bridge a part at a time, never whole.
@@ -123,9 +234,42 @@ export interface VoiceNotesPlugin {
   deleteAudio(options: { id: string }): Promise<void>;
   /** Stopped recordings still on the device, i.e. not yet confirmed saved. */
   listPending(): Promise<{ recordings: VoiceNoteRecording[] }>;
+  pause(): Promise<void>;
+  resume(): Promise<void>;
+  discard(): Promise<{ id: string | null }>;
+  setRecordingOptions(options: Partial<CaptureOptions>): Promise<void>;
+  getCaptureDefaults(): Promise<CaptureDefaults & { status: AccountStatus }>;
+  setCaptureDefaults(options: CaptureDefaults): Promise<{ claimed: string[] }>;
+  setAccountState(options: { status: AccountStatus; accountDid: string | null; transitionGen: number }): Promise<void>;
+  retryRecovery(options: { id: string }): Promise<void>;
+  /** A healthy id rejects with `not_failed_recording`; a live id with `recording_in_progress`. */
+  discardFailedRecording(options: { id: string }): Promise<void>;
+  beginRemoteOp(receipt: RemoteOpReceipt): Promise<void>;
+  recordRemoteResult(options: { id: string; did: string; opId: string; result: {
+    handle?: string; uploadId?: string; uploadUrl?: string; jobId?: string; handleExpiresAt?: number;
+    outcome: "created" | "failed" | "unknown";
+  } }): Promise<{ destination: "ledger" | "outbox" }>;
+  claim(options: ClaimOptions): Promise<{ owner: string | null }>;
+  updateLedger(options: { id: string; did: string; rev: number; patch: Partial<NoteLedger> }): Promise<{ rev: number }>;
+  localAudioUrl(options: { id: string }): Promise<{ url: string }>;
+  putTranscript(options: { id: string; transcript: LocalTranscript }): Promise<void>;
+  getTranscript(options: { id: string }): Promise<{ transcript: LocalTranscript | null }>;
+  listInputs(): Promise<{ inputs: AudioInput[]; selectedId: string | null; activeId: string | null }>;
+  selectInput(options: { id: string | null }): Promise<void>;
+  listQuarantine(): Promise<{ items: { id: string; reason: string; sizeBytes: number }[] }>;
+  deleteQuarantined(options: { id: string }): Promise<void>;
+  listOutbox(options: { did: string }): Promise<{ entries: OutboxEntry[] }>;
+  completeOutbox(options: { entryId: string; result: "done" | "retry" | "lookup" | "unknown" | "authority_expired" }): Promise<void>;
   addListener(event: "micState", listener: (event: MicStateEvent) => void): Promise<PluginListenerHandle>;
-  addListener(event: "level", listener: (event: { level: number }) => void): Promise<PluginListenerHandle>;
+  addListener(event: "captureAlert", listener: (event: CaptureAlertEvent) => void): Promise<PluginListenerHandle>;
+  addListener(event: "recoveryFailed", listener: (event: RecoveryFailedEvent) => void): Promise<PluginListenerHandle>;
+  addListener(event: "writeFailure", listener: (event: WriteFailureEvent) => void): Promise<PluginListenerHandle>;
+  addListener(event: "recovered" | "committed", listener: (event: RecoveryCompletedEvent) => void): Promise<PluginListenerHandle>;
+  openSettings(): Promise<void>;
+  addListener(event: "level", listener: (event: { level: number; peak?: number }) => void): Promise<PluginListenerHandle>;
   addListener(event: "autoStopped", listener: (event: VoiceNoteAutoStopEvent) => void): Promise<PluginListenerHandle>;
+  addListener(event: "presentRecorder", listener: (event: { id: string | null; reason?: "permission_denied" | "permission_granted" | string }) => void): Promise<PluginListenerHandle>;
+  addListener(event: "inputs", listener: (event: { inputs: AudioInput[]; selectedId: string | null; activeId: string | null }) => void): Promise<PluginListenerHandle>;
 }
 
 // `let`, so the browser harnesses can swap in a fake (below): every caller
@@ -203,4 +347,93 @@ export async function nativeHttpFileUploadSupported(
   } catch {
     return false;
   }
+}
+
+export type AudioInputsSnapshot = {
+  inputs: AudioInput[];
+  selectedId: string | null;
+  activeId: string | null;
+};
+
+const inputSubscribers = new Map<
+  (snapshot: AudioInputsSnapshot) => void,
+  ((caught: unknown) => void) | undefined
+>();
+let nativeInputsHandle: PluginListenerHandle | null = null;
+let nativeInputsQueue: Promise<void> = Promise.resolve();
+
+const fanOutInputs = (snapshot: AudioInputsSnapshot) => {
+  for (const subscriber of [...inputSubscribers.keys()]) subscriber(snapshot);
+};
+
+/** Brings the one native listener in line with whether anyone is subscribed. */
+async function reconcileNativeInputs(): Promise<void> {
+  if (inputSubscribers.size > 0 && !nativeInputsHandle) {
+    nativeInputsHandle = await VoiceNotes.addListener("inputs", fanOutInputs);
+  } else if (inputSubscribers.size === 0 && nativeInputsHandle) {
+    await nativeInputsHandle.remove();
+    nativeInputsHandle = null;
+  }
+}
+
+/**
+ * Add and remove run one at a time, so a resubscribe straight after the last
+ * unsubscribe (React StrictMode does it) waits for the removal and never
+ * leaves two native listeners. A failure is logged and goes to every current
+ * subscriber's `onError`; the state is left as the plugin left it, and the next
+ * change retries.
+ */
+function syncNativeInputs(): void {
+  nativeInputsQueue = nativeInputsQueue
+    .then(reconcileNativeInputs)
+    .catch((caught: unknown) => {
+      console.error(
+        "[VoiceNotes] Could not update the audio input listener",
+        caught,
+      );
+      for (const onError of [...inputSubscribers.values()]) onError?.(caught);
+    });
+}
+
+/**
+ * Subscribe to input-list changes. Capacitor delivers a retained event to the
+ * first native listener only, so this keeps one native listener for all
+ * subscribers: attached with the first, removed with the last.
+ */
+export function onInputsChanged(
+  listener: (snapshot: AudioInputsSnapshot) => void,
+  onError?: (caught: unknown) => void,
+): () => void {
+  inputSubscribers.set(listener, onError);
+  syncNativeInputs();
+  return () => {
+    inputSubscribers.delete(listener);
+    syncNativeInputs();
+  };
+}
+
+export function listInputs(): Promise<AudioInputsSnapshot> {
+  return VoiceNotes.listInputs();
+}
+
+export function selectInput(id: string | null): Promise<void> {
+  return VoiceNotes.selectInput({ id });
+}
+
+export type QuarantinedRecording = { id: string; reason: string; sizeBytes: number };
+
+export function listQuarantine(): Promise<{ items: QuarantinedRecording[] }> {
+  return VoiceNotes.listQuarantine();
+}
+
+export function retryRecovery(id: string): Promise<void> {
+  return VoiceNotes.retryRecovery({ id });
+}
+
+export function discardFailedRecording(id: string): Promise<void> {
+  return VoiceNotes.discardFailedRecording({ id });
+}
+
+export function deleteQuarantined(id: string): Promise<void> {
+  return VoiceNotes.deleteQuarantined({ id });
 }

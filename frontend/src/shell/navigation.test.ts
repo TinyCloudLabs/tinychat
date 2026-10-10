@@ -91,8 +91,9 @@ describe("remembered places never cross accounts", () => {
     const app = await Bun.file(new URL("../App.tsx", import.meta.url)).text();
     const body = (name: string) => app.slice(app.indexOf(`const ${name} = useCallback(`), app.indexOf("}, [", app.indexOf(`const ${name} = useCallback(`)));
     expect(body("signIn")).toContain("resetNavigationMemory();");
-    expect(body("signOut")).toContain("clearLocalSession(openKeyWarning, tcw ?? undefined);");
-    const cleanup = app.slice(app.indexOf("const clearLocalSession ="), app.indexOf("const startNativeRenewal ="));
+    expect(body("signOut")).toContain("completeLocalSignOut(openKeyWarning, Boolean(options.terminal));");
+    expect(body("signOut")).not.toContain("resetNavigationMemory();");
+    const cleanup = app.slice(app.indexOf("const completeLocalSignOut ="), app.indexOf("useEffect(() => registerSessionSignedOutHook"));
     expect(cleanup).toContain("resetNavigationMemory();");
   });
 });

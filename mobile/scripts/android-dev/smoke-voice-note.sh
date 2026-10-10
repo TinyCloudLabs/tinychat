@@ -23,7 +23,7 @@ $ADB shell pm grant xyz.tinycloud.exo android.permission.POST_NOTIFICATIONS 2>/d
 LIST='[data-testid=library-list] [data-testid=voice-note-item]'
 ready=$(cdp 'new Promise(r => { let n = 0; const t = setInterval(() => { n++;
   if (location.pathname !== "/chat/capture" && n % 10 === 1) { history.pushState({}, "", "/chat/capture"); dispatchEvent(new PopStateEvent("popstate")); }
-  const card = document.querySelector("[data-testid=voice-note-record]"), busy = document.querySelector("[data-testid=voice-note-stop]");
+  const card = document.querySelector("[data-testid=voice-note-record]"), busy = document.querySelector("[data-testid=recording-overlay] [data-testid=voice-note-stop]");
   const listed = document.querySelector("[data-testid=library-list][data-state=ready]");
   if (((card || busy) && listed) || n > 400) { clearInterval(t); const items = document.querySelectorAll("'"$LIST"'");
     r(JSON.stringify({ ok: !!card, recording: !!busy, items: items.length, newest: items[0]?.dataset.sourceId ?? null, signedOut: /Sign in to start/.test(document.body.textContent) })); } }, 300); })')
@@ -46,7 +46,11 @@ state=$(cdp 'new Promise(r => { let n = 0; const t = setInterval(() => { n++; co
 [ "$(echo "$state" | json '')" = "recording" ] || fail "recording did not start ($state)"
 "$here/inject-audio.sh" "$clip"
 # With SMOKE_LIMIT_MS the recorder stops itself at the limit; otherwise press Stop.
-[ -n "$limit_ms" ] || cdp 'document.querySelector("[data-testid=voice-note-stop]").click(), "ok"' >/dev/null
+[ -n "$limit_ms" ] || cdp 'document.querySelector("[data-testid=recording-overlay] [data-testid=voice-note-stop]").click(), "ok"' >/dev/null
+local_receipt=$(cdp 'new Promise(r => { let n = 0; const t = setInterval(() => { n++;
+  const receipt = document.querySelector("[data-testid=recording-overlay] [data-testid=voice-note-receipt]");
+  if (receipt || n > 100) { clearInterval(t); r(!!receipt && /Saved on this phone/.test(receipt.textContent)); } }, 100); })' | json '')
+[ "$local_receipt" = "True" ] || fail "local receipt did not appear after native Stop"
 saved=$(cdp 'new Promise(r => { let n = 0; const t = setInterval(() => { n++; const items = document.querySelectorAll("'"$LIST"'");
   const pending = document.querySelector("[data-testid=voice-note-pending]"); const alert = [...document.querySelectorAll("[role=alert]")].map(a => a.textContent).find(t => /saving|voice note/i.test(t));
   const newest = items[0]?.dataset.sourceId ?? null;

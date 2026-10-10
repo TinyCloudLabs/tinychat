@@ -10,6 +10,7 @@
     <uses-sdk tools:overrideLibrary="androidx.health.connect.client" />
 
     <application
+        android:name=".ExoApplication"
         android:allowBackup="true"
         android:fullBackupContent="@xml/backup_rules"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -31,6 +32,7 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
 
             <!-- Google connector OAuth return (TC-521): the backend's /callback 302s the
                  system browser here, and singleTask delivers it to the running activity
@@ -59,7 +61,7 @@
         </provider>
 
         <service
-            android:name=".voicenotes.VoiceNoteService"
+            android:name=".capture.CaptureService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
     </application>
@@ -67,8 +69,12 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- On-device STT (TC-836): ModelDownloads checks for Wi-Fi before downloading. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 </manifest>

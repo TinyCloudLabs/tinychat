@@ -18,7 +18,7 @@
     },
     "backend": {
       "name": "@tinychat/backend",
-      "version": "0.4.2-beta.0",
+      "version": "0.5.0-beta.1",
       "dependencies": {
         "@scalar/express-api-reference": "^0.4.0",
         "@tinyboilerplate/core": "workspace:*",
@@ -42,7 +42,7 @@
     },
     "desktop": {
       "name": "exo-desktop",
-      "version": "0.6.0-beta.13",
+      "version": "0.6.0-beta.14",
       "dependencies": {
         "@tauri-apps/api": "^2.9.0",
       },
@@ -52,7 +52,7 @@
     },
     "frontend": {
       "name": "@tinychat/frontend",
-      "version": "0.6.0-beta.13",
+      "version": "0.6.0-beta.14",
       "dependencies": {
         "@assistant-ui/react": "^0.14.13",
         "@assistant-ui/react-markdown": "0.14.1",
@@ -60,8 +60,8 @@
         "@capacitor/browser": "^8.0.5",
         "@capacitor/core": "^8.5.2",
         "@capacitor/haptics": "^8.0.2",
-        "@openkey/sdk": "^0.11.0",
-        "@openkey/sdk-capacitor": "0.1.0-beta.0",
+        "@openkey/sdk": "0.12.0-beta.1",
+        "@openkey/sdk-capacitor": "0.1.0-beta.1",
         "@peculiar/x509": "^2.0.0",
         "@radix-ui/react-alert-dialog": "^1.1.4",
         "@radix-ui/react-dialog": "^1.1.4",
@@ -113,7 +113,7 @@
         "@capacitor/core": "^8.5.2",
         "@capacitor/haptics": "^8.0.2",
         "@capacitor/ios": "^8.5.2",
-        "@openkey/sdk-capacitor": "0.1.0-beta.0",
+        "@openkey/sdk-capacitor": "0.1.0-beta.1",
       },
       "devDependencies": {
         "@capacitor/cli": "^8.5.2",
@@ -128,12 +128,12 @@
         "@tinycloud/sdk-core": "2.11.0",
       },
       "devDependencies": {
-        "@openkey/sdk": "^0.11.0",
+        "@openkey/sdk": "0.12.0-beta.1",
         "@tinycloud/web-sdk": "2.11.0",
         "typescript": "^5.7.0",
       },
       "peerDependencies": {
-        "@openkey/sdk": ">=0.11.0",
+        "@openkey/sdk": ">=0.11.0 || 0.12.0-beta.1",
         "@tinycloud/web-sdk": ">=2.4.1-beta.0",
       },
     },
@@ -581,11 +581,11 @@
 
     "@nodelib/fs.walk": ["@nodelib/fs.walk@1.2.8", "", { "dependencies": { "@nodelib/fs.scandir": "2.1.5", "fastq": "^1.6.0" } }, "sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg=="],
 
-    "@openkey/core": ["@openkey/core@0.8.8", "", {}, "sha512-aeGiQ2SK5lMTaJMkLZJ/HKMTym/AlrWLHeKHNZmuV6pTbAgIi9uTTO+IaF11V7+htFHO0kD6XUosNVGCGRWr3w=="],
+    "@openkey/core": ["@openkey/core@0.12.0-beta.0", "", { "dependencies": { "@noble/curves": "^1.9.7" } }, "sha512-ztdpIbjtcELUnUSETZneegVfeWsYm61HxxlFLOV9fkaFqvXBYxH0c++WxCodDPCyWmRpx5WIYAQQnm/UuUjkgA=="],
 
-    "@openkey/sdk": ["@openkey/sdk@0.11.0", "", { "dependencies": { "@openkey/core": "^0.8.8" } }, "sha512-TsIvnia+rbCDQt1sb6i6mNhDeF6NQHUQVmWVd4JvDFUQlBoDYnY2RwhdMvHi50yVu2Z7ENAGtw/6BoAQynaeGA=="],
+    "@openkey/sdk": ["@openkey/sdk@0.12.0-beta.1", "", { "dependencies": { "@openkey/core": "^0.12.0-beta.0" } }, "sha512-/HwF3RLbwcdHRMe/sTomw2Fgyg2EJsA0dmN/C5kk38XLgFvWc9okdDSp8DIOPIl/PTxhdDjMiUMsK4KxoeGiyg=="],
 
-    "@openkey/sdk-capacitor": ["@openkey/sdk-capacitor@0.1.0-beta.0", "", { "peerDependencies": { "@capacitor/core": "^8.0.0", "@tinycloud/web-sdk": "^2.11.0" } }, "sha512-xZydvKDSnOkZquQVuxsfcnLDNhK3k2Lvgo5X1H8a4Oem3N46UnwildabukY7itNK6x52VHz6ytQEHXL44yiMqQ=="],
+    "@openkey/sdk-capacitor": ["@openkey/sdk-capacitor@0.1.0-beta.1", "", { "peerDependencies": { "@capacitor/core": "^8.0.0", "@tinycloud/web-sdk": "^2.11.0" } }, "sha512-3V3Kd+uPzA1PFg00Pt9ZZohYe9iaihulIdFAfSgY1iKEGj+7CibID+6EJqjLRvsLG+2/lllRe5QzLVnsTC5gug=="],
 
     "@peculiar/asn1-cms": ["@peculiar/asn1-cms@2.7.0", "", { "dependencies": { "@peculiar/asn1-schema": "^2.7.0", "@peculiar/asn1-x509": "^2.7.0", "@peculiar/asn1-x509-attr": "^2.7.0", "asn1js": "^3.0.6", "tslib": "^2.8.1" } }, "sha512-hew63shtzzvBcSHbhm+cyAmKe6AIfinT9hzEqSPjDC6opTTMKmTkQ0gHuN2KsWlvqiKw1S/fS94fhag/FJkioQ=="],
 

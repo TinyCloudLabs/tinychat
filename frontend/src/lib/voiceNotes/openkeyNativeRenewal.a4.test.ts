@@ -72,7 +72,10 @@ test("forced swap aborts an outstanding part and schedules pending manifest and 
   }
   const old = graph();
   live = old;
-  const raw = { get kv() { return live.kv; } } as unknown as TinyCloudWeb;
+  const raw = { did: "did:pkh:eip155:1:0x1111111111111111111111111111111111111111",
+    spaceId: "did:pkh:eip155:1:0x1111111111111111111111111111111111111111/applications",
+    get kv() { return live.kv; } } as unknown as TinyCloudWeb;
+  note.owner = raw.did;
   const original = {
     delegation: { address: "0x1111111111111111111111111111111111111111", delegationCid: "old", issuedAt: new Date(1_000_000).toISOString(), expiresAt: new Date(1_300_000).toISOString() },
   } as NativeSession;
@@ -102,7 +105,8 @@ test("forced swap aborts an outstanding part and schedules pending manifest and 
     await recovered; // scheduled after the save's single-flight guard settles
     expect(manifestAndParts.has(store.voiceNoteAudioManifestKey(note.id))).toBe(true);
     expect(records.get(note.id)).toEqual({ audio: store.voiceNoteAudioKvKey(note.id), parts: 2 });
-    expect(pending).toBe(false);
+    // The owner-aware recorder keeps the local audio playable after its space save.
+    expect(pending).toBe(true);
   } finally {
     unregister();
     renewal.stop();

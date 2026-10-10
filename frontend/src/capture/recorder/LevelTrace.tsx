@@ -16,17 +16,25 @@ export function barScale(level: number): number {
 export function LevelTrace(props: {
   subscribe: (listener: (level: number) => void) => () => void;
   /** `live` while the mic hears; `warning` while it is silenced or hears nothing. */
-  tone?: "live" | "warning";
+  tone?: "live" | "warning" | "muted";
+  variant?: "tape" | "waveform";
+  paused?: boolean;
   bars?: number;
   className?: string;
 }) {
-  const { subscribe, tone = "live", bars = 48 } = props;
+  const { subscribe, tone = "live", variant = "tape", paused = false, bars = variant === "waveform" ? 96 : 48 } = props;
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const element = root.current;
     if (!element) return;
     const spans = [...element.children] as HTMLElement[];
     const samples: number[] = new Array(spans.length).fill(0);
+    if (paused) {
+      spans.forEach((span) => { span.style.transform = `scaleY(${FLOOR})`; });
+      return;
+    }
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    if (reduceMotion) return;
     return subscribe((level) => {
       samples.shift();
       samples.push(level);
@@ -34,19 +42,20 @@ export function LevelTrace(props: {
         span.style.transform = `scaleY(${barScale(samples[index]).toFixed(3)})`;
       });
     });
-  }, [subscribe, bars]);
+  }, [subscribe, bars, paused]);
   return (
     <div
       ref={root}
       aria-hidden="true"
       data-level-trace=""
       data-tone={tone}
-      className={cn("flex h-10 w-full items-center gap-[3px]", props.className)}
+      data-variant={variant}
+      className={cn("flex h-10 w-full items-center", variant === "waveform" ? "gap-[2px]" : "gap-[3px]", props.className)}
     >
       {Array.from({ length: bars }, (_, index) => (
         <span
           key={index}
-          className={cn("h-full min-w-0 flex-1 rounded-full", tone === "warning" ? "bg-warning" : "bg-live")}
+          className={cn("h-full min-w-0 flex-1 rounded-full", tone === "warning" ? "bg-warning" : tone === "muted" ? "bg-muted-foreground/45" : "bg-live")}
           style={{ transform: `scaleY(${FLOOR})` }}
         />
       ))}

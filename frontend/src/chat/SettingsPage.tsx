@@ -8,6 +8,7 @@ import {
   CreditCardIcon,
   DatabaseIcon,
   LogOutIcon,
+  MicIcon,
   RefreshCwIcon,
   ShieldCheckIcon,
   SunIcon,
@@ -17,6 +18,7 @@ import { Link } from "react-router-dom";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Button } from "@/components/ui/button";
+import { BuildInfoLine } from "@/components/BuildInfoLine";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { InfoTip } from "@/components/ui/info-tip";
 import { SectionCard } from "@/components/ui/section-card";
@@ -29,6 +31,8 @@ import { useBackendAttestation } from "../lib/useBackendAttestation";
 import { BackendAttestationDetails } from "./BackendAttestationDetails";
 import { useConversationCanvasFeature } from "./useExperimentalFeatures";
 import { TranscriptionSettings } from "./TranscriptionSettings";
+import { VoiceNotesTranscriberSettings } from "./VoiceNotesTranscriberSettings";
+import { nativeVoiceNotesAvailable } from "../lib/voiceNotes/nativeVoiceNotes";
 import { useSizeClass } from "../lib/sizeClass";
 import { PageHeader } from "../shell/PageHeader";
 import { PATHS } from "../shell/routes";
@@ -157,6 +161,11 @@ export function SettingsPage({
             />
           </SectionCard>
           <TranscriptionSettings tcw={tcw} />
+          {nativeVoiceNotesAvailable() && (
+            <SectionCard icon={MicIcon} title="Voice notes">
+              <VoiceNotesTranscriberSettings />
+            </SectionCard>
+          )}
           <SectionCard icon={ShieldCheckIcon} title="Infrastructure">
             <BackendAttestationPanel
               backendUrl={backendUrl}
@@ -253,6 +262,8 @@ export function SettingsPage({
             <span className="flex-1">How it works</span>
             <ChevronRightIcon aria-hidden className="size-4 text-muted-foreground" />
           </Link>
+          {/* The build line at the bottom of Settings (TC-840). */}
+          <BuildInfoLine />
         </div>
       </div>
     </div>

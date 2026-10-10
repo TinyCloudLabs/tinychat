@@ -9,6 +9,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { fakeVoiceNoteStore } from "@/harness/fakeVoiceNoteStore";
 import { __setVoiceNotesForTests, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
+import { currentAccountGeneration } from "./accountContext";
 
 const realStore = { ...(await import("./voiceNoteStore")) };
 mock.module("./voiceNoteStore", () => ({
@@ -33,10 +34,11 @@ function withStorage(): Map<string, string> {
   return items;
 }
 
-const tcw = {} as TinyCloudWeb;
+const tcw = { did: "did:example:alice" } as TinyCloudWeb;
 
 function recording(id: string, startedAt: number): VoiceNoteRecording {
-  return { id, startedAt, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 };
+  return { id, startedAt, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+    version: 2, owner: tcw.did, rev: 1 };
 }
 
 /** The phone: what is listed as pending, and how deleteAudio and listPending behave. */
@@ -46,6 +48,8 @@ const phone = {
   deletes: 0,
   lists: 0,
   holdList: null as Promise<void> | null,
+  ledgerUpdates: [] as unknown[],
+  ledgerConflicts: 0,
 };
 
 const plugin = {
@@ -65,6 +69,15 @@ const plugin = {
   async readAudioChunk({ id, offset, length }: { id: string; offset: number; length: number }) {
     return { id, offset, base64: btoa("\u0000".repeat(length)), bytesRead: length, size: 4, eof: true };
   },
+  async updateLedger(options: unknown) {
+    phone.ledgerUpdates.push(options);
+    if (phone.ledgerConflicts > 0) {
+      phone.ledgerConflicts--;
+      phone.pending = phone.pending.map((note) => ({ ...note, rev: 2 }));
+      throw Object.assign(new Error("ledger changed"), { code: "rev_conflict" });
+    }
+    return { rev: 3 };
+  },
 } as unknown as VoiceNotesPlugin;
 
 let saveCalls = 0;
@@ -79,7 +92,7 @@ const fails = async () => {
 
 beforeEach(() => {
   __setVoiceNotesForTests(plugin, { available: true });
-  Object.assign(phone, { pending: [], deleteFailures: 0, deletes: 0, lists: 0, holdList: null });
+  Object.assign(phone, { pending: [], deleteFailures: 0, deletes: 0, lists: 0, holdList: null, ledgerUpdates: [], ledgerConflicts: 0 });
   saveCalls = 0;
   fakeVoiceNoteStore.save = ok;
 });
@@ -122,54 +135,112 @@ describe("savePendingRecordings", () => {
     });
   });
 
-  test("saved, but the phone keeps its copy twice: never hidden, never uploaded again, removed on the third try", async () => {
+  test("an uploaded note remains on the phone and is never uploaded twice", async () => {
     const note = recording("kept", 1);
     phone.pending = [note];
-    phone.deleteFailures = 2;
-
-    // In the space; the copy stays and is counted, with what happened.
     const first = await saves.savePendingRecordings(tcw);
     expect(first.saved.map((r) => r.id)).toEqual(["kept"]);
-    expect(first.lastError).toContain("Saved to your space, but this phone kept its copy");
-    expect(saves.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 1 });
-
-    // Save now: only the copy is left to remove; it fails again and is still counted, not re-saved.
+    expect(first.lastError).toBeNull();
+    expect(saves.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 0 });
     const second = await saves.savePendingRecordings(tcw);
     expect(second.saved).toEqual([]);
     expect(second.left).toEqual([]);
-    expect(second.lastError).toContain("this phone kept its copy");
-    expect(saves.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 1 });
-
-    // The third time the copy goes, and the count follows the phone.
-    const third = await saves.savePendingRecordings(tcw);
-    expect(third.lastError).toBeNull();
+    expect(second.lastError).toBeNull();
     expect(saves.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 0 });
     expect(saveCalls).toBe(1);
-    expect(phone.deletes).toBe(3);
+    expect(phone.deletes).toBe(0);
+    expect(phone.pending).toEqual([note]);
   });
 });
 
 describe("saveRecording", () => {
-  test("a save in the space and the device copy are separate results", async () => {
+  test("renewal's save-idle waiter resolves when an account pipeline save fails", async () => {
+    const note = recording("account-save-idle", 1);
+    const accountTcw = { ...tcw, spaceId: "space" } as TinyCloudWeb;
+    let finish!: () => void;
+    fakeVoiceNoteStore.save = async () => {
+      await new Promise<void>((resolve) => { finish = resolve; });
+      return fails();
+    };
+    const saving = saves.saveNoteForAccount(accountTcw,
+      { did: tcw.did, spaceId: "space", generation: currentAccountGeneration() }, note);
+    expect(saves.voiceNoteSaveBusy()).toBe(true);
+    let idle = false;
+    const waiting = saves.whenVoiceNoteSavesIdle().then(() => { idle = true; });
+    await Promise.resolve();
+    expect(idle).toBe(false);
+    finish();
+    expect(await saving).toEqual({ kind: "failed", failure: "The network connection was lost." });
+    await waiting;
+    expect(idle).toBe(true);
+    expect(saves.voiceNoteSaveBusy()).toBe(false);
+  });
+
+  test("a save in the space leaves the device copy for local playback", async () => {
     const note = recording("one", 1);
     phone.pending = [note];
-    phone.deleteFailures = 1;
     const outcome = await saves.saveRecording(tcw, note);
     expect(outcome.kind).toBe("saved");
-    expect(outcome.kind === "saved" && outcome.cleanupError).toContain("this phone kept its copy");
-    // A late "autoStopped" for the same note: already in the space, so only the copy is removed.
+    expect(outcome.kind === "saved" && outcome.cleanupError).toBeNull();
     expect(await saves.saveRecording(tcw, note)).toEqual({ kind: "already-saved", cleanupError: null });
     expect(saveCalls).toBe(1);
+    expect(phone.deletes).toBe(0);
+    expect(phone.pending).toEqual([note]);
+  });
+
+  test("every v1 note, including one missing ownerUnknown, is held by the sign-in saver", async () => {
+    const bareV1: VoiceNoteRecording = {
+      id: "bare-v1", startedAt: 0, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4,
+      silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+    };
+    phone.pending = [bareV1];
+    expect(await saves.savePendingRecordings(tcw)).toMatchObject({ total: 1, left: [bareV1], saved: [] });
+    expect(saveCalls).toBe(0);
+    expect(phone.deletes).toBe(0);
+  });
+
+  test("legacy and unowned v2 notes never reach saveVoiceNote", async () => {
+    const legacy = { ...recording("legacy-held", 1), ownerUnknown: true };
+    const unowned = { ...recording("unowned-held", 2), version: 2 as const, owner: null };
+    const other = { ...recording("other-account", 3), version: 2 as const, owner: "did:example:bob" };
+    phone.pending = [legacy, unowned, other];
+    expect(await saves.saveRecording(tcw, legacy)).toEqual({ kind: "held", reason: "legacy" });
+    expect(await saves.saveRecording(tcw, unowned)).toEqual({ kind: "held", reason: "unowned" });
+    expect(await saves.saveRecording(tcw, other)).toEqual({ kind: "held", reason: "other-account" });
+    expect(saveCalls).toBe(0);
+    expect(phone.deletes).toBe(0);
+    expect(phone.pending).toHaveLength(3);
+  });
+
+  test("owned v2 upload updates the native audio ledger and retains local audio", async () => {
+    const note = { ...recording("owned-v2", 3), version: 2 as const, owner: "did:example:alice", rev: 2 };
+    phone.pending = [note];
+    fakeVoiceNoteStore.save = async () => ({ ok: true, data: { id: "actual-row", inserted: true, createdAt: "2026-10-07T00:00:00Z" } }) as never;
+    expect((await saves.saveRecording(tcw, note)).kind).toBe("saved");
+    expect(phone.ledgerUpdates).toEqual([{ id: note.id, did: note.owner, rev: 2,
+      patch: { audio: { state: "saved", rowId: "actual-row", at: expect.any(Number) } } }]);
+    expect(phone.pending).toEqual([note]);
+    expect(phone.deletes).toBe(0);
+  });
+
+  test("a changed ledger rev is re-read and patched once without another upload", async () => {
+    const note = recording("owned-rev-conflict", 4);
+    phone.pending = [note];
+    phone.ledgerConflicts = 1;
+    const result = await saves.saveRecording(tcw, note);
+    expect(result).toMatchObject({ kind: "saved", cleanupError: null });
+    expect(saveCalls).toBe(1);
+    expect(phone.ledgerUpdates).toMatchObject([{ rev: 1 }, { rev: 2 }]);
+    expect(phone.deletes).toBe(0);
   });
 });
 
 describe("after a reload", () => {
-  test("saved, the delete failed, then a reload: the next run removes the copy only, never saves it again", async () => {
+  test("after a reload, an old localStorage marker cannot suppress a pending native ledger", async () => {
     const storage = withStorage();
     const before = await reloaded();
     const note = recording("reload", 1);
     phone.pending = [note];
-    phone.deleteFailures = 1;
     const first = await before.savePendingRecordings(tcw);
     expect(first.saved.map((r) => r.id)).toEqual(["reload"]);
     expect(saveCalls).toBe(1);
@@ -180,11 +251,11 @@ describe("after a reload", () => {
     // A fresh module: its in-memory guards are gone; the phone and localStorage are not.
     const after = await reloaded();
     const second = await after.savePendingRecordings(tcw);
-    expect(saveCalls).toBe(1);
-    expect(second.saved).toEqual([]);
+    expect(saveCalls).toBe(2);
+    expect(second.saved.map((r) => r.id)).toEqual(["reload"]);
     expect(second.left).toEqual([]);
-    expect(phone.pending).toEqual([]);
-    expect(storage.has(saves.VOICE_NOTE_CLOUD_SAVED_KEY)).toBe(false);
+    expect(phone.pending).toEqual([note]);
+    expect(storage.has(saves.VOICE_NOTE_CLOUD_SAVED_KEY)).toBe(true);
     expect(after.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 0 });
   });
 
@@ -239,7 +310,7 @@ describe("discard guard", () => {
     expect(run.left).toEqual([]);
     expect(run.lastError).toBeNull();
     expect(saveCalls).toBe(1);
-    expect(phone.pending).toEqual([]);
+    expect(phone.pending.map((r) => r.id)).toEqual(["discard-keep"]);
     expect(saves.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 0 });
   });
 

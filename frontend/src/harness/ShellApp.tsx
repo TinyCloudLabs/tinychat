@@ -15,7 +15,7 @@ import { HeaderLiveChip } from "@/capture/recorder/HeaderLiveChip";
 import { LiveEdge } from "@/capture/recorder/LiveEdge";
 import { RecordButton } from "@/capture/recorder/RecordButton";
 import { RecorderProvider, StaticRecorderProvider, type RecorderValue } from "@/capture/recorder/RecorderProvider";
-import { RecorderShell } from "@/capture/recorder/RecorderShell";
+import { FinalRecorderShell, RecorderShell } from "@/capture/recorder/RecorderShell";
 import { useOpenSavedNote } from "@/capture/library/useOpenSavedNote";
 import { ChatWorkspace } from "@/chat/ChatWorkspace";
 import { DEFAULT_CONTEXT_TOKENS } from "@/chat/compaction";
@@ -23,7 +23,7 @@ import { ConnectorsPage } from "@/chat/ConnectorsPage";
 import { MeetingsSection } from "@/chat/MeetingsSection";
 import { ModelPicker, type ModelOption } from "@/chat/ModelPicker";
 import type { ModelSelectionController, SelectionView } from "@/chat/modelSelection";
-import { OfflineVoiceNotes } from "@/chat/OfflineVoiceNotes";
+import { LocalCaptureHome } from "@/capture/local/LocalCaptureHome";
 import { SettingsPage } from "@/chat/SettingsPage";
 import { AboutPage } from "@/chat/AboutPage";
 import { AgentAccessProvider } from "@/chat/useAgentEnablement";
@@ -68,9 +68,13 @@ export interface ShellAppProps {
   captureTcw?: TinyCloudWeb;
   /** A fixed recorder state in place of the real controller (the screens' recorder fixtures). */
   recorder?: Partial<RecorderValue>;
+  /** The Soft-skin minimised recorder (TC-870); the harness build has no env, so the flag cannot say. */
+  finalRecorder?: boolean;
+  /** Rendered inside the real recorder provider, beside the shell (a harness driver). */
+  inside?: ReactNode;
 }
 
-export function ShellApp({ platform, shim, state, probe = (_id, node) => node, captureTcw = harnessTcw, recorder }: ShellAppProps) {
+export function ShellApp({ platform, shim, state, probe = (_id, node) => node, captureTcw = harnessTcw, recorder, finalRecorder = false, inside }: ShellAppProps) {
   useVisualViewportFit();
   const location = useLocation();
   const navigate = useNavigate();
@@ -95,8 +99,9 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
     navigate(state === "ready" ? legacy.to : homePath(platform), { replace: true });
   }, [legacy, settled, state, platform, navigate]);
 
+  const Shell = finalRecorder ? FinalRecorderShell : RecorderShell;
   const recorderShell = (
-    <RecorderShell
+    <Shell
       onOpenNote={openSavedNote}
       screen={screen}
       platform={platform}
@@ -198,19 +203,17 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
                   sessionStore={harnessSessionStore}
                   onSaved={() => captureEvents.emit("library-changed")}
                 >
+                  {inside}
                   {recorderShell}
                 </RecorderProvider>
               )}
             </TranscriberLibrarySyncProvider>
           </AgentAccessProvider>
         ) : (
-          <main className="h-full pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
-            <BootSurface
-              state={state}
-              error={null}
-              onAction={() => {}}
-              voiceNotes={state === "offline" && voiceNotesInApp ? <OfflineVoiceNotes /> : null}
-            />
+          <main className="h-full overflow-y-auto pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
+            {state === "offline" && voiceNotesInApp
+              ? <StaticRecorderProvider value={recorder}><LocalCaptureHome offline /></StaticRecorderProvider>
+              : <BootSurface state={state} error={null} onAction={() => {}} />}
           </main>
         )}
       </div>

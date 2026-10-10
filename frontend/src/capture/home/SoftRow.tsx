@@ -1,0 +1,167 @@
+// One Recent / Library row in the Soft skin (TC-871): a kind tile, the title, a
+// time-and-source line, then the length and a chevron. A capture issue swaps the
+// tile for "!" and the state line for the issue's. A saved recording that is
+// missing some audio keeps its row and adds a quiet line under it, which opens
+// its details. Each row is labelled with all of it: the state is in the label,
+// never in colour alone.
+// T22 adds pipeline status to this row.
+import { ChevronRightIcon, type LucideIcon } from "lucide-react";
+import { Link } from "react-router-dom";
+
+import {
+  formatClockDuration,
+  formatSpokenDuration,
+} from "../library/formatters";
+import {
+  issueIsFailure,
+  issueIsInformational,
+  issueMeta,
+  type HomeIssue,
+} from "./captureIssues";
+import { HOME_COPY } from "./homeCopy";
+
+export interface SoftRowProps {
+  icon: LucideIcon;
+  title: string;
+  /** "Today 2:18 AM" (or the source and time). */
+  meta: string;
+  durationSecs?: number | null;
+  issue?: HomeIssue;
+  /** A destination: the row is a link. */
+  href?: string;
+  /** Otherwise a button (an issue's sheet); neither makes a plain, labelled row. */
+  onActivate?: (row: HTMLElement) => void;
+  /** The informational line's button, for a partial-audio recording: opens its details. */
+  onDetails?: (opener: HTMLElement) => void;
+  selected?: boolean;
+  testId: string;
+  sourceId?: string;
+}
+
+/** What sits under the title: the issue's line, except for an informational one, which has a line of its own below. */
+function stateLine(issue: HomeIssue | undefined, meta: string): string {
+  return issue && !issueIsInformational(issue) ? issueMeta(issue) : meta;
+}
+
+/** The row's one accessible name: the title, what it says under it, how long, and its state. */
+export function softRowLabel(
+  props: Pick<
+    SoftRowProps,
+    "title" | "meta" | "durationSecs" | "issue" | "onActivate"
+  >,
+): string {
+  const parts = [props.title, stateLine(props.issue, props.meta)];
+  if (props.durationSecs != null)
+    parts.push(formatSpokenDuration(props.durationSecs));
+  if (props.issue && issueIsInformational(props.issue))
+    parts.push(issueMeta(props.issue));
+  if (props.issue && issueIsFailure(props.issue))
+    parts.push(HOME_COPY.needsAttention);
+  if (props.issue && props.onActivate) parts.push(HOME_COPY.opensDetails);
+  return parts.join(". ");
+}
+
+function Spinner() {
+  return (
+    <span
+      className="soft-spinner"
+      aria-hidden="true"
+      data-testid="soft-row-spinner"
+    />
+  );
+}
+
+export function SoftRow(props: SoftRowProps) {
+  const { issue } = props;
+  const failed = issue !== undefined && issueIsFailure(issue);
+  const notice = issue !== undefined && issueIsInformational(issue) ? issueMeta(issue) : null;
+  const Icon = props.icon;
+  const label = softRowLabel(props);
+  const body = (
+    <>
+      <span
+        className="soft-tile"
+        aria-hidden="true"
+        data-failed={failed ? "true" : undefined}
+      >
+        {failed ? (
+          <span className="soft-tile-bang">!</span>
+        ) : (
+          <Icon className="soft-ico" />
+        )}
+      </span>
+      <span className="soft-row-text">
+        <b className="soft-row-title">{props.title}</b>
+        <span
+          className="soft-row-meta"
+          data-testid="soft-row-meta"
+          data-failed={failed ? "true" : undefined}
+        >
+          {issue?.kind === "finalization_timed_out" && <Spinner />}
+          {stateLine(issue, props.meta)}
+        </span>
+      </span>
+      {(props.durationSecs != null ||
+        props.href !== undefined ||
+        props.onActivate) && (
+        <span className="soft-row-aside" aria-hidden="true">
+          {props.durationSecs != null && (
+            <span className="tnum">
+              {formatClockDuration(props.durationSecs)}
+            </span>
+          )}
+          {(props.href !== undefined || props.onActivate) && (
+            <ChevronRightIcon className="soft-chev" />
+          )}
+        </span>
+      )}
+    </>
+  );
+  const common = {
+    className: "soft-row",
+    "aria-label": label,
+    "data-selected": props.selected ? "true" : undefined,
+  };
+  return (
+    <li
+      className="soft-row-item"
+      data-testid={props.testId}
+      data-source-id={props.sourceId}
+      data-issue={issue?.kind}
+      data-notice={notice !== null ? "true" : undefined}
+    >
+      {props.href !== undefined ? (
+        <Link
+          to={props.href}
+          {...common}
+          aria-current={props.selected ? "page" : undefined}
+        >
+          {body}
+        </Link>
+      ) : props.onActivate ? (
+        <button
+          type="button"
+          onClick={(event) => props.onActivate?.(event.currentTarget)}
+          {...common}
+        >
+          {body}
+        </button>
+      ) : (
+        <div role="group" {...common}>
+          {body}
+        </div>
+      )}
+      {notice !== null && props.onDetails && (
+        <button
+          type="button"
+          className="soft-row-notice"
+          aria-label={`${notice}. ${HOME_COPY.opensDetails}`}
+          onClick={(event) => props.onDetails?.(event.currentTarget)}
+          data-testid="soft-row-notice"
+        >
+          {notice}
+        </button>
+      )}
+    </li>
+  );
+}

@@ -100,8 +100,16 @@ jobs:
       - name: Install JS deps
         run: bun install --frozen-lockfile
 
+      # VITE_EXO_CHANNEL tells the bundled frontend its channel (TC-840): the archive strips
+      # "-beta.N" from CFBundleShortVersionString, so App.getInfo() alone would call a beta "stable".
       - name: Build workspace packages and the production frontend
-        run: bun run build:packages && bun run build:frontend
+        run: |
+          version=$(node -p 'require("./frontend/package.json").version')
+          case "$version" in
+            *-beta.*) export VITE_EXO_CHANNEL=beta ;;
+            *) export VITE_EXO_CHANNEL=stable ;;
+          esac
+          bun run build:packages && bun run build:frontend
 
       # Bundles frontend/dist into App/public; without EXO_DEV_SERVER_URL there is no server.url (no live reload).
       - name: Sync Capacitor
@@ -143,6 +151,14 @@ jobs:
           [ "$(value CFBundleIdentifier)" = xyz.tinycloud.exo ] || fail "CFBundleIdentifier is $(value CFBundleIdentifier)"
           [ "$(value CFBundleShortVersionString)" = "$SHORT_VERSION" ] || fail "CFBundleShortVersionString is $(value CFBundleShortVersionString), expected $SHORT_VERSION"
           [ "$(value CFBundleVersion)" = "$BUILD_NUMBER" ] || fail "CFBundleVersion is $(value CFBundleVersion), expected $BUILD_NUMBER"
+          appex="$app/PlugIns/ExoWidgets.appex"
+          [ -d "$appex" ] || fail "ExoWidgets.appex is missing"
+          widget_plist="$appex/Info.plist"
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$widget_plist")" = xyz.tinycloud.exo.widgets ] || fail "ExoWidgets has the wrong bundle ID"
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$widget_plist")" = "$BUILD_NUMBER" ] || fail "ExoWidgets has the wrong build number"
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$widget_plist")" = com.apple.widgetkit-extension ] || fail "ExoWidgets is not a WidgetKit extension"
+          [ "$(value NSSupportsLiveActivities)" = true ] || fail "NSSupportsLiveActivities is not true"
+          plutil -lint "$appex/PrivacyInfo.xcprivacy" || fail "ExoWidgets privacy manifest is missing or invalid"
           [ "$(value CAPACITOR_DEBUG)" != true ] || fail "CAPACITOR_DEBUG is true in a Release build"
           value NSMicrophoneUsageDescription >/dev/null || fail "NSMicrophoneUsageDescription is missing"
           plutil -extract UIBackgroundModes json -o - "$plist" | jq -e 'index("audio") != null' >/dev/null || fail "UIBackgroundModes lacks audio"

@@ -1,6 +1,12 @@
 import groovy.json.JsonSlurper
+import java.security.MessageDigest
 
 apply plugin: 'com.android.application'
+apply plugin: 'org.jetbrains.kotlin.android'
+
+kotlin {
+    jvmToolchain(21)
+}
 
 // Release inputs, each a Gradle property (-PNAME=..., ~/.gradle/gradle.properties) or an environment variable of the
 // same name. CI sets them in .github/workflows/mobile-release-android.yml; see mobile/README.md, "Android release".
@@ -40,6 +46,7 @@ def signGradleRelease = !unsignedRelease && missingReleaseSigning.isEmpty()
 android {
     namespace = "xyz.tinycloud.exo"
     compileSdk = rootProject.ext.compileSdkVersion
+    buildFeatures { buildConfig true }
     defaultConfig {
         applicationId "xyz.tinycloud.exo"
         minSdkVersion rootProject.ext.minSdkVersion
@@ -69,7 +76,15 @@ android {
         }
     }
     buildTypes {
+        debug {
+            ndk {
+                abiFilters 'arm64-v8a', 'x86_64'
+            }
+        }
         release {
+            ndk {
+                abiFilters 'arm64-v8a'
+            }
             if (signGradleRelease) {
                 signingConfig signingConfigs.release
             }
@@ -128,7 +143,40 @@ repositories {
     }
 }
 
+def sherpaAarName = 'sherpa-onnx-static-link-onnxruntime-1.13.8'
+def sherpaAar = file("libs/${sherpaAarName}.aar")
+def sherpaSha256 = 'b22c3fc1b6a45666d28892bb2f7694beeb77a8362d7ebd77c1a5431ec9435471'
+def fetchSherpaOnnx = tasks.register('fetchSherpaOnnx') {
+    group = 'build setup'
+    description = 'Fetch and verify the pinned sherpa-onnx Android runtime.'
+    doLast {
+        sherpaAar.parentFile.mkdirs()
+        if (!sherpaAar.isFile()) {
+            def temp = file("${sherpaAar}.download")
+            temp.delete()
+            try {
+                def connection = new URL("https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/${sherpaAarName}.aar").openConnection()
+                connection.connectTimeout = 30_000
+                connection.readTimeout = 120_000
+                connection.getInputStream().withCloseable { input ->
+                    temp.withOutputStream { output -> output << input }
+                }
+                def digest = MessageDigest.getInstance('SHA-256').digest(temp.bytes).encodeHex().toString()
+                if (digest != sherpaSha256) throw new GradleException("sherpa-onnx SHA-256 mismatch: ${digest}")
+                if (!temp.renameTo(sherpaAar)) throw new GradleException("Cannot move ${temp} to ${sherpaAar}")
+            } finally {
+                temp.delete()
+            }
+        }
+        def digest = MessageDigest.getInstance('SHA-256').digest(sherpaAar.bytes).encodeHex().toString()
+        if (digest != sherpaSha256) throw new GradleException("sherpa-onnx SHA-256 mismatch: ${digest}")
+    }
+}
+tasks.named('preBuild') { dependsOn fetchSherpaOnnx }
+
 dependencies {
+    testImplementation 'org.json:json:20240303'
+    implementation(name: sherpaAarName, ext: 'aar')
     implementation fileTree(include: ['*.jar'], dir: 'libs')
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
@@ -137,9 +185,13 @@ dependencies {
     // Health spike (TC-525): Health Connect client, and the coroutines its suspend API needs from Java.
     implementation "androidx.health.connect:connect-client:$healthConnectClientVersion"
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:$kotlinxCoroutinesVersion"
+    // On-device STT (TC-836): extracts the small model pack's .tar.bz2 release asset.
+    implementation 'org.apache.commons:commons-compress:1.26.1'
     testImplementation "junit:junit:$junitVersion"
+    testImplementation 'org.jetbrains.kotlin:kotlin-test-junit'
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    androidTestImplementation "androidx.test.uiautomator:uiautomator:2.3.0"
     implementation project(':capacitor-cordova-android-plugins')
 }
 

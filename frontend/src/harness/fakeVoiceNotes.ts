@@ -5,10 +5,15 @@
 // can emit `level` and `micState` like the shells do, and it lists the
 // recordings deleted from the "phone".
 import type {
+  CaptureDefaults,
+  CaptureOptions,
+  CaptureStatus,
   MicState,
   MicStateEvent,
   VoiceNoteAutoStopEvent,
   VoiceNoteRecording,
+  RecoveryFailedEvent,
+  WriteFailureEvent,
   VoiceNotesPlugin,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
 
@@ -20,25 +25,59 @@ export interface FakeVoiceNotes {
   stats(): { adds: number; active: number; recording: boolean; deleted: string[] };
   emit(event: "level", payload: { level: number }): void;
   emit(event: "micState", payload: MicStateEvent): void;
+  emit(event: "recoveryFailed", payload: RecoveryFailedEvent): void;
+  emit(event: "writeFailure", payload: WriteFailureEvent): void;
+  emit(event: "recovered" | "committed", payload: { id: string }): void;
   emit(event: "autoStopped", payload: VoiceNoteAutoStopEvent): void;
+  /** Capacitor hands a retained presentRecorder event to the first listener only. */
+  retainPresentRecorder(payload: { id: string | null; reason?: string }): void;
 }
 
-export function createFakeVoiceNotes(): FakeVoiceNotes {
+export interface FakeVoiceNotesOptions {
+  /** Delays `listPending` and `localAudioUrl` by this long (default: resolve immediately) — for
+   * exercising the receipt's display-clock gating (TC-781) against a native read slow enough that
+   * the immediate fake can never establish the timing. */
+  nativeReadDelayMs?: number;
+  /** Reports every committed note as unowned, regardless of the signed-in account defaults ever
+   * carry — so the frontend's own background space-save holds it rather than attempting one. */
+  unownedNotes?: boolean;
+}
+
+export function createFakeVoiceNotes(options: FakeVoiceNotesOptions = {}): FakeVoiceNotes {
+  const nativeReadDelayMs = options.nativeReadDelayMs ?? 0;
+  const unownedNotes = options.unownedNotes ?? false;
+  const delay = () => (nativeReadDelayMs > 0 ? new Promise((resolve) => setTimeout(resolve, nativeReadDelayMs)) : Promise.resolve());
   const listeners = new Map<string, Set<Listener>>();
+  let retainedPresent: { id: string | null; reason?: string } | null = null;
   let adds = 0;
   let active = 0;
-  let current: { id: string; startedAt: number } | null = null;
+  let current: { id: string; startedAt: number; options: CaptureOptions } | null = null;
   let state: MicState = "idle";
   let counter = 0;
+  let maxDurationMs = 10_800_000;
+  let defaults: CaptureDefaults = { accountDid: null, transitionGen: 0, transcriber: "on-device", identifySpeakers: false };
   const deleted: string[] = [];
+  /** Committed recordings, for `listPending` — a real note's own transcriber and durable on-device
+   * state (e.g. TranscriptionRouteControl's live-session read, SavedReceipt's seed). */
+  const committed: VoiceNoteRecording[] = [];
+  const unsupported = async (): Promise<never> => {
+    throw Object.assign(new Error("This action is not implemented in the browser harness"), { code: "not_implemented_in_harness" });
+  };
 
   const plugin: VoiceNotesPlugin = {
-    async start(options) {
+    openSettings: unsupported,
+    dismissShortcutRecovery: unsupported,
+    consumeShortcutRecord: unsupported,
+    async start(options?: Parameters<VoiceNotesPlugin["start"]>[0]) {
       if (current) throw Object.assign(new Error("Already recording"), { code: "already_recording" });
       counter += 1;
-      current = { id: `fake-${counter}`, startedAt: Date.now() };
+      current = { id: `fake-${counter}`, startedAt: Date.now(), options: {
+        transcriber: defaults.accountDid ? (options?.transcriber ?? defaults.transcriber) : "on-device",
+        identifySpeakers: options?.identifySpeakers ?? defaults.identifySpeakers,
+      } };
+      maxDurationMs = options?.maxDurationMs ?? 10_800_000;
       state = "recording";
-      return { ...current, maxDurationMs: options?.maxDurationMs };
+      return { ...current, maxDurationMs };
     },
     async stop() {
       if (!current) throw Object.assign(new Error("Not recording"), { code: "not_recording" });
@@ -51,30 +90,90 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
         silencedMs: 0,
         silencedEvents: 0,
         noSignalMs: 0,
+        version: 2,
+        owner: unownedNotes ? null : defaults.accountDid,
+        rev: 1,
+        options: current.options,
       };
       current = null;
       state = "idle";
+      committed.push({ ...recording, stt: recording.options?.transcriber === "on-device"
+        ? { state: "waiting_for_model", pack: null, engine: null, segmentsDone: 0, windowsDone: 0, error: null } : undefined });
       return recording;
     },
-    async status() {
+    async status(): Promise<CaptureStatus> {
+      const elapsedMs = current ? Date.now() - current.startedAt : 0;
       return {
         state,
         reason: null,
         id: current?.id ?? null,
-        elapsedMs: current ? Date.now() - current.startedAt : 0,
+        intent: current ? "recording" : "stopped",
+        availability: "available",
+        startedAt: current?.startedAt ?? null,
+        elapsedMs,
+        audioMs: elapsedMs,
+        pausedMs: 0,
+        maxDurationMs,
+        spans: [],
+        openSpan: null,
+        options: current?.options,
+        transitionGen: defaults.transitionGen,
       };
     },
-    async readAudioChunk({ id, offset, length }) {
+    async readAudioChunk({ id, offset, length }: Parameters<VoiceNotesPlugin["readAudioChunk"]>[0]) {
       const size = 4;
       const bytesRead = Math.max(0, Math.min(length, size - offset));
       return { id, offset, base64: btoa("\u0000".repeat(bytesRead)), bytesRead, size, eof: offset + bytesRead >= size };
     },
-    async deleteAudio({ id }) {
+    async deleteAudio({ id }: Parameters<VoiceNotesPlugin["deleteAudio"]>[0]) {
       deleted.push(id);
     },
     async listPending() {
-      return { recordings: [] };
+      await delay();
+      return { recordings: committed };
     },
+    pause: unsupported,
+    resume: unsupported,
+    async discard() {
+      const id = current?.id ?? null;
+      if (id) {
+        current = null;
+        state = "idle";
+        deleted.push(id);
+      }
+      return { id };
+    },
+    async setRecordingOptions(changed) {
+      if (!current) throw Object.assign(new Error("Not recording"), { code: "not_recording" });
+      current.options = { ...current.options, ...changed,
+        transcriber: defaults.accountDid ? (changed.transcriber ?? current.options.transcriber) : "on-device" };
+    },
+    async getCaptureDefaults() { return { ...defaults, status: defaults.accountDid ? "signed_in" as const : "signed_out" as const }; },
+    async setCaptureDefaults(next) {
+      if (next.transitionGen < defaults.transitionGen) throw Object.assign(new Error("Stale transition"), { code: "stale_transition" });
+      defaults = { ...next };
+      return { claimed: [] };
+    },
+    setAccountState: unsupported,
+    retryRecovery: unsupported,
+    discardFailedRecording: unsupported,
+    beginRemoteOp: unsupported,
+    recordRemoteResult: unsupported,
+    claim: unsupported,
+    updateLedger: unsupported,
+    // A tiny silent WAV data URL: real enough for MeetingAudioPlayer to mount and show Play.
+    async localAudioUrl() {
+      await delay();
+      return { url: "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=" };
+    },
+    putTranscript: unsupported,
+    async getTranscript() { return { transcript: null }; },
+    listInputs: unsupported,
+    selectInput: unsupported,
+    listQuarantine: unsupported,
+    deleteQuarantined: unsupported,
+    listOutbox: unsupported,
+    completeOutbox: unsupported,
     addListener(event: string, listener: Listener) {
       adds += 1;
       active += 1;
@@ -84,6 +183,11 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
         listeners.set(event, set);
       }
       set.add(listener);
+      if (event === "presentRecorder" && retainedPresent) {
+        const retained = retainedPresent;
+        retainedPresent = null;
+        (listener as (value: typeof retained) => void)(retained);
+      }
       let removed = false;
       return Promise.resolve({
         remove: async () => {
@@ -94,7 +198,7 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
         },
       });
     },
-  } as VoiceNotesPlugin;
+  };
 
   return {
     plugin,
@@ -102,5 +206,6 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
     emit(event: string, payload: unknown) {
       for (const listener of listeners.get(event) ?? []) (listener as (value: unknown) => void)(payload);
     },
+    retainPresentRecorder(payload) { retainedPresent = payload; },
   };
 }

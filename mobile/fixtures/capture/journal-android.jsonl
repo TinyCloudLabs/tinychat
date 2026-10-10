@@ -1,0 +1,19 @@
+{"a":0,"bitrate":64000,"channels":1,"codec":"aac-lc","container":"adts","e":"session","id":"11111111-1111-4111-8111-111111111111","maxDurationMs":10800000,"options":{"identifySpeakers":false,"transcriber":"on-device"},"owner":null,"platform":"android","rate":44100,"source":"in_app","t":1759800000000,"transitionGen":12,"v":1}
+{"a":0,"e":"avail","gen":1,"reason":null,"t":1759800000000,"value":"available"}
+{"a":0,"e":"input","id":"built-in","kind":"built_in","name":"Built-in microphone","t":1759800000000}
+{"a":0,"e":"segment","file":"seg-00000.aac","index":0,"t":1759800000000}
+{"a":1996,"availability":"available","e":"hb","intent":"recording","seg":0,"segBytes":9202,"t":1759800002000}
+{"a":2484,"availability":"available","e":"hb","intent":"recording","seg":0,"segBytes":11449,"t":1759800002500}
+{"a":2484,"e":"span_open","kind":"omitted","reason":"interruption","t":1759800002500}
+{"a":2484,"e":"avail","gen":2,"reason":"call","t":1759800002500,"value":"interrupted"}
+{"a":2484,"e":"span_close","kind":"omitted","reason":"interruption","t":1759800004500}
+{"a":2484,"e":"avail","gen":3,"reason":null,"t":1759800004500,"value":"available"}
+{"a":2484,"e":"segment","file":"seg-00001.aac","index":1,"t":1759800004500}
+{"a":2972,"availability":"available","e":"hb","intent":"recording","seg":1,"segBytes":2247,"t":1759800005000}
+{"a":2972,"by":"user","e":"intent","t":1759800005000,"value":"paused"}
+{"a":2972,"by":"user","e":"intent","t":1759800010000,"value":"recording"}
+{"a":2972,"e":"avail","gen":5,"reason":null,"t":1759800010000,"value":"available"}
+{"a":2972,"e":"segment","file":"seg-00002.aac","index":2,"t":1759800010000}
+{"a":3970,"availability":"available","e":"hb","intent":"recording","seg":2,"segBytes":4601,"t":1759800011000}
+{"a":3970,"by":"user","e":"intent","t":1759800011000,"value":"stopped"}
+{"a":3970,"e":"stop","reason":"user","t":1759800011000}

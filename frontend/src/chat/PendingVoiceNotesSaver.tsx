@@ -13,9 +13,14 @@ import { useEffect } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import { nativeVoiceNotesAvailable } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { voiceNoteTranscriberFor, type VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { savePendingRecordings, whenVoiceNoteSavesIdle, type PendingRun } from "@/lib/voiceNotes/recorderSaves";
+import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
+import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
+import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
+import type { VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { whenVoiceNoteSavesIdle, type PendingRun } from "@/lib/voiceNotes/recorderSaves";
+import { advanceAccountGeneration, currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
+import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 
 let recovery: (() => Promise<void>) | null = null;
 /** Keep the mounted saver available to renewal without remounting the view. */
@@ -29,6 +34,28 @@ export function schedulePendingVoiceNotesRecovery(): void {
 }
 
 /**
+ * An on-device transcription that finishes after its note is already saved (the common case: the
+ * space save is quick, on-device decode is not) has nothing left to trigger `saveRecording`'s own
+ * sync, so this listens for it directly. `saveRecording` covers the opposite ordering.
+ */
+function installOnDeviceTranscriptSync(tcw: TinyCloudWeb): () => void {
+  let disposed = false;
+  const handle = OnDeviceStt.addListener("transcribed", ({ id }) => {
+    if (disposed) return;
+    void VoiceNotes.listPending()
+      .then(({ recordings }) => {
+        const recording = recordings.find((note) => note.id === id);
+        if (recording) return syncOnDeviceTranscript(tcw, recording);
+      })
+      .catch((err: unknown) => console.warn("[OnDeviceStt] Could not sync a finished transcription", err));
+  });
+  return () => {
+    disposed = true;
+    void handle.then((h) => h.remove());
+  };
+}
+
+/**
  * Save what is on the phone, and hand each saved note to transcription. The availability check
  * runs alongside the save, so a note is offered to private cloud only once the account's
  * answer is in (`noteSaved` ignores it otherwise, as for the card).
@@ -38,32 +65,37 @@ export async function savePendingVoiceNotes(deps: {
   transcriber: Pick<VoiceNoteTranscriber, "check" | "noteSaved"> | null;
 }): Promise<PendingRun> {
   const [run] = await Promise.all([deps.save(), deps.transcriber?.check()]);
+  // noteSaved uses each committed sidecar's options, including Off; legacy notes have none.
   for (const recording of run.saved) deps.transcriber?.noteSaved(recording);
   return run;
 }
 
 export function PendingVoiceNotesSaver({
   tcw,
-  backendUrl,
-  sessionStore,
+  pipeline,
 }: {
   tcw: TinyCloudWeb;
+  pipeline: VoiceNotePipeline;
   backendUrl: string;
   sessionStore: SessionStore;
 }) {
   useEffect(() => {
-    if (!nativeVoiceNotesAvailable()) return;
-    const run = () => savePendingVoiceNotes({
-      save: () => savePendingRecordings(tcw),
-      transcriber: voiceNoteTranscriberFor(tcw, backendUrl, sessionStore),
-    })
-      .then((run) => {
-        if (run.lastError) console.warn("[VoiceNotes] Some notes are still on this phone:", run.lastError);
-      })
+    if (!captureEngineAvailable()) return;
+    return installOnDeviceTranscriptSync(tcw);
+  }, [tcw]);
+
+  useEffect(() => {
+    if (!captureEngineAvailable()) return;
+    advanceAccountGeneration();
+    const did = tcw.did;
+    const spaceId = tcw.spaceId;
+    if (!did || !spaceId) return;
+    pipeline.resume();
+    const run = () => pipeline.reconcileAll({ did, spaceId, generation: currentAccountGeneration() })
       .catch((error: unknown) => console.warn("[VoiceNotes] Saving notes left on this phone failed", error));
     const unregister = registerPendingVoiceNotesRecovery(run);
     void run();
-    return unregister;
-  }, [backendUrl, sessionStore, tcw]);
+    return () => { unregister(); pipeline.cancelAll(); };
+  }, [pipeline, tcw]);
   return null;
 }

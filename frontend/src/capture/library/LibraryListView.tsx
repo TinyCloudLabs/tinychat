@@ -9,6 +9,10 @@ import { Button } from "@/components/ui/button";
 import { Empty } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
+import { orphanIssues } from "../home/captureIssues";
+import { SoftIssueRow } from "../home/SoftIssueRow";
+import { useSoftHome } from "../home/softHome";
 import { groupByDay } from "./formatters";
 import { LIBRARY_FILTERS, emptyFilterText, matchesFilter, type LibraryFilter } from "./libraryKinds";
 import { LibraryRow, type LibraryItem } from "./LibraryRow";
@@ -70,17 +74,25 @@ export function LibraryFilterControl(props: { value: LibraryFilter; onValueChang
 export function LibraryListView(props: LibraryListViewProps) {
   const { status, items, filter, now } = props;
   const shown = items.filter((item) => matchesFilter(item.source, filter));
+  // Soft skin only: recordings with a capture issue and no row yet, under the voice-note filters.
+  const soft = useSoftHome();
+  const orphans = soft && matchesFilter(VOICE_NOTE_SOURCE, filter) ? orphanIssues(items, soft.issues) : [];
   return (
-    <div className="flex flex-col gap-3" data-testid="library-list" data-state={status}>
+    <div
+      className={cn("flex flex-col gap-3", soft && "focus:outline-none")}
+      data-testid="library-list"
+      data-state={status}
+      {...(soft ? { role: "region", "aria-label": "Library", tabIndex: -1, "data-return-focus": "" } : {})}
+    >
       <LibraryFilterControl value={filter} onValueChange={props.onFilterChange} />
-      {status === "loading" && items.length === 0 ? (
+      {status === "loading" && items.length === 0 && orphans.length === 0 ? (
         <div role="status">
           <span className="sr-only">Loading your Library…</span>
           {Array.from({ length: 5 }, (_, i) => (
             <Skeleton key={i} shape="row" />
           ))}
         </div>
-      ) : status === "failed" && items.length === 0 ? (
+      ) : status === "failed" && items.length === 0 && orphans.length === 0 ? (
         <Empty
           data-testid="library-failed"
           title="Couldn’t load your Library."
@@ -91,7 +103,7 @@ export function LibraryListView(props: LibraryListViewProps) {
             </Button>
           }
         />
-      ) : shown.length === 0 ? (
+      ) : shown.length === 0 && orphans.length === 0 ? (
         <Empty
           data-testid="library-empty"
           title={items.length === 0 ? "Nothing here yet." : emptyFilterText(filter)}
@@ -106,6 +118,13 @@ export function LibraryListView(props: LibraryListViewProps) {
                 Try again
               </Button>
             </p>
+          )}
+          {orphans.length > 0 && (
+            <ul className="flex flex-col">
+              {orphans.map((orphan) => (
+                <SoftIssueRow key={`issue-${orphan.id}`} {...orphan} testId="voice-note-item" />
+              ))}
+            </ul>
           )}
           {groupByDay(shown, now).map((group) => (
             <section key={group.label} aria-label={group.label}>

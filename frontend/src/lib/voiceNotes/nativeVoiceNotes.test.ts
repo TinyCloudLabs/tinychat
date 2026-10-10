@@ -1,5 +1,5 @@
 // The native contract's web-side helpers (TC-517):
-//   1. the recording limit is 60 minutes; a test override can only lower it, never raise it;
+//   1. the recording limit is three hours; a test override can only lower it, never raise it;
 //   2. a recording is read from the phone a slice at a time, and a short or changed read rejects
 //      (a note is never stored truncated).
 
@@ -17,15 +17,15 @@ import { bytesToBase64 } from "./voiceNoteAudio";
 const storage = (value: string | null) => ({ getItem: (key: string) => (key === VOICE_NOTE_MAX_DURATION_OVERRIDE_KEY ? value : null) });
 
 describe("voiceNoteMaxDurationMs", () => {
-  test("60 minutes unless a test override lowers it, clamped to [1 s, 60 min]", () => {
-    expect(VOICE_NOTE_MAX_DURATION_MS).toBe(3_600_000);
-    expect(voiceNoteMaxDurationMs(storage(null))).toBe(3_600_000);
-    expect(voiceNoteMaxDurationMs(null)).toBe(3_600_000);
+  test("three hours unless a test override lowers it, clamped to [1 s, 3 h]", () => {
+    expect(VOICE_NOTE_MAX_DURATION_MS).toBe(10_800_000);
+    expect(voiceNoteMaxDurationMs(storage(null))).toBe(10_800_000);
+    expect(voiceNoteMaxDurationMs(null)).toBe(10_800_000);
     expect(voiceNoteMaxDurationMs(storage("15000"))).toBe(15_000);
     expect(voiceNoteMaxDurationMs(storage("10"))).toBe(1_000);
-    expect(voiceNoteMaxDurationMs(storage(String(6 * 3_600_000)))).toBe(3_600_000);
-    expect(voiceNoteMaxDurationMs(storage("nope"))).toBe(3_600_000);
-    expect(voiceNoteMaxDurationMs(storage("-5"))).toBe(3_600_000);
+    expect(voiceNoteMaxDurationMs(storage(String(6 * 3_600_000)))).toBe(10_800_000);
+    expect(voiceNoteMaxDurationMs(storage("nope"))).toBe(10_800_000);
+    expect(voiceNoteMaxDurationMs(storage("-5"))).toBe(10_800_000);
   });
 });
 

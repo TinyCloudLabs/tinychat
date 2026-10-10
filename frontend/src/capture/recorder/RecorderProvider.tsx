@@ -1,8 +1,8 @@
-// The one voice-note recorder, shared by every view of it: the recorder
-// sheet, the island, the rail and sidebar live controls and the header chip.
+// The one voice-note recorder, shared by every view of it: the full-page view,
+// the island, the rail and sidebar live controls and the header chip.
 // RecorderProvider calls useVoiceNoteRecorder once (a second controller would
 // race the first for the microphone and its saves); the views are context
-// consumers that own no listeners. It also owns whether the sheet is open,
+// consumers that own no listeners. It also owns whether the overlay is open,
 // publishes the live microphone to liveCapture (the Live Edge), and gives
 // feedback: haptics, and a polite announcement of each change.
 //
@@ -11,45 +11,89 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
+import { Button } from "@/components/ui/button";
 import { hapticRecordStarted, hapticSaved, hapticWarning } from "@/lib/haptics";
-import { VOICE_NOTE_MAX_DURATION_MS, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { VOICE_NOTE_MAX_DURATION_MS, VoiceNotes, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
+import { effectiveCaptureOptions, readTranscriberPreference } from "@/lib/voiceNotes/transcriberPreference";
 import type { PendingSnapshot } from "@/lib/voiceNotes/recorderSaves";
 import { liveCapture } from "./liveCapture";
-import { DISCARDED, micWarning, recorderStatusText, RECEIPT_KEPT, RECEIPT_SAVED } from "./recorderCopy";
-import type { RecorderMic, RecorderPhase, RecorderState } from "./recorderReducer";
+import { DISCARDED, micWarning, recorderStatusText, RECEIPT_KEPT } from "./recorderCopy";
+import type { RecorderCaptureIssue, RecorderMic, RecorderPhase, RecorderState } from "./recorderReducer";
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
+import type { RecorderTranscriberChoice, TranscriberChoiceResult, TranscriberChoiceScope } from "./voiceNoteRecorderController";
+import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
+import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { useVoiceNoteRecorder } from "./useVoiceNoteRecorder";
 
-/** How long a saved receipt stays before the sheet closes and the island lets go. */
+/** How long a saved receipt stays, once its content is actually visible, before the sheet closes
+ * and the island lets go. */
 export const RECEIPT_MS = 3000;
+/** A hard ceiling on how long a receipt may hold the sheet open waiting for that content — a
+ * native read that never resolves must not keep Stop from ever returning to Capture home. */
+export const RECEIPT_MAX_MS = 15000;
+
+export function permissionDeniedAnnouncement(wasDenied: boolean, denied: boolean): string | null {
+  return !wasDenied && denied ? "Microphone access is off" : null;
+}
 
 export interface RecorderValue {
   available: boolean;
   /** The recorder has heard status() and its retained events; Record waits until then. */
   ready: boolean;
   phase: RecorderPhase;
+  permissionDenied: boolean;
   mic: RecorderMic;
-  /** Views tick their own timers from this (useElapsed); the provider never ticks. */
+  /** Wall-clock start of this recording. */
   startedAt: number | null;
+  audioMs: number;
+  /** Native recorded-time checkpoint; useRecordedElapsed ticks it from elapsedAt except during user Pause. */
+  elapsedMs: number;
+  elapsedAt: number | null;
+  captureIssues: Record<string, RecorderCaptureIssue>;
+  dismissCaptureIssue(id: string): boolean;
+  recoveryScanFailure: string | null;
+  controlPending: RecorderState["controlPending"];
   maxDurationMs: number;
   limitNotice: string | null;
   savePercent: number | null;
   error: string | null;
   /** How the last recording ended; drives the receipt. */
-  outcome: "saved" | "failed" | null;
+  outcome: "local" | "saved" | "failed" | null;
+  localUpload: RecorderState["localUpload"];
   lastSaved: RecorderState["lastSaved"];
+  /** The recording in progress, or stopping: its capture issue and error belong to it. */
+  recordingId: RecorderState["recordingId"];
+  /** A recording that failed to finish, kept for its receipt. */
+  failedRecording: RecorderState["failedRecording"];
+  /** The recording whose stop timed out finalizing while `error` is the finalizing promise. */
+  finalizationPendingId: RecorderState["finalizationPendingId"];
   pending: PendingSnapshot;
   transcription: VoiceNoteTranscriptionProps | undefined;
+  /** Native options while recording; otherwise the signed-in effective JS default. */
+  transcriber: RecorderTranscriberChoice;
+  setTranscriber(id: TranscriberId, options: { scope: TranscriberChoiceScope; waitForModel?: boolean }): Promise<TranscriberChoiceResult>;
+  setIdentifySpeakers(on: boolean, scope: "recording" | "default"): Promise<"ok" | "needs_consent" | "locked_signed_out" | "unavailable">;
+  /** Capture always forces on-device while signed out (CaptureEngine), so the transcription route
+   * must too — never offer "Off" or "Private cloud" without an account. */
+  signedIn: boolean;
   sheetOpen: boolean;
   record(): void;
   stop(): void;
+  pause(): void;
+  resume(): void;
   /** Stop the live recording and delete it; the sheet closes once it is gone. */
   discard(): void;
   retryPending(): void;
+  openSettings(): Promise<void>;
   /** The receipt was read (Done, Open): it goes, and the sheet closes. */
   dismissOutcome(): void;
   openSheet(): void;
-  minimiseSheet(): void;
+  minimiseSheet(): void | Promise<void>;
+  setReceiptPlaying(playing: boolean): void;
+  /** The receipt's local Play control is ready (or has visibly failed to load): starts the
+   * display clock, so it can never close the sheet before there is anything to show. */
+  setReceiptReady(): void;
   subscribeLevel(listener: (level: number) => void): () => void;
 }
 
@@ -76,24 +120,65 @@ export function islandShown(value: Pick<RecorderValue, "phase" | "outcome" | "sh
 }
 
 export interface RecorderProviderProps {
-  tcw: TinyCloudWeb;
+  tcw: TinyCloudWeb | null;
   /** False turns the recorder off for this session (local validation). */
   enabled?: boolean;
   backendUrl?: string;
   sessionStore?: SessionStore;
   /** A recording landed in the space. */
   onSaved?: (recording: VoiceNoteRecording) => void;
+  onAccountReady?: (tcw: TinyCloudWeb) => void;
+  pipeline?: VoiceNotePipeline | null;
+  signedOut?: boolean;
+  onSignedOut?: () => Promise<boolean>;
   children: ReactNode;
 }
 
-export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSaved, children }: RecorderProviderProps) {
-  const recorder = useVoiceNoteRecorder({ tcw, enabled, backendUrl, sessionStore, onSaved });
+export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSaved, onAccountReady, pipeline, signedOut, onSignedOut, children }: RecorderProviderProps) {
+  const [configured, setConfigured] = useState<{ tcw: TinyCloudWeb; did: string | null } | null>(null);
+  const [defaultsError, setDefaultsError] = useState<string | null>(null);
+  const [defaultsAttempt, setDefaultsAttempt] = useState(0);
+  const defaultsReady = tcw === null || (configured?.tcw === tcw && configured.did === (tcw.did ?? null));
+  useEffect(() => {
+    if (enabled !== false && signedOut && captureEngineAvailable()) void onSignedOut?.();
+  }, [enabled, signedOut, onSignedOut]);
+  useEffect(() => {
+    if (enabled === false || !captureEngineAvailable() || tcw === null) return;
+    let active = true;
+    setConfigured(null);
+    void (async () => {
+      try {
+        const native = await VoiceNotes.getCaptureDefaults();
+        if (!active) return;
+        const key = "exo.capture.transitionGen";
+        const local = Number(globalThis.localStorage?.getItem(key) ?? 0) || 0;
+        // A preference sync is not an account transition. Only an owner change advances the generation.
+        const transitionGen = native.accountDid === (tcw.did ?? null) && native.status === "signed_in"
+          ? native.transitionGen : Math.max(native.transitionGen, local) + 1;
+        await VoiceNotes.setCaptureDefaults({ ...native,
+          ...effectiveCaptureOptions(readTranscriberPreference(), tcw.did != null),
+          accountDid: tcw.did ?? null, transitionGen });
+        globalThis.localStorage?.setItem(key, String(transitionGen));
+        if (active) { setDefaultsError(null); setConfigured({ tcw, did: tcw.did ?? null }); if (tcw.did) onAccountReady?.(tcw); }
+      } catch (caught) {
+        if (active) setDefaultsError(`Could not set this phone's recording account: ${caught instanceof Error ? caught.message : String(caught)}`);
+      }
+    })();
+    return () => { active = false; };
+  }, [enabled, tcw, defaultsAttempt, onAccountReady]);
+  const recorder = useVoiceNoteRecorder({ tcw, enabled: enabled !== false && defaultsReady, backendUrl, sessionStore, onSaved, pipeline });
   const { state, dismissOutcome, subscribeLevel, record: startRecording } = recorder;
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [receiptPlaying, setReceiptPlaying] = useState(false);
+  const [receiptReady, setReceiptReadyState] = useState(false);
+  const setReceiptReady = useCallback(() => setReceiptReadyState(true), []);
+  // A new note's receipt starts unready again — each one waits for its own Play control (or
+  // load error), not whatever the previous note left behind.
+  useEffect(() => { setReceiptReadyState(false); }, [state.lastSaved?.id]);
   const [announcement, setAnnouncement] = useState("");
 
   // The Live Edge follows the live microphone.
-  const live = state.phase === "recording";
+  const live = state.phase === "recording" && (state.mic.state === "recording" || state.mic.state === "silenced");
   const warning = live && micWarning(state.mic) !== null;
   useEffect(() => {
     liveCapture.set(live ? { source: "voice-note", warning, startedAt: state.startedAt } : null);
@@ -111,14 +196,20 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   useEffect(() => {
     const before = previous.current;
     previous.current = state;
-    if (before.phase === "starting" && state.phase === "recording") {
+    const deniedAnnouncement = permissionDeniedAnnouncement(before.permissionDenied, state.permissionDenied);
+    if (deniedAnnouncement) {
+      hapticWarning();
+      setAnnouncement(deniedAnnouncement);
+    } else if (before.phase === "starting" && state.phase === "recording") {
       hapticRecordStarted();
       setAnnouncement("Recording started");
+    } else if (before.phase === "recording" && state.phase === "recording" && before.mic.state !== state.mic.state) {
+      setAnnouncement(recorderStatusText(state.phase, state.mic, null));
     } else if (before.phase === "recording" && state.phase === "recording" && micWarning(before.mic) !== micWarning(state.mic)) {
       setAnnouncement(recorderStatusText(state.phase, state.mic, null));
-    } else if (before.outcome !== state.outcome && state.outcome === "saved") {
+    } else if (before.outcome !== state.outcome && state.outcome === "local") {
       hapticSaved();
-      setAnnouncement(RECEIPT_SAVED);
+      setAnnouncement("Saved on this phone");
     } else if (before.outcome !== state.outcome && state.outcome === "failed") {
       hapticWarning();
       setAnnouncement(RECEIPT_KEPT);
@@ -130,15 +221,36 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     }
   }, [state]);
 
-  // A saved receipt stays 3 s, then the sheet closes; a failure stays until it is read.
+  // The receipt clock starts once its content is actually visible — the local Play control, or
+  // its load error (receiptReady) — not at commit: a native read slow enough to still be loading
+  // must not let the sheet close before the user ever sees it. Playback keeps it open past that.
+  // A hard ceiling (RECEIPT_MAX_MS) bounds only the *wait* for that content: it stops counting the
+  // instant readiness arrives, so a read that lands late (even near the ceiling itself) still gets
+  // its own full, playback-aware RECEIPT_MS window below, not whatever was left of the ceiling.
   useEffect(() => {
-    if (state.outcome !== "saved") return;
+    if (state.outcome !== "local" && state.outcome !== "saved") return;
+    if (state.permissionDenied) return;
+    if (receiptReady) return;
+    const ceiling = setTimeout(() => {
+      setSheetOpen(false);
+      dismissOutcome();
+    }, RECEIPT_MAX_MS);
+    return () => clearTimeout(ceiling);
+  }, [dismissOutcome, receiptReady, state.outcome, state.lastSaved, state.permissionDenied]);
+
+  useEffect(() => {
+    if (state.outcome !== "local" && state.outcome !== "saved") return;
+    if (state.permissionDenied) return;
+    if (!receiptReady) return;
+    if (receiptPlaying) return;
     const timer = setTimeout(() => {
       setSheetOpen(false);
       dismissOutcome();
     }, RECEIPT_MS);
     return () => clearTimeout(timer);
-  }, [dismissOutcome, state.outcome, state.lastSaved]);
+  }, [dismissOutcome, receiptPlaying, receiptReady, state.outcome, state.lastSaved, state.permissionDenied]);
+
+  useEffect(() => recorder.setOnPresent(() => setSheetOpen(true)), [recorder.setOnPresent]);
 
   const record = useCallback(() => {
     setSheetOpen(true);
@@ -149,31 +261,53 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     dismissOutcome();
   }, [dismissOutcome]);
   const openSheet = useCallback(() => setSheetOpen(true), []);
-  const minimiseSheet = useCallback(() => setSheetOpen(false), []);
+  const minimiseSheet = useCallback(async () => {
+    if (state.permissionDenied) await recorder.dismissShortcutRecovery();
+    setSheetOpen(false);
+  }, [recorder.dismissShortcutRecovery, state.permissionDenied]);
 
   const value = useMemo<RecorderValue>(
     () => ({
       available: recorder.available,
       ready: state.ready,
       phase: state.phase,
+      permissionDenied: state.permissionDenied,
       mic: state.mic,
       startedAt: state.startedAt,
+      audioMs: state.audioMs,
+      elapsedMs: state.elapsedMs,
+      elapsedAt: state.elapsedAt,
+      captureIssues: state.captureIssues,
+      dismissCaptureIssue: recorder.dismissCaptureIssue,
+      recoveryScanFailure: state.recoveryScanFailure,
+      controlPending: state.controlPending,
       maxDurationMs: state.maxDurationMs,
       limitNotice: state.limitNotice,
       savePercent: state.savePercent,
-      error: state.error,
+      error: state.error ?? defaultsError,
       outcome: state.outcome,
+      localUpload: state.localUpload,
       lastSaved: state.lastSaved,
+      ...recordingIdentity(state),
       pending: recorder.pending,
       transcription: recorder.transcription,
+      transcriber: recorder.transcriber,
+      setTranscriber: recorder.setTranscriber,
+      setIdentifySpeakers: recorder.setIdentifySpeakers,
+      signedIn: tcw?.did != null,
       sheetOpen,
       record,
       stop: recorder.stop,
+      pause: recorder.pause,
+      resume: recorder.resume,
       discard: recorder.discard,
       retryPending: recorder.retryPending,
+      openSettings: recorder.openSettings,
       dismissOutcome: dismiss,
       openSheet,
       minimiseSheet,
+      setReceiptPlaying,
+      setReceiptReady,
       subscribeLevel,
     }),
     [
@@ -183,24 +317,49 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       record,
       recorder.available,
       recorder.discard,
+      recorder.dismissCaptureIssue,
       recorder.pending,
       recorder.retryPending,
+      recorder.openSettings,
       recorder.stop,
+      recorder.pause,
+      recorder.resume,
       recorder.transcription,
+      recorder.transcriber,
+      recorder.setTranscriber,
+      recorder.setIdentifySpeakers,
+      defaultsError,
+      setReceiptReady,
       sheetOpen,
       state,
       subscribeLevel,
+      tcw?.did,
     ],
   );
 
   return (
     <RecorderContext.Provider value={value}>
       {children}
+      {defaultsError && <div role="alert" className="fixed inset-x-4 bottom-[max(1rem,env(safe-area-inset-bottom))] z-50 mx-auto flex max-w-xl items-center gap-3 rounded-xl bg-card p-4 text-callout text-card-foreground shadow-float">
+        <span className="min-w-0 flex-1">{defaultsError}</span>
+        <Button type="button" variant="outline" onClick={() => setDefaultsAttempt((n) => n + 1)}>Retry</Button>
+      </div>}
       <p role="status" aria-live="polite" className="sr-only" data-testid="recorder-announcer">
         {announcement}
       </p>
     </RecorderContext.Provider>
   );
+}
+
+/** The live provider's read-only passthrough of the ids that tie an error line to its recording. */
+export function recordingIdentity(
+  state: Pick<RecorderState, "recordingId" | "failedRecording" | "finalizationPendingId">,
+): Pick<RecorderValue, "recordingId" | "failedRecording" | "finalizationPendingId"> {
+  return {
+    recordingId: state.recordingId,
+    failedRecording: state.failedRecording,
+    finalizationPendingId: state.finalizationPendingId,
+  };
 }
 
 const NO_PENDING: PendingSnapshot = { listing: { state: "ok", count: 0 }, running: false, lastError: null };
@@ -217,24 +376,45 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       available: true,
       ready: true,
       phase: "idle",
+      permissionDenied: false,
       mic: { state: "idle", reason: null },
       startedAt: null,
+      audioMs: 0,
+      elapsedMs: 0,
+      elapsedAt: null,
+      captureIssues: {},
+      dismissCaptureIssue: () => false,
+      recoveryScanFailure: null,
+      controlPending: null,
       maxDurationMs: VOICE_NOTE_MAX_DURATION_MS,
       limitNotice: null,
       savePercent: null,
       error: null,
       outcome: null,
+      localUpload: null,
       lastSaved: null,
+      recordingId: null,
+      failedRecording: null,
+      finalizationPendingId: null,
       pending: NO_PENDING,
       transcription: undefined,
+      transcriber: { id: "on-device", identifySpeakers: false, source: "default" },
+      setTranscriber: async () => "unavailable",
+      setIdentifySpeakers: async () => "unavailable",
+      signedIn: true,
       sheetOpen: false,
       record: noop,
       stop: noop,
+      pause: noop,
+      resume: noop,
       discard: noop,
       retryPending: noop,
+      openSettings: async () => {},
       dismissOutcome: noop,
       openSheet: noop,
       minimiseSheet: noop,
+      setReceiptPlaying: noop,
+      setReceiptReady: noop,
       subscribeLevel: (listener) => {
         for (const level of levels ?? []) listener(level);
         return noop;

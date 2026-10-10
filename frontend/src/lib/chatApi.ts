@@ -1,3 +1,4 @@
+import { clearSessionAfterHandoff } from "./sessionSignedOut";
 import {
   type SessionStore,
 } from "@tinyboilerplate/client";
@@ -229,7 +230,7 @@ export async function* streamChat(options: StreamChatOptions): AsyncGenerator<st
     throw new Error("Not authenticated. Please sign in.");
   }
   if (sessionStore.isExpired()) {
-    sessionStore.clear();
+    await clearSessionAfterHandoff(sessionStore);
     throw new Error("Session expired. Please sign in again.");
   }
 
@@ -249,7 +250,7 @@ export async function* streamChat(options: StreamChatOptions): AsyncGenerator<st
   });
 
   if (res.status === 401) {
-    sessionStore.clear();
+    await clearSessionAfterHandoff(sessionStore);
     throw new Error("Session expired. Please sign in again.");
   }
   if (res.status === 402) {
