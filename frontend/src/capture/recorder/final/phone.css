@@ -39,29 +39,6 @@
 .pr-sheet:not([data-kbd]) :focus-visible {
   outline: none;
 }
-.pr-blob {
-  position: absolute;
-  border-radius: 50%;
-  filter: blur(70px);
-  opacity: 0.5;
-  pointer-events: none;
-  z-index: -1;
-}
-.pr-blob.a {
-  width: 340px;
-  height: 340px;
-  left: -120px;
-  top: 20%;
-  background: color-mix(in srgb, var(--ring-accent) 14%, transparent);
-}
-.pr-blob.b {
-  width: 300px;
-  height: 300px;
-  right: -120px;
-  bottom: 8%;
-  background: color-mix(in srgb, var(--ink) 6%, transparent);
-}
-
 .pr-top {
   position: relative;
   width: 100%;
@@ -726,14 +703,14 @@
   position: fixed;
   inset: 0;
   z-index: 40;
-  background: rgba(10, 6, 14, 0.45);
+  background: rgb(0 0 0 / 0.45);
   animation: pr-fade 0.3s ease;
 }
 .soft-skin.soft-day .pr-veil {
-  background: rgba(58, 47, 54, 0.25);
+  background: rgb(0 0 0 / 0.25);
 }
 .soft-skin.soft-night .pr-veil {
-  background: rgba(10, 6, 14, 0.45);
+  background: rgb(0 0 0 / 0.45);
 }
 @keyframes pr-fade {
   from {

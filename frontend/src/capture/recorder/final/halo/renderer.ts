@@ -318,7 +318,7 @@ export function selectRenderSurface(
   return { canvas, gl, path };
 }
 
-function makeDisc(theme: HaloConfig["theme"]): HTMLCanvasElement {
+function makeDisc(background: string, surface: string): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = 256;
   const context = canvas.getContext("2d");
@@ -326,18 +326,12 @@ function makeDisc(theme: HaloConfig["theme"]): HTMLCanvasElement {
     throw new Error("Could not create the halo disc texture");
   }
 
-  context.fillStyle = theme === "night" ? "#2a2033" : "#f4ebe4";
+  context.fillStyle = background;
   context.fillRect(0, 0, 256, 256);
   const gradient = context.createRadialGradient(96, 74, 8, 128, 128, 190);
-  if (theme === "night") {
-    gradient.addColorStop(0, "rgba(255,255,255,.16)");
-    gradient.addColorStop(0.55, "rgba(255,255,255,.07)");
-    gradient.addColorStop(1, "rgba(255,255,255,.04)");
-  } else {
-    gradient.addColorStop(0, "#ffffff");
-    gradient.addColorStop(0.55, "#f7efe9");
-    gradient.addColorStop(1, "#efe4dc");
-  }
+  gradient.addColorStop(0, surface);
+  gradient.addColorStop(0.55, surface);
+  gradient.addColorStop(1, "transparent");
   context.fillStyle = gradient;
   context.fillRect(0, 0, 256, 256);
   return canvas;
@@ -383,10 +377,7 @@ class SharedHaloRenderer {
   private program: WebGLProgram | null = null;
   private buffer: WebGLBuffer | null = null;
   private uniforms: Uniforms | null = null;
-  private readonly discCanvases = new Map<
-    HaloConfig["theme"],
-    HTMLCanvasElement
-  >();
+  private readonly discCanvases = new Map<string, HTMLCanvasElement>();
   private startTime = performance.now();
   private lost = false;
 
@@ -613,7 +604,7 @@ class SharedHaloRenderer {
       gl.RGBA,
       gl.RGBA,
       gl.UNSIGNED_BYTE,
-      this.getDisc(entry.config.theme),
+      this.getDisc(entry.canvas),
     );
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     entry.uploadedTheme = entry.config.theme;
@@ -636,11 +627,22 @@ class SharedHaloRenderer {
     }
   }
 
-  private getDisc(theme: HaloConfig["theme"]): HTMLCanvasElement {
-    let disc = this.discCanvases.get(theme);
+  private getDisc(canvas: HTMLCanvasElement): HTMLCanvasElement {
+    const root =
+      canvas.closest?.(".soft-skin") ?? canvas.ownerDocument?.documentElement;
+    const styles =
+      root && canvas.ownerDocument?.defaultView?.getComputedStyle(root);
+    const backgroundToken = styles?.getPropertyValue("--background").trim();
+    const surfaceToken = styles?.getPropertyValue("--secondary").trim();
+    const background = backgroundToken ? `hsl(${backgroundToken})` : "#ffffff";
+    const surface = surfaceToken
+      ? `hsl(${surfaceToken} / 0.12)`
+      : "rgb(0 0 0 / 0.04)";
+    const key = `${background}|${surface}`;
+    let disc = this.discCanvases.get(key);
     if (!disc) {
-      disc = makeDisc(theme);
-      this.discCanvases.set(theme, disc);
+      disc = makeDisc(background, surface);
+      this.discCanvases.set(key, disc);
     }
     return disc;
   }
@@ -905,7 +907,7 @@ class SharedHaloRenderer {
       context.arc(center, center, discSize / 2, 0, Math.PI * 2);
       context.clip();
       context.drawImage(
-        this.getDisc(config.theme),
+        this.getDisc(entry.canvas),
         0,
         0,
         256,

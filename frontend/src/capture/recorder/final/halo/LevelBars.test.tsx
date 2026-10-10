@@ -59,8 +59,8 @@ describe("level bars", () => {
     const spectrum = renderToStaticMarkup(
       <MirroredSpectrumBars paused bars={30} source={sourceFromLevel(0.5)} />,
     );
-    expect(level).toContain("background:#8f8993");
-    expect(spectrum).toContain("background:#8f8993");
+    expect(level).toContain("background:var(--dim)");
+    expect(spectrum).toContain("background:var(--dim)");
     expect(level).toContain('data-paused="true"');
     expect(spectrum).toContain('data-paused="true"');
     expect(spectrum).not.toContain("scaleY(0.120)");

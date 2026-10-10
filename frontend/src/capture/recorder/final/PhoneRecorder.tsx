@@ -321,8 +321,6 @@ export function PhoneRecorder({
       data-ring={view.ring}
       style={{ "--kbh": `${keyboardInset}px` } as CSSProperties}
     >
-      <div className="pr-blob a" aria-hidden="true" />
-      <div className="pr-blob b" aria-hidden="true" />
       <p
         role="status"
         aria-live="polite"

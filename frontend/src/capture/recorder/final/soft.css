@@ -58,59 +58,33 @@
   color-scheme: light;
 }
 
-.soft-skin.soft-night[data-layout="phone"] {
-  --ink: #f6effa;
-  --dim: #a397ae;
-  --glass: rgba(255, 255, 255, 0.07);
-  --gedge: rgba(255, 255, 255, 0.12);
-  --solid: #2a2034;
-  --bgc: #17111f;
-  --side: #140f1b;
-  --line: rgba(255, 255, 255, 0.07);
-  --red: #ff6b62;
-  --ring-accent: #ff6b62;
-  --ring-accent-secondary: #e8475a;
-}
-
+.soft-skin.soft-night[data-layout="phone"],
 .soft-skin.soft-night[data-layout="rail"],
 .soft-skin.soft-night[data-layout="desktop"] {
-  --ink: #f6effa;
-  --dim: #a397ae;
-  --glass: rgba(255, 255, 255, 0.06);
-  --gedge: rgba(255, 255, 255, 0.11);
-  --solid: #2a2034;
-  --bgc: #17111f;
-  --side: #140f1b;
-  --line: rgba(255, 255, 255, 0.07);
+  --ink: hsl(var(--foreground));
+  --dim: hsl(var(--muted-foreground));
+  --glass: hsl(var(--foreground) / 0.05);
+  --gedge: hsl(var(--border));
+  --solid: hsl(var(--secondary));
+  --bgc: hsl(var(--background));
+  --side: hsl(var(--chrome));
+  --line: hsl(var(--border));
   --red: #ff6b62;
   --ring-accent: #ff6b62;
   --ring-accent-secondary: #e8475a;
 }
 
-.soft-skin.soft-day[data-layout="phone"] {
-  --ink: #3a2f36;
-  --dim: #9a8c92;
-  --glass: rgba(255, 255, 255, 0.6);
-  --gedge: rgba(255, 255, 255, 0.95);
-  --solid: #fffaf5;
-  --bgc: #fbf5ee;
-  --side: #f5eee5;
-  --line: rgba(58, 47, 54, 0.08);
-  --red: #e5483f;
-  --ring-accent: #e5483f;
-  --ring-accent-secondary: #f07a72;
-}
-
+.soft-skin.soft-day[data-layout="phone"],
 .soft-skin.soft-day[data-layout="rail"],
 .soft-skin.soft-day[data-layout="desktop"] {
-  --ink: #3a2f36;
-  --dim: #8f8288;
-  --glass: rgba(255, 255, 255, 0.66);
-  --gedge: rgba(58, 47, 54, 0.1);
-  --solid: #fffaf5;
-  --bgc: #fbf5ee;
-  --side: #f5eee5;
-  --line: rgba(58, 47, 54, 0.08);
+  --ink: hsl(var(--foreground));
+  --dim: hsl(var(--muted-foreground));
+  --glass: hsl(var(--card) / 0.7);
+  --gedge: hsl(var(--border));
+  --solid: hsl(var(--card));
+  --bgc: hsl(var(--background));
+  --side: hsl(var(--chrome));
+  --line: hsl(var(--border));
   --red: #e5483f;
   --ring-accent: #e5483f;
   --ring-accent-secondary: #f07a72;
