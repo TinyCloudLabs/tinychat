@@ -49,6 +49,9 @@ final class TranscriptionCore {
     private let library: TranscriptionLibrary
     private let backend: TranscriptionBackend
     private let captureGate = CapturePauseGate()
+    /// Held while a pending note's sidecar is published on the control queue and while the worker takes
+    /// a note, so a note cannot start decoding in the middle of a status write meant for it.
+    private let pendingWriteLock = NSLock()
     var onQueueChanged: (() -> Void)?
     var onProgress: ((String, Int) -> Void)?
     var onTranscribed: ((String, String) -> Void)?
@@ -141,20 +144,22 @@ final class TranscriptionCore {
         do {
             session = try backend.makeSession()
         } catch {
-            for id in state.removeAllPending() { fail(id, code: "model_load_failed", message: String(describing: error)) }
+            for id in state.removeAllPending() {
+                fail(id, code: "model_load_failed", message: String(describing: error)) { state.finishRemoved(id) }
+            }
             onQueueChanged?()
             return
         }
         guard let session else {
             state.markAllPending(state: "waiting_for_model")
-            for id in state.pendingIds { try? library.updateStt(id, patch: ["state": "waiting_for_model"]) }
+            publishWaitingState(state.pendingIds)
             onQueueChanged?()
             return
         }
         state.markAllPending(state: "queued")
         CaptureYieldingLoop.run(
             hasNext: { state.hasPending },
-            next: { state.takeNext() },
+            next: { pendingWriteLock.lock(); defer { pendingWriteLock.unlock() }; return state.takeNext() },
             isPaused: { captureGate.isActive() }
         ) { next in
             guard let id = next else { return } // cancelled between hasNext and next
@@ -163,7 +168,7 @@ final class TranscriptionCore {
             let previousAttempts = ((try? library.readSidecar(id))?["stt"] as? [String: Any])?["attempts"] as? Int ?? 0
             switch AttemptGuard.next(previousAttempts: previousAttempts) {
             case .giveUp:
-                fail(id, code: "too_many_attempts", message: "gave up after \(AttemptGuard.maxAttempts) attempts")
+                fail(id, code: "too_many_attempts", message: "gave up after \(AttemptGuard.maxAttempts) attempts") { state.finishCurrent() }
                 return
             case .proceed(let attempt):
                 // Persisted before the risky decode starts: a crash mid-attempt still counts
@@ -181,22 +186,40 @@ final class TranscriptionCore {
                 // attempt count so being interrupted repeatedly never burns the crash-loop budget.
                 try? library.updateStt(id, patch: ["state": "queued", "attempts": previousAttempts])
                 if state.yieldCurrent() == .cancelled {
-                    // A cancel accepted during the rollback wins: the note must not run again.
+                    // A cancel accepted during the rollback wins: the note must not run again. It stays
+                    // owned by this worker until `cancelled` is durable, so no scan can re-add it meanwhile.
                     try? library.updateStt(id, patch: ["state": "cancelled", "attempts": previousAttempts])
+                    state.finishCurrent()
                     onQueueChanged?()
                 }
             } catch TranscriptionQueueError.cancelled {
                 try? library.updateStt(id, patch: ["state": "cancelled", "attempts": previousAttempts])
+                state.finishCurrent()
                 onQueueChanged?()
             } catch {
-                fail(id, code: "decode_failed", message: String(describing: error))
+                fail(id, code: "decode_failed", message: String(describing: error)) { state.finishCurrent() }
             }
         }
         if state.hasPending { workQueue.asyncAfter(deadline: .now() + 2) { [weak self] in self?.pump() } }
     }
 
-    private func fail(_ id: String, code: String, message: String) {
+    /// Writes the pending notes' `waiting_for_model` state on the control queue, where it is ordered
+    /// with cancel and enqueue: a note cancelled (or taken for decoding) in the meantime is skipped
+    /// instead of having its newer state overwritten.
+    private func publishWaitingState(_ ids: [String]) {
+        controlQueue.async { [self] in
+            for id in ids {
+                pendingWriteLock.lock(); defer { pendingWriteLock.unlock() }
+                guard state.isPending(id, state: "waiting_for_model") else { continue }
+                try? library.updateStt(id, patch: ["state": "waiting_for_model"])
+            }
+        }
+    }
+
+    /// Records a final `failed` state; `release` then hands the note back, before anyone is told.
+    private func fail(_ id: String, code: String, message: String, release: () -> Void) {
         try? library.updateStt(id, patch: ["state": "failed", "error": code])
+        release()
         NSLog("ExoStt transcription failed id=%@ code=%@ message=%@", id, code, message)
         onFailed?(id, code, message)
         onQueueChanged?()

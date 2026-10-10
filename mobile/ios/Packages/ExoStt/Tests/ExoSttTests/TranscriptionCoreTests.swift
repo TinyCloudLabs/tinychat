@@ -81,7 +81,11 @@ final class TranscriptionCoreTests: XCTestCase {
     private final class FakeBackend: TranscriptionBackend {
         var isChecking = false
         var session: FakeSession?
-        func makeSession() throws -> TranscriptionSession? { session }
+        var loadError: Error?
+        func makeSession() throws -> TranscriptionSession? {
+            if let loadError { throw loadError }
+            return session
+        }
     }
 
     private final class FakeSession: TranscriptionSession {
@@ -255,6 +259,118 @@ final class TranscriptionCoreTests: XCTestCase {
         waitUntil("finished after capture") { library.hasTranscript("a") }
         settle()
         XCTAssertEqual(session.startedIds, ["a", "a"])
+        XCTAssertEqual(library.sidecar("a")["state"] as? String, "done")
+    }
+
+    func testACancelledYieldIsNotReAddedByAScanBeforeItsCancelledStateIsDurable() {
+        library.seed("a", state: "queued")
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        let calls = Recorder()
+        session.decode = { id, checkpoint in
+            try checkpoint()
+            guard calls.add(id) == 1 else { return }
+            entered.signal()
+            release.wait()
+            try checkpoint()
+        }
+        core.enqueue(id: "a")
+        XCTAssertEqual(entered.wait(timeout: .now() + 5), .success)
+
+        // Hold the rollback write so the cancel is accepted first, then the final `cancelled` write.
+        let rollbackEntered = DispatchSemaphore(value: 0), rollbackRelease = DispatchSemaphore(value: 0)
+        let cancelledEntered = DispatchSemaphore(value: 0), cancelledRelease = DispatchSemaphore(value: 0)
+        library.beforeUpdate = { _, patch in
+            switch patch["state"] as? String {
+            case "queued": rollbackEntered.signal(); rollbackRelease.wait()
+            case "cancelled": cancelledEntered.signal(); cancelledRelease.wait()
+            default: break
+            }
+        }
+        core.captureStarted()
+        release.signal()
+        XCTAssertEqual(rollbackEntered.wait(timeout: .now() + 5), .success)
+        core.cancel(id: "a")
+        waitUntil("cancel accepted") { core.state.isCancelRequested("a") }
+        rollbackRelease.signal()
+        XCTAssertEqual(cancelledEntered.wait(timeout: .now() + 5), .success)
+
+        // The sidecar still says `queued`; a scan starting now must not take the note back.
+        XCTAssertEqual(library.sidecar("a")["state"] as? String, "queued")
+        core.reconcile()
+        core.controlQueue.sync {}
+        XCTAssertEqual(core.queueSnapshot().map { $0["state"] as? String }, ["running"], "only the worker's own, still-owned note")
+
+        library.beforeUpdate = nil
+        cancelledRelease.signal()
+        core.captureEnded()
+        settle()
+        XCTAssertEqual(session.startedIds, ["a"])
+        XCTAssertFalse(library.hasTranscript("a"))
+        XCTAssertEqual(library.sidecar("a")["state"] as? String, "cancelled")
+        XCTAssertTrue(core.queueSnapshot().isEmpty)
+    }
+
+    func testAModelLoadFailureNoteIsNotReAddedByAScanBeforeItsFailureIsDurable() {
+        library.seed("a", state: "queued")
+        backend.loadError = TranscriptionQueueError.modelFilesMissing
+        let failedEntered = DispatchSemaphore(value: 0), failedRelease = DispatchSemaphore(value: 0)
+        library.beforeUpdate = { _, patch in
+            if patch["state"] as? String == "failed" { failedEntered.signal(); failedRelease.wait() }
+        }
+        core.enqueue(id: "a")
+        XCTAssertEqual(failedEntered.wait(timeout: .now() + 5), .success)
+
+        core.reconcile()
+        core.controlQueue.sync {}
+        XCTAssertEqual(core.queueSnapshot().count, 0, "the failing note must not be queued again")
+
+        library.beforeUpdate = nil
+        failedRelease.signal()
+        settle()
+        XCTAssertEqual(library.sidecar("a")["state"] as? String, "failed")
+        XCTAssertEqual(session.startedIds, [])
+        XCTAssertEqual(events.all, ["failed:a:model_load_failed"])
+    }
+
+    // MARK: waiting_for_model must not undo a cancel
+
+    func testALateWaitingForModelWriteDoesNotUndoACancelAndNoLaterScanRestartsTheNote() {
+        library.seed("a", state: "queued")
+        backend.session = nil // no usable model
+        let waitingEntered = DispatchSemaphore(value: 0), waitingRelease = DispatchSemaphore(value: 0)
+        library.beforeUpdate = { _, patch in
+            if patch["state"] as? String == "waiting_for_model" { waitingEntered.signal(); waitingRelease.wait() }
+        }
+        core.enqueue(id: "a")
+        XCTAssertEqual(waitingEntered.wait(timeout: .now() + 5), .success)
+
+        core.cancel(id: "a") // accepted while the waiting-state write is in flight
+        library.beforeUpdate = nil
+        waitingRelease.signal()
+        settle()
+        XCTAssertEqual(library.sidecar("a")["state"] as? String, "cancelled")
+        XCTAssertTrue(core.queueSnapshot().isEmpty)
+
+        // The model becomes usable and a download-complete reconcile runs.
+        backend.session = session
+        core.reconcile()
+        settle()
+        XCTAssertEqual(session.startedIds, [])
+        XCTAssertFalse(library.hasTranscript("a"))
+        XCTAssertEqual(library.sidecar("a")["state"] as? String, "cancelled")
+    }
+
+    func testPendingNotesWaitingForAModelAreStoredAsSuchAndRunOnceItArrives() {
+        library.seed("a", state: "queued")
+        backend.session = nil
+        core.enqueue(id: "a")
+        waitUntil("waiting state stored") { library.sidecar("a")["state"] as? String == "waiting_for_model" }
+        XCTAssertEqual(core.queueSnapshot().first?["state"] as? String, "waiting_for_model")
+
+        backend.session = session
+        core.reconcile()
+        waitUntil("decoded") { library.hasTranscript("a") }
+        settle()
         XCTAssertEqual(library.sidecar("a")["state"] as? String, "done")
     }
 

@@ -109,6 +109,10 @@ final class TranscriptionStateTests: XCTestCase {
         XCTAssertEqual(state.cancel("a"), .flaggedRunning)
         XCTAssertEqual(state.yieldCurrent(), .cancelled)
         XCTAssertFalse(state.hasPending)
+        // Still owned by the worker until it has written `cancelled`: a scan must not re-add it.
+        XCTAssertEqual(state.snapshot().first?["state"] as? String, "running")
+        XCTAssertFalse(state.addScanned("a", scanStartedAt: state.scanStarted()))
+        state.finishCurrent()
         XCTAssertTrue(state.snapshot().isEmpty)
     }
 
@@ -143,6 +147,21 @@ final class TranscriptionStateTests: XCTestCase {
         let scanStartedAt = state.scanStarted()
         XCTAssertEqual(state.removeAllPending(), ["a"])
         XCTAssertFalse(state.addScanned("a", scanStartedAt: scanStartedAt))
+        // Owned until the failure is written, even for a scan that started after it was removed.
+        XCTAssertFalse(state.addScanned("a", scanStartedAt: state.scanStarted()))
+        state.finishRemoved("a")
+        XCTAssertFalse(state.addScanned("a", scanStartedAt: scanStartedAt))
+        XCTAssertTrue(state.addScanned("a", scanStartedAt: state.scanStarted()))
+    }
+
+    func testIsPendingReflectsTheNotesCurrentStateOnly() {
+        let state = TranscriptionState()
+        _ = add(state, "a")
+        XCTAssertFalse(state.isPending("a", state: "waiting_for_model"))
+        state.markAllPending(state: "waiting_for_model")
+        XCTAssertTrue(state.isPending("a", state: "waiting_for_model"))
+        XCTAssertEqual(state.cancel("a"), .removedPending)
+        XCTAssertFalse(state.isPending("a", state: "waiting_for_model"))
     }
 
     func testAReservedNoteIsInvisibleToTheWorkerUntilPublished() {

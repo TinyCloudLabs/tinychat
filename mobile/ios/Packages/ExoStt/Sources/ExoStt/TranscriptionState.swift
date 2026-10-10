@@ -44,6 +44,8 @@ final class TranscriptionState {
     private var current: Running?
     /// Explicit enqueues whose sidecar is being initialised; invisible to the worker until published.
     private var reserved: Set<String> = []
+    /// Notes taken off the queue to be given a final state; owned by the worker until it has written it.
+    private var finalizing: Set<String> = []
     private var sequence: UInt64 = 0
     private var finishedAt: [String: UInt64] = [:]
 
@@ -96,7 +98,7 @@ final class TranscriptionState {
     }
 
     private func isKnown(_ id: String) -> Bool {
-        current?.id == id || reserved.contains(id) || pending.contains(where: { $0.id == id })
+        current?.id == id || reserved.contains(id) || finalizing.contains(id) || pending.contains(where: { $0.id == id })
     }
 
     /// Moves the head of the queue into the running slot (progress 0) and returns its id.
@@ -119,17 +121,21 @@ final class TranscriptionState {
     }
 
     /// Ends an orderly yield to capture: puts the running note back at the head of the queue, unless a
-    /// cancel was accepted meanwhile, in which case the note is finished and the caller records it.
+    /// cancel was accepted meanwhile. In that case the note stays the running note, so nothing else
+    /// can pick it up, until the caller has written its `cancelled` state and calls `finishCurrent()`.
     func yieldCurrent() -> YieldOutcome {
         lock.lock(); defer { lock.unlock() }
         guard let running = current else { return .requeued }
+        if running.cancelRequested { return .cancelled }
         current = nil
-        if running.cancelRequested {
-            markFinished(running.id)
-            return .cancelled
-        }
         pending.insert(PendingNote(id: running.id, state: "queued"), at: 0)
         return .requeued
+    }
+
+    /// Whether `id` is queued and showing `state` (nothing has taken it or cancelled it since).
+    func isPending(_ id: String, state: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return pending.contains(where: { $0.id == id && $0.state == state })
     }
 
     func finishCurrent() {
@@ -149,13 +155,20 @@ final class TranscriptionState {
         for index in pending.indices { pending[index].state = state }
     }
 
-    /// Empties the queue and returns the ids that were in it (they are all given a final state).
+    /// Empties the queue and returns the ids that were in it. They stay owned by the caller until it
+    /// has written each one's final state and called `finishRemoved`.
     func removeAllPending() -> [String] {
         lock.lock(); defer { lock.unlock() }
         let ids = pending.map(\.id)
         pending.removeAll()
-        for id in ids { markFinished(id) }
+        finalizing.formUnion(ids)
         return ids
+    }
+
+    func finishRemoved(_ id: String) {
+        lock.lock(); defer { lock.unlock() }
+        guard finalizing.remove(id) != nil else { return }
+        markFinished(id)
     }
 
     /// Drops a pending note, or asks the running decode to stop at its next checkpoint.
