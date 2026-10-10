@@ -12,9 +12,11 @@ import { createVoiceNotePipeline, VoiceNoteSaveDeferred } from "./voiceNotePipel
 import { handoffBeforeCredentialClear } from "./accountHandoff";
 import { advanceAccountGeneration, currentAccountGeneration } from "./accountContext";
 import { runOnSpaceLane } from "../spaceWriteLane";
+import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
+import { pendingStore } from "./recorderSaves";
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
 import { loadNote, saveNote } from "./recordingNotes";
-import { readRecordingNoteFromSpace, syncRecordingNote, voiceNoteMarkdownKvKey } from "./voiceNoteStore";
+import { readRecordingNoteFromSpace, syncRecordingNote, voiceNoteAudioKvKey, voiceNoteMarkdownKvKey } from "./voiceNoteStore";
 
 let count = 0;
 function space() {
@@ -527,6 +529,108 @@ test("cancelAll prevents queued identity SQL from reaching the space", async () 
     await occupying;
     expect(calls).toBe(0);
   } finally { release(); __setVoiceNotesForTests(original, { available: null }); }
+});
+
+test("a never-settling audio KV put reports a visible timeout and clears Saving now state", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  const account = { did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() };
+  let putStarted!: () => void;
+  const started = new Promise<void>((resolve) => { putStarted = resolve; });
+  try {
+    setVoiceNoteSaveDeadlineForTests(25);
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    await fake.plugin.start();
+    await fake.plugin.stop();
+    tcw.kv.put = ((_key, _value, options) => {
+      putStarted();
+      return new Promise((_resolve, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+    }) as typeof tcw.kv.put;
+    const pipeline = createVoiceNotePipeline(tcw);
+    const reconcile = pipeline.reconcileAll(account);
+    await started;
+    expect(pendingStore.snapshot().running).toBe(true);
+    await reconcile;
+    expect(pendingStore.snapshot().running).toBe(false);
+    expect(pendingStore.snapshot().lastError).toContain("saving it is taking too long");
+    // The disabled={saving} condition is now false, so Save now is enabled again.
+  } finally {
+    setVoiceNoteSaveDeadlineForTests(null);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+test("a late part put settles before retry writes and retry commits one complete save", async () => {
+  const original = VoiceNotes;
+  const { tcw, sqlite, values } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  let resolveLate!: (result: Awaited<ReturnType<typeof tcw.kv.put>>) => void;
+  let partWrites = 0;
+  let rowId = "";
+  try {
+    setVoiceNoteSaveDeadlineForTests(25);
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    const recording = await fake.plugin.start();
+    rowId = recording.id;
+    await fake.plugin.stop();
+    const partKey = `${voiceNoteAudioKvKey(recording.id)}/p/000000`;
+    const manifestKey = `${voiceNoteAudioKvKey(recording.id)}/manifest`;
+    const put = tcw.kv.put.bind(tcw.kv);
+    tcw.kv.put = ((key: string, value: unknown, options: { ifNoneMatch?: string; signal?: AbortSignal }) => {
+      if (key === partKey) {
+        partWrites++;
+        return new Promise((resolve) => { resolveLate = (result) => {
+          values.set(key, "late part committed");
+          resolve(result);
+        }; }) as ReturnType<typeof put>;
+      }
+      return put(key, value as never, options);
+    }) as typeof tcw.kv.put;
+    const pipeline = createVoiceNotePipeline(tcw);
+    const ctx = { did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() };
+    await pipeline.reconcileAll(ctx);
+    expect(pendingStore.snapshot().lastError).toContain("taking too long");
+    expect(partWrites).toBe(1);
+    const retry = pipeline.reconcileAll(ctx);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(partWrites).toBe(1);
+    expect(values.has(manifestKey)).toBe(false);
+    resolveLate({ ok: true, data: {} } as Awaited<ReturnType<typeof tcw.kv.put>>);
+    await retry;
+    expect(partWrites).toBe(1);
+    expect(values.has(manifestKey)).toBe(true);
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM connector_meeting WHERE source_id = ? AND source = 'exo-voice-note'").get(rowId))
+      .toMatchObject({ n: 1 });
+    const ledger = (await fake.plugin.listPending()).recordings.find((note) => note.id === rowId)?.ledger;
+    expect(ledger?.audio.state).toBe("saved");
+  } finally {
+    setVoiceNoteSaveDeadlineForTests(null);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+test("reconciling an already-saved note does not set the user-visible running state", async () => {
+  const original = VoiceNotes;
+  const { tcw, values } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    const { id } = await fake.plugin.start();
+    await fake.plugin.stop();
+    const note = (await fake.plugin.listPending()).recordings.find((recording) => recording.id === id)!;
+    await createVoiceNoteRow(tcw, note, "Saved note");
+    await saveNote(id, "# Local Markdown ahead of the space");
+    await fake.plugin.updateLedger({ id, did: tcw.did, rev: note.rev ?? 0,
+      patch: { audio: { state: "saved", rowId: `vn-${id}`, at: Date.now() } } });
+    const pipeline = createVoiceNotePipeline(tcw);
+    await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
+    expect(pendingStore.snapshot().running).toBe(false);
+    expect(values.get(voiceNoteMarkdownKvKey(id))).toContain("Local Markdown ahead of the space");
+  } finally { __setVoiceNotesForTests(original, { available: null }); }
 });
 
 test("a stale checkpoint prevents queued create and archive sweep SQL", async () => {

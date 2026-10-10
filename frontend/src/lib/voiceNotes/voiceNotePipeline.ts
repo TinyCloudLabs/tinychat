@@ -2,8 +2,9 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { assertCurrent, StaleAccountContext, type AccountContext } from "./accountContext";
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
 import { VoiceNotes } from "./nativeVoiceNotes";
-import { isDiscarded, saveNoteForAccount } from "./recorderSaves";
+import { isDiscarded, pendingStore, saveNoteForAccount } from "./recorderSaves";
 import { ensureVoiceNoteIdentity, sweepArchived } from "./voiceNoteRows";
+import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { syncRecordingNote } from "./voiceNoteStore";
 
 export interface VoiceNotePipeline {
@@ -45,7 +46,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
     assertCurrent(ctx);
     if (tcw.did !== ctx.did || tcw.spaceId !== ctx.spaceId) throw new Error("Voice-note space changed");
   };
-  const processOne = async (ctx: AccountContext, id: string, epoch: number) => {
+  const processOne = async (ctx: AccountContext, id: string, epoch: number, trackPending = false) => {
     const check = checkFor(ctx, epoch);
     check();
     const gate = await ensureVoiceNoteIdentity(tcw, check);
@@ -53,19 +54,19 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
     check();
     // Identity does the initial archive repair, and reconcileAll sweeps once for the
     // session. A fresh Stop must not repeat that space-wide work before its upload.
-    const note = (await VoiceNotes.listPending()).recordings.find((r) => r.id === id);
+    const note = (await withVoiceNoteSaveDeadline(`native listPending id=${id}`, () => VoiceNotes.listPending())).recordings.find((r) => r.id === id);
     if (!note) return;
     check();
-    const result = await saveNoteForAccount(tcw, ctx, note, check);
-    if (result.kind === "failed") { check(); throw new Error(result.failure); }
-    if (result.kind === "discarded" && result.cleanupError) throw new Error(result.cleanupError);
-    if (result.kind === "saved" || result.kind === "already-saved") {
-      try { await syncRecordingNote(tcw, id, check); }
-      catch (error) {
-        check(); // A stale account/cancelled pass must still stop.
-        console.warn("[VoiceNotes] Audio saved, but its Markdown did not sync", error);
-      }
-    }
+    // Reconcile's post-upload pass retries Markdown sync for saved notes. Stop and
+    // background paths also avoid repeating that round trip for already-saved audio.
+    if (note.ledger?.audio.state === "saved" && !isDiscarded(id)) return;
+    const finish = trackPending && note.ledger?.audio.state !== "saved"
+      ? pendingStore.beginAutomaticSave() : () => undefined;
+    try {
+      const result = await saveNoteForAccount(tcw, ctx, note, check);
+      if (result.kind === "failed") { check(); throw new Error(result.failure); }
+      if (result.kind === "discarded" && result.cleanupError) throw new Error(result.cleanupError);
+    } finally { finish(); }
   };
   return {
     process(ctx, id, trigger = "stop") {
@@ -84,7 +85,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
         try { await migrateLegacyDiscardLedger(undefined, check); }
         catch (error) { check(); migrationError = error; }
         check();
-        const notes = markLegacyOwnerUnknown((await VoiceNotes.listPending()).recordings);
+        const notes = markLegacyOwnerUnknown((await withVoiceNoteSaveDeadline("native listPending for reconcile", () => VoiceNotes.listPending())).recordings);
         check();
         // A phone can retain notes from another account. They are never candidates for
         // this space, so do not queue a schema check and archive sweep ahead of a new Stop.
@@ -105,13 +106,24 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
           if (note.owner === ctx.did && !note.ownerUnknown) {
             try {
               logSaveStart(note.id, trigger);
-              await processOne(ctx, note.id, epoch);
+              await processOne(ctx, note.id, epoch, true);
             }
             catch (error) {
               check();
-              if (!isDiscarded(note.id)) throw error;
-              discardError ??= error;
+              if (isDiscarded(note.id)) discardError ??= error;
+              else pendingStore.reportNoteFailure(note.id, error instanceof Error ? error.message : String(error));
             }
+          }
+        }
+        // Pending audio uploads went first. This untracked catch-up pass restores
+        // reconcile's Markdown retry without making saved audio look like an upload.
+        for (const note of notes) {
+          check();
+          if (note.owner !== ctx.did || note.ledger?.audio.state !== "saved" || isDiscarded(note.id)) continue;
+          try { await syncRecordingNote(tcw, note.id, check); }
+          catch (error) {
+            check();
+            console.warn("[VoiceNotes] Saved audio's Markdown sync is still pending", { id: note.id, error });
           }
         }
         if (migrationError) throw Object.assign(new Error(`Voice-note discard migration failed: ${String(migrationError)}`),

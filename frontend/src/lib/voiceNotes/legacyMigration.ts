@@ -2,6 +2,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CONNECTORS_SQL_DB_NAME } from "../connectors/connectorStore";
 import { VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { deleteNote } from "./recordingNotes";
+import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 
 export const LEGACY_DISCARD_KEY = "exo.voiceNotes.discarded";
 
@@ -14,11 +15,11 @@ export async function migrateLegacyDiscardLedger(storage: Pick<Storage, "getItem
   if (!Array.isArray(parsed) || !parsed.every((id) => typeof id === "string"))
     throw new Error("Legacy voice-note discard ledger is malformed");
   checkpoint();
-  const pending = (await VoiceNotes.listPending()).recordings;
+  const pending = (await withVoiceNoteSaveDeadline("native listPending for discard migration", () => VoiceNotes.listPending())).recordings;
   const present = new Set(pending.map((note) => note.id));
   for (const id of new Set(parsed as string[])) {
     checkpoint();
-    if (present.has(id)) await VoiceNotes.deleteAudio({ id });
+    if (present.has(id)) await withVoiceNoteSaveDeadline(`native deleteAudio id=${id}`, () => VoiceNotes.deleteAudio({ id }));
     // Native discard may already have removed audio before the WebView died.
     await deleteNote(id);
     if (!present.has(id)) continue;
@@ -63,14 +64,14 @@ export async function associateLegacyNotes(tcw: TinyCloudWeb, did: string,
   for (const note of notes) {
     if (!isLegacyNote(note) || note.owner) continue;
     checkpoint();
-    const found = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
-      "SELECT id FROM connector_meeting WHERE source = 'exo-voice-note' AND source_id = ? LIMIT 1", [note.id]);
+    const found = await withVoiceNoteSaveDeadline(`SQL legacy association query id=${note.id}`, () => tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
+      "SELECT id FROM connector_meeting WHERE source = 'exo-voice-note' AND source_id = ? LIMIT 1", [note.id]));
     if (!found.ok) throw new Error(`Legacy association lookup: ${found.error.message}`);
     const id = found.data.rows[0]?.[0];
     if (typeof id !== "string") continue;
     checkpoint();
     try {
-      await VoiceNotes.claim({ id: note.id, did, evidence: "space_row", rowId: id });
+      await withVoiceNoteSaveDeadline(`native claim id=${note.id}`, () => VoiceNotes.claim({ id: note.id, did, evidence: "space_row", rowId: id }));
       associated.push(note.id);
     } catch (error) {
       if ((error as { code?: string }).code !== "owner_mismatch") throw error;

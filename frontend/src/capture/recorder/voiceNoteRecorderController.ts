@@ -46,7 +46,7 @@ import { adoptNote, deleteNote, loadNote, parseMomentLines, saveNote, type Recor
 import { readRecordingNoteFromSpace, recordingNoteSyncError, reportRecordingNoteSyncError,
   subscribeRecordingNoteSync, syncRecordingNote, type NoteSyncErrorCode } from "@/lib/voiceNotes/voiceNoteStore";
 import { assertCurrent, currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
-import { withCaptureDeadline } from "@/lib/voiceNotes/accountHandoff";
+import { withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
 import { FINALIZATION_PENDING, limitNoticeText } from "./recorderCopy";
 import { autoStopIsCurrent, initialRecorderState, recorderReducer, type RecorderCaptureIssue, type RecorderEvent, type RecorderMic, type RecorderState } from "./recorderReducer";
 import { recordedElapsedAt } from "./recordedElapsed";
@@ -506,6 +506,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     );
   };
 
+  let retryPendingInFlight: Promise<void> | null = null;
   return {
     getState: () => state,
     getTranscriber: () => choice,
@@ -956,52 +957,56 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         committedIds.delete(id); lostAudioIds.delete(id);
       }
     },
-    async retryPending() {
-      if (!available) return;
-      if (!tcw?.did || !tcw.spaceId) {
-        pendingStore.reportError("Your account space is not ready to save this note. Try again after sign-in finishes.");
-        return;
-      }
-      if (pipeline) {
-        const finishSaving = pendingStore.beginManualSave();
+    retryPending() {
+      if (retryPendingInFlight) return retryPendingInFlight;
+      const run = async () => {
+        if (!available) return;
+        if (!tcw?.did || !tcw.spaceId) {
+          pendingStore.reportError("Your account space is not ready to save this note. Try again after sign-in finishes.");
+          return;
+        }
+        if (pipeline) {
+          const finishSaving = pendingStore.beginManualSave();
+          const account = pendingStore.forAccount(tcw.did);
+          const generation = currentAccountGeneration();
+          try {
+            const native = await withVoiceNoteSaveDeadline("native getCaptureDefaults", () => VoiceNotes.getCaptureDefaults());
+            if (native.status !== "signed_in" || native.accountDid !== tcw.did) {
+              account.reportError("This phone's recording account is not ready. Try again shortly.");
+              return;
+            }
+            // The same generation can claim a v2 note left unowned during sign-in.
+            await withVoiceNoteSaveDeadline("native setCaptureDefaults", () => VoiceNotes.setCaptureDefaults(native));
+            if (generation !== currentAccountGeneration()) {
+              account.reportError("The recording account changed while saving. Try again from the current account.");
+              return;
+            }
+            pipeline.resume();
+            await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation }, "manual");
+            await account.refresh(null);
+          } catch (caught) {
+            account.reportError(`Could not save notes on this phone: ${messageOf(caught)}`);
+          } finally { finishSaving(); }
+          return;
+        }
         const account = pendingStore.forAccount(tcw.did);
-        const generation = currentAccountGeneration();
+        let savedRun;
         try {
-          const native = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
-          if (native.status !== "signed_in" || native.accountDid !== tcw.did) {
-            account.reportError("This phone's recording account is not ready. Try again shortly.");
-            return;
-          }
-          // The same generation can claim a v2 note left unowned during sign-in.
-          await withCaptureDeadline(VoiceNotes.setCaptureDefaults(native));
-          if (generation !== currentAccountGeneration()) {
-            account.reportError("The recording account changed while saving. Try again from the current account.");
-            return;
-          }
-          pipeline.resume();
-          await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation }, "manual");
-          await account.refresh(null);
+          savedRun = await savePendingRecordings(tcw);
         } catch (caught) {
           account.reportError(`Could not save notes on this phone: ${messageOf(caught)}`);
-        } finally {
-          finishSaving();
+          return;
         }
-        return;
-      }
-      const account = pendingStore.forAccount(tcw.did);
-      let run;
-      try {
-        run = await savePendingRecordings(tcw);
-      } catch (caught) {
-        account.reportError(`Could not save notes on this phone: ${messageOf(caught)}`);
-        return;
-      }
-      for (const recording of run.saved) landed(recording);
-      // The note behind a "Kept on this phone" receipt is in the space now: the receipt says so.
-      const failed = state.failedRecording;
-      if (failed && state.outcome === "failed" && run.saved.some((recording) => recording.id === failed.id)) {
-        send({ type: "SAVED", id: failed.id, durationMs: failed.durationMs, at: Date.now() });
-      }
+        for (const recording of savedRun.saved) landed(recording);
+        // The note behind a "Kept on this phone" receipt is in the space now: the receipt says so.
+        const failed = state.failedRecording;
+        if (failed && state.outcome === "failed" && savedRun.saved.some((recording) => recording.id === failed.id)) {
+          send({ type: "SAVED", id: failed.id, durationMs: failed.durationMs, at: Date.now() });
+        }
+      };
+      const inFlight = run().finally(() => { if (retryPendingInFlight === inFlight) retryPendingInFlight = null; });
+      retryPendingInFlight = inFlight;
+      return inFlight;
     },
     dismissOutcome() {
       send({ type: "DISMISSED" });
