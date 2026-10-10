@@ -25,6 +25,12 @@ describe("savedNoteMeta", () => {
     expect(meta.endsWith("saved to your space")).toBe(true);
   });
 
+  test("a note only on this phone says it is not in the space yet", () => {
+    const meta = savedNoteMeta({ ...item, onPhone: true }, {}, "ios");
+    expect(meta.endsWith("not in your space yet")).toBe(true);
+    expect(meta).not.toContain("saved to your space");
+  });
+
   test("names the private cloud route", () => {
     expect(
       savedNoteMeta(item, { transcript_provider: "tinycloud-private-transcription" }, "ios"),

@@ -1,6 +1,7 @@
-import { useContext, useMemo, type ReactNode } from "react";
+import { useContext, useMemo, useRef, type ReactNode } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { PlatformContext } from "@/lib/platform";
+import { voiceNoteTitle } from "@/lib/voiceNotes/voiceNoteStore";
 import { useResolvedTheme } from "@/lib/theme";
 import { useRecorder } from "../../recorder/RecorderProvider";
 import type { MeetingMetadataRead } from "@/lib/connectors/meetingExplorer";
@@ -44,14 +45,18 @@ export default function SavedNote({
   const recorder = useRecorder();
   const platform = useContext(PlatformContext);
   const theme = useResolvedTheme() === "dark" ? "night" : "day";
-  const space = useMemo(() => store ?? savedNoteStoreFor(tcw), [store, tcw]);
+  // Read when the note loads, so the store (and the open editor) stay put when the row lands.
+  const hasSpaceRow = useRef(item.onPhone !== true);
+  hasSpaceRow.current = item.onPhone !== true;
+  const space = useMemo(() => store ?? savedNoteStoreFor(tcw, () => hasSpaceRow.current), [store, tcw]);
   const screen = useSavedNoteScreen(item.sourceId, space);
   const view = {
     screen,
     layout,
     theme,
     id: item.id,
-    title: item.title ?? "Untitled",
+    recordingId: item.sourceId,
+    title: item.title ?? voiceNoteTitle(Date.parse(item.startedAt ?? "") || Date.now()),
     meta: savedNoteMeta(
       item,
       metadata?.status === "ok" ? metadata.metadata : null,

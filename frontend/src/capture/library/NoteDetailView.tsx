@@ -19,7 +19,7 @@ import type { FirefliesSentence } from "@/lib/connectors/firefliesClient";
 import type { MeetingMetadataRead, TranscriptRead } from "@/lib/connectors/meetingExplorer";
 import { UPLOAD_MEETING_SOURCE } from "@/lib/audioUpload";
 import { transcriptionStatusText } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { voiceNoteTranscriptState, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
+import { voiceNoteTitle, voiceNoteTranscriptState, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 import { detailWhen, formatSpokenDuration } from "./formatters";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -239,7 +239,11 @@ function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
                 item,
                 outcome: voiceNoteTranscriptState(metadata.status === "ok" ? metadata.metadata : null).status,
                 transcription: props.transcription,
-              }) ?? <p className="text-callout text-muted-foreground">No transcript.</p>
+              }) ?? (
+                <p className="text-callout text-muted-foreground" data-testid={item.onPhone ? "note-transcript-on-phone" : undefined}>
+                  {item.onPhone ? "No transcript yet. It shows here once this note is saved to your space." : "No transcript."}
+                </p>
+              )
             }
           />
         )
@@ -284,7 +288,8 @@ export function NoteDetailView(props: NoteDetailViewProps) {
   if (props.savedNote && item.source === VOICE_NOTE_SOURCE) {
     return (
       <LazySavedNote
-        key={item.id}
+        // The recording, so the sheet stays open when its stand-in becomes the space's row.
+        key={item.sourceId}
         item={item}
         metadata={metadata}
         loadAudio={props.loadAudio}
@@ -293,12 +298,12 @@ export function NoteDetailView(props: NoteDetailViewProps) {
         layout={props.savedNote.layout}
         onBack={props.onBack}
         transcript={<Transcript {...props} item={item} />}
-        footer={<HowThisGotHere source={item.source} read={metadata} onRetry={props.onRetry} />}
+        footer={item.onPhone ? undefined : <HowThisGotHere source={item.source} read={metadata} onRetry={props.onRetry} />}
       />
     );
   }
 
-  const title = item.title ?? "Untitled";
+  const title = item.title ?? (item.source === VOICE_NOTE_SOURCE ? voiceNoteTitle(Date.parse(item.startedAt ?? "") || Date.now()) : "Untitled");
   const meta = metadata?.status === "ok" ? metadata.metadata : null;
   const audioKept = (meta?.audio as { stored?: unknown } | undefined)?.stored === true;
   return (
@@ -308,7 +313,7 @@ export function NoteDetailView(props: NoteDetailViewProps) {
         <p className="tnum text-meta text-muted-foreground">{noteMeta(item)}</p>
       </header>
       {props.loadAudio ? (
-        <MeetingAudioPlayer key={item.id} load={props.loadAudio} />
+        <MeetingAudioPlayer key={`${item.source}:${item.sourceId}`} load={props.loadAudio} />
       ) : item.source === VOICE_NOTE_SOURCE && meta && Object.keys(meta).length === 0 ? (
         <p role="status" className="text-callout text-muted-foreground" data-testid="voice-note-saving-from-phone">
           Saving from your phone…
@@ -318,7 +323,7 @@ export function NoteDetailView(props: NoteDetailViewProps) {
           Only the transcript was saved; the audio wasn’t stored.
         </p>
       ) : null}
-      <HowThisGotHere source={item.source} read={metadata} onRetry={props.onRetry} />
+      {!item.onPhone && <HowThisGotHere source={item.source} read={metadata} onRetry={props.onRetry} />}
       <Transcript {...props} item={item} />
     </Frame>
   );

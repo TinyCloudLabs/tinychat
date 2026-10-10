@@ -136,6 +136,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
     visible: active,
     noteId: screen.noteId,
     transcriber: recorder.available ? { backendUrl, sessionStore } : null,
+    onPhone: pendingVisible ? (recorder.pending.notes ?? null) : null,
   });
   // A saved voice note is the note itself: a full page (desktop) or a sheet over the Library (phone).
   const openNote = noteScreen && library.note.item?.source === VOICE_NOTE_SOURCE ? library.note.item : null;
