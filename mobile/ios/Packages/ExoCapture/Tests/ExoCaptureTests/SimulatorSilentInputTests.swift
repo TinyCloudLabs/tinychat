@@ -84,5 +84,44 @@ final class SimulatorSilentInputTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(journal.filter { $0["e"] as? String == "segment" }.count, 2)
         XCTAssertTrue(journal.contains { $0["e"] as? String == "hb" || $0["e"] as? String == "first_audio" })
     }
+
+    private struct AcquisitionAttempted: Error {}
+
+    @MainActor private func startCountingAcquisition(environment: [String: String]) throws -> (acquisitions: Int, error: Error?) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("exo-sim-mode-\(UUID().uuidString)")
+        let engine = try CaptureEngine(testRoot: root)
+        engine.debugForeground = true
+        engine.debugInputEnvironment = environment
+        var acquisitions = 0
+        // Host acquisition is replaced by a sentinel throw so this test never opens the Mac mic.
+        engine.debugHardwareAcquisition = { acquisitions += 1; throw AcquisitionAttempted() }
+        defer {
+            _ = try? engine.discard()
+            try? FileManager.default.removeItem(at: root)
+        }
+        do { _ = try engine.start() } catch { return (acquisitions, error) }
+        return (acquisitions, nil)
+    }
+
+    @MainActor func testSilenceNeverAcquiresHardwareSession() throws {
+        for environment in [[:], ["EXO_SIM_AUDIO_INPUT": "silence"]] as [[String: String]] {
+            let result = try startCountingAcquisition(environment: environment)
+            XCTAssertEqual(result.acquisitions, 0)
+            XCTAssertNil(result.error)
+        }
+    }
+
+    @MainActor func testInvalidModeIsRejectedBeforeAnyAcquisition() throws {
+        let result = try startCountingAcquisition(environment: ["EXO_SIM_AUDIO_INPUT": "mic"])
+        XCTAssertEqual(result.acquisitions, 0)
+        XCTAssertNotNil(result.error)
+        XCTAssertFalse(result.error is AcquisitionAttempted)
+    }
+
+    @MainActor func testHostModeAcquiresHardwareSession() throws {
+        let result = try startCountingAcquisition(environment: ["EXO_SIM_AUDIO_INPUT": "host"])
+        XCTAssertEqual(result.acquisitions, 1)
+        XCTAssertTrue(result.error is AcquisitionAttempted)
+    }
 }
 #endif

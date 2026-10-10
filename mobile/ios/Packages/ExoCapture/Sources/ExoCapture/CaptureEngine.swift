@@ -21,6 +21,8 @@ public final class CaptureEngine {
     private var audioEngine: AVAudioEngine?
     #if DEBUG && targetEnvironment(simulator)
     private var silentInput: SimulatorSilentInput?
+    var debugInputEnvironment: [String: String]?
+    var debugHardwareAcquisition: (() throws -> Void)?
     #endif
     private let tapCallbacks = DispatchGroup()
     private let tapTimeLock = NSLock()
@@ -79,6 +81,20 @@ public final class CaptureEngine {
     var debugMuxOperationTimeout: TimeInterval?
     var debugScheduleTimedOutRetry: ((String) -> Void)?
     var debugMuxWaitSeam: RecordingFinalizer.WaitSeam?
+    #endif
+    /// False only for the Debug-simulator synthetic source, which never acquires the recording
+    /// session, applies a preferred input or deactivates a session it did not activate.
+    private var usesHardwareSession: Bool {
+        #if DEBUG && targetEnvironment(simulator)
+        return (try? simulatorInputMode()) == .host
+        #else
+        return true
+        #endif
+    }
+    #if DEBUG && targetEnvironment(simulator)
+    private func simulatorInputMode() throws -> SimulatorSilentInput.Mode {
+        try SimulatorSilentInput.mode(environment: debugInputEnvironment ?? ProcessInfo.processInfo.environment)
+    }
     #endif
     private var hasInput: Bool {
         #if DEBUG && targetEnvironment(simulator)
@@ -379,11 +395,19 @@ public final class CaptureEngine {
         debugActivationAttempts += 1
         if let debugActivationError { throw debugActivationError }
         #endif
+        #if DEBUG && targetEnvironment(simulator)
+        // Chosen before any recording-session call, so an invalid value is rejected without
+        // touching hardware and silence never acquires the session.
+        let inputMode = try simulatorInputMode()
+        let acquiresHardware = inputMode == .host
+        #else
+        let acquiresHardware = true
+        #endif
         let audioSession = AVAudioSession.sharedInstance()
         var acquired = false
         var pendingEngine: AVAudioEngine?
         defer {
-            if !acquired {
+            if !acquired, acquiresHardware {
                 pendingEngine?.stop()
                 do {
                     try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
@@ -392,16 +416,21 @@ public final class CaptureEngine {
                 catch { log.error("Audio session cleanup failed: \(String(describing: error), privacy: .public)") }
             }
         }
-        _ = try inputRouter.list()
-        try audioSession.setPrefersNoInterruptionsFromSystemAlerts(true)
-        try audioSession.setPrefersInterruptionOnRouteDisconnect(false)
-        try audioSession.setActive(true)
-        graphActive = true
-        try inputRouter.apply()
+        if acquiresHardware {
+            #if DEBUG && targetEnvironment(simulator)
+            try debugHardwareAcquisition?()
+            #endif
+            _ = try inputRouter.list()
+            try audioSession.setPrefersNoInterruptionsFromSystemAlerts(true)
+            try audioSession.setPrefersInterruptionOnRouteDisconnect(false)
+            try audioSession.setActive(true)
+            graphActive = true
+            try inputRouter.apply()
+        }
         let engine: AVAudioEngine?
         let format: AVAudioFormat
         #if DEBUG && targetEnvironment(simulator)
-        switch try SimulatorSilentInput.mode() {
+        switch inputMode {
         case .silence:
             engine = nil
             format = SimulatorSilentInput.format
@@ -423,14 +452,24 @@ public final class CaptureEngine {
         }
         let acquiredAt = wallClock.nowMilliseconds()
         // The transition machine emits span_close, availability, and only a changed input.
-        var input = inputRouter.active()
+        let input: (id: String, name: String, kind: String)?
+        let inputRate: Double
         #if DEBUG && targetEnvironment(simulator)
-        if engine == nil, let routed = input { input = (routed.id, SimulatorSilentInput.inputName, routed.kind) }
+        if acquiresHardware {
+            input = inputRouter.active()
+            inputRate = audioSession.sampleRate
+        } else {
+            input = (SimulatorSilentInput.inputID, SimulatorSilentInput.inputName, "other")
+            inputRate = SimulatorSilentInput.sampleRate
+        }
+        #else
+        input = inputRouter.active()
+        inputRate = audioSession.sampleRate
         #endif
         if let input {
             currentInput = ["id": input.id, "name": input.name, "kind": input.kind]
         }
-        currentInputRate = audioSession.sampleRate
+        currentInputRate = inputRate
         var next = transitions ?? CaptureTransitionMachine()
         for event in next.acquired(at: acquiredAt, audioMs: audioMs, generation: generation, input: input) {
             try library.appendJournal(session.id, event)
@@ -539,6 +578,7 @@ public final class CaptureEngine {
             engine.stop()
         }
         audioEngine = nil
+        guard usesHardwareSession else { return }
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             graphActive = false
@@ -702,6 +742,7 @@ public final class CaptureEngine {
         clearResumeNotification()
         var next = transitions ?? CaptureTransitionMachine()
         let input = ClosureInputControl(stop: { [self] in stopInput() }, release: { [self] in
+            guard usesHardwareSession else { return }
             try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             graphActive = false
         })
@@ -1176,6 +1217,8 @@ public final class CaptureEngine {
             // The list is read afresh at Resume; an OS route event cannot activate the input.
             emitState()
         } else if availability == "available" {
+            // The synthetic source has no hardware route to follow.
+            guard usesHardwareSession else { return }
             #if DEBUG
             let route = debugInputRoute ?? (inputRouter.active()?.id, AVAudioSession.sharedInstance().sampleRate)
             #else

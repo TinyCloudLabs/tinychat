@@ -8,6 +8,7 @@ import Foundation
 /// or touches any input node: it delivers silent 48 kHz mono buffers at real-time cadence through
 /// the same tap handler the engine path uses.
 final class SimulatorSilentInput {
+    static let inputID = "exo-sim-silence"
     static let inputName = "Simulator silence (debug)"
     static let environmentKey = "EXO_SIM_AUDIO_INPUT"
     static let frames: AVAudioFrameCount = 1024

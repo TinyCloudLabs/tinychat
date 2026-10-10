@@ -343,6 +343,13 @@ import XCTest
             let first = try segmentCount(engine, id)
             engine.routeChanged()
             XCTAssertEqual(try segmentCount(engine, id), first)
+            #if targetEnvironment(simulator)
+            // Debug simulator captures synthetic silence and follows no host route.
+            engine.debugInputRoute = ("changed-input", AVAudioSession.sharedInstance().sampleRate)
+            engine.routeChanged()
+            XCTAssertEqual(try segmentCount(engine, id), first)
+            return
+            #endif
             if let active = engine.status()["input"] as? [String: Any], let uid = active["id"] as? String {
                 try engine.selectInput(uid)
                 XCTAssertEqual(try segmentCount(engine, id), first)
