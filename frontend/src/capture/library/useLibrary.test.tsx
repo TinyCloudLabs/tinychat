@@ -12,7 +12,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { saveNote } from "@/lib/voiceNotes/recordingNotes";
-import type { PendingNote } from "@/lib/voiceNotes/recorderSaves";
+import { clearDiscarded, markDiscarded, unmarkDiscarded, type PendingNote } from "@/lib/voiceNotes/recorderSaves";
 import { captureEvents } from "../captureEvents";
 import { RELIST_AFTER_MS, useLibrary, type Library } from "./useLibrary";
 
@@ -239,5 +239,87 @@ describe("useLibrary, notes still on this phone", () => {
     expect(byId["on-phone:rec-p1"]).toBe("Call the landlord");
     expect(byId.a).toBe("The quarterly numbers look good this time and we should send them to…");
     expect(byId.b).toBeUndefined();
+  });
+
+  test("a departure never commits a render without the note: the stand-in is kept in the very render that drops it", async () => {
+    const space = fakeSpace();
+    const seen: Library[] = [];
+    const open = { noteId: "on-phone:rec-hand" };
+    await render(props(space, seen, { ...open, onPhone: [phoneNote("rec-hand")] }));
+    await space.answer("list", listed("a"));
+    const before = seen.length;
+    await render(props(space, seen, { ...open, onPhone: [] }));
+    const renders = seen.slice(before);
+    expect(renders.length).toBeGreaterThan(0);
+    for (const library of renders) {
+      expect(library.note.item?.id).toBe("on-phone:rec-hand");
+      expect(library.items.map((item) => item.id)).toContain("on-phone:rec-hand");
+    }
+  });
+
+  test("a note whose discard went through is gone, not kept as if it had uploaded; a failed discard is not a discard", async () => {
+    const space = fakeSpace();
+    const seen: Library[] = [];
+    await render(props(space, seen, { onPhone: [phoneNote("rec-tossed"), phoneNote("rec-kept")] }));
+    await space.answer("list", listed("a"));
+    // rec-tossed: marked, deleted, marker retired, then the phone lists it no more.
+    markDiscarded("rec-tossed");
+    clearDiscarded("rec-tossed");
+    // rec-kept: marked, the discard failed (the recording stays), then it uploads.
+    markDiscarded("rec-kept");
+    unmarkDiscarded("rec-kept");
+    await render(props(space, seen, { onPhone: [] }));
+    expect(seen.at(-1)!.items.map((item) => item.id)).toEqual(["on-phone:rec-kept", "a"]);
+  });
+
+  test("when the phone's notes become unknown, notes still waiting for the list are dropped and do not come back", async () => {
+    const space = fakeSpace();
+    const seen: Library[] = [];
+    await render(props(space, seen, { onPhone: [phoneNote("rec-p1")] }));
+    await render(props(space, seen, { onPhone: [] }));
+    expect(seen.at(-1)!.items.map((item) => item.id)).toEqual(["on-phone:rec-p1"]);
+    await render(props(space, seen, { onPhone: null }));
+    expect(seen.at(-1)!.items).toEqual([]);
+    await render(props(space, seen, { onPhone: [] }));
+    expect(seen.at(-1)!.items).toEqual([]);
+  });
+
+  test("notes waiting for the list belong to their space: another space never lists them", async () => {
+    const space = fakeSpace();
+    const other = fakeSpace();
+    const seen: Library[] = [];
+    await render(props(space, seen, { onPhone: [phoneNote("rec-p1")] }));
+    await render(props(space, seen, { onPhone: [] }));
+    expect(seen.at(-1)!.items.map((item) => item.id)).toEqual(["on-phone:rec-p1"]);
+    await render(props(other, seen, { onPhone: [] }));
+    expect(seen.at(-1)!.items).toEqual([]);
+  });
+
+  test("a note that is on the phone again after leaving is one item, not its stand-in twice", async () => {
+    const space = fakeSpace();
+    const seen: Library[] = [];
+    await render(props(space, seen, { onPhone: [phoneNote("rec-p1")] }));
+    await render(props(space, seen, { onPhone: [] }));
+    await render(props(space, seen, { onPhone: [phoneNote("rec-p1")] }));
+    expect(seen.at(-1)!.items.map((item) => item.id)).toEqual(["on-phone:rec-p1"]);
+  });
+
+  test("closing a saved row re-reads its first moment: an edited one retitles it, a removed one drops the title", async () => {
+    await saveNote("rec-ed", "- **0:01** Original words");
+    const space = fakeSpace();
+    const seen: Library[] = [];
+    const base = props(space, seen);
+    await render({ ...base, noteId: null });
+    await space.answer("list", { ok: true, data: { rows: [["ed", "exo-voice-note", "rec-ed", "Voice note", "2026-10-06T10:00:00.000Z", 14]] } });
+    expect(seen.at(-1)!.items[0].snippet).toBe("Original words");
+    await render({ ...base, noteId: "ed" });
+    await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+    await saveNote("rec-ed", "- **0:01** Updated words", { savedEdit: true });
+    await render({ ...base, noteId: null });
+    expect(seen.at(-1)!.items[0].snippet).toBe("Updated words");
+    await render({ ...base, noteId: "ed" });
+    await saveNote("rec-ed", "just a note, no moments", { savedEdit: true });
+    await render({ ...base, noteId: null });
+    expect(seen.at(-1)!.items[0].snippet).toBeUndefined();
   });
 });

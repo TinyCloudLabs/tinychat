@@ -30,6 +30,8 @@ export interface SavedNoteViewProps {
   layout: SavedNoteLayout;
   theme: "night" | "day";
   id: string;
+  /** The recording: stays the same when a note that was only on the phone becomes the space's row. */
+  recordingId: string;
   title: string;
   meta: string;
   /** Reads the recording's audio; null when it has none stored. */
@@ -231,12 +233,12 @@ const useRefs = (): Refs => ({
   cancelButton: useRef<HTMLButtonElement>(null),
 });
 
-function Body(
+export function SavedNoteBody(
   props: SavedNoteViewProps &
     Refs & { toolbarHost: HTMLElement | null | undefined },
 ) {
   const { editButton, cancelButton, toolbarHost } = props;
-  const { screen, layout, loadAudio, id } = props;
+  const { screen, layout, loadAudio, recordingId } = props;
   const notes = (
     <Notes
       screen={screen}
@@ -261,7 +263,7 @@ function Body(
       )}
       {loadAudio && (
         <div className="sn-player">
-          <MeetingAudioPlayer key={id} load={loadAudio} seek={screen.seek} />
+          <MeetingAudioPlayer key={recordingId} load={loadAudio} seek={screen.seek} />
         </div>
       )}
       {layout === "page" ? (
@@ -353,7 +355,7 @@ export function SavedNotePage(props: SavedNoteViewProps) {
           {props.title}
         </h1>
         <p className="sn-meta">{props.meta}</p>
-        <Body {...props} {...refs} toolbarHost={undefined} />
+        <SavedNoteBody {...props} {...refs} toolbarHost={undefined} />
       </div>
       <Confirm {...props} {...refs} />
     </div>
@@ -412,7 +414,7 @@ export function SavedNoteSheet(props: SavedNoteViewProps) {
               <Dialog.Description className="sn-meta">
                 {props.meta}
               </Dialog.Description>
-              <Body {...props} {...refs} toolbarHost={toolbarHost} />
+              <SavedNoteBody {...props} {...refs} toolbarHost={toolbarHost} />
             </div>
           </div>
           <div

@@ -33,6 +33,7 @@ import { effectiveCaptureOptions, readTranscriberPreference, setDefaultIdentifyS
   setDefaultTranscriber, subscribeTranscriberPreference } from "@/lib/voiceNotes/transcriberPreference";
 import {
   clearDiscarded,
+  unmarkDiscarded,
   deleteDiscarded,
   errorCode,
   markDiscarded,
@@ -910,7 +911,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       try {
         const discarded = await VoiceNotes.discard();
         if (discarded.id && discarded.id !== id) {
-          if (shown) clearDiscarded(shown);
+          if (shown) unmarkDiscarded(shown);
           id = discarded.id;
           markDiscarded(id);
         }
@@ -919,20 +920,20 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         // no_audio_captured: the phone kept nothing.
         const code = errorCode(caught);
         if (code === "already_committed") {
-          if (shown) clearDiscarded(shown);
+          if (shown) unmarkDiscarded(shown);
           await reconcileDiscardFailure(shown, "Already saved on this phone. The note is still available.");
           return;
         }
         if (code !== "not_recording" && code !== "no_audio_captured") {
-          if (shown) clearDiscarded(shown);
-          if (id && id !== shown) clearDiscarded(id);
+          if (shown) unmarkDiscarded(shown);
+          if (id && id !== shown) unmarkDiscarded(id);
           await reconcileDiscardFailure(shown, `Could not discard the recording: ${messageOf(caught)}`);
           return;
         }
         needDeleteCommitted = code === "not_recording";
       }
       if (!id) {
-        if (shown) clearDiscarded(shown);
+        if (shown) unmarkDiscarded(shown);
         await reconcileDiscardFailure(shown, "Could not discard the recording.");
         return;
       }

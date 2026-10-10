@@ -28,13 +28,15 @@ export interface SavedNoteStore {
 
 /**
  * The note of a saved recording: the device's copy first, else the space's (adopted, so the first edit is a revision of
- * it), and every save through the same local-first write the recorder's note uses.
+ * it), and every save through the same local-first write the recorder's note uses. `hasSpaceRow` is read when the
+ * note is loaded; false keeps the load off the network.
  */
-export function spaceSavedNoteStore(tcw: TinyCloudWeb): SavedNoteStore {
+export function spaceSavedNoteStore(tcw: TinyCloudWeb, hasSpaceRow: () => boolean = () => true): SavedNoteStore {
   return {
     async load(id) {
       let note = await loadNote(id);
-      if (!note) {
+      // A recording with no row in the space has no note there either: its note is the device's, read or not.
+      if (!note && hasSpaceRow()) {
         const remote = await readRecordingNoteFromSpace(tcw, id);
         if (remote) note = await adoptNote(remote);
       }
@@ -57,5 +59,5 @@ export function __setSavedNoteStoreForTests(store: SavedNoteStore | null): void 
   override = store;
 }
 
-export const savedNoteStoreFor = (tcw: TinyCloudWeb): SavedNoteStore =>
-  override ?? spaceSavedNoteStore(tcw);
+export const savedNoteStoreFor = (tcw: TinyCloudWeb, hasSpaceRow?: () => boolean): SavedNoteStore =>
+  override ?? spaceSavedNoteStore(tcw, hasSpaceRow);

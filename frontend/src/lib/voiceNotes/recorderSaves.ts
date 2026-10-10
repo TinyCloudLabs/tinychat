@@ -141,11 +141,25 @@ export function isDiscarded(id: string): boolean {
   return discardedThisSession.has(id) || storedDiscarded().includes(id);
 }
 
-/** Its device copy is gone: nothing is left to guard. */
-export function clearDiscarded(id: string): void {
+/** Recordings whose discard went through and whose device copy is gone, this session. */
+const deletedThisSession = new Set<string>();
+
+/** The user discarded this recording, and it is still marked or its copy has been deleted: it never became a saved note. */
+export function wasDiscarded(id: string): boolean {
+  return isDiscarded(id) || deletedThisSession.has(id);
+}
+
+/** It was not discarded after all (the discard failed): the guard goes, the recording stays. */
+export function unmarkDiscarded(id: string): void {
   discardedThisSession.delete(id);
   const ids = storedDiscarded();
   if (ids.includes(id)) storeDiscarded(ids.filter((stored) => stored !== id));
+}
+
+/** Its device copy is gone: nothing is left to guard, and `wasDiscarded` still remembers it. */
+export function clearDiscarded(id: string): void {
+  deletedThisSession.add(id);
+  unmarkDiscarded(id);
 }
 
 const discardDeletes = new Map<string, Promise<string | null>>();

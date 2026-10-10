@@ -22,7 +22,10 @@
 // one with no row yet is a stand-in that opens from the phone's own copy (its
 // audio, its notes and moments); one with a row is that row, marked "saving".
 // A note that leaves the phone keeps its stand-in until a list read that began
-// after it left has come back, so it never drops out between the two.
+// after it left has come back, so it never drops out between the two. The
+// stand-in is kept in the same render that drops the note, never an effect
+// later; it is dropped at once when the phone's notes become unknown or the
+// space changes, and for a note that was discarded rather than uploaded.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -39,7 +42,7 @@ import {
 import { scheduledSpace } from "@/lib/spaceQueue";
 import { Capacitor } from "@capacitor/core";
 import { loadNote } from "@/lib/voiceNotes/recordingNotes";
-import { isDiscarded, type PendingNote } from "@/lib/voiceNotes/recorderSaves";
+import { wasDiscarded, type PendingNote } from "@/lib/voiceNotes/recorderSaves";
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { loadVoiceNoteAudioBlob, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { readTranscriptPreviews, voiceNoteTranscriptLocator } from "@/lib/voiceNotes/voiceNoteCommits";
@@ -83,6 +86,30 @@ function localAudioLoad(recordingId: string): AudioLoad {
   };
 }
 
+/** Voice notes on the phone, and those that just left it and wait for the list to catch up. */
+interface Handoff {
+  space: unknown;
+  notes: readonly PendingNote[] | null;
+  lingering: ReadonlyMap<string, { note: PendingNote; since: number }>;
+  /** Counts notes that left, so each departure asks for one list read. */
+  departures: number;
+}
+
+function handoffAfter(previous: Handoff, space: unknown, notes: readonly PendingNote[] | null, since: number): Handoff {
+  if (previous.space !== space || previous.notes === null || notes === null) {
+    return { space, notes, lingering: new Map(), departures: previous.departures };
+  }
+  const still = new Set(notes.map((note) => note.id));
+  const lingering = new Map([...previous.lingering].filter(([id]) => !still.has(id)));
+  let departures = previous.departures;
+  for (const note of previous.notes) {
+    if (still.has(note.id) || wasDiscarded(note.id)) continue;
+    lingering.set(note.id, { note, since });
+    departures++;
+  }
+  return { space, notes, lingering, departures };
+}
+
 const settled = (read: { status: string } | undefined) => read !== undefined && read.status !== "failed";
 const noop = () => undefined;
 
@@ -116,9 +143,14 @@ export function useLibrary(
   const mounted = useRef(true);
   const listRun = useRef({ out: false, again: false });
   const readsStarted = useRef(0);
-  // Notes that left the phone, kept as stand-ins until a list read begun after they left has come back.
-  const lingering = useRef(new Map<string, { note: PendingNote; since: number }>());
-  const [lingerRevision, setLingerRevision] = useState(0);
+  const onPhoneNotes = options.onPhone ?? null;
+  const [handoff, setHandoff] = useState<Handoff>({ space, notes: onPhoneNotes, lingering: new Map(), departures: 0 });
+  // Derived while rendering, so no render shows the note gone before its stand-in is kept.
+  let currentHandoff = handoff;
+  if (handoff.space !== space || handoff.notes !== onPhoneNotes) {
+    currentHandoff = handoffAfter(handoff, space, onPhoneNotes, readsStarted.current);
+    setHandoff(currentHandoff);
+  }
   const [moments, setMoments] = useState<ReadonlyMap<string, string>>(new Map());
   const momentsLoaded = useRef(new Set<string>());
   const clock = useRef(options.now ?? Date.now);
@@ -166,14 +198,10 @@ export function useLibrary(
           : { status: "failed", items: current.items, previews: current.previews },
       );
       if (read.status === "ok") {
-        let cleared = false;
-        for (const [id, entry] of lingering.current) {
-          if (entry.since < started) {
-            lingering.current.delete(id);
-            cleared = true;
-          }
-        }
-        if (cleared) setLingerRevision((n) => n + 1);
+        setHandoff((current) => {
+          const lingering = new Map([...current.lingering].filter(([, entry]) => entry.since >= started));
+          return lingering.size === current.lingering.size ? current : { ...current, lingering };
+        });
       }
       if (listRun.current.again) {
         listRun.current.again = false;
@@ -206,20 +234,10 @@ export function useLibrary(
   // Something landed (a voice note saved, an upload's or a notetaker's transcript).
   useEffect(() => captureEvents.on("library-changed", () => refresh()), [refresh]);
 
-  // Voice notes still on the phone: a note that has just left it is kept until the list has caught up.
-  const onPhoneNotes = options.onPhone ?? null;
-  const lastOnPhone = useRef<{ space: typeof space; notes: readonly PendingNote[] } | null>(null);
+  // Each note that leaves the phone asks for one list read to catch up.
   useEffect(() => {
-    const previous = lastOnPhone.current;
-    lastOnPhone.current = onPhoneNotes === null ? null : { space, notes: onPhoneNotes };
-    if (previous === null || previous.space !== space || onPhoneNotes === null) return;
-    const still = new Set(onPhoneNotes.map((note) => note.id));
-    const left = previous.notes.filter((note) => !still.has(note.id) && !isDiscarded(note.id));
-    if (left.length === 0) return;
-    for (const note of left) lingering.current.set(note.id, { note, since: readsStarted.current });
-    setLingerRevision((n) => n + 1);
-    refresh();
-  }, [onPhoneNotes, refresh, space]);
+    if (handoff.departures > 0) refresh();
+  }, [handoff.departures, refresh]);
 
   // A voice note's first moment titles its row, ahead of its transcript.
   const voiceSourceIds = useMemo(
@@ -227,12 +245,36 @@ export function useLibrary(
       .concat((onPhoneNotes ?? []).map((note) => note.id)),
     [list.items, onPhoneNotes],
   );
+  const items = useMemo(() => {
+    const merged = withOnPhone(
+      list.items,
+      onPhoneNotes ?? [],
+      [...currentHandoff.lingering.values()].map((entry) => entry.note).filter((note) => !wasDiscarded(note.id)),
+    );
+    return merged.map((entry) => {
+      if (entry.source !== VOICE_NOTE_SOURCE) return entry;
+      const snippet = moments.get(entry.sourceId) ?? noteSnippet(list.previews.get(entry.sourceId));
+      return snippet === null ? entry : { ...entry, snippet };
+    });
+  }, [list.items, list.previews, moments, onPhoneNotes, currentHandoff.lingering]);
+
+  // The open note by its id; a stand-in's sheet stays open when its row replaces it.
+  const item = useMemo(() => {
+    if (options.noteId === null) return null;
+    const exact = items.find((entry) => entry.id === options.noteId);
+    if (exact) return exact;
+    const recordingId = recordingIdOfOnPhoneId(options.noteId);
+    return recordingId === null ? null : (items.find((entry) => entry.source === VOICE_NOTE_SOURCE && entry.sourceId === recordingId) ?? null);
+  }, [items, options.noteId]);
+
+  // The open voice note, by recording: a stand-in and its row are one note.
+  const openRecordingId = item?.source === VOICE_NOTE_SOURCE ? item.sourceId : null;
   const lastOpened = useRef<string | null>(null);
   useEffect(() => {
-    // A note just closed may have had its moments edited: read it again.
-    const reread = lastOpened.current;
-    lastOpened.current = options.noteId === null ? null : (recordingIdOfOnPhoneId(options.noteId) ?? null);
-    const todo = [...new Set(voiceSourceIds)].filter((id) => !momentsLoaded.current.has(id) || id === reread);
+    // A note just closed may have had its moments edited: read them again.
+    const closed = lastOpened.current !== openRecordingId ? lastOpened.current : null;
+    lastOpened.current = openRecordingId;
+    const todo = [...new Set(voiceSourceIds)].filter((id) => !momentsLoaded.current.has(id) || id === closed);
     if (todo.length === 0) return;
     for (const id of todo) momentsLoaded.current.add(id);
     void (async () => {
@@ -256,30 +298,7 @@ export function useLibrary(
         return next;
       });
     })();
-  }, [options.noteId, voiceSourceIds]);
-
-  const items = useMemo(() => {
-    const merged = withOnPhone(
-      list.items,
-      onPhoneNotes ?? [],
-      [...lingering.current.values()].map((entry) => entry.note),
-    );
-    return merged.map((entry) => {
-      if (entry.source !== VOICE_NOTE_SOURCE) return entry;
-      const snippet = moments.get(entry.sourceId) ?? noteSnippet(list.previews.get(entry.sourceId));
-      return snippet === null ? entry : { ...entry, snippet };
-    });
-    // lingerRevision: the lingering stand-ins live in a ref.
-  }, [list.items, list.previews, moments, onPhoneNotes, lingerRevision]);
-
-  // The open note by its id; a stand-in's sheet stays open when its row replaces it.
-  const item = useMemo(() => {
-    if (options.noteId === null) return null;
-    const exact = items.find((entry) => entry.id === options.noteId);
-    if (exact) return exact;
-    const recordingId = recordingIdOfOnPhoneId(options.noteId);
-    return recordingId === null ? null : (items.find((entry) => entry.source === VOICE_NOTE_SOURCE && entry.sourceId === recordingId) ?? null);
-  }, [items, options.noteId]);
+  }, [openRecordingId, voiceSourceIds]);
 
   const readNote = useCallback(
     (note: LibraryItem) => {

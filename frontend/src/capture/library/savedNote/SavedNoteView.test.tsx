@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { SavedNotePage } from "./SavedNoteView";
+import type { ReactElement, ReactNode } from "react";
+import { Children, isValidElement } from "react";
+import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
+import { SavedNoteBody, SavedNotePage } from "./SavedNoteView";
 import { editedLabel } from "./savedNoteMeta";
 import type { SavedNoteViewProps } from "./SavedNoteView";
 import type { SavedNoteScreen } from "./useSavedNoteScreen";
@@ -58,6 +61,7 @@ const props = (screen: SavedNoteScreen, over: Partial<SavedNoteViewProps> = {}):
   layout: "page",
   theme: "night",
   id: "rec-1",
+  recordingId: "rec-1",
   title: "Standup",
   meta: "1 min · saved to your space",
   loadAudio: null,
@@ -165,5 +169,34 @@ describe("SavedNotePage", () => {
     expect(out).toContain("Discard your changes?");
     expect(out).toContain("Keep editing");
     expect(out).toContain("Discard changes");
+  });
+});
+
+describe("SavedNoteBody's player", () => {
+  const playerIn = (node: ReactNode): ReactElement | null => {
+    if (!isValidElement(node)) return null;
+    if (node.type === MeetingAudioPlayer) return node;
+    for (const child of Children.toArray((node.props as { children?: ReactNode }).children)) {
+      const found = playerIn(child);
+      if (found) return found;
+    }
+    return null;
+  };
+  const load = async () => new Blob();
+  const player = (over: Partial<SavedNoteViewProps>) => {
+    const view = props(screenOf({ md: "hi" }), { loadAudio: load, ...over });
+    const refs = { editButton: { current: null }, cancelButton: { current: null } };
+    return playerIn(SavedNoteBody({ ...view, ...refs, toolbarHost: undefined }));
+  };
+
+  test("is the same player when a note that was only on the phone becomes the space's row, so a load or playback in flight carries on", () => {
+    const standIn = player({ id: "on-phone:rec-9", recordingId: "rec-9" });
+    const row = player({ id: "9", recordingId: "rec-9" });
+    expect(standIn?.key).not.toBeNull();
+    expect(row?.key).toBe(standIn?.key ?? "");
+  });
+
+  test("is a new player for another recording", () => {
+    expect(player({ id: "1", recordingId: "rec-1" })?.key).not.toBe(player({ id: "2", recordingId: "rec-2" })?.key);
   });
 });

@@ -313,7 +313,7 @@ export function NoteDetailView(props: NoteDetailViewProps) {
         <p className="tnum text-meta text-muted-foreground">{noteMeta(item)}</p>
       </header>
       {props.loadAudio ? (
-        <MeetingAudioPlayer key={item.id} load={props.loadAudio} />
+        <MeetingAudioPlayer key={`${item.source}:${item.sourceId}`} load={props.loadAudio} />
       ) : item.source === VOICE_NOTE_SOURCE && meta && Object.keys(meta).length === 0 ? (
         <p role="status" className="text-callout text-muted-foreground" data-testid="voice-note-saving-from-phone">
           Saving from your phone…

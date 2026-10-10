@@ -301,6 +301,17 @@ describe("pendingStore", () => {
     await saves.pendingStore.refresh(null);
     expect(saves.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 3 });
   });
+  test("a discard that went through is remembered as discarded after its marker is retired; one that failed is not", async () => {
+    saves.markDiscarded("gone");
+    expect(saves.wasDiscarded("gone")).toBe(true);
+    expect(await saves.deleteDiscarded("gone")).toBeNull();
+    expect(saves.isDiscarded("gone")).toBe(false);
+    expect(saves.wasDiscarded("gone")).toBe(true);
+    saves.markDiscarded("stays");
+    saves.unmarkDiscarded("stays");
+    expect(saves.isDiscarded("stays")).toBe(false);
+    expect(saves.wasDiscarded("stays")).toBe(false);
+  });
   test("the notes the Library lists are this account's and unowned ones, not a discarded one, and absent when the listing failed", async () => {
     phone.pending = [{ ...recording("alice-note", 1), owner: tcw.did }, { ...recording("bob-note", 2), owner: "did:example:bob" },
       { ...recording("unowned", 3), owner: null, ownerUnknown: true }, { ...recording("tossed", 4), owner: "did:example:bob" }];
