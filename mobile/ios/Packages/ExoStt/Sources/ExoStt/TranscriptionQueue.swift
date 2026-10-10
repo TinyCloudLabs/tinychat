@@ -34,10 +34,13 @@ public final class TranscriptionQueue {
 
     private let store: ModelStore
     private let capture = CaptureEngine.shared
-    private let runQueue = DispatchQueue(label: "xyz.tinycloud.exo.stt.queue")
+    /// Runs the model load and the decode loop (the only long work); nothing ever `sync`s onto it.
+    private let workQueue = DispatchQueue(label: "xyz.tinycloud.exo.stt.queue", qos: .utility)
+    /// Short bookkeeping (reconcile scan, enqueue, cancel): never queued behind a decode, so a
+    /// cancel or a freshly committed note is seen by the running pass right away.
+    private let controlQueue = DispatchQueue(label: "xyz.tinycloud.exo.stt.control")
     private let captureGate = CapturePauseGate()
-    private var pending: [String] = []
-    private var running = false
+    private let state = TranscriptionState()
     public var onQueueChanged: (() -> Void)?
     public var onProgress: ((String, Int) -> Void)?
     public var onTranscribed: ((String, String) -> Void)?
@@ -45,13 +48,19 @@ public final class TranscriptionQueue {
 
     public init(store: ModelStore) {
         self.store = store
+        // The launch-time model check runs in the background; `pump()` waits for it (rather than
+        // concluding the model is missing) and this restarts the queue and refreshes the UI once done.
+        store.onInitialCheckFinished { [weak self] in
+            self?.onQueueChanged?()
+            self?.kickWorker()
+        }
     }
 
     /// Scans every committed note for unfinished on-device work (native work inventory, plan §2.5)
     /// and adds it to the queue. Called at launch (after recovery), on every `committed` event, and
     /// when a model finishes downloading.
     public func reconcile() {
-        runQueue.async { [self] in
+        controlQueue.async { [self] in
             guard let notes = try? capture.library.listCommitted() else { return }
             for note in notes {
                 guard let id = note["id"] as? String,
@@ -61,40 +70,41 @@ public final class TranscriptionQueue {
                       let state = stt["state"] as? String,
                       ["waiting_for_model", "queued", "running"].contains(state) else { continue }
                 if (try? capture.library.transcript(id)) != nil { continue }
-                if !pending.contains(id) { pending.append(id) }
+                self.state.add(id)
             }
-            pump()
+            kickWorker()
         }
     }
 
     /// Explicit enqueue: the UI's Retry for a `failed` note, or a fresh on-device recording. Resets
     /// the attempt count, since this is a deliberate retry, not an automatic one.
     public func enqueue(id: String) {
-        runQueue.async { [self] in
+        controlQueue.async { [self] in
             guard (try? capture.library.transcript(id)) == nil else { return } // already has one
             try? capture.library.updateStt(id, patch: ["state": "queued", "error": NSNull(), "attempts": 0])
-            if !pending.contains(id) { pending.append(id) }
+            state.add(id)
             onQueueChanged?()
-            pump()
+            kickWorker()
         }
     }
 
+    /// Drops a queued note, or stops the note decoding right now at its next window; the worker then
+    /// records the `cancelled` state itself, so a finishing decode and a cancel never race on the sidecar.
     public func cancel(id: String) {
-        runQueue.async { [self] in
-            pending.removeAll { $0 == id }
-            try? capture.library.updateStt(id, patch: ["state": "cancelled"])
+        controlQueue.async { [self] in
+            switch state.cancel(id) {
+            case .removedPending, .notFound:
+                try? capture.library.updateStt(id, patch: ["state": "cancelled"])
+            case .flaggedRunning:
+                break
+            }
             onQueueChanged?()
         }
     }
 
+    /// Never blocks on a decode: the running note (with its last percent) and the pending ones, from memory.
     public func queueSnapshot() -> [[String: Any]] {
-        runQueue.sync {
-            pending.map { id in
-                let stt = (try? capture.library.readSidecar(id))?["stt"] as? [String: Any] ?? [:]
-                return ["id": id, "state": stt["state"] as? String ?? "queued",
-                        "percent": NSNull(), "error": stt["error"] as Any? ?? NSNull()]
-            }
-        }
+        state.snapshot()
     }
 
     /// Pushed by `CaptureEngine` (via `captureSessionStarted`) the instant a session begins
@@ -107,36 +117,43 @@ public final class TranscriptionQueue {
     /// Discard, or a start that never acquired the mic): resumes the queue from its checkpoint.
     public func captureEnded() {
         captureGate.captureEnded()
-        runQueue.async { [self] in pump() }
+        kickWorker()
     }
 
+    private func kickWorker() {
+        workQueue.async { [self] in pump() }
+    }
+
+    /// Runs on `workQueue` only, so there is never more than one decode at a time.
     private func pump() {
-        guard !running, !pending.isEmpty else { return }
+        guard state.hasPending else { return }
         guard !captureGate.isActive() else { return } // Resumed by `captureEnded()`.
+        guard !store.isChecking else { return } // Resumed by the store's `onInitialCheckFinished`.
         let memory = ProcessInfo.processInfo.physicalMemory
         let modelId = ModelManifest.primaryModel(physicalMemoryBytes: memory)
         guard store.isReady(modelId), store.isReady(ModelManifest.sileroVad) else {
-            for id in pending { try? capture.library.updateStt(id, patch: ["state": "waiting_for_model"]) }
+            state.markAllPending(state: "waiting_for_model")
+            for id in state.pendingIds { try? capture.library.updateStt(id, patch: ["state": "waiting_for_model"]) }
             onQueueChanged?()
             return
         }
-        running = true
+        state.markAllPending(state: "queued")
         let engine: Engine
         do {
             engine = try Engine(store: store, modelId: modelId)
         } catch {
-            for id in pending { fail(id, code: "model_load_failed", message: String(describing: error)) }
-            pending.removeAll()
-            running = false
+            for id in state.removeAllPending() { fail(id, code: "model_load_failed", message: String(describing: error)) }
             onQueueChanged?()
             return
         }
-        defer { running = false }
         CaptureYieldingLoop.run(
-            hasNext: { !pending.isEmpty },
-            next: { pending.removeFirst() },
+            hasNext: { state.hasPending },
+            next: { state.takeNext() },
             isPaused: { captureGate.isActive() }
-        ) { id in
+        ) { next in
+            guard let id = next else { return } // cancelled between hasNext and next
+            defer { state.finishCurrent() }
+            if (try? capture.library.transcript(id)) != nil { return } // finished while it was being re-queued
             let previousAttempts = ((try? capture.library.readSidecar(id))?["stt"] as? [String: Any])?["attempts"] as? Int ?? 0
             switch AttemptGuard.next(previousAttempts: previousAttempts) {
             case .giveUp:
@@ -155,12 +172,15 @@ public final class TranscriptionQueue {
                 // Not a failed attempt: an orderly yield to a resumed recording. Restore the
                 // attempt count so being interrupted repeatedly never burns the crash-loop budget.
                 try? capture.library.updateStt(id, patch: ["state": "queued", "attempts": previousAttempts])
-                pending.insert(id, at: 0)
+                state.requeueCurrentFirst()
+            } catch TranscriptionQueueError.cancelled {
+                try? capture.library.updateStt(id, patch: ["state": "cancelled", "attempts": previousAttempts])
+                onQueueChanged?()
             } catch {
                 fail(id, code: "decode_failed", message: String(describing: error))
             }
         }
-        if !pending.isEmpty { runQueue.asyncAfter(deadline: .now() + 2) { [weak self] in self?.pump() } }
+        if state.hasPending { workQueue.asyncAfter(deadline: .now() + 2) { [weak self] in self?.pump() } }
     }
 
     private func fail(_ id: String, code: String, message: String) {
@@ -177,13 +197,22 @@ public final class TranscriptionQueue {
         var decodedAny = false
         var segmentsDone = 0
         var windowsDone = 0
+        var lastPercent = -1
         try engine.transcribe(
             file: audioURL,
-            checkCapturing: { [self] in guard !captureGate.isActive() else { throw TranscriptionQueueError.captureStarted } },
+            checkCapturing: { [self] in
+                if state.isCancelRequested(id) { throw TranscriptionQueueError.cancelled }
+                guard !captureGate.isActive() else { throw TranscriptionQueueError.captureStarted }
+            },
             onWindow: { [self] in
                 windowsDone += 1
-                try? capture.library.updateStt(id, patch: ["windowsDone": windowsDone])
                 let percent = totalWindows.map { min(99, Int(Double(windowsDone) / Double($0) * 100)) } ?? 0
+                // A window is 32 ms of audio: persist and announce progress only when the percent
+                // moves, not ~30 times a second (each is a durable sidecar write and a bridge event).
+                guard percent != lastPercent else { return }
+                lastPercent = percent
+                try? capture.library.updateStt(id, patch: ["windowsDone": windowsDone])
+                state.setProgress(percent)
                 onProgress?(id, percent)
             },
             onSegment: { [self] chunk, words in
@@ -223,6 +252,7 @@ public final class TranscriptionQueue {
 
 enum TranscriptionQueueError: Error {
     case captureStarted
+    case cancelled
     case modelFilesMissing
     case decodeFailed
 }
