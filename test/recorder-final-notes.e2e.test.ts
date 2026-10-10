@@ -161,6 +161,36 @@ describe.serial(`recorder-final notes, ${engineName}`, () => {
     expect(errors).toEqual([]);
   });
 
+  test("focus rings are rounded: the ＋ disc and the moment field's card, not the browser's square box", async () => {
+    const { page, errors } = await open();
+    await page.keyboard.press("Tab");
+    await plus(page).focus();
+    const key = await plus(page).evaluate((el) => {
+      const style = getComputedStyle(el);
+      return {
+        visible: el.matches(":focus-visible"),
+        outline: style.outlineStyle,
+        radius: style.borderTopLeftRadius,
+      };
+    });
+    expect(key).toEqual({ visible: true, outline: "solid", radius: "50%" });
+
+    await plus(page).click();
+    await shown(field(page));
+    await focused(field(page));
+    const ring = await field(page).evaluate((el) => {
+      const card = el.closest(".pr-moment")!;
+      const cardStyle = getComputedStyle(card);
+      return {
+        input: getComputedStyle(el).outlineStyle,
+        card: cardStyle.outlineStyle,
+        radius: cardStyle.borderTopLeftRadius,
+      };
+    });
+    expect(ring).toEqual({ input: "none", card: "solid", radius: "16px" });
+    expect(errors).toEqual([]);
+  });
+
   test("Escape cancels a moment and leaves no note", async () => {
     const { page, errors } = await open();
     await plus(page).click();

@@ -6,6 +6,7 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
+import { createPortal } from "react-dom";
 import { NOTES_COPY } from "../notesCopy";
 import { BulletsIcon, ChecklistIcon, QuoteIcon } from "../notesIcons";
 import {
@@ -26,6 +27,8 @@ export interface NoteWriterProps {
   disabled?: boolean;
   label?: string;
   placeholder?: string;
+  /** Where the formatting bar renders, outside the writer: an element to portal into, or null while that element is not mounted yet (no bar until it is). Omitted: the bar sits under the field. */
+  toolbarHost?: HTMLElement | null;
 }
 
 const TOOLS: { tool: FormatTool; glyph: ReactNode }[] = [
@@ -46,6 +49,7 @@ export function NoteWriter({
   disabled = false,
   label = NOTES_COPY.noteField,
   placeholder = NOTES_COPY.notePlaceholder,
+  toolbarHost,
 }: NoteWriterProps) {
   const field = useRef<HTMLTextAreaElement>(null);
   useImperativeHandle(textareaRef, () => field.current!, []);
@@ -60,6 +64,44 @@ export function NoteWriter({
     target.setSelectionRange(edit.select[0], edit.select[1]);
     onChange(target.value);
   };
+  const toolbar = (
+    <div
+      className="nt-wtools"
+      role="toolbar"
+      aria-label={NOTES_COPY.formatting}
+      // A tap on the bar must not take focus (or the keyboard) from the field.
+      onPointerDown={(event) => event.preventDefault()}
+    >
+      {TOOLS.map(({ tool, glyph }) => (
+        <button
+          key={tool}
+          type="button"
+          aria-label={NOTES_COPY.tools[tool]}
+          title={NOTES_COPY.tools[tool]}
+          aria-disabled={disabled || undefined}
+          onClick={() => {
+            if (disabled) return;
+            const target = field.current!;
+            target.focus();
+            apply(
+              target,
+              toolEdit(
+                tool,
+                target.value,
+                target.selectionStart,
+                target.selectionEnd,
+              ),
+            );
+          }}
+        >
+          {glyph}
+        </button>
+      ))}
+      <span className="nt-wmd" aria-hidden="true">
+        {NOTES_COPY.markdownHint}
+      </span>
+    </div>
+  );
   return (
     <div className="nt-writer">
       <textarea
@@ -86,42 +128,9 @@ export function NoteWriter({
           apply(target, edit);
         }}
       />
-      <div
-        className="nt-wtools"
-        role="toolbar"
-        aria-label={NOTES_COPY.formatting}
-        // A tap on the bar must not take focus (or the keyboard) from the field.
-        onPointerDown={(event) => event.preventDefault()}
-      >
-        {TOOLS.map(({ tool, glyph }) => (
-          <button
-            key={tool}
-            type="button"
-            aria-label={NOTES_COPY.tools[tool]}
-            title={NOTES_COPY.tools[tool]}
-            aria-disabled={disabled || undefined}
-            onClick={() => {
-              if (disabled) return;
-              const target = field.current!;
-              target.focus();
-              apply(
-                target,
-                toolEdit(
-                  tool,
-                  target.value,
-                  target.selectionStart,
-                  target.selectionEnd,
-                ),
-              );
-            }}
-          >
-            {glyph}
-          </button>
-        ))}
-        <span className="nt-wmd" aria-hidden="true">
-          {NOTES_COPY.markdownHint}
-        </span>
-      </div>
+      {toolbarHost === undefined
+        ? toolbar
+        : toolbarHost && createPortal(toolbar, toolbarHost)}
     </div>
   );
 }

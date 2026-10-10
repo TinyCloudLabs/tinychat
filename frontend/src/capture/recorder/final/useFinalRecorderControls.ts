@@ -13,6 +13,7 @@ import { useRecorder, type RecorderValue } from "../RecorderProvider";
 import type { RecorderState } from "../recorderReducer";
 import { useRecordedElapsed } from "../useRecordedElapsed";
 import { selectRecorderView } from "./recorderView";
+import { openSettingsFailedLine } from "./shell/micDeniedCopy";
 import { shellForPlatform } from "./shellCapabilities";
 import {
   identifySpeakersControl,
@@ -203,10 +204,7 @@ export function useFinalRecorderControls({
   const openSettings = () => {
     setSettingsError(null);
     recorder.openSettings().catch((error: unknown) => {
-      console.error("[Recorder] Could not open Settings", error);
-      setSettingsError(
-        `Could not open Settings: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      setSettingsError(openSettingsFailedLine(error));
     });
   };
   const alerts = [
