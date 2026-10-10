@@ -62,7 +62,7 @@ export type RestoreOutcome<T> =
 const MISSING_SPACE_CODE = "restored-session-missing-space";
 
 export const MISSING_SPACE_MESSAGE =
-  "Your saved session is missing its TinyCloud space, so Exo can't open or save your notes with it. Tap Try again to sign in again; notes recorded on this device stay on it until they upload.";
+  "Your saved session is missing its TinyCloud space, so Exo can't open or save your notes with it. Tap Sign in to sign in again; notes recorded on this device stay on it until they upload.";
 
 function isMissingSpaceError(error: unknown): boolean {
   return typeof error === "object" && error !== null && (error as { code?: unknown }).code === MISSING_SPACE_CODE;

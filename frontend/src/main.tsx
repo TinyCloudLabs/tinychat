@@ -4,6 +4,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Capacitor } from "@capacitor/core";
 import "./index.css";
 import { App } from "./App";
+import { installEd25519Polyfill } from "./lib/ed25519Polyfill";
 import { CaptureEngineGate } from "./capture/recorder/CaptureEngineGate";
 import { PwaPrompts } from "./components/pwa-prompts";
 import { RootRoute } from "./landing/RootRoute";
@@ -39,15 +40,18 @@ setupPwa({
 
 registerWebCaptureEngine();
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<RootRoute nativeShell={nativeShell} />} />
-        <Route path="/chat/*" element={<CaptureEngineGate><App /></CaptureEngineGate>} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </BrowserRouter>
-    <PwaPrompts />
-  </StrictMode>,
-);
+// Android WebView before 137 has no WebCrypto Ed25519, which sign-in needs.
+void installEd25519Polyfill().then(() => {
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<RootRoute nativeShell={nativeShell} />} />
+          <Route path="/chat/*" element={<CaptureEngineGate><App /></CaptureEngineGate>} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </BrowserRouter>
+      <PwaPrompts />
+    </StrictMode>,
+  );
+});

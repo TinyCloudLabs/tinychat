@@ -22,6 +22,7 @@ import type {
   OpenKeyNative,
 } from "@openkey/sdk-capacitor";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { UserFacingError } from "./authErrors";
 import { nativeRenewAt, renewalLeadMs, terminalRenewalError, nativeCode } from "./openkeyNativeRenewal";
 
 // ── Gate ──────────────────────────────────────────────────────────────
@@ -387,10 +388,10 @@ export async function signInNative(
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("Native sign-in is not configured")) {
       logNativeOpenKeyError("sign-in", error);
-      throw error;
+      throw new UserFacingError(error.message, { cause: error });
     }
     logNativeOpenKeyError("sign-in", error);
-    throw new Error(nativeSignInErrorMessage(error), { cause: error });
+    throw new UserFacingError(nativeSignInErrorMessage(error), { cause: error });
   }
 }
 

@@ -325,12 +325,12 @@ describe("restorePersistedSession", () => {
     expect(logged.length).toBe(1);
 
     // App maps `failed` to recoverableError with this message (asserted in the App wiring
-    // tests below); BootSurface is what the user then reads, with a Try again action.
+    // tests below); BootSurface is what the user then reads, with a Sign in action.
     const markup = renderToStaticMarkup(
       BootSurface({ state: "recoverableError", error: outcome.message, onAction: () => {} }),
     );
     expect(markup).toContain("missing its TinyCloud space");
-    expect(markup).toContain(">Try again</button>");
+    expect(markup).toContain(">Sign in</button>");
     expect(markup).not.toContain("Sign in to start chatting");
   });
 
