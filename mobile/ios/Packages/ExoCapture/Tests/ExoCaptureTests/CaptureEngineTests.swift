@@ -31,6 +31,23 @@ import XCTest
         try body(engine)
     }
 
+    /// Device engines would deliver live mic taps, so they are suppressed. The Debug simulator engine
+    /// uses a manually driven silent source that delivers nothing until `deliverTap` is called.
+    private func suppressLiveTaps(_ engine: CaptureEngine) {
+        #if !targetEnvironment(simulator)
+        engine.debugSuppressTaps()
+        #endif
+    }
+
+    private func deliverTap(_ engine: CaptureEngine) {
+        #if targetEnvironment(simulator)
+        engine.debugDeliverSilentTaps(1)
+        XCTAssertTrue(engine.debugSilentInputRunning)
+        #else
+        engine.debugRecordDeliveredTap()
+        #endif
+    }
+
     private func events(_ engine: CaptureEngine, _ id: String) throws -> [[String: Any]] {
         try engine.library.readJournal(id)
     }
@@ -388,7 +405,7 @@ import XCTest
         try withEngine { engine in
             var clock = ProcessInfo.processInfo.systemUptime
             engine.debugNow = { clock }
-            engine.debugSuppressTaps()
+            suppressLiveTaps(engine)
             let id = try XCTUnwrap(engine.start()["id"] as? String)
             engine.debugDisableWatchdog()
             engine.debugAgeLastTap(by: 4)
@@ -396,7 +413,7 @@ import XCTest
             XCTAssertEqual(engine.status()["state"] as? String, "recording")
             XCTAssertFalse(engine.debugRetryPending)
 
-            engine.debugRecordDeliveredTap()
+            deliverTap(engine)
             engine.debugWatchdogTick() // A delivered buffer starts a fresh stall sequence.
             engine.debugAgeLastTap(by: 4)
             engine.debugWatchdogTick()

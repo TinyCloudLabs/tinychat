@@ -37,15 +37,23 @@ final class SimulatorSilentInput {
     private var startedAt: TimeInterval = 0
     private var deliveredFrames: AVAudioFramePosition = 0
     private let handler: AVAudioNodeTapBlock
+    private let manual: Bool
+    private var manualRunning = false
 
-    var isRunning: Bool { timer != nil }
+    var isRunning: Bool { manual ? manualRunning : timer != nil }
 
-    init(handler: @escaping AVAudioNodeTapBlock) { self.handler = handler }
+    /// `manual` sources have no timer: buffers are delivered only by `deliver(buffers:)`, so engine
+    /// tests control exactly when taps arrive and no wall-clock thread races their injected clocks.
+    init(manual: Bool = false, handler: @escaping AVAudioNodeTapBlock) {
+        self.manual = manual
+        self.handler = handler
+    }
 
     func start() {
+        deliveredFrames = 0
+        if manual { manualRunning = true; return }
         let timer = DispatchSource.makeTimerSource(queue: queue)
         startedAt = ProcessInfo.processInfo.systemUptime
-        deliveredFrames = 0
         let period = Double(Self.frames) / Self.sampleRate
         timer.schedule(deadline: .now() + period, repeating: period, leeway: .milliseconds(1))
         timer.setEventHandler { [weak self] in self?.tick() }
@@ -55,9 +63,27 @@ final class SimulatorSilentInput {
 
     /// Returns after any in-flight delivery has finished; no buffer is delivered afterwards.
     func stop() {
+        manualRunning = false
         timer?.cancel()
         timer = nil
         queue.sync {}
+    }
+
+    /// Manual sources only: synchronously delivers `buffers` silent buffers; none once stopped.
+    func deliver(buffers: Int) {
+        precondition(manual, "deliver(buffers:) is for manual sources")
+        guard manualRunning else { return }
+        for _ in 0..<buffers { deliverNext() }
+    }
+
+    private func deliverNext() {
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: Self.frames) else {
+            preconditionFailure("allocate simulator silence buffer")
+        }
+        buffer.frameLength = Self.frames
+        memset(buffer.floatChannelData![0], 0, Int(Self.frames) * MemoryLayout<Float>.size)
+        handler(buffer, AVAudioTime(sampleTime: deliveredFrames, atRate: Self.sampleRate))
+        deliveredFrames += AVAudioFramePosition(Self.frames)
     }
 
     private func tick() {
@@ -65,13 +91,7 @@ final class SimulatorSilentInput {
         let due = AVAudioFramePosition((ProcessInfo.processInfo.systemUptime - startedAt) * Self.sampleRate)
         var delivered = 0
         while deliveredFrames + AVAudioFramePosition(Self.frames) <= due, delivered < 64 {
-            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: Self.frames) else {
-                preconditionFailure("allocate simulator silence buffer")
-            }
-            buffer.frameLength = Self.frames
-            memset(buffer.floatChannelData![0], 0, Int(Self.frames) * MemoryLayout<Float>.size)
-            handler(buffer, AVAudioTime(sampleTime: deliveredFrames, atRate: Self.sampleRate))
-            deliveredFrames += AVAudioFramePosition(Self.frames)
+            deliverNext()
             delivered += 1
         }
     }

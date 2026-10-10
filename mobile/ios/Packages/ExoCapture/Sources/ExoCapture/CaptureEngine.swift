@@ -23,6 +23,8 @@ public final class CaptureEngine {
     private var silentInput: SimulatorSilentInput?
     var debugInputEnvironment: [String: String]?
     var debugHardwareAcquisition: (() throws -> Void)?
+    /// Test-root engines use a manually driven silent source (no timer); set true to run the real-time one.
+    var debugRealTimeSilentInput = false
     #endif
     private let tapCallbacks = DispatchGroup()
     private let tapTimeLock = NSLock()
@@ -145,6 +147,7 @@ public final class CaptureEngine {
     var debugGraphActive: Bool { graphActive || inputRunning }
     #if targetEnvironment(simulator)
     var debugSilentInputRunning: Bool { silentInput?.isRunning == true }
+    func debugDeliverSilentTaps(_ buffers: Int = 1) { silentInput?.deliver(buffers: buffers) }
     #endif
     var debugLimitTimerArmed: Bool { limitTimer?.isValid == true }
     var debugRetryPending: Bool { retryTimer != nil }
@@ -540,7 +543,7 @@ public final class CaptureEngine {
             audioEngine = engine
         } else {
             #if DEBUG && targetEnvironment(simulator)
-            let source = SimulatorSilentInput(handler: tapHandler)
+            let source = SimulatorSilentInput(manual: debugTesting && !debugRealTimeSilentInput, handler: tapHandler)
             silentInput = source
             source.start()
             #endif

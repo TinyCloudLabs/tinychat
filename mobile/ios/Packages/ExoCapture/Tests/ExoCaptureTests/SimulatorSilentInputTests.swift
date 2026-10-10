@@ -49,10 +49,45 @@ final class SimulatorSilentInputTests: XCTestCase {
         lock.lock(); XCTAssertEqual(starts.count, delivered.count); lock.unlock()
     }
 
+    func testManualSourceDeliversOnlyWhenDrivenAndNothingAfterStop() {
+        let lock = NSLock()
+        var starts: [AVAudioFramePosition] = []
+        let source = SimulatorSilentInput(manual: true) { _, when in
+            lock.lock(); starts.append(when.sampleTime); lock.unlock()
+        }
+        source.deliver(buffers: 2) // Not started: nothing.
+        source.start()
+        XCTAssertTrue(source.isRunning)
+        Thread.sleep(forTimeInterval: 0.2) // A manual source never ticks on its own.
+        lock.lock(); XCTAssertTrue(starts.isEmpty); lock.unlock()
+        source.deliver(buffers: 3)
+        source.stop()
+        XCTAssertFalse(source.isRunning)
+        source.deliver(buffers: 3)
+        lock.lock(); XCTAssertEqual(starts, [0, 1024, 2048]); lock.unlock()
+    }
+
+    @MainActor func testTestRootEngineUsesManualSourceThatNeverTicksOnItsOwn() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("exo-sim-manual-\(UUID().uuidString)")
+        let engine = try CaptureEngine(testRoot: root)
+        engine.debugForeground = true
+        defer {
+            _ = try? engine.discard()
+            try? FileManager.default.removeItem(at: root)
+        }
+        _ = try engine.start()
+        XCTAssertTrue(engine.debugSilentInputRunning)
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertEqual(engine.status()["audioMs"] as? Int64 ?? 0, 0)
+        engine.debugDeliverSilentTaps(10)
+        XCTAssertTrue(engine.debugSilentInputRunning)
+    }
+
     @MainActor func testEngineRecordsSyntheticSilenceThroughPauseResumeAndStop() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("exo-sim-silence-\(UUID().uuidString)")
         let engine = try CaptureEngine(testRoot: root)
         engine.debugForeground = true
+        engine.debugRealTimeSilentInput = true
         defer {
             _ = try? engine.discard()
             try? FileManager.default.removeItem(at: root)
