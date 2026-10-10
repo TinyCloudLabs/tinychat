@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.21
+
+### Patch Changes
+
+- 477b730: Recover voice-note saves after a fresh sign-in and show the recorder for cold iOS quick actions.
+
 ## 0.6.0-beta.20
 
 ### Patch Changes
