@@ -405,13 +405,15 @@ export function PhoneRecorder({
         >
           {view.statusLine}
         </div>
-        {(momentField !== null || hasNote(noteMd)) && (
+        {phase !== "starting" && (momentField !== null || hasNote(noteMd)) && (
           <div className="pr-notes">
             {momentField ? (
               <MomentField
                 field={momentField}
                 flow={moment}
+                onFocus={() => recorder.setMomentFieldFocused(true)}
                 onClosed={(result, refocus) => {
+                  recorder.setMomentFieldFocused(false);
                   if (result === "saved") say(NOTES_COPY.momentNoted);
                   if (refocus)
                     markButton.current?.focus({ preventScroll: true });

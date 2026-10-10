@@ -89,6 +89,7 @@ export function ViaMenu({
         <div
           className="pr-menu"
           role="menu"
+          data-overlay-open="true"
           aria-label="Record from"
           data-testid="via-menu"
         >

@@ -84,7 +84,7 @@ describe("Recent", () => {
     expect(html).toMatch(/aria-label="Voice note\. Today 1:49 AM · 1:05"/);
   });
 
-  test("a note still on this phone is a row of its own, badged, that opens from the phone", () => {
+  test("a note still on this phone is a row of its own with its badge", () => {
     const onPhone = note(1, { id: "on-phone:rec-1", title: null, onPhone: true });
     const html = home({ recent: { status: "ready", items: [onPhone, note(2)] } });
     expect(html.match(/data-testid="recent-item"/g)).toHaveLength(2);

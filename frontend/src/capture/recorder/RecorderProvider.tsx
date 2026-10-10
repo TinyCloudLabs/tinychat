@@ -24,6 +24,7 @@ import type { RecorderNote, RecorderNoteStatus } from "./voiceNoteRecorderContro
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { useVoiceNoteRecorder } from "./useVoiceNoteRecorder";
+import { shouldScheduleReceiptDismissal } from "./receiptBehavior";
 
 /** How long a saved receipt stays, once its content is actually visible, before the sheet closes
  * and the island lets go. */
@@ -79,6 +80,8 @@ export interface RecorderValue {
   noteSyncError: string | null;
   setNoteText(md: string): Promise<void>;
   markMoment(): number;
+  /** Keeps an automatically stopped receipt open until an active moment commits or cancels. */
+  setMomentFieldFocused(focused: boolean): void;
   setTranscriber(id: TranscriberId, options: { scope: TranscriberChoiceScope; waitForModel?: boolean }): Promise<TranscriberChoiceResult>;
   setIdentifySpeakers(on: boolean, scope: "recording" | "default"): Promise<"ok" | "needs_consent" | "locked_signed_out" | "unavailable">;
   /** Capture always forces on-device while signed out (CaptureEngine), so the transcription route
@@ -178,11 +181,13 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   const [sheetOpen, setSheetOpen] = useState(false);
   const [receiptPlaying, setReceiptPlaying] = useState(false);
   const [receiptReady, setReceiptReadyState] = useState(false);
+  const [momentFieldFocused, setMomentFieldFocused] = useState(false);
   const setReceiptReady = useCallback(() => setReceiptReadyState(true), []);
   // A new note's receipt starts unready again — each one waits for its own Play control (or
   // load error), not whatever the previous note left behind.
   useEffect(() => { setReceiptReadyState(false); }, [state.lastSaved?.id]);
   const [announcement, setAnnouncement] = useState("");
+
 
   // Feedback for each change: a haptic and a polite announcement.
   const previous = useRef(state);
@@ -223,17 +228,19 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   useEffect(() => {
     if (state.outcome !== "local" && state.outcome !== "saved") return;
     if (state.permissionDenied) return;
+    if (!shouldScheduleReceiptDismissal(state, momentFieldFocused)) return;
     if (receiptReady) return;
     const ceiling = setTimeout(() => {
       setSheetOpen(false);
       dismissOutcome();
     }, RECEIPT_MAX_MS);
     return () => clearTimeout(ceiling);
-  }, [dismissOutcome, receiptReady, state.outcome, state.lastSaved, state.permissionDenied]);
+  }, [dismissOutcome, momentFieldFocused, receiptReady, state.outcome, state.lastSaved, state.permissionDenied, state.limitNotice]);
 
   useEffect(() => {
     if (state.outcome !== "local" && state.outcome !== "saved") return;
     if (state.permissionDenied) return;
+    if (!shouldScheduleReceiptDismissal(state, momentFieldFocused)) return;
     if (!receiptReady) return;
     if (receiptPlaying) return;
     const timer = setTimeout(() => {
@@ -241,21 +248,24 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       dismissOutcome();
     }, RECEIPT_MS);
     return () => clearTimeout(timer);
-  }, [dismissOutcome, receiptPlaying, receiptReady, state.outcome, state.lastSaved, state.permissionDenied]);
+  }, [dismissOutcome, momentFieldFocused, receiptPlaying, receiptReady, state.outcome, state.lastSaved, state.permissionDenied, state.limitNotice]);
 
   useEffect(() => recorder.setOnPresent(() => setSheetOpen(true)), [recorder.setOnPresent]);
 
   const record = useCallback(() => {
+    setMomentFieldFocused(false);
     setSheetOpen(true);
     startRecording();
   }, [startRecording]);
   const dismiss = useCallback(() => {
+    setMomentFieldFocused(false);
     setSheetOpen(false);
     dismissOutcome();
   }, [dismissOutcome]);
   const openSheet = useCallback(() => setSheetOpen(true), []);
   const minimiseSheet = useCallback(async () => {
     if (state.permissionDenied) await recorder.dismissShortcutRecovery();
+    setMomentFieldFocused(false);
     setSheetOpen(false);
   }, [recorder.dismissShortcutRecovery, state.permissionDenied]);
 
@@ -290,6 +300,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       noteSyncError: recorder.noteSyncError,
       setNoteText: recorder.setNoteText,
       markMoment: recorder.markMoment,
+      setMomentFieldFocused,
       setTranscriber: recorder.setTranscriber,
       setIdentifySpeakers: recorder.setIdentifySpeakers,
       signedIn: tcw?.did != null,
@@ -321,6 +332,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       recorder.noteSyncError,
       recorder.setNoteText,
       recorder.markMoment,
+      setMomentFieldFocused,
       recorder.pending,
       recorder.retryPending,
       recorder.openSettings,
@@ -407,6 +419,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       noteSyncError: null,
       setNoteText: async () => {},
       markMoment: () => 0,
+      setMomentFieldFocused: noop,
       setTranscriber: async () => "unavailable",
       setIdentifySpeakers: async () => "unavailable",
       signedIn: true,

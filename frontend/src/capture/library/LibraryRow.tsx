@@ -52,7 +52,7 @@ export function libraryRowAsideDuration(item: LibraryItem, lineReplaced: boolean
   return isVoiceNote(item) && !lineReplaced ? null : item.durationSecs;
 }
 
-export function LibraryRow(props: { item: LibraryItem; now: Date; grouped: boolean; selected?: boolean; testId?: string }) {
+export function LibraryRow(props: { item: LibraryItem; now: Date; grouped: boolean; selected?: boolean; testId?: string; onRecentOpen?: (id: string) => void }) {
   const { item } = props;
   const Icon = KIND_ICON[libraryKind(item.source)];
   const voiceNote = libraryKind(item.source) === "note";
@@ -70,7 +70,11 @@ export function LibraryRow(props: { item: LibraryItem; now: Date; grouped: boole
         durationSecs={libraryRowAsideDuration(item, lineReplaced)}
         issue={issue}
         onDetails={issue && issueIsInformational(issue) ? (opener: HTMLElement) => soft.openIssue(item.sourceId, opener) : undefined}
-        {...(issue && issueHasSheet(issue) ? { onActivate: (row: HTMLElement) => soft.openIssue(item.sourceId, row) } : { href: notePath(item.id) })}
+        {...(issue && issueHasSheet(issue)
+          ? { onActivate: (row: HTMLElement) => soft.openIssue(item.sourceId, row) }
+          : props.onRecentOpen && isVoiceNote(item)
+            ? { onActivate: () => props.onRecentOpen?.(item.id) }
+            : { href: notePath(item.id) })}
         selected={props.selected}
         testId={props.testId ?? (voiceNote ? "voice-note-item" : "library-item")}
         sourceId={voiceNote ? item.sourceId : undefined}

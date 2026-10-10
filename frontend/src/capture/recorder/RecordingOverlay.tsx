@@ -26,6 +26,17 @@ function useRecorderLayout(): RecorderLayout {
   return recorderLayout(width);
 }
 
+/** Inner dialogs own their Escape. Only Escape aimed at the recorder itself minimizes it. */
+export function minimizePhoneRecorder(event: { preventDefault: () => void; target?: EventTarget | null }, minimise: () => void | Promise<void>): void {
+  event.preventDefault();
+  const target = event.target as (Element & { ownerDocument: Document }) | null | undefined;
+  if (!target || typeof target.closest !== "function") return;
+  const surface = target.closest('[data-overlay-open="true"]');
+  const recorder = target.ownerDocument.querySelector('[data-testid="recording-overlay"]');
+  if (surface !== recorder || target.closest(".pr-moment, input, textarea, [contenteditable='true']")) return;
+  void minimise();
+}
+
 /** The ring view fills the main region, so a move to another screen puts it away: the dock takes over. */
 function MinimizeOnNavigate() {
   const recorder = useRecorder();
@@ -98,7 +109,9 @@ export function RecordingOverlay({
           data-testid="recording-overlay"
           className="fixed inset-0 z-50 h-dvh w-screen overflow-hidden bg-background outline-none"
           onEscapeKeyDown={(event) => {
-            if (phone) event.preventDefault();
+            if (phone) {
+              minimizePhoneRecorder(event, recorder.minimiseSheet);
+            }
           }}
           onOpenAutoFocus={(event) => {
             event.preventDefault();
