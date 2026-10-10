@@ -15,12 +15,15 @@ import { join } from "node:path";
 import {
   classifyRestoreFailure,
   isTransientRestoreError,
+  MISSING_SPACE_MESSAGE,
   restorePersistedSession,
   restoreUnavailableMessage,
   type RestoreAttempt,
   type RestoreDeps,
   type RestoreSessionStore,
 } from "./sessionRestore";
+import { renderToStaticMarkup } from "react-dom/server";
+import { BootSurface } from "../shell/BootSurface";
 import { handoffBeforeCredentialClear } from "./voiceNotes/accountHandoff";
 import { createFakeVoiceNotes } from "./voiceNotes/fakeVoiceNotes";
 import { __setVoiceNotesForTests, VoiceNotes } from "./voiceNotes/nativeVoiceNotes";
@@ -290,6 +293,45 @@ describe("restorePersistedSession", () => {
     });
     expect(await restorePersistedSession(store, d)).toEqual({ kind: "signedOut" });
     expect(store.cleared).toBe(1);
+  });
+
+  test("a restored session with no space is explained to the user, not dropped to a bare sign-in", async () => {
+    const store = signedIn();
+    const cleared: string[] = [];
+    const { d } = deps({
+      beforeClear: async () => { cleared.push("handoff"); },
+      restore: async () => ({
+        status: "restore-failed",
+        tcw: null,
+        // What the client's restore boundary returns (RestoredSessionMissingSpaceError).
+        error: Object.assign(new Error("Restored TinyCloud session has no spaceId: the SDK reported none"), {
+          code: "restored-session-missing-space",
+        }),
+      }),
+    });
+    const logged: unknown[][] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => void logged.push(args);
+    let outcome;
+    try {
+      outcome = await restorePersistedSession(store, d);
+    } finally {
+      console.error = originalError;
+    }
+
+    expect(outcome).toEqual({ kind: "failed", message: MISSING_SPACE_MESSAGE });
+    expect(cleared).toEqual(["handoff"]);
+    expect(store.cleared).toBe(1);
+    expect(logged.length).toBe(1);
+
+    // App maps `failed` to recoverableError with this message (asserted in the App wiring
+    // tests below); BootSurface is what the user then reads, with a Try again action.
+    const markup = renderToStaticMarkup(
+      BootSurface({ state: "recoverableError", error: outcome.message, onAction: () => {} }),
+    );
+    expect(markup).toContain("missing its TinyCloud space");
+    expect(markup).toContain(">Try again</button>");
+    expect(markup).not.toContain("Sign in to start chatting");
   });
 
   test("an unexpected throw is classified the same way", async () => {

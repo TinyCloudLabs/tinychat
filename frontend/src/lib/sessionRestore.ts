@@ -58,6 +58,16 @@ export type RestoreOutcome<T> =
   /** An unexpected, non-network failure. Cleared, as before TC-514. */
   | { kind: "failed"; message: string };
 
+/** `code` of the client's RestoredSessionMissingSpaceError (packages/client/src/tinycloud.ts). */
+const MISSING_SPACE_CODE = "restored-session-missing-space";
+
+export const MISSING_SPACE_MESSAGE =
+  "Your saved session is missing its TinyCloud space, so Exo can't open or save your notes with it. Tap Try again to sign in again; notes recorded on this device stay on it until they upload.";
+
+function isMissingSpaceError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === MISSING_SPACE_CODE;
+}
+
 export type RestoreFailureKind = "transient" | "auth";
 
 const OFFLINE_MESSAGE = "You're offline. Exo will reconnect when you're back online.";
@@ -174,6 +184,14 @@ export async function restorePersistedSession<M, T>(
 
   if (restored.status === "restored" && restored.tcw) {
     return { kind: "restored", address, tcw: restored.tcw };
+  }
+  if (isMissingSpaceError(restored.error)) {
+    // The stored session cannot work, so it is cleared like any refused one, but the user is
+    // told why instead of landing on an unexplained sign-in screen.
+    console.error("[session] restored session has no space:", restored.error);
+    await deps.beforeClear?.();
+    sessionStore.clear();
+    return { kind: "failed", message: MISSING_SPACE_MESSAGE };
   }
   if (classifyRestoreFailure(restored, deps.isOffline()) === "transient") {
     return unavailable();
