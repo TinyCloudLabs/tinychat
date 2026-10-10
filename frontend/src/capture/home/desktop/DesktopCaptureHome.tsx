@@ -60,7 +60,11 @@ import {
   homePlace,
   type HomePlace,
 } from "./desktopCopy";
-import { retryWhisperJob, whisperJobMeta, WHISPER_JOB_COPY } from "@/capture/library/DesktopWhisperStatus";
+import {
+  retryWhisperJob,
+  whisperJobMeta,
+  WHISPER_JOB_COPY,
+} from "@/capture/library/DesktopWhisperStatus";
 import { useDesktopWhisperJob } from "@/lib/voiceNotes/desktop/useDesktopWhisperJob";
 import {
   desktopIssueMeta,
@@ -203,6 +207,35 @@ export function PendingVoiceCard(props: {
   );
 }
 
+/** The pending-note listing could not be read: say so (the cause is logged where it failed) and offer Try again. */
+export function ListFailedCard(props: {
+  place: HomePlace;
+  saving: boolean;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="soft-card dch-mac" data-testid="voice-note-list-failed">
+      <MicIcon className="soft-ico soft-card-icon" aria-hidden="true" />
+      <div className="soft-card-text">
+        <b>
+          {forPlace(props.place)("Couldn't check this phone for unsaved notes")}
+        </b>
+      </div>
+      <span className="soft-pill-hit" data-hit-area="">
+        <button
+          type="button"
+          className="soft-pill"
+          onClick={props.onRetry}
+          disabled={props.saving}
+          data-testid="voice-note-list-retry"
+        >
+          Try again
+        </button>
+      </span>
+    </div>
+  );
+}
+
 function InProgress(props: {
   inProgress: InProgressRowsViewProps;
   place: HomePlace;
@@ -219,26 +252,35 @@ function InProgress(props: {
       }
     : props.inProgress;
   const restShown = inProgressShown(rest);
-  if (!card && !restShown) return null;
+  // A listing that failed is never shown as "nothing pending" (the generic row it replaces did the same).
+  const listFailed = voice !== undefined && voice.listing.state === "error";
+  if (!card && !listFailed && !restShown) return null;
   return (
     <section
       aria-labelledby="dch-in-progress-title"
       className="dch-in-progress"
       data-testid="soft-in-progress"
     >
+      {(card || listFailed) && (
+        <h2 id="dch-in-progress-title" className="soft-sect">
+          {COPY.inProgress}
+        </h2>
+      )}
       {card && (
-        <>
-          <h2 id="dch-in-progress-title" className="soft-sect">
-            {COPY.inProgress}
-          </h2>
-          <PendingVoiceCard
-            place={props.place}
-            count={count}
-            saving={voice.saving}
-            note={pendingNote(props.issues, voice.lastError, props.place)}
-            onSaveNow={voice.onSaveNow}
-          />
-        </>
+        <PendingVoiceCard
+          place={props.place}
+          count={count}
+          saving={voice.saving}
+          note={pendingNote(props.issues, voice.lastError, props.place)}
+          onSaveNow={voice.onSaveNow}
+        />
+      )}
+      {listFailed && (
+        <ListFailedCard
+          place={props.place}
+          saving={voice.saving}
+          onRetry={voice.onSaveNow}
+        />
       )}
       {restShown && (
         <div className="soft-legacy" data-with-card={card ? "true" : undefined}>
@@ -344,7 +386,9 @@ export function RecentRow(props: {
   const [dismissError, setDismissError] = useState<string | null>(null);
   const [retryError, setRetryError] = useState(false);
   const whisperJob = useDesktopWhisperJob(
-    entry.type === "item" && libraryKind(entry.item.source) === "note" ? entry.item.sourceId : null,
+    entry.type === "item" && libraryKind(entry.item.source) === "note"
+      ? entry.item.sourceId
+      : null,
   );
   let icon: LucideIcon = MicIcon;
   let title: string = COPY.voiceNoteTitle;
@@ -417,7 +461,9 @@ export function RecentRow(props: {
           {meta}
         </span>
       </span>
-      {(durationSecs !== null || href !== undefined || sheetId !== undefined) && (
+      {(durationSecs !== null ||
+        href !== undefined ||
+        sheetId !== undefined) && (
         <span className="soft-row-aside" aria-hidden="true">
           {durationSecs !== null && (
             <span className="tnum">{formatClockDuration(durationSecs)}</span>
@@ -465,7 +511,9 @@ export function RecentRow(props: {
         <DismissControl
           label={COPY.dismissLabel(title)}
           error={dismissError}
-          onDismiss={() => setDismissError(dismissNotice(dismissId, props.onDismiss))}
+          onDismiss={() =>
+            setDismissError(dismissNotice(dismissId, props.onDismiss))
+          }
         />
       )}
       {retryId !== undefined && (
