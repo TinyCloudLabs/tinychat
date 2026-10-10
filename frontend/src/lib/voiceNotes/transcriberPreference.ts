@@ -1,5 +1,6 @@
 // JS owns the user's default. Native owns a live session's journaled options.
 import { captureCapabilities, captureEngineAvailable, captureEngineKind, onDeviceTranscriptionAvailable } from "./captureEngine";
+import { withCaptureDeadline } from "./accountHandoff";
 import { VoiceNotes, type CaptureOptions, type TranscriberId } from "./nativeVoiceNotes";
 
 const TRANSCRIBER_KEY = "exo.voiceNotes.transcriber";
@@ -99,12 +100,31 @@ function inOrder<T>(write: () => Promise<T>): Promise<T> {
 
 /** Writes the effective default for the current account to the engine and returns what it replaced, or null when nothing changed. Never during a sign-in or sign-out transition. */
 async function writeEffectiveDefaults(pref: CaptureOptions, explicit: boolean): Promise<EngineDefaults | null> {
-  const current = await VoiceNotes.getCaptureDefaults();
+  const current = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
   const effective = effectiveCaptureOptions(pref, current.accountDid !== null, explicit);
   // A preference write must not re-assign the previous DID during sign-out.
   if (current.status === "transitioning" || (current.transcriber === effective.transcriber && current.identifySpeakers === effective.identifySpeakers)) return null;
-  await VoiceNotes.setCaptureDefaults({ ...current, ...effective, transitionGen: current.transitionGen });
+  await withCaptureDeadline(VoiceNotes.setCaptureDefaults({ ...current, ...effective, transitionGen: current.transitionGen }));
   return current;
+}
+
+/**
+ * Sets which account the engine's defaults belong to (sign-in, an aborted sign-out, claiming a note), in the same
+ * lane as every other default write. The engine's defaults are read, and the transcriber and speakers are taken
+ * from the stored preference, when this step runs, so it can neither restore an older mode over a choice nor be
+ * overwritten by one still queued. `plan` returns the account and generation to write, or null to write nothing.
+ */
+export function writeAccountDefaults(
+  plan: (native: EngineDefaults) => { accountDid: string | null; transitionGen: number } | null,
+): Promise<{ accountDid: string | null; transitionGen: number } | null> {
+  return inOrder(async () => {
+    const native = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
+    const account = plan(native);
+    if (!account) return null;
+    const effective = effectiveCaptureOptions(readTranscriberPreference(), account.accountDid !== null, transcriberChoiceIsExplicit());
+    await withCaptureDeadline(VoiceNotes.setCaptureDefaults({ ...native, ...effective, ...account }));
+    return account;
+  });
 }
 
 /**
@@ -132,7 +152,7 @@ async function commitPreference(change: Partial<CaptureOptions>): Promise<void> 
           for (const [key, value] of [[TRANSCRIBER_KEY, prior.transcriber], [SPEAKERS_KEY, prior.speakers]] as const)
             if (value === null) store.removeItem(key); else store.setItem(key, value);
         }
-        if (replaced) await VoiceNotes.setCaptureDefaults(replaced);
+        if (replaced) await withCaptureDeadline(VoiceNotes.setCaptureDefaults(replaced));
       } catch (rollback) {
         console.error("[VoiceNotes] Could not restore the default transcription mode after a failed save", rollback);
       }

@@ -12,7 +12,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { createFakeVoiceNotes, type FakeVoiceNotes } from "@/harness/fakeVoiceNotes";
 import { fakeVoiceNoteStore } from "@/harness/fakeVoiceNoteStore";
 import { __setVoiceNotesForTests, type CaptureSource, type VoiceNoteRecording, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { readDefaultTranscriber, refreshEffectiveTranscriber, setDefaultIdentifySpeakers as setDefaultIdentifySpeakersForTest, setDefaultTranscriber } from "@/lib/voiceNotes/transcriberPreference";
+import { readDefaultTranscriber, refreshEffectiveTranscriber, setDefaultIdentifySpeakers as setDefaultIdentifySpeakersForTest, setDefaultTranscriber, writeAccountDefaults } from "@/lib/voiceNotes/transcriberPreference";
 import { createVoiceNoteTranscriber, type VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { VoiceNoteSaveDeferred, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { advanceAccountGeneration } from "@/lib/voiceNotes/accountContext";
@@ -1916,6 +1916,42 @@ describe("voice-note recorder controller", () => {
           detach();
         });
       }
+    });
+
+    test("a sign-in landing while a mode choice is still being written applies the account and keeps the chosen mode", async () => {
+      await fake.plugin.setCaptureDefaults({ accountDid: "did:key:previous", transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false });
+      const recorder = controller({ transcriber: offer({ availability: "available", consented: true }).stub, onDeviceReady: true });
+      const detach = recorder.attach();
+      await tick();
+      expect(await recorder.setTranscriber("private-cloud", { scope: "default" })).toBe("ok");
+
+      // The engine takes On this phone, then holds the reply while the sign-in default write arrives.
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      __setVoiceNotesForTests({ ...plugin, async setCaptureDefaults(defaults) {
+        const result = await plugin.setCaptureDefaults(defaults);
+        if (defaults.transcriber === "on-device") await held;
+        return result;
+      } }, { available: true });
+      const choosing = recorder.setTranscriber("on-device", { scope: "default" });
+      await tick();
+      const signingIn = writeAccountDefaults((native) => ({ accountDid: tcw.did, transitionGen: native.transitionGen + 1 }));
+      await tick();
+      release();
+      const [, account] = await Promise.all([choosing, signingIn]);
+      await tick();
+      __setVoiceNotesForTests(plugin, { available: true });
+
+      expect(account).toEqual({ accountDid: tcw.did, transitionGen: 2 });
+      expect(await fake.plugin.getCaptureDefaults()).toMatchObject({ accountDid: tcw.did, transitionGen: 2, transcriber: "on-device" });
+      expect(values.get("exo.voiceNotes.transcriber")).toBe("on-device");
+      expect(recorder.getTranscriber()).toMatchObject({ id: "on-device", source: "default" });
+      await recorder.record();
+      expect((await fake.plugin.status()).options?.transcriber).toBe("on-device");
+      await recorder.stop();
+      await tick();
+      expect(onPhone[0]!.options?.transcriber).toBe("on-device");
+      detach();
     });
 
     describe("a failed engine write is shown and changes nothing", () => {

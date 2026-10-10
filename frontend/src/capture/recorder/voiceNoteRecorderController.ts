@@ -30,7 +30,7 @@ import { isOnDeviceReady } from "@/lib/voiceNotes/onDeviceStt";
 import { setQuarantineAccount } from "@/lib/voiceNotes/quarantine";
 import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { effectiveCaptureOptions, localModelSubstituted, readTranscriberPreference, refreshEffectiveTranscriber,
-  setDefaultIdentifySpeakers, setDefaultTranscriber, setEffectiveContextSource, subscribeTranscriberPreference,
+  setDefaultIdentifySpeakers, setDefaultTranscriber, setEffectiveContextSource, subscribeTranscriberPreference, writeAccountDefaults,
   type EffectiveContext } from "@/lib/voiceNotes/transcriberPreference";
 import {
   clearDiscarded,
@@ -1010,13 +1010,14 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           const account = pendingStore.forAccount(tcw.did);
           const generation = currentAccountGeneration();
           try {
-            const native = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
-            if (native.status !== "signed_in" || native.accountDid !== tcw.did) {
+            // The same generation can claim a v2 note left unowned during sign-in.
+            const claimed = await withCaptureDeadline(writeAccountDefaults((native) =>
+              native.status === "signed_in" && native.accountDid === tcw.did
+                ? { accountDid: native.accountDid, transitionGen: native.transitionGen } : null));
+            if (!claimed) {
               account.reportError("This phone's recording account is not ready. Try again shortly.");
               return;
             }
-            // The same generation can claim a v2 note left unowned during sign-in.
-            await withCaptureDeadline(VoiceNotes.setCaptureDefaults(native));
             if (generation !== currentAccountGeneration()) {
               account.reportError("The recording account changed while saving. Try again from the current account.");
               return;

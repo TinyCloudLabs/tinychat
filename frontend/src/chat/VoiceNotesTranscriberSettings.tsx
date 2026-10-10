@@ -44,15 +44,10 @@ export function PrivateUnavailable(props: { signedIn: boolean; transcription: Tr
   );
 }
 
-export function VoiceNotesTranscriberSettings() {
-  const { transcription, signedIn } = useRecorder();
+/** The default mode as the engine holds it. A choice moves it only once the engine has taken it; a refusal is shown. */
+export function useDefaultTranscriber() {
   const [value, setValue] = useState<TranscriberId | null>(null);
-  const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
-  const model = primaryOnDeviceModel(sttStatus);
-  const modelLine = onDeviceModelLine(sttStatus);
-
   const [error, setError] = useState<string | null>(null);
-
   useEffect(() => {
     const read = () => {
       readDefaultTranscriber().then(setValue).catch((err: unknown) => {
@@ -63,9 +58,6 @@ export function VoiceNotesTranscriberSettings() {
     read();
     return subscribeTranscriberPreference(read);
   }, []);
-
-  if (!nativeVoiceNotesAvailable() || value === null) return null;
-
   const choose = (next: TranscriberId) => {
     setError(null);
     // The control follows the engine's default through the preference listener, so it only moves once the engine has it.
@@ -74,6 +66,17 @@ export function VoiceNotesTranscriberSettings() {
       setError(`Could not save the default transcriber: ${err instanceof Error ? err.message : String(err)}`);
     });
   };
+  return { value, error, choose };
+}
+
+export function VoiceNotesTranscriberSettings() {
+  const { transcription, signedIn } = useRecorder();
+  const { value, error, choose } = useDefaultTranscriber();
+  const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
+  const model = primaryOnDeviceModel(sttStatus);
+  const modelLine = onDeviceModelLine(sttStatus);
+
+  if (!nativeVoiceNotesAvailable() || value === null) return null;
 
   const { privateOffered, options } = transcriberOptions(signedIn, transcription);
 
