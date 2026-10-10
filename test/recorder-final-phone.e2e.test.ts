@@ -570,10 +570,12 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
       });
     });
     await page.getByRole("button", { name: "Open Settings" }).click();
+    // Generic copy; the cause is only logged, never shown (E1 iOS F1).
     const settingsAlert = alerts.filter({
-      hasText: "Could not open Settings: Settings would not open",
+      hasText: "Couldn't open Settings. Open Settings › Exo › Microphone.",
     });
     await shown(settingsAlert);
+    expect(await settingsAlert.textContent()).not.toContain("Settings would not open");
     expect(
       errors.some((text) => text.includes("Could not open Settings")),
     ).toBe(true);
