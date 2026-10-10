@@ -334,6 +334,21 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                   findings.push({ check: "native-record-ready", detail: "Capture has no enabled Record button" });
                 }
               }
+              if (screen.id === "shell-chat-ribbon") {
+                const emptyState = await page.evaluate(() => {
+                  const viewport = document.querySelector<HTMLElement>("[data-scroll-root]");
+                  const title = viewport?.querySelector("h2");
+                  const viewportTop = viewport?.getBoundingClientRect().top ?? 0;
+                  const titleTop = title?.getBoundingClientRect().top ?? -1;
+                  return { scrollTop: viewport?.scrollTop ?? -1, viewportTop, titleTop };
+                });
+                if (emptyState.scrollTop !== 0 || emptyState.titleTop < emptyState.viewportTop) {
+                  findings.push({ check: "chat-empty-start", detail: `scrollTop ${emptyState.scrollTop}; title top ${emptyState.titleTop}; viewport top ${emptyState.viewportTop}` });
+                }
+                if (await page.locator('button[aria-label="Scroll to bottom"]').count() > 0) {
+                  findings.push({ check: "chat-empty-start", detail: "empty Chat showed the scroll-to-bottom overlay" });
+                }
+              }
               for (const error of errors) findings.push({ check: "errors", detail: error });
 
               const file = `${screen.id}__${viewport.id}__${theme}.png`;

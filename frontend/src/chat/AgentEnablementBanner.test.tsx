@@ -59,6 +59,19 @@ describe("AgentEnablementBanner", () => {
     expect(markup).toContain("sign with your passkey");
   });
 
+  it("marks the banner parts so the minimized-phone layout can retain only the action", () => {
+    const markup = renderToStaticMarkup(
+      <AgentEnablementBanner {...baseProps} reconnectReason={null} />,
+    );
+    expect(markup).toContain("data-agent-enable-banner");
+    expect(markup).toContain("data-agent-enable-copy");
+    expect(markup).toContain("data-agent-enable-action");
+    const failed = renderToStaticMarkup(
+      <AgentEnablementBanner {...baseProps} reconnectReason={null} enableError="Could not connect." />,
+    );
+    expect(failed).toContain("data-agent-enable-error");
+  });
+
   it("does not promise a passkey where OpenKey offers none (desktop)", () => {
     const markup = renderToStaticMarkup(
       <AgentEnablementBanner {...baseProps} reconnectReason={null} passkeysSupported={false} />,

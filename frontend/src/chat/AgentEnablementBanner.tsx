@@ -74,16 +74,18 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
       aria-label="Agent tools"
       aria-live="polite"
       aria-atomic="true"
+      data-agent-enable-banner
       className="fixed bottom-[calc(var(--tc-bottom-chrome)+8rem)] left-3 right-3 z-[5] sm:left-1/2 sm:right-auto sm:-translate-x-1/2"
     >
       <div className="flex flex-col gap-2 rounded-lg border border-border bg-popover px-4 py-2.5 text-sm text-popover-foreground shadow-lg sm:flex-row sm:items-center sm:gap-3">
         {enableError ? (
           <>
-            <span className="text-xs text-destructive">{enableError}</span>
+            <span className="text-xs text-destructive" data-agent-enable-error>{enableError}</span>
             <button
               type="button"
               onClick={() => void onEnable()}
               disabled={enabling}
+              data-agent-enable-action
               className="min-h-11 shrink-0 rounded-md bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed fine:min-h-0"
             >
               {enabling ? `${reconnecting ? "Reconnecting" : "Connecting"}…` : "Retry"}
@@ -91,7 +93,7 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
           </>
         ) : (
           <>
-            <div className="flex flex-col gap-0.5">
+            <div className="flex flex-col gap-0.5" data-agent-enable-copy>
               <span className="text-xs text-muted-foreground">
                 {reconnecting
                   ? reconnectReason === "delegation_expired"
@@ -115,6 +117,7 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
               type="button"
               onClick={() => void onEnable()}
               disabled={enabling}
+              data-agent-enable-action
               className="min-h-11 shrink-0 rounded-md bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed fine:min-h-0"
             >
               {enabling ? `${reconnecting ? "Reconnecting" : "Connecting"}…` : action}

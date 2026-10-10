@@ -12,6 +12,12 @@ import type { SizeClassState } from "../lib/sizeClass";
 import { AppShell, AppShellView, shownSurface } from "./AppShell";
 import { PATHS, screenFor } from "./routes";
 
+test("the shell exposes its platform for native typography rules", () => {
+  const source = readFileSync(new URL("./AppShell.tsx", import.meta.url), "utf8");
+  expect(source).toContain("root.dataset.platform = props.platform");
+  expect(source).toContain("delete document.documentElement.dataset.platform");
+});
+
 const SLOTS = {
   chat: <p>chat-slot</p>,
   capture: <p>capture-slot</p>,

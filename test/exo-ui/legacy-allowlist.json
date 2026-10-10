@@ -1,5 +1,33 @@
 [
   {
+    "screen": "shell-chat",
+    "selector": "button[aria-label=\"Model\"] > span.truncate",
+    "check": "clipped-text",
+    "reason": "At 200% text the composer keeps its model control within the send row and ellipsizes the model name; opening Model shows the full choice.",
+    "removeIn": "When the composer toolbar gains a responsive full-name layout."
+  },
+  {
+    "screen": "shell-chat-ribbon",
+    "selector": "button[aria-label=\"Model\"] > span.truncate",
+    "check": "clipped-text",
+    "reason": "At 200% text the composer keeps its model control within the send row and ellipsizes the model name; opening Model shows the full choice.",
+    "removeIn": "When the composer toolbar gains a responsive full-name layout."
+  },
+  {
+    "screen": "shell-chats-sheet",
+    "selector": "button[aria-label=\"Model\"] > span.truncate",
+    "check": "clipped-text",
+    "reason": "At 200% text the composer keeps its model control within the send row and ellipsizes the model name; opening Model shows the full choice.",
+    "removeIn": "When the composer toolbar gains a responsive full-name layout."
+  },
+  {
+    "screen": "shell-model-sheet",
+    "selector": "button[aria-label=\"Model\"] > span.truncate",
+    "check": "clipped-text",
+    "reason": "At 200% text the composer keeps its model control within the send row and ellipsizes the model name; opening Model shows the full choice.",
+    "removeIn": "When the composer toolbar gains a responsive full-name layout."
+  },
+  {
     "screen": "legacy-connectors",
     "selector": "button[aria-label=\"Toggle theme\"]",
     "check": "touch-target",

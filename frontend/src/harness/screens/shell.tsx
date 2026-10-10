@@ -11,13 +11,14 @@ import { PlatformContext } from "@/lib/platform";
 import { createRuntimeShim } from "../runtimeShim";
 import type { HarnessScreen } from "../screen";
 import { ShellApp } from "../ShellApp";
+import type { RecorderValue } from "@/capture/recorder/RecorderProvider";
 
-function Shell(props: { state?: AppState; act?: () => boolean }) {
+function Shell(props: { state?: AppState; act?: () => boolean; recorder?: Partial<RecorderValue> }) {
   const platform = useContext(PlatformContext);
   const shim = useMemo(() => createRuntimeShim(), []);
   return (
     <>
-      <ShellApp platform={platform} shim={shim} state={props.state ?? "ready"} />
+      <ShellApp platform={platform} shim={shim} state={props.state ?? "ready"} recorder={props.recorder} />
       {props.act && <Act run={props.act} />}
     </>
   );
@@ -98,6 +99,21 @@ export const shellScreens: HarnessScreen[] = [
     platform: "ios",
     readyWhen: 'button[aria-label="Model"]:not([disabled])',
     render: () => <Shell />,
+  },
+  {
+    ...SHELL,
+    id: "shell-chat-ribbon",
+    path: "/chat",
+    platform: "ios",
+    readyWhen: 'button[aria-label="Model"]:not([disabled])',
+    render: () => <Shell recorder={{
+      phase: "recording",
+      mic: { state: "recording", reason: null },
+      startedAt: Date.now() - 83_000,
+      elapsedMs: 83_000,
+      recordingId: "harness-minimized-recording",
+      sheetOpen: false,
+    }} />,
   },
   {
     ...SHELL,
