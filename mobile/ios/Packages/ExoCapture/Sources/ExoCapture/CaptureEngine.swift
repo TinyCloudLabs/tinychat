@@ -19,6 +19,9 @@ public final class CaptureEngine {
     private var startedRecovery = false
     private var recoveringIDs: Set<String> = []
     private var audioEngine: AVAudioEngine?
+    #if DEBUG && targetEnvironment(simulator)
+    private var silentInput: SimulatorSilentInput?
+    #endif
     private let tapCallbacks = DispatchGroup()
     private let tapTimeLock = NSLock()
     private var lastTapEndSample: AVAudioFramePosition?
@@ -77,6 +80,18 @@ public final class CaptureEngine {
     var debugScheduleTimedOutRetry: ((String) -> Void)?
     var debugMuxWaitSeam: RecordingFinalizer.WaitSeam?
     #endif
+    private var hasInput: Bool {
+        #if DEBUG && targetEnvironment(simulator)
+        if silentInput != nil { return true }
+        #endif
+        return audioEngine != nil
+    }
+    private var inputRunning: Bool {
+        #if DEBUG && targetEnvironment(simulator)
+        if let silentInput { return silentInput.isRunning }
+        #endif
+        return audioEngine?.isRunning == true
+    }
     private var isForeground: Bool {
         #if DEBUG
         if let debugForeground { return debugForeground }
@@ -111,12 +126,15 @@ public final class CaptureEngine {
         wallClock = clock
         debugTesting = true
     }
-    var debugGraphActive: Bool { graphActive || audioEngine?.isRunning == true }
+    var debugGraphActive: Bool { graphActive || inputRunning }
+    #if targetEnvironment(simulator)
+    var debugSilentInputRunning: Bool { silentInput?.isRunning == true }
+    #endif
     var debugLimitTimerArmed: Bool { limitTimer?.isValid == true }
     var debugRetryPending: Bool { retryTimer != nil }
     var debugEpoch: Int { attempts.epoch }
     func debugRetryTick() { retryTimer?.invalidate(); retryTimer = nil; try? attemptResume(automatic: true) }
-    func debugStopEngineWithoutTransition() { audioEngine?.stop() }
+    func debugStopEngineWithoutTransition() { stopInputWithoutBookkeeping() }
     func debugAgeLastTap(by seconds: TimeInterval) {
         tapTimeLock.lock(); lastTapAt = retryNow - seconds; tapTimeLock.unlock()
     }
@@ -380,14 +398,21 @@ public final class CaptureEngine {
         try audioSession.setActive(true)
         graphActive = true
         try inputRouter.apply()
-        let engine = AVAudioEngine()
-        pendingEngine = engine
-        let node = engine.inputNode
-        let format = node.outputFormat(forBus: 0)
-        guard format.sampleRate > 0 else { throw CaptureError.io("microphone input has no format") }
-        // Verify the input can actually start before recording a successful acquisition.
-        engine.prepare()
-        try engine.start()
+        let engine: AVAudioEngine?
+        let format: AVAudioFormat
+        #if DEBUG && targetEnvironment(simulator)
+        switch try SimulatorSilentInput.mode() {
+        case .silence:
+            engine = nil
+            format = SimulatorSilentInput.format
+            log.notice("Debug simulator: capturing synthetic silence, not the Mac microphone (EXO_SIM_AUDIO_INPUT=host opts in)")
+        case .host:
+            log.notice("Debug simulator: EXO_SIM_AUDIO_INPUT=host, capturing the Mac microphone")
+            (engine, format) = try openHostInput(pending: &pendingEngine)
+        }
+        #else
+        (engine, format) = try openHostInput(pending: &pendingEngine)
+        #endif
         #if DEBUG
         debugBeforeAttach?()
         #endif
@@ -398,7 +423,10 @@ public final class CaptureEngine {
         }
         let acquiredAt = wallClock.nowMilliseconds()
         // The transition machine emits span_close, availability, and only a changed input.
-        let input = inputRouter.active()
+        var input = inputRouter.active()
+        #if DEBUG && targetEnvironment(simulator)
+        if engine == nil, let routed = input { input = (routed.id, SimulatorSilentInput.inputName, routed.kind) }
+        #endif
         if let input {
             currentInput = ["id": input.id, "name": input.name, "kind": input.kind]
         }
@@ -439,7 +467,7 @@ public final class CaptureEngine {
         writer.setGeneration(generation)
         tapTimeLock.lock(); lastTapEndSample = nil; lastTapAt = retryNow; tapTimeLock.unlock()
         let attemptGeneration = generation
-        node.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self, writer] buffer, when in
+        let tapHandler: AVAudioNodeTapBlock = { [weak self, writer] buffer, when in
             self?.tapCallbacks.enter()
             defer { self?.tapCallbacks.leave() }
             var delivered = true
@@ -468,13 +496,44 @@ public final class CaptureEngine {
             self?.tapTimeLock.unlock()
             if delivered { writer.enqueue(buffer, generation: attemptGeneration) }
         }
-        audioEngine = engine
+        if let engine {
+            engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: format, block: tapHandler)
+            audioEngine = engine
+        } else {
+            #if DEBUG && targetEnvironment(simulator)
+            let source = SimulatorSilentInput(handler: tapHandler)
+            silentInput = source
+            source.start()
+            #endif
+        }
         acquired = true
         _ = attempts.succeeded(ticket)
         clearResumeNotification()
     }
 
+    private func openHostInput(pending: inout AVAudioEngine?) throws -> (AVAudioEngine, AVAudioFormat) {
+        let engine = AVAudioEngine()
+        pending = engine
+        let format = engine.inputNode.outputFormat(forBus: 0)
+        guard format.sampleRate > 0 else { throw CaptureError.io("microphone input has no format") }
+        // Verify the input can actually start before recording a successful acquisition.
+        engine.prepare()
+        try engine.start()
+        return (engine, format)
+    }
+
+    private func stopInputWithoutBookkeeping() {
+        #if DEBUG && targetEnvironment(simulator)
+        silentInput?.stop()
+        #endif
+        audioEngine?.stop()
+    }
+
     private func deactivateGraph(tapRemoved: Bool = false) {
+        #if DEBUG && targetEnvironment(simulator)
+        silentInput?.stop()
+        silentInput = nil
+        #endif
         if let engine = audioEngine {
             if !tapRemoved { engine.inputNode.removeTap(onBus: 0) }
             engine.stop()
@@ -488,6 +547,15 @@ public final class CaptureEngine {
     }
 
     @discardableResult private func stopInput() -> Bool {
+        #if DEBUG && targetEnvironment(simulator)
+        if let source = silentInput {
+            source.stop()
+            silentInput = nil
+            let stoppedAt = wallClock.nowMilliseconds()
+            recordInputStopped(at: stoppedAt, renderEnd: nil)
+            return true
+        }
+        #endif
         guard let engine = audioEngine else { return true }
         let renderTime = engine.inputNode.lastRenderTime
         let renderEnd = renderTime?.isSampleTimeValid == true ? renderTime?.sampleTime : nil
@@ -495,6 +563,12 @@ public final class CaptureEngine {
         guard !engine.isRunning else { return false }
         let stoppedAt = wallClock.nowMilliseconds()
         engine.inputNode.removeTap(onBus: 0)
+        recordInputStopped(at: stoppedAt, renderEnd: renderEnd)
+        audioEngine = nil
+        return true
+    }
+
+    private func recordInputStopped(at stoppedAt: Int64, renderEnd: AVAudioFramePosition?) {
         tapCallbacks.wait()
         tapTimeLock.lock()
         let deliveredEnd = lastTapEndSample
@@ -511,8 +585,6 @@ public final class CaptureEngine {
         if let renderEnd, let deliveredEnd {
             log.notice("Pause/stop tap tail estimate samples=\(max(0, renderEnd - deliveredEnd)); bufferSize=1024")
         }
-        audioEngine = nil
-        return true
     }
 
     private func receiveLevel(_ level: Double, peak: Double) {
@@ -1184,7 +1256,7 @@ public final class CaptureEngine {
                 "staleAttachRejected": staleAttachRejected, "pausedCallIgnored": pausedCallIgnored,
                 "newSegmentAllowed": newSegmentAllowed, "noOldNotice": noOldNotice,
                 "stopRejectsAttach": stopRejectsAttach, "recordedLimitMs": elapsed,
-                "sessionInactive": !graphActive && audioEngine == nil,
+                "sessionInactive": !graphActive && !hasInput,
                 "noEndedNotice": noEndedNoticeValid,
                 "manualAfterFailedRestart": manualAfterFailedRestart,
                 "stopDuringBackoff": !stoppedBackoff.mayAttach(pendingBackoff),
@@ -1199,19 +1271,19 @@ public final class CaptureEngine {
         let id = started["id"] as! String
         defer { if info?.id == id { _ = try? discard() } }
         try pause()
-        let inactiveOnPause = audioEngine == nil && !graphActive && status()["state"] as? String == "paused"
+        let inactiveOnPause = !hasInput && !graphActive && status()["state"] as? String == "paused"
         interruptionBegan(); interruptionEnded()
-        let stayedPaused = status()["state"] as? String == "paused" && audioEngine == nil
+        let stayedPaused = status()["state"] as? String == "paused" && !hasInput
         mediaServicesReset()
         try resume()
-        let resumedRecording = status()["state"] as? String == "recording" && audioEngine?.isRunning == true
+        let resumedRecording = status()["state"] as? String == "recording" && inputRunning
         let events = try library.readJournal(id)
         let segments = events.filter { $0["e"] as? String == "segment" }.count
         let noPauseSpan = !events.contains { $0["e"] as? String == "span_open" }
         let beforeUnchangedRoute = segments
         routeChanged()
         let routeUnchanged = try library.readJournal(id).filter { $0["e"] as? String == "segment" }.count == beforeUnchangedRoute
-        audioEngine?.stop() // Simulate a graph that stopped without an interruption notification.
+        stopInputWithoutBookkeeping() // Simulate a graph that stopped without an interruption notification.
         tapTimeLock.lock(); lastTapAt = retryNow - 4; tapTimeLock.unlock()
         checkDurationLimit()
         let stalledEvents = try library.readJournal(id)
@@ -1227,7 +1299,7 @@ public final class CaptureEngine {
                 "resumedRecording": resumedRecording, "newSegment": segments >= 2,
                 "noPauseSpan": noPauseSpan, "routeUnchanged": routeUnchanged,
                 "stalledRebuild": stalledRebuild, "silencedClosedForCall": silencedClosedForCall,
-                "inactiveAfterDiscard": audioEngine == nil && !graphActive]
+                "inactiveAfterDiscard": !hasInput && !graphActive]
     }
 
     private func emitState() { emit("micState", status().merging(["at": wallClock.nowMilliseconds()]) { _, newer in newer }, retained: true) }
