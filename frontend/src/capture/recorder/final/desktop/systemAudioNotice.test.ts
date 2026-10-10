@@ -22,4 +22,24 @@ describe("system audio notice storage", () => {
     expect(storage.map.get(SYSTEM_AUDIO_NOTICE_KEY)).toBe("1");
     expect(systemAudioNoticeSeen(storage)).toBe(true);
   });
+  test("storage that throws never breaks Settings: an unreadable flag shows the notice, a failed write is only logged", () => {
+    const throwing = {
+      getItem: () => {
+        throw new Error("SecurityError");
+      },
+      setItem: () => {
+        throw new Error("QuotaExceededError");
+      },
+    };
+    const warn = console.warn;
+    const warnings: unknown[][] = [];
+    console.warn = (...args: unknown[]) => void warnings.push(args);
+    try {
+      expect(systemAudioNoticeSeen(throwing)).toBe(false);
+      expect(() => markSystemAudioNoticeSeen(throwing)).not.toThrow();
+    } finally {
+      console.warn = warn;
+    }
+    expect(warnings).toHaveLength(2);
+  });
 });
