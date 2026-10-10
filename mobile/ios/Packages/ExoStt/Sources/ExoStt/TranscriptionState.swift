@@ -19,6 +19,8 @@ final class TranscriptionState {
         case flaggedRunning
         /// The transcript is already being published: the note will finish as `done`.
         case tooLate
+        /// Being enqueued or given a final state by its owner, which writes that state itself.
+        case owned
         case notFound
     }
 
@@ -184,6 +186,7 @@ final class TranscriptionState {
             current = running
             return .flaggedRunning
         }
+        if reserved.contains(id) || finalizing.contains(id) { return .owned }
         return .notFound
     }
 

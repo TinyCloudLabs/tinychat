@@ -49,9 +49,14 @@ final class TranscriptionCore {
     private let library: TranscriptionLibrary
     private let backend: TranscriptionBackend
     private let captureGate = CapturePauseGate()
-    /// Held while a pending note's sidecar is published on the control queue and while the worker takes
-    /// a note, so a note cannot start decoding in the middle of a status write meant for it.
-    private let pendingWriteLock = NSLock()
+    /// Orders the sidecar writes that are conditional on a note's queue state against every change to
+    /// that state. A conditional write (`writeIfPending`) checks its precondition and writes while
+    /// holding it; every transition that takes a note out of that state (`transition`) takes it too, so
+    /// a transition either happens before the check (the write is skipped) or waits for the write to
+    /// land (the transition's own, newer write follows). A conditional write can therefore never
+    /// replace a newer state: running, done, failed or cancelled. Lock order: this, then the state's
+    /// lock. Never taken by snapshot or any other main-thread read, only by the control and worker queues.
+    private let transitionLock = NSLock()
     var onQueueChanged: (() -> Void)?
     var onProgress: ((String, Int) -> Void)?
     var onTranscribed: ((String, String) -> Void)?
@@ -100,14 +105,17 @@ final class TranscriptionCore {
 
     func cancel(id: String) {
         controlQueue.async { [self] in
-            switch state.cancel(id) {
+            switch transition({ state.cancel(id) }) {
             case .removedPending:
                 try? library.updateStt(id, patch: ["state": "cancelled"])
             case .notFound:
-                // A note that already finished keeps its `done`.
-                if (try? library.transcript(id)) == nil { try? library.updateStt(id, patch: ["state": "cancelled"]) }
-            case .flaggedRunning, .tooLate:
-                break // The worker records the outcome itself.
+                // Only a note nobody is working on that is still unfinished (interrupted) is cancelled;
+                // a note that already reached done, failed or cancelled keeps that state.
+                if (try? library.transcript(id)) == nil, isUnfinished(id) {
+                    try? library.updateStt(id, patch: ["state": "cancelled"])
+                }
+            case .flaggedRunning, .tooLate, .owned:
+                break // The worker (or admitter) records the outcome itself.
             }
             onQueueChanged?()
         }
@@ -144,22 +152,22 @@ final class TranscriptionCore {
         do {
             session = try backend.makeSession()
         } catch {
-            for id in state.removeAllPending() {
+            for id in transition({ state.removeAllPending() }) {
                 fail(id, code: "model_load_failed", message: String(describing: error)) { state.finishRemoved(id) }
             }
             onQueueChanged?()
             return
         }
         guard let session else {
-            state.markAllPending(state: "waiting_for_model")
+            transition { state.markAllPending(state: "waiting_for_model") }
             publishWaitingState(state.pendingIds)
             onQueueChanged?()
             return
         }
-        state.markAllPending(state: "queued")
+        transition { state.markAllPending(state: "queued") }
         CaptureYieldingLoop.run(
             hasNext: { state.hasPending },
-            next: { pendingWriteLock.lock(); defer { pendingWriteLock.unlock() }; return state.takeNext() },
+            next: { transition { state.takeNext() } },
             isPaused: { captureGate.isActive() }
         ) { next in
             guard let id = next else { return } // cancelled between hasNext and next
@@ -208,12 +216,26 @@ final class TranscriptionCore {
     /// instead of having its newer state overwritten.
     private func publishWaitingState(_ ids: [String]) {
         controlQueue.async { [self] in
-            for id in ids {
-                pendingWriteLock.lock(); defer { pendingWriteLock.unlock() }
-                guard state.isPending(id, state: "waiting_for_model") else { continue }
-                try? library.updateStt(id, patch: ["state": "waiting_for_model"])
-            }
+            for id in ids { writeIfPending(id, state: "waiting_for_model") }
         }
+    }
+
+    /// Runs a change to a note's queue state, ordered against in-flight conditional writes.
+    private func transition<T>(_ body: () -> T) -> T {
+        transitionLock.lock(); defer { transitionLock.unlock() }
+        return body()
+    }
+
+    /// Writes `state` to the note's sidecar only if the note is still pending in that same state.
+    private func writeIfPending(_ id: String, state newState: String) {
+        transitionLock.lock(); defer { transitionLock.unlock() }
+        guard state.isPending(id, state: newState) else { return }
+        try? library.updateStt(id, patch: ["state": newState])
+    }
+
+    private func isUnfinished(_ id: String) -> Bool {
+        let current = ((try? library.readSidecar(id))?["stt"] as? [String: Any])?["state"] as? String
+        return current.map { ["waiting_for_model", "queued", "running"].contains($0) } ?? false
     }
 
     /// Records a final `failed` state; `release` then hands the note back, before anyone is told.

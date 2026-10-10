@@ -360,6 +360,94 @@ final class TranscriptionCoreTests: XCTestCase {
         XCTAssertEqual(library.sidecar("a")["state"] as? String, "cancelled")
     }
 
+    // MARK: a stale waiting_for_model write must not replace a newer state
+
+    /// Holds the pending note `a`'s `waiting_for_model` publication after it was admitted and returns
+    /// the signal that lets it land.
+    private func holdWaitingPublication() -> DispatchSemaphore {
+        library.seed("a", state: "queued")
+        backend.session = nil // no usable model
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        library.beforeUpdate = { _, patch in
+            if patch["state"] as? String == "waiting_for_model" { entered.signal(); release.wait() }
+        }
+        core.enqueue(id: "a")
+        XCTAssertEqual(entered.wait(timeout: .now() + 5), .success)
+        library.beforeUpdate = nil
+        return release
+    }
+
+    func testAHeldWaitingWriteDoesNotUndoAModelLoadFailureAndNoLaterScanRestartsTheNote() {
+        let release = holdWaitingPublication()
+        backend.loadError = TranscriptionQueueError.modelFilesMissing
+        core.kickWorker() // a direct worker wakeup (e.g. capture ended) whose model load now throws
+        Thread.sleep(forTimeInterval: 0.2) // lets the failing pass run ahead of the held write, if it can
+        release.signal()
+        settle()
+
+        XCTAssertEqual(library.sidecar("a")["state"] as? String, "failed")
+        XCTAssertEqual(library.sidecar("a")["error"] as? String, "model_load_failed")
+        XCTAssertEqual(events.all, ["failed:a:model_load_failed"])
+
+        backend.loadError = nil
+        backend.session = session
+        core.reconcile()
+        settle()
+        XCTAssertEqual(session.startedIds, [], "a failed note is only restarted by an explicit retry")
+        XCTAssertFalse(library.hasTranscript("a"))
+        XCTAssertEqual(library.sidecar("a")["state"] as? String, "failed")
+    }
+
+    func testAHeldWaitingWriteNeverOverwritesRunningOrDone() {
+        let release = holdWaitingPublication()
+        backend.session = session
+        let entered = DispatchSemaphore(value: 0), decodeRelease = DispatchSemaphore(value: 0)
+        holdDecode(of: "a", entered: entered, release: decodeRelease)
+        core.kickWorker() // the model arrived; the note is up next while the old write is still in flight
+        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertEqual(session.startedIds, [], "the note must not start in the middle of a status write meant for it")
+
+        release.signal()
+        XCTAssertEqual(entered.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(library.sidecar("a")["state"] as? String, "running")
+
+        decodeRelease.signal()
+        settle()
+        XCTAssertEqual(library.sidecar("a")["state"] as? String, "done")
+        XCTAssertTrue(library.hasTranscript("a"))
+        let states = library.updates("a").compactMap { $0["state"] as? String }
+        XCTAssertEqual(states, ["queued", "waiting_for_model", "running", "done"])
+    }
+
+    func testACancelNeverOverwritesAFinalState() {
+        library.seed("failed", state: "failed", attempts: 3)
+        library.seed("interrupted", state: "running", attempts: 1)
+        core.cancel(id: "failed")
+        core.cancel(id: "interrupted")
+        settle()
+        XCTAssertEqual(library.sidecar("failed")["state"] as? String, "failed")
+        XCTAssertEqual(library.sidecar("interrupted")["state"] as? String, "cancelled", "an unfinished note nobody is working on can be cancelled")
+    }
+
+    func testACancelOfANoteBeingFailedLeavesTheFailureToItsOwner() {
+        library.seed("a", state: "queued")
+        backend.loadError = TranscriptionQueueError.modelFilesMissing
+        let failedEntered = DispatchSemaphore(value: 0), failedRelease = DispatchSemaphore(value: 0)
+        library.beforeUpdate = { _, patch in
+            if patch["state"] as? String == "failed" { failedEntered.signal(); failedRelease.wait() }
+        }
+        core.enqueue(id: "a")
+        XCTAssertEqual(failedEntered.wait(timeout: .now() + 5), .success)
+
+        core.cancel(id: "a")
+        core.controlQueue.sync {}
+        library.beforeUpdate = nil
+        failedRelease.signal()
+        settle()
+        XCTAssertEqual(library.sidecar("a")["state"] as? String, "failed")
+        XCTAssertEqual(events.all, ["failed:a:model_load_failed"])
+    }
+
     func testPendingNotesWaitingForAModelAreStoredAsSuchAndRunOnceItArrives() {
         library.seed("a", state: "queued")
         backend.session = nil
