@@ -283,12 +283,20 @@ describe("after a reload", () => {
       listing: { state: "error", message: "Could not check this phone for unsaved notes: no bridge" },
       running: false,
       lastError: null,
+      otherAccountCount: 0,
     });
     expect(cold.pendingCount(cold.pendingStore.snapshot())).toBe(0);
   });
 });
 
 describe("pendingStore", () => {
+  test("notes from a prior account remain counted with an ownership reason", async () => {
+    phone.pending = [recording("old-account", 1), { ...recording("current", 2), owner: "did:example:bob" }];
+    saves.pendingStore.setAccount("did:example:bob");
+    await saves.pendingStore.refresh(null);
+    expect(saves.pendingStore.snapshot()).toMatchObject({ listing: { state: "ok", count: 2 }, otherAccountCount: 1 });
+    saves.pendingStore.setAccount(null);
+  });
   test("refresh lists the phone; a listing that fails is an error state, never a cached count", async () => {
     phone.pending = [recording("a", 1), recording("b", 2)];
     await saves.pendingStore.refresh(null);

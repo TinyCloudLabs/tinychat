@@ -44,7 +44,7 @@ const savesInFlight = new Set<string>();
 const saveIdleListeners = new Set<() => void>();
 /** A swap must not retire the service graph while a recording is writing. */
 export function voiceNoteSaveBusy(): boolean {
-  return savesInFlight.size > 0 || pendingRunInFlight !== null || manualSavesInFlight > 0;
+  return savesInFlight.size > 0 || pendingRunInFlight !== null || trackedSavesInFlight > 0;
 }
 
 /** Resolve after the recording and the pending-run single-flight guard settle. */
@@ -343,7 +343,8 @@ export interface PendingRun {
 }
 
 let pendingRunInFlight: Promise<PendingRun> | null = null;
-let manualSavesInFlight = 0;
+let trackedSavesInFlight = 0;
+let activeAccountDid: string | null = null;
 
 /**
  * Retry every recording still on the device, oldest first, one at a time. Single-flight: the
@@ -384,7 +385,7 @@ export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
     return { total: recordings.length, left, saved, lastError };
   })().finally(() => {
     pendingRunInFlight = null;
-    publishPending({ running: manualSavesInFlight > 0 });
+    publishPending({ running: trackedSavesInFlight > 0 });
     publishSaveIdle();
   });
   return pendingRunInFlight;
@@ -399,6 +400,8 @@ export interface PendingSnapshot {
   /** A save of them is running (savePendingRecordings). */
   running: boolean;
   lastError: string | null;
+  /** Notes assigned to another account are kept here until that account signs in. */
+  otherAccountCount?: number;
 }
 
 /** How many notes await a space save (0 when unknown or the listing failed). */
@@ -406,12 +409,22 @@ export function pendingCount(snapshot: Pick<PendingSnapshot, "listing">): number
   return snapshot.listing.state === "ok" ? snapshot.listing.count : 0;
 }
 
-let pendingSnapshot: PendingSnapshot = { listing: { state: "unknown" }, running: false, lastError: null };
+let pendingSnapshot: PendingSnapshot = { listing: { state: "unknown" }, running: false, lastError: null, otherAccountCount: 0 };
 const pendingListeners = new Set<() => void>();
 
 function publishPending(patch: Partial<PendingSnapshot>): void {
   pendingSnapshot = { ...pendingSnapshot, ...patch };
   for (const listener of pendingListeners) listener();
+}
+
+function beginTrackedSave(): () => void {
+  trackedSavesInFlight++;
+  publishPending({ running: true, lastError: null });
+  return () => {
+    trackedSavesInFlight--;
+    publishPending({ running: trackedSavesInFlight > 0 || pendingRunInFlight !== null });
+    publishSaveIdle();
+  };
 }
 
 export const pendingStore = {
@@ -433,16 +446,14 @@ export const pendingStore = {
   reportError(message: string): void {
     publishPending({ lastError: message });
   },
-  /** The owner-aware manual retry uses the same saving state as the legacy path. */
-  beginManualSave(): () => void {
-    manualSavesInFlight++;
-    publishPending({ running: true, lastError: null });
-    return () => {
-      manualSavesInFlight--;
-      publishPending({ running: manualSavesInFlight > 0 || pendingRunInFlight !== null });
-      publishSaveIdle();
-    };
+  setAccount(did: string | null): void {
+    activeAccountDid = did;
+    void relistPending(null);
   },
+  /** Track the whole automatic pipeline, including its cloud preflight. */
+  beginAutomaticSave: beginTrackedSave,
+  /** The owner-aware manual retry uses the same saving state as the legacy path. */
+  beginManualSave: beginTrackedSave,
 };
 
 function listingFailure(caught: unknown): string {
@@ -453,9 +464,12 @@ function listingFailure(caught: unknown): string {
 async function relistPending(lastError: string | null): Promise<void> {
   try {
     const { recordings } = await VoiceNotes.listPending();
-    publishPending({ listing: { state: "ok", count: recordings.filter((recording) =>
+    const pending = recordings.filter((recording) =>
       isDiscarded(recording.id) || (recording.ledger?.audio.state !== "saved" && !savedThisSession.has(recording.id)),
-    ).length }, lastError });
+    );
+    publishPending({ listing: { state: "ok", count: pending.length }, lastError,
+      otherAccountCount: activeAccountDid ? pending.filter((recording) =>
+        recording.owner && recording.owner !== activeAccountDid && !isDiscarded(recording.id)).length : 0 });
   } catch (caught) {
     publishPending({ listing: { state: "error", message: listingFailure(caught) }, lastError });
   }

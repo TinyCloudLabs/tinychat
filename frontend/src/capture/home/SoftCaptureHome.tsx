@@ -91,7 +91,9 @@ function InProgress(props: { inProgress: InProgressRowsViewProps }) {
           <OnThisPhoneCard
             count={count}
             saving={voice.saving}
-            note={cardNote(soft?.issues ?? {}, voice.lastError)}
+            note={voice.lastError ?? (voice.saving ? HOME_COPY.savingToSpace
+              : voice.otherAccountCount ? HOME_COPY.otherAccountNotes
+                : cardNote(soft?.issues ?? {}, null))}
             onSaveNow={voice.onSaveNow}
           />
         </>

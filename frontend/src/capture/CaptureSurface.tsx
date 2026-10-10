@@ -157,6 +157,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
           listing: recorder.pending.listing,
           saving: recorder.pending.running,
           lastError: recorder.pending.lastError,
+          otherAccountCount: recorder.pending.otherAccountCount,
           limitNotice: recorder.phase === "recording" ? null : recorder.limitNotice,
           onSaveNow: recorder.retryPending,
         }

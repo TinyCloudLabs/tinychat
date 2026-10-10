@@ -18,7 +18,7 @@ import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import type { VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { whenVoiceNoteSavesIdle, type PendingRun } from "@/lib/voiceNotes/recorderSaves";
+import { messageOf, pendingStore, whenVoiceNoteSavesIdle, type PendingRun } from "@/lib/voiceNotes/recorderSaves";
 import { advanceAccountGeneration, currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
 import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 
@@ -90,12 +90,21 @@ export function PendingVoiceNotesSaver({
     const did = tcw.did;
     const spaceId = tcw.spaceId;
     if (!did || !spaceId) return;
+    pendingStore.setAccount(did);
     pipeline.resume();
-    const run = () => pipeline.reconcileAll({ did, spaceId, generation: currentAccountGeneration() })
-      .catch((error: unknown) => console.warn("[VoiceNotes] Saving notes left on this phone failed", error));
+    const run = async () => {
+      const finish = pendingStore.beginAutomaticSave();
+      try {
+        await pipeline.reconcileAll({ did, spaceId, generation: currentAccountGeneration() });
+        await pendingStore.refresh(null);
+      } catch (error) {
+        console.warn("[VoiceNotes] Saving notes left on this phone failed", error);
+        pendingStore.reportError(`Could not save notes on this phone: ${messageOf(error)}`);
+      } finally { finish(); }
+    };
     const unregister = registerPendingVoiceNotesRecovery(run);
     void run();
-    return () => { unregister(); pipeline.cancelAll(); };
+    return () => { unregister(); pipeline.cancelAll(); pendingStore.setAccount(null); };
   }, [pipeline, tcw]);
   return null;
 }

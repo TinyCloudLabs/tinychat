@@ -14,6 +14,7 @@ import type { PendingListing } from "@/lib/voiceNotes/recorderSaves";
 import type { TranscriberMeeting } from "@/lib/transcriberApi";
 import { transcriberMeetingTitle } from "@/lib/transcriberSave";
 import type { PausedUpload } from "./upload/pausedUpload";
+import { HOME_COPY } from "./home/homeCopy";
 
 /** The recorder's part of In progress (the phone app). */
 export interface VoiceInProgress {
@@ -22,6 +23,7 @@ export interface VoiceInProgress {
   /** A save of them is running. */
   saving: boolean;
   lastError: string | null;
+  otherAccountCount?: number;
   /** The last recording stopped itself at the limit. */
   limitNotice: string | null;
   onSaveNow: () => void;
@@ -111,7 +113,8 @@ export function InProgressRowsView(props: InProgressRowsViewProps) {
               <MicIcon className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
               <RowText
                 title={voiceCount === 1 ? "1 voice note on this phone" : `${voiceCount} voice notes on this phone`}
-                meta={voice.lastError ?? "Not in your space yet"}
+                meta={voice.lastError ?? (voice.saving ? HOME_COPY.savingToSpace
+                  : voice.otherAccountCount ? HOME_COPY.otherAccountNotes : HOME_COPY.notInSpace)}
                 spinning={voice.saving}
               />
             </span>

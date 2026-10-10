@@ -106,6 +106,14 @@ describe("Recent", () => {
 });
 
 describe("the on-this-phone card", () => {
+  test("shows automatic saving and why an older account's notes are held", () => {
+    const saving = voice(5);
+    saving.voice!.saving = true;
+    saving.voice!.otherAccountCount = 4;
+    expect(home({ inProgress: saving })).toContain("Saving to your TinyCloud space…");
+    saving.voice!.saving = false;
+    expect(home({ inProgress: saving })).toContain("Some notes belong to another account. Sign in there to save them.");
+  });
   test("app only: a count, 'Not in your space yet' and Save now", () => {
     const html = home({ inProgress: voice(2) });
     expect(html).toContain("2 voice notes on this phone");
