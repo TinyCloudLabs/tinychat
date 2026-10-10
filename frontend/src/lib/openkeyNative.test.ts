@@ -602,7 +602,7 @@ describe("error message mapping", () => {
     expect(nativeSignInErrorMessage("boom")).toMatch(/failed/i);
   });
 
-  test("logs only an SDK code, and a plain error message", () => {
+  test("logs only an SDK code, and a plain error's name", () => {
     const prior = console.warn;
     const lines: string[] = [];
     console.warn = (line: string) => { lines.push(line); };
@@ -618,8 +618,30 @@ describe("error message mapping", () => {
     expect(lines).toEqual([
       "[OpenKey native] sign-in: SERVER",
       "[OpenKey native] sign-out: STORAGE",
-      "[OpenKey native] verify: verification failed",
+      "[OpenKey native] verify: Error",
     ]);
+  });
+
+  test("never logs the message of a non-native error, whatever it carries", () => {
+    const token = "rt_SYNTHETIC_TOKEN_IN_MESSAGE";
+    const lines: string[] = [];
+    const prior = console.warn;
+    console.warn = (line: string) => { lines.push(line); };
+    try {
+      logNativeOpenKeyError("sign-in", new Error(`exchange failed for refresh_token=${token}`));
+      logNativeOpenKeyError("restore", new TypeError(`Bearer ${token}`));
+      logNativeOpenKeyError("sign-in", { message: token });
+      logNativeOpenKeyError("sign-in", token);
+    } finally {
+      console.warn = prior;
+    }
+    expect(lines).toEqual([
+      "[OpenKey native] sign-in: Error",
+      "[OpenKey native] restore: TypeError",
+      "[OpenKey native] sign-in: unknown error",
+      "[OpenKey native] sign-in: unknown error",
+    ]);
+    expect(lines.join("\n")).not.toContain(token);
   });
 
   test("storage sign-out failures keep the session available for retry", () => {

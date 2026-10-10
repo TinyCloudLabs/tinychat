@@ -183,11 +183,11 @@ function nativeErrorCode(error: unknown): string | null {
     "code" in error && typeof error.code === "string" ? error.code : null;
 }
 
-/** SDK errors may carry a refresh token, so only their code is safe to log. */
+/** Error messages may carry a token or key, so only an SDK code, or else an error's name, is logged. */
 export function logNativeOpenKeyError(operation: string, error: unknown): void {
   const code = nativeErrorCode(error);
   if (code) console.warn(`[OpenKey native] ${operation}: ${code}`);
-  else console.warn(`[OpenKey native] ${operation}: ${error instanceof Error ? error.message : "unknown error"}`);
+  else console.warn(`[OpenKey native] ${operation}: ${error instanceof Error ? error.name : "unknown error"}`);
 }
 
 /**
