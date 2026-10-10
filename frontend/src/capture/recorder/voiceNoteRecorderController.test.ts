@@ -19,6 +19,8 @@ import { advanceAccountGeneration } from "@/lib/voiceNotes/accountContext";
 import { consentToRecordingPrivateCloud, setRecordingRoute } from "./TranscriptionRouteControl";
 import { loadNote } from "@/lib/voiceNotes/recordingNotes";
 import { reportRecordingNoteSyncError } from "@/lib/voiceNotes/voiceNoteStore";
+import { runOnSpaceLane, setSpaceLaneAbortGraceForTests, setSpaceLaneQueueWaitForTests } from "@/lib/spaceWriteLane";
+import { setVoiceNoteSaveDeadlineForTests } from "@/lib/voiceNotes/saveDeadline";
 
 const realStore = { ...(await import("@/lib/voiceNotes/voiceNoteStore")) };
 mock.module("@/lib/voiceNotes/voiceNoteStore", () => ({
@@ -1005,10 +1007,12 @@ describe("voice-note recorder controller", () => {
     }, { available: true });
     const note = earlier();
     let settled = false;
+    let reconcileRuns = 0;
     const pipeline: VoiceNotePipeline = {
       process: async () => {}, cancelAll: () => {}, resume: () => {},
       isAccepting: () => true, quiescent: async () => true,
       reconcileAll: async () => {
+        reconcileRuns++;
         await new Promise((resolve) => setTimeout(resolve, 20_100));
         settled = true;
         note.ledger = { audio: { state: "saved", rowId: "row", at: Date.now() } } as VoiceNoteRecording["ledger"];
@@ -1018,14 +1022,116 @@ describe("voice-note recorder controller", () => {
     const detach = recorder.attach();
     await tick();
     const saving = recorder.retryPending();
+    const doubleTap = recorder.retryPending();
     await tick();
     expect(pendingStore.snapshot().running).toBe(true);
     expect(settled).toBe(false);
-    await saving;
+    await Promise.all([saving, doubleTap]);
+    expect(reconcileRuns).toBe(1);
     expect(settled).toBe(true);
     expect(pendingStore.snapshot()).toMatchObject({ running: false, lastError: null, listing: { state: "ok", count: 0 } });
     detach();
   }, 35_000);
+
+  test("Save now reports a call timeout after refresh and clears saving without a second pass", async () => {
+    __setVoiceNotesForTests({ ...plugin,
+      getCaptureDefaults: async () => ({ status: "signed_in", accountDid: tcw.did, transitionGen: 1,
+        transcriber: "on-device", identifySpeakers: false }),
+      setCaptureDefaults: async () => ({ claimed: [] }),
+    }, { available: true });
+    const note = earlier();
+    let reconcileRuns = 0;
+    const pipeline: VoiceNotePipeline = {
+      process: async () => {}, cancelAll: () => {}, resume: () => {},
+      isAccepting: () => true, quiescent: async () => true,
+      reconcileAll: async () => {
+        reconcileRuns++;
+        try {
+          await runOnSpaceLane((signal) => new Promise((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+          }), { operation: `KV put controller-test/${note.id}` });
+        } catch (error) {
+          pendingStore.reportNoteFailure(note.id, error instanceof Error ? error.message : String(error));
+        }
+      },
+    };
+    setVoiceNoteSaveDeadlineForTests(20);
+    const recorder = controller({ pipeline });
+    const detach = recorder.attach();
+    await tick();
+    pendingStore.setAccount(tcw.did!);
+    const first = recorder.retryPending();
+    const doubleTap = recorder.retryPending();
+    await tick();
+    expect(pendingStore.snapshot().running).toBe(true);
+    await Promise.all([first, doubleTap]);
+    expect(reconcileRuns).toBe(1);
+    expect(pendingStore.snapshot()).toMatchObject({ running: false, listing: { state: "ok", count: 1 } });
+    expect(pendingStore.snapshot().lastError).toContain("saving it is taking too long");
+    setVoiceNoteSaveDeadlineForTests(null);
+    pendingStore.setAccount(null);
+    detach();
+  });
+
+  test("Save now settles visibly when a stuck SQL call is ahead of it in the lane", async () => {
+    __setVoiceNotesForTests({ ...plugin,
+      getCaptureDefaults: async () => ({ status: "signed_in", accountDid: tcw.did, transitionGen: 1,
+        transcriber: "on-device", identifySpeakers: false }),
+      setCaptureDefaults: async () => ({ claimed: [] }),
+    }, { available: true });
+    const note = earlier();
+    setVoiceNoteSaveDeadlineForTests(100);
+    setSpaceLaneAbortGraceForTests(500);
+    setSpaceLaneQueueWaitForTests(20);
+    let sqlSignal: AbortSignal | undefined;
+    const stuckSqlDb = { execute: (_sql: string, _params: unknown[], options: { signal?: AbortSignal }) => {
+      sqlSignal = options.signal;
+      // Simulate SQL execute ignoring its SDK abort signal and never settling.
+      return new Promise<never>(() => {});
+    } };
+    const stuckSql = runOnSpaceLane((signal) => stuckSqlDb.execute(
+      "INSERT INTO connector_meeting (...) VALUES (...)", [], { signal }),
+    { operation: `SQL execute: INSERT stuck controller-test/${note.id}` }).catch((error: unknown) => error);
+    const initialTimeout = await stuckSql;
+    expect(initialTimeout).toMatchObject({ code: "VOICE_NOTE_OPERATION_TIMEOUT" });
+    expect(sqlSignal?.aborted).toBe(true);
+
+    let queuedSqlDispatches = 0;
+    const queuedSqlDb = { execute: async (_sql: string, _params: unknown[], _options: { signal?: AbortSignal }) => {
+      queuedSqlDispatches++;
+      return { ok: true };
+    } };
+    const pipeline: VoiceNotePipeline = {
+      process: async () => {}, cancelAll: () => {}, resume: () => {},
+      isAccepting: () => true, quiescent: async () => true,
+      reconcileAll: () => runOnSpaceLane((signal) => queuedSqlDb.execute(
+        "UPDATE connector_meeting SET metadata = ?", [], { signal }),
+      { operation: `SQL execute: Save now ${note.id}` }).then(() => undefined),
+    };
+    const recorder = controller({ pipeline });
+    const detach = recorder.attach();
+    try {
+      await tick();
+      pendingStore.setAccount(tcw.did!);
+      const saving = recorder.retryPending();
+      await tick();
+      expect(pendingStore.snapshot().running).toBe(true);
+      await saving;
+      expect(pendingStore.snapshot()).toMatchObject({ running: false, listing: { state: "ok", count: 1 } });
+      expect(pendingStore.snapshot().lastError).toContain("waiting for another sync to finish");
+      expect(pendingStore.snapshot().lastError).not.toContain("connection");
+      expect(queuedSqlDispatches).toBe(0);
+      // Let the post-abort grace release the intentionally unresolved SQL request
+      // before the next test enqueues work on this module-level lane.
+      await new Promise((resolve) => setTimeout(resolve, 450));
+    } finally {
+      setVoiceNoteSaveDeadlineForTests(null);
+      setSpaceLaneAbortGraceForTests(null);
+      setSpaceLaneQueueWaitForTests(null);
+      pendingStore.setAccount(null);
+      detach();
+    }
+  });
 
   test("a Save now still running when another account signs in never touches that account's pending row", async () => {
     __setVoiceNotesForTests({ ...plugin,

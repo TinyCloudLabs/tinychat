@@ -39,6 +39,7 @@ import {
 } from "./voiceNoteStore";
 import { loadNote, noteMarkdown, saveNote } from "./recordingNotes";
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
+import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
 
 type KvValue = string | Uint8Array;
 type KvFailure = { code: string; message: string; meta?: { status: number } };
@@ -187,6 +188,48 @@ describe("saveVoiceNote", () => {
     expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
     expect(recordingNoteSyncError(space.tcw, withNote.id)).toBeNull();
     expect(space.kv.get(noteKey)).toContain("# Local draft");
+  });
+
+  test("a timed-out E1 Markdown put settles before E2 can write", async () => {
+    const space = fakeSpace();
+    const withNote = { ...recording, id: `rec-note-late-edit-${++fakeSpaceNumber}` };
+    const noteKey = voiceNoteMarkdownKvKey(withNote.id);
+    await saveNote(withNote.id, "# Original");
+    await saveVoiceNote(space.tcw, withNote,
+      voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
+    const originalPut = space.tcw.kv.put.bind(space.tcw.kv);
+    let resolveE1!: () => void;
+    let e1Started!: () => void;
+    const started = new Promise<void>((resolve) => { e1Started = resolve; });
+    let e2Puts = 0;
+    space.tcw.kv.put = ((key: string, value: KvValue, options?: { contentType?: string; ifNoneMatch?: string; signal?: AbortSignal }) => {
+      const body = String(value);
+      if (key === noteKey && body.includes("# Edit E1")) {
+        e1Started();
+        return new Promise((resolve) => { resolveE1 = () => {
+          space.kv.set(key, value);
+          resolve({ ok: true, data: { data: undefined, headers: { etag: "e1" } } });
+        }; }) as ReturnType<typeof originalPut>;
+      }
+      if (key === noteKey && body.includes("# Edit E2")) e2Puts++;
+      return originalPut(key, value, options);
+    }) as typeof space.tcw.kv.put;
+    setVoiceNoteSaveDeadlineForTests(20);
+    try {
+      await saveNote(withNote.id, "# Edit E1");
+      const e1 = syncRecordingNote(space.tcw, withNote.id);
+      await started;
+      await expect(e1).rejects.toThrow("saving it is taking too long");
+      await saveNote(withNote.id, "# Edit E2");
+      const e2 = syncRecordingNote(space.tcw, withNote.id);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(e2Puts).toBe(0);
+      resolveE1();
+      await expect(e2).resolves.toBe(true);
+      expect(e2Puts).toBe(1);
+      expect(space.kv.get(noteKey)).toContain("# Edit E2");
+      expect((await readRecordingNoteFromSpace(space.tcw, withNote.id))?.md).toBe("# Edit E2");
+    } finally { setVoiceNoteSaveDeadlineForTests(null); }
   });
 
   test("sync carries the saved-edit time to the space and a recorder write after it does not clear it", async () => {
