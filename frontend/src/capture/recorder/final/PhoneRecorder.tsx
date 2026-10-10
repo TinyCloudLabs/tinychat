@@ -334,15 +334,8 @@ export function PhoneRecorder({
         className="pr-main"
         data-noting={momentField !== null}
         inert={sheetOpen}
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          flex: 1,
-          minHeight: 0,
-          width: "100%",
-        }}
       >
+        <div className="pr-col pr-col-a">
         <div className="pr-top">
           <button
             type="button"
@@ -456,6 +449,8 @@ export function PhoneRecorder({
           />
         </div>
 
+        </div>
+        <div className="pr-col pr-col-b">
         <div className="pr-controls-wrap">
           <div className="pr-mrow">
             <button
@@ -527,6 +522,7 @@ export function PhoneRecorder({
           )}
         </div>
 
+        <div className="pr-dock">
         {alerts.map(({ message, retry }) => (
           <p key={message} className="pr-alert" role="alert">
             {message}
@@ -602,6 +598,8 @@ export function PhoneRecorder({
             </div>
           </>
         )}
+        </div>
+        </div>
       </div>
 
       {notesOpen && (

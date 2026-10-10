@@ -39,6 +39,37 @@
 .pr-sheet:not([data-kbd]) :focus-visible {
   outline: none;
 }
+.pr-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+/* Whatever does not fit, at a small size, a large font or on its side, scrolls; the dock below stays in reach. */
+.pr:not(.dr) .pr-main {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.pr-col {
+  display: contents;
+}
+/* Nothing is squeezed below its own height: what does not fit scrolls. */
+.pr:not(.dr) :is(.pr-main, .pr-col) > * {
+  flex-shrink: 0;
+}
+.pr-dock {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  width: 100%;
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  background: var(--bgc);
+}
 .pr-top {
   position: relative;
   width: 100%;
@@ -116,7 +147,7 @@
 .pr-time[data-dim="true"] > span {
   opacity: 0.5;
 }
-/* The ＋ moments button goes at the right of the timer: left:100%, 14px out. The button is a 44px target around the 36px disc (phoneNotes.css), so it starts 4px sooner. */
+/* The ＋ moments button goes at the right of the timer, 10px out. The button is a 44px target around the 36px disc (phoneNotes.css). */
 .pr-time-slot {
   position: absolute;
   left: 100%;
@@ -125,6 +156,33 @@
   width: 44px;
   height: 44px;
   transform: translateY(-50%);
+}
+/* A timer too wide for the button beside it (320 px at a doubled font) wraps the button under it, never off the screen. The empty ::before keeps the timer centred while the button is beside it. */
+.pr:not(.dr) .pr-time-row {
+  width: 100%;
+}
+.pr:not(.dr) .pr-time {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  max-width: 100%;
+  row-gap: 2px;
+}
+.pr:not(.dr) .pr-time::before {
+  content: "";
+  flex: 0 0 54px;
+}
+.pr:not(.dr) .pr-time-slot {
+  position: relative;
+  left: auto;
+  top: auto;
+  flex: none;
+  margin: 0 0 0 10px;
+  transform: none;
+}
+.pr:not(.dr) .pr-time-slot:not(:disabled):not([aria-disabled="true"]):active {
+  transform: scale(0.86);
 }
 .pr-countdown {
   margin-top: 6px;
@@ -144,6 +202,13 @@
   line-height: 1.35;
   color: var(--dim);
 }
+/* The ring's ticks are drawn beyond the ring's box; the text above it, the moment field and the notes pill paint over them, never under. */
+.pr:not(.dr) .pr-time-row,
+.pr:not(.dr) .pr-extra,
+.pr:not(.dr) .pr-notes {
+  position: relative;
+  z-index: 1;
+}
 .pr-extra[data-emphasis="true"] {
   color: var(--ink);
   font-weight: 600;
@@ -155,10 +220,24 @@
   display: grid;
   place-items: center;
 }
-.pr-ring {
+/* The ring is sized from its stage, so it never overflows it: the ticks reach out to about 1.25x the disc, and a stage that is already at its minimum height scrolls the screen instead of shrinking the ring further. */
+.pr:not(.dr) .pr-stage {
+  flex: 1 0 auto;
+  min-height: 150px;
+  width: 100%;
+  container-type: size;
   position: relative;
-  width: 172px;
-  height: 172px;
+  z-index: 0;
+}
+.pr-ring {
+  --ring: min(
+    172px,
+    calc((100cqh - 14px) / 1.25),
+    calc((100cqw - 14px) / 1.25)
+  );
+  position: relative;
+  width: var(--ring);
+  height: var(--ring);
   border-radius: 50%;
   display: grid;
   place-items: center;
@@ -188,15 +267,17 @@
   width: 100%;
   padding: 0 22px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   justify-items: center;
   position: relative;
 }
 .pr-mrow {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: center;
-  gap: 8px;
+  gap: 0 8px;
   max-width: 100%;
 }
 .pr-mname {
@@ -309,6 +390,7 @@
 .pr-src-wrap {
   position: relative;
   display: flex;
+  max-width: 100%;
   justify-content: center;
 }
 .pr-srcbtn {
@@ -823,5 +905,41 @@
   .pr-sw,
   .pr-sw::after {
     transition: none;
+  }
+}
+
+/* A phone on its side: the ring and the timer at the left, the mode, the scale, the input and the controls at the right. */
+@media (orientation: landscape) and (max-height: 520px) {
+  .pr:not(.dr) .pr-main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: auto;
+    justify-items: stretch;
+  }
+  .pr:not(.dr) .pr-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 0;
+  }
+  .pr:not(.dr) .pr-col-b {
+    justify-content: center;
+  }
+  .pr:not(.dr) .pr-top {
+    margin-top: calc(env(safe-area-inset-top) + 8px);
+  }
+  .pr:not(.dr) .pr-time-row {
+    margin-top: 6px;
+  }
+  .pr:not(.dr) .pr-time {
+    font-size: 48px;
+  }
+  .pr:not(.dr) .pr-stage {
+    flex: 0 0 auto;
+    height: 130px;
+    min-height: 0;
+  }
+  .pr:not(.dr) .pr-controls {
+    padding-top: 8px;
   }
 }
