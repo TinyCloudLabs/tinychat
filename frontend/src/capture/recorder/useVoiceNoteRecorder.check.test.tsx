@@ -6,11 +6,12 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { createFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
-import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { __setVoiceNotesForTests, VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { createVoiceNoteTranscriber, voiceNoteTranscriberFor, type VoiceNoteCloud } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { useVoiceNoteRecorder } from "./useVoiceNoteRecorder";
 
 type Listener = () => void;
+const realVoiceNotes = VoiceNotes;
 const listeners = new Map<string, Set<Listener>>();
 const visibility = { state: "visible" };
 const previous = {
@@ -31,6 +32,7 @@ beforeAll(() => {
   (globalThis as { document?: unknown }).document = { get visibilityState() { return visibility.state; } };
 });
 afterAll(() => {
+  __setVoiceNotesForTests(realVoiceNotes, { available: null });
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = previous.act;
   (globalThis as { window?: unknown }).window = previous.window;
   (globalThis as { document?: unknown }).document = previous.document;
@@ -77,4 +79,76 @@ test("check() runs when the account is ready, not before, and again on returning
   visibility.state = "visible";
   for (const listener of listeners.get("visibilitychange") ?? []) listener();
   expect(checks).toBe(2);
+});
+
+function Probe(props: { tcw: TinyCloudWeb | null }) {
+  useVoiceNoteRecorder({ tcw: props.tcw, backendUrl, sessionStore });
+  return null;
+}
+const foreground = () => {
+  for (const listener of listeners.get("visibilitychange") ?? []) listener();
+};
+
+test("the automatic check names its account's guard, which turns false when the account leaves", async () => {
+  __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: true });
+  const account = { did: "did:example:check-guard", spaceId: "tinycloud:space" } as TinyCloudWeb;
+  const transcriber = voiceNoteTranscriberFor(account, backendUrl, sessionStore)!;
+  const seen: { automatic?: boolean; current?: () => boolean }[] = [];
+  transcriber.check = (options) => {
+    seen.push(options ?? {});
+    return Promise.resolve();
+  };
+  root = createRoot(container);
+  await act(async () => root!.render(<Probe tcw={account} />));
+  expect(seen).toHaveLength(1);
+  expect(seen[0]!.automatic).toBe(true);
+  expect(seen[0]!.current!()).toBe(true);
+  await act(async () => root!.render(<Probe tcw={null} />));
+  expect(seen[0]!.current!()).toBe(false);
+});
+
+test("a completed account-A check does not resume A's work after the hook switches to B or signs out", async () => {
+  __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: true });
+  const a = { did: "did:example:switch-A", spaceId: "space-a" } as TinyCloudWeb;
+  const b = { did: "did:example:switch-B", spaceId: "space-b" } as TinyCloudWeb;
+  for (const leave of [b, null]) {
+    const resumed: string[] = [];
+    let finish: (caps: unknown) => void = () => {};
+    const real = createVoiceNoteTranscriber({
+      tcw: () => a,
+      cloud: { capabilities: () => new Promise((resolve) => { finish = resolve; }), pendingSourceIds: () => ["a-note"] } as unknown as VoiceNoteCloud,
+      consent: { get: () => true, set() {} },
+      runNote: async (args) => {
+        resumed.push(args.sourceId);
+        return "no_speech";
+      },
+    });
+    const transcriber = voiceNoteTranscriberFor({ ...a, did: `${a.did}-${leave === null ? "out" : "b"}` } as TinyCloudWeb, backendUrl, sessionStore)!;
+    transcriber.check = real.check;
+    const account = { ...a, did: `${a.did}-${leave === null ? "out" : "b"}` } as TinyCloudWeb;
+    root = createRoot(container);
+    await act(async () => root!.render(<Probe tcw={account} />));
+    await act(async () => root!.render(<Probe tcw={leave} />));
+    await act(async () => finish({ max_bytes: 1_000_000, max_duration_seconds: 100 }));
+    await act(async () => root!.unmount());
+    root = null;
+    expect(resumed).toEqual([]);
+  }
+});
+
+test("rapid foreground returns reuse a fresh settled availability result", async () => {
+  __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: true });
+  const account = { did: "did:example:check-foreground", spaceId: "tinycloud:space" } as TinyCloudWeb;
+  let requests = 0;
+  const real = createVoiceNoteTranscriber({
+    tcw: () => account,
+    cloud: { capabilities: async () => { requests += 1; return null; }, pendingSourceIds: () => [] } as unknown as VoiceNoteCloud,
+    consent: { get: () => false, set() {} },
+  });
+  voiceNoteTranscriberFor(account, backendUrl, sessionStore)!.check = real.check;
+  root = createRoot(container);
+  await act(async () => root!.render(<Probe tcw={account} />));
+  await act(async () => foreground());
+  await act(async () => foreground());
+  expect(requests).toBe(1);
 });

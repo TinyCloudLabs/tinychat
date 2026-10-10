@@ -1,7 +1,9 @@
 // Where a saved voice note's on-device transcription stands, read from the
-// phone's own state (the native sidecar's `stt` plus the live queue). Shown in
-// place of "No transcript." while the note is waiting for the model, queued,
-// running, failed, or done but not yet in the space.
+// phone's own state: the note's committed mode (`options.transcriber`), the
+// native sidecar's `stt`, the live queue, and the plugin's progress events.
+// Shown in place of "No transcript." for a Local note that is waiting for the
+// model, queued, running, failed, silent, or done but not yet in the space.
+// While the note's mode and state are still being read, it says so.
 import { useCallback, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Loader2Icon, RefreshCwIcon } from "lucide-react";
 
@@ -22,55 +24,105 @@ export type OnDeviceNote =
   | { kind: "queued" }
   | { kind: "running"; percent: number | null }
   | { kind: "failed"; reason: string }
+  | { kind: "no_speech" }
   | { kind: "done" };
 
-/** The note's on-device state, or null while the first read is out. A failed read is `error`, with `reload`. */
-export function useOnDeviceNote(noteId: string): { note: OnDeviceNote | null; error: string | null; reload: () => void } {
+type Outcome = "transcribed" | "no_speech";
+
+/** What one native scan found for a note. `local` is the note's committed mode; only Local notes have an on-device state. */
+interface Scan {
+  noteId: string;
+  local: boolean;
+  stt: NoteSttState | null;
+  outcome: Outcome | null;
+}
+
+/** What the plugin's events said last: a progress tick, or the end of the job. */
+type Live =
+  | { noteId: string; kind: "running"; percent: number }
+  | { noteId: string; kind: "done"; outcome: Outcome | null };
+
+export interface OnDeviceNoteView {
+  /** Null while this note's mode and state are still being read. */
+  note: OnDeviceNote | null;
+  error: string | null;
+  reload: () => void;
+}
+
+/** The note's on-device state; a failed read is `error`, with `reload`. State is kept per note id. */
+export function useOnDeviceNote(noteId: string): OnDeviceNoteView {
   const status = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
-  const [durable, setDurable] = useState<NoteSttState | null | undefined>(undefined);
+  const [scan, setScan] = useState<Scan | null>(null);
+  const [live, setLive] = useState<Live | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    let live = true;
-    setDurable(undefined);
+    let alive = true;
+    let latest = 0;
+    setScan(null);
+    setLive(null);
     setError(null);
     const read = () => {
-      VoiceNotes.listPending().then(
-        ({ recordings }) => {
-          if (!live) return;
-          setDurable(recordings.find((recording) => recording.id === noteId)?.stt ?? null);
+      const mine = ++latest;
+      const current = () => alive && mine === latest;
+      const found = async (): Promise<Scan> => {
+        const { recordings } = await VoiceNotes.listPending();
+        const recording = recordings.find((candidate) => candidate.id === noteId);
+        const stt = recording?.stt ?? null;
+        const local = recording?.options?.transcriber === "on-device";
+        const outcome = local && stt?.state === "done" ? ((await VoiceNotes.getTranscript({ id: noteId })).transcript?.outcome ?? null) : null;
+        return { noteId, local, stt, outcome };
+      };
+      found().then(
+        (result) => {
+          if (!current()) return;
+          setScan(result);
           setError(null);
         },
         (caught: unknown) => {
           console.error("[Library] Could not read this note's on-device transcription", noteId, caught);
-          if (live) setError(`Couldn't check this note's on-device transcription: ${caught instanceof Error ? caught.message : String(caught)}`);
+          if (current()) setError(`Couldn't check this note's on-device transcription: ${caught instanceof Error ? caught.message : String(caught)}`);
         },
       );
     };
     read();
-    const follow = (event: "transcribed" | "failed") =>
-      OnDeviceStt.addListener(event, (done) => {
-        if (done.id === noteId) read();
-      });
-    const subs = [follow("transcribed"), follow("failed")];
+    const subs = [
+      OnDeviceStt.addListener("progress", (event) => {
+        if (event.id === noteId) setLive({ noteId, kind: "running", percent: event.percent });
+      }),
+      OnDeviceStt.addListener("transcribed", (event) => {
+        if (event.id !== noteId) return;
+        setLive({ noteId, kind: "done", outcome: event.outcome ?? null });
+        read();
+      }),
+      OnDeviceStt.addListener("failed", (event) => {
+        if (event.id !== noteId) return;
+        setLive(null);
+        read();
+      }),
+    ];
     for (const sub of subs) sub.catch((caught: unknown) => console.error("[Library] Could not follow on-device transcription", caught));
     return () => {
-      live = false;
+      alive = false;
       for (const sub of subs) sub.then((handle) => handle.remove()).catch(() => {});
     };
   }, [noteId, attempt]);
 
   const reload = useCallback(() => setAttempt((n) => n + 1), []);
   const job = status.queue.find((entry) => entry.id === noteId) ?? null;
-  // The live queue answers at once; the sidecar read (a native scan) fills in what the queue no longer holds.
-  if (durable === undefined && job === null) return { note: null, error, reload };
-  return { note: onDeviceNote(durable ?? null, job), error, reload };
+  return { note: onDeviceNote(scan?.noteId === noteId ? scan : null, live?.noteId === noteId ? live : null, job), error, reload };
 }
 
-/** The queue's live job wins over the sidecar's last write. */
-export function onDeviceNote(durable: NoteSttState | null, job: OnDeviceSttStatus["queue"][number] | null): OnDeviceNote {
-  const state = job?.state ?? durable?.state;
+/**
+ * The live queue wins, then the plugin's latest event, then the sidecar. A note only has an
+ * on-device state when its committed mode is Local (the queue never holds any other); with
+ * nothing known yet the answer is null, never "none".
+ */
+export function onDeviceNote(scan: Scan | null, live: Live | null, job: OnDeviceSttStatus["queue"][number] | null): OnDeviceNote | null {
+  if (scan === null && live === null && job === null) return null;
+  if (job === null && live === null && scan !== null && !scan.local) return { kind: "none" };
+  const state = job?.state ?? live?.kind ?? scan?.stt?.state;
   if (state === undefined) return { kind: "none" };
   switch (state) {
     case "waiting_for_model":
@@ -78,13 +130,15 @@ export function onDeviceNote(durable: NoteSttState | null, job: OnDeviceSttStatu
     case "queued":
       return { kind: "queued" };
     case "running":
-      return { kind: "running", percent: job?.percent ?? null };
+      return { kind: "running", percent: job?.percent ?? (live?.kind === "running" ? live.percent : null) };
     case "failed":
-      return { kind: "failed", reason: job?.error ?? durable?.error ?? "unknown error" };
+      return { kind: "failed", reason: job?.error ?? scan?.stt?.error ?? "unknown error" };
     case "cancelled":
       return { kind: "failed", reason: "it was cancelled" };
-    case "done":
-      return { kind: "done" };
+    case "done": {
+      const outcome = (live?.kind === "done" ? live.outcome : null) ?? scan?.outcome ?? null;
+      return outcome === "no_speech" ? { kind: "no_speech" } : { kind: "done" };
+    }
   }
 }
 
@@ -112,7 +166,7 @@ function ModelDownload() {
 
 export function OnDeviceNoteStatusView(props: {
   noteId: string;
-  view: { note: OnDeviceNote | null; error: string | null; reload: () => void };
+  view: OnDeviceNoteView;
   fallback: ReactNode;
 }) {
   const { note, error, reload } = props.view;
@@ -127,7 +181,13 @@ export function OnDeviceNoteStatusView(props: {
       </div>
     );
   }
-  if (note === null) return <>{props.fallback}</>;
+  if (note === null) {
+    return (
+      <p role="status" className="flex items-center gap-2 text-callout text-muted-foreground" data-testid="voice-note-on-device-checking">
+        <Loader2Icon className="size-4 shrink-0 motion-safe:animate-spin" aria-hidden /> Checking this note&apos;s transcription…
+      </p>
+    );
+  }
   switch (note.kind) {
     case "none":
       return <>{props.fallback}</>;
@@ -171,6 +231,12 @@ export function OnDeviceNoteStatusView(props: {
           </div>
           {retryError && <p role="alert" className="text-callout text-destructive">{retryError}</p>}
         </div>
+      );
+    case "no_speech":
+      return (
+        <p role="status" className="text-callout text-muted-foreground" data-testid="voice-note-on-device-no-speech">
+          No speech was found in this note.
+        </p>
       );
     case "done":
       return (
