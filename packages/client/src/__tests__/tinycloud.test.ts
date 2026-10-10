@@ -6,6 +6,8 @@ let lastCleanupCalled = false;
 let lastClearPersistedSessionAddress: string | undefined;
 let lastSignInOptions: any;
 let restoreResult: any = { status: "restored", session: { address: "0xabc" } };
+let sdkSpaceId: string | undefined = "space-from-sdk";
+let persistedSession: any = null;
 const signInSession = {
   address: "0xabc",
   walletAddress: "0xabc",
@@ -16,13 +18,21 @@ const signInSession = {
 };
 
 mock.module("@tinycloud/web-sdk", () => ({
-  BrowserSessionStorage: class BrowserSessionStorage {},
+  BrowserSessionStorage: class BrowserSessionStorage {
+    async load() {
+      return persistedSession;
+    }
+  },
   serializeDelegation: (delegation: any) => delegation.serialized ?? "serialized-delegation",
   TinyCloudWeb: class TinyCloudWeb {
     provider: unknown;
 
     constructor(config: any) {
       lastTinyCloudConfig = config;
+    }
+
+    get spaceId() {
+      return sdkSpaceId;
     }
 
     async restoreSession(address?: string) {
@@ -153,6 +163,71 @@ describe("restoreTinyCloudWebSession", () => {
     expect(lastTinyCloudConfig.autoCreateSpace).toBe(false);
     expect(lastTinyCloudConfig.tinycloudHosts).toEqual(["https://node.example"]);
     expect(lastTinyCloudConfig.sessionStorage.constructor.name).toBe("BrowserSessionStorage");
+  });
+
+  test("keeps the SDK's spaceId when it provides one", async () => {
+    restoreResult = { status: "restored", session: { address: "0xabc" } };
+    sdkSpaceId = "space-from-sdk";
+    persistedSession = { tinycloudSession: { spaceId: "space-persisted" } };
+
+    const result = await restoreTinyCloudWebSession("0xabc");
+
+    expect(result.status).toBe("restored");
+    expect(result.tcw?.spaceId).toBe("space-from-sdk");
+  });
+
+  test("exposes the persisted spaceId when the SDK restores without one", async () => {
+    restoreResult = { status: "restored", session: { address: "0xabc" } };
+    sdkSpaceId = undefined;
+    persistedSession = { tinycloudSession: { spaceId: "space-persisted" } };
+
+    const result = await restoreTinyCloudWebSession("0xabc");
+
+    expect(result.status).toBe("restored");
+    expect(result.tcw?.spaceId).toBe("space-persisted");
+
+    sdkSpaceId = "space-renewed";
+    expect(result.tcw?.spaceId).toBe("space-renewed");
+  });
+
+  test("reads the persisted spaceId from the supplied session storage", async () => {
+    restoreResult = { status: "restored", session: { address: "0xabc" } };
+    sdkSpaceId = undefined;
+    persistedSession = null;
+    let loadedAddress: string | undefined;
+    const sessionStorage = {
+      load: async (address: string) => {
+        loadedAddress = address;
+        return { tinycloudSession: { spaceId: "space-secure-store" } };
+      },
+    } as any;
+
+    const result = await restoreTinyCloudWebSession("0xabc", { sessionStorage });
+
+    expect(loadedAddress).toBe("0xabc");
+    expect(result.tcw?.spaceId).toBe("space-secure-store");
+  });
+
+  test("fails the restore visibly when no spaceId can be determined", async () => {
+    restoreResult = { status: "restored", session: { address: "0xabc" } };
+    sdkSpaceId = undefined;
+    persistedSession = { tinycloudSession: undefined };
+    lastCleanupCalled = false;
+    const originalConsoleError = console.error;
+    const logged: unknown[][] = [];
+    console.error = (...args: unknown[]) => void logged.push(args);
+
+    try {
+      const result = await restoreTinyCloudWebSession("0xabc");
+
+      expect(result.status).toBe("restore-failed");
+      expect(result.tcw).toBeNull();
+      expect(result.error?.message).toContain("no spaceId");
+      expect(lastCleanupCalled).toBe(true);
+      expect(logged.some((args) => String(args[1]).includes("no spaceId"))).toBe(true);
+    } finally {
+      console.error = originalConsoleError;
+    }
   });
 
   test("cleans up and returns backend-only state when direct restore is unavailable", async () => {

@@ -103,6 +103,36 @@ export async function createAndSignIn(
 }
 
 /**
+ * @tinycloud/web-sdk 2.11.0 restores a session without an auth instance into
+ * `_restoredTcSession`, but its `spaceId` getter only reads the auth instance,
+ * so a restored `tcw.spaceId` is undefined. Take the space from the persisted
+ * session instead, and fail the restore when it cannot be determined. To be
+ * reported upstream; remove once the SDK's getter reads the restored session.
+ */
+async function exposeRestoredSpaceId(
+  tcw: TinyCloudWeb,
+  address: string,
+  storage: ISessionStorage | undefined,
+): Promise<void> {
+  if (tcw.spaceId) return;
+
+  const persisted = await storage?.load(address);
+  const persistedSpaceId = persisted?.tinycloudSession?.spaceId;
+  if (!persistedSpaceId) {
+    const error = new Error(
+      "Restored TinyCloud session has no spaceId: the SDK reported none and the persisted session has none",
+    );
+    console.error("[tinycloud] restore failed:", error.message);
+    throw error;
+  }
+
+  Object.defineProperty(tcw, "spaceId", {
+    configurable: true,
+    get: () => Reflect.get(Object.getPrototypeOf(tcw), "spaceId", tcw) ?? persistedSpaceId,
+  });
+}
+
+/**
  * Restore a TinyCloudWeb session from the configured session storage (browser
  * localStorage by default; the Exo native app's secure-store adapter when
  * `sessionStorage` is given). `provider` lets the native app attach a
@@ -136,6 +166,7 @@ export async function restoreTinyCloudWebSession(
   try {
     const result = await tcw.restoreSession(address);
     if (result.status === "restored") {
+      await exposeRestoredSpaceId(tcw, address, tcwConfig.sessionStorage);
       return { tcw, status: result.status, session: result.session };
     }
 
