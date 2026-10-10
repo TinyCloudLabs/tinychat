@@ -52,24 +52,28 @@ const SHEET = { screen: "interactive-sheet", platform: "ios", width: 390, height
 const PAGE_EMPTY = { ...PAGE, screen: "interactive-page-empty" };
 const SHEET_EMPTY = { ...SHEET, screen: "interactive-sheet-empty" };
 
-async function open(target: typeof PAGE) {
+async function open(target: typeof PAGE, theme = "light") {
   const page = await (
     await browser.newContext({
       viewport: { width: target.width, height: target.height },
+      colorScheme: theme === "dark" ? "dark" : "light",
       reducedMotion: "reduce",
     })
   ).newPage();
   const errors: string[] = [];
   page.on("console", (message) => {
+    const text = message.text();
     if (
       message.type() === "error" &&
-      !message.text().startsWith("Failed to load resource")
-    )
-      errors.push(message.text());
+      !text.startsWith("Failed to load resource") &&
+      !text.includes('Viewport argument key "interactive-widget" not recognized')
+    ) {
+      errors.push(text);
+    }
   });
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(
-    `http://127.0.0.1:${server.port}/?screen=saved-note-${target.screen}&theme=light&platform=${target.platform}`,
+    `http://127.0.0.1:${server.port}/?screen=saved-note-${target.screen}&theme=${theme}&platform=${target.platform}`,
   );
   await page.waitForSelector(
     '[data-testid="saved-note-page"], [data-testid="saved-note-sheet"]',
@@ -123,6 +127,25 @@ async function typeAtEnd(page: Page, text: string) {
 }
 
 describe.serial(`recorder-final saved note, ${engineName}`, () => {
+  test("dark sheet: Play audio has a visible edge against its surface", async () => {
+    const { page, errors } = await open(SHEET, "dark");
+    const play = page.getByTestId("note-audio-play");
+    await shown(play);
+    const edge = await play.evaluate((button) => {
+      const skin = button.closest(".soft-skin")!;
+      const buttonStyle = getComputedStyle(button);
+      return {
+        border: buttonStyle.borderTopColor,
+        width: buttonStyle.borderTopWidth,
+        surface: getComputedStyle(skin).backgroundColor,
+      };
+    });
+    expect(edge.width).not.toBe("0px");
+    expect(edge.border).not.toBe(edge.surface);
+    expect(errors).toEqual([]);
+    await page.close();
+  });
+
   test("page: Edit → type → ⌘S saves, shows the new text and adds the Edited line (none before the first saved edit)", async () => {
     const { page, errors } = await open(PAGE);
     await shown(rendered(page));

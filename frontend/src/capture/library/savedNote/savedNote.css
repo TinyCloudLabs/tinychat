@@ -47,6 +47,9 @@
 .soft-skin .sn-player audio {
   width: 100%;
 }
+.soft-skin.soft-night .sn-player button {
+  border-color: var(--gedge);
+}
 .soft-skin .sn-sec {
   display: flex;
   flex-direction: column;
