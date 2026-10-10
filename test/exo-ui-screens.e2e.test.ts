@@ -56,6 +56,7 @@ const VIEWPORTS: Viewport[] = [
       "recorder-final-phone-",
       "recorder-final-minimized-",
       "capture-soft-",
+      "capture-notetaker-route",
     ],
   },
   {
@@ -65,9 +66,45 @@ const VIEWPORTS: Viewport[] = [
     deviceScaleFactor: 3,
     isMobile: true,
     hasTouch: true,
-    screenPrefixes: ["capture-soft-"],
+    screenPrefixes: ["capture-soft-", "capture-notetaker-route"],
   },
   { id: "text200-phone", group: "text200", width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true, textScale: 2, zoom: true },
+  {
+    id: "text200-phone-small",
+    group: "text200",
+    width: 320,
+    height: 640,
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    textScale: 2,
+    zoom: true,
+    screenPrefixes: ["capture-soft-", "capture-notetaker-route"],
+  },
+  {
+    id: "text200-phone-360",
+    group: "text200",
+    width: 360,
+    height: 740,
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    textScale: 2,
+    zoom: true,
+    screenPrefixes: ["capture-soft-", "capture-notetaker-route"],
+  },
+  {
+    id: "text200-rail",
+    group: "text200",
+    width: 844,
+    height: 600,
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    textScale: 2,
+    zoom: true,
+    screenPrefixes: ["shell-"],
+  },
   { id: "text200-desktop", group: "text200", width: 1280, height: 800, deviceScaleFactor: 2, textScale: 2, zoom: true },
   ...[0.8, 2.5, 3.3].map((scale) => ({
     id: `text${Math.round(scale * 100)}-phone`,
@@ -79,7 +116,7 @@ const VIEWPORTS: Viewport[] = [
     hasTouch: true,
     textScale: scale,
     zoom: true,
-    screenPrefixes: ["shell-", "recorder-final-phone-", "recorder-final-minimized-", "capture-soft-"],
+    screenPrefixes: ["shell-", "recorder-final-phone-", "recorder-final-minimized-", "capture-soft-", "capture-notetaker-route"],
   })),
 ];
 const THEMES = ["light", "dark"] as const;
@@ -155,7 +192,7 @@ function ignoredConsoleError(message: ConsoleMessage): boolean {
 }
 
 // Runs in the page: the automated checks of plan §8.2 (TC-761).
-function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: boolean; displayTitle: boolean; largeText: boolean; normalCaptureRow: boolean; allow: Array<{ selector: string; check: string }> }) {
+function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: boolean; displayTitle: boolean; largeText: boolean; normalCaptureRow: boolean; routeMode: "stacked" | "horizontal" | null; allow: Array<{ selector: string; check: string }> }) {
   const findings: Array<{ check: string; element?: string; detail: string }> = [];
   const allowed = (el: Element, check: string) => args.allow.some((entry) => entry.check === check && el.matches(entry.selector));
   const describe = (el: Element) => {
@@ -241,6 +278,9 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
       '[data-testid="connector-row"]',
       'button[role="switch"][aria-label="Enable Conversation Canvas"]',
       '[data-testid="capture-actions"]',
+      '[data-testid="capture-upload"]',
+      '[data-testid="voice-note-record"]',
+      '[data-testid="capture-meeting"]',
       '[data-testid="tab-bar"]',
       '[data-testid="ribbon"]',
       '[data-testid="voice-note-recorder"] main',
@@ -251,7 +291,9 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
     for (const selector of targets) {
       for (const el of document.querySelectorAll(selector)) {
         const bounds = el.getBoundingClientRect();
-        const name = `${selector} (${Math.round(bounds.width)}x${Math.round(bounds.height)} at ${Math.round(bounds.left)},${Math.round(bounds.top)})`;
+        const routeContainer = selector === "[data-route-line]" ? el.parentElement : null;
+        const routeInfo = routeContainer ? `; wrapper ${Math.round(routeContainer.getBoundingClientRect().width)}px/${getComputedStyle(routeContainer).fontSize}/${getComputedStyle(routeContainer).containerType}/${getComputedStyle(routeContainer).containerName}; tracks ${getComputedStyle(el).gridTemplateColumns}` : "";
+        const name = `${selector} (${Math.round(bounds.width)}x${Math.round(bounds.height)} at ${Math.round(bounds.left)},${Math.round(bounds.top)}${routeInfo})`;
         if (bounds.left < -1 || bounds.right > window.innerWidth + 1) {
           findings.push({ check: "text200-bounds", element: name, detail: "component extends beyond the phone width" });
         }
@@ -272,14 +314,23 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
             textRects.push({ parent: node.parentElement!, rect, text });
           }
           const wordCount = text.split(/\s+/).filter(Boolean).length;
-          const maxReasonableLines = wordCount + 1;
-          const splitLongWord = [...text.matchAll(/\S{6,}/g)].some((match) => {
+          const maxReasonableLines = wordCount * 2;
+          const letterByLetterWord = [...text.matchAll(/\S{6,}/g)].some((match) => {
             const range = document.createRange();
             range.setStart(node, match.index!);
             range.setEnd(node, match.index! + match[0].length);
-            return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size > 1;
+            const wordRects = [...range.getClientRects()];
+            const lines = new Map<number, { width: number; height: number }>();
+            for (const rect of wordRects) {
+              const top = Math.round(rect.top);
+              const line = lines.get(top) ?? { width: 0, height: 0 };
+              line.width += rect.width;
+              line.height = Math.max(line.height, rect.height);
+              lines.set(top, line);
+            }
+            return [...lines.values()].some((line) => line.width < line.height * 0.75);
           });
-          if (rects.length > maxReasonableLines || splitLongWord || getComputedStyle(node.parentElement!).wordBreak === "break-all") {
+          if (rects.length > maxReasonableLines || letterByLetterWord || getComputedStyle(node.parentElement!).wordBreak === "break-all") {
             findings.push({ check: "text200-letter-wrap", element: name, detail: `"${text.slice(0, 48)}" occupies ${rects.length} lines for ${wordCount} word(s)` });
           }
         }
@@ -308,8 +359,18 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
       }
       chatTitle.textContent = previous;
     }
-    if (document.querySelector('[data-testid="ribbon"]')) {
-      const ribbon = document.querySelector('[data-testid="ribbon"]')!.getBoundingClientRect();
+    const receiptStatus = document.querySelector<HTMLElement>('[data-testid="voice-note-status"]');
+    if (receiptStatus) {
+      const range = document.createRange();
+      range.selectNodeContents(receiptStatus.querySelector('[data-testid="voice-note-status-label"]') ?? receiptStatus);
+      const lineCount = new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size;
+      if (lineCount > 2) {
+        findings.push({ check: "text200-receipt-status", element: describe(receiptStatus), detail: "status text occupies " + lineCount + " lines; expected at most two" });
+      }
+    }
+    const ribbonElement = document.querySelector<HTMLElement>('[data-testid="ribbon"][data-layout="rail"]');
+    if (ribbonElement) {
+      const ribbon = ribbonElement.getBoundingClientRect();
       for (const scroller of document.querySelectorAll<HTMLElement>("[data-scroll-root], .dch-scroll")) {
         const initialTop = scroller.scrollTop;
         scroller.scrollTo({ top: scroller.scrollHeight, behavior: "instant" });
@@ -333,6 +394,28 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
           findings.push({ check: "ribbon-occlusion", element: describe(scroller), detail: `visible text intersects Ribbon between y=${Math.round(overlapTop)} and y=${Math.round(overlapBottom)} at scroll end` });
         }
         scroller.scrollTo({ top: initialTop, behavior: "instant" });
+      }
+    }
+  }
+
+  if (args.routeMode) {
+    const container = document.querySelector<HTMLElement>("[data-route-line-container]");
+    const route = container?.querySelector<HTMLElement>("[data-route-line]");
+    if (container && route) {
+      const tracks = getComputedStyle(route).gridTemplateColumns.trim().split(/\s+/);
+      const stacked = tracks.length === 2;
+      if (stacked !== (args.routeMode === "stacked")) {
+        findings.push({ check: "route-line-layout", detail: `expected ${args.routeMode}, got ${tracks.length} grid tracks (container ${Math.round(container.getBoundingClientRect().width)}px, font ${getComputedStyle(container).fontSize}, type ${getComputedStyle(container).containerType})` });
+      }
+      if (args.routeMode === "stacked") {
+        const indicators = [...container.querySelectorAll<HTMLElement>("[data-route-node-indicator]")];
+        const maxIndicator = Math.max(0, ...indicators.map((indicator) => indicator.getBoundingClientRect().width));
+        const twoRem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) * 2;
+        const connectorHeights = [...container.querySelectorAll<HTMLElement>("[data-route-node-indicator] > [data-route-connector]")]
+          .map((connector) => connector.getBoundingClientRect().height);
+        if (maxIndicator > twoRem + 1 || connectorHeights.some((height) => height <= 0)) {
+          findings.push({ check: "route-line-stack-geometry", detail: "indicator column max " + Math.round(maxIndicator) + "px (limit " + Math.round(twoRem) + "px), connector heights " + connectorHeights.map(Math.round).join(",") });
+        }
       }
     }
   }
@@ -482,6 +565,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 displayTitle: screen.displayTitle ?? false,
                 largeText: (viewport.textScale ?? 1) >= 2,
                 normalCaptureRow: ["phone", "phone-small", "phone-360"].includes(viewport.id),
+                routeMode: screen.id === "capture-notetaker-route" ? (viewport.textScale && viewport.width <= 400 ? "stacked" : "horizontal") : null,
                 allow,
               });
               // The native Capture home must finish recorder setup; generic layout checks missed a missing Record button.

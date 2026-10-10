@@ -390,6 +390,10 @@ button.soft-row:focus-visible {
   flex-wrap: wrap;
   gap: 8px;
 }
+.soft-actions-container {
+  container: capture-actions / inline-size;
+  font-size: 1rem;
+}
 .soft-act {
   flex: 1 1 calc((100% - 16px) / 3.3);
   display: flex;
@@ -422,8 +426,8 @@ button.soft-row:focus-visible {
   box-shadow: none;
   color: var(--bgc);
 }
-/* Preserve the original one-line action row on compact phones at normal text size. */
-@media (max-width: 375px) {
+/* A compact row fits when its available width is at least 17 em of its text size. */
+@container capture-actions (min-width: 17em) {
   .soft-actions {
     display: grid;
     grid-template-columns: 1fr 1.3fr 1fr;

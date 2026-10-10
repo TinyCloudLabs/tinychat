@@ -1,13 +1,14 @@
 /* Keep the compact route horizontal at normal text sizes. When the labels grow
    enough that the columns become narrower than readable words, stack the
    ordered nodes and connect them vertically. */
-.route-line {
+.route-line-container {
   container-type: inline-size;
   container-name: route-line;
+  font-size: 1rem;
 }
 
-@container route-line (max-width: 18em) {
-  .route-line {
+@container route-line (max-width: 16rem) {
+  .route-line-container > .route-line {
     display: grid;
     grid-template-columns: 1rem minmax(0, 1fr);
     gap: 0;
@@ -17,7 +18,7 @@
     display: contents;
   }
 
-  .route-line > li > [data-route-node-indicator] {
+  .route-line-container > .route-line > li > [data-route-node-indicator] {
     grid-column: 1;
     grid-row: auto;
     display: flex;
@@ -27,7 +28,7 @@
     align-items: center;
   }
 
-  .route-line > li > [data-route-connector] {
+  .route-line-container > .route-line > li > [data-route-node-indicator] > [data-route-connector] {
     width: 1.5px;
     height: auto;
     min-height: 0.5rem;
@@ -35,10 +36,11 @@
     flex: 1 1 auto;
   }
 
-  .route-line > li > [data-route-label] {
+  .route-line-container > .route-line > li > [data-route-label] {
     grid-column: 2;
     grid-row: auto;
     align-self: start;
     padding-bottom: 0.5rem;
+    font-size: min(0.875rem, 14px);
   }
 }

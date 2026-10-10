@@ -31,30 +31,32 @@ export function SoftActions(props: {
   onMeeting?: () => void;
 }) {
   return (
-    <div className="soft-actions" data-testid="capture-actions">
-      <button
-        type="button"
-        className="soft-act"
-        onClick={props.onUpload}
-        aria-label={HOME_COPY.uploadLabel}
-        data-testid="capture-upload"
-      >
-        <UploadIcon className="soft-ico" aria-hidden="true" />
-        {HOME_COPY.upload}
-      </button>
-      <RecorderAction />
-      {props.onMeeting && (
+    <div className="soft-actions-container">
+      <div className="soft-actions" data-testid="capture-actions">
         <button
           type="button"
           className="soft-act"
-          onClick={props.onMeeting}
-          aria-label={HOME_COPY.meetingLabel}
-          data-testid="capture-meeting"
+          onClick={props.onUpload}
+          aria-label={HOME_COPY.uploadLabel}
+          data-testid="capture-upload"
         >
-          <VideoIcon className="soft-ico" aria-hidden="true" />
-          {HOME_COPY.meeting}
+          <UploadIcon className="soft-ico" aria-hidden="true" />
+          {HOME_COPY.upload}
         </button>
-      )}
+        <RecorderAction />
+        {props.onMeeting && (
+          <button
+            type="button"
+            className="soft-act"
+            onClick={props.onMeeting}
+            aria-label={HOME_COPY.meetingLabel}
+            data-testid="capture-meeting"
+          >
+            <VideoIcon className="soft-ico" aria-hidden="true" />
+            {HOME_COPY.meeting}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
