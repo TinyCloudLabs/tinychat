@@ -290,7 +290,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         }
         send({ type: "SAVE_FAILED", error: `Saved on this phone, but uploading to your space failed: ${messageOf(caught)}`,
           recording: { id: recording.id, durationMs: recording.durationMs } });
-        void pendingStore.refresh(messageOf(caught));
+        pendingStore.reportNoteFailure(recording.id, messageOf(caught));
+        void pendingStore.refresh();
         return;
       }
       void pendingStore.refresh(null);
@@ -313,7 +314,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           error: `Saved on this phone, but uploading to your space failed: ${outcome.failure}`,
           recording: { id: recording.id, durationMs: recording.durationMs },
         });
-        void pendingStore.refresh(outcome.failure);
+        pendingStore.reportNoteFailure(recording.id, outcome.failure);
+        void pendingStore.refresh();
         return;
       case "already-saved":
         send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
@@ -345,11 +347,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       if (recording.owner === tcw.did && tcw.did && tcw.spaceId) {
         const finish = pendingStore.beginAutomaticSave();
         try {
-          await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id);
+          await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id, "background");
           landed(recording);
         } catch (caught) {
           if (!saveDeferredForAccountTransition(caught) && pipeline.isAccepting()) {
-            void pendingStore.refresh(messageOf(caught));
+            pendingStore.reportNoteFailure(recording.id, messageOf(caught));
+            void pendingStore.refresh();
             return;
           }
         } finally { finish(); }
@@ -359,7 +362,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     }
     const outcome = await saveRecording(tcw, recording);
     if (outcome.kind === "saved") landed(recording, outcome.audio ?? undefined);
-    if (outcome.kind === "failed") void pendingStore.refresh(outcome.failure);
+    if (outcome.kind === "failed") {
+      pendingStore.reportNoteFailure(recording.id, outcome.failure);
+      void pendingStore.refresh();
+    }
     else if (outcome.kind === "already-saved" || outcome.kind === "discarded") void pendingStore.refresh(outcome.cleanupError ?? undefined);
     else if (outcome.kind === "held") void pendingStore.refresh();
   };
@@ -796,7 +802,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
             return;
           }
           pipeline.resume();
-          await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation });
+          await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation }, "manual");
           await pendingStore.refresh(null);
         } catch (caught) {
           pendingStore.reportError(`Could not save notes on this phone: ${messageOf(caught)}`);

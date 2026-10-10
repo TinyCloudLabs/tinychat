@@ -345,6 +345,12 @@ export interface PendingRun {
 let pendingRunInFlight: Promise<PendingRun> | null = null;
 let trackedSavesInFlight = 0;
 let activeAccountDid: string | null = null;
+const noteFailures = new Map<string, string>();
+let generalFailure: string | null = null;
+
+function currentFailure(): string | null {
+  return generalFailure ?? [...noteFailures.values()].at(-1) ?? null;
+}
 
 /**
  * Retry every recording still on the device, oldest first, one at a time. Single-flight: the
@@ -397,11 +403,11 @@ export type PendingListing = { state: "unknown" } | { state: "ok"; count: number
 /** Recordings awaiting a space save, as the recorder views show them. */
 export interface PendingSnapshot {
   listing: PendingListing;
+  /** Which signed-in account this listing was filtered for. */
+  accountDid?: string | null;
   /** A save of them is running (savePendingRecordings). */
   running: boolean;
   lastError: string | null;
-  /** Notes assigned to another account are kept here until that account signs in. */
-  otherAccountCount?: number;
 }
 
 /** How many notes await a space save (0 when unknown or the listing failed). */
@@ -409,7 +415,7 @@ export function pendingCount(snapshot: Pick<PendingSnapshot, "listing">): number
   return snapshot.listing.state === "ok" ? snapshot.listing.count : 0;
 }
 
-let pendingSnapshot: PendingSnapshot = { listing: { state: "unknown" }, running: false, lastError: null, otherAccountCount: 0 };
+let pendingSnapshot: PendingSnapshot = { listing: { state: "unknown" }, accountDid: null, running: false, lastError: null };
 const pendingListeners = new Set<() => void>();
 
 function publishPending(patch: Partial<PendingSnapshot>): void {
@@ -419,7 +425,7 @@ function publishPending(patch: Partial<PendingSnapshot>): void {
 
 function beginTrackedSave(): () => void {
   trackedSavesInFlight++;
-  publishPending({ running: true, lastError: null });
+  publishPending({ running: true });
   return () => {
     trackedSavesInFlight--;
     publishPending({ running: trackedSavesInFlight > 0 || pendingRunInFlight !== null });
@@ -439,14 +445,25 @@ export const pendingStore = {
     };
   },
   /** Count the phone's unsaved notes again, with what went wrong, if anything. */
-  refresh(lastError: string | null = pendingSnapshot.lastError): Promise<void> {
+  refresh(lastError?: string | null): Promise<void> {
     return relistPending(lastError);
   },
   /** A retry that cannot start still needs a visible result beside Save now. */
   reportError(message: string): void {
-    publishPending({ lastError: message });
+    generalFailure = message;
+    publishPending({ lastError: currentFailure() });
+  },
+  reportNoteFailure(id: string, message: string): void {
+    noteFailures.delete(id);
+    noteFailures.set(id, message);
+    publishPending({ lastError: currentFailure() });
   },
   setAccount(did: string | null): void {
+    if (activeAccountDid !== did) {
+      noteFailures.clear();
+      generalFailure = null;
+      publishPending({ accountDid: did, listing: { state: "unknown" }, lastError: null });
+    }
     activeAccountDid = did;
     void relistPending(null);
   },
@@ -461,16 +478,20 @@ function listingFailure(caught: unknown): string {
 }
 
 /** Re-list the phone and exclude retained copies already saved to the space. */
-async function relistPending(lastError: string | null): Promise<void> {
+async function relistPending(lastError?: string | null): Promise<void> {
+  if (lastError !== undefined) generalFailure = lastError;
   try {
     const { recordings } = await VoiceNotes.listPending();
-    const pending = recordings.filter((recording) =>
+    const visible = activeAccountDid
+      ? recordings.filter((recording) => !recording.owner || recording.owner === activeAccountDid)
+      : recordings;
+    const pending = visible.filter((recording) =>
       isDiscarded(recording.id) || (recording.ledger?.audio.state !== "saved" && !savedThisSession.has(recording.id)),
     );
-    publishPending({ listing: { state: "ok", count: pending.length }, lastError,
-      otherAccountCount: activeAccountDid ? pending.filter((recording) =>
-        recording.owner && recording.owner !== activeAccountDid && !isDiscarded(recording.id)).length : 0 });
+    const pendingIds = new Set(pending.map((note) => note.id));
+    for (const id of noteFailures.keys()) if (!pendingIds.has(id)) noteFailures.delete(id);
+    publishPending({ accountDid: activeAccountDid, listing: { state: "ok", count: pending.length }, lastError: currentFailure() });
   } catch (caught) {
-    publishPending({ listing: { state: "error", message: listingFailure(caught) }, lastError });
+    publishPending({ listing: { state: "error", message: listingFailure(caught) }, lastError: currentFailure() });
   }
 }

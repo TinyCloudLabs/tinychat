@@ -724,7 +724,8 @@ describe("voice-note recorder controller", () => {
     const pipeline: VoiceNotePipeline = {
       process: async () => {}, cancelAll: () => { accepting = false; },
       resume: () => { accepting = true; }, isAccepting: () => accepting, quiescent: async () => true,
-      reconcileAll: async () => {
+      reconcileAll: async (_ctx, trigger) => {
+        expect(trigger).toBe("manual");
         expect(accepting).toBe(true);
         expect(onPhone[0]?.owner).toBe(account.did);
         const result = await saveRecording(account, onPhone[0]!);

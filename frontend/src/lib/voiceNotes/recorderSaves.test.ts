@@ -281,20 +281,44 @@ describe("after a reload", () => {
     expect(run).toEqual({ total: 0, left: [], saved: [], lastError: "Could not check this phone for unsaved notes: no bridge" });
     expect(cold.pendingStore.snapshot()).toEqual({
       listing: { state: "error", message: "Could not check this phone for unsaved notes: no bridge" },
+      accountDid: null,
       running: false,
       lastError: null,
-      otherAccountCount: 0,
     });
     expect(cold.pendingCount(cold.pendingStore.snapshot())).toBe(0);
   });
 });
 
 describe("pendingStore", () => {
-  test("notes from a prior account remain counted with an ownership reason", async () => {
-    phone.pending = [recording("old-account", 1), { ...recording("current", 2), owner: "did:example:bob" }];
+  test("B sees only B's and unowned notes; A's notes do not enter the signed-in count", async () => {
+    phone.pending = [recording("old-account", 1), { ...recording("current", 2), owner: "did:example:bob" },
+      { ...recording("unowned", 3), owner: null, ownerUnknown: true }];
+    saves.pendingStore.reportNoteFailure("old-account", "A's upload failed");
     saves.pendingStore.setAccount("did:example:bob");
     await saves.pendingStore.refresh(null);
-    expect(saves.pendingStore.snapshot()).toMatchObject({ listing: { state: "ok", count: 2 }, otherAccountCount: 1 });
+    expect(saves.pendingStore.snapshot()).toMatchObject({ accountDid: "did:example:bob", listing: { state: "ok", count: 2 }, lastError: null });
+    saves.pendingStore.setAccount(null);
+    await saves.pendingStore.refresh(null);
+    expect(saves.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 3 });
+  });
+  test("a new automatic save preserves an earlier note's failure until that note succeeds", async () => {
+    const failed = recording("failed-earlier", 1);
+    const newer = recording("newer-save", 2);
+    phone.pending = [failed, newer];
+    saves.pendingStore.setAccount(tcw.did);
+    await saves.pendingStore.refresh(null);
+    saves.pendingStore.reportNoteFailure(failed.id, "Earlier upload failed");
+    const finish = saves.pendingStore.beginAutomaticSave();
+    expect(saves.pendingStore.snapshot()).toMatchObject({ running: true, lastError: "Earlier upload failed" });
+    saves.pendingStore.reportNoteFailure(newer.id, "Newer upload failed");
+    expect(saves.pendingStore.snapshot().lastError).toBe("Newer upload failed");
+    newer.ledger = { audio: { state: "saved", rowId: "newer", at: 2 } } as VoiceNoteRecording["ledger"];
+    await saves.pendingStore.refresh(null);
+    expect(saves.pendingStore.snapshot().lastError).toBe("Earlier upload failed");
+    finish();
+    failed.ledger = { audio: { state: "saved", rowId: "earlier", at: 3 } } as VoiceNoteRecording["ledger"];
+    await saves.pendingStore.refresh(null);
+    expect(saves.pendingStore.snapshot()).toMatchObject({ running: false, lastError: null });
     saves.pendingStore.setAccount(null);
   });
   test("refresh lists the phone; a listing that fails is an error state, never a cached count", async () => {

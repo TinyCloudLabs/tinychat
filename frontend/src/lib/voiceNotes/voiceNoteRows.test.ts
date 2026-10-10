@@ -362,7 +362,19 @@ test("another account's retained notes do not delay a fresh Stop with a space pr
     expect(sqlite.query("SELECT name FROM sqlite_schema WHERE name = 'voice_note_transcript'").all()).toEqual([]);
     await fake.plugin.start();
     const fresh = await fake.plugin.stop();
-    await pipeline.process(ctx, fresh.id);
+    const originalDebug = console.debug;
+    const starts: string[] = [];
+    console.debug = (message: unknown) => {
+      if (String(message).startsWith("[VoiceNotes] automatic save starting")) starts.push(String(message));
+    };
+    try {
+      await pipeline.process(ctx, fresh.id);
+      await pipeline.process(ctx, fresh.id, "background");
+      await pipeline.reconcileAll(ctx);
+      await pipeline.reconcileAll(ctx, "manual");
+    } finally { console.debug = originalDebug; }
+    expect(starts.filter((line) => line.includes(`id=${fresh.id} `)).map((line) => line.split("trigger=")[1]))
+      .toEqual(["stop", "background", "reconcile", "manual"]);
     const notes = (await fake.plugin.listPending()).recordings;
     expect(notes.find((note) => note.id === old.id)?.ledger?.audio.state).toBe("pending");
     expect(notes.find((note) => note.id === fresh.id)?.ledger?.audio.state).toBe("saved");
