@@ -412,6 +412,13 @@ export function PhoneRecorder({
               Open Settings
             </button>
           </div>
+        ) : phase === "idle" ? (
+          <div className="pr-controls">
+            <button type="button" className="pr-b primary" disabled={!recorder.ready || recorder.outcome !== null}
+              onClick={() => void recorder.record()}>
+              Record
+            </button>
+          </div>
         ) : (
           <>
             {view.controls.openSettings && (
