@@ -17,7 +17,7 @@
     "@capacitor/core": "^8.5.2",
     "@capacitor/haptics": "^8.0.2",
     "@openkey/sdk": "0.12.0-beta.1",
-    "@openkey/sdk-capacitor": "0.1.0-beta.1",
+    "@openkey/sdk-capacitor": "0.1.0-beta.2",
     "@peculiar/x509": "^2.0.0",
     "@radix-ui/react-alert-dialog": "^1.1.4",
     "@radix-ui/react-dialog": "^1.1.4",
