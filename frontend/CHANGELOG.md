@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.20
+
+### Patch Changes
+
+- ec1eac7: Report current iOS microphone permission in voice recorder status so access can refresh after Settings.
+
 ## 0.6.0-beta.19
 
 ### Patch Changes
