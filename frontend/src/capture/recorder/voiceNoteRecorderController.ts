@@ -25,6 +25,7 @@ import {
   type TranscriberId,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { captureCapabilities, captureEngineKind, onDeviceTranscriptionAvailable } from "@/lib/voiceNotes/captureEngine";
+import { levelFromAmplitude } from "@/lib/voiceNotes/web/webLevels";
 import { isOnDeviceReady } from "@/lib/voiceNotes/onDeviceStt";
 import { setQuarantineAccount } from "@/lib/voiceNotes/quarantine";
 import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
@@ -657,7 +658,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           sendMicState(event);
         }),
         VoiceNotes.addListener("level", (event) => {
-          for (const listener of levelListeners) listener(event.level);
+          // Every capture engine emits linear RMS. Convert once at the boundary to the
+          // perceptual 0..1 level shared by the halo, bars, trace, and activity gate.
+          for (const listener of levelListeners) listener(levelFromAmplitude(event.level));
         }),
         // Retained by the shell until heard, so a reload mid-recording still saves the note.
         VoiceNotes.addListener("autoStopped", onAutoStopped),
