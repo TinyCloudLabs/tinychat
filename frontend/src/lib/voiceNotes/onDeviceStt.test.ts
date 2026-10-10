@@ -2,6 +2,7 @@
 // the RAM-tier's primary parakeet model ready, and Silero VAD ready.
 import { describe, expect, test } from "bun:test";
 import { isOnDeviceReady, type OnDeviceSttStatus } from "./onDeviceStt";
+import { onDeviceModelLine } from "./onDeviceSttStore";
 
 function status(patch: Partial<OnDeviceSttStatus> = {}): OnDeviceSttStatus {
   return {
@@ -62,5 +63,17 @@ describe("isOnDeviceReady", () => {
   test("apple-speech path (if ever wired) is ready purely from appleSpeech, independent of the parakeet models", () => {
     expect(isOnDeviceReady(status({ engine: "apple-speech", appleSpeech: "ready", models: [] }))).toBe(true);
     expect(isOnDeviceReady(status({ engine: "apple-speech", appleSpeech: "asset_missing", models: [] }))).toBe(false);
+  });
+});
+
+describe("a model the phone is still verifying after launch", () => {
+  const checking = status({
+    pack: "small",
+    models: [model("parakeet-tdt-110m-en-int8", "checking"), model("silero-vad", "checking")],
+  });
+
+  test("is not ready, and is described as being checked rather than as missing or downloading", () => {
+    expect(isOnDeviceReady(checking)).toBe(false);
+    expect(onDeviceModelLine(checking)).toEqual({ text: "Checking the downloaded model…", percent: null });
   });
 });

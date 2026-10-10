@@ -40,7 +40,7 @@ export function VoiceNotesTranscriberSettings() {
       {value === "on-device" && (
         <div className="flex items-center justify-between gap-3 text-xs">
           <span className="text-muted-foreground">On-device model: {modelLine.text}</span>
-          {model && model.state !== "ready" && model.state !== "downloading" && model.state !== "queued" && (
+          {model && model.state !== "ready" && model.state !== "checking" && model.state !== "downloading" && model.state !== "queued" && (
             <Button type="button" variant="outline" size="sm" onClick={() => void OnDeviceStt.downloadNow({ allowCellular: false })}>
               Download
             </Button>

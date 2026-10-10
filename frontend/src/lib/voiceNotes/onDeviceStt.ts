@@ -3,7 +3,7 @@ import type { NoteSttState } from "./nativeVoiceNotes";
 
 export type SttModelId = "parakeet-tdt-0.6b-v3-int8" | "parakeet-tdt-110m-en-int8" | "silero-vad" | "diarization";
 export interface OnDeviceSttStatus {
-  models: { id: SttModelId; state: "absent" | "queued" | "downloading" | "verifying" | "ready" | "failed";
+  models: { id: SttModelId; state: "absent" | "queued" | "downloading" | "verifying" | "checking" | "ready" | "failed";
     bytes: number; totalBytes: number; error: string | null }[];
   pack: "full" | "small"; autoDownload: boolean;
   download: { policy: "wifi" | "cellular_approved"; state: "idle" | "running" | "waiting_for_network" | "low_data_mode" | "failed" };
