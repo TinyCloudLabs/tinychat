@@ -31,6 +31,23 @@ import XCTest
         try body(engine)
     }
 
+    /// Device engines would deliver live mic taps, so they are suppressed. The Debug simulator engine
+    /// uses a manually driven silent source that delivers nothing until `deliverTap` is called.
+    private func suppressLiveTaps(_ engine: CaptureEngine) {
+        #if !targetEnvironment(simulator)
+        engine.debugSuppressTaps()
+        #endif
+    }
+
+    private func deliverTap(_ engine: CaptureEngine) {
+        #if targetEnvironment(simulator)
+        engine.debugDeliverSilentTaps(1)
+        XCTAssertTrue(engine.debugSilentInputRunning)
+        #else
+        engine.debugRecordDeliveredTap()
+        #endif
+    }
+
     private func events(_ engine: CaptureEngine, _ id: String) throws -> [[String: Any]] {
         try engine.library.readJournal(id)
     }
@@ -343,6 +360,13 @@ import XCTest
             let first = try segmentCount(engine, id)
             engine.routeChanged()
             XCTAssertEqual(try segmentCount(engine, id), first)
+            #if targetEnvironment(simulator)
+            // Debug simulator captures synthetic silence and follows no host route.
+            engine.debugInputRoute = ("changed-input", AVAudioSession.sharedInstance().sampleRate)
+            engine.routeChanged()
+            XCTAssertEqual(try segmentCount(engine, id), first)
+            return
+            #endif
             if let active = engine.status()["input"] as? [String: Any], let uid = active["id"] as? String {
                 try engine.selectInput(uid)
                 XCTAssertEqual(try segmentCount(engine, id), first)
@@ -381,7 +405,7 @@ import XCTest
         try withEngine { engine in
             var clock = ProcessInfo.processInfo.systemUptime
             engine.debugNow = { clock }
-            engine.debugSuppressTaps()
+            suppressLiveTaps(engine)
             let id = try XCTUnwrap(engine.start()["id"] as? String)
             engine.debugDisableWatchdog()
             engine.debugAgeLastTap(by: 4)
@@ -389,7 +413,7 @@ import XCTest
             XCTAssertEqual(engine.status()["state"] as? String, "recording")
             XCTAssertFalse(engine.debugRetryPending)
 
-            engine.debugRecordDeliveredTap()
+            deliverTap(engine)
             engine.debugWatchdogTick() // A delivered buffer starts a fresh stall sequence.
             engine.debugAgeLastTap(by: 4)
             engine.debugWatchdogTick()

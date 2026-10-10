@@ -9,6 +9,7 @@ import {
   registerHalo,
   selectRenderSurface,
   TICKS_SHADER,
+  type HaloConfig,
 } from "./renderer";
 import { sourceFromLevel } from "./source";
 
@@ -130,7 +131,48 @@ describe("halo renderer bitmap hold", () => {
       cancelAnimationFrame: g.cancelAnimationFrame,
     };
     const bitmaps: { closed: boolean; close(): void }[] = [];
-    const gl = permissive({ isContextLost: () => false });
+    const discCanvases: object[] = [];
+    const uploadedDiscs: unknown[] = [];
+    const discFills: string[] = [];
+    const gl = permissive({
+      isContextLost: () => false,
+      texImage2D: (...args: unknown[]) => {
+        const source = args.at(-1);
+        if (source && discCanvases.includes(source as object)) {
+          uploadedDiscs.push(source);
+        }
+      },
+    });
+    let theme: "night" | "day" = "night";
+    const document = {
+      documentElement: {},
+      defaultView: {
+        getComputedStyle: () => ({
+          getPropertyValue: (name: string) => {
+            if (name === "--solid") {
+              return theme === "day"
+                ? "hsl(0 0% 100%)"
+                : "hsl(240 3.7% 15.9%)";
+            }
+            if (name === "--foreground") return "0 0% 98%";
+            return "";
+          },
+        }),
+      },
+      createElement: () => {
+        const gradient = { addColorStop() {} };
+        const context = {
+          set fillStyle(value: string | object) {
+            if (typeof value === "string") discFills.push(value);
+          },
+          fillRect() {},
+          createRadialGradient: () => gradient,
+        };
+        const disc = { width: 0, height: 0, getContext: () => context };
+        discCanvases.push(disc);
+        return disc;
+      },
+    } as unknown as Document;
     let intersect: (items: { isIntersecting: boolean }[]) => void = () => {};
     let frame: FrameRequestCallback | null = null;
     g.OffscreenCanvas = class {
@@ -149,7 +191,7 @@ describe("halo renderer bitmap hold", () => {
         return bitmap;
       }
     };
-    g.document = { createElement: () => permissive() };
+    g.document = document;
     g.window = { devicePixelRatio: 1 };
     g.matchMedia = () => ({
       matches: false,
@@ -185,8 +227,9 @@ describe("halo renderer bitmap hold", () => {
         width: 0,
         height: 0,
         getContext: () => permissive(),
+        ownerDocument: document,
       } as unknown as HTMLCanvasElement;
-      const unmount = registerHalo(canvas, {
+      const config: HaloConfig = {
         size: 100,
         ticks: 40,
         paused: false,
@@ -195,8 +238,12 @@ describe("halo renderer bitmap hold", () => {
         sourceRef: { current: sourceFromLevel(0.3) },
         weight: 1,
         spread: 1,
-      });
+      };
+      const unmount = registerHalo(canvas, config);
       expect(haloRenderPath()).toBe("webgl-atlas");
+      expect(uploadedDiscs.length).toBeGreaterThan(0);
+      expect(discFills).toContain("hsl(240 3.7% 15.9%)");
+      const nightDisc = uploadedDiscs.at(-1);
       intersect([{ isIntersecting: true }]);
 
       run(1000);
@@ -209,8 +256,20 @@ describe("halo renderer bitmap hold", () => {
       expect(bitmaps[0].closed).toBe(true);
       expect(bitmaps[1].closed).toBe(false);
 
+      theme = "day";
+      config.theme = theme;
+      run(3000);
+      expect(uploadedDiscs.length).toBeGreaterThan(1);
+      expect(uploadedDiscs.at(-1)).not.toBe(nightDisc);
+      expect(discFills).toContain("hsl(0 0% 100%)");
+
+      theme = "night";
+      config.theme = theme;
+      run(4000);
+      expect(uploadedDiscs.at(-1)).toBe(nightDisc);
+
       unmount();
-      expect(bitmaps[1].closed).toBe(true);
+      expect(bitmaps.at(-1)?.closed).toBe(true);
     } finally {
       for (const [key, value] of Object.entries(saved)) {
         if (value === undefined) delete g[key];

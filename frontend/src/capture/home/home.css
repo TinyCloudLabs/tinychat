@@ -1,51 +1,5 @@
-/* Capture home and its rows in the Soft skin (TC-871). The palette (--ink,
-   --dim, --glass, --gedge, --solid, --bgc, --red) is soft.css's. .soft-home is
-   the whole list pane, so the Library, which shares the rows, wears it too:
-   the app's own tokens are remapped here (as HSL triples) to the Soft palette. */
-
-.soft-home.soft-night {
-  --background: 266 29% 9%;
-  --foreground: 278 52% 96%;
-  --card: 270 24% 16%;
-  --card-foreground: 278 52% 96%;
-  --popover: 270 24% 16%;
-  --popover-foreground: 278 52% 96%;
-  --chrome: 266 29% 9%;
-  --surface-2: 270 24% 16%;
-  --secondary: 270 24% 16%;
-  --secondary-foreground: 278 52% 96%;
-  --muted: 270 24% 16%;
-  --muted-foreground: 271 12% 64%;
-  --accent: 270 24% 16%;
-  --accent-foreground: 278 52% 96%;
-  --border: 270 13% 20%;
-  --input: 270 13% 20%;
-  --primary: 278 52% 96%;
-  --primary-foreground: 266 29% 9%;
-  --ring: 278 52% 96%;
-}
-
-.soft-home.soft-day {
-  --background: 32 62% 96%;
-  --foreground: 322 10% 21%;
-  --card: 30 100% 98%;
-  --card-foreground: 322 10% 21%;
-  --popover: 30 100% 98%;
-  --popover-foreground: 322 10% 21%;
-  --chrome: 32 62% 96%;
-  --surface-2: 30 100% 98%;
-  --secondary: 30 100% 98%;
-  --secondary-foreground: 322 10% 21%;
-  --muted: 30 100% 98%;
-  --muted-foreground: 334 7% 50%;
-  --accent: 30 100% 98%;
-  --accent-foreground: 322 10% 21%;
-  --border: 28 25% 90%;
-  --input: 28 25% 90%;
-  --primary: 322 10% 21%;
-  --primary-foreground: 32 62% 96%;
-  --ring: 322 10% 21%;
-}
+/* Capture home keeps the app's zinc tokens; .soft-home only supplies surface
+   styling shared with the recorder. */
 
 .soft-home .font-display {
   font-family: var(--soft-title-font);

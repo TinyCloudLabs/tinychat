@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { webkit, type Browser } from "playwright";
 import { buildHarness, serveHarness } from "./exo-ui/harness-server";
-import { inspectHaloPixels, readHaloCenterPixel } from "./exo-ui/halo-pixels";
+import { inspectHaloPixels, readHaloCenterPixel, readHaloThemeColor } from "./exo-ui/halo-pixels";
 
 declare global {
   interface Window {
@@ -78,9 +78,11 @@ test("recorder-final halo renders its centre pixel in WebKit", async () => {
           .nth(3)
           .evaluate(readHaloCenterPixel);
         expect(center.size % 2).toBe(1);
-        expect(center.color).toEqual(
-          theme === "dark" ? [68, 59, 76] : [251, 248, 246],
-        );
+        const tokenColor = await page
+          .locator(".halo-ring__canvas")
+          .nth(3)
+          .evaluate(readHaloThemeColor, theme);
+        expect(center.color.every((channel, index) => Math.abs(channel - tokenColor[index]!) <= 18)).toBe(true);
       } catch (caught) {
         const { canvases } = (await page.evaluate(inspectHaloPixels, {
           diagnostics: true,
@@ -111,6 +113,38 @@ test("recorder-final halo renders its centre pixel in WebKit", async () => {
     } finally {
       await context.close();
     }
+  }
+}, 60_000);
+
+test("halo harness theme toggle updates the idle disc tokens", async () => {
+  const context = await browser!.newContext({
+    viewport: { width: 390, height: 4400 },
+    deviceScaleFactor: 2,
+    isMobile: true,
+    hasTouch: true,
+    colorScheme: "light",
+    reducedMotion: "reduce",
+  });
+  try {
+    const page = await context.newPage();
+    await page.goto(`http://127.0.0.1:${server!.port}/?screen=recorder-final-halo&theme=light&platform=web&freeze=1`);
+    await page.waitForFunction(() => window.exoUi?.ready === true);
+    await page.waitForFunction(inspectHaloPixels, {});
+    const idle = page.locator(".halo-ring__canvas").nth(3);
+    const before = await idle.evaluate(readHaloCenterPixel);
+    await page.locator("[data-halo-theme-toggle]").first().click();
+    await page.waitForFunction((previous) => {
+      const canvas = document.querySelectorAll<HTMLCanvasElement>(".halo-ring__canvas")[3];
+      if (!canvas) return false;
+      const center = canvas.getContext("2d")!.getImageData(canvas.width >> 1, canvas.height >> 1, 1, 1).data;
+      return center.some((value, index) => Math.abs(value - previous[index]!) > 12);
+    }, before.color, { timeout: 5_000 });
+    const after = await idle.evaluate(readHaloCenterPixel);
+    const nightColor = await idle.evaluate(readHaloThemeColor, "dark");
+    expect(after.color).not.toEqual(before.color);
+    expect(after.color.every((channel, index) => Math.abs(channel - nightColor[index]!) <= 18)).toBe(true);
+  } finally {
+    await context.close();
   }
 }, 60_000);
 

@@ -24,6 +24,8 @@ A fresh private iOS 18 simulator quick-action run started session `2e460390-877b
 
 Vonnegut remains unavailable. The review's nine physical-device checks, including the measured Pause tail and `F_FULLFSYNC`/`F_BARRIERFSYNC` latency, are pending until it reconnects. The iOS 27 simulator can hang before the WebView loads under host load; the current verification uses fresh private iOS 18 or 26 devices.
 
+Debug simulator builds never read the Mac microphone. The simulator's input is the host Mac's microphone, so `CaptureEngine` (inside `#if DEBUG && targetEnvironment(simulator)` only) replaces `AVAudioEngine.inputNode` with `SimulatorSilentInput`, which feeds the same tap handler and writer with silent 48 kHz mono buffers at real-time cadence; Pause/Resume, heartbeats, the 3-hour limit and Stop behave as for a real recording, and the route shows "Simulator silence (debug)". The microphone permission flow is unchanged. To record the Mac microphone on purpose, launch with `EXO_SIM_AUDIO_INPUT=host` (for `simctl`, `SIMCTL_CHILD_EXO_SIM_AUDIO_INPUT=host`); any other value besides unset/`silence` fails the start with an error. Release and device builds contain none of this code (checked by symbol and string search of the Release and Debug-device binaries).
+
 ## Integration order
 
 Merge T6's recording view and save policy before T4. The pre-T6 `recorderSaves.ts` uploads every listed note and deletes the local copy, including T4's newly listed `ownerUnknown` legacy imports. Until T6 is present, a T4-only integration build must not be installed while signed in on a phone holding old notes.

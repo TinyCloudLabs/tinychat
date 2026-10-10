@@ -275,11 +275,11 @@ html:not(.dark) .capture-dot[data-dot="live"] {
 }
 
 .capture-dot[data-dot="paused"] {
-  background: #8f8993;
+  background: var(--dim);
 }
 
 .capture-dot[data-dot="hollow"] {
-  border: 1.5px solid #8f8993;
+  border: 1.5px solid var(--dim);
 }
 
 /* ---------- motion: only the recorder's own move, transform and opacity, never under reduced motion ---------- */
