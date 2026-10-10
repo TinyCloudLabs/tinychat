@@ -136,6 +136,15 @@
 .soft-skin .sn-edit .nt-writer {
   min-height: 220px;
 }
+/* On the phone sheet the formatting bar stays at the bottom of the visible sheet while the note scrolls under it. */
+.soft-skin.sn-sheet .sn-edit .nt-wtools {
+  position: sticky;
+  bottom: 12px;
+  z-index: 1;
+  background:
+    linear-gradient(var(--glass), var(--glass)),
+    var(--solid);
+}
 .soft-skin .sn-read .fmd {
   font-size: 15px;
 }

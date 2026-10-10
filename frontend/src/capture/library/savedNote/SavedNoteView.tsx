@@ -4,6 +4,7 @@ import "../../recorder/final/desktop/desktop.css";
 import "./savedNote.css";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
+  useCallback,
   useEffect,
   useId,
   useRef,
@@ -14,6 +15,7 @@ import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
 import { DESKTOP_HOME_COPY } from "../../home/desktop/desktopCopy";
 import { ConfirmDialog } from "../../recorder/final/desktop/ConfirmDialog";
 import { NoteRenderer, NoteWriter } from "../../recorder/final/notes";
+import { useKeyboardInset } from "../../recorder/final/keyboardInset";
 import { SheetDialog } from "../../recorder/final/SheetDialog";
 import type { AudioLoad } from "../NoteDetailView";
 import { SAVED_NOTE_COPY as COPY } from "./savedNoteCopy";
@@ -59,6 +61,14 @@ function Notes({
     if (wasEditing.current && !editing) editButton.current?.focus();
     wasEditing.current = editing;
   }, [editing, editButton]);
+
+  // On the phone sheet the writer comes into view when Edit opens, so its sticky formatting bar has the field to sit under.
+  const showWriter = useCallback(
+    (element: HTMLElement | null) => {
+      if (layout === "sheet") element?.scrollIntoView({ block: "start" });
+    },
+    [layout],
+  );
 
   const ready = note.load.status === "ready";
   const editedWhen =
@@ -169,7 +179,7 @@ function Notes({
       )}
       {ready &&
         (editing ? (
-          <div className="sn-edit" onKeyDownCapture={onKeys}>
+          <div ref={showWriter} className="sn-edit" onKeyDownCapture={onKeys}>
             <NoteWriter
               initialValue={draft.draft ?? ""}
               onChange={draft.type}
@@ -350,6 +360,8 @@ export function SavedNoteSheet(props: SavedNoteViewProps) {
     if (screen.requestClose()) onBack();
   };
   const confirming = screen.draft.confirming !== null;
+  const keyboardInset = useKeyboardInset();
+  const lifted = screen.editing && keyboardInset > 0;
   return (
     <Dialog.Root open onOpenChange={(open) => !open && close()}>
       <Dialog.Portal>
@@ -359,6 +371,8 @@ export function SavedNoteSheet(props: SavedNoteViewProps) {
           data-layout="phone"
           data-testid="saved-note-sheet"
           data-note-id={props.id}
+          data-lifted={lifted}
+          style={lifted ? { bottom: keyboardInset + 8 } : undefined}
           onEscapeKeyDown={(event) => {
             if (confirming) {
               event.preventDefault();

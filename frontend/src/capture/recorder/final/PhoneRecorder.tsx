@@ -52,6 +52,7 @@ import {
 import { useAudioInputs, type AudioInputsSource } from "./useAudioInputs";
 import { useSilencedSince } from "./useSilencedSince";
 import { MicDeniedAction } from "./shell/MicDeniedAction";
+import { openSettingsFailedLine } from "./shell/micDeniedCopy";
 import {
   useOnDeviceModel,
   useTranscriptionChoice,
@@ -298,10 +299,7 @@ export function PhoneRecorder({
   const openSettings = () => {
     setSettingsError(null);
     recorder.openSettings().catch((error: unknown) => {
-      console.error("[Recorder] Could not open Settings", error);
-      setSettingsError(
-        `Could not open Settings: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      setSettingsError(openSettingsFailedLine(error));
     });
   };
   const recorderError = honestRecorderError(recorder);

@@ -209,6 +209,33 @@ describe.serial(`recorder-final saved note, ${engineName}`, () => {
     expect(errors).toEqual([]);
   });
 
+  for (const size of [
+    { width: 390, height: 844 },
+    { width: 320, height: 640 },
+    // What is left of those two above the on-screen keyboard.
+    { width: 390, height: 480 },
+    { width: 320, height: 380 },
+  ]) {
+    test(`sheet ${size.width}x${size.height}: the formatting bar stays inside the visible sheet in Edit mode, also after scrolling to the end`, async () => {
+      const { page, errors } = await open({ ...SHEET, ...size });
+      await shown(rendered(page));
+      await button(page, "Edit").click();
+      await shown(field(page));
+      const bar = page.locator(".sn-sheet .nt-wtools");
+      const within = () =>
+        page.evaluate(() => {
+          const sheet = document.querySelector(".sn-sheet")!.getBoundingClientRect();
+          const bar = document.querySelector(".sn-sheet .nt-wtools")!.getBoundingClientRect();
+          return bar.top >= sheet.top && bar.bottom <= sheet.bottom + 0.5;
+        });
+      await shown(bar);
+      expect(await within()).toBe(true);
+      await page.locator(".sn-sheet").evaluate((el) => (el.scrollTop = el.scrollHeight));
+      expect(await within()).toBe(true);
+      expect(errors).toEqual([]);
+    });
+  }
+
   test("sheet: Cancel with changes asks first; Discard changes returns to the note", async () => {
     const { page, errors } = await open(SHEET);
     await shown(rendered(page));
