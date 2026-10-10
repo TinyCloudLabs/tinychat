@@ -34,7 +34,9 @@ pub struct ExtrasState {
 struct Preferences {
     #[serde(default)]
     selected_model: Option<String>,
-    #[serde(default = "default_system_audio")]
+    // The original beta key (`systemAudio`) defaulted off. Start the new
+    // recorder at on for existing users, then honor choices saved under V2.
+    #[serde(rename = "systemAudioV2", default = "default_system_audio")]
     system_audio: bool,
     #[serde(default)]
     auto_save_to_space: bool,
@@ -579,7 +581,7 @@ mod tests {
     use super::*;
     #[test]
     fn corrupt_recorder_settings_are_an_error_only_when_read() {
-        let value = serde_json::json!({ "exo_recorder": { "systemAudio": "invalid" } });
+        let value = serde_json::json!({ "exo_recorder": { "systemAudioV2": "invalid" } });
         assert!(parse_preferences(&value).is_err());
     }
     #[test]
@@ -594,8 +596,25 @@ mod tests {
                 .unwrap()
                 .system_audio
         );
+        let beta = parse_preferences(&serde_json::json!({
+            "exo_recorder": {
+                "systemAudio": false,
+                "selectedModel": "QuantizedTinyEn",
+                "autoSaveToSpace": true
+            }
+        }))
+        .unwrap();
+        assert!(beta.system_audio);
+        assert_eq!(beta.selected_model.as_deref(), Some("QuantizedTinyEn"));
+        assert!(beta.auto_save_to_space);
+
+        let mut chosen = beta;
+        chosen.system_audio = false;
+        let stored = serde_json::to_value(&chosen).unwrap();
+        assert_eq!(stored["systemAudioV2"], false);
+        assert!(stored.get("systemAudio").is_none());
         assert!(
-            !parse_preferences(&serde_json::json!({ "exo_recorder": { "systemAudio": false } }))
+            !parse_preferences(&serde_json::json!({ "exo_recorder": stored }))
                 .unwrap()
                 .system_audio
         );
