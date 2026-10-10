@@ -323,7 +323,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
               ) continue;
               if (screen.viewports && !screen.viewports.includes(viewport.id)) continue;
               if (screen.minViewportWidth !== undefined && viewport.width < screen.minViewportWidth) continue;
-              if ((viewport.textScale ?? 0) > 2 && screen.platform !== "ios") continue;
+              if (viewport.textScale !== undefined && viewport.textScale !== 2 && screen.platform !== "ios") continue;
               const page = await context.newPage();
               const errors: string[] = [];
               page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
