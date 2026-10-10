@@ -167,6 +167,13 @@ export function onDeviceNote(scan: Scan | null, live: Live | null, jobEntry: Que
   }
 }
 
+/**
+ * The saved-note sheet sits on `--solid`, which in the dark theme is the same colour as the outline variant's
+ * `--input` border (1:1, so the button vanishes). The sheet's own glass fill and ring, the ones "Add a note"
+ * uses, stay visible in both themes; the fallbacks keep it an outline button outside that skin.
+ */
+const SHEET_BUTTON = "w-full border-transparent bg-[color:var(--glass,transparent)] shadow-[inset_0_0_0_1px_var(--gedge,hsl(var(--input)))]";
+
 /** A note waiting for the model: one sentence, then the way forward as full-width buttons. Nothing is running, so no spinner. */
 function WaitingForModel(props: { onUsePrivate?: () => Promise<string | null> }) {
   const status = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
@@ -183,7 +190,7 @@ function WaitingForModel(props: { onUsePrivate?: () => Promise<string | null> })
     <div className="flex flex-col gap-3" data-testid="voice-note-on-device-waiting">
       <p role="status" className="text-callout text-muted-foreground">{waitingForModelSentence(model, guide)}</p>
       {guide.action && (
-        <Button type="button" className="w-full" onClick={guide.action.run} data-testid="voice-note-model-download-action">
+        <Button type="button" variant="outline" className={SHEET_BUTTON} onClick={guide.action.run} data-testid="voice-note-model-download-action">
           {modelActionLabel(guide.action)}
         </Button>
       )}
@@ -203,7 +210,7 @@ function PrivateInstead(props: { onUse?: () => Promise<string | null> }) {
       <Button
         type="button"
         variant="outline"
-        className="w-full"
+        className={SHEET_BUTTON}
         data-testid="voice-note-use-private"
         disabled={switching}
         onClick={() => {

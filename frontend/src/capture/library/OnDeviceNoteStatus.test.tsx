@@ -125,6 +125,25 @@ describe("a saved note's on-device state, gated by the note's committed mode", (
     expect(html).not.toContain("Transcribe with Private instead");
   });
 
+  test("the model and Private buttons are outline buttons that stay visible on the dark sheet", async () => {
+    await iosStt();
+    fakeVoiceNotes({ recordings: () => [recording("n1", "on-device", stt("waiting_for_model"))] });
+    const { latest } = await mount("n1");
+    const html = renderToStaticMarkup(
+      <OnDeviceNoteStatusView noteId="n1" view={{ note: latest().note, error: null, reload: () => {} }} fallback={<p>No transcript.</p>} onUsePrivate={async () => null} />,
+    );
+    for (const testId of ["voice-note-model-download-action", "voice-note-use-private"]) {
+      const tag = html.match(new RegExp(`<button[^>]*data-testid="${testId}"[^>]*>`))?.[0] ?? "";
+      // The sheet's own glass fill and ring ("Add a note"'s), not the outline variant's border alone: in the dark
+      // theme `--input` equals the sheet colour, so that border cannot be seen.
+      expect(tag).toContain("bg-[color:var(--glass,transparent)]");
+      expect(tag).toContain("var(--gedge,");
+      expect(tag).toContain("border-transparent");
+      expect(tag).not.toContain("border-input");
+      expect(tag).not.toContain("bg-primary");
+    }
+  });
+
   test("Transcribe with Private instead appears, full width, only when the view is given the offer", async () => {
     await iosStt();
     fakeVoiceNotes({ recordings: () => [recording("n1", "on-device", stt("waiting_for_model"))] });
