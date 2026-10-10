@@ -40,6 +40,8 @@ type Harness = {
     fail: Record<string, boolean>;
     transcriberResult: string | null;
     downloadCalls?: number[];
+    deferModelStatus?: boolean;
+    releaseModelStatus?: () => void;
     patchTranscriber: (patch: object) => void;
   };
 };
@@ -458,7 +460,14 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
       });
     await page.setViewportSize({ width: 390, height: 844 });
 
+    await page.evaluate(() => {
+      (window as unknown as Harness).exoRecorder.deferModelStatus = true;
+    });
     await getModel.click();
+    await shown(page.getByText("Starting the download…"));
+    await page.evaluate(() => {
+      (window as unknown as Harness).exoRecorder.releaseModelStatus?.();
+    });
     await shown(page.getByText(/Waiting for Wi-Fi to download the model/));
     expect(
       await page.evaluate(() => window.exoRecorder?.downloadCalls?.length),

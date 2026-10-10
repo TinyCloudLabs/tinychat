@@ -56,6 +56,7 @@ import { useAudioInputs, type AudioInputsSource } from "./useAudioInputs";
 import { useSilencedSince } from "./useSilencedSince";
 import { MicDeniedAction } from "./shell/MicDeniedAction";
 import { openSettingsFailedLine } from "./shell/micDeniedCopy";
+import type { OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import {
   useOnDeviceModel,
   useTranscriptionChoice,
@@ -142,6 +143,7 @@ export function PhoneRecorder({
   const toastPauseReasons = useRef(new Set<"pointer" | "focus">());
   const toastActionUsed = useRef(false);
   const modelProgressToastKey = useRef<number | null>(null);
+  const modelDownloadStartingFrom = useRef<OnDeviceSttStatus | null>(null);
   const [modelDownloadRequested, setModelDownloadRequested] = useState(false);
   const clearModelProgressToast = (key?: number) => {
     if (
@@ -150,6 +152,7 @@ export function PhoneRecorder({
     )
       return;
     modelProgressToastKey.current = null;
+    modelDownloadStartingFrom.current = null;
     setModelDownloadRequested(false);
   };
   const showToast = (
@@ -167,7 +170,8 @@ export function PhoneRecorder({
     return key;
   };
   const showModelProgressToast = () => {
-    const key = showToast("Checking Wi-Fi before downloading the model…");
+    modelDownloadStartingFrom.current = onDevice.model;
+    const key = showToast("Starting the download…");
     modelProgressToastKey.current = key;
     setModelDownloadRequested(true);
   };
@@ -333,6 +337,7 @@ export function PhoneRecorder({
     const local = choice.stops.find(({ stop }) => stop.id === "local");
     if (local?.available) {
       modelProgressToastKey.current = null;
+      modelDownloadStartingFrom.current = null;
       setModelDownloadRequested(false);
       setToast((current) =>
         current?.key === progressKey
@@ -341,8 +346,13 @@ export function PhoneRecorder({
       );
       return;
     }
-    const next =
-      local?.reason ?? "Checking Wi-Fi before downloading the model…";
+    const waitingForFirstStatus =
+      modelDownloadStartingFrom.current === onDevice.model &&
+      onDevice.download.error === null;
+    if (!waitingForFirstStatus) modelDownloadStartingFrom.current = null;
+    const next = waitingForFirstStatus
+      ? "Starting the download…"
+      : (local?.reason ?? "Checking Wi-Fi before downloading the model…");
     setToast((current) =>
       current?.key === progressKey && current.message !== next
         ? { ...current, message: next }

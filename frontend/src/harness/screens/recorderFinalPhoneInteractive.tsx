@@ -41,6 +41,8 @@ declare global {
       /** What the provider answers to the next setTranscriber calls (null: decide as it would). */
       transcriberResult: SetTranscriberResult | null;
       downloadCalls?: number[];
+      deferModelStatus?: boolean;
+      releaseModelStatus?: () => void;
       /** The provider's transcriber changes from outside this screen. */
       patchTranscriber: (patch: Partial<RecorderValue["transcriber"]>) => void;
     };
@@ -326,11 +328,18 @@ function screen(name: string, setup: Setup): HarnessScreen {
               ...(harness.downloadCalls ?? []),
               Date.now(),
             ];
-          modelStatus = {
-            ...MODEL_ABSENT,
-            download: { policy: "wifi", state: "waiting_for_network" },
+          const publishStatus = () => {
+            modelStatus = {
+              ...MODEL_ABSENT,
+              download: { policy: "wifi", state: "waiting_for_network" },
+            };
+            statusListeners.forEach((listener) => listener(modelStatus));
           };
-          statusListeners.forEach((listener) => listener(modelStatus));
+          if (harness?.deferModelStatus) {
+            harness.releaseModelStatus = publishStatus;
+          } else {
+            publishStatus();
+          }
         },
         cancelDownload: async () => {},
         deleteModels: async () => {},
