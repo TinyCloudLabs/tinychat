@@ -1,5 +1,39 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.25
+
+### Patch Changes
+
+- 108e63e: Add a flag-gated desktop Meeting sources entry and shared modal on Connectors.
+- 108e63e: Fix the Capture settings e2e: expose one fake service on the harness page and target the Capture heading exactly.
+- 108e63e: Capture settings: the local-model picker is a standard radio group of downloaded models, with the rest as plain rows with Get, and focus follows a download from Get to progress to the new radio.
+- 108e63e: Add the desktop Capture settings popover and the DesktopCaptureExtras seam it reads, behind the final recorder flag.
+- 108e63e: The desktop Capture home's Recent row now says so when a partial-audio notice could not be dismissed: the same inline alert as the phone sheet, on that row, with the notice kept and focus left on Dismiss.
+- 108e63e: Connect the Tauri recorder to the shared voice-note contract and store its audio in Rust-owned files.
+- 108e63e: Default the new desktop recorder to capturing system audio and keep corrupt recorder settings from blocking app launch. Remove the classic desktop capture engine and its native private-cloud uploader; retain transcript saving for meetings and uploads.
+- 108e63e: Start existing desktop beta users with system audio on in the new recorder, while preserving choices they make afterward. Remove the unused classic cloud bridge and local-stt model download permissions.
+- 108e63e: Transcribe stopped desktop recorder notes locally with the selected Whisper model, and resume unfinished transcription after a WebView reload.
+- 108e63e: Store recording Markdown and moments with voice notes
+- 108e63e: Add the recorder engine seam: one selector installs the native, web or desktop engine at boot (web and desktop only with the final recorder on), and native-only calls are gated on the engine's capabilities.
+- 108e63e: A pending-note save that fails after you switch accounts no longer shows its error on the new account's pending notes.
+- 108e63e: Add a flag-gated desktop recorder note view and a saved voice-note page and sheet with edit, copy and play-from-moment.
+- 108e63e: Phone recorder: note moments with ＋ while recording, and a notes sheet with a Markdown writer and a lazily loaded Markdown preview (TC-881). The preview's WASM is no longer part of the service worker's install; it is cached after its first use.
+- 108e63e: CI: split the frontend workflow so the Exo UI screens run one viewport per job and the browser harnesses run beside the unit tests; add the recorder follow-ups' interaction suites.
+- 108e63e: Desktop Capture home (wide layout) behind the final-recorder flag: the Capture header with Library and the ⚙︎ settings, the idle start button and Back to recording, Upload, Meeting and Connect existing meetings, the "on this Mac" card on the app, and Recent with All / Notes / Meetings filters and capture-issue rows (including a partial-audio row with Dismiss). The Capture nav dot also shows on the rail.
+- 108e63e: Bind the desktop capture settings to the Tauri recorder's model, system-audio and auto-save commands, and drop the Mac recorder card from Capture when the shared recorder is on.
+- 108e63e: On the Mac app, the recorder's Local choice is Whisper: available (signed in or out) once a Whisper model is selected, named in its caption, and live as models download; saved notes and Recent rows show the after-stop Whisper progress and failure with Retry.
+- 108e63e: Recorder phone UI fixes from the E1 pass: rounded focus rings on the moment field and the ＋ button, the saved note sheet keeps its formatting bar in view in Edit mode, and a failed Open Settings shows a generic line instead of the raw plugin error.
+- 108e63e: Unsaved voice notes keep their Save now row on the web at rail widths ("in this browser"), and native tablets say "on this device" instead of "this Mac". The microphone recovery views show stable lines instead of native error text. Library filter chips are at least 44 px wide.
+- 108e63e: The new recorder is the only recorder: `VITE_EXO_RECORDER_FINAL` is gone and the previous recorder screens, the live-edge indicator and the on-page local transcriber panel are removed. After Done, a receipt-only view shows the saved note.
+- 108e63e: Recorder in a browser: the tab title follows the recording, the screen stays awake, leaving the page asks first, a keep-open notice shows once, a denied microphone gets site-permission guidance with Try again, the microphone list comes from the browser, and Local transcription stays closed on the web.
+- 108e63e: Expose recording note sync status and retry note loads with backoff
+- 108e63e: Test infrastructure: the Meeting sources e2e waits for Radix to move focus instead of reading it the instant the sheet unmounts, and the exo-ui harness readiness cap runs on `performance.now()` so `?freeze=1` can no longer hang a never-ready screen.
+- 108e63e: Show a one-time, dismissible notice in the desktop Capture settings that system audio is now included in Mac recordings.
+- 108e63e: Hide the legacy screen-edge glow when the final recorder is enabled.
+- 108e63e: Turn on the browser voice-notes engine behind the recorder flag: lazy registration, boot recovery, a fetch upload transport for private-cloud transcription, and mime-derived saved file extensions.
+- 108e63e: Add a browser voice-notes engine (IndexedDB store, MediaRecorder capture, level meter) implementing the full VoiceNotesPlugin contract. Not wired in yet.
+- 108e63e: Add the desktop recorder ring view (rail and desktop layouts, in the main region), its discard confirmation and toasts, the overlay mount by layout, and shell × layout capabilities.
+
 ## 0.6.0-beta.24
 
 ### Patch Changes
