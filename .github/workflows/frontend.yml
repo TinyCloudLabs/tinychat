@@ -226,4 +226,4 @@ jobs:
 
       - name: Recorder follow-ups interaction suites (Chromium)
         working-directory: test
-        run: EXO_UI_ENGINE=chromium bun test recorder-final-desktop recorder-final-notes recorder-final-saved-note recorder-final-web meeting-sources capture-settings capture-home-desktop web-voice-notes-codec
+        run: EXO_UI_ENGINE=chromium bun test recorder-final-desktop recorder-final-notes recorder-final-saved-note recorder-final-web meeting-sources capture-settings capture-home-desktop web-voice-notes-codec mic-recovery
