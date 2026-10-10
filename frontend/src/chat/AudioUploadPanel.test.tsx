@@ -14,7 +14,8 @@ import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
-import { CaptureActions } from "@/capture/CaptureActions";
+import { SoftActions } from "@/capture/home/SoftActions";
+import { StaticRecorderProvider } from "@/capture/recorder/RecorderProvider";
 import { AboutPage } from "./AboutPage";
 import { assemblyAiStatus, AudioUploadView, fileProblem, PRIVATE_CONSENT_TEXT, type AudioUploadViewProps } from "./AudioUploadPanel";
 import { TranscriptionSettingsView, type TranscriptionSettingsViewProps } from "./TranscriptionSettings";
@@ -67,11 +68,11 @@ const transcribeButton = /<button[^>]*>Transcribe<\/button>/;
 
 describe("Upload on Capture", () => {
   test("Upload is a Capture action that opens its own sheet, on every platform; the Transcriber tabs are gone", () => {
-    const actions = renderToStaticMarkup(<CaptureActions onUpload={noop} onMeeting={noop} />);
+    const actions = renderToStaticMarkup(<StaticRecorderProvider value={{ available: false }}><SoftActions onUpload={noop} onMeeting={noop} /></StaticRecorderProvider>);
     expect(actions).toContain('aria-label="Upload audio"');
     expect(actions).toContain('aria-label="Send a notetaker to a meeting"');
     // No notetaker on this backend: no Meeting action, Upload stays.
-    const dark = renderToStaticMarkup(<CaptureActions onUpload={noop} />);
+    const dark = renderToStaticMarkup(<StaticRecorderProvider value={{ available: false }}><SoftActions onUpload={noop} /></StaticRecorderProvider>);
     expect(dark).toContain('aria-label="Upload audio"');
     expect(dark).not.toContain("Send a notetaker");
     const capture = readFileSync(join(import.meta.dir, "../capture/CaptureSurface.tsx"), "utf8");

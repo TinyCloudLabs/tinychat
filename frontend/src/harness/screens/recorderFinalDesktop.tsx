@@ -1,8 +1,7 @@
 // The final desktop recorder (D1) in the real app shell: the ring view fills the main region and the
 // sidebar (1280 wide) or rail (900 wide) stays visible. The static screens run over a fixed recorder on
 // the frozen clock; the interactive one runs the real recorder over the fake native plugin, for
-// test/recorder-final-desktop.e2e.test.ts. The harness build has no env, so FinalRecorderShell stands in
-// for the flag, and DesktopRecorderSeedContext opens the surfaces that start closed.
+// test/recorder-final-desktop.e2e.test.ts. DesktopRecorderSeedContext opens the surfaces that start closed.
 import { useContext, useEffect, useMemo, useRef } from "react";
 
 import {
@@ -145,7 +144,6 @@ export function Frame({
         shim={shim}
         state="ready"
         recorder={recorder}
-        finalRecorder
         inside={
           start ? <StartRecording /> : null
         }

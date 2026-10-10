@@ -3,7 +3,6 @@
 // the screen installs, so nothing depends on a device store or a space.
 import { useContext, useEffect, useMemo } from "react";
 
-import { forceSoftHome } from "@/capture/home/softHome";
 import {
   clearSavedNoteDrafts,
   setSavedNoteDraft,
@@ -147,7 +146,6 @@ function Note(props: {
   audio?: boolean;
   press?: { selector: string; text?: string };
 }) {
-  forceSoftHome(true);
   const platform = useContext(PlatformContext);
   const shim = useMemo(() => createRuntimeShim(), []);
   const tcw = useMemo(() => (props.audio ? tcwWithAudio() : libraryTcw()), [props.audio]);
@@ -164,7 +162,6 @@ function Note(props: {
         state="ready"
         captureTcw={tcw}
         recorder={IDLE}
-        finalRecorder
       />
       {props.press && <Press {...props.press} />}
     </>

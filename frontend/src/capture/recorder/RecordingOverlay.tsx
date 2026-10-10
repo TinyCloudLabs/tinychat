@@ -1,9 +1,8 @@
-import { useContext, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useLocation } from "react-router-dom";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 
-import { PlatformContext } from "@/lib/platform";
 import { DesktopRecorderHost } from "./final/desktop/DesktopRecorderHost";
 import type { DesktopRecorderLoader } from "./final/desktop/LazyDesktopRecorder";
 import type { NoteViewLoader } from "./final/desktop/LazyNoteView";
@@ -11,15 +10,10 @@ import {
   LazyPhoneRecorder,
   type PhoneRecorderLoader,
 } from "./final/LazyPhoneRecorder";
-import { recorderFinalEnabled } from "./final/recorderFinalFlag";
-import {
-  recorderLayout,
-  shellForPlatform,
-  type RecorderLayout,
-} from "./final/shellCapabilities";
+import { recorderLayout, type RecorderLayout } from "./final/shellCapabilities";
 import { ReceiptNoteNotice } from "./final/UnsavedNoteNotice";
 import { overlayMount } from "./overlayMount";
-import { RecordingView, type RecordingViewProps } from "./RecordingView";
+import { ReceiptView } from "./ReceiptView";
 import { useRecorder } from "./RecorderProvider";
 
 function useRecorderLayout(): RecorderLayout {
@@ -45,11 +39,11 @@ function MinimizeOnNavigate() {
   return null;
 }
 
-export type RecordingOverlayProps = Omit<RecordingViewProps, "recorder"> & {
-  /** The app's main region (AppShell's recorder host), where the desktop view is drawn; null until it mounts. Left out above the gate, where there is no shell, so the classic dialog stays. */
+export type RecordingOverlayProps = {
+  /** Opens a saved note (the receipt's Open). */
+  onOpenNote?: (id: string) => void;
+  /** The app's main region (AppShell's recorder host), where the desktop view is drawn; null until it mounts. Left out above the gate, where there is no shell, so the phone recorder fills a dialog. */
   desktopHost?: HTMLElement | null;
-  /** Whether the Soft skin is on. The flag decides unless the caller is the final shell, which only renders with it on (the browser harness builds with no env). */
-  finalSkin?: boolean;
   /** Where the desktop view is imported from; a test replaces it. */
   loadDesktopRecorder?: DesktopRecorderLoader;
   /** Where the desktop note view is imported from; a test replaces it. */
@@ -59,19 +53,15 @@ export type RecordingOverlayProps = Omit<RecordingViewProps, "recorder"> & {
 };
 
 export function RecordingOverlay({
+  onOpenNote,
   desktopHost,
-  finalSkin = recorderFinalEnabled(),
   loadDesktopRecorder,
   loadNoteView,
   loadPhoneRecorder,
-  ...props
 }: RecordingOverlayProps) {
   const recorder = useRecorder();
   const layout = useRecorderLayout();
-  const shell = shellForPlatform(useContext(PlatformContext));
   const mount = overlayMount({
-    flag: finalSkin,
-    shell,
     layout,
     available: recorder.available,
     hosted: desktopHost !== undefined,
@@ -93,7 +83,7 @@ export function RecordingOverlay({
     );
   }
 
-  const final = mount === "phone";
+  const phone = mount === "phone";
   return (
     <DialogPrimitive.Root
       open={recorder.sheetOpen}
@@ -108,7 +98,7 @@ export function RecordingOverlay({
           data-testid="recording-overlay"
           className="fixed inset-0 z-50 h-dvh w-screen overflow-hidden bg-background outline-none"
           onEscapeKeyDown={(event) => {
-            if (final) event.preventDefault();
+            if (phone) event.preventDefault();
           }}
           onOpenAutoFocus={(event) => {
             event.preventDefault();
@@ -118,11 +108,11 @@ export function RecordingOverlay({
           <DialogPrimitive.Title className="sr-only">
             Voice note recorder
           </DialogPrimitive.Title>
-          {final ? (
+          {phone ? (
             <LazyPhoneRecorder load={loadPhoneRecorder} />
           ) : (
             <>
-              <RecordingView recorder={recorder} {...props} />
+              <ReceiptView recorder={recorder} onOpenNote={onOpenNote} />
               <ReceiptNoteNotice />
             </>
           )}

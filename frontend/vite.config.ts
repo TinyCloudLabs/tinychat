@@ -96,9 +96,8 @@ export default defineConfig(({ command }) => ({
         globPatterns: ["**/*.{html,js,css,wasm,png,svg,ico,webmanifest,woff2}"],
         // The desktop-only window API chunk (see build.rollupOptions): a web install can never reach it.
         // The notes renderer's WASM (7.7 MB, lazy: first Preview) is cached at runtime below, so a
-        // first visit, and every visit with the recorder flag off, never downloads it.
-        // The web recorder engine (a lazy chunk, only fetched behind VITE_EXO_RECORDER_FINAL) stays out of the precache.
-        globIgnores: ["agents/**", "assets/tauri-window-*.js", "**/franken_markdown_bg*.wasm", "**/webEngine-*.js"],
+        // first visit never downloads it.
+        globIgnores: ["agents/**", "assets/tauri-window-*.js", "**/franken_markdown_bg*.wasm"],
         // The main chunk carries the TinyCloud SDK's inlined WASM (~7.4 MB today); Workbox skips
         // anything over its 2 MiB default, which would leave the shell unable to boot offline.
         maximumFileSizeToCacheInBytes: 24 * 1024 * 1024,

@@ -76,7 +76,7 @@ const windowStub = (extra: object = {}) => ({ setTimeout, clearTimeout, event: u
   addEventListener: () => {}, removeEventListener: () => {}, ...extra });
 
 const saved = {
-  window: global.window, act: global.IS_REACT_ACT_ENVIRONMENT, flag: process.env.VITE_EXO_RECORDER_FINAL,
+  window: global.window, act: global.IS_REACT_ACT_ENVIRONMENT,
   MediaRecorder: global.MediaRecorder, voiceNotes: VoiceNotes, onDevice: OnDeviceStt,
   mediaDevices: Object.getOwnPropertyDescriptor(navigator, "mediaDevices"),
   storage: global.localStorage,
@@ -103,7 +103,6 @@ afterEach(async () => {
   root = null;
   __resetCaptureEngineForTests();
   global.window = saved.window;
-  if (saved.flag === undefined) delete process.env.VITE_EXO_RECORDER_FINAL; else process.env.VITE_EXO_RECORDER_FINAL = saved.flag;
   if (saved.MediaRecorder === undefined) delete global.MediaRecorder; else global.MediaRecorder = saved.MediaRecorder;
   if (saved.mediaDevices) Object.defineProperty(navigator, "mediaDevices", saved.mediaDevices); else delete (navigator as unknown as Record<string, unknown>).mediaDevices;
   __setVoiceNotesForTests(saved.voiceNotes, { available: null });
@@ -123,7 +122,6 @@ async function mountWith(kind: CaptureEngineKind, capabilities: CaptureCapabilit
     global.window = windowStub();
     __setVoiceNotesForTests(strict.engine, { available: true });
   } else {
-    process.env.VITE_EXO_RECORDER_FINAL = "true";
     __setVoiceNotesForTests(saved.voiceNotes, { available: false });
     global.window = windowStub(kind === "tauri" ? { __TAURI_INTERNALS__: {} } : {});
     global.MediaRecorder = class {};
@@ -199,7 +197,6 @@ describe("web engine, status carries native-only fields", () => {
 
 describe("CaptureEngineGate", () => {
   const webShell = () => {
-    process.env.VITE_EXO_RECORDER_FINAL = "true";
     __setVoiceNotesForTests(saved.voiceNotes, { available: false });
     global.window = windowStub();
     global.MediaRecorder = class {};
@@ -242,7 +239,7 @@ describe("CaptureEngineGate", () => {
     expect(VoiceNotes).toBe(saved.voiceNotes);
   });
 
-  test("native and flag-off render at once, with nothing to install", async () => {
+  test("native renders at once, with nothing to install", async () => {
     rendered = 0;
     __setVoiceNotesForTests(saved.voiceNotes, { available: true });
     global.window = windowStub();

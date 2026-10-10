@@ -53,7 +53,7 @@ export interface NoteDetailViewProps {
   /** A screen of its own (compact), with Back; otherwise a pane beside the list. */
   pushed: boolean;
   onBack: () => void;
-  /** Behind the recorder flag: a voice note opens as its editable note (a page, or a sheet on a phone) instead of this view. */
+  /** A voice note opens as its editable note (a page, or a sheet on a phone) instead of this view. */
   savedNote?: { tcw: TinyCloudWeb; layout: "page" | "sheet"; store?: SavedNoteStore };
 }
 

@@ -4,7 +4,6 @@
 // recorder over the fake native plugin on the Library fixture, for test/capture-home-desktop.e2e.test.ts.
 import { useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
-import { forceSoftHome } from "@/capture/home/softHome";
 import { showToast } from "@/capture/recorder/final/desktop/Toasts";
 import type { RecorderValue } from "@/capture/recorder/RecorderProvider";
 import { PlatformContext } from "@/lib/platform";
@@ -28,7 +27,6 @@ function Home(props: {
   rows?: typeof LIBRARY_ROWS;
   toast?: string;
 }) {
-  forceSoftHome(true);
   const platform = useContext(PlatformContext);
   const shim = useMemo(() => createRuntimeShim(), []);
   const tcw = useMemo(() => libraryTcw({ rows: props.rows }), [props.rows]);
@@ -43,7 +41,6 @@ function Home(props: {
       state="ready"
       captureTcw={tcw}
       recorder={props.recorder}
-      finalRecorder
     />
   );
 }

@@ -7,21 +7,11 @@ import {
   type RecorderLayout,
 } from "../../recorder/final/shellCapabilities";
 
-/** Which home Capture draws: today's, the phone's Soft one (TC-871), or the desktop's (flag on, recorder available, a rail or sidebar). */
-export type CaptureHomeKind = "classic" | "phone" | "desktop";
+/** Which home Capture draws: the phone's Soft one (TC-871) at a compact width, the desktop's from medium up. */
+export type CaptureHomeKind = "phone" | "desktop";
 
-export function captureHomeKind(input: {
-  flag: boolean;
-  /** The recorder can record on this shell; without it the desktop home has nothing to start. */
-  available: boolean;
-  nav: NavKind;
-  size: SizeClass;
-}): CaptureHomeKind {
-  if (!input.flag) return "classic";
-  if (input.nav === "tabbar" && input.size === "compact") return "phone";
-  if (input.nav !== "tabbar" && input.size !== "compact" && input.available)
-    return "desktop";
-  return "classic";
+export function captureHomeKind(size: SizeClass): CaptureHomeKind {
+  return size === "compact" ? "phone" : "desktop";
 }
 
 export function layoutForNav(nav: NavKind): RecorderLayout {

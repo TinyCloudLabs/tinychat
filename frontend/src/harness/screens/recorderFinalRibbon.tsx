@@ -111,7 +111,6 @@ function Minimized({ paused, mic, elapsedMs }: Setup) {
       shim={shim}
       state="ready"
       recorder={value}
-      finalRecorder
     />
   );
 }
@@ -180,7 +179,6 @@ function Native() {
       platform={platform}
       shim={shim}
       state="ready"
-      finalRecorder
       inside={<StartMinimized />}
     />
   );

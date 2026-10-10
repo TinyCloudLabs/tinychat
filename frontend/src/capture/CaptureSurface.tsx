@@ -1,14 +1,11 @@
 // Capture (TC-761): the first of Exo's three destinations, and the phone app's
 // landing. It gathers the capture tools that used to live in Connectors:
 //
-//   Record on this Mac (desktop app), at the top, in a fixed place in the
-//     tree: Capture stays mounted while hidden, so a local recording survives
-//     navigation;
 //   In progress: the upload, the notetaker sessions still moving, and the
 //     voice notes still only on this phone (or stopped at the limit);
 //   Recent (a phone): the last five captures, with See all;
-//   the actions: Upload and Meeting open their sheets; Record (phone app)
-//     goes through the one recorder (RecorderProvider). The notetaker's state
+//   the actions: Upload and Meeting open their sheets; Record goes through
+//     the one recorder (RecorderProvider). The notetaker's state
 //     comes from one useMeetingBot, here, for both the sheet and the rows; its
 //     reads and polling run only while the home shows;
 //   the Library (/chat/capture/library) and a note (/chat/capture/library/:id),
@@ -18,15 +15,13 @@
 // only classes move. On a phone (compact) one of home, Library or the note
 // shows, each its own scroller, so each keeps its scroll. From medium up the
 // list pane (home above the Library) sits beside the detail pane. A resize
-// never re-parents anything: the local recorder and the cohort archive keep
-// their place.
-import { useEffect, useRef, useState, useSyncExternalStore, useContext } from "react";
+// never re-parents anything: the cohort archive keeps its place.
+import { useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { uploadRunner } from "@/lib/audioUpload";
-import { isDesktopLocalTranscriptionAvailable } from "@/lib/localTranscriber";
 import { PlatformContext } from "@/lib/platform";
 import { useSizeClass } from "@/lib/sizeClass";
 import { cn } from "@/lib/utils";
@@ -34,19 +29,16 @@ import { activeMeetings, useMeetingBot } from "@/chat/TranscriberSection";
 import { useTranscriberSavedState } from "@/chat/useTranscriberLibrarySync";
 import { useNavKind } from "@/shell/navItems";
 import { goUp } from "@/shell/navigation";
-import { PAGE_COLUMN, PageHeader, SettingsGear } from "@/shell/PageHeader";
+import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 import { PATHS, type Screen } from "@/shell/routes";
-import { CaptureActions } from "./CaptureActions";
-import { CaptureHomeView, FirstUse } from "./CaptureHomeView";
 import { captureEvents } from "./captureEvents";
-import { LocalRecorderCard } from "./desktop/LocalRecorderCard";
-import { localRecorderCardShown } from "./desktop/localRecorderGate";
+import { FirstUse } from "./FirstUse";
 import { HOME_COPY } from "./home/homeCopy";
 import { SoftActions } from "./home/SoftActions";
 import { SoftCaptureHome } from "./home/SoftCaptureHome";
 import { captureHomeKind, layoutForNav } from "./home/desktop/captureHomeKind";
 import { LazyDesktopCaptureHome } from "./home/desktop/LazyDesktopCaptureHome";
-import { SoftHomeProvider, softHomeEnabled } from "./home/softHome";
+import { SoftHomeProvider } from "./home/softHome";
 import { useSoftTheme } from "./home/softTheme";
 import { inProgressShown, type InProgressRowsViewProps } from "./InProgressRows";
 import { LibraryScreen } from "./library/LibraryScreen";
@@ -54,7 +46,6 @@ import { NoteDetail } from "./library/NoteDetail";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { useLibrary } from "./library/useLibrary";
 import { MeetingSheet } from "./meeting/MeetingSheet";
-import { RecordButton } from "./recorder/RecordButton";
 import { useRecorder } from "./recorder/RecorderProvider";
 import { continuePausedUpload, pausedUpload } from "./upload/pausedUpload";
 import { UploadSheet } from "./upload/UploadSheet";
@@ -81,12 +72,10 @@ const LIST_COLUMN = "w-full px-4";
 type Sheet = "upload" | "meeting";
 
 export function CaptureSurface(props: CaptureSurfaceProps) {
-  // Behind the flag: the phone (the tab bar, compact width) has the Soft home (TC-862);
-  // a rail or sidebar at medium width and up, with a recorder, has the desktop home.
-  const nav = useNavKind();
+  // A compact width has the Soft home (TC-862); medium and up has the desktop home.
   const size = useSizeClass().size;
   const recorder = useRecorder();
-  const kind = captureHomeKind({ flag: softHomeEnabled(), available: recorder.available, nav, size });
+  const kind = captureHomeKind(size);
   const soft = kind === "phone";
   return (
     <SoftHomeProvider enabled={soft} issues={recorder.captureIssues} onDismissIssue={recorder.dismissCaptureIssue}>
@@ -139,11 +128,6 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
   const sheetChange = (which: Sheet) => (open: boolean) => setSheet(open ? which : null);
   // The phone app's recorder: notes still on this phone and a stop at the limit are In progress rows.
   const recorder = useRecorder();
-  const localRecorder = localRecorderCardShown({
-    tauri: isDesktopLocalTranscriptionAvailable(),
-    flag: softHomeEnabled(),
-    recorderAvailable: recorder.available,
-  });
 
   // Recent, the Library and the open note: one reader, through the per-space queue.
   const library = useLibrary(tcw, {
@@ -151,7 +135,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
     noteId: screen.noteId,
     transcriber: recorder.available ? { backendUrl, sessionStore } : null,
   });
-  // Behind the flag a saved voice note is the note itself: a full page (desktop) or a sheet over the Library (phone).
+  // A saved voice note is the note itself: a full page (desktop) or a sheet over the Library (phone).
   const openNote = noteScreen && library.note.item?.source === VOICE_NOTE_SOURCE ? library.note.item : null;
   const notePage = desktopHome && openNote !== null;
   const noteSheet = soft && openNote !== null;
@@ -223,62 +207,27 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
             title="Capture"
             className={column}
             trailing={
-              <>
-                {soft ? (
-                  <Link to={PATHS.library} className="soft-header-link">
-                    {HOME_COPY.library}
-                  </Link>
-                ) : (
-                  <>
-                    <Link
-                      to={PATHS.library}
-                      className="tap-transparent flex h-11 items-center rounded-full px-3 text-callout font-medium text-primary transition-colors hover:bg-surface-2 active:bg-surface-2"
-                    >
-                      Library
-                    </Link>
-                    {nav === "tabbar" && <SettingsGear />}
-                  </>
-                )}
-              </>
+              <Link to={PATHS.library} className="soft-header-link">
+                {HOME_COPY.library}
+              </Link>
             }
           />
-          <div className={cn(column, "flex flex-1 flex-col gap-6 pt-2", wide ? "order-2 pb-6" : "pb-4")}>
-            {localRecorder && <LocalRecorderCard tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />}
-            {soft ? (
-              <SoftCaptureHome
-                inProgress={inProgress}
-                recent={{ status: library.status, items: library.items }}
-                scanFailure={recorder.recoveryScanFailure}
-                onRetryRecent={library.retry}
-                now={now}
-              />
-            ) : (
-              <CaptureHomeView
-                platform={platform}
-                inProgress={inProgress}
-                recent={wide ? null : { status: library.status, items: library.items }}
-                onRetryRecent={library.retry}
-                now={now}
-              />
-            )}
+          <div className={cn(column, "flex flex-1 flex-col gap-6 pt-2 pb-4")}>
+            <SoftCaptureHome
+              inProgress={inProgress}
+              recent={{ status: library.status, items: library.items }}
+              scanFailure={recorder.recoveryScanFailure}
+              onRetryRecent={library.retry}
+              now={now}
+            />
           </div>
-          <div className={wide ? "order-1 pb-2 pt-1" : "sticky bottom-0 z-10 bg-background pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2"}>
-            {soft ? (
-              <div className={column}>
-                <SoftActions
-                  onUpload={() => setSheet("upload")}
-                  {...(bot.listStatus === "dark" ? {} : { onMeeting: () => setSheet("meeting") })}
-                />
-              </div>
-            ) : (
-              <CaptureActions
-                // Beside the note the pane is narrow: with large text an action wraps rather than being cut.
-                className={cn(column, wide && "flex-wrap")}
-                record={<RecordButton variant="action" />}
+          <div className="sticky bottom-0 z-10 bg-background pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2">
+            <div className={column}>
+              <SoftActions
                 onUpload={() => setSheet("upload")}
                 {...(bot.listStatus === "dark" ? {} : { onMeeting: () => setSheet("meeting") })}
               />
-            )}
+            </div>
           </div>
             </>
           )}

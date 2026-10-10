@@ -76,7 +76,6 @@ import { ConnectorsPage } from "./chat/ConnectorsPage";
 import { CaptureSurface } from "./capture/CaptureSurface";
 import { captureEvents } from "./capture/captureEvents";
 import { HeaderLiveChip } from "./capture/recorder/HeaderLiveChip";
-import { LiveEdge } from "./capture/recorder/LiveEdge";
 import { RecordButton } from "./capture/recorder/RecordButton";
 import { RecorderProvider } from "./capture/recorder/RecorderProvider";
 import { MicDeniedRecovery } from "./capture/recorder/MicDeniedRecovery";
@@ -1300,9 +1299,6 @@ export function App() {
           </div>
         </div>
       )}
-
-      {/* The Live Edge: a rim while a microphone is live in Exo (never on the web). */}
-      <LiveEdge />
     </div>
     </RecorderProvider>
   );

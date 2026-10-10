@@ -141,10 +141,22 @@ async function signIn(did: string, transitionGen: number) {
 }
 
 describe("registration", () => {
-  test("flag off: registering the web engine does nothing; no engine is reachable", () => {
-    registerWebCaptureEngine();
-    expect(captureEngineKind()).toBeNull();
-    expect(captureEngineAvailable()).toBe(false);
+  test("registering the web engine makes a browser that can record select it, without building it", () => {
+    const g = globalThis as Record<string, unknown>;
+    const savedRecorder = g.MediaRecorder;
+    const savedDevices = Object.getOwnPropertyDescriptor(navigator, "mediaDevices");
+    g.MediaRecorder = class {};
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: {} });
+    try {
+      expect(captureEngineKind()).toBeNull();
+      registerWebCaptureEngine();
+      expect(captureEngineKind()).toBe("web");
+      expect(captureEngineAvailable()).toBe(false);
+    } finally {
+      if (savedRecorder === undefined) delete g.MediaRecorder; else g.MediaRecorder = savedRecorder;
+      if (savedDevices) Object.defineProperty(navigator, "mediaDevices", savedDevices); else delete (navigator as unknown as Record<string, unknown>).mediaDevices;
+      __resetCaptureEngineForTests();
+    }
   });
 
   test("the web engine's capabilities are all false", async () => {

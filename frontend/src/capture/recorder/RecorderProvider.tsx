@@ -3,8 +3,7 @@
 // RecorderProvider calls useVoiceNoteRecorder once (a second controller would
 // race the first for the microphone and its saves); the views are context
 // consumers that own no listeners. It also owns whether the overlay is open,
-// publishes the live microphone to liveCapture (the Live Edge), and gives
-// feedback: haptics, and a polite announcement of each change.
+// and gives feedback: haptics, and a polite announcement of each change.
 //
 // StaticRecorderProvider serves a fixed value, for the screenshot harness.
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -17,7 +16,6 @@ import { VOICE_NOTE_MAX_DURATION_MS, VoiceNotes, type VoiceNoteRecording } from 
 import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
 import { effectiveCaptureOptions, readTranscriberPreference } from "@/lib/voiceNotes/transcriberPreference";
 import type { PendingSnapshot } from "@/lib/voiceNotes/recorderSaves";
-import { liveCapture } from "./liveCapture";
 import { DISCARDED, micWarning, recorderStatusText, RECEIPT_KEPT } from "./recorderCopy";
 import type { RecorderCaptureIssue, RecorderMic, RecorderPhase, RecorderState } from "./recorderReducer";
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
@@ -185,20 +183,6 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   // load error), not whatever the previous note left behind.
   useEffect(() => { setReceiptReadyState(false); }, [state.lastSaved?.id]);
   const [announcement, setAnnouncement] = useState("");
-
-  // The Live Edge follows the live microphone.
-  const live = state.phase === "recording" && (state.mic.state === "recording" || state.mic.state === "silenced");
-  const warning = live && micWarning(state.mic) !== null;
-  useEffect(() => {
-    liveCapture.set(live ? { source: "voice-note", warning, startedAt: state.startedAt } : null);
-  }, [live, warning, state.startedAt]);
-  useEffect(
-    () => () => {
-      if (liveCapture.get()?.source === "voice-note") liveCapture.set(null);
-    },
-    [],
-  );
-  useEffect(() => subscribeLevel((level) => liveCapture.setLevel(level)), [subscribeLevel]);
 
   // Feedback for each change: a haptic and a polite announcement.
   const previous = useRef(state);

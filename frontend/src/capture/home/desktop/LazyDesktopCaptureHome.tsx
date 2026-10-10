@@ -1,4 +1,4 @@
-// The desktop home is its own chunk, so a build with the recorder flag off never loads it.
+// The desktop home is its own chunk, so a phone never loads it.
 import { Component, lazy, Suspense, type ReactNode } from "react";
 
 import { Skeleton } from "@/components/ui/skeleton";

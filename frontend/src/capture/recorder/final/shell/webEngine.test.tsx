@@ -37,7 +37,7 @@ const WEB: CaptureCapabilities = {
 const noop = () => {};
 
 const saved = {
-  flag: process.env.VITE_EXO_RECORDER_FINAL,
+ 
   MediaRecorder: global.MediaRecorder,
   voiceNotes: VoiceNotes,
   onDevice: OnDeviceStt,
@@ -59,8 +59,6 @@ beforeEach(() => {
 
 afterEach(() => {
   __resetCaptureEngineForTests();
-  if (saved.flag === undefined) delete process.env.VITE_EXO_RECORDER_FINAL;
-  else process.env.VITE_EXO_RECORDER_FINAL = saved.flag;
   if (saved.MediaRecorder === undefined) delete global.MediaRecorder;
   else global.MediaRecorder = saved.MediaRecorder;
   if (saved.mediaDevices) Object.defineProperty(navigator, "mediaDevices", saved.mediaDevices);
@@ -70,7 +68,6 @@ afterEach(() => {
 });
 
 async function installWeb() {
-  process.env.VITE_EXO_RECORDER_FINAL = "true";
   __setVoiceNotesForTests(saved.voiceNotes, { available: false });
   global.MediaRecorder = class {};
   Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: {} });
@@ -197,13 +194,5 @@ describe("shellAudioInputs", () => {
     __setVoiceNotesForTests(saved.voiceNotes, { available: null });
     await installWeb();
     expect(shellAudioInputs()).toBe(browserAudioInputs);
-  });
-
-  test("with the flag off the web has no list", async () => {
-    process.env.VITE_EXO_RECORDER_FINAL = "false";
-    global.MediaRecorder = class {};
-    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: {} });
-    registerCaptureEngine("web", async () => Object.assign(createFakeVoiceNotes().plugin, { capabilities: WEB }) as CaptureEngine);
-    expect(shellAudioInputs()).toBeNull();
   });
 });

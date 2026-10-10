@@ -45,7 +45,7 @@ test("App mounts RecorderProvider exactly once above the auth gate", () => {
   expect(app).toContain("!isReady && <RecordingOverlay />");
   expect(app).not.toContain("voiceNoteOpen");
   expect(app).not.toContain("QuickVoiceNote");
-  expect(app.match(/<LiveEdge \/>/g)).toHaveLength(1);
+  expect(app).not.toContain("LiveEdge");
 });
 
 test("offline local home consumes the same recorder above the auth gate", () => {

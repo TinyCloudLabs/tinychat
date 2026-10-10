@@ -1,14 +1,11 @@
 import { expect, test } from "bun:test";
 import { overlayMount, type OverlayMountInput } from "./overlayMount";
-import type { RecorderLayout, RecorderShell } from "./final/shellCapabilities";
+import type { RecorderLayout } from "./final/shellCapabilities";
 
-const SHELLS: RecorderShell[] = ["phone", "desktop", "web"];
 const LAYOUTS: RecorderLayout[] = ["phone", "rail", "desktop"];
 
 const mount = (input: Partial<OverlayMountInput>) =>
   overlayMount({
-    flag: true,
-    shell: "web",
     layout: "desktop",
     available: true,
     hosted: true,
@@ -16,39 +13,22 @@ const mount = (input: Partial<OverlayMountInput>) =>
     ...input,
   });
 
-test("flag off: every shell and layout keeps the classic view", () => {
-  for (const shell of SHELLS)
-    for (const layout of LAYOUTS)
-      for (const available of [true, false])
-        expect(mount({ flag: false, shell, layout, available })).toBe("legacy");
+test("the phone layout gets the phone recorder", () => {
+  expect(mount({ layout: "phone" })).toBe("phone");
+  expect(mount({ layout: "phone", available: false })).toBe("phone");
 });
 
-test("flag on, phone layout: the phone shell, and any shell with a recorder, gets the phone recorder", () => {
-  expect(mount({ shell: "phone", layout: "phone" })).toBe("phone");
-  expect(mount({ shell: "phone", layout: "phone", available: false })).toBe("phone");
-  expect(mount({ shell: "desktop", layout: "phone" })).toBe("phone");
-  expect(mount({ shell: "web", layout: "phone" })).toBe("phone");
-  expect(mount({ shell: "desktop", layout: "phone", available: false })).toBe("legacy");
-  expect(mount({ shell: "web", layout: "phone", available: false })).toBe("legacy");
+test("rail and desktop layouts with a recorder get the desktop view", () => {
+  for (const layout of ["rail", "desktop"] as const)
+    expect(mount({ layout })).toBe("desktop");
 });
 
-test("flag on, rail and desktop layouts: any shell with a recorder gets the desktop view", () => {
-  for (const shell of SHELLS)
-    for (const layout of ["rail", "desktop"] as const) {
-      expect(mount({ shell, layout })).toBe("desktop");
-      expect(mount({ shell, layout, available: false })).toBe("legacy");
-    }
+test("above the gate there is no main region, so the rail and desktop layouts get the phone recorder in a dialog", () => {
+  for (const layout of ["rail", "desktop"] as const)
+    expect(mount({ layout, hosted: false })).toBe("phone");
 });
 
-test("above the gate there is no main region, so the rail and desktop layouts keep the classic dialog", () => {
-  for (const shell of SHELLS)
-    for (const layout of ["rail", "desktop"] as const)
-      expect(mount({ shell, layout, hosted: false })).toBe("legacy");
-  expect(mount({ shell: "phone", layout: "phone", hosted: false })).toBe("phone");
-});
-
-test("a receipt keeps the classic view at every layout", () => {
-  for (const shell of SHELLS)
-    for (const layout of LAYOUTS)
-      expect(mount({ shell, layout, receipt: true })).toBe("legacy");
+test("a receipt gets its own view at every layout", () => {
+  for (const layout of LAYOUTS)
+    expect(mount({ layout, receipt: true })).toBe("receipt");
 });

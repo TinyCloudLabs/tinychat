@@ -1,17 +1,12 @@
-// The voice-note recorder (TC-761, PR4) in each of its states, over a
-// StaticRecorderProvider on the frozen clock: the sheet (or the dialog on wide
-// screens), the island, and the rail and sidebar live controls. Until the new
-// shell (PR3) lands, the page under the island, the rail and the sidebar are
-// stand-ins.
-import { useEffect, type ReactNode } from "react";
+// The recorder's receipt and minimised presentations over a StaticRecorderProvider on the frozen
+// clock: the receipt dialog, the island, and the rail and sidebar live controls. The page under the
+// island, the rail and the sidebar are stand-ins. The recording view itself is in recorderFinal*.
+import type { ReactNode } from "react";
 import { SettingsIcon } from "lucide-react";
 
 import { Island } from "@/capture/recorder/Island";
-import { liveCapture } from "@/capture/recorder/liveCapture";
-import { LiveEdge } from "@/capture/recorder/LiveEdge";
 import { RailLiveButton } from "@/capture/recorder/RailLiveButton";
 import { RecordingOverlay } from "@/capture/recorder/RecordingOverlay";
-import { forceSoftHome } from "@/capture/home/softHome";
 import { StaticRecorderProvider, type RecorderValue } from "@/capture/recorder/RecorderProvider";
 import { SidebarLiveCard } from "@/capture/recorder/SidebarLiveCard";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
@@ -24,7 +19,6 @@ const noop = () => {};
 const LEVELS = Array.from({ length: 96 }, (_, i) =>
   Math.min(1, Math.max(0, 0.32 + 0.24 * Math.sin(i * 0.61) + 0.18 * Math.sin(i * 1.73 + 1.1) + 0.08 * Math.cos(i * 3.1))),
 );
-const QUIET = LEVELS.map(() => 0);
 
 const PRIVATE_CLOUD_ON: VoiceNoteTranscriptionProps = {
   availability: "available",
@@ -47,46 +41,27 @@ const LIVE: Partial<RecorderValue> = {
   transcription: PRIVATE_CLOUD_ON,
 };
 
-/** Publishes the live microphone for the Live Edge, as the real provider does. */
-function LiveMic(props: { warning?: boolean }) {
-  useEffect(() => {
-    liveCapture.set({ source: "voice-note", warning: props.warning ?? false, startedAt: LIVE.startedAt ?? null });
-    liveCapture.setLevel(0.5);
-    return () => liveCapture.set(null);
-  }, [props.warning]);
-  return <LiveEdge />;
-}
-
 function Backdrop(props: { children?: ReactNode }) {
   return <div className="h-full bg-background">{props.children}</div>;
 }
 
-function sheet(
-  id: string,
-  value: Partial<RecorderValue>,
-  options: { levels?: readonly number[]; live?: boolean; warning?: boolean; consentAsking?: boolean; discardAsking?: boolean; soft?: boolean } = {},
-): HarnessScreen {
+function sheet(id: string, value: Partial<RecorderValue>): HarnessScreen {
   return {
     id: `recorder-${id}`,
     group: "recorder",
     layout: "pane",
     platform: "ios",
     displayTitle: false,
-    render: () => {
-      // The receipt's informational line is behind the recorder-final flag, which the harness build does not set.
-      if (options.soft) forceSoftHome(true);
-      return (
-      <StaticRecorderProvider value={{ ...value, sheetOpen: true }} levels={options.levels ?? LEVELS}>
+    render: () => (
+      <StaticRecorderProvider value={{ ...value, sheetOpen: true }} levels={LEVELS}>
         <Backdrop />
-        <RecordingOverlay onOpenNote={noop} consentAsking={options.consentAsking} discardAsking={options.discardAsking} />
-        {options.live && <LiveMic warning={options.warning} />}
+        <RecordingOverlay onOpenNote={noop} />
       </StaticRecorderProvider>
-      );
-    },
+    ),
   };
 }
 
-function island(id: string, value: Partial<RecorderValue>, live = false): HarnessScreen {
+function island(id: string, value: Partial<RecorderValue>): HarnessScreen {
   return {
     id: `recorder-island-${id}`,
     group: "recorder",
@@ -103,7 +78,6 @@ function island(id: string, value: Partial<RecorderValue>, live = false): Harnes
             <Island onOpenNote={noop} />
           </div>
         </div>
-        {live && <LiveMic />}
       </StaticRecorderProvider>
     ),
   };
@@ -148,7 +122,6 @@ function NavStandIn(props: { kind: "rail" | "sidebar" }) {
           <h1 className="font-display text-title-1">Capture</h1>
         </main>
       </div>
-      <LiveMic />
     </StaticRecorderProvider>
   );
 }
@@ -156,20 +129,10 @@ function NavStandIn(props: { kind: "rail" | "sidebar" }) {
 const SAVED = { id: "rec-1", durationMs: 42_000, at: FROZEN_NOW };
 
 export const recorderScreens: HarnessScreen[] = [
-  { ...sheet("mic-denied", { phase: "idle", permissionDenied: true, startedAt: null, transcription: undefined }, { levels: QUIET }), platform: "android" },
-  sheet("starting", { phase: "starting", startedAt: null, transcription: PRIVATE_CLOUD_ON }, { levels: QUIET }),
-  sheet("live", LIVE, { live: true }),
-  sheet("silenced", { ...LIVE, mic: { state: "silenced", reason: "os_silenced" } }, { levels: QUIET, live: true, warning: true }),
-  sheet("no-signal", { ...LIVE, mic: { state: "recording", reason: "no_signal" } }, { levels: QUIET, live: true, warning: true }),
-  sheet("near-limit", { ...LIVE, startedAt: FROZEN_NOW - minutes(176, 12), audioMs: minutes(176, 12) }, { live: true }),
-  sheet("paused", { ...LIVE, mic: { state: "paused", reason: "user" }, audioMs: minutes(12, 48) }, { levels: QUIET }),
-  sheet("interrupted", { ...LIVE, mic: { state: "interrupted", reason: "call" } }, { levels: QUIET }),
-  sheet("saving", { ...LIVE, phase: "saving", savePercent: 42 }),
   sheet("landed", { phase: "idle", outcome: "saved", lastSaved: SAVED, transcription: PRIVATE_CLOUD_ON }),
   sheet(
     "landed-partial",
     { phase: "idle", outcome: "saved", lastSaved: SAVED, transcription: PRIVATE_CLOUD_ON, captureIssues: { "rec-1": { kind: "partial_audio", missingMs: 12_000 } } },
-    { soft: true },
   ),
   sheet("local", { phase: "idle", outcome: "local", localUpload: "uploading", lastSaved: SAVED, transcription: PRIVATE_CLOUD_ON }),
   sheet("failed", {
@@ -178,10 +141,7 @@ export const recorderScreens: HarnessScreen[] = [
     error: "Recorded, but saving to your space failed: The network connection was lost.",
     pending: { listing: { state: "ok", count: 1 }, running: false, lastError: null },
   }),
-  sheet("consent", { ...LIVE, transcription: { ...PRIVATE_CLOUD_ON, consented: false } }, { live: true, consentAsking: true }),
-  // Discard's question, in place of the header's action (PR5).
-  sheet("discard", LIVE, { live: true, discardAsking: true }),
-  island("live", LIVE, true),
+  island("live", LIVE),
   island("saving", { ...LIVE, phase: "saving", savePercent: 42 }),
   island("landed", { phase: "idle", outcome: "saved", lastSaved: SAVED }),
   island("failed", { phase: "idle", outcome: "failed", pending: { listing: { state: "ok", count: 1 }, running: false, lastError: null } }),
