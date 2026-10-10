@@ -144,8 +144,9 @@
 .pr-main[data-noting="true"] .pr-controls {
   display: none;
 }
+/* The screen ends where the keyboard begins, so what is typed into scrolls above it instead of sitting under it. */
 .pr-main[data-noting="true"] {
-  padding-bottom: var(--kbh, 0px);
+  margin-bottom: var(--kbh, 0px);
 }
 
 .pr-nsheet {

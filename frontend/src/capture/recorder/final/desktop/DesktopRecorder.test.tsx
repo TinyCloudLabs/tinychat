@@ -85,16 +85,29 @@ describe("DesktopRecorder", () => {
     expect(html).not.toContain("View notes");
   });
 
-  test("a revoked permission while recording replaces the controls row with Open Settings", () => {
+  test("a revoked permission while recording keeps Discard and Done, with Open Settings above them", () => {
     const html = render({
       mic: { state: "needs_user", reason: "permission_revoked" },
     });
     expect(html).toContain("Microphone off");
     expect(html).toContain("Open Settings");
-    expect(html).not.toContain('aria-label="Discard recording"');
+    expect(html).toContain('aria-label="Discard recording"');
+    expect(html).toContain("Done");
     expect(html).not.toContain('aria-label="Pause recording"');
-    expect(html).not.toContain("Done");
+    expect(html.indexOf("Open Settings")).toBeLessThan(
+      html.indexOf('aria-label="Discard recording"'),
+    );
     expect(html).toContain('class="pr-src-wrap"');
+  });
+
+  test("a revoked permission while recording in a browser keeps Discard and Done under the site-permission guidance", () => {
+    __setInstalledEngineForTests("tauri", MAC_CAPABILITIES);
+    const html = render({
+      mic: { state: "needs_user", reason: "permission_revoked" },
+    });
+    expect(html).toContain('data-testid="browser-mic-guidance"');
+    expect(html).toContain('aria-label="Discard recording"');
+    expect(html).toContain("Done");
   });
 
   test("a denied microphone at idle replaces the controls row with Open Settings", () => {
