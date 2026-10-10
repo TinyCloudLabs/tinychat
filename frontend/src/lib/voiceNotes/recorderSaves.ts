@@ -428,6 +428,10 @@ export const pendingStore = {
   refresh(lastError: string | null = pendingSnapshot.lastError): Promise<void> {
     return relistPending(lastError);
   },
+  /** A retry that cannot start still needs a visible result beside Save now. */
+  reportError(message: string): void {
+    publishPending({ lastError: message });
+  },
 };
 
 function listingFailure(caught: unknown): string {
