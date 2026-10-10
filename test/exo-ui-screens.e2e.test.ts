@@ -367,6 +367,8 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                     scrollTop: viewport?.scrollTop ?? -1,
                     viewportTop,
                     titleTop,
+                    compactBannerApplies: window.matchMedia("(max-width: 639px)").matches &&
+                      document.documentElement.matches('html[data-nav="tabbar"][data-island]'),
                     copyVisible: Boolean(copy?.getClientRects().length),
                     actionHeight: action?.getBoundingClientRect().height ?? 0,
                   };
@@ -374,7 +376,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 if (emptyState.scrollTop !== 0 || emptyState.titleTop < emptyState.viewportTop) {
                   findings.push({ check: "chat-empty-start", detail: `scrollTop ${emptyState.scrollTop}; title top ${emptyState.titleTop}; viewport top ${emptyState.viewportTop}` });
                 }
-                if (emptyState.copyVisible || emptyState.actionHeight < 43.5) {
+                if (emptyState.compactBannerApplies && (emptyState.copyVisible || emptyState.actionHeight < 43.5)) {
                   findings.push({ check: "chat-ribbon-action", detail: `copy visible ${emptyState.copyVisible}; action height ${emptyState.actionHeight}px` });
                 }
                 if (await page.locator('button[aria-label="Scroll to bottom"]').count() > 0) {

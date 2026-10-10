@@ -90,8 +90,6 @@ export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onRe
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const isEmpty = useAuiState((s) => s.thread.isEmpty);
   const viewportRef = useRef<HTMLDivElement>(null);
-  const previousThreadId = useRef(threadId);
-  const pendingEmptyThreadReset = useRef(true);
   const threadRuntime = useThreadRuntime();
   const applyCanvasToRuntime = useCallback((canvas: CanvasModel) => {
     threadRuntime.import(repositoryFromCanvas(canvas));
@@ -99,25 +97,28 @@ export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onRe
   const [surface, setSurface] = useState<"chat" | "canvas">("chat");
   useEffect(() => setSurface("chat"), [threadId]);
   useLayoutEffect(() => {
-    if (previousThreadId.current !== threadId) {
-      previousThreadId.current = threadId;
-      pendingEmptyThreadReset.current = true;
-    }
-    if (!pendingEmptyThreadReset.current || !isEmpty) return;
-    pendingEmptyThreadReset.current = false;
+    if (!isEmpty) return;
+    const viewport = viewportRef.current;
+    if (!viewport) return;
 
-    // assistant-ui schedules initialize and thread-switch auto-scroll on its
-    // own animation frame. Reset after those frames, but only for an empty
-    // thread; switching between threads with messages keeps normal behavior.
-    let secondFrame = 0;
-    const firstFrame = requestAnimationFrame(() => {
-      secondFrame = requestAnimationFrame(() => {
-        viewportRef.current?.scrollTo({ top: 0, behavior: "instant" });
+    let frame: number | null = null;
+    const pinToTop = () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        viewport.scrollTo({ top: 0, behavior: "instant" });
       });
-    });
+    };
+    const resizeObserver = new ResizeObserver(pinToTop);
+    resizeObserver.observe(viewport);
+    // Also pin on mount and thread switch; ResizeObserver covers later layout
+    // changes such as minimising the recorder while assistant-ui has a pending
+    // scroll-to-bottom intent for the empty thread.
+    pinToTop();
+
     return () => {
-      cancelAnimationFrame(firstFrame);
-      cancelAnimationFrame(secondFrame);
+      resizeObserver.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
     };
   }, [threadId, isEmpty]);
   return (
