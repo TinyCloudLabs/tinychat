@@ -39,6 +39,7 @@ import {
 import type { VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { saveDeferredForAccountTransition, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
+import { withCaptureDeadline } from "@/lib/voiceNotes/accountHandoff";
 import { FINALIZATION_PENDING, limitNoticeText } from "./recorderCopy";
 import { autoStopIsCurrent, initialRecorderState, recorderReducer, type RecorderCaptureIssue, type RecorderEvent, type RecorderMic, type RecorderState } from "./recorderReducer";
 import { clearPartialAudioIssue, dismissPartialAudioIssue, partialAudioDismissed, partialAudioScope,
@@ -126,6 +127,11 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   let choice = defaultChoice();
   let onSaved: ((recording: VoiceNoteRecording) => void) | undefined;
   let onPresent: (() => void) | undefined;
+  let presentWhenReady = false;
+  const present = () => {
+    if (onPresent) onPresent();
+    else presentWhenReady = true;
+  };
   const listeners = new Set<() => void>();
   const levelListeners = new Set<(level: number) => void>();
   // Resolve only after mount. An invalid SDK identity is logged, while the
@@ -421,6 +427,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     },
     setOnPresent(next) {
       onPresent = next;
+      if (next && presentWhenReady) { presentWhenReady = false; next(); }
     },
     attach() {
       const key = scope();
@@ -495,7 +502,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
             const status = await VoiceNotes.status();
             if (attached && status.micDeniedPresentation) {
               send({ type: "PERMISSION_DENIED" });
-              onPresent?.();
+              present();
             }
             return;
           }
@@ -504,7 +511,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
             if (attached && !status.micDeniedPresentation && status.microphonePermissionGranted) {
               send({ type: "PERMISSION_GRANTED" });
               if (status.shortcutRecordPending) {
-                onPresent?.();
+                present();
                 void VoiceNotes.consumeShortcutRecord().catch((caught: unknown) =>
                   console.warn("[VoiceNotes] Could not consume the shortcut Record offer", caught));
               }
@@ -517,7 +524,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
             if (state.phase === "idle") {
               send(activePickup(status));
             }
-            if (state.recordingId === status.id && state.phase === "recording") onPresent?.();
+            if (state.recordingId === status.id && state.phase === "recording") present();
           } catch (caught) {
             console.warn("[VoiceNotes] Could not present the native recording", caught);
           }
@@ -531,17 +538,17 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
             if (!attached) return;
             if (status.micDeniedPresentation) {
               send({ type: "PERMISSION_DENIED" });
-              onPresent?.();
+              present();
             } else if (status.shortcutRecordPending && status.microphonePermissionGranted) {
               send({ type: "PERMISSION_GRANTED" });
-              onPresent?.();
+              present();
               void VoiceNotes.consumeShortcutRecord().catch((caught: unknown) =>
                 console.warn("[VoiceNotes] Could not consume the shortcut Record offer", caught));
             }
             if (status.state === "idle") return;
             acceptNativeOptions(status);
             send(activePickup(status));
-            if (status.source === "app_shortcut" || status.source === "notification") onPresent?.();
+            if (status.source && status.source !== "in_app") present();
           },
           (caught: unknown) => console.warn("[VoiceNotes] Could not ask the recorder what is running", caught),
         )
@@ -596,7 +603,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         send({ type: "START_FAILED", error: messageOf(caught) });
         if (errorCode(caught) === "permission_denied") {
           send({ type: "PERMISSION_DENIED" });
-          onPresent?.();
+          present();
         }
       }
     },
@@ -738,18 +745,40 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     },
     async retryPending() {
       if (!available) return;
-      if (pipeline && pipeline.isAccepting() && tcw?.did && tcw.spaceId) {
-        try { await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }); }
-        catch (caught) { console.warn("[VoiceNotes] Saving notes left on this phone failed", caught); }
-        await pendingStore.refresh();
+      if (!tcw?.did || !tcw.spaceId) {
+        pendingStore.reportError("Your account space is not ready to save this note. Try again after sign-in finishes.");
+        return;
+      }
+      if (pipeline) {
+        const finishSaving = pendingStore.beginManualSave();
+        const generation = currentAccountGeneration();
+        try {
+          const native = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
+          if (native.status !== "signed_in" || native.accountDid !== tcw.did) {
+            pendingStore.reportError("This phone's recording account is not ready. Try again shortly.");
+            return;
+          }
+          // The same generation can claim a v2 note left unowned during sign-in.
+          await withCaptureDeadline(VoiceNotes.setCaptureDefaults(native));
+          if (generation !== currentAccountGeneration()) {
+            pendingStore.reportError("The recording account changed while saving. Try again from the current account.");
+            return;
+          }
+          pipeline.resume();
+          await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation });
+          await pendingStore.refresh(null);
+        } catch (caught) {
+          pendingStore.reportError(`Could not save notes on this phone: ${messageOf(caught)}`);
+        } finally {
+          finishSaving();
+        }
         return;
       }
       let run;
       try {
-        if (!tcw) { await pendingStore.refresh(); return; }
         run = await savePendingRecordings(tcw);
       } catch (caught) {
-        console.warn("[VoiceNotes] Saving notes left on this phone failed", caught);
+        pendingStore.reportError(`Could not save notes on this phone: ${messageOf(caught)}`);
         return;
       }
       for (const recording of run.saved) landed(recording);
