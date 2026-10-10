@@ -262,10 +262,13 @@ export function localStorageVoiceNoteConsentStore(
 /** Said on a note that began outside the app and has not been sent. */
 export const HELD_NOTE_MESSAGE = "This note was started from a shortcut, so it was not sent for transcription. Transcribe with Private to send it.";
 
-/** The notes held back, per account. A hold is released only by that note's own Transcribe. */
+/** `held`: not sent, until the user's Transcribe on that note. `released`: the user asked for it, so a later launch may resume it. */
+export type VoiceNoteHoldState = "held" | "released";
+
+/** What the user has decided about each note that began outside the app, per account. */
 export interface VoiceNoteHoldStore {
-  read(): string[];
-  write(sourceIds: string[]): void;
+  read(): Record<string, VoiceNoteHoldState>;
+  write(holds: Record<string, VoiceNoteHoldState>): void;
 }
 
 export function localStorageVoiceNoteHoldStore(
@@ -276,15 +279,17 @@ export function localStorageVoiceNoteHoldStore(
   return {
     read: () => {
       const raw = storage?.getItem(key);
-      if (raw === null || raw === undefined) return [];
+      if (raw === null || raw === undefined) return {};
       const parsed: unknown = JSON.parse(raw);
-      if (!Array.isArray(parsed) || parsed.some((id) => typeof id !== "string")) throw new Error("The held-notes list is not a list of ids");
-      return parsed as string[];
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+        || Object.values(parsed).some((value) => value !== "held" && value !== "released"))
+        throw new Error("The held-notes list is not a map of note ids to held or released");
+      return parsed as Record<string, VoiceNoteHoldState>;
     },
-    write: (sourceIds) => {
+    write: (holds) => {
       if (!storage) throw new Error("No storage to keep the held notes in");
-      if (sourceIds.length === 0) storage.removeItem(key);
-      else storage.setItem(key, JSON.stringify(sourceIds));
+      if (Object.keys(holds).length === 0) storage.removeItem(key);
+      else storage.setItem(key, JSON.stringify(holds));
     },
   };
 }
@@ -877,6 +882,8 @@ export async function transcribeVoiceNote(args: {
   sourceId: string;
   audio?: VoiceNoteAudio;
   allowed?: () => boolean;
+  /** The user asked for this note to be transcribed. Without it, only a note recorded in the app goes. */
+  explicit?: boolean;
   report: (status: VoiceNoteTranscriptionStatus) => void;
   now?: () => Date;
 }): Promise<"transcribed" | "no_speech"> {
@@ -924,6 +931,11 @@ export async function transcribeVoiceNote(args: {
   if (!Number.isSafeInteger(rev))
     throw new PrivateCloudError("transcript_save_failed", "The voice note has no remaining transcript revisions");
   // T22 writes the committed rev and hash back to native transcriptSync after this cloud save.
+
+  // Cleanups above only delete; from here a job is created or resumed, so a note that did not begin in the app
+  // (or whose source the row does not say) waits for the user's own Transcribe.
+  if (!args.explicit && note.data.captureSource !== "in_app")
+    throw new PrivateCloudError("note_held", "This note did not begin in the app, so it waits for the user to transcribe it");
 
   const loadAudio = async (): Promise<VoiceNoteAudio> => {
     if (args.audio) return args.audio;
@@ -1039,18 +1051,20 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   const cloud = deps.cloud;
   const listeners = new Set<(event: VoiceNoteTranscriberEvent) => void>();
   const jobs = new Map<string, NoteTranscriptionState>();
-  const held = new Set<string>();
+  const holdStates = new Map<string, VoiceNoteHoldState>();
   try {
-    for (const sourceId of deps.holds.read()) {
-      held.add(sourceId);
-      jobs.set(sourceId, { kind: "held", message: HELD_NOTE_MESSAGE });
+    for (const [sourceId, holdState] of Object.entries(deps.holds.read())) {
+      holdStates.set(sourceId, holdState);
+      if (holdState === "held") jobs.set(sourceId, { kind: "held", message: HELD_NOTE_MESSAGE });
     }
   } catch (err) {
-    console.error("[VoiceNotes] Could not read which notes are held back from transcription; notes started outside the app stay held until they are offered again", err);
+    // Unreadable: no note counts as released, so the saved source decides each one (see transcribeVoiceNote).
+    console.error("[VoiceNotes] Could not read which notes are held back from transcription; only notes recorded in the app will be resumed", err);
   }
+  const isHeld = (sourceId: string) => holdStates.get(sourceId) === "held";
   const saveHolds = () => {
     try {
-      deps.holds.write([...held]);
+      deps.holds.write(Object.fromEntries(holdStates));
     } catch (err) {
       console.error("[VoiceNotes] Could not keep which notes are held back from transcription; they stay held until the app closes", err);
     }
@@ -1073,8 +1087,20 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   };
   const on = () => state.availability === "available" && state.consented && state.capabilities !== null;
 
-  const enqueue = (sourceId: string, audio?: VoiceNoteAudio) => {
+  /** A note that did not begin in the app: kept from every automatic job until the user's own Transcribe on it. */
+  const hold = (sourceId: string) => {
+    if (!isHeld(sourceId)) {
+      holdStates.set(sourceId, "held");
+      saveHolds();
+    }
+    jobs.set(sourceId, { kind: "held", message: HELD_NOTE_MESSAGE });
+    emit();
+  };
+
+  /** Every job, new or resumed, starts here. Only `explicit` (the user's Transcribe on this note) may pass a held note. */
+  const enqueue = (sourceId: string, audio: VoiceNoteAudio | undefined, explicit: boolean) => {
     if (!on() || cloud === null) return;
+    if (!explicit && isHeld(sourceId)) return;
     // Queued, running, or just saved (the list may not show it yet): never a second job.
     const current = jobs.get(sourceId);
     if (current?.kind === "active" || current?.kind === "done") return;
@@ -1089,6 +1115,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         emit();
         return;
       }
+      const authorised = explicit || holdStates.get(sourceId) === "released";
       try {
         const outcome = await runNote({
           tcw: deps.tcw(),
@@ -1097,6 +1124,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           sourceId,
           audio,
           allowed: () => state.consented,
+          explicit: authorised,
           report: (status) => {
             if (jobs.get(sourceId)?.kind !== "active") return;
             jobs.set(sourceId, { kind: "active", status });
@@ -1106,6 +1134,11 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         jobs.set(sourceId, { kind: "done", outcome });
         emit({ kind: "saved", sourceId });
       } catch (err) {
+        if (voiceNoteErrorCode(err) === "note_held") {
+          console.warn("[VoiceNotes] Held a note back from private-cloud transcription: it did not begin in the app", { id: sourceId });
+          hold(sourceId);
+          return;
+        }
         // Whatever stopped a note after the user turned transcription off is not a failure to show.
         if (!state.consented || voiceNoteErrorCode(err) === "transcription_off") jobs.delete(sourceId);
         else jobs.set(sourceId, { kind: "failed", ...voiceNoteTranscriptionFailure(err) });
@@ -1118,7 +1151,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   const resume = () => {
     if (resumed || !on() || cloud === null) return;
     resumed = true;
-    for (const sourceId of cloud.pendingSourceIds()) enqueue(sourceId);
+    for (const sourceId of cloud.pendingSourceIds()) enqueue(sourceId, undefined, false);
   };
 
   return {
@@ -1191,9 +1224,9 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     },
 
     transcribe(sourceId, audio) {
-      enqueue(sourceId, audio);
-      if (held.has(sourceId) && jobs.get(sourceId)?.kind === "active") {
-        held.delete(sourceId);
+      enqueue(sourceId, audio, true);
+      if (jobs.get(sourceId)?.kind === "active" && holdStates.get(sourceId) !== "released") {
+        holdStates.set(sourceId, "released");
         saveHolds();
       }
     },
@@ -1201,21 +1234,16 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     noteSaved(recording, audio) {
       if (recording.options && recording.options.transcriber !== "private-cloud") return;
       if (recording.source !== "in_app") {
-        if (cloud === null) return;
+        if (cloud === null || holdStates.get(recording.id) === "released") return;
         const current = jobs.get(recording.id);
         if (current?.kind === "active" || current?.kind === "done" || current?.kind === "failed") return;
         console.warn("[VoiceNotes] Held a note back from private-cloud transcription: it did not begin in the app", { id: recording.id, source: recording.source });
-        if (!held.has(recording.id)) {
-          held.add(recording.id);
-          saveHolds();
-        }
-        jobs.set(recording.id, { kind: "held", message: HELD_NOTE_MESSAGE });
-        emit();
+        hold(recording.id);
         return;
       }
       if (!on()) return;
       if (recording.durationMs / 1000 > maxTranscriptionSeconds(state.capabilities)) return; // the card says why
-      enqueue(recording.id, audio);
+      enqueue(recording.id, audio, false);
     },
   };
 }

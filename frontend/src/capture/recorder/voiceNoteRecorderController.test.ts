@@ -2200,7 +2200,7 @@ describe("voice-note recorder controller", () => {
       const expectHeld = (run: ReturnType<typeof jobsOf>, id: string) => {
         expect(run.jobs).toEqual([]);
         expect(run.real.snapshot().jobs.get(id)).toEqual({ kind: "held", message: HELD_NOTE_MESSAGE });
-        expect(holds.ids).toContain(id);
+        expect(holds.held).toContain(id);
       };
 
       for (const source of SOURCES) {
@@ -2291,7 +2291,7 @@ describe("voice-note recorder controller", () => {
         run.real.transcribe(id);
         await tick();
         expect(run.jobs).toEqual([id]);
-        expect(holds.ids).toEqual([]);
+        expect(holds.held).toEqual([]);
         expect(jobsOf().real.snapshot().jobs.get(id)).toBeUndefined();
       });
 
@@ -2310,7 +2310,7 @@ describe("voice-note recorder controller", () => {
         expect(onPhone[0]!.options?.transcriber).toBe("private-cloud");
         expect(onPhone[0]!.source).toBe("in_app");
         expect(jobs).toEqual([onPhone[0]!.id]);
-        expect(holds.ids).toEqual([]);
+        expect(holds.held).toEqual([]);
         detach();
       });
 

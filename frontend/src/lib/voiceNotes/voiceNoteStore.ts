@@ -407,6 +407,8 @@ export interface VoiceNoteForTranscription {
   /** A v2 choice is durable in the space row even after native deletes its sidecar. */
   captureVersion: number | null;
   captureTranscriber: string | null;
+  /** Where the note's recording began (v2 notes only); null when the row does not say. */
+  captureSource: string | null;
 }
 
 export async function readVoiceNoteForTranscription(
@@ -427,20 +429,22 @@ export async function readVoiceNoteForTranscription(
   let durationSeconds: number | null = typeof row[0] === "number" ? row[0] : null;
   let captureVersion: number | null = null;
   let captureTranscriber: string | null = null;
+  let captureSource: string | null = null;
   try {
     const metadata = typeof row[1] === "string" ? JSON.parse(row[1]) as unknown : row[1];
     const capture = metadata && typeof metadata === "object" ? (metadata as { capture?: unknown }).capture : null;
     if (capture && typeof capture === "object") {
-      const saved = capture as { duration_ms?: unknown; version?: unknown; options?: { transcriber?: unknown } };
+      const saved = capture as { duration_ms?: unknown; version?: unknown; source?: unknown; options?: { transcriber?: unknown } };
       if (durationSeconds === null && typeof saved.duration_ms === "number") durationSeconds = saved.duration_ms / 1000;
       if (typeof saved.version === "number") captureVersion = saved.version;
       if (typeof saved.options?.transcriber === "string") captureTranscriber = saved.options.transcriber;
+      if (typeof saved.source === "string") captureSource = saved.source;
     }
   } catch {
     // Legacy metadata may be malformed; the audio's size is checked before decoding.
   }
   return { ok: true, data: { transcript: await readVoiceNoteTranscriptState(tcw, sourceId),
-    durationSeconds, captureVersion, captureTranscriber } };
+    durationSeconds, captureVersion, captureTranscriber, captureSource } };
 }
 
 /** What a transcription adds to a note: the sentences for its transcript key and row metadata. */

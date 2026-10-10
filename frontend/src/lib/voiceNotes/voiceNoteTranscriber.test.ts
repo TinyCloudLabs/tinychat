@@ -61,6 +61,7 @@ type Run = {
   sourceId: string;
   audio: unknown;
   allowed: () => boolean;
+  explicit: boolean;
   report: (s: VoiceNoteTranscriptionStatus) => void;
   resolve: (outcome: "transcribed" | "no_speech") => void;
   reject: (err: unknown) => void;
@@ -83,7 +84,7 @@ function setup(opts: { consented?: boolean; cloud?: VoiceNoteCloud | null; pendi
     },
     runNote: (args) =>
       new Promise((resolve, reject) => {
-        runs.push({ sourceId: args.sourceId, audio: args.audio, allowed: args.allowed ?? (() => true), report: args.report, resolve, reject });
+        runs.push({ sourceId: args.sourceId, audio: args.audio, allowed: args.allowed ?? (() => true), explicit: args.explicit ?? false, report: args.report, resolve, reject });
       }),
   });
   transcriber.subscribe((e) => events.push(e));
@@ -324,7 +325,7 @@ describe("notes that did not begin in the app are held, per note", () => {
       await tick();
       expect(s.runs).toHaveLength(0);
       expect(s.job("n")).toEqual({ kind: "held", message: HELD_NOTE_MESSAGE });
-      expect(holds.ids).toEqual(["n"]);
+      expect(holds.held).toEqual(["n"]);
     });
   }
 
@@ -376,7 +377,7 @@ describe("notes that did not begin in the app are held, per note", () => {
     expect(s.runs.map((run) => run.sourceId)).toEqual(["n"]);
     expect(s.job("n")?.kind).toBe("active");
     expect(s.job("other")?.kind).toBe("held");
-    expect(holds.ids).toEqual(["other"]);
+    expect(holds.held).toEqual(["other"]);
 
     const later = setup({ consented: true, holds });
     expect(later.job("n")).toBeUndefined();
@@ -392,7 +393,7 @@ describe("notes that did not begin in the app are held, per note", () => {
     await tick();
     expect(s.runs).toHaveLength(0);
     expect(s.job("n")?.kind).toBe("held");
-    expect(holds.ids).toEqual(["n"]);
+    expect(holds.held).toEqual(["n"]);
   });
 
   test("a hold that cannot be written is still held for this launch, and says so", async () => {
@@ -400,7 +401,7 @@ describe("notes that did not begin in the app are held, per note", () => {
     const original = console.error;
     console.error = (...args: unknown[]) => { errors.push(args); };
     try {
-      const holds: VoiceNoteHoldStore = { read: () => [], write: () => { throw new Error("storage full"); } };
+      const holds: VoiceNoteHoldStore = { read: () => ({}), write: () => { throw new Error("storage full"); } };
       const s = setup({ consented: true, holds });
       await s.transcriber.check();
       s.transcriber.noteSaved({ id: "n", durationMs: 5_000, source: "quick_action" }, AUDIO);
@@ -439,6 +440,43 @@ describe("notes that did not begin in the app are held, per note", () => {
     s.transcriber.noteSaved({ id: "app", durationMs: 5_000, source: "in_app", options: { transcriber: "private-cloud", identifySpeakers: false } }, AUDIO);
     await tick();
     expect(s.runs.map((run) => run.sourceId)).toEqual(["app"]);
-    expect(holds.ids).toEqual(["w"]);
+    expect(holds.held).toEqual(["w"]);
+  });
+
+  test("an automatic job is not explicit; the user's Transcribe is, and so is every later run of a released note", async () => {
+    const holds = memoryHoldStore();
+    const s = setup({ consented: true, holds });
+    await s.transcriber.check();
+    s.transcriber.noteSaved({ id: "app", durationMs: 5_000, source: "in_app" }, AUDIO);
+    s.transcriber.noteSaved({ id: "w", durationMs: 5_000, source: "widget" }, AUDIO);
+    await tick();
+    expect(s.runs.map((run) => [run.sourceId, run.explicit])).toEqual([["app", false]]);
+    s.runs[0]!.resolve("transcribed");
+    await tick();
+    s.transcriber.transcribe("w", AUDIO);
+    await tick();
+    expect(s.runs.map((run) => [run.sourceId, run.explicit])).toEqual([["app", false], ["w", true]]);
+  });
+
+  test("a job the saved row says did not begin in the app is held when the run refuses it, and the hold is kept", async () => {
+    const holds = memoryHoldStore();
+    const s = setup({ consented: true, holds, pending: ["old"] });
+    await s.transcriber.check();
+    await tick();
+    expect(s.runs.map((run) => run.sourceId)).toEqual(["old"]);
+    s.runs[0]!.reject(new PrivateCloudError("note_held", "waits for the user"));
+    await tick();
+    expect(s.job("old")).toEqual({ kind: "held", message: HELD_NOTE_MESSAGE });
+    expect(holds.held).toEqual(["old"]);
+  });
+
+  test("a held note with an interrupted attempt is not started by check() or consent(), without a run being attempted", async () => {
+    const holds = memoryHoldStore({ held: "held" });
+    const s = setup({ consented: false, holds, pending: ["held", "free"] });
+    await s.transcriber.check();
+    s.transcriber.consent();
+    await tick();
+    expect(s.runs.map((run) => run.sourceId)).toEqual(["free"]);
+    expect(s.job("held")?.kind).toBe("held");
   });
 });
