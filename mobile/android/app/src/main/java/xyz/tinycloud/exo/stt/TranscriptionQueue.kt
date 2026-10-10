@@ -112,7 +112,10 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
     fun cancel(id: String) {
         executor.execute {
             pending.remove(id)
-            try { capture.library.mutate(id, "stt.write") { note -> note.getJSONObject("stt").put("state", "cancelled") } } catch (_: Exception) {}
+            // A note that already finished keeps its `done` state.
+            if (capture.library.getTranscript(id) == null) {
+                try { capture.library.mutate(id, "stt.write") { note -> note.getJSONObject("stt").put("state", "cancelled") } } catch (_: Exception) {}
+            }
             onQueueChanged?.invoke()
         }
     }

@@ -94,7 +94,10 @@ public final class TranscriptionQueue {
         controlQueue.async { [self] in
             switch state.cancel(id) {
             case .removedPending, .notFound:
-                try? capture.library.updateStt(id, patch: ["state": "cancelled"])
+                // A note that already finished keeps its `done` state: cancelling it must not read as "never transcribed".
+                if (try? capture.library.transcript(id)) == nil {
+                    try? capture.library.updateStt(id, patch: ["state": "cancelled"])
+                }
             case .flaggedRunning:
                 break
             }

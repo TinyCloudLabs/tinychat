@@ -54,8 +54,11 @@ describe("privateInsteadOffered", () => {
 describe("switchToPrivate", () => {
   const wait = { intervalMs: 1, timeoutMs: 50, sleep: () => new Promise<void>((resolve) => setTimeout(resolve, 1)) };
   const note = (state: string | null) => ({ recordings: [{ id: "n1", stt: state === null ? undefined : { state } }] }) as never;
-  const listing = (read: () => unknown) => {
-    __setVoiceNotesForTests({ listPending: async () => read() } as unknown as VoiceNotesPlugin, { available: true });
+  const listing = (read: () => unknown, transcript: () => unknown = () => null) => {
+    __setVoiceNotesForTests({
+      listPending: async () => read(),
+      getTranscript: async () => ({ transcript: transcript() }),
+    } as unknown as VoiceNotesPlugin, { available: true });
   };
 
   function withCancel(cancel: () => Promise<void> | void = () => {}) {
@@ -111,12 +114,50 @@ describe("switchToPrivate", () => {
     expect(transcription.privately).toEqual(["n1"]);
   });
 
-  test("when Local finishes the note first, private cloud is not started", async () => {
-    withCancel();
+  test("a note whose on-device state is already done is neither cancelled nor switched", async () => {
+    const order: string[] = [];
+    withCancel(() => void order.push("cancel n1"));
     listing(() => note("done"));
     const transcription = props();
     expect(await switchToPrivate(transcription, "n1", wait)).toBe("This note finished transcribing on this phone just now.");
+    expect(order).toEqual([]);
     expect(transcription.privately).toEqual([]);
+  });
+
+  test("when Local finishes while the cancel is in flight, private cloud is not started", async () => {
+    let state = "running";
+    withCancel();
+    listing(() => note(state), () => null);
+    const transcription = props();
+    const sleeps: number[] = [];
+    expect(await switchToPrivate(transcription, "n1", { ...wait, sleep: async () => { state = "done"; sleeps.push(1); } }))
+      .toBe("This note finished transcribing on this phone just now.");
+    expect(transcription.privately).toEqual([]);
+  });
+
+  test("a cancel that overwrote done with cancelled over a finished transcript does not start private cloud", async () => {
+    let state = "running";
+    const transcript = { version: 1, noteId: "n1", outcome: "transcribed", segments: [{ text: "Local finished" }] };
+    const order: string[] = [];
+    withCancel(() => { order.push("cancel n1"); state = "cancelled"; });
+    listing(() => note(state), () => (state === "cancelled" ? transcript : null));
+    const transcription = props();
+    expect(await switchToPrivate(transcription, "n1", wait)).toBe("This note finished transcribing on this phone just now.");
+    expect(order).toEqual(["cancel n1"]);
+    expect(transcription.privately).toEqual([]);
+  });
+
+  test("when the transcript cannot be read after the note stopped, private cloud is not started", async () => {
+    withCancel();
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    __setVoiceNotesForTests({
+      listPending: async () => note("cancelled"),
+      getTranscript: async () => { throw new Error("bridge closed"); },
+    } as unknown as VoiceNotesPlugin, { available: true });
+    const transcription = props();
+    expect(await switchToPrivate(transcription, "n1", wait)).toBe("Could not confirm the on-device transcription stopped: bridge closed");
+    expect(transcription.privately).toEqual([]);
+    logged.mockRestore();
   });
 
   test("when the worker never stops it says so and does not start private cloud", async () => {
@@ -147,6 +188,7 @@ describe("switchToPrivate", () => {
 
   test("when the on-device job cannot be stopped it says so and does not start private cloud", async () => {
     withCancel(() => { throw new Error("bridge closed"); });
+    listing(() => note("running"));
     const logged = spyOn(console, "error").mockImplementation(() => {});
     const transcription = props();
     expect(await switchToPrivate(transcription, "n1", wait)).toBe("Could not stop the on-device transcription: bridge closed");

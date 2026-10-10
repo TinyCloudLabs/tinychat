@@ -1159,7 +1159,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   /** This session's choices, so a Retry after a released failure keeps the choice. */
   const chosenPrivate = new Set<string>();
   const isChosen = (sourceId: string) => chosenPrivate.has(sourceId) || choices.has(sourceId);
-  /** The persisted choice only has to outlive a job that a relaunch can re-join. */
+  /** The persisted choice goes once the note is done or its job can no longer be retried; a pending job keeps it. */
   const settleChoice = (sourceId: string) => {
     if (cloud !== null && !cloud.pendingSourceIds().includes(sourceId)) choices.remove(sourceId);
   };
@@ -1208,9 +1208,15 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           resumed = false;
           jobs.delete(sourceId);
           console.warn("[Transcription] Stopped a private cloud job: its account is no longer the signed-in one", sourceId);
-        } else if (!state.consented || voiceNoteErrorCode(err) === "transcription_off") jobs.delete(sourceId);
-        else jobs.set(sourceId, { kind: "failed", ...voiceNoteTranscriptionFailure(err) });
-        settleChoice(sourceId);
+        } else if (!state.consented || voiceNoteErrorCode(err) === "transcription_off") {
+          jobs.delete(sourceId);
+          settleChoice(sourceId);
+        } else {
+          const failure = voiceNoteTranscriptionFailure(err);
+          jobs.set(sourceId, { kind: "failed", ...failure });
+          // A failure Retry can fix keeps the choice, so a relaunch does not turn it back into Local.
+          if (!failure.retryable) settleChoice(sourceId);
+        }
         emit();
       }
     });

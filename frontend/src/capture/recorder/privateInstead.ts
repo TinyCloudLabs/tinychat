@@ -20,26 +20,41 @@ export interface StopWait {
 
 const DEFAULT_WAIT: StopWait = { intervalMs: 250, timeoutMs: 20_000, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
 
+const FINISHED = "This note finished transcribing on this phone just now.";
+
+async function readOnDeviceState(noteId: string): Promise<{ state: string | undefined } | { failure: string }> {
+  try {
+    const { recordings } = await VoiceNotes.listPending();
+    const recording = recordings.find((candidate) => candidate.id === noteId);
+    if (!recording) return { failure: "Could not confirm the on-device transcription stopped: the note was not found on this phone." };
+    return { state: recording.stt?.state };
+  } catch (caught) {
+    console.error("[OnDeviceStt] reading the note around cancel failed", noteId, caught);
+    return { failure: `Could not confirm the on-device transcription stopped: ${caught instanceof Error ? caught.message : String(caught)}` };
+  }
+}
+
 /**
  * `cancel` only says the request was accepted; the worker stops at its next audio window and can
- * still finish the note. So wait for the note's own state to end: `cancelled` or `failed` mean it
- * is stopped, `done` means Local won the race and there is nothing left to hand over.
+ * still finish the note. So wait for the note's own state to end. `cancelled` or `failed` mean it
+ * stopped, but a cancel that arrives after the worker finished can overwrite `done` with
+ * `cancelled`, so a stopped note is only handed over when it has no transcript.
  */
 async function waitForOnDeviceToEnd(noteId: string, wait: StopWait): Promise<string | null> {
   const deadline = Date.now() + wait.timeoutMs;
   for (;;) {
-    let state: string | undefined;
-    try {
-      const { recordings } = await VoiceNotes.listPending();
-      const recording = recordings.find((candidate) => candidate.id === noteId);
-      if (!recording) return "Could not confirm the on-device transcription stopped: the note was not found on this phone.";
-      state = recording.stt?.state;
-    } catch (caught) {
-      console.error("[OnDeviceStt] reading the note after cancel failed", noteId, caught);
-      return `Could not confirm the on-device transcription stopped: ${caught instanceof Error ? caught.message : String(caught)}`;
+    const read = await readOnDeviceState(noteId);
+    if ("failure" in read) return read.failure;
+    if (read.state === "done") return FINISHED;
+    if (read.state === "cancelled" || read.state === "failed") {
+      try {
+        const { transcript } = await VoiceNotes.getTranscript({ id: noteId });
+        return transcript ? FINISHED : null;
+      } catch (caught) {
+        console.error("[OnDeviceStt] reading the transcript after cancel failed", noteId, caught);
+        return `Could not confirm the on-device transcription stopped: ${caught instanceof Error ? caught.message : String(caught)}`;
+      }
     }
-    if (state === "cancelled" || state === "failed") return null;
-    if (state === "done") return "This note finished transcribing on this phone just now.";
     if (Date.now() >= deadline) return "The on-device transcription is still stopping. Try again in a moment.";
     await wait.sleep(wait.intervalMs);
   }
@@ -51,6 +66,9 @@ export async function switchToPrivate(
   noteId: string,
   wait: StopWait = DEFAULT_WAIT,
 ): Promise<string | null> {
+  const before = await readOnDeviceState(noteId);
+  if ("failure" in before) return before.failure;
+  if (before.state === "done") return FINISHED;
   const failure = await cancelOnDeviceNote(noteId);
   if (failure !== null) return failure;
   const unconfirmed = await waitForOnDeviceToEnd(noteId, wait);

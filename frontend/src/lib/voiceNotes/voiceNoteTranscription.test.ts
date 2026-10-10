@@ -1120,3 +1120,46 @@ describe("an explicit move to private cloud survives a restart", () => {
     expect(choices.ids()).toEqual([]);
   });
 });
+
+test("a retryable audio-read failure before the cloud job exists retains the user's Private choice on restart", async () => {
+  _resetConnectorSchemaMemoForTests();
+  const space = sqliteSpace();
+  expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+  space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata,
+    '$.capture.version', 2, '$.capture.options.transcriber', 'on-device') WHERE source_id = 'rec-1'`).run();
+  VoiceNotes.listPending = async () => ({ recordings: [{ ...RECORDING, owner: "did:test:voice",
+    options: { transcriber: "on-device", identifySpeakers: false }, stt: { state: "cancelled" } } as never] });
+  const storage = memoryStorage();
+  const pending = localStorageVoiceNotePendingStore(DID, storage);
+  const choices = localStorageVoiceNotePrivateChoiceStore(DID, storage);
+  const client = space.tcw as unknown as { kv: { get: (key: string) => Promise<unknown> } };
+  const originalGet = client.kv.get;
+  client.kv.get = async key => key.startsWith(voiceNoteAudioKvKey("rec-1"))
+    ? { ok: false, error: { code: "NETWORK_ERROR", message: "KV offline" } }
+    : originalGet(key);
+  const launch = (h: ReturnType<typeof harness>) => createVoiceNoteTranscriber({
+    cloud: h.cloud, consent: { get: () => true, set: () => {} },
+    choices: localStorageVoiceNotePrivateChoiceStore(DID, storage), tcw: () => space.tcw,
+  });
+  const settle = async (t: ReturnType<typeof createVoiceNoteTranscriber>) => {
+    for (let i = 0; i < 200 && t.snapshot().jobs.get("rec-1")?.kind === "active"; i++)
+      await new Promise(resolve => setTimeout(resolve, 50));
+  };
+  const first = harness({ pending });
+  const t = launch(first);
+  await t.check();
+  t.transcribePrivately("rec-1");
+  await settle(t);
+  expect(t.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", retryable: true });
+  expect(first.creates).toHaveLength(0);
+  expect(pending.sourceIds()).toEqual([]);
+  const retainedAfterFailure = choices.has("rec-1");
+  client.kv.get = originalGet;
+  const second = harness({ pending, jobs: [job("completed")] });
+  const restarted = launch(second);
+  await restarted.check();
+  await settle(restarted);
+  expect({ retainedAfterFailure, job: restarted.snapshot().jobs.get("rec-1") }).toMatchObject({
+    retainedAfterFailure: true, job: { kind: "done", outcome: "transcribed" },
+  });
+}, 15000);
