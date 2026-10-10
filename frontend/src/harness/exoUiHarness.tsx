@@ -26,6 +26,7 @@ import { legacyScreens } from "./screens/legacy";
 import { libraryScreens } from "./screens/library";
 import { localScreens } from "./screens/local";
 import { meetingSourcesScreens } from "./screens/meetingSources";
+import { micRecoveryScreens } from "./screens/micRecovery";
 import { primitivesScreens } from "./screens/primitives";
 import { recorderScreens } from "./screens/recorder";
 import { recorderFinalDesktopScreens } from "./screens/recorderFinalDesktop";
@@ -68,6 +69,7 @@ const SCREENS: HarnessScreen[] = [
   ...savedNoteScreens,
   ...localScreens,
   ...meetingSourcesScreens,
+  ...micRecoveryScreens,
 ];
 const PLATFORMS: readonly AppPlatform[] = ["ios", "android", "tauri", "web"];
 

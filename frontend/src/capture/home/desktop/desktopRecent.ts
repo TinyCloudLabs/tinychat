@@ -1,4 +1,4 @@
-// What the desktop Capture home's Recent and "on this Mac" card say, as pure
+// What the desktop Capture home's Recent and unsaved-voice-notes card say, as pure
 // functions of the Library's items and the recorder's capture issues. An
 // issue's `detail` is diagnostic and never reaches this file's output.
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
@@ -10,7 +10,11 @@ import {
   type HomeIssue,
 } from "../captureIssues";
 import { HOME_COPY } from "../homeCopy";
-import { DESKTOP_HOME_COPY as COPY } from "./desktopCopy";
+import {
+  DESKTOP_HOME_COPY as COPY,
+  placeWhere,
+  type HomePlace,
+} from "./desktopCopy";
 
 export type RecentFilter = "all" | "note" | "meeting";
 
@@ -101,10 +105,10 @@ export function desktopRecent(
 }
 
 /** The state line a failed recording's row shows. */
-export function desktopIssueMeta(issue: Failure): string {
+export function desktopIssueMeta(issue: Failure, place: HomePlace): string {
   switch (issue.kind) {
     case "finalization_timed_out":
-      return COPY.timedOut;
+      return COPY.timedOut(placeWhere(place));
     case "recoveryFailed":
       return COPY.recoveryFailed;
     case "quarantined":
@@ -120,16 +124,21 @@ export function issueNeedsAttention(issue: Failure): boolean {
   return issue.kind !== "finalization_timed_out";
 }
 
-export function onMacTitle(count: number): string {
-  return count === 1 ? COPY.onMacOne : COPY.onMacMany(count);
+export function pendingTitle(count: number, place: HomePlace): string {
+  const where = placeWhere(place);
+  return count === 1 ? COPY.pendingOne(where) : COPY.pendingMany(count, where);
 }
 
 /**
- * The "on this Mac" card's second line. A save error shows as it is, except
+ * The unsaved-voice-notes card's second line. A save error shows as it is, except
  * the "Exo will finish it automatically" one (FINALIZATION_PENDING): a
  * recording that could not be recovered or fully written outranks that.
  */
-export function onMacNote(issues: Issues, lastError: string | null): string {
+export function pendingNote(
+  issues: Issues,
+  lastError: string | null,
+  place: HomePlace,
+): string {
   if (lastError && lastError !== FINALIZATION_PENDING) return lastError;
   const kinds = Object.values(issues).map((issue) => issue.kind);
   if (kinds.includes("recoveryFailed"))
@@ -139,6 +148,6 @@ export function onMacNote(issues: Issues, lastError: string | null): string {
   if (kinds.includes("write_failed"))
     return `${COPY.notInSpace} · ${COPY.writeFailed}`;
   if (lastError || kinds.includes("finalization_timed_out"))
-    return COPY.willFinish;
+    return COPY.willFinish(placeWhere(place));
   return COPY.notInSpace;
 }

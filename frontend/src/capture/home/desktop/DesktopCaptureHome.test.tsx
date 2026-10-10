@@ -138,7 +138,7 @@ describe("actions", () => {
   });
 });
 
-describe("the on-this-Mac card", () => {
+describe("the unsaved-voice-notes card", () => {
   test("the desktop app: a count, 'Not in your space yet' and Save now", () => {
     const html = home({ props: { inProgress: voice(2) } });
     expect(html).toContain("2 voice notes on this Mac");
@@ -147,15 +147,57 @@ describe("the on-this-Mac card", () => {
     expect(html).not.toContain("on this phone");
   });
 
-  test("the web: no card, and never the phone row either", () => {
-    const html = home({ platform: "web", props: { inProgress: voice(2) } });
-    expect(html).not.toContain("voice-note-pending");
-    expect(html).not.toContain("on this Mac");
-    expect(html).not.toContain("on this phone");
+  test("the web at a desktop layout: the same card, in this browser, with Save now", () => {
+    for (const layout of ["rail", "desktop"] as const) {
+      const html = home({ platform: "web", layout, props: { inProgress: voice(2) } });
+      expect(html).toContain('data-testid="voice-note-pending"');
+      expect(html).toContain("2 voice notes in this browser");
+      expect(html).toContain('data-testid="voice-note-retry"');
+      expect(html).not.toContain("this Mac");
+      expect(html).not.toContain("on this phone");
+    }
+  });
+
+  test("a web save that failed (820 px, the rail): the error stays on the card beside Save now", () => {
+    const failed: InProgressRowsViewProps = {
+      ...idle,
+      voice: {
+        listing: { state: "ok", count: 1 },
+        saving: false,
+        lastError: "Couldn't reach your space",
+        limitNotice: null,
+        onSaveNow: noop,
+      },
+    };
+    const html = home({ platform: "web", layout: "rail", props: { inProgress: failed } });
+    expect(html).toContain("1 voice note in this browser");
+    expect(html).toContain("Couldn&#x27;t reach your space");
+    expect(html).toMatch(/<button[^>]*data-testid="voice-note-retry"/);
+    expect(html).not.toMatch(/<button[^>]*data-testid="voice-note-retry"[^>]*disabled/);
+  });
+
+  test("a phone or tablet app at a medium width says this device, never this Mac or this phone", () => {
+    for (const platform of ["ios", "android"] as const) {
+      const html = home({ platform, layout: "rail", props: { inProgress: voice(3) } });
+      expect(html).toContain("3 voice notes on this device");
+      expect(html).toContain('data-testid="voice-note-retry"');
+      expect(html).not.toContain("this Mac");
+      expect(html).not.toContain("on this phone");
+    }
+  });
+
+  test("a failed-recording row on a tablet says this device", () => {
+    const html = home({
+      platform: "android",
+      layout: "rail",
+      recorder: { captureIssues: { saving: { kind: "finalization_timed_out" } } },
+    });
+    expect(html).toContain("Saving… · kept on this device");
+    expect(html).not.toContain("this Mac");
   });
 
   test("nothing waiting, no card", () => {
-    expect(home({ props: { inProgress: voice(0) } })).not.toContain("on this Mac");
+    expect(home({ props: { inProgress: voice(0) } })).not.toContain("voice-note-pending");
   });
 });
 

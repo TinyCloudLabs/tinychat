@@ -24,21 +24,19 @@ describe("which home Capture draws", () => {
 });
 
 describe("what the desktop home offers per shell", () => {
-  test("the desktop app: full settings, meeting sources, the on-this-Mac card", () => {
+  test("the desktop app: full settings and meeting sources", () => {
     for (const layout of ["rail", "desktop"] as const)
       expect(desktopHomeCapabilities("tauri", layout)).toEqual({
         settings: "app",
         connectMeetings: true,
-        onThisMac: true,
       });
   });
 
-  test("the web at a desktop layout: microphone-only settings, meeting sources, no card", () => {
+  test("the web at a desktop layout: microphone-only settings, meeting sources", () => {
     for (const layout of ["rail", "desktop"] as const)
       expect(desktopHomeCapabilities("web", layout)).toEqual({
         settings: "microphone-only",
         connectMeetings: true,
-        onThisMac: false,
       });
   });
 
@@ -46,7 +44,6 @@ describe("what the desktop home offers per shell", () => {
     expect(desktopHomeCapabilities("web", "phone")).toEqual({
       settings: null,
       connectMeetings: false,
-      onThisMac: false,
     });
   });
 });

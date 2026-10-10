@@ -183,6 +183,8 @@ function screen(
 // The Mac's Whisper as the engine and the ⚙︎ extras report it: a selected, downloaded model (or none).
 function macWhisper(model: "ready" | "none"): HarnessScreen["render"] {
   return () => {
+    // The engine being installed makes the home read the parked recordings; the app's own engine answers that, here the fake plugin does.
+    __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: false });
     __setInstalledEngineForTests("tauri", {
       nativeShortcuts: false, presentRecorder: false, openSettings: false, micDeniedPresentation: false,
       background: true, localTranscription: false, desktopWhisper: model === "ready", offlineRecorder: true,

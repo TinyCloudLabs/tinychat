@@ -6,8 +6,9 @@
 //      reply survive every tab, Settings, rotation and size class, and the chat
 //      and Capture surfaces never remount.
 //   2. One recorder: the native plugin never has more than one view listening
-//      (the provider's eight, plus the one shared `inputs` listener the desktop
-//      Capture home's microphone picker attaches), and none on Connectors.
+//      (the provider's eight, plus the one shared `inputs` listener the
+//      recorder's microphone picker attaches), and none on Connectors. The web
+//      app has no native plugin, so no listener at all.
 //   3. Android Back closes overlays first, the top one first, then goes home.
 //   4. Retired addresses end on the Library.
 //   5. How it works opens at the section a link names, with its heading
@@ -173,7 +174,7 @@ describe.serial(`shell invariants (${name})`, () => {
     await page.close();
   }, 60_000);
 
-  test("one recorder: the provider's eight listeners from ready on; navigation, Settings and resizes add only the desktop home's shared inputs listener", async () => {
+  test("one recorder (the phone app): the provider's eight listeners from ready on; navigation, Settings and resizes add none; the recorder's picker adds the shared inputs listener", async () => {
     const { page, errors } = await open("/chat/capture");
     const stats = () => page.evaluate(() => window.shellHarness!.voiceNotes());
     let highest = 0;
@@ -197,13 +198,14 @@ describe.serial(`shell invariants (${name})`, () => {
       await settle(page);
       await sample();
     }
-    // The desktop Capture home (tablet and wider) shows the microphone picker, which attaches the one shared native `inputs` listener, once; nothing else is added.
-    expect((await stats()).adds).toBe(addsAtReady + 1);
+    // The phone app's Capture home (tablet widths included) has no settings picker: nothing is added by the home.
+    expect((await stats()).adds).toBe(addsAtReady);
 
     // Record from the chat header: the recorder opens and records.
     await page.getByTestId("header-voice-note").click();
     await page.waitForFunction(() => window.shellHarness!.voiceNotes().recording);
     await page.waitForFunction(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Done")?.disabled === false);
+    await sample();
     // Minimise keeps it recording: the Ribbon follows to Connectors.
     await page.getByRole("button", { name: "Minimise recorder" }).click();
     await page.getByTestId("ribbon").waitFor();
@@ -222,9 +224,24 @@ describe.serial(`shell invariants (${name})`, () => {
     await page.waitForFunction(() => /landed|failed/.test(document.querySelector('[data-testid="recorder-island"]')?.getAttribute("data-state") ?? ""));
     await sample();
 
-    // Opening the recorder attached the same shared `inputs` listener again (its microphone picker), once.
-    expect((await stats()).adds).toBe(addsAtReady + 2);
+    // Opening the recorder attached the shared `inputs` listener (its microphone picker), once.
+    expect((await stats()).adds).toBe(addsAtReady + 1);
     expect(highest).toBe(9);
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 60_000);
+
+  test("one recorder (the web app): no native plugin, so no native listener at any width; the home still offers the microphone settings", async () => {
+    const { page, errors } = await open("/chat/capture?platform=web", { width: 1280, height: 800 });
+    await page.getByTestId("desktop-capture-home").waitFor();
+    for (const [width, height] of [[820, 1180], [1280, 800], [1024, 768]]) {
+      await page.setViewportSize({ width, height });
+      await settle(page);
+      await page.getByTestId("capture-settings-button").waitFor();
+      expect(await page.evaluate(() => window.shellHarness!.voiceNotes())).toMatchObject({ adds: 0, active: 0 });
+    }
+    for (const path of ["/chat", "/chat/connectors", "/chat/capture"]) await go(page, path);
+    expect(await page.evaluate(() => window.shellHarness!.voiceNotes())).toMatchObject({ adds: 0, active: 0 });
     expect(errors).toEqual([]);
     await page.close();
   }, 60_000);

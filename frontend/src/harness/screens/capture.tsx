@@ -53,7 +53,8 @@ const MINIMISED: Partial<RecorderValue> = {
   sheetOpen: false,
 };
 
-const CAPTURE = { group: "capture", layout: "pane", displayTitle: true, path: "/chat/capture", platform: "ios" } as const;
+// The Soft home sets its title in Fraunces, so the Literata font check does not apply.
+const CAPTURE = { group: "capture", layout: "pane", displayTitle: false, path: "/chat/capture", platform: "ios" } as const;
 const LISTED = '[data-testid="library-list"][data-state="ready"]';
 
 export const captureScreens: HarnessScreen[] = [
@@ -70,8 +71,7 @@ export const captureScreens: HarnessScreen[] = [
 ];
 
 // The Soft-skin phone Capture home (TC-871). Night and Day come from the harness's themes.
-// The Soft skin sets its title in Fraunces, so the Literata font check does not apply.
-const SOFT = { ...CAPTURE, platform: "ios", readyWhen: LISTED, displayTitle: false } as const;
+const SOFT = { ...CAPTURE, platform: "ios", readyWhen: LISTED } as const;
 
 function SoftHome(props: {
   recorder?: Partial<RecorderValue>;

@@ -15,3 +15,19 @@ export function openSettingsFailedLine(cause: unknown): string {
   console.error("[Recorder] Could not open Settings", cause);
   return OPEN_SETTINGS_FAILED_LINE;
 }
+
+export const CLOSE_RECOVERY_FAILED_LINE = "Couldn't close this. Try again.";
+
+/** What the person sees when dismissing the microphone recovery fails; the cause is only logged, never shown. */
+export function closeRecoveryFailedLine(cause: unknown): string {
+  console.error("[Recorder] Could not dismiss the microphone recovery", cause);
+  return CLOSE_RECOVERY_FAILED_LINE;
+}
+
+export const MIC_CHECK_FAILED_LINE = "Couldn't check microphone access. Exo will try again.";
+
+/** What the signed-out recovery shows when native cannot report the microphone state; the cause is only logged, never shown. */
+export function micCheckFailedLine(cause: unknown): string {
+  console.error("[Recorder] Could not check microphone recovery", cause);
+  return MIC_CHECK_FAILED_LINE;
+}

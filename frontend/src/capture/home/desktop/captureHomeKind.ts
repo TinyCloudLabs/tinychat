@@ -23,8 +23,6 @@ export interface DesktopHomeCapabilities {
   settings: CaptureSettingsVariant | null;
   /** Connect existing meetings opens the Meeting sources window. */
   connectMeetings: boolean;
-  /** The "N voice notes on this Mac" card can show. */
-  onThisMac: boolean;
 }
 
 export function desktopHomeCapabilities(
@@ -40,6 +38,5 @@ export function desktopHomeCapabilities(
           ? "microphone-only"
           : null,
     connectMeetings: caps.meetingSources,
-    onThisMac: caps.notYetUploadedList,
   };
 }
