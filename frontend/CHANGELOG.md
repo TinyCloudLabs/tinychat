@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.23
+
+### Patch Changes
+
+- 02ba07e: Show automatic voice-note saving and explain when recordings belong to another account. Avoid repeating the space-wide archive sweep for each note.
+
 ## 0.6.0-beta.22
 
 ### Patch Changes
