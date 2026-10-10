@@ -65,7 +65,8 @@ let micDenied: boolean;
 let shortcutPending: boolean;
 let microphoneGranted: boolean;
 
-function controller(options: { tcw?: TinyCloudWeb | null; pipeline?: VoiceNotePipeline; consented?: boolean | (() => boolean); onDeviceReady?: boolean; appleInterim?: boolean; transcriber?: VoiceNoteTranscriber } = {}) {
+function controller(options: { tcw?: TinyCloudWeb | null; pipeline?: VoiceNotePipeline; consented?: boolean | (() => boolean); onDeviceReady?: boolean; appleInterim?: boolean; transcriber?: VoiceNoteTranscriber;
+  subscribeAppActive?: (listener: () => void) => Promise<{ remove(): Promise<void> }> } = {}) {
   return createVoiceNoteRecorderController({
     tcw: options.tcw === undefined ? tcw : options.tcw,
     pipeline: options.pipeline,
@@ -75,6 +76,7 @@ function controller(options: { tcw?: TinyCloudWeb | null; pipeline?: VoiceNotePi
         capabilities: null, jobs: new Map() }) },
     onDeviceReady: () => options.onDeviceReady ?? true,
     appleInterim: () => options.appleInterim ?? false,
+    subscribeAppActive: options.subscribeAppActive,
   });
 }
 
@@ -486,6 +488,33 @@ describe("voice-note recorder controller", () => {
     expect(recorder.getState().permissionDenied).toBe(false);
     await recorder.record();
     expect(recorder.getState().phase).toBe("recording");
+  });
+
+  test("app-active recheck clears a missed grant event without relaunch", async () => {
+    let appActive: () => void = () => {};
+    const recorder = controller({ subscribeAppActive: async (listener) => {
+      appActive = listener;
+      return { remove: async () => { appActive = () => {}; } };
+    } });
+    const detach = recorder.attach();
+    await tick();
+    micDenied = true;
+    microphoneGranted = false;
+    fake.emit("presentRecorder", { id: null, reason: "permission_denied" });
+    await tick();
+    expect(recorder.getState().permissionDenied).toBe(true);
+    appActive();
+    await tick();
+    expect(recorder.getState().permissionDenied).toBe(true);
+    // The native grant event was missed while Settings covered the WebView.
+    micDenied = false;
+    microphoneGranted = true;
+    appActive();
+    await tick();
+    expect(recorder.getState().permissionDenied).toBe(false);
+    await recorder.record();
+    expect(recorder.getState().phase).toBe("recording");
+    detach();
   });
 
   test("a cold shortcut's retained event reaches the controller's first listener", async () => {

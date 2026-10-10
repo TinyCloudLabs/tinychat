@@ -38,6 +38,14 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
         engine.addConsumerListener(this)
         engine.beginLaunchRecovery()
     }
+    override fun handleOnResume() {
+        super.handleOnResume()
+        if (::engine.isInitialized && MicShortcutRecovery.denied(context) &&
+            MicShortcutRecovery.permissionGranted(context)) {
+            MicShortcutRecovery.markGranted(context)
+            engine.presentRecorder(null, "permission_granted")
+        }
+    }
     override fun handleOnDestroy() { engine.removeListener(this); super.handleOnDestroy() }
     override fun event(name: String, data: JSONObject) {
         if (name == "started") {

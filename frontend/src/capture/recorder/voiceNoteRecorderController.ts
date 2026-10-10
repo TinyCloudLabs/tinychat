@@ -11,6 +11,8 @@
 // hands each saved note to private cloud transcription. Discard (PR5) marks the
 // recording before stopping it, so no save that meets it keeps it.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { App } from "@capacitor/app";
+import { Capacitor } from "@capacitor/core";
 
 import {
   VoiceNotes,
@@ -73,6 +75,8 @@ export interface VoiceNoteRecorderControllerOptions {
   /** Test seam for model readiness; production reads the shared native STT snapshot. */
   onDeviceReady?: () => boolean;
   appleInterim?: () => boolean;
+  /** A native foreground subscription; injected in tests to exercise a missed grant event. */
+  subscribeAppActive?: (listener: () => void) => Promise<{ remove(): Promise<void> }>;
 }
 
 export type TranscriberChoiceResult = "ok" | "needs_consent" | "locked_signed_out" | "unavailable";
@@ -115,7 +119,7 @@ export interface VoiceNoteRecorderController {
 }
 
 export function createVoiceNoteRecorderController({ tcw, available, transcriber, pipeline, onDeviceReady,
-  appleInterim }: VoiceNoteRecorderControllerOptions): VoiceNoteRecorderController {
+  appleInterim, subscribeAppActive }: VoiceNoteRecorderControllerOptions): VoiceNoteRecorderController {
   let state = initialRecorderState;
   let preference = readTranscriberPreference();
   let nativeOptions: CaptureOptions | null = null;
@@ -433,6 +437,23 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       const key = scope();
       if (!available) return () => {};
       let attached = true;
+      const recheckPermission = async () => {
+        if (!attached || !state.permissionDenied) return;
+        try {
+          const status = await VoiceNotes.status();
+          if (attached && status.microphonePermissionGranted) send({ type: "PERMISSION_GRANTED" });
+        } catch (caught) {
+          console.warn("[VoiceNotes] Could not recheck microphone permission", caught);
+        }
+      };
+      const appActiveHandle = (subscribeAppActive
+        ? subscribeAppActive(() => { void recheckPermission(); })
+        : Capacitor.isNativePlatform()
+          ? App.addListener("appStateChange", ({ isActive }) => { if (isActive) void recheckPermission(); })
+          : null)?.catch((caught: unknown) => {
+            console.warn("[VoiceNotes] Could not watch app activity", caught);
+            return null;
+          });
       if (key !== null) {
         for (const [id, issue] of Object.entries(savedPartialAudioIssues(key))) {
           if (!partialAudioDismissed(key, id)) send({ type: "CAPTURE_ISSUE", id, issue });
@@ -574,6 +595,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         attached = false;
         if (typeof window !== "undefined") window.removeEventListener("exo:captureIssueDeleted", onCaptureDeleted);
         unsubscribePreference();
+        if (appActiveHandle) void appActiveHandle.then((handle) => handle?.remove());
         for (const handle of handles) void handle.then((h) => h.remove());
       };
     },
