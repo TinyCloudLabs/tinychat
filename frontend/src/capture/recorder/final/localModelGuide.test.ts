@@ -37,6 +37,11 @@ describe("localModelGuide", () => {
     expect(guide.action).toBeUndefined();
   });
 
+  test("a model the phone is still verifying says so and offers nothing to press", () => {
+    const guide = localModelGuide(status({}, { state: "checking" }), download().download);
+    expect(guide).toEqual({ reason: "Checking the downloaded model…" });
+  });
+
   test("a failed model says why and offers the download again", () => {
     const guide = localModelGuide(status({}, { state: "failed", error: "disk full" }), download().download);
     expect(guide.reason).toBe("Couldn't download the model: disk full");

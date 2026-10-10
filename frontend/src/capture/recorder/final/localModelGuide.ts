@@ -43,6 +43,9 @@ export function localModelGuide(
       action: get(FINAL_COPY.modelTryAgain),
     };
   }
+  if (needed.some((entry) => entry.state === "checking")) {
+    return { reason: "Checking the downloaded model…" };
+  }
   const total = onDeviceDownloadTotalBytes(model);
   const size = total > 0 ? ` (${mb(total)} MB)` : "";
   if (model.download.state === "waiting_for_network") {
