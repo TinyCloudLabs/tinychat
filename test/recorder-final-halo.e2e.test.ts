@@ -8,6 +8,20 @@ declare global {
   interface Window {
     exoUi?: { ready: boolean };
     haloStall?: { done: boolean };
+    haloProbe?: {
+      draws: (index: number) => number;
+      path: () => string | null;
+    };
+  }
+}
+
+// Without the atlas path the job would pass without exercising
+// transferToImageBitmap(), so a fallback fails loudly instead.
+function expectAtlasPath(path: string | null) {
+  if (path !== "webgl-atlas") {
+    throw new Error(
+      `Halo rendered through "${path}", not "webgl-atlas": this check would not exercise transferToImageBitmap()`,
+    );
   }
 }
 
@@ -58,6 +72,7 @@ test("recorder-final halo renders its centre pixel in WebKit", async () => {
           { timeout: 20_000 },
         );
         await page.waitForFunction(inspectHaloPixels, {}, { timeout: 5_000 });
+        expectAtlasPath(await page.evaluate(() => window.haloProbe?.path() ?? null));
         const center = await page
           .locator(".halo-ring__canvas")
           .nth(3)
@@ -110,8 +125,9 @@ interface BlankEpisode {
 }
 
 // Samples every ring's centre on each animation frame after the injected stall
-// (every ring has been drawn by then) and records each run of transparent
-// frames as an episode.
+// and records each run of transparent frames as an episode. A ring counts only
+// from the frame its first draw reached the canvas (including a first draw that
+// itself comes out blank); a ring that never draws is reported separately.
 async function blankEpisodesAfterStall(theme: "light" | "dark") {
   const context = await browser!.newContext({
     viewport: { width: 390, height: 4400 },
@@ -133,7 +149,12 @@ async function blankEpisodesAfterStall(theme: "light" | "dark") {
     );
     return await page.evaluate(
       () =>
-        new Promise<{ canvases: number; episodes: BlankEpisode[] }>(
+        new Promise<{
+          canvases: number;
+          path: string | null;
+          undrawn: number[];
+          episodes: BlankEpisode[];
+        }>(
           (resolve) => {
             const canvases = [
               ...document.querySelectorAll<HTMLCanvasElement>(
@@ -156,6 +177,7 @@ async function blankEpisodesAfterStall(theme: "light" | "dark") {
             };
             const sample = (now: number) => {
               canvases.forEach((canvas, ring) => {
+                if (window.haloProbe!.draws(ring) === 0) return;
                 const context = canvas.getContext("2d");
                 const blank =
                   !context ||
@@ -181,7 +203,14 @@ async function blankEpisodesAfterStall(theme: "light" | "dark") {
               if (++frame < 40) requestAnimationFrame(sample);
               else {
                 for (const ring of [...open.keys()]) close(ring, now);
-                resolve({ canvases: canvases.length, episodes });
+                resolve({
+                  canvases: canvases.length,
+                  path: window.haloProbe!.path(),
+                  undrawn: canvases.flatMap((_, ring) =>
+                    window.haloProbe!.draws(ring) === 0 ? [ring] : [],
+                  ),
+                  episodes,
+                });
               }
             };
             requestAnimationFrame(sample);
@@ -202,10 +231,11 @@ test(
         await browser?.close();
         browser = await webkit.launch({ headless: true });
       }
-      const { canvases, episodes } = await blankEpisodesAfterStall(
-        load % 2 === 0 ? "light" : "dark",
-      );
+      const { canvases, path, undrawn, episodes } =
+        await blankEpisodesAfterStall(load % 2 === 0 ? "light" : "dark");
+      expectAtlasPath(path);
       expect(canvases).toBe(8);
+      expect(undrawn).toEqual([]);
       console.log(
         `HALO_STALL_LOAD ${load} theme=${load % 2 === 0 ? "light" : "dark"} episodes=${episodes.length}`,
       );

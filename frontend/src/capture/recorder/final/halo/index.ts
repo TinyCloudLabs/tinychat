@@ -15,3 +15,5 @@ export {
 } from "./source";
 /** Push samples here; HaloRing reads the latest source each render frame, without React state. */
 export type { HaloSource, HaloSourceSubscriber } from "./source";
+/** Test hooks: the render path in use and how many draws reached a ring's canvas since it was last cleared. */
+export { haloDrawCount, haloRenderPath } from "./renderer";

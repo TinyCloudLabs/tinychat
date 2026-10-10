@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import {
   HaloRing,
+  haloDrawCount,
+  haloRenderPath,
   LevelBars,
   MirroredSpectrumBars,
   sourceFromLevel,
@@ -28,7 +30,30 @@ function subscribeLevels(listener: (level: number) => void) {
 declare global {
   interface Window {
     haloStall?: { done: boolean };
+    haloProbe?: {
+      draws: (index: number) => number;
+      path: () => string | null;
+    };
   }
+}
+
+// Test-only: how many draws reached the nth ring canvas, and the render path.
+function HaloProbe() {
+  useEffect(() => {
+    window.haloProbe = {
+      draws: (index) =>
+        haloDrawCount(
+          document.querySelectorAll<HTMLCanvasElement>(".halo-ring__canvas")[
+            index
+          ],
+        ),
+      path: haloRenderPath,
+    };
+    return () => {
+      delete window.haloProbe;
+    };
+  }, []);
+  return null;
 }
 
 // Test-only (?haloStall=<ms>): blocks the main thread in each of the first
@@ -212,6 +237,7 @@ export const recorderFinalHaloScreen: HarnessScreen = {
           the halo-review capture keeps all eight in view.
         </p>
         <HaloStall />
+        <HaloProbe />
         {previews.map((theme) => (
           <ThemePreview key={theme} theme={theme} />
         ))}

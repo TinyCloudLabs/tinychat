@@ -1,12 +1,16 @@
 import { describe, expect, mock, test } from "bun:test";
 import {
   easePause,
+  haloDrawCount,
   haloFrameInterval,
   HaloRafLoop,
+  haloRenderPath,
   pauseBreathOpacity,
+  registerHalo,
   selectRenderSurface,
   TICKS_SHADER,
 } from "./renderer";
+import { sourceFromLevel } from "./source";
 
 describe("halo renderer selection", () => {
   test("selects and logs Canvas 2D when WebGL getContext returns null", () => {
@@ -94,5 +98,124 @@ describe("halo renderer selection", () => {
       pauseBreathOpacity(1, 1, false),
     );
     expect(TICKS_SHADER).toContain("uPause * (1.0 - uReduce)");
+  });
+});
+
+// A permissive stand-in for a WebGL or 2D context: every member is a no-op
+// that returns another stand-in, except the few the renderer branches on.
+function permissive(overrides: Record<string, unknown> = {}): any {
+  const target = function () {};
+  return new Proxy(target, {
+    get: (_target, key) => {
+      if (key in overrides) return overrides[key];
+      if (key === Symbol.toPrimitive) return () => 0;
+      return permissive();
+    },
+    set: () => true,
+    apply: () => permissive(),
+  });
+}
+
+describe("halo renderer bitmap hold", () => {
+  test("holds a bitmap for one frame and closes it when the last ring unmounts", () => {
+    const g = globalThis as any;
+    const saved = {
+      OffscreenCanvas: g.OffscreenCanvas,
+      document: g.document,
+      window: g.window,
+      matchMedia: g.matchMedia,
+      IntersectionObserver: g.IntersectionObserver,
+      ResizeObserver: g.ResizeObserver,
+      requestAnimationFrame: g.requestAnimationFrame,
+      cancelAnimationFrame: g.cancelAnimationFrame,
+    };
+    const bitmaps: { closed: boolean; close(): void }[] = [];
+    const gl = permissive({ isContextLost: () => false });
+    let intersect: (items: { isIntersecting: boolean }[]) => void = () => {};
+    let frame: FrameRequestCallback | null = null;
+    g.OffscreenCanvas = class {
+      getContext() {
+        return gl;
+      }
+      addEventListener() {}
+      transferToImageBitmap() {
+        const bitmap = {
+          closed: false,
+          close() {
+            bitmap.closed = true;
+          },
+        };
+        bitmaps.push(bitmap);
+        return bitmap;
+      }
+    };
+    g.document = { createElement: () => permissive() };
+    g.window = { devicePixelRatio: 1 };
+    g.matchMedia = () => ({
+      matches: false,
+      addEventListener() {},
+      removeEventListener() {},
+    });
+    g.IntersectionObserver = class {
+      constructor(callback: typeof intersect) {
+        intersect = callback;
+      }
+      observe() {}
+      disconnect() {}
+    };
+    g.ResizeObserver = class {
+      observe() {}
+      disconnect() {}
+    };
+    g.requestAnimationFrame = (callback: FrameRequestCallback) => {
+      frame = callback;
+      return 1;
+    };
+    g.cancelAnimationFrame = () => {
+      frame = null;
+    };
+    const run = (now: number) => {
+      const callback = frame;
+      frame = null;
+      callback?.(now);
+    };
+
+    try {
+      const canvas = {
+        width: 0,
+        height: 0,
+        getContext: () => permissive(),
+      } as unknown as HTMLCanvasElement;
+      const unmount = registerHalo(canvas, {
+        size: 100,
+        ticks: 40,
+        paused: false,
+        still: false,
+        theme: "night",
+        sourceRef: { current: sourceFromLevel(0.3) },
+        weight: 1,
+        spread: 1,
+      });
+      expect(haloRenderPath()).toBe("webgl-atlas");
+      intersect([{ isIntersecting: true }]);
+
+      run(1000);
+      expect(bitmaps).toHaveLength(1);
+      expect(bitmaps[0].closed).toBe(false);
+      expect(haloDrawCount(canvas)).toBe(1);
+
+      run(2000);
+      expect(bitmaps).toHaveLength(2);
+      expect(bitmaps[0].closed).toBe(true);
+      expect(bitmaps[1].closed).toBe(false);
+
+      unmount();
+      expect(bitmaps[1].closed).toBe(true);
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete g[key];
+        else g[key] = value;
+      }
+    }
   });
 });
