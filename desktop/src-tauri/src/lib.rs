@@ -1,9 +1,14 @@
 #[cfg(feature = "transcription")]
-mod cloud;
-#[cfg(feature = "transcription")]
 mod recorder;
 #[cfg(all(feature = "transcription", debug_assertions))]
 mod smoke;
+
+#[cfg(feature = "transcription")]
+fn install_recorder_runtime<R: tauri::Runtime>(app: &mut tauri::App<R>) {
+    use tauri::Manager;
+
+    app.manage(recorder::RecorderRuntime::default());
+}
 
 pub fn run() {
     let builder = tauri::Builder::default();
@@ -22,7 +27,7 @@ pub fn run() {
     let builder = {
         use tauri::Manager;
 
-        let system_audio = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let system_audio = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let meter = std::sync::Arc::new(std::sync::Mutex::new(
             recorder::audio_provider::Meter::default(),
         ));
@@ -42,14 +47,9 @@ pub fn run() {
             ));
 
         // App commands. build.rs declares them in the app ACL manifest, so each
-        // one is callable only where a capability grants it: the private cloud
-        // commands by capabilities-transcription/, the debug smoke below.
+        // one is callable only where a capability grants it.
         #[cfg(not(debug_assertions))]
         let builder = builder.invoke_handler(tauri::generate_handler![
-            cloud::commands::cloud_transcription_status,
-            cloud::commands::cloud_transcription_submit,
-            cloud::commands::cloud_transcription_cancel,
-            cloud::commands::cloud_transcription_reopen,
             recorder::files::append_audio_chunk,
             recorder::files::audio_file_size,
             recorder::files::read_audio_chunk,
@@ -83,10 +83,6 @@ pub fn run() {
         // native wiring in one invoke before any recording is attempted.
         #[cfg(debug_assertions)]
         let builder = builder.invoke_handler(tauri::generate_handler![
-            cloud::commands::cloud_transcription_status,
-            cloud::commands::cloud_transcription_submit,
-            cloud::commands::cloud_transcription_cancel,
-            cloud::commands::cloud_transcription_reopen,
             recorder::files::append_audio_chunk,
             recorder::files::audio_file_size,
             recorder::files::read_audio_chunk,
@@ -119,18 +115,10 @@ pub fn run() {
         ]);
 
         builder.setup(|app| {
-            app.manage(recorder::engine::Engine::default());
-            app.manage(recorder::extras::ExtrasState::default());
-            recorder::engine::install(app);
-            recorder::extras::install(app);
-            tauri::async_runtime::block_on(recorder::extras::load_system_audio(app.handle()))
-                .map_err(std::io::Error::other)?;
+            install_recorder_runtime(app);
             app.add_capability(include_str!(
                 "../capabilities-transcription/transcription.json"
             ))?;
-            // Private cloud engine: inert (no listener, no file access) unless
-            // a PTX origin is compiled in.
-            cloud::install(app);
             // EXO_SMOKE=1 runs real plugin invokes in the webview (debug only).
             #[cfg(debug_assertions)]
             {
@@ -144,4 +132,38 @@ pub fn run() {
     builder
         .run(tauri::generate_context!())
         .expect("error while running Exo");
+}
+
+#[cfg(all(test, feature = "transcription"))]
+mod tests {
+    use tauri::Manager;
+
+    #[tokio::test]
+    async fn corrupt_settings_do_not_block_recorder_setup() {
+        let vault =
+            std::env::temp_dir().join(format!("exo-corrupt-settings-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::write(vault.join("settings.json"), "{invalid json").unwrap();
+
+        let mut app = tauri::test::mock_builder()
+            .manage(tauri_plugin_settings::StartupSnapshot::new(vault.clone()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+
+        super::install_recorder_runtime(&mut app);
+
+        assert!(app
+            .try_state::<super::recorder::RecorderRuntime>()
+            .is_some());
+        assert!(app.try_state::<super::recorder::engine::Engine>().is_none());
+        assert!(app
+            .state::<tauri_plugin_settings::StartupSnapshot>()
+            .load()
+            .await
+            .is_err());
+        assert!(super::recorder::extras::load_system_audio(app.handle())
+            .await
+            .is_err());
+        std::fs::remove_dir_all(vault).unwrap();
+    }
 }
