@@ -30,7 +30,7 @@ import { isOnDeviceReady } from "@/lib/voiceNotes/onDeviceStt";
 import { setQuarantineAccount } from "@/lib/voiceNotes/quarantine";
 import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { effectiveCaptureOptions, localModelSubstituted, readTranscriberPreference, refreshEffectiveTranscriber,
-  setDefaultIdentifySpeakers, setDefaultTranscriber, setEffectiveContextSource, subscribeTranscriberPreference, writeAccountDefaults,
+  setDefaultIdentifySpeakers, setDefaultTranscriber, setEffectiveContextSource, settleDefaults, subscribeTranscriberPreference, writeAccountDefaults,
   type EffectiveContext } from "@/lib/voiceNotes/transcriberPreference";
 import {
   clearDiscarded,
@@ -829,6 +829,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       startedWithoutModel = choice.localModelNeeded ? choice.id : null;
       const requested = voiceNoteMaxDurationMs();
       try {
+        // The recording starts from the engine's default: wait for any default write in flight, and refuse to start on one that could not be put right.
+        await settleDefaults();
         const started = await VoiceNotes.start({ maxDurationMs: requested });
         const elapsedAt = Date.now();
         nativeOptions = null;

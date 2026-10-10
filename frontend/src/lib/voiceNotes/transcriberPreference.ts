@@ -99,13 +99,78 @@ function inOrder<T>(write: () => Promise<T>): Promise<T> {
 }
 
 /** Writes the effective default for the current account to the engine and returns what it replaced, or null when nothing changed. Never during a sign-in or sign-out transition. */
-async function writeEffectiveDefaults(pref: CaptureOptions, explicit: boolean): Promise<EngineDefaults | null> {
+async function writeEffectiveDefaults(pref: CaptureOptions, explicit: boolean, attempting?: (before: EngineDefaults) => void): Promise<EngineDefaults | null> {
   const current = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
   const effective = effectiveCaptureOptions(pref, current.accountDid !== null, explicit);
   // A preference write must not re-assign the previous DID during sign-out.
   if (current.status === "transitioning" || (current.transcriber === effective.transcriber && current.identifySpeakers === effective.identifySpeakers)) return null;
+  attempting?.(current);
   await withCaptureDeadline(VoiceNotes.setCaptureDefaults({ ...current, ...effective, transitionGen: current.transitionGen }));
   return current;
+}
+
+const CLOUD_REACH: Record<TranscriberId, number> = { off: 0, "on-device": 1, "private-cloud": 2, assemblyai: 3 };
+const leastCloud = (a: TranscriberId, b: TranscriberId): TranscriberId => (CLOUD_REACH[a] <= CLOUD_REACH[b] ? a : b);
+
+// Set when a failed save could not put the engine's default back. Recording waits for `settleDefaults` until it has.
+let unreconciled: unknown = null;
+
+/**
+ * After a failed save: put each stored key back on its own, then the engine's default, each attempted whatever the
+ * others did. If the keys could not all be restored, the engine goes to the less cloud-reaching of its old default
+ * and what is stored now, so it never reaches further than what the screen will show. If the engine cannot be
+ * written at all, recording is held (`settleDefaults`) rather than left on a default the screen does not show.
+ */
+async function restoreAfterFailure(
+  caught: unknown,
+  store: Storage | undefined,
+  prior: { transcriber: string | null; speakers: string | null } | null,
+  before: EngineDefaults | null,
+): Promise<unknown> {
+  const problems: string[] = [];
+  if (store && prior) {
+    for (const [key, value] of [[TRANSCRIBER_KEY, prior.transcriber], [SPEAKERS_KEY, prior.speakers]] as const) {
+      try {
+        if (value === null) store.removeItem(key); else store.setItem(key, value);
+      } catch (failure) {
+        console.error(`[VoiceNotes] Could not restore ${key} after a failed save`, failure);
+        problems.push("the saved choice could not be put back");
+      }
+    }
+  }
+  if (before) {
+    const shown = effectiveCaptureOptions(readTranscriberPreference(), before.accountDid !== null, transcriberChoiceIsExplicit());
+    const unchanged = shown.transcriber === before.transcriber && shown.identifySpeakers === before.identifySpeakers;
+    const target = unchanged ? before : {
+      ...before,
+      transcriber: leastCloud(before.transcriber, shown.transcriber),
+      identifySpeakers: before.identifySpeakers && shown.identifySpeakers,
+    };
+    try {
+      await withCaptureDeadline(VoiceNotes.setCaptureDefaults(target));
+    } catch (failure) {
+      console.error("[VoiceNotes] Could not restore the default transcription mode after a failed save", failure);
+      unreconciled = failure;
+      problems.push("the engine's default could not be put back, so recording is held until it is");
+    }
+  }
+  for (const listener of listeners) listener();
+  if (!problems.length) return caught;
+  return new Error(`${caught instanceof Error ? caught.message : String(caught)} (${problems.join("; ")})`, { cause: caught });
+}
+
+/** Resolves once the engine's default is the stored one again, or throws why it is not. Waits behind every default write in flight. */
+export function settleDefaults(): Promise<void> {
+  return inOrder(async () => {
+    if (unreconciled === null) return;
+    try {
+      await writeEffectiveDefaults(readTranscriberPreference(), transcriberChoiceIsExplicit());
+    } catch (caught) {
+      console.error("[VoiceNotes] The default transcription mode is still not put right; recording is held", caught);
+      throw new Error(`${caught instanceof Error ? caught.message : String(caught)} (the default transcription mode could not be put right, so recording is held)`, { cause: caught });
+    }
+    unreconciled = null;
+  });
 }
 
 /**
@@ -123,6 +188,7 @@ export function writeAccountDefaults(
     if (!account) return null;
     const effective = effectiveCaptureOptions(readTranscriberPreference(), account.accountDid !== null, transcriberChoiceIsExplicit());
     await withCaptureDeadline(VoiceNotes.setCaptureDefaults({ ...native, ...effective, ...account }));
+    unreconciled = null;
     return account;
   });
 }
@@ -130,43 +196,38 @@ export function writeAccountDefaults(
 /**
  * One change to the preference, applied as one unit inside the write lane. Only the changed field is carried in; the
  * rest is read from the stored preference when the write runs, so a request queued earlier can never write back what
- * an earlier change replaced. The engine is written first, then both stored keys; if either fails, the keys are put
- * back (an absent key stays absent) and the engine's default is restored, and the call throws with the old
- * preference still in place.
+ * an earlier change replaced. The stored keys are read first, then the engine is written, then both keys. If any
+ * step fails, `restoreAfterFailure` puts the keys and the engine back, each on its own, and the call throws.
  */
 async function commitPreference(change: Partial<CaptureOptions>): Promise<void> {
   await inOrder(async () => {
-    const pref = { ...readTranscriberPreference(), ...change };
-    const chosenTranscriber = change.transcriber !== undefined;
-    const replaced = await writeEffectiveDefaults(pref, chosenTranscriber || transcriberChoiceIsExplicit());
     const store = storage();
     const prior = store ? { transcriber: store.getItem(TRANSCRIBER_KEY), speakers: store.getItem(SPEAKERS_KEY) } : null;
+    const pref = { ...readTranscriberPreference(), ...change };
+    const chosenTranscriber = change.transcriber !== undefined;
+    let before: EngineDefaults | null = null;
     try {
+      await writeEffectiveDefaults(pref, chosenTranscriber || transcriberChoiceIsExplicit(), (current) => { before = current; });
       if (store) {
         if (chosenTranscriber) store.setItem(TRANSCRIBER_KEY, pref.transcriber);
         store.setItem(SPEAKERS_KEY, pref.identifySpeakers ? "1" : "0");
       }
     } catch (caught) {
-      try {
-        if (store && prior) {
-          for (const [key, value] of [[TRANSCRIBER_KEY, prior.transcriber], [SPEAKERS_KEY, prior.speakers]] as const)
-            if (value === null) store.removeItem(key); else store.setItem(key, value);
-        }
-        if (replaced) await withCaptureDeadline(VoiceNotes.setCaptureDefaults(replaced));
-      } catch (rollback) {
-        console.error("[VoiceNotes] Could not restore the default transcription mode after a failed save", rollback);
-      }
-      throw caught;
+      throw await restoreAfterFailure(caught, store, prior, before);
     }
     memoryPreference = pref;
     if (chosenTranscriber) memoryExplicit = true;
+    unreconciled = null;
   });
   for (const listener of listeners) listener();
 }
 
 /** The effective choice changed under an unchanged preference (the Mac's Whisper became ready, or the on-device model or private-cloud offer changed): rewrite the engine's default and tell the listeners. */
 export async function refreshEffectiveTranscriber(): Promise<void> {
-  await inOrder(() => writeEffectiveDefaults(readTranscriberPreference(), transcriberChoiceIsExplicit()));
+  await inOrder(async () => {
+    await writeEffectiveDefaults(readTranscriberPreference(), transcriberChoiceIsExplicit());
+    unreconciled = null;
+  });
   for (const listener of listeners) listener();
 }
 

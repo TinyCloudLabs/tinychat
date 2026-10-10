@@ -144,7 +144,8 @@ describe("the default transcriber setting", () => {
       __setVoiceNotesForTests({ ...fake.plugin, async setCaptureDefaults() { throw new Error("engine is busy"); } }, { available: true });
       await mount();
       await act(async () => { seen!.choose("on-device"); await tick(); await tick(); });
-      expect(seen!.error).toBe("Could not save the default transcriber: engine is busy");
+      expect(seen!.error).toStartWith("Could not save the default transcriber: engine is busy");
+      expect(seen!.error).toContain("recording is held");
       expect(seen!.value).toBe("private-cloud");
       expect(errors).toHaveBeenCalled();
     });

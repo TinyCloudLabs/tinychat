@@ -1954,6 +1954,177 @@ describe("voice-note recorder controller", () => {
       detach();
     });
 
+    describe("failure matrix: the screen, the stored choice and the engine agree after every outcome", () => {
+      const TRANSCRIBER_KEY = "exo.voiceNotes.transcriber";
+      const SPEAKERS_KEY = "exo.voiceNotes.identifySpeakers";
+      const REACH = { off: 0, "on-device": 1, "private-cloud": 2, assemblyai: 3 } as const;
+      let down = true;
+
+      const engines = {
+        "engine takes it": () => plugin,
+        "engine refuses": () => ({ ...plugin, setCaptureDefaults: async () => { throw new Error("engine is busy"); } }),
+        "engine applies it, loses the ack, then works again": () => {
+          let calls = 0;
+          return { ...plugin, async setCaptureDefaults(defaults) {
+            const result = await plugin.setCaptureDefaults(defaults);
+            if (calls++ === 0) throw new Error("ack lost");
+            return result;
+          } } as VoiceNotesPlugin;
+        },
+        "engine applies it, loses the ack, and stays down": () => {
+          let calls = 0;
+          return { ...plugin, async setCaptureDefaults(defaults) {
+            if (calls++ === 0) {
+              await plugin.setCaptureDefaults(defaults);
+              throw new Error("ack lost");
+            }
+            if (down) throw new Error("engine is down");
+            return plugin.setCaptureDefaults(defaults);
+          } } as VoiceNotesPlugin;
+        },
+      } as const;
+
+      const stores = {
+        "storage takes it": () => ({
+          getItem: (key: string) => values.get(key) ?? null,
+          setItem: (key: string, value: string) => { values.set(key, value); },
+          removeItem: (key: string) => { values.delete(key); },
+        }),
+        "storage refuses every write, restores included": () => ({
+          getItem: (key: string) => values.get(key) ?? null,
+          setItem: () => { throw new Error("persistent storage refusal"); },
+          removeItem: () => { throw new Error("persistent storage refusal"); },
+        }),
+        "the second key fails, restores work": () => ({
+          getItem: (key: string) => values.get(key) ?? null,
+          setItem: (key: string, value: string) => {
+            if (key === SPEAKERS_KEY && value === "0" && values.get(TRANSCRIBER_KEY) === "private-cloud") throw new Error("storage is full");
+            values.set(key, value);
+          },
+          removeItem: (key: string) => { values.delete(key); },
+        }),
+        "the second key fails, and the first cannot be put back": () => {
+          let transcriberWrites = 0;
+          return {
+            getItem: (key: string) => values.get(key) ?? null,
+            setItem: (key: string, value: string) => {
+              if (key === SPEAKERS_KEY) throw new Error("storage is full");
+              if (transcriberWrites++ > 0) throw new Error("storage is full");
+              values.set(key, value);
+            },
+            removeItem: (key: string) => { values.delete(key); },
+          };
+        },
+      } as const;
+
+      const jobsFor = () => {
+        const jobs: string[] = [];
+        const real = createVoiceNoteTranscriber({
+          cloud: {
+            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"] }),
+            pendingSourceIds: () => [],
+            transcribe: async () => { throw new Error("runNote is injected"); },
+            finish: async () => {},
+            releaseUnsent: async () => {},
+          },
+          consent: { get: () => true, set: () => {} },
+          tcw: () => tcw,
+          runNote: async ({ sourceId }) => { jobs.push(sourceId); return "transcribed"; },
+        });
+        return { real, jobs };
+      };
+
+      test("a failed save never leaves the engine reaching further than what is stored, even if the engine was already ahead of it", async () => {
+        values.set(TRANSCRIBER_KEY, "on-device");
+        values.set(SPEAKERS_KEY, "0");
+        await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false });
+        const recorder = controller({ transcriber: offer({ availability: "available", consented: true }).stub, onDeviceReady: true });
+        const detach = recorder.attach();
+        await tick();
+        Object.defineProperty(globalThis, "localStorage", { configurable: true, value: stores["storage refuses every write, restores included"]() });
+        await expect(recorder.setTranscriber("off", { scope: "default" })).rejects.toThrow("persistent storage refusal");
+        expect(await nativeDefault()).toBe("on-device");
+        expect(values.get(TRANSCRIBER_KEY)).toBe("on-device");
+        expect(recorder.getTranscriber().id).toBe("on-device");
+        detach();
+      });
+
+      for (const [engineName, engine] of Object.entries(engines)) {
+        for (const [storeName, store] of Object.entries(stores)) {
+          test(`explicit Local, then Private: ${engineName}; ${storeName}`, async () => {
+            down = true;
+            const succeeds = engineName === "engine takes it" && storeName === "storage takes it";
+            const staysDown = engineName.endsWith("stays down");
+            const partlyStored = storeName.endsWith("cannot be put back") && engineName === "engine takes it";
+            values.set(TRANSCRIBER_KEY, "on-device");
+            values.set(SPEAKERS_KEY, "0");
+            await seedNative();
+            const { real, jobs } = jobsFor();
+            await real.check();
+            const recorder = controller({ transcriber: real, onDeviceReady: true });
+            const detach = recorder.attach();
+            await tick();
+            expect(recorder.getTranscriber()).toMatchObject({ id: "on-device", source: "default" });
+
+            __setVoiceNotesForTests(engine(), { available: true });
+            Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store() });
+            const choosing = recorder.setTranscriber("private-cloud", { scope: "default" });
+            if (succeeds) expect(await choosing).toBe("ok");
+            else await expect(choosing).rejects.toThrow();
+            await tick();
+            Object.defineProperty(globalThis, "localStorage", { configurable: true, value: stores["storage takes it"]() });
+
+            const native = await nativeDefault();
+            const shown = recorder.getTranscriber().id;
+            const stored = values.get(TRANSCRIBER_KEY) ?? null;
+            if (succeeds) {
+              expect({ shown, stored, native }).toEqual({ shown: "private-cloud", stored: "private-cloud", native: "private-cloud" });
+            } else if (partlyStored) {
+              // The first key could not be put back: the engine sits at the old default, never beyond what the screen shows.
+              expect({ shown, stored }).toEqual({ shown: "private-cloud", stored: "private-cloud" });
+              expect(REACH[native]).toBeLessThanOrEqual(REACH[shown]);
+              expect(native).toBe("on-device");
+            } else if (!staysDown) {
+              expect({ shown, stored, native }).toEqual({ shown: "on-device", stored: "on-device", native: "on-device" });
+            } else {
+              // The engine could not be put back: it holds what was never saved, so recording is held, visibly.
+              expect({ shown, stored }).toEqual({ shown: "on-device", stored: "on-device" });
+              expect(native).toBe("private-cloud");
+              await recorder.record();
+              expect(recorder.getState().phase).toBe("idle");
+              expect(recorder.getState().error).toContain("recording is held");
+              expect((await fake.plugin.status()).id).toBeNull();
+              expect(await nativeDefault()).toBe("private-cloud");
+              down = false;
+              await recorder.record();
+              expect(recorder.getState().phase).toBe("recording");
+            }
+            __setVoiceNotesForTests(plugin, { available: true });
+
+            if (!succeeds) {
+              if (recorder.getState().phase !== "recording") await recorder.record();
+              expect(recorder.getState().phase).toBe("recording");
+              expect((await fake.plugin.status()).options?.transcriber).toBe("on-device");
+              await recorder.stop();
+              await tick();
+              expect(onPhone.at(-1)!.options?.transcriber).toBe("on-device");
+              expect(jobs).toEqual([]);
+              expect(await nativeDefault()).toBe("on-device");
+            }
+
+            if (!succeeds && !partlyStored) {
+              // Retry once everything works: all three say Private.
+              down = false;
+              expect(await recorder.setTranscriber("private-cloud", { scope: "default" })).toBe("ok");
+              expect({ shown: recorder.getTranscriber().id, stored: values.get(TRANSCRIBER_KEY), native: await nativeDefault() })
+                .toEqual({ shown: "private-cloud", stored: "private-cloud", native: "private-cloud" });
+            }
+            detach();
+          });
+        }
+      }
+    });
+
     describe("a failed engine write is shown and changes nothing", () => {
       test("the engine refuses: the choice throws, nothing is stored, and screen and engine keep the old default", async () => {
         await seedNative();
