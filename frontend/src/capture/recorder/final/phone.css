@@ -476,7 +476,7 @@
   padding: 0 28px;
   text-align: center;
   font-size: 13px;
-  color: hsl(var(--destructive));
+  color: var(--red-text);
 }
 .pr-retry {
   margin-left: 8px;
@@ -671,6 +671,10 @@
   color: var(--dim);
 }
 .pr-spk[aria-disabled="true"] {
+  opacity: 1;
+}
+.pr-spk[aria-disabled="true"] .l,
+.pr-spk[aria-disabled="true"] .pr-sw {
   opacity: 0.5;
 }
 .pr-sw {
@@ -773,7 +777,7 @@
   border-radius: 999px;
   font-size: 15px;
   font-weight: 600;
-  color: hsl(var(--destructive));
+  color: var(--red-text);
 }
 .pr-sheet a {
   display: inline-flex;

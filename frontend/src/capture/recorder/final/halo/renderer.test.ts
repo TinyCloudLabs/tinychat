@@ -149,7 +149,7 @@ describe("halo renderer bitmap hold", () => {
       defaultView: {
         getComputedStyle: () => ({
           getPropertyValue: (name: string) => {
-            if (name === "--solid") {
+            if (name === "--disc") {
               return theme === "day"
                 ? "hsl(0 0% 100%)"
                 : "hsl(240 3.7% 15.9%)";

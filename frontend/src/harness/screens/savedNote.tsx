@@ -196,6 +196,7 @@ const SAVE = { selector: '[data-testid="saved-note-notes"] .sn-pill', text: "Sav
 
 export const savedNoteScreens: HarnessScreen[] = [
   screen("page", "tauri", DESKTOP_VIEWPORTS, RENDERED, () => <Note />),
+  screen("page-audio", "tauri", DESKTOP_VIEWPORTS, ".sn-player button", () => <Note audio />),
   screen("page-editing", "tauri", DESKTOP_VIEWPORTS, EDITOR, () => (
     <Note press={EDIT} />
   )),

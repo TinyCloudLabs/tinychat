@@ -53,6 +53,7 @@
     --live-foreground: 0 0% 98%;
     --warning: 26 90% 37%;
     --destructive: 0 72% 51%;
+    --red-text: hsl(var(--destructive));
     --destructive-foreground: 0 0% 98%;
     --border: 240 5.9% 90%;
     --input: 240 5.9% 90%;
@@ -86,6 +87,7 @@
     --live-foreground: 240 10% 3.9%;
     --warning: 43 96% 56%;
     --destructive: 0 62.8% 50%;
+    --red-text: 0 100% 70%;
     --destructive-foreground: 0 0% 98%;
     --border: 240 3.7% 15.9%;
     --input: 240 3.7% 15.9%;

@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect } from "react";
 import {
   HaloRing,
   haloDrawCount,
@@ -16,16 +16,6 @@ const SCRIPT_SOURCES = [
   sourceFromLevel(LEVEL_SCRIPT[2], 0.42, 0.91),
 ];
 const ACTIVE = SCRIPT_SOURCES[SCRIPT_SOURCES.length - 1];
-const LIGHT_TOKENS = {
-  "--background": "0 0% 100%",
-  "--foreground": "240 10% 3.9%",
-  "--card": "0 0% 100%",
-  "--secondary": "240 4.8% 95.9%",
-  "--solid": "hsl(var(--card))",
-  "--muted-foreground": "240 3.8% 46.1%",
-  "--dim": "hsl(var(--muted-foreground))",
-} as CSSProperties;
-
 function subscribeScript(listener: (source: typeof ACTIVE) => void) {
   for (const source of SCRIPT_SOURCES) listener(source);
   return () => {};
@@ -89,41 +79,10 @@ function HaloStall() {
 }
 
 function IdleRing({ theme }: { theme: "night" | "day" }) {
-  const [surface, setSurface] = useState(theme);
   return (
-    <div
-      className={surface === "night" ? "dark" : undefined}
-      style={{
-        ...(surface === "day"
-          ? LIGHT_TOKENS
-          : ({ "--solid": "hsl(var(--secondary))" } as CSSProperties)),
-        textAlign: "center",
-        padding: "44px 40px 58px",
-      }}
-    >
-      <button
-        type="button"
-        data-halo-theme-toggle=""
-        onClick={() =>
-          setSurface((current) => (current === "night" ? "day" : "night"))
-        }
-        style={{
-          display: "block",
-          minHeight: 44,
-          margin: "0 auto 54px",
-          padding: "10px 14px",
-          border: "1px solid currentColor",
-          borderRadius: 999,
-          color: "inherit",
-          background: "transparent",
-          font: "inherit",
-          cursor: "pointer",
-        }}
-      >
-        Switch idle disc theme
-      </button>
-      <HaloRing size={118} ticks={40} theme={surface} />
-      <p>Idle · theme refresh</p>
+    <div style={{ textAlign: "center", padding: "44px 40px 58px" }}>
+      <HaloRing size={118} ticks={40} theme={theme} />
+      <p>Idle</p>
     </div>
   );
 }
@@ -132,13 +91,11 @@ function ThemePreview({ theme }: { theme: "night" | "day" }) {
   const night = theme === "night";
   return (
     <section
-      className={night ? "dark" : undefined}
+      className={`soft-skin soft-${theme}${night ? " dark" : ""}`}
+      data-layout="phone"
       style={{
-        ...(night
-          ? ({ "--solid": "hsl(var(--secondary))" } as CSSProperties)
-          : LIGHT_TOKENS),
-        background: "hsl(var(--background))",
-        color: "hsl(var(--foreground))",
+        background: "var(--bgc)",
+        color: "var(--ink)",
         borderRadius: 16,
         padding: 20,
       }}
@@ -232,9 +189,7 @@ export const recorderFinalHaloScreen: HarnessScreen = {
   layout: "document",
   displayTitle: false,
   render: () => {
-    const previews = document.documentElement.classList.contains("dark")
-      ? (["night", "day"] as const)
-      : (["day", "night"] as const);
+    const theme = document.documentElement.classList.contains("dark") ? "night" : "day";
     return (
       <main
         style={{
@@ -257,13 +212,11 @@ export const recorderFinalHaloScreen: HarnessScreen = {
           }}
         >
           Rings draw while in view. Scroll to start rings outside the viewport;
-          the halo-review capture keeps all eight in view.
+          the halo-review capture keeps every ring in view.
         </p>
         <HaloStall />
         <HaloProbe />
-        {previews.map((theme) => (
-          <ThemePreview key={theme} theme={theme} />
-        ))}
+        <ThemePreview theme={theme} />
       </main>
     );
   },

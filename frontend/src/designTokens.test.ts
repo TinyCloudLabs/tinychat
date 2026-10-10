@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-import { contrast, hslTriplet, over, toHex, type Rgb } from "./harness/color";
+import { contrast, fromHex, hslTriplet, over, toHex, type Rgb } from "./harness/color";
 import { THEME_COLOR } from "./lib/theme";
 
 const css = readFileSync(new URL("./index.css", import.meta.url), "utf8");
@@ -28,6 +28,9 @@ type ThemeName = keyof typeof themes;
 const color = (theme: ThemeName, name: string): Rgb => {
   const value = themes[theme].get(`--${name}`);
   if (!value) throw new Error(`${theme} has no --${name}`);
+  const colorValue = value.match(/^hsl\(var\(--([\w-]+)\)\)$/)?.[1];
+  if (colorValue) return color(theme, colorValue);
+  if (value.startsWith("#")) return fromHex(value);
   return hslTriplet(value);
 };
 const number = (theme: ThemeName, name: string) => Number.parseFloat(themes[theme].get(`--${name}`)!);
@@ -36,7 +39,7 @@ const number = (theme: ThemeName, name: string) => Number.parseFloat(themes[them
 const THEME_INDEPENDENT = new Set(["--radius"]);
 
 const SURFACES = ["background", "chrome", "card", "surface-2", "popover"] as const;
-const TEXT = ["foreground", "muted-foreground", "primary", "live", "warning", "destructive"] as const;
+const TEXT = ["foreground", "muted-foreground", "primary", "live", "warning", "destructive", "red-text"] as const;
 
 interface Pair {
   what: string;
@@ -93,6 +96,7 @@ describe("design tokens (index.css)", () => {
     Day: [
       "muted-foreground on surface-2",
       "destructive on surface-2",
+      "red-text on surface-2",
       ...SURFACES.map((surface) => `input edge on ${surface}`),
       ...(["background", "chrome", "card", "surface-2"] as const).map((surface) => `muted-foreground on the selected tint over ${surface}`),
     ],

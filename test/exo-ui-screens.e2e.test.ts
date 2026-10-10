@@ -388,6 +388,32 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 const expected = Math.max(16, Math.min(32, 16 * viewport.textScale));
                 if (Math.abs(rootSize - expected) > 0.1) findings.push({ check: "ios-text-scale", detail: `root font-size ${rootSize}px; expected ${expected}px at scale ${viewport.textScale}` });
               }
+              if (screen.id === "shell-chat" && viewport.id === "phone") {
+                const bannerLayout = await page.evaluate(() => {
+                  const banner = document.querySelector('[aria-label="Agent tools"]');
+                  const markdown = document.querySelector('[data-testid="chat-markdown-demo"]');
+                  if (!banner || !markdown) return { missing: !banner ? "agent banner" : "Markdown demo" };
+                  const bannerRect = banner.getBoundingClientRect();
+                  const markdownRect = markdown.getBoundingClientRect();
+                  return {
+                    bottomGap: window.innerHeight - bannerRect.bottom,
+                    overlapsMarkdown: bannerRect.left < markdownRect.right &&
+                      bannerRect.right > markdownRect.left &&
+                      bannerRect.top < markdownRect.bottom &&
+                      bannerRect.bottom > markdownRect.top,
+                  };
+                });
+                if ("missing" in bannerLayout) {
+                  findings.push({ check: "chat-banner-layout", detail: `missing ${bannerLayout.missing}` });
+                } else {
+                  if (bannerLayout.bottomGap < 150 || bannerLayout.bottomGap > 220) {
+                    findings.push({ check: "chat-banner-offset", detail: `${Math.round(bannerLayout.bottomGap)}px from viewport bottom` });
+                  }
+                  if (bannerLayout.overlapsMarkdown) {
+                    findings.push({ check: "chat-banner-overlap", detail: "agent banner covers the Markdown demo card" });
+                  }
+                }
+              }
               for (const error of errors) findings.push({ check: "errors", detail: error });
 
               const file = `${screen.id}__${viewport.id}__${theme}.png`;
@@ -414,7 +440,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
     viewportFilter.some((id) => ["phone", "phone-halo-review"].includes(id));
   const runsHaloReview = viewportFilter?.includes("halo-review") ?? false;
   if (runsPhoneHaloReview || runsHaloReview)
-    test("recorder halo in tall phone and eight-ring review captures", async () => {
+    test("recorder halo in tall phone and theme-token review captures", async () => {
       const halo = screens.find((screen) => screen.id === "recorder-final-halo");
       if (!halo) return;
 
@@ -487,7 +513,9 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 .locator(".halo-ring__canvas")
                 .nth(3)
                 .evaluate(readHaloThemeColor, theme);
-              expect(center.color.every((channel, index) => Math.abs(channel - tokenColor[index]!) <= 18)).toBe(true);
+              if (!center.color.every((channel, index) => Math.abs(channel - tokenColor[index]!) <= 18)) {
+                throw new Error(`Halo ${theme} center ${center.color.join(",")} does not match --disc ${tokenColor.join(",")}`);
+              }
             }
             if (forceCanvas) expect(rendererPaths.some((path) => path.includes("canvas-2d"))).toBe(true);
             const file = `${halo.id}__${viewport.id}__${theme}${forceCanvas ? "-canvas2d" : ""}.png`;

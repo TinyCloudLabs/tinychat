@@ -1,8 +1,8 @@
 // The agent access prompt on a phone (TC-522). Positioned at `left-1/2`, a
 // fixed box only gets half the viewport to lay out in, so at 412 px the prompt
-// was squeezed into a narrow column with the button beside the text. Below
-// `sm` it now spans the width and stacks; from `sm` up the classes are the
-// original centred row.
+// was squeezed into a narrow column with the button beside the text. At 390
+// px it spans the width as a compact row; at 320 px it stacks. On a phone it
+// is fixed to the viewport and tab bar; from `md` it is absolute in the pane.
 
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -31,11 +31,11 @@ describe("AgentEnablementBanner layout", () => {
     ["the connect prompt", baseProps],
     ["the error / retry state", { ...baseProps, enableError: "Something went wrong." }],
   ] as const) {
-    test(`${name}: full width and stacked on phones, centred row from sm`, () => {
+    test(`${name}: phone offset, compact row and pane positioning`, () => {
       const markup = renderToStaticMarkup(<AgentEnablementBanner {...props} />);
 
       const region = classList(markup, 'role="region"');
-      expect(region).toEqual(expect.arrayContaining(["absolute", "left-3", "right-3"]));
+      expect(region).toEqual(expect.arrayContaining(["fixed", "left-3", "right-3", "md:absolute", "md:bottom-32"]));
       expect(region).not.toContain("left-1/2");
       expect(region).not.toContain("-translate-x-1/2");
       expect(region).toEqual(
@@ -51,7 +51,7 @@ describe("AgentEnablementBanner layout", () => {
       const card = classList(markup, "rounded-lg");
       expect(card).toContain("flex-col");
       expect(card).not.toContain("items-center");
-      expect(card).toEqual(expect.arrayContaining(["sm:flex-row", "sm:items-center"]));
+      expect(card).toEqual(expect.arrayContaining(["min-[380px]:flex-row", "min-[380px]:items-center", "sm:flex-row", "sm:items-center"]));
 
       // 44px wherever the pointer is a finger (a tablet too); compact with a mouse.
       const button = classList(markup, "<button");
@@ -65,7 +65,7 @@ describe("AgentEnablementBanner layout", () => {
       <AgentEnablementBanner {...baseProps} capability="enabled" silentlyEnabled />,
     );
     const toast = classList(markup, 'role="status"');
-    expect(toast).toEqual(expect.arrayContaining(["absolute", "left-1/2", "-translate-x-1/2"]));
+    expect(toast).toEqual(expect.arrayContaining(["fixed", "left-1/2", "-translate-x-1/2", "md:absolute", "md:bottom-32"]));
     expect(toast).toContain("bottom-[calc(var(--tc-bottom-chrome)+8rem)]");
     expect(markup).toContain("Agent tools active.");
   });

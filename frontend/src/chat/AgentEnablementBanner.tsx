@@ -47,7 +47,7 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
         role="status"
         aria-live="polite"
         aria-atomic="true"
-        className="absolute bottom-[calc(var(--tc-bottom-chrome)+8rem)] left-1/2 z-[5] -translate-x-1/2"
+        className="fixed bottom-[calc(var(--tc-bottom-chrome)+8rem)] left-1/2 z-[5] -translate-x-1/2 md:absolute md:bottom-32"
       >
         <div className="flex items-center gap-2 rounded-lg border border-border bg-popover px-4 py-2.5 text-sm text-popover-foreground shadow-lg">
           <span className="size-1.5 rounded-full bg-green-500" />
@@ -75,9 +75,9 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
       aria-live="polite"
       aria-atomic="true"
       data-agent-enable-banner
-      className="absolute bottom-[calc(var(--tc-bottom-chrome)+8rem)] left-3 right-3 z-[5] sm:left-1/2 sm:right-auto sm:-translate-x-1/2"
+      className="fixed bottom-[calc(var(--tc-bottom-chrome)+8rem)] left-3 right-3 z-[5] sm:left-1/2 sm:right-auto sm:-translate-x-1/2 md:absolute md:bottom-32"
     >
-      <div className="flex flex-col gap-2 rounded-lg border border-border bg-popover px-4 py-2.5 text-sm text-popover-foreground shadow-lg sm:flex-row sm:items-center sm:gap-3">
+      <div className="flex flex-col gap-2 rounded-lg border border-border bg-popover px-4 py-2.5 text-sm text-popover-foreground shadow-lg min-[380px]:flex-row min-[380px]:items-center sm:flex-row sm:items-center sm:gap-3">
         {enableError ? (
           <>
             <span className="text-xs text-destructive" data-agent-enable-error>{enableError}</span>
@@ -93,7 +93,7 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
           </>
         ) : (
           <>
-            <div className="flex flex-col gap-0.5" data-agent-enable-copy>
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5" data-agent-enable-copy>
               <span className="text-xs text-muted-foreground">
                 {reconnecting
                   ? reconnectReason === "delegation_expired"

@@ -76,7 +76,7 @@
 .soft-skin .nt-alert {
   margin: 0;
   font-size: 13px;
-  color: hsl(var(--destructive));
+  color: var(--red-text);
 }
 .soft-skin .nt-retry {
   margin-left: 8px;

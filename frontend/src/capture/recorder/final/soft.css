@@ -66,10 +66,12 @@
   --glass: hsl(var(--foreground) / 0.05);
   --gedge: hsl(var(--foreground) / 0.4);
   --solid: hsl(var(--popover));
+  --disc: hsl(var(--secondary));
   --bgc: hsl(var(--background));
   --side: hsl(var(--chrome));
   --line: hsl(var(--foreground) / 0.4);
   --red: #ff6b62;
+  --red-text: var(--red);
   --ring-accent: #ff6b62;
   --ring-accent-secondary: #e8475a;
 }
@@ -80,12 +82,14 @@
   --ink: hsl(var(--foreground));
   --dim: hsl(var(--muted-foreground));
   --glass: hsl(var(--card) / 0.7);
-  --gedge: hsl(var(--foreground) / 0.55);
+  --gedge: hsl(var(--border));
   --solid: hsl(var(--popover));
+  --disc: hsl(var(--foreground) / 0.12);
   --bgc: hsl(var(--background));
   --side: hsl(var(--chrome));
-  --line: hsl(var(--foreground) / 0.55);
+  --line: hsl(var(--border));
   --red: #e5483f;
+  --red-text: hsl(var(--destructive));
   --ring-accent: #e5483f;
   --ring-accent-secondary: #f07a72;
 }

@@ -107,7 +107,7 @@
   color: var(--dim);
 }
 .cs-error {
-  color: hsl(var(--destructive));
+  color: var(--red-text);
 }
 .cs-link {
   display: inline-flex;

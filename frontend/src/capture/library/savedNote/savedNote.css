@@ -47,7 +47,7 @@
 .soft-skin .sn-player audio {
   width: 100%;
 }
-.soft-skin.soft-night .sn-player button {
+.soft-skin .sn-player button {
   border-color: var(--gedge);
 }
 .soft-skin .sn-sec {
@@ -72,7 +72,7 @@
 }
 .soft-skin .sn-editing {
   margin-left: 6px;
-  color: hsl(var(--destructive));
+  color: var(--red-text);
 }
 .soft-skin .sn-pill {
   position: relative;
@@ -115,7 +115,7 @@
 }
 .soft-skin .sn-alert {
   margin: 0;
-  color: hsl(var(--destructive));
+  color: var(--red-text);
   font-size: 13px;
   line-height: 1.4;
 }

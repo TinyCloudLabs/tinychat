@@ -2,4 +2,4 @@
 "@tinychat/frontend": patch
 ---
 
-Improve recorder and Capture sheet contrast, readable status text, and desktop page alignment.
+Improve theme-aware recorder contrast, visible halo discs, readable notetaker errors, and Chat banner placement.

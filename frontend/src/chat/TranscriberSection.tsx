@@ -245,7 +245,7 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
             </div>
           </div>
           {form.error !== null && (
-            <p role="alert" className="text-callout text-destructive">
+            <p role="alert" className="text-callout text-[var(--red-text)]">
               {form.error}
             </p>
           )}
@@ -370,11 +370,11 @@ function MeetingRow(props: {
   const stoppable = active && meeting.status !== "processing";
   const when = formatWhen(meeting.metadata?.scheduled_start ?? meeting.created_at);
   const meta = [
+    statusLabel(meeting.status),
     when,
     meeting.bot?.name,
     props.saveState === "saved" ? "Saved to your space" : null,
     props.saveState === "saving" ? "Saving to your space…" : null,
-    props.saveState === "error" ? "Could not save to your space" : null,
   ].filter(Boolean).join(" · ");
   return (
     <div>
@@ -391,18 +391,18 @@ function MeetingRow(props: {
             </span>
           </a>
           <span className="mt-0.5 flex flex-wrap items-center gap-x-2 text-meta text-muted-foreground">
-            <span className="inline-flex items-center gap-1.5">
+            <span className="inline-flex items-center" aria-hidden="true">
               <span
-                role="img"
-                aria-label={statusLabel(meeting.status)}
                 className={`size-1.5 rounded-full ${statusTone(meeting.status)} ${active ? "animate-pulse" : ""}`}
               />
-              {statusLabel(meeting.status)}
             </span>
             {meta && <span>{meta}</span>}
+            {props.saveState === "error" && (
+              <span data-testid="meeting-save-error" className="text-[var(--red-text)]">Could not save to your space</span>
+            )}
           </span>
           {meeting.status === "failed" && meeting.error && (
-            <span className="mt-0.5 block text-xs text-destructive">{meeting.error.message}</span>
+            <span className="mt-0.5 block text-xs text-[var(--red-text)]">{meeting.error.message}</span>
           )}
           <CaptureDetails meeting={meeting} />
         </div>
