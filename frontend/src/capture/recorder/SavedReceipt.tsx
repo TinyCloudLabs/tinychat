@@ -38,6 +38,8 @@ export interface SavedReceiptProps {
   movedToPrivate?: boolean;
   /** Why private cloud could not transcribe the note, once it has failed. */
   privateFailure?: string | null;
+  /** How private cloud's job for the note ended, once it has finished. */
+  privateOutcome?: "transcribed" | "no_speech" | null;
   error?: string | null;
   /** Saved, but some audio could not be written: an informational line, not an error. */
   notice?: string | null;
@@ -131,11 +133,13 @@ export function onDeviceOffer(args: {
   hasNote: boolean;
   movedToPrivate: boolean;
   canUsePrivate: boolean;
+  /** The receipt shows an Open button for the note. */
+  canOpen: boolean;
 }) {
   const { onDevice, movedToPrivate } = args;
   const needsModel = !movedToPrivate && onDevice.kind === "pending" && onDevice.state === "waiting_for_model";
   const usePrivate = needsModel && args.saved && args.canUsePrivate;
-  const actionable = (needsModel && (args.guide.action !== undefined || usePrivate)) || (!movedToPrivate && onDevice.kind === "failed" && args.hasNote);
+  const actionable = args.canOpen || (needsModel && (args.guide.action !== undefined || usePrivate)) || (!movedToPrivate && onDevice.kind === "failed" && args.hasNote);
   return { needsModel, usePrivate, actionable };
 }
 
@@ -145,7 +149,7 @@ export function honestSourceRoute(route: readonly RouteNode[], transcribedHere: 
 }
 
 /** A Local note whose model is not on the phone: what it needs and what can be done, with no spinner (nothing is running). */
-export function NeedsOnDeviceModel(props: { guide: ReturnType<typeof localModelGuide>; error: string | null; onUsePrivate?: () => void }) {
+export function NeedsOnDeviceModel(props: { guide: ReturnType<typeof localModelGuide>; error: string | null; onUsePrivate?: () => void; switching?: boolean }) {
   const { action } = props.guide;
   return (
     <div className="flex flex-col gap-2" data-testid="voice-note-on-device-needs-model">
@@ -158,8 +162,8 @@ export function NeedsOnDeviceModel(props: { guide: ReturnType<typeof localModelG
             </Button>
           )}
           {props.onUsePrivate && (
-            <Button type="button" variant="outline" onClick={props.onUsePrivate} data-testid="voice-note-use-private">
-              Use Private instead
+            <Button type="button" variant="outline" disabled={props.switching} onClick={props.onUsePrivate} data-testid="voice-note-use-private">
+              {props.switching ? "Switching to Private…" : "Use Private instead"}
             </Button>
           )}
         </div>
@@ -192,6 +196,7 @@ export function SavedReceipt(props: SavedReceiptProps) {
   const onDevice = useOnDeviceReceipt(props.saved?.id, props.transcriber === "on-device", props.sttHint);
   const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const [modelError, setModelError] = useState<string | null>(null);
+  const [switching, setSwitching] = useState(false);
   const guide = localModelGuide(sttStatus.models.length > 0 ? sttStatus : null, {
     start: () => {
       setModelError(null);
@@ -201,7 +206,7 @@ export function SavedReceipt(props: SavedReceiptProps) {
   });
   // A Local note moved to private cloud: that line below says so, and the on-device ones step aside.
   const movedToPrivate = props.movedToPrivate === true;
-  const offer = onDeviceOffer({ onDevice, guide, saved, hasNote: !!props.saved, movedToPrivate, canUsePrivate: props.onUsePrivate !== undefined });
+  const offer = onDeviceOffer({ onDevice, guide, saved, hasNote: !!props.saved, movedToPrivate, canUsePrivate: props.onUsePrivate !== undefined, canOpen: (saved || props.outcome === "local") && props.onOpen !== undefined });
   const { needsModel, actionable } = offer;
   const usePrivate = offer.usePrivate ? props.onUsePrivate : undefined;
   const onActionableChange = props.onActionableChange;
@@ -241,14 +246,27 @@ export function SavedReceipt(props: SavedReceiptProps) {
       }</p>}
       {saved && <p className="text-meta text-muted-foreground">Saved to your TinyCloud space</p>}
       {saved && props.transcribing && <p className="text-meta text-muted-foreground">Transcribing in private cloud…</p>}
-      {movedToPrivate && props.privateFailure && (
+      {saved && props.privateOutcome && (
+        <p className="text-meta text-muted-foreground" data-testid="voice-note-private-done">
+          {props.privateOutcome === "no_speech" ? "No speech was found in this note." : "Transcribed in private cloud"}
+        </p>
+      )}
+      {props.privateFailure && (
         <p role="alert" className="text-callout text-destructive" data-testid="voice-note-private-failed">Couldn&apos;t transcribe in private cloud: {props.privateFailure}</p>
       )}
       {needsModel && (
         <NeedsOnDeviceModel
           guide={guide}
           error={modelError}
-          onUsePrivate={usePrivate && (() => { setModelError(null); void usePrivate().then(setModelError); })}
+          switching={switching}
+          onUsePrivate={usePrivate && (() => {
+            setModelError(null);
+            setSwitching(true);
+            void usePrivate().then((failure) => {
+              setModelError(failure);
+              setSwitching(false);
+            });
+          })}
         />
       )}
       {!movedToPrivate && onDevice.kind === "pending" && !needsModel && (

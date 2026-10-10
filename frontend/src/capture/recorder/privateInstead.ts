@@ -1,5 +1,7 @@
 // "Use Private instead" for a note committed to Local: private cloud has to be on offer, and the
-// note short enough for it. The on-device job is stopped first so the two never both write a transcript.
+// note short enough for it. The on-device job is stopped first, and Private starts only once the
+// phone's own record of the note says that job has ended, so the two never both transcribe it.
+import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { cancelOnDeviceNote } from "@/lib/voiceNotes/onDeviceSttStore";
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
 
@@ -10,10 +12,49 @@ export function privateInsteadOffered(transcription: VoiceNoteTranscriptionProps
   return job?.kind !== "active" && job?.kind !== "done";
 }
 
+export interface StopWait {
+  intervalMs: number;
+  timeoutMs: number;
+  sleep: (ms: number) => Promise<void>;
+}
+
+const DEFAULT_WAIT: StopWait = { intervalMs: 250, timeoutMs: 20_000, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
+
+/**
+ * `cancel` only says the request was accepted; the worker stops at its next audio window and can
+ * still finish the note. So wait for the note's own state to end: `cancelled` or `failed` mean it
+ * is stopped, `done` means Local won the race and there is nothing left to hand over.
+ */
+async function waitForOnDeviceToEnd(noteId: string, wait: StopWait): Promise<string | null> {
+  const deadline = Date.now() + wait.timeoutMs;
+  for (;;) {
+    let state: string | undefined;
+    try {
+      const { recordings } = await VoiceNotes.listPending();
+      const recording = recordings.find((candidate) => candidate.id === noteId);
+      if (!recording) return "Could not confirm the on-device transcription stopped: the note was not found on this phone.";
+      state = recording.stt?.state;
+    } catch (caught) {
+      console.error("[OnDeviceStt] reading the note after cancel failed", noteId, caught);
+      return `Could not confirm the on-device transcription stopped: ${caught instanceof Error ? caught.message : String(caught)}`;
+    }
+    if (state === "cancelled" || state === "failed") return null;
+    if (state === "done") return "This note finished transcribing on this phone just now.";
+    if (Date.now() >= deadline) return "The on-device transcription is still stopping. Try again in a moment.";
+    await wait.sleep(wait.intervalMs);
+  }
+}
+
 /** The reason it could not switch, or null once private cloud has the note. */
-export async function switchToPrivate(transcription: VoiceNoteTranscriptionProps, noteId: string): Promise<string | null> {
+export async function switchToPrivate(
+  transcription: VoiceNoteTranscriptionProps,
+  noteId: string,
+  wait: StopWait = DEFAULT_WAIT,
+): Promise<string | null> {
   const failure = await cancelOnDeviceNote(noteId);
   if (failure !== null) return failure;
+  const unconfirmed = await waitForOnDeviceToEnd(noteId, wait);
+  if (unconfirmed !== null) return unconfirmed;
   transcription.onTranscribePrivately(noteId);
   return null;
 }

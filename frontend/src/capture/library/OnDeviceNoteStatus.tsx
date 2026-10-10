@@ -196,6 +196,7 @@ function WaitingForModel(props: { onUsePrivate?: () => Promise<string | null> })
 /** "Transcribe with Private instead", full width, when private cloud is on offer for this note. */
 function PrivateInstead(props: { onUse?: () => Promise<string | null> }) {
   const [error, setError] = useState<string | null>(null);
+  const [switching, setSwitching] = useState(false);
   if (!props.onUse) return null;
   return (
     <>
@@ -204,12 +205,17 @@ function PrivateInstead(props: { onUse?: () => Promise<string | null> }) {
         variant="outline"
         className="w-full"
         data-testid="voice-note-use-private"
+        disabled={switching}
         onClick={() => {
           setError(null);
-          void props.onUse!().then(setError);
+          setSwitching(true);
+          void props.onUse!().then((failure) => {
+            setError(failure);
+            setSwitching(false);
+          });
         }}
       >
-        Transcribe with Private instead
+        {switching ? "Switching to Private…" : "Transcribe with Private instead"}
       </Button>
       {error && <p role="alert" className="text-callout text-destructive">{error}</p>}
     </>

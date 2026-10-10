@@ -60,13 +60,16 @@ export function receiptRouting(args: {
   const { outcome, lastSaved, transcription, savedTranscriber } = args;
   const privateJob = lastSaved ? transcription?.jobs.get(lastSaved.id) : undefined;
   const movedToPrivate = savedTranscriber === "on-device" && privateJob !== undefined;
-  const transcribing = outcome === "saved" && transcription?.availability === "available" &&
-    transcription.consented && !!lastSaved && lastSaved.durationMs <= transcription.maxSeconds * 1000 &&
-    (savedTranscriber !== "on-device" || privateJob?.kind === "active");
-  const savedRoute = movedToPrivate ? "private-cloud" : savedTranscriber === "on-device" ? "on-device" : transcribing ? "private-cloud" : "off";
+  // Only a job that is really running says "Transcribing": availability alone never does, and a
+  // note committed to Audio only or to Local (not moved) has no private job to speak of.
+  const transcribing = outcome === "saved" && savedTranscriber !== "off" && privateJob?.kind === "active";
+  const savedRoute = savedTranscriber === "on-device" && !movedToPrivate ? "on-device"
+    : savedTranscriber === "off" ? "off"
+    : privateJob !== undefined ? "private-cloud" : "off";
+  const privateOutcome = savedTranscriber !== "off" && privateJob?.kind === "done" ? privateJob.outcome : null;
   const canUsePrivate = outcome === "saved" && savedTranscriber === "on-device" && !!lastSaved &&
     privateInsteadOffered(transcription, lastSaved.id, lastSaved.durationMs / 1000);
-  return { transcribing, movedToPrivate, savedRoute, privateJob, canUsePrivate } as const;
+  return { transcribing, movedToPrivate, savedRoute, privateJob, privateOutcome, canUsePrivate } as const;
 }
 
 /** The full-page receipt once a recording has ended: saved, kept on this phone, or failed (Save now). */
@@ -76,7 +79,7 @@ export function ReceiptView({ recorder, onOpenNote }: ReceiptViewProps) {
   // recording lands as "local" and must still show its real route and transcript.
   const savedNote = useSavedNote(lastSaved?.id);
   const savedTranscriber = savedNote.transcriber;
-  const { transcribing, movedToPrivate, savedRoute, privateJob, canUsePrivate } = receiptRouting({ outcome, lastSaved, transcription: recorder.transcription, savedTranscriber });
+  const { transcribing, movedToPrivate, savedRoute, privateJob, privateOutcome, canUsePrivate } = receiptRouting({ outcome, lastSaved, transcription: recorder.transcription, savedTranscriber });
   const transcription = recorder.transcription;
   const usePrivate = canUsePrivate && lastSaved && transcription ? () => switchToPrivate(transcription, lastSaved.id) : undefined;
 
@@ -101,7 +104,7 @@ export function ReceiptView({ recorder, onOpenNote }: ReceiptViewProps) {
         </div>
 
         <div className="flex min-h-0 flex-col justify-start land:col-start-2 land:row-start-1 land:justify-end">
-          <SavedReceipt outcome={outcome} localUpload={recorder.localUpload} saved={lastSaved} route={voiceNoteRoute(savedRoute)} transcriber={savedTranscriber} sttHint={savedNote.stt} transcribing={transcribing} movedToPrivate={movedToPrivate} privateFailure={privateJob?.kind === "failed" ? privateJob.message : null} error={honestRecorderError(recorder)} notice={receiptPartialNotice(recorder, lastSaved?.id)} retrying={recorder.pending.running}
+          <SavedReceipt outcome={outcome} localUpload={recorder.localUpload} saved={lastSaved} route={voiceNoteRoute(savedRoute)} transcriber={savedTranscriber} sttHint={savedNote.stt} transcribing={transcribing} movedToPrivate={movedToPrivate} privateFailure={savedTranscriber !== "off" && privateJob?.kind === "failed" ? privateJob.message : null} privateOutcome={privateOutcome} error={honestRecorderError(recorder)} notice={receiptPartialNotice(recorder, lastSaved?.id)} retrying={recorder.pending.running}
             onOpen={onOpenNote && lastSaved ? () => { recorder.dismissOutcome(); onOpenNote(lastSaved.id); } : undefined}
             onDone={recorder.dismissOutcome} onSaveNow={recorder.retryPending} onPlayingChange={recorder.setReceiptPlaying} onReady={recorder.setReceiptReady} onUsePrivate={usePrivate} onActionableChange={recorder.setReceiptActionable} />
         </div>

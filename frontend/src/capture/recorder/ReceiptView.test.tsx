@@ -106,9 +106,34 @@ describe("receiptRouting: where a saved note stands", () => {
       .toMatchObject({ movedToPrivate: true, transcribing: false, savedRoute: "private-cloud", canUsePrivate: true });
   });
 
-  test("Private notes still read as transcribing in private cloud, and Audio only as off", () => {
-    expect(route({ savedTranscriber: "private-cloud" })).toMatchObject({ transcribing: true, savedRoute: "private-cloud", canUsePrivate: false });
-    expect(route({ savedTranscriber: "off" })).toMatchObject({ savedRoute: "private-cloud" });
-    expect(route({ savedTranscriber: "off", transcription: undefined })).toMatchObject({ savedRoute: "off" });
+  const finished = (outcome: "transcribed" | "no_speech") =>
+    new Map([["rec-1", { kind: "done", outcome }]]) as unknown as VoiceNoteTranscriptionProps["jobs"];
+
+  test("a Private note reads as transcribing only while its job runs", () => {
+    expect(route({ savedTranscriber: "private-cloud", transcription: transcription({ jobs: jobs("active") }) }))
+      .toMatchObject({ transcribing: true, savedRoute: "private-cloud", canUsePrivate: false });
+    // Availability alone is not work in progress, and the mode lookup may not have answered yet.
+    expect(route({ savedTranscriber: "private-cloud" })).toMatchObject({ transcribing: false });
+    expect(route({ savedTranscriber: null })).toMatchObject({ transcribing: false, savedRoute: "off" });
+  });
+
+  test("Audio only is off and transcribes nothing, however available Private is", () => {
+    expect(route({ savedTranscriber: "off" })).toMatchObject({ transcribing: false, savedRoute: "off", privateOutcome: null });
+    expect(route({ savedTranscriber: "off", transcription: undefined })).toMatchObject({ transcribing: false, savedRoute: "off" });
+  });
+
+  test("a finished Private job stays on the private route and is no longer transcribing", () => {
+    expect(route({ savedTranscriber: "private-cloud", transcription: transcription({ jobs: finished("transcribed") }) }))
+      .toMatchObject({ transcribing: false, savedRoute: "private-cloud", privateOutcome: "transcribed" });
+    expect(route({ savedTranscriber: "private-cloud", transcription: transcription({ jobs: finished("no_speech") }) }))
+      .toMatchObject({ transcribing: false, privateOutcome: "no_speech" });
+    expect(route({ transcription: transcription({ jobs: finished("transcribed") }) }))
+      .toMatchObject({ movedToPrivate: true, transcribing: false, privateOutcome: "transcribed", savedRoute: "private-cloud" });
+  });
+
+  test("a failed Private job is not transcribing and stays on the private route", () => {
+    expect(route({ savedTranscriber: "private-cloud", transcription: transcription({ jobs: jobs("failed") }) }))
+      .toMatchObject({ transcribing: false, savedRoute: "private-cloud" });
   });
 });
+

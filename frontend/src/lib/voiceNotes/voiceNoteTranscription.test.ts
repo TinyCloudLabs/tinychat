@@ -54,6 +54,7 @@ import {
   createVoiceNoteCloudForBuild,
   localStorageVoiceNoteConsentStore,
   localStorageVoiceNotePendingStore,
+  localStorageVoiceNotePrivateChoiceStore,
   maxTranscriptionSeconds,
   prepareVoiceNoteTranscript,
   transcribeVoiceNote,
@@ -1030,5 +1031,92 @@ describe("progress copy", () => {
     expect(transcriptionStatusText({ kind: "queued", position: 3 })).toBe("Queued (position 3)…");
     expect(transcriptionStatusText({ kind: "processing", completed: 2, total: 5 })).toBe("Transcribing in private cloud… 2/5");
     expect(transcriptionStatusText({ kind: "processing", completed: null, total: null })).toBe("Transcribing in private cloud…");
+  });
+});
+
+describe("an explicit move to private cloud survives a restart", () => {
+  async function onDeviceNote() {
+    _resetConnectorSchemaMemoForTests();
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+    space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata,
+      '$.capture.version', 2, '$.capture.options.transcriber', 'on-device') WHERE source_id = 'rec-1'`).run();
+    VoiceNotes.listPending = async () => ({
+      recordings: [{ ...RECORDING, owner: "did:test:voice", options: { transcriber: "on-device", identifySpeakers: false }, stt: { state: "cancelled" } } as never],
+    });
+    return space;
+  }
+  const settle = async (t: ReturnType<typeof createVoiceNoteTranscriber>) => {
+    for (let i = 0; i < 30 && t.snapshot().jobs.get("rec-1")?.kind === "active"; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+
+  test("the relaunch rejoins the uploaded job instead of deleting it as a leftover", async () => {
+    const space = await onDeviceNote();
+    const storage = memoryStorage();
+    const pending = localStorageVoiceNotePendingStore(DID, storage);
+    const launch = (h: ReturnType<typeof harness>) =>
+      createVoiceNoteTranscriber({
+        cloud: h.cloud,
+        consent: { get: () => true, set: () => {} },
+        choices: localStorageVoiceNotePrivateChoiceStore(DID, storage),
+        tcw: () => space.tcw,
+      });
+    const first = harness({ pending, jobs: [new PrivateCloudError("offline", "network gone")] });
+    const t = launch(first);
+    await t.check();
+    t.transcribePrivately("rec-1");
+    await settle(t);
+    expect(first.puts).toHaveLength(1);
+    expect(pending.read("rec-1")?.transcriptionId).toBe(ID);
+
+    const second = harness({ pending, jobs: [job("completed")] });
+    const restarted = launch(second);
+    await restarted.check();
+    await settle(restarted);
+    // The finished job is deleted only after its transcript was saved from it, never as a leftover.
+    expect(restarted.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "done", outcome: "transcribed" });
+    expect(second.puts).toHaveLength(0);
+    expect(localStorageVoiceNotePrivateChoiceStore(DID, storage).ids()).toEqual([]);
+  });
+
+  test("the same leftover job without a choice is still deleted", async () => {
+    const space = await onDeviceNote();
+    const storage = memoryStorage();
+    const pending = localStorageVoiceNotePendingStore(DID, storage);
+    pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
+    const h = harness({ pending, jobs: [job("completed")] });
+    const t = createVoiceNoteTranscriber({
+      cloud: h.cloud,
+      consent: { get: () => true, set: () => {} },
+      choices: localStorageVoiceNotePrivateChoiceStore(DID, storage),
+      tcw: () => space.tcw,
+    });
+    await t.check();
+    await settle(t);
+    expect(h.removed).toEqual([ID]);
+  });
+
+  test("a choice whose job failed before reaching the cloud is not retried by the next launch", async () => {
+    const space = await onDeviceNote();
+    const storage = memoryStorage();
+    const choices = localStorageVoiceNotePrivateChoiceStore(DID, storage);
+    const h = harness({ jobs: [job("completed")], creates: [new PrivateCloudError("invalid_argument", "no")] });
+    const t = createVoiceNoteTranscriber({ cloud: h.cloud, consent: { get: () => true, set: () => {} }, choices, tcw: () => space.tcw });
+    await t.check();
+    t.transcribePrivately("rec-1");
+    await settle(t);
+    expect(t.snapshot().jobs.get("rec-1")?.kind).toBe("failed");
+    expect(choices.ids()).toEqual([]);
+  });
+
+  test("turning private cloud off revokes the choice", async () => {
+    const space = await onDeviceNote();
+    const storage = memoryStorage();
+    const choices = localStorageVoiceNotePrivateChoiceStore(DID, storage);
+    choices.add("rec-1");
+    const h = harness({ jobs: [job("completed")] });
+    const t = createVoiceNoteTranscriber({ cloud: h.cloud, consent: { get: () => true, set: () => {} }, choices, tcw: () => space.tcw });
+    await t.turnOff();
+    expect(choices.ids()).toEqual([]);
   });
 });
