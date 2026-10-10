@@ -70,6 +70,8 @@ final class SimulatorSilentInputTests: XCTestCase {
         XCTAssertTrue(engine.debugSilentInputRunning)
         XCTAssertEqual(engine.status()["state"] as? String, "recording")
         Thread.sleep(forTimeInterval: 0.6)
+        // The session directory is removed at commit, so read the journal while still recording.
+        let journal = try engine.library.readJournal(id)
         let stopped = expectation(description: "stop committed")
         var committed: [String: Any]?
         engine.stop { result in
@@ -80,7 +82,6 @@ final class SimulatorSilentInputTests: XCTestCase {
         wait(for: [stopped], timeout: 30)
         XCTAssertEqual(committed?["id"] as? String, id)
         XCTAssertGreaterThan(committed?["durationMs"] as? Int64 ?? 0, pausedAudio)
-        let journal = try engine.library.readJournal(id)
         XCTAssertGreaterThanOrEqual(journal.filter { $0["e"] as? String == "segment" }.count, 2)
         XCTAssertTrue(journal.contains { $0["e"] as? String == "hb" || $0["e"] as? String == "first_audio" })
     }
