@@ -1,14 +1,7 @@
-// "Private cloud" transcription engine: the webview half.
+// Private cloud transcription API shared by voice notes and audio uploads.
 //
-// Three callers upload to TinyCloud Private Transcription (PTX):
-//
-//   - Local recording (desktop): native code (desktop/src-tauri/src/cloud)
-//     opens each stopped recording itself and gives this module only an
-//     opaque capture handle; it hashes, creates the job and uploads natively.
-//   - Voice notes (Exo mobile, lib/voiceNotes) and Upload audio (every
-//     platform, lib/audioUpload.ts) make the create call from the webview with
-//     `createPrivateCloudJob` below and PUT the audio to this build's PTX
-//     origin (`buildPtxUploadOrigin`).
+// Both callers create jobs in the webview with `createPrivateCloudJob` below
+// and PUT audio to this build's PTX origin (`buildPtxUploadOrigin`).
 //
 // Every caller asks the backend whether this account may upload
 // (capabilities 200, not 404), polls the job through the backend (bearer),
@@ -816,89 +809,6 @@ export function createCloudJobPoller(
         await sleep(polling.intervalMs);
       }
     },
-  };
-}
-
-// ── Native bridge ──────────────────────────────────────────────────────
-
-type Unlisten = () => void;
-
-/** `exo://capture-ready`: a handle for the stopped session's recording, or why there is none. */
-export interface CaptureReadyEvent {
-  sessionId: string;
-  captureHandle?: string;
-  sizeBytes?: number;
-  format?: string;
-  partial: boolean;
-  error?: { code: string; message: string };
-}
-
-export interface ReopenedCapture {
-  captureHandle: string;
-  sizeBytes: number;
-  format: string;
-}
-
-export interface UploadProgressEvent {
-  captureHandle: string;
-  sentBytes: number;
-  totalBytes: number;
-}
-
-export interface PrivateCloudSubmitArgs {
-  captureHandle: string;
-  /** The create call's Idempotency-Key (UUID); the same id re-joins the same job. */
-  attemptId: string;
-  backendUrl: string;
-  bearer: string;
-  language: string;
-}
-
-/** The Exo native commands (desktop/src-tauri/src/cloud/commands.rs). */
-export interface PrivateCloudNative {
-  status(): Promise<{ configured: boolean }>;
-  submit(args: PrivateCloudSubmitArgs): Promise<{ transcriptionId: string; status: string | null }>;
-  /** Abort an upload in flight and release the handle; the recording stays on disk. */
-  cancel(captureHandle: string): Promise<void>;
-  /** A new handle for a stopped `cloud-` session's recording that native no
-   *  longer holds (a relaunch, or a released handle). Native finds the file
-   *  inside its own sessions folder; the webview names no path. */
-  reopen(sessionId: string): Promise<ReopenedCapture>;
-  onCaptureReady(cb: (e: CaptureReadyEvent) => void): Promise<Unlisten>;
-  onUploadProgress(cb: (e: UploadProgressEvent) => void): Promise<Unlisten>;
-}
-
-/** Native rejections are the serialized CloudError `{code, message, correlationId?, ...}`. */
-export function toPrivateCloudError(err: unknown): PrivateCloudError {
-  if (err instanceof PrivateCloudError) return err;
-  if (err && typeof err === "object" && typeof (err as { code?: unknown }).code === "string") {
-    const e = err as { code: string; message?: string; correlationId?: string; retryAfterSeconds?: number; transcriptionId?: string };
-    return new PrivateCloudError(e.code, e.message ?? e.code, {
-      correlationId: e.correlationId ?? null,
-      retryAfterSeconds: e.retryAfterSeconds ?? null,
-      transcriptionId: e.transcriptionId ?? null,
-    });
-  }
-  return new PrivateCloudError("native_error", err instanceof Error ? err.message : String(err));
-}
-
-/** Loaded lazily: `@tauri-apps/api` must never enter the web bundle's main chunk. */
-export async function loadPrivateCloudNative(): Promise<PrivateCloudNative> {
-  const [{ invoke }, { listen }] = await Promise.all([import("@tauri-apps/api/core"), import("@tauri-apps/api/event")]);
-  const call = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
-    try {
-      return await invoke<T>(cmd, args);
-    } catch (err) {
-      throw toPrivateCloudError(err);
-    }
-  };
-  return {
-    status: () => call("cloud_transcription_status"),
-    submit: (args) => call("cloud_transcription_submit", { ...args }),
-    cancel: (captureHandle) => call("cloud_transcription_cancel", { captureHandle }),
-    reopen: (sessionId) => call("cloud_transcription_reopen", { sessionId }),
-    onCaptureReady: (cb) => listen<CaptureReadyEvent>("exo://capture-ready", (e) => cb(e.payload)),
-    onUploadProgress: (cb) => listen<UploadProgressEvent>("exo://cloud-upload-progress", (e) => cb(e.payload)),
   };
 }
 

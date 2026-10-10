@@ -1,5 +1,4 @@
-// Private cloud webview module: engine default matrix, the backend client's
-// error classification (plan §4.6), and native error decoding.
+// Private cloud webview module: engine default matrix and backend errors.
 
 import { describe, expect, test } from "bun:test";
 
@@ -12,7 +11,6 @@ import {
   PrivateCloudError,
   privateCloudMessage,
   resolveEngine,
-  toPrivateCloudError,
 } from "./privateCloud";
 
 const ID = "trn_01J8Z3K4M5N6P7Q8R9S0T1V2W3";
@@ -239,20 +237,7 @@ describe("privateCloudJobClient", () => {
   });
 });
 
-describe("native errors", () => {
-  test("the serialized CloudError becomes a PrivateCloudError", () => {
-    const err = toPrivateCloudError({
-      code: "upload_outcome_unknown",
-      message: "The upload connection failed",
-      correlationId: "c-9",
-      transcriptionId: ID,
-    });
-    expect(err.code).toBe("upload_outcome_unknown");
-    expect(err.correlationId).toBe("c-9");
-    expect(err.transcriptionId).toBe(ID);
-    expect(toPrivateCloudError("boom").code).toBe("native_error");
-  });
-
+describe("private-cloud messages", () => {
   test("user-facing messages never claim more than the plan allows", () => {
     for (const code of ["upload_outcome_unknown", "recording_too_long_for_cloud", "provider_outcome_unknown", "service_misconfigured"]) {
       const text = privateCloudMessage(new PrivateCloudError(code, "x"));

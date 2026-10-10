@@ -6,8 +6,6 @@
   "permissions": [
     "transcription:allow-start-transcription",
     "transcription:allow-stop-transcription",
-    "local-stt:allow-is-model-downloaded",
-    "local-stt:allow-download-model",
     "local-stt:allow-start-server",
     "local-stt:allow-stop-server",
     "allow-append-audio-chunk",
