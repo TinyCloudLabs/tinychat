@@ -3,6 +3,7 @@ import Capacitor
 import CaptureCore
 import ExoCapture
 import Foundation
+import UIKit
 
 @objc(VoiceNotesPlugin)
 public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
@@ -14,7 +15,8 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
         "setCaptureDefaults", "claim", "updateLedger", "localAudioUrl", "putTranscript",
         "getTranscript", "listInputs", "selectInput", "listQuarantine",
         "deleteQuarantined", "listOutbox", "completeOutbox", "setAccountState",
-        "beginRemoteOp", "recordRemoteResult", "retryRecovery", "discardFailedRecording"
+        "beginRemoteOp", "recordRemoteResult", "retryRecovery", "discardFailedRecording",
+        "openSettings"
     ].map { CAPPluginMethod(name: $0, returnType: CAPPluginReturnPromise) }
 
     private let capture = CaptureEngine.shared
@@ -68,6 +70,18 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func status(_ call: CAPPluginCall) { DispatchQueue.main.async { call.resolve(self.capture.status()) } }
+    @objc func openSettings(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            guard let url = URL(string: UIApplication.openSettingsURLString) else {
+                call.reject("Could not open Settings", "settings_unavailable")
+                return
+            }
+            UIApplication.shared.open(url, options: [:]) { opened in
+                if opened { call.resolve() }
+                else { call.reject("Could not open Settings", "settings_unavailable") }
+            }
+        }
+    }
     @objc func pause(_ call: CAPPluginCall) {
         DispatchQueue.main.async { do { try self.capture.pause(); call.resolve() } catch { self.reject(call, error) } }
     }
