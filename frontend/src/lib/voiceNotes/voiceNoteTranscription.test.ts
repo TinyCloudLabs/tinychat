@@ -532,7 +532,7 @@ describe("turning transcription off", () => {
   test("off before anything is sent: no job is created", async () => {
     const h = harness({});
     const err = await h.cloud
-      .transcribe({ sourceId: "rec-1", capabilities: CAPS, loadAudio: async () => AUDIO, allowed: () => false }, () => {})
+      .transcribe({ sourceId: "rec-1", capabilities: CAPS, loadAudio: async () => AUDIO, allowed: (scope) => scope === "account" }, () => {})
       .catch((e: unknown) => e);
     expect((err as PrivateCloudError).code).toBe("transcription_off");
     expect(h.creates).toHaveLength(0);
@@ -549,7 +549,8 @@ describe("turning transcription off", () => {
         sourceId: "rec-1",
         capabilities: CAPS,
         loadAudio: async () => AUDIO,
-        allowed: () => {
+        allowed: (scope) => {
+          if (scope === "account") return true;
           // Turned off once the job exists (the third question is right before the PUT).
           if (h.creates.length > 0) allowed = false;
           return allowed;

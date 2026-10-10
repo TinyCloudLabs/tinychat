@@ -10,7 +10,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { createFakeOnDeviceStt } from "@/lib/voiceNotes/fakeOnDeviceStt";
 import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
-import { __setOnDeviceSttForTests, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
+import { __setOnDeviceSttForTests, OnDeviceStt, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import {
   __setVoiceNotesForTests,
   VoiceNotes,
@@ -20,7 +20,7 @@ import {
   type VoiceNoteRecording,
   type VoiceNotesPlugin,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { onDeviceNote, OnDeviceNoteStatusView, useOnDeviceNote, type OnDeviceNote } from "./OnDeviceNoteStatus";
+import { onDeviceNote, OnDeviceNoteStatusView, queueMark, useOnDeviceNote, type OnDeviceNote } from "./OnDeviceNoteStatus";
 
 const plugins = { voiceNotes: VoiceNotes, onDeviceStt: OnDeviceStt };
 const saved = { window: (globalThis as { window?: unknown }).window, act: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT };
@@ -63,7 +63,7 @@ function fakeVoiceNotes(native: Native) {
 }
 
 /** The plugin as iOS drives it: events through `emit`, and a queue that never holds the active note. */
-async function iosStt() {
+async function iosStt(queue: OnDeviceSttStatus["queue"] = []) {
   const fake = createFakeOnDeviceStt();
   const base = await fake.plugin.status();
   const callbacks = new Map<string, Set<(event: unknown) => void>>();
@@ -72,10 +72,11 @@ async function iosStt() {
     callbacks.get(event)!.add(callback);
     return Promise.resolve({ remove: async () => void callbacks.get(event)?.delete(callback) });
   }) as typeof fake.plugin.addListener;
-  fake.plugin.status = async () => ({ ...base, queue: [] });
+  let shown = queue;
+  fake.plugin.status = async () => ({ ...base, queue: shown });
   __setOnDeviceSttForTests(fake.plugin);
   await onDeviceSttStore.refresh();
-  return { emit: (event: string, value: unknown) => { for (const callback of callbacks.get(event) ?? []) callback(value); }, listening: (event: string) => callbacks.get(event)?.size ?? 0 };
+  return { setQueue: (next: OnDeviceSttStatus["queue"]) => { shown = next; }, emit: (event: string, value: unknown) => { for (const callback of callbacks.get(event) ?? []) callback(value); }, listening: (event: string) => callbacks.get(event)?.size ?? 0 };
 }
 
 const container = { nodeType: 1, nodeName: "DIV", tagName: "DIV", ownerDocument: null, textContent: "", addEventListener() {}, removeEventListener() {} } as unknown as HTMLElement;
@@ -244,6 +245,61 @@ describe("following the real iOS events", () => {
     expect(events.listening("progress")).toBe(0);
     expect(events.listening("transcribed")).toBe(0);
     expect(events.listening("failed")).toBe(0);
+  });
+});
+
+describe("an older queue snapshot against newer events", () => {
+  const waiting = { id: "n1", state: "waiting_for_model", percent: null, error: null } as OnDeviceSttStatus["queue"][number];
+
+  test("waiting in the queue, then progress, then completion, with the status delivery delayed", async () => {
+    const events = await iosStt([waiting]);
+    fakeVoiceNotes({ recordings: () => [recording("n1", "on-device", stt("waiting_for_model"))], transcript: () => null });
+    const { latest } = await mount("n1");
+    expect(latest().note).toEqual({ kind: "waiting_for_model" });
+    await act(async () => events.emit("progress", { id: "n1", percent: 40 }));
+    expect(latest().note).toEqual({ kind: "running", percent: 40 });
+    await act(async () => events.emit("transcribed", { id: "n1", outcome: "no_speech" }));
+    expect(latest().note).toEqual({ kind: "no_speech" });
+  });
+
+  test("a newer queue snapshot replaces an older event, and an old terminal event gives way to a retry", async () => {
+    const events = await iosStt([waiting]);
+    fakeVoiceNotes({ recordings: () => [recording("n1", "on-device", stt("waiting_for_model"))], transcript: () => null });
+    const { latest } = await mount("n1");
+    await act(async () => events.emit("transcribed", { id: "n1", outcome: "transcribed" }));
+    expect(latest().note).toEqual({ kind: "done" });
+    events.setQueue([{ ...waiting, state: "queued" }]);
+    await act(async () => { await onDeviceSttStore.refresh(); });
+    expect(latest().note).toEqual({ kind: "queued" });
+  });
+
+  test("the queue's own state shows again once it differs from what the event superseded", () => {
+    const old = { ...waiting };
+    const live = { noteId: "n1", kind: "running" as const, percent: 40, supersedes: queueMark(old) };
+    const scan = { noteId: "n1", local: true, stt: stt("waiting_for_model"), outcome: null };
+    expect(onDeviceNote(scan, live, old)).toEqual({ kind: "running", percent: 40 });
+    expect(onDeviceNote(scan, live, { ...old, state: "queued" })).toEqual({ kind: "queued" });
+    expect(onDeviceNote(scan, live, null)).toEqual({ kind: "running", percent: 40 });
+  });
+});
+
+describe("a failed subscription to the native events", () => {
+  test("is shown, survives a good scan, and Try again reinstalls the listeners", async () => {
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    const events = await iosStt();
+    const working = OnDeviceStt.addListener;
+    let broken = true;
+    const plugin = { ...OnDeviceStt, addListener: ((...args: Parameters<typeof working>) => (broken ? Promise.reject(new Error("bridge subscription failed")) : working(...args))) as typeof working };
+    __setOnDeviceSttForTests(plugin as typeof OnDeviceStt);
+    fakeVoiceNotes({ recordings: () => [recording("n1", "on-device", stt("running"))] });
+    const { latest } = await mount("n1");
+    expect(latest().error).toContain("bridge subscription failed");
+    expect(view(latest().note, latest().error)).toContain("bridge subscription failed");
+    broken = false;
+    await act(async () => latest().reload());
+    expect(latest().error).toBeNull();
+    expect(events.listening("progress")).toBe(1);
+    logged.mockRestore();
   });
 });
 

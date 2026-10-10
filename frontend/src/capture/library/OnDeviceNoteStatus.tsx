@@ -37,10 +37,21 @@ interface Scan {
   outcome: Outcome | null;
 }
 
-/** What the plugin's events said last: a progress tick, or the end of the job. */
+/**
+ * What the plugin's events said last: a progress tick, or the end of the job. `supersedes` is the
+ * shared queue's entry for the note (see `queueMark`) as the event arrived: while the queue still
+ * shows exactly that, it is older than the event; once it shows anything else it is newer. Left
+ * out, the event is taken as newer than whatever the queue shows.
+ */
 type Live =
-  | { noteId: string; kind: "running"; percent: number }
-  | { noteId: string; kind: "done"; outcome: Outcome | null };
+  | { noteId: string; kind: "running"; percent: number; supersedes?: string }
+  | { noteId: string; kind: "done"; outcome: Outcome | null; supersedes?: string };
+
+type QueueEntry = OnDeviceSttStatus["queue"][number];
+
+export function queueMark(job: QueueEntry | null): string {
+  return job === null ? "absent" : `${job.state}|${job.percent ?? ""}|${job.error ?? ""}`;
+}
 
 export interface OnDeviceNoteView {
   /** Null while this note's mode and state are still being read. */
@@ -55,6 +66,7 @@ export function useOnDeviceNote(noteId: string): OnDeviceNoteView {
   const [scan, setScan] = useState<Scan | null>(null);
   const [live, setLive] = useState<Live | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [watchError, setWatchError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
@@ -63,6 +75,8 @@ export function useOnDeviceNote(noteId: string): OnDeviceNoteView {
     setScan(null);
     setLive(null);
     setError(null);
+    setWatchError(null);
+    const supersedes = () => queueMark(onDeviceSttStore.snapshot().queue.find((entry) => entry.id === noteId) ?? null);
     const read = () => {
       const mine = ++latest;
       const current = () => alive && mine === latest;
@@ -89,11 +103,11 @@ export function useOnDeviceNote(noteId: string): OnDeviceNoteView {
     read();
     const subs = [
       OnDeviceStt.addListener("progress", (event) => {
-        if (event.id === noteId) setLive({ noteId, kind: "running", percent: event.percent });
+        if (event.id === noteId) setLive({ noteId, kind: "running", percent: event.percent, supersedes: supersedes() });
       }),
       OnDeviceStt.addListener("transcribed", (event) => {
         if (event.id !== noteId) return;
-        setLive({ noteId, kind: "done", outcome: event.outcome ?? null });
+        setLive({ noteId, kind: "done", outcome: event.outcome ?? null, supersedes: supersedes() });
         read();
       }),
       OnDeviceStt.addListener("failed", (event) => {
@@ -102,7 +116,12 @@ export function useOnDeviceNote(noteId: string): OnDeviceNoteView {
         read();
       }),
     ];
-    for (const sub of subs) sub.catch((caught: unknown) => console.error("[Library] Could not follow on-device transcription", caught));
+    for (const sub of subs) {
+      sub.catch((caught: unknown) => {
+        console.error("[Library] Could not follow on-device transcription", noteId, caught);
+        if (alive) setWatchError(`Couldn't follow this note's on-device transcription: ${caught instanceof Error ? caught.message : String(caught)}`);
+      });
+    }
     return () => {
       alive = false;
       for (const sub of subs) sub.then((handle) => handle.remove()).catch(() => {});
@@ -111,15 +130,18 @@ export function useOnDeviceNote(noteId: string): OnDeviceNoteView {
 
   const reload = useCallback(() => setAttempt((n) => n + 1), []);
   const job = status.queue.find((entry) => entry.id === noteId) ?? null;
-  return { note: onDeviceNote(scan?.noteId === noteId ? scan : null, live?.noteId === noteId ? live : null, job), error, reload };
+  return { note: onDeviceNote(scan?.noteId === noteId ? scan : null, live?.noteId === noteId ? live : null, job), error: watchError ?? error, reload };
 }
 
 /**
- * The live queue wins, then the plugin's latest event, then the sidecar. A note only has an
- * on-device state when its committed mode is Local (the queue never holds any other); with
- * nothing known yet the answer is null, never "none".
+ * The newest source wins: a queue entry the plugin's latest event has not yet moved past, else
+ * that event, else the sidecar. A note only has an on-device state when its committed mode is
+ * Local (the queue never holds any other); with nothing known yet the answer is null, never "none".
  */
-export function onDeviceNote(scan: Scan | null, live: Live | null, job: OnDeviceSttStatus["queue"][number] | null): OnDeviceNote | null {
+export function onDeviceNote(scan: Scan | null, live: Live | null, jobEntry: QueueEntry | null): OnDeviceNote | null {
+  // A snapshot the event arrived after is older than it; once the queue shows anything else it is newer.
+  const eventNewer = live !== null && (live.supersedes === undefined || live.supersedes === queueMark(jobEntry));
+  const job = eventNewer ? null : jobEntry;
   if (scan === null && live === null && job === null) return null;
   if (job === null && live === null && scan !== null && !scan.local) return { kind: "none" };
   const state = job?.state ?? live?.kind ?? scan?.stt?.state;

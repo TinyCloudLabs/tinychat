@@ -182,3 +182,38 @@ describe("freshness and backoff for automatic checks", () => {
     expect(b.requests).toHaveLength(1);
   });
 });
+
+describe("work an account's departure paused", () => {
+  test("returning to a settled available account resumes it without asking again", async () => {
+    let current = true;
+    let pendingIds: string[] = [];
+    let finish: () => void = () => {};
+    let started = 0;
+    let requests = 0;
+    const transcriber = createVoiceNoteTranscriber({
+      cloud: { capabilities: async () => { requests++; return CAPS; }, pendingSourceIds: () => pendingIds, releaseUnsent: async () => {} } as unknown as VoiceNoteCloud,
+      consent: consent(true),
+      tcw: () => ({}) as TinyCloudWeb,
+      runNote: async (args) => {
+        started++;
+        if (started === 1) {
+          await new Promise<void>((resolve) => { finish = resolve; });
+          if (!args.allowed!()) throw new PrivateCloudError("account_changed", "left");
+        }
+        return "no_speech";
+      },
+    });
+    await transcriber.check({ automatic: true, current: () => current });
+    transcriber.transcribe("a-note");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    current = false;
+    pendingIds = ["a-note"];
+    finish();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    current = true;
+    await transcriber.check({ automatic: true, current: () => current });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(requests).toBe(1);
+    expect(started).toBe(2);
+  });
+});
