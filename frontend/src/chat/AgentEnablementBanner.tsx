@@ -103,14 +103,14 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
                       : "Private agent access needs reconnecting"
                   : "Connect private agent access"}
               </span>
-              <span className="text-xs leading-snug text-muted-foreground">
+              <span data-agent-enable-helper className="hidden text-xs leading-snug text-muted-foreground sm:block">
                 {unverified
                   ? "That reply couldn't use your meetings. Reconnect if this keeps happening."
                   : reconnecting
                     ? "Reconnect to let the agent read your private meeting transcripts again."
                     : passkeysSupported
-                      ? "Sign in with your passkey."
-                      : "Sign in with OpenKey."}
+                      ? "You'll be prompted to sign in with your passkey once to authorize access."
+                      : "You'll be prompted to sign in with OpenKey once to authorize access."}
               </span>
             </div>
             <button

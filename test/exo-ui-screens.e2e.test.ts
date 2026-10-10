@@ -52,6 +52,7 @@ const VIEWPORTS: Viewport[] = [
     isMobile: true,
     hasTouch: true,
     screenPrefixes: [
+      "shell-chat",
       "recorder-final-phone-",
       "recorder-final-minimized-",
       "capture-soft-",
@@ -388,11 +389,12 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 const expected = Math.max(16, Math.min(32, 16 * viewport.textScale));
                 if (Math.abs(rootSize - expected) > 0.1) findings.push({ check: "ios-text-scale", detail: `root font-size ${rootSize}px; expected ${expected}px at scale ${viewport.textScale}` });
               }
-              if (screen.id === "shell-chat" && viewport.id === "phone") {
+              if (screen.id === "shell-chat" && ["phone", "phone-small"].includes(viewport.id)) {
                 const bannerLayout = await page.evaluate(() => {
                   const banner = document.querySelector('[aria-label="Agent tools"]');
                   const markdown = document.querySelector('[data-testid="chat-markdown-demo"]');
-                  if (!banner || !markdown) return { missing: !banner ? "agent banner" : "Markdown demo" };
+                  const helper = document.querySelector<HTMLElement>("[data-agent-enable-helper]");
+                  if (!banner || !markdown || !helper) return { missing: !banner ? "agent banner" : !markdown ? "Markdown demo" : "agent helper" };
                   const bannerRect = banner.getBoundingClientRect();
                   const markdownRect = markdown.getBoundingClientRect();
                   return {
@@ -400,6 +402,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                     bannerTop: bannerRect.top,
                     bannerBottom: bannerRect.bottom,
                     markdownBottom: markdownRect.bottom,
+                    helperVisible: Boolean(helper.getClientRects().length),
                     overlapsMarkdown: bannerRect.left < markdownRect.right &&
                       bannerRect.right > markdownRect.left &&
                       bannerRect.top < markdownRect.bottom &&
@@ -414,6 +417,9 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                   }
                   if (bannerLayout.overlapsMarkdown) {
                     findings.push({ check: "chat-banner-overlap", detail: `banner ${Math.round(bannerLayout.bannerTop)}–${Math.round(bannerLayout.bannerBottom)}px; Markdown ends at ${Math.round(bannerLayout.markdownBottom)}px` });
+                  }
+                  if (bannerLayout.helperVisible) {
+                    findings.push({ check: "chat-banner-helper", detail: `${viewport.width}px phone should hide the helper line` });
                   }
                 }
               }

@@ -1,8 +1,9 @@
 // The agent access prompt on a phone (TC-522). Positioned at `left-1/2`, a
 // fixed box only gets half the viewport to lay out in, so at 412 px the prompt
 // was squeezed into a narrow column with the button beside the text. At 390
-// px it spans the width as a compact row; at 320 px it stacks. On a phone it
-// is fixed to the viewport and tab bar; from `md` it is absolute in the pane.
+// px it spans the width as a compact row. The explanatory helper hides below
+// `sm` to keep the Markdown demo visible. On a phone it is fixed to the tab bar;
+// from `md` it is absolute in the pane.
 
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -41,17 +42,21 @@ describe("AgentEnablementBanner layout", () => {
       expect(region).toEqual(
         expect.arrayContaining(["sm:left-1/2", "sm:right-auto", "sm:-translate-x-1/2"]),
       );
-      // 8rem above whatever covers the bottom: the tab bar (and the recording
+      // 7.75rem above whatever covers the bottom: the tab bar (and the recording
       // island) on a phone, else the home indicator / gesture bar (index.css),
       // which clears the composer and its toolbar row. Under the composer's
       // menus (its z-10 layer) and sheets.
-      expect(region).toContain("bottom-[calc(var(--tc-bottom-chrome)+8rem)]");
+      expect(region).toContain("bottom-[calc(var(--tc-bottom-chrome)+7.75rem)]");
       expect(region).toContain("z-[5]");
 
       const card = classList(markup, "rounded-lg");
-      expect(card).toContain("flex-col");
-      expect(card).not.toContain("items-center");
-      expect(card).toEqual(expect.arrayContaining(["min-[380px]:flex-row", "min-[380px]:items-center", "sm:flex-row", "sm:items-center"]));
+      expect(card).toEqual(expect.arrayContaining(["flex", "items-center", "gap-2", "py-1.5"]));
+      expect(card).not.toContain("flex-col");
+
+      if (props.enableError === null) {
+        const helper = classList(markup, "data-agent-enable-helper");
+        expect(helper).toEqual(expect.arrayContaining(["hidden", "sm:block"]));
+      }
 
       // 44px wherever the pointer is a finger (a tablet too); compact with a mouse.
       const button = classList(markup, "<button");
