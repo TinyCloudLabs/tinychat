@@ -801,7 +801,7 @@ function formatRetryIn(ms: number): string {
   return `${min} min`;
 }
 
-function formatRowError(msg: string, retryAfterMs: number | null): string {
+export function formatRowError(msg: string, retryAfterMs: number | null): string {
   if (retryAfterMs && retryAfterMs > 0) {
     return `${msg} — try again in ${formatRetryIn(retryAfterMs)}`;
   }

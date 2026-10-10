@@ -77,7 +77,7 @@ function MeetingSourcesFixture({
         <SourceRow
           id="fireflies"
           name={fireflies.name}
-          description="Meeting transcripts from Fireflies.ai."
+          description={fireflies.description}
           Icon={fireflies.icon ?? PlugIcon}
           status={meetingSourceStatus(
             connected ? "connected" : "disconnected",
@@ -117,7 +117,7 @@ function MeetingSourcesFixture({
         <SourceRow
           id="google-meet"
           name={google.name}
-          description="Google Meet transcripts and Notes by Gemini."
+          description={google.description}
           Icon={google.icon ?? PlugIcon}
           status={meetingSourceStatus("disconnected")}
           lookup="ready"
@@ -135,7 +135,7 @@ function MeetingSourcesFixture({
         <SourceRow
           id="granola"
           name={granola.name}
-          description="Notes and transcripts from Granola."
+          description={granola.description}
           Icon={granola.icon ?? PlugIcon}
           comingSoon
           status={null}

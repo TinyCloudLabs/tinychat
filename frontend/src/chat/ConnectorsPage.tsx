@@ -2,10 +2,8 @@ import { lazy, Suspense } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { useNavKind } from "@/shell/navItems";
 import { PAGE_COLUMN, PageHeader, SettingsGear } from "@/shell/PageHeader";
-import { ConnectorsCard } from "./ConnectorsCard";
 
 const MeetingSourcesFeature = lazy(() => import("@/capture/meetingSources/MeetingSourcesDialog").then((m) => ({ default: m.MeetingSourcesFeature })));
 
@@ -28,15 +26,15 @@ interface ConnectorsPageProps {
 /**
  * Connectors (TC-761): the meeting sources a user connects and syncs, one page
  * and one of the app's three destinations. Capture (recording, uploads, the
- * notetaker) and the Library moved to Capture, so this is the connector rows
- * and, in builds that ask for them, the development spikes.
+ * notetaker) and the Library moved to Capture, so this is the Meeting sources
+ * view (the same one Capture's Connect meetings opens, with its one How it
+ * works) and, in builds that ask for them, the development spikes.
  *
  * There is no back affordance: it is a destination, and the shell's navigation
  * is always on screen.
  */
 export function ConnectorsPage({ tcw, backendUrl, sessionStore }: ConnectorsPageProps) {
   const nav = useNavKind();
-  const meetingSourcesEnabled = nav !== "tabbar";
   return (
     // `relative` makes this scroller the containing block for absolutely
     // positioned descendants (the `sr-only` form labels). Without it they
@@ -45,13 +43,7 @@ export function ConnectorsPage({ tcw, backendUrl, sessionStore }: ConnectorsPage
     <div className="relative h-full overflow-y-auto" data-scroll-root>
       <PageHeader title="Connectors" trailing={nav === "tabbar" ? <SettingsGear /> : undefined} className={PAGE_COLUMN} />
       <div className={`${PAGE_COLUMN} pb-[max(1.5rem,env(safe-area-inset-bottom))]`}>
-        {/* One line; what each source can reach, autojoin and background
-            notifications are How it works → Connectors. */}
-        <div className="mb-4 mt-1 flex flex-wrap items-center gap-x-3">
-          <p className="text-callout text-muted-foreground">Bring meeting notes into your private space.</p>
-          <HowItWorksLink section="connectors" />
-        </div>
-        <div className="flex flex-col gap-4">
+        <div className="mt-1 flex flex-col gap-4">
           {HealthSpikeSection && (
             <Suspense fallback={null}>
               <HealthSpikeSection tcw={tcw} />
@@ -62,13 +54,9 @@ export function ConnectorsPage({ tcw, backendUrl, sessionStore }: ConnectorsPage
               <LocationSpikeSection tcw={tcw} />
             </Suspense>
           )}
-          {meetingSourcesEnabled ? (
-            <Suspense fallback={null}>
-              <MeetingSourcesFeature tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />
-            </Suspense>
-          ) : (
-            <ConnectorsCard tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} title="Meeting sources" />
-          )}
+          <Suspense fallback={null}>
+            <MeetingSourcesFeature tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />
+          </Suspense>
         </div>
       </div>
     </div>

@@ -5,6 +5,7 @@
 import { CheckIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { routeSourceName, TRANSCRIBER_NAME } from "./final/finalCopy";
 
 export interface RouteNode {
   label: string;
@@ -14,21 +15,22 @@ export interface RouteNode {
 /** A voice note from the phone app: straight to the space, through private cloud for its
  * transcript, or transcribed on this phone before either ever leaves it. */
 export function voiceNoteRoute(route: "off" | "on-device" | "private-cloud"): RouteNode[] {
+  const phone = routeSourceName("ios");
   if (route === "private-cloud") {
     return [
-      { label: "This phone", kind: "source" },
-      { label: "Private cloud", kind: "processing" },
+      { label: phone, kind: "source" },
+      { label: TRANSCRIBER_NAME["private-cloud"], kind: "processing" },
       { label: "Your space", kind: "destination" },
     ];
   }
   if (route === "on-device") {
     return [
-      { label: "This phone (transcribed here)", kind: "source" },
+      { label: `${phone} (transcribed here)`, kind: "source" },
       { label: "Your space", kind: "destination" },
     ];
   }
   return [
-    { label: "This phone", kind: "source" },
+    { label: phone, kind: "source" },
     { label: "Your space", kind: "destination" },
   ];
 }

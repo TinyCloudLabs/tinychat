@@ -131,6 +131,11 @@
 .soft-pill:disabled {
   opacity: 0.6;
 }
+.soft-pill[data-quiet] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--gedge);
+  color: var(--ink);
+}
 .soft-pill-hit {
   display: flex;
   flex: none;
@@ -140,6 +145,53 @@
   min-height: 44px;
 }
 
+.soft-in-progress-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* An In progress row that opens a sheet: the whole text side is the button; the pill sits beside it, wrapping below at large text. */
+.soft-card {
+  flex-wrap: wrap;
+}
+.soft-card-main {
+  display: flex;
+  flex: 1 1 12rem;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+button.soft-card-main {
+  cursor: pointer;
+}
+button.soft-card-main:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: 12px;
+}
+.soft-card-text span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.soft-card-text span[data-warn] {
+  color: var(--ink);
+}
+.soft-card-spin {
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
 .soft-legacy {
   margin-top: 8px;
 }

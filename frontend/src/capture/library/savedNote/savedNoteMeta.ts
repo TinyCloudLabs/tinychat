@@ -1,5 +1,6 @@
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import type { AppPlatform } from "@/lib/platform";
+import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { detailWhen, formatSpokenDuration } from "../formatters";
 import type { LibraryItem } from "../LibraryRow";
 import { SAVED_NOTE_COPY } from "./savedNoteCopy";
@@ -30,13 +31,19 @@ function recordedOn(
   return platform === "tauri" ? "recorded on this Mac" : null;
 }
 
-function transcriptRoute(metadata: Record<string, unknown> | null): string | null {
+/** A voice note names who made its transcript only once its transcription outcome says it was transcribed. */
+function transcriptRoute(
+  source: string,
+  metadata: Record<string, unknown> | null,
+): string | null {
+  if (source === VOICE_NOTE_SOURCE && metadata?.transcription_outcome !== "transcribed")
+    return null;
   const provider = text(metadata?.transcript_provider);
   const engine = text(metadata?.transcription_engine);
   if (provider === PRIVATE_CLOUD || engine === "private-cloud")
-    return "Private cloud transcript";
-  if (provider === "assemblyai") return "AssemblyAI transcript";
-  if (provider === "whispercpp") return "Local transcript";
+    return `${TRANSCRIBER_NAME["private-cloud"]} transcript`;
+  if (provider === "assemblyai") return `${TRANSCRIBER_NAME.assemblyai} transcript`;
+  if (provider === "whispercpp") return `${TRANSCRIBER_NAME["on-device"]} transcript`;
   return null;
 }
 
@@ -50,7 +57,7 @@ export function savedNoteMeta(
     detailWhen(item.startedAt),
     item.durationSecs !== null ? formatSpokenDuration(item.durationSecs) : null,
     item.source === VOICE_NOTE_SOURCE ? recordedOn(metadata, platform) : null,
-    transcriptRoute(metadata),
+    transcriptRoute(item.source, metadata),
     item.onPhone ? SAVED_NOTE_COPY.notInSpace : SAVED_NOTE_COPY.savedToSpace,
   ]
     .filter((part): part is string => !!part)

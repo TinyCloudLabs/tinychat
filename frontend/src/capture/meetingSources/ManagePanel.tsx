@@ -74,6 +74,8 @@ export interface FirefliesManageProps {
   onRetry: () => void;
   onBringBack: () => void;
   onDisconnect: () => void;
+  /** A sync this window started is still running: Disconnect waits for it. */
+  syncing?: boolean;
 }
 
 export function FirefliesManage(props: FirefliesManageProps) {
@@ -234,18 +236,31 @@ export function FirefliesManage(props: FirefliesManageProps) {
         </OptionRow>
       )}
 
-      <DisconnectRow name={connectorName} onDisconnect={props.onDisconnect} />
+      <DisconnectRow name={connectorName} onDisconnect={props.onDisconnect} syncing={props.syncing} />
     </>
   );
 }
 
-export function DisconnectRow({ name, onDisconnect }: { name: string; onDisconnect: () => void }) {
+export const DISCONNECT_WHILE_SYNCING =
+  "A sync is still running. Stop it or wait for it to finish, then disconnect.";
+
+export function DisconnectRow({
+  name,
+  onDisconnect,
+  syncing = false,
+}: {
+  name: string;
+  onDisconnect: () => void;
+  /** A sync this window started has not settled: its final write would undo the disconnect. */
+  syncing?: boolean;
+}) {
   return (
     <div className="ms-opt">
       <div className="ms-opt-copy">
-        <LinkButton danger onClick={onDisconnect}>
+        <LinkButton danger disabled={syncing} onClick={onDisconnect}>
           Disconnect {name}
         </LinkButton>
+        {syncing && <p className="ms-opt-text">{DISCONNECT_WHILE_SYNCING}</p>}
       </div>
     </div>
   );

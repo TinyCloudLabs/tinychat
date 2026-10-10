@@ -756,22 +756,22 @@ describe.serial(`default recorder route control (${engineName})`, () => {
     await page.evaluate(() => {
       (window as unknown as RouteHarness).exoRoute.rejectSetter = true;
     });
-    await page.getByRole("radio", { name: "Off" }).click();
+    await page.getByRole("radio", { name: "Audio only" }).click();
     const alert = page.getByRole("alert");
     await shown(alert);
     expect(await alert.textContent()).toBe(
-      "Could not change the transcription to Off: Plugin is down",
+      "Could not change the transcription to Audio only: Plugin is down",
     );
-    expect(await selected()).toBe("On this phone");
+    expect(await selected()).toBe("Local");
     expect(errors.some((text) => text.includes("Could not change"))).toBe(true);
     await page.context().close();
   });
 
   test("through the consent question the selection stays the provider's, and a rejected consent shows the alert", async () => {
     const { page, selected } = await openRoute();
-    await page.getByRole("radio", { name: "Private cloud" }).click();
+    await page.getByRole("radio", { name: "Private" }).click();
     await shown(page.getByTestId("voice-note-transcription-consent"));
-    expect(await selected()).toBe("On this phone");
+    expect(await selected()).toBe("Local");
     await page.evaluate(() => {
       (window as unknown as RouteHarness).exoRoute.rejectConsent = true;
     });
@@ -779,9 +779,9 @@ describe.serial(`default recorder route control (${engineName})`, () => {
     const alert = page.getByRole("alert");
     await shown(alert);
     expect(await alert.textContent()).toBe(
-      "Could not change the transcription to Private cloud: Consent was not saved",
+      "Could not change the transcription to Private: Consent was not saved",
     );
-    expect(await selected()).toBe("On this phone");
+    expect(await selected()).toBe("Local");
     expect(
       await page.evaluate(
         () => (window as unknown as RouteHarness).exoRoute.calls,

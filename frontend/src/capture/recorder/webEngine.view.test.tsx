@@ -83,7 +83,7 @@ describe("web engine, opened overlay", () => {
     const calls = await installWeb();
     const html = renderToStaticMarkup(<MemoryRouter><TranscriptionRouteControl transcription={recorder().transcription} signedIn /></MemoryRouter>);
     expect(html).not.toContain("On this phone");
-    expect(html).toContain("Private cloud");
+    expect(html).toContain(">Private<");
     expect(calls).toEqual([]);
   });
 });

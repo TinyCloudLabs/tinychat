@@ -154,7 +154,7 @@ for (const theme of ["dark", "light"] as const) {
       expect(await row.locator(".ms-btn1").count()).toBe(0);
       await row.getByRole("button", { name: "Try again" }).click();
       expect(await row.getByRole("alert").count()).toBe(0);
-      expect(await row.getByRole("button", { name: "Sync now" }).isVisible()).toBe(true);
+      expect(await row.getByRole("button", { name: "Sync Fireflies now" }).isVisible()).toBe(true);
       await page.close();
     }, TEST_TIMEOUT_MS);
   });
