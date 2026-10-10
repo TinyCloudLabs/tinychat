@@ -1,5 +1,54 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.17
+
+### Minor Changes
+
+- d5e1894: Add the Android native capture engine, durable voice-note recovery, app shortcut and recording notification controls.
+- 671f28c: Add on-device transcription for Exo voice notes: an "On this phone" transcriber choice in the recorder and Settings, a downloadable Parakeet/sherpa-onnx model with Wi-Fi-only download and sha256 verification, and native decode-and-transcribe after Stop that works signed out and offline.
+- a376332: Add native iOS voice-note capture with durable segments, recovery, account-aware sidecars, and a home-screen recording shortcut.
+- da282d4: Show native voice recordings in a full-page view with pause, a waveform, and immediate local playback after Stop. Keep committed audio on the phone after upload.
+- 3973e7f: Add iOS recording interruption recovery, stale notification protection, and audio input routing.
+- c79b024: Add Android recording interruption recovery, paused resume notifications, and microphone input selection.
+- 99f170a: Keep one native recorder available above sign-in, show local notes while signed out, and durably hand off capture ownership before clearing credentials. Claim signed-out notes at the next ready session and save them through the account-aware pipeline.
+
+### Patch Changes
+
+- 6d9a101: Keep the native renewal test's voice-note save fixture from leaking into later Bun test files.
+- 177ddc9: Expose recorded elapsed time and native mic state reasons
+- 15f5c94: Persist Android capture account state, remote cleanup receipts, and recovery actions.
+- d0f143f: Make the Android compensation debug hook fail both the sign-out and compensation writes so the account remains transitioning.
+- b32e046: Fix Android STT benchmark VAD framing by feeding Silero one decision window at a time.
+- 01dab09: Show the target, version, build number and commit at the foot of the boot screen, the desktop sidebar and the bottom of Settings; a tap copies the line.
+- bf477cb: Add pure view models and Soft-skin foundations for the final recorder.
+- 5dea60d: Keep Android microphone-state reasons within the native contract, carry diagnostic detail separately, and publish read failures only after entering interrupted state.
+- 85aa07b: Keep iOS recording account state and remote cleanup receipts durable, recover parked pauses, and expose recovery actions.
+- 83cd123: Route voice notes by their committed transcriber choice and expose one recorder choice API
+- 003fe5b: Keep recordings on the phone when sign-out suspends an upload, and move the app to the signed-out screen after a shared 401 session clear.
+- 47cc4f7: Never say Exo will finish a recording automatically when it couldn't recover or save it, and add Try again and Delete (with a confirmation) to the couldn't-recover sheet, including recordings the phone quarantined
+- 12ec582: Keep recorder harnesses rendering with a real string space ID, validate capture issue scope after mount, and reconcile status before the best-effort sidecar scan.
+- d9c24a7: Show the full-page microphone recovery screen after an Android recording shortcut is denied, with a direct link to app settings.
+- 3177a1b: Route recorder private-cloud choices into native capture
+- e36018b: Update the OpenKey Capacitor SDK and use the shared Kotlin version for Android builds.
+- 69c83e2: The final phone recorder reads and changes the transcriber through the recorder provider, and names the mode that is unavailable.
+- cfc7daf: Pin the OpenKey SDK WebView popup fix and explain when remote OpenKey sign-out is unavailable while completing local sign-out.
+- e604971: Show a quiet "Saved — part of this recording couldn't be written" line on Recent and Library rows and on the saved receipt when a recording is missing some audio, with a details sheet (how much is missing, when known) and a Dismiss button
+- 65cb50f: Add the final phone recorder screen behind VITE_EXO_RECORDER_FINAL (off by default).
+- de2d034: Add the minimized final recorder behind the flag: a Ribbon above the tab bar, floating on the rail, and a dock in the sidebar.
+- ca5ccda: Fit the final recorder and Capture home on a 320 px phone: the Ribbon's trace stays clear of Pause (whose Day edge now shows), the modes card's labels wrap beside their dots, the paused pill keeps its distance from the minimise button, and the Capture actions fit.
+- 58891dd: Soft-skin phone Capture home and Recent rows, with the capture-issue row states, behind the recorder-final flag (TC-871).
+- b23d76c: Align recorder announcements with the final recorder UI and restore the dock spectrum gain and halo pixel checks.
+- c99ac25: Expose native capture recovery and write failures
+- e7f978f: Announce when microphone access is off in the recorder
+- b425f3f: Save voice notes to their owner’s space with deterministic row identities and durable transcript commits.
+- 0913742: CI: split the frontend workflow so the Exo UI screens run one viewport per job and the browser harnesses run beside the unit tests.
+- d8881bc: Make the iOS compensation failure probe keep account state transitioning after a failed sign-out handoff.
+- d37cc52: Raise the Exo iOS minimum to iOS 18 and support a separate device test bundle identifier.
+- 85ad869: Add the Halo Ticks recorder ring and level bar visualisers for the final recorder.
+- c173a11: Keep native renewal stopped when terminal sign-out cannot complete its capture handoff, while preserving renewal after a failed manual sign-out.
+- 45e43de: Anchor recorded elapsed time to the native checkpoint receipt
+- 92f97f6: Keep partial-audio notices after a recording commits
+
 ## 0.6.0-beta.16
 
 ### Patch Changes

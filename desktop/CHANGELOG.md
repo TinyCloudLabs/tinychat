@@ -1,5 +1,11 @@
 # exo-desktop
 
+## 0.6.0-beta.17
+
+### Patch Changes
+
+- 01dab09: Show the target, version, build number and commit at the foot of the boot screen, the desktop sidebar and the bottom of Settings; a tap copies the line.
+
 ## 0.6.0-beta.16
 
 No changes in this release.
