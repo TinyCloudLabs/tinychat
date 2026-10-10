@@ -139,7 +139,10 @@ export function libraryTcw(options: { rows?: readonly FixtureRow[]; hang?: boole
   const query = async (sql: string, params: unknown[] = []) => {
     if (sql.includes("WHERE source IN")) {
       if (options.hang) return new Promise(() => {});
-      return { ok: true, data: { rows: rows.map((r) => [r.id, r.source, r.sourceId, r.title, r.startedAt, r.durationSecs]) } };
+      // Match listMeetingsRead's `ORDER BY started_at DESC`; the Capture
+      // Recent harness relies on the newest fixture row being first.
+      const newestFirst = [...rows].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+      return { ok: true, data: { rows: newestFirst.map((r) => [r.id, r.source, r.sourceId, r.title, r.startedAt, r.durationSecs]) } };
     }
     if (sql.includes("SELECT metadata FROM connector_meeting WHERE id = ?")) {
       const row = rows.find((r) => r.id === params[0]);
