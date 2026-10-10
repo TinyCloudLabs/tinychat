@@ -8,7 +8,7 @@ import {
 } from "./renderer";
 
 export interface HaloRingProps {
-  /** The disc's diameter in CSS px; the ticks are drawn out to about 1.25x that. */
+  /** The disc's diameter in CSS px; the ticks reach out to TICK_REACH times that, at most. */
   size: number;
   ticks: 44 | 40;
   paused?: boolean;

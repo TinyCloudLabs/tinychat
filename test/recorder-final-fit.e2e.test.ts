@@ -17,6 +17,7 @@ import {
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, webkit, type Browser, type Page } from "playwright";
+import { TICK_REACH } from "../frontend/src/capture/recorder/final/halo/renderer";
 import { buildHarness, serveHarness } from "./exo-ui/harness-server";
 
 const engineName = process.env.EXO_UI_ENGINE ?? "webkit";
@@ -68,6 +69,10 @@ const VIEWPORTS = [
   { name: "740x360 landscape", width: 740, height: 360, fontScale: 1 },
   { name: "390x844 font 2.0", width: 390, height: 844, fontScale: 2 },
   { name: "320x545 font 2.0", width: 320, height: 545, fontScale: 2 },
+  { name: "844x390 landscape font 2.0", width: 844, height: 390, fontScale: 2 },
+  { name: "740x360 landscape font 2.0", width: 740, height: 360, fontScale: 2 },
+  { name: "545x320 landscape", width: 545, height: 320, fontScale: 1 },
+  { name: "545x320 landscape font 2.0", width: 545, height: 320, fontScale: 2 },
 ] as const;
 
 const SCREENS = [
@@ -86,6 +91,7 @@ async function open(
   theme: "light" | "dark",
   viewport: { width: number; height: number; fontScale: number },
   ready: string,
+  options: { level?: number; keyboard?: number } = {},
 ): Promise<Page> {
   const page = await (
     await browser.newContext({
@@ -97,18 +103,35 @@ async function open(
     })
   ).newPage();
   await page.goto(
-    `http://127.0.0.1:${server.port}/?screen=recorder-final-phone-${screen}&theme=${theme}&platform=android&freeze=1`,
+    `http://127.0.0.1:${server.port}/?screen=recorder-final-phone-${screen}&theme=${theme}&platform=android&freeze=1${options.level === undefined ? "" : `&level=${options.level}`}`,
   );
   await page.waitForSelector(ready);
   if (viewport.fontScale !== 1) {
     // What Android's font scale does to a WebView: every font size is multiplied, whatever unit it was set in.
     await page.evaluate((scale) => {
       const elements = [...document.querySelectorAll<HTMLElement>("*")];
-      const sizes = elements.map((el) => parseFloat(getComputedStyle(el).fontSize));
+      const sizes = elements.map((el) =>
+        parseFloat(getComputedStyle(el).fontSize),
+      );
       elements.forEach((el, i) => {
         el.style.fontSize = `${sizes[i]! * scale}px`;
       });
     }, viewport.fontScale);
+  }
+  if (options.keyboard) {
+    // What iOS does when the keyboard rises: the visual viewport shrinks, the layout viewport does not.
+    await page.evaluate((height) => {
+      const viewport = window.visualViewport!;
+      Object.defineProperty(viewport, "height", {
+        configurable: true,
+        get: () => window.innerHeight - height,
+      });
+      Object.defineProperty(viewport, "offsetTop", {
+        configurable: true,
+        get: () => 0,
+      });
+      viewport.dispatchEvent(new Event("resize"));
+    }, options.keyboard);
   }
   await page.waitForTimeout(400);
   return page;
@@ -133,38 +156,41 @@ const SELECTORS = {
 
 /** Every visible part of the recorder, by name, in page coordinates; the ring is its disc and its ticks. */
 async function parts(page: Page) {
-  return page.evaluate((selectors) => {
-    const box = (r: DOMRect) => ({
-      left: r.left,
-      top: r.top,
-      right: r.right,
-      bottom: r.bottom,
-    });
-    const out: { name: string; box: ReturnType<typeof box> }[] = [];
-    for (const [name, selector] of Object.entries(selectors)) {
-      for (const el of document.querySelectorAll(selector)) {
-        const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) continue;
-        if (name === "status" && !el.textContent?.trim()) continue;
-        out.push({ name, box: box(rect) });
-      }
-    }
-    const ring = document.querySelector(".pr-ring");
-    if (ring) {
-      const r = ring.getBoundingClientRect();
-      const grow = (r.width * 1.25 - r.width) / 2;
-      out.push({
-        name: "ring",
-        box: {
-          left: r.left - grow,
-          top: r.top - grow,
-          right: r.right + grow,
-          bottom: r.bottom + grow,
-        },
+  return page.evaluate(
+    ({ selectors, reach }) => {
+      const box = (r: DOMRect) => ({
+        left: r.left,
+        top: r.top,
+        right: r.right,
+        bottom: r.bottom,
       });
-    }
-    return out;
-  }, SELECTORS);
+      const out: { name: string; box: ReturnType<typeof box> }[] = [];
+      for (const [name, selector] of Object.entries(selectors)) {
+        for (const el of document.querySelectorAll(selector)) {
+          const rect = el.getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) continue;
+          if (name === "status" && !el.textContent?.trim()) continue;
+          out.push({ name, box: box(rect) });
+        }
+      }
+      const ring = document.querySelector(".pr-ring");
+      if (ring) {
+        const r = ring.getBoundingClientRect();
+        const grow = (r.width * reach - r.width) / 2;
+        out.push({
+          name: "ring",
+          box: {
+            left: r.left - grow,
+            top: r.top - grow,
+            right: r.right + grow,
+            bottom: r.bottom + grow,
+          },
+        });
+      }
+      return out;
+    },
+    { selectors: SELECTORS, reach: TICK_REACH },
+  );
 }
 
 // A part is only compared with the parts it does not contain by design: the plus lives at the timer's side,
@@ -199,7 +225,12 @@ for (const theme of ["light", "dark"] as const) {
 
           const stage = await page.$eval(".pr-stage", (el) => {
             const r = el.getBoundingClientRect();
-            return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+            return {
+              left: r.left,
+              top: r.top,
+              right: r.right,
+              bottom: r.bottom,
+            };
           });
           const ring = laidOut.find((p) => p.name === "ring");
           expect(ring).toBeDefined();
@@ -208,10 +239,18 @@ for (const theme of ["light", "dark"] as const) {
           // The dock holds the controls and is the last thing in the flow; the rest of the screen is above it.
           const dock = await page.$eval(".pr-dock", (el) => {
             const r = el.getBoundingClientRect();
-            return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+            return {
+              left: r.left,
+              top: r.top,
+              right: r.right,
+              bottom: r.bottom,
+            };
           });
           const flow = laidOut.filter(
-            (p) => p.name !== "controls" && p.name !== "alert" && p.name !== "guidance",
+            (p) =>
+              p.name !== "controls" &&
+              p.name !== "alert" &&
+              p.name !== "guidance",
           );
           for (let i = 0; i < flow.length; i++) {
             for (let j = i + 1; j < flow.length; j++) {
@@ -315,7 +354,8 @@ for (const theme of ["light", "dark"] as const) {
                 ? "ok"
                 : `blocked by ${hit?.className || hit?.tagName} (visible ${visible})`;
             }, selector);
-            if (result !== "absent") expect([selector, result]).toEqual([selector, "ok"]);
+            if (result !== "absent")
+              expect([selector, result]).toEqual([selector, "ok"]);
           }
           await page.context().close();
         });
@@ -324,10 +364,173 @@ for (const theme of ["light", "dark"] as const) {
   }
 }
 
+// The timer sits centred in its row with the ＋ ten pixels past its last digit, on the same line, wherever it fits.
+describe.serial(`the timer and its ＋ (${engineName})`, () => {
+  for (const viewport of VIEWPORTS.filter((v) => v.fontScale === 1)) {
+    test(`${viewport.name}: the timer is centred and the ＋ is beside it`, async () => {
+      const page = await open("recording", "light", viewport, ".pr-ring");
+      const layout = await page.evaluate(() => {
+        const rect = (selector: string) =>
+          document.querySelector(selector)!.getBoundingClientRect();
+        return {
+          row: rect(".pr-time-row"),
+          timer: rect(".pr-time > span"),
+          plus: rect(".pr-time-slot"),
+        };
+      });
+      const rowCentre = (layout.row.left + layout.row.right) / 2;
+      expect(
+        Math.abs((layout.timer.left + layout.timer.right) / 2 - rowCentre),
+      ).toBeLessThan(1.5);
+      expect(Math.abs(layout.plus.left - layout.timer.right - 10)).toBeLessThan(
+        1.5,
+      );
+      expect(
+        Math.abs(
+          (layout.plus.top + layout.plus.bottom) / 2 -
+            (layout.timer.top + layout.timer.bottom) / 2,
+        ),
+      ).toBeLessThan(4);
+      await page.context().close();
+    });
+  }
+});
+
+// With the keyboard up (the visual viewport shorter than the layout viewport, as on iOS) the moment field and its
+// key are above the keyboard once the screen is scrolled to them.
+describe.serial(`the moment field above the keyboard (${engineName})`, () => {
+  const CASES = [
+    { width: 390, height: 844, fontScale: 1, keyboard: 336 },
+    { width: 320, height: 545, fontScale: 2, keyboard: 260 },
+    { width: 844, height: 390, fontScale: 1, keyboard: 200 },
+    { width: 740, height: 360, fontScale: 2, keyboard: 200 },
+  ];
+  for (const c of CASES) {
+    test(`${c.width}x${c.height}, font ${c.fontScale}, keyboard ${c.keyboard}`, async () => {
+      const page = await open("moment-field", "light", c, ".pr-moment input", {
+        keyboard: c.keyboard,
+      });
+      const result = await page.evaluate((keyboard) => {
+        const main = document.querySelector<HTMLElement>(".pr-main")!;
+        const field = document.querySelector(".pr-moment input")!;
+        const key = document.querySelector(".pr-moment button")!;
+        main.scrollTop +=
+          field.getBoundingClientRect().top -
+          main.getBoundingClientRect().top -
+          8;
+        const visibleBottom = window.innerHeight - keyboard;
+        const within = (el: Element) => {
+          const r = el.getBoundingClientRect();
+          return {
+            top: r.top,
+            bottom: r.bottom,
+            ok: r.top >= 0 && r.bottom <= visibleBottom + 0.5,
+          };
+        };
+        return {
+          visibleBottom,
+          mainBottom: main.getBoundingClientRect().bottom,
+          field: within(field),
+          key: within(key),
+        };
+      }, c.keyboard);
+      expect(result.mainBottom).toBeLessThanOrEqual(result.visibleBottom + 0.5);
+      expect([c, "field", result.field]).toEqual([
+        c,
+        "field",
+        { ...result.field, ok: true },
+      ]);
+      expect([c, "key", result.key]).toEqual([
+        c,
+        "key",
+        { ...result.key, ok: true },
+      ]);
+      await page.context().close();
+    });
+  }
+});
+
+// The ticks are painted out to TICK_REACH times the disc when the source is loud; what is painted stays inside the stage.
+describe.serial(`the loudest ticks stay in the stage (${engineName})`, () => {
+  test("the stage's sizing factor covers what the renderer can draw", async () => {
+    const page = await open("recording", "light", VIEWPORTS[0], ".pr-ring");
+    const reach = await page.$eval(".pr-ring", (el) =>
+      parseFloat(getComputedStyle(el).getPropertyValue("--ring-reach")),
+    );
+    expect(reach).toBeGreaterThanOrEqual(TICK_REACH);
+    await page.context().close();
+  });
+  for (const viewport of VIEWPORTS) {
+    test(`${viewport.name}: painted at level 1, the ticks are inside the stage`, async () => {
+      const page = await open(
+        "recording",
+        "light",
+        viewport,
+        ".halo-ring__canvas",
+        { level: 1 },
+      );
+      await page.waitForTimeout(2000);
+      const painted = await page.evaluate(() => {
+        const canvas =
+          document.querySelector<HTMLCanvasElement>(".halo-ring__canvas")!;
+        const box = canvas.getBoundingClientRect();
+        const data = canvas
+          .getContext("2d")!
+          .getImageData(0, 0, canvas.width, canvas.height).data;
+        let top = Infinity,
+          bottom = -Infinity,
+          left = Infinity,
+          right = -Infinity;
+        for (let y = 0; y < canvas.height; y++)
+          for (let x = 0; x < canvas.width; x++) {
+            const i = (y * canvas.width + x) * 4;
+            // Opaque red: the ticks themselves, not their faint glow.
+            if (
+              data[i + 3]! > 128 &&
+              data[i]! > 150 &&
+              data[i]! > data[i + 1]! * 1.3
+            ) {
+              top = Math.min(top, y);
+              bottom = Math.max(bottom, y + 1);
+              left = Math.min(left, x);
+              right = Math.max(right, x + 1);
+            }
+          }
+        const stage = document
+          .querySelector(".pr-stage")!
+          .getBoundingClientRect();
+        return {
+          found: bottom > top,
+          top: box.top + (top / canvas.height) * box.height,
+          bottom: box.top + (bottom / canvas.height) * box.height,
+          left: box.left + (left / canvas.width) * box.width,
+          right: box.left + (right / canvas.width) * box.width,
+          stage: {
+            top: stage.top,
+            bottom: stage.bottom,
+            left: stage.left,
+            right: stage.right,
+          },
+        };
+      });
+      expect(painted.found).toBe(true);
+      expect(painted.top).toBeGreaterThanOrEqual(painted.stage.top - 0.5);
+      expect(painted.bottom).toBeLessThanOrEqual(painted.stage.bottom + 0.5);
+      expect(painted.left).toBeGreaterThanOrEqual(painted.stage.left - 0.5);
+      expect(painted.right).toBeLessThanOrEqual(painted.stage.right + 0.5);
+      await page.context().close();
+    });
+  }
+});
+
 describe.serial(`the recorder on desktop and web (${engineName})`, () => {
   const DESKTOP = { width: 1280, height: 800 };
 
-  async function openWide(screen: string, theme: "light" | "dark", platform: string) {
+  async function openWide(
+    screen: string,
+    theme: "light" | "dark",
+    platform: string,
+  ) {
     const page = await (
       await browser.newContext({ viewport: DESKTOP, reducedMotion: "reduce" })
     ).newPage();
@@ -359,10 +562,17 @@ describe.serial(`the recorder on desktop and web (${engineName})`, () => {
         const box = async (selector: string): Promise<Box> =>
           page.$eval(selector, (el) => {
             const r = el.getBoundingClientRect();
-            return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+            return {
+              left: r.left,
+              top: r.top,
+              right: r.right,
+              bottom: r.bottom,
+            };
           });
         const action = await box(
-          platform === "web" ? "[data-testid=browser-mic-guidance]" : ".pr-controls .pr-b.primary",
+          platform === "web"
+            ? "[data-testid=browser-mic-guidance]"
+            : ".pr-controls .pr-b.primary",
         );
         const doneBox = await box(".pr-b.main");
         // The microphone's own action sits above the row, and the row is whole inside the window.
@@ -394,10 +604,16 @@ describe.serial(`the recorder on desktop and web (${engineName})`, () => {
         const boxes = await page.$$eval(selector, (els) =>
           els.map((el) => {
             const r = el.getBoundingClientRect();
-            return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+            return {
+              left: r.left,
+              top: r.top,
+              right: r.right,
+              bottom: r.bottom,
+            };
           }),
         );
-        for (const other of boxes) expect([selector, apart(toast, other)]).toEqual([selector, true]);
+        for (const other of boxes)
+          expect([selector, apart(toast, other)]).toEqual([selector, true]);
       }
       await page.context().close();
     });
