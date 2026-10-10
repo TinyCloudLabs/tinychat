@@ -4,7 +4,7 @@
 // screens run as the phone app (its landing, its voice note button and the
 // fake recorder); `shell-capture-web` shows Capture as the web and desktop app
 // have it. Sheets are opened after mount, the way a tap would.
-import { useContext, useEffect, useMemo } from "react";
+import { useContext, useEffect, useMemo, useState } from "react";
 
 import type { AppState } from "@/lib/appState";
 import { PlatformContext } from "@/lib/platform";
@@ -16,9 +16,15 @@ import type { RecorderValue } from "@/capture/recorder/RecorderProvider";
 function Shell(props: { state?: AppState; act?: () => boolean; recorder?: Partial<RecorderValue> }) {
   const platform = useContext(PlatformContext);
   const shim = useMemo(() => createRuntimeShim(), []);
+  const [sheetOpen, setSheetOpen] = useState(props.recorder?.sheetOpen ?? false);
+  const recorder = props.recorder && {
+    ...props.recorder,
+    sheetOpen,
+    minimiseSheet: () => setSheetOpen(false),
+  };
   return (
     <>
-      <ShellApp platform={platform} shim={shim} state={props.state ?? "ready"} recorder={props.recorder} />
+      <ShellApp platform={platform} shim={shim} state={props.state ?? "ready"} recorder={recorder} />
       {props.act && <Act run={props.act} />}
     </>
   );
@@ -63,6 +69,20 @@ const typeWithKeyboard = () => {
       document.documentElement.dataset.keyboard = "open";
     }),
   );
+  return true;
+};
+
+const openChatTab = () => {
+  const tab = document.querySelector<HTMLAnchorElement>('a[href="/chat"]');
+  if (!tab) return false;
+  tab.click();
+  return true;
+};
+
+const minimiseRecorder = () => {
+  const button = document.querySelector<HTMLButtonElement>('button[aria-label="Minimise recorder"]');
+  if (!button) return false;
+  button.click();
   return true;
 };
 
@@ -113,6 +133,36 @@ export const shellScreens: HarnessScreen[] = [
       elapsedMs: 83_000,
       recordingId: "harness-minimized-recording",
       sheetOpen: false,
+    }} />,
+  },
+  {
+    ...SHELL,
+    id: "shell-chat-ribbon-from-capture",
+    path: "/chat/capture",
+    platform: "ios",
+    readyWhen: 'a[href="/chat"]',
+    render: () => <Shell act={openChatTab} recorder={{
+      phase: "recording",
+      mic: { state: "recording", reason: null },
+      startedAt: Date.now() - 83_000,
+      elapsedMs: 83_000,
+      recordingId: "harness-minimized-recording",
+      sheetOpen: false,
+    }} />,
+  },
+  {
+    ...SHELL,
+    id: "shell-chat-ribbon-minimized-from-chat",
+    path: "/chat",
+    platform: "ios",
+    readyWhen: 'button[aria-label="Model"]:not([disabled])',
+    render: () => <Shell act={minimiseRecorder} recorder={{
+      phase: "recording",
+      mic: { state: "recording", reason: null },
+      startedAt: Date.now() - 83_000,
+      elapsedMs: 83_000,
+      recordingId: "harness-minimized-recording",
+      sheetOpen: true,
     }} />,
   },
   {

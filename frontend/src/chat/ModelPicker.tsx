@@ -156,7 +156,7 @@ export function ModelPicker(props: {
       >
         {model && <ModelShield id={model} className="size-3.5 shrink-0" />}
         {/* Two lines at most, so large text wraps the name instead of hiding it. */}
-        <span className="min-w-0 max-w-[9rem] truncate whitespace-nowrap text-left leading-tight fine:max-w-[14rem]">
+        <span className="min-w-0 max-w-[9rem] line-clamp-2 [overflow-wrap:anywhere] text-left leading-tight fine:max-w-[14rem]">
           {model ?? status ?? "Choosing model…"}
         </span>
         <ChevronDownIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />

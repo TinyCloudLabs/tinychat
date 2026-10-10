@@ -59,6 +59,18 @@ const VIEWPORTS: Viewport[] = [
   },
   { id: "text200-phone", group: "text200", width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true, textScale: 2, zoom: true },
   { id: "text200-desktop", group: "text200", width: 1280, height: 800, deviceScaleFactor: 2, textScale: 2, zoom: true },
+  ...[2.5, 3.3].map((scale) => ({
+    id: `text${Math.round(scale * 100)}-phone`,
+    group: `text${Math.round(scale * 100)}`,
+    width: 390,
+    height: 844,
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    textScale: scale,
+    zoom: true,
+    screenPrefixes: ["shell-", "recorder-final-phone-", "recorder-final-minimized-", "capture-soft-"],
+  })),
 ];
 const THEMES = ["light", "dark"] as const;
 
@@ -290,7 +302,15 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
           if (viewport.textScale) {
             // Before the app's scripts run; <html> may not exist yet when init scripts start.
             await context.addInitScript((scale) => {
-              const apply = () => document.documentElement.style.setProperty("font-size", `${scale * 100}%`);
+              const apply = () => {
+                const root = document.documentElement;
+                if (new URLSearchParams(location.search).get("platform") === "ios") {
+                  root.style.removeProperty("font-size");
+                  root.style.setProperty("--ios-body-scale", String(scale));
+                } else {
+                  root.style.setProperty("font-size", `${scale * 100}%`);
+                }
+              };
               if (document.documentElement) apply();
               else document.addEventListener("readystatechange", apply, { once: true });
             }, viewport.textScale);
@@ -303,6 +323,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
               ) continue;
               if (screen.viewports && !screen.viewports.includes(viewport.id)) continue;
               if (screen.minViewportWidth !== undefined && viewport.width < screen.minViewportWidth) continue;
+              if ((viewport.textScale ?? 0) > 2 && screen.platform !== "ios") continue;
               const page = await context.newPage();
               const errors: string[] = [];
               page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
@@ -334,20 +355,35 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                   findings.push({ check: "native-record-ready", detail: "Capture has no enabled Record button" });
                 }
               }
-              if (screen.id === "shell-chat-ribbon") {
+              if (["shell-chat-ribbon", "shell-chat-ribbon-from-capture", "shell-chat-ribbon-minimized-from-chat"].includes(screen.id)) {
                 const emptyState = await page.evaluate(() => {
                   const viewport = document.querySelector<HTMLElement>("[data-scroll-root]");
                   const title = viewport?.querySelector("h2");
                   const viewportTop = viewport?.getBoundingClientRect().top ?? 0;
                   const titleTop = title?.getBoundingClientRect().top ?? -1;
-                  return { scrollTop: viewport?.scrollTop ?? -1, viewportTop, titleTop };
+                  const copy = document.querySelector<HTMLElement>("[data-agent-enable-copy]");
+                  const action = document.querySelector<HTMLElement>("[data-agent-enable-action]");
+                  return {
+                    scrollTop: viewport?.scrollTop ?? -1,
+                    viewportTop,
+                    titleTop,
+                    copyVisible: Boolean(copy?.getClientRects().length),
+                    actionHeight: action?.getBoundingClientRect().height ?? 0,
+                  };
                 });
                 if (emptyState.scrollTop !== 0 || emptyState.titleTop < emptyState.viewportTop) {
                   findings.push({ check: "chat-empty-start", detail: `scrollTop ${emptyState.scrollTop}; title top ${emptyState.titleTop}; viewport top ${emptyState.viewportTop}` });
                 }
+                if (emptyState.copyVisible || emptyState.actionHeight < 43.5) {
+                  findings.push({ check: "chat-ribbon-action", detail: `copy visible ${emptyState.copyVisible}; action height ${emptyState.actionHeight}px` });
+                }
                 if (await page.locator('button[aria-label="Scroll to bottom"]').count() > 0) {
                   findings.push({ check: "chat-empty-start", detail: "empty Chat showed the scroll-to-bottom overlay" });
                 }
+              }
+              if (screen.platform === "ios" && viewport.textScale && viewport.textScale > 2) {
+                const rootSize = await page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).fontSize));
+                if (rootSize > 32.01) findings.push({ check: "ios-text-cap", detail: `root font-size ${rootSize}px exceeds 32px` });
               }
               for (const error of errors) findings.push({ check: "errors", detail: error });
 

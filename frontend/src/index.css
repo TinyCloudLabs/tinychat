@@ -159,6 +159,10 @@
      the root lets rem-based type and spacing follow that preference. */
   html[data-platform="ios"] {
     font: -apple-system-body;
+    line-height: 1.5;
+    /* UIKit body / 17 keeps the default design at 16px. Cap the rem scale at
+       2×: even at the cap, a 56px tab bar is 112px and a 64px ribbon is 128px. */
+    font-size: clamp(12.8px, calc(16px * var(--ios-body-scale, 1)), 32px);
   }
   body {
     @apply bg-background text-foreground antialiased;
@@ -201,6 +205,8 @@
   html[data-nav="tabbar"][data-island] [data-agent-enable-action] {
     flex: 1;
     min-height: 44px;
+    /* Compact minimized-ribbon action: keep its label at 16px to preserve the
+       one-row layout; the surrounding screen still follows Dynamic Type. */
     font-size: 16px;
   }
   html[data-nav="tabbar"][data-island] [data-agent-enable-error] {

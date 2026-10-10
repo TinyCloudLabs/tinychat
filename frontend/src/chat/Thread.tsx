@@ -5,7 +5,6 @@ import {
   useCallback,
   useContext,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useState,
   useSyncExternalStore,
@@ -94,20 +93,6 @@ export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onRe
   }, [threadRuntime]);
   const [surface, setSurface] = useState<"chat" | "canvas">("chat");
   useEffect(() => setSurface("chat"), [threadId]);
-  useLayoutEffect(() => {
-    if (!isEmpty) return;
-    let secondFrame = 0;
-    const firstFrame = requestAnimationFrame(() => {
-      secondFrame = requestAnimationFrame(() => {
-        const viewport = document.querySelector<HTMLElement>("[data-scroll-root]");
-        if (viewport) viewport.scrollTop = 0;
-      });
-    });
-    return () => {
-      cancelAnimationFrame(firstFrame);
-      cancelAnimationFrame(secondFrame);
-    };
-  }, [isEmpty, threadId]);
   return (
     <TooltipProvider delayDuration={300}>
       <ShareThreadProvider tcw={tcw}>
@@ -119,7 +104,7 @@ export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onRe
               <Button type="button" variant={surface === "canvas" ? "default" : "outline"} size="sm" aria-pressed={surface === "canvas"} onClick={() => setSurface("canvas")}>Canvas</Button>
             </div>
           )}
-          <ThreadPrimitive.Viewport data-scroll-root className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
+          <ThreadPrimitive.Viewport autoScroll={!isEmpty} data-scroll-root className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
             {surface === "canvas" ? (
               <div className="h-full w-full">
                 <Suspense fallback={<div className="flex h-full items-center justify-center text-sm text-muted-foreground">Loading canvas…</div>}>
@@ -458,7 +443,7 @@ const HistorySkeleton: FC = () => (
 const ThreadWelcome: FC = () => {
   return (
     <ThreadPrimitive.Empty>
-      <div className="flex w-full flex-1 flex-col items-center justify-start gap-6 py-8 text-center">
+      <div className="flex w-full flex-1 flex-col items-center justify-center gap-6 py-16 text-center">
         <div className="flex flex-col items-center gap-2">
           {/* The chat header's title is the screen's h1. */}
           <h2 className="font-display text-title-2">TinyCloud Chat</h2>

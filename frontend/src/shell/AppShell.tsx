@@ -177,17 +177,15 @@ export function AppShell(props: AppShellProps) {
   // The bottom chrome (--tc-bottom-chrome in index.css) follows the navigation kind.
   useLayoutEffect(() => {
     const root = document.documentElement;
-    root.dataset.platform = props.platform;
     if (nav === "none") delete root.dataset.nav;
     else root.dataset.nav = nav;
     if (hasIsland) root.dataset.island = "";
     else delete root.dataset.island;
-  }, [nav, hasIsland, props.platform]);
+  }, [nav, hasIsland]);
   useLayoutEffect(
     () => () => {
       delete document.documentElement.dataset.nav;
       delete document.documentElement.dataset.island;
-      delete document.documentElement.dataset.platform;
     },
     [],
   );
