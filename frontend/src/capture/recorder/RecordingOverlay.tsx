@@ -26,6 +26,12 @@ function useRecorderLayout(): RecorderLayout {
   return recorderLayout(width);
 }
 
+/** The outer phone recorder treats Escape/Android Back as minimize, never discard. */
+export function minimizePhoneRecorder(event: { preventDefault: () => void }, minimise: () => void | Promise<void>): void {
+  event.preventDefault();
+  void minimise();
+}
+
 /** The ring view fills the main region, so a move to another screen puts it away: the dock takes over. */
 function MinimizeOnNavigate() {
   const recorder = useRecorder();
@@ -98,7 +104,9 @@ export function RecordingOverlay({
           data-testid="recording-overlay"
           className="fixed inset-0 z-50 h-dvh w-screen overflow-hidden bg-background outline-none"
           onEscapeKeyDown={(event) => {
-            if (phone) event.preventDefault();
+            if (phone) {
+              minimizePhoneRecorder(event, recorder.minimiseSheet);
+            }
           }}
           onOpenAutoFocus={(event) => {
             event.preventDefault();

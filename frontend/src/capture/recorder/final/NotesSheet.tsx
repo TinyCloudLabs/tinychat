@@ -91,6 +91,7 @@ export function NotesSheet({
         ref={root}
         className="pr-nsheet"
         role="dialog"
+        data-overlay-open="true"
         aria-modal="true"
         aria-labelledby={`${ids}-title`}
         data-lifted={lifted}

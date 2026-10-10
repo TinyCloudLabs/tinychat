@@ -115,6 +115,8 @@ describe("CaptureSurface", () => {
   test("the sheets close when the home is left", () => {
     const source = readFileSync(join(import.meta.dir, "CaptureSurface.tsx"), "utf8");
     expect(source).toContain("if (!homeShown) setSheet(null);");
+    expect(source).toContain("onOpenRecentNote={setRecentNoteId}");
+    expect(source).toContain("if (recentNoteId !== null) setRecentNoteId(null);");
   });
 
   test("something landing re-lists the Library: the recorder's save, an upload's, a notetaker's", () => {

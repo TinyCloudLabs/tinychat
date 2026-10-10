@@ -93,6 +93,12 @@ describe("Recent", () => {
     expect(html).toContain('aria-label="Voice note. On this phone. Today 1:49 AM · 1:05"');
   });
 
+  test("a Recent tap opens its note over Capture and closing returns to Capture", () => {
+    const html = home({ recent: { status: "ready", items: [note(2)] }, onOpenRecentNote: noop });
+    expect(html).toContain('<button type="button"');
+    expect(html).not.toContain('href="/chat/capture/library/row-2"');
+  });
+
   test("shows the last five", () => {
     const html = home({
       recent: {

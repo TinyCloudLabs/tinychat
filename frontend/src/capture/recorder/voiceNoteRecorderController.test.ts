@@ -1348,6 +1348,7 @@ describe("voice-note recorder controller", () => {
     expect(recorder.getState().captureIssues[id]?.kind).toBe("write_failed");
     const recording = await stopNatively();
     fake.emit("autoStopped", { id, reason: "write_failed", maxDurationMs: 10_800_000, at: Date.now(), recording });
+    expect(recorder.getState().limitNotice).toBe("Recording stopped because audio could not be written.");
     expect(recorder.getState().captureIssues[id]).toEqual({ kind: "partial_audio" });
     await tick();
     expect(saves).toEqual([id]);

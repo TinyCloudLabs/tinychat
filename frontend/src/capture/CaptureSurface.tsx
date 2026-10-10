@@ -120,6 +120,10 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
   const paused = useSyncExternalStore(pausedUpload.subscribe, pausedUpload.snapshot, pausedUpload.snapshot);
   const { deps: uploadDeps } = useUploadDeps(tcw, backendUrl, sessionStore);
   const [sheet, setSheet] = useState<Sheet | null>(null);
+  const [recentNoteId, setRecentNoteId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!active || screen.id !== "capture") setRecentNoteId(null);
+  }, [active, screen.id]);
   // A sheet belongs to the home: leaving it (another destination, the
   // Library, a How it works link) closes it.
   useEffect(() => {
@@ -134,13 +138,13 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
   // Recent, the Library and the open note: one reader, through the per-space queue.
   const library = useLibrary(tcw, {
     visible: active,
-    noteId: screen.noteId,
+    noteId: screen.noteId ?? recentNoteId,
     transcriber: recorder.available ? { backendUrl, sessionStore } : null,
     onPhone: pendingVisible ? (recorder.pending.notes ?? null) : null,
   });
   // A saved voice note is the note itself: a full page (desktop) or a sheet over the Library (phone).
-  const openNote = noteScreen && library.note.item?.source === VOICE_NOTE_SOURCE ? library.note.item : null;
-  const notePage = desktopHome && openNote !== null;
+  const openNote = (noteScreen || recentNoteId !== null) && library.note.item?.source === VOICE_NOTE_SOURCE ? library.note.item : null;
+  const notePage = desktopHome && noteScreen && openNote !== null;
   const noteSheet = soft && openNote !== null;
   const now = new Date();
 
@@ -221,6 +225,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
               recent={{ status: library.status, items: library.items }}
               scanFailure={recorder.recoveryScanFailure}
               onRetryRecent={library.retry}
+              onOpenRecentNote={setRecentNoteId}
               now={now}
             />
           </div>
@@ -237,7 +242,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
         </div>
         <div
           ref={libraryRef}
-          className={homeOnly ? "hidden" : desktopHome ? SCROLLER : wide ? "border-t border-border pt-2" : libraryScreen || noteSheet ? SCROLLER : "hidden"}
+          className={homeOnly ? "hidden" : desktopHome ? SCROLLER : wide ? "border-t border-border pt-2" : libraryScreen || (noteSheet && recentNoteId === null) ? SCROLLER : "hidden"}
           data-scroll-root={wide ? undefined : ""}
           data-testid="capture-library"
         >
@@ -257,12 +262,15 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
         data-scroll-root=""
         data-testid="capture-detail"
       >
-        {noteScreen ? (
+        {noteScreen || recentNoteId !== null ? (
           <NoteDetail
-            key={screen.noteId}
+            key={screen.noteId ?? recentNoteId}
             library={library}
             pushed={!wide}
-            onBack={() => goUp(navigate, notePage ? PATHS.capture : PATHS.library)}
+            onBack={() => {
+              if (recentNoteId !== null) setRecentNoteId(null);
+              else goUp(navigate, notePage ? PATHS.capture : PATHS.library);
+            }}
             transcription={recorder.transcription}
             savedNote={notePage || noteSheet ? { tcw, layout: notePage ? "page" : "sheet" } : undefined}
           />

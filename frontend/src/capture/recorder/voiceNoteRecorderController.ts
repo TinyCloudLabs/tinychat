@@ -49,7 +49,7 @@ import { readRecordingNoteFromSpace, recordingNoteSyncError, reportRecordingNote
   subscribeRecordingNoteSync, syncRecordingNote, type NoteSyncErrorCode } from "@/lib/voiceNotes/voiceNoteStore";
 import { assertCurrent, currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
 import { withCaptureDeadline } from "@/lib/voiceNotes/accountHandoff";
-import { FINALIZATION_PENDING, limitNoticeText } from "./recorderCopy";
+import { autoStopNoticeText, FINALIZATION_PENDING } from "./recorderCopy";
 import { autoStopIsCurrent, initialRecorderState, recorderReducer, type RecorderCaptureIssue, type RecorderEvent, type RecorderMic, type RecorderState } from "./recorderReducer";
 import { recordedElapsedAt } from "./recordedElapsed";
 import { clearPartialAudioIssue, dismissPartialAudioIssue, partialAudioDismissed, partialAudioScope,
@@ -499,7 +499,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     }
     const finalElapsed = recording && typeof recording.wallMs === "number" && typeof recording.pausedMs === "number"
       ? Math.max(0, recording.wallMs - recording.pausedMs) : undefined;
-    send({ type: "AUTO_STOPPED", id: recording?.id ?? null, notice: limitNoticeText(event.maxDurationMs),
+    send({ type: "AUTO_STOPPED", id: recording?.id ?? null, notice: autoStopNoticeText(event.reason, event.maxDurationMs),
       captured: recording !== null, at: Date.now(), elapsedMs: finalElapsed, error: event.error,
       pendingId: event.error === "finalization_timed_out" ? event.id ?? state.recordingId : null });
     if (!recording) return;

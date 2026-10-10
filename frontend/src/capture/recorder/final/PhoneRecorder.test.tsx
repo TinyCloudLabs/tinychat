@@ -162,7 +162,8 @@ describe("PhoneRecorder", () => {
 
   test("the harness can open the modes card, with Identify speakers disabled while Powerful is off", () => {
     const html = render({}, { defaultOpen: "modes" });
-    expect(html).toMatch(/role="dialog" aria-label="Transcription modes"/);
+    expect(html).toMatch(/role="dialog"[^>]*aria-label="Transcription modes"/);
+    expect(html).toContain('data-overlay-open="true"');
     expect(html).toContain('role="radiogroup"');
     expect(html).toContain('role="switch"');
     expect(html).toMatch(/role="switch"[^>]*aria-disabled="true"/);
