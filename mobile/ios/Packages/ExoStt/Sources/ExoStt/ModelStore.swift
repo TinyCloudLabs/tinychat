@@ -36,19 +36,22 @@ public final class ModelStore {
 
     /// Re-derives each downloadable model's state from what is actually on disk (sha256-verified),
     /// so a relaunch never trusts stale in-memory state. Called at init and after every download.
+    /// The hashing (hundreds of MB) happens before the lock is taken, so `status`/`isReady`/`setState`
+    /// callers, including the main thread, never wait on it.
     public func rescan() {
+        var verified: [String: Bool] = [:]
+        for id in ModelManifest.allIds {
+            guard let files = ModelManifest.filesFor(id) else { continue }
+            let allPresent = files.allSatisfy { file in
+                let url = modelDir(id).appendingPathComponent(file.name)
+                return (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? Int64 == file.bytes
+            }
+            verified[id] = allPresent && verify(id: id, files: files)
+        }
         queue.sync {
-            for id in ModelManifest.allIds {
+            for (id, isVerified) in verified {
                 guard let files = ModelManifest.filesFor(id) else { continue }
-                var done: Int64 = 0
-                var allPresent = true
-                for file in files {
-                    let url = modelDir(id).appendingPathComponent(file.name)
-                    guard let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? Int64,
-                          size == file.bytes else { allPresent = false; continue }
-                    done += size
-                }
-                if allPresent, verifyUnlocked(id: id, files: files) {
+                if isVerified {
                     states[id] = .ready; bytesDone[id] = files.reduce(0) { $0 + $1.bytes }; errors[id] = nil
                 } else if states[id] != .downloading && states[id] != .queued && states[id] != .verifying {
                     states[id] = .absent; bytesDone[id] = 0
@@ -57,7 +60,7 @@ public final class ModelStore {
         }
     }
 
-    private func verifyUnlocked(id: String, files: [ModelFile]) -> Bool {
+    private func verify(id: String, files: [ModelFile]) -> Bool {
         for file in files {
             guard let data = try? Data(contentsOf: modelDir(id).appendingPathComponent(file.name)) else { return false }
             let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
