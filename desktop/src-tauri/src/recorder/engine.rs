@@ -56,8 +56,8 @@ struct AutoStopped {
     spans: Vec<journal::MissingAudioSpan>,
 }
 
-pub fn install(app: &tauri::App) {
-    let handle = app.handle().clone();
+pub fn install(app: &tauri::AppHandle) {
+    let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_millis(33));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -263,6 +263,8 @@ pub async fn recorder_start(
     id: String,
     max_duration_ms: Option<u64>,
 ) -> Result<CaptureStatus, String> {
+    super::ensure(&app);
+    super::extras::load_system_audio(&app).await?;
     if !files::valid_recording_id(&id) {
         return Err("invalid_recording_id".into());
     }
@@ -435,6 +437,7 @@ fn empty_segment_span(closed_at: u64, elapsed: u64, at_audio_ms: u64) -> journal
 
 #[tauri::command]
 pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, String> {
+    super::ensure(&app);
     let (id, segment_id) = {
         let state = app.state::<Engine>();
         let mut state = state.0.lock().unwrap();
@@ -545,6 +548,7 @@ pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, Stri
 
 #[tauri::command]
 pub async fn recorder_resume(app: tauri::AppHandle) -> Result<CaptureStatus, String> {
+    super::ensure(&app);
     let incomplete_pause = {
         let engine = app.state::<Engine>();
         let state = engine.0.lock().unwrap();
@@ -629,6 +633,7 @@ pub async fn recorder_resume(app: tauri::AppHandle) -> Result<CaptureStatus, Str
 
 #[tauri::command]
 pub async fn recorder_stop(app: tauri::AppHandle) -> Result<CaptureStatus, String> {
+    super::ensure(&app);
     if app.state::<Engine>().0.lock().unwrap().id.is_none() {
         return Err("no_recording".into());
     }
@@ -681,6 +686,7 @@ pub struct RecoveryReport {
 
 #[tauri::command]
 pub fn recorder_recover(app: tauri::AppHandle) -> Result<RecoveryReport, String> {
+    super::ensure(&app);
     if app.state::<Engine>().0.lock().unwrap().id.is_some() {
         return Err("recording_in_progress".into());
     }
@@ -727,6 +733,7 @@ pub fn recorder_recover(app: tauri::AppHandle) -> Result<RecoveryReport, String>
 
 #[tauri::command]
 pub fn recorder_acknowledge(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    super::ensure(&app);
     if app.state::<Engine>().0.lock().unwrap().id.is_some() {
         return Err("recording_in_progress".into());
     }
@@ -741,6 +748,7 @@ pub fn recorder_acknowledge(app: tauri::AppHandle, id: String) -> Result<(), Str
 
 #[tauri::command]
 pub fn recorder_failed_list(app: tauri::AppHandle) -> Result<Vec<journal::FailedSegment>, String> {
+    super::ensure(&app);
     journal::list_failed(&app)
 }
 
@@ -749,6 +757,7 @@ pub fn recorder_failed_retry(
     app: tauri::AppHandle,
     id: String,
 ) -> Result<Vec<journal::FailedSegment>, String> {
+    super::ensure(&app);
     for failed in journal::list_failed(&app)?
         .into_iter()
         .filter(|item| item.id == id)
@@ -771,11 +780,13 @@ pub fn recorder_failed_retry(
 
 #[tauri::command]
 pub fn recorder_failed_delete(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    super::ensure(&app);
     journal::delete_failed_for_note(&app, &id)
 }
 
 #[tauri::command]
 pub fn recorder_status(app: tauri::AppHandle) -> CaptureStatus {
+    super::ensure(&app);
     app.state::<Engine>().0.lock().unwrap().status()
 }
 
@@ -795,6 +806,7 @@ pub struct Input {
 
 #[tauri::command]
 pub async fn recorder_list_inputs(app: tauri::AppHandle) -> Result<Inputs, String> {
+    super::ensure(&app);
     let devices = app
         .listener()
         .list_microphone_devices()
@@ -846,6 +858,7 @@ pub async fn recorder_select_input(
     app: tauri::AppHandle,
     id: Option<String>,
 ) -> Result<(), String> {
+    super::ensure(&app);
     if let Some(ref id) = id {
         let devices = app
             .listener()

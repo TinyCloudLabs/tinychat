@@ -29,15 +29,29 @@ pub struct ExtrasState {
     pub watching: Mutex<HashSet<String>>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Preferences {
     #[serde(default)]
     selected_model: Option<String>,
-    #[serde(default)]
+    #[serde(default = "default_system_audio")]
     system_audio: bool,
     #[serde(default)]
     auto_save_to_space: bool,
+}
+
+fn default_system_audio() -> bool {
+    true
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            selected_model: None,
+            system_audio: true,
+            auto_save_to_space: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -175,8 +189,12 @@ fn parse_model(id: &str) -> Result<LocalModel, String> {
     Ok(LocalModel::Whisper(model))
 }
 
-async fn preferences(app: &tauri::AppHandle) -> Result<Preferences, String> {
+async fn preferences<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Preferences, String> {
     let value = app.settings().load().await.map_err(|e| e.to_string())?;
+    parse_preferences(&value)
+}
+
+fn parse_preferences(value: &serde_json::Value) -> Result<Preferences, String> {
     serde_json::from_value(
         value
             .get("exo_recorder")
@@ -201,15 +219,15 @@ async fn save_preferences(
     Ok(prefs)
 }
 
-pub async fn load_system_audio(app: &tauri::AppHandle) -> Result<(), String> {
+pub async fn load_system_audio<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
     let enabled = preferences(app).await?.system_audio;
     app.state::<Arc<AtomicBool>>()
         .store(enabled, Ordering::SeqCst);
     Ok(())
 }
 
-pub fn install(app: &tauri::App) {
-    let handle = app.handle().clone();
+pub fn install(app: &tauri::AppHandle) {
+    let handle = app.clone();
     app.listen_any(UPSTREAM_PROGRESS_EVENT, move |event| {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(event.payload()) else {
             return;
@@ -287,6 +305,7 @@ pub fn install(app: &tauri::App) {
 
 #[tauri::command]
 pub async fn recorder_models_list(app: tauri::AppHandle) -> Result<Vec<ModelRow>, String> {
+    super::ensure(&app);
     let selected = preferences(&app).await?.selected_model;
     let mut rows = Vec::new();
     for id in MODEL_IDS {
@@ -329,11 +348,13 @@ pub async fn recorder_models_list(app: tauri::AppHandle) -> Result<Vec<ModelRow>
 
 #[tauri::command]
 pub async fn recorder_models_get(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    super::ensure(&app);
     Ok(preferences(&app).await?.selected_model)
 }
 
 #[tauri::command]
 pub async fn recorder_models_select(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    super::ensure(&app);
     let model = parse_model(&id)?;
     if !app
         .local_stt()
@@ -350,6 +371,7 @@ pub async fn recorder_models_select(app: tauri::AppHandle, id: String) -> Result
 
 #[tauri::command]
 pub fn recorder_models_progress(app: tauri::AppHandle) -> Vec<Progress> {
+    super::ensure(&app);
     app.state::<ExtrasState>()
         .progress
         .lock()
@@ -361,6 +383,7 @@ pub fn recorder_models_progress(app: tauri::AppHandle) -> Vec<Progress> {
 
 #[tauri::command]
 pub async fn recorder_models_download(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    super::ensure(&app);
     let model = parse_model(&id)?;
     let result = download_model_until_done(app.clone(), id.clone(), model).await;
     if let Err(error) = &result {
@@ -521,11 +544,13 @@ async fn download_model_until_done(
 
 #[tauri::command]
 pub async fn recorder_system_audio_get(app: tauri::AppHandle) -> Result<bool, String> {
+    super::ensure(&app);
     Ok(preferences(&app).await?.system_audio)
 }
 
 #[tauri::command]
 pub async fn recorder_system_audio_set(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    super::ensure(&app);
     // The live stream cannot change source mid-capture; this applies on next start/resume.
     save_preferences(&app, |prefs| prefs.system_audio = enabled).await?;
     app.state::<Arc<AtomicBool>>()
@@ -535,6 +560,7 @@ pub async fn recorder_system_audio_set(app: tauri::AppHandle, enabled: bool) -> 
 
 #[tauri::command]
 pub async fn recorder_auto_save_to_space_get(app: tauri::AppHandle) -> Result<bool, String> {
+    super::ensure(&app);
     Ok(preferences(&app).await?.auto_save_to_space)
 }
 
@@ -543,6 +569,7 @@ pub async fn recorder_auto_save_to_space_set(
     app: tauri::AppHandle,
     enabled: bool,
 ) -> Result<(), String> {
+    super::ensure(&app);
     save_preferences(&app, |prefs| prefs.auto_save_to_space = enabled).await?;
     Ok(())
 }
@@ -550,6 +577,29 @@ pub async fn recorder_auto_save_to_space_set(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn corrupt_recorder_settings_are_an_error_only_when_read() {
+        let value = serde_json::json!({ "exo_recorder": { "systemAudio": "invalid" } });
+        assert!(parse_preferences(&value).is_err());
+    }
+    #[test]
+    fn system_audio_defaults_on_for_new_recordings() {
+        assert!(
+            parse_preferences(&serde_json::json!({}))
+                .unwrap()
+                .system_audio
+        );
+        assert!(
+            parse_preferences(&serde_json::json!({ "exo_recorder": {} }))
+                .unwrap()
+                .system_audio
+        );
+        assert!(
+            !parse_preferences(&serde_json::json!({ "exo_recorder": { "systemAudio": false } }))
+                .unwrap()
+                .system_audio
+        );
+    }
     #[test]
     fn only_whisper_models_are_accepted() {
         assert!(MODEL_IDS.iter().all(|id| parse_model(id).is_ok()));

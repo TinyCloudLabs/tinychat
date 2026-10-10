@@ -329,11 +329,13 @@ pub fn append_audio_chunk(
     id: String,
     bytes: Vec<u8>,
 ) -> Result<u64, String> {
+    super::ensure(&app);
     append(&root(&app)?, &id, &bytes)
 }
 
 #[tauri::command]
 pub fn audio_file_size(app: tauri::AppHandle, id: String) -> Result<u64, String> {
+    super::ensure(&app);
     let root = root(&app)?;
     let path = audio_path(&root, &id)?;
     match rustix::fs::open(&path, OFlags::RDONLY | OFlags::NOFOLLOW, Mode::empty()) {
@@ -353,6 +355,7 @@ pub fn read_audio_chunk(
     offset: u64,
     len: u32,
 ) -> Result<tauri::ipc::Response, String> {
+    super::ensure(&app);
     Ok(tauri::ipc::Response::new(read(
         &root(&app)?,
         &id,
@@ -363,6 +366,7 @@ pub fn read_audio_chunk(
 
 #[tauri::command]
 pub fn finalize_audio_file(app: tauri::AppHandle, id: String) -> Result<u64, String> {
+    super::ensure(&app);
     finalize_at(&root(&app)?, &id)
 }
 
@@ -396,6 +400,7 @@ pub async fn recorder_whisper_stage_audio(
     id: String,
     stage_id: String,
 ) -> Result<String, String> {
+    super::ensure(&app);
     let dir = root(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         stage_whisper_at(&dir, &id, &stage_id).map(|path| path.to_string_lossy().into_owned())
@@ -458,6 +463,7 @@ fn stage_whisper_at(dir: &Path, id: &str, stage_id: &str) -> Result<PathBuf, Str
 
 #[tauri::command]
 pub fn recorder_whisper_cleanup_stages(app: tauri::AppHandle) -> Result<u64, String> {
+    super::ensure(&app);
     cleanup_whisper_stages_at(&root(&app)?)
 }
 
@@ -492,6 +498,7 @@ fn cleanup_whisper_stages_at(dir: &Path) -> Result<u64, String> {
 
 #[tauri::command]
 pub fn delete_audio_file(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    super::ensure(&app);
     let root = root(&app)?;
     let sessions = sessions_root(&app)?;
     delete_note_at(&root, &sessions, &id)?;

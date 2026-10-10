@@ -145,11 +145,10 @@ pub fn maybe_run(app: &tauri::App) {
   const i = window.__TAURI_INTERNALS__.invoke;
   const out = {{}};
   for (const [k, cmd, args] of [
-    ["list_mics", "plugin:transcription|list_microphone_devices"],
-    ["capture_state", "plugin:transcription|get_capture_state"],
+    ["recorder_status", "recorder_status"],
+    ["system_audio", "recorder_system_audio_get"],
     ["model_downloaded", "plugin:local-stt|is_model_downloaded", {{ model: "QuantizedTinyEn" }}],
     ["smoke_cmd", "exo_desktop_smoke"],
-    ["cloud_status", "cloud_transcription_status"],
     ["emit_denied", "plugin:event|emit", {{ event: "plugin:transcription:capture-lifecycle-event", payload: null }}],
   ]) {{
     try {{ out[k] = await i(cmd, args); }}
