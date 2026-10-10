@@ -164,6 +164,18 @@ async function attached() {
 }
 
 describe("voice-note recorder controller", () => {
+  test("maps linear native RMS once for every level subscriber; silence stays below the activity gate", async () => {
+    const { recorder, detach } = await attached();
+    const received: number[] = [];
+    const unsubscribe = recorder.subscribeLevel((level) => received.push(level));
+    fake.emit("level", { level: 10 ** (-25 / 20), peak: 10 ** (-10 / 20) });
+    expect(received.at(-1)).toBeCloseTo(0.623, 2);
+    fake.emit("level", { level: 0, peak: 0 });
+    expect(received.at(-1)).toBe(0);
+    unsubscribe();
+    detach();
+  });
+
   test("a signed-out recording keeps its Markdown local without starting a space sync", async () => {
     const recorder = controller({ tcw: null });
     const detach = recorder.attach();
