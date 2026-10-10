@@ -31,6 +31,8 @@ const color = (theme: ThemeName, name: string): Rgb => {
   const colorValue = value.match(/^hsl\(var\(--([\w-]+)\)\)$/)?.[1];
   if (colorValue) return color(theme, colorValue);
   if (value.startsWith("#")) return fromHex(value);
+  const hsl = value.match(/^hsl\(([^)]+)\)$/)?.[1];
+  if (hsl) return hslTriplet(hsl);
   return hslTriplet(value);
 };
 const number = (theme: ThemeName, name: string) => Number.parseFloat(themes[theme].get(`--${name}`)!);
@@ -85,6 +87,17 @@ describe("design tokens (index.css)", () => {
     const day = [...themes.Day.keys()].filter((name) => !THEME_INDEPENDENT.has(name)).sort();
     const night = [...themes.Night.keys()].sort();
     expect(night).toEqual(day);
+  });
+
+  test("red-text is a valid full colour and stays red in both themes", () => {
+    for (const theme of ["Day", "Night"] as const) {
+      const value = themes[theme].get("--red-text")!;
+      expect(value.startsWith("hsl(")).toBe(true);
+      const [red, green, blue] = color(theme, "red-text");
+      expect(red).toBeGreaterThan(green);
+      expect(red).toBeGreaterThan(blue);
+    }
+    expect(themes.Night.get("--red-text")).toBe("hsl(0 100% 70%)");
   });
 
   // Pairs below their minimum in Exo's original zinc palette, which the owner

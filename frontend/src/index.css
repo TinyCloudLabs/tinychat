@@ -87,7 +87,7 @@
     --live-foreground: 240 10% 3.9%;
     --warning: 43 96% 56%;
     --destructive: 0 62.8% 50%;
-    --red-text: 0 100% 70%;
+    --red-text: hsl(0 100% 70%);
     --destructive-foreground: 0 0% 98%;
     --border: 240 3.7% 15.9%;
     --input: 240 3.7% 15.9%;

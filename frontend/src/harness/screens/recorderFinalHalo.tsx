@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   HaloRing,
   haloDrawCount,
@@ -188,8 +188,13 @@ export const recorderFinalHaloScreen: HarnessScreen = {
   group: "recorder",
   layout: "document",
   displayTitle: false,
-  render: () => {
-    const theme = document.documentElement.classList.contains("dark") ? "night" : "day";
+  render: () => <RecorderFinalHaloView />,
+};
+
+function RecorderFinalHaloView() {
+  const [theme, setTheme] = useState<"night" | "day">(() =>
+    document.documentElement.classList.contains("dark") ? "night" : "day",
+  );
     return (
       <main
         style={{
@@ -203,6 +208,16 @@ export const recorderFinalHaloScreen: HarnessScreen = {
           fontFamily: "system-ui, sans-serif",
         }}
       >
+        <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "flex-end" }}>
+          <button
+            type="button"
+            data-halo-theme-toggle
+            onClick={() => setTheme((current) => current === "day" ? "night" : "day")}
+            style={{ minHeight: 44, padding: "8px 12px" }}
+          >
+            Toggle halo theme
+          </button>
+        </div>
         <p
           style={{
             gridColumn: "1 / -1",
@@ -219,5 +234,4 @@ export const recorderFinalHaloScreen: HarnessScreen = {
         <ThemePreview theme={theme} />
       </main>
     );
-  },
-};
+}

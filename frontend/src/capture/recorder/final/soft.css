@@ -84,7 +84,7 @@
   --glass: hsl(var(--card) / 0.7);
   --gedge: hsl(var(--border));
   --solid: hsl(var(--popover));
-  --disc: hsl(var(--foreground) / 0.12);
+  --disc: hsl(var(--card));
   --bgc: hsl(var(--background));
   --side: hsl(var(--chrome));
   --line: hsl(var(--border));

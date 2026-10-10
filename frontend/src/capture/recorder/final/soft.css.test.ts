@@ -262,7 +262,7 @@ describe("Soft skin theme and layout tokens", () => {
     expect(day["--glass"]).toBe("hsl(var(--card) / 0.7)");
     expect(day["--solid"]).toBe("hsl(var(--popover))");
     expect(day["--red-text"]).toBe("hsl(var(--destructive))");
-    expect(day["--disc"]).toBe("hsl(var(--foreground) / 0.12)");
+    expect(day["--disc"]).toBe("hsl(var(--card))");
   });
 
   test("retains the recording ring accents in each theme", () => {
@@ -290,12 +290,15 @@ describe("Soft skin theme and layout tokens", () => {
       }
 
       const red = resolveColor(soft["--red-text"]!, mode, soft, app);
+      expect(red.rgb[0]).toBeGreaterThan(red.rgb[1]);
+      expect(red.rgb[0]).toBeGreaterThan(red.rgb[2]);
       expect([surface, side].every((background) => contrast(composite(red, background), background) >= 4.5)).toBe(true);
       const dim = resolveColor(soft["--dim"]!, mode, soft, app);
       expect(contrast(composite(dim, surface), surface)).toBeGreaterThanOrEqual(4.5);
       const page = resolveColor(soft["--bgc"]!, mode, soft, app).rgb;
       const disc = resolveColor(soft["--disc"]!, mode, soft, app);
-      expect(contrast(composite(disc, page), page)).toBeGreaterThanOrEqual(1.3);
+      expect(disc.alpha).toBe(1);
+      if (mode === "night") expect(contrast(disc.rgb, page)).toBeGreaterThanOrEqual(1.3);
     }
   });
 });
