@@ -43,12 +43,14 @@ async function check(cnames: string[] | Error, txt: string[][] | Error = [[`${ap
 }
 
 describe("Phala deployment DNS gate", () => {
-  test.each([gateway, `${gateway}.`, alias, `${alias}.`])("accepts same-gateway CNAME %s with correct app-address TXT", async cname => {
+  test.each([gateway, `${gateway}.`])("accepts same-gateway CNAME %s with correct app-address TXT", async cname => {
     const result = await check([cname], [[appId, ":443"]], `${gateway}.`);
     expect(result).toEqual({ exitCode: 0, errors: [], advertised: `${gateway}.` });
   });
 
   test.each([
+    alias,
+    `${alias}.`,
     "_.dstack-pha-prod4.phala.network",
     "gateway.dstack-pha-prod4.phala.network",
     "_.dstack-pha-prod5.phala.network.attacker.example",
