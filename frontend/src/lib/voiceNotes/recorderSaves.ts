@@ -365,6 +365,8 @@ export interface PendingRun {
 let pendingRunInFlight: Promise<PendingRun> | null = null;
 let trackedSavesInFlight = 0;
 let activeAccountDid: string | null = null;
+/** Bumped whenever the active account changes, so a run can tell "not registered yet" from "signed out since". */
+let accountChanges = 0;
 const noteFailures = new Map<string, string>();
 let generalFailure: string | null = null;
 
@@ -473,6 +475,27 @@ export const pendingStore = {
     generalFailure = message;
     publishPending({ lastError: currentFailure() });
   },
+  /**
+   * Writes for a run on behalf of `did`, valid only in the account session the run began in: while nothing has
+   * changed since (`did` active, or no account registered yet), or after exactly the first registration of `did` when
+   * none was registered at the start (the saver registers the signed-in account just after mount). Any later change
+   * (another account, a sign-out, a return to the same account) ends the session: its writes are dropped (a dropped
+   * error is logged), so a late result never clears or replaces a later session's state.
+   */
+  forAccount(did: string): { refresh(lastError?: string | null): Promise<void>; reportError(message: string): void } {
+    const startedAs = activeAccountDid;
+    const changesAtStart = accountChanges;
+    const current = () => accountChanges === changesAtStart
+      ? activeAccountDid === did || activeAccountDid === null
+      : startedAs === null && accountChanges === changesAtStart + 1 && activeAccountDid === did;
+    return {
+      refresh: (lastError) => (current() ? relistPending(lastError) : Promise.resolve()),
+      reportError: (message) => {
+        if (current()) pendingStore.reportError(message);
+        else console.warn("[VoiceNotes] Dropped a pending-save error from a previous account", message);
+      },
+    };
+  },
   reportNoteFailure(id: string, message: string): void {
     noteFailures.delete(id);
     noteFailures.set(id, message);
@@ -480,6 +503,7 @@ export const pendingStore = {
   },
   setAccount(did: string | null): void {
     if (activeAccountDid !== did) {
+      accountChanges++;
       noteFailures.clear();
       generalFailure = null;
       publishPending({ accountDid: did, listing: { state: "unknown" }, lastError: null });
