@@ -4,7 +4,7 @@ import { Loader2Icon, RefreshCwIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { appPlatform } from "@/lib/platform";
-import { getDesktopWhisperQueue, type DesktopWhisperJob } from "@/lib/voiceNotes/desktop/desktopWhisper";
+import { getDesktopWhisperQueue, type DesktopWhisperJob } from "@/lib/voiceNotes/desktop/desktopWhisperQueueRegistry";
 import { useDesktopWhisperJob } from "@/lib/voiceNotes/desktop/useDesktopWhisperJob";
 import { recorderFinalEnabled } from "@/capture/recorder/final/recorderFinalFlag";
 

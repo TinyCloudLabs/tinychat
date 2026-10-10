@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { getDesktopWhisperQueue, type DesktopWhisperJob } from "./desktopWhisper";
+import { getDesktopWhisperQueue, type DesktopWhisperJob } from "./desktopWhisperQueueRegistry";
 
 const noop = () => undefined;
 

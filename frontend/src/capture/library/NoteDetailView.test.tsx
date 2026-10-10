@@ -15,7 +15,7 @@ import {
   registerDesktopWhisperQueue,
   type DesktopWhisperJob,
   type DesktopWhisperQueue,
-} from "@/lib/voiceNotes/desktop/desktopWhisper";
+} from "@/lib/voiceNotes/desktop/desktopWhisperQueueRegistry";
 import type { NoteTranscriptionState } from "@/lib/voiceNotes/voiceNoteTranscription";
 import type { LibraryItem } from "./LibraryRow";
 import { NoteDetailView, transcriptBlocks, type NoteDetailViewProps } from "./NoteDetailView";

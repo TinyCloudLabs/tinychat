@@ -7,7 +7,7 @@ import {
   registerDesktopWhisperQueue,
   type DesktopWhisperJob,
   type DesktopWhisperQueue,
-} from "@/lib/voiceNotes/desktop/desktopWhisper";
+} from "@/lib/voiceNotes/desktop/desktopWhisperQueueRegistry";
 import { DesktopWhisperStatus, DesktopWhisperStatusView, retryWhisperJob, useLogWhisperFailure, whisperJobMeta, WHISPER_JOB_COPY } from "./DesktopWhisperStatus";
 
 const job = (patch: Partial<DesktopWhisperJob>): DesktopWhisperJob =>

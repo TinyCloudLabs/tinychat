@@ -2,10 +2,11 @@ import fs from "fs";
 import { execFileSync } from "node:child_process";
 import path from "path";
 import { fileURLToPath } from "url";
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
 import { VitePWA } from "vite-plugin-pwa";
+import { resolveRecorderFinal } from "./src/capture/recorder/final/recorderFinalFlag";
 import { firstNonEmpty } from "./src/lib/buildEnv";
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
@@ -36,8 +37,30 @@ const exoBuildInfo = {
   channel: firstNonEmpty(process.env.VITE_EXO_CHANNEL),
 };
 
-export default defineConfig(({ command }) => ({
+// Modules only the Soft-skin recorder (VITE_EXO_RECORDER_FINAL) can reach. A lazy chunk made only of these is named
+// `final-*` (output.chunkFileNames/assetFileNames below), which is what the PWA precache keys on. Eager code that
+// imports one of these modules keeps it in the entry chunk, which is never renamed, so a mixed chunk is never `final-`.
+const FINAL_ONLY_MODULE = [
+  /\/src\/capture\/recorder\/final\//,
+  /\/src\/capture\/home\/desktop\//,
+  /\/src\/capture\/library\/savedNote\//,
+  /\/src\/capture\/meetingSources\//,
+  /\/src\/lib\/voiceNotes\/(?:web|desktop)\//,
+  /@franken-suite\/franken-markdown\//,
+  /\/src\/capture\/recorder\/useRecordedElapsed\./,
+  /\/src\/lib\/voiceNotes\/desktopCaptureExtras\./,
+];
+// CSS files imported only by `final-*` chunks, filled while the bundle is generated (before the service worker is built).
+const finalCss = new Set<string>();
+const isFinalOnlyModule = (id: string) => FINAL_ONLY_MODULE.some((pattern) => pattern.test(id));
+
+export default defineConfig(({ command, mode }) => {
+  // One validated value for the bundle, the precache and the tests: a typo fails the build, not a user's session.
+  const recorderFinal = resolveRecorderFinal(loadEnv(mode, rootDir, "VITE_EXO_RECORDER_FINAL"));
+  return {
   define: {
+    // Defined as "true"/"false" so Rollup folds recorderFinalEnabled() and a flag-off build drops the final-only branches.
+    "import.meta.env.VITE_EXO_RECORDER_FINAL": JSON.stringify(String(recorderFinal)),
     __EXO_BUILD_INFO__: JSON.stringify({ ...exoBuildInfo, channel: exoBuildInfo.channel ?? (command === "serve" ? "dev" : undefined) }),
   },
   // The client-side TEE verifier (@redpill-ai/verifier + @peculiar/x509) is
@@ -51,6 +74,18 @@ export default defineConfig(({ command }) => ({
       buildStart() {
         for (const script of ["build-agent-skills.mjs", "build-agent-setup.mjs"]) {
           execFileSync("node", [path.join(rootDir, "../scripts", script)], { stdio: "inherit" });
+        }
+      },
+    },
+    {
+      // Rollup names no CSS file after its chunk's prefix, so the precache learns which CSS belongs to a `final-*` chunk here.
+      name: "exo-final-css",
+      apply: "build",
+      generateBundle(_options, bundle) {
+        finalCss.clear();
+        for (const chunk of Object.values(bundle)) {
+          if (chunk.type !== "chunk" || !chunk.fileName.startsWith("assets/final-")) continue;
+          for (const css of chunk.viteMetadata?.importedCss ?? []) finalCss.add(css);
         }
       },
     },
@@ -94,11 +129,29 @@ export default defineConfig(({ command }) => ({
         // offline launch never misses a chunk), the icons and the display font. /agents/* is
         // published docs, not the app.
         globPatterns: ["**/*.{html,js,css,wasm,png,svg,ico,webmanifest,woff2}"],
-        // The desktop-only window API chunk (see build.rollupOptions): a web install can never reach it.
-        // The notes renderer's WASM (7.7 MB, lazy: first Preview) is cached at runtime below, so a
-        // first visit, and every visit with the recorder flag off, never downloads it.
-        // The web recorder engine (a lazy chunk, only fetched behind VITE_EXO_RECORDER_FINAL) stays out of the precache.
-        globIgnores: ["agents/**", "assets/tauri-window-*.js", "**/franken_markdown_bg*.wasm", "**/webEngine-*.js"],
+        // Precached: index.html, every JS/CSS chunk (lazy ones included, so an offline launch never misses a
+        // chunk), the icons and the display font. Left out of it:
+        //  - the desktop-only window API chunk (see build.rollupOptions): a web install can never reach it;
+        //  - the notes renderer's WASM (7.7 MB, lazy: first Preview), cached at runtime below, so a first
+        //    visit never downloads it, with the recorder flag on or off;
+        //  - with VITE_EXO_RECORDER_FINAL unset, every `final-*` chunk (see FINAL_ONLY_MODULE): the Soft-skin
+        //    recorder, the desktop Capture home, the saved-note page, Meeting sources, the web and desktop
+        //    engines and the Markdown renderer. Nothing a flag-off build runs can reach them, so the service
+        //    worker must not download them on install. A build with the flag on precaches them, so the
+        //    recorder opens offline. Either way a `final-*` chunk that is fetched anyway is cached at runtime.
+        // frontend/scripts/flag-off-bundle-check.ts asserts both halves against a built dist/.
+        globIgnores: [
+          "agents/**",
+          "assets/tauri-window-*.js",
+          "**/franken_markdown_bg*.wasm",
+          ...(recorderFinal ? [] : ["assets/final-*.js"]),
+        ],
+        manifestTransforms: [
+          async (entries) => ({
+            manifest: recorderFinal ? entries : entries.filter((entry) => !finalCss.has(entry.url)),
+            warnings: [],
+          }),
+        ],
         // The main chunk carries the TinyCloud SDK's inlined WASM (~7.4 MB today); Workbox skips
         // anything over its 2 MiB default, which would leave the shell unable to boot offline.
         maximumFileSizeToCacheInBytes: 24 * 1024 * 1024,
@@ -107,11 +160,20 @@ export default defineConfig(({ command }) => ({
         // ...except the static /agents docs (and /api, should one ever be same-origin). Precached files
         // still win: their route is registered first. Mirrors public/_redirects.
         navigateFallbackDenylist: [/^\/agents(?:\/|$)/, /^\/api(?:\/|$)/],
-        // The only runtime cache is the notes renderer's own WASM, same-origin and content-hashed.
+        // The runtime caches are the notes renderer's own WASM and the `final-*` chunks, same-origin and content-hashed.
         // Everything else outside the precache is not intercepted, so API and cross-origin traffic
         // (api.tinycloud.chat, the TinyCloud nodes, OpenKey, RedPill, Google, Fireflies …) always goes
         // straight to the network, never to a cache.
         runtimeCaching: [
+          {
+            urlPattern: ({ sameOrigin, url }) => sameOrigin && /\/assets\/final-[^/]+\.js$/.test(url.pathname),
+            handler: "CacheFirst",
+            options: {
+              cacheName: "exo-final-recorder-chunks",
+              cacheableResponse: { statuses: [200] },
+              expiration: { maxEntries: 40 },
+            },
+          },
           {
             urlPattern: ({ sameOrigin, url }) =>
               sameOrigin && /\/franken_markdown_bg[^/]*\.wasm$/.test(url.pathname),
@@ -154,6 +216,11 @@ export default defineConfig(({ command }) => ({
         // The Tauri window API is reached only from the desktop app's recording title (a lazy import).
         // Naming its chunk lets the web PWA precache leave it out (globIgnores below). core and event
         // are shared with code the web can load, so they get their own chunk rather than being pulled in.
+        // A lazy chunk that holds only final-only modules is named `final-*` (see FINAL_ONLY_MODULE and the precache).
+        chunkFileNames: (chunk) =>
+          !chunk.isEntry && chunk.moduleIds.length > 0 && chunk.moduleIds.every(isFinalOnlyModule)
+            ? "assets/final-[name]-[hash].js"
+            : "assets/[name]-[hash].js",
         manualChunks: (id) => {
           const tauri = /node_modules\/@tauri-apps\/api\/(\w+)\.js$/.exec(id)?.[1];
           if (tauri === "window" || tauri === "image" || tauri === "dpi") return "tauri-window";
@@ -173,4 +240,5 @@ export default defineConfig(({ command }) => ({
       },
     }),
   },
-}));
+  };
+});

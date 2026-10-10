@@ -9,6 +9,9 @@ export function resolveRecorderFinal(env: {
   return true;
 }
 
+// vite.config.ts validates the value with resolveRecorderFinal and defines it as "true" or "false", so Rollup folds this
+// comparison and drops the final-only branches from a flag-off build. A bare `resolveRecorderFinal(import.meta.env)` can't
+// be folded: it throws. Tests still toggle the flag at run time through the environment.
 export function recorderFinalEnabled(): boolean {
-  return resolveRecorderFinal(import.meta.env);
+  return import.meta.env.VITE_EXO_RECORDER_FINAL === "true";
 }

@@ -17,7 +17,7 @@ import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { captureCapabilities, captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
-import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
+import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisperQueueRegistry";
 import type { VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { whenVoiceNoteSavesIdle, type PendingRun } from "@/lib/voiceNotes/recorderSaves";
 import { advanceAccountGeneration, currentAccountGeneration } from "@/lib/voiceNotes/accountContext";

@@ -13,7 +13,7 @@ import {
   StaticRecorderProvider,
   type RecorderValue,
 } from "../../recorder/RecorderProvider";
-import { registerDesktopWhisperQueue, type DesktopWhisperJob, type DesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
+import { registerDesktopWhisperQueue, type DesktopWhisperJob, type DesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisperQueueRegistry";
 import { retryWhisperJob } from "@/capture/library/DesktopWhisperStatus";
 import { dismissNotice } from "../captureIssues";
 import { HOME_COPY } from "../homeCopy";

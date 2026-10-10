@@ -59,11 +59,12 @@ describe("serviceWorkerDecision", () => {
 describe("PWA build config", () => {
   const config = readFileSync(path.join(import.meta.dir, "../../vite.config.ts"), "utf8");
 
-  test("the worker caches only the notes renderer's WASM at runtime: API and cross-origin traffic stays network-only", () => {
+  test("the worker caches only the notes renderer's WASM and the final-* chunks at runtime: API and cross-origin traffic stays network-only", () => {
     const rules = config.match(/runtimeCaching: \[([\s\S]*?)\n {8}\],/)![1];
-    expect(rules.match(/urlPattern/g)).toHaveLength(1);
-    expect(rules).toContain("sameOrigin &&");
+    expect(rules.match(/urlPattern/g)).toHaveLength(2);
+    expect(rules.match(/sameOrigin &&/g)).toHaveLength(2);
     expect(rules).toContain("franken_markdown_bg");
+    expect(rules).toContain("assets\\/final-");
     expect(rules).toContain('handler: "CacheFirst"');
     expect(config).toContain('navigateFallback: "index.html"');
     expect(config).toContain("navigateFallbackDenylist: [/^\\/agents(?:\\/|$)/, /^\\/api(?:\\/|$)/]");
@@ -71,6 +72,11 @@ describe("PWA build config", () => {
 
   test("the 7.7 MB notes renderer WASM is not precached: it is fetched on first Preview, never at install", () => {
     expect(config).toMatch(/globIgnores: \[[^\]]*"\*\*\/franken_markdown_bg\*\.wasm"[^\]]*\]/);
+  });
+
+  test("the final-only chunks join the precache only when the build turns the recorder flag on", () => {
+    expect(config).toContain('...(recorderFinal ? [] : ["assets/final-*.js"])');
+    expect(config).toContain("recorderFinal ? entries : entries.filter((entry) => !finalCss.has(entry.url))");
   });
 
   test("an update waits for the user instead of swapping the shell under the page", () => {

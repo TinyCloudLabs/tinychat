@@ -3,12 +3,12 @@ import type {
   AudioInput, CaptureOptions, CaptureStatus, MicStateEvent, MissingAudioSpan, VoiceNoteRecording, VoiceNotesPlugin,
 } from "../nativeVoiceNotes";
 import { VOICE_NOTE_MAX_DURATION_MS, VOICE_NOTE_MIN_DURATION_LIMIT_MS } from "../nativeVoiceNotes";
-import { notifyCaptureCapabilitiesChanged, registerCaptureEngine, type CaptureCapabilities, type CaptureEngine } from "../captureEngine";
+import { notifyCaptureCapabilitiesChanged, type CaptureCapabilities, type CaptureEngine } from "../captureEngine";
 import { refreshEffectiveTranscriber } from "../transcriberPreference";
 import { registerDesktopCaptureExtras } from "../desktopCaptureExtras";
 import { createFileAudioBlobStore, type CommandBridge } from "./fileAudioBlobStore";
-import { createDesktopWhisperQueue, getDesktopWhisperQueue, loadDesktopWhisperBridge, registerDesktopWhisperQueue,
-  type DesktopWhisperBridge, type DesktopWhisperQueue } from "./desktopWhisper";
+import { createDesktopWhisperQueue, loadDesktopWhisperBridge, type DesktopWhisperBridge } from "./desktopWhisper";
+import { getDesktopWhisperQueue, registerDesktopWhisperQueue, type DesktopWhisperQueue } from "./desktopWhisperQueueRegistry";
 import { failure, memoryLocks, recordingFromSession, RECORDING_LOCK, sessionLock, type RecoveryResult, type SessionRecord,
   type WebStore, openWebStore, type WebStoreOptions } from "../web/webStore";
 
@@ -652,8 +652,7 @@ export async function installDesktopEngine(
   return engine.plugin;
 }
 
-/** Registration is the only desktop engine gate. The main entry imports this module once. */
-export function registerDesktopVoiceNotes(): void {
-  registerCaptureEngine("tauri", async () => installDesktopEngine(await tauriBridge(), undefined,
-    await loadDesktopWhisperBridge()));
+/** The Tauri shell's engine: the real bridge and the Whisper bridge. registerDesktopEngine.ts imports this lazily. */
+export async function createTauriDesktopEngine(): Promise<CaptureEngine> {
+  return installDesktopEngine(await tauriBridge(), undefined, await loadDesktopWhisperBridge());
 }
