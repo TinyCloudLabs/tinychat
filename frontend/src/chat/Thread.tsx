@@ -91,7 +91,7 @@ export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onRe
   const isEmpty = useAuiState((s) => s.thread.isEmpty);
   const viewportRef = useRef<HTMLDivElement>(null);
   const previousThreadId = useRef(threadId);
-  const pendingEmptyThreadReset = useRef(false);
+  const pendingEmptyThreadReset = useRef(true);
   const threadRuntime = useThreadRuntime();
   const applyCanvasToRuntime = useCallback((canvas: CanvasModel) => {
     threadRuntime.import(repositoryFromCanvas(canvas));
@@ -106,13 +106,13 @@ export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onRe
     if (!pendingEmptyThreadReset.current || !isEmpty) return;
     pendingEmptyThreadReset.current = false;
 
-    // assistant-ui schedules thread-switch auto-scroll on its own animation
-    // frame. Reset after that frame, but only when the switched-to thread is
-    // empty; switching between threads with messages keeps normal behavior.
+    // assistant-ui schedules initialize and thread-switch auto-scroll on its
+    // own animation frame. Reset after those frames, but only for an empty
+    // thread; switching between threads with messages keeps normal behavior.
     let secondFrame = 0;
     const firstFrame = requestAnimationFrame(() => {
       secondFrame = requestAnimationFrame(() => {
-        if (viewportRef.current) viewportRef.current.scrollTop = 0;
+        viewportRef.current?.scrollTo({ top: 0, behavior: "instant" });
       });
     });
     return () => {
