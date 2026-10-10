@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.19
+
+### Patch Changes
+
+- d0c51c3: Open the app's iOS Settings page from the voice recorder's microphone access screen.
+
 ## 0.6.0-beta.18
 
 ### Patch Changes
