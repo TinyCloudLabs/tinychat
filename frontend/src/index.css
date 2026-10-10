@@ -155,6 +155,14 @@
   body {
     overscroll-behavior: none;
   }
+  /* main.tsx measures UIKit's body size and normalizes it into this root scale.
+     Keep the 16px design below the default so rem-based hit areas stay 44pt. */
+  html[data-platform="ios"] {
+    line-height: 1.5;
+    /* UIKit body / 17 keeps the default design at 16px. Cap the rem scale at
+       2×: even at the cap, a 56px tab bar is 112px and a 64px ribbon is 128px. */
+    font-size: clamp(16px, calc(16px * var(--ios-body-scale, 1)), 32px);
+  }
   body {
     @apply bg-background text-foreground antialiased;
     caret-color: hsl(var(--primary));
@@ -178,6 +186,33 @@
   /* No long-press callout on controls. Never on transcripts or other text. */
   :where(button, [role="button"], [role="radio"], [role="tab"], nav a) {
     -webkit-touch-callout: none;
+  }
+}
+
+/* The tab-bar island is already visible during a minimized recording. Keep
+   the agent action reachable without letting its full explanation cover the
+   chat suggestions underneath. */
+@media (max-width: 639px) {
+  html[data-nav="tabbar"][data-island] [data-agent-enable-banner] > div {
+    align-items: center;
+    flex-direction: row;
+    padding: 0.5rem;
+  }
+  html[data-nav="tabbar"][data-island] [data-agent-enable-copy] {
+    display: none;
+  }
+  html[data-nav="tabbar"][data-island] [data-agent-enable-action] {
+    flex: 1;
+    min-height: 44px;
+    /* Compact minimized-ribbon action: keep its label at 16px to preserve the
+       one-row layout; the surrounding screen still follows Dynamic Type. */
+    font-size: 16px;
+  }
+  html[data-nav="tabbar"][data-island] [data-agent-enable-error] {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 

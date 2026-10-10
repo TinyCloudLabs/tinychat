@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { App as CapacitorApp } from "@capacitor/app";
 import { Capacitor } from "@capacitor/core";
 import "./index.css";
 import { App } from "./App";
@@ -10,6 +11,7 @@ import { PwaPrompts } from "./components/pwa-prompts";
 import { RootRoute } from "./landing/RootRoute";
 import { registerWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 import { appPlatform } from "./lib/platform";
+import { setIOSDynamicTypeScale } from "./lib/dynamicType";
 import { setupPwa } from "./lib/pwa";
 import { initSizeClass } from "./lib/sizeClass";
 import { initTheme } from "./lib/theme";
@@ -21,7 +23,29 @@ registerDesktopVoiceNotes();
 
 // <html data-platform> for platform-specific CSS; the size class and the theme
 // stay current from here on (index.html's inline script set both before paint).
-document.documentElement.dataset.platform = appPlatform();
+const platform = appPlatform();
+const root = document.documentElement;
+root.dataset.platform = platform;
+if (platform === "ios") {
+  // Measure UIKit's preferred body size before React mounts, including the
+  // pre-sign-in recorder. The native active event also catches text-size
+  // changes made in Control Center while the app remains foregrounded.
+  const updateIOSBodyScale = () => {
+    const bodyStyle = document.createElement("span");
+    bodyStyle.style.cssText = "position:fixed;visibility:hidden;pointer-events:none;font:-apple-system-body";
+    document.body.append(bodyStyle);
+    const bodySize = Number.parseFloat(getComputedStyle(bodyStyle).fontSize);
+    setIOSDynamicTypeScale(root, bodySize);
+    bodyStyle.remove();
+  };
+  updateIOSBodyScale();
+  document.addEventListener("visibilitychange", updateIOSBodyScale);
+  void CapacitorApp.addListener("appStateChange", ({ isActive }) => {
+    if (isActive) updateIOSBodyScale();
+  }).catch((error: unknown) => {
+    console.error("[DynamicType] Could not listen for app resume", error);
+  });
+}
 initSizeClass();
 initTheme();
 

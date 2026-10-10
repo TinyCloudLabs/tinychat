@@ -151,12 +151,12 @@ export function ModelPicker(props: {
         aria-expanded={open}
         aria-controls={sheet ? undefined : "model-picker-popup"}
         aria-label="Model"
-        title={status}
+        title={model ?? status}
         className="tap-transparent flex min-h-11 min-w-0 max-w-full shrink items-center gap-1.5 rounded-[1.375rem] border border-input py-1 pl-3 pr-2.5 text-meta text-foreground transition-colors hover:bg-surface-2 active:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-60 fine:min-h-8 fine:rounded-2xl"
       >
         {model && <ModelShield id={model} className="size-3.5 shrink-0" />}
         {/* Two lines at most, so large text wraps the name instead of hiding it. */}
-        <span className="line-clamp-2 min-w-0 max-w-[9rem] text-left leading-tight [overflow-wrap:anywhere] fine:max-w-[14rem]">
+        <span className="min-w-0 max-w-[9rem] line-clamp-2 [overflow-wrap:anywhere] text-left leading-tight fine:max-w-[14rem]">
           {model ?? status ?? "Choosing model…"}
         </span>
         <ChevronDownIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
