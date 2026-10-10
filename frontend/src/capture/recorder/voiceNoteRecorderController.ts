@@ -964,7 +964,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       }
       if (pipeline) {
         const finishSaving = pendingStore.beginManualSave();
-        const account = pendingStore.forCurrentAccount();
+        const account = pendingStore.forAccount(tcw.did);
         const generation = currentAccountGeneration();
         try {
           const native = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
@@ -988,7 +988,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         }
         return;
       }
-      const account = pendingStore.forCurrentAccount();
+      const account = pendingStore.forAccount(tcw.did);
       let run;
       try {
         run = await savePendingRecordings(tcw);

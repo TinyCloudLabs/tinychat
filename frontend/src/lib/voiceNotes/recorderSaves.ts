@@ -365,6 +365,8 @@ export interface PendingRun {
 let pendingRunInFlight: Promise<PendingRun> | null = null;
 let trackedSavesInFlight = 0;
 let activeAccountDid: string | null = null;
+/** Bumped whenever the active account changes, so a run can tell "not registered yet" from "signed out since". */
+let accountChanges = 0;
 const noteFailures = new Map<string, string>();
 let generalFailure: string | null = null;
 
@@ -474,15 +476,18 @@ export const pendingStore = {
     publishPending({ lastError: currentFailure() });
   },
   /**
-   * Writes for a run that started under the account active now. Once another account is active they are dropped
-   * (the run logs its own outcome), so a late result never clears or replaces the next account's state.
+   * Writes for a run on behalf of `did`. They land while `did` is the active account, or while no account has been
+   * registered since the run began (the saver registers the signed-in account just after mount). Once another account
+   * (or a sign-out) has taken over they are dropped (a dropped error is logged), so a late result never clears or
+   * replaces the next account's state.
    */
-  forCurrentAccount(): { refresh(lastError?: string | null): Promise<void>; reportError(message: string): void } {
-    const owner = activeAccountDid;
+  forAccount(did: string): { refresh(lastError?: string | null): Promise<void>; reportError(message: string): void } {
+    const changesAtStart = accountChanges;
+    const current = () => activeAccountDid === did || (activeAccountDid === null && accountChanges === changesAtStart);
     return {
-      refresh: (lastError) => (activeAccountDid === owner ? relistPending(lastError) : Promise.resolve()),
+      refresh: (lastError) => (current() ? relistPending(lastError) : Promise.resolve()),
       reportError: (message) => {
-        if (activeAccountDid === owner) pendingStore.reportError(message);
+        if (current()) pendingStore.reportError(message);
         else console.warn("[VoiceNotes] Dropped a pending-save error from a previous account", message);
       },
     };
@@ -494,6 +499,7 @@ export const pendingStore = {
   },
   setAccount(did: string | null): void {
     if (activeAccountDid !== did) {
+      accountChanges++;
       noteFailures.clear();
       generalFailure = null;
       publishPending({ accountDid: did, listing: { state: "unknown" }, lastError: null });

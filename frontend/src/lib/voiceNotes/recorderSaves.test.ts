@@ -304,9 +304,9 @@ describe("pendingStore", () => {
   test("A's late save result, failed or finished, never replaces or clears B's pending state", async () => {
     phone.pending = [{ ...recording("bob-note", 1), owner: "did:example:bob" }];
     saves.pendingStore.setAccount(tcw.did);
-    const forA = saves.pendingStore.forCurrentAccount();
+    const forA = saves.pendingStore.forAccount(tcw.did!);
     saves.pendingStore.setAccount("did:example:bob");
-    const forB = saves.pendingStore.forCurrentAccount();
+    const forB = saves.pendingStore.forAccount("did:example:bob");
     await saves.pendingStore.refresh(null);
     forB.reportError("Could not save notes on this phone: B's space timed out");
     forA.reportError("Could not save notes on this phone: A's space timed out");
@@ -316,6 +316,23 @@ describe("pendingStore", () => {
     await forB.refresh(null);
     expect(saves.pendingStore.snapshot().lastError).toBeNull();
     saves.pendingStore.setAccount(null);
+  });
+  test("a run that began before its account was registered still reports once that account registers, never after another", async () => {
+    phone.pending = [recording("alice-note", 1)];
+    saves.pendingStore.setAccount(null);
+    const forAlice = saves.pendingStore.forAccount(tcw.did!);
+    saves.pendingStore.setAccount(tcw.did);
+    forAlice.reportError("Could not save notes on this phone: Alice's space timed out");
+    expect(saves.pendingStore.snapshot()).toMatchObject({ accountDid: tcw.did,
+      lastError: "Could not save notes on this phone: Alice's space timed out" });
+    await forAlice.refresh(null);
+    expect(saves.pendingStore.snapshot().lastError).toBeNull();
+    saves.pendingStore.setAccount(null);
+    const forAliceAgain = saves.pendingStore.forAccount(tcw.did!);
+    saves.pendingStore.setAccount("did:example:bob");
+    saves.pendingStore.setAccount(null);
+    forAliceAgain.reportError("Alice's late failure");
+    expect(saves.pendingStore.snapshot().lastError).toBeNull();
   });
   test("a new automatic save preserves an earlier note's failure until that note succeeds", async () => {
     const failed = recording("failed-earlier", 1);

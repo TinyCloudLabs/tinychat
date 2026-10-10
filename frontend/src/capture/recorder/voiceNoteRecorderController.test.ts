@@ -1046,6 +1046,33 @@ describe("voice-note recorder controller", () => {
     detach();
   });
 
+  test("a Save now that starts before the saver registers its account still shows its result", async () => {
+    __setVoiceNotesForTests({ ...plugin,
+      getCaptureDefaults: async () => ({ status: "signed_in", accountDid: tcw.did, transitionGen: 1,
+        transcriber: "on-device", identifySpeakers: false }),
+      setCaptureDefaults: async () => ({ claimed: [] }),
+    }, { available: true });
+    const outcomes: Array<{ reject(error: Error): void }> = [];
+    const pipeline: VoiceNotePipeline = {
+      process: async () => {}, cancelAll: () => {}, resume: () => {},
+      isAccepting: () => true, quiescent: async () => true,
+      reconcileAll: () => new Promise<void>((_resolve, reject) => { outcomes.push({ reject }); }),
+    };
+    const recorder = controller({ pipeline });
+    const detach = recorder.attach();
+    await tick();
+    pendingStore.setAccount(null);
+    const saving = recorder.retryPending();
+    while (outcomes.length === 0) await tick();
+    pendingStore.setAccount(tcw.did!);
+    outcomes.shift()!.reject(new Error("space timed out"));
+    await saving;
+    expect(pendingStore.snapshot()).toMatchObject({ accountDid: tcw.did,
+      lastError: "Could not save notes on this phone: space timed out" });
+    pendingStore.setAccount(null);
+    detach();
+  });
+
   test("Save now cannot re-arm an account cancelled during the native claim", async () => {
     const base = plugin;
     __setVoiceNotesForTests({ ...base,

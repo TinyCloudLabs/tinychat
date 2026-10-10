@@ -107,7 +107,7 @@ export function PendingVoiceNotesSaver({
     pipeline.resume();
     const run = async () => {
       const finish = pendingStore.beginAutomaticSave();
-      const account = pendingStore.forCurrentAccount();
+      const account = pendingStore.forAccount(did);
       try {
         await pipeline.reconcileAll({ did, spaceId, generation: currentAccountGeneration() });
         await account.refresh(null);
