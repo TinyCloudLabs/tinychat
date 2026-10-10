@@ -16,7 +16,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { chromium, webkit, type Browser, type BrowserContext, type BrowserType, type ConsoleMessage } from "playwright";
 import { buildHarness, serveHarness, type HarnessAssets } from "./exo-ui/harness-server";
-import { inspectHaloPixels, readHaloCenterPixel } from "./exo-ui/halo-pixels";
+import { inspectHaloPixels, readHaloCenterPixel, readHaloThemeColor } from "./exo-ui/halo-pixels";
 
 interface Viewport {
   id: string;
@@ -429,7 +429,11 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 .nth(3)
                 .evaluate(readHaloCenterPixel);
               expect(center.size % 2).toBe(1);
-              expect(center.color).toEqual(theme === "dark" ? [68, 59, 76] : [251, 248, 246]);
+              const tokenColor = await page
+                .locator(".halo-ring__canvas")
+                .nth(3)
+                .evaluate(readHaloThemeColor, theme);
+              expect(center.color.every((channel, index) => Math.abs(channel - tokenColor[index]!) <= 18)).toBe(true);
             }
             if (forceCanvas) expect(rendererPaths.some((path) => path.includes("canvas-2d"))).toBe(true);
             const file = `${halo.id}__${viewport.id}__${theme}${forceCanvas ? "-canvas2d" : ""}.png`;

@@ -42,7 +42,7 @@ function useBars(
       spans.forEach((bar, index) => {
         bar.style.transform = `scaleY(${heights.current[index].toFixed(3)})`;
         bar.style.background = isPaused
-          ? "#8f8993"
+          ? "var(--dim)"
           : bar.dataset.theme === "day"
             ? "#e5483f"
             : "#ff6b62";
@@ -109,7 +109,7 @@ export function LevelBars({
             flex: "none",
             borderRadius: 2,
             background: paused
-              ? "#8f8993"
+              ? "var(--dim)"
               : theme === "night"
                 ? "#ff6b62"
                 : "#e5483f",
@@ -237,7 +237,7 @@ export function MirroredSpectrumBars({
               flex: "0 1 auto",
               borderRadius: 2,
               background: paused
-                ? "#8f8993"
+                ? "var(--dim)"
                 : theme === "night"
                   ? "#ff6b62"
                   : "#e5483f",

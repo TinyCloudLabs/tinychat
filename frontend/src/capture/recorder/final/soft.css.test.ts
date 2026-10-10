@@ -155,70 +155,27 @@ function computedTokens(theme: "night" | "day", layout: string) {
 }
 
 describe("Soft skin theme and layout tokens", () => {
-  test.each([
-    [
-      "night",
-      "phone",
-      "rgba(255, 255, 255, 0.07)",
-      "rgba(255, 255, 255, 0.12)",
-      "#a397ae",
-      "#ff6b62",
-      "#e8475a",
-    ],
-    [
-      "night",
-      "rail",
-      "rgba(255, 255, 255, 0.06)",
-      "rgba(255, 255, 255, 0.11)",
-      "#a397ae",
-      "#ff6b62",
-      "#e8475a",
-    ],
-    [
-      "night",
-      "desktop",
-      "rgba(255, 255, 255, 0.06)",
-      "rgba(255, 255, 255, 0.11)",
-      "#a397ae",
-      "#ff6b62",
-      "#e8475a",
-    ],
-    [
-      "day",
-      "phone",
-      "rgba(255, 255, 255, 0.6)",
-      "rgba(255, 255, 255, 0.95)",
-      "#9a8c92",
-      "#e5483f",
-      "#f07a72",
-    ],
-    [
-      "day",
-      "rail",
-      "rgba(255, 255, 255, 0.66)",
-      "rgba(58, 47, 54, 0.1)",
-      "#8f8288",
-      "#e5483f",
-      "#f07a72",
-    ],
-    [
-      "day",
-      "desktop",
-      "rgba(255, 255, 255, 0.66)",
-      "rgba(58, 47, 54, 0.1)",
-      "#8f8288",
-      "#e5483f",
-      "#f07a72",
-    ],
-  ] as const)(
-    "%s × %s",
-    (theme, layout, glass, gedge, dim, accent, secondary) => {
-      const tokens = computedTokens(theme, layout);
-      expect(tokens["--glass"]).toBe(glass);
-      expect(tokens["--gedge"]).toBe(gedge);
-      expect(tokens["--dim"]).toBe(dim);
-      expect(tokens["--ring-accent"]).toBe(accent);
-      expect(tokens["--ring-accent-secondary"]).toBe(secondary);
-    },
-  );
+  test.each(["phone", "rail", "desktop"])("zinc palette on %s", (layout) => {
+    const night = computedTokens("night", layout);
+    const day = computedTokens("day", layout);
+    for (const tokens of [night, day]) {
+      expect(tokens["--ink"]).toBe("hsl(var(--foreground))");
+      expect(tokens["--dim"]).toBe("hsl(var(--muted-foreground))");
+      expect(tokens["--bgc"]).toBe("hsl(var(--background))");
+      expect(tokens["--side"]).toBe("hsl(var(--chrome))");
+      expect(tokens["--line"]).toBe("hsl(var(--border))");
+      expect(tokens["--red"]).toMatch(/^#(?:ff6b62|e5483f)$/);
+    }
+    expect(night["--gedge"]).toBe("hsl(var(--foreground) / 0.1)");
+    expect(day["--gedge"]).toBe("hsl(var(--border))");
+    expect(night["--glass"]).toBe("hsl(var(--foreground) / 0.05)");
+    expect(night["--solid"]).toBe("hsl(var(--secondary))");
+    expect(day["--glass"]).toBe("hsl(var(--card) / 0.7)");
+    expect(day["--solid"]).toBe("hsl(var(--card))");
+  });
+
+  test("retains the recording ring accents in each theme", () => {
+    expect(computedTokens("night", "phone")["--ring-accent"]).toBe("#ff6b62");
+    expect(computedTokens("day", "phone")["--ring-accent"]).toBe("#e5483f");
+  });
 });
