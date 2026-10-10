@@ -17,13 +17,17 @@ enum AudioDecoder {
         let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
         guard let converter = AVAudioConverter(from: file.processingFormat, to: target) else { throw Error.converterFailed }
         let readChunkFrames: AVAudioFrameCount = 48_000 * 10 // ~10 s of source audio per read.
-        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: readChunkFrames) else {
+        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: readChunkFrames),
+              let inputBuffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: readChunkFrames) else {
             throw Error.converterFailed
         }
         let windows = WindowAccumulator(windowSize: windowSize, onWindow: onWindow)
         var reachedEndOfFile = false
+        var readError: Swift.Error?
         // One AVAudioConverterInputBlock call per source read; loop `convert` until it has drained
-        // that read (status `.inputRanDry`) before asking for the next chunk of the file.
+        // that read (status `.inputRanDry`) before asking for the next chunk of the file. The end of
+        // the file is detected from the frame count, never from a failed read: `AVAudioFile.read`
+        // throws `eofErr` at the end instead of returning zero frames.
         while !reachedEndOfFile {
             var suppliedThisRead = false
             conversionLoop: while true {
@@ -33,25 +37,25 @@ enum AudioDecoder {
                         outStatus.pointee = .noDataNow
                         return nil
                     }
-                    guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: readChunkFrames) else {
-                        outStatus.pointee = .noDataNow
-                        return nil
-                    }
-                    do {
-                        try file.read(into: inputBuffer, frameCount: readChunkFrames)
-                    } catch {
-                        outStatus.pointee = .noDataNow
-                        return nil
-                    }
-                    suppliedThisRead = true
-                    if inputBuffer.frameLength == 0 {
+                    let remaining = file.length - file.framePosition
+                    guard remaining > 0 else {
+                        suppliedThisRead = true
                         reachedEndOfFile = true
                         outStatus.pointee = .endOfStream
                         return nil
                     }
+                    do {
+                        try file.read(into: inputBuffer, frameCount: AVAudioFrameCount(min(Int64(readChunkFrames), remaining)))
+                    } catch {
+                        readError = error
+                        outStatus.pointee = .noDataNow
+                        return nil
+                    }
+                    suppliedThisRead = true
                     outStatus.pointee = .haveData
                     return inputBuffer
                 }
+                if let readError { throw readError }
                 if let error { throw error }
                 if let channel = outputBuffer.floatChannelData?[0], outputBuffer.frameLength > 0 {
                     try windows.push(UnsafeBufferPointer(start: channel, count: Int(outputBuffer.frameLength)))
@@ -61,7 +65,7 @@ enum AudioDecoder {
                 case .inputRanDry: break conversionLoop
                 case .endOfStream: reachedEndOfFile = true; break conversionLoop
                 case .error: throw Error.readFailed
-                @unknown default: break conversionLoop
+                @unknown default: throw Error.readFailed
                 }
             }
         }

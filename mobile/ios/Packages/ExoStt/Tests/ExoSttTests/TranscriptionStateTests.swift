@@ -2,6 +2,12 @@ import XCTest
 @testable import ExoStt
 
 final class TranscriptionStateTests: XCTestCase {
+    private func add(_ state: TranscriptionState, _ id: String) -> Bool {
+        guard state.reserve(id) else { return false }
+        state.publishReserved(id)
+        return true
+    }
+
     private func elapsedMs(_ body: () -> Void) -> Double {
         let startedAt = DispatchTime.now()
         body()
@@ -32,7 +38,7 @@ final class TranscriptionStateTests: XCTestCase {
 
     func testSnapshotEnqueueAndCancelReturnPromptlyWhileADecodeIsBlocked() {
         let state = TranscriptionState()
-        state.add("a"); state.add("b")
+        _ = add(state, "a"); _ = add(state, "b")
         let release = DispatchSemaphore(value: 0)
         let entered = expectation(description: "decode entered")
         let done = expectation(description: "drain finished")
@@ -47,7 +53,7 @@ final class TranscriptionStateTests: XCTestCase {
         XCTAssertEqual(snapshot[1]["state"] as? String, "queued")
         XCTAssertTrue(snapshot[1]["percent"] is NSNull)
 
-        XCTAssertLessThan(elapsedMs { state.add("c") }, 200)
+        XCTAssertLessThan(elapsedMs { _ = add(state, "c") }, 200)
         var outcome = TranscriptionState.CancelOutcome.notFound
         XCTAssertLessThan(elapsedMs { outcome = state.cancel("b") }, 200)
         XCTAssertEqual(outcome, .removedPending)
@@ -60,7 +66,7 @@ final class TranscriptionStateTests: XCTestCase {
 
     func testCancellingTheRunningNoteFlagsItInsteadOfRemovingIt() {
         let state = TranscriptionState()
-        state.add("a")
+        _ = add(state, "a")
         XCTAssertEqual(state.takeNext(), "a")
         XCTAssertFalse(state.isCancelRequested("a"))
         XCTAssertEqual(state.cancel("a"), .flaggedRunning)
@@ -73,28 +79,89 @@ final class TranscriptionStateTests: XCTestCase {
 
     func testTheRunningNoteIsNeverQueuedAgain() {
         let state = TranscriptionState()
-        XCTAssertTrue(state.add("a"))
-        XCTAssertFalse(state.add("a"))
+        XCTAssertTrue(add(state, "a"))
+        XCTAssertFalse(add(state, "a"))
         XCTAssertEqual(state.takeNext(), "a")
-        XCTAssertFalse(state.add("a")) // a reconcile scan mid-decode still sees "a" as unfinished
+        XCTAssertFalse(add(state, "a")) // a duplicate enqueue mid-decode must not touch it
+        XCTAssertFalse(state.addScanned("a", scanStartedAt: state.scanStarted())) // nor a scan that still sees it unfinished
         XCTAssertEqual(state.snapshot().count, 1)
         state.finishCurrent()
-        XCTAssertTrue(state.add("a"))
+        XCTAssertTrue(add(state, "a")) // an explicit retry after it finished is allowed
     }
 
     func testYieldingToCaptureRequeuesTheRunningNoteAtTheHead() {
         let state = TranscriptionState()
-        state.add("a"); state.add("b")
+        _ = add(state, "a"); _ = add(state, "b")
         XCTAssertEqual(state.takeNext(), "a")
         state.setProgress(50)
-        state.requeueCurrentFirst()
+        XCTAssertEqual(state.yieldCurrent(), .requeued)
         XCTAssertEqual(state.snapshot().map { $0["id"] as? String }, ["a", "b"])
         XCTAssertEqual(state.snapshot().map { $0["state"] as? String }, ["queued", "queued"])
+        state.finishCurrent() // the worker's defer after a yield must not count as a final state
+        XCTAssertTrue(state.addScanned("c", scanStartedAt: 0))
+        XCTAssertEqual(state.cancel("a"), .removedPending)
+    }
+
+    func testACancelAcceptedBeforeAYieldWinsAndTheNoteIsNotRequeued() {
+        let state = TranscriptionState()
+        _ = add(state, "a")
+        _ = state.takeNext()
+        XCTAssertEqual(state.cancel("a"), .flaggedRunning)
+        XCTAssertEqual(state.yieldCurrent(), .cancelled)
+        XCTAssertFalse(state.hasPending)
+        XCTAssertTrue(state.snapshot().isEmpty)
+    }
+
+    func testCancelAndCommitHaveExactlyOneWinner() {
+        let cancelFirst = TranscriptionState()
+        _ = add(cancelFirst, "a")
+        _ = cancelFirst.takeNext()
+        XCTAssertEqual(cancelFirst.cancel("a"), .flaggedRunning)
+        XCTAssertFalse(cancelFirst.beginCommit())
+
+        let commitFirst = TranscriptionState()
+        _ = add(commitFirst, "a")
+        _ = commitFirst.takeNext()
+        XCTAssertTrue(commitFirst.beginCommit())
+        XCTAssertEqual(commitFirst.cancel("a"), .tooLate)
+        XCTAssertFalse(commitFirst.isCancelRequested("a"))
+    }
+
+    func testAScanThatStraddlesANoteFinishingCannotAddItBack() {
+        let state = TranscriptionState()
+        _ = add(state, "a")
+        let scanStartedAt = state.scanStarted()
+        _ = state.takeNext()
+        state.finishCurrent()
+        XCTAssertFalse(state.addScanned("a", scanStartedAt: scanStartedAt))
+        XCTAssertTrue(state.addScanned("a", scanStartedAt: state.scanStarted())) // a later scan may
+    }
+
+    func testAScanThatStraddlesAModelLoadFailureCannotAddTheNoteBack() {
+        let state = TranscriptionState()
+        _ = add(state, "a")
+        let scanStartedAt = state.scanStarted()
+        XCTAssertEqual(state.removeAllPending(), ["a"])
+        XCTAssertFalse(state.addScanned("a", scanStartedAt: scanStartedAt))
+    }
+
+    func testAReservedNoteIsInvisibleToTheWorkerUntilPublished() {
+        let state = TranscriptionState()
+        XCTAssertTrue(state.reserve("a"))
+        XCTAssertFalse(state.reserve("a"))
+        XCTAssertFalse(state.addScanned("a", scanStartedAt: state.scanStarted()))
+        XCTAssertFalse(state.hasPending)
+        XCTAssertNil(state.takeNext())
+        state.publishReserved("a")
+        XCTAssertEqual(state.takeNext(), "a")
+        XCTAssertTrue(state.reserve("b"))
+        state.releaseReserved("b")
+        XCTAssertTrue(state.reserve("b"))
     }
 
     func testWaitingForModelStateIsReportedForPendingNotes() {
         let state = TranscriptionState()
-        state.add("a"); state.add("b")
+        _ = add(state, "a"); _ = add(state, "b")
         state.markAllPending(state: "waiting_for_model")
         XCTAssertEqual(state.snapshot().map { $0["state"] as? String }, ["waiting_for_model", "waiting_for_model"])
         XCTAssertEqual(state.removeAllPending(), ["a", "b"])
