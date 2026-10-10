@@ -22,6 +22,7 @@ import type {
   OpenKeyNative,
 } from "@openkey/sdk-capacitor";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { authErrorMessage, UserFacingError } from "./authErrors";
 import { nativeRenewAt, renewalLeadMs, terminalRenewalError, nativeCode } from "./openkeyNativeRenewal";
 
 // ── Gate ──────────────────────────────────────────────────────────────
@@ -182,11 +183,21 @@ function nativeErrorCode(error: unknown): string | null {
     "code" in error && typeof error.code === "string" ? error.code : null;
 }
 
-/** SDK errors may carry a refresh token, so only their code is safe to log. */
+/** Error messages may carry a token or key, so only an SDK code, or else an error's name, is logged. */
 export function logNativeOpenKeyError(operation: string, error: unknown): void {
   const code = nativeErrorCode(error);
   if (code) console.warn(`[OpenKey native] ${operation}: ${code}`);
-  else console.warn(`[OpenKey native] ${operation}: ${error instanceof Error ? error.message : "unknown error"}`);
+  else console.warn(`[OpenKey native] ${operation}: ${error instanceof Error ? error.name : "unknown error"}`);
+}
+
+/**
+ * The message for a failed sign-in or restore. The failure is logged through the
+ * redacting logger above (a code or message string, never the error object or its
+ * cause chain); a UserFacingError was already logged where it was thrown.
+ */
+export function describeAuthFailure(error: unknown): string {
+  if (!(error instanceof UserFacingError)) logNativeOpenKeyError("sign-in", error);
+  return authErrorMessage(error);
 }
 
 /** Map an OpenKey native failure to a user-facing message. */
@@ -387,10 +398,10 @@ export async function signInNative(
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("Native sign-in is not configured")) {
       logNativeOpenKeyError("sign-in", error);
-      throw error;
+      throw new UserFacingError(error.message, { cause: error });
     }
     logNativeOpenKeyError("sign-in", error);
-    throw new Error(nativeSignInErrorMessage(error), { cause: error });
+    throw new UserFacingError(nativeSignInErrorMessage(error), { cause: error });
   }
 }
 

@@ -195,7 +195,7 @@ describe.serial(`recorder-final saved note, ${engineName}`, () => {
     await typeAtEnd(page, " kept draft");
     await page.getByRole("button", { name: "Back to Capture" }).click();
     await gone(page.getByTestId("saved-note-page"));
-    await page.getByText("Voice note · Oct 6, 9:28 AM").first().click();
+    await page.locator('[data-source-id="rec-0928"]').first().click();
     await shown(field(page));
     expect(await field(page).inputValue()).toEndWith(" kept draft");
     expect(await saves(page)).toEqual([]);

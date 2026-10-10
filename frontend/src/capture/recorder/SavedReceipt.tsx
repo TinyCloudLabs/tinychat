@@ -33,6 +33,8 @@ export interface SavedReceiptProps {
   sttHint?: NoteSttState | null;
   /** Private cloud has the note now. */
   transcribing?: boolean;
+  /** Why this note was not sent for transcription (it began outside the app); the note's own Transcribe sends it. */
+  held?: string | null;
   error?: string | null;
   /** Saved, but some audio could not be written: an informational line, not an error. */
   notice?: string | null;
@@ -167,6 +169,7 @@ export function SavedReceipt(props: SavedReceiptProps) {
       }</p>}
       {saved && <p className="text-meta text-muted-foreground">Saved to your TinyCloud space</p>}
       {saved && props.transcribing && <p className="text-meta text-muted-foreground">Transcribing in private cloud…</p>}
+      {saved && props.held && <p role="status" className="text-meta text-muted-foreground" data-testid="voice-note-held">{props.held}</p>}
       {onDevice.kind === "pending" && (
         <p role="status" className="flex items-center gap-2 text-meta text-muted-foreground" data-testid="voice-note-on-device-pending">
           <Loader2Icon className="size-3.5 shrink-0 motion-safe:animate-spin" aria-hidden />

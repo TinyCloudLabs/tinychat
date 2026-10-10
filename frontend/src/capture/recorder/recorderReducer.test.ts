@@ -10,9 +10,9 @@ const recording = () => run([{ type: "START_REQUESTED" }, STARTED]);
 
 describe("recorderReducer", () => {
   test("record: idle → starting → recording, clearing the last error, notice and receipt", () => {
-    const stale: RecorderState = { ...initialRecorderState, error: "old", limitNotice: "Stopped at the 60-minute limit.", outcome: "saved" };
+    const stale: RecorderState = { ...initialRecorderState, error: "old", limitNotice: "Stopped at the 60-minute limit.", outcome: "saved", elapsedMs: 124_000, audioMs: 121_000, elapsedAt: 8_000, startedAt: 2_000 };
     const starting = recorderReducer(stale, { type: "START_REQUESTED" });
-    expect(starting).toMatchObject({ phase: "starting", error: null, limitNotice: null, outcome: null });
+    expect(starting).toMatchObject({ phase: "starting", error: null, limitNotice: null, outcome: null, elapsedMs: 0, audioMs: 0, elapsedAt: null, startedAt: null });
     expect(recorderReducer(starting, STARTED)).toMatchObject({
       phase: "recording",
       recordingId: "rec-1",

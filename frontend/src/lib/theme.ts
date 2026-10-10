@@ -5,7 +5,7 @@
 // with the same rules as this module (theme.test.ts runs both on the same
 // inputs). main.tsx calls initTheme() to keep it applied afterwards.
 import { useSyncExternalStore } from "react";
-import { SystemBars, SystemBarsStyle, type SystemBarsStyleOptions } from "@capacitor/core";
+import { registerPlugin, SystemBars, SystemBarsStyle, type SystemBarsStyleOptions } from "@capacitor/core";
 
 import { appPlatform, type AppPlatform } from "./platform";
 
@@ -69,11 +69,15 @@ function systemPrefersDark(): boolean {
 export interface SystemBarsTarget {
   platform: AppPlatform;
   setStyle: (options: SystemBarsStyleOptions) => Promise<void>;
+  setBackgroundColor?: (color: string) => Promise<void>;
 }
+
+const ThemeBars = registerPlugin<{ setBackgroundColor(options: { color: string }): Promise<void> }>("ThemeBars");
 
 const capacitorSystemBars = (): SystemBarsTarget => ({
   platform: appPlatform(),
   setStyle: (options) => SystemBars.setStyle(options),
+  setBackgroundColor: (color) => ThemeBars.setBackgroundColor({ color }),
 });
 
 /**
@@ -97,6 +101,11 @@ export function applyTheme(
     // Dark = light bar content, for a dark page.
     systemBars.setStyle({ style: theme === "dark" ? SystemBarsStyle.Dark : SystemBarsStyle.Light }).catch((error: unknown) => {
       console.warn("Could not set the system bar style", error);
+    });
+  }
+  if (systemBars.platform === "android") {
+    systemBars.setBackgroundColor?.(THEME_COLOR[theme]).catch((error: unknown) => {
+      console.warn("Could not set the system bar background", error);
     });
   }
   return theme;

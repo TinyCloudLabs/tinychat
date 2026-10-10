@@ -8,6 +8,7 @@ import { RefreshCwIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { Skeleton } from "@/components/ui/skeleton";
+import { routeSourceName, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { RouteLine, type RouteNode } from "@/capture/recorder/RouteLine";
 import { GMEET_MEETING_SOURCE } from "@/lib/connectors/gmeetNormalize";
 import type { MeetingMetadataRead } from "@/lib/connectors/meetingExplorer";
@@ -30,14 +31,18 @@ function str(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-function phoneLabel(platform: string | null): string {
-  if (platform === "ios") return "iPhone";
-  if (platform === "android") return "Android phone";
-  return "Phone";
+/** Where a voice note started; one with no recorded platform predates the desktop and web recorders, so it came from a phone. */
+function voiceNoteSource(platform: string | null): string {
+  return routeSourceName(platform === "tauri" || platform === "web" ? platform : "ios");
 }
 
-/** Who made the text, as the row records it. */
+/**
+ * Who made the text, as the row records it. A voice note's engine and provider are
+ * written when a transcription is attempted; only its transcription outcome says
+ * that text came of it.
+ */
 function processor(source: string, metadata: Record<string, unknown> | null): "private-cloud" | "assemblyai" | "whisper" | null {
+  if (source === VOICE_NOTE_SOURCE && metadata?.transcription_outcome !== "transcribed") return null;
   const provider = str(metadata?.transcript_provider);
   if (provider === PRIVATE_CLOUD) return "private-cloud";
   if (provider === "assemblyai") return "assemblyai";
@@ -66,11 +71,11 @@ export function captureRoute(source: string, metadata: Record<string, unknown> |
   const capture = metadata?.capture;
   const sourceLabel =
     source === VOICE_NOTE_SOURCE
-      ? phoneLabel(str((capture as { platform?: unknown } | null | undefined)?.platform))
+      ? voiceNoteSource(str((capture as { platform?: unknown } | null | undefined)?.platform))
       : source === UPLOAD_MEETING_SOURCE
         ? "Upload"
         : source === LOCAL_MEETING_SOURCE
-          ? "This Mac"
+          ? routeSourceName("tauri")
           : null;
   if (sourceLabel === null) {
     return { nodes: [{ label: source, kind: "source" }, SPACE], sentence: "Saved to your TinyCloud space.", privateCloud: false };
@@ -84,7 +89,7 @@ export function captureRoute(source: string, metadata: Record<string, unknown> |
   if (by === "private-cloud") {
     const speech = str(metadata?.inference_provider) === "tinfoil" ? "; speech-to-text by Tinfoil" : "";
     return {
-      nodes: [{ label: sourceLabel, kind: "source" }, { label: "Private cloud", kind: "processing" }, SPACE],
+      nodes: [{ label: sourceLabel, kind: "source" }, { label: TRANSCRIBER_NAME["private-cloud"], kind: "processing" }, SPACE],
       sentence: `${saved} ${audioStored ? "A copy was" : "It was"} transcribed by TinyCloud Private Transcription${speech}.`,
       privateCloud: true,
     };
@@ -93,7 +98,7 @@ export function captureRoute(source: string, metadata: Record<string, unknown> |
     const account = str(metadata?.assemblyai_account);
     const whose = account === "tinycloud" ? " with TinyCloud's account" : account === "own" ? " with your key" : "";
     return {
-      nodes: [{ label: sourceLabel, kind: "source" }, { label: "AssemblyAI", kind: "processing" }, SPACE],
+      nodes: [{ label: sourceLabel, kind: "source" }, { label: TRANSCRIBER_NAME.assemblyai, kind: "processing" }, SPACE],
       sentence: `${saved} ${audioStored ? "A copy was" : "It was"} transcribed by AssemblyAI${whose}.`,
       privateCloud: false,
     };

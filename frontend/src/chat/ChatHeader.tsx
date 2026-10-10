@@ -25,12 +25,12 @@ export interface ChatHeaderProps {
   verification?: ReactNode;
 }
 
-const ICON_BUTTON = "size-11 shrink-0 rounded-full text-muted-foreground hover:text-foreground fine:size-9 [&_svg]:size-5";
+const ICON_BUTTON = "size-[44px] shrink-0 rounded-full text-muted-foreground hover:text-foreground fine:size-9 [&_svg]:size-[20px]";
 
 export function ChatHeader({ onOpenChats, recorder, newChat, verification }: ChatHeaderProps) {
   const title = useAuiState((s) => s.threadListItem.title);
   return (
-    <header className="flex min-h-13 shrink-0 items-center gap-1 py-1 border-b border-border/70 bg-background px-2 medium:px-3 expanded:px-4">
+    <header className="flex min-h-[52px] shrink-0 items-center gap-1 py-1 border-b border-border/70 bg-background px-2 medium:px-3 expanded:px-4">
       {onOpenChats && (
         <Button variant="ghost" size="icon" aria-label="Chats" title="Chats" onClick={onOpenChats} className={ICON_BUTTON}>
           <PanelLeftIcon />

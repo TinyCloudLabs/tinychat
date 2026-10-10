@@ -77,12 +77,20 @@ describe("Recent", () => {
   test("rows: a mic tile, the title, time, the length and a chevron, as one link", () => {
     const html = home({ recent: { status: "ready", items: [note(1)] } });
     expect(html).toContain('data-testid="recent-item"');
-    expect(html).toContain("Voice note · Oct 9, 1:49 AM");
-    expect(html).toContain("1:05");
+    expect(html).toContain(">Voice note</b>");
+    expect(html).not.toContain("Oct 9, 1:49 AM");
+    expect(html).toContain("Today 1:49 AM · 1:05");
     expect(html).toContain('href="/chat/capture/library/row-1"');
-    expect(html).toMatch(
-      /aria-label="Voice note · Oct 9, 1:49 AM\. [^"]*1 min"/,
-    );
+    expect(html).toMatch(/aria-label="Voice note\. Today 1:49 AM · 1:05"/);
+  });
+
+  test("a note still on this phone is a row of its own with its badge", () => {
+    const onPhone = note(1, { id: "on-phone:rec-1", title: null, onPhone: true });
+    const html = home({ recent: { status: "ready", items: [onPhone, note(2)] } });
+    expect(html.match(/data-testid="recent-item"/g)).toHaveLength(2);
+    expect(html).toContain('href="/chat/capture/library/on-phone%3Arec-1"');
+    expect(html.match(/data-testid="row-badge"/g)).toHaveLength(1);
+    expect(html).toContain('aria-label="Voice note. On this phone. Today 1:49 AM · 1:05"');
   });
 
   test("shows the last five", () => {
@@ -183,7 +191,8 @@ describe("capture-issue rows", () => {
       { "rec-1": failed },
     );
     expect(html.match(/data-testid="recent-item"/g)).toHaveLength(1);
-    expect(html).toContain("Voice note · Oct 9, 1:49 AM");
+    expect(html).toContain(">Voice note</b>");
+    expect(html).toContain(`<span class="tnum">1:05</span>`); // its line is the failure, so its length moves aside
     expect(html).toContain("Couldn&#x27;t recover this recording");
   });
 
@@ -195,8 +204,8 @@ describe("capture-issue rows", () => {
       const html = recent();
       expect(html.match(/data-testid="recent-item"/g)).toHaveLength(1);
       expect(html).toContain('href="/chat/capture/library/row-1"');
-      expect(html).toContain("Voice note · Oct 9, 1:49 AM");
-      expect(html).toContain("1:05");
+      expect(html).toContain(">Voice note</b>");
+      expect(html).toContain("Today 1:49 AM · 1:05");
       expect(html).toContain("<svg"); // the normal kind tile, not the "!" one
       expect(html).not.toContain("soft-tile-bang");
       expect(html).not.toContain("data-failed");
@@ -210,7 +219,7 @@ describe("capture-issue rows", () => {
     test("the row's accessible label includes the state, and is not marked as needing attention", () => {
       const html = recent();
       expect(html).toMatch(
-        /aria-label="Voice note · Oct 9, 1:49 AM\. [^"]*\. 1 min[^"]*\. Saved — part of this recording couldn&#x27;t be written"/,
+        /aria-label="Voice note\. Today 1:49 AM · 1:05\. Saved — part of this recording couldn&#x27;t be written"/,
       );
       expect(html).not.toContain("Needs attention");
     });
@@ -376,9 +385,7 @@ describe("Library list", () => {
     expect(html).toContain('data-source-id="rec-lost"');
     expect(html).toContain('data-issue="recoveryFailed"');
     expect(html).toContain("Couldn&#x27;t recover this recording");
-    expect(html.indexOf("rec-lost")).toBeLessThan(
-      html.indexOf("Voice note · Oct 9, 1:49 AM"),
-    );
+    expect(html.indexOf("rec-lost")).toBeLessThan(html.indexOf('data-source-id="rec-1"'));
   });
 
   test("a recording that has its row is decorated, not shown twice", () => {

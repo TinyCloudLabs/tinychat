@@ -46,6 +46,7 @@ import { isSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
 import { secretsAvailable, SECRETS_UNAVAILABLE_IN_APP_MESSAGE } from "@/lib/openkeyNative";
 import type { PrivateCloudCapabilities } from "@/lib/privateCloud";
 import { PATHS } from "@/shell/routes";
+import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { FilePicker } from "./FilePicker";
 
 /** Whether an engine can take a new upload, and if not, why (one line). */
@@ -61,8 +62,8 @@ const PRIVATE_CLOUD_MAX_BYTES = 120_960_000;
 export const UPLOAD_PRIVATE_CONSENT_KEY = "exo.upload.privateCloudConsent";
 
 export const ROUTE_LABELS: Readonly<Record<UploadEngine, string>> = {
-  "private-cloud": "Private cloud",
-  assemblyai: "AssemblyAI",
+  "private-cloud": TRANSCRIBER_NAME["private-cloud"],
+  assemblyai: TRANSCRIBER_NAME.assemblyai,
 };
 
 const ROUTE_OPTIONS = [
@@ -92,7 +93,7 @@ export function fileProblem(
   const who = engine === "private-cloud" ? "Private transcription" : "TinyCloud's AssemblyAI account";
   if (privateCloudContentType(file) === null) {
     return engine === "private-cloud"
-      ? "Private transcription takes MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio. Choose AssemblyAI, or convert the file."
+      ? "Private transcription takes MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio. Choose Powerful, or convert the file."
       : "TinyCloud's AssemblyAI account takes MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio. Use your own AssemblyAI key, or convert the file.";
   }
   if (file.size > maxBytes) return `${who} takes files up to ${formatBytes(maxBytes)} (and 2 hours).`;
@@ -117,7 +118,7 @@ function stageText(job: UploadState): string {
     case "preparing":
       return "Preparing the file…";
     case "uploading":
-      return job.uploadPct === null ? `Uploading to ${engine}…` : `Uploading to ${engine}… ${job.uploadPct}%`;
+      return job.uploadPct === null ? `Uploading for ${engine} transcription…` : `Uploading for ${engine} transcription… ${job.uploadPct}%`;
     case "queued":
     case "transcribing":
       return job.detail ?? "Transcribing…";
@@ -537,7 +538,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
 
   const privateStatus: EngineStatus =
     origin === null
-      ? { state: "unavailable", reason: "Private transcription isn't set up in this version of Exo yet. Use AssemblyAI instead." }
+      ? { state: "unavailable", reason: "Private transcription isn't set up in this version of Exo yet. Use Powerful instead." }
       : caps.state === "checking"
         ? { state: "checking" }
         : caps.state === "absent"

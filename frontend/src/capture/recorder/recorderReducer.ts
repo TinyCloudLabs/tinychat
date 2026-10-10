@@ -217,7 +217,7 @@ function reduce(state: RecorderState, event: RecorderEvent): RecorderState {
   switch (event.type) {
     case "START_REQUESTED":
       if (state.phase !== "idle") return state;
-      return { ...state, phase: "starting", permissionDenied: false, error: null, limitNotice: null, outcome: null, localUpload: null, failedRecording: null, savePercent: null };
+      return { ...state, phase: "starting", permissionDenied: false, error: null, limitNotice: null, outcome: null, localUpload: null, failedRecording: null, savePercent: null, elapsedMs: 0, audioMs: 0, elapsedAt: null, startedAt: null };
     case "STARTED":
       if (state.phase !== "starting") return state;
       return {

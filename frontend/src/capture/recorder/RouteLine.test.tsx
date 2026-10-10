@@ -22,7 +22,7 @@ describe("RouteLine", () => {
   test("private cloud: through private cloud, which is a processing stop", () => {
     expect(items(renderToStaticMarkup(<RouteLine nodes={voiceNoteRoute("private-cloud")} />))).toEqual([
       ["source", "This phone"],
-      ["processing", "Private cloud"],
+      ["processing", "Private"],
       ["destination", "Your space"],
     ]);
   });

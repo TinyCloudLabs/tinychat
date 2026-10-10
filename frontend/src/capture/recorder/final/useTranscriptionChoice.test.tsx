@@ -7,13 +7,11 @@ import type { VoiceNoteTranscriptionProps } from "../transcriptionProps";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { SetTranscriberResult } from "../voiceNoteRecorderController";
 import type { ModeShell } from "./transcriptionModes";
-import { FINAL_COPY } from "./finalCopy";
+import { CHECK_AGAIN, FINAL_COPY, privateNotOffered } from "./finalCopy";
 import { localDesktopCaption, LOCAL_DESKTOP_NO_MODEL_EXPLANATION, type DesktopWhisperState } from "./desktop/useDesktopWhisper";
 import {
   DESKTOP_SIGNED_OUT_CAPTION,
-  PRIVATE_CHECK_AGAIN,
-  PRIVATE_CHECK_FAILED,
-  PRIVATE_CHECKING,
+  LOCAL_NEEDS_MODEL,
   PRIVATE_UNAVAILABLE,
   SIGNED_OUT,
   SPEAKERS_NEEDS_CONSENT,
@@ -544,7 +542,7 @@ describe("Private while its availability is checked", () => {
   test("a pending check reads as checking, not as unavailable", () => {
     const stop = privateStop("checking");
     expect(stop.available).toBe(false);
-    expect(stop.reason).toBe(PRIVATE_CHECKING);
+    expect(stop.reason).toBe(privateNotOffered("checking").reason);
     expect(stop.action).toBeUndefined();
   });
 
@@ -552,8 +550,8 @@ describe("Private while its availability is checked", () => {
     let rechecks = 0;
     const stop = privateStop("failed", () => void rechecks++);
     expect(stop.available).toBe(false);
-    expect(stop.reason).toBe(PRIVATE_CHECK_FAILED);
-    expect(stop.action?.label).toBe(PRIVATE_CHECK_AGAIN);
+    expect(stop.reason).toBe(privateNotOffered("failed").reason);
+    expect(stop.action?.label).toBe(CHECK_AGAIN);
     stop.action!.run();
     expect(rechecks).toBe(1);
   });
@@ -565,7 +563,7 @@ describe("Private while its availability is checked", () => {
   });
 
   test("choosing Private while the check is out or failed returns why and asks for nothing", async () => {
-    for (const [availability, reason] of [["checking", PRIVATE_CHECKING], ["failed", PRIVATE_CHECK_FAILED]] as const) {
+    for (const [availability, reason] of [["checking", privateNotOffered("checking").reason], ["failed", privateNotOffered("failed").reason]] as const) {
       const { api, calls } = fakeApi("on-device");
       const { result } = choice(transcription({ availability }), api);
       expect(result.select("private")).toBe(reason);
@@ -607,5 +605,34 @@ describe("Local without its on-device model", () => {
 
   test("the Mac and the web never get a model download control", () => {
     expect(localStop(ABSENT, { start: noop, error: null }, "web").action).toBeUndefined();
+  });
+});
+
+describe("useTranscriptionChoice: the knob never rests on Local without saying the model is missing", () => {
+  const NO_MODEL: OnDeviceSttStatus = { ...MODEL, engine: "none", models: [] };
+
+  test("resting on Local with the model absent shows the needs-model note", () => {
+    const { result } = choice(transcription(), fakeApi("on-device").api, NO_MODEL);
+    expect(result.mode).toBe("local");
+    expect(result.stops.find((s) => s.stop.id === "local")!.available).toBe(false);
+    expect(result.restingNote).toBe(LOCAL_NEEDS_MODEL);
+  });
+
+  test("a default that stands in for Local carries the note even though the knob is on another stop", () => {
+    const api = fakeApi("private-cloud").api;
+    api.transcriber = { id: "private-cloud", identifySpeakers: false, source: "default", localModelNeeded: true };
+    const { result } = choice(transcription(), api, NO_MODEL);
+    expect(result.mode).toBe("private");
+    expect(result.restingNote).toBe(LOCAL_NEEDS_MODEL);
+  });
+
+  test("no note when Local can run, or when another mode rests on its own choice", () => {
+    expect(choice(transcription(), fakeApi("on-device").api, MODEL).result.restingNote).toBeNull();
+    expect(choice(transcription(), fakeApi("private-cloud").api, NO_MODEL).result.restingNote).toBeNull();
+    expect(choice(transcription(), fakeApi("off").api, NO_MODEL).result.restingNote).toBeNull();
+  });
+
+  test("no note while the model's state is still unknown", () => {
+    expect(choice(transcription(), fakeApi("on-device").api, null).result.restingNote).toBeNull();
   });
 });

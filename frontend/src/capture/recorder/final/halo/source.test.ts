@@ -5,6 +5,7 @@ import {
   sourceFromLevel,
   whitenSpectrum,
 } from "./source";
+import { levelFromAmplitude } from "@/lib/voiceNotes/web/webLevels";
 
 describe("Halo level source", () => {
   test("holds activity for 450 ms and then releases", () => {
@@ -19,6 +20,16 @@ describe("Halo level source", () => {
       released = adapter.sample(time).act;
     }
     expect(released).toBeLessThan(0.03);
+  });
+
+  test("mapped native speech clears the activity gate while silence stays below it", () => {
+    const adapter = new LevelSourceAdapter(9);
+    adapter.update(levelFromAmplitude(10 ** (-30 / 20)), 0, 100);
+    expect(adapter.sample(200).act).toBeGreaterThan(0);
+
+    const silent = new LevelSourceAdapter(10);
+    silent.update(levelFromAmplitude(0), 0, 100);
+    expect(silent.sample(200).act).toBe(0);
   });
 
   test("smooths incoming level with a faster attack than release", () => {

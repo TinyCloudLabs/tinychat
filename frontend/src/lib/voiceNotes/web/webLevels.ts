@@ -23,7 +23,7 @@ export function measureLevels(samples: Float32Array): { level: number; peak: num
     if (abs > peak) peak = abs;
   }
   const rms = samples.length ? Math.sqrt(sum / samples.length) : 0;
-  return { level: levelFromAmplitude(rms), peak: levelFromAmplitude(peak) };
+  return { level: rms, peak };
 }
 
 /** Voice activity: on while the level is above ACTIVE_LEVEL, and for ACTIVE_HANG_MS after it last was. */
@@ -74,7 +74,7 @@ export function startLevelMeter(
     last = at;
     analyser.getFloatTimeDomainData(buffer);
     const { level, peak } = measureLevels(buffer);
-    onSample({ level, peak, active: activity.update(level, dtMs) });
+    onSample({ level, peak, active: activity.update(levelFromAmplitude(level), dtMs) });
   }, LEVEL_INTERVAL_MS);
   return { stop: () => env.clearInterval(handle) };
 }

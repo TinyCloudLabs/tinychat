@@ -18,7 +18,7 @@ import { initSizeClass } from "@/lib/sizeClass";
 import { applyTheme } from "@/lib/theme";
 import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { createFakeOnDeviceStt } from "@/lib/voiceNotes/fakeOnDeviceStt";
-import { __setOnDeviceSttForTests } from "@/lib/voiceNotes/onDeviceStt";
+import { __setOnDeviceSttForTests, type OnDeviceSttPlugin } from "@/lib/voiceNotes/onDeviceStt";
 import { createFakeVoiceNotes as createCaptureFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
 import type { HarnessScreen } from "./screen";
 import { captureScreens, captureSoftScreens } from "./screens/capture";
@@ -108,6 +108,17 @@ if (platform === "ios" || platform === "android") {
     });
   }
   __setVoiceNotesForTests(fake.plugin, { available: true });
+  if (params.get("screen")?.startsWith("shell-chat-ribbon-minimized-from-chat")) {
+    // The interaction opens the real recorder surface before minimising it;
+    // keep its local-model probe hermetic in the browser harness.
+    __setOnDeviceSttForTests({
+      status: async () => ({
+        models: [], pack: "small", autoDownload: false,
+        download: { policy: "wifi", state: "idle" }, engine: "none", appleSpeech: "unsupported", queue: [],
+      }),
+      addListener: async () => ({ remove: async () => {} }),
+    } as unknown as OnDeviceSttPlugin);
+  }
 }
 
 window.exoUi = {

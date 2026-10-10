@@ -6,10 +6,11 @@
 // restore with a read-only provider → verify — plus the flag/platform routing
 // and the cancel/deny messages.
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { OpenKeyNativeError } from "@openkey/sdk-capacitor";
+import { UserFacingError } from "./authErrors";
 import type {
   NativeSession,
   OpenKeyNative,
@@ -19,6 +20,7 @@ import type { ISessionStorage, PersistedSessionData } from "@tinycloud/web-sdk";
 import type { Manifest } from "@tinycloud/sdk-core";
 
 import {
+  describeAuthFailure,
   nativeOpenKeyEnabled,
   nativePermissions,
   nativeSignInErrorMessage,
@@ -600,7 +602,7 @@ describe("error message mapping", () => {
     expect(nativeSignInErrorMessage("boom")).toMatch(/failed/i);
   });
 
-  test("logs only an SDK code, and a plain error message", () => {
+  test("logs only an SDK code, and a plain error's name", () => {
     const prior = console.warn;
     const lines: string[] = [];
     console.warn = (line: string) => { lines.push(line); };
@@ -616,8 +618,30 @@ describe("error message mapping", () => {
     expect(lines).toEqual([
       "[OpenKey native] sign-in: SERVER",
       "[OpenKey native] sign-out: STORAGE",
-      "[OpenKey native] verify: verification failed",
+      "[OpenKey native] verify: Error",
     ]);
+  });
+
+  test("never logs the message of a non-native error, whatever it carries", () => {
+    const token = "rt_SYNTHETIC_TOKEN_IN_MESSAGE";
+    const lines: string[] = [];
+    const prior = console.warn;
+    console.warn = (line: string) => { lines.push(line); };
+    try {
+      logNativeOpenKeyError("sign-in", new Error(`exchange failed for refresh_token=${token}`));
+      logNativeOpenKeyError("restore", new TypeError(`Bearer ${token}`));
+      logNativeOpenKeyError("sign-in", { message: token });
+      logNativeOpenKeyError("sign-in", token);
+    } finally {
+      console.warn = prior;
+    }
+    expect(lines).toEqual([
+      "[OpenKey native] sign-in: Error",
+      "[OpenKey native] restore: TypeError",
+      "[OpenKey native] sign-in: unknown error",
+      "[OpenKey native] sign-in: unknown error",
+    ]);
+    expect(lines.join("\n")).not.toContain(token);
   });
 
   test("storage sign-out failures keep the session available for retry", () => {
@@ -718,5 +742,34 @@ describe("platform routing (source)", () => {
     expect(terminal.indexOf("await captureHandoff()")).toBeLessThan(terminal.indexOf("clearPersistedSession(storedAddress)"));
     expect(terminal.indexOf("clearPersistedSession(storedAddress)")).toBeLessThan(terminal.indexOf("await boot.revoke()"));
     expect(terminal).toContain('setError(NATIVE_STORAGE_MESSAGE)');
+  });
+});
+
+describe("describeAuthFailure redaction", () => {
+  test("logs only a code or a message string, never the error object, its cause or token fields", () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+    const error = spyOn(console, "error").mockImplementation(() => undefined);
+    const log = spyOn(console, "log").mockImplementation(() => undefined);
+    const secret = "rt_SYNTHETIC_REFRESH_TOKEN";
+    const jwk = { kty: "OKP", crv: "Ed25519", d: "SYNTHETIC_PRIVATE_D" };
+    const sdkError = Object.assign(new Error("exchange failed"), {
+      name: "OpenKeyNativeError", code: "INVALID_GRANT", rotatedRefreshToken: secret, privateJwk: jwk,
+    });
+    const wrapped = Object.assign(new Error("outer", { cause: sdkError }), { token: secret, privateJwk: jwk });
+    const plainObject = { code: "TIMEOUT", message: "slow", rotatedRefreshToken: secret, privateJwk: jwk };
+    const messages = [describeAuthFailure(sdkError), describeAuthFailure(wrapped), describeAuthFailure(plainObject),
+      describeAuthFailure(new UserFacingError("Sign-in was cancelled.", { cause: sdkError }))];
+    const calls = [...warn.mock.calls, ...error.mock.calls, ...log.mock.calls];
+    warn.mockRestore(); error.mockRestore(); log.mockRestore();
+
+    expect(calls.length).toBeGreaterThan(0);
+    for (const args of calls) {
+      for (const arg of args) expect(typeof arg).toBe("string");
+      const text = args.join(" ");
+      expect(text).not.toContain(secret);
+      expect(text).not.toContain("SYNTHETIC_PRIVATE_D");
+    }
+    expect(calls.some((args) => args.join(" ").includes("INVALID_GRANT"))).toBe(true);
+    for (const message of messages) expect(message).not.toMatch(/SYNTHETIC|exchange failed|outer|slow/);
   });
 });

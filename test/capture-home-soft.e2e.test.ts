@@ -87,7 +87,7 @@ describe("Soft Capture home interactions (phone)", () => {
   test("tapping a Recent row opens its note", async () => {
     const page = await open("capture-soft-notes");
     const row = page
-      .locator('[data-testid="capture-recent"] [data-testid="recent-item"] a')
+      .locator('[data-testid="capture-recent"] [data-testid="recent-item"] button[aria-label^="Voice note"]')
       .first();
     expect(await row.getAttribute("aria-label")).toContain("Voice note");
     await row.tap();
@@ -393,9 +393,9 @@ describe("Soft Capture home interactions (phone)", () => {
 
     test("the row still opens the note; its quiet line opens the sheet, and Close returns focus to the line", async () => {
       const page = await open("capture-soft-partial-audio");
-      const link = page.locator(`${LI} a`);
-      expect(await link.getAttribute("aria-label")).toContain("Saved — part of this recording couldn't be written");
-      expect(await link.getAttribute("aria-label")).not.toContain("Needs attention");
+      const row = page.locator(`${LI} > button[aria-label^="Voice note"]`);
+      expect(await row.getAttribute("aria-label")).toContain("Saved — part of this recording couldn't be written");
+      expect(await row.getAttribute("aria-label")).not.toContain("Needs attention");
       expect(await page.locator(NOTICE).innerText()).toBe("Saved — part of this recording couldn't be written");
 
       await page.locator(NOTICE).tap();
@@ -408,7 +408,7 @@ describe("Soft Capture home interactions (phone)", () => {
       await hasFocus(page.locator(NOTICE));
       expect(await page.locator(NOTICE).count()).toBe(1);
 
-      await link.tap();
+      await row.tap();
       await page.waitForSelector(
         '[data-testid="note-detail"], [data-testid="note-loading"], [data-testid="note-failed"], [data-testid="note-absent"]',
         { timeout: 5_000 },
@@ -433,7 +433,7 @@ describe("Soft Capture home interactions (phone)", () => {
       expect(await page.evaluate(() => window.exoUiDismiss!.calls)).toEqual(["rec-0928"]);
       expect(await page.locator(NOTICE).count()).toBe(0);
       expect(await page.locator(LI).count()).toBe(0);
-      await hasFocus(page.locator('[data-testid="capture-recent"] [data-testid="recent-item"] a').first());
+      await hasFocus(page.locator('[data-testid="capture-recent"] [data-testid="recent-item"] button[aria-label^="Voice note"]').first());
       await page.context().close();
     });
 
