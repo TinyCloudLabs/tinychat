@@ -548,7 +548,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
             if (status.state === "idle") return;
             acceptNativeOptions(status);
             send(activePickup(status));
-            if (status.source === "app_shortcut" || status.source === "quick_action" || status.source === "notification") present();
+            if (status.source && status.source !== "in_app") present();
           },
           (caught: unknown) => console.warn("[VoiceNotes] Could not ask the recorder what is running", caught),
         )
@@ -750,6 +750,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         return;
       }
       if (pipeline) {
+        const finishSaving = pendingStore.beginManualSave();
         const generation = currentAccountGeneration();
         try {
           const native = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
@@ -764,11 +765,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
             return;
           }
           pipeline.resume();
-          await withCaptureDeadline(pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId,
-            generation }), 20_000);
+          await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation });
           await pendingStore.refresh(null);
         } catch (caught) {
           pendingStore.reportError(`Could not save notes on this phone: ${messageOf(caught)}`);
+        } finally {
+          finishSaving();
         }
         return;
       }

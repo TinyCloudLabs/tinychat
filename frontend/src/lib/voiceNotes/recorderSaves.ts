@@ -44,7 +44,7 @@ const savesInFlight = new Set<string>();
 const saveIdleListeners = new Set<() => void>();
 /** A swap must not retire the service graph while a recording is writing. */
 export function voiceNoteSaveBusy(): boolean {
-  return savesInFlight.size > 0 || pendingRunInFlight !== null;
+  return savesInFlight.size > 0 || pendingRunInFlight !== null || manualSavesInFlight > 0;
 }
 
 /** Resolve after the recording and the pending-run single-flight guard settle. */
@@ -343,6 +343,7 @@ export interface PendingRun {
 }
 
 let pendingRunInFlight: Promise<PendingRun> | null = null;
+let manualSavesInFlight = 0;
 
 /**
  * Retry every recording still on the device, oldest first, one at a time. Single-flight: the
@@ -383,7 +384,7 @@ export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
     return { total: recordings.length, left, saved, lastError };
   })().finally(() => {
     pendingRunInFlight = null;
-    publishPending({ running: false });
+    publishPending({ running: manualSavesInFlight > 0 });
     publishSaveIdle();
   });
   return pendingRunInFlight;
@@ -431,6 +432,16 @@ export const pendingStore = {
   /** A retry that cannot start still needs a visible result beside Save now. */
   reportError(message: string): void {
     publishPending({ lastError: message });
+  },
+  /** The owner-aware manual retry uses the same saving state as the legacy path. */
+  beginManualSave(): () => void {
+    manualSavesInFlight++;
+    publishPending({ running: true, lastError: null });
+    return () => {
+      manualSavesInFlight--;
+      publishPending({ running: manualSavesInFlight > 0 || pendingRunInFlight !== null });
+      publishSaveIdle();
+    };
   },
 };
 

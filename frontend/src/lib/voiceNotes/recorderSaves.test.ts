@@ -102,6 +102,20 @@ afterEach(() => {
 });
 
 describe("savePendingRecordings", () => {
+  test("a manual owner-aware save keeps the shared saving and idle state until it settles", async () => {
+    const finish = saves.pendingStore.beginManualSave();
+    expect(saves.pendingStore.snapshot().running).toBe(true);
+    expect(saves.voiceNoteSaveBusy()).toBe(true);
+    let idle = false;
+    const waiting = saves.whenVoiceNoteSavesIdle().then(() => { idle = true; });
+    await Promise.resolve();
+    expect(idle).toBe(false);
+    finish();
+    await waiting;
+    expect(saves.pendingStore.snapshot().running).toBe(false);
+    expect(saves.voiceNoteSaveBusy()).toBe(false);
+  });
+
   test("single-flight: a second call while one runs gets the same run", async () => {
     let release!: () => void;
     phone.holdList = new Promise((resolve) => {
