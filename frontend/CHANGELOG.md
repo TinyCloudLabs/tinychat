@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.22
+
+### Patch Changes
+
+- f23b956: Restore recorder controls when Android microphone access is granted while the app is away.
+
 ## 0.6.0-beta.21
 
 ### Patch Changes
