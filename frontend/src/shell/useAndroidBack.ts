@@ -7,7 +7,7 @@ import { useNavigate } from "react-router-dom";
 import { App as CapacitorApp } from "@capacitor/app";
 
 import type { AppPlatform } from "../lib/platform";
-import { useSizeClass } from "../lib/sizeClass";
+import { isTextEntry, useSizeClass } from "../lib/sizeClass";
 import { decideBack } from "./backDecision";
 import { historyIndex } from "./navigation";
 import { homeDestination, homePath, type Screen } from "./routes";
@@ -30,7 +30,7 @@ export function dismissOverlay(overlay: HTMLElement): void {
   if (
     focused instanceof HTMLElement &&
     overlay.contains(focused) &&
-    focused.matches("input, textarea, [contenteditable='true']")
+    isTextEntry(focused)
   ) {
     // Android Back first dismisses the keyboard. Blurring lets one-line editors
     // commit on their normal blur path; Escape would cancel (and delete) a moment.
