@@ -733,5 +733,5 @@ The session JWK never touches WebView localStorage. Details:
   handoff after consent revokes the new grant before showing an error. If
   secure storage fails during sign-out, the app keeps the native session for
   another attempt.
-- `@openkey/sdk-capacitor` is the published `0.1.0-beta.0` npm package (beta /
-  latest dist-tags).
+- `@openkey/sdk-capacitor` is the published `0.1.0-beta.2` npm package (beta
+  dist-tag). Its `@tinycloud/web-sdk` peer is `^2.11.0 || ^3.1.0`.
