@@ -6,7 +6,7 @@ import { BrowserRouter, useLocation, useNavigate } from "react-router-dom";
 import { installDom } from "@/test/dom";
 import { SoftCaptureHome } from "../home/SoftCaptureHome";
 import { SoftHomeProvider } from "../home/softHome";
-import type { LibraryItem } from "../library/LibraryRow";
+import { LibraryRow, type LibraryItem } from "../library/LibraryRow";
 import type { InProgressRowsViewProps } from "../InProgressRows";
 import type { MomentFlow } from "./final/momentController";
 import { MomentField } from "./final/MomentField";
@@ -46,6 +46,15 @@ describe("dogfood interaction regressions", () => {
     document.body.append(host);
     let minimized = 0;
     let closed = 0;
+    let committed = 0;
+    let cancelled = 0;
+    let draft = "";
+    const flow = {
+      isOpen: () => true,
+      type: (value: string) => { draft = value; },
+      commit: () => { committed++; },
+      cancel: () => { cancelled++; },
+    } as unknown as MomentFlow;
     function BackHarness() {
       const [open, setOpen] = useState(true);
       const opener = useRef<HTMLElement>(null);
@@ -57,7 +66,9 @@ describe("dogfood interaction regressions", () => {
         role: "dialog", title: "Notes", description: "Note sheet", titleId: "notes-title", descriptionId: "notes-description",
         onCancel: () => { closed++; setOpen(false); }, returnFocus: opener, fallbackFocus: fallback,
         children: createElement("p", null, "Notes stay saved while the sheet closes"),
-      }) : createElement("div", { className: "pr-moment" }, createElement("input", { "aria-label": "Moment" })));
+      }) : createElement(MomentField, {
+        field: { time: "0:12" }, flow, onClosed: () => {},
+      }));
     }
     const root = await mounted(host, createElement(BackHarness));
     const inner = topOverlay()!;
@@ -68,7 +79,13 @@ describe("dogfood interaction regressions", () => {
     const recorder = document.querySelector<HTMLElement>('[data-testid="recording-overlay"]')!;
     const moment = recorder.querySelector("input")!;
     moment.focus();
+    Object.getOwnPropertyDescriptor(moment.constructor.prototype, "value")?.set?.call(moment, "follow up with Sam");
+    await act(async () => moment.dispatchEvent(new InputEvent("input", { bubbles: true, data: "follow up with Sam", inputType: "insertText" })));
     await act(async () => dismissOverlay(recorder));
+    expect(committed).toBe(1);
+    expect(cancelled).toBe(0);
+    expect(draft).toBe("follow up with Sam");
+    expect(document.activeElement).not.toBe(moment);
     expect(minimized).toBe(0);
     recorder.focus();
     await act(async () => dismissOverlay(recorder));
@@ -107,6 +124,58 @@ describe("dogfood interaction regressions", () => {
     });
     expect(commits).toEqual(["saved"]);
     expect(closed).toEqual(["saved"]);
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
+  test("a physical Escape still cancels the real moment field", async () => {
+    cleanupDom = installDom();
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    let committed = 0;
+    let cancelled = 0;
+    const flow = {
+      isOpen: () => true,
+      type: noop,
+      commit: () => { committed++; },
+      cancel: () => { cancelled++; },
+    } as unknown as MomentFlow;
+    await act(async () => root.render(createElement(MomentField, {
+      field: { time: "0:12" }, flow, onClosed: noop,
+    })));
+    const input = host.querySelector("input")!;
+    input.focus();
+    await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    expect(committed).toBe(0);
+    expect(cancelled).toBe(1);
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
+  test("a Recent row with a recovery issue activates issue details instead of Recent note navigation", async () => {
+    cleanupDom = installDom();
+    const host = document.createElement("div");
+    document.body.append(host);
+    let openedRecent = 0;
+    const root = await mounted(host, createElement(BrowserRouter, null,
+      createElement(SoftHomeProvider, {
+        enabled: true,
+        issues: { "rec-2": { kind: "recoveryFailed", detail: "disk unavailable" } },
+        onDismissIssue: () => true,
+      },
+        createElement(LibraryRow, {
+          item: recentNote, now, grouped: false, onRecentOpen: () => { openedRecent++; },
+        }),
+      ),
+    ));
+    const row = host.querySelector<HTMLButtonElement>(".soft-row")!;
+    expect(row.getAttribute("aria-label")).toContain("Couldn't recover this recording");
+    expect(row.getAttribute("aria-label")).toContain("Opens details");
+    expect(host.querySelector('[data-issue="recoveryFailed"]')).not.toBeNull();
+    await act(async () => row.click());
+    expect(openedRecent).toBe(0);
+    expect(row.isConnected).toBe(true);
     await act(async () => root.unmount());
     host.remove();
   });
@@ -169,6 +238,11 @@ describe("dogfood interaction regressions", () => {
       listing: false, failed: true, onRetry: () => { retries++; }, onClose: noop,
     })));
     expect(document.querySelector('[role="alert"]')?.textContent).toContain("Couldn’t load this note");
+    expect(document.activeElement).toBe(document.querySelector("[data-recent-retry]"));
+    await act(async () => document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true })));
+    expect(document.activeElement).toBe(document.querySelector("[data-recent-close]"));
+    await act(async () => document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true })));
+    expect(document.activeElement).toBe(document.querySelector("[data-recent-retry]"));
     await act(async () => (document.querySelector('[data-testid="recent-note-sheet"] button') as HTMLButtonElement).click());
     expect(retries).toBe(1);
     await act(async () => retryRoot.unmount());

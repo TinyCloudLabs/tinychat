@@ -1,3 +1,4 @@
+---
 "@tinychat/frontend": patch
 ---
 

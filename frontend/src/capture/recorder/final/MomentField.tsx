@@ -9,12 +9,13 @@ import { EnterIcon } from "./notesIcons";
 export interface MomentFieldProps {
   field: MomentFieldState;
   flow: MomentFlow;
+  onFocus?: () => void;
   /** Called once the moment is saved or cancelled; `refocus` is false when the field lost focus to something else. */
   onClosed: (result: "saved" | "cancelled", refocus: boolean) => void;
 }
 
 /** The one-line field under the timer: Enter or ↵ saves, Escape cancels, blur saves. */
-export function MomentField({ field, flow, onClosed }: MomentFieldProps) {
+export function MomentField({ field, flow, onFocus, onClosed }: MomentFieldProps) {
   const { time } = field;
   const save = (refocus: boolean) => {
     if (!flow.isOpen()) return;
@@ -28,6 +29,7 @@ export function MomentField({ field, flow, onClosed }: MomentFieldProps) {
         type="text"
         // Mounting focuses it inside the tap that opened it; the keyboard only comes up for a focus made in a gesture.
         autoFocus
+        onFocus={() => onFocus?.()}
         autoComplete="off"
         enterKeyHint="done"
         placeholder={
@@ -40,7 +42,7 @@ export function MomentField({ field, flow, onClosed }: MomentFieldProps) {
             ? NOTES_COPY.momentLabelPending
             : NOTES_COPY.momentLabel(time)
         }
-        onChange={(event) => flow.type(event.target.value)}
+        onInput={(event) => flow.type(event.currentTarget.value)}
         onKeyDown={(event) => {
           // Gboard sends keyCode 13 while composition is active to commit the
           // one-line field. IME confirmation itself is 229 and must not save.

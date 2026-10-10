@@ -27,6 +27,16 @@ export function topOverlay(doc: Document = document): HTMLElement | null {
  */
 export function dismissOverlay(overlay: HTMLElement): void {
   const focused = document.activeElement;
+  if (
+    focused instanceof HTMLElement &&
+    overlay.contains(focused) &&
+    focused.matches("input, textarea, [contenteditable='true']")
+  ) {
+    // Android Back first dismisses the keyboard. Blurring lets one-line editors
+    // commit on their normal blur path; Escape would cancel (and delete) a moment.
+    focused.blur();
+    return;
+  }
   const target = focused instanceof HTMLElement && overlay.contains(focused) ? focused : overlay;
   target.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true }));
 }

@@ -411,7 +411,9 @@ export function PhoneRecorder({
               <MomentField
                 field={momentField}
                 flow={moment}
+                onFocus={() => recorder.setMomentFieldFocused(true)}
                 onClosed={(result, refocus) => {
+                  recorder.setMomentFieldFocused(false);
                   if (result === "saved") say(NOTES_COPY.momentNoted);
                   if (refocus)
                     markButton.current?.focus({ preventScroll: true });

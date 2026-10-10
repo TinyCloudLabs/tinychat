@@ -70,10 +70,10 @@ export function LibraryRow(props: { item: LibraryItem; now: Date; grouped: boole
         durationSecs={libraryRowAsideDuration(item, lineReplaced)}
         issue={issue}
         onDetails={issue && issueIsInformational(issue) ? (opener: HTMLElement) => soft.openIssue(item.sourceId, opener) : undefined}
-        {...(props.onRecentOpen && isVoiceNote(item)
-          ? { onActivate: () => props.onRecentOpen?.(item.id) }
-          : issue && issueHasSheet(issue)
-            ? { onActivate: (row: HTMLElement) => soft.openIssue(item.sourceId, row) }
+        {...(issue && issueHasSheet(issue)
+          ? { onActivate: (row: HTMLElement) => soft.openIssue(item.sourceId, row) }
+          : props.onRecentOpen && isVoiceNote(item)
+            ? { onActivate: () => props.onRecentOpen?.(item.id) }
             : { href: notePath(item.id) })}
         selected={props.selected}
         testId={props.testId ?? (voiceNote ? "voice-note-item" : "library-item")}

@@ -299,7 +299,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
       <UploadSheet open={sheet === "upload"} onOpenChange={sheetChange("upload")} tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />
       <MeetingSheet open={sheet === "meeting"} onOpenChange={sheetChange("meeting")} bot={bot} />
       {soft && recentNoteId !== null && !openNote && (
-        <RecentNotePendingSheet listing={library.listing} failed={library.status === "failed"} onRetry={library.retry} onClose={closeRecentNote} />
+        <RecentNotePendingSheet listing={library.listing} failed={library.status === "failed"} onRetry={library.retry} onClose={closeRecentNote} suspended={recorder.sheetOpen} />
       )}
     </div>
   );
