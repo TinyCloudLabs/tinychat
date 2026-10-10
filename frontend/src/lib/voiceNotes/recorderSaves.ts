@@ -26,6 +26,7 @@ import { saveVoiceNote, type NoteSyncErrorCode, type VoiceNoteAudio, type VoiceN
 import { assertCurrent, type AccountContext } from "@/lib/voiceNotes/accountContext";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { deleteNote } from "@/lib/voiceNotes/recordingNotes";
+import { withVoiceNoteSaveDeadline } from "@/lib/spaceWriteLane";
 
 export function messageOf(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -165,7 +166,7 @@ export async function deleteDiscarded(id: string): Promise<string | null> {
 
 async function deleteDiscardedOnce(id: string): Promise<string | null> {
   try {
-    await VoiceNotes.deleteAudio({ id });
+    await withVoiceNoteSaveDeadline(`native deleteAudio id=${id}`, VoiceNotes.deleteAudio({ id }));
   } catch (caught) {
     return `Discarded, but this phone kept its copy: ${messageOf(caught)}`;
   }
@@ -268,13 +269,13 @@ export async function saveRecording(
       try {
         const patch = { audio: { state: "saved" as const, rowId: saved.data.id, at: Date.now() } };
         try {
-          await VoiceNotes.updateLedger({ id: recording.id, did: recording.owner, rev: recording.rev ?? 0, patch });
+          await withVoiceNoteSaveDeadline(`native updateLedger id=${recording.id}`, VoiceNotes.updateLedger({ id: recording.id, did: recording.owner, rev: recording.rev ?? 0, patch }));
         } catch (caught) {
           if (errorCode(caught) !== "rev_conflict") throw caught;
-          const fresh = (await VoiceNotes.listPending()).recordings.find((note) => note.id === recording.id);
+          const fresh = (await withVoiceNoteSaveDeadline(`native listPending id=${recording.id}`, VoiceNotes.listPending())).recordings.find((note) => note.id === recording.id);
           if (!fresh || isLegacyNote(fresh) || fresh.owner !== recording.owner || fresh.rev === undefined) throw caught;
           if (fresh.ledger?.audio?.state !== "saved") {
-            await VoiceNotes.updateLedger({ id: recording.id, did: recording.owner, rev: fresh.rev, patch });
+            await withVoiceNoteSaveDeadline(`native updateLedger id=${recording.id}`, VoiceNotes.updateLedger({ id: recording.id, did: recording.owner, rev: fresh.rev, patch }));
           }
         }
         savedThisSession.add(recording.id);
@@ -330,12 +331,12 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
     for (let attempt = 0; attempt < 2; attempt++) {
       check();
       try {
-        await VoiceNotes.updateLedger({ id: recording.id, did: ctx.did, rev: fresh.rev ?? 0, patch });
+        await withVoiceNoteSaveDeadline(`native updateLedger id=${recording.id}`, VoiceNotes.updateLedger({ id: recording.id, did: ctx.did, rev: fresh.rev ?? 0, patch }));
         return { kind: "saved", audio: null, cleanupError: null, noteSyncError: saved.data.noteSyncError };
       } catch (caught) {
         if (errorCode(caught) !== "rev_conflict") throw caught;
         check();
-        const current = (await VoiceNotes.listPending()).recordings.find((note) => note.id === recording.id);
+        const current = (await withVoiceNoteSaveDeadline(`native listPending id=${recording.id}`, VoiceNotes.listPending())).recordings.find((note) => note.id === recording.id);
         if (!current || current.owner !== ctx.did || isLegacyNote(current)) throw caught;
         if (current.ledger?.audio.state === "saved") return { kind: "saved", audio: null, cleanupError: null,
           noteSyncError: saved.data.noteSyncError };
@@ -385,7 +386,7 @@ export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
   pendingRunInFlight = (async () => {
     let recordings: VoiceNoteRecording[];
     try {
-      ({ recordings } = await VoiceNotes.listPending());
+      ({ recordings } = await withVoiceNoteSaveDeadline("native listPending for pending saves", VoiceNotes.listPending()));
     } catch (caught) {
       // Nothing is known about the phone: told as such, never as "nothing pending".
       const message = listingFailure(caught);
@@ -525,7 +526,7 @@ function listingFailure(caught: unknown): string {
 async function relistPending(lastError?: string | null): Promise<void> {
   if (lastError !== undefined) generalFailure = lastError;
   try {
-    const { recordings } = await VoiceNotes.listPending();
+    const { recordings } = await withVoiceNoteSaveDeadline("native listPending for pending count", VoiceNotes.listPending());
     const visible = activeAccountDid
       ? recordings.filter((recording) => !recording.owner || recording.owner === activeAccountDid)
       : recordings;

@@ -12,6 +12,8 @@ import { createVoiceNotePipeline, VoiceNoteSaveDeferred } from "./voiceNotePipel
 import { handoffBeforeCredentialClear } from "./accountHandoff";
 import { advanceAccountGeneration, currentAccountGeneration } from "./accountContext";
 import { runOnSpaceLane } from "../spaceWriteLane";
+import { setVoiceNoteSaveDeadlineForTests } from "../spaceWriteLane";
+import { pendingStore } from "./recorderSaves";
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
 import { loadNote, saveNote } from "./recordingNotes";
 import { readRecordingNoteFromSpace, syncRecordingNote, voiceNoteMarkdownKvKey } from "./voiceNoteStore";
@@ -527,6 +529,99 @@ test("cancelAll prevents queued identity SQL from reaching the space", async () 
     await occupying;
     expect(calls).toBe(0);
   } finally { release(); __setVoiceNotesForTests(original, { available: null }); }
+});
+
+test("a never-settling audio KV put reports a visible timeout and clears Saving now state", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  const account = { did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() };
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const timers = new Map<number, () => void>();
+  let timerId = 0;
+  let putStarted!: () => void;
+  const started = new Promise<void>((resolve) => { putStarted = resolve; });
+  try {
+    setVoiceNoteSaveDeadlineForTests(90_000);
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    await fake.plugin.start();
+    await fake.plugin.stop();
+    tcw.kv.put = (() => { putStarted(); return new Promise(() => undefined); }) as typeof tcw.kv.put;
+    globalThis.setTimeout = ((callback: TimerHandler) => {
+      const id = ++timerId;
+      if (typeof callback === "function") timers.set(id, callback as () => void);
+      return id as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout;
+    globalThis.clearTimeout = ((id: ReturnType<typeof setTimeout>) => { timers.delete(id as unknown as number); }) as typeof clearTimeout;
+    const pipeline = createVoiceNotePipeline(tcw);
+    const reconcile = pipeline.reconcileAll(account);
+    await started;
+    expect(pendingStore.snapshot().running).toBe(true);
+    expect(timers.size).toBe(1);
+    [...timers.values()][0]!();
+    await reconcile;
+    expect(pendingStore.snapshot().running).toBe(false);
+    expect(pendingStore.snapshot().lastError).toContain("TinyCloud didn't respond while saving this note");
+    // The disabled={saving} condition is now false, so Save now is enabled again.
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+    setVoiceNoteSaveDeadlineForTests(90_000);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+test("a late KV result after timeout cannot resume the failed save or hold the lane", async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const timers = new Map<number, () => void>();
+  let timerId = 0;
+  let resolveLate!: (value: { ok: true }) => void;
+  let continuationRuns = 0;
+  try {
+    globalThis.setTimeout = ((callback: TimerHandler) => {
+      const id = ++timerId;
+      if (typeof callback === "function") timers.set(id, callback as () => void);
+      return id as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout;
+    globalThis.clearTimeout = ((id: ReturnType<typeof setTimeout>) => { timers.delete(id as unknown as number); }) as typeof clearTimeout;
+    setVoiceNoteSaveDeadlineForTests(90_000);
+    const timedOut = runOnSpaceLane(() => new Promise<{ ok: true }>((resolve) => { resolveLate = resolve; }), "KV put test/late-part")
+      .then(() => { continuationRuns++; });
+    await Promise.resolve();
+    expect(timers.size).toBe(1);
+    [...timers.values()][0]!();
+    await expect(timedOut).rejects.toThrow("TinyCloud didn't respond while saving this note");
+    await expect(runOnSpaceLane(async () => "next save", "KV put test/next-part")).resolves.toBe("next save");
+    resolveLate({ ok: true });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(continuationRuns).toBe(0);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+    setVoiceNoteSaveDeadlineForTests(90_000);
+  }
+});
+
+test("reconciling an already-saved note does not set the user-visible running state", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    const { id } = await fake.plugin.start();
+    await fake.plugin.stop();
+    const note = (await fake.plugin.listPending()).recordings.find((recording) => recording.id === id)!;
+    await fake.plugin.updateLedger({ id, did: tcw.did, rev: note.rev ?? 0,
+      patch: { audio: { state: "saved", rowId: `vn-${id}`, at: Date.now() } } });
+    const pipeline = createVoiceNotePipeline(tcw);
+    await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
+    expect(pendingStore.snapshot().running).toBe(false);
+  } finally { __setVoiceNotesForTests(original, { available: null }); }
 });
 
 test("a stale checkpoint prevents queued create and archive sweep SQL", async () => {

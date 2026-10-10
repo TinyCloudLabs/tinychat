@@ -963,7 +963,6 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         return;
       }
       if (pipeline) {
-        const finishSaving = pendingStore.beginManualSave();
         const account = pendingStore.forAccount(tcw.did);
         const generation = currentAccountGeneration();
         try {
@@ -983,8 +982,6 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           await account.refresh(null);
         } catch (caught) {
           account.reportError(`Could not save notes on this phone: ${messageOf(caught)}`);
-        } finally {
-          finishSaving();
         }
         return;
       }

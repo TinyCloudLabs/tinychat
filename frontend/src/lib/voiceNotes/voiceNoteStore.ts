@@ -119,7 +119,7 @@ export function syncRecordingNote(tcw: TinyCloudWeb, id: string,
       const adopted = theirs !== null && (mine === null || Date.parse(theirs) > Date.parse(mine))
         ? (await adoptNote({ ...note, savedEditAt: theirs })).savedEditAt : mine;
       const body = noteMarkdown({ ...note, savedEditAt: adopted });
-      const put = await runOnSpaceLane(() => { checkpoint(); return tcw.kv.put(key, body, { contentType: "text/markdown" }); });
+      const put = await runOnSpaceLane(() => { checkpoint(); return tcw.kv.put(key, body, { contentType: "text/markdown" }); }, `KV put ${key}`);
       if (!put.ok) throw new Error(`Could not sync recording note: ${put.error.message}`);
       checkpoint();
       await patchVoiceNoteMarkdown(tcw, id, key, note.editedAt, checkpoint);
@@ -139,7 +139,8 @@ export function syncRecordingNote(tcw: TinyCloudWeb, id: string,
 }
 
 export async function readRecordingNoteFromSpace(tcw: TinyCloudWeb, id: string): Promise<RecordingNote | null> {
-  const result = await tcw.kv.get(voiceNoteMarkdownKvKey(id));
+  const key = voiceNoteMarkdownKvKey(id);
+  const result = await runOnSpaceLane(() => tcw.kv.get(key), `KV get ${key}`);
   if (!result.ok) {
     if (/NOT_FOUND|404/i.test(`${result.error.code ?? ""} ${result.error.message}`)) return null;
     throw new Error(`Could not load recording note: ${result.error.message}`);
@@ -179,7 +180,7 @@ export interface StoreAudioOptions {
   onProgress?: (storedBytes: number, totalBytes: number) => void;
   /** Injected in tests. */
   retryDelaysMs?: readonly number[];
-  schedule?: <T>(call: () => Promise<T>) => Promise<T>;
+  schedule?: <T>(call: () => Promise<T>, operation?: string) => Promise<T>;
   checkpoint?: () => void;
 }
 
@@ -329,13 +330,18 @@ export async function saveVoiceNote(
     opts.checkpoint?.();
     const row = await createVoiceNoteRow(tcw, recording, voiceNoteTitle(recording.startedAt), opts.checkpoint);
     opts.checkpoint?.();
-    const empty = await runOnSpaceLane(() => { opts.checkpoint?.(); return tcw.kv.put(transcriptKvKey(VOICE_NOTE_SOURCE, recording.id), "[]",
-      { ifNoneMatch: "*", contentType: "application/json" }); });
+    // A timed-out KV request may still finish remotely. The indexed row uses a
+    // deterministic id with ON CONFLICT DO NOTHING; parts use deterministic
+    // per-note keys and the manifest is written last. A retry therefore adopts
+    // complete existing parts and cannot publish a partial file as complete.
+    const emptyKey = transcriptKvKey(VOICE_NOTE_SOURCE, recording.id);
+    const empty = await runOnSpaceLane(() => { opts.checkpoint?.(); return tcw.kv.put(emptyKey, "[]",
+      { ifNoneMatch: "*", contentType: "application/json" }); }, `KV put ${emptyKey}`);
     if (!empty.ok && !/PRECONDITION|412/i.test(`${empty.error.code} ${empty.error.message}`))
       return { ok: false, error: { code: empty.error.code ?? "STORE_ERROR", message: empty.error.message } };
     opts.checkpoint?.();
-    const audio = await putVoiceNoteAudio(tcw, recording.id, source, { ...opts, schedule: (job) =>
-      (opts.schedule ?? runOnSpaceLane)(() => { opts.checkpoint?.(); return job(); }) });
+    const audio = await putVoiceNoteAudio(tcw, recording.id, source, { ...opts, schedule: (job, operation) =>
+      (opts.schedule ?? ((call, label) => runOnSpaceLane(call, label)))(() => { opts.checkpoint?.(); return job(); }, operation) });
     if (!audio.ok) return audio;
     const base = voiceNoteAudioKvKey(recording.id);
     opts.checkpoint?.();
@@ -525,7 +531,8 @@ async function readStoredAudio(tcw: TinyCloudWeb, sourceId: string, opts: LoadAu
 
 /** A note saved before TC-517: its whole audio as one JSON value at the base key. */
 async function readLegacyAudio(tcw: TinyCloudWeb, sourceId: string): Promise<StoreResult<VoiceNoteAudio>> {
-  const res = await tcw.kv.get(voiceNoteAudioKvKey(sourceId));
+  const key = voiceNoteAudioKvKey(sourceId);
+  const res = await runOnSpaceLane(() => tcw.kv.get(key), `KV get ${key}`);
   if (!res.ok) {
     return { ok: false, error: { code: res.error.code ?? "STORE_ERROR", message: `loadVoiceNoteAudio: ${res.error.message}` } };
   }
