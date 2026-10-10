@@ -532,6 +532,12 @@ export const recorderFinalPhoneInteractiveScreens: HarnessScreen[] = [
     failing: false,
     modelUnavailable: true,
   }),
+  screen("model-unavailable-first-run", {
+    consented: false,
+    transcriber: "off",
+    failing: false,
+    modelUnavailable: true,
+  }),
   screen("permission-denied", {
     consented: true,
     transcriber: "private-cloud",

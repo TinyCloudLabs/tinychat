@@ -71,6 +71,7 @@ async function open(
     | "failing"
     | "native"
     | "model-unavailable"
+    | "model-unavailable-first-run"
     | "permission-denied",
   options: { clock?: boolean; theme?: "light" | "dark" } = {},
 ): Promise<Opened> {
@@ -462,6 +463,29 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     expect(
       await page.evaluate(() => window.exoRecorder?.downloadCalls?.length),
     ).toBe(1);
+
+    await page.evaluate(() => {
+      (window as unknown as Harness).exoRecorder.transcriberResult =
+        "unavailable";
+    });
+    await slider(page).press("ArrowRight");
+    await shown(page.getByText("Private isn't available right now"));
+    expect(await toast.textContent()).toContain(
+      "Private isn't available right now",
+    );
+    await focused(slider(page));
+    await page.context().close();
+  });
+
+  test("Use Private from an unavailable-mode toast returns focus after consent is dismissed", async () => {
+    const { page } = await open("model-unavailable-first-run");
+    await page.locator('.pr-stop[data-stop="local"]').click();
+    const toast = page.locator(".pr-toast");
+    await toast.getByRole("button", { name: "Use Private" }).click();
+    const consent = page.getByRole("dialog", { name: "Use private cloud?" });
+    await shown(consent);
+    await consent.getByRole("button", { name: "Not now" }).click();
+    await gone(consent);
     await focused(slider(page));
     await page.context().close();
   });

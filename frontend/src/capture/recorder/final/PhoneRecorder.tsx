@@ -141,17 +141,35 @@ export function PhoneRecorder({
   const toastRemaining = useRef(TOAST_MS);
   const toastPauseReasons = useRef(new Set<"pointer" | "focus">());
   const toastActionUsed = useRef(false);
+  const modelProgressToastKey = useRef<number | null>(null);
   const [modelDownloadRequested, setModelDownloadRequested] = useState(false);
+  const clearModelProgressToast = (key?: number) => {
+    if (
+      modelProgressToastKey.current === null ||
+      (key !== undefined && modelProgressToastKey.current !== key)
+    )
+      return;
+    modelProgressToastKey.current = null;
+    setModelDownloadRequested(false);
+  };
   const showToast = (
     message: string,
     actions: Array<{ label: string; run: () => void }> = [],
   ) => {
+    clearModelProgressToast();
     const active = document.activeElement;
     if (active instanceof HTMLElement && active !== document.body)
       toastReturnFocus.current = active;
     toastActionUsed.current = false;
     toastPauseReasons.current.clear();
-    setToast({ message, key: ++toastKey.current, actions });
+    const key = ++toastKey.current;
+    setToast({ message, key, actions });
+    return key;
+  };
+  const showModelProgressToast = () => {
+    const key = showToast("Checking Wi-Fi before downloading the model…");
+    modelProgressToastKey.current = key;
+    setModelDownloadRequested(true);
   };
   const choiceForToast = useRef<{
     stops: ReturnType<typeof useTranscriptionChoice>["stops"];
@@ -174,8 +192,7 @@ export function PhoneRecorder({
             ? "Get model"
             : rejected.action.label,
         run: () => {
-          setModelDownloadRequested(true);
-          showToast("Checking Wi-Fi before downloading the model…");
+          showModelProgressToast();
           rejected.action!.run();
         },
       });
@@ -198,6 +215,9 @@ export function PhoneRecorder({
       actions.push({
         label: "Use Private",
         run: () => {
+          consentOpener.current = toastReturnFocus.current?.isConnected
+            ? toastReturnFocus.current
+            : scale.current;
           choose("private");
         },
       });
@@ -288,10 +308,11 @@ export function PhoneRecorder({
       return;
     toastRemaining.current = TOAST_MS;
     toastStartedAt.current = performance.now();
-    toastTimer.current = setTimeout(
-      () => setToast(null),
-      toastRemaining.current,
-    );
+    const key = toast.key;
+    toastTimer.current = setTimeout(() => {
+      clearModelProgressToast(key);
+      setToast((current) => (current?.key === key ? null : current));
+    }, toastRemaining.current);
     return () => {
       if (toastTimer.current) clearTimeout(toastTimer.current);
       toastTimer.current = null;
@@ -300,35 +321,40 @@ export function PhoneRecorder({
 
   useEffect(() => {
     if (!modelDownloadRequested) return;
+    const progressKey = modelProgressToastKey.current;
+    if (progressKey === null) {
+      setModelDownloadRequested(false);
+      return;
+    }
+    if (!toast || toast.key !== progressKey) {
+      clearModelProgressToast(progressKey);
+      return;
+    }
     const local = choice.stops.find(({ stop }) => stop.id === "local");
     if (local?.available) {
+      modelProgressToastKey.current = null;
       setModelDownloadRequested(false);
       setToast((current) =>
-        current
-          ? {
-              ...current,
-              message: "The on-device model is ready.",
-              key: ++toastKey.current,
-            }
+        current?.key === progressKey
+          ? { ...current, message: "The on-device model is ready." }
           : current,
       );
       return;
     }
-    const message =
+    const next =
       local?.reason ?? "Checking Wi-Fi before downloading the model…";
-    const usefulState =
-      /waiting|downloading|could not start|couldn't download|paused/i.test(
-        message,
-      );
-    const next = usefulState
-      ? message
-      : "Checking Wi-Fi before downloading the model…";
     setToast((current) =>
-      current && current.message !== next
-        ? { ...current, message: next, key: ++toastKey.current }
+      current?.key === progressKey && current.message !== next
+        ? { ...current, message: next }
         : current,
     );
-  }, [choice.stops, modelDownloadRequested]);
+  }, [
+    choice.stops,
+    modelDownloadRequested,
+    toast?.key,
+    onDevice.model,
+    onDevice.download,
+  ]);
 
   const pauseToast = (reason: "pointer" | "focus") => {
     if (
@@ -355,14 +381,16 @@ export function PhoneRecorder({
       return;
     if (!toast || toast.actions.length > 0) return;
     toastStartedAt.current = performance.now();
-    toastTimer.current = setTimeout(
-      () => setToast(null),
-      toastRemaining.current,
-    );
+    const key = toast.key;
+    toastTimer.current = setTimeout(() => {
+      clearModelProgressToast(key);
+      setToast((current) => (current?.key === key ? null : current));
+    }, toastRemaining.current);
   };
   const runToastAction = (run: () => void) => {
     if (toastActionUsed.current) return;
     toastActionUsed.current = true;
+    clearModelProgressToast(toast?.key);
     setToast(null);
     run();
     requestAnimationFrame(() => {
@@ -374,6 +402,7 @@ export function PhoneRecorder({
     });
   };
   const dismissToast = () => {
+    clearModelProgressToast(toast?.key);
     setToast(null);
     requestAnimationFrame(() =>
       (toastReturnFocus.current?.isConnected
