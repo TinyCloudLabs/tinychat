@@ -1212,9 +1212,27 @@ public final class CaptureEngine {
                 "transitionGen": info?.transitionGen ?? defaults().transitionGen]
     }
 
-    public func listInputs() throws -> [String: Any] { try inputRouter.list() }
+    public func listInputs() throws -> [String: Any] {
+        #if DEBUG && targetEnvironment(simulator)
+        // The synthetic source is the only input, so the menu checks the one actually in use.
+        let mode = try simulatorInputMode()
+        if mode != .host {
+            let identity = SimulatorSilentInput.identity(for: mode)
+            return ["inputs": [["id": identity.id, "name": identity.name, "kind": "other"]],
+                    "selectedId": NSNull(), "activeId": identity.id]
+        }
+        #endif
+        return try inputRouter.list()
+    }
 
     public func selectInput(_ id: String?) throws {
+        #if DEBUG && targetEnvironment(simulator)
+        let mode = try simulatorInputMode()
+        if mode != .host {
+            guard id == nil || id == SimulatorSilentInput.identity(for: mode).id else { throw CaptureError.invalidArgument }
+            return
+        }
+        #endif
         let selected = inputRouter.selectedID
         try inputRouter.select(id)
         let active = currentInput?["id"] as? String

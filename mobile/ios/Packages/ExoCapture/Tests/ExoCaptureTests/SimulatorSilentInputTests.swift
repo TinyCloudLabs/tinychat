@@ -229,6 +229,32 @@ final class SimulatorSilentInputTests: XCTestCase {
         XCTAssertFalse(result.error is AcquisitionAttempted)
     }
 
+    @MainActor func testInputMenuListsAndChecksTheSyntheticInputInUse() throws {
+        let cases: [(environment: [String: String], id: String, name: String)] = [
+            ([:], SimulatorSilentInput.inputID, SimulatorSilentInput.inputName),
+            (["EXO_SIM_AUDIO_INPUT": "silence"], SimulatorSilentInput.inputID, SimulatorSilentInput.inputName),
+            (["EXO_SIM_AUDIO_INPUT": "file:speech"], "exo-sim-file-speech", "Simulator file: speech (debug)"),
+            (["EXO_SIM_AUDIO_INPUT": "file:sweep"], "exo-sim-file-sweep", "Simulator file: sweep (debug)"),
+        ]
+        for testCase in cases {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("exo-sim-menu-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let engine = try CaptureEngine(testRoot: root)
+            engine.debugInputEnvironment = testCase.environment
+            let list = try engine.listInputs()
+            let inputs = try XCTUnwrap(list["inputs"] as? [[String: Any]])
+            XCTAssertEqual(inputs.count, 1)
+            XCTAssertEqual(inputs.first?["id"] as? String, testCase.id)
+            XCTAssertEqual(inputs.first?["name"] as? String, testCase.name)
+            XCTAssertEqual(list["activeId"] as? String, testCase.id)
+            XCTAssertNoThrow(try engine.selectInput(testCase.id))
+            XCTAssertNoThrow(try engine.selectInput(nil))
+            XCTAssertThrowsError(try engine.selectInput("some-real-mic-uid"))
+            let other = testCase.id == SimulatorSilentInput.inputID ? "exo-sim-file-speech" : SimulatorSilentInput.inputID
+            XCTAssertThrowsError(try engine.selectInput(other))
+        }
+    }
+
     @MainActor func testHostModeAcquiresHardwareSession() throws {
         let result = try startCountingAcquisition(environment: ["EXO_SIM_AUDIO_INPUT": "host"])
         XCTAssertEqual(result.acquisitions, 1)
