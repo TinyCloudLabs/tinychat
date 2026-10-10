@@ -476,14 +476,18 @@ export const pendingStore = {
     publishPending({ lastError: currentFailure() });
   },
   /**
-   * Writes for a run on behalf of `did`. They land while `did` is the active account, or while no account has been
-   * registered since the run began (the saver registers the signed-in account just after mount). Once another account
-   * (or a sign-out) has taken over they are dropped (a dropped error is logged), so a late result never clears or
-   * replaces the next account's state.
+   * Writes for a run on behalf of `did`, valid only in the account session the run began in: while nothing has
+   * changed since (`did` active, or no account registered yet), or after exactly the first registration of `did` when
+   * none was registered at the start (the saver registers the signed-in account just after mount). Any later change
+   * (another account, a sign-out, a return to the same account) ends the session: its writes are dropped (a dropped
+   * error is logged), so a late result never clears or replaces a later session's state.
    */
   forAccount(did: string): { refresh(lastError?: string | null): Promise<void>; reportError(message: string): void } {
+    const startedAs = activeAccountDid;
     const changesAtStart = accountChanges;
-    const current = () => activeAccountDid === did || (activeAccountDid === null && accountChanges === changesAtStart);
+    const current = () => accountChanges === changesAtStart
+      ? activeAccountDid === did || activeAccountDid === null
+      : startedAs === null && accountChanges === changesAtStart + 1 && activeAccountDid === did;
     return {
       refresh: (lastError) => (current() ? relistPending(lastError) : Promise.resolve()),
       reportError: (message) => {

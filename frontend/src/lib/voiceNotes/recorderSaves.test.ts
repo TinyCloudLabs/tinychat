@@ -334,6 +334,21 @@ describe("pendingStore", () => {
     forAliceAgain.reportError("Alice's late failure");
     expect(saves.pendingStore.snapshot().lastError).toBeNull();
   });
+  test("a run from an earlier session of the same account never writes into the next one (A → null → A, A → B → A)", async () => {
+    phone.pending = [recording("alice-note", 1)];
+    for (const via of [null, "did:example:bob"]) {
+      saves.pendingStore.setAccount(tcw.did);
+      const earlier = saves.pendingStore.forAccount(tcw.did!);
+      saves.pendingStore.setAccount(via);
+      saves.pendingStore.setAccount(tcw.did);
+      const later = saves.pendingStore.forAccount(tcw.did!);
+      later.reportError("This session's failure");
+      earlier.reportError("The earlier session's failure");
+      await earlier.refresh(null);
+      expect(saves.pendingStore.snapshot()).toMatchObject({ accountDid: tcw.did, lastError: "This session's failure" });
+      saves.pendingStore.setAccount(null);
+    }
+  });
   test("a new automatic save preserves an earlier note's failure until that note succeeds", async () => {
     const failed = recording("failed-earlier", 1);
     const newer = recording("newer-save", 2);
