@@ -254,7 +254,7 @@ export function TranscriptionRouteControl(props: {
               Check again
             </Button>
           )}
-          {route === "on-device" && primaryModel && primaryModel.state !== "ready" && primaryModel.state !== "downloading" && primaryModel.state !== "queued" && (
+          {route === "on-device" && primaryModel && primaryModel.state !== "ready" && primaryModel.state !== "checking" && primaryModel.state !== "downloading" && primaryModel.state !== "queued" && (
             <Button type="button" variant="outline" size="sm" data-testid="voice-note-on-device-download"
               onClick={() => void OnDeviceStt.downloadNow({ allowCellular: false })}>
               Download

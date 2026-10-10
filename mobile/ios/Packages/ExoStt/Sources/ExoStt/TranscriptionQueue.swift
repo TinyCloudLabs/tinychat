@@ -48,6 +48,12 @@ public final class TranscriptionQueue {
 
     public init(store: ModelStore) {
         self.store = store
+        // The launch-time model check runs in the background; `pump()` waits for it (rather than
+        // concluding the model is missing) and this restarts the queue and refreshes the UI once done.
+        store.onInitialCheckFinished { [weak self] in
+            self?.onQueueChanged?()
+            self?.kickWorker()
+        }
     }
 
     /// Scans every committed note for unfinished on-device work (native work inventory, plan §2.5)
@@ -122,6 +128,7 @@ public final class TranscriptionQueue {
     private func pump() {
         guard state.hasPending else { return }
         guard !captureGate.isActive() else { return } // Resumed by `captureEnded()`.
+        guard !store.isChecking else { return } // Resumed by the store's `onInitialCheckFinished`.
         let memory = ProcessInfo.processInfo.physicalMemory
         let modelId = ModelManifest.primaryModel(physicalMemoryBytes: memory)
         guard store.isReady(modelId), store.isReady(ModelManifest.sileroVad) else {

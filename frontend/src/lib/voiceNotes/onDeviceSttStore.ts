@@ -76,6 +76,7 @@ export function onDeviceModelLine(status: OnDeviceSttStatus): { text: string; pe
   if (!primary || primary.state === "absent") return { text: `Not downloaded (${totalMb} MB)`, percent: null };
   if (primary.state === "failed") return { text: primary.error ? `Couldn't download: ${primary.error}` : "Couldn't download the model", percent: null };
   if (primary.state === "ready") return { text: "Ready", percent: null };
+  if (primary.state === "checking") return { text: "Checking the downloaded model…", percent: null };
   if (status.download.state === "waiting_for_network") return { text: "Waiting for Wi-Fi…", percent: null };
   const totalBytes = onDeviceDownloadTotalBytes(status);
   const percent = totalBytes > 0 ? Math.min(100, Math.round((primary.bytes / totalBytes) * 100)) : null;
