@@ -3,6 +3,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
+import { MinimizedProvider } from "./final/MinimizedProvider";
 import { HeaderLiveChipView } from "./HeaderLiveChip";
 import { IslandView, islandState } from "./Island";
 import { RailLiveButtonView } from "./RailLiveButton";
@@ -107,7 +108,13 @@ describe("the other live controls", () => {
   });
 
   test("header chip: only shown by CSS while the keyboard is open", () => {
-    const html = renderToStaticMarkup(<HeaderLiveChipView recorder={value()} />);
+    const html = renderToStaticMarkup(
+      <StaticRecorderProvider value={value()}>
+        <MinimizedProvider>
+          <HeaderLiveChipView recorder={value()} />
+        </MinimizedProvider>
+      </StaticRecorderProvider>,
+    );
     expect(html).toContain("hidden");
     expect(html).toContain("[html[data-keyboard=open]_&amp;]:inline-flex");
     expect(html).toContain('aria-label="Recording. Open recorder"');

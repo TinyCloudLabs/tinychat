@@ -70,12 +70,12 @@ export interface NoteLedger {
 }
 export interface NoteSttState {
   state: "waiting_for_model" | "queued" | "running" | "done" | "failed" | "cancelled";
-  pack: "full" | "small" | null; engine: "parakeet" | "apple-speech" | null;
+  pack: "full" | "small" | null; engine: "parakeet" | "apple-speech" | "whisper" | null;
   segmentsDone: number; windowsDone: number; error: string | null;
 }
 export interface LocalTranscript {
   version: 1; noteId: string; transcriber: TranscriberId; rev: number;
-  engine: "parakeet-tdt-0.6b-v3" | "parakeet-tdt-110m-en" | "apple-speech" | "assemblyai" | "tinycloud-private-transcription";
+  engine: "parakeet-tdt-0.6b-v3" | "parakeet-tdt-110m-en" | "apple-speech" | "whispercpp" | "assemblyai" | "tinycloud-private-transcription";
   model: string | null; language: string | null; outcome: "transcribed" | "no_speech"; diarized: boolean;
   /** start/end are milliseconds: the native sidecar's canonical-JSON writer only accepts integers. */
   segments: { start: number; end: number; text: string; speaker: string | null }[]; createdAt: string;
@@ -140,6 +140,8 @@ export interface RecoveryFailedEvent {
   id?: string;
   reason?: string;
   error?: string;
+  /** The browser engine names the account the recording belongs to (null: not yet claimed); the controller shows it to that account only. */
+  owner?: string | null;
 }
 
 export interface WriteFailureEvent {
@@ -256,7 +258,7 @@ export interface VoiceNotesPlugin {
   getTranscript(options: { id: string }): Promise<{ transcript: LocalTranscript | null }>;
   listInputs(): Promise<{ inputs: AudioInput[]; selectedId: string | null; activeId: string | null }>;
   selectInput(options: { id: string | null }): Promise<void>;
-  listQuarantine(): Promise<{ items: { id: string; reason: string; sizeBytes: number }[] }>;
+  listQuarantine(): Promise<{ items: { id: string; reason: string; sizeBytes: number; owner?: string | null }[] }>;
   deleteQuarantined(options: { id: string }): Promise<void>;
   listOutbox(options: { did: string }): Promise<{ entries: OutboxEntry[] }>;
   completeOutbox(options: { entryId: string; result: "done" | "retry" | "lookup" | "unknown" | "authority_expired" }): Promise<void>;
@@ -275,6 +277,11 @@ export interface VoiceNotesPlugin {
 // `let`, so the browser harnesses can swap in a fake (below): every caller
 // imports this binding, and an ES module binding is live.
 export let VoiceNotes = registerPlugin<VoiceNotesPlugin>("VoiceNotes");
+
+/** Boot only (captureEngine.installCaptureEngine): every caller of `VoiceNotes` now talks to `plugin`. */
+export function installVoiceNotesEngine(plugin: VoiceNotesPlugin): void {
+  VoiceNotes = plugin;
+}
 
 let availableForTests: boolean | null = null;
 
@@ -420,7 +427,7 @@ export function selectInput(id: string | null): Promise<void> {
   return VoiceNotes.selectInput({ id });
 }
 
-export type QuarantinedRecording = { id: string; reason: string; sizeBytes: number };
+export type QuarantinedRecording = { id: string; reason: string; sizeBytes: number; owner?: string | null };
 
 export function listQuarantine(): Promise<{ items: QuarantinedRecording[] }> {
   return VoiceNotes.listQuarantine();

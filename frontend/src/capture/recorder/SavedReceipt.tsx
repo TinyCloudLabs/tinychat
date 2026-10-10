@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
 import { cn } from "@/lib/utils";
 import { VoiceNotes, type LocalTranscript, type NoteSttState, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { localTranscriptionUnavailable } from "@/lib/voiceNotes/captureEngine";
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { receiptMetaText } from "./recorderCopy";
@@ -26,7 +27,7 @@ export interface SavedReceiptProps {
   /** This note's chosen transcriber, looked up natively; null once it's known not to be on-device. */
   transcriber?: TranscriberId | null;
   /** The sidecar's durable on-device STT state, from the same native `listPending()` read
-   * RecordingView already made to learn `transcriber` — the seed for useOnDeviceReceipt's first
+   * ReceiptView already made to learn `transcriber` — the seed for useOnDeviceReceipt's first
    * render, so this component does not repeat that read (and the recovery scan behind it) on
    * every mount. */
   sttHint?: NoteSttState | null;
@@ -51,14 +52,15 @@ export interface SavedReceiptProps {
 /** On-device transcription's state for this note: the sidecar's durable `stt.state` is the source
  * of truth (round-2 finding 1) — a missed `transcribed`/`failed` event (fired before this
  * component mounted, or before a previous mount's listeners were attached) never strands the UI.
- * The initial read comes from `sttHint`, the caller's own `listPending()` call (RecordingView
+ * The initial read comes from `sttHint`, the caller's own `listPending()` call (ReceiptView
  * already makes one to learn the note's transcriber) — not a second one here. Two `listPending()`
  * calls on every receipt mount used to serialize behind native's recovery-scan lock and could
  * outrun the saved receipt's fixed display window on a phone with many notes (TC-781 round 4). A
  * fresh native read still happens after a `transcribed`/`failed` event or Retry, since those are
  * not on every mount. The live native queue (`onDeviceSttStore`) still drives the "Transcribing…"
  * progress line while a job runs. Works signed out and offline — never touches the space. */
-export function useOnDeviceReceipt(id: string | undefined, onDevice: boolean, sttHint?: NoteSttState | null) {
+export function useOnDeviceReceipt(id: string | undefined, wantsOnDevice: boolean, sttHint?: NoteSttState | null) {
+  const onDevice = wantsOnDevice && !localTranscriptionUnavailable();
   const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const [transcript, setTranscript] = useState<LocalTranscript | null>(null);
   const [durable, setDurable] = useState<NoteSttState | null>(null);

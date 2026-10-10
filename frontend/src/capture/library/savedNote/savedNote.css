@@ -1,0 +1,255 @@
+/* The saved note: a page on a wide screen, a floating sheet on a phone. Soft tokens throughout. */
+.soft-skin .sn-col {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 28px 32px 56px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.soft-skin.sn-page {
+  position: relative;
+  height: 100%;
+  overflow-y: auto;
+}
+.soft-skin .sn-back {
+  align-self: flex-start;
+  min-height: 44px;
+  margin-left: -10px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.soft-skin .sn-back:hover {
+  color: var(--ink);
+}
+.soft-skin .sn-title {
+  margin: 0;
+  font-size: 34px;
+  font-weight: 400;
+  line-height: 1.12;
+  overflow-wrap: anywhere;
+}
+.soft-skin .sn-meta {
+  margin: -8px 0 0;
+  color: var(--dim);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.soft-skin .sn-player audio {
+  width: 100%;
+}
+.soft-skin .sn-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.soft-skin .sn-sechead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+}
+.soft-skin .sn-label {
+  flex: 1;
+  margin: 0;
+  color: var(--dim);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.soft-skin .sn-editing {
+  margin-left: 6px;
+  color: var(--red);
+}
+.soft-skin .sn-pill {
+  position: relative;
+  isolation: isolate;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.soft-skin .sn-pill::before {
+  content: "";
+  position: absolute;
+  inset: 7px 0;
+  z-index: -1;
+  border-radius: 999px;
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--gedge);
+}
+.soft-skin .sn-pill.sn-primary {
+  color: var(--bgc);
+}
+.soft-skin .sn-pill.sn-primary::before {
+  background: var(--ink);
+  box-shadow: none;
+}
+.soft-skin .sn-pill[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: default;
+}
+.soft-skin .sn-pill:focus-visible,
+.soft-skin .sn-back:focus-visible,
+.soft-skin .sn-x:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+.soft-skin .sn-alert {
+  margin: 0;
+  color: var(--red);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.soft-skin .sn-hint,
+.soft-skin .sn-foot {
+  margin: 0;
+  color: var(--dim);
+  font-size: 12.5px;
+}
+.soft-skin .sn-add {
+  align-self: flex-start;
+}
+.soft-skin .sn-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  box-shadow: inset 0 0 0 1px var(--gedge);
+}
+.soft-skin .sn-edit .nt-writer {
+  min-height: 220px;
+}
+.soft-skin .sn-read .fmd {
+  font-size: 15px;
+}
+.soft-skin .sn-transcript {
+  color: var(--ink);
+}
+
+/* The moment times in a rendered note: buttons that play the audio from there. */
+.soft-skin .fmd .nt-moment {
+  min-height: 24px;
+  margin: 0 2px 0 0;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--gedge);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.soft-skin .fmd .nt-moment:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+@media (pointer: coarse) {
+  .soft-skin .fmd .nt-moment {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+.sn-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.5);
+}
+.soft-skin.sn-sheet {
+  position: fixed;
+  z-index: 51;
+  left: 12px;
+  right: 12px;
+  top: max(12px, env(safe-area-inset-top));
+  bottom: max(12px, env(safe-area-inset-bottom));
+  box-sizing: border-box;
+  max-width: 32rem;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 28px;
+  background: var(--solid);
+  box-shadow:
+    inset 0 0 0 1px var(--gedge),
+    0 20px 60px rgba(0, 0, 0, 0.4);
+  outline: none;
+}
+.soft-skin .sn-sheet-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+/* The note's formatting bar (portalled in while editing): a fixed footer of the sheet, outside the scrolling body. */
+.soft-skin .sn-sheet-foot {
+  flex: none;
+  display: flex;
+  justify-content: center;
+  padding: 4px 14px 12px;
+}
+.soft-skin .sn-sheet-foot:empty {
+  display: none;
+}
+/* The bar never outgrows the sheet: it wraps on a narrow phone (320 px). */
+.soft-skin .sn-sheet-foot .nt-wtools {
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+@media (max-width: 359px) {
+  .soft-skin .sn-sheet-foot .nt-wmd {
+    display: none;
+  }
+}
+.soft-skin .sn-sheet-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px 20px 28px;
+}
+.soft-skin .sn-sheet-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.soft-skin .sn-sheet-head .sn-title {
+  flex: 1;
+  font-size: 26px;
+}
+.soft-skin .sn-sheet-body .sn-meta {
+  margin-top: -10px;
+}
+.soft-skin .sn-x {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  margin: -6px -8px 0 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 16px;
+  cursor: pointer;
+}
+.soft-skin.sn-sheet .pr-veil {
+  position: fixed;
+}

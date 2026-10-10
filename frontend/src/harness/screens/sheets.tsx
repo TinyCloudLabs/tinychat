@@ -2,11 +2,8 @@
 // them: a bottom sheet on a phone, upright or on its side, and a dialog from
 // medium up. The bodies are the real views on fixtures, in each state; Capture
 // behind them is the real shell on the empty-space stub (harness/ShellApp.tsx).
-// `sheets-capture-actions` is Capture itself: its actions, and an upload
-// waiting in In progress.
 import { useContext, useMemo } from "react";
 
-import { pausedUpload } from "@/capture/upload/pausedUpload";
 import { AudioUploadView, type AudioUploadViewProps } from "@/chat/AudioUploadPanel";
 import { SendNotetakerButton, TranscriberView, type TranscriberViewProps } from "@/chat/TranscriberSection";
 import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive-sheet";
@@ -125,12 +122,6 @@ function MeetingSheetScreen(props: Partial<TranscriberViewProps>) {
   );
 }
 
-function CaptureActionsScreen() {
-  // An own-key upload a reload interrupted, waiting for Continue.
-  pausedUpload.set({ fileName: "Interview.m4a" });
-  return <Capture />;
-}
-
 const SHEETS = { group: "sheets", layout: "pane", displayTitle: true, path: "/chat/capture", platform: "ios" } as const;
 const UPLOAD = { ...SHEETS, readyWhen: '[data-testid="upload-sheet"]' } as const;
 const MEETING = { ...SHEETS, readyWhen: '[data-testid="meeting-sheet"]' } as const;
@@ -163,5 +154,4 @@ export const sheetsScreens: HarnessScreen[] = [
     id: "sheets-meeting-form",
     render: () => <MeetingSheetScreen meetings={[]} form={{ url: "", botName: "", submitting: false, error: null }} />,
   },
-  { ...SHEETS, id: "sheets-capture-actions", readyWhen: '[data-testid="capture-actions"]', render: () => <CaptureActionsScreen /> },
 ];

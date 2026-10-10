@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-recorder-failed-retry"
+description = "Enables the recorder_failed_retry command without any pre-configured scope."
+commands.allow = ["recorder_failed_retry"]
+
+[[permission]]
+identifier = "deny-recorder-failed-retry"
+description = "Denies the recorder_failed_retry command without any pre-configured scope."
+commands.deny = ["recorder_failed_retry"]

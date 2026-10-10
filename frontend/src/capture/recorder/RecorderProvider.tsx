@@ -3,8 +3,7 @@
 // RecorderProvider calls useVoiceNoteRecorder once (a second controller would
 // race the first for the microphone and its saves); the views are context
 // consumers that own no listeners. It also owns whether the overlay is open,
-// publishes the live microphone to liveCapture (the Live Edge), and gives
-// feedback: haptics, and a polite announcement of each change.
+// and gives feedback: haptics, and a polite announcement of each change.
 //
 // StaticRecorderProvider serves a fixed value, for the screenshot harness.
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -17,11 +16,11 @@ import { VOICE_NOTE_MAX_DURATION_MS, VoiceNotes, type VoiceNoteRecording } from 
 import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
 import { effectiveCaptureOptions, readTranscriberPreference } from "@/lib/voiceNotes/transcriberPreference";
 import type { PendingSnapshot } from "@/lib/voiceNotes/recorderSaves";
-import { liveCapture } from "./liveCapture";
 import { DISCARDED, micWarning, recorderStatusText, RECEIPT_KEPT } from "./recorderCopy";
 import type { RecorderCaptureIssue, RecorderMic, RecorderPhase, RecorderState } from "./recorderReducer";
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
 import type { RecorderTranscriberChoice, TranscriberChoiceResult, TranscriberChoiceScope } from "./voiceNoteRecorderController";
+import type { RecorderNote, RecorderNoteStatus } from "./voiceNoteRecorderController";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { useVoiceNoteRecorder } from "./useVoiceNoteRecorder";
@@ -72,6 +71,14 @@ export interface RecorderValue {
   transcription: VoiceNoteTranscriptionProps | undefined;
   /** Native options while recording; otherwise the signed-in effective JS default. */
   transcriber: RecorderTranscriberChoice;
+  /** The current recording's Markdown; moments are parsed from its timestamp lines. */
+  note: RecorderNote | null;
+  /** The editor can write only after this recording's local note has loaded. */
+  noteStatus: RecorderNoteStatus;
+  /** Short account-scoped code for the current recording's Markdown sync; audio save is separate. */
+  noteSyncError: string | null;
+  setNoteText(md: string): Promise<void>;
+  markMoment(): number;
   setTranscriber(id: TranscriberId, options: { scope: TranscriberChoiceScope; waitForModel?: boolean }): Promise<TranscriberChoiceResult>;
   setIdentifySpeakers(on: boolean, scope: "recording" | "default"): Promise<"ok" | "needs_consent" | "locked_signed_out" | "unavailable">;
   /** Capture always forces on-device while signed out (CaptureEngine), so the transcription route
@@ -177,20 +184,6 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   useEffect(() => { setReceiptReadyState(false); }, [state.lastSaved?.id]);
   const [announcement, setAnnouncement] = useState("");
 
-  // The Live Edge follows the live microphone.
-  const live = state.phase === "recording" && (state.mic.state === "recording" || state.mic.state === "silenced");
-  const warning = live && micWarning(state.mic) !== null;
-  useEffect(() => {
-    liveCapture.set(live ? { source: "voice-note", warning, startedAt: state.startedAt } : null);
-  }, [live, warning, state.startedAt]);
-  useEffect(
-    () => () => {
-      if (liveCapture.get()?.source === "voice-note") liveCapture.set(null);
-    },
-    [],
-  );
-  useEffect(() => subscribeLevel((level) => liveCapture.setLevel(level)), [subscribeLevel]);
-
   // Feedback for each change: a haptic and a polite announcement.
   const previous = useRef(state);
   useEffect(() => {
@@ -292,6 +285,11 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       pending: recorder.pending,
       transcription: recorder.transcription,
       transcriber: recorder.transcriber,
+      note: recorder.note,
+      noteStatus: recorder.noteStatus,
+      noteSyncError: recorder.noteSyncError,
+      setNoteText: recorder.setNoteText,
+      markMoment: recorder.markMoment,
       setTranscriber: recorder.setTranscriber,
       setIdentifySpeakers: recorder.setIdentifySpeakers,
       signedIn: tcw?.did != null,
@@ -318,6 +316,11 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       recorder.available,
       recorder.discard,
       recorder.dismissCaptureIssue,
+      recorder.note,
+      recorder.noteStatus,
+      recorder.noteSyncError,
+      recorder.setNoteText,
+      recorder.markMoment,
       recorder.pending,
       recorder.retryPending,
       recorder.openSettings,
@@ -399,6 +402,11 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       pending: NO_PENDING,
       transcription: undefined,
       transcriber: { id: "on-device", identifySpeakers: false, source: "default" },
+      note: null,
+      noteStatus: "ready",
+      noteSyncError: null,
+      setNoteText: async () => {},
+      markMoment: () => 0,
       setTranscriber: async () => "unavailable",
       setIdentifySpeakers: async () => "unavailable",
       signedIn: true,

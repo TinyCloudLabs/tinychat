@@ -14,9 +14,10 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
+import { captureCapabilities, captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
+import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
 import type { VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { messageOf, pendingStore, whenVoiceNoteSavesIdle, type PendingRun } from "@/lib/voiceNotes/recorderSaves";
 import { advanceAccountGeneration, currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
@@ -80,8 +81,20 @@ export function PendingVoiceNotesSaver({
   sessionStore: SessionStore;
 }) {
   useEffect(() => {
-    if (!captureEngineAvailable()) return;
+    if (!captureEngineAvailable() || !captureCapabilities().localTranscription) return;
     return installOnDeviceTranscriptSync(tcw);
+  }, [tcw]);
+
+  useEffect(() => {
+    const queue = getDesktopWhisperQueue();
+    if (!queue) return;
+    const sync = (id: string) => {
+      void VoiceNotes.listPending().then(({ recordings }) => {
+        const recording = recordings.find((note) => note.id === id);
+        if (recording) return syncOnDeviceTranscript(tcw, recording);
+      }).catch((error: unknown) => console.warn("[desktopWhisper] Could not sync transcript", error));
+    };
+    return queue.onDone(sync);
   }, [tcw]);
 
   useEffect(() => {
@@ -94,12 +107,13 @@ export function PendingVoiceNotesSaver({
     pipeline.resume();
     const run = async () => {
       const finish = pendingStore.beginAutomaticSave();
+      const account = pendingStore.forAccount(did);
       try {
         await pipeline.reconcileAll({ did, spaceId, generation: currentAccountGeneration() });
-        await pendingStore.refresh(null);
+        await account.refresh(null);
       } catch (error) {
         console.warn("[VoiceNotes] Saving notes left on this phone failed", error);
-        pendingStore.reportError(`Could not save notes on this phone: ${messageOf(error)}`);
+        account.reportError(`Could not save notes on this phone: ${messageOf(error)}`);
       } finally { finish(); }
     };
     const unregister = registerPendingVoiceNotesRecovery(run);

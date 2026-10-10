@@ -13,7 +13,7 @@ import { voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription
 import type { RecorderState } from "./recorderReducer";
 import { HIDDEN_SNAPSHOT, noSubscription, transcriptionProps, type VoiceNoteTranscriptionProps } from "./transcriptionProps";
 import { createVoiceNoteRecorderController } from "./voiceNoteRecorderController";
-import type { RecorderTranscriberChoice, TranscriberChoiceResult, TranscriberChoiceScope } from "./voiceNoteRecorderController";
+import type { RecorderNote, RecorderNoteStatus, RecorderTranscriberChoice, TranscriberChoiceResult, TranscriberChoiceScope } from "./voiceNoteRecorderController";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 
@@ -33,6 +33,11 @@ export interface VoiceNoteRecorder {
   available: boolean;
   state: RecorderState;
   transcriber: RecorderTranscriberChoice;
+  note: RecorderNote | null;
+  noteStatus: RecorderNoteStatus;
+  noteSyncError: string | null;
+  setNoteText(md: string): Promise<void>;
+  markMoment(): number;
   setTranscriber(id: TranscriberId, options: { scope: TranscriberChoiceScope; waitForModel?: boolean }): Promise<TranscriberChoiceResult>;
   setIdentifySpeakers(on: boolean, scope: "recording" | "default"): Promise<"ok" | "needs_consent" | "locked_signed_out" | "unavailable">;
   pending: PendingSnapshot;
@@ -71,6 +76,9 @@ export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionS
 
   const state = useSyncExternalStore(controller.subscribe, controller.getState);
   const transcriberChoice = useSyncExternalStore(controller.subscribe, controller.getTranscriber);
+  const note = useSyncExternalStore(controller.subscribe, controller.getNote);
+  const noteStatus = useSyncExternalStore(controller.subscribe, controller.getNoteStatus);
+  const noteSyncError = useSyncExternalStore(controller.subscribe, controller.getNoteSyncError);
   const snapshot = useSyncExternalStore(
     transcriber ? transcriber.subscribe : noSubscription,
     () => transcriber?.snapshot() ?? HIDDEN_SNAPSHOT,
@@ -82,6 +90,11 @@ export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionS
       available,
       state,
       transcriber: transcriberChoice,
+      note,
+      noteStatus,
+      noteSyncError,
+      setNoteText: controller.setNoteText,
+      markMoment: controller.markMoment,
       setTranscriber: controller.setTranscriber,
       setIdentifySpeakers: controller.setIdentifySpeakers,
       pending,
@@ -99,6 +112,6 @@ export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionS
       setOnPresent: controller.setOnPresent,
       subscribeLevel: controller.subscribeLevel,
     }),
-    [available, controller, pending, snapshot, state, transcriber, transcriberChoice],
+    [available, controller, note, noteStatus, noteSyncError, pending, snapshot, state, transcriber, transcriberChoice],
   );
 }

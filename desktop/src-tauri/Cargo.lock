@@ -2894,9 +2894,9 @@ version = "0.6.0-beta.24"
 dependencies = [
  "audio-actual",
  "futures-util",
- "getrandom 0.3.4",
  "hex",
- "reqwest 0.13.4",
+ "hound",
+ "mp3",
  "rustix 1.1.4",
  "serde",
  "serde_json",

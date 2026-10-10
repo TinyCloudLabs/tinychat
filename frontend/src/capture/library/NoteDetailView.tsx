@@ -22,10 +22,14 @@ import { transcriptionStatusText } from "@/lib/voiceNotes/voiceNoteTranscription
 import { voiceNoteTranscriptState, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 import { detailWhen, formatSpokenDuration } from "./formatters";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { DesktopWhisperStatus } from "./DesktopWhisperStatus";
 import { HowThisGotHere } from "./HowThisGotHere";
 import { librarySourceLabel } from "./libraryKinds";
 import type { LibraryItem } from "./LibraryRow";
 import type { LibraryStatus } from "./LibraryListView";
+import { LazySavedNote } from "./savedNote/LazySavedNote";
+import type { SavedNoteStore } from "./savedNote/savedNoteStore";
 
 export type AudioLoad = (signal: AbortSignal, onProgress: (loadedBytes: number, totalBytes: number) => void) => Promise<Blob | null>;
 
@@ -40,6 +44,8 @@ export interface NoteDetailViewProps {
   loadAudio: AudioLoad | null;
   /** Private cloud transcription (voice notes in the phone app); absent elsewhere. */
   transcription?: VoiceNoteTranscriptionProps;
+  /** Whether the Mac's after-stop Whisper job shows here; defaults to the final recorder in the Tauri shell. */
+  desktopWhisper?: boolean;
   copyState: "idle" | "copied" | "failed";
   onCopy: () => void;
   /** Reads again what did not load (the list, or this note). */
@@ -47,6 +53,8 @@ export interface NoteDetailViewProps {
   /** A screen of its own (compact), with Back; otherwise a pane beside the list. */
   pushed: boolean;
   onBack: () => void;
+  /** A voice note opens as its editable note (a page, or a sheet on a phone) instead of this view. */
+  savedNote?: { tcw: TinyCloudWeb; layout: "page" | "sheet"; store?: SavedNoteStore };
 }
 
 /** Consecutive sentences of one speaker as one block. */
@@ -222,12 +230,18 @@ function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
             <Button type="button" variant="outline" onClick={props.onRetry}>Try again</Button>
           </div>
         ) : (
-          // A plain function of its props (no hooks), so its "nothing to say" is known here.
-          VoiceNoteTranscriptionStatus({
-            item,
-            outcome: voiceNoteTranscriptState(metadata.status === "ok" ? metadata.metadata : null).status,
-            transcription: props.transcription,
-          }) ?? <p className="text-callout text-muted-foreground">No transcript.</p>
+          <DesktopWhisperStatus
+            noteId={item.sourceId}
+            enabled={props.desktopWhisper}
+            fallback={
+              // A plain function of its props (no hooks), so its "nothing to say" is known here.
+              VoiceNoteTranscriptionStatus({
+                item,
+                outcome: voiceNoteTranscriptState(metadata.status === "ok" ? metadata.metadata : null).status,
+                transcription: props.transcription,
+              }) ?? <p className="text-callout text-muted-foreground">No transcript.</p>
+            }
+          />
         )
       ) : (
         <p className="text-callout text-muted-foreground" data-testid="note-transcript-absent">
@@ -264,6 +278,23 @@ export function NoteDetailView(props: NoteDetailViewProps) {
           <Empty data-testid="note-absent" title="This note isn’t in your Library." description="It may have been removed from your space." />
         )}
       </Frame>
+    );
+  }
+
+  if (props.savedNote && item.source === VOICE_NOTE_SOURCE) {
+    return (
+      <LazySavedNote
+        key={item.id}
+        item={item}
+        metadata={metadata}
+        loadAudio={props.loadAudio}
+        tcw={props.savedNote.tcw}
+        store={props.savedNote.store}
+        layout={props.savedNote.layout}
+        onBack={props.onBack}
+        transcript={<Transcript {...props} item={item} />}
+        footer={<HowThisGotHere source={item.source} read={metadata} onRetry={props.onRetry} />}
+      />
     );
   }
 

@@ -235,6 +235,17 @@ export async function patchVoiceNoteAudio(tcw: TinyCloudWeb, recording: VoiceNot
   return row;
 }
 
+/** The notes lane changes only its metadata keys, leaving T18 audio and transcript commits intact. */
+export async function patchVoiceNoteMarkdown(tcw: TinyCloudWeb, sourceId: string, key: string, editedAt: string,
+  checkpoint: () => void = () => undefined): Promise<void> {
+  const row = await resolveVoiceNoteRow(tcw, sourceId, checkpoint);
+  if (!row) throw new Error("Voice note row is missing");
+  checkpoint();
+  await execute(tcw, `UPDATE connector_meeting SET metadata = json_patch(COALESCE(metadata,'{}'), ?), updated_at = ?
+    WHERE id = ? AND source = 'exo-voice-note'`,
+  [JSON.stringify({ note_kv_key: key, note_edited_at: editedAt }), new Date().toISOString(), row.id], checkpoint);
+}
+
 export function transcriptRevKvKey(source: string, id: string, hash: string): string {
   return `${CONNECTORS_KV_PREFIX}/${source}/transcript-rev/${id}/${hash}`;
 }

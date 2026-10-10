@@ -20,17 +20,25 @@ import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { createFakeVoiceNotes as createCaptureFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
 import type { HarnessScreen } from "./screen";
 import { captureScreens, captureSoftScreens } from "./screens/capture";
+import { captureHomeDesktopScreens } from "./screens/captureHomeDesktop";
+import { captureSettingsScreens } from "./screens/captureSettings";
 import { legacyScreens } from "./screens/legacy";
 import { libraryScreens } from "./screens/library";
 import { localScreens } from "./screens/local";
+import { meetingSourcesScreens } from "./screens/meetingSources";
+import { micRecoveryScreens } from "./screens/micRecovery";
 import { primitivesScreens } from "./screens/primitives";
 import { recorderScreens } from "./screens/recorder";
+import { recorderFinalDesktopScreens } from "./screens/recorderFinalDesktop";
 import { recorderFinalHaloScreen } from "./screens/recorderFinalHalo";
+import { recorderFinalWebScreens } from "./screens/recorderFinalWeb";
 import { recorderFinalRibbonScreens } from "./screens/recorderFinalRibbon";
 import { recorderFinalPhoneScreens } from "./screens/recorderFinalPhone";
 import { recorderFinalPhoneInteractiveScreens } from "./screens/recorderFinalPhoneInteractive";
+import { savedNoteScreens } from "./screens/savedNote";
 import { sheetsScreens } from "./screens/sheets";
 import { shellScreens } from "./screens/shell";
+import { waitUntilReady } from "./readiness";
 import { FROZEN_NOW, freezeClock } from "./stubs";
 
 type ScreenInfo = Omit<HarnessScreen, "render">;
@@ -49,12 +57,19 @@ const SCREENS: HarnessScreen[] = [
   ...recorderScreens,
   recorderFinalHaloScreen,
   ...recorderFinalRibbonScreens,
+  ...recorderFinalDesktopScreens,
+  ...recorderFinalWebScreens,
   ...recorderFinalPhoneScreens,
   ...recorderFinalPhoneInteractiveScreens,
   ...captureScreens,
   ...captureSoftScreens,
+  ...captureHomeDesktopScreens,
+  ...captureSettingsScreens,
   ...libraryScreens,
+  ...savedNoteScreens,
   ...localScreens,
+  ...meetingSourcesScreens,
+  ...micRecoveryScreens,
 ];
 const PLATFORMS: readonly AppPlatform[] = ["ios", "android", "tauri", "web"];
 
@@ -103,14 +118,9 @@ window.exoUi = {
 function Ready(props: { scrollTo?: string; readyWhen?: string }) {
   useEffect(() => {
     let cancelled = false;
-    const until = Date.now() + 5_000;
     const arrived = () =>
-      new Promise<void>((resolve) => {
-        const check = () => {
-          if (cancelled || !props.readyWhen || document.querySelector(props.readyWhen) || Date.now() > until) resolve();
-          else setTimeout(check, 50);
-        };
-        check();
+      waitUntilReady(() => !props.readyWhen || document.querySelector(props.readyWhen) !== null, {
+        isCancelled: () => cancelled,
       });
     void Promise.all([document.fonts.ready, arrived()]).then(() => {
       if (props.scrollTo) document.querySelector(props.scrollTo)?.scrollIntoView({ block: "center" });

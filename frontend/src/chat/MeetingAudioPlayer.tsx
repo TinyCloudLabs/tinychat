@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type Ref } from "react";
 import { Loader2Icon, PlayIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,8 @@ interface MeetingAudioPlayerProps {
   /** A local native file URL. It is handed straight to the audio element. */
   url?: string;
   onPlayingChange?: (playing: boolean) => void;
+  /** Plays from `seconds` in: loads the audio first if it is not loaded yet. A new `nonce` is a new request. */
+  seek?: { seconds: number; nonce: number } | null;
 }
 
 export type PlayerState =
@@ -30,12 +32,14 @@ export type PlayerState =
  * Unmounting (closing the meeting) aborts an in-flight read and releases the
  * object URL.
  */
-export function MeetingAudioPlayer({ load, url, onPlayingChange }: MeetingAudioPlayerProps) {
+export function MeetingAudioPlayer({ load, url, onPlayingChange, seek }: MeetingAudioPlayerProps) {
   const [state, setState] = useState<PlayerState>({ phase: "idle" });
   const controllerRef = useRef<AbortController | null>(null);
   const urlRef = useRef<string | null>(null);
   const onPlayingChangeRef = useRef(onPlayingChange);
   onPlayingChangeRef.current = onPlayingChange;
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const wanted = useRef<number | null>(null);
 
   useEffect(
     () => () => {
@@ -74,14 +78,39 @@ export function MeetingAudioPlayer({ load, url, onPlayingChange }: MeetingAudioP
     }
   }, [load, url]);
 
+  const playFrom = (audio: HTMLAudioElement, seconds: number) => {
+    audio.currentTime = seconds;
+    audio.play().catch((error: unknown) => console.error("[Audio] Could not play from a moment", error));
+  };
+  const seekNonce = seek?.nonce;
+  useEffect(() => {
+    if (!seek) return;
+    const audio = audioRef.current;
+    if (state.phase === "ready" && audio && audio.readyState >= 1) {
+      playFrom(audio, seek.seconds);
+      return;
+    }
+    wanted.current = seek.seconds;
+    if (state.phase === "idle" || state.phase === "failed") void onPlay();
+    // A request is one nonce; the state it waits on is read when it arrives.
+  }, [seekNonce]);
+  const onLoadedMetadata = () => {
+    const audio = audioRef.current;
+    if (wanted.current === null || !audio) return;
+    const seconds = wanted.current;
+    wanted.current = null;
+    playFrom(audio, seconds);
+  };
+
   return <MeetingAudioPlayerView state={state} onPlay={() => void onPlay()} onPlayingChange={onPlayingChange}
+    audioRef={audioRef} onLoadedMetadata={onLoadedMetadata}
     onError={() => { onPlayingChange?.(false); setState({ phase: "failed" }); }} />;
 }
 
 /** What the player shows in each state (rendered on the server in the tests). */
-export function MeetingAudioPlayerView({ state, onPlay, onPlayingChange, onError }: { state: PlayerState; onPlay: () => void; onPlayingChange?: (playing: boolean) => void; onError?: () => void }) {
+export function MeetingAudioPlayerView({ state, onPlay, onPlayingChange, onError, audioRef, onLoadedMetadata }: { state: PlayerState; onPlay: () => void; onPlayingChange?: (playing: boolean) => void; onError?: () => void; audioRef?: Ref<HTMLAudioElement>; onLoadedMetadata?: () => void }) {
   if (state.phase === "ready") {
-    return <audio controls autoPlay src={state.url} onPlay={() => onPlayingChange?.(true)} onPause={() => onPlayingChange?.(false)} onEnded={() => onPlayingChange?.(false)} onError={onError} className="h-11 w-full" data-testid="note-audio-player" />;
+    return <audio ref={audioRef} onLoadedMetadata={onLoadedMetadata} controls autoPlay src={state.url} onPlay={() => onPlayingChange?.(true)} onPause={() => onPlayingChange?.(false)} onEnded={() => onPlayingChange?.(false)} onError={onError} className="h-11 w-full" data-testid="note-audio-player" />;
   }
   if (state.phase === "loading") {
     return (

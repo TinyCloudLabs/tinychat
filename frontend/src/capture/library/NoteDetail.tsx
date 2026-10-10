@@ -7,7 +7,7 @@ import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcripti
 import { copyText } from "@/lib/copyText";
 import { transcriptCopyText } from "@/lib/connectors/meetingExplorer";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
-import { NoteDetailView } from "./NoteDetailView";
+import { NoteDetailView, type NoteDetailViewProps } from "./NoteDetailView";
 import type { Library } from "./useLibrary";
 
 /** Matches markdown-text's copy button: the tick reverts on its own. */
@@ -18,6 +18,7 @@ export function NoteDetail(props: {
   pushed: boolean;
   onBack: () => void;
   transcription: VoiceNoteTranscriptionProps | undefined;
+  savedNote?: NoteDetailViewProps["savedNote"];
 }) {
   const { library } = props;
   const { item, reads, loadAudio } = library.note;
@@ -62,6 +63,7 @@ export function NoteDetail(props: {
       onRetry={library.retry}
       pushed={props.pushed}
       onBack={props.onBack}
+      savedNote={props.savedNote}
     />
   );
 }

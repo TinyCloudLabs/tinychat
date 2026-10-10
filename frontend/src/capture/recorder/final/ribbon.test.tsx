@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { FinalHeaderLiveChip } from "../HeaderLiveChip";
+import { HeaderLiveChipView } from "../HeaderLiveChip";
 import {
   StaticRecorderProvider,
   useRecorder,
@@ -293,12 +293,12 @@ describe("CaptureDot", () => {
   });
 });
 
-describe("FinalHeaderLiveChip", () => {
+describe("HeaderLiveChipView", () => {
   test("the elapsed time and a red dot while live; grey when paused; hollow when interrupted", () => {
     const chip = (patch: Partial<RecorderValue>) =>
       withProvider(
         patch,
-        <FinalHeaderLiveChip recorder={recorderWith(patch)} />,
+        <HeaderLiveChipView recorder={recorderWith(patch)} />,
       );
     expect(chip(LIVE)).toContain("0:06");
     expect(chip(LIVE)).toContain("rounded-full bg-live");

@@ -1,0 +1,160 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+
+import { createFakeVoiceNotes } from "./fakeVoiceNotes";
+import {
+  __resetCaptureEngineForTests,
+  __setInstalledEngineForTests,
+  captureCapabilities,
+  captureEngineAvailable,
+  captureEngineInstallPending,
+  captureEngineKind,
+  installCaptureEngine,
+  registerCaptureEngine,
+  type CaptureCapabilities,
+  type CaptureEngine,
+  type CaptureEngineKind,
+} from "./captureEngine";
+import { VoiceNotes, __setVoiceNotesForTests } from "./nativeVoiceNotes";
+import { effectiveTranscriber } from "./transcriberPreference";
+
+const none: CaptureCapabilities = {
+  nativeShortcuts: false, presentRecorder: false, openSettings: false, micDeniedPresentation: false,
+  background: false, localTranscription: false, desktopWhisper: false, offlineRecorder: false,
+};
+const engine = (): CaptureEngine => ({ ...createFakeVoiceNotes().plugin, capabilities: none });
+
+const global = globalThis as Record<string, unknown>;
+const saved = {
+  window: global.window,
+  MediaRecorder: global.MediaRecorder,
+  mediaDevices: Object.getOwnPropertyDescriptor(navigator, "mediaDevices"),
+  voiceNotes: VoiceNotes,
+};
+
+interface Shell { native: boolean; tauri: boolean; mediaRecorder: boolean; mediaDevices: boolean }
+function setShell(shell: Shell) {
+  __setVoiceNotesForTests(saved.voiceNotes, { available: shell.native });
+  global.window = shell.tauri ? { __TAURI_INTERNALS__: {} } : {};
+  if (shell.mediaRecorder) global.MediaRecorder = class {}; else delete global.MediaRecorder;
+  Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: shell.mediaDevices ? {} : undefined });
+}
+
+beforeEach(() => __resetCaptureEngineForTests());
+afterEach(() => {
+  __resetCaptureEngineForTests();
+  global.window = saved.window;
+  if (saved.MediaRecorder === undefined) delete global.MediaRecorder; else global.MediaRecorder = saved.MediaRecorder;
+  if (saved.mediaDevices) Object.defineProperty(navigator, "mediaDevices", saved.mediaDevices); else delete (navigator as unknown as Record<string, unknown>).mediaDevices;
+  __setVoiceNotesForTests(saved.voiceNotes, { available: null });
+});
+
+describe("captureEngineKind: native x tauri internals x MediaRecorder x registered", () => {
+  const bools = [false, true];
+  for (const native of bools) for (const tauri of bools) for (const mediaRecorder of bools)
+    for (const registeredWeb of bools) for (const registeredTauri of bools) {
+      const name = `native=${native} tauri=${tauri} MediaRecorder=${mediaRecorder} web=${registeredWeb} tauriEngine=${registeredTauri}`;
+      test(name, () => {
+        setShell({ native, tauri, mediaRecorder, mediaDevices: mediaRecorder });
+        if (registeredWeb) registerCaptureEngine("web", async () => engine());
+        if (registeredTauri) registerCaptureEngine("tauri", async () => engine());
+        const expected: CaptureEngineKind | null = native ? "native"
+          : tauri ? (registeredTauri ? "tauri" : null)
+          : mediaRecorder && registeredWeb ? "web"
+          : null;
+        expect(captureEngineKind()).toBe(expected);
+        expect(captureEngineInstallPending()).toBe(expected === "web" || expected === "tauri");
+      });
+    }
+
+  test("web needs navigator.mediaDevices as well as MediaRecorder", () => {
+    setShell({ native: false, tauri: false, mediaRecorder: true, mediaDevices: false });
+    registerCaptureEngine("web", async () => engine());
+    expect(captureEngineKind()).toBeNull();
+  });
+});
+
+describe("native", () => {
+  test("native stays native: available without an install, the binding untouched, every capability on", async () => {
+    setShell({ native: true, tauri: false, mediaRecorder: false, mediaDevices: false });
+    expect(captureEngineAvailable()).toBe(true);
+    expect(captureCapabilities()).toMatchObject({ localTranscription: true, desktopWhisper: false });
+    await installCaptureEngine();
+    expect(captureEngineKind()).toBe("native");
+    expect(VoiceNotes).toBe(saved.voiceNotes);
+  });
+
+  test("native is not displaced by a registered web engine", async () => {
+    setShell({ native: true, tauri: false, mediaRecorder: true, mediaDevices: true });
+    registerCaptureEngine("web", async () => { throw new Error("must not build"); });
+    await installCaptureEngine();
+    expect(captureEngineKind()).toBe("native");
+    expect(VoiceNotes).toBe(saved.voiceNotes);
+  });
+});
+
+describe("installCaptureEngine", () => {
+  const webShell: Shell = { native: false, tauri: false, mediaRecorder: true, mediaDevices: true };
+
+  test("installs the engine into the VoiceNotes seam once, however many callers", async () => {
+    setShell(webShell);
+    let built = 0;
+    const web: CaptureEngine = { ...engine(), capabilities: { ...none, background: true } };
+    registerCaptureEngine("web", async () => { built += 1; return web; });
+    expect(captureEngineAvailable()).toBe(false);
+    await Promise.all([installCaptureEngine(), installCaptureEngine()]);
+    await installCaptureEngine();
+    expect(built).toBe(1);
+    expect(VoiceNotes).toBe(web);
+    expect(captureEngineAvailable()).toBe(true);
+    expect(captureEngineKind()).toBe("web");
+    expect(captureEngineInstallPending()).toBe(false);
+    expect(captureCapabilities()).toEqual({ ...none, background: true });
+  });
+
+  test("a failed install rejects, leaves nothing installed and the native binding alone, and can be retried", async () => {
+    setShell(webShell);
+    let attempts = 0;
+    registerCaptureEngine("web", async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("indexedDB is blocked");
+      return engine();
+    });
+    await expect(installCaptureEngine()).rejects.toThrow("indexedDB is blocked");
+    expect(captureEngineAvailable()).toBe(false);
+    expect(VoiceNotes).toBe(saved.voiceNotes);
+    await installCaptureEngine();
+    expect(captureEngineAvailable()).toBe(true);
+    expect(attempts).toBe(2);
+  });
+
+  test("tauri is chosen over web inside the desktop shell", async () => {
+    setShell({ ...webShell, tauri: true });
+    registerCaptureEngine("web", async () => engine());
+    const tauri = engine();
+    registerCaptureEngine("tauri", async () => tauri);
+    await installCaptureEngine();
+    expect(captureEngineKind()).toBe("tauri");
+    expect(VoiceNotes).toBe(tauri);
+  });
+});
+
+test("desktop Local follows its selected Whisper model while web routing is unchanged", () => {
+  __setInstalledEngineForTests("tauri", { ...none, offlineRecorder: true });
+  expect(effectiveTranscriber("on-device", false)).toBe("off");
+  expect(effectiveTranscriber("on-device", true)).toBe("private-cloud");
+  __setInstalledEngineForTests("tauri", { ...none, offlineRecorder: true, desktopWhisper: true });
+  expect(effectiveTranscriber("on-device", false)).toBe("on-device");
+  expect(effectiveTranscriber("on-device", true)).toBe("on-device");
+  __setInstalledEngineForTests("web", none);
+  expect(effectiveTranscriber("on-device", false)).toBe("private-cloud");
+});
+
+describe("App.tsx gates its native-only surfaces on capabilities", () => {
+  const app = readFileSync(new URL("../../App.tsx", import.meta.url), "utf8");
+  test("the offline recorder, the signed-out local home and MicDeniedRecovery", () => {
+    expect(app).toContain("voiceNotesInApp && capabilities.offlineRecorder && !LOCAL_VALIDATION && offlineCapture");
+    expect(app).toContain("voiceNotesInApp && capabilities.offlineRecorder && !LOCAL_VALIDATION && state === \"unauthenticated\"");
+    expect(app).toContain("platform === \"android\" && voiceNotesInApp && capabilities.micDeniedPresentation");
+  });
+});

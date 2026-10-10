@@ -6,7 +6,11 @@ import type { OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import type { VoiceNoteTranscriptionProps } from "../transcriptionProps";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { SetTranscriberResult } from "../voiceNoteRecorderController";
+import type { ModeShell } from "./transcriptionModes";
+import { FINAL_COPY } from "./finalCopy";
+import { localDesktopCaption, LOCAL_DESKTOP_NO_MODEL_EXPLANATION, type DesktopWhisperState } from "./desktop/useDesktopWhisper";
 import {
+  DESKTOP_SIGNED_OUT_CAPTION,
   PRIVATE_UNAVAILABLE,
   SIGNED_OUT,
   SPEAKERS_NEEDS_CONSENT,
@@ -79,16 +83,19 @@ function choice(
   api: TranscriberApi,
   model: OnDeviceSttStatus | null = MODEL,
   signedIn = true,
+  shell: ModeShell = "phone",
+  whisper?: DesktopWhisperState,
 ) {
   const notices: string[] = [];
   let result!: ReturnType<typeof useTranscriptionChoice>;
   function Probe() {
     result = useTranscriptionChoice({
-      shell: "phone",
+      shell,
       transcription: props,
       model,
       transcriber: api,
       signedIn,
+      whisper,
       notify: (message) => void notices.push(message),
     });
     return null;
@@ -291,6 +298,42 @@ describe("useTranscriptionChoice", () => {
       expect(result.mode).toBe("local");
     });
 
+    test("signed out on the Mac app: Audio only is selected, Local says to get Whisper, the rest say to sign in", async () => {
+      // Provider still reports the signed-out default (on-device); the Mac scale must not show it.
+      const { api, calls } = fakeApi("on-device");
+      const { result } = choice(transcription(), api, null, false, "desktop");
+      expect(result.mode).toBe("skip");
+      expect(result.stops.map((s) => [s.stop.id, s.available])).toEqual([
+        ["skip", true],
+        ["local", false],
+        ["private", false],
+        ["powerful", false],
+      ]);
+      expect(result.stops.filter((s) => !s.available).map((s) => s.reason)).toEqual([
+        FINAL_COPY.whisperUnavailable,
+        SIGNED_OUT,
+        SIGNED_OUT,
+      ]);
+      expect(result.caption).toBe(DESKTOP_SIGNED_OUT_CAPTION);
+      expect(result.select("local")).toBe(FINAL_COPY.whisperUnavailable);
+      expect(result.select("private")).toBe(SIGNED_OUT);
+      await settle();
+      expect(calls).toEqual([]);
+    });
+
+    test("signed in on the Mac app is not locked and has no override caption", () => {
+      const { result } = choice(transcription(), fakeApi("private-cloud").api, null, true, "desktop");
+      expect(result.mode).toBe("private");
+      expect(result.caption).toBeNull();
+    });
+
+    test("signed out on the phone is unchanged: Local open, no caption override", () => {
+      const { result } = choice(transcription(), fakeApi("on-device").api, MODEL, false, "phone");
+      expect(result.mode).toBe("local");
+      expect(result.stops.find((s) => s.stop.id === "local")!.available).toBe(true);
+      expect(result.caption).toBeNull();
+    });
+
     test("signed out, Audio only cannot be requested at all", async () => {
       const { api, calls } = fakeApi("on-device");
       const { result } = choice(transcription(), api, MODEL, false);
@@ -418,5 +461,73 @@ describe("useTranscriptionChoice", () => {
         "[Recorder] Could not change the transcription mode",
       ]);
     });
+  });
+});
+
+describe("useTranscriptionChoice on the Mac with Whisper", () => {
+  const LABEL = "Whisper Large Turbo (Multilingual)";
+  const ready: DesktopWhisperState = { ready: true, modelLabel: LABEL };
+  const none: DesktopWhisperState = { ready: false, modelLabel: null };
+  const desktop = (signedIn: boolean, whisper: DesktopWhisperState, id: TranscriberId) =>
+    choice(transcription(), fakeApi(id).api, null, signedIn, "desktop", whisper);
+  const available = (r: ReturnType<typeof choice>["result"]) =>
+    Object.fromEntries(r.stops.map((s) => [s.stop.id, s.available]));
+
+  test("the matrix: signed in/out x Whisper ready or not", () => {
+    const outNone = desktop(false, none, "on-device").result;
+    expect(outNone.mode).toBe("skip");
+    expect(available(outNone)).toEqual({ skip: true, local: false, private: false, powerful: false });
+    expect(outNone.caption).toBe(DESKTOP_SIGNED_OUT_CAPTION);
+
+    const outReady = desktop(false, ready, "on-device").result;
+    expect(outReady.mode).toBe("local");
+    expect(available(outReady)).toEqual({ skip: false, local: true, private: false, powerful: false });
+    expect(outReady.caption).toBe("Whisper Large Turbo (Multilingual) on this Mac, after you stop.");
+
+    const inNone = desktop(true, none, "private-cloud").result;
+    expect(inNone.mode).toBe("private");
+    expect(available(inNone).local).toBe(false);
+    expect(inNone.caption).toBeNull();
+
+    const inReady = desktop(true, ready, "on-device").result;
+    expect(inReady.mode).toBe("local");
+    expect(available(inReady)).toMatchObject({ local: true, private: true });
+    expect(inReady.caption).toBe("Whisper Large Turbo (Multilingual) on this Mac, after you stop.");
+    expect(desktop(true, ready, "private-cloud").result.caption).toBeNull();
+  });
+
+  test("signed out with Whisper but no model name yet: the generic caption, never a made-up model", () => {
+    const { result } = desktop(false, { ready: true, modelLabel: null }, "on-device");
+    expect(result.caption).toBe(FINAL_COPY.modes.localDesktopCaption);
+    expect(FINAL_COPY.modes.localDesktopCaption).toBe("Whisper on this Mac, after you stop.");
+  });
+
+  test("the modes card names the model, or points to Settings without one", () => {
+    expect(desktop(true, ready, "on-device").result.explanationFor?.local).toContain("Large Turbo (Multilingual)");
+    expect(desktop(true, none, "private-cloud").result.explanationFor?.local).toBe(LOCAL_DESKTOP_NO_MODEL_EXPLANATION);
+    expect(LOCAL_DESKTOP_NO_MODEL_EXPLANATION).toContain("⚙︎");
+  });
+
+  test("with Whisper, signed out can pick Local and asks for it", async () => {
+    const { api, calls } = fakeApi("off");
+    const { result } = choice(transcription(), api, null, false, "desktop", ready);
+    expect(result.select("local")).toBeNull();
+    await settle();
+    expect(calls).toEqual([["setTranscriber", "on-device", { scope: "recording" }]]);
+  });
+
+  test("the phone and the web ignore Whisper state entirely", () => {
+    for (const shell of ["phone", "web"] as const) {
+      const base = choice(transcription(), fakeApi("private-cloud").api, MODEL, true, shell).result;
+      const withWhisper = choice(transcription(), fakeApi("private-cloud").api, MODEL, true, shell, ready).result;
+      expect(withWhisper.mode).toBe(base.mode);
+      expect(withWhisper.stops.map((s) => [s.stop.id, s.available])).toEqual(base.stops.map((s) => [s.stop.id, s.available]));
+      expect(withWhisper.caption).toBeNull();
+      expect(withWhisper.explanationFor).toBeUndefined();
+    }
+  });
+
+  test("the caption helper falls back to the generic line without a label", () => {
+    expect(localDesktopCaption(null)).toBe(FINAL_COPY.modes.localDesktopCaption);
   });
 });

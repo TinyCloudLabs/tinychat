@@ -70,6 +70,7 @@ const SHELL = { group: "shell", layout: "pane", displayTitle: true } as const;
 export const shellScreens: HarnessScreen[] = [
   {
     ...SHELL,
+    displayTitle: false,
     id: "shell-capture",
     path: "/chat/capture",
     platform: "ios",
@@ -77,12 +78,14 @@ export const shellScreens: HarnessScreen[] = [
   },
   {
     ...SHELL,
+    displayTitle: false,
     id: "shell-capture-web",
     path: "/chat/capture",
     render: () => <Shell />,
   },
   {
     ...SHELL,
+    displayTitle: false,
     id: "shell-library",
     path: "/chat/capture/library",
     platform: "ios",
@@ -137,6 +140,7 @@ export const shellScreens: HarnessScreen[] = [
   // Scrolled: the large title has collapsed into the header row, with its hairline.
   {
     ...SHELL,
+    displayTitle: false,
     id: "shell-capture-scrolled",
     path: "/chat/capture",
     platform: "ios",

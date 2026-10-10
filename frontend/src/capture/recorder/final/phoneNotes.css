@@ -1,0 +1,329 @@
+/* Moments (＋, the field under the timer, View notes) and the notes sheet, on the phone layout. */
+/* A 44px target; the 36px disc is drawn behind the glyph. */
+.pr-mark {
+  display: grid;
+  place-items: center;
+  isolation: isolate;
+  color: var(--ink);
+  transition: transform 0.2s cubic-bezier(0.3, 1.7, 0.4, 1);
+}
+.pr-mark {
+  border-radius: 50%;
+}
+/* The focus ring hugs the 36px disc inside the 44px target, so it is round like the disc. */
+.pr .pr-mark:focus-visible {
+  outline-offset: -2px;
+}
+.pr-mark::before {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  z-index: -1;
+  border-radius: 50%;
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--gedge);
+}
+.pr-mark:not(:disabled):not([aria-disabled="true"]):active {
+  transform: translateY(-50%) scale(0.86);
+}
+.pr-mark:disabled,
+.pr-mark[aria-disabled="true"] {
+  opacity: 0.45;
+}
+
+.pr-extra[data-collapsed="true"] {
+  min-height: 0;
+  margin-top: 0;
+}
+.pr-notes {
+  margin-top: 6px;
+  margin-bottom: -2px;
+  width: 100%;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pr-vnotes {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 6px 13px 6px 11px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  position: relative;
+  isolation: isolate;
+  animation: pr-pop 0.45s cubic-bezier(0.3, 1.6, 0.5, 1);
+}
+/* A 44px target; the 32px pill is drawn behind the label. */
+.pr-vnotes::before {
+  content: "";
+  position: absolute;
+  inset: 6px 0;
+  z-index: -1;
+  border-radius: 999px;
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--gedge);
+}
+@keyframes pr-pop {
+  from {
+    transform: scale(0.85);
+    opacity: 0;
+  }
+}
+
+.pr-moment {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(314px, calc(100% - 24px));
+  height: 42px;
+  padding: 0 6px 0 12px;
+  border-radius: 16px;
+  background: var(--solid);
+  box-shadow:
+    0 0 0 1px var(--gedge),
+    0 10px 24px rgba(0, 0, 0, 0.18);
+  animation: pr-pop 0.4s cubic-bezier(0.3, 1.6, 0.5, 1);
+}
+/* The field's ring is the card's, rounded to match: the input and the key inside it draw none of their own. */
+.pr-moment:focus-within {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+.pr-moment input:focus-visible,
+.pr-moment button:focus-visible {
+  outline: none;
+}
+.pr-moment-time {
+  flex: none;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.pr-moment input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  /* 16px: a smaller field makes iOS zoom the page when it takes focus. */
+  font: 500 16px var(--soft-body-font);
+  caret-color: var(--red);
+  height: 44px;
+  margin-block: -1px;
+}
+.pr-moment input::placeholder {
+  color: color-mix(in srgb, var(--dim) 70%, transparent);
+}
+/* A 44px target; the 30px key is drawn behind the glyph. */
+.pr-moment button {
+  flex: none;
+  position: relative;
+  isolation: isolate;
+  width: 44px;
+  height: 44px;
+  margin: -7px;
+  display: grid;
+  place-items: center;
+  color: var(--bgc);
+}
+.pr-moment button::before {
+  content: "";
+  position: absolute;
+  inset: 7px;
+  z-index: -1;
+  border-radius: 10px;
+  background: var(--ink);
+}
+
+/* While a moment is being typed the scale and controls step aside; the ring and timer stay. */
+.pr-main[data-noting="true"] .pr-controls-wrap,
+.pr-main[data-noting="true"] .pr-controls {
+  display: none;
+}
+.pr-main[data-noting="true"] {
+  padding-bottom: var(--kbh, 0px);
+}
+
+.pr-nsheet {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(env(safe-area-inset-bottom) + 12px);
+  z-index: 41;
+  height: 66%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 16px 12px;
+  border-radius: 34px;
+  background: var(--solid);
+  color: var(--ink);
+  box-shadow:
+    0 0 0 1px var(--gedge),
+    0 20px 60px rgba(0, 0, 0, 0.4);
+  animation: pr-slide 0.45s cubic-bezier(0.3, 1.3, 0.5, 1);
+  outline: none;
+}
+.pr-nsheet:not([data-kbd]) :focus-visible {
+  outline: none;
+}
+/* With the keyboard up the sheet takes the room above it (the bottom is set inline from the keyboard's height). */
+.pr-nsheet[data-lifted="true"] {
+  top: 98px;
+  height: auto;
+}
+.pr-nhead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.pr-nhead h2 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.15;
+  font-weight: 400;
+}
+.pr-nrec {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  margin-block: -4px;
+  padding: 5px 12px 5px 11px;
+  position: relative;
+  isolation: isolate;
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+}
+/* A 44px target; the 36px pill is drawn behind the content. */
+.pr-nrec::before {
+  content: "";
+  position: absolute;
+  inset: 4px 0;
+  z-index: -1;
+  border-radius: 999px;
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--gedge);
+}
+.pr-nrec:disabled {
+  opacity: 0.6;
+}
+.pr-nrec span[data-dim="true"] {
+  opacity: 0.5;
+}
+.pr-nsaved {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--dim);
+  opacity: 0;
+  transition: opacity 0.25s;
+}
+.pr-nsaved[data-shown="true"] {
+  opacity: 1;
+}
+.pr-ndone {
+  position: relative;
+  isolation: isolate;
+  min-height: 44px;
+  margin-block: -2px;
+  padding: 0 20px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--bgc);
+}
+/* A 44px target; the 40px pill is drawn behind the label. */
+.pr-ndone::before {
+  content: "";
+  position: absolute;
+  inset: 2px 0;
+  z-index: -1;
+  border-radius: 999px;
+  background: var(--ink);
+}
+.pr-ntabs {
+  align-self: flex-start;
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--gedge);
+}
+/* A 44px target; the 30px segment is drawn behind the label. */
+.pr-ntabs button {
+  position: relative;
+  isolation: isolate;
+  min-height: 44px;
+  margin-block: -7px;
+  padding: 4px 13px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--dim);
+}
+.pr-ntabs button::before {
+  content: "";
+  position: absolute;
+  inset: 7px 0;
+  z-index: -1;
+  border-radius: 999px;
+}
+.pr-ntabs button[aria-pressed="true"] {
+  color: var(--bgc);
+}
+.pr-ntabs button[aria-pressed="true"]::before {
+  background: var(--ink);
+}
+.pr-nbody {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.pr-nprev {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 2px;
+  scrollbar-width: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pr-vnotes,
+  .pr-moment,
+  .pr-nsheet {
+    animation: none;
+  }
+  .pr-mark,
+  .pr-nsaved {
+    transition: none;
+  }
+}
+.pr-nerr {
+  margin: 0;
+  padding: 0 20px 8px;
+  font-size: 13px;
+  color: var(--red);
+}
+
+.pr-nwait {
+  margin: 0;
+  padding: 12px 4px;
+  font-size: 15px;
+  color: var(--dim);
+}
+
+.pr-nsync {
+  margin: 0;
+  font-size: 12px;
+  color: var(--dim);
+}
+.pr-vnotes[data-failed="true"] {
+  color: var(--red);
+}
+.pr-notes {
+  flex-direction: column;
+  gap: 6px;
+}

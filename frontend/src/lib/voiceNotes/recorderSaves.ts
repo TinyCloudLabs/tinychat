@@ -22,9 +22,10 @@ import {
 } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { bytesToBase64, VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS } from "@/lib/voiceNotes/voiceNoteAudio";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
-import { saveVoiceNote, type VoiceNoteAudio, type VoiceNoteAudioSource } from "@/lib/voiceNotes/voiceNoteStore";
+import { saveVoiceNote, type NoteSyncErrorCode, type VoiceNoteAudio, type VoiceNoteAudioSource } from "@/lib/voiceNotes/voiceNoteStore";
 import { assertCurrent, type AccountContext } from "@/lib/voiceNotes/accountContext";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
+import { deleteNote } from "@/lib/voiceNotes/recordingNotes";
 
 export function messageOf(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -168,6 +169,12 @@ async function deleteDiscardedOnce(id: string): Promise<string | null> {
   } catch (caught) {
     return `Discarded, but this phone kept its copy: ${messageOf(caught)}`;
   }
+  try {
+    // Keep the discard marker until the local Markdown tombstone is durable.
+    await deleteNote(id);
+  } catch (caught) {
+    return `Discarded audio, but this phone kept its note text: ${messageOf(caught)}`;
+  }
   clearDiscarded(id);
   // Saved to the space before it was discarded: the local copy is gone, so that mark goes too.
   if (cloudSaved.delete(id)) {
@@ -188,7 +195,7 @@ async function deleteDiscardedOnce(id: string): Promise<string | null> {
  *  - `failed`: not in the space; it stays on the phone.
  */
 export type SaveOutcome =
-  | { kind: "saved"; audio: VoiceNoteAudio | null; cleanupError: string | null }
+  | { kind: "saved"; audio: VoiceNoteAudio | null; cleanupError: string | null; noteSyncError?: NoteSyncErrorCode }
   | { kind: "already-saved"; cleanupError: string | null }
   | { kind: "discarded"; cleanupError: string | null }
   | { kind: "held"; reason: "legacy" | "unowned" | "other-account" }
@@ -246,8 +253,12 @@ export async function saveRecording(
           },
         }
       : native;
-    const saved = await saveVoiceNote(tcw, recording, source, nativePlatform(), { onProgress });
-    if (!saved.ok) return { kind: "failed", failure: saved.error.message };
+    const saved = await saveVoiceNote(tcw, recording, source, nativePlatform(), { onProgress,
+      checkpoint: () => { if (isDiscarded(recording.id)) throw new Error("Recording was discarded"); } });
+    if (!saved.ok) return isDiscarded(recording.id)
+      ? { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) }
+      : { kind: "failed", failure: saved.error.message };
+    if (isDiscarded(recording.id)) return { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) };
     // The device copy remains playable. This old marker is informational;
     // the indexed row and the native ledger decide idempotence.
     cloudSaved.add(recording.id);
@@ -277,9 +288,12 @@ export async function saveRecording(
       kind: "saved",
       audio: whole ? { mimeType: recording.mimeType, base64: bytesToBase64(concatBytes(kept)) } : null,
       cleanupError,
+      noteSyncError: saved.data.noteSyncError,
     };
   } catch (caught) {
-    return { kind: "failed", failure: messageOf(caught) };
+    return isDiscarded(recording.id)
+      ? { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) }
+      : { kind: "failed", failure: messageOf(caught) };
   } finally {
     savesInFlight.delete(recording.id);
     publishSaveIdle();
@@ -290,6 +304,7 @@ export async function saveRecording(
 export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
   recording: VoiceNoteRecording, checkpoint: () => void = () => undefined): Promise<SaveOutcome> {
   const check = () => { assertCurrent(ctx); checkpoint(); };
+  const checkActive = () => { check(); if (isDiscarded(recording.id)) throw new Error("Recording was discarded"); };
   check();
   if (isDiscarded(recording.id)) return { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) };
   if (tcw.did !== ctx.did || tcw.spaceId !== ctx.spaceId) return { kind: "held", reason: "other-account" };
@@ -302,31 +317,36 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
   try {
     const source = nativeRecordingSource(recording);
     const checkedSource: VoiceNoteAudioSource = { ...source, readPart: async (offset, length) => {
-      check();
+      checkActive();
       return source.readPart(offset, length);
     } };
-    const saved = await saveVoiceNote(tcw, recording, checkedSource, nativePlatform(), { checkpoint: check });
-    if (!saved.ok) return { kind: "failed", failure: saved.error.message };
-    check();
+    const saved = await saveVoiceNote(tcw, recording, checkedSource, nativePlatform(), { checkpoint: checkActive });
+    if (!saved.ok) return isDiscarded(recording.id)
+      ? { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) }
+      : { kind: "failed", failure: saved.error.message };
+    checkActive();
     const patch = { audio: { state: "saved" as const, rowId: saved.data.id, at: Date.now() } };
     let fresh = recording;
     for (let attempt = 0; attempt < 2; attempt++) {
       check();
       try {
         await VoiceNotes.updateLedger({ id: recording.id, did: ctx.did, rev: fresh.rev ?? 0, patch });
-        return { kind: "saved", audio: null, cleanupError: null };
+        return { kind: "saved", audio: null, cleanupError: null, noteSyncError: saved.data.noteSyncError };
       } catch (caught) {
         if (errorCode(caught) !== "rev_conflict") throw caught;
         check();
         const current = (await VoiceNotes.listPending()).recordings.find((note) => note.id === recording.id);
         if (!current || current.owner !== ctx.did || isLegacyNote(current)) throw caught;
-        if (current.ledger?.audio.state === "saved") return { kind: "saved", audio: null, cleanupError: null };
+        if (current.ledger?.audio.state === "saved") return { kind: "saved", audio: null, cleanupError: null,
+          noteSyncError: saved.data.noteSyncError };
         fresh = current;
       }
     }
     return { kind: "failed", failure: "Could not update this phone's saved-note status" };
   } catch (caught) {
-    return { kind: "failed", failure: messageOf(caught) };
+    return isDiscarded(recording.id)
+      ? { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) }
+      : { kind: "failed", failure: messageOf(caught) };
   } finally {
     savesInFlight.delete(recording.id);
     publishSaveIdle();
@@ -345,6 +365,8 @@ export interface PendingRun {
 let pendingRunInFlight: Promise<PendingRun> | null = null;
 let trackedSavesInFlight = 0;
 let activeAccountDid: string | null = null;
+/** Bumped whenever the active account changes, so a run can tell "not registered yet" from "signed out since". */
+let accountChanges = 0;
 const noteFailures = new Map<string, string>();
 let generalFailure: string | null = null;
 
@@ -453,6 +475,27 @@ export const pendingStore = {
     generalFailure = message;
     publishPending({ lastError: currentFailure() });
   },
+  /**
+   * Writes for a run on behalf of `did`, valid only in the account session the run began in: while nothing has
+   * changed since (`did` active, or no account registered yet), or after exactly the first registration of `did` when
+   * none was registered at the start (the saver registers the signed-in account just after mount). Any later change
+   * (another account, a sign-out, a return to the same account) ends the session: its writes are dropped (a dropped
+   * error is logged), so a late result never clears or replaces a later session's state.
+   */
+  forAccount(did: string): { refresh(lastError?: string | null): Promise<void>; reportError(message: string): void } {
+    const startedAs = activeAccountDid;
+    const changesAtStart = accountChanges;
+    const current = () => accountChanges === changesAtStart
+      ? activeAccountDid === did || activeAccountDid === null
+      : startedAs === null && accountChanges === changesAtStart + 1 && activeAccountDid === did;
+    return {
+      refresh: (lastError) => (current() ? relistPending(lastError) : Promise.resolve()),
+      reportError: (message) => {
+        if (current()) pendingStore.reportError(message);
+        else console.warn("[VoiceNotes] Dropped a pending-save error from a previous account", message);
+      },
+    };
+  },
   reportNoteFailure(id: string, message: string): void {
     noteFailures.delete(id);
     noteFailures.set(id, message);
@@ -460,6 +503,7 @@ export const pendingStore = {
   },
   setAccount(did: string | null): void {
     if (activeAccountDid !== did) {
+      accountChanges++;
       noteFailures.clear();
       generalFailure = null;
       publishPending({ accountDid: did, listing: { state: "unknown" }, lastError: null });

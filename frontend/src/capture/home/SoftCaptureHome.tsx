@@ -8,7 +8,6 @@ import { Link } from "react-router-dom";
 
 import { Skeleton } from "@/components/ui/skeleton";
 import { PATHS } from "@/shell/routes";
-import { RECENT_COUNT } from "../CaptureHomeView";
 import {
   InProgressRowsView,
   inProgressShown,
@@ -20,6 +19,9 @@ import { cardNote, recentEntries } from "./captureIssues";
 import { HOME_COPY } from "./homeCopy";
 import { SoftIssueRow } from "./SoftIssueRow";
 import { useSoftHome } from "./softHome";
+
+/** How many captures Recent shows. */
+const RECENT_COUNT = 5;
 
 export interface SoftCaptureHomeProps {
   inProgress: InProgressRowsViewProps;

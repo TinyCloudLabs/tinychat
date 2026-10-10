@@ -6,15 +6,17 @@
 //      reply survive every tab, Settings, rotation and size class, and the chat
 //      and Capture surfaces never remount.
 //   2. One recorder: the native plugin never has more than one view listening
-//      (the Capture card, or the chat bar), and none on Connectors.
+//      (the provider's eight, plus the one shared `inputs` listener the
+//      recorder's microphone picker attaches), and none on Connectors. The web
+//      app has no native plugin, so no listener at all.
 //   3. Android Back closes overlays first, the top one first, then goes home.
 //   4. Retired addresses end on the Library.
 //   5. How it works opens at the section a link names, with its heading
 //      focused; a malformed or unknown anchor opens it at the top.
 //   6. An InfoTip opens on a tap and closes on a second tap, an outside tap
 //      or Escape.
-//   7. Discard asks in place, with focus on Keep, and turns back after 5 s;
-//      confirmed, it stops and deletes the recording and closes the recorder.
+//   7. Discard asks in a dialog, with focus on Keep; confirmed, it stops and
+//      deletes the recording and closes the recorder.
 //   8. A note stays open across size classes: Capture's panes are the same
 //      elements (the fixed tree), and nothing remounts.
 //
@@ -43,6 +45,8 @@ beforeAll(async () => {
   });
   if (!built.success) throw new Error(built.logs.join("\n"));
   bundle = await built.outputs.find((output) => output.kind === "entry-point")!.text();
+  // Stylesheets the components import themselves (the Soft skin) come out of the build beside the script.
+  const componentCss = await Promise.all(built.outputs.filter((output) => output.path.endsWith(".css")).map((output) => output.text()));
 
   const requireFromFrontend = createRequire(`${frontend}package.json`);
   const postcss = requireFromFrontend("postcss");
@@ -50,7 +54,7 @@ beforeAll(async () => {
   const source = await Bun.file(`${frontend}src/index.css`).text();
   const config = (await import(`${frontend}tailwind.config.js`)).default;
   config.content = [`${frontend}index.html`, `${frontend}src/**/*.{js,ts,jsx,tsx}`];
-  css = (await postcss([tailwindcss(config)]).process(source, { from: `${frontend}src/index.css` })).css;
+  css = (await postcss([tailwindcss(config)]).process(source, { from: `${frontend}src/index.css` })).css + componentCss.join("\n");
 }, 120_000);
 
 const encoder = new TextEncoder();
@@ -170,7 +174,7 @@ describe.serial(`shell invariants (${name})`, () => {
     await page.close();
   }, 60_000);
 
-  test("one recorder: the provider's eight listeners from ready on; navigation, Settings and resizes add none", async () => {
+  test("one recorder (the phone app): the provider's eight listeners from ready on; navigation, Settings and resizes add none; the recorder's picker adds the shared inputs listener", async () => {
     const { page, errors } = await open("/chat/capture");
     const stats = () => page.evaluate(() => window.shellHarness!.voiceNotes());
     let highest = 0;
@@ -194,32 +198,50 @@ describe.serial(`shell invariants (${name})`, () => {
       await settle(page);
       await sample();
     }
+    // The phone app's Capture home (tablet widths included) has no settings picker: nothing is added by the home.
     expect((await stats()).adds).toBe(addsAtReady);
 
     // Record from the chat header: the recorder opens and records.
     await page.getByTestId("header-voice-note").click();
     await page.waitForFunction(() => window.shellHarness!.voiceNotes().recording);
-    await page.getByTestId("voice-note-stop").waitFor();
-    // Back (Escape) minimises it without stopping; the island follows to Connectors.
-    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('[data-testid="voice-note-stop"]')?.disabled);
-    await page.evaluate(() => window.shellHarness!.back());
-    await page.getByTestId("recorder-island").waitFor();
+    await page.waitForFunction(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Done")?.disabled === false);
+    await sample();
+    // Minimise keeps it recording: the Ribbon follows to Connectors.
+    await page.getByRole("button", { name: "Minimise recorder" }).click();
+    await page.getByTestId("ribbon").waitFor();
     expect((await stats()).recording).toBe(true);
     await go(page, "/chat/connectors");
-    await page.getByTestId("recorder-island").waitFor();
-    // On its side the rail carries it, and no island floats over Send.
+    await page.getByTestId("ribbon").waitFor();
+    // On its side the rail floats the same Ribbon, with no rail button or island beside it.
     await page.setViewportSize({ width: 844, height: 390 });
-    await page.getByTestId("rail-live").waitFor();
+    await page.getByTestId("ribbon").waitFor();
+    expect(await page.getByTestId("rail-live").count()).toBe(0);
     expect(await page.getByTestId("recorder-island").count()).toBe(0);
     await page.setViewportSize({ width: 390, height: 844 });
-    // Stop from the island: the save runs and the island turns into its receipt.
-    await page.getByTestId("island-stop").click();
+    // Stop from the Ribbon: the save runs and the island turns into its receipt.
+    await page.getByTestId("ribbon-stop").click();
     await page.waitForFunction(() => !window.shellHarness!.voiceNotes().recording);
     await page.waitForFunction(() => /landed|failed/.test(document.querySelector('[data-testid="recorder-island"]')?.getAttribute("data-state") ?? ""));
     await sample();
 
-    expect((await stats()).adds).toBe(addsAtReady);
-    expect(highest).toBe(8);
+    // Opening the recorder attached the shared `inputs` listener (its microphone picker), once.
+    expect((await stats()).adds).toBe(addsAtReady + 1);
+    expect(highest).toBe(9);
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 60_000);
+
+  test("one recorder (the web app): no native plugin, so no native listener at any width; the home still offers the microphone settings", async () => {
+    const { page, errors } = await open("/chat/capture?platform=web", { width: 1280, height: 800 });
+    await page.getByTestId("desktop-capture-home").waitFor();
+    for (const [width, height] of [[820, 1180], [1280, 800], [1024, 768]]) {
+      await page.setViewportSize({ width, height });
+      await settle(page);
+      await page.getByTestId("capture-settings-button").waitFor();
+      expect(await page.evaluate(() => window.shellHarness!.voiceNotes())).toMatchObject({ adds: 0, active: 0 });
+    }
+    for (const path of ["/chat", "/chat/connectors", "/chat/capture"]) await go(page, path);
+    expect(await page.evaluate(() => window.shellHarness!.voiceNotes())).toMatchObject({ adds: 0, active: 0 });
     expect(errors).toEqual([]);
     await page.close();
   }, 60_000);
@@ -231,9 +253,10 @@ describe.serial(`shell invariants (${name})`, () => {
 
     await page.getByTestId("voice-note-record").click();
     await page.waitForFunction(() => window.shellHarness!.voiceNotes().recording);
-    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('[data-testid="voice-note-stop"]')?.disabled);
+    await page.getByRole("button", { name: "Done" }).waitFor();
+    await page.waitForFunction(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Done")?.disabled === false);
 
-    await page.getByTestId("voice-note-stop").click();
+    await page.getByRole("button", { name: "Done" }).click();
     await page.waitForFunction(() => !window.shellHarness!.voiceNotes().recording);
     // The full-page recorder stays open and shows the receipt, with its Play control, for the
     // RECEIPT_MS window — not an immediate close to Capture home.
@@ -258,10 +281,11 @@ describe.serial(`shell invariants (${name})`, () => {
 
     await page.getByTestId("voice-note-record").click();
     await page.waitForFunction(() => window.shellHarness!.voiceNotes().recording);
-    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('[data-testid="voice-note-stop"]')?.disabled);
+    await page.getByRole("button", { name: "Done" }).waitFor();
+    await page.waitForFunction(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Done")?.disabled === false);
 
     const stoppedAt = Date.now();
-    await page.getByTestId("voice-note-stop").click();
+    await page.getByRole("button", { name: "Done" }).click();
     await page.waitForFunction(() => !window.shellHarness!.voiceNotes().recording);
 
     await page.getByTestId("note-audio-play").waitFor({ timeout: 8_000 });
@@ -293,10 +317,11 @@ describe.serial(`shell invariants (${name})`, () => {
 
     await page.getByTestId("voice-note-record").click();
     await page.waitForFunction(() => window.shellHarness!.voiceNotes().recording);
-    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('[data-testid="voice-note-stop"]')?.disabled);
+    await page.getByRole("button", { name: "Done" }).waitFor();
+    await page.waitForFunction(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Done")?.disabled === false);
 
     const stoppedAt = Date.now();
-    await page.getByTestId("voice-note-stop").click();
+    await page.getByRole("button", { name: "Done" }).click();
     await page.waitForFunction(() => !window.shellHarness!.voiceNotes().recording);
 
     await page.getByTestId("note-audio-play").waitFor({ timeout: 18_000 });
@@ -315,36 +340,32 @@ describe.serial(`shell invariants (${name})`, () => {
     await page.close();
   }, 60_000);
 
-  test("discard: the question takes focus to Keep and turns back after 5 s; confirmed, the recording is deleted and the recorder closes", async () => {
+  test("discard: the question takes focus to Keep and returns it to Discard; confirmed, the recording is deleted and the recorder closes", async () => {
     const { page, errors } = await open("/chat/capture");
     const stats = () => page.evaluate(() => window.shellHarness!.voiceNotes());
-    const focused = () => page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? null);
+    const focusedName = () => page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.trim() ?? null);
 
     await page.getByTestId("voice-note-record").click();
     await page.waitForFunction(() => window.shellHarness!.voiceNotes().recording);
-    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('[data-testid="voice-note-stop"]')?.disabled);
+    await page.getByTestId("phone-recorder").waitFor();
+    const discard = page.getByRole("button", { name: "Discard recording", exact: true });
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('button[aria-label="Discard recording"]')?.disabled);
 
-    // Asked in place: focus moves to Keep; 5 s without an answer turns it back, focus with it.
-    await page.getByTestId("recorder-discard").click();
-    await page.getByTestId("recorder-discard-confirm").waitFor();
-    expect(await page.getByRole("group", { name: "Discard this recording?" }).count()).toBe(1);
-    expect(await focused()).toBe("recorder-discard-keep");
-    await page.waitForTimeout(4_000);
-    expect(await page.getByTestId("recorder-discard-confirm").count()).toBe(1);
-    await page.getByTestId("recorder-discard").waitFor({ timeout: 3_000 });
-    expect(await page.getByTestId("recorder-discard-confirm").count()).toBe(0);
-    expect(await focused()).toBe("recorder-discard");
+    // Asked in a dialog: focus moves to Keep.
+    await discard.click();
+    const question = page.getByRole("alertdialog", { name: "Discard this recording?" });
+    await question.waitFor();
+    expect(await focusedName()).toBe("Keep recording");
 
-    // Keep: nothing happens to the recording.
-    await page.getByTestId("recorder-discard").click();
-    await page.getByTestId("recorder-discard-keep").click();
-    await page.getByTestId("recorder-discard").waitFor();
-    expect(await focused()).toBe("recorder-discard");
+    // Keep: nothing happens to the recording, and focus returns to the Discard control.
+    await question.getByRole("button", { name: "Keep recording" }).click();
+    await question.waitFor({ state: "detached" });
+    expect(await focusedName()).toBe("Discard recording");
     expect((await stats()).recording).toBe(true);
 
     // Discard: stopped, deleted from the phone, nothing saved, and the recorder closes.
-    await page.getByTestId("recorder-discard").click();
-    await page.getByTestId("recorder-discard-yes").click();
+    await discard.click();
+    await question.getByRole("button", { name: "Discard recording" }).click();
     await page.waitForFunction(() => !window.shellHarness!.voiceNotes().recording);
     await page.waitForFunction(() => document.querySelector('[data-testid="recorder-announcer"]')?.textContent === "Recording discarded");
     await page.waitForFunction(() => document.querySelector('[data-testid="recording-overlay"]') === null);

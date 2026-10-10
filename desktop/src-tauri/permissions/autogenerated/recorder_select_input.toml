@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-recorder-select-input"
+description = "Enables the recorder_select_input command without any pre-configured scope."
+commands.allow = ["recorder_select_input"]
+
+[[permission]]
+identifier = "deny-recorder-select-input"
+description = "Denies the recorder_select_input command without any pre-configured scope."
+commands.deny = ["recorder_select_input"]

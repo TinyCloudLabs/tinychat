@@ -4,12 +4,18 @@
 //   3. transcription is offered only when available to this build AND account, and only after
 //      the one-time private cloud consent; a hidden or still-checking engine offers nothing;
 //   4. a voice note shows its progress, "No speech", or its failure (with Retry when it can help).
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { aboutHref } from "@/lib/about";
+import {
+  __desktopWhisperQueueReadsForTests,
+  registerDesktopWhisperQueue,
+  type DesktopWhisperJob,
+  type DesktopWhisperQueue,
+} from "@/lib/voiceNotes/desktop/desktopWhisper";
 import type { NoteTranscriptionState } from "@/lib/voiceNotes/voiceNoteTranscription";
 import type { LibraryItem } from "./LibraryRow";
 import { NoteDetailView, transcriptBlocks, type NoteDetailViewProps } from "./NoteDetailView";
@@ -188,5 +194,49 @@ describe("a voice note's transcription", () => {
       expect(html).toContain("Book the venue.");
       expect(html).not.toContain('data-testid="voice-note-transcribe"');
     }
+  });
+});
+
+describe("a voice note with an after-stop Whisper job on the Mac", () => {
+  afterEach(() => registerDesktopWhisperQueue(null));
+  const withJob = (job: Partial<DesktopWhisperJob> | null, patch: Partial<NoteDetailViewProps> = {}) => {
+    const jobs = new Map(job ? [["rec-1", { id: "rec-1", state: "queued", error: null, progress: null, ...job } as DesktopWhisperJob]] : []);
+    registerDesktopWhisperQueue({ snapshot: () => jobs, subscribe: () => noop } as unknown as DesktopWhisperQueue);
+    return render({ desktopWhisper: true, ...patch });
+  };
+
+  test("signed out (no private-cloud props): queued, progress and failure with Retry show on the page", () => {
+    const before = __desktopWhisperQueueReadsForTests();
+    expect(withJob({ state: "queued" })).toContain("Waiting to transcribe on this Mac");
+    // The counter sees the enabled path, so its silence outside the desktop app means something.
+    expect(__desktopWhisperQueueReadsForTests()).toBeGreaterThan(before);
+    expect(withJob({ state: "transcribing", progress: 33 })).toContain("Transcribing on this Mac · 33%");
+    const failed = withJob({ state: "failed", error: "raw detail" });
+    expect(failed).toContain('data-testid="whisper-job-retry"');
+    expect(failed).not.toContain("raw detail");
+    expect(failed).not.toContain("No transcript.");
+  });
+
+  test("outside the desktop app it renders as before and never reads the queue", () => {
+    const calls: string[] = [];
+    const job: DesktopWhisperJob = { id: "rec-1", state: "failed", error: "raw detail", progress: null };
+    registerDesktopWhisperQueue({
+      snapshot: () => { calls.push("snapshot"); return new Map([["rec-1", job]]); },
+      subscribe: () => { calls.push("subscribe"); return noop; },
+    } as unknown as DesktopWhisperQueue);
+    // The production default (no override): the shell isn't Tauri in tests.
+    const before = __desktopWhisperQueueReadsForTests();
+    const classic = render();
+    expect(__desktopWhisperQueueReadsForTests()).toBe(before);
+    expect(render({ desktopWhisper: false })).toBe(classic);
+    expect(__desktopWhisperQueueReadsForTests()).toBe(before);
+    expect(classic).toContain("No transcript.");
+    expect(classic).not.toContain("whisper-job");
+    expect(calls).toEqual([]);
+  });
+
+  test("without a job the page is unchanged", () => {
+    expect(withJob(null)).toBe(render());
+    expect(withJob(null)).toContain("No transcript.");
   });
 });

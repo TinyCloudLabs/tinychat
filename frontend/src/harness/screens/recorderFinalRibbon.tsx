@@ -111,7 +111,6 @@ function Minimized({ paused, mic, elapsedMs }: Setup) {
       shim={shim}
       state="ready"
       recorder={value}
-      finalRecorder
     />
   );
 }
@@ -121,7 +120,7 @@ function screen(name: string, setup: Setup): HarnessScreen {
     id: `recorder-final-minimized-${name}`,
     group: "recorder",
     layout: "pane",
-    displayTitle: true,
+    displayTitle: false,
     path: "/chat/capture",
     platform: "ios",
     render: () => <Minimized {...setup} />,
@@ -180,7 +179,6 @@ function Native() {
       platform={platform}
       shim={shim}
       state="ready"
-      finalRecorder
       inside={<StartMinimized />}
     />
   );
@@ -190,7 +188,7 @@ const nativeScreen: HarnessScreen = {
   id: "recorder-final-minimized-native",
   group: "recorder",
   layout: "pane",
-  displayTitle: true,
+  displayTitle: false,
   path: "/chat/capture",
   platform: "ios",
   interactive: true,

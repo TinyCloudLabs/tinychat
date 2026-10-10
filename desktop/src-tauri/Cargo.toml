@@ -21,7 +21,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # --- Transcription (anarlog, MIT layer) -------------------------------------
-# Local meeting capture + on-device Whisper, reused from fastrepl/anarlog's
+# Desktop recording + on-device Whisper, reused from fastrepl/anarlog's
 # MIT-licensed Tauri plugins. This is a first-class desktop feature, included
 # by default despite its large native dependency graph.
 # Plugin permissions are injected at runtime from
@@ -48,6 +48,18 @@ git = "https://github.com/fastrepl/anarlog"
 rev = "864ddc1f692116d128eea2692fd72b0a51007768"
 optional = true
 
+# Recovery encodes the upstream recorder's crash-retained WAV when its normal
+# MP3 finalization did not run. The crate is already in listener-core's graph.
+[dependencies.anlg-mp3]
+package = "mp3"
+git = "https://github.com/fastrepl/anarlog"
+rev = "864ddc1f692116d128eea2692fd72b0a51007768"
+optional = true
+
+[dependencies.hound]
+version = "3.5"
+optional = true
+
 # `vault_base()` (session audio + settings) is read from the StartupSnapshot
 # state that only tauri-plugin-settings::init() manages, and the local-stt
 # models dir resolves through the same plugin.
@@ -56,21 +68,10 @@ git = "https://github.com/fastrepl/anarlog"
 rev = "864ddc1f692116d128eea2692fd72b0a51007768"
 optional = true
 
-# Debug-only smoke runner (src/smoke.rs) needs tokio::time; the private cloud
-# uploader (src/cloud) uses it for its idle watchdog.
+# Recorder and debug smoke runner use tokio for timers and task coordination.
 [dependencies.tokio]
 version = "1"
-features = ["time"]
-optional = true
-
-# --- Private cloud engine (src/cloud) ---------------------------------------
-# Uploads a stopped recording to TinyCloud Private Transcription through a
-# descriptor opened with openat/O_NOFOLLOW (rustix), hashed with sha2, and
-# streamed by reqwest with redirects disabled. Part of the `transcription`
-# feature because it only ever uploads a capture the transcription plugin made.
-[dependencies.reqwest]
-version = "0.13"
-features = ["stream"]
+features = ["time", "sync"]
 optional = true
 
 [dependencies.rustix]
@@ -84,10 +85,6 @@ optional = true
 
 [dependencies.hex]
 version = "0.4"
-optional = true
-
-[dependencies.getrandom]
-version = "0.3"
 optional = true
 
 [dependencies.uuid]
@@ -143,13 +140,13 @@ transcription = [
     "dep:tauri-plugin-transcription",
     "dep:tauri-plugin-local-stt",
     "dep:audio-actual",
+    "dep:anlg-mp3",
+    "dep:hound",
     "dep:tauri-plugin-settings",
     "dep:tokio",
-    "dep:reqwest",
     "dep:rustix",
     "dep:sha2",
     "dep:hex",
-    "dep:getrandom",
     "dep:uuid",
     "dep:futures-util",
 ]

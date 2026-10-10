@@ -301,6 +301,54 @@ describe("pendingStore", () => {
     await saves.pendingStore.refresh(null);
     expect(saves.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 3 });
   });
+  test("A's late save result, failed or finished, never replaces or clears B's pending state", async () => {
+    phone.pending = [{ ...recording("bob-note", 1), owner: "did:example:bob" }];
+    saves.pendingStore.setAccount(tcw.did);
+    const forA = saves.pendingStore.forAccount(tcw.did!);
+    saves.pendingStore.setAccount("did:example:bob");
+    const forB = saves.pendingStore.forAccount("did:example:bob");
+    await saves.pendingStore.refresh(null);
+    forB.reportError("Could not save notes on this phone: B's space timed out");
+    forA.reportError("Could not save notes on this phone: A's space timed out");
+    await forA.refresh(null);
+    expect(saves.pendingStore.snapshot()).toMatchObject({ accountDid: "did:example:bob", listing: { state: "ok", count: 1 },
+      lastError: "Could not save notes on this phone: B's space timed out" });
+    await forB.refresh(null);
+    expect(saves.pendingStore.snapshot().lastError).toBeNull();
+    saves.pendingStore.setAccount(null);
+  });
+  test("a run that began before its account was registered still reports once that account registers, never after another", async () => {
+    phone.pending = [recording("alice-note", 1)];
+    saves.pendingStore.setAccount(null);
+    const forAlice = saves.pendingStore.forAccount(tcw.did!);
+    saves.pendingStore.setAccount(tcw.did);
+    forAlice.reportError("Could not save notes on this phone: Alice's space timed out");
+    expect(saves.pendingStore.snapshot()).toMatchObject({ accountDid: tcw.did,
+      lastError: "Could not save notes on this phone: Alice's space timed out" });
+    await forAlice.refresh(null);
+    expect(saves.pendingStore.snapshot().lastError).toBeNull();
+    saves.pendingStore.setAccount(null);
+    const forAliceAgain = saves.pendingStore.forAccount(tcw.did!);
+    saves.pendingStore.setAccount("did:example:bob");
+    saves.pendingStore.setAccount(null);
+    forAliceAgain.reportError("Alice's late failure");
+    expect(saves.pendingStore.snapshot().lastError).toBeNull();
+  });
+  test("a run from an earlier session of the same account never writes into the next one (A → null → A, A → B → A)", async () => {
+    phone.pending = [recording("alice-note", 1)];
+    for (const via of [null, "did:example:bob"]) {
+      saves.pendingStore.setAccount(tcw.did);
+      const earlier = saves.pendingStore.forAccount(tcw.did!);
+      saves.pendingStore.setAccount(via);
+      saves.pendingStore.setAccount(tcw.did);
+      const later = saves.pendingStore.forAccount(tcw.did!);
+      later.reportError("This session's failure");
+      earlier.reportError("The earlier session's failure");
+      await earlier.refresh(null);
+      expect(saves.pendingStore.snapshot()).toMatchObject({ accountDid: tcw.did, lastError: "This session's failure" });
+      saves.pendingStore.setAccount(null);
+    }
+  });
   test("a new automatic save preserves an earlier note's failure until that note succeeds", async () => {
     const failed = recording("failed-earlier", 1);
     const newer = recording("newer-save", 2);

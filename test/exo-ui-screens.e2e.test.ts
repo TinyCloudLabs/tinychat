@@ -71,6 +71,8 @@ interface ScreenInfo {
   platform?: string;
   /** Driven by its own test; not captured. */
   interactive?: boolean;
+  /** Not captured at viewports narrower than this. */
+  minViewportWidth?: number;
 }
 
 interface AllowEntry {
@@ -125,6 +127,8 @@ function ignoredConsoleError(message: ConsoleMessage): boolean {
   if (text.startsWith("Failed to load resource") && url !== "" && !url.startsWith("http://127.0.0.1:")) return true;
   // WebKit does not know Chrome's interactive-widget viewport key (index.html) and reports it as an error.
   if (text.includes('Viewport argument key "interactive-widget" not recognized')) return true;
+  // The saved-note-page-save-failed screen refuses the save on purpose, and the app logs every failed save.
+  if (text.startsWith("[SavedNote] Could not save the note")) return true;
   return false;
 }
 
@@ -298,6 +302,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 !viewport.screenPrefixes.some((prefix) => screen.id.startsWith(prefix))
               ) continue;
               if (screen.viewports && !screen.viewports.includes(viewport.id)) continue;
+              if (screen.minViewportWidth !== undefined && viewport.width < screen.minViewportWidth) continue;
               const page = await context.newPage();
               const errors: string[] = [];
               page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));

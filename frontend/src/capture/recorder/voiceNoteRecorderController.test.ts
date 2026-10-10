@@ -17,6 +17,8 @@ import { createVoiceNoteTranscriber, type VoiceNoteTranscriber } from "@/lib/voi
 import { VoiceNoteSaveDeferred, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { advanceAccountGeneration } from "@/lib/voiceNotes/accountContext";
 import { consentToRecordingPrivateCloud, setRecordingRoute } from "./TranscriptionRouteControl";
+import { loadNote } from "@/lib/voiceNotes/recordingNotes";
+import { reportRecordingNoteSyncError } from "@/lib/voiceNotes/voiceNoteStore";
 
 const realStore = { ...(await import("@/lib/voiceNotes/voiceNoteStore")) };
 mock.module("@/lib/voiceNotes/voiceNoteStore", () => ({
@@ -65,7 +67,9 @@ let micDenied: boolean;
 let shortcutPending: boolean;
 let microphoneGranted: boolean;
 
-function controller(options: { tcw?: TinyCloudWeb | null; pipeline?: VoiceNotePipeline; consented?: boolean | (() => boolean); onDeviceReady?: boolean; appleInterim?: boolean; transcriber?: VoiceNoteTranscriber;
+function controller(options: { tcw?: TinyCloudWeb | null; pipeline?: VoiceNotePipeline; consented?: boolean | (() => boolean); onDeviceReady?: boolean;
+  appleInterim?: boolean; transcriber?: VoiceNoteTranscriber; noteLoader?: typeof loadNote;
+  noteRetryScheduler?: (delayMs: number, retry: () => void) => () => void;
   subscribeAppActive?: (listener: () => void) => Promise<{ remove(): Promise<void> }> } = {}) {
   return createVoiceNoteRecorderController({
     tcw: options.tcw === undefined ? tcw : options.tcw,
@@ -76,6 +80,8 @@ function controller(options: { tcw?: TinyCloudWeb | null; pipeline?: VoiceNotePi
         capabilities: null, jobs: new Map() }) },
     onDeviceReady: () => options.onDeviceReady ?? true,
     appleInterim: () => options.appleInterim ?? false,
+    noteLoader: options.noteLoader,
+    noteRetryScheduler: options.noteRetryScheduler,
     subscribeAppActive: options.subscribeAppActive,
   });
 }
@@ -158,6 +164,191 @@ async function attached() {
 }
 
 describe("voice-note recorder controller", () => {
+  test("a signed-out recording keeps its Markdown local without starting a space sync", async () => {
+    const recorder = controller({ tcw: null });
+    const detach = recorder.attach();
+    await tick();
+    await recorder.record();
+    const id = currentId!;
+    await tick();
+    await recorder.setNoteText("Signed-out draft");
+    await recorder.stop();
+    await tick();
+    expect((await loadNote(id))?.md).toBe("Signed-out draft");
+    expect(saves).toEqual([]);
+    expect(recorder.getNoteSyncError()).toBeNull();
+    detach();
+  });
+
+  test("note autosave survives a controller reload during native capture", async () => {
+    const first = controller();
+    const detach = first.attach();
+    await tick();
+    await first.record();
+    const id = currentId!;
+    await tick();
+    await first.setNoteText("# Draft\n- **0:07** hallway");
+    expect((await loadNote(id))?.md).toBe("# Draft\n- **0:07** hallway");
+    detach();
+
+    const reopened = controller();
+    const remove = reopened.attach();
+    await tick();
+    await tick();
+    expect(reopened.getState().recordingId).toBe(id);
+    expect(reopened.getNote()).toEqual({ md: "# Draft\n- **0:07** hallway",
+      moments: [{ atMs: 7_000, label: "hallway" }] });
+    remove();
+  });
+
+  test("an edit during a reload's pending note read cannot replace the stored draft", async () => {
+    const first = controller();
+    const detach = first.attach();
+    await tick();
+    await first.record();
+    await tick();
+    const id = currentId!;
+    await first.setNoteText("# Ten lines of work\nKeep this draft");
+    detach();
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const reopened = controller({ noteLoader: async (noteId) => { await gate; return loadNote(noteId); } });
+    const remove = reopened.attach();
+    await tick();
+    expect(reopened.getNoteStatus()).toBe("loading");
+    await expect(reopened.setNoteText("x")).rejects.toMatchObject({ code: "note_not_loaded" });
+    expect((await loadNote(id))?.md).toBe("# Ten lines of work\nKeep this draft");
+    release();
+    await tick();
+    expect(reopened.getNoteStatus()).toBe("ready");
+    expect(reopened.getNote()?.md).toBe("# Ten lines of work\nKeep this draft");
+    remove();
+  });
+
+  test("note-load errors stay visible and retry at 1, 2, 4 … 30 seconds without mic-event retries", async () => {
+    const first = controller();
+    const detach = first.attach();
+    await tick();
+    await first.record();
+    await tick();
+    const id = currentId!;
+    await first.setNoteText("Do not overwrite");
+    detach();
+
+    let available = false;
+    let reads = 0;
+    const timers: { ms: number; run: () => void; cancelled: boolean }[] = [];
+    const readFailure = new Error("IndexedDB open failed");
+    const reopened = controller({
+      noteLoader: (noteId) => { reads++; return available ? loadNote(noteId) : Promise.reject(readFailure); },
+      noteRetryScheduler: (ms, run) => {
+        const timer = { ms, run, cancelled: false };
+        timers.push(timer);
+        return () => { timer.cancelled = true; };
+      },
+    });
+    const remove = reopened.attach();
+    await tick();
+    expect(reopened.getNoteStatus()).toBe("error");
+    await expect(reopened.setNoteText("x")).rejects.toBe(readFailure);
+    expect((await loadNote(id))?.md).toBe("Do not overwrite");
+    expect(timers.map((timer) => timer.ms)).toEqual([1_000]);
+    fake.emit("micState", { id, state: "recording", reason: null, elapsedMs: 2_000 });
+    await tick();
+    expect(reads).toBe(1);
+    expect(timers).toHaveLength(1);
+    for (const delay of [2_000, 4_000, 8_000, 16_000, 30_000, 30_000]) {
+      timers.at(-1)!.run();
+      await tick();
+      expect(reopened.getNoteStatus()).toBe("error");
+      expect(timers.at(-1)!.ms).toBe(delay);
+    }
+    available = true;
+    timers.at(-1)!.run();
+    await tick();
+    expect(reopened.getNoteStatus()).toBe("ready");
+    expect(reopened.getNote()?.md).toBe("Do not overwrite");
+    expect((await loadNote(id))?.md).toBe("Do not overwrite");
+    remove();
+  });
+
+  test("a recording change cancels the old note retry and starts the next at one second", async () => {
+    const timers: { ms: number; run: () => void; cancelled: boolean }[] = [];
+    const recorder = controller({ noteLoader: () => Promise.reject(new Error("offline local storage")),
+      noteRetryScheduler: (ms, run) => {
+        const timer = { ms, run, cancelled: false };
+        timers.push(timer);
+        return () => { timer.cancelled = true; };
+      } });
+    const detach = recorder.attach();
+    await tick();
+    await recorder.record();
+    await tick();
+    expect(recorder.getNoteStatus()).toBe("error");
+    expect(timers.at(-1)?.ms).toBe(1_000);
+    const old = timers.at(-1)!;
+    await recorder.discard();
+    expect(old.cancelled).toBe(true);
+    await recorder.record();
+    await tick();
+    expect(recorder.getNoteStatus()).toBe("error");
+    expect(timers.at(-1)?.ms).toBe(1_000);
+    detach();
+  });
+
+  test("a Markdown sync failure has a short separate status that a successful sync clears", async () => {
+    const account = { did: tcw.did, spaceId: "space:note-status" } as TinyCloudWeb;
+    fakeVoiceNoteStore.save = async () => ({ ok: true, data: { id: "row", inserted: true,
+      createdAt: new Date().toISOString(), noteSyncError: "sync_failed" } }) as never;
+    const recorder = controller({ tcw: account });
+    const detach = recorder.attach();
+    await tick();
+    await recorder.record();
+    const id = currentId!;
+    await recorder.stop();
+    await tick();
+    expect(recorder.getState().outcome).toBe("saved");
+    expect(recorder.getNoteSyncError()).toBe("sync_failed");
+    expect(recorder.getState().error).toBeNull();
+    reportRecordingNoteSyncError(account, id, null);
+    expect(recorder.getNoteSyncError()).toBeNull();
+    detach();
+  });
+
+  test("discard deletes the local note with its native recording", async () => {
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    const id = currentId!;
+    await tick();
+    await recorder.setNoteText("To discard");
+    await recorder.discard();
+    expect(await loadNote(id)).toBeNull();
+    expect(recorder.getNote()).toBeNull();
+    detach();
+  });
+
+  test("a moment reads the native recorded clock across a long user pause and writes nothing", async () => {
+    const originalNow = Date.now;
+    let now = 100_000;
+    Date.now = () => now;
+    try {
+      const { recorder, detach } = await attached();
+      await recorder.record();
+      const id = currentId!;
+      fake.emit("micState", { id, state: "recording", reason: null, elapsedMs: 20_000 });
+      now += 5_000;
+      expect(recorder.markMoment()).toBe(25_000);
+      fake.emit("micState", { id, state: "paused", reason: "user", elapsedMs: 25_000 });
+      now += 40_000;
+      expect(recorder.markMoment()).toBe(25_000);
+      fake.emit("micState", { id, state: "recording", reason: null, elapsedMs: 25_000 });
+      expect(recorder.markMoment()).toBe(25_000);
+      expect(await loadNote(id)).toBeNull();
+      detach();
+    } finally { Date.now = originalNow; }
+  });
+
   test("the recorder route control journals Private cloud after first-use consent", async () => {
     await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
       transcriber: "on-device", identifySpeakers: false });
@@ -823,6 +1014,64 @@ describe("voice-note recorder controller", () => {
     expect(pendingStore.snapshot()).toMatchObject({ running: false, lastError: null, listing: { state: "ok", count: 0 } });
     detach();
   }, 35_000);
+
+  test("a Save now still running when another account signs in never touches that account's pending row", async () => {
+    __setVoiceNotesForTests({ ...plugin,
+      getCaptureDefaults: async () => ({ status: "signed_in", accountDid: tcw.did, transitionGen: 1,
+        transcriber: "on-device", identifySpeakers: false }),
+      setCaptureDefaults: async () => ({ claimed: [] }),
+    }, { available: true });
+    const outcomes: Array<{ resolve(): void; reject(error: Error): void }> = [];
+    const pipeline: VoiceNotePipeline = {
+      process: async () => {}, cancelAll: () => {}, resume: () => {},
+      isAccepting: () => true, quiescent: async () => true,
+      reconcileAll: () => new Promise<void>((resolve, reject) => { outcomes.push({ resolve, reject }); }),
+    };
+    const recorder = controller({ pipeline });
+    const detach = recorder.attach();
+    await tick();
+    for (const finish of ["reject", "resolve"] as const) {
+      pendingStore.setAccount(tcw.did!);
+      const saving = recorder.retryPending();
+      while (outcomes.length === 0) await tick();
+      pendingStore.setAccount("did:example:bob");
+      pendingStore.reportError("Bob's save failed");
+      const outcome = outcomes.shift()!;
+      if (finish === "reject") outcome.reject(new Error("A's space timed out"));
+      else outcome.resolve();
+      await saving;
+      expect(pendingStore.snapshot()).toMatchObject({ accountDid: "did:example:bob", lastError: "Bob's save failed" });
+    }
+    pendingStore.setAccount(null);
+    detach();
+  });
+
+  test("a Save now that starts before the saver registers its account still shows its result", async () => {
+    __setVoiceNotesForTests({ ...plugin,
+      getCaptureDefaults: async () => ({ status: "signed_in", accountDid: tcw.did, transitionGen: 1,
+        transcriber: "on-device", identifySpeakers: false }),
+      setCaptureDefaults: async () => ({ claimed: [] }),
+    }, { available: true });
+    const outcomes: Array<{ reject(error: Error): void }> = [];
+    const pipeline: VoiceNotePipeline = {
+      process: async () => {}, cancelAll: () => {}, resume: () => {},
+      isAccepting: () => true, quiescent: async () => true,
+      reconcileAll: () => new Promise<void>((_resolve, reject) => { outcomes.push({ reject }); }),
+    };
+    const recorder = controller({ pipeline });
+    const detach = recorder.attach();
+    await tick();
+    pendingStore.setAccount(null);
+    const saving = recorder.retryPending();
+    while (outcomes.length === 0) await tick();
+    pendingStore.setAccount(tcw.did!);
+    outcomes.shift()!.reject(new Error("space timed out"));
+    await saving;
+    expect(pendingStore.snapshot()).toMatchObject({ accountDid: tcw.did,
+      lastError: "Could not save notes on this phone: space timed out" });
+    pendingStore.setAccount(null);
+    detach();
+  });
 
   test("Save now cannot re-arm an account cancelled during the native claim", async () => {
     const base = plugin;

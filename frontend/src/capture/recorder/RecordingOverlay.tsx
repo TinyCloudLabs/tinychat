@@ -1,33 +1,89 @@
-import { useContext, useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useLocation } from "react-router-dom";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 
-import { PlatformContext } from "@/lib/platform";
-import { PhoneRecorder } from "./final/PhoneRecorder";
-import { recorderFinalEnabled } from "./final/recorderFinalFlag";
-import { recorderLayout, shellForPlatform } from "./final/shellCapabilities";
-import { RecordingView, type RecordingViewProps } from "./RecordingView";
+import { DesktopRecorderHost } from "./final/desktop/DesktopRecorderHost";
+import type { DesktopRecorderLoader } from "./final/desktop/LazyDesktopRecorder";
+import type { NoteViewLoader } from "./final/desktop/LazyNoteView";
+import {
+  LazyPhoneRecorder,
+  type PhoneRecorderLoader,
+} from "./final/LazyPhoneRecorder";
+import { recorderLayout, type RecorderLayout } from "./final/shellCapabilities";
+import { ReceiptNoteNotice } from "./final/UnsavedNoteNotice";
+import { overlayMount } from "./overlayMount";
+import { ReceiptView } from "./ReceiptView";
 import { useRecorder } from "./RecorderProvider";
 
-function usePhoneLayout(): boolean {
+function useRecorderLayout(): RecorderLayout {
   const [width, setWidth] = useState(() => window.innerWidth);
   useEffect(() => {
     const onResize = () => setWidth(window.innerWidth);
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
-  return recorderLayout(width) === "phone";
+  return recorderLayout(width);
 }
 
-export function RecordingOverlay(props: Omit<RecordingViewProps, "recorder">) {
+/** The ring view fills the main region, so a move to another screen puts it away: the dock takes over. */
+function MinimizeOnNavigate() {
   const recorder = useRecorder();
-  const phoneLayout = usePhoneLayout();
-  const phone = shellForPlatform(useContext(PlatformContext)) === "phone";
-  // A receipt (Done, then saved) keeps today's view until the Soft skin reaches it.
-  const final =
-    recorderFinalEnabled() &&
-    phone &&
-    phoneLayout &&
-    !(recorder.phase === "idle" && recorder.outcome !== null);
+  const { key } = useLocation();
+  const seen = useRef(key);
+  useEffect(() => {
+    if (seen.current === key) return;
+    seen.current = key;
+    void recorder.minimiseSheet();
+  }, [key, recorder]);
+  return null;
+}
+
+export type RecordingOverlayProps = {
+  /** Opens a saved note (the receipt's Open). */
+  onOpenNote?: (id: string) => void;
+  /** The app's main region (AppShell's recorder host), where the desktop view is drawn; null until it mounts. Left out above the gate, where there is no shell, so the phone recorder fills a dialog. */
+  desktopHost?: HTMLElement | null;
+  /** Where the desktop view is imported from; a test replaces it. */
+  loadDesktopRecorder?: DesktopRecorderLoader;
+  /** Where the desktop note view is imported from; a test replaces it. */
+  loadNoteView?: NoteViewLoader;
+  /** Where the phone view is imported from; a test replaces it. */
+  loadPhoneRecorder?: PhoneRecorderLoader;
+};
+
+export function RecordingOverlay({
+  onOpenNote,
+  desktopHost,
+  loadDesktopRecorder,
+  loadNoteView,
+  loadPhoneRecorder,
+}: RecordingOverlayProps) {
+  const recorder = useRecorder();
+  const layout = useRecorderLayout();
+  const mount = overlayMount({
+    layout,
+    available: recorder.available,
+    hosted: desktopHost !== undefined,
+    receipt: recorder.phase === "idle" && recorder.outcome !== null,
+  });
+
+  if (mount === "desktop" && layout !== "phone") {
+    if (!recorder.sheetOpen || !desktopHost) return null;
+    return createPortal(
+      <>
+        <MinimizeOnNavigate />
+        <DesktopRecorderHost
+          layout={layout}
+          loadDesktopRecorder={loadDesktopRecorder}
+          loadNoteView={loadNoteView}
+        />
+      </>,
+      desktopHost,
+    );
+  }
+
+  const phone = mount === "phone";
   return (
     <DialogPrimitive.Root
       open={recorder.sheetOpen}
@@ -42,7 +98,7 @@ export function RecordingOverlay(props: Omit<RecordingViewProps, "recorder">) {
           data-testid="recording-overlay"
           className="fixed inset-0 z-50 h-dvh w-screen overflow-hidden bg-background outline-none"
           onEscapeKeyDown={(event) => {
-            if (final) event.preventDefault();
+            if (phone) event.preventDefault();
           }}
           onOpenAutoFocus={(event) => {
             event.preventDefault();
@@ -52,10 +108,13 @@ export function RecordingOverlay(props: Omit<RecordingViewProps, "recorder">) {
           <DialogPrimitive.Title className="sr-only">
             Voice note recorder
           </DialogPrimitive.Title>
-          {final ? (
-            <PhoneRecorder />
+          {phone ? (
+            <LazyPhoneRecorder load={loadPhoneRecorder} />
           ) : (
-            <RecordingView recorder={recorder} {...props} />
+            <>
+              <ReceiptView recorder={recorder} onOpenNote={onOpenNote} />
+              <ReceiptNoteNotice />
+            </>
           )}
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
