@@ -104,3 +104,14 @@ export async function retryOnDeviceNote(id: string): Promise<string | null> {
     return `Could not retry: ${caught instanceof Error ? caught.message : String(caught)}`;
   }
 }
+
+/** Stops transcribing a note on this phone. The reason it could not, or null. */
+export async function cancelOnDeviceNote(id: string): Promise<string | null> {
+  try {
+    await OnDeviceStt.cancel({ id });
+    return null;
+  } catch (caught) {
+    console.error("[OnDeviceStt] cancel failed", id, caught);
+    return `Could not stop the on-device transcription: ${caught instanceof Error ? caught.message : String(caught)}`;
+  }
+}

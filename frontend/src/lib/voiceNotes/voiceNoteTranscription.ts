@@ -896,6 +896,8 @@ export async function transcribeVoiceNote(args: {
   sourceId: string;
   audio?: VoiceNoteAudio;
   allowed?: (scope?: "account") => boolean;
+  /** The user chose private cloud for a note committed to another mode: skip the committed-mode checks. */
+  overrideCommitted?: boolean;
   report: (status: VoiceNoteTranscriptionStatus) => void;
   now?: () => Date;
 }): Promise<"transcribed" | "no_speech"> {
@@ -920,7 +922,7 @@ export async function transcribeVoiceNote(args: {
     await finish();
     throw new PrivateCloudError("voice_note_not_found", "The voice note no longer exists");
   }
-  if (note.data.captureVersion === 2 && note.data.captureTranscriber !== "private-cloud") {
+  if (!args.overrideCommitted && note.data.captureVersion === 2 && note.data.captureTranscriber !== "private-cloud") {
     await finish();
     throw new PrivateCloudError("transcription_off", "This note was not recorded for private-cloud transcription");
   }
@@ -931,7 +933,7 @@ export async function transcribeVoiceNote(args: {
   const nativeNote = (await VoiceNotes.listPending()).recordings.find((recording) => recording.id === sourceId);
   // A manual Retry must obey the committed choice too. V1 notes have no options and retain
   // their historical, consent-gated private-cloud behaviour.
-  if (nativeNote?.options && nativeNote.options.transcriber !== "private-cloud") {
+  if (!args.overrideCommitted && nativeNote?.options && nativeNote.options.transcriber !== "private-cloud") {
     await finish();
     throw new PrivateCloudError("transcription_off", "This note was not recorded for private-cloud transcription");
   }
@@ -1042,6 +1044,11 @@ export interface VoiceNoteTranscriber {
   turnOff(): Promise<void>;
   /** Transcribe / Retry for one note. Only while available and consented. */
   transcribe(sourceId: string, audio?: VoiceNoteAudio): void;
+  /**
+   * The user's "Use Private instead" for a note committed to another mode (its on-device job is
+   * cancelled by the caller first). Runs like `transcribe`, and its Retry keeps the choice.
+   */
+  transcribePrivately(sourceId: string): void;
   /** Use the committed native options; v1 notes without options keep their consent-gated behaviour. */
   noteSaved(recording: Pick<VoiceNoteRecording, "id" | "durationMs" | "options">, audio?: VoiceNoteAudio): void;
 }
@@ -1097,6 +1104,9 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   const identityCurrent = () => accountCurrent === null || accountCurrent();
   const on = () => identityCurrent() && state.availability === "available" && state.consented && state.capabilities !== null;
 
+  /** Notes the user moved to private cloud from another committed mode, so a Retry keeps the choice. */
+  const chosenPrivate = new Set<string>();
+
   const enqueue = (sourceId: string, audio?: VoiceNoteAudio) => {
     if (!on() || cloud === null) return;
     // Queued, running, or just saved (the list may not show it yet): never a second job.
@@ -1125,6 +1135,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           sourceId,
           audio,
           allowed: (scope) => identityCurrent() && (scope === "account" || state.consented),
+          overrideCommitted: chosenPrivate.has(sourceId),
           report: (status) => {
             if (jobs.get(sourceId)?.kind !== "active") return;
             jobs.set(sourceId, { kind: "active", status });
@@ -1241,6 +1252,11 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
 
     transcribe(sourceId, audio) {
       enqueue(sourceId, audio);
+    },
+
+    transcribePrivately(sourceId) {
+      chosenPrivate.add(sourceId);
+      enqueue(sourceId);
     },
 
     noteSaved(recording, audio) {

@@ -108,9 +108,33 @@ describe("a saved note's on-device state, gated by the note's committed mode", (
     const { latest } = await mount("n1");
     expect(latest().note).toEqual({ kind: "waiting_for_model" });
     const html = view(latest().note);
-    expect(html).toContain("Waiting for the on-device model");
-    expect(html).toContain('data-testid="voice-note-model-download"');
+    expect(html).toContain("Transcribe on this phone");
+    expect(html).toContain('data-testid="voice-note-model-download-action"');
     expect(html).not.toContain("No transcript.");
+  });
+
+  test("waiting for the model is one sentence and a full-width button, with no spinner and no Private offer unless given", async () => {
+    await iosStt();
+    fakeVoiceNotes({ recordings: () => [recording("n1", "on-device", stt("waiting_for_model"))] });
+    const { latest } = await mount("n1");
+    const html = view(latest().note);
+    expect(html).toMatch(/Transcribe on this phone — needs (a \d+ MB download|the on-device model)/);
+    expect(html).toContain("Get model");
+    expect(html).toMatch(/<button[^>]*class="[^"]*w-full[^"]*"[^>]*data-testid="voice-note-model-download-action"|<button[^>]*data-testid="voice-note-model-download-action"[^>]*class="[^"]*w-full/);
+    expect(html).not.toContain("animate-spin");
+    expect(html).not.toContain("Transcribe with Private instead");
+  });
+
+  test("Transcribe with Private instead appears, full width, only when the view is given the offer", async () => {
+    await iosStt();
+    fakeVoiceNotes({ recordings: () => [recording("n1", "on-device", stt("waiting_for_model"))] });
+    const { latest } = await mount("n1");
+    const html = renderToStaticMarkup(
+      <OnDeviceNoteStatusView noteId="n1" view={{ note: latest().note, error: null, reload: () => {} }} fallback={<p>No transcript.</p>} onUsePrivate={async () => null} />,
+    );
+    expect(html).toContain("Transcribe with Private instead");
+    expect(html).toContain('data-testid="voice-note-use-private"');
+    expect(html).not.toContain("animate-spin");
   });
 
   test("Audio only, Private and AssemblyAI notes never show Local waiting, though native writes waiting_for_model for all", async () => {

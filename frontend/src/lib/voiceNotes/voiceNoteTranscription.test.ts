@@ -790,6 +790,22 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     }
   });
 
+  test("overrideCommitted (Use Private instead) transcribes a note committed to Local or Audio only", async () => {
+    for (const transcriber of ["off", "on-device"] as const) {
+      _resetConnectorSchemaMemoForTests();
+      const space = sqliteSpace();
+      expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+      space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata,
+        '$.capture.version', 2, '$.capture.options.transcriber', ?) WHERE source_id = 'rec-1'`).run(transcriber);
+      VoiceNotes.listPending = async () => ({ recordings: [{ ...RECORDING, options: { transcriber, identifySpeakers: false } } as never] });
+      const h = harness({});
+      const outcome = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS,
+        sourceId: "rec-1", overrideCommitted: true, report: () => {} });
+      expect(outcome).toBe("transcribed");
+      expect(h.creates).toHaveLength(1);
+    }
+  });
+
   test("a note owned by another account is rejected before contacting private cloud", async () => {
     const space = sqliteSpace();
     expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android")).ok).toBe(true);

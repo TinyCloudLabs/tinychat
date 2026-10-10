@@ -65,3 +65,18 @@ export function localModelGuide(
     action: get(FINAL_COPY.modelUnavailable),
   };
 }
+
+/** The short label the receipt and a saved note's transcript block put on the guide's first-download control. */
+export function modelActionLabel(action: StopAction): string {
+  return action.label === FINAL_COPY.modelUnavailable ? "Get model" : action.label;
+}
+
+/**
+ * One sentence for a note waiting for the model: what transcribing it on this phone needs. The
+ * download's size while nothing has started; otherwise the guide's own line (progress, failure, Wi-Fi).
+ */
+export function waitingForModelSentence(model: OnDeviceSttStatus | null, guide: { reason: string; action?: StopAction }): string {
+  if (guide.action?.label !== FINAL_COPY.modelUnavailable) return guide.reason;
+  const total = model ? onDeviceDownloadTotalBytes(model) : 0;
+  return total > 0 ? `Transcribe on this phone — needs a ${mb(total)} MB download` : "Transcribe on this phone — needs the on-device model";
+}

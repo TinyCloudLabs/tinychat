@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
-import { ReceiptView } from "./ReceiptView";
+import { ReceiptView, receiptRouting } from "./ReceiptView";
+import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
 import type { RecorderValue } from "./RecorderProvider";
 import { FINALIZATION_PENDING } from "./recorderCopy";
 import { HOME_COPY } from "../home/homeCopy";
@@ -69,5 +70,45 @@ describe("ReceiptView", () => {
     test("with no failure the finishing promise stays", () => {
       expect(receipt({ finalizationPendingId: "rec-1", captureIssues: {} })).toContain("finish it automatically");
     });
+  });
+});
+
+describe("receiptRouting: where a saved note stands", () => {
+  const saved = { id: "rec-1", durationMs: 42_000, at: Date.now() };
+  const transcription = (patch: Partial<VoiceNoteTranscriptionProps> = {}): VoiceNoteTranscriptionProps => ({
+    availability: "available", consented: true, maxSeconds: 7_200, jobs: new Map(),
+    onTranscribe: noop, onTranscribePrivately: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop, ...patch,
+  });
+  const jobs = (kind: "active" | "failed") =>
+    new Map([["rec-1", kind === "active" ? { kind } : { kind, message: "busy" }]]) as unknown as VoiceNoteTranscriptionProps["jobs"];
+  const route = (patch: Partial<Parameters<typeof receiptRouting>[0]> = {}) =>
+    receiptRouting({ outcome: "saved", lastSaved: saved, transcription: transcription(), savedTranscriber: "on-device", ...patch });
+
+  test("a Local note with Private available is not in private cloud, and offers Use Private instead", () => {
+    expect(route()).toMatchObject({ transcribing: false, movedToPrivate: false, savedRoute: "on-device", canUsePrivate: true });
+  });
+
+  test("a Local note with Private unavailable offers no switch", () => {
+    for (const patch of [{ availability: "hidden" as const }, { consented: false }, { maxSeconds: 10 }]) {
+      expect(route({ transcription: transcription(patch) })).toMatchObject({ savedRoute: "on-device", canUsePrivate: false });
+    }
+    expect(route({ transcription: undefined }).canUsePrivate).toBe(false);
+  });
+
+  test("a Local note that was only saved here (not yet in the space) offers no switch", () => {
+    expect(route({ outcome: "local" })).toMatchObject({ canUsePrivate: false, savedRoute: "on-device" });
+  });
+
+  test("once moved, the route is private cloud; it is transcribing only while its job is active", () => {
+    expect(route({ transcription: transcription({ jobs: jobs("active") }) }))
+      .toMatchObject({ movedToPrivate: true, transcribing: true, savedRoute: "private-cloud", canUsePrivate: false });
+    expect(route({ transcription: transcription({ jobs: jobs("failed") }) }))
+      .toMatchObject({ movedToPrivate: true, transcribing: false, savedRoute: "private-cloud", canUsePrivate: true });
+  });
+
+  test("Private notes still read as transcribing in private cloud, and Audio only as off", () => {
+    expect(route({ savedTranscriber: "private-cloud" })).toMatchObject({ transcribing: true, savedRoute: "private-cloud", canUsePrivate: false });
+    expect(route({ savedTranscriber: "off" })).toMatchObject({ savedRoute: "private-cloud" });
+    expect(route({ savedTranscriber: "off", transcription: undefined })).toMatchObject({ savedRoute: "off" });
   });
 });

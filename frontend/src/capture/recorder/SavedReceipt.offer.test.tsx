@@ -1,0 +1,107 @@
+// The Done receipt for a Local note: the truthful source, the static "needs the model" block with
+// its two ways forward, and when the receipt counts as offering something to press.
+import { describe, expect, test } from "bun:test";
+import { renderToStaticMarkup } from "react-dom/server";
+
+import { honestSourceRoute, NeedsOnDeviceModel, onDeviceOffer, SavedReceipt } from "./SavedReceipt";
+import { voiceNoteRoute } from "./RouteLine";
+
+const noop = () => {};
+const guideWithAction = { reason: "The on-device model isn't downloaded (602 MB)", action: { label: "Get the on-device model", run: noop } };
+const waiting = { kind: "pending", state: "waiting_for_model", retry: noop } as const;
+const offer = (patch: Partial<Parameters<typeof onDeviceOffer>[0]> = {}) =>
+  onDeviceOffer({ onDevice: waiting, guide: guideWithAction, saved: true, hasNote: true, movedToPrivate: false, canUsePrivate: true, ...patch });
+
+describe("the needs-the-model block", () => {
+  test("is static copy and two buttons, with no spinner", () => {
+    const html = renderToStaticMarkup(<NeedsOnDeviceModel guide={guideWithAction} error={null} onUsePrivate={noop} />);
+    expect(html).toContain("Needs the on-device model");
+    expect(html).toContain("Get model");
+    expect(html).toContain("Use Private instead");
+    expect(html).not.toContain("animate-spin");
+    expect(html).not.toContain("Waiting for the on-device model");
+  });
+
+  test("Use Private instead is absent when private cloud is not on offer", () => {
+    const html = renderToStaticMarkup(<NeedsOnDeviceModel guide={guideWithAction} error={null} />);
+    expect(html).toContain("Get model");
+    expect(html).not.toContain("Use Private instead");
+  });
+
+  test("while the model downloads it says so rather than offering to get it again", () => {
+    const html = renderToStaticMarkup(<NeedsOnDeviceModel guide={{ reason: "Downloading the model: 50% of 602 MB" }} error={null} onUsePrivate={noop} />);
+    expect(html).toContain("Downloading the model: 50% of 602 MB");
+    expect(html).not.toContain("Get model");
+    expect(html).toContain("Use Private instead");
+  });
+
+  test("a failed attempt to switch or download shows its reason", () => {
+    expect(renderToStaticMarkup(<NeedsOnDeviceModel guide={guideWithAction} error="Could not stop it" />)).toContain("Could not stop it");
+  });
+});
+
+describe("what the receipt is offering", () => {
+  test("waiting for the model with something to press is actionable and shows the block", () => {
+    expect(offer()).toEqual({ needsModel: true, usePrivate: true, actionable: true });
+    expect(offer({ canUsePrivate: false })).toMatchObject({ needsModel: true, usePrivate: false, actionable: true });
+    expect(offer({ guide: { reason: "Downloading…" }, canUsePrivate: false })).toMatchObject({ needsModel: true, actionable: false });
+  });
+
+  test("Use Private instead needs a note that is saved", () => {
+    expect(offer({ saved: false })).toMatchObject({ needsModel: true, usePrivate: false });
+  });
+
+  test("a note moved to private cloud offers nothing from the phone", () => {
+    expect(offer({ movedToPrivate: true })).toEqual({ needsModel: false, usePrivate: false, actionable: false });
+    expect(offer({ onDevice: { kind: "failed", retry: noop }, movedToPrivate: true }).actionable).toBe(false);
+  });
+
+  test("a failed on-device note with a saved note is actionable (Retry); queued and running are not", () => {
+    expect(offer({ onDevice: { kind: "failed", retry: noop } })).toMatchObject({ needsModel: false, actionable: true });
+    expect(offer({ onDevice: { kind: "failed", retry: noop }, hasNote: false }).actionable).toBe(false);
+    expect(offer({ onDevice: { kind: "pending", state: "running", retry: noop } })).toMatchObject({ needsModel: false, actionable: false });
+    expect(offer({ onDevice: { kind: "none", retry: noop } }).actionable).toBe(false);
+  });
+});
+
+describe("the source on the route", () => {
+  test("reads This phone until a transcript made there exists", () => {
+    const route = voiceNoteRoute("on-device");
+    expect(honestSourceRoute(route, false).map((node) => node.label)).toEqual(["This phone", "Your space"]);
+    expect(honestSourceRoute(route, true).map((node) => node.label)).toEqual(["This phone (transcribed here)", "Your space"]);
+  });
+
+  test("other routes are untouched", () => {
+    expect(honestSourceRoute(voiceNoteRoute("private-cloud"), false)).toEqual(voiceNoteRoute("private-cloud"));
+  });
+});
+
+describe("the receipt's wording", () => {
+  const render = (patch: Partial<Parameters<typeof SavedReceipt>[0]> = {}) => renderToStaticMarkup(
+    <SavedReceipt outcome="saved" saved={{ id: "rec-1", durationMs: 65_000, at: Date.UTC(2026, 9, 9, 9, 41) }}
+      route={voiceNoteRoute("on-device")} transcriber="on-device" onDone={noop} onSaveNow={noop} {...patch} />,
+  );
+
+  test("Saved on this phone is said once, not as a heading and a label", () => {
+    const html = render();
+    expect(html).not.toContain("<h3");
+    expect(html.match(/Saved on this phone/g) ?? []).toHaveLength(1);
+    expect(html).toContain('aria-label="Saved on this phone"');
+  });
+
+  test("a Local note with no transcript yet names its source This phone", () => {
+    const html = render();
+    expect(html).not.toContain("transcribed here");
+  });
+
+  test("a note private cloud has taken shows no on-device line", () => {
+    const html = render({ movedToPrivate: true, transcribing: true });
+    expect(html).toContain("Transcribing in private cloud…");
+    expect(html).not.toContain("Transcribing on this phone");
+  });
+
+  test("a private-cloud failure after the switch is shown, not silent", () => {
+    expect(render({ movedToPrivate: true, privateFailure: "service busy" })).toContain("Couldn&#x27;t transcribe in private cloud: service busy");
+  });
+});
+
