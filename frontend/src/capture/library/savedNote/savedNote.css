@@ -208,6 +208,17 @@
 .soft-skin .sn-sheet-foot:empty {
   display: none;
 }
+/* The bar never outgrows the sheet: it wraps on a narrow phone (320 px). */
+.soft-skin .sn-sheet-foot .nt-wtools {
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+@media (max-width: 359px) {
+  .soft-skin .sn-sheet-foot .nt-wmd {
+    display: none;
+  }
+}
 .soft-skin .sn-sheet-body {
   display: flex;
   flex-direction: column;
