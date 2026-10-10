@@ -132,6 +132,8 @@ const script = <A extends unknown[]>(
     [call, args] as const,
   );
 
+const page_press = (scope: Locator, key: string) => scope.page().keyboard.press(key);
+
 const CAUSED_DOWNLOAD_ERROR = /^\[CaptureSettings\] Could not download the model/;
 const CAUSED_SETTING_ERROR = /^\[CaptureSettings\] Could not change the setting/;
 
@@ -479,5 +481,40 @@ describe.serial(`capture settings (${engine.name()})`, () => {
     await attr(system, "aria-checked", "true");
     expect(errors).toEqual([]);
     await page.context().close();
+  });
+  test("the one-time system audio notice: Dismiss hides it, names itself, and focus goes to the switch; it stays gone on reopen", async () => {
+    const { errors, gear, dialog } = await open([], "capture-settings-interactive-notice");
+    await gear.click();
+    const notice = dialog.getByTestId("system-audio-notice");
+    await notice.waitFor();
+    await expect(notice.textContent()).resolves.toContain(
+      "System audio is now included in Mac recordings. Turn it off here.",
+    );
+    const dismiss = dialog.getByRole("button", { name: "Dismiss the system audio notice" });
+    await dismiss.focus();
+    await page_press(dialog, "Enter");
+    await notice.waitFor({ state: "detached" });
+    await focused(dialog.getByRole("switch", { name: "Also record this Mac’s audio" }));
+    await page_press(dialog, "Escape");
+    await gear.click();
+    await dialog.getByRole("switch", { name: "Also record this Mac’s audio" }).waitFor();
+    expect(await dialog.getByTestId("system-audio-notice").count()).toBe(0);
+    expect(errors).toEqual([]);
+    await dialog.page().context().close();
+  });
+
+  test("changing the system audio switch counts as seeing the notice", async () => {
+    const { errors, gear, dialog } = await open([], "capture-settings-interactive-notice");
+    await gear.click();
+    await dialog.getByTestId("system-audio-notice").waitFor();
+    const system = dialog.getByRole("switch", { name: "Also record this Mac’s audio" });
+    await system.click();
+    await attr(system, "aria-checked", "false");
+    await dialog.getByTestId("system-audio-notice").waitFor({ state: "detached" });
+    await system.click();
+    await attr(system, "aria-checked", "true");
+    expect(await dialog.getByTestId("system-audio-notice").count()).toBe(0);
+    expect(errors).toEqual([]);
+    await dialog.page().context().close();
   });
 });

@@ -7,6 +7,7 @@ import {
   CaptureSettings,
   type CaptureSettingsVariant,
 } from "@/capture/recorder/final/desktop/CaptureSettings";
+import { markSystemAudioNoticeSeen } from "@/capture/recorder/final/desktop/systemAudioNotice";
 import type { Downloads } from "@/capture/recorder/final/desktop/captureSettingsModel";
 import type { AudioInputsSource } from "@/capture/recorder/final/useAudioInputs";
 import { useResolvedTheme } from "@/lib/theme";
@@ -32,6 +33,16 @@ declare global {
 }
 
 const noop = () => {};
+
+const noticeStorage = (seen: boolean) => {
+  const map = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => map.get(key) ?? null,
+    setItem: (key: string, value: string) => void map.set(key, value),
+  };
+  if (seen) markSystemAudioNoticeSeen(storage);
+  return storage;
+};
 
 // The ⚙︎ lives on the desktop Capture header, which the rail (768 and up) and desktop layouts place.
 const RAIL_MIN_WIDTH = 768;
@@ -101,13 +112,16 @@ function Settings({
   noExtras = false,
   initialDownloads,
   interactive = false,
+  showNotice = false,
 }: {
   variant: CaptureSettingsVariant;
   fake?: FakeDesktopCaptureExtrasOptions;
   noExtras?: boolean;
   initialDownloads?: Downloads;
   interactive?: boolean;
+  showNotice?: boolean;
 }) {
+  const [storage] = useState(() => noticeStorage(!showNotice));
   const [scripted] = useState(() => createFakeDesktopCaptureExtras(fake));
   useEffect(() => {
     if (!interactive) return;
@@ -131,6 +145,7 @@ function Settings({
         extras={noExtras ? null : scripted.extras}
         defaultOpen={!interactive}
         initialDownloads={initialDownloads}
+        noticeStorage={storage}
       />
     </Frame>
   );
@@ -187,6 +202,11 @@ export const captureSettingsScreens: HarnessScreen[] = [
       }}
     />
   )),
+  screen(
+    "app-system-audio-notice",
+    () => <Settings variant="app" fake={LARGE_TURBO} showNotice />,
+    { readyWhen: "[data-testid=system-audio-notice]" },
+  ),
   screen("app-unavailable", () => <Settings variant="app" noExtras />, {
     readyWhen: "[data-testid=settings-unavailable]",
   }),
@@ -201,6 +221,18 @@ export const captureSettingsScreens: HarnessScreen[] = [
           downloaded: ["QuantizedTinyEn", "QuantizedBaseEn"],
           selected: "QuantizedTinyEn",
         }}
+      />
+    ),
+    { interactive: true, readyWhen: "[data-testid=capture-settings-button]" },
+  ),
+  screen(
+    "interactive-notice",
+    () => (
+      <Settings
+        variant="app"
+        interactive
+        showNotice
+        fake={{ downloaded: ["QuantizedTinyEn"], selected: "QuantizedTinyEn", systemAudio: true }}
       />
     ),
     { interactive: true, readyWhen: "[data-testid=capture-settings-button]" },

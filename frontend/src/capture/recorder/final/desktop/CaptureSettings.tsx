@@ -30,6 +30,12 @@ import {
   type FocusTarget,
 } from "./captureSettingsModel";
 import { onOpenCaptureSettings } from "./openCaptureSettings";
+import {
+  SYSTEM_AUDIO_NOTICE_DISMISS,
+  SYSTEM_AUDIO_NOTICE_TEXT,
+  markSystemAudioNoticeSeen,
+  systemAudioNoticeSeen,
+} from "./systemAudioNotice";
 import "../soft.css";
 import "./captureSettings.css";
 
@@ -89,6 +95,9 @@ export interface SettingsPanelProps {
   microphone: MicrophoneRow;
   modelError: string | null;
   switches: Record<SwitchKey, { pending: boolean; error: string | null }>;
+  /** The one-time "system audio is on" notice is showing under its switch. */
+  systemAudioNotice: boolean;
+  onDismissSystemAudioNotice: () => void;
   onRetryLoad: () => void;
   onSelectModel: (id: WhisperModelId) => void;
   onGetModel: (id: WhisperModelId) => void;
@@ -336,6 +345,8 @@ export function SettingsPanel({
   microphone,
   modelError,
   switches,
+  systemAudioNotice,
+  onDismissSystemAudioNotice,
   onRetryLoad,
   onSelectModel,
   onGetModel,
@@ -399,6 +410,20 @@ export function SettingsPanel({
             testId="switch-system-audio"
             onToggle={(on) => onToggle("systemAudio", on)}
           />
+          {systemAudioNotice && load.data.systemAudio && (
+            <div className="cs-notice" data-testid="system-audio-notice">
+              <p>{SYSTEM_AUDIO_NOTICE_TEXT}</p>
+              <button
+                type="button"
+                className="cs-notice-dismiss"
+                aria-label={SYSTEM_AUDIO_NOTICE_DISMISS}
+                data-testid="system-audio-notice-dismiss"
+                onClick={onDismissSystemAudioNotice}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
           <Switch
             label="Save to your space automatically"
             description="Recordings and notes sync to TinyCloud when you stop."
@@ -423,6 +448,8 @@ export interface CaptureSettingsProps {
   defaultOpen?: boolean;
   /** Download rows to show before anything is clicked: for the harness. */
   initialDownloads?: Downloads;
+  /** Where the one-time system audio notice remembers it was seen. Defaults to local storage. */
+  noticeStorage?: Pick<Storage, "getItem" | "setItem">;
 }
 
 const NO_SWITCH = { pending: false, error: null };
@@ -433,6 +460,7 @@ export function CaptureSettings({
   extras: extrasProp,
   defaultOpen = false,
   initialDownloads = {},
+  noticeStorage,
 }: CaptureSettingsProps) {
   const extras =
     variant === "app"
@@ -447,6 +475,9 @@ export function CaptureSettings({
   const [switches, setSwitches] = useState<
     Record<SwitchKey, { pending: boolean; error: string | null }>
   >({ systemAudio: NO_SWITCH, autoSave: NO_SWITCH });
+  const [noticeSeen, setNoticeSeen] = useState(() =>
+    extras ? systemAudioNoticeSeen(noticeStorage) : true,
+  );
   const root = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
@@ -655,6 +686,18 @@ export function CaptureSettings({
     );
   };
 
+  const seeSystemAudioNotice = () => {
+    markSystemAudioNoticeSeen(noticeStorage);
+    setNoticeSeen(true);
+  };
+
+  const onDismissSystemAudioNotice = () => {
+    panel.current
+      ?.querySelector<HTMLElement>('[data-testid="switch-system-audio"]')
+      ?.focus();
+    seeSystemAudioNotice();
+  };
+
   const onToggle = (switchKey: SwitchKey, on: boolean) => {
     if (!extras) return;
     const target =
@@ -662,6 +705,7 @@ export function CaptureSettings({
     setSwitches((s) => ({ ...s, [switchKey]: { pending: true, error: null } }));
     target.set(on).then(
       () => {
+        if (switchKey === "systemAudio") seeSystemAudioNotice();
         setSwitches((s) => ({ ...s, [switchKey]: NO_SWITCH }));
         setLoad((current) =>
           current.status === "ready"
@@ -724,6 +768,8 @@ export function CaptureSettings({
             }}
             modelError={modelError}
             switches={switches}
+            systemAudioNotice={!noticeSeen}
+            onDismissSystemAudioNotice={onDismissSystemAudioNotice}
             onRetryLoad={() => void reload(true)}
             onSelectModel={onSelectModel}
             onGetModel={onGetModel}
