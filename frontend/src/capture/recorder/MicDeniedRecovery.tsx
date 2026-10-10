@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { VoiceNotes, type CaptureStatus } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { closeRecoveryFailedLine, micCheckFailedLine } from "./final/shell/micDeniedCopy";
 import { MicrophoneAccessOff } from "./MicrophoneAccessOff";
 
 /** The signed-out gate reads native recovery state without taking presentRecorder events. */
@@ -27,8 +28,7 @@ export function MicDeniedRecovery({ enabled, onContinue }: { enabled: boolean; o
         setMode(next);
       }).catch((caught: unknown) => {
         if (mounted) {
-          console.warn("[VoiceNotes] Could not check microphone recovery", caught);
-          setError(`Could not check microphone access: ${caught instanceof Error ? caught.message : String(caught)}`);
+          setError(micCheckFailedLine(caught));
         }
       });
     };
@@ -50,7 +50,7 @@ export function MicDeniedRecovery({ enabled, onContinue }: { enabled: boolean; o
       ) : (
         <div className="flex h-full flex-col bg-background text-foreground">
           <header className="flex min-h-14 items-center px-4 pt-[env(safe-area-inset-top)]">
-            <Button type="button" variant="ghost" onClick={() => void dismiss().catch((caught: unknown) => setError(String(caught)))}>Dismiss</Button>
+            <Button type="button" variant="ghost" onClick={() => void dismiss().catch((caught: unknown) => setError(closeRecoveryFailedLine(caught)))}>Dismiss</Button>
           </header>
           <main className="mx-auto flex w-full max-w-xl flex-1 flex-col items-center justify-center gap-5 px-6 text-center">
             <MicIcon className="size-12 text-primary" aria-hidden />

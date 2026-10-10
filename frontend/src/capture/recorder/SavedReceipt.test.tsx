@@ -58,7 +58,7 @@ afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = null;
 });
-/** `sttHint` mirrors what RecordingView's own `listPending()` read already has by the time
+/** `sttHint` mirrors what ReceiptView's own `listPending()` read already has by the time
  * SavedReceipt mounts in production — the hook no longer repeats that native call itself. */
 async function render(id: string, seen: ReturnType<typeof useOnDeviceReceipt>[], sttHint: NoteSttState | null = null, onDevice = true) {
   root = createRoot(container);
@@ -102,7 +102,7 @@ describe("useOnDeviceReceipt, mounted", () => {
   });
 
   test("TC-781 regression: an initial mount seeded with sttHint never calls listPending itself", async () => {
-    // RecordingView's own listPending() read already knows this note's durable state (sttHint) by
+    // ReceiptView's own listPending() read already knows this note's durable state (sttHint) by
     // the time SavedReceipt mounts; a second listPending() call here used to run native's full
     // recovery scan a second time on every Stop, serialized behind the first one's lock, and on a
     // phone with many notes that reliably outran the saved receipt's fixed display window ("Stop
@@ -120,7 +120,7 @@ describe("useOnDeviceReceipt, mounted", () => {
   });
 
   test("a private-cloud note whose sidecar says waiting_for_model never shows the on-device state", async () => {
-    // RecordingView passes `onDevice` only when the note's own options.transcriber is "on-device";
+    // ReceiptView passes `onDevice` only when the note's own options.transcriber is "on-device";
     // a private-cloud note can still carry a waiting_for_model sidecar, and that must stay invisible.
     const fake = createFakeOnDeviceStt();
     __setOnDeviceSttForTests(fake.plugin);

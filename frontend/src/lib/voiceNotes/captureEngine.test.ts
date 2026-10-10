@@ -26,16 +26,14 @@ const engine = (): CaptureEngine => ({ ...createFakeVoiceNotes().plugin, capabil
 
 const global = globalThis as Record<string, unknown>;
 const saved = {
-  flag: process.env.VITE_EXO_RECORDER_FINAL,
   window: global.window,
   MediaRecorder: global.MediaRecorder,
   mediaDevices: Object.getOwnPropertyDescriptor(navigator, "mediaDevices"),
   voiceNotes: VoiceNotes,
 };
 
-interface Shell { flag: boolean; native: boolean; tauri: boolean; mediaRecorder: boolean; mediaDevices: boolean }
+interface Shell { native: boolean; tauri: boolean; mediaRecorder: boolean; mediaDevices: boolean }
 function setShell(shell: Shell) {
-  if (shell.flag) process.env.VITE_EXO_RECORDER_FINAL = "true"; else delete process.env.VITE_EXO_RECORDER_FINAL;
   __setVoiceNotesForTests(saved.voiceNotes, { available: shell.native });
   global.window = shell.tauri ? { __TAURI_INTERNALS__: {} } : {};
   if (shell.mediaRecorder) global.MediaRecorder = class {}; else delete global.MediaRecorder;
@@ -45,24 +43,22 @@ function setShell(shell: Shell) {
 beforeEach(() => __resetCaptureEngineForTests());
 afterEach(() => {
   __resetCaptureEngineForTests();
-  if (saved.flag === undefined) delete process.env.VITE_EXO_RECORDER_FINAL; else process.env.VITE_EXO_RECORDER_FINAL = saved.flag;
   global.window = saved.window;
   if (saved.MediaRecorder === undefined) delete global.MediaRecorder; else global.MediaRecorder = saved.MediaRecorder;
   if (saved.mediaDevices) Object.defineProperty(navigator, "mediaDevices", saved.mediaDevices); else delete (navigator as unknown as Record<string, unknown>).mediaDevices;
   __setVoiceNotesForTests(saved.voiceNotes, { available: null });
 });
 
-describe("captureEngineKind: flag x native x tauri internals x MediaRecorder x registered", () => {
+describe("captureEngineKind: native x tauri internals x MediaRecorder x registered", () => {
   const bools = [false, true];
-  for (const flag of bools) for (const native of bools) for (const tauri of bools) for (const mediaRecorder of bools)
+  for (const native of bools) for (const tauri of bools) for (const mediaRecorder of bools)
     for (const registeredWeb of bools) for (const registeredTauri of bools) {
-      const name = `flag=${flag} native=${native} tauri=${tauri} MediaRecorder=${mediaRecorder} web=${registeredWeb} tauriEngine=${registeredTauri}`;
+      const name = `native=${native} tauri=${tauri} MediaRecorder=${mediaRecorder} web=${registeredWeb} tauriEngine=${registeredTauri}`;
       test(name, () => {
-        setShell({ flag, native, tauri, mediaRecorder, mediaDevices: mediaRecorder });
+        setShell({ native, tauri, mediaRecorder, mediaDevices: mediaRecorder });
         if (registeredWeb) registerCaptureEngine("web", async () => engine());
         if (registeredTauri) registerCaptureEngine("tauri", async () => engine());
         const expected: CaptureEngineKind | null = native ? "native"
-          : !flag ? null
           : tauri ? (registeredTauri ? "tauri" : null)
           : mediaRecorder && registeredWeb ? "web"
           : null;
@@ -72,28 +68,15 @@ describe("captureEngineKind: flag x native x tauri internals x MediaRecorder x r
     }
 
   test("web needs navigator.mediaDevices as well as MediaRecorder", () => {
-    setShell({ flag: true, native: false, tauri: false, mediaRecorder: true, mediaDevices: false });
+    setShell({ native: false, tauri: false, mediaRecorder: true, mediaDevices: false });
     registerCaptureEngine("web", async () => engine());
     expect(captureEngineKind()).toBeNull();
   });
 });
 
-describe("flag off is unchanged", () => {
-  test("web and tauri engines are never selected, installed or available", async () => {
-    setShell({ flag: false, native: false, tauri: true, mediaRecorder: true, mediaDevices: true });
-    let built = 0;
-    registerCaptureEngine("web", async () => { built += 1; return engine(); });
-    registerCaptureEngine("tauri", async () => { built += 1; return engine(); });
-    await installCaptureEngine();
-    expect(built).toBe(0);
-    expect(captureEngineKind()).toBeNull();
-    expect(captureEngineAvailable()).toBe(false);
-    expect(captureCapabilities()).toEqual(none);
-    expect(VoiceNotes).toBe(saved.voiceNotes);
-  });
-
+describe("native", () => {
   test("native stays native: available without an install, the binding untouched, every capability on", async () => {
-    setShell({ flag: false, native: true, tauri: false, mediaRecorder: false, mediaDevices: false });
+    setShell({ native: true, tauri: false, mediaRecorder: false, mediaDevices: false });
     expect(captureEngineAvailable()).toBe(true);
     expect(captureCapabilities()).toMatchObject({ localTranscription: true, desktopWhisper: false });
     await installCaptureEngine();
@@ -101,8 +84,8 @@ describe("flag off is unchanged", () => {
     expect(VoiceNotes).toBe(saved.voiceNotes);
   });
 
-  test("native is not displaced by a registered web engine, flag on", async () => {
-    setShell({ flag: true, native: true, tauri: false, mediaRecorder: true, mediaDevices: true });
+  test("native is not displaced by a registered web engine", async () => {
+    setShell({ native: true, tauri: false, mediaRecorder: true, mediaDevices: true });
     registerCaptureEngine("web", async () => { throw new Error("must not build"); });
     await installCaptureEngine();
     expect(captureEngineKind()).toBe("native");
@@ -111,7 +94,7 @@ describe("flag off is unchanged", () => {
 });
 
 describe("installCaptureEngine", () => {
-  const webShell: Shell = { flag: true, native: false, tauri: false, mediaRecorder: true, mediaDevices: true };
+  const webShell: Shell = { native: false, tauri: false, mediaRecorder: true, mediaDevices: true };
 
   test("installs the engine into the VoiceNotes seam once, however many callers", async () => {
     setShell(webShell);

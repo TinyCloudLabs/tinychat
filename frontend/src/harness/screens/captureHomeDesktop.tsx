@@ -4,7 +4,6 @@
 // recorder over the fake native plugin on the Library fixture, for test/capture-home-desktop.e2e.test.ts.
 import { useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
-import { forceSoftHome } from "@/capture/home/softHome";
 import { showToast } from "@/capture/recorder/final/desktop/Toasts";
 import type { RecorderValue } from "@/capture/recorder/RecorderProvider";
 import { PlatformContext } from "@/lib/platform";
@@ -28,7 +27,6 @@ function Home(props: {
   rows?: typeof LIBRARY_ROWS;
   toast?: string;
 }) {
-  forceSoftHome(true);
   const platform = useContext(PlatformContext);
   const shim = useMemo(() => createRuntimeShim(), []);
   const tcw = useMemo(() => libraryTcw({ rows: props.rows }), [props.rows]);
@@ -43,7 +41,6 @@ function Home(props: {
       state="ready"
       captureTcw={tcw}
       recorder={props.recorder}
-      finalRecorder
     />
   );
 }
@@ -83,12 +80,24 @@ const ISSUES: Partial<RecorderValue> = {
   },
 };
 
+// Unsaved voice notes whose save failed: the retry card, in the browser or on a native tablet.
+const SAVE_FAILED: Partial<RecorderValue> = {
+  ...IDLE,
+  pending: {
+    listing: { state: "ok", count: 2 },
+    running: false,
+    lastError: "Couldn't reach your space",
+  },
+  retryPending: () => {},
+};
+
 const LOST: NonNullable<RecorderValue["captureIssues"]> = {
   "rec-lost": { kind: "recoveryFailed", detail: "native: segment unreadable" },
   // A voice note already in the Library (rec-0802) whose recovery failed.
   "rec-0802": { kind: "recoveryFailed", detail: "native: segment unreadable" },
 };
 const LOST_ROW = '[data-testid="capture-recent"] li[data-issue="recoveryFailed"] button';
+const PENDING_LISTED = '[data-testid="desktop-capture-home"]:has([data-testid="voice-note-pending"]):has([data-testid="recent-item"])';
 const SHEET = '[data-testid="capture-issue-sheet"]';
 const CONFIRM = '[role="alertdialog"]';
 
@@ -213,4 +222,8 @@ export const captureHomeDesktopScreens: HarnessScreen[] = [
     scrollTo: '[data-testid="capture-issue-dismiss"]',
   },
   screen("empty", () => <Home recorder={IDLE} rows={[]} />),
+  // A web save that failed keeps its Save now row (in this browser) at the rail widths too.
+  { ...screen("save-failed-web", () => <Home recorder={SAVE_FAILED} />, "web"), viewports: ["tablet", "desktop"], readyWhen: PENDING_LISTED },
+  // A native tablet keeps the desktop home and says "on this device", never "this Mac".
+  { ...screen("save-failed-tablet", () => <Home recorder={SAVE_FAILED} />, "android"), viewports: ["tablet", "tablet-land"], readyWhen: PENDING_LISTED },
 ];

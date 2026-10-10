@@ -1,4 +1,3 @@
-import { recorderFinalEnabled } from "@/capture/recorder/final/recorderFinalFlag";
 import { installVoiceNotesEngine, nativeVoiceNotesAvailable, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 
 export type CaptureEngineKind = "native" | "web" | "tauri";
@@ -57,11 +56,10 @@ export function registerCaptureEngine(kind: RegisterableKind, factory: () => Pro
   factories.set(kind, factory);
 }
 
-/** Native always; web and Tauri only with the recorder flag on, a shell that can record, and a registered engine. */
+/** Native always; web and Tauri only in a shell that can record, with a registered engine. */
 export function captureEngineKind(): CaptureEngineKind | null {
   if (installed) return installed.kind;
   if (nativeVoiceNotesAvailable()) return "native";
-  if (!recorderFinalEnabled()) return null;
   // Inside the desktop app only the Tauri engine records; never fall back to the browser engine.
   if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) return factories.has("tauri") ? "tauri" : null;
   if (typeof MediaRecorder !== "undefined" && typeof navigator !== "undefined" && navigator.mediaDevices && factories.has("web")) return "web";

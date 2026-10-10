@@ -71,13 +71,13 @@ describe("CaptureSurface", () => {
     expect(library).toContain(">Back</button>");
     expect(library).toContain('aria-label="Refresh the Library"');
     expect(library).toContain('data-state="loading"');
-    // The home (and a desktop local recording in it) is still mounted.
+    // The home is still mounted.
     expect(pane(markup, "capture-home").after).toContain('data-testid="capture-actions"');
   });
 
   test("on a note: the note shows with Back, over a hidden list pane that stays mounted", () => {
     const markup = render("/chat/capture/library/row-1", true);
-    expect(pane(markup, "capture-list-pane").classes).toEqual(["hidden"]);
+    expect(pane(markup, "capture-list-pane").classes).toContain("hidden");
     expect(pane(markup, "capture-detail").classes).not.toContain("hidden");
     const detail = pane(markup, "capture-detail").after;
     expect(detail).toContain(">Back</button>");
@@ -86,15 +86,14 @@ describe("CaptureSurface", () => {
     expect(pane(markup, "capture-home").after).toContain('data-testid="capture-actions"');
   });
 
-  test("Record sits in the actions row; Recent, the Library and a note read through one useLibrary", () => {
+  test("Recent, the Library and a note read through one useLibrary; the Soft actions row holds Record", () => {
     const source = readFileSync(join(import.meta.dir, "CaptureSurface.tsx"), "utf8");
     expect(source).not.toContain("VoiceNotesListCard");
     expect(source.match(/useLibrary\(/g)).toHaveLength(1);
     expect(source).toContain("<LibraryScreen");
     expect(source).toContain("<NoteDetail");
-    // One Record: the actions row's slot, between Upload and Meeting.
-    expect(source.match(/<RecordButton\b/g)).toHaveLength(1);
-    expect(source).toContain('record={<RecordButton variant="action" />}');
+    // One Record: SoftActions' own, between Upload and Meeting.
+    expect(source.match(/<SoftActions\b/g)).toHaveLength(1);
     // The recorder's notes on the phone and its limit notice are In progress rows.
     expect(source).toContain("listing: recorder.pending.listing,");
     // App and the harness hand `active` from the screen's destination.
@@ -113,11 +112,8 @@ describe("CaptureSurface", () => {
     expect(source.match(/meetingsSlot=\{meetingsSlot\}/g)).toHaveLength(1);
   });
 
-  test("the desktop local recorder is mounted whatever shows, and the sheets close when the home is left", () => {
+  test("the sheets close when the home is left", () => {
     const source = readFileSync(join(import.meta.dir, "CaptureSurface.tsx"), "utf8");
-    // Never behind `active`: unmounting the panel stops a recording without saving it.
-    expect(source).toContain("{localRecorder && <LocalRecorderCard tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />}");
-    expect(source).not.toMatch(/active && \(?\s*<LocalRecorderCard/);
     expect(source).toContain("if (!homeShown) setSheet(null);");
   });
 

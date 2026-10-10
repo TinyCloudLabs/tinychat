@@ -6,14 +6,14 @@ import { FINALIZATION_PENDING } from "../../recorder/recorderCopy";
 import type { RecorderCaptureIssue } from "../../recorder/recorderReducer";
 import { issueSheetCopy, type CaptureIssues, type HomeIssue } from "../captureIssues";
 import { HOME_COPY } from "../homeCopy";
-import { onThisMac } from "./desktopCopy";
+import { forPlace, homePlace } from "./desktopCopy";
 import {
   desktopIssueMeta,
   desktopRecent,
   issueNeedsAttention,
   matchesRecentFilter,
-  onMacNote,
-  onMacTitle,
+  pendingNote,
+  pendingTitle,
 } from "./desktopRecent";
 
 const item = (id: string, source: string, patch: Partial<LibraryItem> = {}): LibraryItem => ({
@@ -100,12 +100,12 @@ describe("a recording native parked", () => {
       { type: "issue", id: "p", issue: { kind: "quarantined" } },
     ]);
     expect(desktopRecent(LIBRARY, parked, "meeting").attention).toHaveLength(0);
-    expect(desktopIssueMeta({ kind: "quarantined" })).toBe("Couldn't recover this recording · audio kept");
+    expect(desktopIssueMeta({ kind: "quarantined" }, "mac")).toBe("Couldn't recover this recording · audio kept");
     expect(issueNeedsAttention({ kind: "quarantined" })).toBe(true);
   });
 
   test("the card says so", () => {
-    expect(onMacNote(parked, null)).toBe("Not in your space yet · Couldn't recover · audio kept");
+    expect(pendingNote(parked, null, "mac")).toBe("Not in your space yet · Couldn't recover · audio kept");
   });
 });
 
@@ -128,31 +128,62 @@ describe("the failed-recording sheet's copy on the desktop", () => {
       HOME_COPY.deleteConfirm.title,
       HOME_COPY.deleteConfirm.body,
     ];
-    for (const line of lines) expect(onThisMac(line)).not.toContain("phone");
-    expect(onThisMac(HOME_COPY.deleteConfirm.body)).toBe(
+    for (const line of lines) expect(forPlace("mac")(line)).not.toContain("phone");
+    expect(forPlace("mac")(HOME_COPY.deleteConfirm.body)).toBe(
       "The audio will be deleted from this Mac. This can't be undone.",
     );
   });
 });
 
-describe("the on-this-Mac card", () => {
+describe("the unsaved-voice-notes card", () => {
   test("a count, singular or plural, saying Mac", () => {
-    expect(onMacTitle(1)).toBe("1 voice note on this Mac");
-    expect(onMacTitle(3)).toBe("3 voice notes on this Mac");
+    expect(pendingTitle(1, "mac")).toBe("1 voice note on this Mac");
+    expect(pendingTitle(3, "mac")).toBe("3 voice notes on this Mac");
   });
 
   test("its note follows the worst thing that happened", () => {
-    expect(onMacNote({}, null)).toBe("Not in your space yet");
-    expect(onMacNote({ a: { kind: "finalization_timed_out" } }, null)).toBe(
+    expect(pendingNote({}, null, "mac")).toBe("Not in your space yet");
+    expect(pendingNote({ a: { kind: "finalization_timed_out" } }, null, "mac")).toBe(
       "Kept on this Mac. Exo will finish it automatically.",
     );
-    expect(onMacNote({}, FINALIZATION_PENDING)).toBe("Kept on this Mac. Exo will finish it automatically.");
+    expect(pendingNote({}, FINALIZATION_PENDING, "mac")).toBe("Kept on this Mac. Exo will finish it automatically.");
     expect(
-      onMacNote({ a: { kind: "finalization_timed_out" }, b: { kind: "recoveryFailed", detail: "x" } }, FINALIZATION_PENDING),
+      pendingNote({ a: { kind: "finalization_timed_out" }, b: { kind: "recoveryFailed", detail: "x" } }, FINALIZATION_PENDING, "mac"),
     ).toBe("Not in your space yet · Exo will retry when it next opens");
-    expect(onMacNote({ a: { kind: "write_failed", detail: "x" } }, null)).toBe(
+    expect(pendingNote({ a: { kind: "write_failed", detail: "x" } }, null, "mac")).toBe(
       "Not in your space yet · Couldn't save all of this recording",
     );
-    expect(onMacNote({}, "Couldn't reach your space")).toBe("Couldn't reach your space");
+    expect(pendingNote({}, "Couldn't reach your space", "mac")).toBe("Couldn't reach your space");
+  });
+});
+
+describe("the card names where the recordings are kept", () => {
+  test("a Mac, a browser or a phone or tablet app", () => {
+    expect(homePlace("tauri")).toBe("mac");
+    expect(homePlace("web")).toBe("browser");
+    expect(homePlace("ios")).toBe("device");
+    expect(homePlace("android")).toBe("device");
+    expect(pendingTitle(2, "browser")).toBe("2 voice notes in this browser");
+    expect(pendingTitle(1, "device")).toBe("1 voice note on this device");
+    expect(pendingNote({ a: { kind: "finalization_timed_out" } }, null, "browser")).toBe(
+      "Kept in this browser. Exo will finish it automatically.",
+    );
+    expect(pendingNote({}, FINALIZATION_PENDING, "device")).toBe(
+      "Kept on this device. Exo will finish it automatically.",
+    );
+    expect(desktopIssueMeta({ kind: "finalization_timed_out" }, "device")).toBe("Saving… · kept on this device");
+  });
+
+  test("the failed-recording sheet's copy follows, never saying Mac or phone off the Mac", () => {
+    const body = HOME_COPY.deleteConfirm.body;
+    expect(forPlace("device")(body)).toBe("The audio will be deleted from this device. This can't be undone.");
+    expect(forPlace("browser")(HOME_COPY.timedOutSheet.body)).toBe(
+      "Kept in this browser. Exo will finish it automatically.",
+    );
+    for (const line of [body, HOME_COPY.partialAudioSheet.body, HOME_COPY.tryAgainFailed])
+      for (const place of ["device", "browser"] as const) {
+        expect(forPlace(place)(line)).not.toContain("Mac");
+        expect(forPlace(place)(line)).not.toContain("phone");
+      }
   });
 });

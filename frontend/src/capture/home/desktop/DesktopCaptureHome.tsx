@@ -1,7 +1,7 @@
 // Capture's home on the desktop layout (a rail or the sidebar, medium width
 // and up; flag on): the Soft skin as one centred column. A quiet ring and
 // Start recording (Back to recording · m:ss while the recorder is docked),
-// Upload and Meeting, Connect existing meetings, what is still on this Mac,
+// Upload and Meeting, Connect existing meetings, what is still unsaved here,
 // In progress, then Recent with its filters. The phone's home is
 // ../SoftCaptureHome; this one shares its CSS and nothing else.
 import type { SessionStore } from "@tinyboilerplate/client";
@@ -54,15 +54,24 @@ import { useSoftTheme } from "../softTheme";
 import { useIssueController } from "../useIssueController";
 import { desktopHomeCapabilities } from "./captureHomeKind";
 import { ConnectMeetingsLink } from "./ConnectMeetingsLink";
-import { DESKTOP_HOME_COPY as COPY, onThisMac } from "./desktopCopy";
-import { retryWhisperJob, whisperJobMeta, WHISPER_JOB_COPY } from "@/capture/library/DesktopWhisperStatus";
+import {
+  DESKTOP_HOME_COPY as COPY,
+  forPlace,
+  homePlace,
+  type HomePlace,
+} from "./desktopCopy";
+import {
+  retryWhisperJob,
+  whisperJobMeta,
+  WHISPER_JOB_COPY,
+} from "@/capture/library/DesktopWhisperStatus";
 import { useDesktopWhisperJob } from "@/lib/voiceNotes/desktop/useDesktopWhisperJob";
 import {
   desktopIssueMeta,
   desktopRecent,
   issueNeedsAttention,
-  onMacNote,
-  onMacTitle,
+  pendingNote,
+  pendingTitle,
   RECENT_FILTERS,
   type DesktopEntry,
   type RecentFilter,
@@ -169,7 +178,8 @@ function ActionPill(props: {
   );
 }
 
-export function OnThisMacCard(props: {
+export function PendingVoiceCard(props: {
+  place: HomePlace;
   count: number;
   saving: boolean;
   note: string;
@@ -179,7 +189,7 @@ export function OnThisMacCard(props: {
     <div className="soft-card dch-mac" data-testid="voice-note-pending">
       <MicIcon className="soft-ico soft-card-icon" aria-hidden="true" />
       <div className="soft-card-text">
-        <b>{onMacTitle(props.count)}</b>
+        <b>{pendingTitle(props.count, props.place)}</b>
         <span data-testid="voice-note-pending-note">{props.note}</span>
       </div>
       <span className="soft-pill-hit" data-hit-area="">
@@ -197,15 +207,44 @@ export function OnThisMacCard(props: {
   );
 }
 
+/** The pending-note listing could not be read: say so (the cause is logged where it failed) and offer Try again. */
+export function ListFailedCard(props: {
+  place: HomePlace;
+  saving: boolean;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="soft-card dch-mac" data-testid="voice-note-list-failed">
+      <MicIcon className="soft-ico soft-card-icon" aria-hidden="true" />
+      <div className="soft-card-text">
+        <b>
+          {forPlace(props.place)("Couldn't check this phone for unsaved notes")}
+        </b>
+      </div>
+      <span className="soft-pill-hit" data-hit-area="">
+        <button
+          type="button"
+          className="soft-pill"
+          onClick={props.onRetry}
+          disabled={props.saving}
+          data-testid="voice-note-list-retry"
+        >
+          Try again
+        </button>
+      </span>
+    </div>
+  );
+}
+
 function InProgress(props: {
   inProgress: InProgressRowsViewProps;
-  macCard: boolean;
+  place: HomePlace;
   issues: CaptureIssues;
 }) {
   const { voice } = props.inProgress;
   const count = voice?.listing.state === "ok" ? voice.listing.count : 0;
-  const card = props.macCard && voice !== undefined && count > 0;
-  // The voice-note row is the card's (or, on the web, nobody's: it says "on this phone"); the rest show as they are.
+  const card = voice !== undefined && count > 0;
+  // The voice-note row is the card's (the generic row says "on this phone"); the rest show as they are.
   const rest: InProgressRowsViewProps = voice
     ? {
         ...props.inProgress,
@@ -213,25 +252,35 @@ function InProgress(props: {
       }
     : props.inProgress;
   const restShown = inProgressShown(rest);
-  if (!card && !restShown) return null;
+  // A listing that failed is never shown as "nothing pending" (the generic row it replaces did the same).
+  const listFailed = voice !== undefined && voice.listing.state === "error";
+  if (!card && !listFailed && !restShown) return null;
   return (
     <section
       aria-labelledby="dch-in-progress-title"
       className="dch-in-progress"
       data-testid="soft-in-progress"
     >
+      {(card || listFailed) && (
+        <h2 id="dch-in-progress-title" className="soft-sect">
+          {COPY.inProgress}
+        </h2>
+      )}
       {card && (
-        <>
-          <h2 id="dch-in-progress-title" className="soft-sect">
-            {COPY.inProgress}
-          </h2>
-          <OnThisMacCard
-            count={count}
-            saving={voice.saving}
-            note={onMacNote(props.issues, voice.lastError)}
-            onSaveNow={voice.onSaveNow}
-          />
-        </>
+        <PendingVoiceCard
+          place={props.place}
+          count={count}
+          saving={voice.saving}
+          note={pendingNote(props.issues, voice.lastError, props.place)}
+          onSaveNow={voice.onSaveNow}
+        />
+      )}
+      {listFailed && (
+        <ListFailedCard
+          place={props.place}
+          saving={voice.saving}
+          onRetry={voice.onSaveNow}
+        />
       )}
       {restShown && (
         <div className="soft-legacy" data-with-card={card ? "true" : undefined}>
@@ -333,10 +382,13 @@ export function RecentRow(props: {
   onOpenIssue: (id: string, row: HTMLElement) => void;
 }) {
   const { entry } = props;
+  const place = homePlace(useContext(PlatformContext));
   const [dismissError, setDismissError] = useState<string | null>(null);
   const [retryError, setRetryError] = useState(false);
   const whisperJob = useDesktopWhisperJob(
-    entry.type === "item" && libraryKind(entry.item.source) === "note" ? entry.item.sourceId : null,
+    entry.type === "item" && libraryKind(entry.item.source) === "note"
+      ? entry.item.sourceId
+      : null,
   );
   let icon: LucideIcon = MicIcon;
   let title: string = COPY.voiceNoteTitle;
@@ -362,7 +414,7 @@ export function RecentRow(props: {
       dismissId = entry.partialId;
       issueKind = "partial_audio";
     } else if (entry.issue) {
-      meta = desktopIssueMeta(entry.issue);
+      meta = desktopIssueMeta(entry.issue, place);
       attention = issueNeedsAttention(entry.issue);
       issueKind = entry.issue.kind;
       if (issueHasSheet(entry.issue)) sheetId = item.sourceId;
@@ -377,7 +429,7 @@ export function RecentRow(props: {
     sourceId = entry.id;
     issueKind = "partial_audio";
   } else {
-    meta = desktopIssueMeta(entry.issue);
+    meta = desktopIssueMeta(entry.issue, place);
     attention = issueNeedsAttention(entry.issue);
     sourceId = entry.id;
     issueKind = entry.issue.kind;
@@ -409,7 +461,9 @@ export function RecentRow(props: {
           {meta}
         </span>
       </span>
-      {(durationSecs !== null || href !== undefined || sheetId !== undefined) && (
+      {(durationSecs !== null ||
+        href !== undefined ||
+        sheetId !== undefined) && (
         <span className="soft-row-aside" aria-hidden="true">
           {durationSecs !== null && (
             <span className="tnum">{formatClockDuration(durationSecs)}</span>
@@ -457,7 +511,9 @@ export function RecentRow(props: {
         <DismissControl
           label={COPY.dismissLabel(title)}
           error={dismissError}
-          onDismiss={() => setDismissError(dismissNotice(dismissId, props.onDismiss))}
+          onDismiss={() =>
+            setDismissError(dismissNotice(dismissId, props.onDismiss))
+          }
         />
       )}
       {retryId !== undefined && (
@@ -601,6 +657,7 @@ export function DesktopCaptureHome(props: DesktopCaptureHomeProps) {
   const softTheme = useSoftTheme();
   const theme = softTheme === "soft-night" ? "night" : "day";
   const caps = desktopHomeCapabilities(platform, props.layout);
+  const place = homePlace(platform);
   const [filter, setFilter] = useState<RecentFilter>("all");
   // The same issue state and sheet as the phone home, over the recorder's issues and what native parked.
   const issues = useIssueController(
@@ -667,7 +724,7 @@ export function DesktopCaptureHome(props: DesktopCaptureHomeProps) {
           )}
           <InProgress
             inProgress={props.inProgress}
-            macCard={caps.onThisMac}
+            place={place}
             issues={issues.issues}
           />
           {issues.quarantineFailed && (
@@ -697,7 +754,7 @@ export function DesktopCaptureHome(props: DesktopCaptureHomeProps) {
           />
         </div>
       </div>
-      <IssueSheet {...issues.sheet} layout="desktop" text={onThisMac} />
+      <IssueSheet {...issues.sheet} layout="desktop" text={forPlace(place)} />
     </div>
   );
 }

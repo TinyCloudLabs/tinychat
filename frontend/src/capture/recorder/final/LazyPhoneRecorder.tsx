@@ -199,7 +199,7 @@ export interface LazyPhoneRecorderProps extends PhoneRecorderProps {
   reload?: () => void;
 }
 
-/** The final phone recorder, fetched when it is first shown (never with the flag off, which never renders it). */
+/** The final phone recorder, fetched when it is first shown (never on a layout that does not show it). */
 export function LazyPhoneRecorder({
   load = importPhoneRecorder,
   reload = reloadExo,

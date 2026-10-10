@@ -5,7 +5,6 @@
 import { useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import type { RecorderValue } from "@/capture/recorder/RecorderProvider";
-import { forceSoftHome } from "@/capture/home/softHome";
 import { pausedUpload } from "@/capture/upload/pausedUpload";
 import { PlatformContext } from "@/lib/platform";
 import {
@@ -54,7 +53,8 @@ const MINIMISED: Partial<RecorderValue> = {
   sheetOpen: false,
 };
 
-const CAPTURE = { group: "capture", layout: "pane", displayTitle: true, path: "/chat/capture", platform: "ios" } as const;
+// The Soft home sets its title in Fraunces, so the Literata font check does not apply.
+const CAPTURE = { group: "capture", layout: "pane", displayTitle: false, path: "/chat/capture", platform: "ios" } as const;
 const LISTED = '[data-testid="library-list"][data-state="ready"]';
 
 export const captureScreens: HarnessScreen[] = [
@@ -70,18 +70,14 @@ export const captureScreens: HarnessScreen[] = [
   { ...CAPTURE, id: "capture-web", platform: "web", readyWhen: LISTED, render: () => <CaptureShell /> },
 ];
 
-// The Soft-skin phone Capture home (TC-871, behind VITE_EXO_RECORDER_FINAL; the
-// harness has no env, so each screen turns the skin on). Night and Day come
-// from the harness's themes.
-// The Soft skin sets its title in Fraunces, so the Literata font check does not apply.
-const SOFT = { ...CAPTURE, platform: "ios", readyWhen: LISTED, displayTitle: false } as const;
+// The Soft-skin phone Capture home (TC-871). Night and Day come from the harness's themes.
+const SOFT = { ...CAPTURE, platform: "ios", readyWhen: LISTED } as const;
 
 function SoftHome(props: {
   recorder?: Partial<RecorderValue>;
   library?: boolean;
   rows?: typeof LIBRARY_ROWS;
 }) {
-  forceSoftHome(true);
   return (
     <CaptureShell
       library={props.library ?? true}

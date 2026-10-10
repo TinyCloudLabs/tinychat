@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { openSettingsUnavailable } from "@/lib/voiceNotes/captureEngine";
+import { closeRecoveryFailedLine, openSettingsFailedLine } from "./final/shell/micDeniedCopy";
 
 export const BROWSER_MIC_GUIDANCE = "Allow microphone access for this site in your browser, then try again.";
 
@@ -19,7 +20,7 @@ export function MicrophoneAccessOff({ onMinimise, onOpenSettings, onTryAgain }: 
       <header className="flex min-h-14 shrink-0 items-center px-4 pt-[env(safe-area-inset-top)]">
         <Button type="button" variant="ghost" size="icon" className="size-11" aria-label="Minimise recorder" onClick={() => {
           setSettingsError(null);
-          void Promise.resolve(onMinimise()).catch((error: unknown) => setSettingsError(error instanceof Error ? error.message : String(error)));
+          void Promise.resolve(onMinimise()).catch((error: unknown) => setSettingsError(closeRecoveryFailedLine(error)));
         }}><ChevronDownIcon className="!size-5" /></Button>
       </header>
       <main className="mx-auto flex w-full max-w-xl flex-1 flex-col items-center justify-center gap-5 px-6 pb-[env(safe-area-inset-bottom)] text-center">
@@ -35,7 +36,7 @@ export function MicrophoneAccessOff({ onMinimise, onOpenSettings, onTryAgain }: 
             <p className="text-body text-muted-foreground">Allow microphone access in Settings to record a voice note.</p>
             <Button type="button" size="lg" className="min-h-12 min-w-36" data-testid="voice-note-open-settings" onClick={() => {
               setSettingsError(null);
-              void onOpenSettings().catch((error: unknown) => setSettingsError(error instanceof Error ? error.message : String(error)));
+              void onOpenSettings().catch((error: unknown) => setSettingsError(openSettingsFailedLine(error)));
             }}>Open Settings</Button>
           </>
         )}

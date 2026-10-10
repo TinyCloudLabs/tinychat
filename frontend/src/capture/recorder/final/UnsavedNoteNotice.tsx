@@ -126,7 +126,7 @@ export function ShellNoteNotice({ layout }: { layout: "tabbar" | "beside" }) {
 export function ReceiptNoteNotice() {
   const recorder = useRecorder();
   const unsaved = useUnsavedNote();
-  // Nothing at all without a lost note, so the classic receipt (and the flag off) is unchanged.
+  // Nothing at all without a lost note, so the receipt is unchanged.
   if (unsaved === null || recorder.phase !== "idle" || recorder.outcome === null)
     return null;
   return (

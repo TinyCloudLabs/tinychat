@@ -192,7 +192,7 @@ describe("useNotesLifecycle", () => {
     expect(readNotesUi("5")?.draft).toBe("x");
   });
 
-  describe("in a stable owner (FinalRecorderShell) above a view that minimising unmounts", () => {
+  describe("in a stable owner (RecorderShell) above a view that minimising unmounts", () => {
     function Owner({ children }: { children: ReactNode }) {
       useNotesLifecycle();
       return <>{children}</>;

@@ -5,7 +5,7 @@ import { recordingKey } from "./recordingKey";
 
 /**
  * Drops the notes UI state when its recording is over (Done, discard) or another one has started. Mount it in an
- * owner that stays mounted across minimise and stop (FinalRecorderShell), never in a view: the views unmount when
+ * owner that stays mounted across minimise and stop (RecorderShell), never in a view: the views unmount when
  * the sheet is minimised, and a recording stopped or discarded then would never be cleared. Its unmount also counts
  * as the end when the recording is no longer live.
  */

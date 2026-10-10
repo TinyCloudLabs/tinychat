@@ -208,7 +208,7 @@ describe("a voice note with an after-stop Whisper job on the Mac", () => {
   test("signed out (no private-cloud props): queued, progress and failure with Retry show on the page", () => {
     const before = __desktopWhisperQueueReadsForTests();
     expect(withJob({ state: "queued" })).toContain("Waiting to transcribe on this Mac");
-    // The counter sees the enabled path, so its silence in the classic test means something.
+    // The counter sees the enabled path, so its silence outside the desktop app means something.
     expect(__desktopWhisperQueueReadsForTests()).toBeGreaterThan(before);
     expect(withJob({ state: "transcribing", progress: 33 })).toContain("Transcribing on this Mac · 33%");
     const failed = withJob({ state: "failed", error: "raw detail" });
@@ -217,14 +217,14 @@ describe("a voice note with an after-stop Whisper job on the Mac", () => {
     expect(failed).not.toContain("No transcript.");
   });
 
-  test("with the flag off (the classic view) it renders as before and never reads the queue", () => {
+  test("outside the desktop app it renders as before and never reads the queue", () => {
     const calls: string[] = [];
     const job: DesktopWhisperJob = { id: "rec-1", state: "failed", error: "raw detail", progress: null };
     registerDesktopWhisperQueue({
       snapshot: () => { calls.push("snapshot"); return new Map([["rec-1", job]]); },
       subscribe: () => { calls.push("subscribe"); return noop; },
     } as unknown as DesktopWhisperQueue);
-    // The production default (no override): the flag is unset and the shell isn't Tauri in tests.
+    // The production default (no override): the shell isn't Tauri in tests.
     const before = __desktopWhisperQueueReadsForTests();
     const classic = render();
     expect(__desktopWhisperQueueReadsForTests()).toBe(before);

@@ -193,52 +193,11 @@
   }
 }
 
-/* The Live Edge (capture/recorder/LiveEdge.tsx): the only coloured glow, and
-   only while a microphone is live. Its brightness follows --live-level (0..1),
-   written by a level subscription, never by React. Amber and still on a mic
-   problem; still for the desktop recorder and with reduced motion. */
-.live-edge {
-  --live-edge-tone: var(--live);
-  position: fixed;
-  inset: 0;
-  border-radius: var(--tc-screen-radius, 3.25rem);
-  z-index: 60;
-  pointer-events: none;
-  box-shadow:
-    inset 0 0 0 3px hsl(var(--live-edge-tone) / 0.94),
-    inset 0 0 24px 5px hsl(var(--live-edge-tone) / 0.72),
-    inset 0 0 60px 12px hsl(var(--live-edge-tone) / 0.48);
-  opacity: calc(0.68 + 0.32 * var(--live-level, 0));
-  transition: opacity var(--dur-quick) linear;
-}
-.dark .live-edge {
-  box-shadow:
-    inset 0 0 0 3px hsl(var(--live-edge-tone) / 0.92),
-    inset 0 0 28px 6px hsl(var(--live-edge-tone) / 0.7),
-    inset 0 0 64px 14px hsl(var(--live-edge-tone) / 0.45);
-}
-.live-edge[data-tone="warning"] {
-  --live-edge-tone: var(--warning);
-}
-.live-edge[data-static] {
-  opacity: 0.8;
-}
-@media (prefers-reduced-motion: reduce) {
-  .live-edge {
-    opacity: 0.8;
-    transition: none;
-  }
-}
-
 /* Forced colours drop the tints. The selected segment keeps its edge, in the
-   system highlight; the Live Edge (PR4) is decoration over a state the status
-   text already carries. */
+   system highlight. */
 @media (forced-colors: active) {
   [data-segmented-thumb] {
     border-color: Highlight;
-  }
-  .live-edge {
-    display: none;
   }
 }
 

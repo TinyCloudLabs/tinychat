@@ -57,7 +57,7 @@ export function LibraryFilterControl(props: { value: LibraryFilter; onValueChang
             key={option.value}
             value={option.value}
             className={cn(
-              "tap-transparent flex min-h-11 items-center gap-1.5 rounded-full border px-3 text-callout font-medium transition-colors fine:min-h-8",
+              "tap-transparent flex min-h-11 min-w-11 items-center gap-1.5 rounded-full border px-3 text-callout font-medium transition-colors fine:min-h-8",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:opacity-60",
               selected ? "border-primary bg-selected font-semibold text-foreground" : "border-border text-muted-foreground hover:text-foreground",
             )}

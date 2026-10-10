@@ -38,8 +38,11 @@ const WEB_CAPABILITIES: CaptureCapabilities = {
   offlineRecorder: false,
 };
 
-const installWebEngine = () =>
+// The installed engine makes the home read the parked recordings; the fake plugin answers that here.
+const installWebEngine = () => {
+  __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: false });
   __setInstalledEngineForTests("web", WEB_CAPABILITIES);
+};
 
 // What the browser would show on the tab while this state runs; plain "Exo" otherwise.
 function TabStrip({ value }: { value: Partial<RecorderValue> }) {

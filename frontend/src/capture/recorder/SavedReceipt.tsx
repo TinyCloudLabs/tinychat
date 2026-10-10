@@ -27,7 +27,7 @@ export interface SavedReceiptProps {
   /** This note's chosen transcriber, looked up natively; null once it's known not to be on-device. */
   transcriber?: TranscriberId | null;
   /** The sidecar's durable on-device STT state, from the same native `listPending()` read
-   * RecordingView already made to learn `transcriber` — the seed for useOnDeviceReceipt's first
+   * ReceiptView already made to learn `transcriber` — the seed for useOnDeviceReceipt's first
    * render, so this component does not repeat that read (and the recovery scan behind it) on
    * every mount. */
   sttHint?: NoteSttState | null;
@@ -52,7 +52,7 @@ export interface SavedReceiptProps {
 /** On-device transcription's state for this note: the sidecar's durable `stt.state` is the source
  * of truth (round-2 finding 1) — a missed `transcribed`/`failed` event (fired before this
  * component mounted, or before a previous mount's listeners were attached) never strands the UI.
- * The initial read comes from `sttHint`, the caller's own `listPending()` call (RecordingView
+ * The initial read comes from `sttHint`, the caller's own `listPending()` call (ReceiptView
  * already makes one to learn the note's transcriber) — not a second one here. Two `listPending()`
  * calls on every receipt mount used to serialize behind native's recovery-scan lock and could
  * outrun the saved receipt's fixed display window on a phone with many notes (TC-781 round 4). A

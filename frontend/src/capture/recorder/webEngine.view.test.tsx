@@ -1,4 +1,4 @@
-// The legacy recorder overlay and the denied-microphone screen on an engine without native
+// The saved receipt and the denied-microphone screen on an engine without native
 // capabilities: OnDeviceStt is never touched, Local is not offered, and the browser gets guidance.
 import { afterEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -10,7 +10,7 @@ import { VoiceNotes, __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoic
 import { OnDeviceStt, __setOnDeviceSttForTests, type OnDeviceSttPlugin } from "@/lib/voiceNotes/onDeviceStt";
 import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { BROWSER_MIC_GUIDANCE, MicrophoneAccessOff } from "./MicrophoneAccessOff";
-import { RecordingView } from "./RecordingView";
+import { ReceiptView } from "./ReceiptView";
 import type { RecorderValue } from "./RecorderProvider";
 import { TranscriptionRouteControl } from "./TranscriptionRouteControl";
 
@@ -22,13 +22,12 @@ const WEB: CaptureCapabilities = {
 const noop = () => {};
 
 const saved = {
-  flag: process.env.VITE_EXO_RECORDER_FINAL, MediaRecorder: global.MediaRecorder, voiceNotes: VoiceNotes, onDevice: OnDeviceStt,
+  MediaRecorder: global.MediaRecorder, voiceNotes: VoiceNotes, onDevice: OnDeviceStt,
   mediaDevices: Object.getOwnPropertyDescriptor(navigator, "mediaDevices"),
 };
 
 afterEach(() => {
   __resetCaptureEngineForTests();
-  if (saved.flag === undefined) delete process.env.VITE_EXO_RECORDER_FINAL; else process.env.VITE_EXO_RECORDER_FINAL = saved.flag;
   if (saved.MediaRecorder === undefined) delete global.MediaRecorder; else global.MediaRecorder = saved.MediaRecorder;
   if (saved.mediaDevices) Object.defineProperty(navigator, "mediaDevices", saved.mediaDevices); else delete (navigator as unknown as Record<string, unknown>).mediaDevices;
   __setVoiceNotesForTests(saved.voiceNotes, { available: null });
@@ -41,7 +40,6 @@ async function installWeb(): Promise<string[]> {
     calls.push(property);
     throw new Error(`OnDeviceStt.${property} must not be called without localTranscription`);
   } }) as unknown as OnDeviceSttPlugin);
-  process.env.VITE_EXO_RECORDER_FINAL = "true";
   __setVoiceNotesForTests(saved.voiceNotes, { available: false });
   global.MediaRecorder = class {};
   Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: {} });
@@ -51,7 +49,7 @@ async function installWeb(): Promise<string[]> {
 }
 
 const recorder = (patch: Partial<RecorderValue> = {}): RecorderValue => ({
-  available: true, ready: true, phase: "recording", permissionDenied: false, mic: { state: "recording", reason: null },
+  available: true, ready: true, phase: "idle", permissionDenied: false, mic: { state: "recording", reason: null },
   startedAt: Date.now() - 42_000, audioMs: 42_000, maxDurationMs: 3 * 60 * 60_000,
   limitNotice: null, savePercent: null, error: null, outcome: null, lastSaved: null,
   pending: { listing: { state: "ok", count: 0 }, running: false, lastError: null },
@@ -65,20 +63,18 @@ const recorder = (patch: Partial<RecorderValue> = {}): RecorderValue => ({
 });
 
 const view = (patch: Partial<RecorderValue> = {}) => renderToStaticMarkup(
-  <MemoryRouter><RecordingView recorder={recorder(patch)} /></MemoryRouter>,
+  <MemoryRouter><ReceiptView recorder={recorder(patch)} /></MemoryRouter>,
 );
 
 describe("web engine, opened overlay", () => {
-  test("the recording view and the saved receipt never call OnDeviceStt, and Local is not offered", async () => {
+  test("the saved receipt never calls OnDeviceStt", async () => {
     const calls = await installWeb();
-    const recording = view();
     const receipt = view({ phase: "idle", outcome: "local", startedAt: null, lastSaved: { id: "rec-1", durationMs: 42_000, at: Date.now() } });
     // The store snapshot is module state other tests may have filled; what matters is that
     // nothing below reaches OnDeviceStt on the web engine.
     expect(onDeviceSttStore.subscribe(noop)).toBeInstanceOf(Function);
     await onDeviceSttStore.refresh();
-    expect(recording).toContain('data-testid="transcription-route"');
-    expect(recording).not.toContain("On this phone");
+    expect(receipt).not.toContain("On this phone");
     expect(receipt).toContain('data-testid="voice-note-receipt"');
     expect(calls).toEqual([]);
   });

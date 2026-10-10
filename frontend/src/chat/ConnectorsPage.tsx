@@ -6,11 +6,8 @@ import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { useNavKind } from "@/shell/navItems";
 import { PAGE_COLUMN, PageHeader, SettingsGear } from "@/shell/PageHeader";
 import { ConnectorsCard } from "./ConnectorsCard";
-import { recorderFinalEnabled } from "@/capture/recorder/final/recorderFinalFlag";
 
-const MeetingSourcesFeature = recorderFinalEnabled()
-  ? lazy(() => import("@/capture/meetingSources/MeetingSourcesDialog").then((m) => ({ default: m.MeetingSourcesFeature })))
-  : null;
+const MeetingSourcesFeature = lazy(() => import("@/capture/meetingSources/MeetingSourcesDialog").then((m) => ({ default: m.MeetingSourcesFeature })));
 
 // Health spike (TC-525): development-only, and only in builds with VITE_EXO_HEALTH_SPIKE=true (the rule of
 // healthSpikeEnabled, written out so Vite can inline it: a normal build drops the card's chunk entirely).
@@ -39,7 +36,7 @@ interface ConnectorsPageProps {
  */
 export function ConnectorsPage({ tcw, backendUrl, sessionStore }: ConnectorsPageProps) {
   const nav = useNavKind();
-  const meetingSourcesEnabled = MeetingSourcesFeature !== null && nav !== "tabbar";
+  const meetingSourcesEnabled = nav !== "tabbar";
   return (
     // `relative` makes this scroller the containing block for absolutely
     // positioned descendants (the `sr-only` form labels). Without it they
