@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, setSystemTime, test } from "bun:test";
 import { tinycloud, initialized } from "@tinycloud/web-sdk-wasm";
 import { privateKeyToAccount } from "viem/accounts";
 import type { NativeSession, OpenKeyNative } from "@openkey/sdk-capacitor";
@@ -6,12 +6,16 @@ import type { ISessionStorage, PersistedSessionData, TinyCloudWeb } from "@tinyc
 import { installNativeSession, type NativeSignInDeps } from "./openkeyNative";
 import { NativeRenewal, guardNativeTinyCloudCalls } from "./openkeyNativeRenewal";
 
+afterEach(() => setSystemTime());
+
+// The system clock is pinned and advanced by hand, so session lifetimes never depend on wall time.
 // This fake mirrors web-sdk 2.11's restoreSession graph retirement. Each
 // service signs real WASM proofs, and the fake HTTP node rejects an expired CID.
 test("held calls and an in-flight audio-part overwrite use the renewed graph", async () => {
   await initialized;
   const account = privateKeyToAccount(`0x${"1".padStart(64, "0")}`);
-  const issued = Date.now();
+  const issued = Math.floor(Date.now() / 1_000) * 1_000;
+  setSystemTime(new Date(issued));
   const spaceId = `tinycloud:pkh:eip155:1:${account.address}:applications`;
   const sign = async (ttl: number, jwk?: unknown) => {
     const prepared = tinycloud.prepareSession({
@@ -102,14 +106,15 @@ test("held calls and an in-flight audio-part overwrite use the renewed graph", a
     const inFlight = held.put("app/threads/audio/p/000001", "during");
     await atOld;
     now = issued + 900;
+    setSystemTime(new Date(now));
     await renewal.check();
     releaseOld();
     expect((await inFlight).status).toBe(200);
     expect(seen.at(-1)).toBe(newSigned.delegationCid);
-    await Bun.sleep(1_250);
     now = issued + 1_300;
+    setSystemTime(new Date(now));
     expect((await held.put("app/threads/later", "after")).status).toBe(200);
     expect(seen.at(-1)).toBe(newSigned.delegationCid);
     renewal.stop();
   } finally { node.stop(true); }
-});
+}, 60_000);
