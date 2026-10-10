@@ -12,12 +12,11 @@
     "mobile"
   ],
   "overrides": {
-    "@tinycloud/sdk-core": "2.11.0",
-    "@tinycloud/sdk-services": "2.11.0",
-    "@tinycloud/web-sdk": "2.11.0",
-    "@tinycloud/node-sdk": "2.11.0",
-    "@tinycloud/web-core": "1.7.0",
-    "@tinycloud/node-sdk-wasm": "1.7.6",
+    "@tinycloud/sdk-core": "3.1.0",
+    "@tinycloud/sdk-services": "3.1.0",
+    "@tinycloud/web-sdk": "3.1.0",
+    "@tinycloud/node-sdk": "3.1.0",
+    "@tinycloud/node-sdk-wasm": "1.7.7",
     "@tinycloud/web-sdk-wasm": "1.7.6",
     "ethers": "6.16.0",
     "react": "19.2.3",
@@ -54,7 +53,7 @@
   "devDependencies": {
     "@changesets/cli": "3.0.3",
     "@eslint/js": "^10.0.1",
-    "@tinycloud/node-sdk": "2.11.0",
+    "@tinycloud/node-sdk": "3.1.0",
     "eslint": "^10.1.0",
     "husky": "^9.1.7",
     "portless": "^0.13.0",
@@ -63,6 +62,6 @@
     "typescript-eslint": "^8.57.1"
   },
   "patchedDependencies": {
-    "@tinycloud/node-sdk@2.11.0": "patches/@tinycloud%2Fnode-sdk@2.11.0.patch"
+    "@tinycloud/node-sdk@3.1.0": "patches/@tinycloud%2Fnode-sdk@3.1.0.patch"
   }
 }
