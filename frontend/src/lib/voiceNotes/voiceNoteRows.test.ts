@@ -344,6 +344,31 @@ test("Stop during the OpenKey wait after handoff cannot upload to the old accoun
   } finally { __setVoiceNotesForTests(previous, { available: null }); }
 });
 
+test("another account's retained notes do not delay a fresh Stop with a space preflight", async () => {
+  const previous = VoiceNotes;
+  const { tcw, sqlite } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: "did:test:previous", transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false });
+    await fake.plugin.start();
+    const old = await fake.plugin.stop();
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 2,
+      transcriber: "on-device", identifySpeakers: false });
+    const pipeline = createVoiceNotePipeline(tcw);
+    const ctx = { did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() };
+    await pipeline.reconcileAll(ctx);
+    expect(sqlite.query("SELECT name FROM sqlite_schema WHERE name = 'voice_note_transcript'").all()).toEqual([]);
+    await fake.plugin.start();
+    const fresh = await fake.plugin.stop();
+    await pipeline.process(ctx, fresh.id);
+    const notes = (await fake.plugin.listPending()).recordings;
+    expect(notes.find((note) => note.id === old.id)?.ledger?.audio.state).toBe("pending");
+    expect(notes.find((note) => note.id === fresh.id)?.ledger?.audio.state).toBe("saved");
+  } finally { __setVoiceNotesForTests(previous, { available: null }); }
+});
+
 test("a user-choice claimed legacy note uploads once and keeps its owner", async () => {
   const original = VoiceNotes;
   const { tcw, sqlite } = space();

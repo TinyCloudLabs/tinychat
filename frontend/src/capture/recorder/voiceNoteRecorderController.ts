@@ -272,9 +272,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         return;
       }
       try {
-        await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id);
-        send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
-        landed(recording);
+        const finish = pendingStore.beginAutomaticSave();
+        try {
+          await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id);
+          send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
+          landed(recording);
+        } finally { finish(); }
       } catch (caught) {
         if (!pipeline.isAccepting() || saveDeferredForAccountTransition(caught)) {
           send({ type: "LOCAL_UPLOAD_HELD", id: recording.id });
@@ -283,8 +286,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         }
         send({ type: "SAVE_FAILED", error: `Saved on this phone, but uploading to your space failed: ${messageOf(caught)}`,
           recording: { id: recording.id, durationMs: recording.durationMs } });
+        void pendingStore.refresh(messageOf(caught));
+        return;
       }
-      void pendingStore.refresh();
+      void pendingStore.refresh(null);
       return;
     }
     send({ type: "SAVE_PROGRESS", percent: null });
@@ -334,12 +339,16 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     if (!tcw || (pipeline && !pipeline.isAccepting())) { void pendingStore.refresh(); return; }
     if (pipeline) {
       if (recording.owner === tcw.did && tcw.did && tcw.spaceId) {
+        const finish = pendingStore.beginAutomaticSave();
         try {
           await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id);
           landed(recording);
         } catch (caught) {
-          if (!saveDeferredForAccountTransition(caught) && pipeline.isAccepting()) throw caught;
-        }
+          if (!saveDeferredForAccountTransition(caught) && pipeline.isAccepting()) {
+            void pendingStore.refresh(messageOf(caught));
+            return;
+          }
+        } finally { finish(); }
       }
       void pendingStore.refresh();
       return;

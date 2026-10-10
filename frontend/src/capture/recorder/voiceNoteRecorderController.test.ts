@@ -713,6 +713,43 @@ describe("voice-note recorder controller", () => {
     detach();
   });
 
+  test("fresh sign-in then Done starts the automatic upload and shows it saving", async () => {
+    const signedOut = controller({ tcw: null });
+    const detachSignedOut = signedOut.attach();
+    await tick();
+    detachSignedOut();
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false });
+    let release!: () => void;
+    const uploadWaiting = new Promise<void>((resolve) => { release = resolve; });
+    const processed: string[] = [];
+    const pipeline: VoiceNotePipeline = {
+      process: async (_ctx, id) => {
+        processed.push(id);
+        await uploadWaiting;
+        onPhone.find((note) => note.id === id)!.ledger = {
+          audio: { state: "saved", rowId: `vn-${id}`, at: Date.now() },
+        } as VoiceNoteRecording["ledger"];
+      },
+      reconcileAll: async () => {}, cancelAll: () => {}, resume: () => {},
+      isAccepting: () => true, quiescent: async () => true,
+    };
+    const recorder = controller({ pipeline });
+    const detach = recorder.attach();
+    await tick();
+    await recorder.record();
+    await recorder.stop();
+    await tick();
+    expect(processed).toEqual([onPhone[0]!.id]);
+    expect(recorder.getState()).toMatchObject({ outcome: "local", localUpload: "uploading" });
+    expect(pendingStore.snapshot().running).toBe(true);
+    release();
+    await tick();
+    expect(recorder.getState()).toMatchObject({ outcome: "saved", error: null });
+    expect(pendingStore.snapshot().running).toBe(false);
+    detach();
+  });
+
   test("Save now reports an unavailable fresh sign-in client instead of silently refreshing", async () => {
     const recorder = controller({ tcw: null });
     const detach = recorder.attach();
