@@ -49,8 +49,10 @@ export interface ReceiptViewProps {
 /** The full-page receipt once a recording has ended: saved, kept on this phone, or failed (Save now). */
 export function ReceiptView({ recorder, onOpenNote }: ReceiptViewProps) {
   const { phase, outcome, lastSaved } = recorder;
+  const heldJob = lastSaved ? recorder.transcription?.jobs.get(lastSaved.id) : undefined;
   const transcribing = outcome === "saved" && recorder.transcription?.availability === "available" &&
-    recorder.transcription.consented && !!lastSaved && lastSaved.durationMs <= recorder.transcription.maxSeconds * 1000;
+    recorder.transcription.consented && !!lastSaved && lastSaved.durationMs <= recorder.transcription.maxSeconds * 1000 &&
+    heldJob?.kind !== "held";
   // Looked up for every outcome with a note (not just "saved"): a signed-out or offline on-device
   // recording lands as "local" and must still show its real route and transcript.
   const savedNote = useSavedNote(lastSaved?.id);
@@ -78,7 +80,7 @@ export function ReceiptView({ recorder, onOpenNote }: ReceiptViewProps) {
         </div>
 
         <div className="flex min-h-0 flex-col justify-end land:col-start-2 land:row-start-1">
-          <SavedReceipt outcome={outcome} localUpload={recorder.localUpload} saved={lastSaved} route={voiceNoteRoute(savedRoute)} transcriber={savedTranscriber} sttHint={savedNote.stt} transcribing={transcribing} error={honestRecorderError(recorder)} notice={receiptPartialNotice(recorder, lastSaved?.id)} retrying={recorder.pending.running}
+          <SavedReceipt outcome={outcome} localUpload={recorder.localUpload} saved={lastSaved} route={voiceNoteRoute(savedRoute)} transcriber={savedTranscriber} sttHint={savedNote.stt} transcribing={transcribing} held={heldJob?.kind === "held" ? heldJob.message : null} error={honestRecorderError(recorder)} notice={receiptPartialNotice(recorder, lastSaved?.id)} retrying={recorder.pending.running}
             onOpen={onOpenNote && lastSaved ? () => { recorder.dismissOutcome(); onOpenNote(lastSaved.id); } : undefined}
             onDone={recorder.dismissOutcome} onSaveNow={recorder.retryPending} onPlayingChange={recorder.setReceiptPlaying} onReady={recorder.setReceiptReady} />
         </div>

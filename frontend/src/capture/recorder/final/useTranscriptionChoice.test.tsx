@@ -11,6 +11,7 @@ import { FINAL_COPY } from "./finalCopy";
 import { localDesktopCaption, LOCAL_DESKTOP_NO_MODEL_EXPLANATION, type DesktopWhisperState } from "./desktop/useDesktopWhisper";
 import {
   DESKTOP_SIGNED_OUT_CAPTION,
+  LOCAL_NEEDS_MODEL,
   PRIVATE_UNAVAILABLE,
   SIGNED_OUT,
   SPEAKERS_NEEDS_CONSENT,
@@ -529,5 +530,34 @@ describe("useTranscriptionChoice on the Mac with Whisper", () => {
 
   test("the caption helper falls back to the generic line without a label", () => {
     expect(localDesktopCaption(null)).toBe(FINAL_COPY.modes.localDesktopCaption);
+  });
+});
+
+describe("useTranscriptionChoice: the knob never rests on Local without saying the model is missing", () => {
+  const NO_MODEL: OnDeviceSttStatus = { ...MODEL, engine: "none", models: [] };
+
+  test("resting on Local with the model absent shows the needs-model note", () => {
+    const { result } = choice(transcription(), fakeApi("on-device").api, NO_MODEL);
+    expect(result.mode).toBe("local");
+    expect(result.stops.find((s) => s.stop.id === "local")!.available).toBe(false);
+    expect(result.restingNote).toBe(LOCAL_NEEDS_MODEL);
+  });
+
+  test("a default that stands in for Local carries the note even though the knob is on another stop", () => {
+    const api = fakeApi("private-cloud").api;
+    api.transcriber = { id: "private-cloud", identifySpeakers: false, source: "default", localModelNeeded: true };
+    const { result } = choice(transcription(), api, NO_MODEL);
+    expect(result.mode).toBe("private");
+    expect(result.restingNote).toBe(LOCAL_NEEDS_MODEL);
+  });
+
+  test("no note when Local can run, or when another mode rests on its own choice", () => {
+    expect(choice(transcription(), fakeApi("on-device").api, MODEL).result.restingNote).toBeNull();
+    expect(choice(transcription(), fakeApi("private-cloud").api, NO_MODEL).result.restingNote).toBeNull();
+    expect(choice(transcription(), fakeApi("off").api, NO_MODEL).result.restingNote).toBeNull();
+  });
+
+  test("no note while the model's state is still unknown", () => {
+    expect(choice(transcription(), fakeApi("on-device").api, null).result.restingNote).toBeNull();
   });
 });

@@ -11,12 +11,15 @@
 import { describe, expect, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
+import { memoryHoldStore } from "@/harness/memoryHoldStore";
 import { PrivateCloudError, type PrivateCloudCapabilities } from "../privateCloud";
 import {
   createVoiceNoteTranscriber,
+  HELD_NOTE_MESSAGE,
   voiceNoteTranscriberFor,
   type VoiceNoteCloud,
   type VoiceNoteConsentStore,
+  type VoiceNoteHoldStore,
   type VoiceNoteTranscriberEvent,
   type VoiceNoteTranscriptionStatus,
 } from "./voiceNoteTranscription";
@@ -58,13 +61,14 @@ type Run = {
   sourceId: string;
   audio: unknown;
   allowed: () => boolean;
+  explicit: boolean;
   report: (s: VoiceNoteTranscriptionStatus) => void;
   resolve: (outcome: "transcribed" | "no_speech") => void;
   reject: (err: unknown) => void;
 };
 
 /** A transcriber whose per-note work is controlled by the test, one deferred run per note. */
-function setup(opts: { consented?: boolean; cloud?: VoiceNoteCloud | null; pending?: string[]; capabilities?: () => Promise<PrivateCloudCapabilities | null> } = {}) {
+function setup(opts: { consented?: boolean; cloud?: VoiceNoteCloud | null; pending?: string[]; capabilities?: () => Promise<PrivateCloudCapabilities | null>; holds?: VoiceNoteHoldStore } = {}) {
   const { cloud, calls } = fakeCloud({ pending: opts.pending, capabilities: opts.capabilities });
   const consent = memoryConsent(opts.consented ?? false);
   const runs: Run[] = [];
@@ -74,12 +78,13 @@ function setup(opts: { consented?: boolean; cloud?: VoiceNoteCloud | null; pendi
     cloud: opts.cloud === undefined ? cloud : opts.cloud,
     consent,
     tcw: () => ({}) as TinyCloudWeb,
+    holds: opts.holds ?? memoryHoldStore(),
     sleep: async (ms) => {
       sleeps.push(ms);
     },
     runNote: (args) =>
       new Promise((resolve, reject) => {
-        runs.push({ sourceId: args.sourceId, audio: args.audio, allowed: args.allowed ?? (() => true), report: args.report, resolve, reject });
+        runs.push({ sourceId: args.sourceId, audio: args.audio, allowed: args.allowed ?? (() => true), explicit: args.explicit ?? false, report: args.report, resolve, reject });
       }),
   });
   transcriber.subscribe((e) => events.push(e));
@@ -94,7 +99,7 @@ describe("availability and consent", () => {
     const s = setup({ consented: true });
     await s.transcriber.check();
     const note = (id: string, transcriber?: "off" | "on-device" | "private-cloud") => ({
-      id, durationMs: 5_000,
+      id, durationMs: 5_000, source: "in_app" as const,
       ...(transcriber ? { options: { transcriber, identifySpeakers: false } } : {}),
     });
     s.transcriber.noteSaved(note("off", "off"), AUDIO);
@@ -114,7 +119,7 @@ describe("availability and consent", () => {
     const s = setup({ cloud: null, consented: true });
     await s.transcriber.check();
     expect(s.transcriber.snapshot().availability).toBe("hidden");
-    s.transcriber.noteSaved({ id: "rec-1", durationMs: 5_000 }, AUDIO);
+    s.transcriber.noteSaved({ id: "rec-1", durationMs: 5_000, source: "in_app" }, AUDIO);
     s.transcriber.transcribe("rec-1");
     await tick();
     expect(s.runs).toHaveLength(0);
@@ -144,7 +149,7 @@ describe("availability and consent", () => {
   test("before consent a saved note is not sent; after it, new notes are transcribed with the audio in hand", async () => {
     const s = setup();
     await s.transcriber.check();
-    s.transcriber.noteSaved({ id: "rec-before", durationMs: 5_000 }, AUDIO);
+    s.transcriber.noteSaved({ id: "rec-before", durationMs: 5_000, source: "in_app" }, AUDIO);
     s.transcriber.transcribe("rec-before");
     await tick();
     expect(s.runs).toHaveLength(0);
@@ -152,7 +157,7 @@ describe("availability and consent", () => {
 
     s.transcriber.consent();
     expect(s.consent.value).toBe(true);
-    s.transcriber.noteSaved({ id: "rec-after", durationMs: 5_000 }, AUDIO);
+    s.transcriber.noteSaved({ id: "rec-after", durationMs: 5_000, source: "in_app" }, AUDIO);
     await tick();
     expect(s.runs.map((r) => [r.sourceId, r.audio])).toEqual([["rec-after", AUDIO]]);
     expect(s.runs[0]!.allowed()).toBe(true);
@@ -176,7 +181,7 @@ describe("availability and consent", () => {
   test("a note over the phone's limit is not queued automatically", async () => {
     const s = setup({ consented: true });
     await s.transcriber.check();
-    s.transcriber.noteSaved({ id: "rec-long", durationMs: 11 * 60_000 }, AUDIO);
+    s.transcriber.noteSaved({ id: "rec-long", durationMs: 11 * 60_000, source: "in_app" }, AUDIO);
     await tick();
     expect(s.runs).toHaveLength(0);
   });
@@ -186,8 +191,8 @@ describe("one at a time, and the post-success window", () => {
   test("notes wait their turn; progress is told; a saved note stays done and is not queued again", async () => {
     const s = setup({ consented: true });
     await s.transcriber.check();
-    s.transcriber.noteSaved({ id: "a", durationMs: 5_000 }, AUDIO);
-    s.transcriber.noteSaved({ id: "b", durationMs: 5_000 }, AUDIO);
+    s.transcriber.noteSaved({ id: "a", durationMs: 5_000, source: "in_app" }, AUDIO);
+    s.transcriber.noteSaved({ id: "b", durationMs: 5_000, source: "in_app" }, AUDIO);
     await tick();
     expect(s.runs.map((r) => r.sourceId)).toEqual(["a"]);
     expect(s.job("b")).toEqual({ kind: "active", status: { kind: "waiting" } });
@@ -202,7 +207,7 @@ describe("one at a time, and the post-success window", () => {
 
     // The list may still be stale: Transcribe on "a" (or its auto path) does nothing.
     s.transcriber.transcribe("a");
-    s.transcriber.noteSaved({ id: "a", durationMs: 5_000 });
+    s.transcriber.noteSaved({ id: "a", durationMs: 5_000, source: "in_app" });
     await tick();
     expect(s.runs.map((r) => r.sourceId)).toEqual(["a", "b"]);
     expect(s.job("a")).toEqual({ kind: "done", outcome: "transcribed" });
@@ -226,8 +231,8 @@ describe("turning off", () => {
   test("waiting notes never start, the running one is told, unsent jobs are released, nothing shows as failed", async () => {
     const s = setup({ consented: true });
     await s.transcriber.check();
-    s.transcriber.noteSaved({ id: "running", durationMs: 5_000 }, AUDIO);
-    s.transcriber.noteSaved({ id: "waiting", durationMs: 5_000 }, AUDIO);
+    s.transcriber.noteSaved({ id: "running", durationMs: 5_000, source: "in_app" }, AUDIO);
+    s.transcriber.noteSaved({ id: "waiting", durationMs: 5_000, source: "in_app" }, AUDIO);
     await tick();
     const running = s.runs[0]!;
     expect(running.allowed()).toBe(true);
@@ -245,7 +250,7 @@ describe("turning off", () => {
     expect(s.transcriber.snapshot().jobs.size).toBe(0);
 
     // Off: nothing new is sent.
-    s.transcriber.noteSaved({ id: "later", durationMs: 5_000 }, AUDIO);
+    s.transcriber.noteSaved({ id: "later", durationMs: 5_000, source: "in_app" }, AUDIO);
     s.transcriber.transcribe("later");
     await tick();
     expect(s.runs).toHaveLength(1);
@@ -272,7 +277,7 @@ describe("turning off", () => {
     await s.transcriber.check();
     await s.transcriber.turnOff();
     s.transcriber.consent();
-    s.transcriber.noteSaved({ id: "rec-1", durationMs: 5_000 }, AUDIO);
+    s.transcriber.noteSaved({ id: "rec-1", durationMs: 5_000, source: "in_app" }, AUDIO);
     await tick();
     expect(s.runs.map((r) => r.sourceId)).toEqual(["rec-1"]);
   });
@@ -305,5 +310,173 @@ describe("nativeHttpFileUploadSupported (Android 8.0+ only)", () => {
     expect(await nativeHttpFileUploadSupported("android", status())).toBe(false);
     expect(await nativeHttpFileUploadSupported("android", async () => { throw new Error("no plugin"); })).toBe(false);
     expect(await nativeHttpFileUploadSupported("web", status(34))).toBe(false);
+  });
+});
+
+describe("notes that did not begin in the app are held, per note", () => {
+  const SHORTCUTS = ["quick_action", "app_shortcut", "intent", "control", "tile", "widget", "notification"] as const;
+
+  for (const source of SHORTCUTS) {
+    test(`a ${source} note is held, not sent, even with consent, availability and a committed Private choice`, async () => {
+      const holds = memoryHoldStore();
+      const s = setup({ consented: true, holds });
+      await s.transcriber.check();
+      s.transcriber.noteSaved({ id: "n", durationMs: 5_000, source, options: { transcriber: "private-cloud", identifySpeakers: false } }, AUDIO);
+      await tick();
+      expect(s.runs).toHaveLength(0);
+      expect(s.job("n")).toEqual({ kind: "held", message: HELD_NOTE_MESSAGE });
+      expect(holds.held).toEqual(["n"]);
+    });
+  }
+
+  test("a note with no source, with or without options, is held", async () => {
+    const s = setup({ consented: true });
+    await s.transcriber.check();
+    s.transcriber.noteSaved({ id: "bare", durationMs: 5_000 }, AUDIO);
+    s.transcriber.noteSaved({ id: "opts", durationMs: 5_000, options: { transcriber: "private-cloud", identifySpeakers: false } }, AUDIO);
+    await tick();
+    expect(s.runs).toHaveLength(0);
+    expect(s.job("bare")?.kind).toBe("held");
+    expect(s.job("opts")?.kind).toBe("held");
+  });
+
+  test("a held note is not released by consent, a new check or the same note being saved again", async () => {
+    const s = setup({ consented: false });
+    await s.transcriber.check();
+    s.transcriber.noteSaved({ id: "n", durationMs: 5_000, source: "widget" }, AUDIO);
+    s.consent.set(true);
+    await s.transcriber.check();
+    s.transcriber.noteSaved({ id: "n", durationMs: 5_000, source: "widget" }, AUDIO);
+    await tick();
+    expect(s.runs).toHaveLength(0);
+    expect(s.job("n")?.kind).toBe("held");
+  });
+
+  test("the hold outlasts the transcriber: a fresh one over the same store shows it held and does not send it when it is saved again", async () => {
+    const holds = memoryHoldStore();
+    const first = setup({ consented: true, holds });
+    await first.transcriber.check();
+    first.transcriber.noteSaved({ id: "n", durationMs: 5_000, source: "quick_action" }, AUDIO);
+
+    const second = setup({ consented: true, holds });
+    expect(second.job("n")).toEqual({ kind: "held", message: HELD_NOTE_MESSAGE });
+    await second.transcriber.check();
+    second.transcriber.noteSaved({ id: "n", durationMs: 5_000, source: "quick_action", options: { transcriber: "private-cloud", identifySpeakers: false } }, AUDIO);
+    await tick();
+    expect(second.runs).toHaveLength(0);
+  });
+
+  test("only that note's own Transcribe sends it, and it clears the hold for good", async () => {
+    const holds = memoryHoldStore();
+    const s = setup({ consented: true, holds });
+    await s.transcriber.check();
+    s.transcriber.noteSaved({ id: "n", durationMs: 5_000, source: "quick_action" }, AUDIO);
+    s.transcriber.noteSaved({ id: "other", durationMs: 5_000, source: "quick_action" }, AUDIO);
+    s.transcriber.transcribe("n", AUDIO);
+    await tick();
+    expect(s.runs.map((run) => run.sourceId)).toEqual(["n"]);
+    expect(s.job("n")?.kind).toBe("active");
+    expect(s.job("other")?.kind).toBe("held");
+    expect(holds.held).toEqual(["other"]);
+
+    const later = setup({ consented: true, holds });
+    expect(later.job("n")).toBeUndefined();
+    expect(later.job("other")?.kind).toBe("held");
+  });
+
+  test("Transcribe without consent sends nothing and leaves the hold in place", async () => {
+    const holds = memoryHoldStore();
+    const s = setup({ consented: false, holds });
+    await s.transcriber.check();
+    s.transcriber.noteSaved({ id: "n", durationMs: 5_000, source: "quick_action" }, AUDIO);
+    s.transcriber.transcribe("n", AUDIO);
+    await tick();
+    expect(s.runs).toHaveLength(0);
+    expect(s.job("n")?.kind).toBe("held");
+    expect(holds.held).toEqual(["n"]);
+  });
+
+  test("a hold that cannot be written is still held for this launch, and says so", async () => {
+    const errors: unknown[][] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args); };
+    try {
+      const holds: VoiceNoteHoldStore = { read: () => ({}), write: () => { throw new Error("storage full"); } };
+      const s = setup({ consented: true, holds });
+      await s.transcriber.check();
+      s.transcriber.noteSaved({ id: "n", durationMs: 5_000, source: "quick_action" }, AUDIO);
+      await tick();
+      expect(s.runs).toHaveLength(0);
+      expect(s.job("n")?.kind).toBe("held");
+      expect(errors.length).toBeGreaterThan(0);
+    } finally {
+      console.error = original;
+    }
+  });
+
+  test("a hold list that cannot be read is reported, and shortcut notes are still held", async () => {
+    const errors: unknown[][] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args); };
+    try {
+      const holds: VoiceNoteHoldStore = { read: () => { throw new Error("unreadable"); }, write: () => {} };
+      const s = setup({ consented: true, holds });
+      await s.transcriber.check();
+      s.transcriber.noteSaved({ id: "n", durationMs: 5_000, source: "intent" }, AUDIO);
+      await tick();
+      expect(s.runs).toHaveLength(0);
+      expect(s.job("n")?.kind).toBe("held");
+      expect(errors.length).toBeGreaterThan(0);
+    } finally {
+      console.error = original;
+    }
+  });
+
+  test("an in-app note is not held, whatever else is", async () => {
+    const holds = memoryHoldStore();
+    const s = setup({ consented: true, holds });
+    await s.transcriber.check();
+    s.transcriber.noteSaved({ id: "w", durationMs: 5_000, source: "widget" }, AUDIO);
+    s.transcriber.noteSaved({ id: "app", durationMs: 5_000, source: "in_app", options: { transcriber: "private-cloud", identifySpeakers: false } }, AUDIO);
+    await tick();
+    expect(s.runs.map((run) => run.sourceId)).toEqual(["app"]);
+    expect(holds.held).toEqual(["w"]);
+  });
+
+  test("an automatic job is not explicit; the user's Transcribe is, and so is every later run of a released note", async () => {
+    const holds = memoryHoldStore();
+    const s = setup({ consented: true, holds });
+    await s.transcriber.check();
+    s.transcriber.noteSaved({ id: "app", durationMs: 5_000, source: "in_app" }, AUDIO);
+    s.transcriber.noteSaved({ id: "w", durationMs: 5_000, source: "widget" }, AUDIO);
+    await tick();
+    expect(s.runs.map((run) => [run.sourceId, run.explicit])).toEqual([["app", false]]);
+    s.runs[0]!.resolve("transcribed");
+    await tick();
+    s.transcriber.transcribe("w", AUDIO);
+    await tick();
+    expect(s.runs.map((run) => [run.sourceId, run.explicit])).toEqual([["app", false], ["w", true]]);
+  });
+
+  test("a job the saved row says did not begin in the app is held when the run refuses it, and the hold is kept", async () => {
+    const holds = memoryHoldStore();
+    const s = setup({ consented: true, holds, pending: ["old"] });
+    await s.transcriber.check();
+    await tick();
+    expect(s.runs.map((run) => run.sourceId)).toEqual(["old"]);
+    s.runs[0]!.reject(new PrivateCloudError("note_held", "waits for the user"));
+    await tick();
+    expect(s.job("old")).toEqual({ kind: "held", message: HELD_NOTE_MESSAGE });
+    expect(holds.held).toEqual(["old"]);
+  });
+
+  test("a held note with an interrupted attempt is not started by check() or consent(), without a run being attempted", async () => {
+    const holds = memoryHoldStore({ held: "held" });
+    const s = setup({ consented: false, holds, pending: ["held", "free"] });
+    await s.transcriber.check();
+    s.transcriber.consent();
+    await tick();
+    expect(s.runs.map((run) => run.sourceId)).toEqual(["free"]);
+    expect(s.job("held")?.kind).toBe("held");
   });
 });

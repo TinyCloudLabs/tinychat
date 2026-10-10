@@ -12,9 +12,9 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { Button } from "@/components/ui/button";
 import { hapticRecordStarted, hapticSaved, hapticWarning } from "@/lib/haptics";
-import { VOICE_NOTE_MAX_DURATION_MS, VoiceNotes, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { VOICE_NOTE_MAX_DURATION_MS, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
-import { effectiveCaptureOptions, readTranscriberPreference } from "@/lib/voiceNotes/transcriberPreference";
+import { writeAccountDefaults } from "@/lib/voiceNotes/transcriberPreference";
 import type { PendingSnapshot } from "@/lib/voiceNotes/recorderSaves";
 import { DISCARDED, micWarning, recorderStatusText, RECEIPT_KEPT } from "./recorderCopy";
 import type { RecorderCaptureIssue, RecorderMic, RecorderPhase, RecorderState } from "./recorderReducer";
@@ -158,17 +158,17 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     setConfigured(null);
     void (async () => {
       try {
-        const native = await VoiceNotes.getCaptureDefaults();
-        if (!active) return;
         const key = "exo.capture.transitionGen";
-        const local = Number(globalThis.localStorage?.getItem(key) ?? 0) || 0;
-        // A preference sync is not an account transition. Only an owner change advances the generation.
-        const transitionGen = native.accountDid === (tcw.did ?? null) && native.status === "signed_in"
-          ? native.transitionGen : Math.max(native.transitionGen, local) + 1;
-        await VoiceNotes.setCaptureDefaults({ ...native,
-          ...effectiveCaptureOptions(readTranscriberPreference(), tcw.did != null),
-          accountDid: tcw.did ?? null, transitionGen });
-        globalThis.localStorage?.setItem(key, String(transitionGen));
+        const written = await writeAccountDefaults((native) => {
+          if (!active) return null;
+          const local = Number(globalThis.localStorage?.getItem(key) ?? 0) || 0;
+          // A preference sync is not an account transition. Only an owner change advances the generation.
+          const transitionGen = native.accountDid === (tcw.did ?? null) && native.status === "signed_in"
+            ? native.transitionGen : Math.max(native.transitionGen, local) + 1;
+          return { accountDid: tcw.did ?? null, transitionGen };
+        });
+        if (!written) return;
+        globalThis.localStorage?.setItem(key, String(written.transitionGen));
         if (active) { setDefaultsError(null); setConfigured({ tcw, did: tcw.did ?? null }); if (tcw.did) onAccountReady?.(tcw); }
       } catch (caught) {
         if (active) setDefaultsError(`Could not set this phone's recording account: ${caught instanceof Error ? caught.message : String(caught)}`);
