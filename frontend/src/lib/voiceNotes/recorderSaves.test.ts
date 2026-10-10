@@ -301,6 +301,17 @@ describe("pendingStore", () => {
     await saves.pendingStore.refresh(null);
     expect(saves.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 3 });
   });
+  test("A's save that fails after B signed in never shows its error on B's pending notes", async () => {
+    phone.pending = [{ ...recording("bob-note", 1), owner: "did:example:bob" }];
+    saves.pendingStore.setAccount(tcw.did);
+    saves.pendingStore.setAccount("did:example:bob");
+    await saves.pendingStore.refresh(null);
+    saves.pendingStore.reportErrorFor(tcw.did!, "Could not save notes on this phone: A's space timed out");
+    expect(saves.pendingStore.snapshot()).toMatchObject({ accountDid: "did:example:bob", listing: { state: "ok", count: 1 }, lastError: null });
+    saves.pendingStore.reportErrorFor("did:example:bob", "Could not save notes on this phone: B's space timed out");
+    expect(saves.pendingStore.snapshot().lastError).toBe("Could not save notes on this phone: B's space timed out");
+    saves.pendingStore.setAccount(null);
+  });
   test("a new automatic save preserves an earlier note's failure until that note succeeds", async () => {
     const failed = recording("failed-earlier", 1);
     const newer = recording("newer-save", 2);

@@ -112,7 +112,7 @@ export function PendingVoiceNotesSaver({
         await pendingStore.refresh(null);
       } catch (error) {
         console.warn("[VoiceNotes] Saving notes left on this phone failed", error);
-        pendingStore.reportError(`Could not save notes on this phone: ${messageOf(error)}`);
+        pendingStore.reportErrorFor(did, `Could not save notes on this phone: ${messageOf(error)}`);
       } finally { finish(); }
     };
     const unregister = registerPendingVoiceNotesRecovery(run);

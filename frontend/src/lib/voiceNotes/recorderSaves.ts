@@ -473,6 +473,11 @@ export const pendingStore = {
     generalFailure = message;
     publishPending({ lastError: currentFailure() });
   },
+  /** A run that belongs to one account reports only while that account is active; a late failure never lands on the next account. */
+  reportErrorFor(did: string, message: string): void {
+    if (activeAccountDid !== did) return;
+    pendingStore.reportError(message);
+  },
   reportNoteFailure(id: string, message: string): void {
     noteFailures.delete(id);
     noteFailures.set(id, message);
