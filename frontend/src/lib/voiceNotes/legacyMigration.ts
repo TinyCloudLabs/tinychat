@@ -64,8 +64,8 @@ export async function associateLegacyNotes(tcw: TinyCloudWeb, did: string,
   for (const note of notes) {
     if (!isLegacyNote(note) || note.owner) continue;
     checkpoint();
-    const found = await withVoiceNoteSaveDeadline(`SQL legacy association query id=${note.id}`, () => tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
-      "SELECT id FROM connector_meeting WHERE source = 'exo-voice-note' AND source_id = ? LIMIT 1", [note.id]));
+    const found = await withVoiceNoteSaveDeadline(`SQL legacy association query id=${note.id}`, (signal) => tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
+      "SELECT id FROM connector_meeting WHERE source = 'exo-voice-note' AND source_id = ? LIMIT 1", [note.id], { signal }));
     if (!found.ok) throw new Error(`Legacy association lookup: ${found.error.message}`);
     const id = found.data.rows[0]?.[0];
     if (typeof id !== "string") continue;

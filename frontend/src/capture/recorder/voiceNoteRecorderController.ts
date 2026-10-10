@@ -46,7 +46,7 @@ import { adoptNote, deleteNote, loadNote, parseMomentLines, saveNote, type Recor
 import { readRecordingNoteFromSpace, recordingNoteSyncError, reportRecordingNoteSyncError,
   subscribeRecordingNoteSync, syncRecordingNote, type NoteSyncErrorCode } from "@/lib/voiceNotes/voiceNoteStore";
 import { assertCurrent, currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
-import { withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
+import { withCaptureDeadline } from "@/lib/voiceNotes/accountHandoff";
 import { FINALIZATION_PENDING, limitNoticeText } from "./recorderCopy";
 import { autoStopIsCurrent, initialRecorderState, recorderReducer, type RecorderCaptureIssue, type RecorderEvent, type RecorderMic, type RecorderState } from "./recorderReducer";
 import { recordedElapsedAt } from "./recordedElapsed";
@@ -970,13 +970,13 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           const account = pendingStore.forAccount(tcw.did);
           const generation = currentAccountGeneration();
           try {
-            const native = await withVoiceNoteSaveDeadline("native getCaptureDefaults", () => VoiceNotes.getCaptureDefaults());
+            const native = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
             if (native.status !== "signed_in" || native.accountDid !== tcw.did) {
               account.reportError("This phone's recording account is not ready. Try again shortly.");
               return;
             }
             // The same generation can claim a v2 note left unowned during sign-in.
-            await withVoiceNoteSaveDeadline("native setCaptureDefaults", () => VoiceNotes.setCaptureDefaults(native));
+            await withCaptureDeadline(VoiceNotes.setCaptureDefaults(native));
             if (generation !== currentAccountGeneration()) {
               account.reportError("The recording account changed while saving. Try again from the current account.");
               return;

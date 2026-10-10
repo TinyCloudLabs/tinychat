@@ -23,6 +23,11 @@ export function setVoiceNoteSaveDeadlineForTests(timeoutMs: number | null): void
   testDeadlineMs = timeoutMs;
 }
 
+export function createVoiceNoteSaveTimeout(operation: string, timeoutMs: number): VoiceNoteSaveTimeout {
+  console.warn(`[VoiceNotes] Timed out ${operation} after ${timeoutMs}ms`);
+  return new VoiceNoteSaveTimeout(operation, timeoutMs);
+}
+
 function timeBound<T>(operation: string, request: Promise<T>, controller: AbortController, timeoutMs: number,
   timeoutMessage?: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -30,9 +35,9 @@ function timeBound<T>(operation: string, request: Promise<T>, controller: AbortC
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      console.warn(`[VoiceNotes] Timed out ${operation} after ${timeoutMs}ms`);
+      const timeout = createVoiceNoteSaveTimeout(operation, timeoutMs);
       controller.abort();
-      reject(new VoiceNoteSaveTimeout(operation, timeoutMs, timeoutMessage));
+      reject(timeoutMessage ? new VoiceNoteSaveTimeout(operation, timeoutMs, timeoutMessage) : timeout);
     }, timeoutMs);
     request.then((value) => {
       if (settled) return;
@@ -61,10 +66,4 @@ export function withVoiceNoteReadDeadline<T>(operation: string, request: (signal
   const controller = new AbortController();
   return timeBound(operation, Promise.resolve().then(() => request(controller.signal)), controller, timeoutMs,
     "This recording note couldn't be loaded in time. Check your connection and try again.");
-}
-
-/** Internal lane variant: its caller times out, while the lane waits for request settlement. */
-export function deadlineForSpaceCall<T>(operation: string, request: Promise<T>, controller: AbortController,
-  timeoutMs = voiceNoteCallDeadlineMs()): Promise<T> {
-  return timeBound(operation, request, controller, timeoutMs);
 }

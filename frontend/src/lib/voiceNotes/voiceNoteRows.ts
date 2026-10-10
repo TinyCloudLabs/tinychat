@@ -21,13 +21,13 @@ function errorOf(result: { ok: boolean; error?: { code?: string; message?: strin
   });
 }
 async function query(tcw: TinyCloudWeb, sql: string, params: unknown[] = [], checkpoint: () => void = () => undefined): Promise<unknown[][]> {
-  const result = await runOnSpaceLane(() => { checkpoint(); return db(tcw).query(sql, params as never[]); },
+  const result = await runOnSpaceLane((signal) => { checkpoint(); return db(tcw).query(sql, params as never[], { signal }); },
     { operation: `SQL query: ${sql.slice(0, 80)}` });
   if (!result.ok) throw errorOf(result);
   return result.data.rows as unknown[][];
 }
 async function execute(tcw: TinyCloudWeb, sql: string, params: unknown[] = [], checkpoint: () => void = () => undefined): Promise<number> {
-  const result = await runOnSpaceLane(() => { checkpoint(); return db(tcw).execute(sql, params as never[]); },
+  const result = await runOnSpaceLane((signal) => { checkpoint(); return db(tcw).execute(sql, params as never[], { signal }); },
     { operation: `SQL execute: ${sql.slice(0, 80)}` });
   if (!result.ok) throw errorOf(result);
   return Number((result.data as { changes?: number }).changes ?? 0);
@@ -36,10 +36,10 @@ async function readTranscriptCommitOnLane(tcw: TinyCloudWeb, sourceId: string,
   checkpoint: () => void = () => undefined): Promise<TranscriptCommit | null> {
   // The helper may issue a schema check and then a row query. Bound and serialize
   // each actual SQL request on its own lane turn rather than timing the pair as one job.
-  const hasTable = await runOnSpaceLane(() => hasTranscriptCommitTable(tcw, checkpoint),
+  const hasTable = await runOnSpaceLane((signal) => hasTranscriptCommitTable(tcw, checkpoint, signal),
     { operation: "SQL check transcript commit table" });
   if (!hasTable) return null;
-  return runOnSpaceLane(() => readTranscriptCommit(tcw, sourceId, checkpoint),
+  return runOnSpaceLane((signal) => readTranscriptCommit(tcw, sourceId, checkpoint, signal),
     { operation: "SQL read transcript commit" });
 }
 function normalizedStoredDDL(ddl: string): string {
@@ -253,6 +253,9 @@ export async function patchVoiceNoteMarkdown(tcw: TinyCloudWeb, sourceId: string
   const row = await resolveVoiceNoteRow(tcw, sourceId, checkpoint);
   if (!row) throw new Error("Voice note row is missing");
   checkpoint();
+  // Aborting narrows but cannot eliminate the server-side late-write window: the
+  // metadata patch and fixed transcript mirror below are last-write-wins if a server
+  // committed just as its client request was aborted; transcript rev/hash rows remain authoritative.
   await execute(tcw, `UPDATE connector_meeting SET metadata = json_patch(COALESCE(metadata,'{}'), ?), updated_at = ?
     WHERE id = ? AND source = 'exo-voice-note'`,
   [JSON.stringify({ note_kv_key: key, note_edited_at: editedAt }), new Date().toISOString(), row.id], checkpoint);

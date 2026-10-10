@@ -19,7 +19,7 @@ import { advanceAccountGeneration } from "@/lib/voiceNotes/accountContext";
 import { consentToRecordingPrivateCloud, setRecordingRoute } from "./TranscriptionRouteControl";
 import { loadNote } from "@/lib/voiceNotes/recordingNotes";
 import { reportRecordingNoteSyncError } from "@/lib/voiceNotes/voiceNoteStore";
-import { runOnSpaceLane } from "@/lib/spaceWriteLane";
+import { runOnSpaceLane, setSpaceLaneAbortGraceForTests } from "@/lib/spaceWriteLane";
 import { setVoiceNoteSaveDeadlineForTests } from "@/lib/voiceNotes/saveDeadline";
 
 const realStore = { ...(await import("@/lib/voiceNotes/voiceNoteStore")) };
@@ -1059,6 +1059,63 @@ describe("voice-note recorder controller", () => {
     setVoiceNoteSaveDeadlineForTests(null);
     pendingStore.setAccount(null);
     detach();
+  });
+
+  test("Save now settles visibly when a stuck SQL call is ahead of it in the lane", async () => {
+    __setVoiceNotesForTests({ ...plugin,
+      getCaptureDefaults: async () => ({ status: "signed_in", accountDid: tcw.did, transitionGen: 1,
+        transcriber: "on-device", identifySpeakers: false }),
+      setCaptureDefaults: async () => ({ claimed: [] }),
+    }, { available: true });
+    const note = earlier();
+    setVoiceNoteSaveDeadlineForTests(100);
+    setSpaceLaneAbortGraceForTests(500);
+    let sqlSignal: AbortSignal | undefined;
+    const stuckSqlDb = { execute: (_sql: string, _params: unknown[], options: { signal?: AbortSignal }) => {
+      sqlSignal = options.signal;
+      // Simulate SQL execute ignoring its SDK abort signal and never settling.
+      return new Promise<never>(() => {});
+    } };
+    const stuckSql = runOnSpaceLane((signal) => stuckSqlDb.execute(
+      "INSERT INTO connector_meeting (...) VALUES (...)", [], { signal }),
+    { operation: `SQL execute: INSERT stuck controller-test/${note.id}` }).catch((error: unknown) => error);
+    const initialTimeout = await stuckSql;
+    expect(initialTimeout).toMatchObject({ code: "VOICE_NOTE_OPERATION_TIMEOUT" });
+    expect(sqlSignal?.aborted).toBe(true);
+
+    let queuedSqlDispatches = 0;
+    const queuedSqlDb = { execute: async (_sql: string, _params: unknown[], _options: { signal?: AbortSignal }) => {
+      queuedSqlDispatches++;
+      return { ok: true };
+    } };
+    const pipeline: VoiceNotePipeline = {
+      process: async () => {}, cancelAll: () => {}, resume: () => {},
+      isAccepting: () => true, quiescent: async () => true,
+      reconcileAll: () => runOnSpaceLane((signal) => queuedSqlDb.execute(
+        "UPDATE connector_meeting SET metadata = ?", [], { signal }),
+      { operation: `SQL execute: Save now ${note.id}` }).then(() => undefined),
+    };
+    const recorder = controller({ pipeline });
+    const detach = recorder.attach();
+    try {
+      await tick();
+      pendingStore.setAccount(tcw.did!);
+      const saving = recorder.retryPending();
+      await tick();
+      expect(pendingStore.snapshot().running).toBe(true);
+      await saving;
+      expect(pendingStore.snapshot()).toMatchObject({ running: false, listing: { state: "ok", count: 1 } });
+      expect(pendingStore.snapshot().lastError).toContain("saving it is taking too long");
+      expect(queuedSqlDispatches).toBe(0);
+      // Let the post-abort grace release the intentionally unresolved SQL request
+      // before the next test enqueues work on this module-level lane.
+      await new Promise((resolve) => setTimeout(resolve, 450));
+    } finally {
+      setVoiceNoteSaveDeadlineForTests(null);
+      setSpaceLaneAbortGraceForTests(null);
+      pendingStore.setAccount(null);
+      detach();
+    }
   });
 
   test("a Save now still running when another account signs in never touches that account's pending row", async () => {
