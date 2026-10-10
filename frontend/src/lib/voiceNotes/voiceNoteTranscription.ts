@@ -537,8 +537,12 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
     }
   };
 
-  /** Stop using the note's job: cancel it (if it exists) and forget it. */
-  const release = async (sourceId: string) => {
+  /**
+   * Stop using the note's job: cancel it (if it exists) and forget it. For an account that has left
+   * it does neither: the cancel would carry the new account's token, and the job stays for its owner.
+   */
+  const release = async (sourceId: string, guard: () => void = () => {}) => {
+    guard();
     const transcriptionId = pending.read(sourceId)?.transcriptionId ?? null;
     pending.clear(sourceId);
     if (transcriptionId !== null) await cancelQuietly(transcriptionId);
@@ -695,8 +699,9 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       guard();
       if (!allowed()) throw transcriptionOffError();
     } catch (err) {
-      // An account that left keeps its job (nothing is sent for it now); the rest release it.
-      if (voiceNoteErrorCode(err) !== ACCOUNT_CHANGED) await release(sourceId);
+      // An account that left keeps its job whatever this failure was (nothing is sent for it now).
+      guard();
+      await release(sourceId, guard);
       throw err;
     }
     if (job === null) {
@@ -753,11 +758,16 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
     pendingSourceIds: () => pending.sourceIds(),
 
     async transcribe(input, report) {
+      const guard = () => {
+        if (!(input.allowed?.("account") ?? true)) throw accountChangedError();
+      };
       try {
         return await run(input, report);
       } catch (err) {
+        // No cleanup for an account that left, whatever the error: its job stays for it.
+        guard();
         const code = voiceNoteErrorCode(err);
-        if (RELEASE_CODES.has(code)) await release(input.sourceId);
+        if (RELEASE_CODES.has(code)) await release(input.sourceId, guard);
         else if (JOB_ENDED_CODES.has(code)) pending.clear(input.sourceId);
         throw err;
       }

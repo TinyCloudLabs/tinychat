@@ -273,6 +273,74 @@ describe("an older queue snapshot against newer events", () => {
     expect(latest().note).toEqual({ kind: "queued" });
   });
 
+  describe("a failure against a queue that still holds the running note (the merged native shape)", () => {
+    const running = { id: "n1", state: "running", percent: 40, error: null } as OnDeviceSttStatus["queue"][number];
+
+    test("the failure shows its reason and Retry although the cached queue entry still says running", async () => {
+      const events = await iosStt([running]);
+      let current = stt("running");
+      fakeVoiceNotes({ recordings: () => [recording("n1", "on-device", current)] });
+      const { latest } = await mount("n1");
+      expect(latest().note).toEqual({ kind: "running", percent: 40 });
+      current = stt("failed", "decode_failed");
+      await act(async () => events.emit("failed", { id: "n1", code: "decode_failed", message: "decoder stopped" }));
+      expect(latest().note).toEqual({ kind: "failed", reason: "decode_failed" });
+      const html = view(latest().note);
+      expect(html).toContain("decode_failed");
+      expect(html).toContain('data-testid="voice-note-on-device-retry"');
+    });
+
+    test("the event's reason stands before the sidecar rescan returns", async () => {
+      const events = await iosStt([running]);
+      let release: (recordings: VoiceNoteRecording[]) => void = () => {};
+      let first = true;
+      fakeVoiceNotes({ recordings: () => (first ? (first = false, [recording("n1", "on-device", stt("running"))]) : new Promise<VoiceNoteRecording[]>((resolve) => { release = resolve; })) });
+      const { latest } = await mount("n1");
+      await act(async () => events.emit("failed", { id: "n1", code: "out_of_memory" }));
+      expect(latest().note).toEqual({ kind: "failed", reason: "out_of_memory" });
+      await act(async () => release([recording("n1", "on-device", stt("failed", "out_of_memory"))]));
+      expect(latest().note).toEqual({ kind: "failed", reason: "out_of_memory" });
+    });
+
+    test("a delayed status that still shows the old running entry does not bring the running state back", async () => {
+      const events = await iosStt([running]);
+      fakeVoiceNotes({ recordings: () => [recording("n1", "on-device", stt("failed", "decode_failed"))] });
+      const { latest } = await mount("n1");
+      await act(async () => events.emit("failed", { id: "n1", code: "decode_failed" }));
+      await act(async () => { await onDeviceSttStore.refresh(); });
+      expect(latest().note).toEqual({ kind: "failed", reason: "decode_failed" });
+    });
+
+    test("once the active slot clears (the queue holds nothing for the note) the failure still stands", async () => {
+      const events = await iosStt([running]);
+      fakeVoiceNotes({ recordings: () => [recording("n1", "on-device", stt("failed", "decode_failed"))] });
+      const { latest } = await mount("n1");
+      await act(async () => events.emit("failed", { id: "n1", code: "decode_failed" }));
+      events.setQueue([]);
+      await act(async () => { await onDeviceSttStore.refresh(); });
+      expect(latest().note).toEqual({ kind: "failed", reason: "decode_failed" });
+    });
+
+    test("a genuinely newer entry from Retry replaces the failure", async () => {
+      const events = await iosStt([running]);
+      fakeVoiceNotes({ recordings: () => [recording("n1", "on-device", stt("failed", "decode_failed"))] });
+      const { latest } = await mount("n1");
+      await act(async () => events.emit("failed", { id: "n1", code: "decode_failed" }));
+      events.setQueue([{ ...running, state: "queued", percent: null }]);
+      await act(async () => { await onDeviceSttStore.refresh(); });
+      expect(latest().note).toEqual({ kind: "queued" });
+    });
+
+    test("a retry that starts running reports progress over the failure", async () => {
+      const events = await iosStt([running]);
+      fakeVoiceNotes({ recordings: () => [recording("n1", "on-device", stt("failed", "decode_failed"))] });
+      const { latest } = await mount("n1");
+      await act(async () => events.emit("failed", { id: "n1", code: "decode_failed" }));
+      await act(async () => events.emit("progress", { id: "n1", percent: 5 }));
+      expect(latest().note).toEqual({ kind: "running", percent: 5 });
+    });
+  });
+
   test("the queue's own state shows again once it differs from what the event superseded", () => {
     const old = { ...waiting };
     const live = { noteId: "n1", kind: "running" as const, percent: 40, supersedes: queueMark(old) };

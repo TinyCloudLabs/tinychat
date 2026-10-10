@@ -45,7 +45,8 @@ interface Scan {
  */
 type Live =
   | { noteId: string; kind: "running"; percent: number; supersedes?: string }
-  | { noteId: string; kind: "done"; outcome: Outcome | null; supersedes?: string };
+  | { noteId: string; kind: "done"; outcome: Outcome | null; supersedes?: string }
+  | { noteId: string; kind: "failed"; reason: string; supersedes?: string };
 
 type QueueEntry = OnDeviceSttStatus["queue"][number];
 
@@ -112,7 +113,7 @@ export function useOnDeviceNote(noteId: string): OnDeviceNoteView {
       }),
       OnDeviceStt.addListener("failed", (event) => {
         if (event.id !== noteId) return;
-        setLive(null);
+        setLive({ noteId, kind: "failed", reason: event.code || event.message || "unknown error", supersedes: supersedes() });
         read();
       }),
     ];
@@ -154,7 +155,7 @@ export function onDeviceNote(scan: Scan | null, live: Live | null, jobEntry: Que
     case "running":
       return { kind: "running", percent: job?.percent ?? (live?.kind === "running" ? live.percent : null) };
     case "failed":
-      return { kind: "failed", reason: job?.error ?? scan?.stt?.error ?? "unknown error" };
+      return { kind: "failed", reason: job?.error ?? (live?.kind === "failed" ? live.reason : null) ?? scan?.stt?.error ?? "unknown error" };
     case "cancelled":
       return { kind: "failed", reason: "it was cancelled" };
     case "done": {

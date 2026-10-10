@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { createPrivateCloudApi } from "../privateCloud";
+import { VoiceNoteAudioError } from "./voiceNoteAudio";
 import type { SessionStore } from "../session";
 import { createVoiceNoteCloud, createVoiceNoteTranscriber, ACCOUNT_CHANGED } from "./voiceNoteTranscription";
 
@@ -94,5 +95,54 @@ describe("an existing Private job when its account leaves", () => {
     await s.transcriber.check({ current: s.current });
     await settle();
     expect(s.transcriber.snapshot().jobs.size).toBe(0);
+  });
+});
+
+describe("an account that leaves while its note's audio is being prepared", () => {
+  function prepare(loadAudio: (leave: () => void) => Promise<never>) {
+    let account = "A";
+    const requests: string[] = [];
+    const cleared: string[] = [];
+    const api = createPrivateCloudApi("https://backend.example", {
+      sessionStore: { getToken: () => account, isExpired: () => false } as unknown as SessionStore,
+      fetchImpl: (async (_url: string, init: RequestInit) => {
+        requests.push(`${init.method ?? "GET"}:${new Headers(init.headers).get("Authorization")}`);
+        return json({ id: "trn_A", status: "awaiting_upload" });
+      }) as typeof fetch,
+    });
+    const cloud = createVoiceNoteCloud({
+      origin: "https://ptx.example",
+      api,
+      pending: { read: () => ({ attemptId: "attempt-A", transcriptionId: "trn_A" }), write() {}, clear: (id: string) => void cleared.push(id), sourceIds: () => ["a-note"] },
+      create: async () => { throw new Error("unexpected create"); },
+      put: async () => { throw new Error("unexpected upload"); },
+      clock: { now: () => 0, random: () => 0.5, sleep: async () => {} },
+    });
+    const run = () => cloud.transcribe(
+      { sourceId: "a-note", capabilities: CAPS, allowed: () => account === "A", loadAudio: () => loadAudio(() => { account = "B"; }) },
+      () => {},
+    ).catch((err: unknown) => err);
+    return { run, requests, cleared };
+  }
+
+  test("a rejecting audio load keeps A's job and sends nothing with B's token", async () => {
+    const s = prepare(async (leave) => { leave(); throw new Error("audio read failed while signing out"); });
+    expect((await s.run() as { code?: string }).code).toBe(ACCOUNT_CHANGED);
+    expect(s.requests.filter((request) => request.endsWith("Bearer B"))).toEqual([]);
+    expect(s.cleared).toEqual([]);
+  });
+
+  test("an error that would release the job (a note too long) still leaves A's job alone once A has left", async () => {
+    const s = prepare(async (leave) => { leave(); throw new VoiceNoteAudioError("recording_too_long_for_phone", "too long"); });
+    expect((await s.run() as { code?: string }).code).toBe(ACCOUNT_CHANGED);
+    expect(s.requests.filter((request) => request.endsWith("Bearer B"))).toEqual([]);
+    expect(s.cleared).toEqual([]);
+  });
+
+  test("with the account still current the same failure releases the job: cancels it and forgets it", async () => {
+    const s = prepare(async () => { throw new VoiceNoteAudioError("recording_too_long_for_phone", "too long"); });
+    expect((await s.run() as { code?: string }).code).toBe("recording_too_long_for_phone");
+    expect(s.cleared).toContain("a-note");
+    expect(s.requests.some((request) => request.startsWith("POST:") && request.endsWith("Bearer A"))).toBe(true);
   });
 });

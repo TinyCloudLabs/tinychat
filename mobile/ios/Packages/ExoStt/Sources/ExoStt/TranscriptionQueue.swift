@@ -152,7 +152,8 @@ public final class TranscriptionQueue {
             isPaused: { captureGate.isActive() }
         ) { next in
             guard let id = next else { return } // cancelled between hasNext and next
-            defer { state.finishCurrent() }
+            // Published after the slot clears: the queue change `fail()` sends goes out while the note still reads as running.
+            defer { state.finishCurrent(); onQueueChanged?() }
             if (try? capture.library.transcript(id)) != nil { return } // finished while it was being re-queued
             let previousAttempts = ((try? capture.library.readSidecar(id))?["stt"] as? [String: Any])?["attempts"] as? Int ?? 0
             switch AttemptGuard.next(previousAttempts: previousAttempts) {
