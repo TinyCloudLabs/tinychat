@@ -8,7 +8,7 @@ import type {
   SessionRestoreResult,
   SiweConfig,
 } from "@tinycloud/web-sdk";
-import type { ISessionStorage } from "@tinycloud/web-sdk";
+import type { ISessionStorage, PersistedSessionData } from "@tinycloud/web-sdk";
 import type { EIP1193Provider } from "./openkey.js";
 
 // ── Configuration ────────────────────────────────────────────────────
@@ -102,33 +102,93 @@ export async function createAndSignIn(
   return { tcw, session };
 }
 
+/** Matched by `code` in frontend/src/lib/sessionRestore.ts. */
+export const RESTORED_SESSION_MISSING_SPACE_CODE = "restored-session-missing-space";
+
+export class RestoredSessionMissingSpaceError extends Error {
+  readonly code = RESTORED_SESSION_MISSING_SPACE_CODE;
+
+  constructor() {
+    super(
+      "Restored TinyCloud session has no spaceId: the SDK reported none and the persisted session has none",
+    );
+    this.name = "RestoredSessionMissingSpaceError";
+  }
+}
+
+interface RecordingStorage {
+  storage: ISessionStorage;
+  /** Start capturing; returns the record the SDK loaded while capturing. */
+  capture: <T>(run: () => Promise<T>) => Promise<{ value: T; record: PersistedSessionData | null }>;
+}
+
+/**
+ * Proxies the session storage so the exact record the SDK's restore consumes
+ * can be read back, instead of reading storage a second time (which could see
+ * a different record than the one the SDK installed).
+ */
+function recordRestoredSession(storage: ISessionStorage): RecordingStorage {
+  let capturing = false;
+  let record: PersistedSessionData | null = null;
+
+  const proxy = new Proxy(storage, {
+    get(target, prop) {
+      const member = Reflect.get(target, prop, target);
+      if (typeof member !== "function" || prop === "constructor") return member;
+      if (prop === "load") {
+        return async (address: string) => {
+          const data = (await member.call(target, address)) as PersistedSessionData | null;
+          if (capturing) record = data;
+          return data;
+        };
+      }
+      if (prop === "loadWithStatus") {
+        return async (address: string) => {
+          const result = await member.call(target, address);
+          if (capturing) record = result?.status === "loaded" ? result.data : null;
+          return result;
+        };
+      }
+      return member.bind(target);
+    },
+  });
+
+  return {
+    storage: proxy,
+    capture: async (run) => {
+      capturing = true;
+      record = null;
+      try {
+        const value = await run();
+        return { value, record };
+      } finally {
+        capturing = false;
+        record = null;
+      }
+    },
+  };
+}
+
 /**
  * @tinycloud/web-sdk 2.11.0 restores a session without an auth instance into
  * `_restoredTcSession`, but its `spaceId` getter only reads the auth instance,
- * so a restored `tcw.spaceId` is undefined. Take the space from the persisted
- * session instead, and fail the restore when it cannot be determined. To be
+ * so a restored `tcw.spaceId` is undefined. Fall back to the space of the very
+ * record the SDK restored from, and fail the restore when it has none. To be
  * reported upstream; remove once the SDK's getter reads the restored session.
  */
-async function exposeRestoredSpaceId(
-  tcw: TinyCloudWeb,
-  address: string,
-  storage: ISessionStorage | undefined,
-): Promise<void> {
+function exposeRestoredSpaceId(tcw: TinyCloudWeb, restored: PersistedSessionData | null): void {
   if (tcw.spaceId) return;
 
-  const persisted = await storage?.load(address);
-  const persistedSpaceId = persisted?.tinycloudSession?.spaceId;
-  if (!persistedSpaceId) {
-    const error = new Error(
-      "Restored TinyCloud session has no spaceId: the SDK reported none and the persisted session has none",
-    );
+  const restoredSpaceId = restored?.tinycloudSession?.spaceId;
+  if (!restoredSpaceId) {
+    const error = new RestoredSessionMissingSpaceError();
     console.error("[tinycloud] restore failed:", error.message);
     throw error;
   }
 
   Object.defineProperty(tcw, "spaceId", {
     configurable: true,
-    get: () => Reflect.get(Object.getPrototypeOf(tcw), "spaceId", tcw) ?? persistedSpaceId,
+    get: () => Reflect.get(Object.getPrototypeOf(tcw), "spaceId", tcw) ?? restoredSpaceId,
   });
 }
 
@@ -144,12 +204,13 @@ export async function restoreTinyCloudWebSession(
   config?: TinyCloudWebConfig & { provider?: EIP1193Provider },
 ): Promise<RestoreTinyCloudWebSessionResult> {
   const manifest = config?.manifest ?? config?.capabilityRequest?.manifests;
+  const recording = recordRestoredSession(config?.sessionStorage ?? new BrowserSessionStorage());
   const tcwConfig: TinyCloudWebSdkConfig = {
     tinycloudHosts: config?.tinycloudHosts,
     tinycloudRegistryUrl: config?.tinycloudRegistryUrl,
     tinycloudFallbackHosts: config?.tinycloudFallbackHosts,
     autoCreateSpace: config?.autoCreateSpace ?? false,
-    sessionStorage: config?.sessionStorage ?? new BrowserSessionStorage(),
+    sessionStorage: recording.storage,
     nonce: config?.nonce,
     siweConfig: config?.siweConfig,
     manifest,
@@ -164,9 +225,9 @@ export async function restoreTinyCloudWebSession(
   const tcw = new TinyCloudWeb(tcwConfig);
 
   try {
-    const result = await tcw.restoreSession(address);
+    const { value: result, record } = await recording.capture(() => tcw.restoreSession(address));
     if (result.status === "restored") {
-      await exposeRestoredSpaceId(tcw, address, tcwConfig.sessionStorage);
+      exposeRestoredSpaceId(tcw, record);
       return { tcw, status: result.status, session: result.session };
     }
 

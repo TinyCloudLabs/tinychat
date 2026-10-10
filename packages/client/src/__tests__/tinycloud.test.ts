@@ -27,16 +27,26 @@ mock.module("@tinycloud/web-sdk", () => ({
   TinyCloudWeb: class TinyCloudWeb {
     provider: unknown;
 
+    sessionStorage: any;
+    installedRecord: any = null;
+
     constructor(config: any) {
       lastTinyCloudConfig = config;
+      this.sessionStorage = config.sessionStorage;
     }
 
     get spaceId() {
       return sdkSpaceId;
     }
 
+    // Like the SDK: loadWithStatus when the storage has it, else load, once per restore.
     async restoreSession(address?: string) {
       lastRestoreAddress = address;
+      const loaded =
+        "loadWithStatus" in this.sessionStorage
+          ? await this.sessionStorage.loadWithStatus(address)
+          : { status: "loaded", data: await this.sessionStorage.load(address) };
+      this.installedRecord = loaded.data;
       return restoreResult;
     }
 
@@ -208,6 +218,72 @@ describe("restoreTinyCloudWebSession", () => {
     expect(result.tcw?.spaceId).toBe("space-secure-store");
   });
 
+  test("takes the spaceId from the record the SDK restored, never a second storage read", async () => {
+    restoreResult = { status: "restored", session: { address: "0xabc" } };
+    sdkSpaceId = undefined;
+    const snapshots = [
+      { chainId: 1, tinycloudSession: { spaceId: "space-chain-1" } },
+      { chainId: 137, tinycloudSession: { spaceId: "space-chain-137" } },
+    ];
+    let loads = 0;
+    const sessionStorage = {
+      load: async () => snapshots[Math.min(loads++, snapshots.length - 1)],
+    } as any;
+
+    const result = await restoreTinyCloudWebSession("0xabc", { sessionStorage });
+
+    const installed = (result.tcw as any).installedRecord;
+    expect(installed.chainId).toBe(1);
+    expect(result.tcw?.spaceId).toBe("space-chain-1");
+    expect(result.tcw?.spaceId).toBe(installed.tinycloudSession.spaceId);
+    expect(loads).toBe(1);
+  });
+
+  test("captures the record loaded through loadWithStatus too", async () => {
+    restoreResult = { status: "restored", session: { address: "0xabc" } };
+    sdkSpaceId = undefined;
+    let loads = 0;
+    const sessionStorage = {
+      loadWithStatus: async () => ({
+        status: "loaded",
+        data: { chainId: 1, tinycloudSession: { spaceId: loads++ === 0 ? "space-first" : "space-later" } },
+      }),
+      load: async () => {
+        throw new Error("load must not be called when loadWithStatus exists");
+      },
+      save: async () => {},
+    } as any;
+
+    const result = await restoreTinyCloudWebSession("0xabc", { sessionStorage });
+
+    expect(result.tcw?.spaceId).toBe("space-first");
+    expect(loads).toBe(1);
+    expect("loadWithStatus" in lastTinyCloudConfig.sessionStorage).toBe(true);
+  });
+
+  test("keeps the supplied storage usable for later saves with its own receiver", async () => {
+    restoreResult = { status: "restored", session: { address: "0xabc" } };
+    sdkSpaceId = "space-from-sdk";
+    class PrivateStorage {
+      #saved: string[] = [];
+      async load() {
+        return null;
+      }
+      async save(address: string) {
+        this.#saved.push(address);
+      }
+      saved() {
+        return this.#saved;
+      }
+    }
+    const sessionStorage = new PrivateStorage() as any;
+
+    await restoreTinyCloudWebSession("0xabc", { sessionStorage });
+    await lastTinyCloudConfig.sessionStorage.save("0xabc");
+
+    expect(sessionStorage.saved()).toEqual(["0xabc"]);
+  });
+
   test("fails the restore visibly when no spaceId can be determined", async () => {
     restoreResult = { status: "restored", session: { address: "0xabc" } };
     sdkSpaceId = undefined;
@@ -223,6 +299,7 @@ describe("restoreTinyCloudWebSession", () => {
       expect(result.status).toBe("restore-failed");
       expect(result.tcw).toBeNull();
       expect(result.error?.message).toContain("no spaceId");
+      expect((result.error as any).code).toBe("restored-session-missing-space");
       expect(lastCleanupCalled).toBe(true);
       expect(logged.some((args) => String(args[1]).includes("no spaceId"))).toBe(true);
     } finally {
