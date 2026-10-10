@@ -369,6 +369,13 @@ function MeetingRow(props: {
   const active = ACTIVE_STATUSES.has(meeting.status);
   const stoppable = active && meeting.status !== "processing";
   const when = formatWhen(meeting.metadata?.scheduled_start ?? meeting.created_at);
+  const meta = [
+    when,
+    meeting.bot?.name,
+    props.saveState === "saved" ? "Saved to your space" : null,
+    props.saveState === "saving" ? "Saving to your space…" : null,
+    props.saveState === "error" ? "Could not save to your space" : null,
+  ].filter(Boolean).join(" · ");
   return (
     <div>
       <div className="flex items-start justify-between gap-3">
@@ -392,13 +399,7 @@ function MeetingRow(props: {
               />
               {statusLabel(meeting.status)}
             </span>
-            {when && <span>· {when}</span>}
-            {meeting.bot?.name && <span>· {meeting.bot.name}</span>}
-            {props.saveState === "saved" && <span>· Saved to your space</span>}
-            {props.saveState === "saving" && <span>· Saving to your space…</span>}
-            {props.saveState === "error" && (
-              <span className="text-destructive">· Could not save to your space</span>
-            )}
+            {meta && <span>{meta}</span>}
           </span>
           {meeting.status === "failed" && meeting.error && (
             <span className="mt-0.5 block text-xs text-destructive">{meeting.error.message}</span>

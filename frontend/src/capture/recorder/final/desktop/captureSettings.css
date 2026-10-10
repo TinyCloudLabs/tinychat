@@ -7,7 +7,7 @@
 .cs *::after {
   box-sizing: border-box;
 }
-.cs button {
+:where(.cs) button {
   font: inherit;
   color: inherit;
   cursor: pointer;
@@ -107,7 +107,7 @@
   color: var(--dim);
 }
 .cs-error {
-  color: var(--red);
+  color: hsl(var(--destructive));
 }
 .cs-link {
   display: inline-flex;

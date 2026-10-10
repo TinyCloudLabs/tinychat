@@ -305,7 +305,7 @@
   margin: 0;
   padding: 0 20px 8px;
   font-size: 13px;
-  color: var(--red);
+  color: hsl(var(--destructive));
 }
 
 .pr-nwait {
@@ -321,7 +321,7 @@
   color: var(--dim);
 }
 .pr-vnotes[data-failed="true"] {
-  color: var(--red);
+  color: hsl(var(--destructive));
 }
 .pr-notes {
   flex-direction: column;

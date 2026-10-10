@@ -374,7 +374,7 @@
   text-underline-offset: 3px;
 }
 .ms-link[data-danger] {
-  color: var(--red);
+  color: hsl(var(--destructive));
 }
 .ms-link[aria-disabled="true"] {
   opacity: 0.55;
@@ -649,7 +649,7 @@
 .ms-confirm-drop {
   margin-top: 4px;
   background: none;
-  color: var(--red);
+  color: hsl(var(--destructive));
 }
 .ms-confirm [aria-disabled="true"] {
   opacity: 0.55;

@@ -56,7 +56,7 @@ describe("AgentEnablementBanner", () => {
     expect(markup).toContain("Connect private agent access");
     expect(markup).toContain(">Connect agent</button>");
     expect(markup).not.toContain("Reconnect");
-    expect(markup).toContain("sign with your passkey");
+    expect(markup).toContain("sign in with your passkey");
   });
 
   it("marks the banner parts so the minimized-phone layout can retain only the action", () => {

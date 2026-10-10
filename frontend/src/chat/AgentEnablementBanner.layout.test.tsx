@@ -35,7 +35,7 @@ describe("AgentEnablementBanner layout", () => {
       const markup = renderToStaticMarkup(<AgentEnablementBanner {...props} />);
 
       const region = classList(markup, 'role="region"');
-      expect(region).toEqual(expect.arrayContaining(["fixed", "left-3", "right-3"]));
+      expect(region).toEqual(expect.arrayContaining(["absolute", "left-3", "right-3"]));
       expect(region).not.toContain("left-1/2");
       expect(region).not.toContain("-translate-x-1/2");
       expect(region).toEqual(
@@ -65,7 +65,7 @@ describe("AgentEnablementBanner layout", () => {
       <AgentEnablementBanner {...baseProps} capability="enabled" silentlyEnabled />,
     );
     const toast = classList(markup, 'role="status"');
-    expect(toast).toEqual(expect.arrayContaining(["fixed", "left-1/2", "-translate-x-1/2"]));
+    expect(toast).toEqual(expect.arrayContaining(["absolute", "left-1/2", "-translate-x-1/2"]));
     expect(toast).toContain("bottom-[calc(var(--tc-bottom-chrome)+8rem)]");
     expect(markup).toContain("Agent tools active.");
   });

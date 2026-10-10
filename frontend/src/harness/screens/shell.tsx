@@ -150,7 +150,7 @@ export const shellScreens: HarnessScreen[] = [
     id: "shell-chat",
     path: "/chat",
     platform: "ios",
-    readyWhen: 'button[aria-label="Model"]:not([disabled])',
+    readyWhen: '[aria-label="Agent tools"]',
     render: () => <Shell />,
   },
   {

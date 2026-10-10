@@ -163,19 +163,68 @@ describe("Soft skin theme and layout tokens", () => {
       expect(tokens["--dim"]).toBe("hsl(var(--muted-foreground))");
       expect(tokens["--bgc"]).toBe("hsl(var(--background))");
       expect(tokens["--side"]).toBe("hsl(var(--chrome))");
-      expect(tokens["--line"]).toBe("hsl(var(--border))");
       expect(tokens["--red"]).toMatch(/^#(?:ff6b62|e5483f)$/);
     }
-    expect(night["--gedge"]).toBe("hsl(var(--foreground) / 0.1)");
-    expect(day["--gedge"]).toBe("hsl(var(--border))");
+    expect(night["--gedge"]).toBe("hsl(var(--foreground) / 0.4)");
+    expect(day["--gedge"]).toBe("hsl(var(--foreground) / 0.55)");
+    expect(night["--line"]).toBe("hsl(var(--foreground) / 0.4)");
+    expect(day["--line"]).toBe("hsl(var(--foreground) / 0.55)");
     expect(night["--glass"]).toBe("hsl(var(--foreground) / 0.05)");
-    expect(night["--solid"]).toBe("hsl(var(--secondary))");
+    expect(night["--solid"]).toBe("hsl(var(--popover))");
     expect(day["--glass"]).toBe("hsl(var(--card) / 0.7)");
-    expect(day["--solid"]).toBe("hsl(var(--card))");
+    expect(day["--solid"]).toBe("hsl(var(--popover))");
   });
 
   test("retains the recording ring accents in each theme", () => {
     expect(computedTokens("night", "phone")["--ring-accent"]).toBe("#ff6b62");
     expect(computedTokens("day", "phone")["--ring-accent"]).toBe("#e5483f");
+  });
+
+  test("Soft sheet outlines and dividers clear 3:1 in both themes", () => {
+    const blend = (foreground: number, background: number, alpha: number) =>
+      foreground * alpha + background * (1 - alpha);
+    const luminance = (channel: number) => {
+      const normalized = channel / 255;
+      return normalized <= 0.04045
+        ? normalized / 12.92
+        : ((normalized + 0.055) / 1.055) ** 2.4;
+    };
+    const contrast = (foreground: readonly number[], background: readonly number[]) => {
+      const rgbLuminance = ([r, g, b]: readonly number[]) =>
+        0.2126 * luminance(r) + 0.7152 * luminance(g) + 0.0722 * luminance(b);
+      const first = rgbLuminance(foreground);
+      const second = rgbLuminance(background);
+      return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
+    };
+    const cases = [
+      { mode: "night", foreground: [250, 250, 250], background: [15, 15, 17], alpha: 0.4 },
+      { mode: "day", foreground: [10, 10, 12], background: [255, 255, 255], alpha: 0.55 },
+    ] as const;
+
+    for (const { mode, foreground, background, alpha } of cases) {
+      const tokens = computedTokens(mode, "phone");
+      const edge = foreground.map((channel, index) =>
+        blend(channel, background[index]!, alpha),
+      );
+      expect(tokens["--solid"]).toBe("hsl(var(--popover))");
+      expect(tokens["--line"]).toBe(tokens["--gedge"]);
+      expect(contrast(edge, background)).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  test("light-mode destructive text clears 4.5:1 while ring red stays separate", () => {
+    const lightText = [220, 38, 38];
+    const white = [255, 255, 255];
+    const channel = (value: number) => {
+      const normalized = value / 255;
+      return normalized <= 0.04045
+        ? normalized / 12.92
+        : ((normalized + 0.055) / 1.055) ** 2.4;
+    };
+    const luma = ([r, g, b]: readonly number[]) =>
+      0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+    const ratio = (luma(white) + 0.05) / (luma(lightText) + 0.05);
+    expect(ratio).toBeGreaterThanOrEqual(4.5);
+    expect(computedTokens("day", "phone")["--red"]).toBe("#e5483f");
   });
 });
