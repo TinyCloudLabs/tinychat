@@ -1863,6 +1863,61 @@ describe("voice-note recorder controller", () => {
       });
     });
 
+    describe("one preference, one source: nothing queued earlier can write back an older value", () => {
+      for (const [from, to] of [["private-cloud", "on-device"], ["private-cloud", "off"]] as const) {
+        test(`${from} -> ${to} with Identify speakers changed while the choice is still being written: the engine, the screen, the store and the next note all say ${to}`, async () => {
+          await seedNative();
+          const enclaveJobs: string[] = [];
+          const transcriber = createVoiceNoteTranscriber({
+            cloud: {
+              capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"] }),
+              pendingSourceIds: () => [],
+              transcribe: async () => { throw new Error("runNote is injected"); },
+              finish: async () => {},
+              releaseUnsent: async () => {},
+            },
+            consent: { get: () => true, set: () => {} },
+            tcw: () => tcw,
+            runNote: async ({ sourceId }) => { enclaveJobs.push(sourceId); return "transcribed"; },
+          });
+          await transcriber.check();
+          const recorder = controller({ transcriber, onDeviceReady: true });
+          const detach = recorder.attach();
+          await tick();
+          expect(await recorder.setTranscriber(from, { scope: "default" })).toBe("ok");
+          expect(await nativeDefault()).toBe(from);
+
+          // The engine takes the new mode, then holds the reply back while Identify speakers is requested.
+          let release!: () => void;
+          const held = new Promise<void>((resolve) => { release = resolve; });
+          __setVoiceNotesForTests({ ...plugin, async setCaptureDefaults(defaults) {
+            const result = await plugin.setCaptureDefaults(defaults);
+            if (defaults.transcriber === to) await held;
+            return result;
+          } }, { available: true });
+          const choosing = recorder.setTranscriber(to, { scope: "default" });
+          await tick();
+          const speakers = setDefaultIdentifySpeakersForTest(true);
+          await tick();
+          release();
+          await Promise.all([choosing, speakers]);
+          await tick();
+          __setVoiceNotesForTests(plugin, { available: true });
+
+          expect(values.get("exo.voiceNotes.transcriber")).toBe(to);
+          expect(await nativeDefault()).toBe(to);
+          expect(recorder.getTranscriber()).toMatchObject({ id: to, source: "default" });
+          await recorder.record();
+          expect((await fake.plugin.status()).options?.transcriber).toBe(to);
+          await recorder.stop();
+          await tick();
+          expect(onPhone[0]!.options?.transcriber).toBe(to);
+          expect(enclaveJobs).toEqual([]);
+          detach();
+        });
+      }
+    });
+
     describe("a failed engine write is shown and changes nothing", () => {
       test("the engine refuses: the choice throws, nothing is stored, and screen and engine keep the old default", async () => {
         await seedNative();
@@ -1886,6 +1941,7 @@ describe("voice-note recorder controller", () => {
         Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
           getItem: (key: string) => values.get(key) ?? null,
           setItem: () => { throw new Error("storage is full"); },
+          removeItem: (key: string) => { values.delete(key); },
         } });
         await expect(recorder.setTranscriber("on-device", { scope: "default", waitForModel: true })).rejects.toThrow("storage is full");
         expect(await nativeDefault()).toBe("private-cloud");
@@ -1893,6 +1949,39 @@ describe("voice-note recorder controller", () => {
         await agree(recorder);
         detach();
       });
+
+      for (const prior of [null, "private-cloud"] as const) {
+        test(`the second stored key fails (${prior === null ? "first save" : `previous choice ${prior}`}): both keys and the engine go back, and a fresh controller sees the old choice`, async () => {
+          await seedNative();
+          if (prior) { values.set("exo.voiceNotes.transcriber", prior); await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: prior, identifySpeakers: false }); }
+          const route = offer({ availability: "available", consented: true });
+          const recorder = controller({ transcriber: route.stub, onDeviceReady: false });
+          const detach = recorder.attach();
+          await tick();
+          const before = { transcriber: await nativeDefault(), shown: recorder.getTranscriber() };
+          Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+            getItem: (key: string) => values.get(key) ?? null,
+            setItem: (key: string, value: string) => {
+              if (key === "exo.voiceNotes.identifySpeakers") throw new Error("storage is full");
+              values.set(key, value);
+            },
+            removeItem: (key: string) => { values.delete(key); },
+          } });
+          await expect(recorder.setTranscriber("on-device", { scope: "default", waitForModel: true })).rejects.toThrow("storage is full");
+          expect(values.get("exo.voiceNotes.transcriber") ?? null).toBe(prior);
+          expect(await nativeDefault()).toBe(before.transcriber);
+          expect(recorder.getTranscriber()).toEqual(before.shown);
+          await agree(recorder);
+          detach();
+
+          const remounted = controller({ transcriber: route.stub, onDeviceReady: false });
+          const detachRemounted = remounted.attach();
+          await tick();
+          expect(remounted.getTranscriber()).toEqual(before.shown);
+          expect(await nativeDefault()).toBe(before.transcriber);
+          detachRemounted();
+        });
+      }
     });
 
     test("signed out stays Local, and a ready model keeps Local for a signed-in default", async () => {

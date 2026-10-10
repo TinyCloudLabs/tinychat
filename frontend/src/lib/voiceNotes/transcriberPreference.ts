@@ -108,22 +108,33 @@ async function writeEffectiveDefaults(pref: CaptureOptions, explicit: boolean): 
 }
 
 /**
- * The engine is written first, with this request's own explicitness; the preference is stored and shown only once
- * that has worked. A failure leaves the old preference in place and throws, so what is shown is what the engine holds.
+ * One change to the preference, applied as one unit inside the write lane. Only the changed field is carried in; the
+ * rest is read from the stored preference when the write runs, so a request queued earlier can never write back what
+ * an earlier change replaced. The engine is written first, then both stored keys; if either fails, the keys are put
+ * back (an absent key stays absent) and the engine's default is restored, and the call throws with the old
+ * preference still in place.
  */
-async function writePreference(pref: CaptureOptions, chosenTranscriber: boolean): Promise<void> {
+async function commitPreference(change: Partial<CaptureOptions>): Promise<void> {
   await inOrder(async () => {
+    const pref = { ...readTranscriberPreference(), ...change };
+    const chosenTranscriber = change.transcriber !== undefined;
     const replaced = await writeEffectiveDefaults(pref, chosenTranscriber || transcriberChoiceIsExplicit());
+    const store = storage();
+    const prior = store ? { transcriber: store.getItem(TRANSCRIBER_KEY), speakers: store.getItem(SPEAKERS_KEY) } : null;
     try {
-      const store = storage();
       if (store) {
         if (chosenTranscriber) store.setItem(TRANSCRIBER_KEY, pref.transcriber);
         store.setItem(SPEAKERS_KEY, pref.identifySpeakers ? "1" : "0");
       }
     } catch (caught) {
-      if (replaced) {
-        try { await VoiceNotes.setCaptureDefaults(replaced); }
-        catch (rollback) { console.error("[VoiceNotes] Could not restore the default transcription mode after a failed save", rollback); }
+      try {
+        if (store && prior) {
+          for (const [key, value] of [[TRANSCRIBER_KEY, prior.transcriber], [SPEAKERS_KEY, prior.speakers]] as const)
+            if (value === null) store.removeItem(key); else store.setItem(key, value);
+        }
+        if (replaced) await VoiceNotes.setCaptureDefaults(replaced);
+      } catch (rollback) {
+        console.error("[VoiceNotes] Could not restore the default transcription mode after a failed save", rollback);
       }
       throw caught;
     }
@@ -140,11 +151,11 @@ export async function refreshEffectiveTranscriber(): Promise<void> {
 }
 
 export async function setDefaultTranscriber(transcriber: TranscriberId): Promise<void> {
-  await writePreference({ ...readTranscriberPreference(), transcriber }, true);
+  await commitPreference({ transcriber });
 }
 
 export async function setDefaultIdentifySpeakers(identifySpeakers: boolean): Promise<void> {
-  await writePreference({ ...readTranscriberPreference(), identifySpeakers }, false);
+  await commitPreference({ identifySpeakers });
 }
 
 /** Legacy view helper; the controller API surfaces errors and is the new owner of choices. */
