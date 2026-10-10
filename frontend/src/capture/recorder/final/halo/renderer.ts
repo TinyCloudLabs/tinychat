@@ -93,6 +93,8 @@ interface HaloEntry {
   visible: boolean;
   pixelSize: number;
   lastDraw: number;
+  // Draws that reached this display canvas since it was last cleared.
+  draws: number;
   reduced: boolean;
   avatarTexture: WebGLTexture | null;
   dataTexture: WebGLTexture | null;
@@ -369,6 +371,11 @@ class SharedHaloRenderer {
   private readonly entries = new Set<HaloEntry>();
   private readonly todo: HaloEntry[] = [];
   private readonly batch: HaloEntry[] = [];
+  // A bitmap is closed only after the next frame has drawn: closing it right
+  // after drawImage frees its backing store while WebKit's GPU process may
+  // still be reading it, which leaves the display canvas blank.
+  private held: ImageBitmap[] = [];
+  private spare: ImageBitmap[] = [];
   private readonly frameLoop = new HaloRafLoop((now) => this.tick(now));
   private canvas: HaloSurface;
   private gl: WebGLRenderingContext | null;
@@ -421,6 +428,7 @@ class SharedHaloRenderer {
       visible: false,
       pixelSize: 0,
       lastDraw: 0,
+      draws: 0,
       reduced: reduceQuery.matches,
       avatarTexture: null,
       dataTexture: null,
@@ -467,8 +475,22 @@ class SharedHaloRenderer {
       reduceQuery.removeEventListener("change", onMotionChange);
       this.deleteTextures(entry);
       this.entries.delete(entry);
-      if (this.entries.size === 0) this.frameLoop.stop();
+      if (this.entries.size === 0) {
+        this.frameLoop.stop();
+        this.releaseBitmaps();
+      }
     };
+  }
+
+  get renderPath(): RenderPath {
+    return this.path;
+  }
+
+  drawCount(canvas: HTMLCanvasElement): number {
+    for (const entry of this.entries) {
+      if (entry.canvas === canvas) return entry.draws;
+    }
+    return 0;
   }
 
   invalidate(canvas: HTMLCanvasElement) {
@@ -690,6 +712,7 @@ class SharedHaloRenderer {
     if (entry.pixelSize > 0) {
       entry.canvas.width = entry.canvas.height = entry.pixelSize;
       entry.lastDraw = 0;
+      entry.draws = 0;
     }
   }
 
@@ -725,7 +748,10 @@ class SharedHaloRenderer {
       );
       if (now - entry.lastDraw >= interval) this.todo.push(entry);
     }
-    if (!visible) return false;
+    if (!visible) {
+      this.releaseBitmaps();
+      return false;
+    }
     if (this.todo.length > 0) {
       if (this.gl && this.program && this.buffer && this.uniforms) {
         this.drawWebgl(now);
@@ -746,6 +772,8 @@ class SharedHaloRenderer {
     gl.enable(gl.SCISSOR_TEST);
     gl.clearColor(0, 0, 0, 0);
 
+    const previous = this.held;
+    this.held = this.spare;
     let x = 0;
     let y = 0;
     let shelfHeight = 0;
@@ -775,6 +803,16 @@ class SharedHaloRenderer {
       shelfHeight = Math.max(shelfHeight, size);
     }
     this.flushBatch(now);
+    for (const bitmap of previous) bitmap.close();
+    previous.length = 0;
+    this.spare = previous;
+  }
+
+  private releaseBitmaps() {
+    for (const bitmap of this.held) bitmap.close();
+    for (const bitmap of this.spare) bitmap.close();
+    this.held.length = 0;
+    this.spare.length = 0;
   }
 
   private flushBatch(now: number) {
@@ -802,8 +840,9 @@ class SharedHaloRenderer {
         size,
       );
       entry.lastDraw = now;
+      entry.draws++;
     }
-    bitmap?.close();
+    if (bitmap) this.held.push(bitmap);
     this.batch.length = 0;
   }
 
@@ -989,6 +1028,7 @@ class SharedHaloRenderer {
       context.lineWidth = 1;
       context.stroke();
       entry.lastDraw = now;
+      entry.draws++;
     }
   }
 
@@ -996,6 +1036,7 @@ class SharedHaloRenderer {
     event.preventDefault();
     this.lost = true;
     this.frameLoop.stop();
+    this.releaseBitmaps();
     for (const entry of this.entries) {
       entry.avatarTexture = null;
       entry.dataTexture = null;
@@ -1021,6 +1062,14 @@ let sharedRenderer: SharedHaloRenderer | undefined;
 export function registerHalo(canvas: HTMLCanvasElement, config: HaloConfig) {
   sharedRenderer ??= new SharedHaloRenderer();
   return sharedRenderer.add(canvas, config);
+}
+
+export function haloRenderPath(): RenderPath | null {
+  return sharedRenderer?.renderPath ?? null;
+}
+
+export function haloDrawCount(canvas: HTMLCanvasElement): number {
+  return sharedRenderer?.drawCount(canvas) ?? 0;
 }
 
 export function invalidateHalo(canvas: HTMLCanvasElement) {

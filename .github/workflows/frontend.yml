@@ -7,7 +7,9 @@ name: Frontend
 # Lint covers frontend/ and test/ only: the repo-wide `bun run lint` still has
 # errors in backend/ and artifacts/.
 #
-# WebKit runs locally (EXO_UI_ENGINE=webkit, SCROLL_ENGINE=webkit), not here.
+# WebKit runs locally (EXO_UI_ENGINE=webkit, SCROLL_ENGINE=webkit), not here,
+# except the recorder halo job below: a halo ring has gone blank intermittently
+# on WebKit, which iOS uses (TC-876).
 # The model-router browser suite stays out until TC-768 resolves its three
 # failures on main (since #107, stream before save).
 
@@ -149,4 +151,49 @@ jobs:
         with:
           name: exo-ui-screens-${{ github.event.pull_request.number }}-${{ matrix.viewport }}-${{ github.run_attempt }}
           path: screenshots/exo-ui/
+          if-no-files-found: warn
+
+  halo-webkit:
+    name: Recorder halo (macOS WebKit)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/Library/Caches/ms-playwright
+          key: playwright-webkit-macos-${{ hashFiles('bun.lock', 'test/package.json') }}
+
+      - name: Install JS deps
+        run: bun install --frozen-lockfile
+
+      - name: Build workspace packages
+        run: bun run build:packages
+
+      - name: Install WebKit
+        working-directory: test
+        run: bunx playwright install webkit
+
+      # The halo test file: the centre-pixel check, then 30 fresh loads under an
+      # injected main-thread stall, each sampling every ring per frame for a
+      # blank (TC-876).
+      - name: Recorder halo (WebKit)
+        working-directory: test
+        env:
+          HALO_LOADS: "30"
+        run: bun test recorder-final-halo.e2e.test.ts
+
+      - name: Upload the halo screenshots
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: recorder-halo-webkit-${{ github.event.pull_request.number }}-${{ github.run_attempt }}
+          path: screenshots/recorder-halo/
           if-no-files-found: warn

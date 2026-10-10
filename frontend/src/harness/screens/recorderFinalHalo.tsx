@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   HaloRing,
+  haloDrawCount,
+  haloRenderPath,
   LevelBars,
   MirroredSpectrumBars,
   sourceFromLevel,
@@ -23,6 +25,58 @@ function subscribeScript(listener: (source: typeof ACTIVE) => void) {
 function subscribeLevels(listener: (level: number) => void) {
   for (const level of LEVEL_SCRIPT) listener(level);
   return () => {};
+}
+
+declare global {
+  interface Window {
+    haloStall?: { done: boolean };
+    haloProbe?: {
+      draws: (index: number) => number;
+      path: () => string | null;
+    };
+  }
+}
+
+// Test-only: how many draws reached the nth ring canvas, and the render path.
+function HaloProbe() {
+  useEffect(() => {
+    window.haloProbe = {
+      draws: (index) =>
+        haloDrawCount(
+          document.querySelectorAll<HTMLCanvasElement>(".halo-ring__canvas")[
+            index
+          ],
+        ),
+      path: haloRenderPath,
+    };
+    return () => {
+      delete window.haloProbe;
+    };
+  }, []);
+  return null;
+}
+
+// Test-only (?haloStall=<ms>): blocks the main thread in each of the first
+// three animation frames, so rings are flushed and then starved the way a slow
+// first load starves them. Without the param the harness is unchanged.
+function HaloStall() {
+  useEffect(() => {
+    const ms = Number(new URLSearchParams(window.location.search).get("haloStall"));
+    if (!(ms > 0)) return;
+    const state = { done: false };
+    window.haloStall = state;
+    let frames = 0;
+    let handle = 0;
+    const frame = () => {
+      const until = performance.now() + ms;
+      while (performance.now() < until);
+      if (++frames < 3) handle = requestAnimationFrame(frame);
+      else state.done = true;
+    };
+    handle = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(handle);
+  }, []);
+  return null;
 }
 
 function IdleRing({ theme }: { theme: "night" | "day" }) {
@@ -182,6 +236,8 @@ export const recorderFinalHaloScreen: HarnessScreen = {
           Rings draw while in view. Scroll to start rings outside the viewport;
           the halo-review capture keeps all eight in view.
         </p>
+        <HaloStall />
+        <HaloProbe />
         {previews.map((theme) => (
           <ThemePreview key={theme} theme={theme} />
         ))}
