@@ -16,7 +16,7 @@ describe("savedNoteMeta", () => {
   test("says where it was recorded, how it was transcribed and that it is saved", () => {
     const meta = savedNoteMeta(
       item,
-      { capture: { platform: "ios" }, transcript_provider: "whispercpp" },
+      { capture: { platform: "ios" }, transcription_outcome: "transcribed", transcript_provider: "whispercpp" },
       "tauri",
     );
     expect(meta).toContain("1 min");
@@ -31,10 +31,30 @@ describe("savedNoteMeta", () => {
     expect(meta).not.toContain("saved to your space");
   });
 
-  test("names the private cloud route", () => {
+
+  test("names each transcript by its mode", () => {
+    const transcribed = { transcription_outcome: "transcribed" };
     expect(
-      savedNoteMeta(item, { transcript_provider: "tinycloud-private-transcription" }, "ios"),
-    ).toContain("Private cloud transcript");
+      savedNoteMeta(item, { ...transcribed, transcript_provider: "tinycloud-private-transcription" }, "ios"),
+    ).toContain("Private transcript");
+    expect(savedNoteMeta(item, { ...transcribed, transcript_provider: "assemblyai" }, "ios")).toContain(
+      "Powerful transcript",
+    );
+  });
+
+  test("a voice note claims no transcript unless its transcription outcome says it was transcribed", () => {
+    const engine = { transcription_engine: "private-cloud", transcript_provider: "tinycloud-private-transcription" };
+    for (const outcome of [undefined, "none", "no_speech"]) {
+      const meta = savedNoteMeta(item, { ...engine, ...(outcome ? { transcription_outcome: outcome } : {}) }, "ios");
+      expect(meta).not.toContain("transcript");
+    }
+  });
+
+  test("an upload's provider still names its transcript", () => {
+    const upload = { ...item, source: "exo-upload" } as LibraryItem;
+    expect(savedNoteMeta(upload, { transcript_provider: "tinycloud-private-transcription" }, "ios")).toContain(
+      "Private transcript",
+    );
   });
 
   test("leaves out what is not known", () => {

@@ -47,11 +47,6 @@ import { useSourceSync } from "./useSourceSync";
 export { meetingSourceActionBusy, meetingSourceStatus };
 
 export const SOURCE_IDS: readonly ConnectorId[] = ["fireflies", "google-meet", "granola"];
-const DESCRIPTIONS: Readonly<Record<string, string>> = {
-  fireflies: "Meeting transcripts from Fireflies.ai.",
-  "google-meet": "Google Meet transcripts and Notes by Gemini.",
-  granola: "Notes and transcripts from Granola.",
-};
 
 /** A source with no entry yet has not been read. Failed is not "not connected". */
 type ConnectionRead =
@@ -188,7 +183,7 @@ export function MeetingSourcesDialog({
               key={d.id}
               id={d.id}
               name={d.name}
-              description={DESCRIPTIONS[d.id] ?? ""}
+              description={d.description}
               Icon={d.icon ?? PlugIcon}
               comingSoon={d.status === "coming-soon"}
               status={status}

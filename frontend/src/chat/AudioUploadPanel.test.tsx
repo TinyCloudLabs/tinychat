@@ -126,16 +126,19 @@ describe("AudioUploadView", () => {
       expect(html).not.toMatch(/verified|attested|end-to-end/i);
       expect(html).toContain('aria-label="Where your audio goes"');
       expect(html).toContain('href="/chat/about#uploads"');
-      // The route control is a radio group (Private cloud · AssemblyAI).
+      // The route control is a radio group (Private · Powerful).
       expect(html).toContain('role="radiogroup"');
-      expect(html).toContain(">Private cloud<");
+      expect(html).toContain(">Private<");
+      expect(html).toContain(">Powerful<");
+      expect(html).not.toContain(">Private cloud<");
+      expect(html).toContain(">This browser<");
     }
     // TinyCloud's account: the file passes through Exo's server, and the line says so.
     expect(hosted).toContain("Sent through Exo&#x27;s server to AssemblyAI under TinyCloud&#x27;s account, then deleted there.");
-    expect(hosted).toContain("AssemblyAI · TinyCloud&#x27;s account");
+    expect(hosted).toContain("Powerful · TinyCloud&#x27;s account");
     expect(hosted).not.toContain("your key");
     expect(aai).toContain("Sent from this device to AssemblyAI with your key, then deleted there.");
-    expect(aai).toContain("AssemblyAI · your key");
+    expect(aai).toContain("Powerful · your key");
     expect(priv).toContain("Transcribed by TinyCloud Private Transcription. A copy of the file stays in your space.");
     // No disclosure paragraphs inline.
     expect(priv).not.toContain("confidential virtual machine");
@@ -186,7 +189,7 @@ describe("AudioUploadView", () => {
   });
 
   test("a file private cloud can't take is named before anything is sent", () => {
-    expect(fileProblem({ name: "clip.mov", type: "video/quicktime", size: 10 }, "private-cloud")).toContain("Choose AssemblyAI");
+    expect(fileProblem({ name: "clip.mov", type: "video/quicktime", size: 10 }, "private-cloud")).toContain("Choose Powerful");
     expect(fileProblem({ name: "clip.mov", type: "video/quicktime", size: 10 }, "assemblyai", undefined, "own")).toBeNull();
     // TinyCloud's AssemblyAI account goes through Exo's server, which takes the same audio types.
     expect(fileProblem({ name: "clip.mov", type: "video/quicktime", size: 10 }, "assemblyai", undefined, "hosted")).toContain("your own AssemblyAI key");
@@ -214,7 +217,7 @@ describe("AudioUploadView", () => {
     expect(final).toContain(">Discard</button>");
 
     const running = renderUpload({ job: job({ stage: "uploading", uploadPct: 42, audio: { stage: "storing", pct: 10 } }) });
-    expect(running).toContain("Uploading to AssemblyAI… 42%");
+    expect(running).toContain("Uploading for Powerful transcription… 42%");
     expect(running).toContain("Storing the original audio in your space… 10%");
     expect(running).not.toContain(">Discard</button>");
   });

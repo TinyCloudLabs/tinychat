@@ -42,7 +42,7 @@ describe("TranscriptionRouteControl", () => {
       const html = render(value);
       expect(html).toContain(">Transcription</h3>");
       expect(segments(html)).toBe(2);
-      expect(html).not.toContain(">Private cloud</span>");
+      expect(html).not.toContain(">Private</span>");
       expect(html).toContain("Transcribed on this phone");
       expect(html).toContain('data-route="on-device"');
     }
@@ -50,12 +50,12 @@ describe("TranscriptionRouteControl", () => {
 
   test("checking: Off and On this phone shown, nothing from private cloud to choose yet", () => {
     expect(segments(render(transcription({ availability: "checking", consented: false })))).toBe(2);
-    expect(render(transcription({ availability: "checking", consented: true }))).toContain("Checking private cloud…");
+    expect(render(transcription({ availability: "checking", consented: true }))).toContain("Checking Private…");
   });
 
   test("failed for someone who chose private cloud: told, with Check again; nobody else hears of it", () => {
     const html = render(transcription({ availability: "failed", consented: true }));
-    expect(html).toContain("Private cloud is unavailable right now.");
+    expect(html).toContain("Private isn&#x27;t available right now.");
     expect(html).toContain('data-testid="voice-note-transcription-recheck"');
     expect(render(transcription({ availability: "failed", consented: false }))).not.toContain("unavailable");
   });
@@ -63,10 +63,10 @@ describe("TranscriptionRouteControl", () => {
   test("available and on: Off · On this phone · Private cloud with Private cloud chosen, and its route", () => {
     const html = render(transcription());
     expect(segments(html)).toBe(3);
-    expect(html).toMatch(/aria-checked="true"[^>]*>.*?Private cloud/);
+    expect(html).toMatch(/aria-checked="true"[^>]*>.*?Private/);
     expect(html).toContain('data-route="private-cloud"');
-    expect(html).toContain(">Private cloud</span>");
-    expect(html).toContain("Private cloud transcribes notes up to 10 minutes.");
+    expect(html).toContain(">Private</span>");
+    expect(html).toContain("Private transcribes notes up to 10 minutes.");
     expect(html).not.toContain("voice-note-transcription-consent");
   });
 
@@ -90,7 +90,7 @@ describe("TranscriptionRouteControl", () => {
         <TranscriptionRouteControl transcription={transcription({ consented: false })} signedIn />
       </MemoryRouter>,
     );
-    expect(html).toContain(">On this phone</span>");
+    expect(html).toContain(">Local</span>");
     expect(segments(html)).toBe(3);
   });
 
@@ -105,9 +105,9 @@ describe("TranscriptionRouteControl", () => {
       const html = render(value, false, false);
       expect(segments(html)).toBe(1);
       expect(html).toContain('data-route="on-device"');
-      expect(html).toContain(">On this phone</span>");
-      expect(html).not.toContain(">Off</span>");
-      expect(html).not.toContain(">Private cloud</span>");
+      expect(html).toContain(">Local</span>");
+      expect(html).not.toContain(">Audio only</span>");
+      expect(html).not.toContain(">Private</span>");
     }
   });
 });
@@ -139,13 +139,13 @@ describe("a live recorder's selection is always the provider's", () => {
       const html = renderWith(id, transcription({ consented: false }), true);
       expect(html).toContain('data-testid="voice-note-transcription-consent"');
       expect(html).toContain(`data-route="${id}"`);
-      expect(checked(html)).toEqual([id === "off" ? "Off" : "On this phone"]);
+      expect(checked(html)).toEqual([id === "off" ? "Audio only" : "Local"]);
     }
   });
 
   test("with consent given the selection is the provider's too", () => {
-    expect(checked(renderWith("private-cloud", transcription(), false))).toEqual(["Private cloud"]);
-    expect(checked(renderWith("on-device", transcription(), false))).toEqual(["On this phone"]);
+    expect(checked(renderWith("private-cloud", transcription(), false))).toEqual(["Private"]);
+    expect(checked(renderWith("on-device", transcription(), false))).toEqual(["Local"]);
   });
 });
 
@@ -173,8 +173,8 @@ describe("requestRecordingRoute: the provider's answer is shown, logged, and nev
 
   test("unavailable names the mode that was picked, and is logged", async () => {
     expect(await run(async () => "unavailable")).toEqual({ events: [`notify:${routeUnavailable("private-cloud")}`], errors: 1 });
-    expect(routeUnavailable("private-cloud")).toBe("Private cloud isn't available right now");
-    expect(routeUnavailable("on-device")).toBe("On this phone isn't available right now");
+    expect(routeUnavailable("private-cloud")).toBe("Private isn't available right now");
+    expect(routeUnavailable("on-device")).toBe("Local isn't available right now");
   });
 
   test("locked_signed_out says to sign in, and is logged", async () => {
@@ -183,7 +183,7 @@ describe("requestRecordingRoute: the provider's answer is shown, logged, and nev
 
   test("a rejected change says why, and is logged", async () => {
     const { events, errors } = await run(async () => { throw new Error("plugin down"); });
-    expect(events).toEqual(["notify:Could not change the transcription to Private cloud: plugin down"]);
+    expect(events).toEqual(["notify:Could not change the transcription to Private: plugin down"]);
     expect(errors).toBe(1);
   });
 });

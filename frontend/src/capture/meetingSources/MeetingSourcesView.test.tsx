@@ -4,9 +4,13 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { PlugIcon } from "lucide-react";
 import { renderToStaticMarkup } from "react-dom/server";
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { CONNECTORS } from "@/lib/connectors/registry";
 import { MeetingSourcesFeature } from "./MeetingSourcesDialog";
 import { meetingSourceStatus } from "./meetingSourceState";
-import { SourceRow, type SourceRowProps } from "./MeetingSourcesView";
+import { CalendarAutojoinRow, SourceRow, type SourceRowProps } from "./MeetingSourcesView";
 
 const noop = () => {};
 function render(patch: Partial<SourceRowProps>): string {
@@ -74,5 +78,34 @@ describe("Connectors entry card", () => {
     expect(html).not.toContain("Checking");
     expect(html).toContain('class="ms-entry-sub">Fireflies, Google Meet and Granola</span>');
     expect(html).toContain("<span>Meeting sources</span>");
+  });
+});
+
+describe("one Meeting sources view", () => {
+  const read = (name: string) => readFileSync(join(import.meta.dir, name), "utf8");
+
+  test("the registry is the one table of source descriptions", () => {
+    expect(read("MeetingSourcesDialog.tsx")).not.toContain("DESCRIPTIONS");
+    expect(read("MeetingSourcesDialog.tsx")).toContain("description={d.description}");
+    expect(CONNECTORS.map((d) => d.description)).toEqual([
+      "Meeting transcripts from Fireflies.ai.",
+      "Notes and transcripts from Granola.",
+      "Google Meet transcripts and Notes by Gemini.",
+    ]);
+  });
+
+  test("Calendar autojoin carries no How it works of its own (the window header has the one)", () => {
+    const html = renderToStaticMarkup(
+      <CalendarAutojoinRow on={false} disabled={false} scan="none yet" warning={null} onToggle={noop} />,
+    );
+    expect(html).not.toContain("How it works");
+  });
+
+  test("on a phone width a row's actions go under its text", () => {
+    const css = read("meetingSources.css");
+    const phone = css.slice(css.indexOf("@media (max-width: 560px)"));
+    expect(phone).toContain("grid-template-columns: 40px minmax(0, 1fr)");
+    expect(phone).toMatch(/\.ms-actions \{\s*grid-column: 2;\s*flex-wrap: wrap;/);
+    expect(phone).toContain("grid-column: 2 / -1");
   });
 });

@@ -141,6 +141,12 @@ export function libraryTcw(options: { rows?: readonly FixtureRow[]; hang?: boole
       if (options.hang) return new Promise(() => {});
       return { ok: true, data: { rows: rows.map((r) => [r.id, r.source, r.sourceId, r.title, r.startedAt, r.durationSecs]) } };
     }
+    if (sql.includes("FROM connector_meeting g") && sql.includes("transcription_outcome")) {
+      const row = rows.find(
+        (r) => r.sourceId === params[0] && r.source === "exo-voice-note" && r.metadata.transcription_outcome !== undefined,
+      );
+      return { ok: true, data: { rows: row ? [[row.id, JSON.stringify(row.metadata)]] : [] } };
+    }
     if (sql.includes("SELECT metadata FROM connector_meeting WHERE id = ?")) {
       const row = rows.find((r) => r.id === params[0]);
       return { ok: true, data: { rows: row ? [[JSON.stringify(row.metadata)]] : [] } };

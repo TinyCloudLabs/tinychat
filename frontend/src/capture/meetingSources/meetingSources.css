@@ -663,6 +663,22 @@
   outline-offset: 2px;
 }
 
+/* Phone widths: the row's actions go under its text (the window is ~358px wide at 390, which left the text about 90px). */
+@media (max-width: 560px) {
+  .ms-row {
+    grid-template-columns: 40px minmax(0, 1fr);
+  }
+  .ms-actions {
+    grid-column: 2;
+    flex-wrap: wrap;
+    margin-top: 12px;
+  }
+  .ms-panel,
+  .ms-extra {
+    grid-column: 2 / -1;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ms-window,
   .ms-confirm,

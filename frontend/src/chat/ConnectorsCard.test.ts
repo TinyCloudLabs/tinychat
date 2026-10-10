@@ -62,9 +62,9 @@ describe("supportsBackgroundNotifications", () => {
 });
 
 describe("Connectors page composition", () => {
-  test("ConnectorsPage hands the card the backendUrl and sessionStore it already has", () => {
+  test("ConnectorsPage hands the Meeting sources view the backendUrl and sessionStore it already has", () => {
     const page = read("ConnectorsPage.tsx");
-    const usage = page.slice(page.indexOf("<ConnectorsCard"));
+    const usage = page.slice(page.indexOf("<MeetingSourcesFeature"));
     expect(usage).toContain("backendUrl={backendUrl}");
     expect(usage).toContain("sessionStore={sessionStore}");
   });

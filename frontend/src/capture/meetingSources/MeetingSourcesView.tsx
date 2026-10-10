@@ -328,7 +328,6 @@ export function CalendarAutojoinRow({
             Last scan: {scan}.
           </p>
           {warning && <InlineError>{warning}</InlineError>}
-          <HowItWorks />
         </div>
         <Switch checked={on} label="Calendar autojoin" disabled={disabled} onToggle={onToggle} />
       </div>
