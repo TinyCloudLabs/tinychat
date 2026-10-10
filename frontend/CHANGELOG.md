@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.24
+
+### Patch Changes
+
+- d682e75: Hide other accounts' pending voice notes from signed-in capture, preserve a note's save error while newer notes upload, and log automatic save starts for device diagnosis.
+
 ## 0.6.0-beta.23
 
 ### Patch Changes
