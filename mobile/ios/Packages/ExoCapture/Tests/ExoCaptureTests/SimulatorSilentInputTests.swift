@@ -229,6 +229,24 @@ final class SimulatorSilentInputTests: XCTestCase {
         XCTAssertFalse(result.error is AcquisitionAttempted)
     }
 
+    @MainActor func testInputMenuListsAndChecksTheSyntheticInputInUse() throws {
+        for environment in [[:], ["EXO_SIM_AUDIO_INPUT": "silence"]] as [[String: String]] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("exo-sim-menu-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let engine = try CaptureEngine(testRoot: root)
+            engine.debugInputEnvironment = environment
+            let list = try engine.listInputs()
+            let inputs = try XCTUnwrap(list["inputs"] as? [[String: Any]])
+            XCTAssertEqual(inputs.count, 1)
+            XCTAssertEqual(inputs.first?["id"] as? String, SimulatorSilentInput.inputID)
+            XCTAssertEqual(inputs.first?["name"] as? String, SimulatorSilentInput.inputName)
+            XCTAssertEqual(list["activeId"] as? String, SimulatorSilentInput.inputID)
+            XCTAssertNoThrow(try engine.selectInput(SimulatorSilentInput.inputID))
+            XCTAssertNoThrow(try engine.selectInput(nil))
+            XCTAssertThrowsError(try engine.selectInput("some-real-mic-uid"))
+        }
+    }
+
     @MainActor func testHostModeAcquiresHardwareSession() throws {
         let result = try startCountingAcquisition(environment: ["EXO_SIM_AUDIO_INPUT": "host"])
         XCTAssertEqual(result.acquisitions, 1)
