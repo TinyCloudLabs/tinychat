@@ -42,7 +42,7 @@
     },
     "desktop": {
       "name": "exo-desktop",
-      "version": "0.6.0-beta.15",
+      "version": "0.6.0-beta.16",
       "dependencies": {
         "@tauri-apps/api": "^2.9.0",
       },
@@ -52,7 +52,7 @@
     },
     "frontend": {
       "name": "@tinychat/frontend",
-      "version": "0.6.0-beta.15",
+      "version": "0.6.0-beta.16",
       "dependencies": {
         "@assistant-ui/react": "^0.14.13",
         "@assistant-ui/react-markdown": "0.14.1",
