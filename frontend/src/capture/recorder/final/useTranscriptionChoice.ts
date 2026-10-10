@@ -13,7 +13,7 @@ import {
   type ModeShell,
   type ModeStop,
 } from "./transcriptionModes";
-import { FINAL_COPY } from "./finalCopy";
+import { FINAL_COPY, TRANSCRIBER_NAME } from "./finalCopy";
 import {
   localDesktopCaption,
   localDesktopExplanation,
@@ -33,7 +33,7 @@ export const unavailableNow = (what: string) =>
   `${what} isn't available right now`;
 export const DESKTOP_SIGNED_OUT_CAPTION =
   "Just the recording, kept on this Mac.";
-export const LOCAL_NEEDS_MODEL = "Local needs the on-device model. Get it from the Local row, or pick another mode.";
+export const LOCAL_NEEDS_MODEL = `${TRANSCRIBER_NAME["on-device"]} needs the on-device model. Get it from the ${TRANSCRIBER_NAME["on-device"]} row, or pick another mode.`;
 export const SPEAKERS_NEEDS_CONSENT = "Turn on private transcription first";
 
 export const TRANSCRIBER_FOR: Record<ModeId, TranscriberId> = {

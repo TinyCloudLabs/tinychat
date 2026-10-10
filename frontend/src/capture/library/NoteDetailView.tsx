@@ -13,6 +13,7 @@ import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
 import { Button } from "@/components/ui/button";
 import { Empty } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { TranscriptionRouteControl } from "@/capture/recorder/TranscriptionRouteControl";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import type { FirefliesSentence } from "@/lib/connectors/firefliesClient";
@@ -128,7 +129,7 @@ export function VoiceNoteTranscriptionStatus(props: {
         <p role="status" className="min-w-0 flex-1 text-callout text-muted-foreground">{job.message}</p>
         {offered && (
           <Button type="button" variant="outline" onClick={() => transcription.onTranscribe(item.sourceId)} data-testid="voice-note-transcribe-held">
-            <FileTextIcon aria-hidden /> Transcribe with Private
+            <FileTextIcon aria-hidden /> Transcribe with {TRANSCRIBER_NAME["private-cloud"]}
           </Button>
         )}
       </div>

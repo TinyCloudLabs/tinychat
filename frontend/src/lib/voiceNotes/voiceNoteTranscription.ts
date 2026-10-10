@@ -26,6 +26,7 @@ import { CapacitorHttp } from "@capacitor/core";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
+import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
 import { MAX_TURN_SECONDS } from "../localTranscriptTurns";
 import {
@@ -260,7 +261,7 @@ export function localStorageVoiceNoteConsentStore(
 }
 
 /** Said on a note that began outside the app and has not been sent. */
-export const HELD_NOTE_MESSAGE = "This note was started from a shortcut, so it was not sent for transcription. Transcribe with Private to send it.";
+export const HELD_NOTE_MESSAGE = `This note was started from a shortcut, so it was not sent for transcription. Transcribe with ${TRANSCRIBER_NAME["private-cloud"]} to send it.`;
 
 /** `held`: not sent, until the user's Transcribe on that note. `released`: the user asked for it, so a later launch may resume it. */
 export type VoiceNoteHoldState = "held" | "released";
