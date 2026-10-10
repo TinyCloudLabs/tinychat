@@ -340,7 +340,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await page.evaluate(() => {
       (window as unknown as Harness).exoRecorder.transcriberResult = null;
     });
-    await privateAction.click();
+    await privateAction.evaluate((button) => (button as HTMLButtonElement).click());
     await modeIs(page, "Private");
     await page.context().close();
   });
