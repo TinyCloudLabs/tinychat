@@ -964,34 +964,36 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       }
       if (pipeline) {
         const finishSaving = pendingStore.beginManualSave();
+        const account = pendingStore.forCurrentAccount();
         const generation = currentAccountGeneration();
         try {
           const native = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
           if (native.status !== "signed_in" || native.accountDid !== tcw.did) {
-            pendingStore.reportError("This phone's recording account is not ready. Try again shortly.");
+            account.reportError("This phone's recording account is not ready. Try again shortly.");
             return;
           }
           // The same generation can claim a v2 note left unowned during sign-in.
           await withCaptureDeadline(VoiceNotes.setCaptureDefaults(native));
           if (generation !== currentAccountGeneration()) {
-            pendingStore.reportError("The recording account changed while saving. Try again from the current account.");
+            account.reportError("The recording account changed while saving. Try again from the current account.");
             return;
           }
           pipeline.resume();
           await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation }, "manual");
-          await pendingStore.refresh(null);
+          await account.refresh(null);
         } catch (caught) {
-          pendingStore.reportError(`Could not save notes on this phone: ${messageOf(caught)}`);
+          account.reportError(`Could not save notes on this phone: ${messageOf(caught)}`);
         } finally {
           finishSaving();
         }
         return;
       }
+      const account = pendingStore.forCurrentAccount();
       let run;
       try {
         run = await savePendingRecordings(tcw);
       } catch (caught) {
-        pendingStore.reportError(`Could not save notes on this phone: ${messageOf(caught)}`);
+        account.reportError(`Could not save notes on this phone: ${messageOf(caught)}`);
         return;
       }
       for (const recording of run.saved) landed(recording);

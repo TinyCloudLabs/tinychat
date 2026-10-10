@@ -107,12 +107,13 @@ export function PendingVoiceNotesSaver({
     pipeline.resume();
     const run = async () => {
       const finish = pendingStore.beginAutomaticSave();
+      const account = pendingStore.forCurrentAccount();
       try {
         await pipeline.reconcileAll({ did, spaceId, generation: currentAccountGeneration() });
-        await pendingStore.refresh(null);
+        await account.refresh(null);
       } catch (error) {
         console.warn("[VoiceNotes] Saving notes left on this phone failed", error);
-        pendingStore.reportErrorFor(did, `Could not save notes on this phone: ${messageOf(error)}`);
+        account.reportError(`Could not save notes on this phone: ${messageOf(error)}`);
       } finally { finish(); }
     };
     const unregister = registerPendingVoiceNotesRecovery(run);

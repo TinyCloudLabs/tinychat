@@ -473,10 +473,19 @@ export const pendingStore = {
     generalFailure = message;
     publishPending({ lastError: currentFailure() });
   },
-  /** A run that belongs to one account reports only while that account is active; a late failure never lands on the next account. */
-  reportErrorFor(did: string, message: string): void {
-    if (activeAccountDid !== did) return;
-    pendingStore.reportError(message);
+  /**
+   * Writes for a run that started under the account active now. Once another account is active they are dropped
+   * (the run logs its own outcome), so a late result never clears or replaces the next account's state.
+   */
+  forCurrentAccount(): { refresh(lastError?: string | null): Promise<void>; reportError(message: string): void } {
+    const owner = activeAccountDid;
+    return {
+      refresh: (lastError) => (activeAccountDid === owner ? relistPending(lastError) : Promise.resolve()),
+      reportError: (message) => {
+        if (activeAccountDid === owner) pendingStore.reportError(message);
+        else console.warn("[VoiceNotes] Dropped a pending-save error from a previous account", message);
+      },
+    };
   },
   reportNoteFailure(id: string, message: string): void {
     noteFailures.delete(id);
