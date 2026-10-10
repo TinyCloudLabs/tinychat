@@ -433,11 +433,18 @@ public final class CaptureEngine {
         let engine: AVAudioEngine?
         let format: AVAudioFormat
         #if DEBUG && targetEnvironment(simulator)
+        var clipSamples: [Float]?
         switch inputMode {
         case .silence:
             engine = nil
             format = SimulatorSilentInput.format
             log.notice("Debug simulator: capturing synthetic silence, not the Mac microphone (EXO_SIM_AUDIO_INPUT=host opts in)")
+        case .file(let clip):
+            // Decoded before any attach so a broken clip fails the start visibly.
+            clipSamples = try SimulatorSilentInput.samples(for: clip)
+            engine = nil
+            format = SimulatorSilentInput.format
+            log.notice("Debug simulator: looping bundled clip \(clip.rawValue, privacy: .public), not the Mac microphone")
         case .host:
             log.notice("Debug simulator: EXO_SIM_AUDIO_INPUT=host, capturing the Mac microphone")
             (engine, format) = try openHostInput(pending: &pendingEngine)
@@ -462,7 +469,8 @@ public final class CaptureEngine {
             input = inputRouter.active()
             inputRate = audioSession.sampleRate
         } else {
-            input = (SimulatorSilentInput.inputID, SimulatorSilentInput.inputName, "other")
+            let identity = SimulatorSilentInput.identity(for: inputMode)
+            input = (identity.id, identity.name, "other")
             inputRate = SimulatorSilentInput.sampleRate
         }
         #else
@@ -543,7 +551,8 @@ public final class CaptureEngine {
             audioEngine = engine
         } else {
             #if DEBUG && targetEnvironment(simulator)
-            let source = SimulatorSilentInput(manual: debugTesting && !debugRealTimeSilentInput, handler: tapHandler)
+            let source = SimulatorSilentInput(manual: debugTesting && !debugRealTimeSilentInput, samples: clipSamples,
+                                              handler: tapHandler)
             silentInput = source
             source.start()
             #endif
