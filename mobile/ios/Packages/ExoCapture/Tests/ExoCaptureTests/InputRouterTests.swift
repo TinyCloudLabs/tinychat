@@ -28,7 +28,8 @@ final class InputRouterTests: XCTestCase {
         XCTAssertEqual(name(.bluetoothHFP, "  "), "Bluetooth Microphone")
         XCTAssertEqual(name(.usbAudio, "USBAudio"), "USB Microphone")
         XCTAssertEqual(name(.carAudio, ""), "Car Audio")
-        XCTAssertEqual(name(AVAudioSession.Port(rawValue: "MicrophoneWired"), "MicrophoneWired"), "Microphone Wired")
+        XCTAssertEqual(name(AVAudioSession.Port(rawValue: "MicrophoneWired"), "MicrophoneWired"), "Headset Microphone")
+        XCTAssertEqual(name(AVAudioSession.Port(rawValue: "CustomMicrophonePort"), "CustomMicrophonePort"), "Custom Microphone Port")
         XCTAssertEqual(name(AVAudioSession.Port(rawValue: ""), ""), "Microphone")
     }
 }
