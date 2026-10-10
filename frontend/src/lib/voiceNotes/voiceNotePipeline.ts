@@ -6,9 +6,9 @@ import { isDiscarded, saveNoteForAccount } from "./recorderSaves";
 import { ensureVoiceNoteIdentity, sweepArchived } from "./voiceNoteRows";
 
 export interface VoiceNotePipeline {
-  process(ctx: AccountContext, id: string): Promise<void>;
+  process(ctx: AccountContext, id: string, trigger?: "stop" | "background"): Promise<void>;
   /** T19 calls setCaptureDefaults on ready before this association and upload pass. */
-  reconcileAll(ctx: AccountContext): Promise<void>;
+  reconcileAll(ctx: AccountContext, trigger?: "reconcile" | "manual"): Promise<void>;
   cancelAll(): void;
   resume(): void;
   isAccepting(): boolean;
@@ -22,6 +22,10 @@ export class VoiceNoteSaveDeferred extends Error {
 
 export function saveDeferredForAccountTransition(error: unknown): boolean {
   return error instanceof VoiceNoteSaveDeferred || error instanceof StaleAccountContext;
+}
+
+function logSaveStart(id: string, trigger: "stop" | "background" | "reconcile" | "manual"): void {
+  console.debug(`[VoiceNotes] automatic save starting id=${id} trigger=${trigger}`);
 }
 
 /** T22 extends these lanes with transcription and cleanup, retaining this API. */
@@ -56,12 +60,13 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
     if (result.kind === "discarded" && result.cleanupError) throw new Error(result.cleanupError);
   };
   return {
-    process(ctx, id) {
+    process(ctx, id, trigger = "stop") {
       if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());
       const epoch = cancellation;
+      logSaveStart(id, trigger);
       return run(() => processOne(ctx, id, epoch));
     },
-    reconcileAll(ctx) {
+    reconcileAll(ctx, trigger = "reconcile") {
       if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());
       const epoch = cancellation;
       return run(async () => {
@@ -90,7 +95,10 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
         for (const note of [...notes].sort((a, b) => a.startedAt - b.startedAt)) {
           check();
           if (note.owner === ctx.did && !note.ownerUnknown) {
-            try { await processOne(ctx, note.id, epoch); }
+            try {
+              logSaveStart(note.id, trigger);
+              await processOne(ctx, note.id, epoch);
+            }
             catch (error) {
               check();
               if (!isDiscarded(note.id)) throw error;

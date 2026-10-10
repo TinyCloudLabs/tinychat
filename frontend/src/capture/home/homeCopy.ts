@@ -18,7 +18,6 @@ export const HOME_COPY = {
   onPhoneMany: (count: number) => `${count} voice notes on this phone`,
   notInSpace: "Not in your space yet",
   savingToSpace: "Saving to your TinyCloud space…",
-  otherAccountNotes: "Some notes belong to another account. Sign in there to save them.",
   saveNow: "Save now",
   willFinish: "Kept on this phone. Exo will finish it automatically.",
   willRetry: "Exo will retry when it next opens",
