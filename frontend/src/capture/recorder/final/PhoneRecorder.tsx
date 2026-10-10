@@ -495,7 +495,7 @@ export function PhoneRecorder({
             <span>more private</span>
             <span>more capable</span>
           </div>
-          <div className="pr-capline">{stop.captions[shell]}</div>
+          <div className="pr-capline">{choice.restingNote ?? stop.captions[shell]}</div>
           {!idleDenied && !audio.unsupported && (
             <ViaMenu
               inputs={audio.inputs}

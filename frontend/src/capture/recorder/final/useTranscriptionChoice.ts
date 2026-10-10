@@ -33,6 +33,7 @@ export const unavailableNow = (what: string) =>
   `${what} isn't available right now`;
 export const DESKTOP_SIGNED_OUT_CAPTION =
   "Just the recording, kept on this Mac.";
+export const LOCAL_NEEDS_MODEL = "Local needs the on-device model. Get it from the Local row, or pick another mode.";
 export const SPEAKERS_NEEDS_CONSENT = "Turn on private transcription first";
 
 export const TRANSCRIBER_FOR: Record<ModeId, TranscriberId> = {
@@ -167,6 +168,16 @@ export function useTranscriptionChoice({
     },
   );
 
+  // The knob never rests on a mode that cannot run, or stands in for one, without saying so.
+  const localModelMissing =
+    shell === "phone" &&
+    model !== null &&
+    scaleStops(shell, model).find((s) => s.id === "local")?.availability.available === false;
+  const restingNote =
+    api.transcriber.localModelNeeded || (mode === "local" && localModelMissing)
+      ? LOCAL_NEEDS_MODEL
+      : null;
+
   const failed = (what: string, caught: unknown) => {
     console.error(`[Recorder] Could not ${what}`, caught);
     notify(
@@ -280,6 +291,7 @@ export function useTranscriptionChoice({
         }
       : undefined,
     stops,
+    restingNote,
     select,
     step,
     identifySpeakers: api.transcriber.identifySpeakers,
