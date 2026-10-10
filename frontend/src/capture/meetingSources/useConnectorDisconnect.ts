@@ -28,6 +28,7 @@ import {
   type SecretsErr,
 } from "@/lib/connectors/connectorSecrets";
 import {
+  type DisconnectMode,
   disconnectRetry,
   disconnectStatusMessage,
   initialDisconnectProgress,
@@ -47,7 +48,9 @@ export interface ConnectorDisconnectController {
   retryLabel: string | null;
   /** A failure or revoke warning to show on the sheet. */
   error: string | null;
-  run: () => Promise<void>;
+  /** A run that stopped part-way pins its plan: resuming under the other one would skip steps by name. */
+  planLocked: boolean;
+  run: (mode: DisconnectMode) => Promise<void>;
   reset: () => void;
 }
 
@@ -59,9 +62,22 @@ export function useConnectorDisconnect(input: {
   sessionStore: SessionStore;
   /** From the Background-sync probe: the companion router is established to be unmounted. */
   featureDark: boolean;
+  /** A sync this window started is still running: its final write would resurrect the connection. */
+  blocked?: boolean;
   onDisconnected: () => void;
+  runner?: typeof runDisconnect;
 }): ConnectorDisconnectController {
-  const { tcw, descriptor, webhooks, backendUrl, sessionStore, featureDark, onDisconnected } = input;
+  const {
+    tcw,
+    descriptor,
+    webhooks,
+    backendUrl,
+    sessionStore,
+    featureDark,
+    blocked = false,
+    onDisconnected,
+    runner = runDisconnect,
+  } = input;
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<DisconnectProgress | null>(null);
   const [revoke, setRevoke] = useState<UpstreamRevokeState | null>(null);
@@ -76,7 +92,8 @@ export function useConnectorDisconnect(input: {
     progressRef.current = null;
   }, []);
 
-  const run = useCallback(async () => {
+  const run = useCallback(async (chosen: DisconnectMode) => {
+    if (blocked) return;
     setRunning(true);
     const resume = progressRef.current;
     if (oauth && resume === null) {
@@ -91,7 +108,7 @@ export function useConnectorDisconnect(input: {
     const deps: DisconnectDeps = {
       connectorId: descriptor.id,
       source: descriptor.source,
-      mode: resume?.mode ?? "keep-data",
+      mode: resume?.mode ?? chosen,
       webhooks: oauth ? NO_DELIVERY_LANE : webhooks,
       featureDark,
       secrets: {
@@ -112,7 +129,7 @@ export function useConnectorDisconnect(input: {
       (oauth
         ? { ...initialDisconnectProgress(deps.mode), completed: [...WEBHOOKLESS_STEPS] }
         : undefined);
-    const final = await runDisconnect(
+    const final = await runner(
       deps,
       (updater) => setProgress((prev) => updater(prev ?? initialDisconnectProgress(deps.mode))),
       from,
@@ -122,7 +139,7 @@ export function useConnectorDisconnect(input: {
     if (!final.done) return;
     removeBackgroundDrainConnectorRecord(descriptor.source);
     onDisconnected();
-  }, [backendUrl, descriptor, featureDark, oauth, onDisconnected, sessionStore, tcw, webhooks]);
+  }, [backendUrl, blocked, descriptor, featureDark, oauth, onDisconnected, runner, sessionStore, tcw, webhooks]);
 
   const retry = progress ? disconnectRetry(progress) : null;
   const failureMessage = progress?.failure
@@ -137,6 +154,7 @@ export function useConnectorDisconnect(input: {
     running,
     done: progress?.done === true,
     retryLabel: retry?.label ?? null,
+    planLocked: progress !== null,
     error: failureMessage ?? revokeWarning,
     run,
     reset,

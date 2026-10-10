@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
+import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { SoftActions } from "@/capture/home/SoftActions";
 import { StaticRecorderProvider } from "@/capture/recorder/RecorderProvider";
 import { AboutPage } from "./AboutPage";
@@ -255,6 +256,41 @@ describe("TranscriptionSettingsView", () => {
     const hostedMode = render();
     expect(hostedMode).toMatch(/role="radio" aria-checked="true"[^>]*>TinyCloud&#x27;s AssemblyAI account</);
     expect(hostedMode).not.toContain('id="assemblyai-api-key"');
+  });
+});
+
+describe("Settings → Transcription names the modes like the recorder and Upload", () => {
+  const radios = (html: string) => [...html.matchAll(/role="radio"[^>]*>([^<]*)</g)].map((m) => m[1]);
+  const view = (patch: Partial<TranscriptionSettingsViewProps> = {}) =>
+    renderToStaticMarkup(
+      <TranscriptionSettingsView
+        engine="private-cloud"
+        keyStatus="none"
+        keyMode="hosted"
+        onKeyModeChange={noop}
+        phase="idle"
+        keyInput=""
+        error={null}
+        onEngineChange={noop}
+        onKeyInputChange={noop}
+        onSaveKey={noop}
+        onRemoveKey={noop}
+        onCheckKey={noop}
+        {...patch}
+      />,
+    );
+
+  test("the default-engine radio says Private and Powerful, never AssemblyAI", () => {
+    const html = view();
+    const engine = html.slice(html.indexOf('aria-label="Default transcription engine"'), html.indexOf("</div>", html.indexOf('aria-label="Default transcription engine"')));
+    expect(radios(engine)).toEqual([TRANSCRIBER_NAME["private-cloud"], TRANSCRIBER_NAME.assemblyai]);
+    expect(radios(engine)).toEqual(["Private", "Powerful"]);
+    expect(engine).not.toContain("AssemblyAI");
+  });
+
+  test("Upload and Settings read the same table, and the old separate one is gone", () => {
+    expect(readFileSync(join(import.meta.dir, "TranscriptionSettings.tsx"), "utf8")).toContain("TRANSCRIBER_NAME[e]");
+    expect(readFileSync(join(import.meta.dir, "../lib/audioUpload.ts"), "utf8")).not.toContain("UPLOAD_ENGINE_LABELS");
   });
 });
 

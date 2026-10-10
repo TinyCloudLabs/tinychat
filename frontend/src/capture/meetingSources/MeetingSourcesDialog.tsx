@@ -25,10 +25,12 @@ import { createConnectorMeetingsClient } from "@/lib/connectors/meetingsApi";
 import { CONNECTORS } from "@/lib/connectors/registry";
 import type { ConnectorConnection, ConnectorDescriptor, ConnectorId } from "@/lib/connectors/types";
 import { createConnectorWebhooksClient } from "@/lib/connectors/webhooksApi";
+import type { DisconnectMode } from "@/lib/connectors/connectorLifecycle";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { DisconnectRow, FirefliesManage } from "./ManagePanel";
+import { DISCONNECT_WHILE_SYNCING, DisconnectRow, FirefliesManage } from "./ManagePanel";
 import {
   CalendarAutojoinRow,
+  DisconnectDataChoice,
   MeetingSourcesEntry,
   MeetingSourcesWindow,
   SourceRow,
@@ -37,14 +39,18 @@ import {
   meetingSourceActionBusy,
   meetingSourceStatus,
   meetingSourcesSummary,
-  syncedAgo,
-  type MeetingSourceState,
+  sourceRowDisplay,
 } from "./meetingSourceState";
 import { autojoinDetail, useCalendarAutojoin } from "./useCalendarAutojoin";
 import { useConnectorDisconnect } from "./useConnectorDisconnect";
-import { useSourceSync } from "./useSourceSync";
+import { syncProgressLabel, useSourceSync } from "./useSourceSync";
 
 export { meetingSourceActionBusy, meetingSourceStatus };
+
+const DISCONNECT_MESSAGE: Record<DisconnectMode, string> = {
+  "keep-data": "Meetings already in your space stay. New ones stop arriving.",
+  "delete-data": "Your synced meetings are deleted from your space too. New ones stop arriving.",
+};
 
 export const SOURCE_IDS: readonly ConnectorId[] = ["fireflies", "google-meet", "granola"];
 
@@ -63,6 +69,10 @@ export interface MeetingSourcesDialogProps {
   sessionStore: SessionStore;
   /** The Capture entry that opened this window; focus goes back there on close. */
   returnFocus?: () => HTMLElement | null;
+}
+
+function connectionOf(read: ConnectionRead | undefined): ConnectorConnection | null {
+  return read?.status === "ready" ? read.connection : null;
 }
 
 function copyToClipboard(value: string): void {
@@ -151,6 +161,10 @@ export function MeetingSourcesDialog({
 
   const autojoinInfo = autojoinDetail(autojoin.status, autojoin.error);
   const disconnectDescriptor = descriptors.find((d) => d.id === disconnecting) ?? null;
+  const requestDisconnect = (id: ConnectorId) => {
+    if (sourceSync.syncingId === id) return;
+    setDisconnecting(id);
+  };
 
   return (
     <>
@@ -166,18 +180,14 @@ export function MeetingSourcesDialog({
           const connected = connection?.status === "connected";
           const connecting = connectDialog?.descriptor.id === d.id && connectDialog.purpose === "browser";
           const syncing = sourceSync.syncingId === d.id;
-          const state: MeetingSourceState = syncing
-            ? "syncing"
-            : connecting
-              ? "connecting"
-              : connected
-                ? "connected"
-                : "disconnected";
-          const status =
-            d.status === "coming-soon"
-              ? null
-              : meetingSourceStatus(state, syncedAgo(connection?.lastSyncedAt), connection?.itemCount ?? 0);
-          const syncFailure = sourceSync.error?.id === d.id ? sourceSync.error.message : null;
+          const { state, status, error } = sourceRowDisplay({
+            comingSoon: d.status === "coming-soon",
+            connection,
+            syncing,
+            connecting,
+            syncError: sourceSync.error?.id === d.id ? sourceSync.error.message : null,
+            rowNote: rowNotes[d.id] ?? null,
+          });
           return (
             <SourceRow
               key={d.id}
@@ -191,14 +201,18 @@ export function MeetingSourcesDialog({
               connected={connected}
               busy={meetingSourceActionBusy(state)}
               syncing={syncing}
+              syncLabel={syncProgressLabel(sourceSync.progress)}
+              joined={syncing && sourceSync.joined}
               manageOpen={manageOpen[d.id] === true}
-              error={syncFailure ?? rowNotes[d.id] ?? null}
+              error={error}
               onConnect={() => setConnectDialog({ descriptor: d, purpose: "browser" })}
               onRetryLookup={() => {
                 setConnections((old) => ({ ...old, [d.id]: { status: "loading" } }));
                 void refresh(d.id);
               }}
               onSync={() => void sourceSync.sync(d)}
+              onFullRescan={d.id === "google-meet" ? () => void sourceSync.sync(d, "snapshot") : undefined}
+              onStop={sourceSync.stop}
               onToggleManage={() => setManageOpen((old) => ({ ...old, [d.id]: !old[d.id] }))}
               manage={
                 d.id === "fireflies" ? (
@@ -210,10 +224,11 @@ export function MeetingSourcesDialog({
                     meetings={meetings}
                     onIngested={() => void refresh(d.id)}
                     onFeatureDark={setFeatureDark}
-                    onDisconnect={() => setDisconnecting(d.id)}
+                    syncing={syncing}
+                    onDisconnect={() => requestDisconnect(d.id)}
                   />
                 ) : (
-                  <DisconnectRow name={d.name} onDisconnect={() => setDisconnecting(d.id)} />
+                  <DisconnectRow name={d.name} syncing={syncing} onDisconnect={() => requestDisconnect(d.id)} />
                 )
               }
               extra={
@@ -244,6 +259,8 @@ export function MeetingSourcesDialog({
           backendUrl={backendUrl}
           sessionStore={sessionStore}
           featureDark={featureDark}
+          itemCount={connectionOf(connections[disconnectDescriptor.id])?.itemCount ?? 0}
+          syncing={sourceSync.syncingId === disconnectDescriptor.id}
           open
           onFinished={(warning) => {
             const id = disconnectDescriptor.id;
@@ -297,6 +314,7 @@ function FirefliesManagePanel({
   meetings,
   onIngested,
   onFeatureDark,
+  syncing,
   onDisconnect,
 }: {
   tcw: TinyCloudWeb;
@@ -306,6 +324,7 @@ function FirefliesManagePanel({
   meetings: ReturnType<typeof createConnectorMeetingsClient>;
   onIngested: () => void;
   onFeatureDark: (dark: boolean) => void;
+  syncing: boolean;
   onDisconnect: () => void;
 }) {
   const sync = useBackgroundSync({ tcw, descriptor, webhooks, meetings, onIngested, onFeatureDark });
@@ -316,7 +335,7 @@ function FirefliesManagePanel({
   const rotateOpener = useRef<HTMLElement | null>(null);
 
   if (!supportsBackgroundNotifications(descriptor, connection)) {
-    return <DisconnectRow name={descriptor.name} onDisconnect={onDisconnect} />;
+    return <DisconnectRow name={descriptor.name} syncing={syncing} onDisconnect={onDisconnect} />;
   }
 
   return (
@@ -348,6 +367,7 @@ function FirefliesManagePanel({
         onRetry={sync.retry}
         onBringBack={() => emit(requestHistoricalResync)}
         onDisconnect={onDisconnect}
+        syncing={syncing}
       />
       <ConfirmDialog
         open={rotateOpen}
@@ -392,6 +412,8 @@ function DisconnectConfirm({
   backendUrl,
   sessionStore,
   featureDark,
+  itemCount,
+  syncing,
   open,
   onFinished,
   onKeep,
@@ -403,6 +425,10 @@ function DisconnectConfirm({
   backendUrl: string;
   sessionStore: SessionStore;
   featureDark: boolean;
+  /** Synced meetings held for this source; the delete choice is offered only when there are some. */
+  itemCount: number;
+  /** A sync this window started is still running: the teardown waits for it to settle. */
+  syncing: boolean;
   open: boolean;
   /** The teardown finished. A warning is an upstream revoke that did not go through. */
   onFinished: (warning: string | null) => void;
@@ -417,9 +443,12 @@ function DisconnectConfirm({
     backendUrl,
     sessionStore,
     featureDark,
+    blocked: syncing,
     onDisconnected: noop,
   });
+  const [alsoDelete, setAlsoDelete] = useState(false);
   const { done, error, reset } = disconnect;
+  const mode: DisconnectMode = alsoDelete ? "delete-data" : "keep-data";
   const finished = useRef(false);
   useEffect(() => {
     if (!done || finished.current) return;
@@ -431,19 +460,30 @@ function DisconnectConfirm({
     <ConfirmDialog
       open={open}
       title={`Disconnect ${descriptor.name}?`}
-      message="Meetings already in your space stay. New ones stop arriving."
+      message={DISCONNECT_MESSAGE[mode]}
       keepLabel="Keep connected"
-      dropLabel={disconnect.retryLabel ?? "Disconnect"}
+      dropLabel={disconnect.retryLabel ?? (alsoDelete ? "Disconnect and delete" : "Disconnect")}
       busy={disconnect.running}
-      error={disconnect.error}
+      dropDisabled={syncing}
+      error={syncing ? DISCONNECT_WHILE_SYNCING : disconnect.error}
       onKeep={() => {
         reset();
+        setAlsoDelete(false);
         onKeep();
       }}
-      onDrop={() => void disconnect.run()}
+      onDrop={() => void disconnect.run(mode)}
       returnFocus={returnFocus}
       testId="confirm-disconnect"
-    />
+    >
+      <DisconnectDataChoice
+        name={descriptor.name}
+        oauth={descriptor.id === "google-meet"}
+        itemCount={itemCount}
+        checked={alsoDelete}
+        disabled={disconnect.running || disconnect.planLocked}
+        onChange={setAlsoDelete}
+      />
+    </ConfirmDialog>
   );
 }
 

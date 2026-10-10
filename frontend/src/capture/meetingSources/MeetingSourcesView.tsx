@@ -133,11 +133,18 @@ export interface SourceRowProps {
   /** Connecting or syncing: the primary action is inert and says what is happening. */
   busy: boolean;
   syncing: boolean;
+  /** The button label while syncing, e.g. "Syncing 3/12…". */
+  syncLabel?: string;
+  /** The running sync only joined one another lane owns: Stop would abort nothing, and the row says so. */
+  joined?: boolean;
   manageOpen: boolean;
   error?: string | null;
   onConnect: () => void;
   onRetryLookup: () => void;
   onSync: () => void;
+  /** Present only where a fresh listing is offered (Google Meet). */
+  onFullRescan?: () => void;
+  onStop?: () => void;
   onToggleManage: () => void;
   /** Manage panel contents (only rendered when connected and open). */
   manage?: ReactNode;
@@ -172,6 +179,18 @@ export function SourceRow(props: SourceRowProps) {
         {props.lookup === "failed" && !props.comingSoon && (
           <InlineError>Couldn&apos;t check {props.name}</InlineError>
         )}
+        {props.syncing && props.joined && (
+          <p className="ms-desc" data-testid="ms-joined-note">
+            A sync that started when you opened Exo is still running — this one joined it rather than
+            starting a second pass over the same meetings. It finishes on its own; progress isn’t shown
+            for the run that owns it.
+          </p>
+        )}
+        {props.syncing && (
+          <span className="ms-sr" aria-live="polite" aria-atomic="true">
+            {props.joined ? `Syncing ${props.name} in the background.` : (props.syncLabel ?? "Syncing…")}
+          </span>
+        )}
         {props.error && <InlineError>{props.error}</InlineError>}
       </div>
       <div className="ms-actions">
@@ -183,16 +202,39 @@ export function SourceRow(props: SourceRowProps) {
           </button>
         ) : props.connected ? (
           <>
+            {props.onFullRescan && (
+              <button
+                type="button"
+                className="ms-btn2"
+                aria-disabled={props.busy}
+                onClick={() => {
+                  if (!props.busy) props.onFullRescan?.();
+                }}
+              >
+                Full rescan
+              </button>
+            )}
             <button
               type="button"
               className="ms-btn2"
               aria-disabled={props.busy}
+              aria-label={`Sync ${props.name} now`}
               onClick={() => {
                 if (!props.busy) props.onSync();
               }}
             >
-              {props.syncing ? "Syncing…" : "Sync now"}
+              {props.syncing ? (props.syncLabel ?? "Syncing…") : "Sync now"}
             </button>
+            {props.syncing && !props.joined && props.onStop && (
+              <button
+                type="button"
+                className="ms-btn2"
+                aria-label={`Stop syncing ${props.name}`}
+                onClick={props.onStop}
+              >
+                Stop
+              </button>
+            )}
             <button
               type="button"
               className="ms-btn2"
@@ -332,5 +374,40 @@ export function CalendarAutojoinRow({
         <Switch checked={on} label="Calendar autojoin" disabled={disabled} onToggle={onToggle} />
       </div>
     </div>
+  );
+}
+
+/** "Also delete the synced meetings": offered only when there are some, and locked once a teardown has begun. */
+export function DisconnectDataChoice({
+  name,
+  oauth,
+  itemCount,
+  checked,
+  disabled,
+  onChange,
+}: {
+  name: string;
+  oauth: boolean;
+  itemCount: number;
+  checked: boolean;
+  disabled: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  if (itemCount <= 0) return null;
+  return (
+    <label className="ms-confirm-choice">
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      <span>
+        Also delete the {itemCount} synced {itemCount === 1 ? "meeting" : "meetings"} from my space.{" "}
+        {oauth
+          ? "They are removed along with their transcripts."
+          : `The deletion is recorded with the server first, so a late ${name} notification can’t bring them back.`}
+      </span>
+    </label>
   );
 }

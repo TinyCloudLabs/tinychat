@@ -4,6 +4,8 @@ import {
   meetingSourceActionBusy,
   meetingSourceStatus,
   meetingSourcesSummary,
+  persistedSyncProblem,
+  sourceRowDisplay,
   syncedAgo,
 } from "./meetingSourceState";
 
@@ -60,5 +62,54 @@ describe("meeting source row state", () => {
     expect(meetingSourcesSummary([{ name: "Fireflies", connected: false, count: 0 }])).toBe(
       "Nothing connected yet",
     );
+  });
+});
+
+describe("a saved sync failure is shown when the window is reopened", () => {
+  const connection = (patch: Partial<Parameters<typeof sourceRowDisplay>[0]["connection"] & object>) => ({
+    status: "connected",
+    lastSyncedAt: "2026-10-09T11:00:00Z",
+    lastSyncStatus: "ok" as string | null,
+    lastSyncError: null as string | null,
+    itemCount: 4,
+    ...patch,
+  });
+  const display = (conn: ReturnType<typeof connection> | null, rest: { syncError?: string | null; rowNote?: string | null } = {}) =>
+    sourceRowDisplay({
+      comingSoon: false,
+      connection: conn,
+      syncing: false,
+      connecting: false,
+      syncError: rest.syncError ?? null,
+      rowNote: rest.rowNote ?? null,
+    });
+
+  test("a clean connection is plain Connected with no error", () => {
+    const row = display(connection({}));
+    expect(row.status?.text).toStartWith("Connected · synced");
+    expect(row.error).toBeNull();
+  });
+
+  test("a saved failure reads Last sync failed and shows the saved message", () => {
+    const row = display(connection({ lastSyncStatus: "error", lastSyncError: "Reconnect Google Meet to keep syncing." }));
+    expect(row.status?.text).toStartWith("Last sync failed · synced");
+    expect(row.error).toBe("Reconnect Google Meet to keep syncing.");
+  });
+
+  test("a saved partial sync reads Last sync incomplete", () => {
+    const row = display(connection({ lastSyncStatus: "partial", lastSyncError: "2 meetings could not be fetched." }));
+    expect(row.status?.text).toStartWith("Last sync incomplete · synced");
+    expect(row.error).toBe("2 meetings could not be fetched.");
+  });
+
+  test("this window's current failure wins over the saved one, then a row note", () => {
+    const failed = connection({ lastSyncStatus: "error", lastSyncError: "saved" });
+    expect(display(failed, { syncError: "now", rowNote: "note" }).error).toBe("now");
+    expect(display(failed, { rowNote: "note" }).error).toBe("note");
+  });
+
+  test("a disconnected source shows no saved failure", () => {
+    expect(persistedSyncProblem(connection({ status: "disconnected", lastSyncStatus: "error", lastSyncError: "x" }))).toBeNull();
+    expect(display(connection({ status: "disconnected", lastSyncStatus: "error", lastSyncError: "x" })).error).toBeNull();
   });
 });
