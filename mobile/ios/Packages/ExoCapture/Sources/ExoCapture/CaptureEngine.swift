@@ -1217,8 +1217,9 @@ public final class CaptureEngine {
         // The synthetic source is the only input, so the menu checks the one actually in use.
         let mode = try simulatorInputMode()
         if mode != .host {
-            return ["inputs": [["id": SimulatorSilentInput.inputID, "name": SimulatorSilentInput.inputName, "kind": "other"]],
-                    "selectedId": NSNull(), "activeId": SimulatorSilentInput.inputID]
+            let identity = SimulatorSilentInput.identity(for: mode)
+            return ["inputs": [["id": identity.id, "name": identity.name, "kind": "other"]],
+                    "selectedId": NSNull(), "activeId": identity.id]
         }
         #endif
         return try inputRouter.list()
@@ -1228,7 +1229,7 @@ public final class CaptureEngine {
         #if DEBUG && targetEnvironment(simulator)
         let mode = try simulatorInputMode()
         if mode != .host {
-            guard id == nil || id == SimulatorSilentInput.inputID else { throw CaptureError.invalidArgument }
+            guard id == nil || id == SimulatorSilentInput.identity(for: mode).id else { throw CaptureError.invalidArgument }
             return
         }
         #endif
