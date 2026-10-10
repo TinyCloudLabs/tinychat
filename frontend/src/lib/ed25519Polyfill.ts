@@ -27,13 +27,45 @@ function asBytes(data: BufferSource): Uint8Array {
     : new Uint8Array(data);
 }
 
-async function nativeEd25519Works(subtle: SubtleCrypto): Promise<boolean> {
+/** True only when the engine says the algorithm itself does not exist; any other failure is thrown. */
+async function nativeEd25519Unsupported(subtle: SubtleCrypto): Promise<boolean> {
   try {
     await subtle.generateKey({ name: "Ed25519" }, false, ["sign", "verify"]);
-    return true;
-  } catch {
     return false;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "NotSupportedError") return true;
+    throw error;
   }
+}
+
+function dataError(message: string): DOMException {
+  return new DOMException(message, "DataError");
+}
+
+/** The JWK checks WebCrypto makes when importing an Ed25519 private key to sign, in the spec's order. */
+function importEd25519Seed(jwk: JsonWebKey, extractable: boolean, usages: readonly string[]): Uint8Array {
+  if (usages.length === 0 || usages.some((usage) => usage !== "sign")) {
+    throw new DOMException("An Ed25519 private key can only have the sign usage", "SyntaxError");
+  }
+  if (jwk.kty !== "OKP") throw dataError("The JWK kty must be OKP");
+  if (jwk.crv !== "Ed25519") throw dataError("The JWK crv must be Ed25519");
+  if (jwk.use !== undefined && jwk.use !== "sig") throw dataError("The JWK use must be sig");
+  if (jwk.key_ops !== undefined) {
+    if (!Array.isArray(jwk.key_ops) || new Set(jwk.key_ops).size !== jwk.key_ops.length) throw dataError("The JWK key_ops is invalid");
+    if (!usages.every((usage) => jwk.key_ops!.includes(usage))) throw dataError("The JWK key_ops does not allow signing");
+  }
+  if (jwk.ext === false && extractable) throw dataError("The JWK is not extractable");
+  if (jwk.alg !== undefined && jwk.alg !== "Ed25519" && jwk.alg !== "EdDSA") throw dataError("The JWK alg must be Ed25519 or EdDSA");
+  if (typeof jwk.x !== "string") throw dataError("The JWK has no public key");
+  if (extractable) throw new DOMException("Extractable Ed25519 keys are not supported in this WebView", "NotSupportedError");
+  let seed: Uint8Array;
+  try {
+    seed = decodeBase64Url(jwk.d!);
+  } catch {
+    throw dataError("The JWK private key is not base64url");
+  }
+  if (seed.length !== 32) throw dataError("The Ed25519 private key must be 32 bytes");
+  return seed;
 }
 
 function replace(subtle: SubtleCrypto, name: "importKey" | "sign", value: unknown): void {
@@ -44,7 +76,7 @@ export async function installEd25519Polyfill(
   subtle: SubtleCrypto | null = globalThis.crypto?.subtle ?? null,
 ): Promise<Ed25519Support> {
   if (!subtle) return "no-subtle";
-  if (await nativeEd25519Works(subtle)) return "native";
+  if (!await nativeEd25519Unsupported(subtle)) return "native";
 
   const importKey = subtle.importKey.bind(subtle) as (...args: unknown[]) => Promise<CryptoKey>;
   const sign = subtle.sign.bind(subtle) as (...args: unknown[]) => Promise<ArrayBuffer>;
@@ -52,10 +84,7 @@ export async function installEd25519Polyfill(
   replace(subtle, "importKey", async (format: string, keyData: JsonWebKey, algorithm: unknown, extractable: boolean, usages: string[]) => {
     const privateJwk = format === "jwk" && isEd25519(algorithm) && typeof keyData?.d === "string";
     if (!privateJwk) return importKey(format, keyData, algorithm, extractable, usages);
-    if (keyData.kty !== "OKP" || keyData.crv !== "Ed25519") throw new DOMException("Not an Ed25519 JWK", "DataError");
-    if (usages.length !== 1 || usages[0] !== "sign") throw new DOMException("Ed25519 keys here can only sign", "SyntaxError");
-    const seed = decodeBase64Url(keyData.d!);
-    if (seed.length !== 32) throw new DOMException("Ed25519 private key must be 32 bytes", "DataError");
+    const seed = importEd25519Seed(keyData, extractable, usages);
     const key = { type: "private", extractable: false, algorithm: { name: "Ed25519" }, usages: ["sign"] } as CryptoKey;
     seeds.set(key, seed);
     return key;

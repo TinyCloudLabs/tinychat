@@ -22,7 +22,7 @@ import type {
   OpenKeyNative,
 } from "@openkey/sdk-capacitor";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { UserFacingError } from "./authErrors";
+import { authErrorMessage, UserFacingError } from "./authErrors";
 import { nativeRenewAt, renewalLeadMs, terminalRenewalError, nativeCode } from "./openkeyNativeRenewal";
 
 // ── Gate ──────────────────────────────────────────────────────────────
@@ -188,6 +188,16 @@ export function logNativeOpenKeyError(operation: string, error: unknown): void {
   const code = nativeErrorCode(error);
   if (code) console.warn(`[OpenKey native] ${operation}: ${code}`);
   else console.warn(`[OpenKey native] ${operation}: ${error instanceof Error ? error.message : "unknown error"}`);
+}
+
+/**
+ * The message for a failed sign-in or restore. The failure is logged through the
+ * redacting logger above (a code or message string, never the error object or its
+ * cause chain); a UserFacingError was already logged where it was thrown.
+ */
+export function describeAuthFailure(error: unknown): string {
+  if (!(error instanceof UserFacingError)) logNativeOpenKeyError("sign-in", error);
+  return authErrorMessage(error);
 }
 
 /** Map an OpenKey native failure to a user-facing message. */

@@ -1,14 +1,10 @@
-import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   authErrorMessage, BROWSER_UPDATE_MESSAGE, errorLinkFor, isSignInCancelled, SIGN_IN_FAILED_MESSAGE,
   UserFacingError, WEBVIEW_UPDATE_LINK, WEBVIEW_UPDATE_MESSAGE,
 } from "./authErrors";
-
-let logged: ReturnType<typeof spyOn>;
-beforeEach(() => { logged = spyOn(console, "error").mockImplementation(() => undefined); });
-afterEach(() => logged.mockRestore());
 
 test("the raw Node-crypto error from an old Android WebView becomes an update message and a link", () => {
   const raw = new TypeError("n.createPrivateKey is not a function");
@@ -17,7 +13,6 @@ test("the raw Node-crypto error from an old Android WebView becomes an update me
   expect(message).not.toContain("createPrivateKey");
   expect(errorLinkFor(message)).toEqual(WEBVIEW_UPDATE_LINK);
   expect(WEBVIEW_UPDATE_LINK.href).toStartWith("https://play.google.com/store/apps/details?id=com.google.android.webview");
-  expect(logged).toHaveBeenCalledWith("[auth] sign-in failed", raw);
 });
 
 test("a WebCrypto Ed25519 failure is recognised through its cause chain", () => {
@@ -58,7 +53,7 @@ const app = readFileSync(join(import.meta.dir, "..", "App.tsx"), "utf8");
 test("sign-in returns quietly to signed-out on cancel and shows no raw message otherwise", () => {
   const signIn = app.slice(app.indexOf("const signIn = useCallback"), app.indexOf("const signOut = useCallback"));
   expect(signIn).toMatch(/if \(isSignInCancelled\(caught\)\) \{\s+setError\(null\);\s+setState\("unauthenticated"\);\s+return;\s+\}/);
-  expect(signIn).toContain("setError(authErrorMessage(caught))");
+  expect(signIn).toContain("setError(describeAuthFailure(caught))");
   expect(app).not.toMatch(/setError\(errorMessage\(caught\)\)/);
 });
 

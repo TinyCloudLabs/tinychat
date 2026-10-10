@@ -40,8 +40,11 @@ setupPwa({
 
 registerWebCaptureEngine();
 
-// Android WebView before 137 has no WebCrypto Ed25519, which sign-in needs.
-void installEd25519Polyfill().then(() => {
+// Android WebView before 137 has no WebCrypto Ed25519, which sign-in needs. If the probe itself
+// fails, WebCrypto is left exactly as the engine provides it and the app still starts.
+void installEd25519Polyfill().catch((error: unknown) => {
+  console.error(`[webcrypto] Ed25519 probe failed; WebCrypto left unchanged: ${error instanceof Error ? error.name : "unknown error"}`);
+}).then(() => {
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
       <BrowserRouter>

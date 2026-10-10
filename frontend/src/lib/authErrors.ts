@@ -41,9 +41,8 @@ function messageOf(error: unknown): string {
 
 const CRYPTO_UNSUPPORTED = /createPrivateKey|Ed25519|Unrecognized name|WebCrypto subtle/i;
 
-/** A message that is safe to show for a failed sign-in or restore. The raw error goes to the log. */
+/** A message that is safe to show for a failed sign-in or restore. Logging the raw error is the caller's job (describeAuthFailure). */
 export function authErrorMessage(error: unknown, platform: AppPlatform = appPlatform()): string {
-  console.error("[auth] sign-in failed", error);
   if (error instanceof UserFacingError) return error.message;
   if (errorChain(error).some((link) => CRYPTO_UNSUPPORTED.test(messageOf(link)))) {
     return platform === "android" ? WEBVIEW_UPDATE_MESSAGE : BROWSER_UPDATE_MESSAGE;

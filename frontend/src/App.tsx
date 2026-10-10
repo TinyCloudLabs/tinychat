@@ -125,11 +125,11 @@ import type {
   SelectionView,
 } from "./chat/modelSelection";
 import { clearAgentSessionCache } from "./lib/agentDelegation";
-import { authErrorMessage, isSignInCancelled } from "./lib/authErrors";
+import { isSignInCancelled } from "./lib/authErrors";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import { clearSessionAfterHandoff, registerSessionSignedOutHook } from "./lib/sessionSignedOut";
 import {
-  isNativeOpenKeySession, isNativeOpenKeySignIn, isNativeStorageError, logNativeOpenKeyError,
+  describeAuthFailure, isNativeOpenKeySession, isNativeOpenKeySignIn, isNativeStorageError, logNativeOpenKeyError,
   nativeSessionWasActive, restoreNativeAtBoot, nativeRenewalServices, secretsAvailable,
   setNativeSessionActive, signInNative, signOutNative,
   type NativeSignInConfig,
@@ -531,7 +531,7 @@ export function App() {
           return;
       }
     } catch (caught) {
-      setError(authErrorMessage(caught));
+      setError(describeAuthFailure(caught));
       setState("recoverableError");
     } finally {
       restoreInFlightRef.current = false;
@@ -840,7 +840,7 @@ export function App() {
         setState("unauthenticated");
         return;
       }
-      setError(authErrorMessage(caught));
+      setError(describeAuthFailure(caught));
       setState("recoverableError");
     }
   }, []);
@@ -906,9 +906,8 @@ export function App() {
             "Remote OpenKey sign-out is unavailable in this app right now. Exo is signed out locally. " +
             "Sign out at openkey.so before choosing another account.";
         } else if (openKeyOutcome.status === "unverified") {
-          const detail = openKeyOutcome.reason ? ` (${openKeyOutcome.reason})` : "";
           openKeyWarning =
-            `OpenKey sign-out could not be verified${detail}. Exo is signed out locally. ` +
+            "OpenKey sign-out could not be verified. Exo is signed out locally. " +
             "Sign out at openkey.so before choosing another account.";
         }
       }
