@@ -4,6 +4,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Capacitor } from "@capacitor/core";
 import "./index.css";
 import { App } from "./App";
+import { installEd25519Polyfill } from "./lib/ed25519Polyfill";
 import { CaptureEngineGate } from "./capture/recorder/CaptureEngineGate";
 import { PwaPrompts } from "./components/pwa-prompts";
 import { RootRoute } from "./landing/RootRoute";
@@ -39,15 +40,21 @@ setupPwa({
 
 registerWebCaptureEngine();
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<RootRoute nativeShell={nativeShell} />} />
-        <Route path="/chat/*" element={<CaptureEngineGate><App /></CaptureEngineGate>} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </BrowserRouter>
-    <PwaPrompts />
-  </StrictMode>,
-);
+// Android WebView before 137 has no WebCrypto Ed25519, which sign-in needs. If the probe itself
+// fails, WebCrypto is left exactly as the engine provides it and the app still starts.
+void installEd25519Polyfill().catch((error: unknown) => {
+  console.error(`[webcrypto] Ed25519 probe failed; WebCrypto left unchanged: ${error instanceof Error ? error.name : "unknown error"}`);
+}).then(() => {
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<RootRoute nativeShell={nativeShell} />} />
+          <Route path="/chat/*" element={<CaptureEngineGate><App /></CaptureEngineGate>} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </BrowserRouter>
+      <PwaPrompts />
+    </StrictMode>,
+  );
+});

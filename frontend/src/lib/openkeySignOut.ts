@@ -1,4 +1,5 @@
 import type { SignOutAcknowledgement } from "@openkey/sdk";
+import { logNativeOpenKeyError } from "./openkeyNative";
 
 export interface OpenKeySignOutClient {
   signOut(): Promise<SignOutAcknowledgement>;
@@ -8,7 +9,7 @@ export type OpenKeySignOutOutcome =
   | { status: "revoked" }
   | { status: "cancelled" }
   | { status: "remote-unavailable" }
-  | { status: "unverified"; reason: string | null };
+  | { status: "unverified" };
 
 /**
  * Prefer the OpenKey client that authenticated this page. A restored TinyChat
@@ -23,7 +24,7 @@ export async function signOutOpenKeySession(
     const acknowledgement = await (current ?? createFallback()).signOut();
     return acknowledgement.revoked
       ? { status: "revoked" }
-      : { status: "unverified", reason: null };
+      : { status: "unverified" };
   } catch (error) {
     if (openKeyErrorCode(error) === "POPUP_BLOCKED" && openKeyErrorReason(error) === "embedded-webview") {
       return { status: "remote-unavailable" };
@@ -31,7 +32,8 @@ export async function signOutOpenKeySession(
     if (openKeyErrorCode(error) === "USER_CANCELLED") {
       return { status: "cancelled" };
     }
-    return { status: "unverified", reason: openKeyErrorMessage(error) };
+    logNativeOpenKeyError("OpenKey sign-out", error);
+    return { status: "unverified" };
   }
 }
 
@@ -44,11 +46,4 @@ function openKeyErrorCode(error: unknown): string | null {
   if (typeof error !== "object" || error === null || !("code" in error))
     return null;
   return typeof error.code === "string" ? error.code : null;
-}
-
-function openKeyErrorMessage(error: unknown): string | null {
-  if (error instanceof Error) return error.message;
-  if (typeof error !== "object" || error === null || !("message" in error))
-    return null;
-  return typeof error.message === "string" ? error.message : null;
 }
