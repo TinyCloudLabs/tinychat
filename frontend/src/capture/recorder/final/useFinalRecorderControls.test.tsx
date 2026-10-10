@@ -90,7 +90,9 @@ function readPhone(html: string): Outputs {
     ring: text(/data-testid="phone-recorder"[^>]*data-ring="([^"]*)"/),
     pillDot: text(/class="pr-dot" data-dot="([^"]*)"/),
     pillLabel: text(/class="pr-dot"[^>]*><\/span><span>([^<]*)<\/span>/),
-    timer: text(/role="timer"[^>]*><span>([^<]*)<\/span>/),
+    timer: text(
+      /role="timer"[^>]*><span class="pr-digits">((?:<span[^>]*>[^<]*<\/span>)*)<\/span>/,
+    )?.replace(/<[^>]*>/g, "") ?? null,
     status: text(/data-testid="phone-recorder-status">([^<]*)</),
     modeName: text(/class="pr-mname soft-title">([^<]*)</),
     selected: text(/aria-valuetext="([^"]*)"/),

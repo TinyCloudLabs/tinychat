@@ -12,6 +12,7 @@ import { hapticLight } from "@/lib/haptics";
 import { ModesCard } from "../ModesCard";
 import { PrivacyScale } from "../PrivacyScale";
 import { recorderSizing, type RecorderLayout } from "../shellCapabilities";
+import { TimerDigits } from "../TimerDigits";
 import {
   CheckIcon,
   ChevronDownIcon,
@@ -238,7 +239,7 @@ export function DesktopRecorder({
             role="timer"
             data-dim={view.ring === "paused"}
           >
-            <span>{view.timer.text}</span>
+            <TimerDigits text={view.timer.text} />
           </div>
           {view.timer.countdown && (
             <div className="pr-countdown">{view.timer.countdown.text}</div>

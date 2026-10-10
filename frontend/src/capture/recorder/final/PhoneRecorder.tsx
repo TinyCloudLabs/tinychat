@@ -32,6 +32,7 @@ import { useMomentFlow } from "./useMomentFlow";
 import { useNoteSaver } from "./useNoteSaver";
 import { PrivacyScale } from "./PrivacyScale";
 import { RecorderRing } from "./RecorderRing";
+import { TimerDigits } from "./TimerDigits";
 import { selectRecorderView } from "./recorderView";
 import { shellForPlatform } from "./shellCapabilities";
 import { honestRecorderError } from "./honestRecorderError";
@@ -362,7 +363,7 @@ export function PhoneRecorder({
             role="timer"
             data-dim={view.ring === "paused"}
           >
-            <span>{view.timer.text}</span>
+            <TimerDigits text={view.timer.text} />
             <button
               ref={markButton}
               type="button"

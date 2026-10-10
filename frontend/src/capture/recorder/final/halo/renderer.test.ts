@@ -3,6 +3,7 @@ import {
   easePause,
   haloFrameInterval,
   HaloRafLoop,
+  hslTripletToRgb,
   pauseBreathOpacity,
   createIsolatedHaloRendererForTests,
   selectRenderSurface,
@@ -98,6 +99,25 @@ describe("halo renderer selection", () => {
     );
     expect(TICKS_SHADER).toContain("uPause * (1.0 - uReduce)");
   });
+
+  test("reads the resting tick colour from the theme, not shader literals", () => {
+    expect(TICKS_SHADER).toContain("vec3 neutral = uNeutral;");
+    expect(TICKS_SHADER).not.toContain("0.70");
+    expect(TICKS_SHADER).not.toContain("0.38)");
+  });
+
+  test("converts the muted-foreground triplets to neutral zinc channels", () => {
+    const [lr, lg, lb] = hslTripletToRgb("240 3.8% 46.1%");
+    expect(lb).toBeGreaterThan(lr);
+    expect(lb - lr).toBeLessThan(0.04);
+    expect(lr).toBeCloseTo(0.443, 2);
+    const [dr, dg, db] = hslTripletToRgb("240 5% 64.9%");
+    expect(db - dr).toBeLessThan(0.04);
+    expect(dr).toBeCloseTo(0.63, 2);
+    expect(dg).toBeCloseTo(dr, 5);
+    expect(lg).toBeCloseTo(lr, 5);
+    expect(() => hslTripletToRgb("#a1a1aa")).toThrow(/triplet/);
+  });
 });
 
 // A permissive stand-in for a WebGL or 2D context: every member is a no-op
@@ -131,8 +151,13 @@ describe("halo renderer bitmap hold", () => {
     const discCanvases: object[] = [];
     const uploadedDiscs: unknown[] = [];
     const discFills: string[] = [];
+    const neutrals: number[][] = [];
     const gl = permissive({
       isContextLost: () => false,
+      getUniformLocation: (_program: unknown, name: string) => name,
+      uniform3fv: (location: string, value: ArrayLike<number>) => {
+        if (location === "uNeutral") neutrals.push([...value]);
+      },
       texImage2D: (...args: unknown[]) => {
         const source = args.at(-1);
         if (source && discCanvases.includes(source as object)) {
@@ -152,6 +177,9 @@ describe("halo renderer bitmap hold", () => {
                 : "hsl(240 3.7% 15.9%)";
             }
             if (name === "--foreground") return "0 0% 98%";
+            if (name === "--muted-foreground") {
+              return theme === "day" ? "240 3.8% 46.1%" : "240 5% 64.9%";
+            }
             return "";
           },
         }),
@@ -251,6 +279,7 @@ describe("halo renderer bitmap hold", () => {
       intersect([{ isIntersecting: true }]);
 
       run(1000);
+      expect(neutrals.at(-1)![0]).toBeCloseTo(0.63, 2);
       expect(bitmaps).toHaveLength(1);
       expect(bitmaps[0].closed).toBe(false);
       expect(renderer.drawCount(canvas)).toBe(1);
@@ -266,6 +295,7 @@ describe("halo renderer bitmap hold", () => {
       expect(uploadedDiscs.length).toBeGreaterThan(1);
       expect(uploadedDiscs.at(-1)).not.toBe(nightDisc);
       expect(discFills).toContain("hsl(0 0% 100%)");
+      expect(neutrals.at(-1)![0]).toBeCloseTo(0.443, 2);
 
       theme = "night";
       config.theme = theme;

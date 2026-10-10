@@ -64,7 +64,9 @@ describe("DesktopRecorder", () => {
 
   test("recording shows the timer, the pause ring and the three controls", () => {
     const html = render();
-    expect(html).toContain("12:48");
+    expect(html).toContain(
+      '<span class="pr-digit">1</span><span class="pr-digit">2</span><span class="pr-colon">:</span><span class="pr-digit">4</span><span class="pr-digit">8</span>',
+    );
     expect(html).toContain('aria-label="Pause recording"');
     expect(html).toContain('aria-label="Discard recording"');
     expect(html).toContain("Done");
