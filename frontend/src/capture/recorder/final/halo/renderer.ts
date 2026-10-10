@@ -99,6 +99,8 @@ interface HaloEntry {
   avatarTexture: WebGLTexture | null;
   dataTexture: WebGLTexture | null;
   uploadedTheme: HaloConfig["theme"] | null;
+  discCanvas: HTMLCanvasElement | null;
+  discTheme: HaloConfig["theme"] | null;
   source: HaloSource;
   frozenSource: HaloSource;
   data: Uint8Array;
@@ -239,7 +241,7 @@ void main() {
 
   float breathe = 0.62 + 0.38 * (0.5 + 0.5 * sin(uClock * 2.4));
   vec3 rest = mix(uAccA, uAccB, 0.5);
-  vec3 drained = mix(vec3(dot(rest, vec3(0.33))), rest, 0.1)
+  vec3 drained = vec3(dot(rest, vec3(0.33)))
     * (uLight > 0.5 ? 0.9 : 0.8);
   color = mix(color, drained, uPause);
   if (uStill > 0.5) {
@@ -318,7 +320,7 @@ export function selectRenderSurface(
   return { canvas, gl, path };
 }
 
-function makeDisc(background: string, surface: string): HTMLCanvasElement {
+function makeDisc(fill: string, highlight: string): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = 256;
   const context = canvas.getContext("2d");
@@ -326,11 +328,11 @@ function makeDisc(background: string, surface: string): HTMLCanvasElement {
     throw new Error("Could not create the halo disc texture");
   }
 
-  context.fillStyle = background;
+  context.fillStyle = fill;
   context.fillRect(0, 0, 256, 256);
   const gradient = context.createRadialGradient(96, 74, 8, 128, 128, 190);
-  gradient.addColorStop(0, surface);
-  gradient.addColorStop(0.55, surface);
+  gradient.addColorStop(0, highlight);
+  gradient.addColorStop(0.55, highlight);
   gradient.addColorStop(1, "transparent");
   context.fillStyle = gradient;
   context.fillRect(0, 0, 256, 256);
@@ -424,6 +426,8 @@ class SharedHaloRenderer {
       avatarTexture: null,
       dataTexture: null,
       uploadedTheme: null,
+      discCanvas: null,
+      discTheme: null,
       source: config.sourceRef.current,
       frozenSource: sourceSnapshot(config.sourceRef.current),
       data: new Uint8Array(DATA_SIZE * 4),
@@ -604,7 +608,7 @@ class SharedHaloRenderer {
       gl.RGBA,
       gl.RGBA,
       gl.UNSIGNED_BYTE,
-      this.getDisc(entry.canvas),
+      this.getDisc(entry),
     );
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     entry.uploadedTheme = entry.config.theme;
@@ -627,23 +631,31 @@ class SharedHaloRenderer {
     }
   }
 
-  private getDisc(canvas: HTMLCanvasElement): HTMLCanvasElement {
-    const root =
-      canvas.closest?.(".soft-skin") ?? canvas.ownerDocument?.documentElement;
-    const styles =
-      root && canvas.ownerDocument?.defaultView?.getComputedStyle(root);
-    const backgroundToken = styles?.getPropertyValue("--background").trim();
-    const surfaceToken = styles?.getPropertyValue("--secondary").trim();
-    const background = backgroundToken ? `hsl(${backgroundToken})` : "#ffffff";
-    const surface = surfaceToken
-      ? `hsl(${surfaceToken} / 0.12)`
-      : "rgb(0 0 0 / 0.04)";
-    const key = `${background}|${surface}`;
+  private getDisc(entry: HaloEntry): HTMLCanvasElement {
+    const { canvas, config } = entry;
+    if (entry.discCanvas && entry.discTheme === config.theme) {
+      return entry.discCanvas;
+    }
+    const view = canvas.ownerDocument.defaultView;
+    if (!view) throw new Error("Halo disc cannot read the document theme");
+    const styles = view.getComputedStyle(canvas);
+    const fillToken = styles.getPropertyValue("--solid").trim();
+    const foregroundToken = styles.getPropertyValue("--foreground").trim();
+    if (!fillToken || !foregroundToken) {
+      throw new Error(
+        `Halo disc theme tokens are missing for ${config.theme} mode (fill: ${fillToken || "missing"}, foreground: ${foregroundToken || "missing"})`,
+      );
+    }
+    const fill = fillToken;
+    const highlight = `hsl(${foregroundToken} / 0.06)`;
+    const key = `${config.theme}|${fill}|${highlight}`;
     let disc = this.discCanvases.get(key);
     if (!disc) {
-      disc = makeDisc(background, surface);
+      disc = makeDisc(fill, highlight);
       this.discCanvases.set(key, disc);
     }
+    entry.discCanvas = disc;
+    entry.discTheme = config.theme;
     return disc;
   }
 
@@ -906,8 +918,11 @@ class SharedHaloRenderer {
       context.beginPath();
       context.arc(center, center, discSize / 2, 0, Math.PI * 2);
       context.clip();
+      if (!entry.discCanvas || entry.discTheme !== config.theme) {
+        this.getDisc(entry);
+      }
       context.drawImage(
-        this.getDisc(entry.canvas),
+        entry.discCanvas!,
         0,
         0,
         256,
@@ -939,9 +954,9 @@ class SharedHaloRenderer {
       const restB = (accentA[2] + accentB[2]) / 2;
       const gray = (restR + restG + restB) * 0.33;
       const drainAmount = light ? 0.9 : 0.8;
-      const drainedR = (gray + (restR - gray) * 0.1) * drainAmount;
-      const drainedG = (gray + (restG - gray) * 0.1) * drainAmount;
-      const drainedB = (gray + (restB - gray) * 0.1) * drainAmount;
+      const drainedR = gray * drainAmount;
+      const drainedG = gray * drainAmount;
+      const drainedB = gray * drainAmount;
       const breathAlpha = pauseBreathOpacity(
         (now - this.startTime) / 1000,
         entry.pauseValue,

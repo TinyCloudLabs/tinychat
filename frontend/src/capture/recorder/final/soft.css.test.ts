@@ -164,9 +164,10 @@ describe("Soft skin theme and layout tokens", () => {
       expect(tokens["--bgc"]).toBe("hsl(var(--background))");
       expect(tokens["--side"]).toBe("hsl(var(--chrome))");
       expect(tokens["--line"]).toBe("hsl(var(--border))");
-      expect(tokens["--gedge"]).toBe("hsl(var(--border))");
       expect(tokens["--red"]).toMatch(/^#(?:ff6b62|e5483f)$/);
     }
+    expect(night["--gedge"]).toBe("hsl(var(--foreground) / 0.1)");
+    expect(day["--gedge"]).toBe("hsl(var(--border))");
     expect(night["--glass"]).toBe("hsl(var(--foreground) / 0.05)");
     expect(night["--solid"]).toBe("hsl(var(--secondary))");
     expect(day["--glass"]).toBe("hsl(var(--card) / 0.7)");

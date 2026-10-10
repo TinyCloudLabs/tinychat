@@ -64,7 +64,7 @@
   --ink: hsl(var(--foreground));
   --dim: hsl(var(--muted-foreground));
   --glass: hsl(var(--foreground) / 0.05);
-  --gedge: hsl(var(--border));
+  --gedge: hsl(var(--foreground) / 0.1);
   --solid: hsl(var(--secondary));
   --bgc: hsl(var(--background));
   --side: hsl(var(--chrome));

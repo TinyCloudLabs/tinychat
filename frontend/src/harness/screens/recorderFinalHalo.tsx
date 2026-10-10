@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import {
   HaloRing,
   haloDrawCount,
@@ -16,6 +16,15 @@ const SCRIPT_SOURCES = [
   sourceFromLevel(LEVEL_SCRIPT[2], 0.42, 0.91),
 ];
 const ACTIVE = SCRIPT_SOURCES[SCRIPT_SOURCES.length - 1];
+const LIGHT_TOKENS = {
+  "--background": "0 0% 100%",
+  "--foreground": "240 10% 3.9%",
+  "--card": "0 0% 100%",
+  "--secondary": "240 4.8% 95.9%",
+  "--solid": "hsl(var(--card))",
+  "--muted-foreground": "240 3.8% 46.1%",
+  "--dim": "hsl(var(--muted-foreground))",
+} as CSSProperties;
 
 function subscribeScript(listener: (source: typeof ACTIVE) => void) {
   for (const source of SCRIPT_SOURCES) listener(source);
@@ -82,7 +91,16 @@ function HaloStall() {
 function IdleRing({ theme }: { theme: "night" | "day" }) {
   const [surface, setSurface] = useState(theme);
   return (
-    <div style={{ textAlign: "center", padding: "44px 40px 58px" }}>
+    <div
+      className={surface === "night" ? "dark" : undefined}
+      style={{
+        ...(surface === "day"
+          ? LIGHT_TOKENS
+          : ({ "--solid": "hsl(var(--secondary))" } as CSSProperties)),
+        textAlign: "center",
+        padding: "44px 40px 58px",
+      }}
+    >
       <button
         type="button"
         data-halo-theme-toggle=""
@@ -114,9 +132,13 @@ function ThemePreview({ theme }: { theme: "night" | "day" }) {
   const night = theme === "night";
   return (
     <section
+      className={night ? "dark" : undefined}
       style={{
-        background: night ? "#17111f" : "#fbf5ee",
-        color: night ? "#f6effa" : "#3a2f36",
+        ...(night
+          ? ({ "--solid": "hsl(var(--secondary))" } as CSSProperties)
+          : LIGHT_TOKENS),
+        background: "hsl(var(--background))",
+        color: "hsl(var(--foreground))",
         borderRadius: 16,
         padding: 20,
       }}
@@ -221,7 +243,8 @@ export const recorderFinalHaloScreen: HarnessScreen = {
           gap: 20,
           padding: 20,
           overflowX: "clip",
-          background: "#100d14",
+          background: "hsl(var(--background))",
+          color: "hsl(var(--foreground))",
           fontFamily: "system-ui, sans-serif",
         }}
       >
@@ -229,7 +252,7 @@ export const recorderFinalHaloScreen: HarnessScreen = {
           style={{
             gridColumn: "1 / -1",
             margin: 0,
-            color: "#b9b2be",
+            color: "hsl(var(--muted-foreground))",
             fontSize: 13,
           }}
         >
