@@ -45,6 +45,22 @@ class RecordingLibraryTest {
         }
     }
 
+    @Test fun markSttCancelledCancelsAnUntranscribedNote() {
+        val lib = library(); val note = id()
+        begin(lib, note); commit(lib, note)
+        assertTrue(lib.markSttCancelled(note))
+        assertEquals("cancelled", lib.read(note)!!.getJSONObject("stt").getString("state"))
+    }
+
+    @Test fun markSttCancelledLeavesAFinishedNoteDone() {
+        val lib = library(); val note = id()
+        begin(lib, note); commit(lib, note)
+        lib.mutate(note, "stt.write") { it.getJSONObject("stt").put("state", "done") }
+        lib.putTranscript(note, JSONObject().put("text", "finished"))
+        assertFalse(lib.markSttCancelled(note))
+        assertEquals("done", lib.read(note)!!.getJSONObject("stt").getString("state"))
+    }
+
     @Test fun failedStopThenRecoveryReturnsSavedNoteAndDiscardCannotDeleteIt() {
         val ops = FileOps(); val lib = RecordingLibrary(temp.newFolder(), ops); val note = id()
         begin(lib, note)
