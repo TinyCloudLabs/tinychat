@@ -405,7 +405,7 @@ export function PhoneRecorder({
         >
           {view.statusLine}
         </div>
-        {(momentField !== null || hasNote(noteMd)) && (
+        {phase !== "starting" && (momentField !== null || hasNote(noteMd)) && (
           <div className="pr-notes">
             {momentField ? (
               <MomentField

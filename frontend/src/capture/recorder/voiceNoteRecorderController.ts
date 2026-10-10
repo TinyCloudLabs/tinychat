@@ -218,7 +218,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   };
 
   const notify = () => { for (const listener of [...listeners]) listener(); };
-  const currentNoteId = () => state.recordingId ?? state.lastSaved?.id ?? null;
+  const currentNoteId = () => state.phase === "starting" ? null : state.recordingId ?? state.lastSaved?.id ?? null;
   const noteAccountCurrent = () => noteAccount && noteAccount.generation === currentAccountGeneration() &&
     tcw?.did === noteAccount.did && tcw?.spaceId === noteAccount.spaceId;
   const getNoteSyncError = () => {

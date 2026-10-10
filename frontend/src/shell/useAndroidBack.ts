@@ -26,7 +26,9 @@ export function topOverlay(doc: Document = document): HTMLElement | null {
  * while it is busy (ConnectorDialog) refuses Back too.
  */
 export function dismissOverlay(overlay: HTMLElement): void {
-  overlay.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true }));
+  const focused = document.activeElement;
+  const target = focused instanceof HTMLElement && overlay.contains(focused) ? focused : overlay;
+  target.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true }));
 }
 
 /** Back for the current screen, as one stable callback. `onMinimize` runs at home. */

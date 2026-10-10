@@ -13,11 +13,6 @@ export interface MomentFieldProps {
   onClosed: (result: "saved" | "cancelled", refocus: boolean) => void;
 }
 
-/** Gboard can finish a composing Enter as beforeinput without a usable keydown. */
-export function savesMomentOnBeforeInput(inputType: string): boolean {
-  return inputType === "insertParagraph" || inputType === "insertLineBreak";
-}
-
 /** The one-line field under the timer: Enter or ↵ saves, Escape cancels, blur saves. */
 export function MomentField({ field, flow, onClosed }: MomentFieldProps) {
   const { time } = field;
@@ -46,15 +41,10 @@ export function MomentField({ field, flow, onClosed }: MomentFieldProps) {
             : NOTES_COPY.momentLabel(time)
         }
         onChange={(event) => flow.type(event.target.value)}
-        onBeforeInput={(event) => {
-          const inputType = (event.nativeEvent as InputEvent).inputType;
-          if (savesMomentOnBeforeInput(inputType)) {
-            event.preventDefault();
-            save(true);
-          }
-        }}
         onKeyDown={(event) => {
-          if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+          // Gboard sends keyCode 13 while composition is active to commit the
+          // one-line field. IME confirmation itself is 229 and must not save.
+          if (event.key === "Enter" && (!event.nativeEvent.isComposing || event.nativeEvent.keyCode === 13)) {
             event.preventDefault();
             save(true);
           } else if (event.key === "Escape") {

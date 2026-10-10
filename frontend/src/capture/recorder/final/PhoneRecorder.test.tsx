@@ -54,6 +54,19 @@ const render = (
   );
 
 describe("PhoneRecorder", () => {
+  test("Starting hides the previous recording's View notes pill", () => {
+    const html = render({
+      phase: "starting",
+      recordingId: null,
+      startedAt: null,
+      lastSaved: { id: "previous-recording", durationMs: 42_000, at: 10 },
+      note: { md: "# Previous note\n- **0:12** old moment", moments: [{ atMs: 12_000, label: "old moment" }] },
+      noteStatus: "ready",
+    });
+    expect(html).toContain("Starting…");
+    expect(html).not.toContain("View notes");
+  });
+
   test("recording shows the timer, the pause ring, the scale and the controls", () => {
     const html = render();
     expect(html).toContain("12:48");

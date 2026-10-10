@@ -17,7 +17,7 @@
 // list pane (home above the Library) sits beside the detail pane. A resize
 // never re-parents anything: the cohort archive keeps its place.
 import { useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
@@ -43,6 +43,7 @@ import { useSoftTheme } from "./home/softTheme";
 import { inProgressShown, type InProgressRowsViewProps } from "./InProgressRows";
 import { LibraryScreen } from "./library/LibraryScreen";
 import { NoteDetail } from "./library/NoteDetail";
+import { RecentNotePendingSheet } from "./library/RecentNotePendingSheet";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { useLibrary } from "./library/useLibrary";
 import { MeetingSheet } from "./meeting/MeetingSheet";
@@ -86,6 +87,7 @@ export function CaptureSurface(props: CaptureSurfaceProps) {
 
 function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, meetingsSlot, soft, desktopHome }: CaptureSurfaceProps & { soft: boolean; desktopHome: boolean }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const nav = useNavKind();
   const softTheme = useSoftTheme();
   const platform = useContext(PlatformContext);
@@ -122,6 +124,10 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
   const [sheet, setSheet] = useState<Sheet | null>(null);
   const [recentNoteId, setRecentNoteId] = useState<string | null>(null);
   useEffect(() => {
+    const fromHistory = (location.state as { recentNoteSheet?: unknown } | null)?.recentNoteSheet;
+    setRecentNoteId(typeof fromHistory === "string" ? fromHistory : null);
+  }, [location.key, location.state]);
+  useEffect(() => {
     if (!active || screen.id !== "capture") setRecentNoteId(null);
   }, [active, screen.id]);
   // A sheet belongs to the home: leaving it (another destination, the
@@ -130,6 +136,14 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
     if (!homeShown) setSheet(null);
   }, [homeShown]);
   const sheetChange = (which: Sheet) => (open: boolean) => setSheet(open ? which : null);
+  const openRecentNote = (id: string) => {
+    setRecentNoteId(id);
+    navigate(location.pathname, { state: { recentNoteSheet: id } });
+  };
+  const closeRecentNote = () => {
+    if ((location.state as { recentNoteSheet?: unknown } | null)?.recentNoteSheet === recentNoteId) navigate(-1);
+    else setRecentNoteId(null);
+  };
   // The phone app's recorder: notes still on this phone and a stop at the limit are In progress rows.
   const recorder = useRecorder();
   // Static screen fixtures predate account-scoped pending snapshots; the live store always sets this field.
@@ -225,7 +239,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
               recent={{ status: library.status, items: library.items }}
               scanFailure={recorder.recoveryScanFailure}
               onRetryRecent={library.retry}
-              onOpenRecentNote={setRecentNoteId}
+              onOpenRecentNote={openRecentNote}
               now={now}
             />
           </div>
@@ -258,17 +272,17 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
         </div>
       </div>
       <div
-        className={homeOnly || noteSheet ? "hidden" : notePage ? "h-full overflow-hidden" : wide || noteScreen ? SCROLLER : "hidden"}
+        className={homeOnly || noteSheet || (soft && recentNoteId !== null) ? "hidden" : notePage ? "h-full overflow-hidden" : wide || noteScreen ? SCROLLER : "hidden"}
         data-scroll-root=""
         data-testid="capture-detail"
       >
-        {noteScreen || recentNoteId !== null ? (
+        {noteScreen || (recentNoteId !== null && openNote !== null) ? (
           <NoteDetail
             key={screen.noteId ?? recentNoteId}
             library={library}
             pushed={!wide}
             onBack={() => {
-              if (recentNoteId !== null) setRecentNoteId(null);
+              if (recentNoteId !== null) closeRecentNote();
               else goUp(navigate, notePage ? PATHS.capture : PATHS.library);
             }}
             transcription={recorder.transcription}
@@ -284,6 +298,9 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
       </div>
       <UploadSheet open={sheet === "upload"} onOpenChange={sheetChange("upload")} tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />
       <MeetingSheet open={sheet === "meeting"} onOpenChange={sheetChange("meeting")} bot={bot} />
+      {soft && recentNoteId !== null && !openNote && (
+        <RecentNotePendingSheet listing={library.listing} failed={library.status === "failed"} onRetry={library.retry} onClose={closeRecentNote} />
+      )}
     </div>
   );
 }

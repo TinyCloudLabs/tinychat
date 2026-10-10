@@ -26,9 +26,14 @@ function useRecorderLayout(): RecorderLayout {
   return recorderLayout(width);
 }
 
-/** The outer phone recorder treats Escape/Android Back as minimize, never discard. */
-export function minimizePhoneRecorder(event: { preventDefault: () => void }, minimise: () => void | Promise<void>): void {
+/** Inner dialogs own their Escape. Only Escape aimed at the recorder itself minimizes it. */
+export function minimizePhoneRecorder(event: { preventDefault: () => void; target?: EventTarget | null }, minimise: () => void | Promise<void>): void {
   event.preventDefault();
+  const target = event.target as (Element & { ownerDocument: Document }) | null | undefined;
+  if (!target || typeof target.closest !== "function") return;
+  const surface = target.closest('[data-overlay-open="true"]');
+  const recorder = target.ownerDocument.querySelector('[data-testid="recording-overlay"]');
+  if (surface !== recorder || target.closest(".pr-moment, input, textarea, [contenteditable='true']")) return;
   void minimise();
 }
 

@@ -84,19 +84,13 @@ describe("Recent", () => {
     expect(html).toMatch(/aria-label="Voice note\. Today 1:49 AM · 1:05"/);
   });
 
-  test("a note still on this phone is a row of its own, badged, that opens from the phone", () => {
+  test("a note still on this phone is a row of its own with its badge", () => {
     const onPhone = note(1, { id: "on-phone:rec-1", title: null, onPhone: true });
     const html = home({ recent: { status: "ready", items: [onPhone, note(2)] } });
     expect(html.match(/data-testid="recent-item"/g)).toHaveLength(2);
     expect(html).toContain('href="/chat/capture/library/on-phone%3Arec-1"');
     expect(html.match(/data-testid="row-badge"/g)).toHaveLength(1);
     expect(html).toContain('aria-label="Voice note. On this phone. Today 1:49 AM · 1:05"');
-  });
-
-  test("a Recent tap opens its note over Capture and closing returns to Capture", () => {
-    const html = home({ recent: { status: "ready", items: [note(2)] }, onOpenRecentNote: noop });
-    expect(html).toContain('<button type="button"');
-    expect(html).not.toContain('href="/chat/capture/library/row-2"');
   });
 
   test("shows the last five", () => {

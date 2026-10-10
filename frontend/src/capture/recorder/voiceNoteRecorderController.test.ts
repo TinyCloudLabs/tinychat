@@ -166,6 +166,30 @@ async function attached() {
 }
 
 describe("voice-note recorder controller", () => {
+  test("Starting detaches the previous note until the new recording starts", async () => {
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    await tick();
+    await recorder.setNoteText("Previous recording notes");
+    await recorder.stop();
+    await tick();
+    expect(recorder.getState().lastSaved?.id).not.toBeNull();
+    expect(recorder.getNote()?.md).toBe("Previous recording notes");
+    recorder.dismissOutcome();
+
+    const nativeStart = fake.plugin.start;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    fake.plugin.start = async (options) => { await gate; return nativeStart(options); };
+    const starting = recorder.record();
+    expect(recorder.getState().phase).toBe("starting");
+    expect(recorder.getState().lastSaved?.id).not.toBeNull();
+    expect(recorder.getNote()).toBeNull();
+    release();
+    await starting;
+    detach();
+  });
+
   test("maps linear native RMS once for every level subscriber; silence stays below the activity gate", async () => {
     const { recorder, detach } = await attached();
     const received: number[] = [];
