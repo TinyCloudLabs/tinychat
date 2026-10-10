@@ -48,6 +48,7 @@ import {
 } from "../privateCloud";
 import { captureEngineKind } from "./captureEngine";
 import { nativeHttpFileUploadSupported, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
+import { cloudHoldFor } from "./transcriberPreference";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import {
   base64ToBytes,
@@ -951,7 +952,9 @@ export async function transcribeVoiceNote(args: {
 export type NoteTranscriptionState =
   | { kind: "active"; status: VoiceNoteTranscriptionStatus }
   | { kind: "done"; outcome: "transcribed" | "no_speech" }
-  | ({ kind: "failed" } & VoiceNoteTranscriptionFailure);
+  | ({ kind: "failed" } & VoiceNoteTranscriptionFailure)
+  /** Not sent: the note's mode reaches further than the user's stored choice. Only Transcribe sends it. */
+  | { kind: "held"; message: string };
 
 export type TranscriptionAvailability = "checking" | "available" | "hidden" | "failed";
 
@@ -977,7 +980,7 @@ export interface VoiceNoteTranscriber {
   /** Transcribe / Retry for one note. Only while available and consented. */
   transcribe(sourceId: string, audio?: VoiceNoteAudio): void;
   /** Use the committed native options; v1 notes without options keep their consent-gated behaviour. */
-  noteSaved(recording: Pick<VoiceNoteRecording, "id" | "durationMs" | "options">, audio?: VoiceNoteAudio): void;
+  noteSaved(recording: Pick<VoiceNoteRecording, "id" | "durationMs" | "options" | "source">, audio?: VoiceNoteAudio): void;
 }
 
 export interface VoiceNoteTranscriberDeps {
@@ -1142,6 +1145,13 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     noteSaved(recording, audio) {
       if (recording.options && recording.options.transcriber !== "private-cloud") return;
       if (!on()) return;
+      const hold = recording.options ? cloudHoldFor(recording.options.transcriber, recording.source) : null;
+      if (hold !== null) {
+        console.warn("[VoiceNotes] Held a note back from private-cloud transcription", { id: recording.id, source: recording.source, reason: hold });
+        jobs.set(recording.id, { kind: "held", message: hold });
+        emit();
+        return;
+      }
       if (recording.durationMs / 1000 > maxTranscriptionSeconds(state.capabilities)) return; // the card says why
       enqueue(recording.id, audio);
     },

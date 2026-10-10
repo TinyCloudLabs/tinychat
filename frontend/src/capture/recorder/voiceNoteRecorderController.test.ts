@@ -2125,6 +2125,142 @@ describe("voice-note recorder controller", () => {
       }
     });
 
+    describe("a start the app did not make takes the engine's default, so the stored choice decides what may leave the phone", () => {
+      const TRANSCRIBER_KEY = "exo.voiceNotes.transcriber";
+      const SOURCES = ["quick_action", "intent", "widget"] as const satisfies readonly CaptureSource[];
+
+      const jobsOf = () => {
+        const jobs: string[] = [];
+        const real = createVoiceNoteTranscriber({
+          cloud: {
+            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"] }),
+            pendingSourceIds: () => [],
+            transcribe: async () => { throw new Error("runNote is injected"); },
+            finish: async () => {},
+            releaseUnsent: async () => {},
+          },
+          consent: { get: () => true, set: () => {} },
+          tcw: () => tcw,
+          runNote: async ({ sourceId }) => { jobs.push(sourceId); return "transcribed"; },
+        });
+        return { real, jobs };
+      };
+
+      /** A shortcut, intent or widget starts native capture itself, with no options override. */
+      const startNatively = async (source: CaptureSource) => {
+        await fake.startFromSource(source);
+        currentId = `note-${++serial}`;
+        return currentId;
+      };
+
+      /** Sol's r4 cell: Local is stored and shown, the engine applied Private, lost the ack and cannot be put back. */
+      const engineAheadOfStoredLocal = async () => {
+        values.set(TRANSCRIBER_KEY, "on-device");
+        values.set("exo.voiceNotes.identifySpeakers", "0");
+        await seedNative();
+        const first = jobsOf();
+        await first.real.check();
+        const recorder = controller({ transcriber: first.real, onDeviceReady: true });
+        const detach = recorder.attach();
+        await tick();
+        let calls = 0;
+        __setVoiceNotesForTests({ ...plugin, async setCaptureDefaults(defaults) {
+          if (calls++ === 0) { await plugin.setCaptureDefaults(defaults); throw new Error("ack lost"); }
+          throw new Error("engine is down");
+        } } as VoiceNotesPlugin, { available: true });
+        await expect(recorder.setTranscriber("private-cloud", { scope: "default" })).rejects.toThrow();
+        await tick();
+        expect(values.get(TRANSCRIBER_KEY)).toBe("on-device");
+        expect(await nativeDefault()).toBe("private-cloud");
+        await recorder.record();
+        expect(recorder.getState().error).toContain("recording is held");
+        detach();
+      };
+
+      for (const source of SOURCES) {
+        test(`${source} while the default is held: the note keeps its mode but is not sent, says so, and Transcribe sends it; a relaunch changes nothing`, async () => {
+          await engineAheadOfStoredLocal();
+          const id = await startNatively(source);
+          expect(await nativeDefault()).toBe("private-cloud");
+
+          // A relaunch: a new controller and transcriber over the same storage and engine state.
+          const second = jobsOf();
+          await second.real.check();
+          const recorder = controller({ transcriber: second.real, onDeviceReady: true });
+          const detach = recorder.attach();
+          await tick();
+          expect(recorder.getState().recordingId).toBe(id);
+          await recorder.stop();
+          await tick();
+
+          expect(onPhone.at(-1)!.options?.transcriber).toBe("private-cloud");
+          expect(onPhone.at(-1)!.source).toBe(source);
+          expect(second.jobs).toEqual([]);
+          const held = second.real.snapshot().jobs.get(id);
+          expect(held).toMatchObject({ kind: "held" });
+          expect((held as { message: string }).message).toContain("Local");
+
+          second.real.transcribe(id);
+          await tick();
+          expect(second.jobs).toEqual([id]);
+          detach();
+        });
+      }
+
+      test("a note that began outside the app is sent when the stored choice allows it, and when the choice is untouched", async () => {
+        for (const stored of ["private-cloud", null] as const) {
+          if (stored) values.set(TRANSCRIBER_KEY, stored); else values.delete(TRANSCRIBER_KEY);
+          await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false });
+          const { real, jobs } = jobsOf();
+          await real.check();
+          const recorder = controller({ transcriber: real, onDeviceReady: false });
+          const detach = recorder.attach();
+          await tick();
+          const id = await startNatively("quick_action");
+          const reopened = controller({ transcriber: real, onDeviceReady: false });
+          const detachReopened = reopened.attach();
+          await tick();
+          await reopened.stop();
+          await tick();
+          expect(onPhone.at(-1)!.options?.transcriber).toBe("private-cloud");
+          expect(jobs).toEqual([id]);
+          expect(real.snapshot().jobs.get(id)?.kind).not.toBe("held");
+          detachReopened();
+          detach();
+        }
+      });
+
+      test("with no recorder open yet, an untouched default still lets a shortcut's Private note go, and an explicit Local does not", async () => {
+        const { real, jobs } = jobsOf();
+        await real.check();
+        const note = (id: string) => ({ id, durationMs: 5_000, source: "quick_action" as const, options: { transcriber: "private-cloud" as const, identifySpeakers: false } });
+        values.delete(TRANSCRIBER_KEY);
+        real.noteSaved(note("untouched"));
+        values.set(TRANSCRIBER_KEY, "on-device");
+        real.noteSaved(note("explicit"));
+        await tick();
+        expect(jobs).toEqual(["untouched"]);
+        expect(real.snapshot().jobs.get("explicit")).toMatchObject({ kind: "held" });
+      });
+
+      test("a note recorded in the app is not held by the stored choice: switching to Private during a recording is the user's own", async () => {
+        values.set(TRANSCRIBER_KEY, "on-device");
+        await seedNative();
+        const { real, jobs } = jobsOf();
+        await real.check();
+        const recorder = controller({ transcriber: real, onDeviceReady: true });
+        const detach = recorder.attach();
+        await tick();
+        await recorder.record();
+        expect(await recorder.setTranscriber("private-cloud", { scope: "recording" })).toBe("ok");
+        await recorder.stop();
+        await tick();
+        expect(onPhone[0]!.options?.transcriber).toBe("private-cloud");
+        expect(jobs).toEqual([onPhone[0]!.id]);
+        detach();
+      });
+    });
+
     describe("a failed engine write is shown and changes nothing", () => {
       test("the engine refuses: the choice throws, nothing is stored, and screen and engine keep the old default", async () => {
         await seedNative();

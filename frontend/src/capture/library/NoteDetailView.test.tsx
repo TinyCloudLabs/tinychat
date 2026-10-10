@@ -178,6 +178,18 @@ describe("a voice note's transcription", () => {
     expect(unavailable).not.toContain('data-testid="voice-note-transcribe-retry"');
   });
 
+  test("a note held back says why and offers Transcribe with Private only while it can be sent", () => {
+    const held = (extra: Partial<Parameters<typeof transcription>[0]> = {}) =>
+      transcription({ jobs: new Map([["rec-1", { kind: "held", message: "This note started from outside the app on Private, but your transcription mode is Local, so it was not sent." }]]), ...extra });
+    const html = render({ transcription: held() });
+    expect(html).toContain("your transcription mode is Local, so it was not sent.");
+    expect(html).toContain('data-testid="voice-note-transcribe-held"');
+    expect(html).toContain("Transcribe with Private");
+    const unconsented = render({ transcription: held({ consented: false }) });
+    expect(unconsented).toContain("so it was not sent.");
+    expect(unconsented).not.toContain('data-testid="voice-note-transcribe-held"');
+  });
+
   test("what the reads can't tell is never offered Transcribe", () => {
     // The metadata read failed: transcribed, or no speech, is unknown.
     const unknown = render({ metadata: { status: "failed" }, transcription: transcription() });

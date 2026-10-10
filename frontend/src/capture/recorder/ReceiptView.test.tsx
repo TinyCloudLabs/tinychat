@@ -48,6 +48,14 @@ describe("ReceiptView", () => {
     expect(() => render({ phase: "idle", outcome: null, startedAt: null })).toThrow("ReceiptView mounted without an outcome");
   });
 
+  test("a note held back from transcription is not announced as transcribing", () => {
+    const route = (jobs: NonNullable<RecorderValue["transcription"]>["jobs"]) => render({ phase: "idle", outcome: "saved", startedAt: null,
+      lastSaved: { id: "rec-1", durationMs: 42_000, at: Date.now() },
+      transcription: { availability: "available", consented: true, maxSeconds: 600, jobs, onTranscribe: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop } });
+    expect(route(new Map())).toContain("Transcribing in private cloud…");
+    expect(route(new Map([["rec-1", { kind: "held", message: "not sent" }]]))).not.toContain("Transcribing in private cloud…");
+  });
+
   describe("the receipt's error line is the honest one", () => {
     const escaped = (text: string) => text.replace("'", "&#x27;");
     const receipt = (patch: Partial<RecorderValue>) => render({ phase: "idle", outcome: "local", startedAt: null,

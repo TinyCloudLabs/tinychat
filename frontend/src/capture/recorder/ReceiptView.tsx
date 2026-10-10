@@ -50,7 +50,8 @@ export interface ReceiptViewProps {
 export function ReceiptView({ recorder, onOpenNote }: ReceiptViewProps) {
   const { phase, outcome, lastSaved } = recorder;
   const transcribing = outcome === "saved" && recorder.transcription?.availability === "available" &&
-    recorder.transcription.consented && !!lastSaved && lastSaved.durationMs <= recorder.transcription.maxSeconds * 1000;
+    recorder.transcription.consented && !!lastSaved && lastSaved.durationMs <= recorder.transcription.maxSeconds * 1000 &&
+    recorder.transcription.jobs.get(lastSaved.id)?.kind !== "held";
   // Looked up for every outcome with a note (not just "saved"): a signed-out or offline on-device
   // recording lands as "local" and must still show its real route and transcript.
   const savedNote = useSavedNote(lastSaved?.id);

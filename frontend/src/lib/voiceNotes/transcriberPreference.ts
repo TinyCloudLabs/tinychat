@@ -1,7 +1,7 @@
 // JS owns the user's default. Native owns a live session's journaled options.
 import { captureCapabilities, captureEngineAvailable, captureEngineKind, onDeviceTranscriptionAvailable } from "./captureEngine";
 import { withCaptureDeadline } from "./accountHandoff";
-import { VoiceNotes, type CaptureOptions, type TranscriberId } from "./nativeVoiceNotes";
+import { VoiceNotes, type CaptureOptions, type CaptureSource, type TranscriberId } from "./nativeVoiceNotes";
 
 const TRANSCRIBER_KEY = "exo.voiceNotes.transcriber";
 const SPEAKERS_KEY = "exo.voiceNotes.identifySpeakers";
@@ -111,6 +111,23 @@ async function writeEffectiveDefaults(pref: CaptureOptions, explicit: boolean, a
 
 const CLOUD_REACH: Record<TranscriberId, number> = { off: 0, "on-device": 1, "private-cloud": 2, assemblyai: 3 };
 const leastCloud = (a: TranscriberId, b: TranscriberId): TranscriberId => (CLOUD_REACH[a] <= CLOUD_REACH[b] ? a : b);
+
+/**
+ * Why a note that began outside the app (a shortcut, intent or widget start takes the engine's default without asking
+ * this module) must wait for the user before its audio is offered to transcription, or null when it may go ahead.
+ * The committed mode may reach no further than the user's stored choice; the untouched default is the app's own
+ * choice and may stand in with Private, as the recorder's knob shows it. An in-app note was started by the controller
+ * after the defaults were settled, and a mid-recording choice there is the user's own.
+ */
+export function cloudHoldFor(committed: TranscriberId, source: CaptureSource | undefined): string | null {
+  if (source === "in_app" || CLOUD_REACH[committed] <= CLOUD_REACH["on-device"]) return null;
+  const pref = readTranscriberPreference().transcriber;
+  const explicit = transcriberChoiceIsExplicit();
+  if (!explicit && pref === "on-device" && committed === "private-cloud") return null;
+  const allowed = effectiveTranscriber(pref, true, explicit);
+  if (CLOUD_REACH[committed] <= CLOUD_REACH[allowed]) return null;
+  return `This note started from outside the app on ${committed === "private-cloud" ? "Private" : "Powerful"}, but your transcription mode is ${allowed === "off" ? "Audio only" : allowed === "on-device" ? "Local" : "Private"}, so it was not sent.`;
+}
 
 // Set when a failed save could not put the engine's default back. Recording waits for `settleDefaults` until it has.
 let unreconciled: unknown = null;
