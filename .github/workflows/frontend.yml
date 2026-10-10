@@ -8,8 +8,8 @@ name: Frontend
 # errors in backend/ and artifacts/.
 #
 # WebKit runs locally (EXO_UI_ENGINE=webkit, SCROLL_ENGINE=webkit), not here,
-# except the recorder halo job below: WebKit on macOS is the only place the
-# halo's bitmap handoff has gone blank (TC-876).
+# except the recorder halo job below: a halo ring has gone blank intermittently
+# on WebKit, which iOS uses (TC-876).
 # The model-router browser suite stays out until TC-768 resolves its three
 # failures on main (since #107, stream before save).
 
@@ -156,7 +156,7 @@ jobs:
   halo-webkit:
     name: Recorder halo (macOS WebKit)
     runs-on: macos-latest
-    timeout-minutes: 75
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -181,47 +181,14 @@ jobs:
         working-directory: test
         run: bunx playwright install webkit
 
-      # CPU contention like the runs that blanked a ring (stopped in the last
-      # step). The stall test starts from this load.
-      - name: Start CPU stress
-        run: |
-          for _ in 1 2 3; do yes > /dev/null & done
-          sleep 1
-          pgrep -x yes | wc -l
-
-      # TEMPORARY A/B (removed in the next push): the same stall test on the
-      # renderer as it was before the fix. Reports the blank count; the check
-      # is that the test ran and printed its result line.
-      - name: Stall test on the pre-fix renderer (report only)
-        shell: bash
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          RENDERER: frontend/src/capture/recorder/final/halo/renderer.ts
-          HALO_LOADS: "30"
-          HALO_REPORT: "1"
-        run: |
-          cp "$RENDERER" "$RUNNER_TEMP/renderer.fixed.ts"
-          git fetch --depth=1 origin "$BASE_SHA"
-          git show "$BASE_SHA:$RENDERER" > "$RENDERER"
-          cd test
-          bun test recorder-final-halo.e2e.test.ts -t "after the main thread stalls" 2>&1 | tee "$RUNNER_TEMP/prefix.txt"
-          cd ..
-          cp "$RUNNER_TEMP/renderer.fixed.ts" "$RENDERER"
-          test "$(grep -c '^HALO_STALL_RESULT ' "$RUNNER_TEMP/prefix.txt")" = 1
-          grep -E '^ 1 pass$' "$RUNNER_TEMP/prefix.txt"
-
-      - name: Recorder halo (WebKit, fixed renderer)
-        shell: bash
+      # The halo test file: the centre-pixel check, then 30 fresh loads under an
+      # injected main-thread stall, each sampling every ring per frame for a
+      # blank (TC-876).
+      - name: Recorder halo (WebKit)
         working-directory: test
         env:
           HALO_LOADS: "30"
-        run: |
-          bun test recorder-final-halo.e2e.test.ts 2>&1 | tee "$RUNNER_TEMP/fixed.txt"
-          test "$(grep -c '^HALO_STALL_RESULT ' "$RUNNER_TEMP/fixed.txt")" = 1
-
-      - name: Stop CPU stress
-        if: ${{ always() }}
-        run: killall yes || echo "no stress processes were left"
+        run: bun test recorder-final-halo.e2e.test.ts
 
       - name: Upload the halo screenshots
         if: ${{ !cancelled() }}

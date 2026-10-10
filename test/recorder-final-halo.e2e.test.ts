@@ -101,7 +101,6 @@ test("recorder-final halo renders its centre pixel in WebKit", async () => {
 
 const loads = Number(process.env.HALO_LOADS ?? 2);
 const stallMs = Number(process.env.HALO_STALL ?? 800);
-const reportOnly = process.env.HALO_REPORT === "1";
 
 interface BlankEpisode {
   ring: number;
@@ -220,7 +219,7 @@ test(
     console.log(
       `HALO_STALL_RESULT blankLoads=${blankLoads}/${loads} episodes=${blank.length} stall=${stallMs}ms`,
     );
-    if (!reportOnly) expect(blank).toEqual([]);
+    expect(blank).toEqual([]);
   },
   Math.max(1, loads) * 120_000,
 );
