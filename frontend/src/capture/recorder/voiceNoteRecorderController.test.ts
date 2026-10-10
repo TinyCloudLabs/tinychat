@@ -19,7 +19,7 @@ import { advanceAccountGeneration } from "@/lib/voiceNotes/accountContext";
 import { consentToRecordingPrivateCloud, setRecordingRoute } from "./TranscriptionRouteControl";
 import { loadNote } from "@/lib/voiceNotes/recordingNotes";
 import { reportRecordingNoteSyncError } from "@/lib/voiceNotes/voiceNoteStore";
-import { runOnSpaceLane, setSpaceLaneAbortGraceForTests } from "@/lib/spaceWriteLane";
+import { runOnSpaceLane, setSpaceLaneAbortGraceForTests, setSpaceLaneQueueWaitForTests } from "@/lib/spaceWriteLane";
 import { setVoiceNoteSaveDeadlineForTests } from "@/lib/voiceNotes/saveDeadline";
 
 const realStore = { ...(await import("@/lib/voiceNotes/voiceNoteStore")) };
@@ -1070,6 +1070,7 @@ describe("voice-note recorder controller", () => {
     const note = earlier();
     setVoiceNoteSaveDeadlineForTests(100);
     setSpaceLaneAbortGraceForTests(500);
+    setSpaceLaneQueueWaitForTests(20);
     let sqlSignal: AbortSignal | undefined;
     const stuckSqlDb = { execute: (_sql: string, _params: unknown[], options: { signal?: AbortSignal }) => {
       sqlSignal = options.signal;
@@ -1105,7 +1106,8 @@ describe("voice-note recorder controller", () => {
       expect(pendingStore.snapshot().running).toBe(true);
       await saving;
       expect(pendingStore.snapshot()).toMatchObject({ running: false, listing: { state: "ok", count: 1 } });
-      expect(pendingStore.snapshot().lastError).toContain("saving it is taking too long");
+      expect(pendingStore.snapshot().lastError).toContain("waiting for another sync to finish");
+      expect(pendingStore.snapshot().lastError).not.toContain("connection");
       expect(queuedSqlDispatches).toBe(0);
       // Let the post-abort grace release the intentionally unresolved SQL request
       // before the next test enqueues work on this module-level lane.
@@ -1113,6 +1115,7 @@ describe("voice-note recorder controller", () => {
     } finally {
       setVoiceNoteSaveDeadlineForTests(null);
       setSpaceLaneAbortGraceForTests(null);
+      setSpaceLaneQueueWaitForTests(null);
       pendingStore.setAccount(null);
       detach();
     }

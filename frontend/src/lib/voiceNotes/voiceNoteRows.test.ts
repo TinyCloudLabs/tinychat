@@ -13,6 +13,32 @@ import { handoffBeforeCredentialClear } from "./accountHandoff";
 import { advanceAccountGeneration, currentAccountGeneration } from "./accountContext";
 import { runOnSpaceLane } from "../spaceWriteLane";
 import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
+
+test("a healthy long drain does not consume the next save's call deadline", async () => {
+  let releaseDrain!: () => void;
+  let enteredDrain!: () => void;
+  const drainGate = new Promise<void>((resolve) => { releaseDrain = resolve; });
+  const drainEntered = new Promise<void>((resolve) => { enteredDrain = resolve; });
+  const drain = runOnSpaceLane(async () => { enteredDrain(); await drainGate; return "drained"; });
+  await drainEntered;
+  let saveStarted = false;
+  const save = runOnSpaceLane(async () => { saveStarted = true; return "saved"; },
+    { operation: "SQL execute: voice-note save after drain", timeoutMs: 20 });
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    expect(saveStarted).toBe(false);
+    releaseDrain();
+    await expect(drain).resolves.toBe("drained");
+    await expect(save).resolves.toBe("saved");
+    expect(saveStarted).toBe(true);
+  } finally { releaseDrain(); }
+});
+
+test("a lane job that rejects without a reason rejects its caller", async () => {
+  const result = await Promise.allSettled([runOnSpaceLane(() => Promise.reject(undefined))]);
+  expect(result).toEqual([{ status: "rejected", reason: undefined }]);
+});
 import { pendingStore } from "./recorderSaves";
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
 import { loadNote, saveNote } from "./recordingNotes";
