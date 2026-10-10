@@ -547,12 +547,19 @@ export function PhoneRecorder({
               onTryAgain={recorder.record}
             />
           </div>
+        ) : phase === "idle" ? (
+          <div className="pr-controls">
+            <button type="button" className="pr-b primary" disabled={!recorder.ready || recorder.outcome !== null}
+              onClick={() => void recorder.record()}>
+              Record
+            </button>
+          </div>
         ) : (
           <>
             {view.controls.openSettings && (
               <div className="pr-controls" style={{ paddingBottom: 0 }}>
                 <MicDeniedAction
-                  idle={phase === "idle"}
+                  idle={false}
                   onOpenSettings={openSettings}
                   onTryAgain={recorder.record}
                 />

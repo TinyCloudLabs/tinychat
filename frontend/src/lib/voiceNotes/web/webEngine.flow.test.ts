@@ -296,7 +296,8 @@ describe("boot recovery", () => {
     await signIn(B, 2);
     const asB = space(B);
     await createVoiceNotePipeline(asB.tcw).reconcileAll(ctxOf(asB.tcw));
-    expect(asB.sqlite.query("SELECT id FROM connector_meeting").all()).toEqual([]);
+    // Only A's notes are pending, so B's pass never touches B's space (not even its schema).
+    expect(asB.sqlite.query("SELECT name FROM sqlite_master WHERE name = 'connector_meeting'").all()).toEqual([]);
     expect((await VoiceNotes.listPending()).recordings.find((r) => r.id === id)).toMatchObject({ owner: A });
     expect((await VoiceNotes.listPending()).recordings.find((r) => r.id === id)?.ledger?.audio.state).not.toBe("saved");
 
@@ -325,7 +326,8 @@ describe("boot recovery", () => {
     expect(note!.owner).toBe(A);
     const asB = space(B);
     await createVoiceNotePipeline(asB.tcw).reconcileAll(ctxOf(asB.tcw));
-    expect(asB.sqlite.query("SELECT id FROM connector_meeting").all()).toEqual([]);
+    // Only A's notes are pending, so B's pass never touches B's space (not even its schema).
+    expect(asB.sqlite.query("SELECT name FROM sqlite_master WHERE name = 'connector_meeting'").all()).toEqual([]);
   });
 
   test("a recording already in quarantine from an earlier run reaches the controller's recoveryFailed once", async () => {

@@ -128,6 +128,8 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
   const sheetChange = (which: Sheet) => (open: boolean) => setSheet(open ? which : null);
   // The phone app's recorder: notes still on this phone and a stop at the limit are In progress rows.
   const recorder = useRecorder();
+  // Static screen fixtures predate account-scoped pending snapshots; the live store always sets this field.
+  const pendingVisible = recorder.pending.accountDid === undefined || recorder.pending.accountDid === tcw.did;
 
   // Recent, the Library and the open note: one reader, through the per-space queue.
   const library = useLibrary(tcw, {
@@ -154,9 +156,9 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
     busyId: bot.busyId,
     voice: recorder.available
       ? {
-          listing: recorder.pending.listing,
-          saving: recorder.pending.running,
-          lastError: recorder.pending.lastError,
+          listing: pendingVisible ? recorder.pending.listing : { state: "unknown" },
+          saving: pendingVisible && recorder.pending.running,
+          lastError: pendingVisible ? recorder.pending.lastError : null,
           limitNotice: recorder.phase === "recording" ? null : recorder.limitNotice,
           onSaveNow: recorder.retryPending,
         }

@@ -1,5 +1,41 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.24
+
+### Patch Changes
+
+- d682e75: Hide other accounts' pending voice notes from signed-in capture, preserve a note's save error while newer notes upload, and log automatic save starts for device diagnosis.
+
+## 0.6.0-beta.23
+
+### Patch Changes
+
+- 02ba07e: Show automatic voice-note saving and explain when recordings belong to another account. Avoid repeating the space-wide archive sweep for each note.
+
+## 0.6.0-beta.22
+
+### Patch Changes
+
+- f23b956: Restore recorder controls when Android microphone access is granted while the app is away.
+
+## 0.6.0-beta.21
+
+### Patch Changes
+
+- 477b730: Recover voice-note saves after a fresh sign-in and show the recorder for cold iOS quick actions.
+
+## 0.6.0-beta.20
+
+### Patch Changes
+
+- ec1eac7: Report current iOS microphone permission in voice recorder status so access can refresh after Settings.
+
+## 0.6.0-beta.19
+
+### Patch Changes
+
+- d0c51c3: Open the app's iOS Settings page from the voice recorder's microphone access screen.
+
 ## 0.6.0-beta.18
 
 ### Patch Changes

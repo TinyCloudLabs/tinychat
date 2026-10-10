@@ -11,6 +11,8 @@
 // hands each saved note to private cloud transcription. Discard (PR5) marks the
 // recording before stopping it, so no save that meets it keeps it.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { App } from "@capacitor/app";
+import { Capacitor } from "@capacitor/core";
 
 import {
   VoiceNotes,
@@ -44,6 +46,7 @@ import { adoptNote, deleteNote, loadNote, parseMomentLines, saveNote, type Recor
 import { readRecordingNoteFromSpace, recordingNoteSyncError, reportRecordingNoteSyncError,
   subscribeRecordingNoteSync, syncRecordingNote, type NoteSyncErrorCode } from "@/lib/voiceNotes/voiceNoteStore";
 import { assertCurrent, currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
+import { withCaptureDeadline } from "@/lib/voiceNotes/accountHandoff";
 import { FINALIZATION_PENDING, limitNoticeText } from "./recorderCopy";
 import { autoStopIsCurrent, initialRecorderState, recorderReducer, type RecorderCaptureIssue, type RecorderEvent, type RecorderMic, type RecorderState } from "./recorderReducer";
 import { recordedElapsedAt } from "./recordedElapsed";
@@ -82,6 +85,8 @@ export interface VoiceNoteRecorderControllerOptions {
   noteLoader?: typeof loadNote;
   /** Test clock for note-load retries; production uses setTimeout. */
   noteRetryScheduler?: (delayMs: number, retry: () => void) => () => void;
+  /** A native foreground subscription; injected in tests to exercise a missed grant event. */
+  subscribeAppActive?: (listener: () => void) => Promise<{ remove(): Promise<void> }>;
 }
 
 export type TranscriberChoiceResult = "ok" | "needs_consent" | "locked_signed_out" | "unavailable";
@@ -133,7 +138,7 @@ export interface VoiceNoteRecorderController {
 }
 
 export function createVoiceNoteRecorderController({ tcw, available, transcriber, pipeline, onDeviceReady,
-  appleInterim, noteLoader = loadNote, noteRetryScheduler = (delayMs, retry) => {
+  appleInterim, subscribeAppActive, noteLoader = loadNote, noteRetryScheduler = (delayMs, retry) => {
     const timer = setTimeout(retry, delayMs);
     return () => clearTimeout(timer);
   } }: VoiceNoteRecorderControllerOptions): VoiceNoteRecorderController {
@@ -166,6 +171,11 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   };
   let onSaved: ((recording: VoiceNoteRecording) => void) | undefined;
   let onPresent: (() => void) | undefined;
+  let presentWhenReady = false;
+  const present = () => {
+    if (onPresent) onPresent();
+    else presentWhenReady = true;
+  };
   const listeners = new Set<() => void>();
   const levelListeners = new Set<(level: number) => void>();
   // Resolve only after mount. An invalid SDK identity is logged, while the
@@ -378,9 +388,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         return;
       }
       try {
-        await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id);
-        send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
-        landed(recording);
+        const finish = pendingStore.beginAutomaticSave();
+        try {
+          await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id);
+          send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
+          landed(recording);
+        } finally { finish(); }
       } catch (caught) {
         if (!pipeline.isAccepting() || saveDeferredForAccountTransition(caught)) {
           send({ type: "LOCAL_UPLOAD_HELD", id: recording.id });
@@ -389,8 +402,11 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         }
         send({ type: "SAVE_FAILED", error: `Saved on this phone, but uploading to your space failed: ${messageOf(caught)}`,
           recording: { id: recording.id, durationMs: recording.durationMs } });
+        pendingStore.reportNoteFailure(recording.id, messageOf(caught));
+        void pendingStore.refresh();
+        return;
       }
-      void pendingStore.refresh();
+      void pendingStore.refresh(null);
       return;
     }
     send({ type: "SAVE_PROGRESS", percent: null });
@@ -411,7 +427,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           error: `Saved on this phone, but uploading to your space failed: ${outcome.failure}`,
           recording: { id: recording.id, durationMs: recording.durationMs },
         });
-        void pendingStore.refresh(outcome.failure);
+        pendingStore.reportNoteFailure(recording.id, outcome.failure);
+        void pendingStore.refresh();
         return;
       case "already-saved":
         send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
@@ -441,12 +458,17 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     if (!tcw || (pipeline && !pipeline.isAccepting())) { void pendingStore.refresh(); return; }
     if (pipeline) {
       if (recording.owner === tcw.did && tcw.did && tcw.spaceId) {
+        const finish = pendingStore.beginAutomaticSave();
         try {
-          await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id);
+          await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id, "background");
           landed(recording);
         } catch (caught) {
-          if (!saveDeferredForAccountTransition(caught) && pipeline.isAccepting()) throw caught;
-        }
+          if (!saveDeferredForAccountTransition(caught) && pipeline.isAccepting()) {
+            pendingStore.reportNoteFailure(recording.id, messageOf(caught));
+            void pendingStore.refresh();
+            return;
+          }
+        } finally { finish(); }
       }
       void pendingStore.refresh();
       return;
@@ -454,7 +476,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     const outcome = await saveRecording(tcw, recording);
     if (outcome.kind === "saved") reportSavedNoteSyncError(recording.id, outcome.noteSyncError);
     if (outcome.kind === "saved") landed(recording, outcome.audio ?? undefined);
-    if (outcome.kind === "failed") void pendingStore.refresh(outcome.failure);
+    if (outcome.kind === "failed") {
+      pendingStore.reportNoteFailure(recording.id, outcome.failure);
+      void pendingStore.refresh();
+    }
     else if (outcome.kind === "already-saved" || outcome.kind === "discarded") void pendingStore.refresh(outcome.cleanupError ?? undefined);
     else if (outcome.kind === "held") void pendingStore.refresh();
   };
@@ -573,6 +598,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     },
     setOnPresent(next) {
       onPresent = next;
+      if (next && presentWhenReady) { presentWhenReady = false; next(); }
     },
     attach() {
       const key = scope();
@@ -582,6 +608,23 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       noteAttached = true;
       if (noteId && noteStatus === "error" && !cancelNoteRetry) scheduleNoteRetry(noteId, noteLoadVersion);
       const unsubscribeNoteSync = subscribeRecordingNoteSync(notify);
+      const recheckPermission = async () => {
+        if (!attached || !state.permissionDenied) return;
+        try {
+          const status = await VoiceNotes.status();
+          if (attached && status.microphonePermissionGranted) send({ type: "PERMISSION_GRANTED" });
+        } catch (caught) {
+          console.warn("[VoiceNotes] Could not recheck microphone permission", caught);
+        }
+      };
+      const appActiveHandle = (subscribeAppActive
+        ? subscribeAppActive(() => { void recheckPermission(); })
+        : Capacitor.isNativePlatform()
+          ? App.addListener("appStateChange", ({ isActive }) => { if (isActive) void recheckPermission(); })
+          : null)?.catch((caught: unknown) => {
+            console.warn("[VoiceNotes] Could not watch app activity", caught);
+            return null;
+          });
       if (key !== null) {
         for (const [id, issue] of Object.entries(savedPartialAudioIssues(key))) {
           if (!partialAudioDismissed(key, id)) send({ type: "CAPTURE_ISSUE", id, issue });
@@ -653,7 +696,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
             const status = await VoiceNotes.status();
             if (attached && status.micDeniedPresentation) {
               send({ type: "PERMISSION_DENIED" });
-              onPresent?.();
+              present();
             }
             return;
           }
@@ -662,7 +705,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
             if (attached && !status.micDeniedPresentation && status.microphonePermissionGranted) {
               send({ type: "PERMISSION_GRANTED" });
               if (status.shortcutRecordPending && captureCapabilities().nativeShortcuts) {
-                onPresent?.();
+                present();
                 void VoiceNotes.consumeShortcutRecord().catch((caught: unknown) =>
                   console.warn("[VoiceNotes] Could not consume the shortcut Record offer", caught));
               }
@@ -675,7 +718,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
             if (state.phase === "idle") {
               send(activePickup(status));
             }
-            if (state.recordingId === status.id && state.phase === "recording") onPresent?.();
+            if (state.recordingId === status.id && state.phase === "recording") present();
           } catch (caught) {
             console.warn("[VoiceNotes] Could not present the native recording", caught);
           }
@@ -690,17 +733,17 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
             const capabilities = captureCapabilities();
             if (capabilities.micDeniedPresentation && status.micDeniedPresentation) {
               send({ type: "PERMISSION_DENIED" });
-              onPresent?.();
+              present();
             } else if (capabilities.nativeShortcuts && status.shortcutRecordPending && status.microphonePermissionGranted) {
               send({ type: "PERMISSION_GRANTED" });
-              onPresent?.();
+              present();
               void VoiceNotes.consumeShortcutRecord().catch((caught: unknown) =>
                 console.warn("[VoiceNotes] Could not consume the shortcut Record offer", caught));
             }
             if (status.state === "idle") return;
             acceptNativeOptions(status);
             send(activePickup(status));
-            if (status.source === "app_shortcut" || status.source === "notification") onPresent?.();
+            if (status.source && status.source !== "in_app") present();
           },
           (caught: unknown) => console.warn("[VoiceNotes] Could not ask the recorder what is running", caught),
         )
@@ -735,6 +778,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         if (typeof window !== "undefined") window.removeEventListener("exo:captureIssueDeleted", onCaptureDeleted);
         unsubscribePreference();
         unsubscribeNoteSync();
+        if (appActiveHandle) void appActiveHandle.then((handle) => handle?.remove());
         for (const handle of handles) void handle.then((h) => h.remove());
       };
     },
@@ -764,7 +808,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         send({ type: "START_FAILED", error: messageOf(caught) });
         if (errorCode(caught) === "permission_denied") {
           send({ type: "PERMISSION_DENIED" });
-          onPresent?.();
+          present();
         }
       }
     },
@@ -914,18 +958,40 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     },
     async retryPending() {
       if (!available) return;
-      if (pipeline && pipeline.isAccepting() && tcw?.did && tcw.spaceId) {
-        try { await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }); }
-        catch (caught) { console.warn("[VoiceNotes] Saving notes left on this phone failed", caught); }
-        await pendingStore.refresh();
+      if (!tcw?.did || !tcw.spaceId) {
+        pendingStore.reportError("Your account space is not ready to save this note. Try again after sign-in finishes.");
+        return;
+      }
+      if (pipeline) {
+        const finishSaving = pendingStore.beginManualSave();
+        const generation = currentAccountGeneration();
+        try {
+          const native = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
+          if (native.status !== "signed_in" || native.accountDid !== tcw.did) {
+            pendingStore.reportError("This phone's recording account is not ready. Try again shortly.");
+            return;
+          }
+          // The same generation can claim a v2 note left unowned during sign-in.
+          await withCaptureDeadline(VoiceNotes.setCaptureDefaults(native));
+          if (generation !== currentAccountGeneration()) {
+            pendingStore.reportError("The recording account changed while saving. Try again from the current account.");
+            return;
+          }
+          pipeline.resume();
+          await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation }, "manual");
+          await pendingStore.refresh(null);
+        } catch (caught) {
+          pendingStore.reportError(`Could not save notes on this phone: ${messageOf(caught)}`);
+        } finally {
+          finishSaving();
+        }
         return;
       }
       let run;
       try {
-        if (!tcw) { await pendingStore.refresh(); return; }
         run = await savePendingRecordings(tcw);
       } catch (caught) {
-        console.warn("[VoiceNotes] Saving notes left on this phone failed", caught);
+        pendingStore.reportError(`Could not save notes on this phone: ${messageOf(caught)}`);
         return;
       }
       for (const recording of run.saved) landed(recording);

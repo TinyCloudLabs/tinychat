@@ -11,10 +11,11 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { createFakeVoiceNotes, type FakeVoiceNotes } from "@/harness/fakeVoiceNotes";
 import { fakeVoiceNoteStore } from "@/harness/fakeVoiceNoteStore";
-import { __setVoiceNotesForTests, type VoiceNoteRecording, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { __setVoiceNotesForTests, type CaptureSource, type VoiceNoteRecording, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { setDefaultTranscriber } from "@/lib/voiceNotes/transcriberPreference";
 import { createVoiceNoteTranscriber, type VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { VoiceNoteSaveDeferred, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
+import { advanceAccountGeneration } from "@/lib/voiceNotes/accountContext";
 import { consentToRecordingPrivateCloud, setRecordingRoute } from "./TranscriptionRouteControl";
 import { loadNote } from "@/lib/voiceNotes/recordingNotes";
 import { reportRecordingNoteSyncError } from "@/lib/voiceNotes/voiceNoteStore";
@@ -26,9 +27,9 @@ mock.module("@/lib/voiceNotes/voiceNoteStore", () => ({
 }));
 const { createVoiceNoteRecorderController } = await import("./voiceNoteRecorderController");
 const { micRecoveryMode, readMicRecoveryMode } = await import("./MicDeniedRecovery");
-const { isDiscarded, saveRecording } = await import("@/lib/voiceNotes/recorderSaves");
+const { isDiscarded, pendingStore, saveRecording } = await import("@/lib/voiceNotes/recorderSaves");
 
-const tcw = { did: "did:example:alice" } as TinyCloudWeb;
+const tcw = { did: "did:example:alice", spaceId: "tinycloud:space" } as TinyCloudWeb;
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 let fake: FakeVoiceNotes;
@@ -68,7 +69,8 @@ let microphoneGranted: boolean;
 
 function controller(options: { tcw?: TinyCloudWeb | null; pipeline?: VoiceNotePipeline; consented?: boolean | (() => boolean); onDeviceReady?: boolean;
   appleInterim?: boolean; transcriber?: VoiceNoteTranscriber; noteLoader?: typeof loadNote;
-  noteRetryScheduler?: (delayMs: number, retry: () => void) => () => void } = {}) {
+  noteRetryScheduler?: (delayMs: number, retry: () => void) => () => void;
+  subscribeAppActive?: (listener: () => void) => Promise<{ remove(): Promise<void> }> } = {}) {
   return createVoiceNoteRecorderController({
     tcw: options.tcw === undefined ? tcw : options.tcw,
     pipeline: options.pipeline,
@@ -80,6 +82,7 @@ function controller(options: { tcw?: TinyCloudWeb | null; pipeline?: VoiceNotePi
     appleInterim: () => options.appleInterim ?? false,
     noteLoader: options.noteLoader,
     noteRetryScheduler: options.noteRetryScheduler,
+    subscribeAppActive: options.subscribeAppActive,
   });
 }
 
@@ -678,6 +681,33 @@ describe("voice-note recorder controller", () => {
     expect(recorder.getState().phase).toBe("recording");
   });
 
+  test("app-active recheck clears a missed grant event without relaunch", async () => {
+    let appActive: () => void = () => {};
+    const recorder = controller({ subscribeAppActive: async (listener) => {
+      appActive = listener;
+      return { remove: async () => { appActive = () => {}; } };
+    } });
+    const detach = recorder.attach();
+    await tick();
+    micDenied = true;
+    microphoneGranted = false;
+    fake.emit("presentRecorder", { id: null, reason: "permission_denied" });
+    await tick();
+    expect(recorder.getState().permissionDenied).toBe(true);
+    appActive();
+    await tick();
+    expect(recorder.getState().permissionDenied).toBe(true);
+    // The native grant event was missed while Settings covered the WebView.
+    micDenied = false;
+    microphoneGranted = true;
+    appActive();
+    await tick();
+    expect(recorder.getState().permissionDenied).toBe(false);
+    await recorder.record();
+    expect(recorder.getState().phase).toBe("recording");
+    detach();
+  });
+
   test("a cold shortcut's retained event reaches the controller's first listener", async () => {
     const started = await plugin.start();
     fake.retainPresentRecorder({ id: started.id });
@@ -692,6 +722,38 @@ describe("voice-note recorder controller", () => {
     expect(recorder.getState()).toMatchObject({ phase: "recording", recordingId: started.id });
     expect(presented).toBeGreaterThan(0);
     detach();
+  });
+
+  test("a signed-out iOS cold quick action opens after the provider installs its callback", async () => {
+    const started = await plugin.start();
+    __setVoiceNotesForTests({ ...plugin, status: async () => ({ ...await plugin.status(), source: "quick_action" }) },
+      { available: true });
+    const recorder = controller({ tcw: null });
+    const detach = recorder.attach();
+    await tick(); // Native status arrives before RecorderProvider's setOnPresent effect.
+    expect(recorder.getState()).toMatchObject({ phase: "recording", recordingId: started.id });
+    let presented = 0;
+    recorder.setOnPresent(() => presented++);
+    expect(presented).toBe(1);
+    recorder.setOnPresent(() => presented++);
+    expect(presented).toBe(1);
+    detach();
+  });
+
+  test("every cold external capture source opens above the sign-in gate", async () => {
+    const started = await plugin.start();
+    const base = plugin;
+    for (const source of ["app_shortcut", "quick_action", "notification", "intent", "control", "widget", "tile"] satisfies CaptureSource[]) {
+      __setVoiceNotesForTests({ ...base, status: async () => ({ ...await base.status(), source }) }, { available: true });
+      const recorder = controller({ tcw: null });
+      let presented = 0;
+      recorder.setOnPresent(() => presented++);
+      const detach = recorder.attach();
+      await tick();
+      expect(recorder.getState().recordingId).toBe(started.id);
+      expect(presented).toBe(1);
+      detach();
+    }
   });
 
   test("signed-out recovery explains a grant while the Record intent is held", async () => {
@@ -834,6 +896,145 @@ describe("voice-note recorder controller", () => {
     expect(recorder.getState().lastSaved?.id).toBe(failed.failedRecording!.id);
     expect(noted).toEqual([failed.failedRecording!.id]);
     expect(onPhone.map((recording) => recording.id)).toEqual([failed.failedRecording!.id]);
+  });
+
+  test("Save now reclaims a fresh sign-in note and resumes its account pipeline", async () => {
+    const account = { did: tcw.did, spaceId: "tinycloud:space" } as TinyCloudWeb;
+    const note = { ...earlier(), owner: null };
+    onPhone = [note];
+    let claimed = 0;
+    let accepting = false;
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base,
+      getCaptureDefaults: async () => ({ status: "signed_in", accountDid: account.did, transitionGen: 1,
+        transcriber: "on-device", identifySpeakers: false }),
+      async setCaptureDefaults() {
+        for (const pending of onPhone) if (!pending.owner) { pending.owner = account.did; claimed++; }
+        return { claimed: onPhone.map((pending) => pending.id) };
+      } }, { available: true });
+    const pipeline: VoiceNotePipeline = {
+      process: async () => {}, cancelAll: () => { accepting = false; },
+      resume: () => { accepting = true; }, isAccepting: () => accepting, quiescent: async () => true,
+      reconcileAll: async (_ctx, trigger) => {
+        expect(trigger).toBe("manual");
+        expect(accepting).toBe(true);
+        expect(onPhone[0]?.owner).toBe(account.did);
+        const result = await saveRecording(account, onPhone[0]!);
+        expect(result.kind).toBe("saved");
+      },
+    };
+    const recorder = controller({ tcw: account, pipeline });
+    const detach = recorder.attach();
+    await tick();
+    await recorder.retryPending();
+    expect(claimed).toBe(1);
+    expect(saves).toEqual([note.id]);
+    expect(recorder.getState().ready).toBe(true);
+    expect(accepting).toBe(true);
+    detach();
+  });
+
+  test("fresh sign-in then Done starts the automatic upload and shows it saving", async () => {
+    const signedOut = controller({ tcw: null });
+    const detachSignedOut = signedOut.attach();
+    await tick();
+    detachSignedOut();
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false });
+    let release!: () => void;
+    const uploadWaiting = new Promise<void>((resolve) => { release = resolve; });
+    const processed: string[] = [];
+    const pipeline: VoiceNotePipeline = {
+      process: async (_ctx, id) => {
+        processed.push(id);
+        await uploadWaiting;
+        onPhone.find((note) => note.id === id)!.ledger = {
+          audio: { state: "saved", rowId: `vn-${id}`, at: Date.now() },
+        } as VoiceNoteRecording["ledger"];
+      },
+      reconcileAll: async () => {}, cancelAll: () => {}, resume: () => {},
+      isAccepting: () => true, quiescent: async () => true,
+    };
+    const recorder = controller({ pipeline });
+    const detach = recorder.attach();
+    await tick();
+    await recorder.record();
+    await recorder.stop();
+    await tick();
+    expect(processed).toEqual([onPhone[0]!.id]);
+    expect(recorder.getState()).toMatchObject({ outcome: "local", localUpload: "uploading" });
+    expect(pendingStore.snapshot().running).toBe(true);
+    release();
+    await tick();
+    expect(recorder.getState()).toMatchObject({ outcome: "saved", error: null });
+    expect(pendingStore.snapshot().running).toBe(false);
+    detach();
+  });
+
+  test("Save now reports an unavailable fresh sign-in client instead of silently refreshing", async () => {
+    const recorder = controller({ tcw: null });
+    const detach = recorder.attach();
+    await tick();
+    onPhone = [earlier()];
+    await recorder.retryPending();
+    expect(recorder.getState().ready).toBe(true);
+    expect(pendingStore.snapshot().lastError)
+      .toContain("account space is not ready");
+    expect(saves).toEqual([]);
+    detach();
+  });
+
+  test("Save now keeps saving past 20 seconds and clears the row on success", async () => {
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base,
+      getCaptureDefaults: async () => ({ status: "signed_in", accountDid: tcw.did, transitionGen: 1,
+        transcriber: "on-device", identifySpeakers: false }),
+      setCaptureDefaults: async () => ({ claimed: [] }),
+    }, { available: true });
+    const note = earlier();
+    let settled = false;
+    const pipeline: VoiceNotePipeline = {
+      process: async () => {}, cancelAll: () => {}, resume: () => {},
+      isAccepting: () => true, quiescent: async () => true,
+      reconcileAll: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20_100));
+        settled = true;
+        note.ledger = { audio: { state: "saved", rowId: "row", at: Date.now() } } as VoiceNoteRecording["ledger"];
+      },
+    };
+    const recorder = controller({ pipeline });
+    const detach = recorder.attach();
+    await tick();
+    const saving = recorder.retryPending();
+    await tick();
+    expect(pendingStore.snapshot().running).toBe(true);
+    expect(settled).toBe(false);
+    await saving;
+    expect(settled).toBe(true);
+    expect(pendingStore.snapshot()).toMatchObject({ running: false, lastError: null, listing: { state: "ok", count: 0 } });
+    detach();
+  }, 35_000);
+
+  test("Save now cannot re-arm an account cancelled during the native claim", async () => {
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base,
+      getCaptureDefaults: async () => ({ status: "signed_in", accountDid: tcw.did, transitionGen: 1,
+        transcriber: "on-device", identifySpeakers: false }),
+      setCaptureDefaults: async () => { advanceAccountGeneration(); return { claimed: [] }; },
+    }, { available: true });
+    let resumed = 0;
+    let reconciled = 0;
+    const pipeline: VoiceNotePipeline = {
+      process: async () => {}, cancelAll: () => {}, resume: () => { resumed++; },
+      isAccepting: () => false, quiescent: async () => true,
+      reconcileAll: async () => { reconciled++; },
+    };
+    const recorder = controller({ pipeline });
+    const detach = recorder.attach();
+    await tick();
+    await recorder.retryPending();
+    expect({ resumed, reconciled }).toEqual({ resumed: 0, reconciled: 0 });
+    detach();
   });
 
   test("discard stops the recording and deletes it; nothing is saved", async () => {

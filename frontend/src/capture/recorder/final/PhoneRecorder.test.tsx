@@ -134,6 +134,15 @@ describe("PhoneRecorder", () => {
     expect(html).not.toContain('aria-label="Record from');
   });
 
+  test("returning from Settings with permission granted offers Record", () => {
+    const html = render({ phase: "idle", permissionDenied: false,
+      mic: { state: "idle", reason: null }, startedAt: null, audioMs: 0, elapsedMs: 0 });
+    expect(html).toContain("Ready");
+    expect(html).toMatch(/class="pr-b primary"[^>]*>Record<\/button>/);
+    expect(html).not.toMatch(/class="pr-b primary"[^>]*disabled/);
+    expect(html).not.toContain("Open Settings");
+  });
+
   test("via names the input the recording is on, from the native status", () => {
     const html = render({
       mic: {

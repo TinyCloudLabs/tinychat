@@ -95,7 +95,7 @@ describe("CaptureSurface", () => {
     // One Record: SoftActions' own, between Upload and Meeting.
     expect(source.match(/<SoftActions\b/g)).toHaveLength(1);
     // The recorder's notes on the phone and its limit notice are In progress rows.
-    expect(source).toContain("listing: recorder.pending.listing,");
+    expect(source).toContain("pendingVisible ? recorder.pending.listing");
     // App and the harness hand `active` from the screen's destination.
     const app = readFileSync(join(import.meta.dir, "../App.tsx"), "utf8");
     expect(app).toContain('active={screen.destination === "capture"}');

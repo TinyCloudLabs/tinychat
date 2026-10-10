@@ -106,6 +106,14 @@ describe("Recent", () => {
 });
 
 describe("the on-this-phone card", () => {
+  test("shows automatic saving; no card or ownership hint for a filtered empty count", () => {
+    const saving = voice(1);
+    saving.voice!.saving = true;
+    expect(home({ inProgress: saving })).toContain("Saving to your TinyCloud space…");
+    const hidden = home({ inProgress: voice(0) });
+    expect(hidden).not.toContain('data-testid="voice-note-pending"');
+    expect(hidden).not.toContain("another account");
+  });
   test("app only: a count, 'Not in your space yet' and Save now", () => {
     const html = home({ inProgress: voice(2) });
     expect(html).toContain("2 voice notes on this phone");
