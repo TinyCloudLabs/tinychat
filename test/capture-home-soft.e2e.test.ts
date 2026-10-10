@@ -64,9 +64,12 @@ afterEach(async () => {
   await Promise.all(contexts.splice(0).map((context) => context.close()));
 });
 
-async function open(screen: string): Promise<Page> {
+async function open(
+  screen: string,
+  viewport = { width: 390, height: 844 },
+): Promise<Page> {
   const context = await browser.newContext({
-    viewport: { width: 390, height: 844 },
+    viewport,
     isMobile: true,
     hasTouch: true,
     colorScheme: "dark",
@@ -84,6 +87,18 @@ async function open(screen: string): Promise<Page> {
 }
 
 describe("Soft Capture home interactions (phone)", () => {
+  test("in phone landscape the minimized Ribbon stays below Capture's action row", async () => {
+    const page = await open("capture-recording-minimised", { width: 844, height: 390 });
+    const actions = page.locator('[data-testid="capture-actions"]');
+    const ribbon = page.locator(".ribbon-float .ribbon");
+    const actionBox = await actions.boundingBox();
+    const ribbonBox = await ribbon.boundingBox();
+    expect(actionBox).not.toBeNull();
+    expect(ribbonBox).not.toBeNull();
+    expect(actionBox!.y + actionBox!.height).toBeLessThanOrEqual(ribbonBox!.y);
+    await page.context().close();
+  });
+
   test("tapping a Recent row opens its note", async () => {
     const page = await open("capture-soft-notes");
     const row = page

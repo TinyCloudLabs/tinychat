@@ -50,10 +50,12 @@ import {
   identifySpeakersControl,
   MODE_STOPS,
 } from "./transcriptionModes";
+import { FINAL_COPY } from "./finalCopy";
 import { useAudioInputs, type AudioInputsSource } from "./useAudioInputs";
 import { useSilencedSince } from "./useSilencedSince";
 import { MicDeniedAction } from "./shell/MicDeniedAction";
 import { openSettingsFailedLine } from "./shell/micDeniedCopy";
+import { startOnDeviceModelDownload } from "../TranscriptionRouteControl";
 import {
   useOnDeviceModel,
   useTranscriptionChoice,
@@ -63,7 +65,7 @@ import { ViaMenu } from "./ViaMenu";
 import "./soft.css";
 import "./phone.css";
 
-const TOAST_MS = 2400;
+const TOAST_MS = 4200;
 /** The notes renderer's WASM is fetched this long into a recording, never when the recorder opens. */
 const WARM_RENDERER_MS = 4000;
 
@@ -127,10 +129,44 @@ export function PhoneRecorder({
       (mic.state === "recording" && mic.reason === "no_signal"));
   const silencedSinceMs = useSilencedSince(silent, silencedSeed);
 
-  const [toast, setToast] = useState<{ message: string; key: number } | null>(
-    null,
-  );
-  const showToast = (message: string) => setToast({ message, key: Date.now() });
+  const [toast, setToast] = useState<{
+    message: string;
+    key: number;
+    actions: Array<{ label: string; run: () => void }>;
+  } | null>(null);
+  const showToast = (
+    message: string,
+    actions: Array<{ label: string; run: () => void }> = [],
+  ) => setToast({ message, key: Date.now(), actions });
+  const choiceForToast = useRef<{
+    stops: ReturnType<typeof useTranscriptionChoice>["stops"];
+    mode: ReturnType<typeof useTranscriptionChoice>["mode"];
+  } | null>(null);
+  const unavailable = (reason: string) => {
+    const actions: Array<{ label: string; run: () => void }> = [];
+    const privateAvailable = choiceForToast.current?.stops.some(
+      ({ stop, available }) => stop.id === "private" && available,
+    );
+    if (reason === FINAL_COPY.modelUnavailable) {
+      actions.push({
+        label: "Get model",
+        run: () => {
+          void startOnDeviceModelDownload().catch(
+            (error: unknown) => {
+              console.error("[Recorder] Could not start the on-device model download", error);
+              showToast(
+                `Could not start the on-device model download: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            },
+          );
+        },
+      });
+    }
+    if (privateAvailable && choiceForToast.current?.mode !== "private") {
+      actions.push({ label: "Use Private", run: () => { choose("private"); } });
+    }
+    showToast(reason, actions);
+  };
 
   const audio = useAudioInputs(inputsSource);
   const input = mic.input ?? audio.current;
@@ -142,8 +178,9 @@ export function PhoneRecorder({
     download: onDevice.download,
     transcriber: transcriberApi ?? recorder,
     signedIn: recorder.signedIn,
-    notify: showToast,
+    notify: unavailable,
   });
+  choiceForToast.current = choice;
 
   const view = selectRecorderView(recorderState(recorder), {
     nowMs: Date.now(),
@@ -321,6 +358,7 @@ export function PhoneRecorder({
       data-layout="phone"
       data-testid="phone-recorder"
       data-ring={view.ring}
+      data-mic-denied={idleDenied || undefined}
       style={{ "--kbh": `${keyboardInset}px` } as CSSProperties}
     >
       <p
@@ -376,8 +414,9 @@ export function PhoneRecorder({
                     ? NOTES_COPY.noteLoading
                     : NOTES_COPY.noteLoadFailed
               }
+              aria-hidden={idleDenied || undefined}
               aria-disabled={recorder.noteStatus !== "ready" || undefined}
-              disabled={phase !== "recording"}
+              disabled={phase !== "recording" || idleDenied}
               onClick={() => {
                 if (recorder.noteStatus !== "ready") return;
                 hapticLight();
@@ -442,6 +481,7 @@ export function PhoneRecorder({
             ring={view.ring}
             flat={view.flat}
             theme={theme}
+            quiet={idleDenied}
             subscribeLevel={recorder.subscribeLevel}
             action={ringAction}
             glyph={
@@ -487,7 +527,7 @@ export function PhoneRecorder({
               return choose(id);
             }}
             step={choice.step}
-            onUnavailable={() => {}}
+            onUnavailable={unavailable}
           />
           <div className="pr-ends" aria-hidden="true">
             <span>more private</span>
@@ -539,7 +579,7 @@ export function PhoneRecorder({
           </p>
         ))}
         {idleDenied ? (
-          <div className="pr-controls">
+          <div className="pr-controls" data-mic-denied="true">
             <MicDeniedAction
               idle={phase === "idle"}
               onOpenSettings={openSettings}
@@ -707,6 +747,11 @@ export function PhoneRecorder({
       {toast && (
         <div key={toast.key} className="pr-toast" role="status">
           {toast.message}
+          {toast.actions.map((action) => (
+            <button key={action.label} type="button" onClick={action.run}>
+              {action.label}
+            </button>
+          ))}
         </div>
       )}
     </div>

@@ -195,6 +195,9 @@
 .pr:not(.dr) .pr-time-slot:not(:disabled):not([aria-disabled="true"]):active {
   transform: scale(0.86);
 }
+.pr[data-mic-denied="true"] .pr-mark {
+  visibility: hidden;
+}
 .pr-countdown {
   margin-top: 6px;
   font-size: 12px;
@@ -254,6 +257,9 @@
   display: grid;
   place-items: center;
   transition: transform 0.35s cubic-bezier(0.3, 1.7, 0.4, 1);
+}
+.pr[data-mic-denied="true"] .pr-ring {
+  opacity: 0.35;
 }
 .pr-ring:not(:disabled):active {
   transform: scale(0.94);
@@ -896,21 +902,34 @@
 .pr-toast {
   position: absolute;
   left: 50%;
-  bottom: 150px;
+  bottom: calc(env(safe-area-inset-bottom) + 220px);
   transform: translateX(-50%);
   z-index: 50;
   padding: 9px 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
   border-radius: 999px;
   background: var(--ink);
   color: var(--bgc);
   font-size: 12.5px;
   font-weight: 600;
-  white-space: nowrap;
+  white-space: normal;
   max-width: calc(100vw - 32px);
   overflow: hidden;
   text-overflow: ellipsis;
   animation: pr-toast 0.4s cubic-bezier(0.3, 1.6, 0.5, 1);
-  pointer-events: none;
+  pointer-events: auto;
+}
+.pr-toast button {
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px currentColor;
+  font-size: 12px;
+  font-weight: 700;
 }
 @keyframes pr-toast {
   from {

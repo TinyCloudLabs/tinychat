@@ -136,7 +136,9 @@
 /* Beside the tab bar the Ribbon fills the width; floating on the rail it sits centred. */
 .ribbon-float {
   position: relative;
-  height: 0;
+  /* Rail placement is a real grid row: 56px for the Ribbon plus 14px above
+     and below it keeps the Capture action row clear in landscape. */
+  height: 84px;
   pointer-events: none;
 }
 

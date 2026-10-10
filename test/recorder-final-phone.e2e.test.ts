@@ -310,6 +310,41 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await page.context().close();
   });
 
+  test("an unavailable mode toast stays actionable for four seconds without covering the privacy labels", async () => {
+    const { page } = await open("consented");
+    await page.evaluate(() => {
+      (window as unknown as Harness).exoRecorder.patchTranscriber({ id: "off" });
+    });
+    await modeIs(page, "Audio only");
+    await page.evaluate(() => {
+      (window as unknown as Harness).exoRecorder.transcriberResult =
+        "unavailable";
+    });
+    await slider(page).focus();
+    await page.keyboard.press("ArrowRight");
+
+    const toast = page.locator(".pr-toast");
+    const privateAction = toast.getByRole("button", { name: "Use Private" });
+    await shown(privateAction);
+    const toastBox = (await toast.boundingBox())!;
+    const labelsBox = (await page.locator(".pr-ends").boundingBox())!;
+    expect(
+      toastBox.x < labelsBox.x + labelsBox.width &&
+        toastBox.x + toastBox.width > labelsBox.x &&
+        toastBox.y < labelsBox.y + labelsBox.height &&
+        toastBox.y + toastBox.height > labelsBox.y,
+    ).toBe(false);
+
+    await page.waitForTimeout(4_000);
+    await shown(privateAction);
+    await page.evaluate(() => {
+      (window as unknown as Harness).exoRecorder.transcriberResult = null;
+    });
+    await privateAction.click();
+    await modeIs(page, "Private");
+    await page.context().close();
+  });
+
   test("signed out: Local is selected and the other stops say why they are off, from the account's state alone", async () => {
     const { page } = await open("consented");
     const stops = () =>
