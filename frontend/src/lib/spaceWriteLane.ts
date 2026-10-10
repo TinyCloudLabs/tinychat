@@ -1,49 +1,33 @@
+import { deadlineForSpaceCall, voiceNoteCallDeadlineMs } from "./voiceNotes/saveDeadline";
+
 /** Small voice-note storage jobs and the existing background drain share this queue. */
 let lane: Promise<unknown> = Promise.resolve();
 
-/** One request can be slow on mobile, but must never hold the shared queue forever. */
-export const SPACE_OPERATION_DEADLINE_MS = 90_000;
-let saveDeadlineMs = SPACE_OPERATION_DEADLINE_MS;
-
-/** Tests can shorten the deadline without replacing the platform timer APIs. */
-export function setVoiceNoteSaveDeadlineForTests(timeoutMs: number): void {
-  saveDeadlineMs = timeoutMs;
+export interface SpaceLaneCallDeadline {
+  operation: string;
+  /** Payload size for uploads; establishes 8 KB/s minimum throughput headroom. */
+  payloadBytes?: number;
+  timeoutMs?: number;
 }
 
-export class SpaceOperationTimeout extends Error {
-  readonly code = "SPACE_OPERATION_TIMEOUT";
-  constructor(readonly operation: string, readonly timeoutMs: number) {
-    super(`TinyCloud didn't respond while saving this note. It's still on this phone — try again.`);
-    this.name = "SpaceOperationTimeout";
-  }
-}
-
-export function withVoiceNoteSaveDeadline<T>(operation: string, request: Promise<T>, timeoutMs = saveDeadlineMs): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      console.warn(`[VoiceNotes] Timed out ${operation} after ${timeoutMs}ms`);
-      reject(new SpaceOperationTimeout(operation, timeoutMs));
-    }, timeoutMs);
-    request.then((value) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(value);
-    }, (error: unknown) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(error);
-    });
-  });
-}
-
-export function runOnSpaceLane<T>(job: () => Promise<T>, operation = "TinyCloud space operation"): Promise<T> {
-  const result = lane.then(() => withVoiceNoteSaveDeadline(operation, job(), saveDeadlineMs));
-  lane = result.then(() => undefined, () => undefined);
+/** Only call sites for one TinyCloud request pass a deadline; composite lane jobs remain serialized. */
+export function runOnSpaceLane<T>(job: (signal?: AbortSignal) => Promise<T>, deadline?: SpaceLaneCallDeadline): Promise<T> {
+  const previous = lane;
+  let release!: () => void;
+  lane = new Promise<void>((resolve) => { release = resolve; });
+  const result = previous.then(() => {
+    const controller = new AbortController();
+    let request: Promise<T>;
+    try { request = Promise.resolve(job(deadline ? controller.signal : undefined)); }
+    catch (error) { release(); throw error; }
+    // Keep the lane occupied until the underlying operation has actually settled,
+    // even when the waiting caller has received its timeout and cancellation signal.
+    request.then(release, release);
+    return deadline
+      ? deadlineForSpaceCall(deadline.operation, request, controller,
+        deadline.timeoutMs ?? voiceNoteCallDeadlineMs(deadline.payloadBytes ?? 0))
+      : request;
+  }, (error: unknown) => { release(); throw error; });
   return result;
 }
 

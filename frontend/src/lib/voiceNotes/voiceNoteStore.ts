@@ -53,6 +53,7 @@ import { readLegacyTranscriptWinner, readTranscriptCommit, legacyTranscriptMetad
 import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio,
   patchVoiceNoteMarkdown, resolveVoiceNoteRow } from "./voiceNoteRows";
 import { runOnSpaceLane } from "../spaceWriteLane";
+import { withVoiceNoteReadDeadline } from "./saveDeadline";
 import { base64ToBytes, bytesToBase64 } from "./voiceNoteAudio";
 import { adoptNote, loadNote, noteMarkdown, parseNoteMarkdown, type RecordingNote } from "./recordingNotes";
 
@@ -119,7 +120,8 @@ export function syncRecordingNote(tcw: TinyCloudWeb, id: string,
       const adopted = theirs !== null && (mine === null || Date.parse(theirs) > Date.parse(mine))
         ? (await adoptNote({ ...note, savedEditAt: theirs })).savedEditAt : mine;
       const body = noteMarkdown({ ...note, savedEditAt: adopted });
-      const put = await runOnSpaceLane(() => { checkpoint(); return tcw.kv.put(key, body, { contentType: "text/markdown" }); }, `KV put ${key}`);
+      const put = await runOnSpaceLane((signal) => { checkpoint(); return tcw.kv.put(key, body, { contentType: "text/markdown", signal }); },
+        { operation: `KV put ${key}`, payloadBytes: new TextEncoder().encode(body).byteLength });
       if (!put.ok) throw new Error(`Could not sync recording note: ${put.error.message}`);
       checkpoint();
       await patchVoiceNoteMarkdown(tcw, id, key, note.editedAt, checkpoint);
@@ -140,7 +142,7 @@ export function syncRecordingNote(tcw: TinyCloudWeb, id: string,
 
 export async function readRecordingNoteFromSpace(tcw: TinyCloudWeb, id: string): Promise<RecordingNote | null> {
   const key = voiceNoteMarkdownKvKey(id);
-  const result = await runOnSpaceLane(() => tcw.kv.get(key), `KV get ${key}`);
+  const result = await withVoiceNoteReadDeadline(`KV get recording note ${key}`, (signal) => tcw.kv.get(key, { signal }));
   if (!result.ok) {
     if (/NOT_FOUND|404/i.test(`${result.error.code ?? ""} ${result.error.message}`)) return null;
     throw new Error(`Could not load recording note: ${result.error.message}`);
@@ -180,7 +182,8 @@ export interface StoreAudioOptions {
   onProgress?: (storedBytes: number, totalBytes: number) => void;
   /** Injected in tests. */
   retryDelaysMs?: readonly number[];
-  schedule?: <T>(call: () => Promise<T>, operation?: string) => Promise<T>;
+  schedule?: <T>(call: (signal?: AbortSignal) => Promise<T>, operation?: string, timeoutMs?: number,
+    payloadBytes?: number) => Promise<T>;
   checkpoint?: () => void;
 }
 
@@ -335,13 +338,15 @@ export async function saveVoiceNote(
     // per-note keys and the manifest is written last. A retry therefore adopts
     // complete existing parts and cannot publish a partial file as complete.
     const emptyKey = transcriptKvKey(VOICE_NOTE_SOURCE, recording.id);
-    const empty = await runOnSpaceLane(() => { opts.checkpoint?.(); return tcw.kv.put(emptyKey, "[]",
-      { ifNoneMatch: "*", contentType: "application/json" }); }, `KV put ${emptyKey}`);
+    const empty = await runOnSpaceLane((signal) => { opts.checkpoint?.(); return tcw.kv.put(emptyKey, "[]",
+      { ifNoneMatch: "*", contentType: "application/json", signal }); }, { operation: `KV put ${emptyKey}` });
     if (!empty.ok && !/PRECONDITION|412/i.test(`${empty.error.code} ${empty.error.message}`))
       return { ok: false, error: { code: empty.error.code ?? "STORE_ERROR", message: empty.error.message } };
     opts.checkpoint?.();
-    const audio = await putVoiceNoteAudio(tcw, recording.id, source, { ...opts, schedule: (job, operation) =>
-      (opts.schedule ?? ((call, label) => runOnSpaceLane(call, label)))(() => { opts.checkpoint?.(); return job(); }, operation) });
+    const audio = await putVoiceNoteAudio(tcw, recording.id, source, { ...opts, schedule: (job, operation, timeoutMs, payloadBytes) =>
+      (opts.schedule ?? ((call, label, limit, size) => runOnSpaceLane(call, {
+        operation: label ?? "voice-note audio KV call", timeoutMs: limit, payloadBytes: size,
+      })))((signal) => { opts.checkpoint?.(); return job(signal); }, operation, timeoutMs, payloadBytes) });
     if (!audio.ok) return audio;
     const base = voiceNoteAudioKvKey(recording.id);
     opts.checkpoint?.();
@@ -532,7 +537,7 @@ async function readStoredAudio(tcw: TinyCloudWeb, sourceId: string, opts: LoadAu
 /** A note saved before TC-517: its whole audio as one JSON value at the base key. */
 async function readLegacyAudio(tcw: TinyCloudWeb, sourceId: string): Promise<StoreResult<VoiceNoteAudio>> {
   const key = voiceNoteAudioKvKey(sourceId);
-  const res = await runOnSpaceLane(() => tcw.kv.get(key), `KV get ${key}`);
+  const res = await tcw.kv.get(key);
   if (!res.ok) {
     return { ok: false, error: { code: res.error.code ?? "STORE_ERROR", message: `loadVoiceNoteAudio: ${res.error.message}` } };
   }

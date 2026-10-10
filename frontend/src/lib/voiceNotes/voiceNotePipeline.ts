@@ -4,7 +4,8 @@ import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedge
 import { VoiceNotes } from "./nativeVoiceNotes";
 import { isDiscarded, pendingStore, saveNoteForAccount } from "./recorderSaves";
 import { ensureVoiceNoteIdentity, sweepArchived } from "./voiceNoteRows";
-import { withVoiceNoteSaveDeadline } from "../spaceWriteLane";
+import { withVoiceNoteSaveDeadline } from "./saveDeadline";
+import { syncRecordingNote } from "./voiceNoteStore";
 
 export interface VoiceNotePipeline {
   process(ctx: AccountContext, id: string, trigger?: "stop" | "background"): Promise<void>;
@@ -53,13 +54,14 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
     check();
     // Identity does the initial archive repair, and reconcileAll sweeps once for the
     // session. A fresh Stop must not repeat that space-wide work before its upload.
-    const note = (await withVoiceNoteSaveDeadline(`native listPending id=${id}`, VoiceNotes.listPending())).recordings.find((r) => r.id === id);
+    const note = (await withVoiceNoteSaveDeadline(`native listPending id=${id}`, () => VoiceNotes.listPending())).recordings.find((r) => r.id === id);
     if (!note) return;
     check();
-    // Already-uploaded notes have no pending audio work. Their Markdown sync is
-    // driven by local note edits; re-reading row/KV here only serializes the next save.
-    if (note.ledger?.audio.state === "saved") return;
-    const finish = trackPending ? pendingStore.beginAutomaticSave() : () => undefined;
+    // Reconcile's post-upload pass retries Markdown sync for saved notes. Stop and
+    // background paths also avoid repeating that round trip for already-saved audio.
+    if (note.ledger?.audio.state === "saved" && !isDiscarded(id)) return;
+    const finish = trackPending && note.ledger?.audio.state !== "saved"
+      ? pendingStore.beginAutomaticSave() : () => undefined;
     try {
       const result = await saveNoteForAccount(tcw, ctx, note, check);
       if (result.kind === "failed") { check(); throw new Error(result.failure); }
@@ -83,7 +85,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
         try { await migrateLegacyDiscardLedger(undefined, check); }
         catch (error) { check(); migrationError = error; }
         check();
-        const notes = markLegacyOwnerUnknown((await withVoiceNoteSaveDeadline("native listPending for reconcile", VoiceNotes.listPending())).recordings);
+        const notes = markLegacyOwnerUnknown((await withVoiceNoteSaveDeadline("native listPending for reconcile", () => VoiceNotes.listPending())).recordings);
         check();
         // A phone can retain notes from another account. They are never candidates for
         // this space, so do not queue a schema check and archive sweep ahead of a new Stop.
@@ -111,6 +113,17 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
               if (isDiscarded(note.id)) discardError ??= error;
               else pendingStore.reportNoteFailure(note.id, error instanceof Error ? error.message : String(error));
             }
+          }
+        }
+        // Pending audio uploads went first. This untracked catch-up pass restores
+        // reconcile's Markdown retry without making saved audio look like an upload.
+        for (const note of notes) {
+          check();
+          if (note.owner !== ctx.did || note.ledger?.audio.state !== "saved" || isDiscarded(note.id)) continue;
+          try { await syncRecordingNote(tcw, note.id, check); }
+          catch (error) {
+            check();
+            console.warn("[VoiceNotes] Saved audio's Markdown sync is still pending", { id: note.id, error });
           }
         }
         if (migrationError) throw Object.assign(new Error(`Voice-note discard migration failed: ${String(migrationError)}`),

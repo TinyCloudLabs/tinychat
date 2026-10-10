@@ -6,7 +6,7 @@
 import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 
 import { base64ToBytes } from "./voiceNoteAudio";
-import { withVoiceNoteSaveDeadline } from "../spaceWriteLane";
+import { voiceNoteCallDeadlineMs, withVoiceNoteSaveDeadline } from "./saveDeadline";
 
 /**
  * What the OS says about the microphone right now.
@@ -320,7 +320,7 @@ export function nativeRecordingSource(
     size: recording.sizeBytes,
     async readPart(offset, length) {
       const chunk = await withVoiceNoteSaveDeadline(`native readAudioChunk id=${recording.id} offset=${offset} length=${length}`,
-        plugin.readAudioChunk({ id: recording.id, offset, length }));
+        () => plugin.readAudioChunk({ id: recording.id, offset, length }), voiceNoteCallDeadlineMs(length));
       const bytes = base64ToBytes(chunk.base64);
       if (bytes.byteLength !== length || chunk.size !== recording.sizeBytes) {
         throw new Error(
