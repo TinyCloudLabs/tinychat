@@ -1,10 +1,10 @@
 // Agent access enablement + renewal affordance (C3).
 // Rendered at the bottom of the chat thread column — consistent with the billingNotice pattern.
-// It floats 8rem above whatever covers the bottom (the tab bar on a phone, the
-// keyboard or the home indicator; index.css --tc-bottom-chrome), clear of the
-// composer and its toolbar row. It sits just above the conversation (z 5) and
-// under everything the user opens: the composer's menus (inside its z-10
-// layer), sheets and dialogs.
+// When access is available, it floats 7.75rem above whatever covers the bottom
+// (the tab bar on a phone, the keyboard or the home indicator;
+// index.css --tc-bottom-chrome), clear of the composer and its toolbar row. It
+// sits just above the conversation (z 5) and under everything the user opens:
+// the composer's menus (inside its z-10 layer), sheets and dialogs.
 // Hidden when capability is "unavailable" or "probing". Disappears after enable
 // and returns with explicit reconnect copy if a private-data tool reports expiry
 // or the backend answers a turn without private access.
@@ -75,9 +75,9 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
       aria-live="polite"
       aria-atomic="true"
       data-agent-enable-banner
-      className="fixed bottom-[calc(var(--tc-bottom-chrome)+8rem)] left-3 right-3 z-[5] sm:left-1/2 sm:right-auto sm:-translate-x-1/2 md:absolute md:bottom-32"
+      className="fixed bottom-[calc(var(--tc-bottom-chrome)+7.75rem)] left-3 right-3 z-[5] sm:left-1/2 sm:right-auto sm:-translate-x-1/2 md:absolute md:bottom-32"
     >
-      <div className="flex flex-col gap-2 rounded-lg border border-border bg-popover px-4 py-2.5 text-sm text-popover-foreground shadow-lg min-[380px]:flex-row min-[380px]:items-center sm:flex-row sm:items-center sm:gap-3">
+      <div className="flex items-center gap-2 rounded-lg border border-border bg-popover px-4 py-1.5 text-sm text-popover-foreground shadow-lg sm:gap-3">
         {enableError ? (
           <>
             <span className="text-xs text-destructive" data-agent-enable-error>{enableError}</span>
@@ -109,8 +109,8 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
                   : reconnecting
                     ? "Reconnect to let the agent read your private meeting transcripts again."
                     : passkeysSupported
-                      ? "You'll be prompted to sign in with your passkey once to authorize access."
-                      : "You'll be prompted to sign in with OpenKey once to authorize access."}
+                      ? "Sign in with your passkey."
+                      : "Sign in with OpenKey."}
               </span>
             </div>
             <button

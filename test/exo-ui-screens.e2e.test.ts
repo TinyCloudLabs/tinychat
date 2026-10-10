@@ -397,6 +397,9 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                   const markdownRect = markdown.getBoundingClientRect();
                   return {
                     bottomGap: window.innerHeight - bannerRect.bottom,
+                    bannerTop: bannerRect.top,
+                    bannerBottom: bannerRect.bottom,
+                    markdownBottom: markdownRect.bottom,
                     overlapsMarkdown: bannerRect.left < markdownRect.right &&
                       bannerRect.right > markdownRect.left &&
                       bannerRect.top < markdownRect.bottom &&
@@ -410,7 +413,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                     findings.push({ check: "chat-banner-offset", detail: `${Math.round(bannerLayout.bottomGap)}px from viewport bottom` });
                   }
                   if (bannerLayout.overlapsMarkdown) {
-                    findings.push({ check: "chat-banner-overlap", detail: "agent banner covers the Markdown demo card" });
+                    findings.push({ check: "chat-banner-overlap", detail: `banner ${Math.round(bannerLayout.bannerTop)}–${Math.round(bannerLayout.bannerBottom)}px; Markdown ends at ${Math.round(bannerLayout.markdownBottom)}px` });
                   }
                 }
               }
