@@ -51,6 +51,16 @@ function render(patch: Partial<NoteDetailViewProps> = {}) {
 }
 
 describe("NoteDetailView", () => {
+  test("a note only on this phone opens from its own audio, titled by its time, with nothing to transcribe or explain", () => {
+    const onPhone: LibraryItem = { ...VOICE, id: "on-phone:rec-1", title: null, onPhone: true };
+    const html = render({ item: onPhone, metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" }, transcription: undefined });
+    expect(html).toContain("Voice note ·");
+    expect(html).toContain('data-testid="note-transcript-on-phone"');
+    expect(html).toContain("No transcript yet. It shows here once this note is saved to your space.");
+    expect(html).not.toContain("Saving from your phone…");
+    expect(html).not.toContain("Transcribe");
+    expect(html).not.toContain("How this got here");
+  });
   test("an inserted voice-note row awaiting its audio explains its state", () => {
     expect(render({ item: VOICE, loadAudio: null, metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" } }))
       .toContain("Saving from your phone…");

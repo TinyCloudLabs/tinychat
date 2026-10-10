@@ -51,7 +51,7 @@ export function savedNoteMeta(
     item.durationSecs !== null ? formatSpokenDuration(item.durationSecs) : null,
     item.source === VOICE_NOTE_SOURCE ? recordedOn(metadata, platform) : null,
     transcriptRoute(metadata),
-    SAVED_NOTE_COPY.savedToSpace,
+    item.onPhone ? SAVED_NOTE_COPY.notInSpace : SAVED_NOTE_COPY.savedToSpace,
   ]
     .filter((part): part is string => !!part)
     .join(" · ");

@@ -1,6 +1,7 @@
 import { useContext, useMemo, type ReactNode } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { PlatformContext } from "@/lib/platform";
+import { voiceNoteTitle } from "@/lib/voiceNotes/voiceNoteStore";
 import { useResolvedTheme } from "@/lib/theme";
 import { useRecorder } from "../../recorder/RecorderProvider";
 import type { MeetingMetadataRead } from "@/lib/connectors/meetingExplorer";
@@ -51,7 +52,7 @@ export default function SavedNote({
     layout,
     theme,
     id: item.id,
-    title: item.title ?? "Untitled",
+    title: item.title ?? voiceNoteTitle(Date.parse(item.startedAt ?? "") || Date.now()),
     meta: savedNoteMeta(
       item,
       metadata?.status === "ok" ? metadata.metadata : null,

@@ -17,6 +17,12 @@
 //
 // A note's settled reads are cached; a failed one is read again when the note
 // is next opened (or on Try again), never pinned.
+//
+// Voice notes still on this phone are listed with the space's rows (`onPhone`):
+// one with no row yet is a stand-in that opens from the phone's own copy (its
+// audio, its notes and moments); one with a row is that row, marked "saving".
+// A note that leaves the phone keeps its stand-in until a list read that began
+// after it left has come back, so it never drops out between the two.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -31,14 +37,19 @@ import {
   type TranscriptRead,
 } from "@/lib/connectors/meetingExplorer";
 import { scheduledSpace } from "@/lib/spaceQueue";
+import { Capacitor } from "@capacitor/core";
+import { loadNote } from "@/lib/voiceNotes/recordingNotes";
+import { isDiscarded, type PendingNote } from "@/lib/voiceNotes/recorderSaves";
+import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { loadVoiceNoteAudioBlob, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
-import { voiceNoteTranscriptLocator } from "@/lib/voiceNotes/voiceNoteCommits";
+import { readTranscriptPreviews, voiceNoteTranscriptLocator } from "@/lib/voiceNotes/voiceNoteCommits";
 import { voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { captureEvents } from "../captureEvents";
 import type { LibraryFilter } from "./libraryKinds";
 import type { LibraryStatus } from "./LibraryListView";
 import type { LibraryItem } from "./LibraryRow";
 import type { AudioLoad } from "./NoteDetailView";
+import { noteSnippet, recordingIdOfOnPhoneId, withOnPhone } from "./onPhone";
 
 export interface NoteReads {
   metadata?: MeetingMetadataRead;
@@ -62,6 +73,16 @@ export interface Library {
 /** Capture away for longer than this re-reads the list when it comes back (plan §4.11). */
 export const RELIST_AFTER_MS = 2 * 60 * 1000;
 
+/** The note's audio from the phone's own file, which the player reads as a whole. */
+function localAudioLoad(recordingId: string): AudioLoad {
+  return async (signal) => {
+    const { url } = await VoiceNotes.localAudioUrl({ id: recordingId });
+    const response = await fetch(Capacitor.convertFileSrc(url), { signal });
+    if (!response.ok) throw new Error(`Could not read this phone's copy of the audio (${response.status}).`);
+    return response.blob();
+  };
+}
+
 const settled = (read: { status: string } | undefined) => read !== undefined && read.status !== "failed";
 const noop = () => undefined;
 
@@ -73,12 +94,18 @@ export function useLibrary(
     noteId: string | null;
     /** The phone app's voice-note transcriber, to hear when a transcript is saved; absent elsewhere. */
     transcriber?: { backendUrl: string; sessionStore: SessionStore } | null;
+    /** Voice notes this account still holds on the device; null when not known (not listed, listing failed, other account). */
+    onPhone?: readonly PendingNote[] | null;
     /** The clock (tests). */
     now?: () => number;
   },
 ): Library {
   const space = useMemo(() => scheduledSpace(tcw), [tcw]);
-  const [list, setList] = useState<{ status: LibraryStatus; items: LibraryItem[] }>({ status: "loading", items: [] });
+  const [list, setList] = useState<{ status: LibraryStatus; items: LibraryItem[]; previews: ReadonlyMap<string, string> }>({
+    status: "loading",
+    items: [],
+    previews: new Map(),
+  });
   const [listing, setListing] = useState(false);
   const [filter, setFilter] = useState<LibraryFilter>("all");
   const reads = useRef(new Map<string, NoteReads>());
@@ -88,6 +115,12 @@ export function useLibrary(
   const chain = useRef<Promise<unknown>>(Promise.resolve());
   const mounted = useRef(true);
   const listRun = useRef({ out: false, again: false });
+  const readsStarted = useRef(0);
+  // Notes that left the phone, kept as stand-ins until a list read begun after they left has come back.
+  const lingering = useRef(new Map<string, { note: PendingNote; since: number }>());
+  const [lingerRevision, setLingerRevision] = useState(0);
+  const [moments, setMoments] = useState<ReadonlyMap<string, string>>(new Map());
+  const momentsLoaded = useRef(new Set<string>());
   const clock = useRef(options.now ?? Date.now);
   clock.current = options.now ?? Date.now;
 
@@ -116,9 +149,32 @@ export function useLibrary(
     // Try again shows the skeleton; rows already on screen stay until the list answers.
     setList((current) => (current.status === "failed" ? { ...current, status: "loading" } : current));
     const readList = async (): Promise<void> => {
+      const started = ++readsStarted.current;
       const read = await listMeetingsRead(space);
+      let previews: ReadonlyMap<string, string> | null = null;
+      if (read.status === "ok") {
+        try {
+          previews = await readTranscriptPreviews(space);
+        } catch (caught) {
+          console.error("Library: could not read transcript previews; voice notes without a moment keep the generic title", caught);
+        }
+      }
       if (!mounted.current) return;
-      setList((current) => (read.status === "ok" ? { status: "ready", items: read.meetings } : { status: "failed", items: current.items }));
+      setList((current) =>
+        read.status === "ok"
+          ? { status: "ready", items: read.meetings, previews: previews ?? current.previews }
+          : { status: "failed", items: current.items, previews: current.previews },
+      );
+      if (read.status === "ok") {
+        let cleared = false;
+        for (const [id, entry] of lingering.current) {
+          if (entry.since < started) {
+            lingering.current.delete(id);
+            cleared = true;
+          }
+        }
+        if (cleared) setLingerRevision((n) => n + 1);
+      }
       if (listRun.current.again) {
         listRun.current.again = false;
         void enqueue(readList);
@@ -150,10 +206,85 @@ export function useLibrary(
   // Something landed (a voice note saved, an upload's or a notetaker's transcript).
   useEffect(() => captureEvents.on("library-changed", () => refresh()), [refresh]);
 
-  const item = options.noteId === null ? null : (list.items.find((entry) => entry.id === options.noteId) ?? null);
+  // Voice notes still on the phone: a note that has just left it is kept until the list has caught up.
+  const onPhoneNotes = options.onPhone ?? null;
+  const lastOnPhone = useRef<{ space: typeof space; notes: readonly PendingNote[] } | null>(null);
+  useEffect(() => {
+    const previous = lastOnPhone.current;
+    lastOnPhone.current = onPhoneNotes === null ? null : { space, notes: onPhoneNotes };
+    if (previous === null || previous.space !== space || onPhoneNotes === null) return;
+    const still = new Set(onPhoneNotes.map((note) => note.id));
+    const left = previous.notes.filter((note) => !still.has(note.id) && !isDiscarded(note.id));
+    if (left.length === 0) return;
+    for (const note of left) lingering.current.set(note.id, { note, since: readsStarted.current });
+    setLingerRevision((n) => n + 1);
+    refresh();
+  }, [onPhoneNotes, refresh, space]);
+
+  // A voice note's first moment titles its row, ahead of its transcript.
+  const voiceSourceIds = useMemo(
+    () => list.items.filter((entry) => entry.source === VOICE_NOTE_SOURCE).map((entry) => entry.sourceId)
+      .concat((onPhoneNotes ?? []).map((note) => note.id)),
+    [list.items, onPhoneNotes],
+  );
+  const lastOpened = useRef<string | null>(null);
+  useEffect(() => {
+    // A note just closed may have had its moments edited: read it again.
+    const reread = lastOpened.current;
+    lastOpened.current = options.noteId === null ? null : (recordingIdOfOnPhoneId(options.noteId) ?? null);
+    const todo = [...new Set(voiceSourceIds)].filter((id) => !momentsLoaded.current.has(id) || id === reread);
+    if (todo.length === 0) return;
+    for (const id of todo) momentsLoaded.current.add(id);
+    void (async () => {
+      const found: [string, string | null][] = [];
+      for (const id of todo) {
+        try {
+          const note = await loadNote(id);
+          found.push([id, noteSnippet(note?.moments.find((moment) => noteSnippet(moment.label) !== null)?.label)]);
+        } catch (caught) {
+          momentsLoaded.current.delete(id);
+          console.warn(`Library: could not read the moments of voice note ${id}; its row is titled without them`, caught);
+        }
+      }
+      if (!mounted.current || found.length === 0) return;
+      setMoments((current) => {
+        const next = new Map(current);
+        for (const [id, snippet] of found) {
+          if (snippet === null) next.delete(id);
+          else next.set(id, snippet);
+        }
+        return next;
+      });
+    })();
+  }, [options.noteId, voiceSourceIds]);
+
+  const items = useMemo(() => {
+    const merged = withOnPhone(
+      list.items,
+      onPhoneNotes ?? [],
+      [...lingering.current.values()].map((entry) => entry.note),
+    );
+    return merged.map((entry) => {
+      if (entry.source !== VOICE_NOTE_SOURCE) return entry;
+      const snippet = moments.get(entry.sourceId) ?? noteSnippet(list.previews.get(entry.sourceId));
+      return snippet === null ? entry : { ...entry, snippet };
+    });
+    // lingerRevision: the lingering stand-ins live in a ref.
+  }, [list.items, list.previews, moments, onPhoneNotes, lingerRevision]);
+
+  // The open note by its id; a stand-in's sheet stays open when its row replaces it.
+  const item = useMemo(() => {
+    if (options.noteId === null) return null;
+    const exact = items.find((entry) => entry.id === options.noteId);
+    if (exact) return exact;
+    const recordingId = recordingIdOfOnPhoneId(options.noteId);
+    return recordingId === null ? null : (items.find((entry) => entry.source === VOICE_NOTE_SOURCE && entry.sourceId === recordingId) ?? null);
+  }, [items, options.noteId]);
 
   const readNote = useCallback(
     (note: LibraryItem) => {
+      // A note only on this phone has nothing in the space to read.
+      if (note.onPhone) return;
       const cached = reads.current.get(note.id) ?? {};
       if ((settled(cached.metadata) && settled(cached.transcript)) || reading.current.has(note.id)) return;
       // Drop a previous failure, so the note reads "loading" rather than restating it.
@@ -213,7 +344,9 @@ export function useLibrary(
   }, [tcw, transcriberBackend, transcriberSession]);
 
   // Re-read the open note once its reads were dropped (a transcript saved).
-  const noteReads = item ? (reads.current.get(item.id) ?? {}) : {};
+  const noteReads: NoteReads = item?.onPhone
+    ? { metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" } }
+    : item ? (reads.current.get(item.id) ?? {}) : {};
   useEffect(() => {
     if (item && noteReads.metadata === undefined && noteReads.transcript === undefined) readNote(item);
   });
@@ -223,9 +356,12 @@ export function useLibrary(
   const audioBase = audio?.status === "stored" ? audio.base : null;
   const voiceSourceId = item?.source === VOICE_NOTE_SOURCE ? item.sourceId : null;
   const pendingAudioRow = voiceSourceId !== null && meta !== null && Object.keys(meta).length === 0;
+  const onThisPhone = voiceSourceId !== null && (item?.onPhone === true || (item?.saving === true && pendingAudioRow));
   // The stored file is read only when the player asks, one part per queued
   // call; the player's signal stops it when the note closes.
   const loadAudio = useMemo<AudioLoad | null>(() => {
+    // The phone's own copy, until the space has the audio.
+    if (voiceSourceId !== null && onThisPhone) return localAudioLoad(voiceSourceId);
     if (voiceSourceId !== null && !pendingAudioRow) {
       return async (signal, onProgress) => {
         const res = await loadVoiceNoteAudioBlob(space, voiceSourceId, { signal, onProgress });
@@ -235,7 +371,7 @@ export function useLibrary(
     }
     if (audioBase !== null) return (signal, onProgress) => getAudio(space.kv, audioBase, { signal, onProgress });
     return null;
-  }, [audioBase, pendingAudioRow, space, voiceSourceId]);
+  }, [audioBase, onThisPhone, pendingAudioRow, space, voiceSourceId]);
 
   const retry = useCallback(() => {
     if (list.status === "failed") refresh();
@@ -244,7 +380,7 @@ export function useLibrary(
 
   return {
     status: list.status,
-    items: list.items,
+    items,
     listing,
     filter,
     setFilter,

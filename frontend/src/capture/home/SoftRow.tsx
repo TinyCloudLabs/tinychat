@@ -18,6 +18,7 @@ import {
   issueMeta,
   type HomeIssue,
 } from "./captureIssues";
+import { RowBadge } from "../library/RowBadge";
 import { HOME_COPY } from "./homeCopy";
 
 export interface SoftRowProps {
@@ -25,6 +26,8 @@ export interface SoftRowProps {
   title: string;
   /** "Today 2:18 AM" (or the source and time). */
   meta: string;
+  /** "On this phone" or "Saving…": a note not yet settled in the space; said in the label, shown before the meta. */
+  badge?: string;
   durationSecs?: number | null;
   issue?: HomeIssue;
   /** A destination: the row is a link. */
@@ -47,10 +50,12 @@ function stateLine(issue: HomeIssue | undefined, meta: string): string {
 export function softRowLabel(
   props: Pick<
     SoftRowProps,
-    "title" | "meta" | "durationSecs" | "issue" | "onActivate"
+    "title" | "meta" | "badge" | "durationSecs" | "issue" | "onActivate"
   >,
 ): string {
-  const parts = [props.title, stateLine(props.issue, props.meta)];
+  const parts = [props.title];
+  if (props.badge) parts.push(props.badge);
+  parts.push(stateLine(props.issue, props.meta));
   if (props.durationSecs != null)
     parts.push(formatSpokenDuration(props.durationSecs));
   if (props.issue && issueIsInformational(props.issue))
@@ -98,6 +103,7 @@ export function SoftRow(props: SoftRowProps) {
           data-failed={failed ? "true" : undefined}
         >
           {issue?.kind === "finalization_timed_out" && <Spinner />}
+          {props.badge && <RowBadge>{props.badge}</RowBadge>}
           {stateLine(issue, props.meta)}
         </span>
       </span>

@@ -425,9 +425,18 @@ export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
 /** What the phone last listed as pending: not yet asked, a count, or a listing that failed. */
 export type PendingListing = { state: "unknown" } | { state: "ok"; count: number } | { state: "error"; message: string };
 
+/** One recording still on the device, as the Library lists it until its space row lands. */
+export interface PendingNote {
+  id: string;
+  startedAt: number;
+  durationMs: number;
+}
+
 /** Recordings awaiting a space save, as the recorder views show them. */
 export interface PendingSnapshot {
   listing: PendingListing;
+  /** The recordings behind a `listing` of state "ok" (this account's); absent until listed, after a failed listing, and in screen fixtures. */
+  notes?: PendingNote[];
   /** Which signed-in account this listing was filtered for. */
   accountDid?: string | null;
   /** A save of them is running (savePendingRecordings). */
@@ -509,7 +518,7 @@ export const pendingStore = {
       accountChanges++;
       noteFailures.clear();
       generalFailure = null;
-      publishPending({ accountDid: did, listing: { state: "unknown" }, lastError: null });
+      publishPending({ accountDid: did, listing: { state: "unknown" }, notes: undefined, lastError: null });
     }
     activeAccountDid = did;
     void relistPending(null);
@@ -537,8 +546,11 @@ async function relistPending(lastError?: string | null): Promise<void> {
     );
     const pendingIds = new Set(pending.map((note) => note.id));
     for (const id of noteFailures.keys()) if (!pendingIds.has(id)) noteFailures.delete(id);
-    publishPending({ accountDid: activeAccountDid, listing: { state: "ok", count: pending.length }, lastError: currentFailure() });
+    const notes = pending
+      .filter((recording) => !isDiscarded(recording.id))
+      .map((recording) => ({ id: recording.id, startedAt: recording.startedAt, durationMs: recording.durationMs }));
+    publishPending({ accountDid: activeAccountDid, listing: { state: "ok", count: pending.length }, notes, lastError: currentFailure() });
   } catch (caught) {
-    publishPending({ listing: { state: "error", message: listingFailure(caught) }, lastError: currentFailure() });
+    publishPending({ listing: { state: "error", message: listingFailure(caught) }, notes: undefined, lastError: currentFailure() });
   }
 }

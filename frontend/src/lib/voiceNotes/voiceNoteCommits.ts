@@ -69,6 +69,20 @@ export async function readTranscriptCommit(tcw: Pick<TinyCloudWeb, "sql">, sourc
   } : null;
 }
 
+/** The committed transcripts' previews by recording id, one read: what a list titles a note by. */
+export async function readTranscriptPreviews(tcw: Pick<TinyCloudWeb, "sql">): Promise<Map<string, string>> {
+  const previews = new Map<string, string>();
+  if (!await hasTranscriptCommitTable(tcw)) return previews;
+  const result = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
+    "SELECT source_id, preview FROM voice_note_transcript WHERE outcome = 'transcribed' AND preview IS NOT NULL AND preview != ''", [],
+  );
+  if (!result.ok) throw new Error(`Read transcript previews: ${result.error.message}`);
+  for (const row of result.data.rows as unknown[][]) {
+    if (typeof row[0] === "string" && typeof row[1] === "string") previews.set(row[0], row[1]);
+  }
+  return previews;
+}
+
 export async function readLegacyTranscriptWinner(tcw: Pick<TinyCloudWeb, "sql">, sourceId: string): Promise<LegacyTranscriptRow | null> {
   const result = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
     `SELECT g.id, g.metadata FROM connector_meeting g
