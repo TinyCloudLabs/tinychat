@@ -69,7 +69,13 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    @objc func status(_ call: CAPPluginCall) { DispatchQueue.main.async { call.resolve(self.capture.status()) } }
+    @objc func status(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            var result = self.capture.status()
+            result["microphonePermissionGranted"] = AVAudioApplication.shared.recordPermission == .granted
+            call.resolve(result)
+        }
+    }
     @objc func openSettings(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
             guard let url = URL(string: UIApplication.openSettingsURLString) else {
