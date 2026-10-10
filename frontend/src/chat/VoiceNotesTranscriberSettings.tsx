@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { onDeviceSttStore, onDeviceModelLine, primaryOnDeviceModel } from "@/lib/voiceNotes/onDeviceSttStore";
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { nativeVoiceNotesAvailable, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { readDefaultTranscriber, setDefaultTranscriber } from "@/lib/voiceNotes/transcriberPreference";
+import { readDefaultTranscriber, setDefaultTranscriber, subscribeTranscriberPreference } from "@/lib/voiceNotes/transcriberPreference";
 
 type Transcription = ReturnType<typeof useRecorder>["transcription"];
 
@@ -51,15 +51,28 @@ export function VoiceNotesTranscriberSettings() {
   const model = primaryOnDeviceModel(sttStatus);
   const modelLine = onDeviceModelLine(sttStatus);
 
+  const [error, setError] = useState<string | null>(null);
+
   useEffect(() => {
-    void readDefaultTranscriber().then(setValue).catch((err: unknown) => console.warn("[VoiceNotes] Could not read the default transcriber", err));
+    const read = () => {
+      readDefaultTranscriber().then(setValue).catch((err: unknown) => {
+        console.error("[VoiceNotes] Could not read the default transcriber", err);
+        setError(`Could not read the default transcriber: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    };
+    read();
+    return subscribeTranscriberPreference(read);
   }, []);
 
   if (!nativeVoiceNotesAvailable() || value === null) return null;
 
   const choose = (next: TranscriberId) => {
-    setValue(next);
-    void setDefaultTranscriber(next).catch((err: unknown) => console.warn("[VoiceNotes] Could not save the default transcriber", err));
+    setError(null);
+    // The control follows the engine's default through the preference listener, so it only moves once the engine has it.
+    setDefaultTranscriber(next).catch((err: unknown) => {
+      console.error("[VoiceNotes] Could not save the default transcriber", err);
+      setError(`Could not save the default transcriber: ${err instanceof Error ? err.message : String(err)}`);
+    });
   };
 
   const { privateOffered, options } = transcriberOptions(signedIn, transcription);
@@ -69,6 +82,7 @@ export function VoiceNotesTranscriberSettings() {
       <p className="text-xs text-muted-foreground">New recordings are transcribed this way by default. Each recording can still choose a different route.</p>
       <SegmentedControl<TranscriberId> aria-label="Default transcriber" value={value} onValueChange={choose} options={options} />
       {!privateOffered && <PrivateUnavailable signedIn={signedIn} transcription={transcription} />}
+      {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
       {value === "on-device" && (
         <div className="flex items-center justify-between gap-3 text-xs">
           <span className="text-muted-foreground">On-device model: {modelLine.text}</span>
