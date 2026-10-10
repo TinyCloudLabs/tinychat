@@ -5,8 +5,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Button } from "@/components/ui/button";
-import { onDeviceSttStore, onDeviceModelLine, primaryOnDeviceModel } from "@/lib/voiceNotes/onDeviceSttStore";
-import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
+import { downloadOnDeviceModel, onDeviceSttStore, onDeviceModelLine, primaryOnDeviceModel } from "@/lib/voiceNotes/onDeviceSttStore";
 import { nativeVoiceNotesAvailable, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { readDefaultTranscriber, setDefaultTranscriber } from "@/lib/voiceNotes/transcriberPreference";
 
@@ -18,6 +17,7 @@ const OPTIONS: { value: TranscriberId; label: string }[] = [
 
 export function VoiceNotesTranscriberSettings() {
   const [value, setValue] = useState<TranscriberId | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const model = primaryOnDeviceModel(sttStatus);
   const modelLine = onDeviceModelLine(sttStatus);
@@ -41,12 +41,13 @@ export function VoiceNotesTranscriberSettings() {
         <div className="flex items-center justify-between gap-3 text-xs">
           <span className="text-muted-foreground">On-device model: {modelLine.text}</span>
           {model && model.state !== "ready" && model.state !== "downloading" && model.state !== "queued" && (
-            <Button type="button" variant="outline" size="sm" onClick={() => void OnDeviceStt.downloadNow({ allowCellular: false })}>
+            <Button type="button" variant="outline" size="sm" onClick={() => { setDownloadError(null); void downloadOnDeviceModel().then(setDownloadError); }}>
               Download
             </Button>
           )}
         </div>
       )}
+      {value === "on-device" && downloadError && <p role="alert" className="text-xs text-destructive">{downloadError}</p>}
     </div>
   );
 }

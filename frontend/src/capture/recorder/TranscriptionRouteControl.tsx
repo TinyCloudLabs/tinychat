@@ -17,7 +17,7 @@ import { hapticSelection } from "@/lib/haptics";
 import { cn } from "@/lib/utils";
 import { localTranscriptionUnavailable } from "@/lib/voiceNotes/captureEngine";
 import { VoiceNotes, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { onDeviceSttStore, onDeviceModelLine } from "@/lib/voiceNotes/onDeviceSttStore";
+import { downloadOnDeviceModel, onDeviceSttStore, onDeviceModelLine } from "@/lib/voiceNotes/onDeviceSttStore";
 import { isOnDeviceReady, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { readDefaultTranscriber, setRecordingTranscriber } from "@/lib/voiceNotes/transcriberPreference";
 import type { RecorderValue } from "./RecorderProvider";
@@ -256,13 +256,19 @@ export function TranscriptionRouteControl(props: {
           )}
           {route === "on-device" && primaryModel && primaryModel.state !== "ready" && primaryModel.state !== "downloading" && primaryModel.state !== "queued" && (
             <Button type="button" variant="outline" size="sm" data-testid="voice-note-on-device-download"
-              onClick={() => void OnDeviceStt.downloadNow({ allowCellular: false })}>
+              onClick={() => { setNotice(null); void downloadOnDeviceModel().then(setNotice); }}>
               Download
             </Button>
           )}
           {route === "on-device" && (primaryModel?.state === "downloading" || primaryModel?.state === "queued") && (
             <Button type="button" variant="outline" size="sm" data-testid="voice-note-on-device-cancel-download"
-              onClick={() => void OnDeviceStt.cancelDownload()}>
+              onClick={() => {
+                setNotice(null);
+                OnDeviceStt.cancelDownload().catch((caught: unknown) => {
+                  console.error("[OnDeviceStt] cancelDownload failed", caught);
+                  setNotice(`Could not cancel the download: ${caught instanceof Error ? caught.message : String(caught)}`);
+                });
+              }}>
               Cancel
             </Button>
           )}

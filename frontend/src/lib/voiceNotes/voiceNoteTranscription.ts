@@ -965,11 +965,22 @@ export interface VoiceNoteTranscriberSnapshot {
 /** `saved`: a note's outcome was written to the space (refresh the list). */
 export type VoiceNoteTranscriberEvent = { kind: "changed" } | { kind: "saved"; sourceId: string };
 
+export interface VoiceNoteCheckOptions {
+  current?: () => boolean;
+  automatic?: boolean;
+}
+
 export interface VoiceNoteTranscriber {
   snapshot(): VoiceNoteTranscriberSnapshot;
   subscribe(listener: (event: VoiceNoteTranscriberEvent) => void): () => void;
-  /** Whether private cloud can be offered (bounded retries when the check itself fails). */
-  check(): Promise<void>;
+  /**
+   * Whether private cloud can be offered (bounded retries when the check itself fails).
+   * `current` says this caller's account is still the signed-in one: once it is false the
+   * check stops, retries and resumes nothing, and sends nothing for this account.
+   * `automatic` (mount, foreground) reuses a fresh answer and backs off after a failure;
+   * a user's "Check again" leaves it out and always asks.
+   */
+  check(options?: VoiceNoteCheckOptions): Promise<void>;
   /** The one-time "Use private cloud". Resumes notes a previous run left in flight. */
   consent(): void;
   /** Stops sending: waiting notes are dropped, the running one stops before its upload, unsent jobs are cancelled. */
@@ -991,12 +1002,20 @@ export interface VoiceNoteTranscriberDeps {
   sleep?: (ms: number) => Promise<void>;
   /** Waits between availability checks after one fails (plus the first try), as on the desktop. */
   checkRetryMs?: readonly number[];
+  /** How long an automatic check reuses an answered (available / off) result. */
+  freshMs?: number;
+  /** Waits before an automatic check may try again after the 1st, 2nd, ... failed check; the last repeats. */
+  failedBackoffMs?: readonly number[];
+  now?: () => number;
 }
 
 export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): VoiceNoteTranscriber {
   const runNote = deps.runNote ?? transcribeVoiceNote;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const checkRetryMs = deps.checkRetryMs ?? [2_000, 5_000];
+  const freshMs = deps.freshMs ?? 5 * 60_000;
+  const failedBackoffMs = deps.failedBackoffMs ?? [15_000, 60_000, 5 * 60_000];
+  const now = deps.now ?? Date.now;
   const cloud = deps.cloud;
   const listeners = new Set<(event: VoiceNoteTranscriberEvent) => void>();
   const jobs = new Map<string, NoteTranscriptionState>();
@@ -1011,12 +1030,17 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   let chain: Promise<void> = Promise.resolve();
   let resumed = false;
   let checking: Promise<void> | null = null;
+  /** The newest caller's "this account is still signed in"; none until a hook-managed check names one. */
+  let accountCurrent: (() => boolean) | null = null;
+  let settledAt: number | null = null;
+  let failedChecks = 0;
 
   const emit = (event: VoiceNoteTranscriberEvent = { kind: "changed" }) => {
     snapshot = { ...state, jobs: new Map(jobs) };
     for (const listener of listeners) listener(event);
   };
-  const on = () => state.availability === "available" && state.consented && state.capabilities !== null;
+  const identityCurrent = () => accountCurrent === null || accountCurrent();
+  const on = () => identityCurrent() && state.availability === "available" && state.consented && state.capabilities !== null;
 
   const enqueue = (sourceId: string, audio?: VoiceNoteAudio) => {
     if (!on() || cloud === null) return;
@@ -1031,6 +1055,10 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       if (!waiting.delete(sourceId)) return;
       if (!on() || state.capabilities === null) {
         jobs.delete(sourceId);
+        if (!identityCurrent()) {
+          resumed = false;
+          console.warn("[Transcription] Not starting a private cloud job: its account is no longer the signed-in one", sourceId);
+        }
         emit();
         return;
       }
@@ -1041,7 +1069,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           capabilities: state.capabilities,
           sourceId,
           audio,
-          allowed: () => state.consented,
+          allowed: () => state.consented && identityCurrent(),
           report: (status) => {
             if (jobs.get(sourceId)?.kind !== "active") return;
             jobs.set(sourceId, { kind: "active", status });
@@ -1052,7 +1080,11 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         emit({ kind: "saved", sourceId });
       } catch (err) {
         // Whatever stopped a note after the user turned transcription off is not a failure to show.
-        if (!state.consented || voiceNoteErrorCode(err) === "transcription_off") jobs.delete(sourceId);
+        if (!identityCurrent()) {
+          resumed = false;
+          jobs.delete(sourceId);
+          console.warn("[Transcription] Stopped a private cloud job: its account is no longer the signed-in one", sourceId);
+        } else if (!state.consented || voiceNoteErrorCode(err) === "transcription_off") jobs.delete(sourceId);
         else jobs.set(sourceId, { kind: "failed", ...voiceNoteTranscriptionFailure(err) });
         emit();
       }
@@ -1075,15 +1107,21 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       };
     },
 
-    check() {
+    check(options = {}) {
       if (cloud === null) return Promise.resolve();
+      if (options.current) accountCurrent = options.current;
       if (checking !== null) return checking;
+      if (options.automatic && settledAt !== null && state.availability !== "checking") {
+        const wait = state.availability === "failed" ? failedBackoffMs[Math.min(failedChecks, failedBackoffMs.length) - 1] ?? 0 : freshMs;
+        if (now() - settledAt < wait) return Promise.resolve();
+      }
       // A re-check (every mount) keeps an answer it already has, so the card does not flicker.
       if (state.availability !== "available") {
         state = { ...state, availability: "checking" };
         emit();
       }
       const attempt = async () => {
+        if (!identityCurrent()) return { availability: "stale" } as const;
         try {
           const caps = await cloud.capabilities();
           return caps === null ? ({ availability: "hidden" } as const) : ({ availability: "available", caps } as const);
@@ -1092,6 +1130,10 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           return { availability: "failed" } as const;
         }
       };
+      const stale = () => {
+        resumed = false;
+        console.warn("[Transcription] Dropped a private cloud check: its account is no longer the signed-in one");
+      };
       checking = (async () => {
         let result = await attempt();
         for (const waitMs of checkRetryMs) {
@@ -1099,6 +1141,9 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           await sleep(waitMs);
           result = await attempt();
         }
+        if (result.availability === "stale" || !identityCurrent()) return stale();
+        failedChecks = result.availability === "failed" ? failedChecks + 1 : 0;
+        settledAt = now();
         state = {
           ...state,
           availability: result.availability,

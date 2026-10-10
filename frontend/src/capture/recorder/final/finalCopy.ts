@@ -46,6 +46,7 @@ export const FINAL_COPY = {
   powerfulOnly: "Powerful only",
   whisperUnavailable: "Get Whisper for this Mac",
   modelUnavailable: "Get the on-device model",
+  modelTryAgain: "Try the download again",
   modes: {
     skipName: "Audio only",
     localName: "Local",
