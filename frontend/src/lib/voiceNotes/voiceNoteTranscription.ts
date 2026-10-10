@@ -48,7 +48,6 @@ import {
 } from "../privateCloud";
 import { captureEngineKind } from "./captureEngine";
 import { nativeHttpFileUploadSupported, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
-import { cloudHoldFor } from "./transcriberPreference";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import {
   base64ToBytes,
@@ -168,6 +167,7 @@ export function createFetchPtxPut(fetchImpl: typeof fetch = (input, init) => fet
 export const VOICE_NOTE_PENDING_JOBS_KEY = "exo.voiceNotes.privateCloudJobs";
 /** The one-time "Use private cloud" for voice notes (its own key: the disclosure differs from the desktop's). */
 export const VOICE_NOTE_CONSENT_KEY = "exo.voiceNotes.privateCloudConsent";
+export const VOICE_NOTE_HELD_KEY = "exo.voiceNotes.heldFromTranscription";
 
 export function accountStorageKey(base: string, accountDid: string): string {
   return `${base}:${accountDid}`;
@@ -255,6 +255,36 @@ export function localStorageVoiceNoteConsentStore(
       } catch {
         // Best-effort: the choice then lasts for this session only.
       }
+    },
+  };
+}
+
+/** Said on a note that began outside the app and has not been sent. */
+export const HELD_NOTE_MESSAGE = "This note was started from a shortcut, so it was not sent for transcription. Transcribe with Private to send it.";
+
+/** The notes held back, per account. A hold is released only by that note's own Transcribe. */
+export interface VoiceNoteHoldStore {
+  read(): string[];
+  write(sourceIds: string[]): void;
+}
+
+export function localStorageVoiceNoteHoldStore(
+  accountDid: string,
+  storage: KeyValueStorage | undefined = globalThis.localStorage,
+): VoiceNoteHoldStore {
+  const key = accountStorageKey(VOICE_NOTE_HELD_KEY, accountDid);
+  return {
+    read: () => {
+      const raw = storage?.getItem(key);
+      if (raw === null || raw === undefined) return [];
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed) || parsed.some((id) => typeof id !== "string")) throw new Error("The held-notes list is not a list of ids");
+      return parsed as string[];
+    },
+    write: (sourceIds) => {
+      if (!storage) throw new Error("No storage to keep the held notes in");
+      if (sourceIds.length === 0) storage.removeItem(key);
+      else storage.setItem(key, JSON.stringify(sourceIds));
     },
   };
 }
@@ -953,7 +983,7 @@ export type NoteTranscriptionState =
   | { kind: "active"; status: VoiceNoteTranscriptionStatus }
   | { kind: "done"; outcome: "transcribed" | "no_speech" }
   | ({ kind: "failed" } & VoiceNoteTranscriptionFailure)
-  /** Not sent: the note's mode reaches further than the user's stored choice. Only Transcribe sends it. */
+  /** Not sent: the note began outside the app. Only the user's Transcribe on this note sends it. */
   | { kind: "held"; message: string };
 
 export type TranscriptionAvailability = "checking" | "available" | "hidden" | "failed";
@@ -979,7 +1009,11 @@ export interface VoiceNoteTranscriber {
   turnOff(): Promise<void>;
   /** Transcribe / Retry for one note. Only while available and consented. */
   transcribe(sourceId: string, audio?: VoiceNoteAudio): void;
-  /** Use the committed native options; v1 notes without options keep their consent-gated behaviour. */
+  /**
+   * Use the committed native options. A note that did not begin in the app (a shortcut, intent or widget start, or a
+   * source this app does not know) is never sent from here, whatever the defaults say: it is held, and only
+   * `transcribe` for that note releases it.
+   */
   noteSaved(recording: Pick<VoiceNoteRecording, "id" | "durationMs" | "options" | "source">, audio?: VoiceNoteAudio): void;
 }
 
@@ -987,6 +1021,8 @@ export interface VoiceNoteTranscriberDeps {
   /** Null when this build cannot transcribe (no PTX origin): always hidden. */
   cloud: VoiceNoteCloud | null;
   consent: VoiceNoteConsentStore;
+  /** Which notes were held back from transcription, kept across launches. */
+  holds: VoiceNoteHoldStore;
   /** The current session's space client. */
   tcw: () => TinyCloudWeb;
   /** Injected in tests. */
@@ -1003,6 +1039,22 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   const cloud = deps.cloud;
   const listeners = new Set<(event: VoiceNoteTranscriberEvent) => void>();
   const jobs = new Map<string, NoteTranscriptionState>();
+  const held = new Set<string>();
+  try {
+    for (const sourceId of deps.holds.read()) {
+      held.add(sourceId);
+      jobs.set(sourceId, { kind: "held", message: HELD_NOTE_MESSAGE });
+    }
+  } catch (err) {
+    console.error("[VoiceNotes] Could not read which notes are held back from transcription; notes started outside the app stay held until they are offered again", err);
+  }
+  const saveHolds = () => {
+    try {
+      deps.holds.write([...held]);
+    } catch (err) {
+      console.error("[VoiceNotes] Could not keep which notes are held back from transcription; they stay held until the app closes", err);
+    }
+  };
   /** Notes queued but not started; turning off empties it, and a dropped note never starts. */
   const waiting = new Set<string>();
   let state: Omit<VoiceNoteTranscriberSnapshot, "jobs"> = {
@@ -1140,18 +1192,28 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
 
     transcribe(sourceId, audio) {
       enqueue(sourceId, audio);
+      if (held.has(sourceId) && jobs.get(sourceId)?.kind === "active") {
+        held.delete(sourceId);
+        saveHolds();
+      }
     },
 
     noteSaved(recording, audio) {
       if (recording.options && recording.options.transcriber !== "private-cloud") return;
-      if (!on()) return;
-      const hold = recording.options ? cloudHoldFor(recording.options.transcriber, recording.source) : null;
-      if (hold !== null) {
-        console.warn("[VoiceNotes] Held a note back from private-cloud transcription", { id: recording.id, source: recording.source, reason: hold });
-        jobs.set(recording.id, { kind: "held", message: hold });
+      if (recording.source !== "in_app") {
+        if (cloud === null) return;
+        const current = jobs.get(recording.id);
+        if (current?.kind === "active" || current?.kind === "done" || current?.kind === "failed") return;
+        console.warn("[VoiceNotes] Held a note back from private-cloud transcription: it did not begin in the app", { id: recording.id, source: recording.source });
+        if (!held.has(recording.id)) {
+          held.add(recording.id);
+          saveHolds();
+        }
+        jobs.set(recording.id, { kind: "held", message: HELD_NOTE_MESSAGE });
         emit();
         return;
       }
+      if (!on()) return;
       if (recording.durationMs / 1000 > maxTranscriptionSeconds(state.capabilities)) return; // the card says why
       enqueue(recording.id, audio);
     },
@@ -1178,6 +1240,7 @@ export function voiceNoteTranscriberFor(
   const transcriber = createVoiceNoteTranscriber({
     cloud: createVoiceNoteCloudForBuild(backendUrl, sessionStore, did),
     consent: localStorageVoiceNoteConsentStore(did),
+    holds: localStorageVoiceNoteHoldStore(did),
     tcw: () => ref.current,
   });
   transcribers.set(did, { transcriber, tcw: ref });

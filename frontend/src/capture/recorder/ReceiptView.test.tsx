@@ -53,7 +53,11 @@ describe("ReceiptView", () => {
       lastSaved: { id: "rec-1", durationMs: 42_000, at: Date.now() },
       transcription: { availability: "available", consented: true, maxSeconds: 600, jobs, onTranscribe: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop } });
     expect(route(new Map())).toContain("Transcribing in private cloud…");
-    expect(route(new Map([["rec-1", { kind: "held", message: "not sent" }]]))).not.toContain("Transcribing in private cloud…");
+    const held = route(new Map([["rec-1", { kind: "held", message: "Held: not sent for transcription" }]]));
+    expect(held).not.toContain("Transcribing in private cloud…");
+    expect(held).toContain('data-testid="voice-note-held"');
+    expect(held).toContain("Held: not sent for transcription");
+    expect(route(new Map())).not.toContain('data-testid="voice-note-held"');
   });
 
   describe("the receipt's error line is the honest one", () => {

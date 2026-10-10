@@ -16,7 +16,7 @@ import {
   type DesktopWhisperJob,
   type DesktopWhisperQueue,
 } from "@/lib/voiceNotes/desktop/desktopWhisper";
-import type { NoteTranscriptionState } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { HELD_NOTE_MESSAGE, type NoteTranscriptionState } from "@/lib/voiceNotes/voiceNoteTranscription";
 import type { LibraryItem } from "./LibraryRow";
 import { NoteDetailView, transcriptBlocks, type NoteDetailViewProps } from "./NoteDetailView";
 
@@ -180,13 +180,13 @@ describe("a voice note's transcription", () => {
 
   test("a note held back says why and offers Transcribe with Private only while it can be sent", () => {
     const held = (extra: Partial<Parameters<typeof transcription>[0]> = {}) =>
-      transcription({ jobs: new Map([["rec-1", { kind: "held", message: "This note started from outside the app on Private, but your transcription mode is Local, so it was not sent." }]]), ...extra });
+      transcription({ jobs: new Map([["rec-1", { kind: "held", message: HELD_NOTE_MESSAGE }]]), ...extra });
     const html = render({ transcription: held() });
-    expect(html).toContain("your transcription mode is Local, so it was not sent.");
+    expect(html).toContain("started from a shortcut, so it was not sent for transcription");
     expect(html).toContain('data-testid="voice-note-transcribe-held"');
     expect(html).toContain("Transcribe with Private");
     const unconsented = render({ transcription: held({ consented: false }) });
-    expect(unconsented).toContain("so it was not sent.");
+    expect(unconsented).toContain("so it was not sent for transcription");
     expect(unconsented).not.toContain('data-testid="voice-note-transcribe-held"');
   });
 

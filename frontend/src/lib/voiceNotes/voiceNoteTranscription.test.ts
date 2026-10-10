@@ -18,6 +18,7 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { _resetConnectorSchemaMemoForTests, transcriptKvKey } from "../connectors/connectorStore";
+import { memoryHoldStore } from "@/harness/memoryHoldStore";
 import {
   buildPtxUploadOrigin,
   interpretUploadResponse,
@@ -737,7 +738,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     const h = harness({});
     h.pending.write("rec-1", { attemptId: "00000000-0000-4000-8000-00000000abcd", transcriptionId: ID });
     const launch = () => createVoiceNoteTranscriber({
-      cloud: h.cloud, consent: { get: () => true, set: () => {} }, tcw: () => space.tcw,
+      cloud: h.cloud, consent: { get: () => true, set: () => {} }, tcw: () => space.tcw, holds: memoryHoldStore(),
     });
     await launch().check();
     await new Promise((resolve) => setTimeout(resolve, 0));
