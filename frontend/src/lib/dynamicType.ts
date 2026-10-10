@@ -1,7 +1,7 @@
 /** iOS AX5 is roughly 3.3× body; cap rem-based layout at 2× so the
  * recorder, ribbon and navigation retain room on a phone. */
 export const IOS_DYNAMIC_TYPE_MAX_SCALE = 2;
-const IOS_DYNAMIC_TYPE_MIN_SCALE = 0.8;
+const IOS_DYNAMIC_TYPE_MIN_SCALE = 1;
 const IOS_DEFAULT_BODY_SIZE_PX = 17;
 
 export function iosDynamicTypeScale(bodySizePx: number): number {

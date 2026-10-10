@@ -8,8 +8,8 @@ describe("iOS Dynamic Type rem scale", () => {
     expect(iosDynamicTypeScale(34)).toBe(2);
   });
 
-  test("keeps smaller body settings bounded and caps AX3/AX5 layouts at 2×", () => {
-    expect(iosDynamicTypeScale(13)).toBeCloseTo(0.8);
+  test("keeps the 16px design as the minimum and caps AX3/AX5 layouts at 2×", () => {
+    expect(iosDynamicTypeScale(13)).toBe(1);
     expect(iosDynamicTypeScale(40)).toBe(IOS_DYNAMIC_TYPE_MAX_SCALE);
     expect(iosDynamicTypeScale(53)).toBe(IOS_DYNAMIC_TYPE_MAX_SCALE);
     expect(iosDynamicTypeScale(Number.NaN)).toBe(1);

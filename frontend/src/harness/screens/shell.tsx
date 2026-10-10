@@ -13,9 +13,9 @@ import type { HarnessScreen } from "../screen";
 import { ShellApp } from "../ShellApp";
 import type { RecorderValue } from "@/capture/recorder/RecorderProvider";
 
-function Shell(props: { state?: AppState; act?: () => boolean; recorder?: Partial<RecorderValue> }) {
+function Shell(props: { state?: AppState; scenario?: string; act?: () => boolean; recorder?: Partial<RecorderValue> }) {
   const platform = useContext(PlatformContext);
-  const shim = useMemo(() => createRuntimeShim(), []);
+  const shim = useMemo(() => createRuntimeShim({ scenario: props.scenario }), [props.scenario]);
   const [sheetOpen, setSheetOpen] = useState(props.recorder?.sheetOpen ?? false);
   const recorder = props.recorder && {
     ...props.recorder,
@@ -85,6 +85,39 @@ const minimiseRecorder = () => {
   button.click();
   return true;
 };
+
+function newChatAfterOpeningSavedThread() {
+  let selectedSavedThread = false;
+  return () => {
+    const oldQuestion = [...document.querySelectorAll<HTMLParagraphElement>("p")].find(
+      (paragraph) => paragraph.textContent?.trim() === "old question" && paragraph.getClientRects().length > 0,
+    );
+    if (oldQuestion && document.documentElement.hasAttribute("data-island")) {
+      const newChat = document.querySelector<HTMLButtonElement>('button[aria-label="New chat"]');
+      if (!newChat) return false;
+      newChat.click();
+      document.documentElement.dataset.harnessNewChatFromSaved = "true";
+      return true;
+    }
+
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"][data-state="open"]');
+    if (dialog) {
+      const savedThread = [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) => button.textContent?.trim() === "Saved",
+      );
+      if (savedThread) {
+        savedThread.click();
+        selectedSavedThread = true;
+      }
+      return false;
+    }
+
+    if (!selectedSavedThread) {
+      document.querySelector<HTMLButtonElement>('button[aria-label="Chats"]')?.click();
+    }
+    return false;
+  };
+}
 
 const SHELL = { group: "shell", layout: "pane", displayTitle: true } as const;
 
@@ -163,6 +196,21 @@ export const shellScreens: HarnessScreen[] = [
       elapsedMs: 83_000,
       recordingId: "harness-minimized-recording",
       sheetOpen: true,
+    }} />,
+  },
+  {
+    ...SHELL,
+    id: "shell-chat-new-ribbon",
+    path: "/chat",
+    platform: "ios",
+    readyWhen: 'html[data-harness-new-chat-from-saved="true"]',
+    render: () => <Shell scenario="reopen" act={newChatAfterOpeningSavedThread()} recorder={{
+      phase: "recording",
+      mic: { state: "recording", reason: null },
+      startedAt: Date.now() - 83_000,
+      elapsedMs: 83_000,
+      recordingId: "harness-minimized-recording",
+      sheetOpen: false,
     }} />,
   },
   {

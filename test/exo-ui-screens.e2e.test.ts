@@ -59,7 +59,7 @@ const VIEWPORTS: Viewport[] = [
   },
   { id: "text200-phone", group: "text200", width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true, textScale: 2, zoom: true },
   { id: "text200-desktop", group: "text200", width: 1280, height: 800, deviceScaleFactor: 2, textScale: 2, zoom: true },
-  ...[2.5, 3.3].map((scale) => ({
+  ...[0.8, 2.5, 3.3].map((scale) => ({
     id: `text${Math.round(scale * 100)}-phone`,
     group: `text${Math.round(scale * 100)}`,
     width: 390,
@@ -355,7 +355,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                   findings.push({ check: "native-record-ready", detail: "Capture has no enabled Record button" });
                 }
               }
-              if (["shell-chat-ribbon", "shell-chat-ribbon-from-capture", "shell-chat-ribbon-minimized-from-chat"].includes(screen.id)) {
+              if (["shell-chat-ribbon", "shell-chat-ribbon-from-capture", "shell-chat-ribbon-minimized-from-chat", "shell-chat-new-ribbon"].includes(screen.id)) {
                 const emptyState = await page.evaluate(() => {
                   const viewport = document.querySelector<HTMLElement>("[data-scroll-root]");
                   const title = viewport?.querySelector("h2");
@@ -381,9 +381,10 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                   findings.push({ check: "chat-empty-start", detail: "empty Chat showed the scroll-to-bottom overlay" });
                 }
               }
-              if (screen.platform === "ios" && viewport.textScale && viewport.textScale > 2) {
+              if (screen.platform === "ios" && viewport.textScale) {
                 const rootSize = await page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).fontSize));
-                if (rootSize > 32.01) findings.push({ check: "ios-text-cap", detail: `root font-size ${rootSize}px exceeds 32px` });
+                const expected = Math.max(16, Math.min(32, 16 * viewport.textScale));
+                if (Math.abs(rootSize - expected) > 0.1) findings.push({ check: "ios-text-scale", detail: `root font-size ${rootSize}px; expected ${expected}px at scale ${viewport.textScale}` });
               }
               for (const error of errors) findings.push({ check: "errors", detail: error });
 

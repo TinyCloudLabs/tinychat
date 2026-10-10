@@ -155,14 +155,13 @@
   body {
     overscroll-behavior: none;
   }
-  /* UIKit's body text style tracks the iOS Dynamic Type setting. Keeping it on
-     the root lets rem-based type and spacing follow that preference. */
+  /* main.tsx measures UIKit's body size and normalizes it into this root scale.
+     Keep the 16px design below the default so rem-based hit areas stay 44pt. */
   html[data-platform="ios"] {
-    font: -apple-system-body;
     line-height: 1.5;
     /* UIKit body / 17 keeps the default design at 16px. Cap the rem scale at
        2×: even at the cap, a 56px tab bar is 112px and a 64px ribbon is 128px. */
-    font-size: clamp(12.8px, calc(16px * var(--ios-body-scale, 1)), 32px);
+    font-size: clamp(16px, calc(16px * var(--ios-body-scale, 1)), 32px);
   }
   body {
     @apply bg-background text-foreground antialiased;

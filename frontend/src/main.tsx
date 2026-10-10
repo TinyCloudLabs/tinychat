@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { App as CapacitorApp } from "@capacitor/app";
 import { Capacitor } from "@capacitor/core";
 import "./index.css";
 import { App } from "./App";
@@ -26,8 +27,8 @@ const root = document.documentElement;
 root.dataset.platform = platform;
 if (platform === "ios") {
   // Measure UIKit's preferred body size before React mounts, including the
-  // pre-sign-in recorder. Visibility changes cover a Dynamic Type change made
-  // while the app was backgrounded.
+  // pre-sign-in recorder. The native active event also catches text-size
+  // changes made in Control Center while the app remains foregrounded.
   const updateIOSBodyScale = () => {
     const bodyStyle = document.createElement("span");
     bodyStyle.style.cssText = "position:fixed;visibility:hidden;pointer-events:none;font:-apple-system-body";
@@ -38,6 +39,11 @@ if (platform === "ios") {
   };
   updateIOSBodyScale();
   document.addEventListener("visibilitychange", updateIOSBodyScale);
+  void CapacitorApp.addListener("appStateChange", ({ isActive }) => {
+    if (isActive) updateIOSBodyScale();
+  }).catch((error: unknown) => {
+    console.error("[DynamicType] Could not listen for app resume", error);
+  });
 }
 initSizeClass();
 initTheme();

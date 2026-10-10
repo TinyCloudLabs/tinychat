@@ -5,7 +5,9 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   type FC,
@@ -87,12 +89,37 @@ export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onRe
   const threadId = useAuiState((s) => s.threadListItem.remoteId ?? s.threadListItem.id) as string | undefined;
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const isEmpty = useAuiState((s) => s.thread.isEmpty);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const previousThreadId = useRef(threadId);
+  const pendingEmptyThreadReset = useRef(false);
   const threadRuntime = useThreadRuntime();
   const applyCanvasToRuntime = useCallback((canvas: CanvasModel) => {
     threadRuntime.import(repositoryFromCanvas(canvas));
   }, [threadRuntime]);
   const [surface, setSurface] = useState<"chat" | "canvas">("chat");
   useEffect(() => setSurface("chat"), [threadId]);
+  useLayoutEffect(() => {
+    if (previousThreadId.current !== threadId) {
+      previousThreadId.current = threadId;
+      pendingEmptyThreadReset.current = true;
+    }
+    if (!pendingEmptyThreadReset.current || !isEmpty) return;
+    pendingEmptyThreadReset.current = false;
+
+    // assistant-ui schedules thread-switch auto-scroll on its own animation
+    // frame. Reset after that frame, but only when the switched-to thread is
+    // empty; switching between threads with messages keeps normal behavior.
+    let secondFrame = 0;
+    const firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        if (viewportRef.current) viewportRef.current.scrollTop = 0;
+      });
+    });
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      cancelAnimationFrame(secondFrame);
+    };
+  }, [threadId, isEmpty]);
   return (
     <TooltipProvider delayDuration={300}>
       <ShareThreadProvider tcw={tcw}>
@@ -104,7 +131,7 @@ export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onRe
               <Button type="button" variant={surface === "canvas" ? "default" : "outline"} size="sm" aria-pressed={surface === "canvas"} onClick={() => setSurface("canvas")}>Canvas</Button>
             </div>
           )}
-          <ThreadPrimitive.Viewport autoScroll={!isEmpty} data-scroll-root className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
+          <ThreadPrimitive.Viewport ref={viewportRef} autoScroll={!isEmpty} data-scroll-root className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
             {surface === "canvas" ? (
               <div className="h-full w-full">
                 <Suspense fallback={<div className="flex h-full items-center justify-center text-sm text-muted-foreground">Loading canvas…</div>}>
