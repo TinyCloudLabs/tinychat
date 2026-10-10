@@ -33,7 +33,7 @@ export function TabBar({ items, current, replace, onReselect }: NavProps) {
           const active = item.id === current;
           const Icon = item.icon;
           return (
-              <li key={item.id} className="flex min-w-0">
+            <li key={item.id} className="flex min-w-0">
               <Link
                 to={tabTarget(item.id, active)}
                 replace={replace}
