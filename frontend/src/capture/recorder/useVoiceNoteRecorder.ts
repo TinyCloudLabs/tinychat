@@ -71,6 +71,19 @@ export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionS
     [available, backendUrl, sessionStore, tcw],
   );
   const controller = useMemo(() => createVoiceNoteRecorderController({ tcw, available, transcriber, pipeline }), [available, tcw, transcriber, pipeline]);
+  // The private-cloud availability check: once the account is ready, and again each time the app comes back to the foreground.
+  useEffect(() => {
+    if (transcriber === null) return;
+    const check = () => {
+      transcriber.check().catch((caught: unknown) => console.error("[Recorder] The private transcription check threw", caught));
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") check();
+    };
+    check();
+    window.addEventListener("visibilitychange", onVisible);
+    return () => window.removeEventListener("visibilitychange", onVisible);
+  }, [transcriber]);
   useEffect(() => controller.setOnSaved(onSaved), [controller, onSaved]);
   useEffect(() => controller.attach(), [controller]);
 

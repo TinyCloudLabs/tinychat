@@ -119,46 +119,58 @@ export function ModesCard({
         <span>Accuracy</span>
       </div>
       <div role="radiogroup" aria-label="Transcription mode">
-        {stops.map(({ stop, available, reason }) => {
+        {stops.map(({ stop, available, reason, action }) => {
           const checked = stop.id === mode;
           return (
-            <button
-              key={stop.id}
-              ref={(el) => {
-                if (el) rows.current.set(stop.id, el);
-                else rows.current.delete(stop.id);
-              }}
-              type="button"
-              role="radio"
-              aria-checked={checked}
-              aria-disabled={!available}
-              tabIndex={checked ? 0 : -1}
-              className="pr-mprow"
-              data-mode={stop.id}
-              onClick={() => onChoose(stop.id)}
-            >
-              <span className="pr-tile">
-                <ModeIcon id={stop.id} size={14} />
-              </span>
-              <span className="pr-mptitle">
-                <span className="n soft-title">{stop.shortName}</span>
-                <span className="s">{stop.subLabel[shell]}</span>
-                {checked && <CheckIcon size={13} />}
-              </span>
-              <span className="pr-mpdots">
-                <Dots value={stop.privacyDots} label="Privacy" />
-                <Dots value={stop.accuracyDots} label="Accuracy" />
-              </span>
-              <span className="pr-mpbody">
-                {explanationFor?.[stop.id] ?? stop.explanations[shell]({ modelName: "" })}
-                {!available && reason ? (
-                  <>
-                    <br />
-                    {reason}
-                  </>
-                ) : null}
-              </span>
-            </button>
+            <div key={stop.id} className="pr-mpgroup">
+              <button
+                ref={(el) => {
+                  if (el) rows.current.set(stop.id, el);
+                  else rows.current.delete(stop.id);
+                }}
+                type="button"
+                role="radio"
+                aria-checked={checked}
+                aria-disabled={!available}
+                tabIndex={checked ? 0 : -1}
+                className="pr-mprow"
+                data-mode={stop.id}
+                onClick={() => onChoose(stop.id)}
+              >
+                <span className="pr-tile">
+                  <ModeIcon id={stop.id} size={14} />
+                </span>
+                <span className="pr-mptitle">
+                  <span className="n soft-title">{stop.shortName}</span>
+                  <span className="s">{stop.subLabel[shell]}</span>
+                  {checked && <CheckIcon size={13} />}
+                </span>
+                <span className="pr-mpdots">
+                  <Dots value={stop.privacyDots} label="Privacy" />
+                  <Dots value={stop.accuracyDots} label="Accuracy" />
+                </span>
+                <span className="pr-mpbody">
+                  {explanationFor?.[stop.id] ??
+                    stop.explanations[shell]({ modelName: "" })}
+                  {!available && reason ? (
+                    <>
+                      <br />
+                      {reason}
+                    </>
+                  ) : null}
+                </span>
+              </button>
+              {action && (
+                <button
+                  type="button"
+                  className="pr-mpaction"
+                  data-testid={`modes-action-${stop.id}`}
+                  onClick={action.run}
+                >
+                  {action.label}
+                </button>
+              )}
+            </div>
           );
         })}
       </div>

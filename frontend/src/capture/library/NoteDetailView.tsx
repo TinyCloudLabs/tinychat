@@ -24,6 +24,7 @@ import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 import { detailWhen, formatSpokenDuration } from "./formatters";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { DesktopWhisperStatus } from "./DesktopWhisperStatus";
+import { OnDeviceNoteStatus } from "./OnDeviceNoteStatus";
 import { HowThisGotHere } from "./HowThisGotHere";
 import { librarySourceLabel } from "./libraryKinds";
 import type { LibraryItem } from "./LibraryRow";
@@ -159,6 +160,17 @@ export function VoiceNoteTranscriptionStatus(props: {
   );
 }
 
+/** A voice note with no transcript yet: what the phone says about its on-device transcription, else where private cloud stands, else "No transcript.". */
+function NoTranscript(props: { item: LibraryItem; metadata: MeetingMetadataRead; transcription: VoiceNoteTranscriptionProps | undefined }) {
+  const outcome = voiceNoteTranscriptState(props.metadata.status === "ok" ? props.metadata.metadata : null).status;
+  // A plain function of its props (no hooks), so its "nothing to say" is known here.
+  const status = VoiceNoteTranscriptionStatus({ item: props.item, outcome, transcription: props.transcription }) ?? (
+    <p className="text-callout text-muted-foreground">No transcript.</p>
+  );
+  if (outcome === "no_speech") return status;
+  return <OnDeviceNoteStatus noteId={props.item.sourceId} fallback={status} />;
+}
+
 /** The transcript text a voice note's row carries (`transcript_text`), for when its body can't be read. */
 function savedText(metadata: MeetingMetadataRead): string | null {
   const text = metadata.status === "ok" ? metadata.metadata.transcript_text : null;
@@ -233,14 +245,7 @@ function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
           <DesktopWhisperStatus
             noteId={item.sourceId}
             enabled={props.desktopWhisper}
-            fallback={
-              // A plain function of its props (no hooks), so its "nothing to say" is known here.
-              VoiceNoteTranscriptionStatus({
-                item,
-                outcome: voiceNoteTranscriptState(metadata.status === "ok" ? metadata.metadata : null).status,
-                transcription: props.transcription,
-              }) ?? <p className="text-callout text-muted-foreground">No transcript.</p>
-            }
+            fallback={<NoTranscript item={item} metadata={metadata} transcription={props.transcription} />}
           />
         )
       ) : (
