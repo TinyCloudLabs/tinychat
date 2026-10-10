@@ -422,6 +422,19 @@ button.soft-row:focus-visible {
   box-shadow: none;
   color: var(--bgc);
 }
+/* Preserve the original one-line action row on compact phones at normal text size. */
+@media (max-width: 375px) {
+  .soft-actions {
+    display: grid;
+    grid-template-columns: 1fr 1.3fr 1fr;
+    gap: 6px;
+  }
+  .soft-act {
+    min-width: 0;
+    gap: 6px;
+    padding: 0 4px;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .soft-act {
     transition: none;

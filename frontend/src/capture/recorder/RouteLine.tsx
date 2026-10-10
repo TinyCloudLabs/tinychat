@@ -6,6 +6,7 @@ import { CheckIcon } from "lucide-react";
 import type { CSSProperties } from "react";
 
 import { cn } from "@/lib/utils";
+import "./RouteLine.css";
 import { routeSourceName, TRANSCRIBER_NAME } from "./final/finalCopy";
 
 export interface RouteNode {
@@ -64,17 +65,17 @@ export function RouteLine(props: { nodes: readonly RouteNode[]; landed?: boolean
       data-route-line=""
       data-landed={landed ? "" : undefined}
       style={{ "--route-node-count": props.nodes.length } as CSSProperties}
-      className={cn("grid w-full grid-cols-[repeat(var(--route-node-count),minmax(0,1fr))] items-start", props.className)}
+      className={cn("route-line grid w-full grid-cols-[repeat(var(--route-node-count),minmax(0,1fr))] items-start gap-x-2", props.className)}
     >
       {props.nodes.map((node, index) => {
         const last = index === props.nodes.length - 1;
         return (
           <li key={node.label} data-node={node.kind} className="flex min-w-0 flex-col gap-1.5">
-            <span className="flex h-4 items-center" aria-hidden="true">
+            <span data-route-node-indicator="" className="flex h-4 items-center" aria-hidden="true">
               <Node kind={node.kind} landed={landed && last} />
-              {!last && <span className="mx-1.5 h-[1.5px] flex-1 rounded-full bg-muted-foreground/40" />}
+              {!last && <span data-route-connector="" className="mx-1.5 h-[1.5px] flex-1 rounded-full bg-muted-foreground/40" />}
             </span>
-            <span className="min-w-0 text-meta text-muted-foreground [overflow-wrap:break-word]">
+            <span data-route-label="" className="min-w-0 text-meta text-muted-foreground [word-break:normal] [overflow-wrap:normal]">
               {node.label}
               {landed && last && <span className="sr-only"> (saved)</span>}
             </span>

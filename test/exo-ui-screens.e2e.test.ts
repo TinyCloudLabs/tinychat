@@ -58,6 +58,15 @@ const VIEWPORTS: Viewport[] = [
       "capture-soft-",
     ],
   },
+  {
+    id: "phone-360",
+    width: 360,
+    height: 740,
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    screenPrefixes: ["capture-soft-"],
+  },
   { id: "text200-phone", group: "text200", width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true, textScale: 2, zoom: true },
   { id: "text200-desktop", group: "text200", width: 1280, height: 800, deviceScaleFactor: 2, textScale: 2, zoom: true },
   ...[0.8, 2.5, 3.3].map((scale) => ({
@@ -263,9 +272,14 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
             textRects.push({ parent: node.parentElement!, rect, text });
           }
           const wordCount = text.split(/\s+/).filter(Boolean).length;
-          const longestWord = Math.max(1, ...text.split(/\s+/).map((word) => word.length));
-          const maxReasonableLines = wordCount + Math.max(1, Math.ceil(longestWord / 5));
-          if (rects.length > maxReasonableLines || getComputedStyle(node.parentElement!).wordBreak === "break-all") {
+          const maxReasonableLines = wordCount + 1;
+          const splitLongWord = [...text.matchAll(/\S{6,}/g)].some((match) => {
+            const range = document.createRange();
+            range.setStart(node, match.index!);
+            range.setEnd(node, match.index! + match[0].length);
+            return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size > 1;
+          });
+          if (rects.length > maxReasonableLines || splitLongWord || getComputedStyle(node.parentElement!).wordBreak === "break-all") {
             findings.push({ check: "text200-letter-wrap", element: name, detail: `"${text.slice(0, 48)}" occupies ${rects.length} lines for ${wordCount} word(s)` });
           }
         }
@@ -298,21 +312,27 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
       const ribbon = document.querySelector('[data-testid="ribbon"]')!.getBoundingClientRect();
       for (const scroller of document.querySelectorAll<HTMLElement>("[data-scroll-root], .dch-scroll")) {
         const initialTop = scroller.scrollTop;
-        scroller.scrollTop = scroller.scrollHeight;
+        scroller.scrollTo({ top: scroller.scrollHeight, behavior: "instant" });
         const walker = document.createTreeWalker(scroller, NodeFilter.SHOW_TEXT);
-        let lastTextRect: DOMRect | null = null;
+        const textRects: DOMRect[] = [];
         for (let node = walker.nextNode(); node; node = walker.nextNode()) {
           if (!node.textContent?.trim() || node.parentElement?.closest(".sr-only,[aria-hidden=true]")) continue;
           const range = document.createRange();
           range.selectNodeContents(node);
           for (const rect of range.getClientRects()) {
-            if (rect.width > 0 && rect.height > 0 && (!lastTextRect || rect.bottom > lastTextRect.bottom)) lastTextRect = rect;
+            if (rect.width > 0 && rect.height > 0) textRects.push(rect);
           }
         }
-        if (lastTextRect && lastTextRect.bottom > ribbon.top + 1) {
-          findings.push({ check: "ribbon-occlusion", element: describe(scroller), detail: `last content bottom ${Math.round(lastTextRect.bottom)} is below Ribbon top ${Math.round(ribbon.top)} at scroll end` });
+        const clip = scroller.getBoundingClientRect();
+        const overlapTop = Math.max(clip.top, ribbon.top);
+        const overlapBottom = Math.min(clip.bottom, ribbon.bottom);
+        if (overlapBottom > overlapTop && textRects.some((rect) =>
+          rect.bottom > overlapTop + 1 && rect.top < overlapBottom - 1 &&
+          rect.right > Math.max(clip.left, ribbon.left) + 1 && rect.left < Math.min(clip.right, ribbon.right) - 1
+        )) {
+          findings.push({ check: "ribbon-occlusion", element: describe(scroller), detail: `visible text intersects Ribbon between y=${Math.round(overlapTop)} and y=${Math.round(overlapBottom)} at scroll end` });
         }
-        scroller.scrollTop = initialTop;
+        scroller.scrollTo({ top: initialTop, behavior: "instant" });
       }
     }
   }
@@ -325,8 +345,9 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
     if (upload && recorder && meeting) {
       const uploadRatio = recorder.width / upload.width;
       const meetingRatio = recorder.width / meeting.width;
-      if (Math.abs(uploadRatio - 1.3) > 0.04 || Math.abs(meetingRatio - 1.3) > 0.04) {
-        findings.push({ check: "capture-normal-emphasis", detail: `Recorder width ratios are ${uploadRatio.toFixed(2)}× Upload and ${meetingRatio.toFixed(2)}× Meeting; expected 1.30×` });
+      const sameRow = Math.abs(upload.top - recorder.top) < 1 && Math.abs(meeting.top - recorder.top) < 1;
+      if (!sameRow || Math.abs(uploadRatio - 1.3) > 0.04 || Math.abs(meetingRatio - 1.3) > 0.04) {
+        findings.push({ check: "capture-normal-emphasis", detail: `same row: ${sameRow}; Recorder width ratios are ${uploadRatio.toFixed(2)}× Upload and ${meetingRatio.toFixed(2)}× Meeting; expected one row and 1.30×` });
       }
     }
   }
@@ -460,7 +481,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 zoom: viewport.zoom ?? false,
                 displayTitle: screen.displayTitle ?? false,
                 largeText: (viewport.textScale ?? 1) >= 2,
-                normalCaptureRow: viewport.id === "phone",
+                normalCaptureRow: ["phone", "phone-small", "phone-360"].includes(viewport.id),
                 allow,
               });
               // The native Capture home must finish recorder setup; generic layout checks missed a missing Record button.

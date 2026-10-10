@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { RouteLine, voiceNoteRoute } from "./RouteLine";
 
-const items = (html: string) => [...html.matchAll(/<li[^>]*data-node="([^"]+)"[^>]*>.*?<span class="[^"]*text-meta[^"]*">([^<]+)/g)].map((m) => [m[1], m[2]]);
+const items = (html: string) => [...html.matchAll(/<li[^>]*data-node="([^"]+)"[^>]*>.*?<span data-route-label="" class="[^"]*text-meta[^"]*">([^<]+)/g)].map((m) => [m[1], m[2]]);
 
 describe("RouteLine", () => {
   test("an ordered list named for what it shows", () => {
@@ -12,6 +12,7 @@ describe("RouteLine", () => {
     expect(html).toStartWith('<ol aria-label="Where your audio goes"');
     expect(html).toContain('style="--route-node-count:2"');
     expect(html).toContain("grid-cols-[repeat(var(--route-node-count),minmax(0,1fr))]");
+    expect(html).toContain("route-line");
   });
 
   test("off: this phone straight to your space", () => {

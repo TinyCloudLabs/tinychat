@@ -1,0 +1,44 @@
+/* Keep the compact route horizontal at normal text sizes. When the labels grow
+   enough that the columns become narrower than readable words, stack the
+   ordered nodes and connect them vertically. */
+.route-line {
+  container-type: inline-size;
+  container-name: route-line;
+}
+
+@container route-line (max-width: 18em) {
+  .route-line {
+    display: grid;
+    grid-template-columns: 1rem minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .route-line > li {
+    display: contents;
+  }
+
+  .route-line > li > [data-route-node-indicator] {
+    grid-column: 1;
+    grid-row: auto;
+    display: flex;
+    height: auto;
+    min-height: 1.5rem;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .route-line > li > [data-route-connector] {
+    width: 1.5px;
+    height: auto;
+    min-height: 0.5rem;
+    margin: 0.25rem 0;
+    flex: 1 1 auto;
+  }
+
+  .route-line > li > [data-route-label] {
+    grid-column: 2;
+    grid-row: auto;
+    align-self: start;
+    padding-bottom: 0.5rem;
+  }
+}

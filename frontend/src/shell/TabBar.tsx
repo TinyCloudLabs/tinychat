@@ -55,7 +55,7 @@ export function TabBar({ items, current, replace, onReselect }: NavProps) {
                   <Icon aria-hidden className={cn("size-6", active ? "text-foreground [stroke-width:2.25]" : "text-muted-foreground")} />
                   <NavBadge count={item.badge} className="-right-1 -top-1" />
                 </span>
-                <span className={cn("min-w-0 text-center [overflow-wrap:anywhere] text-label", active ? "font-semibold text-foreground" : "font-medium text-muted-foreground")}>
+                <span className={cn("min-w-0 text-center text-[min(0.75rem,12px)] [word-break:keep-all] [overflow-wrap:normal]", active ? "font-semibold text-foreground" : "font-medium text-muted-foreground")}>
                   {item.label}
                 </span>
               </Link>

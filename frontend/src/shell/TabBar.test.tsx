@@ -65,12 +65,12 @@ describe("TabBar", () => {
     const current = linkBody(markup, PATHS.capture);
     expect(current).toContain("bg-selected");
     expect(current).toContain("[stroke-width:2.25]");
-    expect(current).toMatch(/class="[^"]*text-label[^"]*font-semibold[^"]*text-foreground">Capture</);
+    expect(current).toMatch(/class="[^"]*text-\[min\(0\.75rem,12px\)\][^"]*\[word-break:keep-all\][^"]*font-semibold[^"]*text-foreground">Capture</);
 
     const other = linkBody(markup, PATHS.chat);
     expect(other).not.toContain("bg-selected");
     expect(other).not.toContain("[stroke-width:2.25]");
-    expect(other).toMatch(/class="[^"]*text-label[^"]*font-medium[^"]*text-muted-foreground">Chat</);
+    expect(other).toMatch(/class="[^"]*text-\[min\(0\.75rem,12px\)\][^"]*\[word-break:keep-all\][^"]*font-medium[^"]*text-muted-foreground">Chat</);
   });
 
   test("the Connectors item's name carries the count; its pill is aria-hidden inside a relative box", () => {
