@@ -75,9 +75,11 @@ final class WebViewRecovery: NSObject, WKNavigationDelegate {
         message.text = "Something interrupted Exo while it was in the background. Reload to pick up where you left off."
         message.font = .preferredFont(forTextStyle: .callout)
         message.textColor = .secondaryLabel
-        message.numberOfLines = 0
-        message.textAlignment = .center
-        title.textAlignment = .center
+        for label in [title, message] {
+            label.numberOfLines = 0
+            label.textAlignment = .center
+            label.adjustsFontForContentSizeCategory = true
+        }
         var configuration = UIButton.Configuration.filled()
         configuration.title = "Reload"
         let button = UIButton(configuration: configuration, primaryAction: UIAction { [weak self, weak webView] _ in
@@ -93,11 +95,31 @@ final class WebViewRecovery: NSObject, WKNavigationDelegate {
         stack.alignment = .center
         stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
-        overlay.addSubview(stack)
+
+        // Centered while it fits; scrolls when large text makes it taller than the screen.
+        let scroll = UIScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        let content = UIView()
+        content.translatesAutoresizingMaskIntoConstraints = false
+        scroll.addSubview(content)
+        content.addSubview(stack)
+        overlay.addSubview(scroll)
         NSLayoutConstraint.activate([
-            stack.centerYAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.centerYAnchor),
-            stack.leadingAnchor.constraint(equalTo: overlay.layoutMarginsGuide.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: overlay.layoutMarginsGuide.trailingAnchor, constant: -16),
+            scroll.topAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.trailingAnchor),
+            content.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            content.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            content.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            content.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor),
+            content.heightAnchor.constraint(greaterThanOrEqualTo: scroll.frameLayoutGuide.heightAnchor),
+            stack.centerYAnchor.constraint(equalTo: content.centerYAnchor),
+            stack.topAnchor.constraint(greaterThanOrEqualTo: content.topAnchor, constant: 24),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -24),
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
         ])
         webView.addSubview(overlay)
         prompt = overlay

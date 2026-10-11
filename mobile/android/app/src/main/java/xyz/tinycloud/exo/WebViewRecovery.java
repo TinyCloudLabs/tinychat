@@ -14,7 +14,7 @@ import java.net.URI;
 
 /**
  * Android can kill the WebView's renderer while Exo is backgrounded. With no listener claiming that, the whole app
- * process is killed. This claims it, remembers the address the user was on, disposes of the dead WebView, and
+ * process is killed. This claims it, remembers the address the user was on, detaches the dead WebView, and
  * recreates the activity (a WebView whose renderer is gone cannot be reused); MainActivity loads the remembered
  * address into the new WebView. Repeated deaths in a short window stop recreating and ask the user to reload.
  */
@@ -54,8 +54,9 @@ final class WebViewRecovery extends WebViewListener {
     @Override public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
         Log.w(TAG, "WebView renderer gone (crashed=" + detail.didCrash() + ")");
         pendingUrl = restorableUrl(view.getUrl(), appUrl);
+        // Detach only: Capacitor's BridgeActivity.onDetachedFromWindow -> Bridge.onDetachedFromWindow destroys the
+        // bridge's WebView when the activity is torn down, and WebView methods must not be called after destroy().
         if (view.getParent() instanceof ViewGroup) ((ViewGroup) view.getParent()).removeView(view);
-        view.destroy();
         boolean automatic = BUDGET.recordDeath(SystemClock.elapsedRealtime());
         new Handler(Looper.getMainLooper()).post(automatic ? activity::recreate : this::askToReload);
         return true;
