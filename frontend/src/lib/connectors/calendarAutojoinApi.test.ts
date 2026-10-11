@@ -79,9 +79,9 @@ describe("TC-581 shared capture outcome labels", () => {
       "Already being recorded by another TinyCloud account. If you accepted that account's calendar invite, the transcript will be added to your meetings after it ends.",
     );
   });
-  test("an already-recorded meeting explains who gets the transcript", () => {
+  test("an already-recorded meeting is neutral, true with sharing on or off", () => {
     expect(calendarOutcomeLabel("already_recorded")).toBe(
-      "Already being recorded by another TinyCloud account. Its transcripts are shared only with people who accepted that account's calendar invite.",
+      "Already recorded by another TinyCloud account. Only one notetaker can join a meeting.",
     );
   });
   test("with sharing off, a capture in progress promises nothing", () => {
