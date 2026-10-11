@@ -608,6 +608,27 @@ describe("saveVoiceNoteTranscript", () => {
     expect(puts(calls)).toEqual([]);
     expect(calls.some((c) => c.kind === "sql.execute" && /INSERT INTO connector_meeting/.test(String(c.params[0])))).toBe(false);
   });
+
+  test("r4: a hung note-exists query times out with an error result instead of waiting forever", async () => {
+    const { tcw, calls } = fakeSpace();
+    const realDb = tcw.sql.db.bind(tcw.sql);
+    let release!: () => void;
+    const hung = new Promise<void>((resolve) => { release = resolve; });
+    (tcw.sql as { db: unknown }).db = (name: string) => {
+      const db = realDb(name);
+      return { ...db, query: (sql: string, params?: unknown[]) =>
+        sql.includes("LIMIT 1") ? hung.then(() => ({ ok: true, data: { rows: [] } })) : db.query(sql, params) };
+    };
+    setVoiceNoteSaveDeadlineForTests(50);
+    try {
+      const result = await saveVoiceNoteTranscript(tcw, "rec", prepared);
+      expect(result).toMatchObject({ ok: false, error: { code: "VOICE_NOTE_OPERATION_TIMEOUT" } });
+      expect(puts(calls)).toEqual([]);
+    } finally {
+      setVoiceNoteSaveDeadlineForTests(null);
+      release();
+    }
+  });
 });
 
 describe("listVoiceNotes dedup", () => {

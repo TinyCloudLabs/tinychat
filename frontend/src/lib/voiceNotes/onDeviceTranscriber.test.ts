@@ -3,11 +3,12 @@ import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "b
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { VoiceNotes, __setVoiceNotesForTests, type LocalTranscript, type VoiceNotesPlugin } from "./nativeVoiceNotes";
+import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
 
 type SaveResult = { ok: true; data: unknown } | { ok: false; error: { code: string; message: string } };
-let save: () => Promise<SaveResult> = async () => ({ ok: true, data: {} });
+let save: (saved: { rev: number }) => Promise<SaveResult> = async () => ({ ok: true, data: {} });
 const realStore = { ...(await import("./voiceNoteStore")) };
-mock.module("./voiceNoteStore", () => ({ ...realStore, saveVoiceNoteTranscript: () => save() }));
+mock.module("./voiceNoteStore", () => ({ ...realStore, saveVoiceNoteTranscript: (_tcw: unknown, _id: string, saved: { rev: number }) => save(saved) }));
 afterAll(() => mock.module("./voiceNoteStore", () => realStore));
 const { onDeviceTranscriptSyncState, subscribeOnDeviceTranscriptSync, syncOnDeviceTranscript } = await import("./onDeviceTranscriber");
 
@@ -34,6 +35,30 @@ afterEach(() => {
 });
 
 describe("syncOnDeviceTranscript publishes the result", () => {
+  test("r4 review: a stalled native read times out so a queued retry can run", async () => {
+    const tcw = account();
+    let release!: (result: { transcript: LocalTranscript | null }) => void;
+    let reads = 0;
+    let retryDone = false;
+    getTranscript = () => {
+      reads++;
+      return reads === 1 ? new Promise((resolve) => { release = resolve; }) : Promise.resolve({ transcript });
+    };
+    setVoiceNoteSaveDeadlineForTests(10);
+    try {
+      const first = syncOnDeviceTranscript(tcw, SAVED);
+      const retry = syncOnDeviceTranscript(tcw, SAVED).then(() => { retryDone = true; });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      const observed = { reads, retryDone, state: onDeviceTranscriptSyncState(tcw, "rec-1") };
+      // Release the fake native call after observing the stall, keeping this test's chain clean.
+      release({ transcript: null });
+      await Promise.all([first, retry]);
+      expect(observed).toMatchObject({ reads: 2, retryDone: true, state: { state: "synced" } });
+    } finally {
+      setVoiceNoteSaveDeadlineForTests(null);
+    }
+  });
+
   const tick = () => new Promise((r) => setTimeout(r, 0));
   const note = (rev: number) => ({ ...transcript, rev });
 
@@ -111,8 +136,8 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     let resolveOld!: (result: { transcript: LocalTranscript | null }) => void;
     const written: number[] = [];
     getTranscript = () => new Promise((resolve) => { resolveOld = resolve; });
-    save = async () => {
-      written.push(written.length + 1);
+    save = async (saved) => {
+      written.push(saved.rev);
       return written.length === 1 ? { ok: true, data: {} } : { ok: false, error: { code: "OFFLINE", message: "revision 2 failed" } };
     };
     const old = syncOnDeviceTranscript(tcw, SAVED);

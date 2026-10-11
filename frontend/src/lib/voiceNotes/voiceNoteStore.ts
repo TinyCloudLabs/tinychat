@@ -53,7 +53,7 @@ import { readLegacyTranscriptWinner, readTranscriptCommit, legacyTranscriptMetad
 import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio,
   patchVoiceNoteMarkdown, resolveVoiceNoteRow } from "./voiceNoteRows";
 import { runOnSpaceLane } from "../spaceWriteLane";
-import { withVoiceNoteReadDeadline } from "./saveDeadline";
+import { withVoiceNoteReadDeadline, withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { base64ToBytes, bytesToBase64 } from "./voiceNoteAudio";
 import { adoptNote, loadNote, noteMarkdown, parseNoteMarkdown, type RecordingNote } from "./recordingNotes";
 
@@ -502,12 +502,19 @@ export async function saveVoiceNoteTranscript(
 ): Promise<StoreResult<UpsertMeetingOutcome>> {
   if (!Number.isSafeInteger(transcript.rev) || transcript.rev < 1)
     return { ok: false, error: { code: "VOICE_NOTE_REV_REQUIRED", message: "The note's transcript revision is missing" } };
-  const schema = await ensureSchema(tcw);
-  if (!schema.ok) return schema;
-  const existing = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
-    `SELECT id FROM connector_meeting WHERE source = ? AND source_id = ? LIMIT 1`,
-    [VOICE_NOTE_SOURCE, sourceId],
-  );
+  // Each await before the commit is bounded and throws on timeout, so a timed-out save never
+  // resumes into a write behind a later save of the same note.
+  let existing: Awaited<ReturnType<ReturnType<typeof tcw.sql.db>["query"]>>;
+  try {
+    const schema = await withVoiceNoteSaveDeadline("ensure the space schema", () => ensureSchema(tcw));
+    if (!schema.ok) return schema;
+    existing = await runOnSpaceLane((signal) => tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
+      `SELECT id FROM connector_meeting WHERE source = ? AND source_id = ? LIMIT 1`,
+      [VOICE_NOTE_SOURCE, sourceId], { signal }), { operation: "SQL query: voice note exists" });
+  } catch (caught) {
+    return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
+      message: caught instanceof Error ? caught.message : String(caught) } };
+  }
   if (!existing.ok) {
     return { ok: false, error: { code: existing.error.code ?? "STORE_ERROR", message: `saveVoiceNoteTranscript: ${existing.error.message}` } };
   }

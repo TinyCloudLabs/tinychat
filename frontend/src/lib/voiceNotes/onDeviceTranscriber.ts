@@ -9,6 +9,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { localTranscriptToSave, saveVoiceNoteTranscript } from "./voiceNoteStore";
 import { VoiceNotes, type LocalTranscript } from "./nativeVoiceNotes";
+import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "./saveDeadline";
 
 /** One note's local transcript -> space write: running, written, or why it did not land (the local transcript stays valid). */
 export type OnDeviceTranscriptSyncState = { state: "syncing" } | { state: "synced" } | { state: "failed"; message: string };
@@ -43,7 +44,9 @@ function publish(key: string, next: OnDeviceTranscriptSyncState | null): void {
  * Failures are logged and published, not thrown: the local transcript stays valid, and the next
  * save or "transcribed" event tries again. Syncs of one note can overlap (save recovery and the
  * native `transcribed` event), so they run one after another per note, each doing its own native
- * read and write: the published state is the last attempt's, which is the newest.
+ * read and write: the published state is the last attempt's, which is the newest. Every await in
+ * an attempt has a deadline, so a hung native read or space call fails that attempt (a late
+ * completion is ignored) and the chain moves on instead of blocking later syncs forever.
  */
 export function syncOnDeviceTranscript(
   tcw: TinyCloudWeb,
@@ -63,10 +66,11 @@ export function syncOnDeviceTranscript(
 async function syncOnce(tcw: TinyCloudWeb, key: string, id: string): Promise<void> {
   let transcript: LocalTranscript | null;
   try {
-    ({ transcript } = await VoiceNotes.getTranscript({ id }));
+    ({ transcript } = await withVoiceNoteSaveDeadline(`native getTranscript ${id}`, () => VoiceNotes.getTranscript({ id })));
   } catch (err) {
     console.warn("[OnDeviceStt] Could not read the local transcript", err);
-    publish(key, { state: "failed", message: `Couldn't read the transcript on this phone: ${errorMessage(err)}` });
+    const reason = err instanceof VoiceNoteSaveTimeout ? "reading it timed out" : errorMessage(err);
+    publish(key, { state: "failed", message: `Couldn't read the transcript on this phone: ${reason}` });
     return;
   }
   if (!transcript) return;
