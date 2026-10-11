@@ -21,6 +21,7 @@ import type { Manifest } from "@tinycloud/sdk-core";
 
 import {
   describeAuthFailure,
+  nativeClientOptions,
   nativePermissions,
   nativeSignInErrorMessage,
   isNativeOpenKeySession,
@@ -206,6 +207,44 @@ describe("native sign-in gate", () => {
       if (prior === undefined) delete (globalThis as { localStorage?: unknown }).localStorage;
       else (globalThis as { localStorage?: unknown }).localStorage = prior;
     }
+  });
+});
+
+describe("nativeClientOptions", () => {
+  const CLIENT_ID = "ok_e1d13d0b220379f37a553aa0391d28a4";
+
+  test("the prod OpenKey host derives the issuer OpenKey's own discovery document reports", () => {
+    // frontend/.env.production: VITE_OPENKEY_HOST=https://openkey.so (the same
+    // value App.tsx's widget client reads). This must land on the exact origin
+    // OpenKey's OAuth discovery names as `issuer`, or token exchange fails.
+    const options = nativeClientOptions(
+      { VITE_OPENKEY_NATIVE_CLIENT_ID: CLIENT_ID, VITE_OPENKEY_HOST: "https://openkey.so" },
+      HOST,
+    );
+    expect(options.issuer).toBe("https://api.openkey.so/api/auth");
+    expect(options.redirectUri).toBe("xyz.tinycloud.exo://openkey/callback");
+    expect(options.clientId).toBe(CLIENT_ID);
+  });
+
+  test("an unset VITE_OPENKEY_HOST falls back to the same default App.tsx uses", () => {
+    const options = nativeClientOptions({ VITE_OPENKEY_NATIVE_CLIENT_ID: CLIENT_ID }, HOST);
+    expect(options.issuer).toBe("https://api.openkey.so/api/auth");
+  });
+
+  test("a non-default OpenKey host derives the matching api. host, not the hard-coded default", () => {
+    const options = nativeClientOptions(
+      { VITE_OPENKEY_NATIVE_CLIENT_ID: CLIENT_ID, VITE_OPENKEY_HOST: "https://openkey.example.com" },
+      HOST,
+    );
+    expect(options.issuer).toBe("https://api.openkey.example.com/api/auth");
+  });
+
+  test("a loopback OpenKey host keeps its own origin (API and widget share it in local dev)", () => {
+    const options = nativeClientOptions(
+      { VITE_OPENKEY_NATIVE_CLIENT_ID: CLIENT_ID, VITE_OPENKEY_HOST: "http://localhost:5183" },
+      HOST,
+    );
+    expect(options.issuer).toBe("http://localhost:5183/api/auth");
   });
 });
 
@@ -730,15 +769,83 @@ describe("platform routing (source)", () => {
   test("restoreSession never reaches the widget restore on a native platform", () => {
     const boot = app.slice(app.indexOf("const restoreSession = useCallback"), app.indexOf("useEffect(() => {\n    if (restoredRef.current)"));
     const nativeBranch = boot.slice(boot.indexOf("if (isNativeOpenKeySignIn())"), boot.indexOf("restorePersistedSession("));
-    // Every path through the native branch returns; restorePersistedSession
-    // (the widget restore) is reached only when isNativeOpenKeySignIn() is false.
     expect(nativeBranch.indexOf("restoreNativeAtBoot(")).toBeGreaterThan(-1);
     expect(nativeBranch).toContain('boot.kind === "restored"');
-    expect((nativeBranch.match(/\breturn;/g) ?? []).length).toBeGreaterThanOrEqual(5);
+    // No outcome inside the native branch — including the "none"/"terminal"
+    // cleanup below — ever calls the widget's own restore: a persisted widget
+    // session cannot be restored from here, only cleared.
+    expect(nativeBranch).not.toContain("restoreTinyCloudWebSession");
+    expect(nativeBranch).not.toContain("connectWallet(");
     const cleanup = nativeBranch.slice(nativeBranch.indexOf('if (boot.kind === "configuration")'), nativeBranch.length);
     expect(cleanup.indexOf("await captureHandoff()")).toBeLessThan(cleanup.indexOf("clearPersistedSession(storedAddress)"));
     expect(cleanup.indexOf("clearPersistedSession(storedAddress)")).toBeLessThan(cleanup.indexOf("await boot.revoke()"));
     expect(cleanup).toContain('setError(NATIVE_STORAGE_MESSAGE)');
+    expect(cleanup).toContain("sessionStoreRef.current.clear()");
+    expect(cleanup).toContain('setState("unauthenticated")');
+  });
+});
+
+describe("persisted widget session on a native cold boot", () => {
+  // restoreSession's cleanup for "none"/"terminal" (proven above to never
+  // reach the widget restore) runs exactly this sequence against the real,
+  // framework-agnostic session layer: clearPersistedSession (the SDK's own
+  // localStorage-backed TinyCloud session, written by the widget's
+  // restoreTinyCloudWebSession/createAndSignIn) and SessionStore.clear() (the
+  // backend bearer session). Exercised here with the real classes/functions,
+  // not mocks, to prove the widget session is actually gone afterward, not
+  // merely "not referenced" by source.
+  test("a widget session from before native-only sign-in is cleared once, not restored", async () => {
+    const address = "0x2222222222222222222222222222222222222222";
+    const values = new Map<string, string>();
+    const prior = (globalThis as { localStorage?: unknown }).localStorage;
+    (globalThis as { localStorage?: unknown }).localStorage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    };
+    try {
+      // @tinyboilerplate/client transitively evaluates @tinycloud/web-sdk at
+      // module load, which references DOM globals (see billingApi.test.ts for
+      // the same gotcha). Stub them before the dynamic import; idempotent if
+      // another test in this run already did it.
+      const g = globalThis as unknown as Record<string, unknown>;
+      if (typeof g.HTMLElement === "undefined") g.HTMLElement = class {};
+      if (typeof g.customElements === "undefined") g.customElements = { define() {}, get() {} };
+      if (typeof g.window === "undefined") g.window = g;
+      const { SessionStore, clearPersistedSession, loadPersistedSession } = await import("@tinyboilerplate/client");
+      // A widget sign-in before this build: a bearer session plus the SDK's
+      // own persisted TinyCloud session for that address.
+      values.set(`tinycloud:session:${address.toLowerCase()}`, JSON.stringify({
+        address, chainId: 1, expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      }));
+      const sessionStore = new SessionStore(`t-${address}`);
+      sessionStore.setSession("bearer-token", 3600, address);
+      expect(sessionStore.hasSession()).toBe(true);
+      expect(loadPersistedSession(address)).not.toBeNull();
+
+      // Cold native launch: no native delegation exists yet (restoreNativeAtBoot
+      // -> "none"), so restoreSession's cleanup runs instead of any restore.
+      const flow = makeFlow();
+      const boot = await restoreNativeAtBoot(
+        config,
+        sessionStore.hasSession() && !sessionStore.isExpired(),
+        flow.deps,
+      );
+      expect(boot.kind).toBe("none");
+      expect(flow.order).toEqual([]); // nothing was restored
+
+      const storedAddress = sessionStore.getAddress();
+      if (storedAddress) clearPersistedSession(storedAddress);
+      sessionStore.clear();
+      setNativeSessionActive(false);
+
+      expect(sessionStore.hasSession()).toBe(false);
+      expect(loadPersistedSession(address)).toBeNull();
+      expect(isNativeOpenKeySession()).toBe(false);
+    } finally {
+      if (prior === undefined) delete (globalThis as { localStorage?: unknown }).localStorage;
+      else (globalThis as { localStorage?: unknown }).localStorage = prior;
+    }
   });
 });
 

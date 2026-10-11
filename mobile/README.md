@@ -676,11 +676,7 @@ this.
 
 On iOS and Android, native OpenKey sign-in through the system browser is the
 only sign-in path — there is no embedded-widget fallback on these platforms.
-Web and the Tauri desktop app still use OpenKey's embedded widget (tested on
-Android: it works inside a WebView with **email + code**; the virtual-passkey
-test harness does not apply there, since Android WebView DevTools has no
-`WebAuthn` domain, and Google sign-in inside a WebView is blocked by Google
-(`disallowed_useragent`) — none of that applies to the native path below).
+Web and the Tauri desktop app still use OpenKey's embedded widget.
 
 ### Native sign-in and renewal (TC-775 E1/E2)
 

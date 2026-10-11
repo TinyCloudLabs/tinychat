@@ -37,7 +37,7 @@ bun install && bun run build:packages && bun run build:frontend
 (cd mobile/android && ./gradlew assembleDebug && "$ANDROID_HOME/platform-tools/adb" -s "$EXO_SERIAL" install -r app/build/outputs/apk/debug/app-debug.apk)
 $H/launch-app.sh
 $H/cdp.sh start
-EXO_TEST_EMAIL=<throwaway>@mailinator.com $H/signin-email.sh
+EXO_TEST_EMAIL=<throwaway>@mailinator.com $H/signin-openkey-native.sh
 $H/smoke-voice-note.sh
 ```
 
@@ -50,8 +50,9 @@ starts, and checks the saved audio's duration and level. Use
 - On Linux, `-no-window` uses a headless QEMU build without the PulseAudio mic
   backend. The starter uses `-qt-hide-window` instead. On macOS, use a visible
   window for host mic audio.
-- Keep one DevTools session: Android WebView lacks virtual passkey support, so
-  sign in with an email code and a throwaway account.
+- Keep one DevTools session: sign-in is native (a Chrome Custom Tab, not the
+  WebView), driven by ADB taps rather than DevTools; use an email code and a
+  throwaway account, since Android has no virtual passkey support either way.
 - The mic is live; audio injected before capture starts is lost. Mono capture
   sums the emulator channels, so `GAIN_DB=-6` is the usual starting point.
 - Android's resolver rejects DNS CNAME targets with an `_` label (TC-513). A

@@ -228,6 +228,8 @@ export interface NativeSignInConfig {
   tinycloudHosts?: string[];
   env?: {
     VITE_OPENKEY_NATIVE_CLIENT_ID?: string;
+    /** The same widget host App.tsx reads (OPENKEY_HOST); defaults to https://openkey.so. */
+    VITE_OPENKEY_HOST?: string;
   };
 }
 
@@ -269,11 +271,36 @@ export interface NativeSignInDeps {
 
 /** The client's registered redirect; the Exo app's own reverse-DNS scheme. */
 const NATIVE_REDIRECT_URI = "xyz.tinycloud.exo://openkey/callback";
-/** The OpenKey API host used by every Exo build; not configurable. */
-const NATIVE_ISSUER = "https://api.openkey.so/api/auth";
+const DEFAULT_OPENKEY_HOST = "https://openkey.so";
+
+/**
+ * Derive the OpenKey OAuth API host from the widget host, exactly like
+ * `@openkey/sdk`'s own (private) `OpenKey.deriveOAuthHost`: prefix `api.` to
+ * the hostname, except for a loopback host (local dev, where the API and
+ * widget share one origin). One OpenKey host config, read the same way App.tsx
+ * reads it for the widget (`VITE_OPENKEY_HOST`) — no second override.
+ */
+function deriveOAuthHost(host: string): string {
+  try {
+    const url = new URL(host);
+    if (url.hostname === "localhost" || url.hostname === "127.0.0.1") {
+      return host.replace(/\/$/, "");
+    }
+    url.hostname = `api.${url.hostname}`;
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return "https://api.openkey.so";
+  }
+}
+
+function nativeIssuer(openKeyHost: string): string {
+  return `${deriveOAuthHost(openKeyHost)}/api/auth`;
+}
+
 let defaultOpenKeyNative: OpenKeyNative | null = null;
 
-function nativeClientOptions(
+/** Exported for tests only: the exact options a native sign-in hands to OpenKeyNative. */
+export function nativeClientOptions(
   env: NativeSignInConfig["env"] | undefined,
   tinycloudHost: string,
 ): Parameters<NativeSignInDeps["createOpenKeyNative"]>[0] {
@@ -284,7 +311,7 @@ function nativeClientOptions(
   return {
     clientId,
     redirectUri: NATIVE_REDIRECT_URI,
-    issuer: NATIVE_ISSUER,
+    issuer: nativeIssuer(env?.VITE_OPENKEY_HOST || DEFAULT_OPENKEY_HOST),
     tinycloudHost,
   };
 }

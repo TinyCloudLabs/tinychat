@@ -3,8 +3,8 @@
 # the app opens the authorize URL in a Chrome Custom Tab, OpenKey signs in there
 # (email + code from a throwaway mailinator inbox), the consent page approves the
 # TinyCloud delegation, and the tab returns to the app on
-# xyz.tinycloud.exo://openkey/callback. Ends on the app's signed-in check, the
-# same probe signin-email.sh uses. Then smoke-voice-note.sh runs unchanged.
+# xyz.tinycloud.exo://openkey/callback. Ends on the app's signed-in check.
+# Then smoke-voice-note.sh runs unchanged.
 #
 #   EXO_TEST_EMAIL=<name>@mailinator.com signin-openkey-native.sh
 #
@@ -12,8 +12,8 @@
 # client id (frontend/.env.production VITE_OPENKEY_NATIVE_CLIENT_ID — the only
 # sign-in path on Android), the app installed and launched (launch-app.sh),
 # and the controller running (cdp.sh start).
-# Taps are coordinates for the Pixel 7 AVD (1080x2400), like signin-email.sh —
-# the Custom Tab is Chrome UI, not the WebView, so it is driven like a user.
+# Taps are coordinates for the Pixel 7 AVD (1080x2400) — the Custom Tab is
+# Chrome UI, not the WebView, so it is driven like a user.
 # Never use a real account here: mailinator inboxes are public.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
