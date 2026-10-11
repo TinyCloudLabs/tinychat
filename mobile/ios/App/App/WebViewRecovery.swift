@@ -90,9 +90,20 @@ final class WebViewRecovery: NSObject, WKNavigationDelegate {
             webView.load(URLRequest(url: target))
         })
 
-        let stack = UIStackView(arrangedSubviews: [title, message, button])
+        // The labels fill the stack's width so they wrap; the button sits centered in a row of its own.
+        button.translatesAutoresizingMaskIntoConstraints = false
+        let buttonRow = UIView()
+        buttonRow.addSubview(button)
+        NSLayoutConstraint.activate([
+            button.centerXAnchor.constraint(equalTo: buttonRow.centerXAnchor),
+            button.topAnchor.constraint(equalTo: buttonRow.topAnchor),
+            button.bottomAnchor.constraint(equalTo: buttonRow.bottomAnchor),
+            button.leadingAnchor.constraint(greaterThanOrEqualTo: buttonRow.leadingAnchor),
+            button.trailingAnchor.constraint(lessThanOrEqualTo: buttonRow.trailingAnchor),
+        ])
+        let stack = UIStackView(arrangedSubviews: [title, message, buttonRow])
         stack.axis = .vertical
-        stack.alignment = .center
+        stack.alignment = .fill
         stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
 
@@ -118,8 +129,8 @@ final class WebViewRecovery: NSObject, WKNavigationDelegate {
             stack.centerYAnchor.constraint(equalTo: content.centerYAnchor),
             stack.topAnchor.constraint(greaterThanOrEqualTo: content.topAnchor, constant: 24),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -24),
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
+            stack.leadingAnchor.constraint(equalTo: scroll.frameLayoutGuide.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: scroll.frameLayoutGuide.trailingAnchor, constant: -24),
         ])
         webView.addSubview(overlay)
         prompt = overlay
