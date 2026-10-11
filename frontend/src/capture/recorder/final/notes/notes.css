@@ -106,7 +106,6 @@
 .soft-skin .fmd h3,
 .soft-skin .fmd h4 {
   font-family: var(--soft-title-font);
-  font-variation-settings: "SOFT" 100;
   font-weight: 450;
   line-height: 1.15;
   margin: 0.95em 0 0.35em;

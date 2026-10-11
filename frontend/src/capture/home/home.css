@@ -1,13 +1,6 @@
 /* Capture home keeps the app's zinc tokens; .soft-home only supplies surface
    styling shared with the recorder. */
 
-.soft-home .font-display {
-  font-family: var(--soft-title-font);
-  font-optical-sizing: auto;
-  font-variation-settings: "SOFT" 100;
-  font-weight: 400;
-}
-
 .soft-home .soft-ico {
   width: 18px;
   height: 18px;

@@ -107,6 +107,8 @@ interface HaloEntry {
   uploadedTheme: HaloConfig["theme"] | null;
   discCanvas: HTMLCanvasElement | null;
   discTheme: HaloConfig["theme"] | null;
+  neutral: Rgb | null;
+  neutralTheme: HaloConfig["theme"] | null;
   source: HaloSource;
   frozenSource: HaloSource;
   data: Uint8Array;
@@ -134,6 +136,7 @@ interface Uniforms {
   level: WebGLUniformLocation | null;
   act: WebGLUniformLocation | null;
   light: WebGLUniformLocation | null;
+  neutral: WebGLUniformLocation | null;
   reduced: WebGLUniformLocation | null;
   avatar: WebGLUniformLocation | null;
   data: WebGLUniformLocation | null;
@@ -159,6 +162,7 @@ uniform vec2 uOrig;
 uniform float uLevel;
 uniform float uAct;
 uniform float uLight;
+uniform vec3 uNeutral;
 uniform float uReduce;
 uniform float uPause;
 uniform float uStill;
@@ -242,7 +246,7 @@ void main() {
   float tick = 1.0 - smoothstep(-px, px, distance);
 
   vec3 hot = mix(uAccA, uAccB, mirror);
-  vec3 neutral = uLight > 0.5 ? vec3(0.62, 0.62, 0.70) : vec3(0.30, 0.30, 0.38);
+  vec3 neutral = uNeutral;
   vec3 color = mix(neutral, hot, uAct);
 
   float breathe = 0.62 + 0.38 * (0.5 + 0.5 * sin(uClock * 2.4));
@@ -324,6 +328,26 @@ export function selectRenderSurface(
     : "canvas-2d";
   logPath(path);
   return { canvas, gl, path };
+}
+
+type Rgb = [number, number, number];
+
+export function hslTripletToRgb(triplet: string): Rgb {
+  const match = /^(-?[\d.]+)(?:deg)?[\s,]+([\d.]+)%[\s,]+([\d.]+)%$/.exec(
+    triplet,
+  );
+  if (!match) {
+    throw new Error(`Halo tick token is not an "H S% L%" triplet: ${triplet}`);
+  }
+  const hue = (((Number(match[1]) % 360) + 360) % 360) / 30;
+  const saturation = Number(match[2]) / 100;
+  const lightness = Number(match[3]) / 100;
+  const chroma = saturation * Math.min(lightness, 1 - lightness);
+  const channel = (offset: number) => {
+    const k = (offset + hue) % 12;
+    return lightness - chroma * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+  };
+  return [channel(0), channel(8), channel(4)];
 }
 
 function makeDisc(fill: string, highlight: string): HTMLCanvasElement {
@@ -434,6 +458,8 @@ class SharedHaloRenderer {
       uploadedTheme: null,
       discCanvas: null,
       discTheme: null,
+      neutral: null,
+      neutralTheme: null,
       source: config.sourceRef.current,
       frozenSource: sourceSnapshot(config.sourceRef.current),
       data: new Uint8Array(DATA_SIZE * 4),
@@ -565,6 +591,7 @@ class SharedHaloRenderer {
       level: gl.getUniformLocation(program, "uLevel"),
       act: gl.getUniformLocation(program, "uAct"),
       light: gl.getUniformLocation(program, "uLight"),
+      neutral: gl.getUniformLocation(program, "uNeutral"),
       reduced: gl.getUniformLocation(program, "uReduce"),
       avatar: gl.getUniformLocation(program, "uAvatar"),
       data: gl.getUniformLocation(program, "uData"),
@@ -671,6 +698,27 @@ class SharedHaloRenderer {
     entry.discCanvas = disc;
     entry.discTheme = config.theme;
     return disc;
+  }
+
+  private getNeutral(entry: HaloEntry): Rgb {
+    const { canvas, config } = entry;
+    if (entry.neutral && entry.neutralTheme === config.theme) {
+      return entry.neutral;
+    }
+    const view = canvas.ownerDocument.defaultView;
+    if (!view) throw new Error("Halo ticks cannot read the document theme");
+    const token = view
+      .getComputedStyle(canvas)
+      .getPropertyValue("--muted-foreground")
+      .trim();
+    if (!token) {
+      throw new Error(
+        `Halo tick theme token --muted-foreground is missing for ${config.theme} mode`,
+      );
+    }
+    entry.neutral = hslTripletToRgb(token);
+    entry.neutralTheme = config.theme;
+    return entry.neutral;
   }
 
   private uploadSource(entry: HaloEntry, dt: number) {
@@ -912,6 +960,7 @@ class SharedHaloRenderer {
     gl.uniform1f(uniforms.level, entry.source.level);
     gl.uniform1f(uniforms.act, entry.source.act);
     gl.uniform1f(uniforms.light, config.theme === "day" ? 1 : 0);
+    gl.uniform3fv(uniforms.neutral, this.getNeutral(entry));
     gl.uniform1f(uniforms.reduced, entry.reduced ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
@@ -960,9 +1009,7 @@ class SharedHaloRenderer {
 
       const [accentA, accentB] = ACCENTS[config.theme];
       const light = config.theme === "day";
-      const neutralR = light ? 0.62 : 0.3;
-      const neutralG = light ? 0.62 : 0.3;
-      const neutralB = light ? 0.7 : 0.38;
+      const [neutralR, neutralG, neutralB] = this.getNeutral(entry);
       const restR = (accentA[0] + accentB[0]) / 2;
       const restG = (accentA[1] + accentB[1]) / 2;
       const restB = (accentA[2] + accentB[2]) / 2;
@@ -1053,9 +1100,7 @@ class SharedHaloRenderer {
       context.globalAlpha = 1;
       context.beginPath();
       context.arc(center, center, discSize / 2, 0, Math.PI * 2);
-      context.strokeStyle = light
-        ? "rgb(158 158 179 / 0.12)"
-        : "rgb(77 77 97 / 0.12)";
+      context.strokeStyle = `rgb(${Math.round(neutralR * 255)} ${Math.round(neutralG * 255)} ${Math.round(neutralB * 255)} / 0.12)`;
       context.lineWidth = 1;
       context.stroke();
       entry.lastDraw = now;

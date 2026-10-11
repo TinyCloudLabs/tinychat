@@ -78,7 +78,6 @@
 }
 .cs-title {
   font-family: var(--soft-title-font);
-  font-variation-settings: "SOFT" 100;
   font-weight: 400;
   font-size: 22px;
   line-height: 1.2;

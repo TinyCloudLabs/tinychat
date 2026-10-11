@@ -55,8 +55,8 @@ const MINIMISED: Partial<RecorderValue> = {
   sheetOpen: false,
 };
 
-// The Soft home sets its title in Fraunces, so the Literata font check does not apply.
-const CAPTURE = { group: "capture", layout: "pane", displayTitle: false, path: "/chat/capture", platform: "ios" } as const;
+// The Soft home sets its title in the app's Literata.
+const CAPTURE = { group: "capture", layout: "pane", displayTitle: true, path: "/chat/capture", platform: "ios" } as const;
 const LISTED = '[data-testid="library-list"][data-state="ready"]';
 
 export const captureScreens: HarnessScreen[] = [
