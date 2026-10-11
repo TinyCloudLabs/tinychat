@@ -1,17 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "transcription",
-  "description": "Desktop recorder and local Whisper: Exo-owned session-id-only capture/transcription, plus native recorder controls. The webview cannot invoke unrestricted plugin start commands or emit trusted events.",
+  "description": "Desktop recorder: guarded batch capture and identifier-only local Whisper; plugin capture/transcription starts are not granted.",
   "windows": ["main"],
   "permissions": [
-    "transcription:allow-list-microphone-devices",
-    "allow-local-capture-start",
-    "transcription:allow-stop-capture",
-    "transcription:allow-get-capture-state",
     "transcription:allow-stop-transcription",
-    "allow-local-transcription-start",
-    "local-stt:allow-is-model-downloaded",
-    "local-stt:allow-download-model",
     "local-stt:allow-start-server",
     "local-stt:allow-stop-server",
     "allow-append-audio-chunk",

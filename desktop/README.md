@@ -72,14 +72,19 @@ size and CRC32 before installation. The vendored Whisper transcription code
 reports work during receive, decode, VAD and inference, so long quiet notes do
 not look stalled. Its supported maximum is eight hours.
 
-The webview has no grant for the transcription plugin's `start_capture` or
-`start_transcription`, nor for `core:image:from_path`. Native capture reserves
-fresh session folders beneath the current vault's `sessions/` directory,
-rejecting symlinks and collisions before the recorder can touch them, and
-forces batch mode (no live upload). On-device transcription takes identifiers,
-not a webview-selected audio path or URL: native code resolves a regular audio
-file without following symlinks, starts its own in-process Whisper server,
-checks its exact loopback URL, and forces the Whisper provider.
+The webview cannot invoke the transcription plugin's `start_capture` or
+`start_transcription`, nor the retired local capture/transcription commands.
+It also lacks plugin device/state/model-download grants. The main capability
+enumerates core APIs without menu or tray, and denies `core:image:from_path`,
+so an icon path cannot read an arbitrary local file. Native recorder capture
+reserves fresh session folders beneath the current vault's `sessions/`
+directory, rejecting symlinks and collisions before any batch-only capture.
+On-device transcription takes identifiers, not a webview-selected audio path
+or URL: native code resolves regular audio without following symlinks, starts
+its own in-process Whisper server, validates the loopback URL, and forces the
+Whisper provider. The upstream server start/stop grants remain for the
+recorder's existing model lease; replacing them with a native lifetime lease
+is separate work needed to close the same-host stale-port race.
 
 `EXO_IPC_SELFTEST=1 bun run dev:desktop` probes the real webview ACL in
 debug builds. macOS CI runs `cargo test --release --lib --locked`, launches a

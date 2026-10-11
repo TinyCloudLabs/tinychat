@@ -9,43 +9,56 @@ use tauri_plugin_transcription::ListenerPluginExt;
 const DENIED: &[&str] = &[
     "plugin:transcription|start_transcription",
     "plugin:transcription|start_capture",
+    "plugin:transcription|list_microphone_devices",
+    "plugin:transcription|stop_capture",
+    "plugin:transcription|get_capture_state",
     "plugin:transcription|run_denoise",
     "plugin:transcription|parse_subtitle",
     "plugin:transcription|export_to_vtt",
     "plugin:transcription|extract_voiceprint_candidates",
     "plugin:transcription|set_mic_muted",
     "plugin:local-stt|delete_model",
+    "plugin:local-stt|is_model_downloaded",
+    "plugin:local-stt|download_model",
     "plugin:settings|set_vault_base",
     "plugin:settings|move_vault",
     "plugin:settings|copy_vault",
     "plugin:settings|save",
     "plugin:image|from_path",
+    "plugin:menu|new",
+    "plugin:tray|new",
     "plugin:event|emit",
     "plugin:event|emit_to",
+    "local_capture_start",
+    "local_transcription_start",
 ];
 
 const SCRIPT: &str = r#"(async () => {
   const probes = [
     ["plugin:transcription|start_transcription", {}],
     ["plugin:transcription|start_capture", {}],
+    ["plugin:transcription|list_microphone_devices", {}],
+    ["plugin:transcription|stop_capture", {}],
+    ["plugin:transcription|get_capture_state", {}],
     ["plugin:transcription|run_denoise", {}],
     ["plugin:transcription|parse_subtitle", {}],
     ["plugin:transcription|export_to_vtt", {}],
     ["plugin:transcription|extract_voiceprint_candidates", {}],
     ["plugin:transcription|set_mic_muted", {}],
     ["plugin:local-stt|delete_model", {}],
+    ["plugin:local-stt|is_model_downloaded", {}],
+    ["plugin:local-stt|download_model", {}],
     ["plugin:settings|set_vault_base", {}],
     ["plugin:settings|move_vault", {}],
     ["plugin:settings|copy_vault", {}],
     ["plugin:settings|save", {}],
     ["plugin:image|from_path", {}],
+    ["plugin:menu|new", {}],
+    ["plugin:tray|new", {}],
     ["plugin:event|emit", {}],
     ["plugin:event|emit_to", {}],
-    ["local_transcription_start", { sessionId: "../../etc", model: "QuantizedTinyEn", language: "en" }],
-    ["local_transcription_start:missing", { sessionId: crypto.randomUUID(), model: "QuantizedTinyEn", language: "en" }],
-    ["local_capture_start:traversal", { sessionId: "../x", language: "en", micDevice: null }],
-    ["local_capture_start:name", { sessionId: "Documents", language: "en", micDevice: null }],
-    ["plugin:transcription|get_capture_state", {}],
+    ["local_capture_start", {}],
+    ["local_transcription_start", {}],
     ["recorder_whisper_start:traversal", { id: "../x", stageId: "whisper-bad", model: "QuantizedTinyEn" }],
     ["recorder_whisper_start:missing", { id: crypto.randomUUID(), stageId: "whisper-bad", model: "QuantizedTinyEn" }],
     ["recorder_status", {}],
@@ -58,9 +71,7 @@ const SCRIPT: &str = r#"(async () => {
   }
   const results = {};
   for (const [label, args] of probes) {
-    const cmd = label.startsWith("local_capture_start:") || label.startsWith("local_transcription_start:")
-      || label.startsWith("recorder_whisper_start:")
-      ? label.split(":")[0] : label;
+    const cmd = label.startsWith("recorder_whisper_start:") ? label.split(":")[0] : label;
     try {
       results[label] = { ok: true, value: await window.__TAURI_INTERNALS__.invoke(cmd, args) };
     } catch (error) {
@@ -96,7 +107,13 @@ fn assert_results(value: &serde_json::Value) -> bool {
             .get(command)
             .and_then(|v| v.get("error"))
             .and_then(|v| v.as_str());
-        let passed = error.is_some_and(|error| acl_denied(command, error));
+        let passed = error.is_some_and(|error| {
+            if matches!(command, "local_capture_start" | "local_transcription_start") {
+                error == format!("Command {command} not found") || acl_denied(command, error)
+            } else {
+                acl_denied(command, error)
+            }
+        });
         eprintln!(
             "[EXO_IPC_SELFTEST] {} {command}: {}",
             if passed { "PASS" } else { "FAIL" },
@@ -105,10 +122,6 @@ fn assert_results(value: &serde_json::Value) -> bool {
         all_pass &= passed;
     }
     for (label, code) in [
-        ("local_transcription_start", "recording_unavailable"),
-        ("local_transcription_start:missing", "recording_unavailable"),
-        ("local_capture_start:traversal", "invalid_session"),
-        ("local_capture_start:name", "invalid_session"),
         ("recorder_whisper_start:traversal", "recording_unavailable"),
         ("recorder_whisper_start:missing", "recording_unavailable"),
     ] {
@@ -124,7 +137,7 @@ fn assert_results(value: &serde_json::Value) -> bool {
         );
         all_pass &= passed;
     }
-    for label in ["plugin:transcription|get_capture_state", "recorder_status"] {
+    for label in ["recorder_status"] {
         let passed =
             value.get(label).and_then(|v| v.get("ok")) == Some(&serde_json::Value::Bool(true));
         eprintln!(
@@ -211,13 +224,16 @@ mod tests {
         .expect("tauri-build must generate pinned ACL manifests before tests");
         for command in DENIED
             .iter()
-            .chain(["plugin:transcription|get_capture_state"].iter())
+            .filter(|command| command.starts_with("plugin:"))
         {
             let name = command.split('|').nth(1).unwrap();
             assert!(
                 manifests.contains(&format!("\"{name}\"")),
                 "probe {command} missing from pinned manifests"
             );
+        }
+        for command in ["local_capture_start", "local_transcription_start"] {
+            assert!(!manifests.contains(&format!("\"{command}\"")));
         }
     }
 

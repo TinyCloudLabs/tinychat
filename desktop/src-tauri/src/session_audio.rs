@@ -212,9 +212,22 @@ pub fn prepare_recorder_dir(sessions_dir: &Path, id: &str) -> Result<PreparedCap
     prepare_dir(sessions_dir, id)
 }
 
-/// Walk precisely the directories the pinned recorder searches. No entry is
-/// followed or silently skipped when scanning fails.
+/// Walk precisely the directories the pinned recorder searches. Entries that
+/// disappear between readdir and stat/open are gone; all other errors fail closed.
 fn scan_recorder_tree(dir_fd: &OwnedFd, id: &str) -> Result<(), Rejection> {
+    scan_recorder_tree_with(dir_fd, id, &mut |_, _, _| {})
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScanPoint {
+    BeforeStat,
+    BeforeOpen,
+}
+
+fn scan_recorder_tree_with<F>(dir_fd: &OwnedFd, id: &str, on_entry: &mut F) -> Result<(), Rejection>
+where
+    F: FnMut(&OwnedFd, &CStr, ScanPoint),
+{
     let mut entries =
         Dir::read_from(dir_fd).map_err(|e| unsafe_tree(format!("Reading sessions folder: {e}")))?;
     while let Some(entry) = entries.read() {
@@ -223,8 +236,12 @@ fn scan_recorder_tree(dir_fd: &OwnedFd, id: &str) -> Result<(), Rejection> {
         if name.to_bytes() == b"." || name.to_bytes() == b".." {
             continue;
         }
-        let stat = rustix::fs::statat(dir_fd, name, AtFlags::SYMLINK_NOFOLLOW)
-            .map_err(|e| unsafe_tree(format!("Inspecting sessions entry: {e}")))?;
+        on_entry(dir_fd, name, ScanPoint::BeforeStat);
+        let stat = match rustix::fs::statat(dir_fd, name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(stat) => stat,
+            Err(rustix::io::Errno::NOENT) => continue,
+            Err(e) => return Err(unsafe_tree(format!("Inspecting sessions entry: {e}"))),
+        };
         let kind = FileType::from_raw_mode(stat.st_mode);
         if kind.is_symlink() {
             return Err(unsafe_tree("The sessions tree contains a symlink"));
@@ -238,14 +255,18 @@ fn scan_recorder_tree(dir_fd: &OwnedFd, id: &str) -> Result<(), Rejection> {
             }
             let child_name = std::ffi::OsStr::from_bytes(name.to_bytes());
             if Uuid::try_parse(child_name.to_str().unwrap_or("")).is_err() {
-                let child = rustix::fs::openat(
+                on_entry(dir_fd, name, ScanPoint::BeforeOpen);
+                let child = match rustix::fs::openat(
                     dir_fd,
                     name,
                     OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                     Mode::empty(),
-                )
-                .map_err(|e| unsafe_tree(format!("Opening sessions entry: {e}")))?;
-                scan_recorder_tree(&child, id)?;
+                ) {
+                    Ok(child) => child,
+                    Err(rustix::io::Errno::NOENT) => continue,
+                    Err(e) => return Err(unsafe_tree(format!("Opening sessions entry: {e}"))),
+                };
+                scan_recorder_tree_with(&child, id, on_entry)?;
             }
         }
     }

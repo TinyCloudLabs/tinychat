@@ -24,7 +24,7 @@ serde_json = "1"
 # Desktop recording + on-device Whisper, reused from fastrepl/anarlog's
 # MIT-licensed Tauri plugins. This is a first-class desktop feature, included
 # by default despite its large native dependency graph.
-# The webview receives Exo's session-id-only capture/transcription commands,
+# Transcription starts through Exo's guarded staged-note Whisper command,
 # not the plugins' unrestricted start commands; capabilities-transcription/
 # is injected at runtime (see src/lib.rs and ../README.md).
 [dependencies.tauri-plugin-transcription]

@@ -48,8 +48,6 @@ fn main() {
             "recorder_system_audio_set",
             "recorder_auto_save_to_space_get",
             "recorder_auto_save_to_space_set",
-            "local_capture_start",
-            "local_transcription_start",
         ]),
     ))
     .expect("failed to run tauri-build");

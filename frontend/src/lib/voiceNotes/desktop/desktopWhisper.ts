@@ -70,6 +70,29 @@ const stt = (state: NoteSttState["state"], error: string | null = null): NoteStt
   state, pack: null, engine: "whisper", segmentsDone: 0, windowsDone: 0, error,
 });
 
+const WHISPER_REJECTION_HELP: Record<string, string> = {
+  unsafe_sessions_folder: "The sessions folder is unsafe. Check the vault sessions folder for unexpected entries before retrying.",
+  session_exists: "A recording session already exists. Resolve the conflicting session before retrying.",
+  recording_unavailable: "The recording audio is unavailable. Check that the note audio still exists, then retry.",
+  recording_busy: "The recording is still being saved. Wait for it to finish, then retry.",
+  server_unavailable: "The Whisper server is unavailable. Restart local transcription and retry.",
+};
+
+function whisperFailure(error: unknown): string {
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    const { code, message } = error as { code?: unknown; message?: unknown };
+    const detail = typeof message === "string" ? message.trim() : "";
+    if (typeof code === "string" && code) {
+      const help = Object.hasOwn(WHISPER_REJECTION_HELP, code) ? WHISPER_REJECTION_HELP[code] : undefined;
+      return help ? `${code}: ${help}${detail ? ` Details: ${detail}` : ""}`
+        : `${code}: ${detail || "Whisper transcription failed"}`;
+    }
+    if (detail) return detail;
+  }
+  return "Whisper transcription failed";
+}
+
 async function stageId(id: string): Promise<string> {
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(id)));
   return `whisper-${Array.from(digest.subarray(0, 16), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
@@ -176,8 +199,9 @@ export function createDesktopWhisperQueue(args: {
       emitDone(id);
     } catch (error) {
       if (disposed) return;
-      if (stopping || captureLive() || String(error).includes("capture_has_priority")) await mark(id, "queued");
-      else await mark(id, "failed", error instanceof Error ? error.message : String(error));
+      const message = whisperFailure(error);
+      if (stopping || captureLive() || message.includes("capture_has_priority")) await mark(id, "queued");
+      else await mark(id, "failed", message);
     } finally {
       transcribing = false;
       serverLease?.release();

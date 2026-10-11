@@ -99,8 +99,6 @@ pub fn run() {
             recorder::extras::recorder_system_audio_set,
             recorder::extras::recorder_auto_save_to_space_get,
             recorder::extras::recorder_auto_save_to_space_set,
-            local::local_capture_start,
-            local::local_transcription_start,
         ]);
         // Debug builds add a diagnostic that lets the webview verify the
         // native wiring in one invoke before any recording is attempted.
@@ -135,8 +133,6 @@ pub fn run() {
             recorder::extras::recorder_system_audio_set,
             recorder::extras::recorder_auto_save_to_space_get,
             recorder::extras::recorder_auto_save_to_space_set,
-            local::local_capture_start,
-            local::local_transcription_start,
             smoke::exo_desktop_smoke,
         ]);
 

@@ -455,7 +455,7 @@ fn stage_marker(session: &rustix::fd::OwnedFd, stage_id: &str) -> Result<bool, S
         Err(rustix::io::Errno::NOENT) => return Ok(false),
         Err(e) => return Err(e.to_string()),
     };
-    let mut marker = File::from(marker);
+    let marker = File::from(marker);
     if !marker.metadata().map_err(|e| e.to_string())?.is_file() {
         return Err("unsafe_whisper_stage".into());
     }
@@ -648,7 +648,7 @@ fn cleanup_whisper_stages_at(dir: &Path, sessions: &Path) -> Result<u64, String>
             Err(rustix::io::Errno::NOENT) => continue,
             Err(e) => return Err(e.to_string()),
         };
-        let mut marker = File::from(marker);
+        let marker = File::from(marker);
         if !marker.metadata().map_err(|e| e.to_string())?.is_file() {
             return Err("unsafe_whisper_stage".into());
         }
@@ -684,15 +684,19 @@ pub fn delete_audio_file(app: tauri::AppHandle, id: String) -> Result<(), String
 
 fn delete_note_at(root: &Path, sessions: &Path, id: &str) -> Result<(), String> {
     if id.starts_with("whisper-") {
-        remove_stage_at(sessions, id)?;
-        delete_at(root, sessions, id)?;
+        let stage_cleanup = remove_stage_at(sessions, id);
+        let note_cleanup = delete_at(root, sessions, id);
+        stage_cleanup?;
+        note_cleanup?;
         remove_if_present(&root.join(format!("{id}.mp3.tmp")))?;
     } else {
         let stage = whisper_stage_id(id)?;
-        remove_stage_at(sessions, &stage)?;
-        delete_at(root, sessions, &stage)?;
-        remove_if_present(&root.join(format!("{stage}.mp3.tmp")))?;
-        delete_at(root, sessions, id)?;
+        let stage_cleanup = remove_stage_at(sessions, &stage)
+            .and_then(|_| delete_at(root, sessions, &stage))
+            .and_then(|_| remove_if_present(&root.join(format!("{stage}.mp3.tmp"))));
+        let note_cleanup = delete_at(root, sessions, id);
+        stage_cleanup?;
+        note_cleanup?;
     }
     Ok(())
 }
@@ -770,6 +774,31 @@ mod tests {
         assert!(!path.exists());
         assert!(other.join("audio.mp3").exists());
         assert!(!audio_path(&root, "note").unwrap().exists());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn squatted_stage_does_not_block_deletion_of_own_audio() {
+        let base =
+            std::env::temp_dir().join(format!("exo-squatted-stage-{}", uuid::Uuid::new_v4()));
+        let root = base.join("audio");
+        let sessions = base.join("sessions");
+        fs::create_dir_all(&root).unwrap();
+        append(&root, "note", b"audio").unwrap();
+        finalize_at(&root, "note").unwrap();
+        let stage = whisper_stage_id("note").unwrap();
+        let session = sessions.join(stage_session_id(&stage).unwrap());
+        fs::create_dir_all(&session).unwrap();
+        fs::write(session.join("audio.mp3"), b"unowned").unwrap();
+
+        assert_eq!(
+            delete_note_at(&root, &sessions, "note").unwrap_err(),
+            "unsafe_whisper_stage"
+        );
+        assert!(!root.join("note.mp3").exists());
+        assert!(!root.join("note.sealed").exists());
+        assert_eq!(fs::read(session.join("audio.mp3")).unwrap(), b"unowned");
+        assert!(!session.join(STAGE_MARKER).exists());
         fs::remove_dir_all(base).unwrap();
     }
 
@@ -866,8 +895,11 @@ mod tests {
         assert!(delete_note_at(&root, &sessions, "../outside").is_err());
         assert_eq!(fs::read(&outside).unwrap(), b"sentinel");
         fs::remove_file(root.join("note.mp3")).unwrap();
-        let dir = File::open(&root).unwrap();
-        rustix::fs::mkfifoat(&dir, "note.mp3", Mode::RWXU).unwrap();
+        assert!(std::process::Command::new("mkfifo")
+            .arg(root.join("note.mp3"))
+            .status()
+            .unwrap()
+            .success());
         assert!(read(&root, "note", 0, 8).is_err());
         assert!(append(&root, "note", b"tamper").is_err());
         fs::remove_dir_all(base).unwrap();

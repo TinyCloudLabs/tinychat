@@ -311,6 +311,40 @@ fn capture_accepts_safe_tree_and_rolls_back_only_failed_starts() {
 }
 
 #[test]
+fn scan_ignores_entries_removed_between_readdir_and_stat_or_open() {
+    let (_root, sessions) = fixture();
+    let fd = rustix::fs::open(
+        &sessions,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .unwrap();
+
+    fs::write(sessions.join("vanishing-file"), b"temporary").unwrap();
+    let mut removed_before_stat = false;
+    scan_recorder_tree_with(&fd, ID, &mut |parent, name, point| {
+        if point == ScanPoint::BeforeStat && name.to_bytes() == b"vanishing-file" {
+            rustix::fs::unlinkat(parent, name, AtFlags::empty()).unwrap();
+            removed_before_stat = true;
+        }
+    })
+    .unwrap();
+    assert!(removed_before_stat);
+
+    fs::create_dir(sessions.join("vanishing-dir")).unwrap();
+    let mut removed_before_open = false;
+    scan_recorder_tree_with(&fd, ID, &mut |parent, name, point| {
+        if point == ScanPoint::BeforeOpen && name.to_bytes() == b"vanishing-dir" {
+            rustix::fs::unlinkat(parent, name, AtFlags::REMOVEDIR).unwrap();
+            removed_before_open = true;
+        }
+    })
+    .unwrap();
+    assert!(removed_before_open);
+    assert!(prepare_capture_dir(&sessions, ID).is_ok());
+}
+
+#[test]
 fn recorder_segment_uses_same_preflight_and_never_resumes_an_existing_folder() {
     let (_root, sessions) = fixture();
     let segment = format!("rec-{ID}");
@@ -426,7 +460,7 @@ async fn real_recorder_stays_in_prepared_session_and_final_audio_resolves() {
     use anlg_transcription_core::listener::actors::{
         RecArgs, RecMsg, RecorderActor, RecorderEnqueueResult,
     };
-    use ractor::Actor;
+    use ractor::{rpc::CallResult, Actor};
     use std::time::Duration;
 
     let (root, sessions) = fixture();
@@ -453,7 +487,7 @@ async fn real_recorder_stays_in_prepared_session_and_final_audio_resolves() {
         )
         .await
         .unwrap();
-    assert_eq!(reply, RecorderEnqueueResult::Accepted);
+    assert_eq!(reply, CallResult::Success(RecorderEnqueueResult::Accepted));
     actor.stop(Some("complete".into()));
     handle.await.unwrap();
     let result = open_session_recording(&sessions, ID).unwrap();
