@@ -44,7 +44,6 @@ import {
   listVoiceNotes,
   saveVoiceNote as storeVoiceNote,
   saveVoiceNoteTranscript,
-  putVoiceNoteAudio,
   voiceNoteAudioKvKey,
   voiceNoteAudioPartKey,
   voiceNoteAudioSourceFromBase64,
@@ -60,6 +59,7 @@ import {
   localStorageVoiceNotePendingStore,
   localStorageVoiceNotePrivateChoiceStore,
   maxTranscriptionSeconds,
+  privateCloudAccepts,
   prepareVoiceNoteTranscript,
   transcribeVoiceNote,
   transcriptionStatusText,
@@ -264,6 +264,10 @@ describe("gating", () => {
     expect(maxTranscriptionSeconds(CAPS)).toBe(7_200);
     expect(maxTranscriptionSeconds({ ...CAPS, max_duration_seconds: 120 })).toBe(120);
     expect(maxTranscriptionSeconds({ ...CAPS, max_duration_seconds: 10_800 })).toBe(10_800);
+    expect(privateCloudAccepts(7_200, CAPS)).toBe(true);
+    expect(privateCloudAccepts(7_201, CAPS)).toBe(false);
+    expect(privateCloudAccepts(null, CAPS)).toBe(true);
+    expect(privateCloudAccepts(1, null)).toBe(false);
   });
 });
 
@@ -1397,7 +1401,7 @@ test("a retryable audio-read failure before the cloud job exists retains the use
   });
 }, 15000);
 
-test("the private saved-note trigger waits for queued audio before reading its space key", async () => {
+test("Library Transcribe uses local audio while the space upload is pending", async () => {
   _resetConnectorSchemaMemoForTests();
   const space = sqliteSpace();
   expect((await saveVoiceNote(space.tcw, { ...RECORDING, version: 2, source: "in_app", options: { transcriber: "private-cloud", identifySpeakers: false } }, AUDIO, "ios")).ok).toBe(true);
@@ -1405,12 +1409,11 @@ test("the private saved-note trigger waits for queued audio before reading its s
     '$.capture.version', 2, '$.capture.options.transcriber', 'private-cloud') WHERE source_id = 'rec-1'`).run();
   for (const key of [...space.kv.keys()]) if (key.startsWith(voiceNoteAudioKvKey("rec-1"))) space.kv.delete(key);
 
-  let recording = { ...RECORDING, version: 2 as const, owner: "did:test:voice", source: "in_app" as const, ledger: {
+  const recording = { ...RECORDING, version: 2 as const, owner: "did:test:voice", source: "in_app" as const, ledger: {
     audio: { state: "pending" as const, rowId: null, at: null },
     transcriptSync: { state: "pending" as const, rev: 0, at: null },
   }, options: { transcriber: "private-cloud" as const, identifySpeakers: false } } as unknown as VoiceNoteRecording;
   VoiceNotes.listPending = async () => ({ recordings: [recording] });
-  let localReadAttempted = false;
   let audioReads = 0;
   const client = space.tcw as unknown as { kv: { get: (key: string) => Promise<unknown> } };
   const originalGet = client.kv.get;
@@ -1418,44 +1421,27 @@ test("the private saved-note trigger waits for queued audio before reading its s
     if (key.startsWith(voiceNoteAudioKvKey("rec-1"))) audioReads++;
     return originalGet(key);
   };
-  VoiceNotes.readAudioChunk = async () => {
-    localReadAttempted = true;
-    throw Object.assign(new Error("not found"), { code: "not_found" });
-  };
+  VoiceNotes.readAudioChunk = async ({ id, offset, length }) => ({ id, offset,
+    base64: bytesToBase64(new Uint8Array(length)), bytesRead: length, size: RECORDING.sizeBytes, eof: offset + length >= RECORDING.sizeBytes });
 
   const finishTrackedUpload = pendingStore.beginAutomaticSave();
-  let saveStillTracked = true;
-  const finishEarlierQueuedUpload = () => {
-    if (!saveStillTracked) return;
-    saveStillTracked = false;
-    finishTrackedUpload();
-  };
   try {
     const h = harness({});
     const transcriber = createVoiceNoteTranscriber({
       cloud: h.cloud, consent: { get: () => true, set: () => {} }, tcw: () => space.tcw, holds: memoryHoldStore(),
     });
     await transcriber.check();
-    // The row is visible in the Library and says Private was chosen, while the native
-    // ledger is pending and another upload holds the save lane ahead of this note.
+    // The row is visible and the audio upload is pending, but its native file is valid.
+    // Keep a save busy to prove local-first transcription does not wait on the upload queue.
     transcriber.transcribe("rec-1");
-    for (let i = 0; i < 30 && !localReadAttempted; i++) await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(localReadAttempted).toBe(true);
-    expect(h.creates).toHaveLength(0);
-    expect(audioReads).toBe(0);
-    expect(space.kv.has(voiceNoteAudioKvKey("rec-1"))).toBe(false);
-
-    expect((await putVoiceNoteAudio(space.tcw, "rec-1", voiceNoteAudioSourceFromBase64(AUDIO))).ok).toBe(true);
-    recording = { ...recording, ledger: { ...recording.ledger, audio: { state: "saved", rowId: "vn-rec-1", at: Date.now() } } };
-    finishEarlierQueuedUpload();
     for (let i = 0; i < 100 && transcriber.snapshot().jobs.get("rec-1")?.kind === "active"; i++)
       await new Promise((resolve) => setTimeout(resolve, 10));
     expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "done", outcome: "transcribed" });
     expect(h.creates).toHaveLength(1);
     expect(h.puts).toHaveLength(1);
-    expect(audioReads).toBeGreaterThan(0);
+    expect(audioReads).toBe(0);
   } finally {
-    finishEarlierQueuedUpload();
+    finishTrackedUpload();
     client.kv.get = originalGet;
   }
 }, 15000);

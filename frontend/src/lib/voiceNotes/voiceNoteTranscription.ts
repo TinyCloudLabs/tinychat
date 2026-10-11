@@ -520,6 +520,12 @@ export function voiceNoteErrorCode(err: unknown): string {
   return err instanceof PrivateCloudError || err instanceof VoiceNoteAudioError ? err.code : "transcription_error";
 }
 
+function localAudioUnavailable(err: unknown): boolean {
+  const code = err && typeof err === "object" && "code" in err ? String(err.code) : "";
+  return code === "not_found" || code === "tombstoned" || code === "recording_changed"
+    || /(?:java\.io\.)?FileNotFoundException/.test(code);
+}
+
 /** The user turned transcription off while this note was on its way. */
 export function transcriptionOffError(): PrivateCloudError {
   return new PrivateCloudError("transcription_off", "Transcription was turned off.");
@@ -548,6 +554,16 @@ export function acceptedContentTypes(capabilities: PrivateCloudCapabilities): st
 export function maxTranscriptionSeconds(capabilities: PrivateCloudCapabilities | null): number {
   const ptx = capabilities?.max_duration_seconds;
   return typeof ptx === "number" && ptx > 0 ? ptx : Number.POSITIVE_INFINITY;
+}
+
+/** Whether a recording fits the duration limit advertised by PTX. Shared by route controls and note actions. */
+export function privateCloudAccepts(
+  durationSecs: number | null,
+  capabilities: Pick<PrivateCloudCapabilities, "max_duration_seconds"> | null,
+): boolean {
+  if (capabilities === null) return false;
+  if (durationSecs === null) return true;
+  return Number.isFinite(durationSecs) && durationSecs >= 0 && durationSecs <= capabilities.max_duration_seconds;
 }
 
 export interface VoiceNoteCloudDeps {
@@ -1071,8 +1087,7 @@ export async function transcribeVoiceNote(args: {
         }
         return { mimeType: source.mimeType, base64: bytesToBase64(bytes) };
       } catch (cause) {
-        const code = typeof cause === "object" && cause !== null && "code" in cause ? String(cause.code) : "";
-        if (code === "not_found") {
+        if (localAudioUnavailable(cause)) {
           console.warn("[VoiceNotes] The local recording is no longer available; reading its space copy", { sourceId });
         } else {
           console.error("[VoiceNotes] Could not read local audio before transcription", { sourceId, cause });
@@ -1414,6 +1429,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           jobs.delete(sourceId);
           settleChoice(sourceId);
         } else {
+          if (voiceNoteErrorCode(err) === "transcription_error")
+            console.error("[VoiceNotes] Private transcription failed with an unexpected error", { sourceId, error: err });
           const failure = voiceNoteTranscriptionFailure(err);
           jobs.set(sourceId, { kind: "failed", ...failure });
           // A failure Retry can fix keeps the choice, so a relaunch does not turn it back into Local.
@@ -1547,6 +1564,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         block(recording.id);
         return;
       }
+      if (!privateCloudAccepts(recording.durationMs / 1000, state.capabilities)) return;
       enqueue(recording.id, audio, false);
     },
   };

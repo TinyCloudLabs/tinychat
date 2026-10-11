@@ -323,9 +323,9 @@ export function nativeRecordingSource(
         () => plugin.readAudioChunk({ id: recording.id, offset, length }), voiceNoteCallDeadlineMs(length));
       const bytes = base64ToBytes(chunk.base64);
       if (bytes.byteLength !== length || chunk.size !== recording.sizeBytes) {
-        throw new Error(
+        throw Object.assign(new Error(
           `The recording on this phone changed while it was being saved (read ${bytes.byteLength} of ${length} bytes at ${offset}; file ${chunk.size} bytes, expected ${recording.sizeBytes}).`,
-        );
+        ), { code: "recording_changed" });
       }
       return bytes;
     },

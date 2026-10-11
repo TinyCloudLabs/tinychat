@@ -21,6 +21,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import xyz.tinycloud.exo.capture.core.MAX_DURATION_MS
 import xyz.tinycloud.exo.capture.core.AccountStateDebugFailure
+import java.io.FileNotFoundException
 import java.io.RandomAccessFile
 import java.util.UUID
 
@@ -152,14 +153,14 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
         require(offset >= 0 && length > 0) { "invalid_argument" }
         val file = engine.library.audio(id)
         if (!file.isFile) throw IllegalStateException("not_found")
-        RandomAccessFile(file, "r").use { input ->
+        try { RandomAccessFile(file, "r").use { input ->
             val size = input.length()
             val count = minOf(length, 4L * 1024 * 1024, maxOf(0L, size - offset)).toInt()
             val bytes = ByteArray(count)
             input.seek(offset); input.readFully(bytes)
             JSONObject().put("id", id).put("offset", offset).put("base64", Base64.encodeToString(bytes, Base64.NO_WRAP))
                 .put("bytesRead", count).put("size", size).put("eof", offset + count >= size)
-        }
+        } } catch (_: FileNotFoundException) { throw IllegalStateException("not_found") }
     }
     @PluginMethod fun setRecordingOptions(call: PluginCall) = async(call) {
         engine.setRecordingOptions(call.data)

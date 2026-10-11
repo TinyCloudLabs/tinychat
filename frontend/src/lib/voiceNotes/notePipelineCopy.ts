@@ -61,11 +61,11 @@ export const SPACE_COPY = {
   accountUnknown: (device: PipelineDevice) => `Exo can't tell which account this note belongs to. It stays on ${deviceName(device)}.`,
   quota: "Your space is full",
   timeout: (device: PipelineDevice) => `Saving timed out. This note is safe on ${deviceName(device)}.`,
-  server: (detail: string | null | undefined, device: PipelineDevice) =>
-    withDetail(`Your space couldn't take this note. It is safe on ${deviceName(device)}.`, detail),
+  server: (_detail: string | null | undefined, device: PipelineDevice) =>
+    `Your space couldn't take this note. It is safe on ${deviceName(device)}. Try again.`,
   unreachable: (device: PipelineDevice) => `Couldn't reach your space. This note is safe on ${deviceName(device)}.`,
-  source: (message: string | null | undefined) => (hasText(message) ? message.trim() : "Couldn't read the recording"),
-  unknown: (message: string | null | undefined) => (hasText(message) ? message.trim() : "Saving failed with no details"),
+  source: (_message: string | null | undefined) => "Couldn't read the recording on this phone.",
+  unknown: (_message: string | null | undefined) => "Couldn't save this note. It is safe on this phone. Try again.",
 };
 
 export const LOCAL_COPY = {
@@ -109,9 +109,9 @@ export const PRIVATE_COPY = {
   checking: "Checking private transcription…",
   noConsent: "Private transcription is turned off",
   hidden: "Private transcription isn't available for this account",
-  failed: (message: string | null | undefined, reference: string | null) =>
-    hasText(reference) ? withDetail(hasText(message) ? message.trim() : "Transcription failed", `Reference ${reference.trim()}`)
-      : hasText(message) ? message.trim() : "Transcription failed",
+  failed: (_message: string | null | undefined, reference: string | null) =>
+    hasText(reference) ? `Private transcription couldn't finish. Try again. · Reference ${reference.trim()}`
+      : "Private transcription couldn't finish. Try again.",
 };
 
 export const NOTES_COPY = {

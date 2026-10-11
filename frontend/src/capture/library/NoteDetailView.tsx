@@ -161,6 +161,13 @@ export function VoiceNoteTranscriptionStatus(props: {
       </div>
     );
   }
+  if (item.durationSecs !== null && item.durationSecs > transcription.maxSeconds) {
+    return (
+      <p className="text-callout text-muted-foreground" data-testid="voice-note-transcription-over-limit">
+        Private Transcription accepts notes up to {formatSpokenDuration(transcription.maxSeconds)}. This note is {formatSpokenDuration(item.durationSecs)}.
+      </p>
+    );
+  }
   // Private cloud is available but not chosen (or chosen and unreachable): the recorder's route control.
   const choosable = transcription.availability === "available" || (transcription.availability === "failed" && transcription.consented);
   // Reached only when private cloud is "available"/"failed", which requires a signed-in account

@@ -98,13 +98,13 @@ const ROWS: Row[] = [
   { name: "space: an offline failure while offline keeps waiting", patch: { online: false, space: { pending: { failed: { kind: "offline", message: "fetch failed" } } } }, states: { space: "waiting" }, current: "space", caption: "Waiting for a connection · Exo continues automatically" },
   { name: "space: an offline failure while online is Try again", patch: { space: { pending: { failed: { kind: "offline", message: "fetch failed" } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't reach your space. This note is safe on this phone.", action: "retry" },
   { name: "space: timeout is Try again", patch: { space: { pending: { failed: { kind: "timeout", message: "deadline" } } } }, states: { space: "failed" }, current: "space", cause: "Saving timed out. This note is safe on this phone.", action: "retry" },
-  { name: "space: server error is Try again, with its message", patch: { space: { pending: { failed: { kind: "server", message: "503 from kv" } } } }, states: { space: "failed" }, current: "space", cause: "Your space couldn't take this note. It is safe on this phone. · 503 from kv", action: "retry" },
+  { name: "space: server error is calm Try again copy", patch: { space: { pending: { failed: { kind: "server", message: "503 from kv" } } } }, states: { space: "failed" }, current: "space", cause: "Your space couldn't take this note. It is safe on this phone. Try again.", action: "retry" },
   { name: "space: quota is full (no action)", patch: { space: { pending: { failed: { kind: "quota", message: "quota" } } } }, states: { space: "blocked" }, current: "space", cause: "Your space is full" },
   { name: "space: an expired session is Sign in", patch: { space: { pending: { failed: { kind: "auth", message: "401" } } } }, states: { space: "blocked" }, current: "space", cause: "Your session ended. This note is safe on this phone.", action: "sign-in" },
-  { name: "space: a source failure keeps its message and has no action", patch: { space: { pending: { failed: { kind: "source", message: "Audio file is too large to read" } } } }, states: { space: "failed" }, current: "space", cause: "Audio file is too large to read" },
-  { name: "space: a source failure with no message still names it", patch: { space: { pending: { failed: { kind: "source", message: " " } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't read the recording" },
-  { name: "space: an unknown error shows its own message and stays retryable", patch: { space: { pending: { failed: { kind: "other", message: "Mount point is read only" } } } }, states: { space: "failed" }, current: "space", cause: "Mount point is read only", action: "retry" },
-  { name: "space: an unknown error with no message says so", patch: { space: { pending: { failed: { kind: "other", message: "  " } } } }, states: { space: "failed" }, current: "space", cause: "Saving failed with no details", action: "retry" },
+  { name: "space: a source failure has calm copy and no action", patch: { space: { pending: { failed: { kind: "source", message: "Audio file is too large to read" } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't read the recording on this phone." },
+  { name: "space: a source failure with no message has the same copy", patch: { space: { pending: { failed: { kind: "source", message: " " } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't read the recording on this phone." },
+  { name: "space: an unknown error has calm copy and stays retryable", patch: { space: { pending: { failed: { kind: "other", message: "Mount point is read only" } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't save this note. It is safe on this phone. Try again.", action: "retry" },
+  { name: "space: an unknown error with no message has the same copy", patch: { space: { pending: { failed: { kind: "other", message: "  " } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't save this note. It is safe on this phone. Try again.", action: "retry" },
 
   // 3. Transcript, Local
   { name: "local: before the note is in the space, nothing has started", patch: local({}), states: { space: "waiting", transcript: "upcoming" }, current: "space" },
@@ -159,8 +159,8 @@ const ROWS: Row[] = [
   { name: "private: no consent (no action)", patch: cloud({ kind: "blocked", reason: "no-consent" }), states: { transcript: "blocked" }, current: "transcript", cause: "Private transcription is turned off" },
   { name: "private: hidden for this account (no action)", patch: cloud({ kind: "blocked", reason: "hidden" }), states: { transcript: "blocked" }, current: "transcript", cause: "Private transcription isn't available for this account" },
   { name: "private: held note shows its message (no action)", patch: cloud({ kind: "held", message: "This note began outside Exo. Transcribe it when you want." }), states: { transcript: "blocked" }, current: "transcript", cause: "This note began outside Exo. Transcribe it when you want." },
-  { name: "private: retryable failure is Try again", patch: cloud({ kind: "failed", code: "server_error", message: "Transcription hit a snag.", retryable: true, reference: "ref-1" }), states: { transcript: "failed" }, current: "transcript", cause: "Transcription hit a snag.", action: "retry" },
-  { name: "private: a failure that cannot be retried shows its reason and reference", patch: cloud({ kind: "failed", code: "recording_too_long", message: "This recording is too long to transcribe.", retryable: false, reference: "ref-9" }), states: { transcript: "failed" }, current: "transcript", cause: "This recording is too long to transcribe. · Reference ref-9" },
+  { name: "private: retryable failure has calm copy", patch: cloud({ kind: "failed", code: "server_error", message: "Transcription hit a snag.", retryable: true, reference: "ref-1" }), states: { transcript: "failed" }, current: "transcript", cause: "Private transcription couldn't finish. Try again.", action: "retry" },
+  { name: "private: non-retryable failure has calm copy and its reference", patch: cloud({ kind: "failed", code: "recording_too_long", message: "This recording is too long to transcribe.", retryable: false, reference: "ref-9" }), states: { transcript: "failed" }, current: "transcript", cause: "Private transcription couldn't finish. Try again. · Reference ref-9" },
   { name: "private: no speech found is done", patch: cloud({ kind: "done", outcome: "no_speech" }), states: { transcript: "done" }, current: null },
   { name: "private: saved but no job yet", patch: { route: "private-cloud", space: SAVED }, states: { transcript: "waiting" }, current: "transcript", caption: "Waiting for private transcription" },
   { name: "private: a transcript in the space is not done before the note is saved", patch: { route: "private-cloud", transcript: { inSpace: "transcribed" } }, states: { space: "waiting", transcript: "upcoming" }, current: "space" },
@@ -355,10 +355,10 @@ describe("stuck-state contract", () => {
     }
   });
 
-  test("an unknown error keeps its own message", () => {
+  test("an unknown error maps to calm copy", () => {
     const message = "Mount point /Volumes/odd is read only";
     const pipeline = notePipeline(input({ space: { pending: { failed: { kind: "other", message } } } }));
-    expect(pipeline.blocker?.cause).toBe(message);
+    expect(pipeline.blocker?.cause).toBe("Couldn't save this note. It is safe on this phone. Try again.");
     const transcript = notePipeline(input(local({ onDevice: od({ stt: stt("failed", message) }) }, { space: SAVED })));
     expect(transcript.blocker?.cause).toContain(message);
   });
