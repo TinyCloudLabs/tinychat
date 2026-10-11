@@ -1,9 +1,10 @@
 import type { BatchResponse, TranscriptionEvent, TranscriptionParams } from "@/lib/anarlog/transcription.gen";
 import type { WhisperModel } from "@/lib/localTranscriber";
 import { leaseWhisperServer, SHARED_WHISPER_SERVER_SCOPE, type WhisperServerLease } from "@/lib/whisperServerLease";
-import type { LocalTranscript, NoteSttState, VoiceNoteRecording } from "../nativeVoiceNotes";
+import type { NoteSttState, VoiceNoteRecording } from "../nativeVoiceNotes";
 import type { WebStore } from "../web/webStore";
 import type { DesktopBridge } from "./desktopVoiceNotes";
+import { whisperLocalTranscript } from "./whisperTranscript";
 
 const MODEL_IDS = new Set<WhisperModel>(["QuantizedTinyEn", "QuantizedTiny", "QuantizedBaseEn", "QuantizedBase",
   "QuantizedSmallEn", "QuantizedSmall", "QuantizedLargeTurbo"]);
@@ -67,17 +68,6 @@ export function registerDesktopWhisperQueue(queue: DesktopWhisperQueue | null): 
 const stt = (state: NoteSttState["state"], error: string | null = null): NoteSttState => ({
   state, pack: null, engine: "whisper", segmentsDone: 0, windowsDone: 0, error,
 });
-
-function transcriptFromResponse(note: VoiceNoteRecording, model: WhisperModel, response: BatchResponse): LocalTranscript {
-  const alternative = response.results.channels[0]?.alternatives[0];
-  const words = alternative?.words ?? [];
-  const text = alternative?.transcript.trim() || words.map((word) => word.punctuated_word ?? word.word).join(" ").trim();
-  const segments = text ? [{ start: words.length ? Math.max(0, Math.round(words[0]!.start * 1000)) : 0,
-    end: words.length ? Math.max(0, Math.round(words.at(-1)!.end * 1000)) : note.durationMs,
-    text, speaker: null }] : [];
-  return { version: 1, noteId: note.id, transcriber: "on-device", rev: 1, engine: "whispercpp", model, language: "en",
-    outcome: segments.length ? "transcribed" : "no_speech", diarized: false, segments, createdAt: new Date().toISOString() };
-}
 
 async function stageId(id: string): Promise<string> {
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(id)));
@@ -181,7 +171,7 @@ export function createDesktopWhisperQueue(args: {
         })();
       });
       if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
-      await store.putTranscript({ id, transcript: transcriptFromResponse(note, model, response) });
+      await store.putTranscript({ id, transcript: whisperLocalTranscript(note, model, response) });
       await mark(id, "done");
       emitDone(id);
     } catch (error) {
