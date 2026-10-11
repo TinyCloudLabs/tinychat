@@ -1,24 +1,14 @@
 // Independent audio and transcript statuses, with one actionable blocker when a track needs attention.
 import { useId } from "react";
 
-import type { NotePipeline, PipelineActionKind, PipelineStep, StepState } from "@/lib/voiceNotes/notePipeline";
+import type { NotePipeline, PipelineActionKind, PipelineStep } from "@/lib/voiceNotes/notePipeline";
 import "../home/home.css";
 import "./PipelineStepper.css";
-
-const STATE_WORD: Record<StepState, string> = {
-  done: "done",
-  active: "in progress",
-  waiting: "waiting",
-  blocked: "needs you",
-  failed: "failed",
-  upcoming: "not started",
-  skipped: "skipped",
-};
 
 function statusText(step: PipelineStep): string {
   if (step.caption) return step.caption;
   switch (step.state) {
-    case "done": return step.key === "phone" ? "Saved on this device" : "Saved";
+    case "done": return "Saved";
     case "active": return "In progress";
     case "waiting": return "Waiting";
     case "blocked": return "Needs attention";
@@ -39,7 +29,8 @@ export function PipelineStepper(props: {
   const causeId = useId();
   if (pipeline.done) return null;
 
-  const visible = pipeline.steps.filter((step) => step.state !== "skipped" && step.key !== "notes");
+  const visible = pipeline.steps.filter((step) => step.state !== "skipped" &&
+    (step.key !== "notes" || step.state === "active" || step.state === "blocked" || step.state === "failed"));
   const { blocker, notice } = pipeline;
 
   return (
@@ -47,7 +38,7 @@ export function PipelineStepper(props: {
       <ul aria-label="Where this note is" className="pipeline-stepper-list">
         {visible.map((step) => (
           <li key={step.key} data-step={step.key} data-state={step.state} data-current={pipeline.current === step.key ? "" : undefined}>
-            <span className="pipeline-stepper-label">{step.label}<span className="sr-only">, {STATE_WORD[step.state]}</span></span>
+            <span className="pipeline-stepper-label">{step.label}</span>
             <span className="pipeline-stepper-status">{step.sublabel ?? statusText(step)}</span>
           </li>
         ))}

@@ -72,7 +72,7 @@ interface Row {
 
 const ROWS: Row[] = [
   // 1. On this phone
-  { name: "phone: finishing the recording", patch: { capture: { finalizing: true } }, states: { phone: "active", space: "waiting" }, current: "phone", caption: "Finishing the recording…" },
+  { name: "phone: finishing the recording", patch: { capture: { finalizing: true } }, states: { phone: "active", space: "upcoming" }, current: "phone", caption: "Finishing the recording…" },
   { name: "phone: finalize timed out, Exo finishes it next launch (no action)", patch: { capture: { issue: "finalization_timed_out" } }, states: { phone: "blocked", space: "waiting" }, current: "phone", cause: "Exo will finish it next launch" },
   { name: "phone: recovery failed, audio kept", patch: { capture: { issue: "recoveryFailed" } }, states: { phone: "failed" }, current: "phone", cause: "Couldn't recover · audio kept" },
   { name: "phone: quarantined", patch: { capture: { issue: "quarantined" } }, states: { phone: "failed" }, current: "phone", cause: "Couldn't recover · audio kept" },
@@ -145,7 +145,7 @@ const ROWS: Row[] = [
   { name: "local on a Mac: ready on this Mac", patch: local({ onDevice: od({ stt: stt("failed", "boom") }) }, { device: "mac", space: SAVED }), current: "transcript", cause: "Couldn't transcribe on this Mac · boom", action: "retry" },
 
   // 3. Transcript, Private
-  { name: "private: before the note is in the space it is upcoming", patch: { route: "private-cloud" }, states: { space: "waiting", transcript: "upcoming" }, current: "space" },
+  { name: "private: before the note is in the space it waits for upload", patch: { route: "private-cloud" }, states: { space: "waiting", transcript: "waiting" }, current: "space", caption: "Waiting to upload" },
   { name: "private: waiting, 2nd", patch: cloud({ kind: "active", status: { kind: "waiting", position: 2 } }), states: { transcript: "waiting" }, current: "transcript", caption: "Waiting · 2nd" },
   { name: "private: preparing", patch: cloud({ kind: "active", status: { kind: "preparing" } }), states: { transcript: "active" }, current: "transcript", caption: "Preparing…" },
   { name: "private: sending to private cloud", patch: cloud({ kind: "active", status: { kind: "uploading" } }), states: { transcript: "active" }, current: "transcript", caption: "Sending to private cloud" },
@@ -163,8 +163,8 @@ const ROWS: Row[] = [
   { name: "private: a failure that cannot be retried shows its reason and reference", patch: cloud({ kind: "failed", code: "recording_too_long", message: "This recording is too long to transcribe.", retryable: false, reference: "ref-9" }), states: { transcript: "failed" }, current: "transcript", cause: "This recording is too long to transcribe. · Reference ref-9" },
   { name: "private: no speech found is done", patch: cloud({ kind: "done", outcome: "no_speech" }), states: { transcript: "done" }, current: null },
   { name: "private: saved but no job yet", patch: { route: "private-cloud", space: SAVED }, states: { transcript: "waiting" }, current: "transcript", caption: "Waiting for private transcription" },
-  { name: "private: a transcript in the space is not done before the note is saved", patch: { route: "private-cloud", transcript: { inSpace: "transcribed" } }, states: { space: "waiting", transcript: "upcoming" }, current: "space" },
-  { name: "private: no speech in the space is not done before the note is saved", patch: { route: "private-cloud", transcript: { inSpace: "no_speech" } }, states: { space: "waiting", transcript: "upcoming" }, current: "space" },
+  { name: "private: a transcript in the space is not done before the note is saved", patch: { route: "private-cloud", transcript: { inSpace: "transcribed" } }, states: { space: "waiting", transcript: "waiting" }, current: "space" },
+  { name: "private: no speech in the space is not done before the note is saved", patch: { route: "private-cloud", transcript: { inSpace: "no_speech" } }, states: { space: "waiting", transcript: "waiting" }, current: "space" },
   { name: "local: a transcript found in the space still counts", patch: local({ inSpace: "transcribed" }, { space: SAVED }), states: { transcript: "done" }, current: null },
   { name: "local: transcript saved while audio is still uploading", patch: local({ inSpace: "transcribed" }, { space: { pending: { upload: { state: "uploading", bytes: 42, total: 100 } } } }), states: { phone: "done", space: "active", transcript: "done" }, current: "space", caption: "Uploading · 42%" },
   { name: "private: transcript is in the space", patch: { route: "private-cloud", space: SAVED, transcript: { inSpace: "transcribed" } }, states: { space: "done", transcript: "done" }, current: null },
@@ -249,7 +249,7 @@ describe("notePipeline: shape", () => {
 
   test("a stuck step that is not first still becomes current, and later steps wait", () => {
     const pipeline = notePipeline(input({ space: { pending: { held: "signed-out" } }, route: "private-cloud", hasNotesOrMoments: true }));
-    expect(pipeline.steps.map((s) => s.state)).toEqual(["done", "blocked", "upcoming", "upcoming"]);
+    expect(pipeline.steps.map((s) => s.state)).toEqual(["done", "blocked", "waiting", "upcoming"]);
   });
 
   test("an active step is current ahead of a waiting one (Local transcribes while the upload waits)", () => {

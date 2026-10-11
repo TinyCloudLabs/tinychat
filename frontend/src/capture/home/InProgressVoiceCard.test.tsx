@@ -105,19 +105,19 @@ describe("InProgressVoiceCard", () => {
 
   test("announces each track, followed by the spoken duration", () => {
     const output = html([row("a", { ...pipeline(), current: "space" })]);
-    expect(output).toContain('aria-label="Note a. Audio on this device: Saved. Audio in your space: Uploading · 42%. Transcript: Not started. 1 min"');
+    expect(output).toContain('aria-label="Note a. Audio on this phone: Saved. Audio in your space: Uploading · 42%. Transcript: Not started. 1 min"');
   });
 
   test("shows audio and transcript independently in each in-progress row", () => {
     const transcriptSaved = pipeline({ steps: [
       { key: "phone", label: "Audio on this phone", state: "done" },
       { key: "space", label: "Audio in your space", state: "active", caption: "Uploading · 42%" },
-      { key: "transcript", label: "Transcript", state: "done" },
+      { key: "transcript", label: "Transcript", state: "done", sublabel: "Ready on this phone" },
       { key: "notes", label: "Notes", state: "skipped" },
     ] });
     const output = html([row("ahead", transcriptSaved)]);
-    expect(output).toContain("Audio: On this device · Saved · In your space · Uploading · 42%");
-    expect(output).toContain("Transcript: Saved");
+    expect(output).toContain("Audio: Uploading · 42%");
+    expect(output).toContain("Transcript: Ready on this phone");
   });
 
   test("a blocker pill tap calls the action handler with its kind and source id", async () => {

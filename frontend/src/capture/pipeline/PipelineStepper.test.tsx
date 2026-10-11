@@ -19,10 +19,10 @@ describe("PipelineStepper", () => {
   test("parallel status rows show each track's state to screen readers", () => {
     const html = render(uploading(42));
     expect(html).toContain('<ul aria-label="Where this note is" class="pipeline-stepper-list"');
-    expect(nodeStates(html)).toEqual([["phone", "done"], ["space", "active"], ["transcript", "upcoming"]]);
-    expect(html).toContain('Audio on this phone<span class="sr-only">, done</span>');
-    expect(html).toContain('Audio in your space<span class="sr-only">, in progress</span>');
-    expect(html).toContain('Transcript<span class="sr-only">, not started</span>');
+    expect(nodeStates(html)).toEqual([["phone", "done"], ["space", "active"], ["transcript", "waiting"]]);
+    expect(html).toContain('class="pipeline-stepper-label">Audio on this phone</span>');
+    expect(html).toContain('class="pipeline-stepper-label">Audio in your space</span>');
+    expect(html).toContain('class="pipeline-stepper-label">Transcript</span>');
     expect(html).toContain("Uploading · 42%");
   });
 
@@ -92,12 +92,20 @@ describe("PipelineStepper", () => {
   test("a saved transcript stays visible while audio is uploading", () => {
     const html = render(pipelineOf({
       route: "on-device",
-      transcript: { inSpace: "transcribed", cloud: null, onDevice: null },
+      transcript: { inSpace: null, cloud: null, onDevice: { stt: { state: "done", error: null }, queue: null, model: { state: "ready", bytes: 640, totalBytes: 640, error: null }, download: "idle", sync: null } },
       space: { saved: false, pending: { upload: { state: "uploading", bytes: 20, total: 100 } } },
     }));
     expect(html).toContain('data-step="transcript" data-state="done"');
-    expect(html).toContain('<span class="pipeline-stepper-status">Saved</span>');
+    expect(html).toContain('<span class="pipeline-stepper-status">Ready on this phone</span>');
     expect(html).toContain('<span class="pipeline-stepper-status">Uploading · 20%</span>');
+  });
+
+  test("keeps notes progress and read failures visible before upload", () => {
+    const syncing = render(pipelineOf({ route: "off", hasNotesOrMoments: true, notes: { state: "syncing" } }));
+    expect(syncing).toContain("Syncing notes…");
+    const unreadable = render(pipelineOf({ route: "off", hasNotesOrMoments: true, notes: { state: "unreadable", cause: "disk unavailable" } }));
+    expect(unreadable).toContain("Couldn&#x27;t read this note&#x27;s text on this phone");
+    expect(unreadable).toContain("Try again");
   });
 
   test("a notice about a saved note's partial audio shows as information", () => {
@@ -118,7 +126,7 @@ describe("PipelineStepper", () => {
   test("track rows adapt to large text and 320px widths", async () => {
     const css = await Bun.file(new URL("./PipelineStepper.css", import.meta.url)).text();
     expect(css).toContain("container-type: inline-size");
-    expect(css).toContain("flex-wrap: wrap");
+    expect(css).toContain("grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)");
     expect(css).not.toMatch(/font-size:\s*[\d.]+px/);
     expect(css.match(/font-size:\s*0\.78125rem/g)?.length).toBeGreaterThanOrEqual(3);
     expect(css).toMatch(/\.pipeline-stepper \.soft-pill \{[^}]*font-size: 0\.78125rem/);

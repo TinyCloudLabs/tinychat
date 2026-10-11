@@ -630,12 +630,11 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 if (Math.abs(rootSize - expected) > 0.1) findings.push({ check: "ios-text-scale", detail: `root font-size ${rootSize}px; expected ${expected}px at scale ${viewport.textScale}` });
               }
               if (screen.group === "pipeline") {
-                // Stepper text is rem (0.78125rem at any root), stays inside its box, and stacks exactly when the
-                // case is no wider than the stylesheet's 14rem container query.
+                // Pipeline labels and statuses keep an even two-column layout and fit their boxes at large text sizes.
                 const sizing = await page.evaluate(() => {
                   const root = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
                   const texts = [...document.querySelectorAll<HTMLElement>(
-                    ".pipeline-stepper-label, .pipeline-stepper-sublabel, .pipeline-stepper-caption, .pipeline-stepper-notice, .pipeline-stepper-cause, .pipeline-stepper .soft-pill",
+                    ".pipeline-stepper-label, .pipeline-stepper-status, .pipeline-track-summary > span, .pipeline-stepper-notice, .pipeline-stepper-cause, .pipeline-stepper .soft-pill",
                   )];
                   const textRects = (el: HTMLElement) => {
                     const range = document.createRange();
@@ -654,23 +653,18 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                     }
                     return el.scrollWidth > el.clientWidth + 1 ? el.className : null;
                   }).filter((name) => name !== null);
-                  const layouts = [...document.querySelectorAll<HTMLElement>(".pipeline-stepper")].map((stepper) => {
-                    const items = [...stepper.querySelectorAll<HTMLElement>(".pipeline-stepper-list > li")].map((li) => ({
-                      indicator: li.querySelector(".pipeline-stepper-indicator")!.getBoundingClientRect(),
-                      label: li.querySelector(".pipeline-stepper-label")!.getBoundingClientRect(),
-                    }));
-                    const width = stepper.getBoundingClientRect().width;
-                    const sameLeft = items.every((item) => Math.abs(item.label.left - items[0]!.label.left) < 1);
-                    const below = items.every((item, i) => i === 0 || item.label.top >= items[i - 1]!.label.bottom - 1);
-                    const beside = items.every((item) => item.indicator.right <= item.label.left + 1 && Math.abs(item.indicator.top - item.label.top) < item.label.height);
-                    const sameTop = items.every((item) => Math.abs(item.label.top - items[0]!.label.top) < 1);
-                    const across = items.every((item, i) => i === 0 || item.label.left >= items[i - 1]!.label.right - 1);
-                    return { width, rem: root, stacked: sameLeft && below && beside, inline: sameTop && across };
+                  const layouts = [...document.querySelectorAll<HTMLElement>(".pipeline-stepper-list > li")].map((li) => {
+                    const label = li.querySelector<HTMLElement>(".pipeline-stepper-label")?.getBoundingClientRect();
+                    const status = li.querySelector<HTMLElement>(".pipeline-stepper-status")?.getBoundingClientRect();
+                    return { label, status, columns: getComputedStyle(li).gridTemplateColumns };
                   });
                   return {
                     root,
                     texts: texts.length,
-                    wrong: texts.filter((el) => Math.abs(Number.parseFloat(getComputedStyle(el).fontSize) - root * 0.78125) > 0.01)
+                    wrong: texts.filter((el) => {
+                      const size = Number.parseFloat(getComputedStyle(el).fontSize);
+                      return el.matches(".pipeline-stepper-status, .pipeline-track-summary > span") ? size > 12.01 : size > root * 0.78125 + 0.01;
+                    })
                       .map((el) => `${el.className} ${getComputedStyle(el).fontSize}`),
                     overflowing,
                     layouts,
@@ -682,9 +676,8 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 if (sizing.wrong.length > 0) findings.push({ check: "pipeline-text-scale", detail: `not 0.78125rem: ${sizing.wrong.join("; ")}` });
                 if (sizing.overflowing.length > 0) findings.push({ check: "pipeline-text-wrap", detail: `text outside its box: ${sizing.overflowing.join("; ")}` });
                 for (const layout of sizing.layouts) {
-                  const shouldStack = layout.width <= 14 * layout.rem;
-                  if (shouldStack ? !layout.stacked : !layout.inline) {
-                    findings.push({ check: "pipeline-stack", detail: `a ${Math.round(layout.width)}px stepper at a ${layout.rem}px root should be ${shouldStack ? "stacked (14rem query)" : "inline"}; stacked ${layout.stacked}, inline ${layout.inline}` });
+                  if (!layout.label || !layout.status || layout.status.left < layout.label.left - 1 || layout.status.top > layout.label.bottom + 1) {
+                    findings.push({ check: "pipeline-wrap", detail: "a pipeline row did not keep its label and status in the same two-column line" });
                   }
                 }
               }

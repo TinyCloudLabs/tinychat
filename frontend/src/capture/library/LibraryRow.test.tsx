@@ -90,7 +90,7 @@ describe("a note not yet settled in the space", () => {
     expect(html).not.toContain('data-pipeline-halo=""');
     expect(html).toContain("Audio in your space: Waiting to upload");
     expect(html).toContain('data-pipeline-track-summary=""');
-    expect(html).toContain("Audio: On this device · Saved · In your space · Waiting to upload");
+    expect(html).toContain("Audio: Waiting to upload");
     expect(html).not.toContain("row-badge");
     const done: NotePipeline = { steps: [
       { key: "phone", label: "On this phone", state: "done" },

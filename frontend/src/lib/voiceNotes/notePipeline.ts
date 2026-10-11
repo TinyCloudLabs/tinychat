@@ -320,7 +320,7 @@ function cloudStep(cloud: PipelineCloud | null, spaceSaved: boolean, checkingCap
 
 function transcriptStep(input: NotePipelineInput): Result {
   const { inSpace, onDevice, cloud } = input.transcript;
-  if (input.route === "private-cloud" && !input.space.saved) return { state: "upcoming" };
+  if (input.route === "private-cloud" && !input.space.saved) return { state: "waiting", caption: PRIVATE_COPY.afterUpload };
   if (inSpace !== null) return inSpace === "no_speech" ? { state: "done", caption: LOCAL_COPY.noSpeech } : { state: "done" };
   if (input.route === "private-cloud") return cloudStep(cloud, input.space.saved, input.transcript.spaceReading === true ? checking(input.transcript) : null);
   if (onDevice === null) return input.space.saved ? { state: "waiting", caption: input.transcript.spaceReading === true ? checking(input.transcript) : LOCAL_COPY.notStarted } : { state: "upcoming" };
@@ -331,10 +331,10 @@ function notesStep(input: NotePipelineInput, transcript: StepState): Result {
   const sync = input.notes;
   if (sync.state === "synced") return { state: "done" };
   if (sync.state === "unreadable") return failed(NOTES_COPY.unreadable(sync.cause), "retry");
+  if (sync.state === "syncing") return { state: "active", caption: NOTES_COPY.syncing };
+  if (sync.state === "failed") return failed(NOTES_COPY.failed, "retry");
   if (!input.space.saved) return { state: "upcoming" };
   switch (sync.state) {
-    case "syncing": return { state: "active", caption: NOTES_COPY.syncing };
-    case "failed": return failed(NOTES_COPY.failed, "retry");
     case "skipped": return sync.reason === "no-note" ? { state: "skipped" } : { state: "waiting", caption: NOTES_COPY.waitingForRow };
     // Nothing has started the sync. Behind a transcript that is still running or needs you, it is not its turn: that step owns the blocker.
     case "idle": return (transcript === "done" || transcript === "skipped") && input.transcript.spaceReading !== true ? blocked(NOTES_COPY.notSynced, "retry") : { state: "upcoming" };
@@ -349,7 +349,11 @@ export function notePipeline(input: NotePipelineInput): NotePipeline {
   // A quarantined or unwritten capture has no audio that the uploader can read yet; this is a capture fact, not a
   // dependency on the phone track's position in a sequence.
   const audioUnavailable = input.capture.issue === "recoveryFailed" || input.capture.issue === "quarantined" || input.capture.issue === "write_failed";
-  const space = audioUnavailable ? UNREACHED : spaceStep(input);
+  const space: Result = audioUnavailable
+    ? UNREACHED
+    : input.capture.finalizing
+      ? { state: "upcoming", caption: SPACE_COPY.afterRecording }
+      : spaceStep(input);
   const { readError, inSpace } = input.transcript;
   // A failed read leaves the route unknown: with no transcript in the space that is a failure, with one the transcript is done (and the failure is shown below).
   const transcript: Result = readError != null && inSpace === null
@@ -357,7 +361,7 @@ export function notePipeline(input: NotePipelineInput): NotePipeline {
     : input.route === "off" && readError == null ? { state: "skipped" } : transcriptStep(input);
   const notes: Result = !input.hasNotesOrMoments && input.notes.state !== "unreadable"
     ? { state: "skipped" }
-    : input.space.saved ? notesStep(input, transcript.state) : UNREACHED;
+    : notesStep(input, transcript.state);
 
   const results: [StepKey, string, Result][] = [
     ["phone", STEP_LABEL.phone(input.device), phone],

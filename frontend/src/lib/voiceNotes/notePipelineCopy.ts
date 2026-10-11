@@ -49,6 +49,7 @@ export const PHONE_COPY = {
 };
 
 export const SPACE_COPY = {
+  afterRecording: "After recording",
   waiting: "Waiting to upload",
   waitingInLine: (position: number) => `Waiting to upload · ${place(position)} in line`,
   uploading: (fraction: number | null) => (fraction === null ? "Uploading…" : `Uploading · ${percentText(fraction)}`),
@@ -103,6 +104,7 @@ export const PRIVATE_COPY = {
     completed === null || total === null ? "Transcribing…" : `Transcribing · ${completed} of ${total}`,
   saving: "Saving transcript",
   notStarted: "Waiting for private transcription",
+  afterUpload: "After audio uploads",
   noSpeech: "No speech found",
   unavailable: "Private transcription isn't available right now",
   checkFailed: "Couldn't check whether private transcription is available",

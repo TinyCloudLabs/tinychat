@@ -1,8 +1,10 @@
 import type { NotePipeline, PipelineStep } from "@/lib/voiceNotes/notePipeline";
 
 function detail(step: PipelineStep, done: string): string {
+  if (step.sublabel) return step.sublabel;
+  if (step.blocker?.action?.kind === "sign-in") return "Needs sign-in";
   if (step.caption) return step.caption;
-  if (step.blocker) return step.blocker.cause;
+  if (step.blocker) return "Needs attention";
   if (step.state === "done") return done;
   if (step.state === "failed") return "Failed";
   if (step.state === "blocked") return "Needs attention";
@@ -16,7 +18,7 @@ export function pipelineTrackLabel(pipeline: NotePipeline): string {
   const space = pipeline.steps.find((step) => step.key === "space");
   const transcript = pipeline.steps.find((step) => step.key === "transcript");
   return [
-    phone && `Audio on this device: ${detail(phone, "Saved")}`,
+    phone && `Audio on this phone: ${detail(phone, "Saved")}`,
     space && space.state !== "skipped" && `Audio in your space: ${detail(space, "Saved")}`,
     transcript && transcript.state !== "skipped" && `Transcript: ${detail(transcript, "Saved")}`,
   ].filter(Boolean).join(". ");
@@ -27,13 +29,14 @@ export function PipelineTrackSummary(props: { pipeline: NotePipeline }) {
   const space = props.pipeline.steps.find((step) => step.key === "space");
   const transcript = props.pipeline.steps.find((step) => step.key === "transcript");
   const audio = [
-    phone && `On this device · ${detail(phone, "Saved")}`,
-    space && space.state !== "skipped" && `In your space · ${detail(space, "Saved")}`,
+    phone && phone.state !== "done" && `on this phone · ${detail(phone, "Saved")}`,
+    space && space.state !== "skipped" && detail(space, "Saved"),
   ].filter(Boolean).join(" · ");
   return (
     <span className="pipeline-track-summary" data-pipeline-track-summary="">
       {audio && <span>Audio: {audio}</span>}
       {transcript && transcript.state !== "skipped" && <span>Transcript: {detail(transcript, "Saved")}</span>}
+      {props.pipeline.steps.some((step) => step.key === "notes" && step.state !== "skipped" && step.state !== "done") && <span>Notes: {detail(props.pipeline.steps.find((step) => step.key === "notes")!, "Saved")}</span>}
     </span>
   );
 }
