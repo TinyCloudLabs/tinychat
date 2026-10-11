@@ -745,7 +745,7 @@ export function PhoneRecorder({
           )}
         </div>
 
-        <div className="pr-dock" data-toast-present={toast ? "true" : undefined}>
+        <div className="pr-dock">
         {toast && (
           <div
             key={toast.key}

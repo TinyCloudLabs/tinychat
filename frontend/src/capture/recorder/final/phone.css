@@ -70,11 +70,6 @@
   justify-items: center;
   background: var(--bgc);
 }
-/* Keep an actionable toast in flow instead of letting the sticky dock cover Via. */
-.pr-dock[data-toast-present="true"] {
-  position: static;
-  margin-top: 12px;
-}
 .pr-top {
   position: relative;
   width: 100%;
@@ -909,17 +904,20 @@
 }
 
 .pr-toast {
-  position: relative;
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  translate: 0 4px;
   width: min(100%, 420px);
   max-width: calc(100vw - 32px);
-  justify-self: center;
   z-index: 50;
-  padding: 9px 16px;
+  padding: 6px 12px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-wrap: wrap;
-  gap: 8px 12px;
+  gap: 4px 8px;
   border-radius: 16px;
   background: var(--ink);
   color: var(--bgc);
@@ -976,6 +974,27 @@
   }
 }
 
+/* Short portrait screens need a more compact stage so the mode and scale stay above the sticky dock. */
+@media (orientation: portrait) and (max-height: 600px) {
+  .pr:not(.dr) .pr-top {
+    margin-top: calc(env(safe-area-inset-top) + 4px);
+  }
+  .pr:not(.dr) .pr-time-row {
+    margin-top: 4px;
+  }
+  .pr:not(.dr) .pr-extra {
+    min-height: 20px;
+    margin-top: 4px;
+  }
+  .pr:not(.dr) .pr-stage {
+    flex: 0 0 136px;
+    min-height: 136px;
+  }
+  .pr:not(.dr) .pr-controls-wrap {
+    transform: translateY(-20px);
+  }
+}
+
 /* A phone on its side: the ring and the timer at the left, the mode, the scale, the input and the controls at the right. */
 @media (orientation: landscape) and (max-height: 520px) {
   .pr:not(.dr) .pr-main {
@@ -992,6 +1011,9 @@
   }
   .pr:not(.dr) .pr-col-b {
     justify-content: center;
+  }
+  .pr:not(.dr) .pr-controls-wrap {
+    transform: translateY(-20px);
   }
   .pr:not(.dr) .pr-top {
     margin-top: calc(env(safe-area-inset-top) + 8px);
