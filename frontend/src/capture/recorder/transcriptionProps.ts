@@ -15,6 +15,8 @@ import {
  */
 export interface VoiceNoteTranscriptionProps {
   availability: TranscriptionAvailability;
+  /** Why the availability check failed (`availability` "failed"). */
+  checkError?: string;
   consented: boolean;
   /** The longest note offered, in seconds. */
   maxSeconds: number;
@@ -25,7 +27,8 @@ export interface VoiceNoteTranscriptionProps {
   onTranscribePrivately: (sourceId: string) => void;
   onConsent: () => void;
   onTurnOff: () => void;
-  onRecheck: () => void;
+  /** Asks again; resolves once the check has answered. */
+  onRecheck: () => void | Promise<void>;
 }
 
 export const HIDDEN_SNAPSHOT: VoiceNoteTranscriberSnapshot = {
@@ -44,6 +47,7 @@ export function transcriptionProps(
   if (transcriber === null) return undefined;
   return {
     availability: snapshot.availability,
+    ...(snapshot.checkError === undefined ? {} : { checkError: snapshot.checkError }),
     consented: snapshot.consented,
     maxSeconds: maxTranscriptionSeconds(snapshot.capabilities),
     jobs: snapshot.jobs,
@@ -51,6 +55,6 @@ export function transcriptionProps(
     onTranscribePrivately: (sourceId) => transcriber.transcribePrivately(sourceId),
     onConsent: () => transcriber.consent(),
     onTurnOff: () => void transcriber.turnOff(),
-    onRecheck: () => void transcriber.check(),
+    onRecheck: () => transcriber.check(),
   };
 }

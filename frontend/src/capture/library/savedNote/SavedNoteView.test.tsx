@@ -5,6 +5,9 @@ import { Children, isValidElement } from "react";
 import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
 import { SavedNoteBody, SavedNotePage } from "./SavedNoteView";
 import { editedLabel } from "./savedNoteMeta";
+import { PipelineStepper } from "@/capture/pipeline/PipelineStepper";
+import { allDone, signedOut, uploading, waitingForModel } from "@/capture/pipeline/pipelineFixtures";
+import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 import type { SavedNoteViewProps } from "./SavedNoteView";
 import type { SavedNoteScreen } from "./useSavedNoteScreen";
 
@@ -64,6 +67,7 @@ const props = (screen: SavedNoteScreen, over: Partial<SavedNoteViewProps> = {}):
   recordingId: "rec-1",
   title: "Standup",
   meta: "1 min · saved to your space",
+  stepper: null,
   audio: null,
   transcript: <p>the transcript</p>,
   partialAudio: false,
@@ -208,5 +212,33 @@ describe("SavedNoteBody's player", () => {
 
   test("is a new player for another recording", () => {
     expect(player({ id: "1", recordingId: "rec-1" })?.key).not.toBe(player({ id: "2", recordingId: "rec-2" })?.key);
+  });
+});
+
+describe("the pipeline under the meta line", () => {
+  const stepper = (pipeline: NotePipeline) => (pipeline.done ? null : <PipelineStepper pipeline={pipeline} onAction={noop} />);
+  const cases: [string, NotePipeline, string][] = [
+    ["uploading", uploading(40), "Uploading"],
+    ["signed out", signedOut(), "Sign in"],
+    ["waiting for the model", waitingForModel(), "Get the model"],
+  ];
+
+  for (const [name, pipeline, text] of cases) {
+    test(`${name}: the stepper shows on the page and the sheet, after the meta`, () => {
+      for (const layout of ["page", "sheet"] as const) {
+        const out = html(screenOf({ md: "hi" }), { layout, meta: "1 min", stepper: stepper(pipeline) });
+        expect(out).toContain('aria-label="Where this note is"');
+        expect(out).toContain(text);
+        expect(out.indexOf("1 min")).toBeLessThan(out.indexOf('aria-label="Where this note is"'));
+      }
+    });
+  }
+
+  test("done: no stepper, and the meta says it is saved", () => {
+    for (const layout of ["page", "sheet"] as const) {
+      const out = html(screenOf({ md: "hi" }), { layout, stepper: stepper(allDone()) });
+      expect(out).not.toContain("Where this note is");
+      expect(out).toContain("1 min · saved to your space");
+    }
   });
 });

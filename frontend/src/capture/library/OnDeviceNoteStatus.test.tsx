@@ -479,3 +479,27 @@ describe("the state itself", () => {
     expect(view({ kind: "done" })).toContain("Transcribed on this phone");
   });
 });
+
+describe("with the pipeline stepper on screen", () => {
+  const withStepper = (note: OnDeviceNote | null, onUsePrivate?: () => Promise<string | null>, error: string | null = null) =>
+    renderToStaticMarkup(<OnDeviceNoteStatusView noteId="n1" view={{ note, error, reload: () => {} }} fallback={<p>No transcript.</p>} onUsePrivate={onUsePrivate} stepperShown />);
+
+  test("what the stepper already says is not said again", () => {
+    for (const note of [null, { kind: "queued" }, { kind: "running", percent: 42 }, { kind: "done" }, { kind: "none" }] as (OnDeviceNote | null)[]) {
+      expect(withStepper(note)).toBe("");
+    }
+  });
+
+  test("a note waiting for the model keeps only the way off the phone's model", () => {
+    const out = withStepper({ kind: "waiting_for_model" } as OnDeviceNote, async () => null);
+    expect(out).toContain("Transcribe with Private instead");
+    expect(out).not.toContain("Get the on-device model");
+    expect(withStepper({ kind: "waiting_for_model" } as OnDeviceNote)).toBe("");
+  });
+
+  test("a failed read of the state still says so, with Try again", () => {
+    const out = withStepper(null, undefined, "Could not read");
+    expect(out).toContain("Could not read");
+    expect(out).toContain("Try again");
+  });
+});

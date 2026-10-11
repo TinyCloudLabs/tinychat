@@ -47,18 +47,23 @@ function transcriptRoute(
   return null;
 }
 
-/** The saved note's meta line: "Oct 8, 2026 · 12:10 PM · 1 min · recorded on iPhone · Local transcript · saved to your space". */
+/**
+ * The saved note's meta line: "Oct 8, 2026 · 12:10 PM · 1 min · recorded on iPhone · Local transcript · saved to your space".
+ * "saved to your space" ends it only once every step is done (`settled`); until then the pipeline stepper under the
+ * line says where the note is.
+ */
 export function savedNoteMeta(
   item: LibraryItem,
   metadata: Record<string, unknown> | null,
   platform: AppPlatform,
+  settled: boolean,
 ): string {
   return [
     detailWhen(item.startedAt),
     item.durationSecs !== null ? formatSpokenDuration(item.durationSecs) : null,
     item.source === VOICE_NOTE_SOURCE ? recordedOn(metadata, platform) : null,
     transcriptRoute(item.source, metadata),
-    item.onPhone ? SAVED_NOTE_COPY.notInSpace : SAVED_NOTE_COPY.savedToSpace,
+    settled ? SAVED_NOTE_COPY.savedToSpace : null,
   ]
     .filter((part): part is string => !!part)
     .join(" · ");

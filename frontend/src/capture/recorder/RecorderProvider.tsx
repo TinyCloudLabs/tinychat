@@ -93,6 +93,10 @@ export interface RecorderValue {
   /** Capture always forces on-device while signed out (CaptureEngine), so the transcription route
    * must too — never offer "Off" or "Private cloud" without an account. */
   signedIn: boolean;
+  /** The app's sign-in entry, for a note that is waiting on the account; null where the app gave none. */
+  signIn: (() => void | Promise<void>) | null;
+  /** The account's space client, for the receipt's per-note pipeline; null signed out. */
+  tcw: TinyCloudWeb | null;
   sheetOpen: boolean;
   record(): void;
   stop(): void;
@@ -100,7 +104,7 @@ export interface RecorderValue {
   resume(): void;
   /** Stop the live recording and delete it; the sheet closes once it is gone. */
   discard(): void;
-  retryPending(): void;
+  retryPending(): void | Promise<void>;
   openSettings(): Promise<void>;
   /** The receipt was read (Done, Open): it goes, and the sheet closes. */
   dismissOutcome(): void;
@@ -149,10 +153,11 @@ export interface RecorderProviderProps {
   pipeline?: VoiceNotePipeline | null;
   signedOut?: boolean;
   onSignedOut?: () => Promise<boolean>;
+  onSignIn?: () => void | Promise<void>;
   children: ReactNode;
 }
 
-export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSaved, onAccountReady, pipeline, signedOut, onSignedOut, children }: RecorderProviderProps) {
+export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSaved, onAccountReady, pipeline, signedOut, onSignedOut, onSignIn, children }: RecorderProviderProps) {
   const [configured, setConfigured] = useState<{ tcw: TinyCloudWeb; did: string | null } | null>(null);
   const [defaultsError, setDefaultsError] = useState<string | null>(null);
   const [defaultsAttempt, setDefaultsAttempt] = useState(0);
@@ -313,6 +318,8 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       setTranscriber: recorder.setTranscriber,
       setIdentifySpeakers: recorder.setIdentifySpeakers,
       signedIn: tcw?.did != null,
+      signIn: onSignIn ?? null,
+      tcw,
       sheetOpen,
       record,
       stop: recorder.stop,
@@ -354,6 +361,8 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       recorder.setTranscriber,
       recorder.setIdentifySpeakers,
       defaultsError,
+      onSignIn,
+      tcw,
       setReceiptReady,
       sheetOpen,
       state,
@@ -433,6 +442,8 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       setTranscriber: async () => "unavailable",
       setIdentifySpeakers: async () => "unavailable",
       signedIn: true,
+      signIn: null,
+      tcw: null,
       sheetOpen: false,
       record: noop,
       stop: noop,

@@ -30,6 +30,7 @@ import { localScreens } from "./screens/local";
 import { meetingSourcesScreens } from "./screens/meetingSources";
 import { micRecoveryScreens } from "./screens/micRecovery";
 import { pipelineScreens } from "./screens/pipeline";
+import { pipelineWireScreens } from "./screens/pipelineWire";
 import { primitivesScreens } from "./screens/primitives";
 import { recorderScreens } from "./screens/recorder";
 import { recorderFinalDesktopScreens } from "./screens/recorderFinalDesktop";
@@ -74,6 +75,7 @@ const SCREENS: HarnessScreen[] = [
   ...meetingSourcesScreens,
   ...micRecoveryScreens,
   ...pipelineScreens,
+  ...pipelineWireScreens,
 ];
 const PLATFORMS: readonly AppPlatform[] = ["ios", "android", "tauri", "web"];
 
@@ -112,7 +114,7 @@ __setOnDeviceSttForTests({
 if (platform === "ios" || platform === "android") {
   __setBuildInfoForTests({ version: "", build: "160", id: "xyz.tinycloud.exo.dev" });
   const fake = createCaptureFakeVoiceNotes();
-  if (params.get("screen")?.startsWith("recorder-")) {
+  if (params.get("screen")?.startsWith("recorder-") || params.get("screen")?.startsWith("pipeline-wire-")) {
     fake.controls.commitLegacy({
       id: "rec-1", startedAt: FROZEN_NOW - 42_000, durationMs: 42_000,
       mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,

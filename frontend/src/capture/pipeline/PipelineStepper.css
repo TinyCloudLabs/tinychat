@@ -100,6 +100,14 @@
   gap: 8px 12px;
   margin-top: 10px;
 }
+.pipeline-stepper-action-error {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 0.78125rem;
+  line-height: 1.4;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
 .pipeline-stepper-cause {
   flex: 1 1 12rem;
   min-width: 0;
