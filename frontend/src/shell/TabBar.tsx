@@ -52,10 +52,26 @@ export function TabBar({ items, current, replace, onReselect }: NavProps) {
                     active ? "bg-selected" : "group-active:bg-surface-2",
                   )}
                 >
-                  <Icon aria-hidden className={cn("size-6", active ? "text-foreground [stroke-width:2.25]" : "text-muted-foreground")} />
+                  <Icon
+                    aria-hidden
+                    className={cn(
+                      "size-6",
+                      active
+                        ? "text-foreground [stroke-width:2.25]"
+                        : "text-muted-foreground",
+                    )}
+                  />
                   <NavBadge count={item.badge} className="-right-1 -top-1" />
                 </span>
-                <span className={cn("min-w-0 text-center text-label [word-break:keep-all] [overflow-wrap:normal]", active ? "font-semibold text-foreground" : "font-medium text-muted-foreground")} style={{ fontSize: "min(0.6875rem,12px)", lineHeight: "min(0.875rem,14px)" }}>
+                <span
+                  data-tab-label
+                  className={cn(
+                    "exo-tab-label min-w-0 text-center text-label [word-break:keep-all] [overflow-wrap:normal]",
+                    active
+                      ? "font-semibold text-foreground"
+                      : "font-medium text-muted-foreground",
+                  )}
+                >
                   {item.label}
                 </span>
               </Link>

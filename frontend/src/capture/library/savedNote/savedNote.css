@@ -24,7 +24,7 @@
   background: none;
   color: var(--dim);
   font: inherit;
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
   cursor: pointer;
 }
@@ -33,7 +33,7 @@
 }
 .soft-skin .sn-title {
   margin: 0;
-  font-size: 34px;
+  font-size: 2.125rem;
   font-weight: 400;
   line-height: 1.12;
   overflow-wrap: anywhere;
@@ -41,7 +41,7 @@
 .soft-skin .sn-meta {
   margin: -8px 0 0;
   color: var(--dim);
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.45;
 }
 .soft-skin .sn-player audio {
@@ -65,7 +65,7 @@
   flex: 1;
   margin: 0;
   color: var(--dim);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 800;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -83,7 +83,7 @@
   background: none;
   color: var(--ink);
   font: inherit;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 700;
   cursor: pointer;
 }
@@ -116,14 +116,14 @@
 .soft-skin .sn-alert {
   margin: 0;
   color: var(--red-text);
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.4;
 }
 .soft-skin .sn-hint,
 .soft-skin .sn-foot {
   margin: 0;
   color: var(--dim);
-  font-size: 12.5px;
+  font-size: 0.78125rem;
 }
 .soft-skin .sn-add {
   align-self: flex-start;
@@ -149,7 +149,7 @@
   overflow-y: auto;
 }
 .soft-skin .sn-read .fmd {
-  font-size: 15px;
+  font-size: 0.9375rem;
 }
 .soft-skin .sn-transcript {
   color: var(--ink);
@@ -244,7 +244,7 @@
 }
 .soft-skin .sn-sheet-head .sn-title {
   flex: 1;
-  font-size: 26px;
+  font-size: 1.625rem;
 }
 .soft-skin .sn-sheet-body .sn-meta {
   margin-top: -10px;
@@ -259,7 +259,7 @@
   background: none;
   color: var(--dim);
   font: inherit;
-  font-size: 16px;
+  font-size: 1rem;
   cursor: pointer;
 }
 .soft-skin.sn-sheet .pr-veil {

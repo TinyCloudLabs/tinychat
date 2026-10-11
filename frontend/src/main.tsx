@@ -2,7 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { App as CapacitorApp } from "@capacitor/app";
-import { Capacitor } from "@capacitor/core";
+import { Capacitor, registerPlugin } from "@capacitor/core";
 import "./index.css";
 import { App } from "./App";
 import { installEd25519Polyfill } from "./lib/ed25519Polyfill";
@@ -11,7 +11,7 @@ import { PwaPrompts } from "./components/pwa-prompts";
 import { RootRoute } from "./landing/RootRoute";
 import { registerWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 import { appPlatform } from "./lib/platform";
-import { setIOSDynamicTypeScale } from "./lib/dynamicType";
+import { setAndroidDynamicTypeScale, setIOSDynamicTypeScale } from "./lib/dynamicType";
 import { setupPwa } from "./lib/pwa";
 import { initSizeClass } from "./lib/sizeClass";
 import { initTheme } from "./lib/theme";
@@ -26,6 +26,23 @@ registerDesktopVoiceNotes();
 const platform = appPlatform();
 const root = document.documentElement;
 root.dataset.platform = platform;
+interface AndroidDynamicTypePlugin {
+  getFontScale(): Promise<{ fontScale: number }>;
+}
+const AndroidDynamicType = registerPlugin<AndroidDynamicTypePlugin>("AndroidDynamicType");
+let androidBodyScaleReady: Promise<void> = Promise.resolve();
+const showAndroidDynamicTypeWarning = (error: unknown) => {
+  console.error(
+    `[DynamicType] Could not read the Android font scale: ${error instanceof Error ? error.message : String(error)}`,
+  );
+  if (document.querySelector("[data-dynamic-type-warning]")) return;
+  const warning = document.createElement("div");
+  warning.dataset.dynamicTypeWarning = "true";
+  warning.className = "dynamic-type-warning";
+  warning.setAttribute("role", "alert");
+  warning.textContent = "Exo couldn't apply Android's system text size.";
+  document.body.append(warning);
+};
 if (platform === "ios") {
   // Measure UIKit's preferred body size before React mounts, including the
   // pre-sign-in recorder. The native active event also catches text-size
@@ -45,6 +62,17 @@ if (platform === "ios") {
   }).catch((error: unknown) => {
     console.error("[DynamicType] Could not listen for app resume", error);
   });
+} else if (platform === "android") {
+  const updateAndroidBodyScale = async () => {
+    const { fontScale } = await AndroidDynamicType.getFontScale();
+    setAndroidDynamicTypeScale(root, fontScale);
+  };
+  androidBodyScaleReady = updateAndroidBodyScale().catch((error: unknown) => {
+    showAndroidDynamicTypeWarning(error);
+  });
+  void CapacitorApp.addListener("appStateChange", ({ isActive }) => {
+    if (isActive) void updateAndroidBodyScale().catch(showAndroidDynamicTypeWarning);
+  }).catch(showAndroidDynamicTypeWarning);
 }
 initSizeClass();
 initTheme();
@@ -68,7 +96,10 @@ registerWebCaptureEngine();
 // fails, WebCrypto is left exactly as the engine provides it and the app still starts.
 void installEd25519Polyfill().catch((error: unknown) => {
   console.error(`[webcrypto] Ed25519 probe failed; WebCrypto left unchanged: ${error instanceof Error ? error.name : "unknown error"}`);
-}).then(() => {
+}).then(async () => {
+  // Mount after the native font scale is read so timer slots and scaled columns
+  // use the same value as WebView's system text zoom from the first frame.
+  await androidBodyScaleReady;
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
       <BrowserRouter>
