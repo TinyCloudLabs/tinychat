@@ -17,7 +17,7 @@ import { load as loadYaml } from "js-yaml";
 
 import { createTranscriberRouter, type TranscriberRouterOptions } from "../routes/transcriber.js";
 import { BackendStorageLane } from "../services/backend-storage-lane.js";
-import { KvTranscriberIndexStore, MemoryTranscriberIndexStore, type TranscriberIndexStore } from "../services/transcriber-index.js";
+import { KvTranscriberIndexStore, MemoryTranscriberIndexStore, resolvePendingCreates, type TranscriberIndexStore } from "../services/transcriber-index.js";
 import {
   createTranscriptionApiClient,
   computeCreateRequestHash,
@@ -180,7 +180,7 @@ describe("POST /api/transcriber/meetings", () => {
       bot_name: "Notetaker",
       metadata: { tinychat_address: ADDRESS_A.toLowerCase() },
     });
-    expect(h.calls[0]?.args[1]).toEqual({ idempotencyKey: expect.stringMatching(/^manual-v1-[0-9a-f-]{36}$/) });
+    expect(h.calls[0]?.args[1]).toEqual({ idempotencyKey: expect.stringMatching(/^manual-v1-[0-9a-f-]{36}$/), onAttempt: expect.any(Function) });
     expect(await h.index.list(ADDRESS_A)).toEqual(["mtg_1"]);
   });
 
@@ -203,7 +203,7 @@ describe("POST /api/transcriber/meetings", () => {
       webhook_url: "https://tinychat.example/api/transcriber/webhooks/ptx",
       metadata: { tinychat_address: ADDRESS_A.toLowerCase() },
     });
-    expect(options).toEqual({ idempotencyKey: expect.stringMatching(/^manual-v1-/) });
+    expect(options).toEqual({ idempotencyKey: expect.stringMatching(/^manual-v1-/), onAttempt: expect.any(Function) });
     expect(await h.index.listPending(ADDRESS_A)).toEqual([]);
   });
 
@@ -933,5 +933,109 @@ describe("TC-581 shares and TC-641 creates share one index document", () => {
       expect(listed.body.meetings.map((m: { id: string }) => m.id)).toEqual(["mtg_own", "mtg_odd", "mtg_shared"]);
     });
     expect(wakes).toEqual([[ADDRESS_B.toLowerCase(), "mtg_own"]]);
+  });
+});
+
+describe("TC-907 capacity refusals and TC-641 manual-create intents", () => {
+  const busy = "All 2 meeting notetakers are busy right now. Try again when one of the current meetings ends.";
+  const owner = ADDRESS_A.toLowerCase();
+
+  test("a capacity refusal of the send's only attempt ends it: busy message, intent cleared, never recovered", async () => {
+    const h = harness();
+    let creates = 0;
+    let lookups = 0;
+    h.api.createMeeting = async (_input, options) => {
+      creates++; options?.onAttempt?.();
+      throw new TranscriptionApiError(429, "capacity_exhausted", busy, 60_000);
+    };
+    const lookup = h.api.lookupMeetingByIdempotencyKey;
+    h.api.lookupMeetingByIdempotencyKey = async (key) => { lookups++; return lookup(key); };
+    await withServer(h.app, async (base) => {
+      const sent = await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/busy" });
+      expect(sent.status).toBe(429);
+      expect(sent.body).toEqual({ error: "capacity_exhausted", message: busy, retry_after_seconds: 60 });
+      expect(await h.index.listPending(owner)).toEqual([]);
+      expect((await call(base, "/api/transcriber/meetings")).body.meetings).toEqual([]);
+    });
+    expect({ creates, lookups }).toEqual({ creates: 1, lookups: 0 });
+    expect(await h.index.list(owner)).toEqual([]);
+  });
+
+  test("busy refusals never pile up as pending intents that would block later sends", async () => {
+    const h = harness();
+    h.api.createMeeting = async (_input, options) => {
+      options?.onAttempt?.();
+      throw new TranscriptionApiError(429, "capacity_exhausted", busy, 60_000);
+    };
+    await withServer(h.app, async (base) => {
+      for (let i = 0; i < 25; i++) {
+        const r = await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/busy" });
+        expect(r.body.error).toBe("capacity_exhausted");
+      }
+    });
+    expect(await h.index.listPending(owner)).toEqual([]);
+  });
+
+  /** The real client against a fake ptx: the first create attempt's socket closes, the retry is refused. */
+  function retriedCapacityRefusal() {
+    const posts: string[] = [];
+    const committed = new Map<string, { meeting: TranscriptionMeeting; hash: string }>();
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname;
+      const headers = new Headers(init?.headers);
+      if (init?.method === "POST" && path === "/v1/meetings") {
+        posts.push(headers.get("idempotency-key")!);
+        if (posts.length === 1) throw new TypeError("fetch failed: socket closed unexpectedly");
+        return new Response(JSON.stringify({ error: { code: "capacity_exhausted", message: busy } }), { status: 429, headers: { "retry-after": "60" } });
+      }
+      if (path === "/v1/meetings/by-idempotency-key") {
+        const found = committed.get(headers.get("idempotency-key")!);
+        return found
+          ? Response.json({ meeting: found.meeting, request_hash: found.hash })
+          : Response.json({ error: { code: "meeting_not_found", message: "Missing" } }, { status: 404 });
+      }
+      return Response.json({ error: { code: "unexpected" } }, { status: 500 });
+    }) as typeof fetch;
+    const api = createTranscriptionApiClient({ baseUrl: "https://ptx.example", apiKey: "k", fetchImpl, sleep: async () => {} });
+    const index = new MemoryTranscriberIndexStore();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.user = { address: ADDRESS_A }; next(); });
+    app.use("/api/transcriber/meetings", createTranscriberRouter({ api, index }));
+    return { api, index, app, posts, committed };
+  }
+
+  test("after a transport retry the intent stays for lookup-only recovery, which owns a late commit", async () => {
+    const f = retriedCapacityRefusal();
+    await withServer(f.app, async (base) => {
+      const sent = await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/late" });
+      expect(sent.status).toBe(429);
+      expect(sent.body.error).toBe("capacity_exhausted");
+    });
+    expect(f.posts).toHaveLength(2);
+    const [intent] = await f.index.listPending(owner);
+    expect(intent?.key).toBe(f.posts[0]!);
+    // Not committed yet: recovery only looks up, inside the grace period, and keeps the intent.
+    await resolvePendingCreates(owner, f.api, f.index, { now: () => intent!.createdAt + 60_000 });
+    expect(await f.index.listPending(owner)).toHaveLength(1);
+    // The first attempt commits late: recovery owns it rather than orphaning it.
+    f.committed.set(intent!.key, { hash: intent!.hash, meeting: meeting("mtg_late", {
+      status: "queued", metadata: { tinychat_address: owner } }) });
+    await resolvePendingCreates(owner, f.api, f.index, { now: () => intent!.createdAt + 120_000 });
+    expect(await f.index.list(owner)).toEqual(["mtg_late"]);
+    expect(await f.index.listPending(owner)).toEqual([]);
+    expect(f.posts).toHaveLength(2);
+  });
+
+  test("after a transport retry with nothing committed, recovery abandons once the grace has passed", async () => {
+    const f = retriedCapacityRefusal();
+    await withServer(f.app, async (base) => {
+      expect((await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/none" })).status).toBe(429);
+    });
+    const [intent] = await f.index.listPending(owner);
+    await resolvePendingCreates(owner, f.api, f.index, { now: () => intent!.createdAt + 15 * 60_000 });
+    expect(await f.index.listPending(owner)).toEqual([]);
+    expect(await f.index.list(owner)).toEqual([]);
+    expect(f.posts).toHaveLength(2);
   });
 });

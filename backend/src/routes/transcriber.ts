@@ -261,11 +261,18 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
     }
 
     let meeting: TranscriptionMeeting;
+    let attempts = 0;
     try {
-      meeting = await api.createMeeting(createBody, { idempotencyKey: key });
+      meeting = await api.createMeeting(createBody, { idempotencyKey: key, onAttempt: () => { attempts++; } });
     } catch (error) {
-      if (error instanceof TranscriptionApiError && error.status >= 400
-        && error.status < 500 && error.status !== 429) {
+      // TC-907: ptx checks the idempotency key before capacity, so a capacity refusal of this send's
+      // only attempt created nothing and the send has ended: clear its intent now. After a transport
+      // retry an earlier attempt may still commit late, so the intent stays for lookup-only recovery
+      // (it owns a late meeting, or abandons after the grace period; recovery never creates).
+      const capacityEnded = error instanceof TranscriptionApiError && error.status === 429
+        && error.code === "capacity_exhausted" && attempts <= 1;
+      if (capacityEnded || (error instanceof TranscriptionApiError && error.status >= 400
+        && error.status < 500 && error.status !== 429)) {
         try {
           await index.abandonCreate(address, key);
         } catch {

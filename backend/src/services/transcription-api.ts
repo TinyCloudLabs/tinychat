@@ -118,6 +118,8 @@ export interface CreateMeetingOptions {
   idempotencyKey?: string;
   /** The scheduler must recheck consent and eligibility before every create attempt. */
   retryTransport?: boolean;
+  /** Called as each HTTP attempt starts, so a caller can tell a lone attempt from a transport retry. */
+  onAttempt?: () => void;
 }
 
 export interface IdempotencyLookup {
@@ -262,6 +264,7 @@ export function createTranscriptionApiClient(config: TranscriptionApiConfig): Tr
     body?: unknown,
     extraHeaders: Record<string, string> = {},
     retryTransport = true,
+    onAttempt?: () => void,
   ): Promise<{ status: number; json: unknown }> {
     const init: RequestInit = {
       method,
@@ -278,6 +281,7 @@ export function createTranscriptionApiClient(config: TranscriptionApiConfig): Tr
     // Retried creates carry an Idempotency-Key, so they cannot send a second bot.
     // The only other POST is stop, whose upstream contract is explicitly idempotent.
     const attempt = async (): Promise<{ response: Response; text: string }> => {
+      onAttempt?.();
       const controller = new AbortController();
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<never>((_resolve, reject) => {
@@ -334,7 +338,7 @@ export function createTranscriptionApiClient(config: TranscriptionApiConfig): Tr
     async createMeeting(input, options = {}) {
       const { json } = await request("POST", "/v1/meetings", input, {
         "Idempotency-Key": options.idempotencyKey ?? newIdempotencyKey(),
-      }, options.retryTransport ?? true);
+      }, options.retryTransport ?? true, options.onAttempt);
       return json as TranscriptionMeeting;
     },
     async lookupMeetingByIdempotencyKey(key) {
