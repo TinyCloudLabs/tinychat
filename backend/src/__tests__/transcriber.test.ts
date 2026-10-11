@@ -863,3 +863,75 @@ describe("server transcript delivery configuration", () => {
     }
   });
 });
+
+describe("TC-581 shares and TC-641 creates share one index document", () => {
+  const prov = { ownerTenant: ADDRESS_A.toLowerCase(), ownerOccurrenceId: "owner-occ", recipientOccurrenceId: "recipient-occ",
+    checkedAt: 1, title: "Team sync", scheduledStart: "2026-09-25T12:00:00.000Z" };
+  const intent = (key: string) => ({ key, hash: `hash-${key}`, createdAt: 1 });
+
+  function kvDocs() {
+    const docs = new Map<string, unknown>();
+    const node = {
+      kv: {
+        async get(key: string) { return docs.has(key) ? { ok: true, data: structuredClone(docs.get(key)) } : { ok: false, error: { code: "KV_NOT_FOUND", service: "kv", message: `Key not found: ${key}` } }; },
+        async put(key: string, value: unknown) { docs.set(key, structuredClone(value)); return { ok: true }; },
+      },
+      async signIn() {},
+    } as unknown as TinyCloudNode;
+    return { node, docs };
+  }
+
+  for (const kind of ["memory", "kv"] as const) {
+    test(`${kind}: pending creates and shares survive each other's writes`, async () => {
+      const index: TranscriberIndexStore = kind === "memory"
+        ? new MemoryTranscriberIndexStore() : new KvTranscriberIndexStore(kvDocs().node, new BackendStorageLane());
+      await index.beginCreate(ADDRESS_B, intent("manual-v1-a"));
+      await index.addShared(ADDRESS_B, "mtg_shared", prov);
+      expect(await index.listPending(ADDRESS_B)).toEqual([intent("manual-v1-a")]);
+      await index.completeCreate(ADDRESS_B, "manual-v1-a", "mtg_own");
+      expect(await index.list(ADDRESS_B)).toEqual(["mtg_own", "mtg_shared"]);
+      expect(await index.shares(ADDRESS_B)).toEqual({ mtg_shared: prov });
+      expect(await index.listPending(ADDRESS_B)).toEqual([]);
+      await index.beginCreate(ADDRESS_B, intent("manual-v1-b"));
+      await index.remove(ADDRESS_B, "mtg_own");
+      await index.add(ADDRESS_B, "mtg_later");
+      expect(await index.listPending(ADDRESS_B)).toEqual([intent("manual-v1-b")]);
+      expect(await index.entries(ADDRESS_B)).toEqual({ ids: ["mtg_later", "mtg_shared"], shared: { mtg_shared: prov } });
+      await index.abandonCreate(ADDRESS_B, "manual-v1-b");
+      await index.remove(ADDRESS_B, "mtg_shared");
+      expect(await index.entries(ADDRESS_B)).toEqual({ ids: ["mtg_later"], shared: {} });
+      expect(await index.listPending(ADDRESS_B)).toEqual([]);
+    });
+  }
+
+  test("kv: a stored document with ids, shares and pending reads back whole in a fresh store", async () => {
+    const { node, docs } = kvDocs();
+    const key = `transcriber/index/${ADDRESS_B.toLowerCase()}`;
+    const writer = new KvTranscriberIndexStore(node, new BackendStorageLane());
+    await writer.beginCreate(ADDRESS_B, intent("manual-v1-a"));
+    await writer.addShared(ADDRESS_B, "mtg_shared", prov);
+    expect(docs.get(key)).toEqual({ ids: ["mtg_shared"], shared: { mtg_shared: prov }, pending: [intent("manual-v1-a")] });
+    const reader = new KvTranscriberIndexStore(node, new BackendStorageLane());
+    expect(await reader.entries(ADDRESS_B)).toEqual({ ids: ["mtg_shared"], shared: { mtg_shared: prov } });
+    expect(await reader.listPending(ADDRESS_B)).toEqual([intent("manual-v1-a")]);
+  });
+
+  test("the list wakes delivery only for this session's own completed meetings, never a shared one", async () => {
+    const wakes: Array<[string, string]> = [];
+    const index = new MemoryTranscriberIndexStore();
+    const h = harness(ADDRESS_B, index, { onObservedCompletion: async (address, id) => { wakes.push([address, id]); } });
+    h.store.set("mtg_shared", meeting("mtg_shared", { status: "completed", metadata: { tinychat_address: ADDRESS_A.toLowerCase() } }));
+    // A garbled share whose upstream record names the recipient is still never this session's to deliver.
+    h.store.set("mtg_odd", meeting("mtg_odd", { status: "completed", metadata: { tinychat_address: ADDRESS_B.toLowerCase() } }));
+    h.store.set("mtg_own", meeting("mtg_own", { status: "completed", metadata: { tinychat_address: ADDRESS_B.toLowerCase() } }));
+    await index.addShared(ADDRESS_B, "mtg_shared", prov);
+    await index.addShared(ADDRESS_B, "mtg_odd", prov);
+    await index.add(ADDRESS_B, "mtg_own");
+    await withServer(h.app, async (base) => {
+      const listed = await call(base, "/api/transcriber/meetings");
+      expect(listed.status).toBe(200);
+      expect(listed.body.meetings.map((m: { id: string }) => m.id)).toEqual(["mtg_own", "mtg_odd", "mtg_shared"]);
+    });
+    expect(wakes).toEqual([[ADDRESS_B.toLowerCase(), "mtg_own"]]);
+  });
+});

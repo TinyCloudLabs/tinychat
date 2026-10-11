@@ -43,7 +43,9 @@ export async function syncTranscriberLibrary(input: {
     if ("unavailable" in row || row.status !== "completed") continue;
     if (saved.has(row.id)) { onState(row.id, "saved"); continue; }
     const completedAt = Date.parse(row.completed_at ?? row.ended_at ?? "");
-    if (deliveryActive() && Number.isFinite(completedAt) && now() - completedAt < SERVER_DELIVERY_GRACE_MS) {
+    // A meeting shared into this list (TC-581) is the owner's; the server never delivers it here.
+    const shared = row.metadata?.shared === true;
+    if (!shared && deliveryActive() && Number.isFinite(completedAt) && now() - completedAt < SERVER_DELIVERY_GRACE_MS) {
       onState(row.id, "saving");
       continue;
     }

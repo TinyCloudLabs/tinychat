@@ -276,6 +276,22 @@ test("the browser defers to server delivery for ten minutes, then repairs a miss
   } finally { f.sql.close(); }
 });
 
+test("a meeting shared into this list (TC-581) is imported at once even with server delivery active", async () => {
+  const f = libraryFixture(); f.allowWrites();
+  const ended = Date.parse("2026-10-08T10:00:00Z");
+  const shared = { ...meeting, ended_at: new Date(ended).toISOString(), metadata: { source: "google-calendar-autojoin", shared: true } };
+  let fetches = 0;
+  const client = {
+    list: async () => ({ status: "ok", value: { meetings: [shared] } }),
+    transcript: async () => { fetches++; return { status: "ok", value: { status: "ready", transcript } }; },
+  } as unknown as TranscriberClient;
+  try {
+    await syncTranscriberLibrary({ tcw: f.tcw, client, deliveryActive: () => true, now: () => ended + 60_000 });
+    expect(fetches).toBe(1);
+    expect(f.sql.query("SELECT COUNT(*) AS n FROM connector_meeting").get()).toEqual({ n: 1 });
+  } finally { f.sql.close(); }
+});
+
 test("without server delivery or a completion timestamp, the browser imports immediately", async () => {
   for (const row of [{ ...meeting, completed_at: "2026-10-08T10:00:00Z" }, { ...meeting, ended_at: null }]) {
     const f = libraryFixture(); f.allowWrites();

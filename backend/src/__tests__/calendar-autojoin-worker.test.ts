@@ -600,7 +600,8 @@ const B_EMAIL = "bee@example.test";
 const A_EMAIL = "owner@example.test";
 const ROOM = "https://meet.google.com/abc-defg-hij";
 
-async function twoTenants(options: { sharing?: boolean; bResponse?: string | null; bEmail?: string; aEmail?: string | null } = {}) {
+async function twoTenants(options: { sharing?: boolean; bResponse?: string | null; bEmail?: string; aEmail?: string | null }
+  & Pick<CalendarAutojoinWorkerOptions, "onRecordingCompleted"> = {}) {
   let now = START - 30_000;
   const store = new MemoryCalendarAutojoinStore();
   const index = new MemoryTranscriberIndexStore();
@@ -671,7 +672,8 @@ async function twoTenants(options: { sharing?: boolean; bResponse?: string | nul
     },
   };
   const worker = () => new CalendarAutojoinWorker({ store, index, coordinator, meetingCoordinator, calendar, api, connection,
-    sharingEnabled: options.sharing ?? true, now: () => now, random: () => 0, sleep: async ms => { now += ms; } });
+    sharingEnabled: options.sharing ?? true, onRecordingCompleted: options.onRecordingCompleted,
+    now: () => now, random: () => 0, sleep: async ms => { now += ms; } });
   const connect = (tenant: string, subject: string, patch: Partial<CalendarConnection> = {}) => store.putConnection({
     tenant, subject, state: "enabled", generation: 1, scopes: [], nextScanAt: 0, scanComplete: true, ...patch });
   await connect(A, SUBJECT_A, options.aEmail === null ? {} : { verifiedEmail: options.aEmail ?? A_EMAIL });
@@ -815,6 +817,18 @@ describe("TC-907 ptx capacity_exhausted", () => {
 });
 
 describe("TC-581 shared capture across tenants", () => {
+  test("TC-641: only the owner's completion wakes server delivery; the shared recipient never does", async () => {
+    const wakes: Array<[string, string]> = [];
+    const f = await twoTenants({ onRecordingCompleted: async (tenant, id) => { wakes.push([tenant, id]); } });
+    await f.attach();
+    f.meeting().status = "completed";
+    f.afterWindow();
+    await f.worker().tick();
+    expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition: "shared" });
+    expect(await f.rowA()).toMatchObject({ phase: "terminal", disposition: "completed" });
+    expect(wakes).toEqual([[A, "mtg_1"]]);
+  });
+
   test("A dispatches and B overlaps: B makes zero POSTs, shows shared_capture_pending, and its status has no meeting id", async () => {
     const f = await twoTenants();
     await f.attach();
