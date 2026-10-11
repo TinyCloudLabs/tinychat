@@ -88,14 +88,16 @@ export function ReceiptView({ recorder, onOpenNote }: ReceiptViewProps) {
 
   return (
     <div data-testid="voice-note-recorder" data-phase={phase} className="flex h-full min-h-0 flex-col bg-background text-foreground">
-      <header className="receipt-status-header relative grid min-h-14 shrink-0 grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center gap-3 px-4 pt-[env(safe-area-inset-top)] land:px-[max(1.25rem,env(safe-area-inset-left))]">
-        <Button type="button" variant="ghost" size="icon" className="size-11 shrink-0" aria-label="Minimise recorder" onClick={recorder.minimiseSheet} data-testid="recorder-minimise"><ChevronDownIcon className="!size-5" /></Button>
-        <p role="status" data-testid="voice-note-status" data-mic-state="idle" data-mic-reason="" className="w-fit min-w-0 max-w-full justify-self-center flex items-center justify-center gap-2 rounded-xl bg-surface-2 px-3 py-1.5 text-callout font-semibold text-foreground">
-          <CheckIcon className="size-4 text-primary" aria-hidden />
-          <span data-testid="voice-note-status-label" className="min-w-0 [overflow-wrap:anywhere]">Saved on this phone</span>
-        </p>
-        <span className="size-11" aria-hidden />
-      </header>
+      <div className="receipt-status-header-container shrink-0">
+        <header className="receipt-status-header relative grid min-h-14 shrink-0 grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center gap-3 px-4 pt-[env(safe-area-inset-top)] land:px-[max(1.25rem,env(safe-area-inset-left))]">
+          <Button type="button" variant="ghost" size="icon" className="size-11 shrink-0" aria-label="Minimise recorder" onClick={recorder.minimiseSheet} data-testid="recorder-minimise"><ChevronDownIcon className="!size-5" /></Button>
+          <p role="status" data-testid="voice-note-status" data-mic-state="idle" data-mic-reason="" className="w-fit min-w-0 max-w-full justify-self-center flex items-center justify-center gap-2 rounded-xl bg-surface-2 px-3 py-1.5 text-callout font-semibold text-foreground">
+            <CheckIcon className="size-4 text-primary" aria-hidden />
+            <span data-testid="voice-note-status-label" className="min-w-0 [overflow-wrap:anywhere]">Saved on this phone</span>
+          </p>
+          <span className="size-11" aria-hidden />
+        </header>
+      </div>
 
       <main className="mx-auto grid min-h-0 w-full max-w-xl flex-1 grid-cols-1 grid-rows-[auto_auto] content-start gap-4 overflow-y-auto px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-4 land:max-w-[72rem] land:grid-cols-2 land:grid-rows-[minmax(0,1fr)_auto] land:gap-x-10 land:px-[max(1.5rem,env(safe-area-inset-left))]">
         <div className="flex min-w-0 flex-col items-center justify-center text-center land:col-start-1 land:row-start-1">

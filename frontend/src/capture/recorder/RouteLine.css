@@ -7,10 +7,10 @@
   font-size: 1rem;
 }
 
-@container route-line (max-width: 16rem) {
+@container route-line (max-width: 14rem) {
   .route-line-container > .route-line {
     display: grid;
-    grid-template-columns: 1rem minmax(0, 1fr);
+    grid-template-columns: 1.25rem minmax(0, 1fr);
     gap: 0;
   }
 
@@ -46,7 +46,7 @@
 
 /* Keep compact labels legible on phones. Only cap them in the narrow desktop
    detail pane, where a desktop-sized route can be exceptionally constrained. */
-@media (min-width: 768px) {
+@media (min-width: 768px) and (pointer: fine) {
   @container route-line (max-width: 16rem) {
     .route-line-container > .route-line > li > [data-route-label] {
       font-size: min(0.875rem, 14px);

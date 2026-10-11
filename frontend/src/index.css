@@ -267,12 +267,16 @@ html [data-vaul-overlay][data-state="closed"] {
 }
 
 .receipt-status-header {
+  min-width: 0;
+}
+
+.receipt-status-header-container {
   container: receipt-status-header / inline-size;
   font-size: 1rem;
 }
 
 @container receipt-status-header (max-width: 17em) {
-  .receipt-status-header.receipt-status-header {
+  .receipt-status-header-container > .receipt-status-header {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     grid-template-rows: auto auto;
     row-gap: 0.5rem;

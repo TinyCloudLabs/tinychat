@@ -79,7 +79,7 @@ const VIEWPORTS: Viewport[] = [
     hasTouch: true,
     textScale: 2,
     zoom: true,
-    screenPrefixes: ["capture-soft-", "capture-notetaker-route"],
+    screenPrefixes: ["recorder-landed", "capture-soft-", "capture-notetaker-route"],
   },
   {
     id: "text200-phone-360",
