@@ -80,8 +80,8 @@ void installEd25519Polyfill().catch((error: unknown) => {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>
+        <PwaPrompts />
       </RootErrorBoundary>
-      <PwaPrompts />
     </StrictMode>,
   );
 });

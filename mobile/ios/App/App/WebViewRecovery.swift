@@ -1,22 +1,44 @@
 import os
+import UIKit
 import WebKit
 
+/// Allows a few automatic recoveries in a short window, so a content process that keeps dying cannot loop forever.
+struct RecoveryBudget {
+    static let maxAutomatic = 2
+    static let window: TimeInterval = 60
+
+    private var deaths: [TimeInterval] = []
+
+    /// Records a death; true while it is still within the automatic budget.
+    mutating func recordDeath(at now: TimeInterval) -> Bool {
+        deaths.removeAll { now - $0 >= Self.window }
+        deaths.append(now)
+        return deaths.count <= Self.maxAutomatic
+    }
+
+    mutating func reset() { deaths.removeAll() }
+}
+
 /// iOS can kill the WebView's content process while Exo is backgrounded. Capacitor answers that with
-/// `webView.reload()`, but a terminated WKWebView has no `url`, so the reload does nothing and the screen stays blank.
+/// `webView.reload()`, which may recover nothing once the WebView has lost its `url`.
 /// This stands in as the navigation delegate, forwards everything to Capacitor's handler, and on termination
-/// loads the address the user was on (or the app's start page when that is unknown or foreign).
+/// loads the address the user was on (or the app's start page when that is unknown or foreign). If the process
+/// keeps dying it stops and shows a native Reload prompt instead.
 final class WebViewRecovery: NSObject, WKNavigationDelegate {
     private let original: WKNavigationDelegate
     private let startURL: URL
     private var urlObservation: NSKeyValueObservation?
+    private var budget = RecoveryBudget()
+    private var prompt: UIView?
     private(set) var lastURL: URL?
 
     init(webView: WKWebView, startURL: URL, original: WKNavigationDelegate) {
         self.original = original
         self.startURL = startURL
         super.init()
+        // The url goes nil when the content process dies; the last real address is what recovery needs.
         urlObservation = webView.observe(\.url, options: [.initial, .new]) { [weak self] webView, _ in
-            self?.lastURL = webView.url
+            if let url = webView.url { self?.lastURL = url }
         }
         webView.navigationDelegate = self
     }
@@ -29,9 +51,56 @@ final class WebViewRecovery: NSObject, WKNavigationDelegate {
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         let target = Self.restoreURL(lastURL: lastURL, startURL: startURL)
-        Logger(subsystem: "xyz.tinycloud.exo", category: "webview")
-            .notice("WebView content process terminated; reloading \(target.path, privacy: .public)")
+        let log = Logger(subsystem: "xyz.tinycloud.exo", category: "webview")
+        guard budget.recordDeath(at: ProcessInfo.processInfo.systemUptime) else {
+            log.notice("WebView content process keeps terminating; waiting for the user to reload")
+            showPrompt(over: webView, target: target)
+            return
+        }
+        log.notice("WebView content process terminated; reloading \(target.path, privacy: .public)")
         webView.load(URLRequest(url: target))
+    }
+
+    private func showPrompt(over webView: WKWebView, target: URL) {
+        prompt?.removeFromSuperview()
+        let overlay = UIView(frame: webView.bounds)
+        overlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        overlay.backgroundColor = .systemBackground
+
+        let title = UILabel()
+        title.text = "Exo needs to reload"
+        title.font = .preferredFont(forTextStyle: .title2)
+        title.textColor = .label
+        let message = UILabel()
+        message.text = "Something interrupted Exo while it was in the background. Reload to pick up where you left off."
+        message.font = .preferredFont(forTextStyle: .callout)
+        message.textColor = .secondaryLabel
+        message.numberOfLines = 0
+        message.textAlignment = .center
+        title.textAlignment = .center
+        var configuration = UIButton.Configuration.filled()
+        configuration.title = "Reload"
+        let button = UIButton(configuration: configuration, primaryAction: UIAction { [weak self, weak webView] _ in
+            guard let self, let webView else { return }
+            self.budget.reset()
+            self.prompt?.removeFromSuperview()
+            self.prompt = nil
+            webView.load(URLRequest(url: target))
+        })
+
+        let stack = UIStackView(arrangedSubviews: [title, message, button])
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        overlay.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerYAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.centerYAnchor),
+            stack.leadingAnchor.constraint(equalTo: overlay.layoutMarginsGuide.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: overlay.layoutMarginsGuide.trailingAnchor, constant: -16),
+        ])
+        webView.addSubview(overlay)
+        prompt = overlay
     }
 
     override func forwardingTarget(for selector: Selector!) -> Any? { original }

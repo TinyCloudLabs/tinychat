@@ -28,7 +28,7 @@ export class RootErrorBoundary extends Component<
           <div className="flex flex-col gap-1.5">
             <h1 className="font-display text-title-2">Exo hit a snag</h1>
             <p className="text-callout text-muted-foreground">
-              Reload to pick up where you left off. Your notes are safe.
+              Reload to get back to where you were.
             </p>
           </div>
           <Button onClick={this.props.onReload ?? (() => window.location.reload())} className="h-11 px-6 fine:h-9 fine:px-4">

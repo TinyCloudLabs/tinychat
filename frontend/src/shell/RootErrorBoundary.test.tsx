@@ -1,7 +1,11 @@
 import { expect, spyOn, test } from "bun:test";
-import { Children, isValidElement, type ReactNode } from "react";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { act, Children, isValidElement, type ReactNode } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Button } from "@/components/ui/button";
+import { installDom } from "@/test/dom";
 import { RootErrorBoundary } from "./RootErrorBoundary";
 
 function failedBoundary(onReload?: () => void) {
@@ -45,4 +49,32 @@ test("the error detail goes to the log, never the screen", () => {
   expect(log).toHaveBeenCalledTimes(1);
   expect(renderToStaticMarkup(boundary.render())).not.toContain("secretKeyFn");
   log.mockRestore();
+});
+
+test("a real render error in any child of the root shows the recovery screen, not a blank root", async () => {
+  const uninstall = installDom();
+  const log = spyOn(console, "error").mockImplementation(() => {});
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  const Healthy = () => <p>app</p>;
+  const Broken = () => { throw new Error("secretKeyFn is not a function"); };
+  try {
+    await act(async () => {
+      root.render(<RootErrorBoundary><Healthy /><Broken /></RootErrorBoundary>);
+    });
+    expect(container.textContent).toContain("Exo hit a snag");
+    expect(container.textContent).not.toContain("secretKeyFn");
+    expect(container.querySelector("button")?.textContent).toBe("Reload");
+  } finally {
+    await act(async () => root.unmount());
+    log.mockRestore();
+    uninstall();
+  }
+});
+
+test("main.tsx mounts the router and the PWA prompts inside the boundary", () => {
+  const main = readFileSync(join(import.meta.dir, "../main.tsx"), "utf8");
+  const boundary = main.slice(main.indexOf("<RootErrorBoundary>"), main.indexOf("</RootErrorBoundary>"));
+  expect(boundary).toContain("<BrowserRouter>");
+  expect(boundary).toContain("<PwaPrompts />");
 });
