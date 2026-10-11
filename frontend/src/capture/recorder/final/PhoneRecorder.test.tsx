@@ -3,6 +3,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
 import { PlatformContext } from "@/lib/platform";
+import { createFakeOnDeviceStt } from "@/lib/voiceNotes/fakeOnDeviceStt";
+import { __setOnDeviceSttForTests, type OnDeviceSttPlugin } from "@/lib/voiceNotes/onDeviceStt";
+import { __resetOnDeviceSttStoreForTests } from "@/lib/voiceNotes/onDeviceSttStore";
 import {
   StaticRecorderProvider,
   type RecorderValue,
@@ -91,6 +94,12 @@ describe("PhoneRecorder", () => {
   });
 
   test("signed out, the first render has Local open and the other stops closed; signed in opens Audio only and Private (Local waits for its model)", () => {
+    // Local waits for a model status the phone has not reported yet.
+    __setOnDeviceSttForTests({
+      status: () => new Promise(() => {}),
+      addListener: async () => ({ remove: async () => {} }),
+    } as unknown as OnDeviceSttPlugin);
+    __resetOnDeviceSttStoreForTests();
     const stops = (patch: Partial<RecorderValue>) =>
       [...render(patch).matchAll(/data-available="(true|false)"/g)].map(
         (m) => m[1],
@@ -112,6 +121,8 @@ describe("PhoneRecorder", () => {
       "true",
       "false",
     ]);
+    __setOnDeviceSttForTests(createFakeOnDeviceStt().plugin);
+    __resetOnDeviceSttStoreForTests();
   });
 
   test("paused offers Resume on the ring", () => {

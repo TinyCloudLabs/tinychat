@@ -284,10 +284,11 @@ describe("following the real iOS events", () => {
     const events = await iosStt();
     fakeVoiceNotes({ recordings: () => [] });
     await mount("n1");
-    expect(events.listening("progress")).toBe(1);
+    // The hook's own listener, and the shared store's, which stays for the life of the app.
+    expect(events.listening("progress")).toBe(2);
     await act(async () => root!.unmount());
     root = null;
-    expect(events.listening("progress")).toBe(0);
+    expect(events.listening("progress")).toBe(1);
     expect(events.listening("transcribed")).toBe(0);
     expect(events.listening("failed")).toBe(0);
   });
