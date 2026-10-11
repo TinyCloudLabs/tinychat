@@ -13,7 +13,11 @@ const SavedContext = createContext<Readonly<Record<string, TranscriberSaveState>
 export const useTranscriberSavedState = () => useContext(SavedContext);
 
 export interface TranscriberLibrarySaver {
-  listSaved(tcw: TinyCloudWeb, scheduleRead?: <T>(read: () => Promise<T>) => Promise<T>): Promise<{ ok: boolean; data?: string[] }>;
+  listSaved(
+    tcw: TinyCloudWeb,
+    scheduleRead?: <T>(read: () => Promise<T>) => Promise<T | null>,
+    isCurrent?: () => boolean,
+  ): Promise<{ ok: boolean; data?: string[] }>;
   save(tcw: TinyCloudWeb, meeting: TranscriberMeeting, transcript: TranscriberTranscript): Promise<{ ok: boolean }>;
 }
 const defaultSaver: TranscriberLibrarySaver = { listSaved: listSavedTranscriberMeetingIds, save: saveTranscriberMeeting };
@@ -34,7 +38,8 @@ export async function syncTranscriberLibrary(input: {
   if (listed.status !== "ok" || !isCurrent()) return;
   // Each SQL/KV completeness read takes its own turn. A library with many
   // saved recordings therefore yields the lane between keys for voice notes.
-  const complete = await saver.listSaved(tcw, (read) => enqueueDrainWork(read));
+  const complete = await saver.listSaved(tcw, (read) => enqueueDrainWork(() =>
+    isCurrent() ? read() : Promise.resolve(null)), isCurrent);
   if (!complete?.ok || !isCurrent()) return;
   const saved = new Set(complete.data ?? []);
   for (const row of listed.value.meetings) {
