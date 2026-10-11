@@ -347,7 +347,6 @@ function useNativeNotes(ids: readonly string[], enabled: boolean): { ready: bool
       for (const sub of subs) sub.then((handle) => handle.remove()).catch(() => {});
     };
     // `ids` is keyed by its content.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, needed]);
   return { ready: !needed || read.key === key, notes: read.notes };
 }
@@ -370,7 +369,6 @@ function useLocalNotes(ids: readonly string[], reread: unknown): ReadonlyMap<str
       }),
     ).then((entries) => { if (alive) setNotes(new Map(entries)); });
     return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, reread]);
   return notes;
 }
@@ -437,7 +435,6 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
     }
     return out;
     // The store versions say the per-key getters read above have new answers.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries, locals, natives, nativeRead.ready, pending, laneBusy, onDeviceStatus, recorder.captureIssues, recorder.finalizationPendingId, recorder.transcription, device, hasOnDevice, syncVersion, transcriptSyncVersion]);
 }
 
