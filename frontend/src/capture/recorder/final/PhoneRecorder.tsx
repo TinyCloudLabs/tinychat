@@ -204,7 +204,7 @@ export function PhoneRecorder({
     ).matches;
     const available = Math.max(
       0,
-      dock.top - (shortPortrait ? 7 : landscape ? 12 : 8) - lastProtectedBottom,
+      dock.top - (shortPortrait ? 6 : landscape ? 12 : 8) - lastProtectedBottom,
     );
     const actions = element.querySelector<HTMLElement>(".pr-toast-actions");
     const actionsHeight = actions?.getBoundingClientRect().height ?? 0;
@@ -213,7 +213,17 @@ export function PhoneRecorder({
       0,
       available - actionsHeight - actionGap,
     );
-    const twoLines = Number.parseFloat(getComputedStyle(element).fontSize) * 2.4;
+    const message = element.querySelector<HTMLElement>(".pr-toast-message");
+    const lineHeight = message
+      ? Number.parseFloat(getComputedStyle(message).lineHeight)
+      : Number.parseFloat(getComputedStyle(element).fontSize) * 1.2;
+    const copy = element.querySelector<HTMLElement>(".pr-toast-copy");
+    const copyStyle = copy ? getComputedStyle(copy) : null;
+    const copyPadding = copyStyle
+      ? Number.parseFloat(copyStyle.paddingTop) +
+        Number.parseFloat(copyStyle.paddingBottom)
+      : 0;
+    const twoLines = lineHeight * 2 + copyPadding;
 
     element.style.setProperty("--pr-toast-max-height", `${available}px`);
     element.style.setProperty(

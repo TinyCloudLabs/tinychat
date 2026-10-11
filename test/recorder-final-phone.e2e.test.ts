@@ -780,6 +780,24 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
         ).size;
       });
       expect(lineCount).toBeGreaterThanOrEqual(5);
+      const copySizing = await copy.evaluate((element) => {
+        const message =
+          element.querySelector<HTMLElement>(".pr-toast-message")!;
+        const style = getComputedStyle(element);
+        return {
+          lineHeight: Number.parseFloat(getComputedStyle(message).lineHeight),
+          padding:
+            Number.parseFloat(style.paddingTop) +
+            Number.parseFloat(style.paddingBottom),
+          minHeight: Number.parseFloat(style.minHeight),
+          maxHeight: Number.parseFloat(style.maxHeight),
+          height: element.getBoundingClientRect().height,
+        };
+      });
+      const twoLinesAndPadding = copySizing.lineHeight * 2 + copySizing.padding;
+      expect(copySizing.minHeight).toBeGreaterThanOrEqual(twoLinesAndPadding);
+      expect(copySizing.maxHeight).toBeGreaterThanOrEqual(twoLinesAndPadding);
+      expect(copySizing.height).toBeGreaterThanOrEqual(twoLinesAndPadding);
       const visibleLineCount = await message.evaluate((element) => {
         const range = document.createRange();
         range.selectNodeContents(element);
