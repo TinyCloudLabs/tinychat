@@ -872,6 +872,184 @@ import XCTest
         }
     }
 
+    func testFileSizeIsFreshForTheSameURLOnABackgroundThread() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("size-\(UUID().uuidString).bin")
+        try Data([1]).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let sizes = Locked([Int64]())
+        let done = expectation(description: "sizes read")
+        Thread.detachNewThread {
+            for _ in 0..<3 {
+                sizes.update { $0.append(RecordingFinalizer.fileSize(url)) }
+                if let handle = try? FileHandle(forWritingTo: url) {
+                    _ = try? handle.seekToEnd()
+                    try? handle.write(contentsOf: Data([2]))
+                    try? handle.close()
+                }
+            }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 10)
+        XCTAssertEqual(sizes.value, [1, 2, 3], "a repeated poll of one URL must see the file grow")
+    }
+
+    func testFinishWritingWaitOutlastsItsTimeoutWhileTheFileKeepsGrowing() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("finish-\(UUID().uuidString).bin")
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let started = ProcessInfo.processInfo.systemUptime
+        try RecordingFinalizer.awaitFinishWriting(waitTimeout: 0.5, progress: { RecordingFinalizer.fileSize(url) }) { done in
+            Thread.detachNewThread {
+                for _ in 0..<20 {
+                    if let handle = try? FileHandle(forWritingTo: url) {
+                        _ = try? handle.seekToEnd()
+                        try? handle.write(contentsOf: Data([1]))
+                        try? handle.close()
+                    }
+                    Thread.sleep(forTimeInterval: 0.1)
+                }
+                done()
+            }
+        }
+        XCTAssertGreaterThan(ProcessInfo.processInfo.systemUptime - started, 1.5,
+                             "the wait must run past its own no-progress timeout")
+    }
+
+    func testFinishWritingWaitStillTimesOutWhenTheFileStopsGrowing() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("finish-\(UUID().uuidString).bin")
+        try Data([1]).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertThrowsError(try RecordingFinalizer.awaitFinishWriting(
+            waitTimeout: 0.3, progress: { RecordingFinalizer.fileSize(url) }) { _ in }) {
+            XCTAssertEqual($0 as? CaptureError, .finalizationTimedOut("finish_writing"))
+        }
+    }
+
+    private func spinUntil(_ timeout: TimeInterval, _ condition: () -> Bool) {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        while !condition(), ProcessInfo.processInfo.systemUptime < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
+    }
+
+    func testDelayedAutomaticRetryNeverOverlapsManualRetryOrDeletesTheCommittedNote() throws {
+        let clock = TestClock()
+        try withEngine(clock: clock) { engine in
+            engine.debugSuppressTaps()
+            engine.debugMuxStallTimeout = 0.2
+            let stallGate = DispatchSemaphore(value: 0)
+            let entered = DispatchSemaphore(value: 0)
+            let gate = DispatchSemaphore(value: 0)
+            defer { for _ in 0..<8 { stallGate.signal() }; gate.signal() }
+            let calls = Locked(0)
+            var seam = RecordingFinalizer.WaitSeam()
+            seam.workerOverride = { output, progress in
+                let call = calls.update { $0 += 1; return $0 }
+                if call <= 2 { stallGate.wait(); return }
+                try progress.tick()
+                entered.signal()
+                gate.wait()
+                try Data("m4a".utf8).write(to: output)
+            }
+            engine.debugMuxWaitSeam = seam
+            let scheduled = Locked([(delay: TimeInterval, run: () -> Void)]())
+            engine.debugScheduleTimedOutRetry = { _, delay, run in scheduled.update { $0.append((delay, run)) } }
+            let id = try XCTUnwrap(engine.start(requestedLimitMs: 1_000)["id"] as? String)
+            try enqueueTone(engine)
+            let stopFailed = expectation(description: "stop reports the timeout")
+            let failedEvents = Locked(0)
+            let token = engine.observe { name, data, _ in
+                if name == "autoStopped", data["error"] as? String == "finalization_timed_out" { stopFailed.fulfill() }
+                if name == "recoveryFailed" { failedEvents.update { $0 += 1 } }
+            }
+            defer { engine.removeObserver(token) }
+            clock.advance(by: 1_000)
+            engine.debugWatchdogTick()
+            wait(for: [stopFailed], timeout: 15)
+            spinUntil(15) { scheduled.value.count == 1 }
+            DispatchQueue.global().async { scheduled.value[0].run() }
+            spinUntil(15) { scheduled.value.count == 2 }
+            XCTAssertEqual(scheduled.value.map(\.delay), [2, 30])
+
+            // Manual "Try again" starts during the 30 s wait and holds its mux open.
+            engine.debugMuxStallTimeout = 60
+            let manualDone = expectation(description: "manual retry finished")
+            let manual = Locked<Result<Void, Error>?>(nil)
+            DispatchQueue.global().async {
+                manual.update { $0 = Result { try engine.retryRecovery(id) } }
+                manualDone.fulfill()
+            }
+            XCTAssertEqual(entered.wait(timeout: .now() + 15), .success)
+
+            // The delayed automatic retry fires now: it must skip, not start a second recovery.
+            scheduled.value[1].run()
+            XCTAssertEqual(calls.value, 3)
+            XCTAssertEqual(try engine.library.listRecoveryFailures().first { $0["id"] as? String == id }?["attempts"] as? Int, 2)
+
+            gate.signal()
+            wait(for: [manualDone], timeout: 15)
+            XCTAssertNoThrow(try manual.value?.get())
+            func assertPublished() {
+                XCTAssertTrue(FileManager.default.fileExists(atPath: engine.library.audioURL(id).path))
+                XCTAssertTrue(FileManager.default.fileExists(atPath: engine.library.sidecarURL(id).path))
+                XCTAssertFalse(FileManager.default.fileExists(atPath: engine.library.url("tombstones/\(id)").path))
+                XCTAssertFalse(FileManager.default.fileExists(atPath: engine.library.sessionURL(id).path))
+            }
+            assertPublished()
+            // A stale automatic retry after the commit must leave the published note alone.
+            scheduled.value[1].run()
+            XCTAssertEqual(calls.value, 3)
+            assertPublished()
+            XCTAssertEqual(failedEvents.value, 0)
+        }
+    }
+
+    func testManualRetryIsRefusedWhileAnAutomaticRetryHoldsTheNote() throws {
+        let clock = TestClock()
+        try withEngine(clock: clock) { engine in
+            engine.debugSuppressTaps()
+            engine.debugMuxStallTimeout = 0.2
+            let stallGate = DispatchSemaphore(value: 0)
+            let entered = DispatchSemaphore(value: 0)
+            let gate = DispatchSemaphore(value: 0)
+            defer { for _ in 0..<8 { stallGate.signal() }; gate.signal() }
+            let calls = Locked(0)
+            var seam = RecordingFinalizer.WaitSeam()
+            seam.workerOverride = { output, progress in
+                let call = calls.update { $0 += 1; return $0 }
+                if call == 1 { stallGate.wait(); return }
+                try progress.tick()
+                entered.signal()
+                gate.wait()
+                try Data("m4a".utf8).write(to: output)
+            }
+            engine.debugMuxWaitSeam = seam
+            let scheduled = Locked([(delay: TimeInterval, run: () -> Void)]())
+            engine.debugScheduleTimedOutRetry = { _, delay, run in scheduled.update { $0.append((delay, run)) } }
+            let id = try XCTUnwrap(engine.start(requestedLimitMs: 1_000)["id"] as? String)
+            try enqueueTone(engine)
+            let stopFailed = expectation(description: "stop reports the timeout")
+            let token = engine.observe { name, data, _ in
+                if name == "autoStopped", data["error"] as? String == "finalization_timed_out" { stopFailed.fulfill() }
+            }
+            defer { engine.removeObserver(token) }
+            clock.advance(by: 1_000)
+            engine.debugWatchdogTick()
+            wait(for: [stopFailed], timeout: 15)
+            spinUntil(15) { scheduled.value.count == 1 }
+            engine.debugMuxStallTimeout = 60
+            DispatchQueue.global().async { scheduled.value[0].run() }
+            XCTAssertEqual(entered.wait(timeout: .now() + 15), .success)
+            XCTAssertThrowsError(try engine.retryRecovery(id)) {
+                XCTAssertEqual($0 as? CaptureError, .recordingInProgress)
+            }
+            gate.signal()
+            spinUntil(15) { FileManager.default.fileExists(atPath: engine.library.sidecarURL(id).path) }
+            XCTAssertTrue(FileManager.default.fileExists(atPath: engine.library.audioURL(id).path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: engine.library.url("tombstones/\(id)").path))
+        }
+    }
+
     func testStartBeforeAttachPauseStopAndDiscardLeaveNoSegment() throws {
         for action in ["pause", "stop", "discard"] {
             try withEngine { engine in

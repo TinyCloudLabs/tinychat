@@ -13,9 +13,11 @@ final class FinalizeWatchdogTests: XCTestCase {
 
     func testOutputGrowthAloneCountsAsProgress() {
         var watchdog = MuxWatchdog(startedAt: 0, stallSeconds: 45, ceilingSeconds: 600)
-        for step in 1...20 {
-            XCTAssertEqual(watchdog.observe(ticks: 7, bytes: Int64(step) * 1_000, now: Double(step) * 25), .running)
+        for step in 1...19 {
+            XCTAssertEqual(watchdog.observe(ticks: 7, bytes: Int64(step) * 1_000, now: Double(step) * 30), .running)
         }
+        XCTAssertEqual(watchdog.observe(ticks: 7, bytes: 20_000, now: 600), .ceilingReached,
+                       "progress never bypasses the ceiling")
     }
 
     func testNoProgressForTheStallWindowFailsFromTheLastChange() {

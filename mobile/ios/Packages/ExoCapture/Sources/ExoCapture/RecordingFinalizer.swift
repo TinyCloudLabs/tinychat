@@ -72,8 +72,11 @@ public enum RecordingFinalizer {
         var seam = WaitSeam()
     }
 
-    private static func fileSize(_ url: URL) -> Int64 {
-        Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+    /// A fresh stat on every call. URL resource values are cached per URL instance, and the
+    /// cache is only cleared on a main run-loop turn, which these background waits never see.
+    static func fileSize(_ url: URL) -> Int64 {
+        var info = stat()
+        return stat(url.path, &info) == 0 ? Int64(info.st_size) : 0
     }
 
     /// Waits for the writer to finish; `waitTimeout` is a no-progress timeout when `progress`
