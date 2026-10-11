@@ -623,7 +623,9 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
     () => soft?.issues ?? withQuarantine(recorder.captureIssues, quarantine.items, new Set()),
     [soft, recorder.captureIssues, quarantine.items],
   );
-  const captureReadError = soft !== null ? (soft.quarantineFailed ? "" : null) : quarantine.error != null ? messageOf(quarantine.error) : null;
+  const quarantineError = soft !== null ? soft.quarantineError : quarantine.error;
+  const refreshQuarantine = soft !== null ? soft.refreshQuarantine : quarantine.refresh;
+  const captureReadError = quarantineError != null ? messageOf(quarantineError) : null;
   const [rowAttempt, setRowAttempt] = useState(0);
   const wantedRows = entries.flatMap(({ id, source }) => {
     const tcw = source.tcw;
@@ -643,10 +645,10 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
   const autoSyncVersion = useStoreVersion(subscribeAutoSync);
   const reread = useCallback(() => {
     nativeRead.reread();
-    quarantine.refresh();
+    refreshQuarantine();
     setLocalAttempt((count) => count + 1);
     setRowAttempt((count) => count + 1);
-  }, [nativeRead.reread, quarantine.refresh]);
+  }, [nativeRead.reread, refreshQuarantine]);
   const device: PipelineDevice = platform === "tauri" ? "mac" : "phone";
   const hasOnDevice = !localTranscriptionUnavailable() && nativeVoiceNotesAvailable();
   const { states, autoSyncs } = useMemo(() => {

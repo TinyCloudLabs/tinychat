@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, te
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
+import { SoftHomeProvider } from "@/capture/home/softHome";
 import { StaticRecorderProvider, type RecorderValue } from "@/capture/recorder/RecorderProvider";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -113,6 +114,7 @@ afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = null;
   Reflect.deleteProperty(globalThis, "localStorage");
+  Reflect.deleteProperty(globalThis, "document");
   errors.mockRestore(); warnings.mockRestore();
 });
 
@@ -365,6 +367,33 @@ describe("a failed read that other evidence outranks is still shown", () => {
     await act(async () => seen.view!.onAction("reread"));
     await settle();
     expect(phone.quarantineReads).toBeGreaterThan(reads);
+    expect(seen.view!.pipeline.done).toBe(true);
+    expect(seen.view!.pipeline.blocker).toBeUndefined();
+  });
+
+  test("under the Soft home provider, Try again rereads through the provider's reader and clears a transient quarantine failure", async () => {
+    phone.recordings = [recording(ID, "off")];
+    phone.quarantineError = new Error("parked list unreadable");
+    const seen: { view: NotePipelineView | null } = { view: null };
+    function Probe() { seen.view = useNotePipeline(ID, SIGNED_OUT); return null; }
+    // The provider's issue sheet reads the page theme; the workspace has no DOM, so give it a light page.
+    (globalThis as { document?: unknown }).document = { documentElement: { classList: { contains: () => false } } };
+    root = createRoot(container);
+    await act(async () => root!.render(
+      <StaticRecorderProvider value={recorder()}>
+        <SoftHomeProvider enabled issues={{}} onDismissIssue={() => true}><Probe /></SoftHomeProvider>
+      </StaticRecorderProvider>,
+    ));
+    await settle();
+    const failed = seen.view!.pipeline;
+    expect(failed.done).toBe(false);
+    expect(failed.blocker?.cause).toBe("Couldn't check for recordings that failed to save · parked list unreadable");
+    expect(failed.blocker?.action?.kind).toBe("reread");
+    const reads = phone.quarantineReads;
+    phone.quarantineError = null;
+    await act(async () => seen.view!.onAction("reread"));
+    await settle();
+    expect(phone.quarantineReads).toBe(reads + 1);
     expect(seen.view!.pipeline.done).toBe(true);
     expect(seen.view!.pipeline.blocker).toBeUndefined();
   });
