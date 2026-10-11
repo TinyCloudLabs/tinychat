@@ -589,8 +589,8 @@ describe("a saved Local note whose transcript is done on the phone but not in th
   const rowWithoutTranscript = () => ({ capture: { platform: "ios" } });
 
   test("the hook starts the one first attempt; its failure is a blocker with the cause and Try again, never an endless Adding", async () => {
-    phone.recordings = [recording(ID, "on-device", stt("done"))];
     const space = fakeSpace("did:p6-item1", rowWithoutTranscript);
+    phone.recordings = [{ ...recording(ID, "on-device", stt("done")), owner: space.tcw.did } as VoiceNoteRecording];
     const source: NotePipelineSource = { tcw: space.tcw, saved: true };
     const history: NotePipeline[] = [];
     function Probe() { const view = useNotePipeline(ID, source); if (view) history.push(view.pipeline); return null; }
@@ -609,8 +609,8 @@ describe("a saved Local note whose transcript is done on the phone but not in th
   });
 
   test("a rerender does not start a second attempt; Try again runs one more", async () => {
-    phone.recordings = [recording(ID, "on-device", stt("done"))];
     const space = fakeSpace("did:p6-item1b", rowWithoutTranscript);
+    phone.recordings = [{ ...recording(ID, "on-device", stt("done")), owner: space.tcw.did } as VoiceNoteRecording];
     const { seen } = await mountOne({ tcw: space.tcw, saved: true });
     await settleUntil(() => seen.view !== null && stepOf(seen.view.pipeline, "transcript").state === "failed");
     await settle();
@@ -621,8 +621,8 @@ describe("a saved Local note whose transcript is done on the phone but not in th
   });
 
   test("a note whose row already has the transcript is not synced again", async () => {
-    phone.recordings = [recording(ID, "on-device", stt("done"))];
     const space = fakeSpace("did:p6-item1c", () => ({ transcription_outcome: "transcribed" }));
+    phone.recordings = [{ ...recording(ID, "on-device", stt("done")), owner: space.tcw.did } as VoiceNoteRecording];
     const { seen } = await mountOne({ tcw: space.tcw, saved: true });
     await settleUntil(() => seen.view !== null && stepOf(seen.view.pipeline, "transcript").state === "done");
     expect(stepOf(seen.view!.pipeline, "transcript").state).toBe("done");

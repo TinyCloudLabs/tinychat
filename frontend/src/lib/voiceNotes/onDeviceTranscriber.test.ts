@@ -4,11 +4,14 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { VoiceNotes, __setVoiceNotesForTests, type LocalTranscript, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
+import { advanceAccountGeneration } from "./accountContext";
+import { resetSpaceLaneForTests, runOnSpaceLane } from "../spaceWriteLane";
 
 type SaveResult = { ok: true; data: unknown } | { ok: false; error: { code: string; message: string } };
-let save: (saved: { rev: number }) => Promise<SaveResult> = async () => ({ ok: true, data: {} });
+let save: (saved: { rev: number }, checkpoint?: () => void) => Promise<SaveResult> = async () => ({ ok: true, data: {} });
 const realStore = { ...(await import("./voiceNoteStore")) };
-mock.module("./voiceNoteStore", () => ({ ...realStore, saveVoiceNoteTranscript: (_tcw: unknown, _id: string, saved: { rev: number }) => save(saved) }));
+mock.module("./voiceNoteStore", () => ({ ...realStore,
+  saveVoiceNoteTranscript: (_tcw: unknown, _id: string, saved: { rev: number }, checkpoint?: () => void) => save(saved, checkpoint) }));
 afterAll(() => mock.module("./voiceNoteStore", () => realStore));
 const { onDeviceTranscriptSyncState, recordOnDeviceTranscript, subscribeOnDeviceTranscriptSync, syncOnDeviceTranscript } = await import("./onDeviceTranscriber");
 
@@ -23,6 +26,7 @@ const account = () => ({ did: (currentDid = `did:test:${++seq}`), spaceId: "spac
 // The phone's ledger for rec-1 as the fake sidecar keeps it; updateLedger merges per top-level key under the rev check.
 type FakeLedger = { transcript: Record<string, unknown>; transcriptSync: { state: string; rev?: number; at?: number } };
 let phone: { rev: number; ledger: FakeLedger };
+let pendingOwner: string | null | undefined;
 let ledgerWrites: { rev: number; patch: Record<string, unknown> }[];
 let updateLedger: (args: { id: string; did: string; rev: number; patch: Record<string, unknown> }) => Promise<unknown>;
 let getTranscript: () => Promise<{ transcript: LocalTranscript | null }>;
@@ -31,6 +35,7 @@ const realPlugin = VoiceNotes;
 
 beforeEach(() => {
   save = async () => ({ ok: true, data: {} });
+  pendingOwner = undefined;
   getTranscript = async () => ({ transcript });
   phone = { rev: 4, ledger: { transcript: { state: "done", outcome: "transcribed", attempts: 1 }, transcriptSync: { state: "pending" } } };
   ledgerWrites = [];
@@ -41,7 +46,8 @@ beforeEach(() => {
   };
   __setVoiceNotesForTests({
     getTranscript: () => getTranscript(),
-    listPending: async () => ({ recordings: [{ id: "rec-1", owner: currentDid, rev: phone.rev, ledger: phone.ledger }] }),
+    listPending: async () => ({ recordings: [{ id: "rec-1", owner: pendingOwner === undefined ? currentDid : pendingOwner,
+      rev: phone.rev, ledger: phone.ledger }] }),
     updateLedger: (args: Parameters<typeof updateLedger>[0]) => updateLedger(args),
   } as unknown as VoiceNotesPlugin, { available: true });
   console.warn = () => {};
@@ -78,6 +84,70 @@ describe("syncOnDeviceTranscript publishes the result", () => {
 
   const tick = () => new Promise((r) => setTimeout(r, 0));
   const note = (rev: number) => ({ ...transcript, rev });
+
+  test("a delayed native transcript read from A does not start a space write after sign-out and B sign-in", async () => {
+    const tcw = account();
+    let resolveRead!: (result: { transcript: LocalTranscript | null }) => void;
+    let writes = 0;
+    getTranscript = () => new Promise((resolve) => { resolveRead = resolve; });
+    save = async () => { writes++; return { ok: true, data: {} }; };
+    const sync = syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did });
+    await tick();
+    advanceAccountGeneration(); // sign-out / B sign-in invalidates A's captured generation.
+    currentDid = "did:test:account-B";
+    resolveRead({ transcript });
+    await sync;
+    expect(writes).toBe(0);
+    expect(ledgerWrites).toHaveLength(0);
+  });
+
+  test("a space write queued before handoff checks its account generation when the lane starts it", async () => {
+    resetSpaceLaneForTests();
+    const tcw = account();
+    let releaseLane!: () => void;
+    let enteredLane!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseLane = resolve; });
+    const entered = new Promise<void>((resolve) => { enteredLane = resolve; });
+    const occupying = runOnSpaceLane(async () => { enteredLane(); await gate; });
+    await entered;
+    let writeQueued!: () => void;
+    const queued = new Promise<void>((resolve) => { writeQueued = resolve; });
+    let writes = 0;
+    save = async (_saved, check) => {
+      writeQueued();
+      return runOnSpaceLane(async () => {
+        check?.();
+        writes++;
+        return { ok: true, data: {} };
+      });
+    };
+    const sync = syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did });
+    try {
+      await queued;
+      advanceAccountGeneration();
+      currentDid = "did:test:account-B";
+      releaseLane();
+      await occupying;
+      await sync;
+      expect(writes).toBe(0);
+      expect(ledgerWrites).toHaveLength(0);
+    } finally {
+      releaseLane();
+    }
+  });
+
+  test("a note owned by another DID is not exported to the transcript saver", async () => {
+    const tcw = account();
+    pendingOwner = "did:test:someone-else";
+    let reads = 0;
+    let writes = 0;
+    getTranscript = async () => { reads++; return { transcript }; };
+    save = async () => { writes++; return { ok: true, data: {} }; };
+    await syncOnDeviceTranscript(tcw, { ...SAVED, owner: pendingOwner });
+    expect(reads).toBe(0);
+    expect(writes).toBe(0);
+    expect(ledgerWrites).toHaveLength(0);
+  });
 
   test("attempts for one note run one after another: the second does not read or write until the first settles", async () => {
     const tcw = account();

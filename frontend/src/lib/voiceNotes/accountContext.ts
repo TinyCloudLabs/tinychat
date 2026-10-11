@@ -4,6 +4,11 @@ export interface AccountContext {
   generation: number;
 }
 
+export interface AccountIdentity {
+  did: string;
+  spaceId?: string;
+}
+
 let generation = 0;
 
 /** Call on every sign-in and sign-out, before starting another account's work. */
@@ -15,10 +20,23 @@ export function currentAccountGeneration(): number {
   return generation;
 }
 
+/** Capture the identity and generation before beginning asynchronous work. */
+export function captureAccountContext(identity: AccountIdentity): AccountContext {
+  return { did: identity.did, spaceId: identity.spaceId ?? "", generation };
+}
+
+export function isAccountContextCurrent(ctx: AccountContext, identity: AccountIdentity): boolean {
+  return ctx.generation === generation && ctx.did === identity.did && ctx.spaceId === (identity.spaceId ?? "");
+}
+
 export class StaleAccountContext extends Error {
   constructor() { super("The account changed while this voice note was being saved"); }
 }
 
 export function assertCurrent(ctx: AccountContext): void {
   if (ctx.generation !== generation) throw new StaleAccountContext();
+}
+
+export function assertAccountContext(ctx: AccountContext, identity: AccountIdentity): void {
+  if (!isAccountContextCurrent(ctx, identity)) throw new StaleAccountContext();
 }

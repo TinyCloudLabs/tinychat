@@ -9,7 +9,7 @@
 // transcription exactly as the card hands them over (when it is on for this
 // account). Headless, like the app's other once-per-session lanes.
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { Capacitor } from "@capacitor/core";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -20,7 +20,7 @@ import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
 import { isTinyCloudNetworkFailure, logVoiceNoteError, messageOf, pendingStore, whenVoiceNoteSavesIdle } from "@/lib/voiceNotes/recorderSaves";
-import { advanceAccountGeneration, currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
+import { advanceAccountGeneration, currentAccountGeneration, isAccountContextCurrent, type AccountContext } from "@/lib/voiceNotes/accountContext";
 import { saveDeferredForAccountTransition, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { transcribeSavedNote, voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
 
@@ -40,14 +40,21 @@ export function schedulePendingVoiceNotesRecovery(): void {
  * space save is quick, on-device decode is not) has nothing left to trigger `saveRecording`'s own
  * sync, so this listens for it directly. `saveRecording` covers the opposite ordering.
  */
-function installOnDeviceTranscriptSync(tcw: TinyCloudWeb): () => void {
+function accountContextForSync(tcw: TinyCloudWeb, generation: number | null): AccountContext | null {
+  return generation === null ? null : { did: tcw.did, spaceId: tcw.spaceId ?? "", generation };
+}
+
+function installOnDeviceTranscriptSync(tcw: TinyCloudWeb, readGeneration: () => number | null): () => void {
   let disposed = false;
   const handle = OnDeviceStt.addListener("transcribed", ({ id }) => {
     if (disposed) return;
+    const account = accountContextForSync(tcw, readGeneration());
+    if (!account || !isAccountContextCurrent(account, tcw)) return;
     void VoiceNotes.listPending()
       .then(({ recordings }) => {
+        if (disposed || !isAccountContextCurrent(account, tcw)) return;
         const recording = recordings.find((note) => note.id === id);
-        if (recording) return syncOnDeviceTranscript(tcw, recording);
+        if (recording) return syncOnDeviceTranscript(tcw, recording, account);
       })
       .catch((err: unknown) => console.warn("[OnDeviceStt] Could not sync a finished transcription", err));
   });
@@ -68,26 +75,40 @@ export function PendingVoiceNotesSaver({
   backendUrl: string;
   sessionStore: SessionStore;
 }) {
+  const syncGeneration = useRef<number | null>(null);
+  useEffect(() => {
+    if (!captureEngineAvailable()) { syncGeneration.current = null; return; }
+    advanceAccountGeneration();
+    const generation = currentAccountGeneration();
+    syncGeneration.current = generation;
+    return () => { if (syncGeneration.current === generation) syncGeneration.current = null; };
+  }, [backendUrl, pipeline, sessionStore, tcw]);
+
   useEffect(() => {
     if (!captureEngineAvailable() || !captureCapabilities().localTranscription) return;
-    return installOnDeviceTranscriptSync(tcw);
+    return installOnDeviceTranscriptSync(tcw, () => syncGeneration.current);
   }, [tcw]);
 
   useEffect(() => {
     const queue = getDesktopWhisperQueue();
     if (!queue) return;
+    let disposed = false;
     const sync = (id: string) => {
+      if (disposed) return;
+      const account = accountContextForSync(tcw, syncGeneration.current);
+      if (!account || !isAccountContextCurrent(account, tcw)) return;
       void VoiceNotes.listPending().then(({ recordings }) => {
+        if (disposed || !isAccountContextCurrent(account, tcw)) return;
         const recording = recordings.find((note) => note.id === id);
-        if (recording) return syncOnDeviceTranscript(tcw, recording);
+        if (recording) return syncOnDeviceTranscript(tcw, recording, account);
       }).catch((error: unknown) => console.warn("[desktopWhisper] Could not sync transcript", error));
     };
-    return queue.onDone(sync);
+    const unsubscribe = queue.onDone(sync);
+    return () => { disposed = true; unsubscribe(); };
   }, [tcw]);
 
   useEffect(() => {
     if (!captureEngineAvailable()) return;
-    advanceAccountGeneration();
     const did = tcw.did;
     const spaceId = tcw.spaceId;
     if (!did || !spaceId) return;
