@@ -17,6 +17,16 @@ describe("calendar state durability", () => {
     expect((await store.getConnection("0xALICE"))?.generation).toBe(21);
     expect((await store.getConnection("0xbob"))?.generation).toBe(1);
   });
+  test("TC-581: capture claims key by the normalized Meet URL and prune claims ended over 24h ago on write", async () => {
+    const store = new MemoryCalendarAutojoinStore();
+    const now = Date.parse("2026-09-25T12:00:00Z");
+    const claim = (tenant: string, end: number) => ({ tenant, occurrenceId: `${tenant}-occ`, start: end - 1_800_000, end, updatedAt: now });
+    await store.updateCaptureClaims("https://meet.google.com/abc-defg-hij", () => [claim("0xold", now - 86_400_001), claim("0xalice", now + 60_000)], now);
+    expect((await store.getCaptureClaims("https://meet.google.com/ABC-DEFG-HIJ/")).map(c => c.tenant)).toEqual(["0xalice"]);
+    expect(await store.getCaptureClaims("https://meet.google.com/xyz-abcd-efg")).toEqual([]);
+    const next = await store.updateCaptureClaims("https://meet.google.com/abc-defg-hij?authuser=1", claims => [...claims, claim("0xbob", now + 60_000)], now);
+    expect(next.map(c => c.tenant)).toEqual(["0xalice", "0xbob"]);
+  });
   test("sent markers survive recording and occurrence deletion and reconnect", async () => {
     const store = new MemoryCalendarAutojoinStore();
     await store.putConnection(connection());

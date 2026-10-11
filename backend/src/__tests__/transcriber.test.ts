@@ -492,3 +492,172 @@ describe("transcription api client — transient upstream blips", () => {
     expect(calls).toBe(1);
   });
 });
+
+describe("TC-581 shared index provenance", () => {
+  const prov = (title = "Team sync") => ({ ownerTenant: ADDRESS_A.toLowerCase(), ownerOccurrenceId: "owner-occ", recipientOccurrenceId: "recipient-occ",
+    checkedAt: 1, title, scheduledStart: "2026-09-25T12:00:00.000Z" });
+
+  function fakeKvNode() {
+    const docs = new Map<string, unknown>();
+    const node = {
+      kv: {
+        async get(key: string) { return docs.has(key) ? { ok: true, data: structuredClone(docs.get(key)) } : { ok: false, error: { code: "KV_NOT_FOUND", service: "kv", message: `Key not found: ${key}` } }; },
+        async put(key: string, value: unknown) { docs.set(key, structuredClone(value)); return { ok: true }; },
+      },
+      async signIn() {},
+    } as unknown as TinyCloudNode;
+    return { node, docs };
+  }
+
+  for (const kind of ["memory", "kv"] as const) {
+    const make = () => {
+      if (kind === "memory") return { index: new MemoryTranscriberIndexStore() as TranscriberIndexStore, docs: null };
+      const { node, docs } = fakeKvNode();
+      return { index: new KvTranscriberIndexStore(node, new BackendStorageLane()) as TranscriberIndexStore, docs };
+    };
+
+    test(`${kind}: addShared is idempotent and overwrites provenance`, async () => {
+      const { index } = make();
+      await index.addShared(ADDRESS_B, "mtg_a", prov("first"));
+      await index.addShared(ADDRESS_B, "mtg_a", prov("second"));
+      expect(await index.list(ADDRESS_B)).toEqual(["mtg_a"]);
+      expect(await index.shares(ADDRESS_B)).toEqual({ mtg_a: prov("second") });
+      expect(await index.shares(ADDRESS_A)).toEqual({});
+    });
+
+    test(`${kind}: add and remove preserve other shares; remove deletes the id's provenance`, async () => {
+      const { index } = make();
+      await index.addShared(ADDRESS_B, "mtg_a", prov());
+      await index.addShared(ADDRESS_B, "mtg_c", prov());
+      await index.add(ADDRESS_B, "mtg_own");
+      await index.remove(ADDRESS_B, "mtg_c");
+      expect(await index.list(ADDRESS_B)).toEqual(["mtg_own", "mtg_a"]);
+      expect(await index.shares(ADDRESS_B)).toEqual({ mtg_a: prov() });
+      await index.remove(ADDRESS_B, "mtg_own");
+      expect(await index.shares(ADDRESS_B)).toEqual({ mtg_a: prov() });
+    });
+  }
+
+  test("kv: a legacy { ids } document still reads, with no shares, and keeps its ids on the next write", async () => {
+    const { node, docs } = fakeKvNode();
+    const key = `transcriber/index/${ADDRESS_B.toLowerCase()}`;
+    docs.set(key, { ids: ["mtg_legacy"] });
+    const index = new KvTranscriberIndexStore(node, new BackendStorageLane());
+    expect(await index.list(ADDRESS_B)).toEqual(["mtg_legacy"]);
+    expect(await index.shares(ADDRESS_B)).toEqual({});
+    await index.addShared(ADDRESS_B, "mtg_a", prov());
+    expect(docs.get(key)).toEqual({ ids: ["mtg_a", "mtg_legacy"], shared: { mtg_a: prov() } });
+  });
+});
+
+describe("TC-581 shared meetings in the router", () => {
+  const provenance = { ownerTenant: ADDRESS_A.toLowerCase(), ownerOccurrenceId: "owner-occ", recipientOccurrenceId: "recipient-occ",
+    checkedAt: 1, title: "Team sync (B's title)", scheduledStart: "2026-09-25T12:00:00.000Z" };
+
+  /** A's calendar capture, shared into B's index. */
+  async function sharedHarness() {
+    const index = new MemoryTranscriberIndexStore();
+    const h = harness(ADDRESS_B, index);
+    h.store.set("mtg_shared", meeting("mtg_shared", {
+      status: "completed", platform: "google_meet", meeting_url: "https://meet.google.com/abc-defg-hij",
+      started_at: "2026-09-25T12:00:10.000Z", ended_at: "2026-09-25T12:30:00.000Z", transcript: { status: "completed" },
+      bot: { name: "A's bot" },
+      metadata: { tinychat_address: ADDRESS_A.toLowerCase(), source: "google-calendar-autojoin", calendar_occurrence_id: "owner-occ",
+        calendar_title: "A's private title", scheduled_start: "2026-09-25T12:00:00.000Z" },
+    }));
+    h.store.set("mtg_own", meeting("mtg_own", { metadata: { tinychat_address: ADDRESS_B.toLowerCase() } }));
+    await index.add(ADDRESS_A, "mtg_shared");
+    await index.addShared(ADDRESS_B, "mtg_shared", provenance);
+    await index.add(ADDRESS_B, "mtg_own");
+    return h;
+  }
+
+  const scrubbed = {
+    id: "mtg_shared", status: "completed", platform: "google_meet", meeting_url: "https://meet.google.com/abc-defg-hij",
+    created_at: "2026-08-18T10:00:00.000Z", started_at: "2026-09-25T12:00:10.000Z", ended_at: "2026-09-25T12:30:00.000Z",
+    transcript: { status: "completed" },
+    metadata: { source: "google-calendar-autojoin", calendar_title: "Team sync (B's title)", scheduled_start: "2026-09-25T12:00:00.000Z", shared: true },
+  };
+
+  test("list and get return a whitelisted shared meeting with scrubbed metadata", async () => {
+    const h = await sharedHarness();
+    await withServer(h.app, async (base) => {
+      const listed = await call(base, "/api/transcriber/meetings");
+      expect(listed.status).toBe(200);
+      const shared = listed.body.meetings.find((m: { id: string }) => m.id === "mtg_shared");
+      expect(shared).toEqual(scrubbed);
+      expect(listed.body.meetings.find((m: { id: string }) => m.id === "mtg_own").metadata).toEqual({ tinychat_address: ADDRESS_B.toLowerCase() });
+      const one = await call(base, "/api/transcriber/meetings/mtg_shared");
+      expect(one.status).toBe(200);
+      expect(one.body).toEqual(scrubbed);
+      for (const text of [listed.text, one.text]) {
+        expect(text.toLowerCase()).not.toContain(ADDRESS_A.toLowerCase());
+        expect(text).not.toContain("owner-occ");
+        expect(text).not.toContain("A's private title");
+        expect(text).not.toContain("recipient-occ");
+      }
+    });
+  });
+
+  test("stop on a shared meeting is 403 shared_meeting and never reaches upstream", async () => {
+    const h = await sharedHarness();
+    await withServer(h.app, async (base) => {
+      const r = await call(base, "/api/transcriber/meetings/mtg_shared/stop", "POST");
+      expect(r.status).toBe(403);
+      expect(r.body).toEqual({ error: "shared_meeting" });
+    });
+    expect(h.calls.filter(c => c.method === "stopMeeting")).toEqual([]);
+  });
+
+  test("delete on a shared meeting is 204, only removes it from this list, and leaves A's index and the recording alone", async () => {
+    const h = await sharedHarness();
+    await withServer(h.app, async (base) => {
+      const r = await call(base, "/api/transcriber/meetings/mtg_shared", "DELETE");
+      expect(r.status).toBe(204);
+    });
+    expect(h.calls.filter(c => c.method === "deleteMeeting")).toEqual([]);
+    expect(h.store.has("mtg_shared")).toBe(true);
+    expect(await h.index.list(ADDRESS_B)).toEqual(["mtg_own"]);
+    expect(await h.index.shares(ADDRESS_B)).toEqual({});
+    expect(await h.index.list(ADDRESS_A)).toEqual(["mtg_shared"]);
+  });
+
+  test("the shared transcript is served", async () => {
+    const h = await sharedHarness();
+    await withServer(h.app, async (base) => {
+      const r = await call(base, "/api/transcriber/meetings/mtg_shared/transcript");
+      expect(r.status).toBe(200);
+      expect(r.body.text).toBe("Sam: hello");
+    });
+  });
+
+  test("a shared meeting the owner deleted upstream drops out of the recipient's list and provenance", async () => {
+    const h = await sharedHarness();
+    h.store.delete("mtg_shared");
+    await withServer(h.app, async (base) => {
+      const listed = await call(base, "/api/transcriber/meetings");
+      expect(listed.body.meetings.map((m: { id: string }) => m.id)).toEqual(["mtg_own"]);
+    });
+    expect(await h.index.shares(ADDRESS_B)).toEqual({});
+  });
+});
+
+describe("TC-581 sharing flag deploy environment", () => {
+  test("CALENDAR_AUTOJOIN_SHARING is declared in all four places and defaults off", () => {
+    const repoRoot = resolve(import.meta.dir, "../../..");
+    const workflow = loadYaml(readFileSync(resolve(repoRoot, ".github/workflows/deploy-backend-phala.yml"), "utf8")) as {
+      jobs?: { deploy?: { steps?: { env?: Record<string, unknown>; run?: string }[] } };
+    };
+    const writer = workflow.jobs?.deploy?.steps?.find(
+      (s) => typeof s.run === "string" && s.run.includes('ENV_FILE="$RUNNER_TEMP/phala-prod.env"'),
+    );
+    const compose = loadYaml(readFileSync(resolve(repoRoot, "docker-compose.phala.yml"), "utf8")) as {
+      services?: Record<string, { environment?: Record<string, string> }>;
+    };
+    const example = readFileSync(resolve(repoRoot, "backend/.env.example"), "utf8");
+    expect(String(writer?.env?.CALENDAR_AUTOJOIN_SHARING)).toContain("vars.CALENDAR_AUTOJOIN_SHARING");
+    expect(writer?.run).toContain('"CALENDAR_AUTOJOIN_SHARING=${CALENDAR_AUTOJOIN_SHARING:-false}"');
+    expect(compose.services?.["tinychat-backend"]?.environment?.CALENDAR_AUTOJOIN_SHARING).toBe("${CALENDAR_AUTOJOIN_SHARING:-false}");
+    expect(example).toContain("\nCALENDAR_AUTOJOIN_SHARING=false\n");
+  });
+});

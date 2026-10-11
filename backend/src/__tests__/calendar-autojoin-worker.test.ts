@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { CalendarAutojoinWorker } from "../services/calendar-autojoin-worker.js";
-import { MemoryCalendarAutojoinStore, TenantCoordinator, type CalendarOccurrence } from "../services/calendar-autojoin-store.js";
+import { CalendarAutojoinConnection, CalendarAutojoinError } from "../services/calendar-autojoin-connection.js";
+import { MemoryCalendarAutojoinStore, TenantCoordinator, type CalendarConnection, type CalendarOccurrence } from "../services/calendar-autojoin-store.js";
 import { calendarOccurrenceIdentity, eligibleCalendarEvent, ExternalOperationLimiter, GoogleCalendarError, type GoogleCalendarEvent, type GoogleCalendarPort } from "../services/google-calendar.js";
 import { MemoryTranscriberIndexStore } from "../services/transcriber-index.js";
 import { computeCreateRequestHash, TranscriptionApiError, type CreateMeetingInput, type TranscriptionApiClient, type TranscriptionMeeting } from "../services/transcription-api.js";
@@ -69,7 +70,7 @@ async function fixture() {
     async getTranscript() { return { pending: true, status: "processing" }; },
   };
   const connection = {
-    async accessToken(_tenant: string, forceRefresh = false) { refreshes.push(forceRefresh); return "access"; },
+    async accessToken(tenant: string, forceRefresh = false) { refreshes.push(forceRefresh); return `tok:${tenant}`; },
     async cleanupEnabling() {},
     async needsReconnect(tenant: string, generation: number) {
       await store.updateConnection(tenant, c => c?.generation === generation ? { ...c, state: "needs_reconnect" } : c);
@@ -517,10 +518,16 @@ describe("calendar dispatch crash and policy boundaries", () => {
       try { await new Promise(resolve => setTimeout(resolve, 1)); return await fn(); }
       finally { active--; }
     };
+    // Each tenant is in its own Meet: one shared link would (correctly) collapse to one capture (TC-581).
+    const room = (token: string) => `https://meet.google.com/abc-defg-hi${"abcdefg"[token === `tok:${TENANT}` ? 0 : Number(token.slice(-1))]}`;
     const list = f.calendar.listEvents;
     const get = f.calendar.getEvent;
-    f.calendar.listEvents = (...args) => limiter.run(() => operation(() => list(...args)));
-    f.calendar.getEvent = (...args) => limiter.run(() => operation(() => get(...args)));
+    f.calendar.listEvents = (token, ...rest) => limiter.run(() => operation(async () =>
+      (await list(token, ...rest)).map(e => ({ ...e, hangoutLink: room(token) }))));
+    f.calendar.getEvent = (token, id) => limiter.run(() => operation(async () => {
+      const found = await get(token, id);
+      return found && { ...found, hangoutLink: room(token) };
+    }));
     const create = f.api.createMeeting;
     f.api.createMeeting = (body, options) => operation(async () => {
       const tenant = String(body.metadata!.tinychat_address);
@@ -553,5 +560,409 @@ describe("calendar dispatch crash and policy boundaries", () => {
     release.resolve();
     await tick;
     expect(f.posts).toHaveLength(1);
+  });
+});
+
+// TC-581 share-if-on-invite. Two tenants, each with their own Google calendar (the access token
+// names the tenant), auto-joining the same Meet.
+const A = "0xaaaa";
+const B = "0xbbbb";
+const SUBJECT_A = "subject-a";
+const SUBJECT_B = "subject-b";
+const B_EMAIL = "bee@example.test";
+const ROOM = "https://meet.google.com/abc-defg-hij";
+
+async function twoTenants(options: { sharing?: boolean; bResponse?: string | null; bEmail?: string } = {}) {
+  let now = START - 30_000;
+  const store = new MemoryCalendarAutojoinStore();
+  const index = new MemoryTranscriberIndexStore();
+  const coordinator = new TenantCoordinator();
+  const meetingCoordinator = new TenantCoordinator();
+  const ownerAttendees = (response: string | null) => [
+    { email: "owner@example.test", self: true, responseStatus: "accepted" },
+    ...(response === null ? [] : [{ email: B_EMAIL, responseStatus: response }]),
+  ];
+  const events: Record<string, GoogleCalendarEvent[]> = {
+    [A]: [event({ id: "event-a", attendees: ownerAttendees(options.bResponse === undefined ? "accepted" : options.bResponse) })],
+    [B]: [event({ id: "event-b", organizer: { self: false }, attendees: [{ email: B_EMAIL, self: true, responseStatus: "accepted" }] })],
+  };
+  const tenantOf = (token: string) => token.slice("tok:".length);
+  const googleErrors: Record<string, (() => never) | undefined> = {};
+  const tokenErrors: Record<string, (() => never) | undefined> = {};
+  const gets: { tenant: string; id: string }[] = [];
+  const calendar: GoogleCalendarPort = {
+    async listEvents(token) { return structuredClone(events[tenantOf(token)] ?? []); },
+    async getEvent(token, id) {
+      const tenant = tenantOf(token);
+      gets.push({ tenant, id });
+      googleErrors[tenant]?.();
+      return structuredClone(events[tenant]?.find(e => e.id === id) ?? null);
+    },
+    async probePrimary() {},
+  };
+  const records = new Map<string, TranscriptionMeeting>();
+  const hashes = new Map<string, string>();
+  const posts: { tenant: string; key: string }[] = [];
+  const stops: string[] = [];
+  const deletes: string[] = [];
+  const api: TranscriptionApiClient = {
+    async createMeeting(input, opts) {
+      const key = opts!.idempotencyKey!;
+      posts.push({ tenant: String(input.metadata!.tinychat_address), key });
+      if (!records.has(key)) {
+        records.set(key, { id: `mtg_${records.size + 1}`, status: "in_progress", platform: "google_meet",
+          meeting_url: input.meeting_url, metadata: input.metadata, created_at: new Date(now).toISOString() });
+        hashes.set(key, computeCreateRequestHash(input));
+      }
+      return structuredClone(records.get(key)!);
+    },
+    async lookupMeetingByIdempotencyKey(key) {
+      const meeting = records.get(key);
+      return meeting ? { meeting: structuredClone(meeting), requestHash: hashes.get(key)! } : null;
+    },
+    async getMeeting(id) {
+      const meeting = [...records.values()].find(m => m.id === id);
+      if (!meeting) throw new TranscriptionApiError(404, "meeting_not_found", "Missing");
+      return structuredClone(meeting);
+    },
+    async stopMeeting(id) { stops.push(id); throw new Error("a shared capture must never stop a meeting"); },
+    async deleteMeeting(id) { deletes.push(id); },
+    async getTranscript() { return { pending: true, status: "processing" }; },
+  };
+  const connection = {
+    async accessToken(tenant: string) { tokenErrors[tenant]?.(); return `tok:${tenant}`; },
+    async cleanupEnabling() {},
+    async needsReconnect(tenant: string, generation: number) {
+      await store.updateConnection(tenant, c => c?.generation === generation ? { ...c, state: "needs_reconnect" } : c);
+    },
+  };
+  const worker = () => new CalendarAutojoinWorker({ store, index, coordinator, meetingCoordinator, calendar, api, connection,
+    sharingEnabled: options.sharing ?? true, now: () => now, random: () => 0, sleep: async ms => { now += ms; } });
+  const connect = (tenant: string, subject: string, patch: Partial<CalendarConnection> = {}) => store.putConnection({
+    tenant, subject, state: "enabled", generation: 1, scopes: [], nextScanAt: 0, scanComplete: true, ...patch });
+  await connect(A, SUBJECT_A);
+  const connectB = () => connect(B, SUBJECT_B, { verifiedEmail: options.bEmail ?? B_EMAIL });
+  const idOf = (tenant: string, subject: string) => calendarOccurrenceIdentity(tenant, subject, events[tenant]![0]!)!;
+  const rowA = () => store.getOccurrence(A, idOf(A, SUBJECT_A));
+  const rowB = () => store.getOccurrence(B, idOf(B, SUBJECT_B));
+  const meeting = (id = "mtg_1") => [...records.values()].find(m => m.id === id)!;
+  const status = (tenant: string) => new CalendarAutojoinConnection({ store, coordinator, credentials: null as never,
+    oauth: null as never, calendar: null as never, now: () => now }).getStatus(tenant);
+  /** A sends its bot, then B (connected afterwards) collides with it and attaches. */
+  const attach = async () => {
+    await worker().tick();
+    expect(meeting().metadata?.tinychat_address).toBe(A);
+    await connectB();
+    await worker().tick();
+    expect((await rowB())?.sharedCapture?.ownerTenant).toBe(A);
+  };
+  /** Keep A's own worker from observing its terminal meeting first, to pin B's view of it. */
+  const holdA = () => store.updateOccurrence(A, idOf(A, SUBJECT_A), r => r && { ...r, nextAttemptAt: now + 86_400_000 * 10 });
+  return { store, index, events, posts, stops, deletes, records, gets, googleErrors, tokenErrors, api, calendar, worker, connect,
+    connectB, rowA, rowB, meeting, status, attach, holdA, idOf,
+    now: () => now, setNow: (value: number) => { now = value; }, advance: (ms: number) => { now += ms; } };
+}
+
+describe("TC-581 shared capture across tenants", () => {
+  test("A dispatches and B overlaps: B makes zero POSTs, shows shared_capture_pending, and its status has no meeting id", async () => {
+    const f = await twoTenants();
+    await f.attach();
+    expect(f.posts.map(p => p.tenant)).toEqual([A]);
+    expect(await f.rowB()).toMatchObject({ phase: "pending", errorCode: "shared_capture_pending" });
+    expect((await f.rowB())?.meetingId).toBeUndefined();
+    const status = await f.status(B);
+    expect(status.outcomes).toEqual([expect.objectContaining({ reason: "shared_capture_pending" })]);
+    expect(status.outcomes[0]).not.toHaveProperty("meetingId");
+    expect(JSON.stringify(status)).not.toContain("mtg_1");
+    expect(JSON.stringify(status)).not.toContain(A);
+    expect(await f.index.list(B)).toEqual([]);
+  });
+
+  test("A completes with B accepted: B's index gets A's id and provenance, disposition shared, marker written, rescan keeps it", async () => {
+    const f = await twoTenants();
+    await f.attach();
+    f.meeting().status = "completed";
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(await f.index.list(B)).toEqual(["mtg_1"]);
+    const provenance = (await f.index.shares(B))["mtg_1"];
+    expect(provenance).toMatchObject({ ownerTenant: A, ownerOccurrenceId: f.idOf(A, SUBJECT_A), recipientOccurrenceId: f.idOf(B, SUBJECT_B),
+      title: "Calendar title", scheduledStart: new Date(START).toISOString() });
+    expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition: "shared", sharedCapture: { result: "shared" } });
+    expect((await f.rowB())?.errorCode).toBeUndefined();
+    expect((await f.rowB())?.meetingId).toBeUndefined();
+    expect(await f.store.getMarker(B, f.idOf(B, SUBJECT_B))).toMatchObject({ disposition: "shared" });
+    expect(f.gets.filter(g => g.tenant === A && g.id === "event-a").length).toBeGreaterThan(0);
+    // A rescan (and a rescan after detail compaction) never recreates or re-dispatches it.
+    f.advance(120_000);
+    await f.worker().tick();
+    await f.store.deleteOccurrence(B, f.idOf(B, SUBJECT_B));
+    await f.store.updateConnection(B, c => c && { ...c, nextScanAt: 0 });
+    await f.worker().tick();
+    expect(await f.rowB()).toBeNull();
+    expect(f.posts.map(p => p.tenant)).toEqual([A]);
+    expect(f.stops).toEqual([]);
+    expect(await f.index.list(A)).toEqual(["mtg_1"]);
+  });
+
+  for (const response of ["tentative", "declined", "needsAction", null]) {
+    test(`B ${response ?? "not invited"} on A's event: already_recorded, B's index untouched`, async () => {
+      const f = await twoTenants({ bResponse: response });
+      await f.attach();
+      f.meeting().status = "completed";
+      f.advance(60_000);
+      await f.worker().tick();
+      expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition: "already_recorded",
+        sharedCapture: { result: "not_shared", reason: "not_accepted_attendee" } });
+      expect((await f.rowB())?.errorCode).toBeUndefined();
+      expect(await f.index.list(B)).toEqual([]);
+      expect(await f.index.shares(B)).toEqual({});
+      expect(await f.store.getMarker(B, f.idOf(B, SUBJECT_B))).toMatchObject({ disposition: "already_recorded" });
+      expect((await f.status(B)).outcomes).toEqual([expect.objectContaining({ reason: "already_recorded" })]);
+    });
+  }
+
+  test("B has no verified email: already_recorded", async () => {
+    const f = await twoTenants({ bEmail: "" });
+    await f.attach();
+    f.meeting().status = "completed";
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(await f.rowB()).toMatchObject({ disposition: "already_recorded", sharedCapture: { reason: "no_verified_email" } });
+    expect(await f.index.list(B)).toEqual([]);
+  });
+
+  test("the sharing flag off: dedupe still holds, the grant is denied", async () => {
+    const f = await twoTenants({ sharing: false });
+    await f.attach();
+    expect(f.posts.map(p => p.tenant)).toEqual([A]);
+    f.meeting().status = "completed";
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(await f.rowB()).toMatchObject({ disposition: "already_recorded", sharedCapture: { reason: "sharing_disabled" } });
+    expect(await f.index.list(B)).toEqual([]);
+  });
+
+  const revocations: [string, (f: Awaited<ReturnType<typeof twoTenants>>) => Promise<void>][] = [
+    ["A's token is revoked (accessToken throws)", async f => { f.tokenErrors[A] = () => { throw new CalendarAutojoinError("needs_reconnect", 401); }; }],
+    ["A's Google answers 401 twice", async f => { f.googleErrors[A] = () => { throw new GoogleCalendarError("calendar_unauthorized", 401, null, true); }; }],
+    ["A's connection is disabled", async f => { await f.store.updateConnection(A, c => c && { ...c, state: "disabled", generation: c.generation + 1 }); }],
+  ];
+  for (const [name, revoke] of revocations) {
+    test(`${name}: already_recorded`, async () => {
+      const f = await twoTenants();
+      await f.attach();
+      f.meeting().status = "completed";
+      await f.holdA();
+      await revoke(f);
+      f.advance(60_000);
+      await f.worker().tick();
+      expect(await f.rowB()).toMatchObject({ disposition: "already_recorded", sharedCapture: { result: "not_shared" } });
+      expect(await f.index.list(B)).toEqual([]);
+      expect(f.stops).toEqual([]);
+    });
+  }
+
+  test("A's Google returns transient 503s: the check retries, then denies after end + 24h", async () => {
+    const f = await twoTenants();
+    await f.attach();
+    f.meeting().status = "completed";
+    await f.holdA();
+    f.googleErrors[A] = () => { throw new GoogleCalendarError("calendar_unavailable", 503, null, false, true); };
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(await f.rowB()).toMatchObject({ phase: "pending", errorCode: "shared_capture_pending" });
+    const deferredUntil = (await f.rowB())!.nextAttemptAt;
+    expect(deferredUntil).toBeGreaterThan(f.now());
+    f.setNow(deferredUntil);
+    await f.worker().tick();
+    expect(await f.rowB()).toMatchObject({ phase: "pending", errorCode: "shared_capture_pending" });
+    f.setNow(START + 1_800_000 + 86_400_000);
+    await f.worker().tick();
+    expect(await f.rowB()).toMatchObject({ disposition: "already_recorded", sharedCapture: { reason: "owner_calendar_unavailable" } });
+    expect(await f.index.list(B)).toEqual([]);
+  });
+
+  test("A sent its bot manually (no claim) and ptx fails B with meeting_already_captured: cleaned up, already_recorded, nothing stopped", async () => {
+    const f = await twoTenants();
+    f.events[A] = [];
+    await f.connectB();
+    await f.worker().tick();
+    expect(f.posts.map(p => p.tenant)).toEqual([B]);
+    expect(await f.index.list(B)).toEqual(["mtg_1"]);
+    Object.assign(f.meeting(), { status: "failed", error: { type: "meeting_join_failed", code: "meeting_already_captured",
+      message: "Another notetaker from this service is already in this meeting." } });
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(await f.index.list(B)).toEqual([]);
+    expect(f.deletes).toEqual(["mtg_1"]);
+    expect(f.stops).toEqual([]);
+    expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition: "already_recorded" });
+    expect((await f.rowB())?.errorCode).toBeUndefined();
+    expect(await f.index.shares(B)).toEqual({});
+  });
+
+  const variants: [string, Partial<GoogleCalendarEvent>][] = [
+    ["uppercase", { hangoutLink: "https://meet.google.com/ABC-DEFG-HIJ" }],
+    ["trailing slash", { hangoutLink: `${ROOM}/` }],
+    ["?authuser=1", { hangoutLink: `${ROOM}?authuser=1` }],
+    ["conferenceData instead of hangoutLink", { hangoutLink: undefined, conferenceData: { entryPoints: [{ entryPointType: "video", uri: `${ROOM}?authuser=1` }] } }],
+  ];
+  for (const [name, patch] of variants) {
+    test(`URL variants collide: ${name}`, async () => {
+      const f = await twoTenants();
+      f.events[B] = [{ ...f.events[B]![0]!, ...patch }];
+      await f.attach();
+      expect(f.posts.map(p => p.tenant)).toEqual([A]);
+    });
+  }
+
+  test("weekly recurrence: last week's completed claim does not block", async () => {
+    const f = await twoTenants();
+    f.events[A] = [];
+    const week = 7 * 86_400_000;
+    const lastWeek: CalendarOccurrence = { id: "last-week", tenant: A, subject: SUBJECT_A, eventId: "event-a", start: START - week,
+      end: START - week + 1_800_000, meetingUrl: ROOM, title: "Calendar title", phase: "terminal", disposition: "completed",
+      meetingId: "mtg_old", nextAttemptAt: 0, attemptCount: 0, stopRequested: false, updatedAt: START - week };
+    await f.store.putOccurrence(lastWeek);
+    await f.store.updateCaptureClaims(ROOM, () => [{ tenant: A, occurrenceId: "last-week", start: lastWeek.start, end: lastWeek.end, updatedAt: lastWeek.start }], START - week);
+    await f.connectB();
+    await f.worker().tick();
+    expect(f.posts.map(p => p.tenant)).toEqual([B]);
+    expect((await f.rowB())?.sharedCapture).toBeUndefined();
+  });
+
+  test("back-to-back meetings in the same room: B dispatches its own bot", async () => {
+    const f = await twoTenants();
+    const earlier = START - 1_800_000;
+    f.events[A] = [event({ id: "event-a", start: { dateTime: new Date(earlier).toISOString() }, end: { dateTime: new Date(START).toISOString() } })];
+    f.setNow(earlier - 30_000);
+    await f.worker().tick();
+    expect(f.posts.map(p => p.tenant)).toEqual([A]);
+    f.setNow(START - 30_000);
+    await f.connectB();
+    await f.worker().tick();
+    expect(f.posts.map(p => p.tenant)).toEqual([A, B]);
+    expect(f.meeting("mtg_1").status).toBe("in_progress");
+    expect(f.stops).toEqual([]);
+  });
+
+  test("A's meeting fails inside B's window: B sends its own bot", async () => {
+    const f = await twoTenants();
+    await f.attach();
+    Object.assign(f.meeting(), { status: "failed", error: { type: "meeting_join_failed", code: "meeting_join_failed", message: "x" } });
+    for (let i = 0; i < 4 && f.posts.length < 2; i++) { f.advance(30_000); await f.worker().tick(); }
+    expect(f.posts.map(p => p.tenant)).toEqual([A, B]);
+    expect((await f.rowB())?.sharedCapture).toBeUndefined();
+    expect(await f.rowB()).toMatchObject({ meetingId: "mtg_2" });
+    expect(f.stops).toEqual([]);
+  });
+
+  test("A's create is rejected after B attached, inside B's window: B sends its own bot", async () => {
+    const f = await twoTenants();
+    await f.connectB();
+    const started = deferred<void>();
+    const release = deferred<void>();
+    const create = f.api.createMeeting;
+    f.api.createMeeting = async (input, opts) => {
+      if (input.metadata?.tinychat_address === A) {
+        started.resolve(); await release.promise;
+        throw new TranscriptionApiError(400, "invalid_request", "Rejected");
+      }
+      return create(input, opts);
+    };
+    // Only A is due first, so A holds the claim; B then attaches while A's POST is in flight.
+    await f.store.updateConnection(B, c => c && { ...c, nextScanAt: f.now() + 3_600_000 });
+    const first = f.worker().tick();
+    await started.promise;
+    await f.store.updateConnection(B, c => c && { ...c, nextScanAt: 0 });
+    await f.worker().tick();
+    expect((await f.rowB())?.sharedCapture?.ownerTenant).toBe(A);
+    release.resolve();
+    await first;
+    expect(await f.rowA()).toMatchObject({ stopRequested: true, errorCode: "create_rejected" });
+    for (let i = 0; i < 3 && !f.records.size; i++) { f.advance(30_000); await f.worker().tick(); }
+    expect(f.records.size).toBe(1);
+    expect(f.meeting().metadata?.tinychat_address).toBe(B);
+  });
+
+  test("after B's window: a dead owner is missed_window", async () => {
+    const f = await twoTenants();
+    await f.attach();
+    await f.store.updateOccurrence(A, f.idOf(A, SUBJECT_A), r => r && { ...r, phase: "terminal", disposition: "failed" });
+    f.setNow(START + 300_000);
+    await f.worker().tick();
+    expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition: "missed_window" });
+    expect(f.posts.map(p => p.tenant)).toEqual([A]);
+  });
+
+  for (const [response, disposition] of [["accepted", "failed"], ["declined", "already_recorded"]] as const) {
+    test(`after B's window: A's failed capture is ${disposition} when B is ${response}`, async () => {
+      const f = await twoTenants({ bResponse: response });
+      await f.attach();
+      await f.holdA();
+      f.meeting().status = "failed";
+      f.setNow(START + 300_000);
+      await f.worker().tick();
+      expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition, sharedCapture: { result: "not_shared" } });
+      expect(await f.index.list(B)).toEqual([]);
+      expect(f.posts.map(p => p.tenant)).toEqual([A]);
+    });
+  }
+
+  test("B turns auto-join off while attached: autojoin_disabled, nothing stopped", async () => {
+    const f = await twoTenants();
+    await f.attach();
+    await f.store.updateConnection(B, c => c && { ...c, state: "disabled", generation: c.generation + 1 });
+    f.advance(30_000);
+    await f.worker().tick();
+    expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition: "autojoin_disabled" });
+    expect(f.stops).toEqual([]);
+    expect(f.meeting().status).toBe("in_progress");
+  });
+
+  test("A and B due in the same tick, with the first POST still in flight: exactly one POST", async () => {
+    const f = await twoTenants();
+    await f.connectB();
+    const started = deferred<void>();
+    const release = deferred<void>();
+    const create = f.api.createMeeting;
+    f.api.createMeeting = async (...args) => { started.resolve(); await release.promise; return create(...args); };
+    const tick = f.worker().tick();
+    await started.promise;
+    // The other tenant attaches while the first create is unresolved.
+    for (let i = 0; i < 200; i++) {
+      const rows = [await f.rowA(), await f.rowB()];
+      if (rows.some(r => r?.sharedCapture)) break;
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
+    const attached = [await f.rowA(), await f.rowB()].filter(r => r?.sharedCapture);
+    expect(attached).toHaveLength(1);
+    release.resolve();
+    await tick;
+    expect(f.posts).toHaveLength(1);
+    expect(f.records.size).toBe(1);
+  });
+
+  test("reconcileShared running twice (lost finish) leaves one index entry", async () => {
+    const f = await twoTenants();
+    await f.attach();
+    f.meeting().status = "completed";
+    const update = f.store.updateOccurrence.bind(f.store);
+    let fail = true;
+    f.store.updateOccurrence = (tenant, id, fn) => update(tenant, id, current => {
+      const next = fn(current);
+      if (fail && next?.disposition === "shared") { fail = false; throw new Error("finish lost"); }
+      return next;
+    });
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(await f.index.list(B)).toEqual(["mtg_1"]);
+    expect((await f.rowB())?.phase).not.toBe("terminal");
+    f.setNow((await f.rowB())!.nextAttemptAt);
+    await f.worker().tick();
+    expect(await f.index.list(B)).toEqual(["mtg_1"]);
+    expect(Object.keys(await f.index.shares(B))).toEqual(["mtg_1"]);
+    expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition: "shared" });
   });
 });

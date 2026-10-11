@@ -6,7 +6,7 @@ import {
   type TranscriptionApiClient,
   type TranscriptionMeeting,
 } from "../services/transcription-api.js";
-import type { TranscriberIndexStore } from "../services/transcriber-index.js";
+import type { ShareProvenance, TranscriberIndexStore } from "../services/transcriber-index.js";
 import { redactedErrorMessage } from "../services/webhook-tokens.js";
 
 /**
@@ -24,6 +24,10 @@ import { redactedErrorMessage } from "../services/webhook-tokens.js";
  *   POST   /:id/stop          stop the bot (idempotent)
  *   GET    /:id/transcript    200 transcript, or 202 { status } while pending
  *   DELETE /:id               forget it here AND upstream
+ *
+ * TC-581: a calendar capture another account's bot made can be SHARED into this address's index.
+ * A shared meeting is served through a field whitelist (the owner's address and occurrence id are
+ * stripped), cannot be stopped (403 `shared_meeting`), and DELETE only removes it from this list.
  */
 
 export interface TranscriberRouterOptions {
@@ -47,6 +51,27 @@ export function isValidMeetingUrl(raw: unknown): raw is string {
     return false;
   }
   return url.protocol === "https:" || url.protocol === "http:";
+}
+
+/** The only fields of someone else's meeting this address sees. Metadata comes from its OWN calendar. */
+export function sharedMeetingView(meeting: TranscriptionMeeting, provenance: ShareProvenance): TranscriptionMeeting {
+  return {
+    id: meeting.id,
+    status: meeting.status,
+    platform: meeting.platform,
+    meeting_url: meeting.meeting_url,
+    created_at: meeting.created_at,
+    ...(meeting.started_at === undefined ? {} : { started_at: meeting.started_at }),
+    ...(meeting.ended_at === undefined ? {} : { ended_at: meeting.ended_at }),
+    ...(meeting.transcript === undefined ? {} : { transcript: meeting.transcript }),
+    ...(meeting.error === undefined ? {} : { error: meeting.error }),
+    metadata: {
+      source: "google-calendar-autojoin",
+      calendar_title: provenance.title,
+      scheduled_start: provenance.scheduledStart,
+      shared: true,
+    },
+  };
 }
 
 export function createTranscriberRouter(options: TranscriberRouterOptions): Router {
@@ -85,7 +110,10 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
     res.status(503).json({ error: "transcriber_unavailable" });
   }
 
-  async function owned(req: Request, res: Response): Promise<{ address: string; id: string } | null> {
+  async function owned(
+    req: Request,
+    res: Response,
+  ): Promise<{ address: string; id: string; shared: ShareProvenance | undefined } | null> {
     const address = addressOf(req, res);
     if (address === null) return null;
     const id = req.params.id;
@@ -94,8 +122,9 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
       return null;
     }
     let ids: string[];
+    let shares: Record<string, ShareProvenance>;
     try {
-      ids = await index.list(address);
+      [ids, shares] = await Promise.all([index.list(address), index.shares(address)]);
     } catch (error) {
       console.warn(`[transcriber] index read failed err=${redactedErrorMessage(error)}`);
       res.status(503).json({ error: "transcriber_unavailable" });
@@ -105,7 +134,7 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
       res.status(404).json({ error: "not_found" });
       return null;
     }
-    return { address, id };
+    return { address, id, shared: Object.hasOwn(shares, id) ? shares[id] : undefined };
   }
 
   router.get("/", async (req, res) => {
@@ -113,8 +142,9 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
     if (address === null) return;
     const owner: string = address;
     let ids: string[];
+    let shares: Record<string, ShareProvenance>;
     try {
-      ids = await index.list(address);
+      [ids, shares] = await Promise.all([index.list(address), index.shares(address)]);
     } catch (error) {
       console.warn(`[transcriber] index read failed err=${redactedErrorMessage(error)}`);
       res.status(503).json({ error: "transcriber_unavailable" });
@@ -131,7 +161,8 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
         const i = cursor++;
         const id = ids[i]!;
         try {
-          meetings[i] = await api.getMeeting(id);
+          const found = await api.getMeeting(id);
+          meetings[i] = Object.hasOwn(shares, id) ? sharedMeetingView(found, shares[id]!) : found;
         } catch (error) {
           if (error instanceof TranscriptionApiError && error.status === 404) {
             // Gone upstream (deleted out of band): drop it from the index rather than
@@ -207,7 +238,8 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
     const own = await owned(req, res);
     if (own === null) return;
     try {
-      res.json(await api.getMeeting(own.id));
+      const found = await api.getMeeting(own.id);
+      res.json(own.shared ? sharedMeetingView(found, own.shared) : found);
     } catch (error) {
       upstreamFailure(res, error, "get");
     }
@@ -216,6 +248,11 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
   router.post("/:id/stop", async (req, res) => {
     const own = await owned(req, res);
     if (own === null) return;
+    if (own.shared) {
+      // Someone else's bot: only its owner can end it.
+      res.status(403).json({ error: "shared_meeting" });
+      return;
+    }
     try {
       res.json(await api.stopMeeting(own.id));
     } catch (error) {
@@ -241,13 +278,16 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
   router.delete("/:id", async (req, res) => {
     const own = await owned(req, res);
     if (own === null) return;
-    try {
-      await api.deleteMeeting(own.id);
-    } catch (error) {
-      // Already gone upstream is fine — the point is that it is gone.
-      if (!(error instanceof TranscriptionApiError && error.status === 404)) {
-        upstreamFailure(res, error, "delete");
-        return;
+    // A shared recording belongs to its owner: removing it here only takes it off this list.
+    if (!own.shared) {
+      try {
+        await api.deleteMeeting(own.id);
+      } catch (error) {
+        // Already gone upstream is fine — the point is that it is gone.
+        if (!(error instanceof TranscriptionApiError && error.status === 404)) {
+          upstreamFailure(res, error, "delete");
+          return;
+        }
       }
     }
     try {
