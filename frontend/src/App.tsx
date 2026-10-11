@@ -89,7 +89,7 @@ import {
   redirectsWhenSignedOut,
   screenFor,
 } from "./shell/routes";
-import { PlatformContext } from "./lib/platform";
+import { PlatformContext, appPlatform } from "./lib/platform";
 import { useSizeClass } from "./lib/sizeClass";
 // W5 — the cohort meetings view. It renders NOTHING unless the backend's read
 // API answers for this address (dark flag / non-cohort = 404 = invisible), and
@@ -889,7 +889,10 @@ export function App() {
           passkeysSupported: openkeyPasskeysSupported() });
         // The user answers OpenKey's own confirmation here, so no deadline runs.
         // signOutOpenKeySession reports every failure as an outcome rather than throwing.
-        const openKeyOutcome = await signOutOpenKeySession(openKeyClient, () => openKeyClient);
+        const openKeyOutcome = await signOutOpenKeySession(openKeyClient, () => openKeyClient, {
+          signedInThisRun: openkeyRef.current !== null,
+          sessionOnlyInRun: appPlatform() === "ios",
+        });
         // OpenKey clears this client's local auth before showing its widget, even
         // when the user cancels. Never retain that spent client for another flow.
         openkeyRef.current = null;
@@ -898,13 +901,9 @@ export function App() {
           openKeyWarning =
             "OpenKey stayed signed in on this device. Exo is signed out locally. " +
             "Sign out at openkey.so before choosing another account.";
-        } else if (openKeyOutcome.status === "remote-unavailable") {
-          openKeyWarning =
-            "Remote OpenKey sign-out is unavailable in this app right now. Exo is signed out locally. " +
-            "Sign out at openkey.so before choosing another account.";
         } else if (openKeyOutcome.status === "unverified") {
           openKeyWarning =
-            "OpenKey sign-out could not be verified. Exo is signed out locally. " +
+            "OpenKey may still be signed in. Exo is signed out here. " +
             "Sign out at openkey.so before choosing another account.";
         }
       }
