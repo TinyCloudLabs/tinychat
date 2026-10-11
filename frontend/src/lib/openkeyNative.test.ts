@@ -21,7 +21,6 @@ import type { Manifest } from "@tinycloud/sdk-core";
 
 import {
   describeAuthFailure,
-  nativeOpenKeyEnabled,
   nativePermissions,
   nativeSignInErrorMessage,
   isNativeOpenKeySession,
@@ -166,28 +165,22 @@ afterEach(() => {
 });
 
 describe("native sign-in gate", () => {
-  test("runs only on ios/android with the build flag", () => {
+  test("runs only on ios/android", () => {
     for (const platform of ["ios", "android"] as const) {
-      expect(isNativeOpenKeySignIn(platform, { VITE_EXO_NATIVE_OPENKEY: "true" })).toBe(true);
+      expect(isNativeOpenKeySignIn(platform)).toBe(true);
     }
-    // Web and desktop keep the iframe widget even when the flag is set.
+    // Web and the Tauri desktop app keep the iframe widget.
     for (const platform of ["web", "tauri"] as const) {
-      expect(isNativeOpenKeySignIn(platform, { VITE_EXO_NATIVE_OPENKEY: "true" })).toBe(false);
+      expect(isNativeOpenKeySignIn(platform)).toBe(false);
     }
-    // The flag alone gates too, whatever the platform.
-    for (const platform of ["ios", "android"] as const) {
-      expect(isNativeOpenKeySignIn(platform, {})).toBe(false);
-      expect(isNativeOpenKeySignIn(platform, { VITE_EXO_NATIVE_OPENKEY: "false" })).toBe(false);
-    }
-    expect(nativeOpenKeyEnabled({ VITE_EXO_NATIVE_OPENKEY: "true" })).toBe(true);
   });
 
   test("test env is web, so secrets stay available by default", () => {
     expect(secretsAvailable()).toBe(true);
   });
 
-  test("a restored widget session keeps vault access even with native sign-in enabled", () => {
-    expect(isNativeOpenKeySignIn("android", { VITE_EXO_NATIVE_OPENKEY: "true" })).toBe(true);
+  test("an active native session loses vault access", () => {
+    expect(isNativeOpenKeySignIn("android")).toBe(true);
     expect(isNativeOpenKeySession()).toBe(false);
     expect(secretsAvailable()).toBe(true);
     setNativeSessionActive(true);
@@ -734,14 +727,18 @@ describe("platform routing (source)", () => {
     expect(app).toContain("signOutRef.current?.({ terminal: message })");
   });
 
-  test("boot restores native grants before trying the legacy widget restore", () => {
+  test("restoreSession never reaches the widget restore on a native platform", () => {
     const boot = app.slice(app.indexOf("const restoreSession = useCallback"), app.indexOf("useEffect(() => {\n    if (restoredRef.current)"));
-    expect(boot.indexOf("restoreNativeAtBoot(")).toBeLessThan(boot.indexOf("restorePersistedSession("));
-    expect(boot).toContain('boot.kind === "restored"');
-    const terminal = boot.slice(boot.indexOf('if (boot.kind === "terminal" || wasNative)'), boot.indexOf("sessionStoreRef.current.clear()", boot.indexOf('if (boot.kind === "terminal" || wasNative)')));
-    expect(terminal.indexOf("await captureHandoff()")).toBeLessThan(terminal.indexOf("clearPersistedSession(storedAddress)"));
-    expect(terminal.indexOf("clearPersistedSession(storedAddress)")).toBeLessThan(terminal.indexOf("await boot.revoke()"));
-    expect(terminal).toContain('setError(NATIVE_STORAGE_MESSAGE)');
+    const nativeBranch = boot.slice(boot.indexOf("if (isNativeOpenKeySignIn())"), boot.indexOf("restorePersistedSession("));
+    // Every path through the native branch returns; restorePersistedSession
+    // (the widget restore) is reached only when isNativeOpenKeySignIn() is false.
+    expect(nativeBranch.indexOf("restoreNativeAtBoot(")).toBeGreaterThan(-1);
+    expect(nativeBranch).toContain('boot.kind === "restored"');
+    expect((nativeBranch.match(/\breturn;/g) ?? []).length).toBeGreaterThanOrEqual(5);
+    const cleanup = nativeBranch.slice(nativeBranch.indexOf('if (boot.kind === "configuration")'), nativeBranch.length);
+    expect(cleanup.indexOf("await captureHandoff()")).toBeLessThan(cleanup.indexOf("clearPersistedSession(storedAddress)"));
+    expect(cleanup.indexOf("clearPersistedSession(storedAddress)")).toBeLessThan(cleanup.indexOf("await boot.revoke()"));
+    expect(cleanup).toContain('setError(NATIVE_STORAGE_MESSAGE)');
   });
 });
 

@@ -130,7 +130,7 @@ import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import { clearSessionAfterHandoff, registerSessionSignedOutHook } from "./lib/sessionSignedOut";
 import {
   describeAuthFailure, isNativeOpenKeySession, isNativeOpenKeySignIn, isNativeStorageError, logNativeOpenKeyError,
-  nativeSessionWasActive, restoreNativeAtBoot, nativeRenewalServices, secretsAvailable,
+  restoreNativeAtBoot, nativeRenewalServices, secretsAvailable,
   setNativeSessionActive, signInNative, signOutNative,
   type NativeSignInConfig,
   NATIVE_SIGN_OUT_WARNING, NATIVE_SIGN_OUT_STORAGE_WARNING,
@@ -423,8 +423,10 @@ export function App() {
     setError(null);
     setState("booting");
     try {
-      if (isNativeOpenKeySignIn() || nativeSessionWasActive()) {
-        const wasNative = nativeSessionWasActive();
+      if (isNativeOpenKeySignIn()) {
+        // iOS/Android take only the native restore path. There is no widget
+        // fallback here: a persisted widget session from a pre-native-only
+        // build is a one-time cleanup below, not something to restore.
         const boot = await restoreNativeAtBoot(nativeConfig,
           sessionStoreRef.current.hasSession() && !sessionStoreRef.current.isExpired());
         if (boot.kind === "restored") {
@@ -442,41 +444,38 @@ export function App() {
           setState("recoverableError");
           return;
         }
-        if (boot.kind === "configuration") {
-          if (wasNative) {
-            setError("Native sign-in is not configured in this build.");
-            setState("recoverableError");
-            return;
-          }
-          // A legacy widget session can still be restored by the browser path.
-        }
         if (boot.kind === "unavailable") {
           setError("Can't reach Exo right now. You're still signed in.");
           setState("offline");
           return;
         }
-        if (boot.kind === "terminal" || wasNative) {
-          if (!await captureHandoff()) { setState("recoverableError"); return; }
-          const storedAddress = sessionStoreRef.current.getAddress();
-          if (storedAddress) clearPersistedSession(storedAddress);
-          if (boot.kind === "terminal") {
-            try {
-              await boot.revoke();
-            } catch (caught) {
-              logNativeOpenKeyError("boot sign-out revoke", caught);
-              if (isNativeStorageError(caught)) {
-                setError(NATIVE_STORAGE_MESSAGE);
-                setState("recoverableError");
-                return;
-              }
-            }
-          }
-          sessionStoreRef.current.clear();
-          setNativeSessionActive(false);
-          if (boot.kind === "terminal") setError(NATIVE_SESSION_ENDED_MESSAGE);
-          setState("unauthenticated");
+        if (boot.kind === "configuration") {
+          setError("Native sign-in is not configured in this build.");
+          setState("recoverableError");
           return;
         }
+        // "none" or "terminal": no native session to restore. Clear any
+        // persisted widget session once; the user signs in again natively.
+        if (!await captureHandoff()) { setState("recoverableError"); return; }
+        const storedAddress = sessionStoreRef.current.getAddress();
+        if (storedAddress) clearPersistedSession(storedAddress);
+        if (boot.kind === "terminal") {
+          try {
+            await boot.revoke();
+          } catch (caught) {
+            logNativeOpenKeyError("boot sign-out revoke", caught);
+            if (isNativeStorageError(caught)) {
+              setError(NATIVE_STORAGE_MESSAGE);
+              setState("recoverableError");
+              return;
+            }
+          }
+        }
+        sessionStoreRef.current.clear();
+        setNativeSessionActive(false);
+        if (boot.kind === "terminal") setError(NATIVE_SESSION_ENDED_MESSAGE);
+        setState("unauthenticated");
+        return;
       }
       const restored = await restorePersistedSession(sessionStoreRef.current, {
         beforeClear: async () => {

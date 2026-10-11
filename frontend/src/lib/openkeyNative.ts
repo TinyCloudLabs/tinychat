@@ -1,10 +1,10 @@
-// Native OpenKey sign-in for the Exo app (TC-775 E1, OpenKey spec
-// docs/native-tinycloud-delegation.md). Inside the Capacitor app, and only when
-// the build sets VITE_EXO_NATIVE_OPENKEY=true, sign-in runs PAR + PKCE in the
-// system browser (ASWebAuthenticationSession / Custom Tabs) and returns a
-// TinyCloud delegation to an Ed25519 session key the OpenKey SDK keeps in the
-// device secure store — nothing wallet-shaped ever signs in the WebView, and
-// the session JWK never touches localStorage.
+// Native OpenKey sign-in for the Exo app (TC-775, OpenKey spec
+// docs/native-tinycloud-delegation.md). Inside the Capacitor app — iOS and
+// Android only — sign-in runs PAR + PKCE in the system browser
+// (ASWebAuthenticationSession / Custom Tabs) and returns a TinyCloud
+// delegation to an Ed25519 session key the OpenKey SDK keeps in the device
+// secure store — nothing wallet-shaped ever signs in the WebView, and the
+// session JWK never touches localStorage.
 //
 // The delegation is limited to the manifest's applications-space KV/SQL
 // entries plus capabilities/read. It has no secrets or vault access, so every
@@ -27,23 +27,13 @@ import { nativeRenewAt, renewalLeadMs, terminalRenewalError, nativeCode } from "
 
 // ── Gate ──────────────────────────────────────────────────────────────
 
-/** Whether this build offers the native OpenKey sign-in path at all. */
-export function nativeOpenKeyEnabled(
-  env: { VITE_EXO_NATIVE_OPENKEY?: string } = import.meta.env,
-): boolean {
-  return env.VITE_EXO_NATIVE_OPENKEY === "true";
-}
-
 /**
- * Whether sign-in runs through the native OpenKey flow: the Capacitor app AND
- * the build flag. Web and the Tauri desktop app always keep the embedded
- * iframe widget.
+ * Whether sign-in runs through the native OpenKey flow: the Capacitor app on
+ * iOS or Android. Web and the Tauri desktop app keep the embedded iframe
+ * widget until a Tauri native adapter ships.
  */
-export function isNativeOpenKeySignIn(
-  platform: AppPlatform = appPlatform(),
-  env: { VITE_EXO_NATIVE_OPENKEY?: string } = import.meta.env,
-): boolean {
-  return (platform === "ios" || platform === "android") && nativeOpenKeyEnabled(env);
+export function isNativeOpenKeySignIn(platform: AppPlatform = appPlatform()): boolean {
+  return platform === "ios" || platform === "android";
 }
 
 /**
@@ -237,9 +227,7 @@ export interface NativeSignInConfig {
   tinycloudHost: string;
   tinycloudHosts?: string[];
   env?: {
-    VITE_OPENKEY_ISSUER?: string;
     VITE_OPENKEY_NATIVE_CLIENT_ID?: string;
-    VITE_OPENKEY_NATIVE_REDIRECT_URI?: string;
   };
 }
 
@@ -279,8 +267,10 @@ export interface NativeSignInDeps {
   ) => Promise<{ token: string; expiresIn: number; address: string }>;
 }
 
-const DEFAULT_REDIRECT_URI = "xyz.tinycloud.exo://openkey/callback";
-const DEFAULT_ISSUER = "https://api.openkey.so/api/auth";
+/** The client's registered redirect; the Exo app's own reverse-DNS scheme. */
+const NATIVE_REDIRECT_URI = "xyz.tinycloud.exo://openkey/callback";
+/** The OpenKey API host used by every Exo build; not configurable. */
+const NATIVE_ISSUER = "https://api.openkey.so/api/auth";
 let defaultOpenKeyNative: OpenKeyNative | null = null;
 
 function nativeClientOptions(
@@ -293,8 +283,8 @@ function nativeClientOptions(
   }
   return {
     clientId,
-    redirectUri: env?.VITE_OPENKEY_NATIVE_REDIRECT_URI ?? DEFAULT_REDIRECT_URI,
-    issuer: env?.VITE_OPENKEY_ISSUER ?? DEFAULT_ISSUER,
+    redirectUri: NATIVE_REDIRECT_URI,
+    issuer: NATIVE_ISSUER,
     tinycloudHost,
   };
 }
