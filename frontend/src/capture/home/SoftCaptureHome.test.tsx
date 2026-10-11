@@ -156,7 +156,8 @@ describe("the in-progress card", () => {
     const html = home({ inProgress: voice(2), recent: { status: "ready", items: [a, b] }, pipelineNotes: [a, b], pipelines: new Map([["rec-1", pipeline()], ["rec-2", pipeline("Waiting to upload", { steps: [
       { key: "phone", label: "On this phone", state: "done" }, { key: "space", label: "In your space", state: "waiting", caption: "Waiting to upload" }, { key: "transcript", label: "Transcript", state: "upcoming" }, { key: "notes", label: "Notes", state: "skipped" },
     ] })]]) });
-    expect(html).toContain('data-testid="voice-note-summary">2 notes on this phone</b>');
+    expect(html).toContain('data-testid="voice-note-summary">2 in progress</b>');
+    expect(html).toContain('data-testid="voice-note-on-phone">2 on this phone</span>');
     expect(html).toContain('data-testid="voice-note-uploading">1 uploading</span>');
     expect(html).toContain("Waiting to upload");
     expect(html).not.toContain("Save now");

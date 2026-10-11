@@ -126,7 +126,14 @@ const ROWS: Row[] = [
   { name: "local: transcribing 63%", patch: local({ onDevice: od({ stt: stt("running"), queue: { position: 1, inLine: 1, percent: 63 } }) }, { space: SAVED }), states: { transcript: "active" }, current: "transcript", caption: "Transcribing · 63%" },
   { name: "local: transcribing with no percent yet", patch: local({ onDevice: od({ stt: stt("running"), queue: { position: 1, inLine: 1, percent: null } }) }, { space: SAVED }), current: "transcript", caption: "Transcribing…" },
   { name: "local: transcript done on the phone before upload is Ready on this phone", patch: local({ onDevice: od({ stt: stt("done") }) }, { space: { saved: false, pending: { upload: { state: "uploading", bytes: 10, total: 100 } } } }), states: { phone: "done", space: "active", transcript: "done" }, current: "space", caption: "Uploading · 10%" },
-  { name: "local: transcript done and note saved, adding it to the note", patch: local({ onDevice: od({ stt: stt("done") }) }, { space: SAVED }), states: { transcript: "active" }, current: "transcript", caption: "Adding to this note…" },
+  { name: "local: transcript done on the phone, note saved, nothing adding it and no space evidence is a blocker, never an endless Adding", patch: local({ onDevice: od({ stt: stt("done") }) }, { space: SAVED }), states: { transcript: "blocked" }, current: "transcript", cause: "The transcript is ready on this phone but hasn't been added to this note", action: "retry" },
+  { name: "local: the space row not read yet is Checking your space, not a blocker", patch: local({ onDevice: od({ stt: stt("done") }), spaceReading: true }, { space: SAVED }), states: { transcript: "waiting" }, current: "transcript", caption: "Checking your space…" },
+  { name: "local: no on-device read yet and the space row not read yet is Checking your space", patch: local({ spaceReading: true }, { space: SAVED }), states: { transcript: "waiting" }, current: "transcript", caption: "Checking your space…" },
+  { name: "private: the space row not read yet is Checking your space", patch: { route: "private-cloud", space: SAVED, transcript: { spaceReading: true } }, states: { transcript: "waiting" }, current: "transcript", caption: "Checking your space…" },
+  { name: "local: the space row queued behind uploads says so", patch: local({ onDevice: od({ stt: stt("done") }), spaceReading: true, afterUploads: true }, { space: SAVED }), states: { transcript: "waiting" }, current: "transcript", caption: "Checking your space · after uploads" },
+  { name: "local: no on-device read yet and the space row queued behind uploads says so", patch: local({ spaceReading: true, afterUploads: true }, { space: SAVED }), states: { transcript: "waiting" }, current: "transcript", caption: "Checking your space · after uploads" },
+  { name: "private: the space row queued behind uploads says so", patch: { route: "private-cloud", space: SAVED, transcript: { spaceReading: true, afterUploads: true } }, states: { transcript: "waiting" }, current: "transcript", caption: "Checking your space · after uploads" },
+  { name: "uploads ahead mean nothing once the row has been read", patch: local({ onDevice: od({ stt: stt("done") }), afterUploads: true }, { space: SAVED }), states: { transcript: "blocked" }, current: "transcript", cause: "The transcript is ready on this phone but hasn't been added to this note", action: "retry" },
   { name: "local: transcript syncing to the space", patch: local({ onDevice: od({ stt: stt("done"), sync: { state: "syncing" } }) }, { space: SAVED }), states: { transcript: "active" }, current: "transcript", caption: "Adding to this note…" },
   { name: "local: transcript sync failed is Try again with its message", patch: local({ onDevice: od({ stt: stt("done"), sync: { state: "failed", message: "write lane timed out" } }) }, { space: SAVED }), states: { transcript: "failed" }, current: "transcript", cause: "Couldn't add the transcript to this note · write lane timed out", action: "retry" },
   { name: "local: transcript synced", patch: local({ onDevice: od({ stt: stt("done"), sync: { state: "synced" } }) }, { space: SAVED }), states: { space: "done", transcript: "done" }, current: null },
@@ -391,5 +398,30 @@ describe("a failed read that other evidence outranks", () => {
 
   test("reread never outranks a step's own action", () => {
     expect(pipelineActionPriority("reread")).toBe(0);
+  });
+});
+
+describe("a transcript in the space that the phone could not record (P6 r1)", () => {
+  const unrecorded = { state: "unrecorded" as const, message: "disk full" };
+
+  test("the transcript step is done, the failure is the blocker with Try again, and the note is not done", () => {
+    const pipeline = notePipeline(input({ space: SAVED, notes: { state: "synced" }, ...local({ inSpace: "no_speech", onDevice: od({ stt: stt("done"), sync: unrecorded }) }) }));
+    expect(pipeline.steps.find((step) => step.key === "transcript")?.state).toBe("done");
+    expect(pipeline.blocker).toEqual({ cause: "The transcript is in your space, but this phone couldn't record that: disk full", action: { kind: "retry", label: "Try again" } });
+    expect(pipeline.current).toBe("transcript");
+    expect(pipeline.done).toBe(false);
+  });
+
+  test("before the row catches up the transcript is still done, not Adding", () => {
+    const pipeline = notePipeline(input({ space: SAVED, ...local({ onDevice: od({ stt: stt("done"), sync: unrecorded }) }) }));
+    expect(pipeline.steps.find((step) => step.key === "transcript")?.state).toBe("done");
+    expect(pipeline.blocker?.cause).toContain("couldn't record that");
+  });
+
+  test("beside another blocker it is a notice, never dropped", () => {
+    const pipeline = notePipeline(input({ space: SAVED, hasNotesOrMoments: true, notes: { state: "failed" }, ...local({ inSpace: "transcribed", onDevice: od({ stt: stt("done"), sync: unrecorded }) }) }));
+    expect(pipeline.current).toBe("notes");
+    expect(pipeline.notice).toBe("The transcript is in your space, but this phone couldn't record that: disk full");
+    expect(pipeline.done).toBe(false);
   });
 });

@@ -14,7 +14,7 @@ import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
 import { cn } from "@/lib/utils";
 import { useResolvedTheme } from "@/lib/theme";
 import { PipelineStepper } from "@/capture/pipeline/PipelineStepper";
-import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
+import { combinedModel, type NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import "./final/soft.css";
 import { VoiceNotes, type LocalTranscript, type NoteSttState, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { localTranscriptionUnavailable } from "@/lib/voiceNotes/captureEngine";
@@ -147,9 +147,11 @@ export function onDeviceOffer(args: {
   canUsePrivate: boolean;
   /** The receipt shows an Open button for the note. */
   canOpen: boolean;
+  /** The on-device model is on the phone. A note's `waiting_for_model` is only its starting state until the queue picks it up. */
+  modelReady: boolean;
 }) {
   const { onDevice, movedToPrivate } = args;
-  const needsModel = !movedToPrivate && onDevice.kind === "pending" && onDevice.state === "waiting_for_model";
+  const needsModel = !movedToPrivate && !args.modelReady && onDevice.kind === "pending" && onDevice.state === "waiting_for_model";
   const usePrivate = needsModel && args.saved && args.canUsePrivate;
   const actionable = args.canOpen || (needsModel && (args.guide.action !== undefined || usePrivate)) || (!movedToPrivate && onDevice.kind === "failed" && args.hasNote);
   return { needsModel, usePrivate, actionable };
@@ -243,7 +245,7 @@ export function SavedReceipt(props: SavedReceiptProps) {
   });
   // A Local note moved to private cloud: that line below says so, and the on-device ones step aside.
   const movedToPrivate = props.movedToPrivate === true;
-  const offer = onDeviceOffer({ onDevice, guide, saved, hasNote: !!props.saved, movedToPrivate, canUsePrivate: props.onUsePrivate !== undefined, canOpen: (saved || props.outcome === "local") && props.onOpen !== undefined });
+  const offer = onDeviceOffer({ onDevice, guide, modelReady: combinedModel(sttStatus)?.state === "ready", saved, hasNote: !!props.saved, movedToPrivate, canUsePrivate: props.onUsePrivate !== undefined, canOpen: (saved || props.outcome === "local") && props.onOpen !== undefined });
   const { needsModel } = offer;
   const actionable = offer.actionable || (stepperShown && pipelineView.pipeline.blocker?.action !== undefined);
   const usePrivate = offer.usePrivate ? props.onUsePrivate : undefined;
