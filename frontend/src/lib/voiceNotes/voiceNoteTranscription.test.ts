@@ -36,13 +36,15 @@ import {
 } from "../privateCloud";
 import { base64ToBytes, bytesToBase64, type AudioDecoder } from "./voiceNoteAudio";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
-import { __setVoiceNotesForTests, VoiceNotes } from "./nativeVoiceNotes";
+import { __setVoiceNotesForTests, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { readTranscriptCommit } from "./voiceNoteCommits";
+import { pendingStore } from "./recorderSaves";
 import {
   VOICE_NOTE_SOURCE,
   listVoiceNotes,
   saveVoiceNote as storeVoiceNote,
   saveVoiceNoteTranscript,
+  putVoiceNoteAudio,
   voiceNoteAudioKvKey,
   voiceNoteAudioPartKey,
   voiceNoteAudioSourceFromBase64,
@@ -1393,4 +1395,67 @@ test("a retryable audio-read failure before the cloud job exists retains the use
   expect({ retainedAfterFailure, job: restarted.snapshot().jobs.get("rec-1") }).toMatchObject({
     retainedAfterFailure: true, job: { kind: "done", outcome: "transcribed" },
   });
+}, 15000);
+
+test("the private saved-note trigger waits for queued audio before reading its space key", async () => {
+  _resetConnectorSchemaMemoForTests();
+  const space = sqliteSpace();
+  expect((await saveVoiceNote(space.tcw, { ...RECORDING, version: 2, source: "in_app", options: { transcriber: "private-cloud", identifySpeakers: false } }, AUDIO, "ios")).ok).toBe(true);
+  space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata,
+    '$.capture.version', 2, '$.capture.options.transcriber', 'private-cloud') WHERE source_id = 'rec-1'`).run();
+  for (const key of [...space.kv.keys()]) if (key.startsWith(voiceNoteAudioKvKey("rec-1"))) space.kv.delete(key);
+
+  let recording = { ...RECORDING, version: 2 as const, owner: "did:test:voice", source: "in_app" as const, ledger: {
+    audio: { state: "pending" as const, rowId: null, at: null },
+    transcriptSync: { state: "pending" as const, rev: 0, at: null },
+  }, options: { transcriber: "private-cloud" as const, identifySpeakers: false } } as unknown as VoiceNoteRecording;
+  VoiceNotes.listPending = async () => ({ recordings: [recording] });
+  let localReadAttempted = false;
+  let audioReads = 0;
+  const client = space.tcw as unknown as { kv: { get: (key: string) => Promise<unknown> } };
+  const originalGet = client.kv.get;
+  client.kv.get = async (key) => {
+    if (key.startsWith(voiceNoteAudioKvKey("rec-1"))) audioReads++;
+    return originalGet(key);
+  };
+  VoiceNotes.readAudioChunk = async () => {
+    localReadAttempted = true;
+    throw Object.assign(new Error("not found"), { code: "not_found" });
+  };
+
+  const finishTrackedUpload = pendingStore.beginAutomaticSave();
+  let saveStillTracked = true;
+  const finishEarlierQueuedUpload = () => {
+    if (!saveStillTracked) return;
+    saveStillTracked = false;
+    finishTrackedUpload();
+  };
+  try {
+    const h = harness({});
+    const transcriber = createVoiceNoteTranscriber({
+      cloud: h.cloud, consent: { get: () => true, set: () => {} }, tcw: () => space.tcw, holds: memoryHoldStore(),
+    });
+    await transcriber.check();
+    // The row is visible in the Library and says Private was chosen, while the native
+    // ledger is pending and another upload holds the save lane ahead of this note.
+    transcriber.transcribe("rec-1");
+    for (let i = 0; i < 30 && !localReadAttempted; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(localReadAttempted).toBe(true);
+    expect(h.creates).toHaveLength(0);
+    expect(audioReads).toBe(0);
+    expect(space.kv.has(voiceNoteAudioKvKey("rec-1"))).toBe(false);
+
+    expect((await putVoiceNoteAudio(space.tcw, "rec-1", voiceNoteAudioSourceFromBase64(AUDIO))).ok).toBe(true);
+    recording = { ...recording, ledger: { ...recording.ledger, audio: { state: "saved", rowId: "vn-rec-1", at: Date.now() } } };
+    finishEarlierQueuedUpload();
+    for (let i = 0; i < 100 && transcriber.snapshot().jobs.get("rec-1")?.kind === "active"; i++)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "done", outcome: "transcribed" });
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+    expect(audioReads).toBeGreaterThan(0);
+  } finally {
+    finishEarlierQueuedUpload();
+    client.kv.get = originalGet;
+  }
 }, 15000);

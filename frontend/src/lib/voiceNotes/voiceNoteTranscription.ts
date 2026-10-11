@@ -50,6 +50,7 @@ import {
 import { captureEngineKind } from "./captureEngine";
 import { nativeHttpFileUploadSupported, nativeRecordingSource, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { readTranscriptCommit } from "./voiceNoteCommits";
+import { whenVoiceNoteSavesIdle } from "./recorderSaves";
 import {
   base64ToBytes,
   bytesToBase64,
@@ -957,6 +958,9 @@ export function voiceNoteTranscriptionFailure(err: unknown): VoiceNoteTranscript
     case "audio_read_failed":
       message = "Could not read this note's audio from this device or your space. Retry tries again.";
       break;
+    case "audio_upload_pending":
+      message = "This note's audio is still being saved to your space. Try again when the upload finishes.";
+      break;
     case "VOICE_NOTE_AUDIO_CORRUPT":
       message = "This note's audio is damaged and can't be transcribed.";
       break;
@@ -1074,6 +1078,21 @@ export async function transcribeVoiceNote(args: {
           console.error("[VoiceNotes] Could not read local audio before transcription", { sourceId, cause });
           throw new VoiceNoteAudioError("audio_read_failed", "Could not read this note's local audio");
         }
+      }
+    }
+    // A row can exist before its audio, and a recording can disappear from the native
+    // listing during a save. Wait for queued save-now/reconcile work before consulting
+    // the space copy; when a native ledger exists, it must confirm the audio commit.
+    if (!local || (local.ledger?.audio && local.ledger.audio.state !== "saved")) {
+      await whenVoiceNoteSavesIdle();
+      try {
+        local = (await VoiceNotes.listPending()).recordings.find((recording) => recording.id === sourceId);
+      } catch (cause) {
+        console.error("[VoiceNotes] Could not confirm the audio save before transcription", { sourceId, cause });
+        throw new VoiceNoteAudioError("audio_read_failed", "Could not confirm this note's audio save");
+      }
+      if (local?.ledger?.audio && local.ledger.audio.state !== "saved") {
+        throw new VoiceNoteAudioError("audio_upload_pending", "This note's audio is still being saved to your space");
       }
     }
     // Refuse a file larger than PTX accepts from its manifest, before reading its parts.
