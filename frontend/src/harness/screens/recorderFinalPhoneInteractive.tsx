@@ -339,6 +339,8 @@ function screen(name: string, setup: Setup): HarnessScreen {
             harness.releaseModelStatus = publishStatus;
           } else {
             publishStatus();
+            // The native call stays pending while the download waits for Wi-Fi.
+            await new Promise<void>(() => {});
           }
         },
         cancelDownload: async () => {},

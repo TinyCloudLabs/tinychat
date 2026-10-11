@@ -282,6 +282,12 @@ const assertToastMessageVisible = async (page: Page, expected: string) => {
     }
   }
 };
+const holdToast = async (page: Page) => {
+  await page
+    .locator(".pr-toast")
+    .getByRole("button", { name: "Dismiss notification" })
+    .focus();
+};
 const assertToastClearOfRecorderControls = async (
   page: Page,
   fontScale: number,
@@ -640,9 +646,11 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
 
   test("an unavailable mode toast stays readable and keeps fixed controls clear", async () => {
     const { page } = await open("model-unavailable", { clock: true });
+    await page.evaluate(() => {
+      (window as unknown as Harness).exoRecorder.transcriberResult =
+        "unavailable";
+    });
     const toast = page.locator(".pr-toast");
-    const privateAction = toast.getByRole("button", { name: "Use Private" });
-    const getModelAction = toast.getByRole("button", { name: "Get model" });
     const evidenceDir = process.env.EXO_POLISH_EVIDENCE;
     if (evidenceDir) mkdirSync(evidenceDir, { recursive: true });
     const viewports = [
@@ -660,8 +668,8 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
         await stop.scrollIntoViewIfNeeded();
         const before = await measureToastLayout(page);
         await stop.click();
-        await shown(privateAction);
-        await shown(getModelAction);
+        await shown(toast);
+        await holdToast(page);
         if (fontScale === 2) await setToastFontScale(page, fontScale);
         const message = page.locator(".pr-toast-message");
         const exerciseFontMetricFallback =
@@ -675,7 +683,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
         await settleToastPlacement(page);
         await assertToastMessageVisible(
           page,
-          "The on-device model isn't downloaded (1 MB)",
+          "Local isn't available right now",
         );
         const after = await measureToastLayout(page);
         expect(after.toast).not.toBeNull();
@@ -724,9 +732,10 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     }
     await setFontScale(page, 1);
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.locator('.pr-stop[data-stop="local"]').click();
-    await shown(privateAction);
-    await privateAction.click();
+    await page.evaluate(() => {
+      (window as unknown as Harness).exoRecorder.transcriberResult = null;
+    });
+    await page.locator('.pr-stop[data-stop="private"]').click();
     await modeIs(page, "Private");
     await page.context().close();
 
@@ -734,8 +743,13 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
       clock: true,
       theme: "dark",
     });
+    await dark.page.evaluate(() => {
+      (window as unknown as Harness).exoRecorder.transcriberResult =
+        "unavailable";
+    });
     await dark.page.locator('.pr-stop[data-stop="local"]').click();
-    await shown(dark.page.getByRole("button", { name: "Get model" }));
+    await shown(dark.page.locator(".pr-toast"));
+    await holdToast(dark.page);
     if (evidenceDir)
       await dark.page.screenshot({
         path: `${evidenceDir}/recorder-toast-phone-dark.png`,
@@ -751,9 +765,14 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
   });
 
   test("a five-line toast scrolls without covering the ring or scale on a short phone", async () => {
-    const { page } = await open("model-unavailable");
-    const messageText =
+    const { page } = await open("model-unavailable", { clock: true });
+    await page.evaluate(() => {
+      (window as unknown as Harness).exoRecorder.transcriberResult =
+        "unavailable";
+    });
+    const sentence =
       "This recording cannot switch to the on-device model until the model download finishes. Check your connection and try again when the download is complete. The recording stays available while you wait.";
+    const messageText = `${sentence} ${sentence} ${sentence}`;
     const message = page.locator(".pr-toast-message");
     const copy = page.locator(".pr-toast-copy");
     await page.setViewportSize({ width: 320, height: 545 });
@@ -764,7 +783,8 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
       const stop = page.locator('.pr-stop[data-stop="local"]');
       await stop.scrollIntoViewIfNeeded();
       await stop.click();
-      await shown(page.getByRole("button", { name: "Get model" }));
+      await shown(page.locator(".pr-toast"));
+      await holdToast(page);
       await message.evaluate((element, value) => {
         element.textContent = value;
       }, messageText);
@@ -800,7 +820,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
           ? 1
           : 2;
       if (fontScale === 1)
-        expect(reservedLines).toBe(1);
+        expect(reservedLines).toBe(2);
       const reservedHeight =
         copySizing.lineHeight * reservedLines + copySizing.padding;
       expect(copySizing.minHeight).toBeGreaterThanOrEqual(reservedHeight);
@@ -896,7 +916,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await page.context().close();
   });
 
-  test("Get model starts the shared Wi-Fi download and replaces the toast with its waiting state", async () => {
+  test("Get model starts the shared Wi-Fi download and shows its waiting state inline", async () => {
     const { page } = await open("model-unavailable", { clock: true });
     await page
       .getByRole("button", { name: "Transcription modes: compare and choose" })
@@ -908,12 +928,13 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
       localRowBox.y + localRowBox.height / 2,
     );
     const toast = page.locator(".pr-toast");
-    const getModel = toast.getByRole("button", { name: "Get model" });
+    const note = page.getByTestId("local-model-note");
+    const getModel = page.getByTestId("local-model-action");
     await shown(getModel);
-    await page
-      .locator(".pr-modes")
-      .getByRole("button", { name: "Close" })
-      .click();
+    expect(await note.textContent()).toContain(
+      "The on-device model isn't downloaded",
+    );
+    expect(await toast.count()).toBe(0);
     await page.clock.fastForward(10_000);
     await shown(getModel);
     const evidenceDir = process.env.EXO_POLISH_EVIDENCE;
@@ -924,25 +945,13 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
         fullPage: true,
       });
     }
-    await page.setViewportSize({ width: 844, height: 390 });
-    await settleToastPlacement(page);
-    await assertToastClearOfRecorderControls(page, 1);
-    if (evidenceDir)
-      await page.screenshot({
-        path: `${evidenceDir}/recorder-get-model-phone-land.png`,
-        fullPage: true,
-      });
-    await page.setViewportSize({ width: 390, height: 844 });
 
-    await page.evaluate(() => {
-      (window as unknown as Harness).exoRecorder.deferModelStatus = true;
-    });
     await getModel.click();
-    await shown(page.getByText("Starting the download…"));
-    await page.evaluate(() => {
-      (window as unknown as Harness).exoRecorder.releaseModelStatus?.();
-    });
-    await shown(page.getByText(/Waiting for Wi-Fi to download the model/));
+    await shown(
+      note.filter({
+        hasText: /Waiting for Wi-Fi to download the on-device model/,
+      }),
+    );
     expect(
       await page.evaluate(() => window.exoRecorder?.downloadCalls?.length),
     ).toBe(1);
@@ -957,14 +966,21 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
       "Private isn't available right now",
     );
     await focused(slider(page));
+    await holdToast(page);
+    await page.setViewportSize({ width: 844, height: 390 });
+    await settleToastPlacement(page);
+    await assertToastClearOfRecorderControls(page, 1);
+    if (evidenceDir)
+      await page.screenshot({
+        path: `${evidenceDir}/recorder-get-model-phone-land.png`,
+        fullPage: true,
+      });
     await page.context().close();
   });
 
-  test("Use Private from an unavailable-mode toast returns focus after consent is dismissed", async () => {
+  test("a Private choice from the first-run scale returns focus after consent is dismissed", async () => {
     const { page } = await open("model-unavailable-first-run");
-    await page.locator('.pr-stop[data-stop="local"]').click();
-    const toast = page.locator(".pr-toast");
-    await toast.getByRole("button", { name: "Use Private" }).click();
+    await page.locator('.pr-stop[data-stop="private"]').click();
     const consent = page.getByRole("dialog", { name: "Use private cloud?" });
     await shown(consent);
     await consent.getByRole("button", { name: "Not now" }).click();
