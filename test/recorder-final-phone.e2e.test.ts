@@ -174,6 +174,18 @@ const setFontScale = (page: Page, scale: number) =>
       element.style.fontSize = `${base * nextScale}px`;
     });
   }, scale);
+const setToastFontScale = (page: Page, scale: number) =>
+  page.evaluate((nextScale) => {
+    const elements = [
+      ...document.querySelectorAll<HTMLElement>(".pr-toast, .pr-toast *"),
+    ];
+    const sizes = elements.map((element) =>
+      Number.parseFloat(getComputedStyle(element).fontSize),
+    );
+    elements.forEach((element, index) => {
+      element.style.fontSize = `${sizes[index]! * nextScale}px`;
+    });
+  }, scale);
 const assertToastClearOfRecorderControls = async (
   page: Page,
   fontScale: number,
@@ -251,6 +263,19 @@ const measureToastLayout = (page: Page) =>
       scale: box(".pr-scale"),
       ring: box(".pr-ring"),
       toast: box(".pr-toast"),
+      toastItems: [
+        ...document.querySelectorAll<HTMLElement>(".pr-toast > *"),
+      ].map((element) => {
+        const { x, y, width, height } = element.getBoundingClientRect();
+        return {
+          className: element.className,
+          text: element.textContent?.trim(),
+          x,
+          y,
+          width,
+          height,
+        };
+      }),
       done: namedControl(/Done/),
       pause: namedControl(/Pause recording/),
       discard: namedControl(/Discard recording/),
@@ -471,6 +496,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
         await stop.click();
         await shown(privateAction);
         await shown(getModelAction);
+        if (fontScale === 2) await setToastFontScale(page, fontScale);
         const after = await measureToastLayout(page);
         console.log(
           `toast-layout ${viewport.width}x${viewport.height} font=${fontScale}x before=${JSON.stringify(before)} after=${JSON.stringify(after)}`,
