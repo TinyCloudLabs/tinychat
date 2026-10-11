@@ -19,6 +19,13 @@ const listeners = new Set<() => void>();
 let started = false;
 let downloadInFlight: Promise<string | null> | null = null;
 let downloadError: string | null = null;
+// Android moves between downloading and waiting for Wi-Fi without publishing a status, so a pending download is re-read.
+let downloadPollMs = 2000;
+let downloadPoll: ReturnType<typeof setInterval> | null = null;
+
+export function __setDownloadPollMsForTests(ms: number): void {
+  downloadPollMs = ms;
+}
 
 function notifyListeners(): void {
   for (const listener of listeners) listener();
@@ -72,6 +79,8 @@ export function __resetOnDeviceSttStoreForTests(): void {
   snapshot = EMPTY_STATUS;
   downloadInFlight = null;
   downloadError = null;
+  if (downloadPoll) clearInterval(downloadPoll);
+  downloadPoll = null;
 }
 
 /** The primary model this phone's RAM tier uses (plan §2.9: full ≥ 6 GB RAM, else small). */
@@ -109,7 +118,12 @@ export function onDeviceModelLine(status: OnDeviceSttStatus): { text: string; pe
 export function downloadOnDeviceModel(): Promise<string | null> {
   if (downloadInFlight) return downloadInFlight;
   downloadError = null;
+  const poll = downloadPoll = setInterval(() => {
+    onDeviceSttStore.refresh().catch((caught: unknown) => console.warn("[OnDeviceStt] status() failed while downloading", caught));
+  }, downloadPollMs);
   const run = finishDownload().then((error) => {
+    clearInterval(poll);
+    if (downloadPoll === poll) downloadPoll = null;
     downloadInFlight = null;
     downloadError = error;
     notifyListeners();
