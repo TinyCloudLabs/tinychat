@@ -263,25 +263,43 @@ describe("listMeetingsRead", () => {
   });
 
   it("carries voice-note pipeline metadata from the listing only for voice notes", async () => {
-    const metadata = JSON.stringify({
+    const projectedMetadata = JSON.stringify({
       transcription_outcome: "transcribed",
       note_kv_key: "recording-note.md",
       note_edited_at: "2026-10-11T10:00:00.000Z",
     });
-    const { tcw } = fakeTcw({
+    const { tcw, sqlCalls } = fakeTcw({
       sql: { ok: true, data: { rows: [
-        ["row-voice", "exo-voice-note", "rec-1", null, "2026-10-11T10:00:00.000Z", 42, metadata],
-        ["row-meeting", "fireflies", "src-1", "Standup", "2026-10-10T10:00:00.000Z", 180, metadata],
+        ["row-voice", "exo-voice-note", "rec-1", null, "2026-10-11T10:00:00.000Z", 42, projectedMetadata],
+        ["row-meeting", "fireflies", "src-1", "Standup", "2026-10-10T10:00:00.000Z", 180, null],
         ["row-no-metadata", "exo-voice-note", "rec-2", null, "2026-10-09T10:00:00.000Z", 42, null],
+        ["row-invalid-metadata", "exo-voice-note", "rec-3", null, "2026-10-08T10:00:00.000Z", 42, "invalid"],
       ] } },
     });
 
     const read = await listMeetingsRead(tcw);
     expect(read.status).toBe("ok");
     if (read.status !== "ok") return;
-    expect(read.meetings[0]?.metadata).toEqual(JSON.parse(metadata));
+    expect(read.meetings[0]?.metadata).toEqual({
+      transcription_outcome: "transcribed",
+      note_kv_key: "recording-note.md",
+      note_edited_at: "2026-10-11T10:00:00.000Z",
+    });
+    expect(read.meetings[0]?.metadata).not.toHaveProperty("transcript_text");
+    expect(read.meetings[1]).toMatchObject({
+      id: "row-meeting",
+      source: "fireflies",
+      sourceId: "src-1",
+      title: "Standup",
+      startedAt: "2026-10-10T10:00:00.000Z",
+      durationSecs: 180,
+    });
     expect(read.meetings[1]?.metadata).toBeUndefined();
     expect(read.meetings[2]?.metadata).toBeNull();
+    expect(read.meetings[3]?.metadata).toBeUndefined();
+    expect(sqlCalls[0]?.sql).toContain("json_valid(metadata)");
+    expect(sqlCalls[0]?.sql).toContain("json_extract(metadata, '$.note_kv_key')");
+    expect(sqlCalls[0]?.sql).not.toMatch(/SELECT[^\n]*,\s*metadata\s+FROM/s);
   });
 
   it("an ordinary empty space is ok and empty; a store error, a refused read or a throwing transport is failed", async () => {

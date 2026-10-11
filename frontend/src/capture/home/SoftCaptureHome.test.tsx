@@ -12,6 +12,7 @@ import { StaticRecorderProvider } from "../recorder/RecorderProvider";
 import { SoftActions } from "./SoftActions";
 import { SoftCaptureHome, type SoftCaptureHomeProps } from "./SoftCaptureHome";
 import { SoftHomeProvider } from "./softHome";
+import { HOME_COPY } from "./homeCopy";
 import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 
 const noop = () => {};
@@ -42,6 +43,16 @@ const pipeline = (caption = "Uploading · 42%", patch: Partial<NotePipeline> = {
     { key: "transcript", label: "Transcript", state: "upcoming" },
     { key: "notes", label: "Notes", state: "skipped" },
   ], current: "space", done: false, ...patch,
+});
+const waitingPipeline = (patch: Partial<NotePipeline> = {}): NotePipeline => pipeline("Waiting for upload", {
+  current: "space",
+  steps: [
+    { key: "phone", label: "On this phone", state: "done" },
+    { key: "space", label: "In your space", state: "waiting", caption: "Waiting for upload" },
+    { key: "transcript", label: "Transcript", state: "upcoming" },
+    { key: "notes", label: "Notes", state: "skipped" },
+  ],
+  ...patch,
 });
 
 function home(
@@ -153,26 +164,45 @@ describe("the in-progress card", () => {
   });
 
   test("shows Save now for an online idle note waiting on the space step", () => {
-    const waiting = pipeline("Waiting to upload", { current: "space", steps: [
-      { key: "phone", label: "On this phone", state: "done" },
-      { key: "space", label: "In your space", state: "waiting", caption: "Waiting to upload" },
-      { key: "transcript", label: "Transcript", state: "upcoming" },
-      { key: "notes", label: "Notes", state: "skipped" },
-    ] });
+    const waiting = waitingPipeline();
     const item = note(1, { id: "on-phone:rec-1", title: null, onPhone: true });
     const html = home({ inProgress: voice(1), recent: { status: "ready", items: [item] }, pipelineNotes: [item], pipelines: new Map([["rec-1", waiting]]) });
     expect(html).toContain('data-testid="voice-note-save-now"');
-    expect(html).toContain(">Save now<");
+    expect(html).toContain(`>${HOME_COPY.saveNow}<`);
   });
 
-  test("hides Save now while a note is uploading", () => {
+  test("hides Save now for a pending-note upload even when its pipeline is waiting", () => {
     const item = note(1, { id: "on-phone:rec-1", title: null, onPhone: true });
     const idleVoice = voice(1).voice!;
     const uploadingVoice: InProgressRowsViewProps = {
       ...voice(1),
       voice: { ...idleVoice, pendingNotes: [{ id: "rec-1", upload: { state: "uploading" } }] },
     };
-    const html = home({ inProgress: uploadingVoice, recent: { status: "ready", items: [item] }, pipelineNotes: [item], pipelines: new Map([["rec-1", pipeline()]]) });
+    const html = home({ inProgress: uploadingVoice, recent: { status: "ready", items: [item] }, pipelineNotes: [item], pipelines: new Map([["rec-1", waitingPipeline()]]) });
+    expect(html).not.toContain('data-testid="voice-note-save-now"');
+  });
+
+  test("hides Save now while offline", () => {
+    const item = note(1, { id: "on-phone:rec-1", title: null, onPhone: true });
+    const onlineVoice = voice(1).voice!;
+    const offline: InProgressRowsViewProps = { ...voice(1), voice: { ...onlineVoice, online: false } };
+    const html = home({ inProgress: offline, recent: { status: "ready", items: [item] }, pipelineNotes: [item], pipelines: new Map([["rec-1", waitingPipeline()]]) });
+    expect(html).not.toContain('data-testid="voice-note-save-now"');
+  });
+
+  test("hides Save now while a save is running", () => {
+    const item = note(1, { id: "on-phone:rec-1", title: null, onPhone: true });
+    const onlineVoice = voice(1).voice!;
+    const saving: InProgressRowsViewProps = { ...voice(1), voice: { ...onlineVoice, saving: true } };
+    const html = home({ inProgress: saving, recent: { status: "ready", items: [item] }, pipelineNotes: [item], pipelines: new Map([["rec-1", waitingPipeline()]]) });
+    expect(html).not.toContain('data-testid="voice-note-save-now"');
+  });
+
+  test("a blocker action takes precedence over Save now", () => {
+    const item = note(1, { id: "on-phone:rec-1", title: null, onPhone: true });
+    const blocked = waitingPipeline({ blocker: { cause: "Couldn't reach your space", action: { kind: "retry", label: "Try again" } } });
+    const html = home({ inProgress: voice(1), recent: { status: "ready", items: [item] }, pipelineNotes: [item], pipelines: new Map([["rec-1", blocked]]) });
+    expect(html).toContain('data-testid="voice-note-action"');
     expect(html).not.toContain('data-testid="voice-note-save-now"');
   });
 

@@ -2,6 +2,7 @@ import { MicIcon } from "lucide-react";
 
 import { pipelineActionPriority, type NotePipeline, type PipelineActionKind } from "@/lib/voiceNotes/notePipeline";
 import { haloLabel, PipelineHalo } from "../pipeline/PipelineHalo";
+import { HOME_COPY } from "./homeCopy";
 
 export interface InProgressNoteRow {
   id: string;
@@ -77,7 +78,7 @@ export function InProgressVoiceCard(props: {
       {!action && props.onSaveNow && (
         <span className="soft-pill-hit" data-hit-area="">
           <button type="button" className="soft-pill" onClick={props.onSaveNow} data-testid="voice-note-save-now">
-            Save now
+            {HOME_COPY.saveNow}
           </button>
         </span>
       )}
