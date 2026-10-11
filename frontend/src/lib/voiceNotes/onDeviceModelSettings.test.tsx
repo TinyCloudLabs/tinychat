@@ -13,6 +13,7 @@ import { __setOnDeviceSttForTests, type OnDeviceSttPlugin, type OnDeviceSttStatu
 import { __resetOnDeviceSttStoreForTests, __setDownloadPollMsForTests, ensureOnDeviceModel, onDeviceSttStore } from "./onDeviceSttStore";
 
 let cleanDom: (() => void) | undefined;
+let previousStorage: PropertyDescriptor | undefined;
 let root: Root | undefined;
 let host: HTMLElement;
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -36,6 +37,7 @@ const button = (label: string) => buttons().find((node) => node.textContent === 
 
 beforeEach(async () => {
   cleanDom = installDom();
+  previousStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
   Object.defineProperty(globalThis, "localStorage", { configurable: true, value: window.localStorage });
   const fake = createFakeVoiceNotes();
   __setVoiceNotesForTests(fake.plugin, { available: true });
@@ -51,6 +53,8 @@ afterEach(async () => {
   root = undefined;
   cleanDom?.();
   cleanDom = undefined;
+  if (previousStorage) Object.defineProperty(globalThis, "localStorage", previousStorage);
+  else Reflect.deleteProperty(globalThis, "localStorage");
   __setVoiceNotesForTests(null, { available: null });
   __resetOnDeviceSttStoreForTests();
   __setDownloadPollMsForTests(2000);

@@ -22,6 +22,7 @@ let downloadError: string | null = null;
 // Android moves between downloading and waiting for Wi-Fi without publishing a status, so a pending download is re-read.
 let downloadPollMs = 2000;
 let downloadPoll: ReturnType<typeof setInterval> | null = null;
+let downloadGeneration = 0;
 
 export function __setDownloadPollMsForTests(ms: number): void {
   downloadPollMs = ms;
@@ -79,6 +80,7 @@ export function __resetOnDeviceSttStoreForTests(): void {
   snapshot = EMPTY_STATUS;
   downloadInFlight = null;
   downloadError = null;
+  downloadGeneration += 1;
   if (downloadPoll) clearInterval(downloadPoll);
   downloadPoll = null;
 }
@@ -121,8 +123,10 @@ export function downloadOnDeviceModel(): Promise<string | null> {
   const poll = downloadPoll = setInterval(() => {
     onDeviceSttStore.refresh().catch((caught: unknown) => console.warn("[OnDeviceStt] status() failed while downloading", caught));
   }, downloadPollMs);
+  const generation = downloadGeneration;
   const run = finishDownload().then((error) => {
     clearInterval(poll);
+    if (generation !== downloadGeneration) return error;
     if (downloadPoll === poll) downloadPoll = null;
     downloadInFlight = null;
     downloadError = error;

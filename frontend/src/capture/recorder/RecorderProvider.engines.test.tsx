@@ -12,7 +12,7 @@ import {
 } from "@/lib/voiceNotes/captureEngine";
 import { VoiceNotes, __setVoiceNotesForTests, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { OnDeviceStt, __setOnDeviceSttForTests, type OnDeviceSttPlugin, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
-import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
+import { __resetOnDeviceSttStoreForTests, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { PendingVoiceNotesSaver, schedulePendingVoiceNotesRecovery } from "@/chat/PendingVoiceNotesSaver";
 import { VoiceNoteSaveDeferred } from "@/lib/voiceNotes/voiceNotePipeline";
 import { CaptureEngineGate } from "./CaptureEngineGate";
@@ -116,6 +116,7 @@ afterEach(async () => {
   // The model store is shared by every file in the run: leave it on its empty snapshot.
   __setOnDeviceSttForTests({ status: async () => EMPTY_STT } as unknown as OnDeviceSttPlugin);
   await onDeviceSttStore.refresh();
+  __resetOnDeviceSttStoreForTests();
   __resetCaptureEngineForTests();
   global.window = saved.window;
   if (saved.MediaRecorder === undefined) delete global.MediaRecorder; else global.MediaRecorder = saved.MediaRecorder;
