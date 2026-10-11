@@ -475,6 +475,17 @@ export function transcriptionOffError(): PrivateCloudError {
   return new PrivateCloudError("transcription_off", "Transcription was turned off.");
 }
 
+/**
+ * The signed-in account changed while this note was on its way. Nothing more is sent for it and
+ * its job is kept (unlike turning transcription off, which releases jobs), so the account's next
+ * run picks it up again.
+ */
+export const ACCOUNT_CHANGED = "account_changed";
+
+export function accountChangedError(): PrivateCloudError {
+  return new PrivateCloudError(ACCOUNT_CHANGED, "The account changed while this note was being transcribed.");
+}
+
 /** Contract field: the formats PTX takes, from capabilities (the relay's three when absent). */
 export function acceptedContentTypes(capabilities: PrivateCloudCapabilities): string[] {
   const listed = capabilities.content_types;
@@ -511,8 +522,12 @@ export interface VoiceNoteTranscribeInput {
   loadAudio: () => Promise<VoiceNoteAudio>;
   /** The note's length from its row, checked before any audio is read or decoded. */
   durationSeconds?: number | null;
-  /** Still allowed to send audio? Asked before the job is created and again right before the upload. */
-  allowed?: () => boolean;
+  /**
+   * Still allowed to send audio? Asked before the job is created and again right before the upload.
+   * Asked with "account", it says only whether this note's account is still the signed-in one,
+   * which every request for its job needs, not just the upload.
+   */
+  allowed?: (scope?: "account") => boolean;
 }
 
 export interface VoiceNoteCloud {
@@ -559,8 +574,12 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
     }
   };
 
-  /** Stop using the note's job: cancel it (if it exists) and forget it. */
-  const release = async (sourceId: string) => {
+  /**
+   * Stop using the note's job: cancel it (if it exists) and forget it. For an account that has left
+   * it does neither: the cancel would carry the new account's token, and the job stays for its owner.
+   */
+  const release = async (sourceId: string, guard: () => void = () => {}) => {
+    guard();
     const transcriptionId = pending.read(sourceId)?.transcriptionId ?? null;
     pending.clear(sourceId);
     if (transcriptionId !== null) await cancelQuietly(transcriptionId);
@@ -589,36 +608,48 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
     };
   };
 
-  const readJob = async (id: string): Promise<PrivateCloudJob> => {
+  /** Before every request for a note's job: its account must still be the signed-in one (the session's token is shared). */
+  type Guard = () => void;
+
+  const readJob = async (id: string, guard: Guard): Promise<PrivateCloudJob> => {
     const tolerance = transientTolerance();
     for (;;) {
+      guard();
       try {
-        return await deps.api.get(id);
+        const job = await deps.api.get(id);
+        guard();
+        return job;
       } catch (err) {
+        guard();
         await tolerance.rideOut(err);
       }
     }
   };
 
-  const poll = async (id: string, report: (s: VoiceNoteTranscriptionStatus) => void): Promise<PrivateCloudTranscript> => {
+  const poll = async (id: string, report: (s: VoiceNoteTranscriptionStatus) => void, guard: Guard): Promise<PrivateCloudTranscript> => {
     const tolerance = transientTolerance();
     report({ kind: "queued", position: null });
     for (;;) {
       let job: PrivateCloudJob;
+      guard();
       try {
         job = await deps.api.get(id);
       } catch (err) {
+        guard();
         await tolerance.rideOut(err);
         continue;
       }
+      guard();
       if (job.status === "completed") {
         let result: Awaited<ReturnType<PrivateCloudApi["result"]>>;
         try {
           result = await deps.api.result(id);
         } catch (err) {
+          guard();
           await tolerance.rideOut(err);
           continue;
         }
+        guard();
         tolerance.reset();
         if (result.status === "completed") return result.transcript;
         if (result.status !== "pending") throw result.error;
@@ -635,21 +666,25 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
         );
       }
       await sleep(polling.intervalMs);
+      guard();
     }
   };
 
-  const createJob = async (sourceId: string, job: PendingVoiceNoteJob, body: PrivateCloudCreateBody) => {
+  const createJob = async (sourceId: string, job: PendingVoiceNoteJob, body: PrivateCloudCreateBody, guard: Guard) => {
     let current = job;
     for (let fresh = 0; ; fresh++) {
+      guard();
       try {
         const created = await deps.create({ attemptId: current.attemptId, correlationId: newId(), body });
         return { job: current, created };
       } catch (err) {
+        guard();
         // This key was used for different bytes, or its job is gone: start a new job, once. A job
         // the old key made that still waits for its upload is cancelled first (it holds the slot).
         const code = err instanceof PrivateCloudError ? err.code : null;
         if (fresh > 0 || (code !== "idempotency_conflict" && code !== "transcription_not_found")) throw err;
         if (current.transcriptionId !== null) await cancelQuietly(current.transcriptionId);
+        guard();
         current = { attemptId: newId(), transcriptionId: null };
         pending.write(sourceId, current);
       }
@@ -660,13 +695,17 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
     { sourceId, capabilities, loadAudio, durationSeconds, allowed = () => true }: VoiceNoteTranscribeInput,
     report: (status: VoiceNoteTranscriptionStatus) => void,
   ) => {
+    const guard: Guard = () => {
+      if (!allowed("account")) throw accountChangedError();
+    };
+    guard();
     let job = pending.read(sourceId);
 
     // Re-join a job this note already has: ask before uploading again.
     if (job?.transcriptionId) {
       let current: PrivateCloudJob | null = null;
       try {
-        current = await readJob(job.transcriptionId);
+        current = await readJob(job.transcriptionId, guard);
       } catch (err) {
         if (!(err instanceof PrivateCloudError && err.code === "transcription_not_found")) throw err;
         job = null;
@@ -674,7 +713,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       }
       if (current !== null) {
         if (current.status === "failed" || current.status === "cancelled") throw jobFailure(current);
-        if (current.status !== "awaiting_upload") return { transcriptionId: current.id, transcript: await poll(current.id, report) };
+        if (current.status !== "awaiting_upload") return { transcriptionId: current.id, transcript: await poll(current.id, report, guard) };
       }
     }
 
@@ -685,6 +724,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       if (typeof durationSeconds === "number" && durationSeconds > maxSeconds) {
         throw new VoiceNoteAudioError("recording_too_long_for_phone", "This note is too long to transcribe from the phone.");
       }
+      guard();
       if (!allowed()) throw transcriptionOffError();
       report({ kind: "preparing" });
       audio = await prepareTranscriptionAudio(await loadAudio(), {
@@ -693,9 +733,12 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
         maxSeconds,
         decode: deps.decode,
       });
+      guard();
       if (!allowed()) throw transcriptionOffError();
     } catch (err) {
-      await release(sourceId);
+      // An account that left keeps its job whatever this failure was (nothing is sent for it now).
+      guard();
+      await release(sourceId, guard);
       throw err;
     }
     if (job === null) {
@@ -711,13 +754,14 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       channel_mode: "mixed",
       channel_labels: [...VOICE_NOTE_CHANNEL_LABELS],
     };
-    const createdJob = await createJob(sourceId, job, body);
+    const createdJob = await createJob(sourceId, job, body, guard);
     job = { ...createdJob.job, transcriptionId: createdJob.created.id };
     pending.write(sourceId, job);
     const created = createdJob.created;
 
     if (created.upload !== null) {
       // The last moment to stop: nothing has been sent yet.
+      guard();
       if (!allowed()) throw transcriptionOffError();
       report({ kind: "uploading" });
       const correlationId = newId();
@@ -729,8 +773,9 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
         );
       } catch (err) {
         if (!(err instanceof PrivateCloudError)) throw err;
+        guard();
         // Only the job's status says whether the bytes landed.
-        const current = await readJob(created.id);
+        const current = await readJob(created.id, guard);
         if (current.status === "awaiting_upload") throw err; // Retry re-uploads (same job, fresh capability)
         if (current.status === "failed" || current.status === "cancelled") {
           throw jobFailure(current, { correlationId: err.correlationId });
@@ -738,7 +783,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
         // Accepted despite the error: carry on as if the 201 had arrived.
       }
     }
-    return { transcriptionId: created.id, transcript: await poll(created.id, report) };
+    return { transcriptionId: created.id, transcript: await poll(created.id, report, guard) };
   };
 
   return {
@@ -750,11 +795,16 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
     pendingSourceIds: () => pending.sourceIds(),
 
     async transcribe(input, report) {
+      const guard = () => {
+        if (!(input.allowed?.("account") ?? true)) throw accountChangedError();
+      };
       try {
         return await run(input, report);
       } catch (err) {
+        // No cleanup for an account that left, whatever the error: its job stays for it.
+        guard();
         const code = voiceNoteErrorCode(err);
-        if (RELEASE_CODES.has(code)) await release(input.sourceId);
+        if (RELEASE_CODES.has(code)) await release(input.sourceId, guard);
         else if (JOB_ENDED_CODES.has(code)) pending.clear(input.sourceId);
         throw err;
       }
@@ -882,7 +932,7 @@ export async function transcribeVoiceNote(args: {
   capabilities: PrivateCloudCapabilities;
   sourceId: string;
   audio?: VoiceNoteAudio;
-  allowed?: () => boolean;
+  allowed?: (scope?: "account") => boolean;
   /** The user asked for this note to be transcribed. Without it, only a note recorded in the app goes. */
   explicit?: boolean;
   report: (status: VoiceNoteTranscriptionStatus) => void;
@@ -890,8 +940,12 @@ export async function transcribeVoiceNote(args: {
 }): Promise<"transcribed" | "no_speech"> {
   const { tcw, cloud, sourceId, report } = args;
   const transcribedAt = () => (args.now?.() ?? new Date()).toISOString();
+  const stillCurrent = () => args.allowed?.("account") ?? true;
   /** The job is done with: forget it, then delete it at PTX (best-effort: PTX deletes it within 24 h). */
   const finish = async (transcriptionId?: string | null) => {
+    // Not for an account that left: the delete would go out with the new account's token, and the
+    // job is kept so this account's next run finds the saved transcript and deletes it then.
+    if (!stillCurrent()) return;
     try {
       await cloud.finish(sourceId, transcriptionId);
     } catch (err) {
@@ -951,6 +1005,7 @@ export async function transcribeVoiceNote(args: {
     return res.data;
   };
   const save = async (prepared: VoiceNoteTranscriptSave) => {
+    if (!stillCurrent()) throw accountChangedError();
     report({ kind: "saving" });
     const saved = await saveVoiceNoteTranscript(tcw, sourceId, prepared);
     if (!saved.ok) {
@@ -1011,11 +1066,22 @@ export interface VoiceNoteTranscriberSnapshot {
 /** `saved`: a note's outcome was written to the space (refresh the list). */
 export type VoiceNoteTranscriberEvent = { kind: "changed" } | { kind: "saved"; sourceId: string };
 
+export interface VoiceNoteCheckOptions {
+  current?: () => boolean;
+  automatic?: boolean;
+}
+
 export interface VoiceNoteTranscriber {
   snapshot(): VoiceNoteTranscriberSnapshot;
   subscribe(listener: (event: VoiceNoteTranscriberEvent) => void): () => void;
-  /** Whether private cloud can be offered (bounded retries when the check itself fails). */
-  check(): Promise<void>;
+  /**
+   * Whether private cloud can be offered (bounded retries when the check itself fails).
+   * `current` says this caller's account is still the signed-in one: once it is false the
+   * check stops, retries and resumes nothing, and sends nothing for this account.
+   * `automatic` (mount, foreground) reuses a fresh answer and backs off after a failure;
+   * a user's "Check again" leaves it out and always asks.
+   */
+  check(options?: VoiceNoteCheckOptions): Promise<void>;
   /** The one-time "Use private cloud". Resumes notes a previous run left in flight. */
   consent(): void;
   /** Stops sending: waiting notes are dropped, the running one stops before its upload, unsent jobs are cancelled. */
@@ -1043,12 +1109,20 @@ export interface VoiceNoteTranscriberDeps {
   sleep?: (ms: number) => Promise<void>;
   /** Waits between availability checks after one fails (plus the first try), as on the desktop. */
   checkRetryMs?: readonly number[];
+  /** How long an automatic check reuses an answered (available / off) result. */
+  freshMs?: number;
+  /** Waits before an automatic check may try again after the 1st, 2nd, ... failed check; the last repeats. */
+  failedBackoffMs?: readonly number[];
+  now?: () => number;
 }
 
 export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): VoiceNoteTranscriber {
   const runNote = deps.runNote ?? transcribeVoiceNote;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const checkRetryMs = deps.checkRetryMs ?? [2_000, 5_000];
+  const freshMs = deps.freshMs ?? 5 * 60_000;
+  const failedBackoffMs = deps.failedBackoffMs ?? [15_000, 60_000, 5 * 60_000];
+  const now = deps.now ?? Date.now;
   const cloud = deps.cloud;
   const listeners = new Set<(event: VoiceNoteTranscriberEvent) => void>();
   const jobs = new Map<string, NoteTranscriptionState>();
@@ -1081,12 +1155,17 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   let chain: Promise<void> = Promise.resolve();
   let resumed = false;
   let checking: Promise<void> | null = null;
+  /** The newest caller's "this account is still signed in"; none until a hook-managed check names one. */
+  let accountCurrent: (() => boolean) | null = null;
+  let settledAt: number | null = null;
+  let failedChecks = 0;
 
   const emit = (event: VoiceNoteTranscriberEvent = { kind: "changed" }) => {
     snapshot = { ...state, jobs: new Map(jobs) };
     for (const listener of listeners) listener(event);
   };
-  const on = () => state.availability === "available" && state.consented && state.capabilities !== null;
+  const identityCurrent = () => accountCurrent === null || accountCurrent();
+  const on = () => identityCurrent() && state.availability === "available" && state.consented && state.capabilities !== null;
 
   /** A note that did not begin in the app: kept from every automatic job until the user's own Transcribe on it. */
   const hold = (sourceId: string) => {
@@ -1113,6 +1192,10 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       if (!waiting.delete(sourceId)) return;
       if (!on() || state.capabilities === null) {
         jobs.delete(sourceId);
+        if (!identityCurrent()) {
+          resumed = false;
+          console.warn("[Transcription] Not starting a private cloud job: its account is no longer the signed-in one", sourceId);
+        }
         emit();
         return;
       }
@@ -1124,7 +1207,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           capabilities: state.capabilities,
           sourceId,
           audio,
-          allowed: () => state.consented,
+          allowed: (scope) => identityCurrent() && (scope === "account" || state.consented),
           explicit: authorised,
           report: (status) => {
             if (jobs.get(sourceId)?.kind !== "active") return;
@@ -1141,7 +1224,11 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           return;
         }
         // Whatever stopped a note after the user turned transcription off is not a failure to show.
-        if (!state.consented || voiceNoteErrorCode(err) === "transcription_off") jobs.delete(sourceId);
+        if (!identityCurrent()) {
+          resumed = false;
+          jobs.delete(sourceId);
+          console.warn("[Transcription] Stopped a private cloud job: its account is no longer the signed-in one", sourceId);
+        } else if (!state.consented || voiceNoteErrorCode(err) === "transcription_off") jobs.delete(sourceId);
         else jobs.set(sourceId, { kind: "failed", ...voiceNoteTranscriptionFailure(err) });
         emit();
       }
@@ -1164,15 +1251,25 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       };
     },
 
-    check() {
+    check(options = {}) {
       if (cloud === null) return Promise.resolve();
+      if (options.current) accountCurrent = options.current;
       if (checking !== null) return checking;
+      if (options.automatic && settledAt !== null && state.availability !== "checking") {
+        const wait = state.availability === "failed" ? failedBackoffMs[Math.min(failedChecks, failedBackoffMs.length) - 1] ?? 0 : freshMs;
+        if (now() - settledAt < wait) {
+          // Reusing the answer still reactivates this account's work an earlier departure paused.
+          resume();
+          return Promise.resolve();
+        }
+      }
       // A re-check (every mount) keeps an answer it already has, so the card does not flicker.
       if (state.availability !== "available") {
         state = { ...state, availability: "checking" };
         emit();
       }
       const attempt = async () => {
+        if (!identityCurrent()) return { availability: "stale" } as const;
         try {
           const caps = await cloud.capabilities();
           return caps === null ? ({ availability: "hidden" } as const) : ({ availability: "available", caps } as const);
@@ -1181,6 +1278,10 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           return { availability: "failed" } as const;
         }
       };
+      const stale = () => {
+        resumed = false;
+        console.warn("[Transcription] Dropped a private cloud check: its account is no longer the signed-in one");
+      };
       checking = (async () => {
         let result = await attempt();
         for (const waitMs of checkRetryMs) {
@@ -1188,6 +1289,9 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           await sleep(waitMs);
           result = await attempt();
         }
+        if (result.availability === "stale" || !identityCurrent()) return stale();
+        failedChecks = result.availability === "failed" ? failedChecks + 1 : 0;
+        settledAt = now();
         state = {
           ...state,
           availability: result.availability,

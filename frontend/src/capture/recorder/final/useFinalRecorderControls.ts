@@ -104,6 +104,7 @@ export function useFinalRecorderControls({
     shell,
     transcription: recorder.transcription,
     model: onDevice.model,
+    download: onDevice.download,
     transcriber: transcriberApi ?? recorder,
     signedIn: recorder.signedIn,
     whisper,

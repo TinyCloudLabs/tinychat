@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   OnDeviceStt,
   type OnDeviceSttStatus,
 } from "@/lib/voiceNotes/onDeviceStt";
+import { downloadOnDeviceModel } from "@/lib/voiceNotes/onDeviceSttStore";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { VoiceNoteTranscriptionProps } from "../transcriptionProps";
@@ -13,7 +14,12 @@ import {
   type ModeShell,
   type ModeStop,
 } from "./transcriptionModes";
-import { FINAL_COPY, TRANSCRIBER_NAME } from "./finalCopy";
+import { CHECK_AGAIN, FINAL_COPY, privateNotOffered, TRANSCRIBER_NAME } from "./finalCopy";
+import {
+  localModelGuide,
+  type OnDeviceDownload,
+  type StopAction,
+} from "./localModelGuide";
 import {
   localDesktopCaption,
   localDesktopExplanation,
@@ -53,6 +59,8 @@ export interface ScaleStop {
   stop: ModeStop;
   available: boolean;
   reason?: string;
+  /** What moves an unavailable stop on (download the model, check again). */
+  action?: StopAction;
 }
 
 /**
@@ -64,9 +72,11 @@ export function useOnDeviceModel(): {
   model: OnDeviceSttStatus | null;
   error: string | null;
   retry: () => void;
+  download: OnDeviceDownload;
 } {
   const [model, setModel] = useState<OnDeviceSttStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (!captureCapabilities().localTranscription) return;
@@ -102,13 +112,23 @@ export function useOnDeviceModel(): {
     setError(null);
     setAttempt((n) => n + 1);
   }, []);
-  return { model, error, retry };
+  const start = useCallback(() => {
+    setDownloadError(null);
+    void downloadOnDeviceModel().then(setDownloadError);
+  }, []);
+  const download = useMemo(
+    () => ({ start, error: downloadError }),
+    [start, downloadError],
+  );
+  return { model, error, retry, download };
 }
 
 export interface TranscriptionChoiceOptions {
   shell: ModeShell;
   transcription: VoiceNoteTranscriptionProps | undefined;
   model: OnDeviceSttStatus | null;
+  /** Starts the model download from the Local row; absent where Local has no model to get. */
+  download?: OnDeviceDownload;
   transcriber: TranscriberApi;
   /** The account's current state: signed out, the provider is locked to Local. */
   signedIn: boolean;
@@ -128,6 +148,7 @@ export function useTranscriptionChoice({
   shell,
   transcription,
   model,
+  download,
   transcriber: api,
   signedIn,
   whisper = NO_DESKTOP_WHISPER,
@@ -160,11 +181,19 @@ export function useTranscriptionChoice({
       if (!signedIn && stop.id !== "local")
         return { stop, available: false, reason: SIGNED_OUT };
       if (!signedIn) return { stop, available: true };
-      if (stop.id === "private" && !offered)
-        return { stop, available: false, reason: PRIVATE_UNAVAILABLE };
-      return availability.available
-        ? { stop, available: true }
-        : { stop, available: false, reason: availability.reason };
+      if (stop.id === "private" && !offered) {
+        const { reason, canRecheck } = privateNotOffered(transcription?.availability);
+        return {
+          stop,
+          available: false,
+          reason,
+          ...(canRecheck && transcription ? { action: { label: CHECK_AGAIN, run: transcription.onRecheck } } : {}),
+        };
+      }
+      if (availability.available) return { stop, available: true };
+      if (stop.id === "local" && shell === "phone")
+        return { stop, available: false, ...localModelGuide(model, download) };
+      return { stop, available: false, reason: availability.reason };
     },
   );
 
