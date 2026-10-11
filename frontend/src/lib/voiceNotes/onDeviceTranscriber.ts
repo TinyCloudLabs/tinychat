@@ -43,8 +43,8 @@ function publish(key: string, next: OnDeviceTranscriptSyncState | null): void {
  * or `failed` (see `onDeviceTranscriptSyncState`). A no-op, with nothing published, without either.
  * Failures are logged and published, not thrown: the local transcript stays valid, and the next
  * save or "transcribed" event tries again. Syncs of one note can overlap (save recovery and the
- * native `transcribed` event); the newest attempt owns the published state, so an older one
- * finishing late never overwrites it.
+ * native `transcribed` event); attempts are numbered when called and the highest to claim a note
+ * owns its published state, so an older one finishing late (read or write) never overwrites it.
  */
 export async function syncOnDeviceTranscript(
   tcw: TinyCloudWeb,
@@ -52,35 +52,38 @@ export async function syncOnDeviceTranscript(
 ): Promise<void> {
   if (recording.ledger?.audio.state !== "saved") return;
   const key = syncKey(tcw, recording.id);
+  // Numbered when called, before the native read: reads can finish in any order, and only a higher number may take over.
+  const attempt = ++attempts;
   const claim = () => {
-    const attempt = ++attempts;
+    if ((owner.get(key) ?? 0) > attempt) return false;
     owner.set(key, attempt);
-    return attempt;
-  };
-  const publishIfOwner = (attempt: number, next: OnDeviceTranscriptSyncState) => {
-    if (owner.get(key) === attempt) publish(key, next);
+    return true;
   };
   let transcript: LocalTranscript | null;
   try {
     ({ transcript } = await VoiceNotes.getTranscript({ id: recording.id }));
   } catch (err) {
     console.warn("[OnDeviceStt] Could not read the local transcript", err);
-    publishIfOwner(claim(), { state: "failed", message: `Couldn't read the transcript on this phone: ${errorMessage(err)}` });
+    if (claim()) publish(key, { state: "failed", message: `Couldn't read the transcript on this phone: ${errorMessage(err)}` });
     return;
   }
   if (!transcript) return;
-  const attempt = claim();
+  // A newer attempt already owns this note and has read a transcript at least as new: nothing for this one to write or say.
+  if (!claim()) return;
   publish(key, { state: "syncing" });
+  const publishIfOwner = (next: OnDeviceTranscriptSyncState) => {
+    if (owner.get(key) === attempt) publish(key, next);
+  };
   try {
     const result = await saveVoiceNoteTranscript(tcw, recording.id, localTranscriptToSave(transcript));
-    if (result.ok) publishIfOwner(attempt, { state: "synced" });
+    if (result.ok) publishIfOwner({ state: "synced" });
     else {
       console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", result.error);
-      publishIfOwner(attempt, { state: "failed", message: result.error.message });
+      publishIfOwner({ state: "failed", message: result.error.message });
     }
   } catch (err) {
     console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", err);
-    publishIfOwner(attempt, { state: "failed", message: errorMessage(err) });
+    publishIfOwner({ state: "failed", message: errorMessage(err) });
   }
 }
 
