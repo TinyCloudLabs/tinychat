@@ -26,7 +26,7 @@ import { saveVoiceNote, type NoteSyncErrorCode, type VoiceNoteAudio, type VoiceN
 import { assertCurrent, type AccountContext } from "@/lib/voiceNotes/accountContext";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { deleteNote } from "@/lib/voiceNotes/recordingNotes";
-import { withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
+import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
 
 export const TINYCLOUD_NETWORK_FAILURE_MESSAGE =
   "Couldn't reach your TinyCloud space. This note is still on your phone — try again.";
@@ -249,7 +249,7 @@ export type SaveOutcome =
   | { kind: "saved"; audio: VoiceNoteAudio | null; cleanupError: string | null; noteSyncError?: NoteSyncErrorCode }
   | { kind: "already-saved"; cleanupError: string | null }
   | { kind: "discarded"; cleanupError: string | null }
-  | { kind: "held"; reason: "legacy" | "unowned" | "other-account" }
+  | { kind: "held"; reason: "signed-out" | "legacy" | "unowned" | "other-account" }
   | { kind: "in-flight" }
   | { kind: "failed"; failure: string };
 
@@ -356,7 +356,7 @@ export async function saveRecording(
 /** The one owner-aware upload entry point used by the T18 pipeline. */
 export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
   recording: VoiceNoteRecording, checkpoint: () => void = () => undefined,
-  audioOptions: Pick<StoreAudioOptions, "retryDelaysMs"> = {}): Promise<SaveOutcome> {
+  audioOptions: Pick<StoreAudioOptions, "retryDelaysMs" | "onProgress" | "onRetry"> = {}): Promise<SaveOutcome> {
   const check = () => { assertCurrent(ctx); checkpoint(); };
   const checkActive = () => { check(); if (isDiscarded(recording.id)) throw new Error("Recording was discarded"); };
   check();
@@ -421,11 +421,36 @@ let trackedSavesInFlight = 0;
 let activeAccountDid: string | null = null;
 /** Bumped whenever the active account changes, so a run can tell "not registered yet" from "signed out since". */
 let accountChanges = 0;
-const noteFailures = new Map<string, string>();
+type NoteFailure = NonNullable<PendingNote["failed"]>;
+const noteFailures = new Map<string, NoteFailure>();
+const heldReasons = new Map<string, NonNullable<PendingNote["held"]>>();
 let generalFailure: string | null = null;
 
 function currentFailure(): string | null {
-  return generalFailure ?? [...noteFailures.values()].at(-1) ?? null;
+  return generalFailure ?? [...noteFailures.values()].at(-1)?.message ?? null;
+}
+
+function failureStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const meta = (error as { meta?: unknown }).meta;
+  if (meta && typeof meta === "object" && typeof (meta as { status?: unknown }).status === "number") return (meta as { status: number }).status;
+  const status = (error as { status?: unknown }).status;
+  if (typeof status === "number") return status;
+  const match = rawErrorMessage(error).match(/\b([45]\d\d)\b/);
+  return match ? Number(match[1]) : undefined;
+}
+
+export function classifyNoteFailure(error: unknown): NoteFailure["kind"] {
+  const code = (errorCode(error) ?? "").toUpperCase();
+  const message = rawErrorMessage(error);
+  const status = failureStatus(error);
+  if (code === "STORAGE_QUOTA_EXCEEDED" || code === "STORAGE_LIMIT_REACHED" || /quota/i.test(code)) return "quota";
+  if (status === 401 || status === 403 || /AUTH|UNAUTHENTICATED|UNAUTHORIZED|FORBIDDEN|CAPABILITY/i.test(code)) return "auth";
+  if ((status !== undefined && status >= 500) || /SERVER_ERROR|INTERNAL_SERVER/i.test(code)) return "server";
+  if (error instanceof VoiceNoteSaveTimeout || (error && typeof error === "object" && (error as { name?: unknown }).name === "VoiceNoteSaveTimeout")
+    || code === "SPACE_LANE_QUEUE_TIMEOUT" || code === "VOICE_NOTE_OPERATION_TIMEOUT" || /timeout|timed out/i.test(code)) return "timeout";
+  if (isTinyCloudNetworkFailure(error) || code === "NETWORK_ERROR" || /offline|network|failed to fetch|load failed/i.test(message)) return "offline";
+  return "other";
 }
 
 function clearPendingErrors(): void {
@@ -471,7 +496,7 @@ export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
       } else if (outcome.kind === "failed") {
         left.push(recording);
         lastError = outcome.failure;
-        noteFailures.set(recording.id, outcome.failure);
+        noteFailures.set(recording.id, { kind: classifyNoteFailure(outcome.failure), message: outcome.failure });
       }
       // Publish each note's new ledger state as soon as its save settles. A long
       // reconcile pass must not leave the Capture count stale until its last note.
@@ -495,7 +520,10 @@ export interface PendingNote {
   startedAt: number;
   durationMs: number;
   /** This note failed its latest save attempt, so its Recent row must not imply it's still saving. */
-  failed?: true;
+  failed?: { kind: "offline" | "timeout" | "quota" | "auth" | "server" | "other"; message: string };
+  held?: "signed-out" | "other-account" | "legacy" | "unowned";
+  upload?: { state: "waiting" | "uploading" | "retrying"; bytes: number; total: number };
+  waitingBehind?: number;
 }
 
 /** Recordings awaiting a space save, as the recorder views show them. */
@@ -508,6 +536,8 @@ export interface PendingSnapshot {
   /** A save of them is running (savePendingRecordings). */
   running: boolean;
   lastError: string | null;
+  uploadingId: string | null;
+  online: boolean;
 }
 
 /** How many notes await a space save (0 when unknown or the listing failed). */
@@ -515,7 +545,8 @@ export function pendingCount(snapshot: Pick<PendingSnapshot, "listing">): number
   return snapshot.listing.state === "ok" ? snapshot.listing.count : 0;
 }
 
-let pendingSnapshot: PendingSnapshot = { listing: { state: "unknown" }, accountDid: null, running: false, lastError: null };
+let pendingSnapshot: PendingSnapshot = { listing: { state: "unknown" }, accountDid: null, running: false, lastError: null,
+  uploadingId: null, online: typeof navigator === "undefined" ? true : navigator.onLine !== false };
 const pendingListeners = new Set<() => void>();
 
 function publishPending(patch: Partial<PendingSnapshot>): void {
@@ -574,14 +605,39 @@ export const pendingStore = {
       },
     };
   },
-  reportNoteFailure(id: string, message: string): void {
-    const visibleMessage = messageOf(message);
+  reportNoteFailure(id: string, error: unknown): void {
+    const visibleMessage = messageOf(error);
+    const failure = { kind: classifyNoteFailure(error), message: visibleMessage };
     noteFailures.delete(id);
-    noteFailures.set(id, visibleMessage);
+    noteFailures.set(id, failure);
     publishPending({
       lastError: currentFailure(),
-      notes: pendingSnapshot.notes?.map((note) => note.id === id ? { ...note, failed: true } : note),
+      notes: pendingSnapshot.notes?.map((note) => note.id === id ? { ...note, failed: failure } : note),
     });
+  },
+  setOnline(online: boolean): void { publishPending({ online }); },
+  setHeld(id: string, held: PendingNote["held"]): void {
+    if (held) heldReasons.set(id, held);
+    publishPending({ notes: pendingSnapshot.notes?.map((note) => note.id === id ? { ...note, held } : note) });
+  },
+  setUpload(id: string, upload: PendingNote["upload"], details?: Pick<PendingNote, "startedAt" | "durationMs">): void {
+    const notes = pendingSnapshot.notes ?? (details ? [] : undefined);
+    publishPending({ uploadingId: upload?.state === "uploading" || upload?.state === "retrying" ? id :
+      pendingSnapshot.uploadingId === id ? null : pendingSnapshot.uploadingId,
+      notes: notes?.some((note) => note.id === id)
+        ? notes.map((note) => note.id === id ? { ...note, upload } : note)
+        : details ? [...(notes ?? []), { id, ...details, upload }] : notes });
+  },
+  setWaitingBehind(id: string, waitingBehind: number): void {
+    publishPending({ notes: pendingSnapshot.notes?.map((note) => note.id === id ? { ...note, waitingBehind } : note) });
+  },
+  clearUpload(id: string): void {
+    publishPending({ uploadingId: pendingSnapshot.uploadingId === id ? null : pendingSnapshot.uploadingId,
+      notes: pendingSnapshot.notes?.map((note) => {
+        if (note.id !== id || !note.upload) return note;
+        const { upload: _upload, waitingBehind: _waitingBehind, ...rest } = note;
+        return rest;
+      }) });
   },
   clearNoteFailure(id: string): void {
     if (!noteFailures.delete(id)) return;
@@ -596,6 +652,7 @@ export const pendingStore = {
     if (activeAccountDid !== did) {
       accountChanges++;
       noteFailures.clear();
+      heldReasons.clear();
       generalFailure = null;
       publishPending({ accountDid: did, listing: { state: "unknown" }, notes: undefined, lastError: null });
     }
@@ -628,7 +685,9 @@ async function relistPending(lastError?: string | null): Promise<void> {
     const notes = pending
       .filter((recording) => !isDiscarded(recording.id))
       .map((recording) => ({ id: recording.id, startedAt: recording.startedAt, durationMs: recording.durationMs,
-        ...(noteFailures.has(recording.id) ? { failed: true as const } : {}) }));
+        ...(noteFailures.has(recording.id) ? { failed: noteFailures.get(recording.id)! } : {}),
+        ...((activeAccountDid ? heldReasons.get(recording.id) : "signed-out") ?
+          { held: activeAccountDid ? heldReasons.get(recording.id)! : "signed-out" as const } : {}) }));
     publishPending({ accountDid: activeAccountDid, listing: { state: "ok", count: pending.length }, notes, lastError: currentFailure() });
   } catch (caught) {
     publishPending({ listing: { state: "error", message: listingFailure(caught) }, notes: undefined, lastError: currentFailure() });

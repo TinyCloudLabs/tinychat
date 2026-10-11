@@ -95,6 +95,7 @@ interface RetryOptions {
     payloadBytes?: number) => Promise<T>;
   /** Waits before each retry of a transient failure; its length bounds the retries. Tests pass zeros. */
   retryDelaysMs?: readonly number[];
+  onRetry?: (attempt: number, code: string) => void;
 }
 
 export interface PutAudioOptions extends RetryOptions {
@@ -205,6 +206,7 @@ async function withRetry<T>(call: (signal?: AbortSignal) => Promise<Result<T>>, 
     const res = await (opts.schedule ? opts.schedule(call, operation, undefined, payloadBytes) : call(signal));
     if (!res.ok && (res.error.code === "ABORTED" || signal?.aborted)) throw abortError();
     if (res.ok || attempt >= delays.length || !isTransient(res.error)) return res;
+    opts.onRetry?.(attempt + 1, res.error.code ?? "STORE_ERROR");
     await sleep(delays[attempt]!, signal);
   }
 }

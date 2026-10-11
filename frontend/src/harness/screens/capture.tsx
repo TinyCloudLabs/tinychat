@@ -116,7 +116,7 @@ declare global {
 }
 const ON_PHONE: Partial<RecorderValue> = {
   ...SOFT_IDLE,
-  pending: { listing: { state: "ok", count: 2 }, running: false, lastError: null },
+  pending: { listing: { state: "ok", count: 2 }, running: false, lastError: null, uploadingId: null, online: true },
   retryPending: () => {
     window.exoUiRetryPending = (window.exoUiRetryPending ?? 0) + 1;
   },

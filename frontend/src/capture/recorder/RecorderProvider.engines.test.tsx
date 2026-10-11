@@ -126,13 +126,17 @@ async function mount(kind: CaptureEngineKind, capabilities: CaptureCapabilities,
   return mountWith(kind, capabilities, undefined, model);
 }
 
-async function mountWith(kind: CaptureEngineKind, capabilities: CaptureCapabilities, prepare?: (plugin: VoiceNotesPlugin) => void, model: "ready" | "absent" = "ready") {
+async function mountWith(kind: CaptureEngineKind, capabilities: CaptureCapabilities, prepare?: (plugin: VoiceNotesPlugin) => void,
+  model: "ready" | "absent" = "ready", recovery?: { listeners: Map<string, () => void>; pipeline: { resume(): void; cancelAll(): void; reconcileAll(): Promise<void> } }) {
   const stt = strictOnDeviceStt(kind === "native", model);
   __setOnDeviceSttForTests(stt.plugin);
   const strict = strictEngine(capabilities);
   prepare?.(strict.fake.plugin);
   if (kind === "native") {
-    global.window = windowStub();
+    global.window = windowStub(recovery ? {
+      addEventListener: (name: string, listener: () => void) => recovery.listeners.set(name, listener),
+      removeEventListener: (name: string) => recovery.listeners.delete(name),
+    } : {});
     __setVoiceNotesForTests(strict.engine, { available: true });
     await onDeviceSttStore.refresh();
   } else {
@@ -143,18 +147,31 @@ async function mountWith(kind: CaptureEngineKind, capabilities: CaptureCapabilit
     registerCaptureEngine(kind, async () => strict.engine);
     await installCaptureEngine();
   }
-  const tcw = { did: "did:example:alice" } as TinyCloudWeb;
+  const tcw = { did: "did:example:alice", spaceId: "space:alice" } as TinyCloudWeb;
   root = createRoot({ nodeType: 1, nodeName: "DIV", tagName: "DIV", ownerDocument: documentStub, textContent: "", addEventListener() {}, removeEventListener() {},
     appendChild() {}, removeChild() {}, insertBefore() {} } as unknown as HTMLElement);
   await act(async () => root!.render(
     <RecorderProvider tcw={tcw} enabled>
       <Probe />
-      <PendingVoiceNotesSaver tcw={tcw} pipeline={{ resume() {}, cancelAll() {}, reconcileAll: async () => {} } as never} backendUrl="" sessionStore={{} as never} />
+      <PendingVoiceNotesSaver tcw={tcw} pipeline={(recovery?.pipeline ?? { resume() {}, cancelAll() {}, reconcileAll: async () => {} }) as never} backendUrl="" sessionStore={{} as never} />
     </RecorderProvider>,
   ));
   await act(async () => { await tick(); await tick(); });
   return { ...strict, stt };
 }
+
+test("pending saver retries reconciliation when the device comes online", async () => {
+  const listeners = new Map<string, () => void>();
+  let reconciles = 0;
+  const pipeline = { resume() {}, cancelAll() {}, reconcileAll: async () => { reconciles++; } };
+  await mountWith("native", ALL, undefined, "ready", { listeners, pipeline });
+  expect(reconciles).toBe(1);
+  await act(async () => { listeners.get("offline")?.(); });
+  expect((await import("@/lib/voiceNotes/recorderSaves")).pendingStore.snapshot().online).toBe(false);
+  await act(async () => { listeners.get("online")?.(); await tick(); });
+  expect(reconciles).toBe(2);
+  expect((await import("@/lib/voiceNotes/recorderSaves")).pendingStore.snapshot().online).toBe(true);
+});
 
 for (const kind of ["web", "tauri"] as const) {
   describe(`${kind} engine without native capabilities`, () => {

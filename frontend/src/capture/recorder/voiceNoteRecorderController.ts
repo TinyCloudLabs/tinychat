@@ -409,12 +409,15 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     send({ type: "LOCAL_COMMITTED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
     void pendingStore.refresh();
     if (!tcw || (pipeline && !pipeline.isAccepting())) {
-      send({ type: "LOCAL_UPLOAD_HELD", id: recording.id });
+      pendingStore.setHeld(recording.id, "signed-out");
+      send({ type: "LOCAL_UPLOAD_HELD", id: recording.id, reason: "signed-out" });
       return;
     }
     if (pipeline) {
       if (recording.owner !== tcw.did || !tcw.did || !tcw.spaceId) {
-        send({ type: "LOCAL_UPLOAD_HELD", id: recording.id });
+        const reason = !tcw.did || !tcw.spaceId ? "signed-out" : recording.owner ? "other-account" : "unowned";
+        pendingStore.setHeld(recording.id, reason);
+        send({ type: "LOCAL_UPLOAD_HELD", id: recording.id, reason });
         return;
       }
       try {
@@ -426,7 +429,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         } finally { finish(); }
       } catch (caught) {
         if (!pipeline.isAccepting() || saveDeferredForAccountTransition(caught)) {
-          send({ type: "LOCAL_UPLOAD_HELD", id: recording.id });
+          pendingStore.setHeld(recording.id, "signed-out");
+          send({ type: "LOCAL_UPLOAD_HELD", id: recording.id, reason: "signed-out" });
           void pendingStore.refresh();
           return;
         }
@@ -470,7 +474,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         send({ type: "RESET" });
         return;
       case "held":
-        send({ type: "LOCAL_UPLOAD_HELD", id: recording.id });
+        pendingStore.setHeld(recording.id, outcome.reason);
+        send({ type: "LOCAL_UPLOAD_HELD", id: recording.id, reason: outcome.reason });
         void pendingStore.refresh();
         return;
       case "in-flight":

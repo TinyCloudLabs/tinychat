@@ -182,6 +182,7 @@ export interface StoreAudioOptions {
   onProgress?: (storedBytes: number, totalBytes: number) => void;
   /** Injected in tests. */
   retryDelaysMs?: readonly number[];
+  onRetry?: (attempt: number, code: string) => void;
   schedule?: <T>(call: (signal?: AbortSignal) => Promise<T>, operation?: string, timeoutMs?: number,
     payloadBytes?: number) => Promise<T>;
   checkpoint?: () => void;

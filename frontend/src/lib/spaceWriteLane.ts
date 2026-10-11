@@ -9,6 +9,17 @@ let testAbortSettleGraceMs: number | null = null;
 let testQueueWaitLimitMs: number | null = null;
 let nextLaneJobId = 0;
 let activeLaneJob: { id: number; operation: string } | null = null;
+const queuedLaneJobs = new Set<number>();
+const laneListeners = new Set<() => void>();
+function publishLane(): void { for (const listener of laneListeners) listener(); }
+export interface SpaceLaneSnapshot { busy: boolean; depth: number }
+export function spaceLaneSnapshot(): SpaceLaneSnapshot {
+  return { busy: activeLaneJob !== null || queuedLaneJobs.size > 0, depth: queuedLaneJobs.size };
+}
+export function subscribeSpaceLane(listener: () => void): () => void {
+  laneListeners.add(listener);
+  return () => { laneListeners.delete(listener); };
+}
 
 export interface SpaceLaneCallDeadline {
   operation: string;
@@ -31,6 +42,8 @@ type CallerSettlement<T> = { kind: "resolve"; value: T } | { kind: "reject"; err
 export function runOnSpaceLane<T>(job: (signal?: AbortSignal) => Promise<T>, deadline?: SpaceLaneCallDeadline): Promise<T> {
   const previous = lane;
   const jobId = ++nextLaneJobId;
+  queuedLaneJobs.add(jobId);
+  publishLane();
   let release!: () => void;
   lane = new Promise<void>((resolve) => { release = resolve; });
   let started = false;
@@ -48,6 +61,8 @@ export function runOnSpaceLane<T>(job: (signal?: AbortSignal) => Promise<T>, dea
     released = true;
     if (abortGraceTimer !== undefined) clearTimeout(abortGraceTimer);
     if (activeLaneJob?.id === jobId) activeLaneJob = null;
+    queuedLaneJobs.delete(jobId);
+    publishLane();
     release();
   };
 
@@ -83,9 +98,11 @@ export function runOnSpaceLane<T>(job: (signal?: AbortSignal) => Promise<T>, dea
       return;
     }
     started = true;
+    queuedLaneJobs.delete(jobId);
     if (queueWaitTimer !== undefined) clearTimeout(queueWaitTimer);
     const operation = deadline?.operation ?? "background drain";
     activeLaneJob = { id: jobId, operation };
+    publishLane();
 
     // The operation budget begins now, after the prior lane job has finished.
     const timeoutMs = deadline
@@ -131,7 +148,7 @@ export function runOnSpaceLane<T>(job: (signal?: AbortSignal) => Promise<T>, dea
 }
 
 /** Tests only: discard a completed lane from the previous case. */
-export function resetSpaceLaneForTests(): void { lane = Promise.resolve(); activeLaneJob = null; }
+export function resetSpaceLaneForTests(): void { lane = Promise.resolve(); activeLaneJob = null; queuedLaneJobs.clear(); publishLane(); }
 /** Tests only: shorten the post-abort lane grace period. */
 export function setSpaceLaneAbortGraceForTests(timeoutMs: number | null): void { testAbortSettleGraceMs = timeoutMs; }
 /** Tests only: shorten the queue wait ceiling without changing call deadlines. */

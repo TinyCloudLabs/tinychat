@@ -3,7 +3,7 @@ import { assertCurrent, StaleAccountContext, type AccountContext } from "./accou
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
 import { VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { isDiscarded, pendingStore, saveNoteForAccount } from "./recorderSaves";
-import { ensureVoiceNoteIdentity, sweepArchived } from "./voiceNoteRows";
+import { ensureVoiceNoteIdentity, spaceLaneSnapshot, sweepArchived } from "./voiceNoteRows";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { syncRecordingNote } from "./voiceNoteStore";
 import type { StoreAudioOptions } from "./voiceNoteStore";
@@ -48,7 +48,6 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     assertCurrent(ctx);
     if (tcw.did !== ctx.did || tcw.spaceId !== ctx.spaceId) throw new Error("Voice-note space changed");
   };
-  /** The note when this call saved it to the space; null when it was already there, gone or discarded. */
   const processOne = async (ctx: AccountContext, id: string, epoch: number, trackPending = false): Promise<VoiceNoteRecording | null> => {
     const check = checkFor(ctx, epoch);
     check();
@@ -66,12 +65,35 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     pendingStore.clearNoteFailure(id);
     const finish = trackPending && note.ledger?.audio.state !== "saved"
       ? pendingStore.beginAutomaticSave() : () => undefined;
+    const tracksUpload = note.ledger?.audio.state !== "saved";
+    if (tracksUpload) {
+      pendingStore.setUpload(id, { state: "waiting", bytes: 0, total: note.sizeBytes },
+        { startedAt: note.startedAt, durationMs: note.durationMs });
+      pendingStore.setWaitingBehind(id, spaceLaneSnapshot().depth);
+    }
+    let lastPublishAt = 0;
+    let lastPercent = -1;
     try {
-      const result = await saveNoteForAccount(tcw, ctx, note, check, testOptions);
+      const result = await saveNoteForAccount(tcw, ctx, note, check, {
+        ...testOptions,
+        onProgress: (bytes, total) => {
+          const now = Date.now();
+          const percent = total > 0 ? Math.floor(bytes / total * 100) : 0;
+          if (percent - lastPercent < 1 && now - lastPublishAt < 250) return;
+          lastPercent = percent;
+          lastPublishAt = now;
+          pendingStore.setUpload(id, { state: "uploading", bytes, total });
+        },
+        onRetry: (_attempt, _code) => {
+          const current = pendingStore.snapshot().notes?.find((item) => item.id === id)?.upload;
+          pendingStore.setUpload(id, { state: "retrying", bytes: current?.bytes ?? 0, total: current?.total ?? note.sizeBytes });
+        },
+      });
       if (result.kind === "failed") { check(); throw new Error(result.failure); }
       if (result.kind === "discarded" && result.cleanupError) throw new Error(result.cleanupError);
+      if (result.kind === "held") pendingStore.setHeld(id, result.reason);
       return result.kind === "saved" ? note : null;
-    } finally { finish(); }
+    } finally { if (tracksUpload) pendingStore.clearUpload(id); finish(); }
   };
   return {
     process(ctx, id, trigger = "stop") {
