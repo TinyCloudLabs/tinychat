@@ -82,7 +82,7 @@ describe("the Library keeps BOTH meeting data paths", () => {
       setFilter: noop,
       refresh: noop,
       retry: noop,
-      note: { item: null, reads: {}, loadAudio: null },
+      note: { item: null, reads: {}, audio: null },
     };
     const html = renderToStaticMarkup(
       <MemoryRouter>

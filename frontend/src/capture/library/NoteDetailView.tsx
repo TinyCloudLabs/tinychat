@@ -35,6 +35,13 @@ import type { SavedNoteStore } from "./savedNote/savedNoteStore";
 
 export type AudioLoad = (signal: AbortSignal, onProgress: (loadedBytes: number, totalBytes: number) => void) => Promise<Blob | null>;
 
+/** A note's audio: fetched from the space as a blob, or a file still on this phone, played from its URL. */
+export type NoteAudio = { load: AudioLoad } | { localUrl: () => Promise<string> };
+
+export function noteAudioPlayerProps(audio: NoteAudio): { load: AudioLoad } | { resolveUrl: () => Promise<string> } {
+  return "load" in audio ? { load: audio.load } : { resolveUrl: audio.localUrl };
+}
+
 export interface NoteDetailViewProps {
   item: LibraryItem | null;
   /** The list's state, for a note opened before the list has answered. */
@@ -42,8 +49,8 @@ export interface NoteDetailViewProps {
   /** Undefined while it is read. */
   metadata: MeetingMetadataRead | undefined;
   transcript: TranscriptRead | undefined;
-  /** Reads the note's audio; null when it has none stored. */
-  loadAudio: AudioLoad | null;
+  /** Where the note's audio comes from; null when it has none stored. */
+  audio: NoteAudio | null;
   /** Private cloud transcription (voice notes in the phone app); absent elsewhere. */
   transcription?: VoiceNoteTranscriptionProps;
   /** Whether the Mac's after-stop Whisper job shows here; defaults to the final recorder in the Tauri shell. */
@@ -308,7 +315,7 @@ export function NoteDetailView(props: NoteDetailViewProps) {
         key={item.sourceId}
         item={item}
         metadata={metadata}
-        loadAudio={props.loadAudio}
+        audio={props.audio}
         tcw={props.savedNote.tcw}
         store={props.savedNote.store}
         layout={props.savedNote.layout}
@@ -328,8 +335,8 @@ export function NoteDetailView(props: NoteDetailViewProps) {
         {!props.pushed && <h2 className="font-display text-title-1 [overflow-wrap:anywhere]">{title}</h2>}
         <p className="tnum text-meta text-muted-foreground">{noteMeta(item)}</p>
       </header>
-      {props.loadAudio ? (
-        <MeetingAudioPlayer key={`${item.source}:${item.sourceId}`} load={props.loadAudio} />
+      {props.audio ? (
+        <MeetingAudioPlayer key={`${item.source}:${item.sourceId}`} {...noteAudioPlayerProps(props.audio)} />
       ) : item.source === VOICE_NOTE_SOURCE && meta && Object.keys(meta).length === 0 ? (
         <p role="status" className="text-callout text-muted-foreground" data-testid="voice-note-saving-from-phone">
           Saving from your phone…

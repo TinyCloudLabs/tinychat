@@ -181,7 +181,7 @@ describe("useLibrary, notes still on this phone", () => {
     expect(library.items[0]).toMatchObject({ onPhone: true, sourceId: "rec-p1", durationSecs: 14 });
     expect(library.note.item?.id).toBe("on-phone:rec-p1");
     expect(library.note.reads).toEqual({ metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" } });
-    expect(library.note.loadAudio).not.toBeNull();
+    expect(library.note.audio).toHaveProperty("localUrl");
     expect(space.kinds).toEqual(["list"]);
   });
 
@@ -327,10 +327,14 @@ describe("useLibrary, notes still on this phone", () => {
 
 describe("useLibrary, which audio a note on the phone plays", () => {
   const phoneNote: PendingNote = { id: "rec-play", startedAt: Date.parse("2026-10-06T10:00:00.000Z"), durationMs: 14_000 };
-  async function withLocalAudio(run: (counts: { local: () => number; remote: () => number }, space: ReturnType<typeof fakeSpace>) => Promise<void>) {
+  async function withLocalAudio(run: (counts: { local: () => number; remote: () => number; fetches: () => number }, space: ReturnType<typeof fakeSpace>) => Promise<void>) {
     const space = fakeSpace();
     let remoteReads = 0;
     let localReads = 0;
+    let fetches = 0;
+    const realFetch = globalThis.fetch;
+    // The WKWebView scheme handler answers a fetch of a local file with status 0; nothing here may fetch it.
+    globalThis.fetch = (async () => { fetches++; return new Response(null, { status: 0 as never }); }) as unknown as typeof fetch;
     space.tcw.kv.get = (async () => {
       remoteReads++;
       return { ok: false, error: { code: "KV_NOT_FOUND", message: "Upload is not finished" } };
@@ -339,29 +343,63 @@ describe("useLibrary, which audio a note on the phone plays", () => {
     const original = VoiceNotes;
     __setVoiceNotesForTests({ localAudioUrl: async () => { localReads++; return { url: localUrl }; } } as VoiceNotesPlugin, { available: true });
     try {
-      await run({ local: () => localReads, remote: () => remoteReads }, space);
+      await run({ local: () => localReads, remote: () => remoteReads, fetches: () => fetches }, space);
     } finally {
+      globalThis.fetch = realFetch;
       __setVoiceNotesForTests(original, { available: null });
       URL.revokeObjectURL(localUrl);
     }
   }
-  const play = (library: Library) => library.note.loadAudio!(new AbortController().signal, () => {});
+  const localUrlOf = (library: Library) => {
+    const audio = library.note.audio;
+    if (!audio || !("localUrl" in audio)) throw new Error("expected the phone's own audio");
+    return audio.localUrl();
+  };
+  const playFromSpace = (library: Library) => {
+    const audio = library.note.audio;
+    if (!audio || !("load" in audio)) throw new Error("expected the space's audio");
+    return audio.load(new AbortController().signal, () => {});
+  };
 
   test("a note still on the phone plays from the phone's copy once its row exists, whatever the row's metadata holds", async () => {
     await withLocalAudio(async (counts, space) => {
       const seen: Library[] = [];
       const base = { tcw: space.tcw, visible: true, now: () => 0, seen, onPhone: [phoneNote] };
       await render({ ...base, noteId: "on-phone:rec-play" });
-      expect(await (await play(seen.at(-1)!))!.text()).toBe("local bytes");
+      expect(await localUrlOf(seen.at(-1)!)).toMatch(/^blob:/);
       // The row is made before the audio is uploaded; its metadata is empty or not yet read.
       await space.answer("list", listed("play"));
       expect(seen.at(-1)!.note.item).toMatchObject({ saving: true, sourceId: "rec-play" });
       const before = { local: counts.local(), remote: counts.remote() };
-      expect(await (await play(seen.at(-1)!))!.text()).toBe("local bytes");
+      expect(await localUrlOf(seen.at(-1)!)).toMatch(/^blob:/);
       await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
-      expect(await (await play(seen.at(-1)!))!.text()).toBe("local bytes");
-      expect({ local: counts.local() - before.local, remote: counts.remote() - before.remote }).toEqual({ local: 2, remote: 0 });
+      expect(await localUrlOf(seen.at(-1)!)).toMatch(/^blob:/);
+      expect({ local: counts.local() - before.local, remote: counts.remote() - before.remote, fetched: counts.fetches() }).toEqual({ local: 2, remote: 0, fetched: 0 });
     });
+  });
+
+  test("the phone's URL is resolved when Play is tapped, not when the note opens", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, onPhone: [phoneNote], noteId: "on-phone:rec-play" });
+      expect(counts.local()).toBe(0);
+      await localUrlOf(seen.at(-1)!);
+      expect(counts.local()).toBe(1);
+    });
+  });
+
+  test("a phone copy that cannot be opened rejects with the real reason, never the space", async () => {
+    const space = fakeSpace();
+    const original = VoiceNotes;
+    __setVoiceNotesForTests({ localAudioUrl: async () => { throw new Error("no such recording"); } } as unknown as VoiceNotesPlugin, { available: true });
+    try {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, onPhone: [phoneNote], noteId: "on-phone:rec-play" });
+      await expect(localUrlOf(seen.at(-1)!)).rejects.toThrow("Could not open this phone's audio: no such recording");
+      expect(space.kinds).not.toContain("audio");
+    } finally {
+      __setVoiceNotesForTests(original, { available: null });
+    }
   });
 
   test("once the phone no longer lists the note, its row plays from the space", async () => {
@@ -375,7 +413,7 @@ describe("useLibrary, which audio a note on the phone plays", () => {
       await space.answer("list", listed("play"));
       expect(seen.at(-1)!.note.item?.saving).toBeUndefined();
       const localBefore = counts.local();
-      await play(seen.at(-1)!).catch(() => null);
+      await playFromSpace(seen.at(-1)!).catch(() => null);
       expect({ local: counts.local() - localBefore, remoteAsked: counts.remote() > 0 }).toEqual({ local: 0, remoteAsked: true });
     });
   });

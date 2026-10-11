@@ -163,7 +163,7 @@ describe("useSavedNoteScreen", () => {
           id="rec-1"
           title="Standup"
           meta=""
-          loadAudio={null}
+          audio={null}
           transcript={null}
           partialAudio={false}
           onBack={() => {}}
@@ -197,7 +197,7 @@ describe("useSavedNoteScreen", () => {
           id="rec-1"
           title="Standup"
           meta=""
-          loadAudio={null}
+          audio={null}
           transcript={null}
           partialAudio={false}
           onBack={() => {}}
