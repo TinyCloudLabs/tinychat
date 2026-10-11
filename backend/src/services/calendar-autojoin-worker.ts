@@ -24,6 +24,9 @@ function ownerCapturing(owner: CalendarOccurrence | null, meeting: Transcription
   return meeting === undefined || (meeting !== null && BOT_IN_CALL.has(meeting.status));
 }
 const SHARE_CHECK_DEADLINE_MS = 86_400_000;
+/** TC-907: past the cutoff, how long a capacity-refused row keeps lookup-only recovery, so a slow
+ *  earlier POST that commits late is still found and owned. */
+const CAPACITY_RECOVERY_MARGIN_MS = 600_000;
 
 export interface CalendarAutojoinWorkerOptions {
   store: CalendarAutojoinStore;
@@ -193,8 +196,9 @@ export class CalendarAutojoinWorker {
         return;
       }
       // TC-907: ptx checks the key before capacity, so a capacity 429 created nothing. Past the
-      // cutoff no further create is sent, so nothing can appear: end it instead of polling forever.
-      if (row.capacityExhausted && this.now() >= dispatchCutoff(row)) { await this.finish(row, "capacity_exhausted"); return; }
+      // cutoff no further create is sent; after a margin for a slow earlier POST that commits late,
+      // nothing can appear: end it instead of polling forever.
+      if (row.capacityExhausted && this.now() >= dispatchCutoff(row) + CAPACITY_RECOVERY_MARGIN_MS) { await this.finish(row, "capacity_exhausted"); return; }
     }
     const connection = await this.options.store.getConnection(row.tenant);
     if (!this.canDispatch(connection, row)) {
@@ -237,6 +241,7 @@ export class CalendarAutojoinWorker {
       const observed = row.idempotencyKey ? new Map<string, TranscriptionMeeting | null>() : await this.observeOwners(row);
       // Reserve external capacity BEFORE entering tenant coordination. A queued dispatch may
       // not leave the lock and then send after a disable; the actual POST begins inside it.
+      let sent = false; // TC-907: only a sent POST was counted when its intent was written.
       const response = await this.limiter.run(async () => {
         let posted: Promise<TranscriptionMeeting> | undefined;
         await this.options.coordinator.run(row.tenant, async () => {
@@ -263,6 +268,7 @@ export class CalendarAutojoinWorker {
           }
           // Do not await while holding the lock: disable must persist during an in-flight POST.
           posted = this.options.api.createMeeting(row.createBody!, { idempotencyKey: row.idempotencyKey, retryTransport: false });
+          sent = true;
           void posted.catch(() => {});
         });
         if (!posted) return null;
@@ -270,7 +276,7 @@ export class CalendarAutojoinWorker {
       }).then(meeting => ({ meeting, error: undefined as unknown }), error => ({ meeting: null, error }));
       if (response.meeting) { await this.acceptRecording(row, response.meeting); return; }
       if (!response.error) return;
-      await this.defer(row, response.error, true);
+      await this.defer(row, response.error, sent);
       // A permanent create rejection must never become another POST on the next tick.
       // Retain lookup-only recovery in case any earlier transport attempt committed.
       if (!this.retryable(response.error)) await this.requestStop(row, "create_rejected");
