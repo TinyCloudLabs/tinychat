@@ -246,6 +246,13 @@ describe("nativeClientOptions", () => {
     );
     expect(options.issuer).toBe("http://localhost:5183/api/auth");
   });
+
+  test("a malformed OpenKey host throws instead of falling back to the prod issuer", () => {
+    expect(() => nativeClientOptions(
+      { VITE_OPENKEY_NATIVE_CLIENT_ID: CLIENT_ID, VITE_OPENKEY_HOST: "openkey.example.com" },
+      HOST,
+    )).toThrow('VITE_OPENKEY_HOST is not a valid URL: "openkey.example.com"');
+  });
 });
 
 describe("nativePermissions", () => {
@@ -786,15 +793,13 @@ describe("platform routing (source)", () => {
 });
 
 describe("persisted widget session on a native cold boot", () => {
-  // restoreSession's cleanup for "none"/"terminal" (proven above to never
-  // reach the widget restore) runs exactly this sequence against the real,
-  // framework-agnostic session layer: clearPersistedSession (the SDK's own
-  // localStorage-backed TinyCloud session, written by the widget's
-  // restoreTinyCloudWebSession/createAndSignIn) and SessionStore.clear() (the
-  // backend bearer session). Exercised here with the real classes/functions,
-  // not mocks, to prove the widget session is actually gone afterward, not
-  // merely "not referenced" by source.
-  test("a widget session from before native-only sign-in is cleared once, not restored", async () => {
+  // Covers restoreNativeAtBoot plus the storage helpers App.restoreSession's
+  // "none"/"terminal" cleanup calls (clearPersistedSession for the SDK's
+  // localStorage TinyCloud session, SessionStore.clear() for the backend
+  // bearer session), using the real functions, not mocks. The cleanup lines
+  // are repeated here; that App runs them in that branch is pinned by the
+  // source assertions above, not by this test.
+  test("restoreNativeAtBoot restores nothing and the cleanup helpers remove a pre-native widget session", async () => {
     const address = "0x2222222222222222222222222222222222222222";
     const values = new Map<string, string>();
     const prior = (globalThis as { localStorage?: unknown }).localStorage;

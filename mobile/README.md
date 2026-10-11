@@ -692,9 +692,11 @@ The session JWK never touches WebView localStorage. Details:
 
 - Config (public, not a secret): `VITE_OPENKEY_NATIVE_CLIENT_ID`, the
   registered native client id, set in `frontend/.env.production`. The redirect
-  URI (`xyz.tinycloud.exo://openkey/callback`) and the OpenKey API issuer
-  (`https://api.openkey.so/api/auth`) are constants in `openkeyNative.ts`, not
-  env vars. The backend nonce for the session SIWE is address-less: `GET
+  URI (`xyz.tinycloud.exo://openkey/callback`) is a constant in
+  `openkeyNative.ts`. The OpenKey API issuer is derived from the same
+  `VITE_OPENKEY_HOST` the web widget reads (`api.` + host + `/api/auth`, so
+  `https://api.openkey.so/api/auth` for the default `https://openkey.so`); a
+  malformed host fails sign-in with a configuration error. The backend nonce for the session SIWE is address-less: `GET
   /api/auth/nonce` without `?address=` issues an unbound, single-use,
   5-minute nonce that `/verify` binds to the recovered signer.
 - The delegation covers the manifest's applications-space KV/SQL entries plus

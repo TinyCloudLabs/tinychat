@@ -278,19 +278,21 @@ const DEFAULT_OPENKEY_HOST = "https://openkey.so";
  * `@openkey/sdk`'s own (private) `OpenKey.deriveOAuthHost`: prefix `api.` to
  * the hostname, except for a loopback host (local dev, where the API and
  * widget share one origin). One OpenKey host config, read the same way App.tsx
- * reads it for the widget (`VITE_OPENKEY_HOST`) — no second override.
+ * reads it for the widget (`VITE_OPENKEY_HOST`) — no second override. A
+ * malformed host is a broken build and throws; it never falls back to prod.
  */
 function deriveOAuthHost(host: string): string {
+  let url: URL;
   try {
-    const url = new URL(host);
-    if (url.hostname === "localhost" || url.hostname === "127.0.0.1") {
-      return host.replace(/\/$/, "");
-    }
-    url.hostname = `api.${url.hostname}`;
-    return url.toString().replace(/\/$/, "");
+    url = new URL(host);
   } catch {
-    return "https://api.openkey.so";
+    throw new Error(`VITE_OPENKEY_HOST is not a valid URL: ${JSON.stringify(host)}`);
   }
+  if (url.hostname === "localhost" || url.hostname === "127.0.0.1") {
+    return host.replace(/\/$/, "");
+  }
+  url.hostname = `api.${url.hostname}`;
+  return url.toString().replace(/\/$/, "");
 }
 
 function nativeIssuer(openKeyHost: string): string {
