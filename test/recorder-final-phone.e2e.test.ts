@@ -273,9 +273,11 @@ const assertToastMessageVisible = async (page: Page, expected: string) => {
     const action = page.locator(".pr-toast").getByRole("button", { name });
     if (await action.count()) {
       const actionBox = await action.boundingBox();
+      const messageBox = await page.locator(".pr-toast-copy").boundingBox();
       expect(actionBox).not.toBeNull();
+      expect(messageBox).not.toBeNull();
       expect(actionBox!.y).toBeGreaterThanOrEqual(
-        toast!.y + toast!.height - actionBox!.height - 5,
+        messageBox!.y + messageBox!.height,
       );
     }
   }
