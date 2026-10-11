@@ -1,10 +1,10 @@
 // Agent access enablement + renewal affordance (C3).
-// Rendered as a fixed bottom banner — consistent with the billingNotice pattern.
-// It floats 8rem above whatever covers the bottom (the tab bar on a phone, the
-// keyboard or the home indicator; index.css --tc-bottom-chrome), clear of the
-// composer and its toolbar row. It sits just above the conversation (z 5) and
-// under everything the user opens: the composer's menus (inside its z-10
-// layer), sheets and dialogs.
+// Rendered at the bottom of the chat thread column — consistent with the billingNotice pattern.
+// When access is available, it floats 7.75rem above whatever covers the bottom
+// (the tab bar on a phone, the keyboard or the home indicator;
+// index.css --tc-bottom-chrome), clear of the composer and its toolbar row. It
+// sits just above the conversation (z 5) and under everything the user opens:
+// the composer's menus (inside its z-10 layer), sheets and dialogs.
 // Hidden when capability is "unavailable" or "probing". Disappears after enable
 // and returns with explicit reconnect copy if a private-data tool reports expiry
 // or the backend answers a turn without private access.
@@ -47,7 +47,7 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
         role="status"
         aria-live="polite"
         aria-atomic="true"
-        className="fixed bottom-[calc(var(--tc-bottom-chrome)+8rem)] left-1/2 z-[5] -translate-x-1/2"
+        className="fixed bottom-[calc(var(--tc-bottom-chrome)+8rem)] left-1/2 z-[5] -translate-x-1/2 md:absolute md:bottom-32"
       >
         <div className="flex items-center gap-2 rounded-lg border border-border bg-popover px-4 py-2.5 text-sm text-popover-foreground shadow-lg">
           <span className="size-1.5 rounded-full bg-green-500" />
@@ -75,9 +75,9 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
       aria-live="polite"
       aria-atomic="true"
       data-agent-enable-banner
-      className="fixed bottom-[calc(var(--tc-bottom-chrome)+8rem)] left-3 right-3 z-[5] sm:left-1/2 sm:right-auto sm:-translate-x-1/2"
+      className="fixed bottom-[calc(var(--tc-bottom-chrome)+7.75rem)] left-3 right-3 z-[5] sm:left-1/2 sm:right-auto sm:-translate-x-1/2 md:absolute md:bottom-32"
     >
-      <div className="flex flex-col gap-2 rounded-lg border border-border bg-popover px-4 py-2.5 text-sm text-popover-foreground shadow-lg sm:flex-row sm:items-center sm:gap-3">
+      <div className="flex items-center gap-2 rounded-lg border border-border bg-popover px-4 py-1.5 text-sm text-popover-foreground shadow-lg sm:gap-3">
         {enableError ? (
           <>
             <span className="text-xs text-destructive" data-agent-enable-error>{enableError}</span>
@@ -93,7 +93,7 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
           </>
         ) : (
           <>
-            <div className="flex flex-col gap-0.5" data-agent-enable-copy>
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5" data-agent-enable-copy>
               <span className="text-xs text-muted-foreground">
                 {reconnecting
                   ? reconnectReason === "delegation_expired"
@@ -103,13 +103,13 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
                       : "Private agent access needs reconnecting"
                   : "Connect private agent access"}
               </span>
-              <span className="text-[11px] leading-none text-muted-foreground/70">
+              <span data-agent-enable-helper className="hidden text-xs leading-snug text-muted-foreground sm:block">
                 {unverified
                   ? "That reply couldn't use your meetings. Reconnect if this keeps happening."
                   : reconnecting
                     ? "Reconnect to let the agent read your private meeting transcripts again."
                     : passkeysSupported
-                      ? "You'll be prompted to sign with your passkey once to authorize access."
+                      ? "You'll be prompted to sign in with your passkey once to authorize access."
                       : "You'll be prompted to sign in with OpenKey once to authorize access."}
               </span>
             </div>

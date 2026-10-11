@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { extractMain, renderNoteHtml } from "./renderMarkdown";
+
+const styles = readFileSync(new URL("./notes.css", import.meta.url), "utf8");
 
 describe("note renderer", () => {
   test("renders Markdown to the inner HTML of main.fmd", async () => {
@@ -9,6 +12,14 @@ describe("note renderer", () => {
     expect(html).toContain('<li class="task">');
     expect(html).not.toContain("<main");
     expect(html).not.toContain("<style");
+  });
+
+  test("keeps formatted checklist prose in one inline text flow", async () => {
+    const html = await renderNoteHtml("- [ ] move **important** and _italic_ words\n");
+    expect(html).toContain('move <strong>important</strong> and <em>italic</em> words</li>');
+    expect(styles).toMatch(/\.soft-skin \.fmd li\.task\s*\{[^}]*position:\s*relative;[^}]*padding-left:\s*1\.5em;/s);
+    expect(styles).toMatch(/\.soft-skin \.fmd li\.task input\s*\{[^}]*position:\s*absolute;/s);
+    expect(styles).not.toMatch(/\.soft-skin \.fmd li\.task\s*\{[^}]*display:\s*flex;/s);
   });
 
   test("escapes raw HTML and drops javascript: links", async () => {

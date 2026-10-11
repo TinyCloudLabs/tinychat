@@ -21,6 +21,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { PlatformContext } from "@/lib/platform";
 import { nativeVoiceNotesAvailable } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { PATHS, notePath } from "@/shell/routes";
+import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 import {
   InProgressRowsView,
   inProgressShown,
@@ -691,11 +692,10 @@ export function DesktopCaptureHome(props: DesktopCaptureHomeProps) {
     >
       {!recorder.sheetOpen && <Toasts />}
       <div className="dch-scroll" data-scroll-root="">
-        <div className="dch-col">
-          <header className="dch-head">
-            <h1 className="dch-title soft-title" tabIndex={-1}>
-              {COPY.heading}
-            </h1>
+        <PageHeader
+          title={COPY.heading}
+          className={PAGE_COLUMN}
+          trailing={(
             <div className="dch-head-actions">
               <Link
                 to={PATHS.library}
@@ -707,13 +707,13 @@ export function DesktopCaptureHome(props: DesktopCaptureHomeProps) {
               {caps.settings !== null && (
                 <CaptureSettings
                   variant={caps.settings}
-                  inputs={
-                    nativeVoiceNotesAvailable() ? nativeAudioInputs : null
-                  }
+                  inputs={nativeVoiceNotesAvailable() ? nativeAudioInputs : null}
                 />
               )}
             </div>
-          </header>
+          )}
+        />
+        <div className="dch-col">
           <Hero theme={theme} />
           <div className="dch-actions" data-testid="capture-actions">
             <ActionPill

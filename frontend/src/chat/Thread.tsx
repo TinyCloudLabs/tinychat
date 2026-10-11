@@ -471,7 +471,7 @@ const HistorySkeleton: FC = () => (
 const ThreadWelcome: FC = () => {
   return (
     <ThreadPrimitive.Empty>
-      <div className="flex w-full flex-1 flex-col items-center justify-center gap-6 py-16 text-center">
+      <div className="relative -top-8 flex w-full flex-1 flex-col items-center justify-center gap-6 px-4 py-16 pb-24 text-center sm:top-0">
         <div className="flex flex-col items-center gap-2">
           {/* The chat header's title is the screen's h1. */}
           <h2 className="font-display text-title-2">TinyCloud Chat</h2>
@@ -488,6 +488,7 @@ const ThreadWelcome: FC = () => {
               method="replace"
               autoSend={false}
               className="rounded-xl border border-border bg-card px-4 py-3 text-left text-sm text-foreground transition-colors hover:bg-accent"
+              data-testid={s.title === "Markdown demo" ? "chat-markdown-demo" : undefined}
             >
               <span className="block font-medium">{s.title}</span>
               <span className="block text-xs text-muted-foreground">

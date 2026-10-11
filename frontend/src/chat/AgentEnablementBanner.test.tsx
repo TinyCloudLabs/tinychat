@@ -56,7 +56,7 @@ describe("AgentEnablementBanner", () => {
     expect(markup).toContain("Connect private agent access");
     expect(markup).toContain(">Connect agent</button>");
     expect(markup).not.toContain("Reconnect");
-    expect(markup).toContain("sign with your passkey");
+    expect(markup).toContain("You&#x27;ll be prompted to sign in with your passkey once to authorize access.");
   });
 
   it("marks the banner parts so the minimized-phone layout can retain only the action", () => {
@@ -77,7 +77,7 @@ describe("AgentEnablementBanner", () => {
       <AgentEnablementBanner {...baseProps} reconnectReason={null} passkeysSupported={false} />,
     );
 
-    expect(markup).toContain("sign in with OpenKey once to authorize access");
+    expect(markup).toContain("You&#x27;ll be prompted to sign in with OpenKey once to authorize access.");
     expect(markup).not.toContain("passkey");
   });
 });

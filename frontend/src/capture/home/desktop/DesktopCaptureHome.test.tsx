@@ -95,7 +95,8 @@ function home(
 describe("header", () => {
   test("Capture, Library, and the settings button", () => {
     const html = home();
-    expect(html).toMatch(/<h1[^>]*>Capture<\/h1>/);
+    expect(html).toMatch(/<h1[^>]*>[\s\S]*>Capture<\/span>[\s\S]*<\/h1>/);
+    expect(html).toContain('class="sticky top-0 z-10 border-b bg-background');
     expect(html).toContain('href="/chat/capture/library"');
     expect(html).toContain('data-testid="capture-settings-button"');
   });

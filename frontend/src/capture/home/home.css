@@ -267,7 +267,7 @@ button.soft-row:focus-visible {
   color: var(--dim);
 }
 .soft-tile[data-failed] {
-  color: var(--red);
+  color: var(--red-text);
 }
 .soft-tile-bang {
   font-size: 18px;
@@ -514,7 +514,7 @@ button.soft-row:focus-visible {
   cursor: pointer;
 }
 .soft-sheet-delete {
-  color: var(--red);
+  color: var(--red-text);
 }
 .soft-sheet-quiet {
   color: var(--dim);
@@ -528,7 +528,7 @@ button.soft-row:focus-visible {
 }
 .soft-sheet-error {
   margin: 12px 0 0;
-  color: var(--red);
+  color: var(--red-text);
   font-size: 13px;
   line-height: 1.4;
 }

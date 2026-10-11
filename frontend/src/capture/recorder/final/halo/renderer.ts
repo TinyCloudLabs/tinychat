@@ -645,15 +645,23 @@ class SharedHaloRenderer {
     const view = canvas.ownerDocument.defaultView;
     if (!view) throw new Error("Halo disc cannot read the document theme");
     const styles = view.getComputedStyle(canvas);
-    const fillToken = styles.getPropertyValue("--solid").trim();
-    const foregroundToken = styles.getPropertyValue("--foreground").trim();
-    if (!fillToken || !foregroundToken) {
+    const rawDiscToken = styles.getPropertyValue("--disc").trim();
+    const rawForegroundToken = styles.getPropertyValue("--foreground").trim();
+    if (!rawDiscToken || !rawForegroundToken) {
       throw new Error(
-        `Halo disc theme tokens are missing for ${config.theme} mode (fill: ${fillToken || "missing"}, foreground: ${foregroundToken || "missing"})`,
+        `Halo disc theme tokens are missing for ${config.theme} mode (disc: ${rawDiscToken || "missing"}, foreground: ${rawForegroundToken || "missing"})`,
       );
     }
-    const fill = fillToken;
-    const highlight = `hsl(${foregroundToken} / 0.06)`;
+    const resolveVars = (value: string, seen = new Set<string>()): string =>
+      value.replace(/var\((--[\w-]+)\)/g, (_match, name: string) => {
+        if (seen.has(name)) throw new Error(`Halo disc theme token cycle at ${name}`);
+        const token = styles.getPropertyValue(name).trim();
+        if (!token) throw new Error(`Halo disc theme token ${name} is missing`);
+        return resolveVars(token, new Set([...seen, name]));
+      });
+    const fill = resolveVars(rawDiscToken);
+    const foreground = resolveVars(rawForegroundToken);
+    const highlight = `hsl(${foreground} / 0.06)`;
     const key = `${config.theme}|${fill}|${highlight}`;
     let disc = this.discCanvases.get(key);
     if (!disc) {

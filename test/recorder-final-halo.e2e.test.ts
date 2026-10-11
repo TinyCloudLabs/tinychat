@@ -268,7 +268,7 @@ test(
       const { canvases, path, undrawn, episodes } =
         await blankEpisodesAfterStall(load % 2 === 0 ? "light" : "dark");
       expectAtlasPath(path);
-      expect(canvases).toBe(8);
+      expect(canvases).toBe(4);
       expect(undrawn).toEqual([]);
       console.log(
         `HALO_STALL_LOAD ${load} theme=${load % 2 === 0 ? "light" : "dark"} episodes=${episodes.length}`,

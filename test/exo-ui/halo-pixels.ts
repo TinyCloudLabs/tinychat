@@ -60,7 +60,7 @@ export function inspectHaloPixels(options: {
     };
   });
   const ready =
-    canvases.length === 8 &&
+    canvases.length === 4 &&
     states.every(
       (state) =>
         state.has2dContext &&
@@ -97,15 +97,21 @@ export function readHaloThemeColor(
   canvas: HTMLCanvasElement,
   theme: "light" | "dark",
 ): number[] {
-  const token = getComputedStyle(canvas)
-    .getPropertyValue(theme === "dark" ? "--secondary" : "--card")
-    .trim();
-  if (!token) throw new Error(`Halo ${theme} fill token is missing`);
+  const probe = canvas.ownerDocument.createElement("span");
+  probe.style.backgroundColor = "var(--disc)";
+  probe.style.cssText += ";position:fixed;visibility:hidden;pointer-events:none;width:0;height:0";
+  const scope = canvas.parentElement ?? canvas.ownerDocument.documentElement;
+  scope.append(probe);
+  const color = getComputedStyle(probe).backgroundColor;
+  probe.remove();
+  if (!color || color === "rgba(0, 0, 0, 0)") {
+    throw new Error(`Halo ${theme} disc token is missing or transparent`);
+  }
   const sample = canvas.ownerDocument.createElement("canvas");
   sample.width = sample.height = 1;
   const context = sample.getContext("2d");
   if (!context) throw new Error("Unable to sample the halo theme token");
-  context.fillStyle = `hsl(${token})`;
+  context.fillStyle = color;
   context.fillRect(0, 0, 1, 1);
   return [...context.getImageData(0, 0, 1, 1).data.slice(0, 3)];
 }
