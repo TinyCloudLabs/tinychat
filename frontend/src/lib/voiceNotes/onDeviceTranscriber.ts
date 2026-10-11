@@ -14,9 +14,8 @@ import { VoiceNotes, type LocalTranscript } from "./nativeVoiceNotes";
 export type OnDeviceTranscriptSyncState = { state: "syncing" } | { state: "synced" } | { state: "failed"; message: string };
 
 const syncStates = new Map<string, OnDeviceTranscriptSyncState>();
-/** The newest attempt per note that owns its state; an older attempt finishing later publishes nothing. */
-const owner = new Map<string, number>();
-let attempts = 0;
+/** The tail of each note's sync chain: attempts for one note run one after another. */
+const chains = new Map<string, Promise<void>>();
 const syncListeners = new Set<() => void>();
 const syncKey = (tcw: TinyCloudWeb, id: string) => JSON.stringify([tcw.spaceId, tcw.did, id]);
 
@@ -43,47 +42,45 @@ function publish(key: string, next: OnDeviceTranscriptSyncState | null): void {
  * or `failed` (see `onDeviceTranscriptSyncState`). A no-op, with nothing published, without either.
  * Failures are logged and published, not thrown: the local transcript stays valid, and the next
  * save or "transcribed" event tries again. Syncs of one note can overlap (save recovery and the
- * native `transcribed` event); attempts are numbered when called and the highest to claim a note
- * owns its published state, so an older one finishing late (read or write) never overwrites it.
+ * native `transcribed` event), so they run one after another per note, each doing its own native
+ * read and write: the published state is the last attempt's, which is the newest.
  */
-export async function syncOnDeviceTranscript(
+export function syncOnDeviceTranscript(
   tcw: TinyCloudWeb,
   recording: { id: string; ledger?: { audio: { state: string } } },
 ): Promise<void> {
-  if (recording.ledger?.audio.state !== "saved") return;
+  if (recording.ledger?.audio.state !== "saved") return Promise.resolve();
   const key = syncKey(tcw, recording.id);
-  // Numbered when called, before the native read: reads can finish in any order, and only a higher number may take over.
-  const attempt = ++attempts;
-  const claim = () => {
-    if ((owner.get(key) ?? 0) > attempt) return false;
-    owner.set(key, attempt);
-    return true;
-  };
+  const run = (chains.get(key) ?? Promise.resolve()).then(() => syncOnce(tcw, key, recording.id));
+  // The chain goes on whatever this attempt does; the caller still sees this attempt's own outcome.
+  const tail = run.then(() => undefined, () => undefined).then(() => {
+    if (chains.get(key) === tail) chains.delete(key);
+  });
+  chains.set(key, tail);
+  return run;
+}
+
+async function syncOnce(tcw: TinyCloudWeb, key: string, id: string): Promise<void> {
   let transcript: LocalTranscript | null;
   try {
-    ({ transcript } = await VoiceNotes.getTranscript({ id: recording.id }));
+    ({ transcript } = await VoiceNotes.getTranscript({ id }));
   } catch (err) {
     console.warn("[OnDeviceStt] Could not read the local transcript", err);
-    if (claim()) publish(key, { state: "failed", message: `Couldn't read the transcript on this phone: ${errorMessage(err)}` });
+    publish(key, { state: "failed", message: `Couldn't read the transcript on this phone: ${errorMessage(err)}` });
     return;
   }
   if (!transcript) return;
-  // A newer attempt already owns this note and has read a transcript at least as new: nothing for this one to write or say.
-  if (!claim()) return;
   publish(key, { state: "syncing" });
-  const publishIfOwner = (next: OnDeviceTranscriptSyncState) => {
-    if (owner.get(key) === attempt) publish(key, next);
-  };
   try {
-    const result = await saveVoiceNoteTranscript(tcw, recording.id, localTranscriptToSave(transcript));
-    if (result.ok) publishIfOwner({ state: "synced" });
+    const result = await saveVoiceNoteTranscript(tcw, id, localTranscriptToSave(transcript));
+    if (result.ok) publish(key, { state: "synced" });
     else {
       console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", result.error);
-      publishIfOwner({ state: "failed", message: result.error.message });
+      publish(key, { state: "failed", message: result.error.message });
     }
   } catch (err) {
     console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", err);
-    publishIfOwner({ state: "failed", message: errorMessage(err) });
+    publish(key, { state: "failed", message: errorMessage(err) });
   }
 }
 
