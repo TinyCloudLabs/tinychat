@@ -174,12 +174,13 @@ export function PhoneRecorder({
   const positionShortToast = useCallback(() => {
     const element = toastElement.current;
     if (!element) return;
-    if (
-      !window.matchMedia(
-        "(orientation: portrait) and (max-width: 360px) and (max-height: 600px)",
-      ).matches
-    ) {
+    const shortPortrait = window.matchMedia(
+      "(orientation: portrait) and (max-width: 360px) and (max-height: 600px)",
+    ).matches;
+    if (!window.matchMedia("(orientation: portrait)").matches) {
       element.style.removeProperty("top");
+      element.style.removeProperty("position");
+      element.style.removeProperty("bottom");
       return;
     }
 
@@ -189,10 +190,33 @@ export function PhoneRecorder({
     const dock = document
       .querySelector(".pr-controls")
       ?.getBoundingClientRect();
-    if (!timer || !ring || !scale || !dock) return;
+    const labels = document.querySelector(".pr-ends")?.getBoundingClientRect();
+    if (!timer || !ring || !scale || !dock || !labels) return;
 
-    const height = element.getBoundingClientRect().height;
+    const toast = element.getBoundingClientRect();
+    const height = toast.height;
     const viewportBottom = window.innerHeight - 8;
+    if (!shortPortrait) {
+      const overlapsLabels =
+        toast.top < labels.bottom && toast.bottom > labels.top;
+      const top = timer.bottom + 8;
+      if (
+        overlapsLabels &&
+        top >= 8 &&
+        top + height <= ring.top - 8 &&
+        top + height <= viewportBottom
+      ) {
+        element.style.position = "fixed";
+        element.style.bottom = "auto";
+        element.style.top = `${top}px`;
+      } else {
+        element.style.removeProperty("top");
+        element.style.removeProperty("position");
+        element.style.removeProperty("bottom");
+      }
+      return;
+    }
+
     const candidates = [
       { top: timer.bottom + 8, bottom: ring.top - 8 },
       { top: timer.bottom + 8, bottom: scale.top - 8 },

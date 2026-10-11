@@ -935,7 +935,7 @@
   display: flex;
   align-items: flex-start;
   gap: 6px;
-  padding-right: 48px;
+  padding-right: 28px;
 }
 .pr-toast-icon {
   display: none;
@@ -1052,7 +1052,7 @@
     padding: 0 6px;
   }
   .pr-toast-copy {
-    padding-right: 32px;
+    padding-right: 28px;
   }
 }
 

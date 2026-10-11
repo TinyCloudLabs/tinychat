@@ -615,6 +615,15 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
         await shown(privateAction);
         await shown(getModelAction);
         if (fontScale === 2) await setToastFontScale(page, fontScale);
+        const message = page.locator(".pr-toast-message");
+        const exerciseFontMetricFallback =
+          viewport.width === 390 && viewport.height === 844 && fontScale === 1;
+        if (exerciseFontMetricFallback)
+          await message.evaluate((element) => {
+            // Simulate wider CI fallback-font glyphs and exercise the toast's
+            // measured placement when that extra width adds a line.
+            element.style.letterSpacing = "2px";
+          });
         await settleToastPlacement(page);
         await assertToastMessageVisible(
           page,
@@ -648,6 +657,12 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
           after.viewport.height,
         );
         await assertToastClearOfRecorderControls(page, fontScale);
+        if (exerciseFontMetricFallback) {
+          await message.evaluate((element) => {
+            element.style.removeProperty("letter-spacing");
+          });
+          await settleToastPlacement(page);
+        }
         if (evidenceDir)
           await page.screenshot({
             path: `${evidenceDir}/recorder-toast-${viewport.width}x${viewport.height}-font-${fontScale}.png`,
