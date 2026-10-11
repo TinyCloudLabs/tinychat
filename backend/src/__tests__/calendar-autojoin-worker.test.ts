@@ -781,6 +781,31 @@ describe("TC-907 ptx capacity_exhausted", () => {
     expect((await f.row())?.disposition).not.toBe("capacity_exhausted");
   });
 
+  test("TC-641: an occurrence TC-907 ends for capacity never wakes server delivery and indexes nothing", async () => {
+    const wakes: Array<[string, string]> = [];
+    const f = await fixture({ webhookUrl: "https://tinychat.example/api/transcriber/webhooks/ptx",
+      onRecordingCompleted: async (tenant, id) => { wakes.push([tenant, id]); } });
+    f.api.createMeeting = async () => { throw busy(); };
+    await runUntil(f, CUTOFF + MARGIN + 900_000);
+    expect(await f.row()).toMatchObject({ phase: "terminal", disposition: "capacity_exhausted" });
+    expect((await f.row())?.meetingId).toBeUndefined();
+    expect(await f.index.list(TENANT)).toEqual([]);
+    expect(wakes).toEqual([]);
+  });
+
+  test("TC-641: a meeting ptx admitted and then failed for capacity finishes failed and never wakes delivery", async () => {
+    const wakes: Array<[string, string]> = [];
+    const f = await fixture({ onRecordingCompleted: async (tenant, id) => { wakes.push([tenant, id]); } });
+    await f.worker().tick();
+    const sent = f.posts[0]!;
+    Object.assign(f.records.get(sent.key)!, { status: "failed",
+      error: { type: "provider_error", code: "capacity_exhausted", message: "All meeting notetakers were busy when this meeting started." } });
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(await f.row()).toMatchObject({ phase: "terminal", disposition: "failed" });
+    expect(wakes).toEqual([]);
+  });
+
   test("a failure before any POST is sent still grows the backoff", async () => {
     const f = await fixture();
     const put = f.store.putOccurrence.bind(f.store);

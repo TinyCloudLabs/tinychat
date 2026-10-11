@@ -11,7 +11,17 @@ import { resolvePendingCreates, KvJsonKv, type JsonKv, type TranscriberIndexStor
 import { TranscriptionApiError, type TranscriptionApiClient, type TranscriptionMeeting } from "./transcription-api.js";
 import { delegatedConnectorPort } from "./user-space-port.js";
 
-export type DeliveryOutcome = "written" | "existing" | "gone" | "owner_mismatch" | "cancelled";
+export type DeliveryOutcome = "written" | "existing" | "gone" | "owner_mismatch" | "cancelled" | "capacity_exhausted";
+
+/**
+ * TC-907: ptx admitted the meeting but never got it a bot within its capacity window, so it failed
+ * with `capacity_exhausted`. It has no capture to recover, so it is terminal, not a watched failure.
+ */
+function capacityEnded(meeting: TranscriptionMeeting): boolean {
+  return meeting.status === "failed" && meeting.error?.code === "capacity_exhausted";
+}
+/** Final for the sweep; a completion wake may still ask upstream (only `cancelled` is reopened up front). */
+const WAKE_RECHECKS = new Set<DeliveryOutcome>(["cancelled", "capacity_exhausted"]);
 export interface DeliveryState {
   v: 1;
   done: Record<string, { at: number; how: DeliveryOutcome }>;
@@ -211,7 +221,7 @@ export class TranscriptDeliveryWorker {
     if (!(await this.options.index.list(address)).includes(id)) return;
     const state = this.dirty.get(address) ?? await this.state.read(address);
     const final = state.done[id];
-    if (final && final.how !== "cancelled") return;
+    if (final && !WAKE_RECHECKS.has(final.how)) return;
     const key = `${address}:${id}`;
     if (this.queued.has(key)) return;
     if (this.queue.length >= 1000) { this.overflow.dropped++; return; }
@@ -398,11 +408,12 @@ export class TranscriptDeliveryWorker {
     const indexed = this.prune(address, state, ids);
     if (!indexed.has(id)) return false;
     const previous = state.done[id];
-    if (previous && (previous.how !== "cancelled" || !kind)) return false;
+    if (previous && (!WAKE_RECHECKS.has(previous.how) || !kind)) return false;
     // A completion wake, or an observation of completion (our own owner-checked upstream read),
     // reopens cancelled/failed meetings even when the throttle postpones the upstream read;
-    // retry history remains until actual success.
-    if (kind && (previous || state.watch[id])) {
+    // retry history remains until actual success. A capacity-ended meeting (TC-907) is reopened
+    // only below, once our own upstream read confirms it completed for this owner.
+    if (kind && ((previous && previous.how !== "capacity_exhausted") || state.watch[id])) {
       delete state.done[id]; delete state.watch[id];
       this.changed(address, state);
     }
@@ -428,6 +439,10 @@ export class TranscriptDeliveryWorker {
     catch (error) {
       if (error instanceof TranscriptionApiError && error.status === 404) this.done(address, state, id, "gone");
       else this.retry(address, state, id, "upstream_unavailable", this.retryAfter(error));
+      return true;
+    }
+    if (capacityEnded(meeting)) {
+      if (previous?.how !== "capacity_exhausted") this.done(address, state, id, "capacity_exhausted");
       return true;
     }
     if (meeting.status === "failed") {

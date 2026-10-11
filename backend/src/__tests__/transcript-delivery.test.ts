@@ -539,6 +539,65 @@ describe("durable transcript delivery", () => {
     await restarted.stop();
   });
 
+  it("a meeting ptx failed for capacity (TC-907) is terminal: no watch, and the sweep never rechecks it", async () => {
+    const f = await fixture();
+    await admit(f, "busy");
+    let reads = 0;
+    const capacityFailed = { ...f.meeting("busy"), status: "failed" as const,
+      error: { type: "provider_error", code: "capacity_exhausted", message: "All meeting notetakers were busy." } };
+    f.api.getMeeting = async () => { reads++; return capacityFailed; };
+    const first = f.worker();
+    await first.deliver(f.grant.address, "busy");
+    expect(f.state().done.busy.how).toBe("capacity_exhausted");
+    expect(f.state().watch.busy).toBeUndefined();
+    await first.stop();
+    // Long after every watch interval: a restarted worker's sweeps make no upstream read.
+    const realNow = Date.now;
+    Date.now = () => realNow() + 40 * 86_400_000;
+    try {
+      const later = f.worker();
+      await later.sweep();
+      await later.sweep();
+      await later.stop();
+    } finally { Date.now = realNow; }
+    expect(reads).toBe(1);
+    expect(f.state().done.busy.how).toBe("capacity_exhausted");
+    expect(f.counts.transcript).toBe(0);
+  });
+
+  it("only an upstream-confirmed completion reopens a capacity-ended meeting", async () => {
+    const f = await fixture();
+    await admit(f, "busy");
+    let reads = 0;
+    let upstream: TranscriptionMeeting = { ...f.meeting("busy"), status: "failed",
+      error: { type: "provider_error", code: "capacity_exhausted", message: "All meeting notetakers were busy." } };
+    f.api.getMeeting = async () => { reads++; return upstream; };
+    const first = f.worker();
+    await first.deliver(f.grant.address, "busy");
+    await first.stop();
+    const marker = f.state().done.busy;
+    expect(marker.how).toBe("capacity_exhausted");
+    // A completion wake (a webhook, possibly unsigned) and an observation each get one upstream
+    // read; upstream still says capacity-failed, so the marker stands unchanged and nothing is written.
+    for (const kind of ["completed", "observed"] as const) {
+      const worker = f.worker();
+      await worker.wake(f.grant.address, "busy", kind);
+      await worker.sweep();
+      await worker.stop();
+      expect(f.state().done.busy).toEqual(marker);
+    }
+    expect(reads).toBe(3);
+    expect(f.counts.transcript).toBe(0);
+    // Only once our own read says completed (for this owner) is it reopened and delivered.
+    upstream = f.meeting("busy");
+    const confirmed = f.worker();
+    await confirmed.wake(f.grant.address, "busy", "completed");
+    await confirmed.sweep();
+    await confirmed.stop();
+    expect(f.state().done.busy.how).toBe("written");
+    expect(f.counts.transcript).toBe(1);
+  });
+
   it("an observed completion does not bypass a storage-error retry backoff, across a restart", async () => {
     const f = await fixture();
     await admit(f, "backoff");
