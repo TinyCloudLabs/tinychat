@@ -32,6 +32,13 @@ describe("withOnPhone", () => {
     expect(merged[1].saving).toBeUndefined();
   });
 
+  test("a failed note stays pending but its Recent row does not claim it is saving", () => {
+    const rows = [row("a", "rec-a", "2026-10-10T19:00:00.000Z")];
+    const merged = withOnPhone(rows, [{ ...note("rec-a", "2026-10-10T19:00:00.000Z"), failed: true }]);
+    expect(merged).toEqual(rows);
+    expect(merged[0]?.saving).toBeUndefined();
+  });
+
   test("stand-ins sit among the rows newest first, and the rows keep the space's order", () => {
     const rows = [row("a", "rec-a", "2026-10-10T19:00:00.000Z"), row("b", "rec-b", "2026-10-10T17:00:00.000Z")];
     const merged = withOnPhone(rows, [note("rec-old", "2026-10-10T10:00:00.000Z"), note("rec-mid", "2026-10-10T18:00:00.000Z"), note("rec-new", "2026-10-10T20:00:00.000Z")]);
