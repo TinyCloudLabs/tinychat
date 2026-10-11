@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import type { SessionStore } from "@tinyboilerplate/client";
-import { createCalendarAutojoinClient, type CalendarAutojoinStatus } from "./calendarAutojoinApi";
+import { calendarOutcomeLabel, createCalendarAutojoinClient, type CalendarAutojoinStatus } from "./calendarAutojoinApi";
 
 const session = { getToken: () => "tinychat-session", isExpired: () => false } as SessionStore;
 const off: CalendarAutojoinStatus = { state: "off", enabled: false, lastScanAt: null, errorCode: null, outcomes: [] };
@@ -71,4 +71,22 @@ describe("Calendar autojoin read deadline", () => {
       }
     });
   }
+});
+
+describe("TC-581 shared capture outcome labels", () => {
+  test("a capture pending on another account's bot is told without alarm", () => {
+    expect(calendarOutcomeLabel("shared_capture_pending")).toBe(
+      "Already being recorded by another TinyCloud account. If you accepted that account's calendar invite, the transcript will be added to your meetings after it ends.",
+    );
+  });
+  test("an already-recorded meeting explains who gets the transcript", () => {
+    expect(calendarOutcomeLabel("already_recorded")).toBe(
+      "Already being recorded by another TinyCloud account. Its transcripts are shared only with people who accepted that account's calendar invite.",
+    );
+  });
+  test("neither reads as a failure", () => {
+    for (const reason of ["shared_capture_pending", "already_recorded"]) {
+      expect(calendarOutcomeLabel(reason)).not.toMatch(/fail|could not|error/i);
+    }
+  });
 });

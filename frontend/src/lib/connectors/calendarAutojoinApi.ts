@@ -50,6 +50,9 @@ export function calendarOutcomeLabel(reason: string): string {
     case "lookup_identity_mismatch": return "The recording could not be verified. No replacement bot was sent.";
     case "create_rejected": return "The notetaker service could not accept this meeting.";
     case "failed": case "create_failed": case "recording_failed": return "The notetaker could not complete this recording.";
+    // TC-581: another account's calendar bot is already capturing this meeting.
+    case "shared_capture_pending": return "Already being recorded by another TinyCloud account. If you accepted that account's calendar invite, the transcript will be added to your meetings after it ends.";
+    case "already_recorded": return "Already being recorded by another TinyCloud account. Its transcripts are shared only with people who accepted that account's calendar invite.";
     default: return "This occurrence could not be recorded automatically.";
   }
 }

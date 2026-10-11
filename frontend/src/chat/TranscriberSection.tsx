@@ -369,6 +369,7 @@ function MeetingRow(props: {
   const active = ACTIVE_STATUSES.has(meeting.status);
   const stoppable = active && meeting.status !== "processing";
   const when = formatWhen(meeting.metadata?.scheduled_start ?? meeting.created_at);
+  const shared = meeting.metadata?.shared === true;
   return (
     <div>
       <div className="flex items-start justify-between gap-3">
@@ -393,6 +394,7 @@ function MeetingRow(props: {
               {statusLabel(meeting.status)}
             </span>
             {when && <span>· {when}</span>}
+            {shared && <span>· Shared recording</span>}
             {meeting.bot?.name && <span>· {meeting.bot.name}</span>}
             {props.saveState === "saved" && <span>· Saved to your space</span>}
             {props.saveState === "saving" && <span>· Saving to your space…</span>}
@@ -440,7 +442,7 @@ function MeetingRow(props: {
               onClick={() => props.onRemove(meeting.id)}
               className="text-muted-foreground"
             >
-              Remove
+              {shared ? "Remove from my list" : "Remove"}
             </Button>
           )}
         </div>
