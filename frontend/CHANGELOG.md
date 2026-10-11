@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.26
+
+### Patch Changes
+
+- adbbaa4: Move to TinyCloud js-sdk 3.1.0 (from 2.11.0). Sessions and grants keep their 30-day lifetimes; existing web and desktop sessions are not re-signed.
+
 ## 0.6.0-beta.25
 
 ### Patch Changes
