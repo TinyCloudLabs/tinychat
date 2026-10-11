@@ -73,8 +73,8 @@ final class WebViewRecovery extends WebViewListener {
         // Detach only: Capacitor's BridgeActivity.onDetachedFromWindow -> Bridge.onDetachedFromWindow destroys the
         // bridge's WebView when the activity is torn down, and WebView methods must not be called after destroy().
         if (view.getParent() instanceof ViewGroup) ((ViewGroup) view.getParent()).removeView(view);
-        if (prompting) return true; // the dialog is up and Reload recreates; do not loop
-        holdNextPage = !BUDGET.recordDeath(SystemClock.elapsedRealtime());
+        // A held page loads nothing, so this should not happen; if it does, release it the same way and keep holding.
+        holdNextPage = prompting || !BUDGET.recordDeath(SystemClock.elapsedRealtime());
         new Handler(Looper.getMainLooper()).post(activity::recreate);
         return true;
     }
