@@ -6,13 +6,15 @@ export interface OnDeviceSttStatus {
   models: { id: SttModelId; state: "absent" | "queued" | "downloading" | "verifying" | "checking" | "ready" | "failed";
     bytes: number; totalBytes: number; error: string | null }[];
   pack: "full" | "small"; autoDownload: boolean;
-  download: { policy: "wifi" | "cellular_approved"; state: "idle" | "running" | "waiting_for_network" | "low_data_mode" | "failed" };
+  download: { policy: "wifi" | "cellular_approved" | "system"; state: "idle" | "running" | "waiting_for_network" | "low_data_mode" | "failed" };
   engine: "parakeet" | "apple-speech" | "none";
   appleSpeech: "unsupported" | "locale_unsupported" | "asset_missing" | "ready";
   queue: { id: string; state: NoteSttState["state"]; percent: number | null; error: string | null }[];
 }
 export interface OnDeviceSttPlugin {
   status(): Promise<OnDeviceSttStatus>;
+  /** iOS only (`engine: "apple-speech"`): has the OS install its speech assets for this phone's language. */
+  installSpeechAssets(): Promise<void>;
   setAutoDownload(options: { enabled: boolean }): Promise<void>;
   downloadNow(options: { allowCellular: boolean }): Promise<void>;
   cancelDownload(): Promise<void>;
@@ -30,16 +32,26 @@ function primaryModelId(status: OnDeviceSttStatus): SttModelId {
   return status.pack === "full" ? "parakeet-tdt-0.6b-v3-int8" : "parakeet-tdt-110m-en-int8";
 }
 
+export function isAppleSpeech(status: OnDeviceSttStatus): boolean {
+  return status.engine === "apple-speech";
+}
+
+/**
+ * True once native has answered `status()`. iOS reports `models: []` for good, so an empty model list does not mean
+ * "not loaded" there; Android lists its models from the first answer.
+ */
+export function isOnDeviceStatusLoaded(status: OnDeviceSttStatus): boolean {
+  return isAppleSpeech(status) || status.models.length > 0;
+}
+
 /**
  * True only when native would actually transcribe a note on this phone right now: mirrors
- * `TranscriptionQueue.pump()`'s own gate exactly (Android `TranscriptionQueue.kt`, iOS
- * `TranscriptionQueue.swift`), both of which require `store.isReady(modelId)` for this device's
- * RAM-tier pack *and* `store.isReady(SILERO_VAD)` before a note ever leaves `waiting_for_model`.
- * Neither platform's decode path currently has a wired apple-speech branch (`engine` is only ever
- * `"parakeet"` or `"none"` today), but the check is included for when that path exists.
+ * `TranscriptionQueue.pump()`'s own gate exactly. Android requires `store.isReady(modelId)` for this
+ * device's RAM-tier pack *and* `store.isReady(SILERO_VAD)` before a note ever leaves `waiting_for_model`;
+ * iOS (`engine: "apple-speech"`) is ready once the OS has its speech assets for this phone's language.
  */
 export function isOnDeviceReady(status: OnDeviceSttStatus): boolean {
-  if (status.engine === "apple-speech") return status.appleSpeech === "ready";
+  if (isAppleSpeech(status)) return status.appleSpeech === "ready";
   if (status.engine !== "parakeet") return false;
   const primaryId = primaryModelId(status);
   const modelReady = status.models.find((model) => model.id === primaryId)?.state === "ready";

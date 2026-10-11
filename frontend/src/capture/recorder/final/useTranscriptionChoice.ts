@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import {
   isOnDeviceReady,
+  isOnDeviceStatusLoaded,
   OnDeviceStt,
   type OnDeviceSttStatus,
 } from "@/lib/voiceNotes/onDeviceStt";
@@ -81,7 +82,7 @@ export function useOnDeviceModel(): {
   const [error, setError] = useState<string | null>(null);
   // The shared snapshot also learns the changes a pending download polls for (Android's Wi-Fi wait publishes no event).
   const shared = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
-  const model = shared.models.length > 0 ? shared : probed;
+  const model = isOnDeviceStatusLoaded(shared) ? shared : probed;
   const downloadError = useSyncExternalStore(
     onDeviceSttStore.subscribe,
     onDeviceSttStore.downloadError,

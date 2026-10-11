@@ -9,7 +9,7 @@ import { useRecorder } from "@/capture/recorder/RecorderProvider";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Button } from "@/components/ui/button";
 import { localModelGuide, modelActionLabel } from "@/capture/recorder/final/localModelGuide";
-import { isOnDeviceReady } from "@/lib/voiceNotes/onDeviceStt";
+import { isAppleSpeech, isOnDeviceReady, isOnDeviceStatusLoaded } from "@/lib/voiceNotes/onDeviceStt";
 import { downloadOnDeviceModel, ensureOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import { nativeVoiceNotesAvailable, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -81,6 +81,7 @@ export function VoiceNotesTranscriberSettings() {
   const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const downloadError = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.downloadError, onDeviceSttStore.downloadError);
   const modelGuide = localModelGuide(sttStatus, { start: () => void downloadOnDeviceModel(), error: downloadError });
+  const modelLabel = isAppleSpeech(sttStatus) ? "On-device speech" : "On-device model";
   const modelFailed = modelGuide.action?.label === FINAL_COPY.modelTryAgain;
 
   if (!nativeVoiceNotesAvailable() || value === null) return null;
@@ -96,7 +97,7 @@ export function VoiceNotesTranscriberSettings() {
       {value === "on-device" && (
         <div className="flex items-center justify-between gap-3 text-xs" data-testid="voice-notes-on-device-model">
           <span className={modelFailed ? "text-destructive" : "text-muted-foreground"} role={modelFailed ? "alert" : undefined}>
-            {sttStatus.models.length === 0 ? "On-device model: Checking…" : isOnDeviceReady(sttStatus) ? "On-device model: Ready" : modelGuide.reason}
+            {!isOnDeviceStatusLoaded(sttStatus) ? `${modelLabel}: Checking…` : isOnDeviceReady(sttStatus) ? `${modelLabel}: Ready` : modelGuide.reason}
           </span>
           {modelGuide.action && !isOnDeviceReady(sttStatus) && (
             <Button type="button" variant="outline" size="sm" onClick={modelGuide.action.run}>
