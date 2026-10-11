@@ -142,7 +142,7 @@ describe("starting the on-device model download", () => {
 
   test("a download that cannot start is logged and handed back as the reason", async () => {
     const logged = spyOn(console, "error").mockImplementation(() => {});
-    __setOnDeviceSttForTests({ downloadNow: async () => { throw new Error("no space"); } } as unknown as OnDeviceSttPlugin);
+    __setOnDeviceSttForTests({ ...createFakeOnDeviceStt().plugin, downloadNow: async () => { throw new Error("no space"); } } as unknown as OnDeviceSttPlugin);
     expect(await downloadOnDeviceModel()).toBe("Couldn't download the on-device model: no space");
     expect(logged).toHaveBeenCalledTimes(1);
     logged.mockRestore();

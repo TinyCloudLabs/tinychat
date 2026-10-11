@@ -198,14 +198,12 @@ export function SavedReceipt(props: SavedReceiptProps) {
   }, [props.saved?.id]);
   const onDevice = useOnDeviceReceipt(props.saved?.id, props.transcriber === "on-device", props.sttHint);
   const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
+  const downloadError = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.downloadError, onDeviceSttStore.downloadError);
   const [modelError, setModelError] = useState<string | null>(null);
   const [switching, setSwitching] = useState(false);
   const guide = localModelGuide(sttStatus.models.length > 0 ? sttStatus : null, {
-    start: () => {
-      setModelError(null);
-      void downloadOnDeviceModel().then(setModelError);
-    },
-    error: null,
+    start: () => void downloadOnDeviceModel(),
+    error: downloadError,
   });
   // A Local note moved to private cloud: that line below says so, and the on-device ones step aside.
   const movedToPrivate = props.movedToPrivate === true;

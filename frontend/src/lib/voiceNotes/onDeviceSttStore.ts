@@ -140,6 +140,7 @@ async function finishDownload(): Promise<string | null> {
     await onDeviceSttStore.refresh();
   } catch (caught) {
     console.error("[OnDeviceStt] downloadNow failed", caught);
+    await onDeviceSttStore.refresh().catch((refreshCaught: unknown) => console.warn("[OnDeviceStt] status() failed after a failed download", refreshCaught));
     return `Couldn't download the on-device model: ${caught instanceof Error ? caught.message : String(caught)}`;
   }
   if (isOnDeviceReady(snapshot)) return null;
