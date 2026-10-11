@@ -165,9 +165,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   // Local needs the on-device model: this starts its download once the user has chosen Local or recorded on it, and
   // the model is not on the phone. Merely being on Local by default starts nothing. Recording never waits for the
   // download; the note's Local transcription queues natively until the model is ready.
-  let localWanted = false;
   const ensureLocalModel = (retry = false) => {
-    localWanted = true;
     if (!available || !captureCapabilities().localTranscription) return;
     if (onDeviceReady?.() ?? isOnDeviceReady(onDeviceSttStore.snapshot())) return;
     ensureOnDeviceModel({ retry });
@@ -693,11 +691,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       const unsubscribePreference = subscribeTranscriberPreference(() => {
         preference = readTranscriberPreference();
         if (refreshChoice()) notify();
-        if (choice.id === "on-device") ensureLocalModel();
       });
-      // Once Local was chosen or recorded on, the download follows the model's state (the first status may arrive late).
-      const followModel = () => { if (localWanted && choice.id === "on-device") ensureLocalModel(); };
-      const unsubscribeModel = onDeviceSttStore.subscribe(followModel);
       const handles = [
         VoiceNotes.addListener("micState", (event) => {
           if (event.id && state.recordingId && event.id !== state.recordingId) return;
@@ -827,7 +821,6 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         }
         if (typeof window !== "undefined") window.removeEventListener("exo:captureIssueDeleted", onCaptureDeleted);
         unsubscribePreference();
-        unsubscribeModel();
         unsubscribeNoteSync();
         if (appActiveHandle) void appActiveHandle.then((handle) => handle?.remove());
         for (const handle of handles) void handle.then((h) => h.remove());

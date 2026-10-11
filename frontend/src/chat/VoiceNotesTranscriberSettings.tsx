@@ -10,7 +10,8 @@ import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Button } from "@/components/ui/button";
 import { localModelGuide, modelActionLabel } from "@/capture/recorder/final/localModelGuide";
 import { isOnDeviceReady } from "@/lib/voiceNotes/onDeviceStt";
-import { downloadOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
+import { downloadOnDeviceModel, ensureOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
+import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import { nativeVoiceNotesAvailable, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { readDefaultTranscriber, setDefaultTranscriber, subscribeTranscriberPreference } from "@/lib/voiceNotes/transcriberPreference";
 
@@ -62,10 +63,14 @@ export function useDefaultTranscriber() {
   const choose = (next: TranscriberId) => {
     setError(null);
     // The control follows the engine's default through the preference listener, so it only moves once the engine has it.
-    setDefaultTranscriber(next).catch((err: unknown) => {
-      console.error("[VoiceNotes] Could not save the default transcriber", err);
-      setError(`Could not save the default transcriber: ${err instanceof Error ? err.message : String(err)}`);
-    });
+    setDefaultTranscriber(next).then(
+      // Choosing Local here is the request for the on-device model; keeping or restoring it elsewhere is not.
+      () => { if (next === "on-device" && captureCapabilities().localTranscription) ensureOnDeviceModel({ retry: true }); },
+      (err: unknown) => {
+        console.error("[VoiceNotes] Could not save the default transcriber", err);
+        setError(`Could not save the default transcriber: ${err instanceof Error ? err.message : String(err)}`);
+      },
+    );
   };
   return { value, error, choose };
 }

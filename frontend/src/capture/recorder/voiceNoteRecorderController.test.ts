@@ -1774,6 +1774,43 @@ describe("voice-note recorder controller", () => {
       detach();
     });
 
+    test("review r4: a speaker preference write on untouched Local does not request a model download", async () => {
+      const calls = await phoneDownloading();
+      await seedNative();
+      const recorder = controller({ tcw: null, onDeviceReady: false });
+      const detach = recorder.attach();
+      try {
+        await tick();
+        expect(calls.downloadNow).toBe(0);
+        await setDefaultIdentifySpeakersForTest(false);
+        await tick();
+        expect(calls.downloadNow).toBe(0);
+      } finally { detach(); }
+    });
+
+    test("review r4: a failed Private preference write does not request a Local model download", async () => {
+      const calls = await phoneDownloading();
+      await seedNative();
+      const recorder = controller({ transcriber: offer({ availability: "available", consented: true }).stub, onDeviceReady: false });
+      const detach = recorder.attach();
+      try {
+        await tick();
+        expect(calls.downloadNow).toBe(0);
+        Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+          getItem: (key: string) => values.get(key) ?? null,
+          setItem: (key: string, value: string) => {
+            if (key === "exo.voiceNotes.transcriber" && value === "private-cloud") throw new Error("storage write failed");
+            values.set(key, value);
+          },
+          removeItem: (key: string) => { values.delete(key); },
+        } });
+        await expect(recorder.setTranscriber("private-cloud", { scope: "default" })).rejects.toThrow("storage write failed");
+        await tick();
+        expect(recorder.getTranscriber().id).toBe("on-device");
+        expect(calls.downloadNow).toBe(0);
+      } finally { detach(); }
+    });
+
     test("being on Local by default, without a choice or a recording, downloads nothing", async () => {
       const calls = await phoneDownloading();
       await seedNative();

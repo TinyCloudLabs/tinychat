@@ -2,7 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { localModelGuide } from "@/capture/recorder/final/localModelGuide";
 import { createFakeOnDeviceStt, type FakeOnDeviceStt } from "./fakeOnDeviceStt";
 import { __setOnDeviceSttForTests, isOnDeviceReady, type OnDeviceSttPlugin } from "./onDeviceStt";
-import { __resetOnDeviceSttStoreForTests, downloadOnDeviceModel, onDeviceSttStore, retryOnDeviceNote } from "./onDeviceSttStore";
+import { __resetOnDeviceSttStoreForTests, downloadOnDeviceModel, ensureOnDeviceModel, onDeviceSttStore, retryOnDeviceNote } from "./onDeviceSttStore";
 
 afterEach(() => {
   __setOnDeviceSttForTests(createFakeOnDeviceStt().plugin);
@@ -138,6 +138,25 @@ describe("starting the on-device model download", () => {
     expect(await downloadOnDeviceModel()).toBe("Couldn't download the on-device model: it finished downloading but is not ready");
     expect(logged).toHaveBeenCalledTimes(1);
     logged.mockRestore();
+  });
+
+  test("a request made before the first status arrives starts the download when it does", async () => {
+    const fake = createFakeOnDeviceStt();
+    const native = downloading(fake);
+    __setOnDeviceSttForTests(native.plugin);
+    ensureOnDeviceModel();
+    expect(native.calls.downloadNow).toBe(0);
+    await onDeviceSttStore.refresh();
+    expect(native.calls.downloadNow).toBe(1);
+  });
+
+  test("nothing starts a download until something asks for one", async () => {
+    const fake = createFakeOnDeviceStt();
+    const native = downloading(fake);
+    __setOnDeviceSttForTests(native.plugin);
+    await onDeviceSttStore.refresh();
+    await onDeviceSttStore.refresh();
+    expect(native.calls.downloadNow).toBe(0);
   });
 
   test("a download still running when the store is reset leaves no error behind for the next test", async () => {

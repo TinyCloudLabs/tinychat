@@ -115,6 +115,22 @@ describe("signed-out Local settings share the one download", () => {
   });
 });
 
+describe("Voice notes settings start the download only from a Local choice", () => {
+  test("opening Settings downloads nothing; choosing Local does", async () => {
+    let calls = 0;
+    __setOnDeviceSttForTests(pluginFor(status(), async () => { calls++; await new Promise<void>(() => {}); }));
+    await onDeviceSttStore.refresh();
+    const fake = createFakeVoiceNotes();
+    __setVoiceNotesForTests(fake.plugin, { available: true });
+    await fake.plugin.setCaptureDefaults({ accountDid: "did:example:A", transitionGen: 2, transcriber: "private-cloud", identifySpeakers: false });
+    await renderSettings();
+    expect(calls).toBe(0);
+    const local = (Array.from(host.querySelectorAll('[role="radio"]')) as HTMLElement[]).find((node) => node.textContent?.includes("Local"));
+    await act(async () => { local!.click(); await tick(); await tick(); await tick(); });
+    expect(calls).toBe(1);
+  });
+});
+
 describe("Voice notes settings show an automatic download's state", () => {
   test("an automatic speech-detection failure is shown with Try again", async () => {
     const logged = spyOn(console, "error").mockImplementation(() => {});

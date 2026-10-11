@@ -23,6 +23,8 @@ let downloadError: string | null = null;
 let downloadPollMs = 2000;
 let downloadPoll: ReturnType<typeof setInterval> | null = null;
 let downloadGeneration = 0;
+// Set once Local was chosen or recorded on: the download then follows the status until the model is ready.
+let modelWanted = false;
 
 export function __setDownloadPollMsForTests(ms: number): void {
   downloadPollMs = ms;
@@ -35,8 +37,9 @@ function notifyListeners(): void {
 function publish(status: OnDeviceSttStatus): void {
   snapshot = status;
   notifyListeners();
+  if (isOnDeviceReady(status)) modelWanted = false;
   // A note already waiting for the model (queued before a relaunch, or recorded on Local mid-download) restarts the download.
-  if (status.queue.some((job) => job.state === "waiting_for_model")) ensureOnDeviceModel();
+  if (modelWanted || status.queue.some((job) => job.state === "waiting_for_model")) ensureOnDeviceModel();
 }
 
 // An engine without on-device speech never reaches OnDeviceStt; the store stays on its empty snapshot.
@@ -81,6 +84,7 @@ export function __resetOnDeviceSttStoreForTests(): void {
   downloadInFlight = null;
   downloadError = null;
   downloadGeneration += 1;
+  modelWanted = false;
   if (downloadPoll) clearInterval(downloadPoll);
   downloadPoll = null;
 }
@@ -155,10 +159,15 @@ async function finishDownload(): Promise<string | null> {
 /**
  * Makes sure the on-device model is on its way, without anyone asking for a "Get model" step: a no-op once it is
  * ready or already moving. A download that failed is left showing its error (no silent retry loop) unless `retry`
- * says the user just asked again. Unknown status (not read yet) does nothing; the next status tries again.
+ * says the user just asked again. Unknown status (not read yet) does nothing yet; the status that arrives tries again.
+ * Only a Local choice, a recording on Local or a note waiting for the model may call this: a preference write that
+ * merely keeps or restores Local is not a request.
  */
 export function ensureOnDeviceModel({ retry = false }: { retry?: boolean } = {}): void {
-  if (localTranscriptionUnavailable() || downloadInFlight) return;
+  if (localTranscriptionUnavailable()) return;
+  modelWanted = true;
+  start();
+  if (downloadInFlight) return;
   const status = snapshot;
   if (status.models.length === 0 || isOnDeviceReady(status)) return;
   const needed = [primaryOnDeviceModel(status), status.models.find((model) => model.id === "silero-vad")];
