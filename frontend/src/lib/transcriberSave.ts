@@ -27,6 +27,10 @@ export const TRANSCRIBER_MEETING_SOURCE = "tinycloud-transcriber";
 /** Human label for the explorer chip. */
 export const TRANSCRIBER_MEETING_SOURCE_LABEL = "TinyCloud Transcriber";
 
+/** Lets callers serialize each individual completeness read without holding
+ *  the shared lane for the full list of saved recordings. */
+export type TranscriberSpaceReadScheduler = <T>(read: () => Promise<T>) => Promise<T | null>;
+
 export function transcriberMeetingTitle(meeting: Pick<TranscriberMeeting, "meeting_url" | "metadata">): string {
   if (meeting.metadata?.source === "google-calendar-autojoin" && meeting.metadata.calendar_title?.trim()) {
     return meeting.metadata.calendar_title.trim();
@@ -115,13 +119,21 @@ export async function saveTranscriberMeeting(
 }
 
 /** The transcriber meeting ids already saved in this space. */
-export async function listSavedTranscriberMeetingIds(tcw: TinyCloudWeb): Promise<StoreResult<string[]>> {
-  const rows = await listKnownSourceIds(tcw, TRANSCRIBER_MEETING_SOURCE);
+export async function listSavedTranscriberMeetingIds(
+  tcw: TinyCloudWeb,
+  scheduleRead: TranscriberSpaceReadScheduler = (read) => read(),
+  isCurrent: () => boolean = () => true,
+): Promise<StoreResult<string[]>> {
+  const rows = await scheduleRead(() => listKnownSourceIds(tcw, TRANSCRIBER_MEETING_SOURCE));
+  if (rows === null) return { ok: true, data: [] };
   if (!rows.ok) return rows;
   const complete: string[] = [];
   for (const id of rows.data) {
+    // Don't queue more old-account reads after the pass has been cancelled.
+    if (!isCurrent()) break;
     try {
-      const body = await tcw.kv.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, id));
+      const body = await scheduleRead(() => tcw.kv.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, id)));
+      if (body === null || !isCurrent()) break;
       if (body.ok) complete.push(id);
       // Unknown reads remain incomplete. Save rechecks this key before writing,
       // so one unavailable body cannot block the other records or be overwritten.

@@ -81,7 +81,7 @@ function controller(options: { tcw?: TinyCloudWeb | null; pipeline?: VoiceNotePi
     tcw: options.tcw === undefined ? tcw : options.tcw,
     pipeline: options.pipeline,
     available: true,
-    transcriber: options.transcriber ?? { noteSaved: (recording) => noted.push(recording.id),
+    transcriber: options.transcriber ?? { check: async () => {}, noteSaved: (recording) => noted.push(recording.id),
       snapshot: () => ({ availability: "available", consented: typeof options.consented === "function" ? options.consented() : options.consented ?? false,
         capabilities: null, jobs: new Map() }) },
     onDeviceReady: () => options.onDeviceReady ?? true,
@@ -910,6 +910,26 @@ describe("voice-note recorder controller", () => {
     expect(noted).toEqual([old.id]);
     expect(onPhone.map((recording) => recording.id)).toEqual([old.id]);
     expect(fake.stats().recording).toBe(true);
+  });
+
+  test("a save that lands while availability is still being checked is handed to the transcriber once the answer is in", async () => {
+    let answer!: () => void;
+    const checked = new Promise<void>((resolve) => { answer = resolve; });
+    const transcriber = { check: () => checked, noteSaved: (recording: VoiceNoteRecording) => noted.push(recording.id) } as unknown as VoiceNoteTranscriber;
+    const recorder = controller({ transcriber });
+    const detach = recorder.attach();
+    await tick();
+    await recorder.record();
+    const old = earlier();
+    fake.emit("autoStopped", { reason: "max_duration", maxDurationMs: 60_000, at: Date.now(), recording: old });
+    await tick();
+    await tick();
+    expect(saves).toEqual([old.id]);
+    expect(noted).toEqual([]);
+    answer();
+    await tick();
+    expect(noted).toEqual([old.id]);
+    detach();
   });
 
   test("an earlier recording's save landing late never resets the recording now under way", async () => {
