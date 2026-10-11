@@ -6,7 +6,7 @@ import type { IdbEnv } from "../web/idb";
 import { createFileAudioBlobStore } from "./fileAudioBlobStore";
 import { openDesktopVoiceNotes, refreshDesktopWhisperCapability, type DesktopBridge } from "./desktopVoiceNotes";
 import type { DesktopWhisperBridge } from "./desktopWhisper";
-import type { TranscriptionEvent, TranscriptionParams } from "@/lib/anarlog/transcription.gen";
+import type { TranscriptionEvent } from "@/lib/anarlog/transcription.gen";
 import { subscribeCaptureCapabilities } from "../captureEngine";
 import type { MissingAudioSpan } from "../nativeVoiceNotes";
 import { leaseWhisperServer } from "@/lib/whisperServerLease";
@@ -16,6 +16,7 @@ type Callback = (payload: never) => void;
 class FakeBridge implements DesktopBridge {
   files = new Map<string, Uint8Array>();
   calls: string[] = [];
+  stageCalls: Record<string, unknown>[] = [];
   listeners = new Map<string, Set<Callback>>();
   recover: { id: string; startedAt: number; recordedMs: number; pausedMs: number; maxDurationMs: number;
     spans?: MissingAudioSpan[] } | null = null;
@@ -83,9 +84,10 @@ class FakeBridge implements DesktopBridge {
       case "read_audio_chunk": result = (this.files.get(id) ?? new Uint8Array()).slice(Number(args.offset), Number(args.offset) + Number(args.len)); break;
       case "finalize_audio_file": result = this.files.get(id)?.length ?? 0; break;
       case "recorder_whisper_stage_audio": {
+        this.stageCalls.push(args);
         const stageId = String(args.stageId);
         this.files.set(stageId, (this.files.get(id) ?? new Uint8Array()).slice());
-        result = `/fixture/${stageId}.mp3`;
+        result = undefined;
         break;
       }
       case "recorder_whisper_cleanup_stages": {
@@ -107,7 +109,7 @@ class FakeBridge implements DesktopBridge {
 
 class FakeWhisper implements DesktopWhisperBridge {
   serverScope?: object;
-  calls: TranscriptionParams[] = [];
+  calls: Parameters<DesktopWhisperBridge["startTranscription"]>[0][] = [];
   stops: string[] = [];
   serverStops = 0;
   serverStarts = 0;
@@ -121,12 +123,12 @@ class FakeWhisper implements DesktopWhisperBridge {
     this.listeners.add(cb);
     return () => { this.listeners.delete(cb); };
   }
-  async startTranscription(params: TranscriptionParams) {
+  async startTranscription(params: Parameters<DesktopWhisperBridge["startTranscription"]>[0]) {
     this.calls.push(params);
     if (this.pending) return;
     queueMicrotask(() => this.emit(this.fail
-      ? { type: "failed", session_id: params.session_id, code: "unknown", error: "fixture failed" }
-      : { type: "completed", session_id: params.session_id, mode: "direct",
+      ? { type: "failed", session_id: params.id, code: "unknown", error: "fixture failed" }
+      : { type: "completed", session_id: params.id, mode: "direct",
         response: { metadata: null, results: { channels: [{ alternatives: [{ transcript: "hello", confidence: 1 }] }] } } }));
   }
   async stopTranscription(id: string) { this.stops.push(id); this.emit({ type: "stopped", session_id: id }); }
@@ -162,6 +164,10 @@ describe("desktop recorder adapter", () => {
     await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
     await waitFor(() => whisper.serverStops === 1);
     expect(whisper.calls).toHaveLength(1);
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(id)));
+    const stageId = `whisper-${Array.from(digest.subarray(0, 16), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+    expect(whisper.calls[0]).toEqual({ id, stageId, model: "QuantizedTinyEn" });
+    expect(bridge.stageCalls).toEqual([{ id, stageId }]);
     expect((await engine.plugin.getTranscript({ id })).transcript).toMatchObject({ engine: "whispercpp", outcome: "transcribed",
       segments: [{ text: "hello" }] });
     const completed: string[] = [];

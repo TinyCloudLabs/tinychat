@@ -24,6 +24,7 @@ fn main() {
             "read_audio_chunk",
             "finalize_audio_file",
             "recorder_whisper_stage_audio",
+            "recorder_whisper_start",
             "recorder_whisper_cleanup_stages",
             "delete_audio_file",
             "recorder_start",
@@ -47,6 +48,8 @@ fn main() {
             "recorder_system_audio_set",
             "recorder_auto_save_to_space_get",
             "recorder_auto_save_to_space_set",
+            "local_capture_start",
+            "local_transcription_start",
         ]),
     ))
     .expect("failed to run tauri-build");

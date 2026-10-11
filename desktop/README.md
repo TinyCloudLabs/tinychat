@@ -72,6 +72,21 @@ size and CRC32 before installation. The vendored Whisper transcription code
 reports work during receive, decode, VAD and inference, so long quiet notes do
 not look stalled. Its supported maximum is eight hours.
 
+The webview has no grant for the transcription plugin's `start_capture` or
+`start_transcription`, nor for `core:image:from_path`. Native capture reserves
+fresh session folders beneath the current vault's `sessions/` directory,
+rejecting symlinks and collisions before the recorder can touch them, and
+forces batch mode (no live upload). On-device transcription takes identifiers,
+not a webview-selected audio path or URL: native code resolves a regular audio
+file without following symlinks, starts its own in-process Whisper server,
+checks its exact loopback URL, and forces the Whisper provider.
+
+`EXO_IPC_SELFTEST=1 bun run dev:desktop` probes the real webview ACL in
+debug builds. macOS CI runs `cargo test --release --lib --locked`, launches a
+release-profile app with `ipc-selftest` against an isolated vault, and fails
+when generated permissions (including untracked files) differ from the
+committed tree. Ordinary release builds compile the self-test out.
+
 The vault lives under `~/Library/Application Support/xyz.tinycloud.exo` in
 both dev and release builds. Exo's vendored anarlog storage crate uses the
 host bundle identifier, so it does not share an upstream app's vault. A

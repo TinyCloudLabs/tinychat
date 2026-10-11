@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-recorder-whisper-start"
+description = "Enables the recorder_whisper_start command without any pre-configured scope."
+commands.allow = ["recorder_whisper_start"]
+
+[[permission]]
+identifier = "deny-recorder-whisper-start"
+description = "Denies the recorder_whisper_start command without any pre-configured scope."
+commands.deny = ["recorder_whisper_start"]

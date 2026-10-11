@@ -58,6 +58,10 @@ on:
         description: Developer ID sign, notarize and verify (release builds from main only)
         type: boolean
         default: false
+      ipc-selftest:
+        description: Include and execute the release-profile IPC capability self-test (CI only)
+        type: boolean
+        default: false
     outputs:
       version:
         description: desktop/package.json version that was built
@@ -211,6 +215,12 @@ jobs:
         id: bundle
         run: node .release-tooling/scripts/release/desktop-bundle-config.mjs --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/exo-bundle" --ad-hoc-sign
 
+      - name: Test Rust confinement and desktop library
+        working-directory: desktop/src-tauri
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "14.2"
+        run: cargo test --release --lib --locked
+
       # tauri build runs the frontend production build itself
       # (beforeBuildCommand in desktop/src-tauri/tauri.conf.json).
       # VITE_EXO_BUILD_NUMBER is the CFBundleVersion the overlay stamps
@@ -220,7 +230,36 @@ jobs:
           TAURI_BUNDLE_CONFIG: ${{ steps.bundle.outputs.config }}
           VITE_EXO_BUILD_NUMBER: ${{ steps.bundle.outputs.bundle-version }}
           VITE_EXO_CHANNEL: ${{ steps.bundle.outputs.prerelease == 'true' && 'beta' || 'stable' }}
-        run: bun run --cwd desktop tauri build --no-bundle --config "$TAURI_BUNDLE_CONFIG"
+          IPC_SELFTEST: ${{ inputs.ipc-selftest }}
+        run: |
+          features=()
+          if [ "$IPC_SELFTEST" = true ]; then features=(--features ipc-selftest); fi
+          bun run --cwd desktop tauri build --no-bundle --config "$TAURI_BUNDLE_CONFIG" "${features[@]}"
+
+      - name: Exercise release webview permissions
+        if: inputs.ipc-selftest
+        timeout-minutes: 5
+        working-directory: desktop/src-tauri
+        run: |
+          CHAR_VAULT_BASE="$RUNNER_TEMP/st-vault" EXO_IPC_SELFTEST=1 target/release/exo-desktop
+          if [ -d "$RUNNER_TEMP/st-vault/sessions" ]; then
+            test -z "$(find "$RUNNER_TEMP/st-vault/sessions" -mindepth 1 -print -quit)"
+          fi
+
+      - name: Ensure shipped release excludes the IPC self-test
+        if: ${{ !inputs.ipc-selftest }}
+        working-directory: desktop/src-tauri
+        run: |
+          if grep -aq EXO_IPC_SELFTEST target/release/exo-desktop; then
+            echo "::error::Release binary contains the IPC self-test"; exit 1
+          fi
+
+      - name: Ensure all generated app permissions are committed
+        run: |
+          if [ -n "$(git status --porcelain --untracked-files=all -- desktop/src-tauri/permissions)" ]; then
+            git status --porcelain --untracked-files=all -- desktop/src-tauri/permissions
+            exit 1
+          fi
 
       # Bundles the compiled app into Exo.app and the DMG without compiling anything, ad-hoc sealing the app.
       - name: Bundle Exo

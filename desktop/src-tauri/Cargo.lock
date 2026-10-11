@@ -2896,7 +2896,11 @@ dependencies = [
  "futures-util",
  "hex",
  "hound",
+ "language",
  "mp3",
+ "parking_lot",
+ "ractor",
+ "reqwest 0.13.4",
  "rustix 1.1.4",
  "serde",
  "serde_json",
@@ -2906,7 +2910,9 @@ dependencies = [
  "tauri-plugin-local-stt",
  "tauri-plugin-settings",
  "tauri-plugin-transcription",
+ "tempfile",
  "tokio",
+ "transcription-core",
  "uuid",
 ]
 

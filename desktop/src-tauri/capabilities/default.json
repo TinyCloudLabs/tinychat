@@ -1,10 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability for the main Exo window",
+  "description": "Main Exo window: core defaults except image from_path, which is explicitly denied.",
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "core:window:allow-set-title"
+    "core:window:allow-set-title",
+    "core:image:deny-from-path"
   ]
 }
