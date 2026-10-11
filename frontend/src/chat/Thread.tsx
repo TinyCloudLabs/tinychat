@@ -471,7 +471,7 @@ const HistorySkeleton: FC = () => (
 const ThreadWelcome: FC = () => {
   return (
     <ThreadPrimitive.Empty>
-      <div className="flex w-full flex-1 flex-col items-center justify-center gap-6 px-4 py-16 pb-24 text-center">
+      <div className="relative -top-8 flex w-full flex-1 flex-col items-center justify-center gap-6 px-4 py-16 pb-24 text-center sm:top-0">
         <div className="flex flex-col items-center gap-2">
           {/* The chat header's title is the screen's h1. */}
           <h2 className="font-display text-title-2">TinyCloud Chat</h2>

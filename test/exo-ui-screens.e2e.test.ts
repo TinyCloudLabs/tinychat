@@ -402,6 +402,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                     bannerTop: bannerRect.top,
                     bannerBottom: bannerRect.bottom,
                     markdownBottom: markdownRect.bottom,
+                    clearance: Math.max(markdownRect.top - bannerRect.bottom, bannerRect.top - markdownRect.bottom),
                     helperVisible: Boolean(helper.getClientRects().length),
                     overlapsMarkdown: bannerRect.left < markdownRect.right &&
                       bannerRect.right > markdownRect.left &&
@@ -417,6 +418,9 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                   }
                   if (bannerLayout.overlapsMarkdown) {
                     findings.push({ check: "chat-banner-overlap", detail: `banner ${Math.round(bannerLayout.bannerTop)}–${Math.round(bannerLayout.bannerBottom)}px; Markdown ends at ${Math.round(bannerLayout.markdownBottom)}px` });
+                  }
+                  if (bannerLayout.clearance < 8) {
+                    findings.push({ check: "chat-banner-clearance", detail: `${Math.round(bannerLayout.clearance)}px between banner and Markdown card; expected at least 8px` });
                   }
                   if (bannerLayout.helperVisible) {
                     findings.push({ check: "chat-banner-helper", detail: `${viewport.width}px phone should hide the helper line` });
