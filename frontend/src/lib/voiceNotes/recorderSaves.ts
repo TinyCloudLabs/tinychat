@@ -625,10 +625,10 @@ function mergeUploadState(note: PendingNote): PendingNote {
 }
 
 function publishUploadQueue(notes = pendingSnapshot.notes): void {
-  let waitingAhead = 0;
+  let ahead = 0;
   for (const state of uploadStates.values()) {
-    if (state.upload.state === "waiting") state.waitingBehind = waitingAhead++;
-    else state.waitingBehind = 0;
+    state.waitingBehind = state.upload.state === "waiting" ? ahead : 0;
+    ahead++;
   }
   publishPending({ uploadingId: activeUploadId(), notes: notes?.map(mergeUploadState) });
 }
