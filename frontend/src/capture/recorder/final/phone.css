@@ -921,6 +921,7 @@
   font-size: 12.5px;
   font-weight: 600;
   white-space: normal;
+  width: min(calc(100vw - 32px), 420px);
   max-width: calc(100vw - 32px);
   overflow-wrap: anywhere;
   animation: pr-toast 0.4s cubic-bezier(0.3, 1.6, 0.5, 1);
@@ -952,15 +953,15 @@
     bottom: auto;
   }
 }
-@media (orientation: landscape) and (max-height: 500px) {
+@media (orientation: landscape) and (max-height: 520px) {
   .pr-toast {
-    top: calc(env(safe-area-inset-top) + 58px);
-    right: auto;
+    top: calc(env(safe-area-inset-top) + 8px);
+    right: 14px;
     bottom: auto;
-    left: 14px;
+    left: calc(50% + 8px);
     transform: none;
-    width: min(calc(100vw - 28px), 300px);
-    max-width: 300px;
+    width: auto;
+    max-width: none;
     animation-name: pr-toast-landscape;
   }
   .pr-toast-message {

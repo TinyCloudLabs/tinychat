@@ -155,6 +155,49 @@ const slider = (page: Page) =>
 const mode = (page: Page) => slider(page).getAttribute("aria-valuetext");
 const modeIs = (page: Page, value: string) =>
   until(`mode ${value}`, async () => (await mode(page)) === value);
+const setFontScale = (page: Page, scale: number) =>
+  page.evaluate((nextScale) => {
+    const root = document.querySelector<HTMLElement>(
+      '[data-testid="phone-recorder"]',
+    );
+    if (!root) throw new Error("phone recorder is missing");
+    for (const element of root.querySelectorAll<HTMLElement>(
+      "[data-font-base]",
+    )) {
+      element.style.removeProperty("font-size");
+      element.removeAttribute("data-font-base");
+    }
+    if (nextScale === 1) return;
+    for (const element of root.querySelectorAll<HTMLElement>("*")) {
+      const base = Number.parseFloat(getComputedStyle(element).fontSize);
+      element.dataset.fontBase = String(base);
+      element.style.fontSize = `${base * nextScale}px`;
+    }
+  }, scale);
+const assertToastClearOfRecorderControls = async (page: Page) => {
+  const toast = await page.locator(".pr-toast").boundingBox();
+  expect(toast).not.toBeNull();
+  const targets: [string, Locator][] = [
+    ["timer", page.locator(".pr-time")],
+    ["moment button", page.locator(".pr-time-slot")],
+    ["Listening pill", page.getByTestId("phone-recorder-pill")],
+    ["Minimise", page.getByRole("button", { name: "Minimise recorder" })],
+    ["privacy labels", page.locator(".pr-ends")],
+  ];
+  for (const [name, locator] of targets) {
+    const target = await locator.boundingBox();
+    expect(target).not.toBeNull();
+    const overlaps =
+      toast!.x < target!.x + target!.width &&
+      toast!.x + toast!.width > target!.x &&
+      toast!.y < target!.y + target!.height &&
+      toast!.y + toast!.height > target!.y;
+    if (overlaps)
+      throw new Error(
+        `toast overlaps ${name} at ${page.viewportSize()?.width}x${page.viewportSize()?.height}: ${JSON.stringify({ toast, target })}`,
+      );
+  }
+};
 const storedMode = (page: Page) =>
   page.evaluate(() => localStorage.getItem("exo.recorder.transcription-mode"));
 const ring = (page: Page) => page.locator(".pr-stage button");
@@ -354,14 +397,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     const getModelAction = toast.getByRole("button", { name: "Get model" });
     await shown(privateAction);
     await shown(getModelAction);
-    const toastBox = (await toast.boundingBox())!;
-    const labelsBox = (await page.locator(".pr-ends").boundingBox())!;
-    expect(
-      toastBox.x < labelsBox.x + labelsBox.width &&
-        toastBox.x + toastBox.width > labelsBox.x &&
-        toastBox.y < labelsBox.y + labelsBox.height &&
-        toastBox.y + toastBox.height > labelsBox.y,
-    ).toBe(false);
+    await assertToastClearOfRecorderControls(page);
 
     await page.clock.fastForward(10_000);
     await shown(privateAction);
@@ -374,21 +410,37 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
       });
     }
     await page.setViewportSize({ width: 844, height: 390 });
-    const landscapeToast = await toast.boundingBox();
-    const landscapeLabels = await page.locator(".pr-ends").boundingBox();
-    expect(landscapeToast).not.toBeNull();
-    expect(landscapeLabels).not.toBeNull();
-    expect(
-      landscapeToast!.x < landscapeLabels!.x + landscapeLabels!.width &&
-        landscapeToast!.x + landscapeToast!.width > landscapeLabels!.x &&
-        landscapeToast!.y < landscapeLabels!.y + landscapeLabels!.height &&
-        landscapeToast!.y + landscapeToast!.height > landscapeLabels!.y,
-    ).toBe(false);
+    await assertToastClearOfRecorderControls(page);
     if (evidenceDir)
       await page.screenshot({
         path: `${evidenceDir}/recorder-toast-phone-land.png`,
         fullPage: true,
       });
+    await page.setViewportSize({ width: 740, height: 360 });
+    await assertToastClearOfRecorderControls(page);
+    await page.setViewportSize({ width: 844, height: 390 });
+    await setFontScale(page, 2);
+    await assertToastClearOfRecorderControls(page);
+    await page.setViewportSize({ width: 740, height: 360 });
+    await assertToastClearOfRecorderControls(page);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await setFontScale(page, 1);
+    await setFontScale(page, 2);
+    const portraitLargeToast = (await toast.boundingBox())!;
+    expect(portraitLargeToast.x).toBeGreaterThanOrEqual(0);
+    expect(portraitLargeToast.y).toBeGreaterThanOrEqual(0);
+    expect(portraitLargeToast.x + portraitLargeToast.width).toBeLessThanOrEqual(
+      390,
+    );
+    expect(
+      portraitLargeToast.y + portraitLargeToast.height,
+    ).toBeLessThanOrEqual(844);
+    if (evidenceDir)
+      await page.screenshot({
+        path: `${evidenceDir}/recorder-toast-phone-font2.png`,
+        fullPage: true,
+      });
+    await setFontScale(page, 1);
     await page.setViewportSize({ width: 390, height: 844 });
     await privateAction.click();
     await modeIs(page, "Private");
@@ -518,7 +570,9 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     const deniedVia = await denied.locator(".pr-via-placeholder").boundingBox();
     expect(recordingVia).not.toBeNull();
     expect(deniedVia).not.toBeNull();
-    expect(Math.abs(recordingVia!.height - deniedVia!.height)).toBeLessThanOrEqual(1);
+    expect(
+      Math.abs(recordingVia!.height - deniedVia!.height),
+    ).toBeLessThanOrEqual(1);
     const deniedControls = denied.locator(".pr-controls[data-mic-denied=true]");
     expect(await deniedControls.getByRole("button").count()).toBe(1);
     expect(
