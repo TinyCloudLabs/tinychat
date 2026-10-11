@@ -15,6 +15,7 @@ import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { formatClockDuration, rowWhen } from "./formatters";
 import { RowBadge } from "./RowBadge";
 import { KIND_ICON, libraryKind, librarySourceLabel } from "./libraryKinds";
+import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 
 export type LibraryItem = MeetingListItem & {
   /** A voice note on this device with no row in the space yet. */
@@ -52,7 +53,7 @@ export function libraryRowAsideDuration(item: LibraryItem, lineReplaced: boolean
   return isVoiceNote(item) && !lineReplaced ? null : item.durationSecs;
 }
 
-export function LibraryRow(props: { item: LibraryItem; now: Date; grouped: boolean; selected?: boolean; testId?: string; onRecentOpen?: (id: string) => void }) {
+export function LibraryRow(props: { item: LibraryItem; now: Date; grouped: boolean; selected?: boolean; testId?: string; onRecentOpen?: (id: string) => void; pipeline?: NotePipeline }) {
   const { item } = props;
   const Icon = KIND_ICON[libraryKind(item.source)];
   const voiceNote = libraryKind(item.source) === "note";
@@ -66,7 +67,8 @@ export function LibraryRow(props: { item: LibraryItem; now: Date; grouped: boole
         icon={Icon}
         title={libraryRowTitle(item)}
         meta={libraryRowMeta(item, props.now, props.grouped)}
-        badge={lineReplaced ? undefined : (badge ?? undefined)}
+        badge={lineReplaced || isVoiceNote(item) ? undefined : (badge ?? undefined)}
+        pipeline={isVoiceNote(item) ? props.pipeline : undefined}
         durationSecs={libraryRowAsideDuration(item, lineReplaced)}
         issue={issue}
         onDetails={issue && issueIsInformational(issue) ? (opener: HTMLElement) => soft.openIssue(item.sourceId, opener) : undefined}

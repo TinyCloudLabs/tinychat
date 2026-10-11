@@ -267,7 +267,10 @@ describe("Soft Capture home interactions (phone)", () => {
   test("Save now retries the saves waiting on this phone", async () => {
     const page = await open("capture-soft-on-phone");
     expect(await page.evaluate(() => window.exoUiRetryPending ?? 0)).toBe(0);
-    await page.locator('[data-testid="voice-note-retry"]').tap();
+    const saveNow = page.locator('[data-testid="voice-note-retry"]');
+    await saveNow.waitFor({ state: "visible", timeout: 5_000 });
+    expect(await saveNow.innerText()).toBe("Save now");
+    await saveNow.tap();
     expect(await page.evaluate(() => window.exoUiRetryPending ?? 0)).toBe(1);
     await page.context().close();
   });
