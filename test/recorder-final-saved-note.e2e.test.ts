@@ -26,6 +26,13 @@ const engine = engineName === "chromium" ? chromium : webkit;
 setDefaultTimeout(30_000);
 
 let browser: Browser;
+/**
+ * Chromium with its desktop autoplay policy on (headless Chromium waives it by default). Chromium
+ * counts any earlier click on the page, so a play() that comes late still passes there: the
+ * calls recorded by `recordPlays` are what show the first tap plays from inside the click, which
+ * is what iOS WebKit needs. `browser` waives the policy for the other specs.
+ */
+let strictBrowser: Browser;
 let server: ReturnType<typeof serveHarness>;
 
 beforeAll(async () => {
@@ -37,11 +44,17 @@ beforeAll(async () => {
         ? ["--autoplay-policy=no-user-gesture-required"]
         : [],
   });
+  strictBrowser =
+    engineName === "chromium"
+      ? await engine.launch({ headless: true, args: ["--autoplay-policy=document-user-activation-required"] })
+      : browser;
 }, 120_000);
 
 afterAll(async () => {
   await Promise.race([
-    browser?.close(),
+    strictBrowser === browser
+      ? browser?.close()
+      : Promise.all([browser?.close(), strictBrowser?.close()]),
     new Promise((resolve) => setTimeout(resolve, 10_000)),
   ]);
   server?.stop(true);
@@ -52,14 +65,18 @@ const SHEET = { screen: "interactive-sheet", platform: "ios", width: 390, height
 const PAGE_EMPTY = { ...PAGE, screen: "interactive-page-empty" };
 const SHEET_EMPTY = { ...SHEET, screen: "interactive-sheet-empty" };
 
-async function open(target: { screen: string; platform: string; width: number; height: number }, theme = "light") {
-  const page = await (
-    await browser.newContext({
-      viewport: { width: target.width, height: target.height },
-      colorScheme: theme === "dark" ? "dark" : "light",
-      reducedMotion: "reduce",
-    })
-  ).newPage();
+async function open(
+  target: { screen: string; platform: string; width: number; height: number },
+  theme = "light",
+  options: { browser?: Browser; init?: () => void } = {},
+) {
+  const context = await (options.browser ?? browser).newContext({
+    viewport: { width: target.width, height: target.height },
+    colorScheme: theme === "dark" ? "dark" : "light",
+    reducedMotion: "reduce",
+  });
+  if (options.init) await context.addInitScript(options.init);
+  const page = await context.newPage();
   const errors: string[] = [];
   page.on("console", (message) => {
     const text = message.text();
@@ -80,6 +97,23 @@ async function open(target: { screen: string; platform: string; width: number; h
   );
   return { page, errors };
 }
+
+/** Records every media play() call: whether it ran inside a click's dispatch, and the element's source then. Everything stays muted. */
+function recordPlays() {
+  const plays: { inClick: boolean; src: string | null }[] = [];
+  let inClick = false;
+  (window as unknown as { __plays: typeof plays }).__plays = plays;
+  addEventListener("click", () => { inClick = true; }, true);
+  addEventListener("click", () => { inClick = false; });
+  const play = HTMLMediaElement.prototype.play;
+  HTMLMediaElement.prototype.play = function (this: HTMLMediaElement) {
+    this.muted = true;
+    plays.push({ inClick, src: this.getAttribute("src") });
+    return play.call(this);
+  };
+}
+const recordedPlays = (page: Page) =>
+  page.evaluate(() => (window as unknown as { __plays: { inClick: boolean; src: string | null }[] }).__plays.slice());
 
 const until = async (
   what: string,
@@ -247,6 +281,55 @@ describe.serial(`recorder-final saved note, ${engineName}`, () => {
       expect(errors).toEqual([]);
     });
   }
+
+  describe.serial("playback under the browser's own autoplay policy", () => {
+    test("sheet: the first tap plays, from the tap itself, and the finished clip plays again", async () => {
+      const { page, errors } = await open(SHEET, "light", { browser: strictBrowser, init: recordPlays });
+      const audio = page.getByTestId("note-audio-player");
+      await page.getByTestId("note-audio-play").click();
+      await shown(page.getByTestId("note-audio-controls"));
+      await until("the first tap to be playing", () =>
+        audio.evaluate((el: HTMLAudioElement) => !el.paused && el.currentTime > 0.3),
+      );
+      expect(await audio.evaluate((el: HTMLAudioElement) => el.muted)).toBe(true);
+      // The first call is the tap's own, made before the audio had a source; the second follows the load.
+      const plays = await recordedPlays(page);
+      expect(plays[0]).toEqual({ inClick: true, src: null });
+      expect(plays.length).toBe(2);
+      expect(plays[1].src).toStartWith("blob:");
+      expect(await page.getByTestId("note-audio-toggle").getAttribute("aria-label")).toBe("Pause");
+
+      await audio.evaluate((el: HTMLAudioElement) => { el.currentTime = el.duration - 0.4; });
+      await until("the clip to end", () => audio.evaluate((el: HTMLAudioElement) => el.ended));
+      await until("the button to offer Play again", async () =>
+        (await page.getByTestId("note-audio-toggle").getAttribute("aria-label")) === "Play",
+      );
+
+      await page.getByTestId("note-audio-toggle").click();
+      await until("the replay to be playing from the start", () =>
+        audio.evaluate((el: HTMLAudioElement) => !el.paused && !el.ended && el.currentTime > 0.2 && el.currentTime < 5),
+      );
+      expect((await recordedPlays(page)).at(-1)).toEqual({ inClick: true, src: expect.stringMatching(/^blob:/) });
+      expect(errors).toEqual([]);
+      await page.close();
+    });
+
+    test("sheet: a seek made while the audio is loading is applied once it is", async () => {
+      const { page, errors } = await open(SHEET, "light", { browser: strictBrowser, init: recordPlays });
+      const audio = page.getByTestId("note-audio-player");
+      await page.getByTestId("note-audio-play").click();
+      await shown(page.getByTestId("note-audio-controls"));
+      const range = page.getByRole("slider", { name: "Seek" });
+      await range.focus();
+      await page.keyboard.press("End");
+      await until("the player to be at the end", () =>
+        audio.evaluate((el: HTMLAudioElement) => el.readyState >= 1 && el.currentTime > el.duration - 1),
+      );
+      expect(await range.getAttribute("aria-valuetext")).toMatch(/^0:\d\d of 0:\d\d$/);
+      expect(errors).toEqual([]);
+      await page.close();
+    });
+  });
 
   test("page: a moment button seeks the player", async () => {
     const { page, errors } = await open(PAGE);

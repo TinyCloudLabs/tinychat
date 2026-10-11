@@ -17,3 +17,11 @@ export function scrubTarget(value: number, durationSecs: number | null): number 
   if (!Number.isFinite(value) || value < 0) return 0;
   return durationSecs === null ? value : Math.min(value, durationSecs);
 }
+
+/** Whether the media can move to `seconds` now: some seekable range holds it. */
+export function isSeekable(seekable: Pick<TimeRanges, "length" | "start" | "end">, seconds: number): boolean {
+  for (let i = 0; i < seekable.length; i++) {
+    if (seconds >= seekable.start(i) && seconds <= seekable.end(i)) return true;
+  }
+  return false;
+}
