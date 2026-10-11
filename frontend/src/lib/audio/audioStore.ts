@@ -95,6 +95,7 @@ interface RetryOptions {
     payloadBytes?: number) => Promise<T>;
   /** Waits before each retry of a transient failure; its length bounds the retries. Tests pass zeros. */
   retryDelaysMs?: readonly number[];
+  onRetry?: (attempt: number, code: string) => void;
 }
 
 export interface PutAudioOptions extends RetryOptions {
@@ -103,6 +104,8 @@ export interface PutAudioOptions extends RetryOptions {
   sha256?: string | null;
   /** Bytes per stored part, at most (and by default) {@link MAX_AUDIO_PART_SIZE}. */
   partSize?: number;
+  /** Called after resumable-part discovery and before the first audio transfer. */
+  onUploadStart?: (totalBytes: number) => void;
   onProgress?: (storedBytes: number, totalBytes: number) => void;
 }
 
@@ -205,6 +208,7 @@ async function withRetry<T>(call: (signal?: AbortSignal) => Promise<Result<T>>, 
     const res = await (opts.schedule ? opts.schedule(call, operation, undefined, payloadBytes) : call(signal));
     if (!res.ok && (res.error.code === "ABORTED" || signal?.aborted)) throw abortError();
     if (res.ok || attempt >= delays.length || !isTransient(res.error)) return res;
+    opts.onRetry?.(attempt + 1, res.error.code ?? "STORE_ERROR");
     await sleep(delays[attempt]!, signal);
   }
 }
@@ -265,6 +269,7 @@ export async function putAudio(
   }
 
   const existing = new Set(await listKeys(kv, `${base}/p/`, opts));
+  opts.onUploadStart?.(total);
 
   const parts: StoredAudioPart[] = [];
   let stored = 0;

@@ -133,6 +133,14 @@ describe("recorderReducer", () => {
     expect(saved).toMatchObject({ permissionDenied: true, outcome: "saved" });
   });
 
+  test("a held receipt retains why upload is waiting", () => {
+    const committed = recorderReducer(run([{ type: "STOP_REQUESTED", at: 0 }], recording()),
+      { type: "LOCAL_COMMITTED", id: "rec-1", durationMs: 42_000, at: 9 });
+    const held = recorderReducer(committed, { type: "LOCAL_UPLOAD_HELD", id: "rec-1", reason: "signed-out" });
+    expect(held).toMatchObject({ localUpload: "held", localUploadHeldReason: "signed-out" });
+    expect(recorderReducer(held, { type: "SAVED", id: "rec-1", durationMs: 42_000, at: 10 }).localUploadHeldReason).toBeUndefined();
+  });
+
   test("Stop is ignored until the recorder has started", () => {
     const starting = recorderReducer(initialRecorderState, { type: "START_REQUESTED" });
     expect(recorderReducer(starting, { type: "STOP_REQUESTED", at: 0 })).toBe(starting);

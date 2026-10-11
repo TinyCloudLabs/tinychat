@@ -147,6 +147,7 @@ import { BootSurface } from "./shell/BootSurface";
 // AppState and stateLabel live in lib/appState; re-exported for imports from App.
 export { stateLabel, type AppState } from "./lib/appState";
 
+const OPENKEY_SIGN_OUT_UNPROVEN_NOTE = "Signed out of Exo. To use a different account, also sign out at openkey.so.";
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const LOCAL_VALIDATION = resolveLocalValidation(import.meta.env, globalThis.location?.hostname);
 const APP_NAME = "Exo";
@@ -898,14 +899,9 @@ export function App() {
           openKeyWarning =
             "OpenKey stayed signed in on this device. Exo is signed out locally. " +
             "Sign out at openkey.so before choosing another account.";
-        } else if (openKeyOutcome.status === "remote-unavailable") {
-          openKeyWarning =
-            "Remote OpenKey sign-out is unavailable in this app right now. Exo is signed out locally. " +
-            "Sign out at openkey.so before choosing another account.";
-        } else if (openKeyOutcome.status === "unverified") {
-          openKeyWarning =
-            "OpenKey sign-out could not be verified. Exo is signed out locally. " +
-            "Sign out at openkey.so before choosing another account.";
+        } else if (openKeyOutcome.status === "unverified" || openKeyOutcome.status === "remote-unavailable") {
+          // Revocation could not be proved (no verified answer, no sheet, or an error): a calm note, not an alarm.
+          openKeyWarning = OPENKEY_SIGN_OUT_UNPROVEN_NOTE;
         }
       }
 

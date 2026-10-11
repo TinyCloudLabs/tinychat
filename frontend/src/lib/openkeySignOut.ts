@@ -12,6 +12,10 @@ export type OpenKeySignOutOutcome =
   | { status: "unverified" };
 
 /**
+ * `revoked: false` means the widget could not prove a revocation: it also answers that when it
+ * found no token to revoke, and the SDK cannot tell that from a failed revoke or an unreachable
+ * OpenKey. Every outcome other than `revoked` therefore means "a live session may remain".
+ *
  * Prefer the OpenKey client that authenticated this page. A restored TinyChat
  * session has no such in-memory client, so construct one lazily and let the
  * OpenKey-owned widget sign out its browser session instead.
@@ -27,6 +31,7 @@ export async function signOutOpenKeySession(
       : { status: "unverified" };
   } catch (error) {
     if (openKeyErrorCode(error) === "POPUP_BLOCKED" && openKeyErrorReason(error) === "embedded-webview") {
+      console.warn("[OpenKey] sign-out sheet could not open in this WebView (POPUP_BLOCKED, embedded-webview); the OpenKey session was not revoked.");
       return { status: "remote-unavailable" };
     }
     if (openKeyErrorCode(error) === "USER_CANCELLED") {

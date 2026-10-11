@@ -68,6 +68,8 @@ const ISSUES: Partial<RecorderValue> = {
     listing: { state: "ok", count: 2 },
     running: false,
     lastError: null,
+    uploadingId: null,
+    online: true,
   },
   retryPending: () => {},
   captureIssues: {
@@ -87,6 +89,8 @@ const SAVE_FAILED: Partial<RecorderValue> = {
     listing: { state: "ok", count: 2 },
     running: false,
     lastError: "Couldn't reach your space",
+    uploadingId: null,
+    online: true,
   },
   retryPending: () => {},
 };

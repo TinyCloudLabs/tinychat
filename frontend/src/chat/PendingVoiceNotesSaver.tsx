@@ -10,6 +10,7 @@
 // account). Headless, like the app's other once-per-session lanes.
 
 import { useEffect } from "react";
+import { Capacitor } from "@capacitor/core";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
@@ -18,10 +19,10 @@ import { captureCapabilities, captureEngineAvailable } from "@/lib/voiceNotes/ca
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
-import type { VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { isTinyCloudNetworkFailure, logVoiceNoteError, messageOf, pendingStore, whenVoiceNoteSavesIdle, type PendingRun } from "@/lib/voiceNotes/recorderSaves";
+import { isTinyCloudNetworkFailure, logVoiceNoteError, messageOf, pendingStore, whenVoiceNoteSavesIdle } from "@/lib/voiceNotes/recorderSaves";
 import { advanceAccountGeneration, currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
-import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
+import { saveDeferredForAccountTransition, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
+import { transcribeSavedNote, voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
 
 let recovery: (() => Promise<void>) | null = null;
 /** Keep the mounted saver available to renewal without remounting the view. */
@@ -56,24 +57,11 @@ function installOnDeviceTranscriptSync(tcw: TinyCloudWeb): () => void {
   };
 }
 
-/**
- * Save what is on the phone, and hand each saved note to transcription. The availability check
- * runs alongside the save, so a note is offered to private cloud only once the account's
- * answer is in (`noteSaved` ignores it otherwise, as for the card).
- */
-export async function savePendingVoiceNotes(deps: {
-  save: () => Promise<PendingRun>;
-  transcriber: Pick<VoiceNoteTranscriber, "check" | "noteSaved"> | null;
-}): Promise<PendingRun> {
-  const [run] = await Promise.all([deps.save(), deps.transcriber?.check()]);
-  // noteSaved uses each committed sidecar's options, including Off; legacy notes have none.
-  for (const recording of run.saved) deps.transcriber?.noteSaved(recording);
-  return run;
-}
-
 export function PendingVoiceNotesSaver({
   tcw,
   pipeline,
+  backendUrl,
+  sessionStore,
 }: {
   tcw: TinyCloudWeb;
   pipeline: VoiceNotePipeline;
@@ -104,22 +92,63 @@ export function PendingVoiceNotesSaver({
     const spaceId = tcw.spaceId;
     if (!did || !spaceId) return;
     pendingStore.setAccount(did);
+    pendingStore.setOnline(typeof navigator === "undefined" ? true : navigator.onLine !== false);
     pipeline.resume();
-    const run = async () => {
-      const account = pendingStore.forAccount(did);
-      try {
-        await pipeline.reconcileAll({ did, spaceId, generation: currentAccountGeneration() });
-        await account.refresh(null);
-      } catch (error) {
-        const message = messageOf(error);
-        // Network errors are already logged by messageOf through the redacting formatter.
-        if (!isTinyCloudNetworkFailure(error)) logVoiceNoteError("Saving notes left on this phone failed", error);
-        account.reportError(`Could not save notes on this phone: ${message}`);
+    const transcriber = voiceNoteTranscriberFor(tcw, backendUrl, sessionStore);
+    let runInFlight: Promise<void> | null = null;
+    let dirty = false;
+    let disposed = false;
+    const run = (): Promise<void> => {
+      if (runInFlight) {
+        dirty = true;
+        return runInFlight;
       }
+      const runOnce = async () => {
+        const generation = currentAccountGeneration();
+        const account = pendingStore.forAccount(did);
+        try {
+          await pipeline.reconcileAll({ did, spaceId, generation }, "reconcile", (note) => {
+            if (transcriber) transcribeSavedNote(transcriber, note, () => generation === currentAccountGeneration());
+          });
+          await account.refresh(null);
+        } catch (error) {
+          if (saveDeferredForAccountTransition(error)) return;
+          const message = messageOf(error);
+          // Network errors are already logged by messageOf through the redacting formatter.
+          if (!isTinyCloudNetworkFailure(error)) logVoiceNoteError("Saving notes left on this phone failed", error);
+          account.reportError(`Could not save notes on this phone: ${message}`);
+        }
+      };
+      runInFlight = (async () => {
+        do {
+          dirty = false;
+          await runOnce();
+        } while (dirty && !disposed);
+      })().finally(() => { runInFlight = null; });
+      return runInFlight;
     };
     const unregister = registerPendingVoiceNotesRecovery(run);
     void run();
-    return () => { unregister(); pipeline.cancelAll(); pendingStore.setAccount(null); };
-  }, [pipeline, tcw]);
+    const onOnline = () => { pendingStore.setOnline(true); void run(); };
+    const onOffline = () => pendingStore.setOnline(false);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    let appStateHandle: { remove(): Promise<void> } | null = null;
+    if (Capacitor.isNativePlatform()) {
+      void import("@capacitor/app").then(({ App }) => App.addListener("appStateChange", ({ isActive }) => {
+        if (isActive) void run();
+      })).then((handle) => {
+        if (disposed) void handle.remove();
+        else appStateHandle = handle;
+      }).catch((error: unknown) => console.warn("[VoiceNotes] Could not listen for foreground recovery", error));
+    }
+    return () => {
+      disposed = true;
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+      if (appStateHandle) void appStateHandle.remove();
+      unregister(); pipeline.cancelAll(); pendingStore.setAccount(null);
+    };
+  }, [backendUrl, pipeline, sessionStore, tcw]);
   return null;
 }

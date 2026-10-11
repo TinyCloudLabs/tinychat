@@ -68,6 +68,7 @@ test("OpenKey sign-out waits for the user: no capture deadline around it", () =>
 test("the app is called Exo everywhere sign-in and sign-out show a name", () => {
   expect(app).toContain('const APP_NAME = "Exo";');
   expect(app).not.toContain("TinyChat is signed out");
-  expect(app.match(/Exo is signed out locally/g)?.length).toBe(3);
+  expect(app.match(/Exo is signed out locally/g)?.length).toBe(1);
+  expect(app).toContain("Signed out of Exo. To use a different account");
   expect(readFileSync(join(import.meta.dir, "..", "..", "index.html"), "utf8")).toContain("<title>Exo</title>");
 });
