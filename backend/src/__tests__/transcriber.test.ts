@@ -661,3 +661,76 @@ describe("TC-581 sharing flag deploy environment", () => {
     expect(example).toContain("\nCALENDAR_AUTOJOIN_SHARING=false\n");
   });
 });
+
+describe("TC-581 review 6a: ownership fails closed", () => {
+  function countingKv(doc: unknown, address = ADDRESS_B) {
+    const docs = new Map<string, unknown>([[`transcriber/index/${address.toLowerCase()}`, doc]]);
+    const counter = { gets: 0 };
+    const node = {
+      kv: {
+        async get(key: string) {
+          counter.gets++;
+          return docs.has(key) ? { ok: true, data: structuredClone(docs.get(key)) } : { ok: false, error: { code: "KV_NOT_FOUND", service: "kv", message: `Key not found: ${key}` } };
+        },
+        async put(key: string, value: unknown) { docs.set(key, structuredClone(value)); return { ok: true }; },
+      },
+      async signIn() {},
+    } as unknown as TinyCloudNode;
+    return { index: new KvTranscriberIndexStore(node, new BackendStorageLane()), counter, docs };
+  }
+  const aMeeting = () => meeting("mtg_shared", { status: "completed", metadata: { tinychat_address: ADDRESS_A.toLowerCase(),
+    source: "google-calendar-autojoin", calendar_occurrence_id: "owner-occ", calendar_title: "A's private title" } });
+
+  test("GET /:id reads ids and shares in exactly one kv.get", async () => {
+    const { index, counter } = countingKv({ ids: ["mtg_shared"], shared: { mtg_shared: { ownerTenant: "x", ownerOccurrenceId: "o",
+      recipientOccurrenceId: "r", checkedAt: 1, title: "Mine", scheduledStart: "2026-09-25T12:00:00.000Z" } } });
+    const h = harness(ADDRESS_B, index);
+    h.store.set("mtg_shared", aMeeting());
+    await withServer(h.app, async (base) => {
+      const r = await call(base, "/api/transcriber/meetings/mtg_shared");
+      expect(r.status).toBe(200);
+      expect(r.body.metadata).toEqual({ source: "google-calendar-autojoin", calendar_title: "Mine", scheduled_start: "2026-09-25T12:00:00.000Z", shared: true });
+    });
+    expect(counter.gets).toBe(1);
+  });
+
+  test("a share map that is not an object makes the list unavailable, never owned", async () => {
+    const { index } = countingKv({ ids: ["mtg_shared"], shared: ["mtg_shared"] });
+    const h = harness(ADDRESS_B, index);
+    h.store.set("mtg_shared", aMeeting());
+    await withServer(h.app, async (base) => {
+      expect((await call(base, "/api/transcriber/meetings")).status).toBe(503);
+      expect((await call(base, "/api/transcriber/meetings/mtg_shared/stop", "POST")).status).toBe(503);
+    });
+    expect(h.calls.filter(c => c.method === "stopMeeting")).toEqual([]);
+  });
+
+  test("a null provenance entry still marks the id shared: scrubbed view, stop refused", async () => {
+    const { index } = countingKv({ ids: ["mtg_shared"], shared: { mtg_shared: null } });
+    const h = harness(ADDRESS_B, index);
+    h.store.set("mtg_shared", aMeeting());
+    await withServer(h.app, async (base) => {
+      const r = await call(base, "/api/transcriber/meetings/mtg_shared");
+      expect(r.status).toBe(200);
+      expect(r.body.metadata).toEqual({ source: "google-calendar-autojoin", calendar_title: "Calendar meeting", shared: true });
+      expect(r.text).not.toContain(ADDRESS_A.toLowerCase());
+      expect((await call(base, "/api/transcriber/meetings/mtg_shared/stop", "POST")).status).toBe(403);
+    });
+    expect(h.calls.filter(c => c.method === "stopMeeting")).toEqual([]);
+  });
+
+  test("an id in this index without provenance but created by another address is never stopped or deleted upstream", async () => {
+    const h = harness(ADDRESS_B);
+    h.store.set("mtg_shared", aMeeting());
+    await h.index.add(ADDRESS_B, "mtg_shared");
+    await withServer(h.app, async (base) => {
+      const stop = await call(base, "/api/transcriber/meetings/mtg_shared/stop", "POST");
+      expect(stop.status).toBe(403);
+      expect(stop.body).toEqual({ error: "shared_meeting" });
+      expect((await call(base, "/api/transcriber/meetings/mtg_shared", "DELETE")).status).toBe(204);
+    });
+    expect(h.calls.filter(c => c.method === "stopMeeting" || c.method === "deleteMeeting")).toEqual([]);
+    expect(h.store.has("mtg_shared")).toBe(true);
+    expect(await h.index.list(ADDRESS_B)).toEqual([]);
+  });
+});

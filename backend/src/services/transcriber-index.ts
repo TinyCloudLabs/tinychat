@@ -36,12 +36,28 @@ export interface TranscriberIndexStore {
   addShared(address: string, meetingId: string, provenance: ShareProvenance): Promise<void>;
   /** Shared meeting ids for this address, with their provenance. */
   shares(address: string): Promise<Record<string, ShareProvenance>>;
+  /** Ids and shares from ONE read of the document, so ownership and sharing can never disagree. */
+  entries(address: string): Promise<{ ids: string[]; shared: Record<string, ShareProvenance> }>;
 }
 
 /** The stored document. A legacy `{ ids }` document has no shares. */
 interface IndexDoc {
   ids: string[];
   shared?: Record<string, ShareProvenance>;
+}
+
+/** A garbled provenance entry still marks its id as shared; its fields fall back to empty values. */
+function sanitizeProvenance(raw: unknown): ShareProvenance {
+  const value = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const text = (key: string) => (typeof value[key] === "string" ? (value[key] as string) : "");
+  return {
+    ownerTenant: text("ownerTenant"),
+    ownerOccurrenceId: text("ownerOccurrenceId"),
+    recipientOccurrenceId: text("recipientOccurrenceId"),
+    checkedAt: typeof value.checkedAt === "number" ? value.checkedAt : 0,
+    title: text("title"),
+    scheduledStart: text("scheduledStart"),
+  };
 }
 
 function withId(doc: IndexDoc, meetingId: string): IndexDoc {
@@ -81,6 +97,10 @@ export class MemoryTranscriberIndexStore implements TranscriberIndexStore {
   async shares(address: string): Promise<Record<string, ShareProvenance>> {
     return structuredClone(this.doc(address).shared ?? {});
   }
+  async entries(address: string): Promise<{ ids: string[]; shared: Record<string, ShareProvenance> }> {
+    const doc = this.doc(address);
+    return structuredClone({ ids: doc.ids, shared: doc.shared ?? {} });
+  }
 }
 
 export const TRANSCRIBER_INDEX_KEY_PREFIX = "transcriber/index/";
@@ -116,13 +136,15 @@ export class KvTranscriberIndexStore implements TranscriberIndexStore {
       }
     }
     const ids = (value as { ids?: unknown } | null)?.ids;
-    const shared = (value as { shared?: unknown } | null)?.shared;
-    return {
-      ids: Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [],
-      ...(shared && typeof shared === "object" && !Array.isArray(shared)
-        ? { shared: shared as Record<string, ShareProvenance> }
-        : {}),
-    };
+    const doc: IndexDoc = { ids: Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [] };
+    if (value !== null && typeof value === "object" && "shared" in value) {
+      const shared = (value as { shared?: unknown }).shared;
+      if (shared === undefined) return doc;
+      // Fail closed: an unreadable share map must never turn a shared id into an owned one.
+      if (shared === null || typeof shared !== "object" || Array.isArray(shared)) throw new Error("transcriber_index_invalid");
+      doc.shared = Object.fromEntries(Object.entries(shared).map(([id, raw]) => [id, sanitizeProvenance(raw)]));
+    }
+    return doc;
   }
 
   /** Writes the whole document, so a write never drops another id's provenance. */
@@ -157,5 +179,12 @@ export class KvTranscriberIndexStore implements TranscriberIndexStore {
 
   shares(address: string): Promise<Record<string, ShareProvenance>> {
     return this.lane.run(async () => (await this.read(this.key(address))).shared ?? {});
+  }
+
+  entries(address: string): Promise<{ ids: string[]; shared: Record<string, ShareProvenance> }> {
+    return this.lane.run(async () => {
+      const doc = await this.read(this.key(address));
+      return { ids: doc.ids, shared: doc.shared ?? {} };
+    });
   }
 }

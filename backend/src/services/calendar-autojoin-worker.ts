@@ -10,6 +10,7 @@ import {
   computeCreateRequestHash, TERMINAL_MEETING_STATUSES, TranscriptionApiError,
   type TranscriptionApiClient, type TranscriptionMeeting, type TranscriptionMeetingStatus,
 } from "./transcription-api.js";
+import { CalendarAutojoinError } from "./calendar-autojoin-connection.js";
 import { GoogleOAuthError } from "./google-oauth.js";
 import type { TranscriberIndexStore } from "./transcriber-index.js";
 
@@ -420,9 +421,11 @@ export class CalendarAutojoinWorker {
       const event = await this.google(ownerConnection, token => this.options.calendar.getEvent(token, owner.eventId));
       return shareDecision(event, owner, recipient.verifiedEmail);
     } catch (error) {
-      const retryable = (error instanceof GoogleCalendarError && error.retryable)
-        || (error instanceof GoogleOAuthError && (error.status === 0 || error.status === 429 || error.status >= 500));
-      if (!retryable) return { ok: false, reason: "owner_authorization_lost" };
+      // Only an explicit authorization answer denies; KV, decryption, network and unknown errors retry.
+      const denied = error instanceof CalendarAutojoinError
+        || (error instanceof GoogleCalendarError && !error.retryable)
+        || (error instanceof GoogleOAuthError && error.status >= 400 && error.status < 500 && error.status !== 429);
+      if (denied) return { ok: false, reason: "owner_authorization_lost" };
       if (this.now() >= row.end + SHARE_CHECK_DEADLINE_MS) return { ok: false, reason: "owner_calendar_unavailable" };
       await this.options.store.updateOccurrence(row.tenant, row.id, current => {
         if (!current || current.phase === "terminal") return current;

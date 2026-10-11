@@ -1121,6 +1121,24 @@ describe("TC-581 shared capture across tenants", () => {
     expect(await f.index.list(B)).toEqual([]);
   });
 
+  test("6c: a non-authorization error reading the owner's token retries, then grants", async () => {
+    const f = await twoTenants();
+    await f.attach();
+    f.meeting().status = "completed";
+    await f.holdA();
+    f.tokenErrors[A] = () => { throw new Error("kv unavailable"); };
+    f.afterWindow();
+    await f.worker().tick();
+    const pending = (await f.rowB())!;
+    expect(pending).toMatchObject({ phase: "pending", errorCode: "shared_capture_pending" });
+    expect(pending.nextAttemptAt).toBeGreaterThan(f.now());
+    f.tokenErrors[A] = undefined;
+    f.setNow(pending.nextAttemptAt);
+    await f.worker().tick();
+    expect(await f.rowB()).toMatchObject({ disposition: "shared" });
+    expect(await f.index.list(B)).toEqual(["mtg_1"]);
+  });
+
   test("reconcileShared running twice (lost finish) leaves one index entry", async () => {
     const f = await twoTenants();
     await f.attach();

@@ -67,8 +67,8 @@ export function sharedMeetingView(meeting: TranscriptionMeeting, provenance: Sha
     ...(meeting.error === undefined ? {} : { error: meeting.error }),
     metadata: {
       source: "google-calendar-autojoin",
-      calendar_title: provenance.title,
-      scheduled_start: provenance.scheduledStart,
+      calendar_title: provenance.title || "Calendar meeting",
+      ...(provenance.scheduledStart ? { scheduled_start: provenance.scheduledStart } : {}),
       shared: true,
     },
   };
@@ -124,7 +124,7 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
     let ids: string[];
     let shares: Record<string, ShareProvenance>;
     try {
-      [ids, shares] = await Promise.all([index.list(address), index.shares(address)]);
+      ({ ids, shared: shares } = await index.entries(address));
     } catch (error) {
       console.warn(`[transcriber] index read failed err=${redactedErrorMessage(error)}`);
       res.status(503).json({ error: "transcriber_unavailable" });
@@ -137,6 +137,12 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
     return { address, id, shared: Object.hasOwn(shares, id) ? shares[id] : undefined };
   }
 
+  /** Positive ownership before an upstream side effect: tinychat stamps every meeting it creates. */
+  async function createdBy(address: string, id: string): Promise<boolean> {
+    const owner = (await api.getMeeting(id)).metadata?.tinychat_address;
+    return typeof owner === "string" && owner.toLowerCase() === address;
+  }
+
   router.get("/", async (req, res) => {
     const address = addressOf(req, res);
     if (address === null) return;
@@ -144,7 +150,7 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
     let ids: string[];
     let shares: Record<string, ShareProvenance>;
     try {
-      [ids, shares] = await Promise.all([index.list(address), index.shares(address)]);
+      ({ ids, shared: shares } = await index.entries(address));
     } catch (error) {
       console.warn(`[transcriber] index read failed err=${redactedErrorMessage(error)}`);
       res.status(503).json({ error: "transcriber_unavailable" });
@@ -248,12 +254,12 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
   router.post("/:id/stop", async (req, res) => {
     const own = await owned(req, res);
     if (own === null) return;
-    if (own.shared) {
-      // Someone else's bot: only its owner can end it.
-      res.status(403).json({ error: "shared_meeting" });
-      return;
-    }
     try {
+      if (own.shared || !(await createdBy(own.address, own.id))) {
+        // Someone else's bot: only its owner can end it.
+        res.status(403).json({ error: "shared_meeting" });
+        return;
+      }
       res.json(await api.stopMeeting(own.id));
     } catch (error) {
       upstreamFailure(res, error, "stop");
@@ -278,10 +284,11 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
   router.delete("/:id", async (req, res) => {
     const own = await owned(req, res);
     if (own === null) return;
-    // A shared recording belongs to its owner: removing it here only takes it off this list.
+    // A recording this address did not create belongs to its owner: removing it here only takes
+    // it off this list.
     if (!own.shared) {
       try {
-        await api.deleteMeeting(own.id);
+        if (await createdBy(own.address, own.id)) await api.deleteMeeting(own.id);
       } catch (error) {
         // Already gone upstream is fine — the point is that it is gone.
         if (!(error instanceof TranscriptionApiError && error.status === 404)) {
