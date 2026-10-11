@@ -7,26 +7,14 @@ export interface OpenKeySignOutClient {
 
 export type OpenKeySignOutOutcome =
   | { status: "revoked" }
-  | { status: "no-session" }
   | { status: "cancelled" }
   | { status: "remote-unavailable" }
   | { status: "unverified" };
 
-export interface OpenKeySignOutContext {
-  /** This app run signed in with the client being used, so the widget holds that session's token. */
-  signedInThisRun: boolean;
-  /**
-   * OpenKey's embedded widget keeps its session token only in per-run iframe storage here
-   * (a cross-site iframe in the phone app gets no cookie), so a session from an earlier run is gone.
-   */
-  sessionOnlyInRun: boolean;
-}
-
 /**
- * The widget answers `revoked: false` for "no token to revoke", "revoke failed" and "could not reach
- * OpenKey" alike, so the answer alone cannot say whether a live session remains. Only one case is
- * knowable here: a restored session in an app whose widget session lives only in the current run
- * has nothing left to revoke.
+ * `revoked: false` means the widget could not prove a revocation: it also answers that when it
+ * found no token to revoke, and the SDK cannot tell that from a failed revoke or an unreachable
+ * OpenKey. Every outcome other than `revoked` therefore means "a live session may remain".
  *
  * Prefer the OpenKey client that authenticated this page. A restored TinyChat
  * session has no such in-memory client, so construct one lazily and let the
@@ -35,13 +23,11 @@ export interface OpenKeySignOutContext {
 export async function signOutOpenKeySession(
   current: OpenKeySignOutClient | null,
   createFallback: () => OpenKeySignOutClient,
-  context: OpenKeySignOutContext = { signedInThisRun: true, sessionOnlyInRun: false },
 ): Promise<OpenKeySignOutOutcome> {
   try {
     const acknowledgement = await (current ?? createFallback()).signOut();
-    if (acknowledgement.revoked) return { status: "revoked" };
-    return !context.signedInThisRun && context.sessionOnlyInRun
-      ? { status: "no-session" }
+    return acknowledgement.revoked
+      ? { status: "revoked" }
       : { status: "unverified" };
   } catch (error) {
     if (openKeyErrorCode(error) === "POPUP_BLOCKED" && openKeyErrorReason(error) === "embedded-webview") {

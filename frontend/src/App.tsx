@@ -89,7 +89,7 @@ import {
   redirectsWhenSignedOut,
   screenFor,
 } from "./shell/routes";
-import { PlatformContext, appPlatform } from "./lib/platform";
+import { PlatformContext } from "./lib/platform";
 import { useSizeClass } from "./lib/sizeClass";
 // W5 — the cohort meetings view. It renders NOTHING unless the backend's read
 // API answers for this address (dark flag / non-cohort = 404 = invisible), and
@@ -147,6 +147,7 @@ import { BootSurface } from "./shell/BootSurface";
 // AppState and stateLabel live in lib/appState; re-exported for imports from App.
 export { stateLabel, type AppState } from "./lib/appState";
 
+const OPENKEY_SIGN_OUT_UNPROVEN_NOTE = "Signed out of Exo. To use a different account, also sign out at openkey.so.";
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const LOCAL_VALIDATION = resolveLocalValidation(import.meta.env, globalThis.location?.hostname);
 const APP_NAME = "Exo";
@@ -889,10 +890,7 @@ export function App() {
           passkeysSupported: openkeyPasskeysSupported() });
         // The user answers OpenKey's own confirmation here, so no deadline runs.
         // signOutOpenKeySession reports every failure as an outcome rather than throwing.
-        const openKeyOutcome = await signOutOpenKeySession(openKeyClient, () => openKeyClient, {
-          signedInThisRun: openkeyRef.current !== null,
-          sessionOnlyInRun: appPlatform() === "ios",
-        });
+        const openKeyOutcome = await signOutOpenKeySession(openKeyClient, () => openKeyClient);
         // OpenKey clears this client's local auth before showing its widget, even
         // when the user cancels. Never retain that spent client for another flow.
         openkeyRef.current = null;
@@ -901,10 +899,9 @@ export function App() {
           openKeyWarning =
             "OpenKey stayed signed in on this device. Exo is signed out locally. " +
             "Sign out at openkey.so before choosing another account.";
-        } else if (openKeyOutcome.status === "unverified") {
-          openKeyWarning =
-            "OpenKey may still be signed in. Exo is signed out here. " +
-            "Sign out at openkey.so before choosing another account.";
+        } else if (openKeyOutcome.status === "unverified" || openKeyOutcome.status === "remote-unavailable") {
+          // Revocation could not be proved (no verified answer, no sheet, or an error): a calm note, not an alarm.
+          openKeyWarning = OPENKEY_SIGN_OUT_UNPROVEN_NOTE;
         }
       }
 

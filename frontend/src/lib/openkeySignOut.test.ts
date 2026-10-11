@@ -77,7 +77,7 @@ describe("signOutOpenKeySession", () => {
     });
   });
 
-  test("embedded WebView popup-unavailable is local sign-out done: its own outcome, logged, no UI warning", async () => {
+  test("embedded WebView popup-unavailable is its own outcome and is logged", async () => {
     const current: OpenKeySignOutClient = {
       async signOut() {
         throw { code: "POPUP_BLOCKED", reason: "embedded-webview",
@@ -93,42 +93,29 @@ describe("signOutOpenKeySession", () => {
     } finally {
       warn.mockRestore();
     }
-    expect(appWarnings()).not.toMatch(/remote-unavailable/);
   });
 
   describe("revoked: false", () => {
-    const unrevoked: OpenKeySignOutClient = { signOut: async () => ({ requestId: "r", revoked: false }) };
-
-    test("a restored session in the phone app has nothing left to revoke: no-session", async () => {
-      await expect(signOutOpenKeySession(unrevoked, () => unrevoked, { signedInThisRun: false, sessionOnlyInRun: true }))
-        .resolves.toEqual({ status: "no-session" });
+    test("is unverified however the session was obtained: the widget cannot say there was nothing to revoke", async () => {
+      const unrevoked: OpenKeySignOutClient = { signOut: async () => ({ requestId: "r", revoked: false }) };
+      await expect(signOutOpenKeySession(unrevoked, () => unrevoked)).resolves.toEqual({ status: "unverified" });
+      await expect(signOutOpenKeySession(null, () => unrevoked)).resolves.toEqual({ status: "unverified" });
     });
 
-    test("a session signed in during this run that was not revoked is still unverified", async () => {
-      await expect(signOutOpenKeySession(unrevoked, () => unrevoked, { signedInThisRun: true, sessionOnlyInRun: true }))
-        .resolves.toEqual({ status: "unverified" });
-    });
-
-    test("where the widget session can outlive a run (cookies) a restored session stays unverified", async () => {
-      await expect(signOutOpenKeySession(unrevoked, () => unrevoked, { signedInThisRun: false, sessionOnlyInRun: false }))
-        .resolves.toEqual({ status: "unverified" });
-    });
-
-    test("a thrown failure is unverified even for a restored phone session", async () => {
-      const failing: OpenKeySignOutClient = { signOut: async () => { throw { code: "NETWORK", message: "offline" }; } };
+    test("a thrown failure is unverified and logged once through the redacting logger", async () => {
+      const failing: OpenKeySignOutClient = { signOut: async () => { throw new Error("offline, token=tok-secret"); } };
       const warn = spyOn(console, "warn").mockImplementation(() => undefined);
       try {
-        await expect(signOutOpenKeySession(failing, () => failing, { signedInThisRun: false, sessionOnlyInRun: true }))
-          .resolves.toEqual({ status: "unverified" });
+        await expect(signOutOpenKeySession(failing, () => failing)).resolves.toEqual({ status: "unverified" });
+        expect(warn.mock.calls).toEqual([["[OpenKey native] OpenKey sign-out: Error"]]);
       } finally {
         warn.mockRestore();
       }
     });
 
-    test("an acknowledged revocation is revoked whatever the context", async () => {
+    test("an acknowledged revocation is revoked", async () => {
       const ok: OpenKeySignOutClient = { signOut: async () => ({ requestId: "r", revoked: true }) };
-      await expect(signOutOpenKeySession(ok, () => ok, { signedInThisRun: false, sessionOnlyInRun: true }))
-        .resolves.toEqual({ status: "revoked" });
+      await expect(signOutOpenKeySession(ok, () => ok)).resolves.toEqual({ status: "revoked" });
     });
   });
 
@@ -169,15 +156,14 @@ describe("signOutOpenKeySession", () => {
     }
   });
 
-  test("App warns only where a live OpenKey session may remain, in plain fixed copy", () => {
-    const warnings = appWarnings();
-    expect(warnings).toContain('openKeyOutcome.status === "unverified"');
-    expect(warnings).toContain("OpenKey may still be signed in. Exo is signed out here. ");
-    expect(warnings).not.toMatch(/could not be verified|\$\{|openKeyOutcome\.reason|openKeyErrorMessage|\.message/);
-    expect(warnings).not.toContain('"no-session"');
-    expect(warnings.match(/openKeyWarning =/g)?.length).toBe(2);
+  test("App shows one calm, fixed note whenever revocation is not proved, and nothing when it is", () => {
     const app = readFileSync(join(import.meta.dir, "..", "App.tsx"), "utf8");
-    expect(app).toContain("signedInThisRun: openkeyRef.current !== null");
-    expect(app).toContain('sessionOnlyInRun: appPlatform() === "ios"');
+    const warnings = appWarnings();
+    expect(app).toContain('const OPENKEY_SIGN_OUT_UNPROVEN_NOTE = "Signed out of Exo. To use a different account, also sign out at openkey.so.";');
+    expect(warnings).toMatch(/status === "unverified" \|\| openKeyOutcome\.status === "remote-unavailable"\)[^}]*openKeyWarning = OPENKEY_SIGN_OUT_UNPROVEN_NOTE;/);
+    expect(warnings).not.toContain('"revoked"');
+    expect(warnings).not.toMatch(/could not be verified|may still be signed in|\$\{|openKeyOutcome\.reason|\.message/);
+    expect(warnings.match(/openKeyWarning =/g)?.length).toBe(2);
+    expect(app).not.toMatch(/appPlatform\(\) === "ios"/);
   });
 });
