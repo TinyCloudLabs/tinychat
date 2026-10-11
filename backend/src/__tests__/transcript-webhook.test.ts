@@ -200,6 +200,23 @@ describe("private transcription webhook", () => {
     }, undefined, true);
   });
 
+  test("a wake the worker cannot record (unreadable index, stopping worker) answers 503 with Retry-After", async () => {
+    await withWebhook(async (h, base) => {
+      await h.index.add(ADDRESS, ID);
+      const entries = h.index.entries.bind(h.index);
+      h.index.entries = async () => { throw new Error("transcriber_index_invalid"); };
+      const unreadable = await post(base);
+      expect(unreadable.status).toBe(503);
+      expect(unreadable.headers.get("retry-after")).toBe("60");
+      h.index.entries = entries;
+      await h.worker.stop();
+      expect((await post(base)).status).toBe(503);
+      // A deliberately ignored wake is still 202 while stopping: nothing about the id leaks.
+      expect((await post(base, { body: event("meeting.completed", OTHER_ADDRESS) })).status).toBe(202);
+      expect(h.upstreamCalls).toEqual([]);
+    });
+  });
+
   test("the public endpoint enforces 60/min/IP and 600/min across different IPs", async () => {
     await withWebhook(async (h, base) => {
       const failed = event("meeting.failed");

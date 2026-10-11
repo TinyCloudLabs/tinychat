@@ -18,7 +18,7 @@ export function createTranscriberWebhookRouter(worker: Pick<TranscriptDeliveryWo
       return;
     }
     next();
-  }, raw({ type: "application/json", limit: "16kb", inflate: false }), (req: Request, res: Response) => {
+  }, raw({ type: "application/json", limit: "16kb", inflate: false }), async (req: Request, res: Response) => {
     if (secret && !verifyHmacSha256Signature(req.body, req.headers[PTX_SIGNATURE_HEADER], secret)) {
       res.status(401).json({ error: "invalid_signature" });
       return;
@@ -45,9 +45,21 @@ export function createTranscriberWebhookRouter(worker: Pick<TranscriptDeliveryWo
       res.status(400).json({ error: "invalid_body" });
       return;
     }
-    if (type === "meeting.completed") void worker.wake(address.toLowerCase(), id, "completed").catch(() => {
-      console.warn("[transcript-delivery] op=wake result=error");
-    });
+    if (type === "meeting.completed") {
+      // ptx treats any 2xx as delivered and never retries it. A wake that was not recorded (a full
+      // queue, a stopping worker, an unreadable index or state) answers retryably, so ptx's retry
+      // schedule delivers it again; an ignored (unowned, shared, unknown) id still gets 202.
+      const result = await worker.wake(address.toLowerCase(), id, "completed").catch(() => {
+        console.warn("[transcript-delivery] op=wake result=error");
+        return "dropped" as const;
+      });
+      if (result === "dropped") {
+        console.warn("[transcript-delivery] op=wake result=not_recorded");
+        res.setHeader("Retry-After", "60");
+        res.status(503).json({ error: "wake_not_recorded" });
+        return;
+      }
+    }
     res.status(202).end();
   }, ((error, _req, res, _next) => {
     const tooLarge = error !== null && typeof error === "object" && "type" in error && error.type === "entity.too.large";

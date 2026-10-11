@@ -855,7 +855,7 @@ async function main() {
       sharingEnabled: process.env.CALENDAR_AUTOJOIN_SHARING === "true",
       webhookUrl: transcriptDeliveryConfig.enabled ? transcriptDeliveryConfig.webhookUrl : undefined,
       onRecordingCompleted: transcriptWorker
-        ? (tenant, meetingId) => transcriptWorker.wake(tenant, meetingId, "completed")
+        ? async (tenant, meetingId) => { await transcriptWorker.wake(tenant, meetingId, "completed"); }
         : undefined,
     });
     app.use("/api/connectors/google/autojoin", authMiddleware, createCalendarAutojoinRouter({ connection: calendarAutojoin }));
@@ -982,7 +982,7 @@ async function main() {
         index: transcriberIndex,
         webhookUrl: transcriptDeliveryConfig.enabled ? transcriptDeliveryConfig.webhookUrl : undefined,
         onObservedCompletion: transcriptWorker
-          ? (address, meetingId) => transcriptWorker.wake(address, meetingId, "observed")
+          ? async (address, meetingId) => { await transcriptWorker.wake(address, meetingId, "observed"); }
           : undefined,
         ...(process.env.TRANSCRIPTION_BOT_NAME
           ? { defaultBotName: process.env.TRANSCRIPTION_BOT_NAME }

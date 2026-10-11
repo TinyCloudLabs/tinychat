@@ -11,6 +11,7 @@ import { DelegationCache, type DelegationMetadata } from "@tinyboilerplate/serve
 import { verificationCacheKey } from "../delegation-verify.js";
 import { createDelegationRouter } from "../routes/delegations.js";
 import { createTranscriberRouter } from "../routes/transcriber.js";
+import { createTranscriberWebhookRouter } from "../routes/transcriber-webhook.js";
 import { TenantCoordinator } from "../services/calendar-autojoin-store.js";
 import type { JsonKv } from "../services/transcriber-index.js";
 import { BackendStorageLane } from "../services/backend-storage-lane.js";
@@ -716,6 +717,85 @@ describe("durable transcript delivery", () => {
     await restarted.stop();
     expect(reads()).toBe(3);
     expect(f.state().done.busy.how).toBe("written");
+  });
+
+  it("a confirmation retry waits Retry-After from the response, however long the read took", async () => {
+    const { f, reads, answer } = await capacityEndedFixture("busy");
+    const realNow = Date.now;
+    let offset = 0;
+    Date.now = () => realNow() + offset;
+    try {
+      let respondedAt = 0;
+      answer(new TranscriptionApiError(503, "provider_unavailable", "Unavailable", 120_000));
+      const getMeeting = f.api.getMeeting.bind(f.api);
+      f.api.getMeeting = async (id) => {
+        offset += 20_000; // a 20 s response
+        respondedAt = Date.now();
+        return getMeeting(id);
+      };
+      const worker = f.worker();
+      await worker.wake(f.grant.address, "busy", "completed");
+      await worker.sweep();
+      await worker.stop();
+      expect(reads()).toBe(2);
+      expect(f.state().confirm!.busy!.nextAt).toBeGreaterThanOrEqual(respondedAt + 120_000);
+      answer(f.meeting("busy"));
+      const restarted = f.worker();
+      offset = respondedAt - realNow() + 119_000;
+      await restarted.sweep();
+      expect(reads()).toBe(2);
+      offset = f.state().confirm!.busy!.nextAt - realNow();
+      await restarted.sweep();
+      await restarted.stop();
+      expect(reads()).toBe(3);
+      expect(f.state().done.busy.how).toBe("written");
+    } finally { Date.now = realNow; }
+  });
+
+  it("a completion webhook a full queue cannot record answers 503; ptx's redelivery is delivered; forged ids stay 202", async () => {
+    const { f } = await capacityEndedFixture("busy");
+    const gate = Promise.withResolvers<void>();
+    const blocking = Promise.withResolvers<void>();
+    let fillerReads = 0;
+    f.api.getMeeting = async (id) => {
+      if (id === "blocker") { blocking.resolve(); await gate.promise; return { ...f.meeting(id), status: "processing" }; }
+      if (id.startsWith("filler-")) { fillerReads++; return { ...f.meeting(id), status: "processing" }; }
+      return f.meeting(id); // `busy` genuinely completed, for this owner
+    };
+    await admit(f, "blocker");
+    for (let i = 0; i < 1000; i++) await admit(f, `filler-${i}`);
+    const worker = f.worker();
+    const app = express();
+    app.use("/api/transcriber/webhooks/ptx", createTranscriberWebhookRouter(worker));
+    // The drain is held inside one delivery while 1,000 more wakes fill the queue.
+    expect(await worker.wake(f.grant.address, "blocker", "completed")).toBe("queued");
+    await blocking.promise;
+    for (let i = 0; i < 1000; i++) expect(await worker.wake(f.grant.address, `filler-${i}`, "completed")).toBe("queued");
+    const completed = (id: string, address = f.grant.address) =>
+      JSON.stringify({ type: "meeting.completed", data: { meeting_id: id, metadata: { tinychat_address: address } } });
+    const until = async (done: () => boolean) => {
+      for (let i = 0; i < 500 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(done()).toBe(true);
+    };
+    await withServer(app, async (base) => {
+      const post = (body: string) => fetch(`${base}/api/transcriber/webhooks/ptx`, {
+        method: "POST", headers: { "content-type": "application/json" }, body,
+      });
+      const refused = await post(completed("busy"));
+      expect(refused.status).toBe(503);
+      expect(refused.headers.get("retry-after")).toBe("60");
+      // Intentionally ignored ids are never an existence oracle, even with the queue full.
+      expect((await post(completed("forged"))).status).toBe(202);
+      expect((await post(completed("busy", "0x00000000000000000000000000000000000000dd"))).status).toBe(202);
+      gate.resolve();
+      await until(() => fillerReads === 1000);
+      expect(f.state()?.done.busy?.how).toBe("capacity_exhausted");
+      // ptx's retry schedule redelivers it.
+      expect((await post(completed("busy"))).status).toBe(202);
+      await until(() => f.state()?.done.busy?.how === "written");
+    });
+    await worker.stop();
+    expect(worker.overflow.dropped).toBe(1);
   });
 
   it("an address whose index cannot be read is passed over, so later addresses are still swept", async () => {

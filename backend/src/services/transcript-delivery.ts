@@ -107,6 +107,12 @@ export class WriteGovernor {
 }
 
 type WakeKind = "completed" | "observed";
+/**
+ * What admission did with a wake. `ignored` is deliberate (not eligible, not owned, shared, already
+ * final) and must look the same as `queued` to a caller. `dropped` means the work was NOT recorded
+ * (a full queue, a stopping worker): a webhook must answer retryably so ptx delivers it again.
+ */
+export type WakeResult = "queued" | "ignored" | "dropped";
 type Item = { address: string; id: string; kind?: WakeKind };
 type SweepAction = Item | { kind: "intent" };
 interface SweepCursor { addresses: string[]; ai: number; idOffset: number; pendingOffset: number; scanned: number; calls: number; }
@@ -226,20 +232,25 @@ export class TranscriptDeliveryWorker {
     this.timer.unref?.();
   }
 
-  /** Admission cannot activate a grant or call the upstream API. */
-  async wake(address: string, id: string, kind: WakeKind): Promise<void> {
+  /**
+   * Admission cannot activate a grant or call the upstream API. It throws when it cannot read the
+   * index or delivery state, which a webhook also treats as work not recorded.
+   */
+  async wake(address: string, id: string, kind: WakeKind): Promise<WakeResult> {
     address = address.toLowerCase();
-    if (this.stopped || !this.options.eligibility(address)) return;
-    if (!(await this.ownedIds(address)).includes(id)) return;
+    if (!this.options.eligibility(address)) return "ignored";
+    if (!(await this.ownedIds(address)).includes(id)) return "ignored";
     const state = this.dirty.get(address) ?? await this.state.read(address);
     const final = state.done[id];
-    if (final && !WAKE_RECHECKS.has(final.how)) return;
+    if (final && !WAKE_RECHECKS.has(final.how)) return "ignored";
     const key = `${address}:${id}`;
-    if (this.queued.has(key)) return;
-    if (this.queue.length >= 1000) { this.overflow.dropped++; return; }
+    if (this.queued.has(key)) return "queued";
+    if (this.stopped) return "dropped";
+    if (this.queue.length >= 1000) { this.overflow.dropped++; return "dropped"; }
     this.queued.add(key);
     this.queue.push({ address, id, kind });
     this.pump();
+    return "queued";
   }
 
   private pump(): void {
@@ -475,7 +486,9 @@ export class TranscriptDeliveryWorker {
         const pending = state.confirm![id]!;
         // A 404 answers the confirmation (nothing can complete); any other failure retries it later.
         if (gone) delete state.confirm![id];
-        else { pending.attempts++; pending.nextAt = now + Math.max(backoffMs(pending.attempts), this.retryAfter(error)); }
+        // From the moment the error is handled, not `now`: the grant read, limiter and request all
+        // took time, and Retry-After counts from the response.
+        else { pending.attempts++; pending.nextAt = Date.now() + Math.max(backoffMs(pending.attempts), this.retryAfter(error)); }
         this.changed(address, state);
         return true;
       }
