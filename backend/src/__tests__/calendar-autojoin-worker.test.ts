@@ -900,6 +900,8 @@ describe("TC-581 shared capture across tenants", () => {
     f.afterWindow();
     await f.worker().tick();
     expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition: "missed_window" });
+    expect((await f.rowB())?.errorCode).toBeUndefined();
+    expect((await f.status(B)).outcomes[0]?.reason).toBe("missed_window");
     expect(f.posts.map(p => p.tenant)).toEqual([A]);
   });
 
@@ -912,6 +914,8 @@ describe("TC-581 shared capture across tenants", () => {
       f.setNow(START + 300_000);
       await f.worker().tick();
       expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition, sharedCapture: { result: "not_shared" } });
+      expect((await f.rowB())?.errorCode).toBeUndefined();
+      expect((await f.status(B)).outcomes[0]?.reason).toBe(disposition);
       expect(await f.index.list(B)).toEqual([]);
       expect(f.posts.map(p => p.tenant)).toEqual([A]);
     });
@@ -924,8 +928,25 @@ describe("TC-581 shared capture across tenants", () => {
     f.advance(30_000);
     await f.worker().tick();
     expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition: "autojoin_disabled" });
+    expect(await f.store.getMarker(B, f.idOf(B, SUBJECT_B))).toBeNull();
+    expect((await f.rowB())?.sharedCapture).toBeUndefined();
     expect(f.stops).toEqual([]);
     expect(f.meeting().status).toBe("in_progress");
+  });
+
+  test("5: toggling auto-join off and on while attached rediscovers the occurrence and can still send", async () => {
+    const f = await twoTenants();
+    await f.attach();
+    await f.store.updateConnection(B, c => c && { ...c, state: "disabled", generation: c.generation + 1 });
+    f.advance(30_000);
+    await f.worker().tick();
+    expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition: "autojoin_disabled" });
+    expect(await f.store.getMarker(B, f.idOf(B, SUBJECT_B))).toBeNull();
+    await f.connect(B, SUBJECT_B, { generation: 3, verifiedEmail: B_EMAIL });
+    f.meeting().status = "failed";
+    for (let i = 0; i < 3 && f.posts.length < 2; i++) { f.advance(30_000); await f.worker().tick(); }
+    expect(f.posts.map(p => p.tenant)).toEqual([A, B]);
+    expect((await f.rowB())?.meetingId).toBe("mtg_2");
   });
 
   test("A and B due in the same tick, with the first POST still in flight: exactly one POST", async () => {
@@ -1023,6 +1044,7 @@ describe("TC-581 shared capture across tenants", () => {
     f.setNow(START + 360_000);
     await f.worker().tick();
     expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition: "missed_window" });
+    expect((await f.rowB())?.errorCode).toBeUndefined();
   });
 
   test("reconcileShared running twice (lost finish) leaves one index entry", async () => {

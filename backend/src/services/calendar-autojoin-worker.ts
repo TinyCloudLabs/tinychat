@@ -342,7 +342,8 @@ export class CalendarAutojoinWorker {
   }
   private async finish(row: CalendarOccurrence, disposition: string): Promise<void> {
     if (row.meetingId || row.idempotencyKey || row.sharedCapture) await this.options.store.putMarker({ tenant: row.tenant, id: row.id, meetingId: row.meetingId, disposition });
-    const clears = (current: CalendarOccurrence) => (disposition === "completed" && !current.stopRequested) || disposition === "shared" || disposition === "already_recorded";
+    // Every code on a shared row (pending, unverified, a deferred retry) is superseded by its disposition.
+    const clears = (current: CalendarOccurrence) => !!current.sharedCapture || (disposition === "completed" && !current.stopRequested) || disposition === "already_recorded";
     await this.options.store.updateOccurrence(row.tenant, row.id, current => current && { ...current, phase: "terminal", disposition, createBody: undefined, requestHash: undefined, updatedAt: this.now(), errorCode: clears(current) ? undefined : current.errorCode });
   }
   /**
@@ -379,7 +380,8 @@ export class CalendarAutojoinWorker {
     const shared = row.sharedCapture!;
     const connection = await store.getConnection(row.tenant);
     if (connection?.state !== "enabled" || connection.subject !== row.subject || connection.generation !== row.generation) {
-      await this.finish(row, "autojoin_disabled"); return;
+      // B never sent a bot: become a plain pending row (no marker), so re-enabling rediscovers it, as before TC-581.
+      await this.detach(row); await this.reconcileOccurrence(row); return;
     }
     const owner = await store.getOccurrence(shared.ownerTenant, shared.ownerOccurrenceId);
     const meeting = owner?.meetingId ? await this.ownerMeeting(owner.meetingId) : undefined;
