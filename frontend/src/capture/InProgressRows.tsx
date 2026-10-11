@@ -21,6 +21,10 @@ export interface VoiceInProgress {
   listing: PendingListing;
   /** A save of them is running. */
   saving: boolean;
+  /** Current network state, from the same pending-store snapshot as the listing. */
+  online?: boolean;
+  /** Per-note upload state, used to keep Save now hidden while work is moving. */
+  pendingNotes?: readonly { id: string; upload?: { state: "waiting" | "uploading" | "retrying" } }[];
   lastError: string | null;
   /** The last recording stopped itself at the limit. */
   limitNotice: string | null;

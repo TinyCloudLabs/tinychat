@@ -262,6 +262,28 @@ describe("listMeetingsRead", () => {
     expect(sqlCalls[0].sql).toContain("duration_secs");
   });
 
+  it("carries voice-note pipeline metadata from the listing only for voice notes", async () => {
+    const metadata = JSON.stringify({
+      transcription_outcome: "transcribed",
+      note_kv_key: "recording-note.md",
+      note_edited_at: "2026-10-11T10:00:00.000Z",
+    });
+    const { tcw } = fakeTcw({
+      sql: { ok: true, data: { rows: [
+        ["row-voice", "exo-voice-note", "rec-1", null, "2026-10-11T10:00:00.000Z", 42, metadata],
+        ["row-meeting", "fireflies", "src-1", "Standup", "2026-10-10T10:00:00.000Z", 180, metadata],
+        ["row-no-metadata", "exo-voice-note", "rec-2", null, "2026-10-09T10:00:00.000Z", 42, null],
+      ] } },
+    });
+
+    const read = await listMeetingsRead(tcw);
+    expect(read.status).toBe("ok");
+    if (read.status !== "ok") return;
+    expect(read.meetings[0]?.metadata).toEqual(JSON.parse(metadata));
+    expect(read.meetings[1]?.metadata).toBeUndefined();
+    expect(read.meetings[2]?.metadata).toBeNull();
+  });
+
   it("an ordinary empty space is ok and empty; a store error, a refused read or a throwing transport is failed", async () => {
     for (const error of [
       { code: "STORE_ERROR", message: "no such table: connector_meeting" },

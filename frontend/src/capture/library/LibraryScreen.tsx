@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { PageHeader } from "@/shell/PageHeader";
 import { LibraryListView } from "./LibraryListView";
 import type { Library } from "./useLibrary";
+import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 
 function RefreshButton(props: { onClick: () => void; busy: boolean }) {
   return (
@@ -40,6 +41,7 @@ export function LibraryScreen(props: {
   now: Date;
   /** The column's width and gutters. */
   column: string;
+  pipelines?: ReadonlyMap<string, NotePipeline>;
 }) {
   const { library } = props;
   const refresh = <RefreshButton onClick={library.refresh} busy={library.listing} />;
@@ -62,6 +64,7 @@ export function LibraryScreen(props: {
           onRetry={library.retry}
           now={props.now}
           selectedId={props.selectedId}
+          pipelines={props.pipelines}
         />
         {props.meetingsSlot}
       </div>

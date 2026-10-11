@@ -12,6 +12,7 @@ import { StaticRecorderProvider } from "../recorder/RecorderProvider";
 import { SoftActions } from "./SoftActions";
 import { SoftCaptureHome, type SoftCaptureHomeProps } from "./SoftCaptureHome";
 import { SoftHomeProvider } from "./softHome";
+import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 
 const noop = () => {};
 const NOW = new Date(2026, 9, 9, 9, 41);
@@ -34,6 +35,14 @@ const note = (i: number, patch: Partial<LibraryItem> = {}): LibraryItem => ({
   durationSecs: 60 * i + 5,
   ...patch,
 });
+const pipeline = (caption = "Uploading · 42%", patch: Partial<NotePipeline> = {}): NotePipeline => ({
+  steps: [
+    { key: "phone", label: "On this phone", state: "done" },
+    { key: "space", label: "In your space", state: "active", caption, progress: 0.42 },
+    { key: "transcript", label: "Transcript", state: "upcoming" },
+    { key: "notes", label: "Notes", state: "skipped" },
+  ], current: "space", done: false, ...patch,
+});
 
 function home(
   patch: Partial<SoftCaptureHomeProps> = {},
@@ -47,6 +56,8 @@ function home(
           recent={{ status: "ready", items: [] }}
           scanFailure={null}
           onRetryRecent={noop}
+          onPipelineAction={noop}
+          onOpenLibrary={noop}
           now={NOW}
           {...patch}
         />
@@ -60,6 +71,8 @@ const voice = (count: number): InProgressRowsViewProps => ({
   voice: {
     listing: { state: "ok", count },
     saving: false,
+    online: true,
+    pendingNotes: Array.from({ length: count }, (_, i) => ({ id: `rec-${i + 1}`, upload: { state: "waiting" as const } })),
     lastError: null,
     limitNotice: null,
     onSaveNow: noop,
@@ -87,11 +100,11 @@ describe("Recent", () => {
 
   test("a note still on this phone is a row of its own with its badge", () => {
     const onPhone = note(1, { id: "on-phone:rec-1", title: null, onPhone: true });
-    const html = home({ recent: { status: "ready", items: [onPhone, note(2)] } });
+    const html = home({ recent: { status: "ready", items: [onPhone, note(2)] }, pipelines: new Map([["rec-1", pipeline()]]) });
     expect(html.match(/data-testid="recent-item"/g)).toHaveLength(2);
     expect(html).toContain('href="/chat/capture/library/on-phone%3Arec-1"');
-    expect(html.match(/data-testid="row-badge"/g)).toHaveLength(1);
-    expect(html).toContain('aria-label="Voice note. On this phone. Today 1:49 AM · 1:05"');
+    expect(html.match(/data-pipeline-halo=/g)).toHaveLength(1);
+    expect(html).toContain('aria-label="Voice note. Uploading · 42%. Today 1:49 AM · 1:05"');
   });
 
   test("shows the last five", () => {
@@ -113,58 +126,59 @@ describe("Recent", () => {
     expect(failed).not.toContain("Your recordings appear here");
   });
 
-  test("a failed save shows the same failure beside an enabled Save now, without a Saving badge", () => {
-    const failure = "Couldn't reach your TinyCloud space. This note is still on your phone — try again.";
+  test("a failed save uses the pipeline action and no longer shows the Saving badge", () => {
     const recent = withOnPhone([note(1)], [
       { id: "rec-1", startedAt: Date.parse("2026-10-09T01:49:00.000Z"), durationMs: 65_000, failed: { kind: "offline", message: "still offline" } },
     ]);
-    const inProgress = {
-      ...voice(1),
-      voice: { ...voice(1).voice!, lastError: failure },
-    };
-    const html = home({ inProgress, recent: { status: "ready", items: recent } });
-    expect(html).toContain("Couldn&#x27;t reach your TinyCloud space. This note is still on your phone — try again.");
+    const failed = pipeline("", { current: "space", blocker: { cause: "Couldn't reach your space. This note is safe on this phone.", action: { kind: "retry", label: "Try again" } } });
+    const html = home({ inProgress: voice(1), recent: { status: "ready", items: recent }, pipelineNotes: recent, pipelines: new Map([["rec-1", failed]]) });
     expect(html).not.toContain(">Saving…<");
-    expect(html).toMatch(/data-testid="voice-note-retry"[^>]*>/);
-    expect(html).not.toMatch(/data-testid="voice-note-retry"[^>]*disabled/);
+    expect(html).toContain('data-testid="voice-note-action"');
+    expect(html).toContain(">Try again<");
   });
 });
 
-describe("the on-this-phone card", () => {
-  test("shows automatic saving; no card or ownership hint for a filtered empty count", () => {
-    const saving = voice(1);
-    saving.voice!.saving = true;
-    expect(home({ inProgress: saving })).toContain("Saving to your TinyCloud space…");
-    const hidden = home({ inProgress: voice(0) });
-    expect(hidden).not.toContain('data-testid="voice-note-pending"');
-    expect(hidden).not.toContain("another account");
-  });
-  test("app only: a count, 'Not in your space yet' and Save now", () => {
-    const html = home({ inProgress: voice(2) });
-    expect(html).toContain("2 voice notes on this phone");
-    expect(html).toContain("Not in your space yet");
-    expect(html).toContain('data-testid="voice-note-retry"');
+describe("the in-progress card", () => {
+  test("shows every unfinished pipeline row and no Save now when notes are moving", () => {
+    const a = note(1, { id: "on-phone:rec-1", sourceId: "rec-1", title: null, onPhone: true });
+    const b = note(2, { id: "on-phone:rec-2", sourceId: "rec-2", title: null, onPhone: true });
+    const html = home({ inProgress: voice(2), recent: { status: "ready", items: [a, b] }, pipelineNotes: [a, b], pipelines: new Map([["rec-1", pipeline()], ["rec-2", pipeline("Waiting to upload", { steps: [
+      { key: "phone", label: "On this phone", state: "done" }, { key: "space", label: "In your space", state: "waiting", caption: "Waiting to upload" }, { key: "transcript", label: "Transcript", state: "upcoming" }, { key: "notes", label: "Notes", state: "skipped" },
+    ] })]]) });
+    expect(html).toContain('data-testid="voice-note-summary">2 notes on this phone</b>');
+    expect(html).toContain('data-testid="voice-note-uploading">1 uploading</span>');
+    expect(html).toContain("Waiting to upload");
+    expect(html).not.toContain("Save now");
     expect(html).toContain("In progress");
   });
 
-  test("one note is singular; no card where the recorder does not exist or nothing is waiting", () => {
-    expect(home({ inProgress: voice(1) })).toContain(
-      "1 voice note on this phone",
-    );
-    expect(home({ inProgress: voice(0) })).not.toContain("on this phone");
-    expect(home()).not.toContain("on this phone");
+  test("shows Save now for an online idle note waiting on the space step", () => {
+    const waiting = pipeline("Waiting to upload", { current: "space", steps: [
+      { key: "phone", label: "On this phone", state: "done" },
+      { key: "space", label: "In your space", state: "waiting", caption: "Waiting to upload" },
+      { key: "transcript", label: "Transcript", state: "upcoming" },
+      { key: "notes", label: "Notes", state: "skipped" },
+    ] });
+    const item = note(1, { id: "on-phone:rec-1", title: null, onPhone: true });
+    const html = home({ inProgress: voice(1), recent: { status: "ready", items: [item] }, pipelineNotes: [item], pipelines: new Map([["rec-1", waiting]]) });
+    expect(html).toContain('data-testid="voice-note-save-now"');
+    expect(html).toContain(">Save now<");
   });
 
-  test("recoveryFailed overrides 'Exo will finish it automatically'", () => {
-    const html = home(
-      { inProgress: voice(2) },
-      {
-        a: { kind: "finalization_timed_out" },
-        b: { kind: "recoveryFailed", detail: "x" },
-      },
-    );
-    expect(html).toContain("Exo will retry when it next opens");
-    expect(html).not.toContain("automatically");
+  test("hides Save now while a note is uploading", () => {
+    const item = note(1, { id: "on-phone:rec-1", title: null, onPhone: true });
+    const idleVoice = voice(1).voice!;
+    const uploadingVoice: InProgressRowsViewProps = {
+      ...voice(1),
+      voice: { ...idleVoice, pendingNotes: [{ id: "rec-1", upload: { state: "uploading" } }] },
+    };
+    const html = home({ inProgress: uploadingVoice, recent: { status: "ready", items: [item] }, pipelineNotes: [item], pipelines: new Map([["rec-1", pipeline()]]) });
+    expect(html).not.toContain('data-testid="voice-note-save-now"');
+  });
+
+  test("does not show a card after every note is done", () => {
+    const done = pipeline("", { done: true, current: null });
+    expect(home({ recent: { status: "ready", items: [note(1)] }, pipelineNotes: [note(1)], pipelines: new Map([["rec-1", done]]) })).not.toContain('data-testid="voice-note-pending"');
   });
 });
 
@@ -244,7 +258,7 @@ describe("capture-issue rows", () => {
     test("is not in the way of the other rows or the on-this-phone card", () => {
       const html = home({ inProgress: voice(2), recent: { status: "ready", items: [note(1), note(2)] } }, { "rec-1": partial });
       expect(html.match(/data-notice="true"/g)).toHaveLength(1);
-      expect(html).toContain(">Not in your space yet<");
+      expect(html).not.toContain("Not in your space yet");
       expect(html).not.toContain("automatically");
     });
 
