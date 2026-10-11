@@ -20,7 +20,7 @@ import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
 import { isTinyCloudNetworkFailure, logVoiceNoteError, messageOf, pendingStore, whenVoiceNoteSavesIdle } from "@/lib/voiceNotes/recorderSaves";
-import { advanceAccountGeneration, currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
+import { advanceAccountGeneration, captureAccountContext, currentAccountGeneration, isAccountContextCurrent } from "@/lib/voiceNotes/accountContext";
 import { saveDeferredForAccountTransition, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { transcribeSavedNote, voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
 
@@ -40,14 +40,25 @@ export function schedulePendingVoiceNotesRecovery(): void {
  * space save is quick, on-device decode is not) has nothing left to trigger `saveRecording`'s own
  * sync, so this listens for it directly. `saveRecording` covers the opposite ordering.
  */
-function installOnDeviceTranscriptSync(tcw: TinyCloudWeb): () => void {
+function installOnDeviceTranscriptSync(tcw: TinyCloudWeb, pipeline: VoiceNotePipeline): () => void {
   let disposed = false;
+  const accountWorkAllowed = () => pipeline.isAccepting?.() ?? true;
   const handle = OnDeviceStt.addListener("transcribed", ({ id }) => {
     if (disposed) return;
+    if (!accountWorkAllowed()) {
+      console.info(`[OnDeviceStt] Dropped transcribed event id=${id}: account work paused`);
+      return;
+    }
+    const account = captureAccountContext(tcw);
     void VoiceNotes.listPending()
       .then(({ recordings }) => {
+        if (disposed) return;
+        if (!accountWorkAllowed() || !isAccountContextCurrent(account, tcw)) {
+          console.info(`[OnDeviceStt] Dropped transcribed event id=${id}: account changed or work paused during phone read`);
+          return;
+        }
         const recording = recordings.find((note) => note.id === id);
-        if (recording) return syncOnDeviceTranscript(tcw, recording);
+        if (recording) return syncOnDeviceTranscript(tcw, recording, account);
       })
       .catch((err: unknown) => console.warn("[OnDeviceStt] Could not sync a finished transcription", err));
   });
@@ -70,20 +81,34 @@ export function PendingVoiceNotesSaver({
 }) {
   useEffect(() => {
     if (!captureEngineAvailable() || !captureCapabilities().localTranscription) return;
-    return installOnDeviceTranscriptSync(tcw);
-  }, [tcw]);
+    return installOnDeviceTranscriptSync(tcw, pipeline);
+  }, [pipeline, tcw]);
 
   useEffect(() => {
     const queue = getDesktopWhisperQueue();
     if (!queue) return;
+    let disposed = false;
+    const accountWorkAllowed = () => pipeline.isAccepting?.() ?? true;
     const sync = (id: string) => {
+      if (disposed) return;
+      if (!accountWorkAllowed()) {
+        console.info(`[desktopWhisper] Dropped transcript id=${id}: account work paused`);
+        return;
+      }
+      const account = captureAccountContext(tcw);
       void VoiceNotes.listPending().then(({ recordings }) => {
+        if (disposed) return;
+        if (!accountWorkAllowed() || !isAccountContextCurrent(account, tcw)) {
+          console.info(`[desktopWhisper] Dropped transcript id=${id}: account changed or work paused during phone read`);
+          return;
+        }
         const recording = recordings.find((note) => note.id === id);
-        if (recording) return syncOnDeviceTranscript(tcw, recording);
+        if (recording) return syncOnDeviceTranscript(tcw, recording, account);
       }).catch((error: unknown) => console.warn("[desktopWhisper] Could not sync transcript", error));
     };
-    return queue.onDone(sync);
-  }, [tcw]);
+    const unsubscribe = queue.onDone(sync);
+    return () => { disposed = true; unsubscribe(); };
+  }, [pipeline, tcw]);
 
   useEffect(() => {
     if (!captureEngineAvailable()) return;

@@ -54,6 +54,7 @@ import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity,
   patchVoiceNoteMarkdown, resolveVoiceNoteRow } from "./voiceNoteRows";
 import { runOnSpaceLane } from "../spaceWriteLane";
 import { withVoiceNoteReadDeadline, withVoiceNoteSaveDeadline } from "./saveDeadline";
+import { StaleAccountContext } from "./accountContext";
 import { base64ToBytes, bytesToBase64 } from "./voiceNoteAudio";
 import { adoptNote, loadNote, noteMarkdown, parseNoteMarkdown, type RecordingNote } from "./recordingNotes";
 
@@ -512,19 +513,28 @@ export async function saveVoiceNoteTranscript(
   tcw: TinyCloudWeb,
   sourceId: string,
   transcript: VoiceNoteTranscriptSave,
+  checkpoint: () => void = () => undefined,
 ): Promise<StoreResult<UpsertMeetingOutcome>> {
+  checkpoint();
   if (!Number.isSafeInteger(transcript.rev) || transcript.rev < 1)
     return { ok: false, error: { code: "VOICE_NOTE_REV_REQUIRED", message: "The note's transcript revision is missing" } };
   // Each await before the commit is bounded and throws on timeout, so a timed-out save never
   // resumes into a write behind a later save of the same note.
   let existing: Awaited<ReturnType<ReturnType<typeof tcw.sql.db>["query"]>>;
   try {
-    const schema = await withVoiceNoteSaveDeadline("ensure the space schema", () => ensureSchema(tcw));
+    checkpoint();
+    const schema = await withVoiceNoteSaveDeadline("ensure the space schema", () => {
+      checkpoint();
+      return ensureSchema(tcw, checkpoint);
+    });
+    checkpoint();
     if (!schema.ok) return schema;
-    existing = await runOnSpaceLane((signal) => tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
+    existing = await runOnSpaceLane((signal) => { checkpoint(); return tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
       `SELECT id FROM connector_meeting WHERE source = ? AND source_id = ? LIMIT 1`,
-      [VOICE_NOTE_SOURCE, sourceId], { signal }), { operation: "SQL query: voice note exists" });
+      [VOICE_NOTE_SOURCE, sourceId], { signal }); }, { operation: "SQL query: voice note exists" });
+    checkpoint();
   } catch (caught) {
+    if (caught instanceof StaleAccountContext) throw caught;
     return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
       message: caught instanceof Error ? caught.message : String(caught) } };
   }
@@ -535,6 +545,7 @@ export async function saveVoiceNoteTranscript(
     return { ok: false, error: { code: "VOICE_NOTE_NOT_FOUND", message: "saveVoiceNoteTranscript: the voice note no longer exists" } };
   }
   try {
+    checkpoint();
     const m = transcript.metadata;
     await commitVoiceNoteTranscript(tcw, sourceId, {
       rev: transcript.rev, sentences: transcript.sentences,
@@ -548,10 +559,12 @@ export async function saveVoiceNoteTranscript(
         : ["diarized", "channels", "channel-you-others"].includes(String(m.speaker_labels)),
       participants: transcript.speakers,
       transcribedAt: typeof m.transcribed_at === "string" ? m.transcribed_at : null, metadata: m,
-    });
+    }, checkpoint);
+    checkpoint();
     return { ok: true, data: { id: String(existing.data.rows[0]?.[0]), inserted: false,
       createdAt: new Date().toISOString() } };
   } catch (caught) {
+    if (caught instanceof StaleAccountContext) throw caught;
     return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
       message: caught instanceof Error ? caught.message : String(caught) } };
   }
