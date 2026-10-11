@@ -361,6 +361,7 @@ export function PhoneRecorder({
           <div
             className="pr-time soft-timer"
             role="timer"
+            aria-label={view.timer.text}
             data-dim={view.ring === "paused"}
           >
             <TimerDigits text={view.timer.text} />

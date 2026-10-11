@@ -11,6 +11,13 @@ const slots = (text: string) =>
   ].map((match) => [match[1], match[2]]);
 
 describe("TimerDigits", () => {
+  test("isolates the slots as LTR and hides them from assistive tech", () => {
+    const html = renderToStaticMarkup(<TimerDigits text="12:48" />);
+    expect(html).toMatch(
+      /^<span class="pr-digits" dir="ltr" aria-hidden="true">/,
+    );
+  });
+
   test("puts every digit and the colon in its own slot", () => {
     expect(slots("9:59")).toEqual([
       ["pr-digit", "9"],
