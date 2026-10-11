@@ -168,6 +168,33 @@ describe("Calendar OAuth custody lifecycle", () => {
     expect(await f.store.getOccurrence(TENANT, "old-attempt")).toMatchObject({ subject: "google-subject", stopRequested: true, idempotencyKey: "frozen-key" });
   });
 
+  test("TC-581: exchange stores the verified email lowercased; a reconnect replaces or clears it", async () => {
+    const f = fixture();
+    f.setTokens({ email: "Person.One@Example.TEST" });
+    const result = await f.enable();
+    expect((await f.store.getConnection(TENANT))?.verifiedEmail).toBe("person.one@example.test");
+    expect(JSON.stringify(result)).not.toContain("example.test");
+    f.setTokens({ subject: "different-google-subject", email: "Other@Example.test" }); await f.enable();
+    expect((await f.store.getConnection(TENANT))?.verifiedEmail).toBe("other@example.test");
+    f.setTokens({ subject: "third-google-subject", email: undefined }); await f.enable();
+    const row = await f.store.getConnection(TENANT);
+    expect(row?.subject).toBe("third-google-subject");
+    expect(row?.verifiedEmail).toBeUndefined();
+  });
+
+  test("TC-581: status lists already_recorded and pending shared captures without a meeting id", async () => {
+    const f = fixture();
+    await f.enable();
+    await f.store.putOccurrence({ ...attempt(), id: "already", idempotencyKey: undefined, phase: "terminal", disposition: "already_recorded" });
+    await f.store.putOccurrence({ ...attempt(), id: "attached", idempotencyKey: undefined, phase: "pending", errorCode: "shared_capture_pending",
+      sharedCapture: { ownerTenant: OTHER, ownerOccurrenceId: "owner-occurrence", attachedAt: 0 } });
+    await f.store.putOccurrence({ ...attempt(), id: "shared", idempotencyKey: undefined, phase: "terminal", disposition: "shared" });
+    const status = await f.connection.getStatus(TENANT);
+    expect(status.outcomes.map(outcome => outcome.reason).sort()).toEqual(["already_recorded", "shared_capture_pending"]);
+    expect(status.outcomes.every(outcome => !("meetingId" in outcome))).toBe(true);
+    expect(JSON.stringify(status)).not.toContain(OTHER);
+  });
+
   test("browser-only reconnect ends custody and invalidates an in-flight enabling exchange", async () => {
     const f = fixture(); await f.enable();
     await f.connection.begin(TENANT, { state: STATE, challenge: CHALLENGE, consent: true });

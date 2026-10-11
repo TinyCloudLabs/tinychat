@@ -14,25 +14,92 @@ const { isKvMissingKeyResult } = serverPackage as typeof serverPackage & {
  * whole app, so ownership lives HERE: the tenant is always the session address, and a meeting id
  * this address did not create is simply not found. Newest first.
  */
+/**
+ * Why a meeting someone else's bot captured is in this address's list (TC-581). Backend-only:
+ * the owner's identity never reaches the browser. `title` and `scheduledStart` come from the
+ * recipient's own calendar occurrence.
+ */
+export interface ShareProvenance {
+  ownerTenant: string;
+  ownerOccurrenceId: string;
+  recipientOccurrenceId: string;
+  checkedAt: number;
+  title: string;
+  scheduledStart: string;
+}
+
 export interface TranscriberIndexStore {
   list(address: string): Promise<string[]>;
   add(address: string, meetingId: string): Promise<void>;
   remove(address: string, meetingId: string): Promise<void>;
+  /** Idempotent: dedupes the id and overwrites its provenance. */
+  addShared(address: string, meetingId: string, provenance: ShareProvenance): Promise<void>;
+  /** Shared meeting ids for this address, with their provenance. */
+  shares(address: string): Promise<Record<string, ShareProvenance>>;
+  /** Ids and shares from ONE read of the document, so ownership and sharing can never disagree. */
+  entries(address: string): Promise<{ ids: string[]; shared: Record<string, ShareProvenance> }>;
+}
+
+/** The stored document. A legacy `{ ids }` document has no shares. */
+interface IndexDoc {
+  ids: string[];
+  shared?: Record<string, ShareProvenance>;
+}
+
+/** A garbled provenance entry still marks its id as shared; its fields fall back to empty values. */
+function sanitizeProvenance(raw: unknown): ShareProvenance {
+  const value = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const text = (key: string) => (typeof value[key] === "string" ? (value[key] as string) : "");
+  return {
+    ownerTenant: text("ownerTenant"),
+    ownerOccurrenceId: text("ownerOccurrenceId"),
+    recipientOccurrenceId: text("recipientOccurrenceId"),
+    checkedAt: typeof value.checkedAt === "number" ? value.checkedAt : 0,
+    title: text("title"),
+    scheduledStart: text("scheduledStart"),
+  };
+}
+
+function withId(doc: IndexDoc, meetingId: string): IndexDoc {
+  return { ...doc, ids: [meetingId, ...doc.ids.filter((id) => id !== meetingId)] };
+}
+
+function withoutId(doc: IndexDoc, meetingId: string): IndexDoc {
+  const next: IndexDoc = { ...doc, ids: doc.ids.filter((id) => id !== meetingId) };
+  if (doc.shared && meetingId in doc.shared) {
+    const { [meetingId]: _removed, ...rest } = doc.shared;
+    next.shared = rest;
+  }
+  return next;
+}
+
+function withShare(doc: IndexDoc, meetingId: string, provenance: ShareProvenance): IndexDoc {
+  return { ...withId(doc, meetingId), shared: { ...doc.shared, [meetingId]: provenance } };
 }
 
 export class MemoryTranscriberIndexStore implements TranscriberIndexStore {
-  private readonly rows = new Map<string, string[]>();
+  private readonly rows = new Map<string, IndexDoc>();
+  private doc(address: string): IndexDoc {
+    return this.rows.get(address.toLowerCase()) ?? { ids: [] };
+  }
   async list(address: string): Promise<string[]> {
-    return [...(this.rows.get(address.toLowerCase()) ?? [])];
+    return [...this.doc(address).ids];
   }
   async add(address: string, meetingId: string): Promise<void> {
-    const key = address.toLowerCase();
-    const current = (this.rows.get(key) ?? []).filter((id) => id !== meetingId);
-    this.rows.set(key, [meetingId, ...current]);
+    this.rows.set(address.toLowerCase(), withId(this.doc(address), meetingId));
   }
   async remove(address: string, meetingId: string): Promise<void> {
-    const key = address.toLowerCase();
-    this.rows.set(key, (this.rows.get(key) ?? []).filter((id) => id !== meetingId));
+    this.rows.set(address.toLowerCase(), withoutId(this.doc(address), meetingId));
+  }
+  async addShared(address: string, meetingId: string, provenance: ShareProvenance): Promise<void> {
+    this.rows.set(address.toLowerCase(), withShare(this.doc(address), meetingId, structuredClone(provenance)));
+  }
+  async shares(address: string): Promise<Record<string, ShareProvenance>> {
+    return structuredClone(this.doc(address).shared ?? {});
+  }
+  async entries(address: string): Promise<{ ids: string[]; shared: Record<string, ShareProvenance> }> {
+    const doc = this.doc(address);
+    return structuredClone({ ids: doc.ids, shared: doc.shared ?? {} });
   }
 }
 
@@ -49,7 +116,7 @@ export class KvTranscriberIndexStore implements TranscriberIndexStore {
     return `${TRANSCRIBER_INDEX_KEY_PREFIX}${address.toLowerCase()}`;
   }
 
-  private async read(key: string): Promise<string[]> {
+  private async read(key: string): Promise<IndexDoc> {
     const result = await withSessionRefresh(this.node, async () => {
       const r = await this.node.kv.get(key);
       if (isKvMissingKeyResult(r, key)) return null;
@@ -59,45 +126,65 @@ export class KvTranscriberIndexStore implements TranscriberIndexStore {
       | { data?: unknown }
       | null
       | undefined;
-    if (response === null || response === undefined) return [];
+    if (response === null || response === undefined) return { ids: [] };
     let value = (response as { data?: unknown }).data ?? response;
     if (typeof value === "string") {
       try {
         value = JSON.parse(value);
       } catch {
-        return [];
+        return { ids: [] };
       }
     }
     const ids = (value as { ids?: unknown } | null)?.ids;
-    return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [];
+    const doc: IndexDoc = { ids: Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [] };
+    if (value !== null && typeof value === "object" && "shared" in value) {
+      const shared = (value as { shared?: unknown }).shared;
+      if (shared === undefined) return doc;
+      // Fail closed: an unreadable share map must never turn a shared id into an owned one.
+      if (shared === null || typeof shared !== "object" || Array.isArray(shared)) throw new Error("transcriber_index_invalid");
+      doc.shared = Object.fromEntries(Object.entries(shared).map(([id, raw]) => [id, sanitizeProvenance(raw)]));
+    }
+    return doc;
   }
 
-  private async write(key: string, ids: string[]): Promise<void> {
+  /** Writes the whole document, so a write never drops another id's provenance. */
+  private async write(key: string, doc: IndexDoc): Promise<void> {
     await withSessionRefresh(this.node, async () => {
-      assertKvResult(await this.node.kv.put(key, { ids }));
+      assertKvResult(await this.node.kv.put(key, doc));
+    });
+  }
+
+  private change(address: string, fn: (doc: IndexDoc) => IndexDoc): Promise<void> {
+    const key = this.key(address);
+    return this.lane.run(async () => {
+      await this.write(key, fn(await this.read(key)));
     });
   }
 
   list(address: string): Promise<string[]> {
-    return this.lane.run(() => this.read(this.key(address)));
+    return this.lane.run(async () => (await this.read(this.key(address))).ids);
   }
 
   add(address: string, meetingId: string): Promise<void> {
-    const key = this.key(address);
-    return this.lane.run(async () => {
-      const current = (await this.read(key)).filter((id) => id !== meetingId);
-      await this.write(key, [meetingId, ...current]);
-    });
+    return this.change(address, (doc) => withId(doc, meetingId));
   }
 
   remove(address: string, meetingId: string): Promise<void> {
-    const key = this.key(address);
+    return this.change(address, (doc) => withoutId(doc, meetingId));
+  }
+
+  addShared(address: string, meetingId: string, provenance: ShareProvenance): Promise<void> {
+    return this.change(address, (doc) => withShare(doc, meetingId, provenance));
+  }
+
+  shares(address: string): Promise<Record<string, ShareProvenance>> {
+    return this.lane.run(async () => (await this.read(this.key(address))).shared ?? {});
+  }
+
+  entries(address: string): Promise<{ ids: string[]; shared: Record<string, ShareProvenance> }> {
     return this.lane.run(async () => {
-      const current = await this.read(key);
-      await this.write(
-        key,
-        current.filter((id) => id !== meetingId),
-      );
+      const doc = await this.read(this.key(address));
+      return { ids: doc.ids, shared: doc.shared ?? {} };
     });
   }
 }

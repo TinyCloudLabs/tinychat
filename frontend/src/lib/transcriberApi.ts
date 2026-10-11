@@ -63,6 +63,8 @@ export interface TranscriberMeeting {
     source?: string;
     calendar_title?: string;
     scheduled_start?: string;
+    /** TC-581: another account's calendar bot captured this; this account can read and remove it, not end it. */
+    shared?: boolean;
     [key: string]: unknown;
   };
 }
