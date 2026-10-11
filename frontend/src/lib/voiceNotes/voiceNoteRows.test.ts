@@ -466,6 +466,51 @@ test("another account's retained notes do not delay a fresh Stop with a space pr
   } finally { __setVoiceNotesForTests(previous, { available: null }); }
 });
 
+test("reconcile refreshes the pending count after each note save", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  let now = 100;
+  const fake = createFakeVoiceNotes(() => now);
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  let releaseSecond!: () => void;
+  const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve; });
+  let enteredSecond!: () => void;
+  const secondStarted = new Promise<void>((resolve) => { enteredSecond = resolve; });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "off", identifySpeakers: false });
+    await fake.plugin.start();
+    const first = await fake.plugin.stop();
+    now++;
+    await fake.plugin.start();
+    const second = await fake.plugin.stop();
+    const readAudioChunk = fake.plugin.readAudioChunk.bind(fake.plugin);
+    fake.plugin.readAudioChunk = (async (options: Parameters<typeof readAudioChunk>[0]) => {
+      if (options.id === second.id) {
+        enteredSecond();
+        await secondGate;
+      }
+      return readAudioChunk(options);
+    }) as typeof fake.plugin.readAudioChunk;
+
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh();
+    expect(pendingStore.snapshot().listing).toEqual({ state: "ok", count: 2 });
+    const pipeline = createVoiceNotePipeline(tcw);
+    const reconcile = pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
+    await secondStarted;
+    expect(pendingStore.snapshot().listing).toEqual({ state: "ok", count: 1 });
+    expect((await fake.plugin.listPending()).recordings.find((note) => note.id === first.id)?.ledger?.audio.state).toBe("saved");
+    releaseSecond();
+    await reconcile;
+    expect(pendingStore.snapshot().listing).toEqual({ state: "ok", count: 0 });
+  } finally {
+    releaseSecond();
+    pendingStore.setAccount(null);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
 test("a user-choice claimed legacy note uploads once and keeps its owner", async () => {
   const original = VoiceNotes;
   const { tcw, sqlite } = space();

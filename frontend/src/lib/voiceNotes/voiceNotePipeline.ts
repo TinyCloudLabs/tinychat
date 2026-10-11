@@ -112,6 +112,11 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
               check();
               if (isDiscarded(note.id)) discardError ??= error;
               else pendingStore.reportNoteFailure(note.id, error instanceof Error ? error.message : String(error));
+            } finally {
+              // The native ledger is authoritative for the In progress count. Publish
+              // each completed note during a long reconcile pass, not only at the end.
+              check();
+              await pendingStore.refresh();
             }
           }
         }

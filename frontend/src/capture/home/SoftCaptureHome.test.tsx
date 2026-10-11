@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { LibraryListView } from "../library/LibraryListView";
 import { LibraryRow, type LibraryItem } from "../library/LibraryRow";
+import { withOnPhone } from "../library/onPhone";
 import type { InProgressRowsViewProps } from "../InProgressRows";
 import type { RecorderCaptureIssue } from "../recorder/recorderReducer";
 import { StaticRecorderProvider } from "../recorder/RecorderProvider";
@@ -110,6 +111,22 @@ describe("Recent", () => {
     const failed = home({ recent: { status: "failed", items: [] } });
     expect(failed).toContain("Couldn’t load your recent captures.");
     expect(failed).not.toContain("Your recordings appear here");
+  });
+
+  test("a failed save shows the same failure beside an enabled Save now, without a Saving badge", () => {
+    const failure = "Couldn't reach your TinyCloud space. This note is still on your phone — try again.";
+    const recent = withOnPhone([note(1)], [
+      { id: "rec-1", startedAt: Date.parse("2026-10-09T01:49:00.000Z"), durationMs: 65_000, failed: true },
+    ]);
+    const inProgress = {
+      ...voice(1),
+      voice: { ...voice(1).voice!, lastError: failure },
+    };
+    const html = home({ inProgress, recent: { status: "ready", items: recent } });
+    expect(html).toContain("Couldn&#x27;t reach your TinyCloud space. This note is still on your phone — try again.");
+    expect(html).not.toContain(">Saving…<");
+    expect(html).toMatch(/data-testid="voice-note-retry"[^>]*>/);
+    expect(html).not.toMatch(/data-testid="voice-note-retry"[^>]*disabled/);
   });
 });
 
