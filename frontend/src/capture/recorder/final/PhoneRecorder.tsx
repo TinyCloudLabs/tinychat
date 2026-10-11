@@ -194,15 +194,35 @@ export function PhoneRecorder({
         ? Math.max(bottom, bounds.bottom)
         : bottom;
     }, 0);
-    const available = Math.max(0, dock.top - 4 - lastProtectedBottom);
+    // The toast is translated up 4 px from the dock. Keep 4 px below controls;
+    // landscape reserves another 4 px for flex content exceeding its max-height.
+    const shortPortrait = window.matchMedia(
+      "(orientation: portrait) and (max-width: 360px) and (max-height: 600px)",
+    ).matches;
+    const landscape = window.matchMedia(
+      "(orientation: landscape) and (max-height: 520px)",
+    ).matches;
+    const available = Math.max(
+      0,
+      dock.top - (shortPortrait ? 7 : landscape ? 12 : 8) - lastProtectedBottom,
+    );
     const actions = element.querySelector<HTMLElement>(".pr-toast-actions");
     const actionsHeight = actions?.getBoundingClientRect().height ?? 0;
     const actionGap = actions ? 4 : 0;
+    const copyAvailable = Math.max(
+      0,
+      available - actionsHeight - actionGap,
+    );
+    const twoLines = Number.parseFloat(getComputedStyle(element).fontSize) * 2.4;
 
     element.style.setProperty("--pr-toast-max-height", `${available}px`);
     element.style.setProperty(
       "--pr-toast-copy-max-height",
-      `${Math.max(0, available - actionsHeight - actionGap)}px`,
+      `${copyAvailable}px`,
+    );
+    element.style.setProperty(
+      "--pr-toast-copy-min-height",
+      `${Math.min(twoLines, copyAvailable)}px`,
     );
   }, []);
   useLayoutEffect(() => {
@@ -829,7 +849,12 @@ export function PhoneRecorder({
                 resumeToast("focus");
             }}
           >
-            <div className="pr-toast-copy" tabIndex={0}>
+            <div
+              className="pr-toast-copy"
+              tabIndex={0}
+              role="region"
+              aria-label="Notification message"
+            >
               <span className="pr-toast-icon" aria-hidden="true">
                 !
               </span>

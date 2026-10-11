@@ -237,11 +237,32 @@ const assertToastMessageVisible = async (page: Page, expected: string) => {
       overflowY: style.overflowY,
       clientHeight: element.clientHeight,
       scrollHeight: element.scrollHeight,
+      minHeight: Number.parseFloat(style.minHeight),
     };
   });
   expect(copy.overflowY).toBe("auto");
   expect(copy.clientHeight).toBeGreaterThan(0);
+  expect(copy.clientHeight).toBeGreaterThanOrEqual(copy.minHeight - 1);
   expect(copy.scrollHeight).toBeGreaterThanOrEqual(copy.clientHeight);
+  expect(
+    await page.getByRole("region", { name: "Notification message" }).count(),
+  ).toBe(1);
+  const toastButtons = await page
+    .locator(".pr-toast")
+    .getByRole("button")
+    .all();
+  for (const button of toastButtons) {
+    const buttonBox = await button.boundingBox();
+    expect(buttonBox).not.toBeNull();
+    expect(buttonBox!.x).toBeGreaterThanOrEqual(toast!.x);
+    expect(buttonBox!.y).toBeGreaterThanOrEqual(toast!.y);
+    expect(buttonBox!.x + buttonBox!.width).toBeLessThanOrEqual(
+      toast!.x + toast!.width,
+    );
+    expect(buttonBox!.y + buttonBox!.height).toBeLessThanOrEqual(
+      toast!.y + toast!.height,
+    );
+  }
   const viewport = page.viewportSize()!;
   expect(toast).not.toBeNull();
   expect(toast!.x).toBeGreaterThanOrEqual(0);
@@ -317,6 +338,15 @@ const assertToastClearOfRecorderControls = async (
   console.log(
     `toast-overlap-check ${viewport.width}x${viewport.height} font=${fontScale}x toast=${JSON.stringify(toast)} overlaps=${JSON.stringify(overlaps)}`,
   );
+  if (viewport.width > viewport.height) {
+    const scale = await page.locator(".pr-scale").boundingBox();
+    expect(scale).not.toBeNull();
+    if (
+      toast!.x < scale!.x + scale!.width &&
+      toast!.x + toast!.width > scale!.x
+    )
+      expect(toast!.y).toBeGreaterThanOrEqual(scale!.y + scale!.height + 4);
+  }
   expect(
     overlaps.filter(({ name }) => {
       if (name.includes("(allowed)")) return false;
@@ -748,6 +778,20 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
         ).size;
       });
       expect(lineCount).toBeGreaterThanOrEqual(5);
+      const visibleLineCount = await message.evaluate((element) => {
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        const copyBounds = element.parentElement!.getBoundingClientRect();
+        return new Set(
+          [...range.getClientRects()]
+            .filter(
+              ({ top, bottom }) =>
+                top >= copyBounds.top && bottom <= copyBounds.bottom,
+            )
+            .map(({ top }) => Math.round(top)),
+        ).size;
+      });
+      expect(visibleLineCount).toBeGreaterThanOrEqual(2);
       await assertToastClearOfRecorderControls(page, fontScale);
 
       await copy.focus();
@@ -850,16 +894,8 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
       });
     }
     await page.setViewportSize({ width: 844, height: 390 });
-    const toastBox = await toast.boundingBox();
-    const labelsBox = await page.locator(".pr-ends").boundingBox();
-    expect(toastBox).not.toBeNull();
-    expect(labelsBox).not.toBeNull();
-    expect(
-      toastBox!.x < labelsBox!.x + labelsBox!.width &&
-        toastBox!.x + toastBox!.width > labelsBox!.x &&
-        toastBox!.y < labelsBox!.y + labelsBox!.height &&
-        toastBox!.y + toastBox!.height > labelsBox!.y,
-    ).toBe(false);
+    await settleToastPlacement(page);
+    await assertToastClearOfRecorderControls(page, 1);
     if (evidenceDir)
       await page.screenshot({
         path: `${evidenceDir}/recorder-get-model-phone-land.png`,

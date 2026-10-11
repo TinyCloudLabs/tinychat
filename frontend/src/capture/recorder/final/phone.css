@@ -912,6 +912,7 @@
   width: min(100%, 420px);
   max-width: calc(100vw - 32px);
   z-index: 50;
+  min-height: 44px;
   max-height: var(--pr-toast-max-height, none);
   padding: 0 8px;
   display: flex;
@@ -931,6 +932,7 @@
 }
 .pr-toast-copy {
   min-width: 0;
+  min-height: var(--pr-toast-copy-min-height, 0px);
   max-height: var(--pr-toast-copy-max-height, none);
   flex: 0 1 auto;
   display: flex;
@@ -978,7 +980,7 @@
 }
 .pr-toast .pr-toast-dismiss {
   position: absolute;
-  top: 2px;
+  top: 0;
   right: 2px;
   width: 44px;
   min-width: 44px;
@@ -1052,13 +1054,13 @@
   }
 }
 
-/* On a short, narrow phone, shrink the stage disc with its tick reach to make room above the dock. */
+/* On a short, narrow phone, shrink the stage disc with its tick reach to make room above the dock and keep two toast message lines clear of the scale. */
 @media (orientation: portrait) and (max-width: 360px) and (max-height: 600px) {
   .pr-toast {
     max-width: calc(100vw - 16px);
   }
   .pr:not(.dr) .pr-stage {
-    min-height: 160px;
+    min-height: 145px;
   }
   .pr-dock .pr-controls {
     padding-top: 8px;
