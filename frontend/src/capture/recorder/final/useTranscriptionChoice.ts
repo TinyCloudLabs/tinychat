@@ -195,6 +195,8 @@ export function useTranscriptionChoice({
       }
       if (!signedIn && stop.id !== "local")
         return { stop, available: false, reason: SIGNED_OUT };
+      if (!signedIn && stop.id === "local" && shell === "phone" && model && !availability.available)
+        return { stop, available: false, reason: availability.reason };
       if (!signedIn)
         return { stop, available: true, ...(stop.id === "local" ? localModelStatus : {}) };
       if (stop.id === "private" && !offered) {

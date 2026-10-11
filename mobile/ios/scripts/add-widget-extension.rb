@@ -1,5 +1,5 @@
 #!/usr/bin/env ruby
-# Idempotently add the iOS 18 widget extension. Kept as a script so future pbxproj merges can be replayed.
+# Idempotently add the iOS 26 widget extension. Kept as a script so future pbxproj merges can be replayed.
 require 'xcodeproj'
 
 project_path = File.expand_path('../App/App.xcodeproj', __dir__)
@@ -29,11 +29,11 @@ end
 
 extension = project.targets.find { |target| target.name == 'ExoWidgets' }
 unless extension
-  extension = project.new_target(:app_extension, 'ExoWidgets', :ios, '18.0')
+  extension = project.new_target(:app_extension, 'ExoWidgets', :ios, '26.0')
   project.root_object.attributes['TargetAttributes'] ||= {}
   project.root_object.attributes['TargetAttributes'][extension.uuid] = { 'CreatedOnToolsVersion' => '16.0', 'ProvisioningStyle' => 'Automatic' }
 end
-# xcodeproj's target template adds a hard-coded iPhoneOS18.0 Foundation.framework path.
+# xcodeproj's target template adds a hard-coded iPhoneOS Foundation.framework path.
 # Swift auto-links Foundation; remove that stale SDK reference for Xcode 26 and 27.
 extension.frameworks_build_phase.files.dup.each do |build_file|
   file = build_file.file_ref
@@ -66,7 +66,7 @@ extension.build_configurations.each do |config|
     'CURRENT_PROJECT_VERSION' => '1',
     'GENERATE_INFOPLIST_FILE' => 'NO',
     'INFOPLIST_FILE' => 'ExoWidgets/Info.plist',
-    'IPHONEOS_DEPLOYMENT_TARGET' => '18.0',
+    'IPHONEOS_DEPLOYMENT_TARGET' => '26.0',
     'LD_RUNPATH_SEARCH_PATHS' => ['$(inherited)', '@executable_path/Frameworks', '@executable_path/../../Frameworks'],
     'MARKETING_VERSION' => '1.0',
     'PRODUCT_BUNDLE_IDENTIFIER' => '$(EXO_BUNDLE_ID).widgets',

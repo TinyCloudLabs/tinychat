@@ -229,6 +229,16 @@ export function ensureOnDeviceModel({ retry = false }: { retry?: boolean } = {})
   void downloadOnDeviceModel();
 }
 
+/**
+ * iOS's speech assets are OS-managed and free, so a phone whose default is Local fetches them at launch instead of at
+ * the first recording. Android's model download is never started by a default: it waits for a choice or a note.
+ */
+export async function ensureAppleSpeechAssets(): Promise<void> {
+  if (localTranscriptionUnavailable()) return;
+  await onDeviceSttStore.refresh();
+  if (isAppleSpeech(snapshot)) ensureOnDeviceModel();
+}
+
 /** Starts transcribing a note on this phone again. The reason it could not, or null. */
 export async function retryOnDeviceNote(id: string): Promise<string | null> {
   try {
