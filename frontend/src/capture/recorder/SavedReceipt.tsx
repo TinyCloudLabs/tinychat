@@ -16,6 +16,7 @@ import { VoiceNotes, type LocalTranscript, type NoteSttState, type TranscriberId
 import { localTranscriptionUnavailable } from "@/lib/voiceNotes/captureEngine";
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { downloadOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
+import { onDeviceQueuePlace } from "@/lib/voiceNotes/onDeviceQueue";
 import { localModelGuide, modelActionLabel } from "./final/localModelGuide";
 import { receiptMetaText } from "./recorderCopy";
 import { RouteLine, type RouteNode } from "./RouteLine";
@@ -121,9 +122,9 @@ export function useOnDeviceReceipt(id: string | undefined, wantsOnDevice: boolea
   };
   if (transcript) return { kind: "transcribed" as const, transcript, retry };
   if (durable?.state === "failed") return { kind: "failed" as const, retry };
-  const queued = sttStatus.queue.find((job) => job.id === id);
-  if (queued) return { kind: "pending" as const, state: queued.state, retry };
-  return { kind: "pending" as const, state: durable?.state ?? "queued", retry };
+  const place = onDeviceQueuePlace(sttStatus, id);
+  if (place) return { kind: "pending" as const, state: place.entry.state, position: place.position, percent: place.percent, retry };
+  return { kind: "pending" as const, state: durable?.state ?? "queued", position: null, percent: null, retry };
 }
 
 type OnDeviceReceipt = ReturnType<typeof useOnDeviceReceipt>;

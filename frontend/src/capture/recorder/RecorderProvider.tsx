@@ -387,7 +387,7 @@ export function recordingIdentity(
   };
 }
 
-const NO_PENDING: PendingSnapshot = { listing: { state: "ok", count: 0 }, running: false, lastError: null };
+const NO_PENDING: PendingSnapshot = { listing: { state: "ok", count: 0 }, running: false, lastError: null, uploadingId: null, online: true };
 const noop = () => {};
 
 /**

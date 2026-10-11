@@ -34,7 +34,7 @@ describe("withOnPhone", () => {
 
   test("a failed note stays pending but its Recent row does not claim it is saving", () => {
     const rows = [row("a", "rec-a", "2026-10-10T19:00:00.000Z")];
-    const merged = withOnPhone(rows, [{ ...note("rec-a", "2026-10-10T19:00:00.000Z"), failed: true }]);
+    const merged = withOnPhone(rows, [{ ...note("rec-a", "2026-10-10T19:00:00.000Z"), failed: { kind: "other", message: "failed" } }]);
     expect(merged).toEqual(rows);
     expect(merged[0]?.saving).toBeUndefined();
   });

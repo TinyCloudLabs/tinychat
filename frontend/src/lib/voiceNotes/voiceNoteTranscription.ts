@@ -423,7 +423,8 @@ export function noSpeechTranscript(transcribedAt: string, rev: number): VoiceNot
 
 /** Progress of one note's transcription. */
 export type VoiceNoteTranscriptionStatus =
-  | { kind: "waiting" }
+  /** `position`: 1-based place among the notes waiting to start (1 = next); the running note is not counted. */
+  | { kind: "waiting"; position: number }
   | { kind: "preparing" }
   | { kind: "uploading" }
   | { kind: "queued"; position: number | null }
@@ -1102,7 +1103,12 @@ export type NoteTranscriptionState =
   | { kind: "done"; outcome: "transcribed" | "no_speech" }
   | ({ kind: "failed" } & VoiceNoteTranscriptionFailure)
   /** Not sent: the note began outside the app. Only the user's Transcribe on this note sends it. */
-  | { kind: "held"; message: string };
+  | { kind: "held"; message: string }
+  /** Private cloud could not take this note when it was saved. Exposed state only: it does not start later on its own. */
+  | { kind: "blocked"; reason: TranscriptionBlockedReason };
+
+/** Why private cloud was not on when a note was offered to it. */
+export type TranscriptionBlockedReason = "checking" | "unavailable" | "check-failed" | "no-consent" | "hidden";
 
 export type TranscriptionAvailability = "checking" | "available" | "hidden" | "failed";
 
@@ -1218,11 +1224,48 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   let failedChecks = 0;
 
   const emit = (event: VoiceNoteTranscriberEvent = { kind: "changed" }) => {
+    refreshBlocked();
+    let position = 0;
+    for (const sourceId of waiting) {
+      position += 1;
+      const job = jobs.get(sourceId);
+      if (job?.kind === "active" && job.status.kind === "waiting" && job.status.position !== position) {
+        jobs.set(sourceId, { kind: "active", status: { kind: "waiting", position } });
+      }
+    }
     snapshot = { ...state, jobs: new Map(jobs) };
     for (const listener of listeners) listener(event);
   };
   const identityCurrent = () => accountCurrent === null || accountCurrent();
   const on = () => identityCurrent() && state.availability === "available" && state.consented && state.capabilities !== null;
+  const blockedReason = (): TranscriptionBlockedReason => {
+    if (cloud === null) return "hidden";
+    switch (state.availability) {
+      case "checking":
+        return "checking";
+      case "failed":
+        return "check-failed";
+      case "hidden":
+        return "hidden";
+      case "available":
+        return state.consented ? "unavailable" : "no-consent";
+    }
+  };
+  /** A blocked note shows why private cloud is off now; once it is on, the note either started (resume) or is not ours to start. */
+  const refreshBlocked = () => {
+    for (const [sourceId, job] of jobs) {
+      if (job.kind !== "blocked") continue;
+      if (on()) jobs.delete(sourceId);
+      else if (job.reason !== blockedReason()) jobs.set(sourceId, { kind: "blocked", reason: blockedReason() });
+    }
+  };
+  /** Records why an offered note is not going to private cloud. Never replaces a held, running, failed or finished job. */
+  const block = (sourceId: string) => {
+    const current = jobs.get(sourceId);
+    if (current !== undefined && current.kind !== "blocked") return;
+    jobs.set(sourceId, { kind: "blocked", reason: blockedReason() });
+    emit();
+  };
 
   /** Notes the user moved to private cloud from another committed mode. */
   const choices = deps.choices ?? memoryVoiceNotePrivateChoiceStore();
@@ -1254,19 +1297,25 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
 
   /** Every job, new or resumed, starts here. Only `explicit` (the user's Transcribe on this note) may pass a held note. */
   const enqueue = (sourceId: string, audio: VoiceNoteAudio | undefined, explicit: boolean) => {
-    if (!on() || cloud === null) return;
+    if (!on() || cloud === null) {
+      if (explicit || !isHeld(sourceId)) block(sourceId);
+      return;
+    }
     if (!explicit && isHeld(sourceId)) return;
     // Queued, running, or just saved (the list may not show it yet): never a second job.
     const current = jobs.get(sourceId);
     if (current?.kind === "active" || current?.kind === "done") return;
     // A failure waits for the user's Retry; no automatic hand-off or resume restarts it.
     if (!explicit && current?.kind === "failed") return;
-    jobs.set(sourceId, { kind: "active", status: { kind: "waiting" } });
     waiting.add(sourceId);
+    jobs.set(sourceId, { kind: "active", status: { kind: "waiting", position: waiting.size } });
     emit();
     chain = chain.then(async () => {
       // Dropped by turn-off while it waited, or turned off since: never starts.
       if (!waiting.delete(sourceId)) return;
+      // Leaving the line, starting, and the others moving up are one change: no snapshot shows the starting note as waiting.
+      if (jobs.get(sourceId)?.kind === "active") jobs.set(sourceId, { kind: "active", status: { kind: "preparing" } });
+      emit();
       if (!on() || state.capabilities === null) {
         jobs.delete(sourceId);
         if (!identityCurrent()) {
@@ -1439,7 +1488,10 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         hold(recording.id);
         return;
       }
-      if (!on()) return;
+      if (!on()) {
+        block(recording.id);
+        return;
+      }
       if (recording.durationMs / 1000 > maxTranscriptionSeconds(state.capabilities)) return; // the card says why
       enqueue(recording.id, audio, false);
     },

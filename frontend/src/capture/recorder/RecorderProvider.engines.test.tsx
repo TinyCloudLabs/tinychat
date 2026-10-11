@@ -13,7 +13,8 @@ import {
 import { VoiceNotes, __setVoiceNotesForTests, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { OnDeviceStt, __setOnDeviceSttForTests, type OnDeviceSttPlugin, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
-import { PendingVoiceNotesSaver } from "@/chat/PendingVoiceNotesSaver";
+import { PendingVoiceNotesSaver, schedulePendingVoiceNotesRecovery } from "@/chat/PendingVoiceNotesSaver";
+import { VoiceNoteSaveDeferred } from "@/lib/voiceNotes/voiceNotePipeline";
 import { CaptureEngineGate } from "./CaptureEngineGate";
 import { useOnDeviceReceipt } from "./SavedReceipt";
 import { RecorderProvider, useRecorder, type RecorderValue } from "./RecorderProvider";
@@ -89,6 +90,7 @@ const saved = {
   window: global.window, act: global.IS_REACT_ACT_ENVIRONMENT,
   MediaRecorder: global.MediaRecorder, voiceNotes: VoiceNotes, onDevice: OnDeviceStt,
   mediaDevices: Object.getOwnPropertyDescriptor(navigator, "mediaDevices"),
+  online: Object.getOwnPropertyDescriptor(navigator, "onLine"),
   storage: global.localStorage,
 };
 beforeAll(() => {
@@ -118,6 +120,7 @@ afterEach(async () => {
   global.window = saved.window;
   if (saved.MediaRecorder === undefined) delete global.MediaRecorder; else global.MediaRecorder = saved.MediaRecorder;
   if (saved.mediaDevices) Object.defineProperty(navigator, "mediaDevices", saved.mediaDevices); else delete (navigator as unknown as Record<string, unknown>).mediaDevices;
+  if (saved.online) Object.defineProperty(navigator, "onLine", saved.online); else delete (navigator as unknown as Record<string, unknown>).onLine;
   __setVoiceNotesForTests(saved.voiceNotes, { available: null });
   __setOnDeviceSttForTests(saved.onDevice);
 });
@@ -126,13 +129,17 @@ async function mount(kind: CaptureEngineKind, capabilities: CaptureCapabilities,
   return mountWith(kind, capabilities, undefined, model);
 }
 
-async function mountWith(kind: CaptureEngineKind, capabilities: CaptureCapabilities, prepare?: (plugin: VoiceNotesPlugin) => void, model: "ready" | "absent" = "ready") {
+async function mountWith(kind: CaptureEngineKind, capabilities: CaptureCapabilities, prepare?: (plugin: VoiceNotesPlugin) => void,
+  model: "ready" | "absent" = "ready", recovery?: { listeners: Map<string, () => void>; pipeline: { resume(): void; cancelAll(): void; reconcileAll(): Promise<void> } }) {
   const stt = strictOnDeviceStt(kind === "native", model);
   __setOnDeviceSttForTests(stt.plugin);
   const strict = strictEngine(capabilities);
   prepare?.(strict.fake.plugin);
   if (kind === "native") {
-    global.window = windowStub();
+    global.window = windowStub(recovery ? {
+      addEventListener: (name: string, listener: () => void) => recovery.listeners.set(name, listener),
+      removeEventListener: (name: string) => recovery.listeners.delete(name),
+    } : {});
     __setVoiceNotesForTests(strict.engine, { available: true });
     await onDeviceSttStore.refresh();
   } else {
@@ -143,18 +150,125 @@ async function mountWith(kind: CaptureEngineKind, capabilities: CaptureCapabilit
     registerCaptureEngine(kind, async () => strict.engine);
     await installCaptureEngine();
   }
-  const tcw = { did: "did:example:alice" } as TinyCloudWeb;
+  const tcw = { did: "did:example:alice", spaceId: "space:alice" } as TinyCloudWeb;
   root = createRoot({ nodeType: 1, nodeName: "DIV", tagName: "DIV", ownerDocument: documentStub, textContent: "", addEventListener() {}, removeEventListener() {},
     appendChild() {}, removeChild() {}, insertBefore() {} } as unknown as HTMLElement);
   await act(async () => root!.render(
     <RecorderProvider tcw={tcw} enabled>
       <Probe />
-      <PendingVoiceNotesSaver tcw={tcw} pipeline={{ resume() {}, cancelAll() {}, reconcileAll: async () => {} } as never} backendUrl="" sessionStore={{} as never} />
+      <PendingVoiceNotesSaver tcw={tcw} pipeline={(recovery?.pipeline ?? { resume() {}, cancelAll() {}, reconcileAll: async () => {} }) as never} backendUrl="" sessionStore={{} as never} />
     </RecorderProvider>,
   ));
   await act(async () => { await tick(); await tick(); });
   return { ...strict, stt };
 }
+
+test("pending saver retries reconciliation when the device comes online", async () => {
+  const listeners = new Map<string, () => void>();
+  let reconciles = 0;
+  const pipeline = { resume() {}, cancelAll() {}, reconcileAll: async () => { reconciles++; } };
+  await mountWith("native", ALL, undefined, "ready", { listeners, pipeline });
+  expect(reconciles).toBe(1);
+  await act(async () => { listeners.get("offline")?.(); });
+  expect((await import("@/lib/voiceNotes/recorderSaves")).pendingStore.snapshot().online).toBe(false);
+  await act(async () => { listeners.get("online")?.(); await tick(); });
+  expect(reconciles).toBe(2);
+  expect((await import("@/lib/voiceNotes/recorderSaves")).pendingStore.snapshot().online).toBe(true);
+});
+
+test("pending saver reads the current navigator online state on mount", async () => {
+  Object.defineProperty(navigator, "onLine", { configurable: true, value: false });
+  const listeners = new Map<string, () => void>();
+  const pipeline = { resume() {}, cancelAll() {}, reconcileAll: async () => {} };
+  await mountWith("native", ALL, undefined, "ready", { listeners, pipeline });
+  expect((await import("@/lib/voiceNotes/recorderSaves")).pendingStore.snapshot().online).toBe(false);
+});
+
+test("forced session-swap recovery queues one trailing reconcile while a run is active", async () => {
+  const listeners = new Map<string, () => void>();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const { pendingStore } = await import("@/lib/voiceNotes/recorderSaves");
+  let finishSave: (() => void) | undefined;
+  let reconciles = 0;
+  let active = 0;
+  let maximumActive = 0;
+  const pipeline = { resume() {}, cancelAll() {}, reconcileAll: async () => {
+    reconciles++;
+    active++;
+    maximumActive = Math.max(maximumActive, active);
+    try {
+      if (reconciles === 1) {
+        finishSave = pendingStore.beginAutomaticSave();
+        await gate;
+        finishSave();
+        finishSave = undefined;
+      }
+    } finally { active--; }
+  } };
+  await mountWith("native", ALL, undefined, "ready", { listeners, pipeline });
+  expect(reconciles).toBe(1);
+  await act(async () => { schedulePendingVoiceNotesRecovery(); await tick(); });
+  expect(reconciles).toBe(1);
+  release();
+  await act(async () => { await tick(); await tick(); });
+  expect(reconciles).toBe(2);
+  expect(maximumActive).toBe(1);
+  release();
+});
+
+test("online during an offline backoff queues one trailing reconcile", async () => {
+  const listeners = new Map<string, () => void>();
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  let reconciles = 0;
+  let active = 0;
+  let maximumActive = 0;
+  const pipeline = { resume() {}, cancelAll() {}, reconcileAll: async () => {
+    reconciles++;
+    active++;
+    maximumActive = Math.max(maximumActive, active);
+    try {
+      if (reconciles === 1) { entered(); await gate; throw Object.assign(new Error("offline backoff ended"), { code: "NETWORK_ERROR" }); }
+    } finally { active--; }
+  } };
+  await mountWith("native", ALL, undefined, "ready", { listeners, pipeline });
+  await started;
+  expect(reconciles).toBe(1);
+  await act(async () => { listeners.get("online")?.(); await tick(); });
+  expect(reconciles).toBe(1);
+  release();
+  await act(async () => { await tick(); await tick(); });
+  expect(reconciles).toBe(2);
+  expect(maximumActive).toBe(1);
+  release();
+});
+
+test("unmount during a dirty reconcile prevents the trailing pass and deferred error", async () => {
+  const listeners = new Map<string, () => void>();
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const { pendingStore } = await import("@/lib/voiceNotes/recorderSaves");
+  let reconciles = 0;
+  const pipeline = { resume() {}, cancelAll() {}, reconcileAll: async () => {
+    reconciles++;
+    if (reconciles === 1) { entered(); await gate; throw new VoiceNoteSaveDeferred(); }
+  } };
+  await mountWith("native", ALL, undefined, "ready", { listeners, pipeline });
+  await started;
+  await act(async () => { listeners.get("online")?.(); await tick(); });
+  expect(reconciles).toBe(1);
+  await act(async () => { root!.unmount(); root = null; });
+  release();
+  await act(async () => { await tick(); await tick(); });
+  expect(reconciles).toBe(1);
+  expect(pendingStore.snapshot().accountDid).toBeNull();
+  expect(pendingStore.snapshot().lastError).toBeNull();
+});
 
 for (const kind of ["web", "tauri"] as const) {
   describe(`${kind} engine without native capabilities`, () => {

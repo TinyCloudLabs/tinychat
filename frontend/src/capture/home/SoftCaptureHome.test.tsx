@@ -116,7 +116,7 @@ describe("Recent", () => {
   test("a failed save shows the same failure beside an enabled Save now, without a Saving badge", () => {
     const failure = "Couldn't reach your TinyCloud space. This note is still on your phone — try again.";
     const recent = withOnPhone([note(1)], [
-      { id: "rec-1", startedAt: Date.parse("2026-10-09T01:49:00.000Z"), durationMs: 65_000, failed: true },
+      { id: "rec-1", startedAt: Date.parse("2026-10-09T01:49:00.000Z"), durationMs: 65_000, failed: { kind: "offline", message: "still offline" } },
     ]);
     const inProgress = {
       ...voice(1),

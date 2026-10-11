@@ -325,6 +325,54 @@ describe("the recorder's hand-off and reconcile's while the first availability c
   });
 });
 
+test("a recorder stop queued behind reconcile waits for the owning save before hand-off", async () => {
+  const s = await setup("private-cloud");
+  const first = await s.recordFor(s.tcw.did);
+  const queued = await s.recordFor(s.tcw.did);
+  const readAudioChunk = s.fake.plugin.readAudioChunk.bind(s.fake.plugin);
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  s.fake.plugin.readAudioChunk = (async (options: Parameters<typeof readAudioChunk>[0]) => {
+    if (options.id === first.id) { entered(); await gate; }
+    return readAudioChunk(options);
+  }) as typeof s.fake.plugin.readAudioChunk;
+
+  let autoStopped: (event: unknown) => void = () => { throw new Error("autoStopped listener not installed"); };
+  const addListener = s.fake.plugin.addListener.bind(s.fake.plugin);
+  s.fake.plugin.addListener = ((event: string, callback: (event: unknown) => void) => {
+    if (event === "autoStopped") autoStopped = callback;
+    return (addListener as (event: string, callback: (event: unknown) => void) => unknown)(event, callback);
+  }) as typeof s.fake.plugin.addListener;
+  const recorder = createVoiceNoteRecorderController({ tcw: s.tcw, available: true, transcriber: s.transcriber,
+    pipeline: s.pipeline, onDeviceReady: () => true });
+  const detach = recorder.attach();
+  const handed: string[] = [];
+  const reconcile = s.pipeline.reconcileAll(s.ctx(), "reconcile", (note) => {
+    handed.push(note.id);
+    s.handOver()(note);
+  });
+  try {
+    await started;
+    autoStopped({ reason: "max_duration", maxDurationMs: 60_000, at: Date.now(), recording: queued });
+    for (let i = 0; i < 5; i++) await tick();
+    expect((await s.fake.plugin.listPending()).recordings.find((note) => note.id === queued.id)?.ledger?.audio.state).toBe("pending");
+    expect(recorder.getState().localUpload).toBe("in-flight");
+    expect(s.runs).toEqual([]);
+
+    release();
+    await reconcile;
+    await tick();
+    expect((await s.fake.plugin.listPending()).recordings.find((note) => note.id === queued.id)?.ledger?.audio.state).toBe("saved");
+    expect(handed).toEqual([first.id, queued.id]);
+  } finally {
+    release();
+    detach();
+    await reconcile.catch(() => undefined);
+  }
+});
+
 describe("a recorder save that finishes after the account changed never transcribes", () => {
   afterEach(async () => {
     pendingStore.setAccount(null);

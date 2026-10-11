@@ -17,6 +17,7 @@ import {
   onDeviceSttStore,
   retryOnDeviceNote,
 } from "@/lib/voiceNotes/onDeviceSttStore";
+import { onDeviceQueuePlace } from "@/lib/voiceNotes/onDeviceQueue";
 import { localModelGuide, modelActionLabel, waitingForModelSentence } from "@/capture/recorder/final/localModelGuide";
 import { privateInsteadOffered, switchToPrivate } from "@/capture/recorder/privateInstead";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
@@ -80,7 +81,7 @@ export function useOnDeviceNote(noteId: string): OnDeviceNoteView {
     setLive(null);
     setError(null);
     setWatchError(null);
-    const supersedes = () => queueMark(onDeviceSttStore.snapshot().queue.find((entry) => entry.id === noteId) ?? null);
+    const supersedes = () => queueMark(onDeviceQueuePlace(onDeviceSttStore.snapshot(), noteId)?.entry ?? null);
     const read = () => {
       const mine = ++latest;
       const current = () => alive && mine === latest;
@@ -133,7 +134,8 @@ export function useOnDeviceNote(noteId: string): OnDeviceNoteView {
   }, [noteId, attempt]);
 
   const reload = useCallback(() => setAttempt((n) => n + 1), []);
-  const job = status.queue.find((entry) => entry.id === noteId) ?? null;
+  const place = onDeviceQueuePlace(status, noteId);
+  const job = place?.entry ?? null;
   return { note: onDeviceNote(scan?.noteId === noteId ? scan : null, live?.noteId === noteId ? live : null, job), error: watchError ?? error, reload };
 }
 

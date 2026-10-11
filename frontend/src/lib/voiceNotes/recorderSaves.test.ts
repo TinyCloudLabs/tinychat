@@ -86,6 +86,45 @@ describe("voice-note network error copy", () => {
   });
 });
 
+describe("pipeline save signals", () => {
+  test.each([
+    [{ code: "NETWORK_ERROR", message: "connection refused" }, "offline"],
+    [{ code: "SPACE_LANE_QUEUE_TIMEOUT", message: "waited" }, "timeout"],
+    [{ name: "VoiceNoteSaveTimeout", message: "waited" }, "timeout"],
+    [{ code: "STORAGE_QUOTA_EXCEEDED", message: "full" }, "quota"],
+    [{ code: "VOICE_NOTE_SOURCE_READ_FAILED", message: "source unavailable" }, "source"],
+    [{ code: "VOICE_NOTE_AUDIO_TOO_LARGE", message: "too large" }, "source"],
+    [{ code: "STORE_CORRUPT_AUDIO", message: "corrupt" }, "source"],
+    [{ code: "AUTH_UNAUTHORIZED", message: "denied", meta: { status: 403 } }, "auth"],
+    [{ code: "NETWORK_ERROR", message: "Failed to execute query: 403 - capability denied" }, "auth"],
+    [{ code: "SQL_ERROR", message: "error", meta: { status: 503 } }, "server"],
+    [{ code: "NETWORK_ERROR", message: "Failed to execute query: 500 - internal error" }, "server"],
+    [{ code: "UNKNOWN", message: "unusual issue" }, "other"],
+  ] as const)("classifies %j once with a useful kind", (error, kind) => {
+    expect(saves.classifyNoteFailure(error)).toBe(kind);
+  });
+
+  test("online state and held reasons publish on the pending snapshot", () => {
+    phone.pending = [recording("held-note", 1)];
+    saves.pendingStore.setAccount(tcw.did);
+    return saves.pendingStore.refresh(null).then(() => {
+      saves.pendingStore.setHeld("held-note", "other-account");
+      expect(saves.pendingStore.snapshot().notes?.[0]?.held).toBe("other-account");
+      saves.pendingStore.setAccount(null);
+      return saves.pendingStore.refresh(null).then(() => {
+        expect(saves.pendingStore.snapshot().notes?.[0]?.held).toBe("signed-out");
+      });
+    });
+  });
+
+  test("online state is a snapshot signal", () => {
+    saves.pendingStore.setOnline(false);
+    expect(saves.pendingStore.snapshot().online).toBe(false);
+    saves.pendingStore.setOnline(true);
+    expect(saves.pendingStore.snapshot().online).toBe(true);
+  });
+});
+
 /** A fresh copy of the module, as after a WebView reload: its in-memory guards and store are new. */
 let instances = 0;
 const reloaded = () => import(`./recorderSaves.ts?reload=${++instances}`) as Promise<typeof saves>;
@@ -175,7 +214,7 @@ describe("savePendingRecordings", () => {
     saves.pendingStore.reportNoteFailure("retrying", "Load failed");
     expect(saves.pendingStore.snapshot()).toMatchObject({
       lastError: "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
-      notes: [{ id: "retrying", failed: true }],
+      notes: [{ id: "retrying", failed: { kind: "offline", message: "Couldn't reach your TinyCloud space. This note is still on your phone — try again." } }],
     });
     const finish = saves.pendingStore.beginManualSave();
     try {
@@ -266,7 +305,8 @@ describe("saveRecording", () => {
     await Promise.resolve();
     expect(idle).toBe(false);
     finish();
-    expect(await saving).toEqual({ kind: "failed", failure: "Couldn't reach your TinyCloud space. This note is still on your phone — try again." });
+    expect(await saving).toMatchObject({ kind: "failed", failure: "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
+      failureKind: "offline", failureCause: { code: "NETWORK", message: "The network connection was lost." } });
     await waiting;
     expect(idle).toBe(true);
     expect(saves.voiceNoteSaveBusy()).toBe(false);
@@ -366,6 +406,9 @@ describe("after a reload", () => {
       accountDid: null,
       running: false,
       lastError: null,
+      notes: undefined,
+      uploadingId: null,
+      online: true,
     });
     expect(cold.pendingCount(cold.pendingStore.snapshot())).toBe(0);
   });
