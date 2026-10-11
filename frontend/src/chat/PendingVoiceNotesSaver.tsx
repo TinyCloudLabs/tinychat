@@ -106,25 +106,36 @@ export function PendingVoiceNotesSaver({
     const spaceId = tcw.spaceId;
     if (!did || !spaceId) return;
     pendingStore.setAccount(did);
+    pendingStore.setOnline(typeof navigator === "undefined" ? true : navigator.onLine !== false);
     pipeline.resume();
     const transcriber = voiceNoteTranscriberFor(tcw, backendUrl, sessionStore);
     let runInFlight: Promise<void> | null = null;
+    let dirty = false;
     const run = (): Promise<void> => {
-      if (runInFlight) return runInFlight;
-      runInFlight = (async () => {
-      const generation = currentAccountGeneration();
-      const account = pendingStore.forAccount(did);
-      try {
-        await pipeline.reconcileAll({ did, spaceId, generation }, "reconcile", (note) => {
-          if (transcriber) transcribeSavedNote(transcriber, note, () => generation === currentAccountGeneration());
-        });
-        await account.refresh(null);
-      } catch (error) {
-        const message = messageOf(error);
-        // Network errors are already logged by messageOf through the redacting formatter.
-        if (!isTinyCloudNetworkFailure(error)) logVoiceNoteError("Saving notes left on this phone failed", error);
-        account.reportError(`Could not save notes on this phone: ${message}`);
+      if (runInFlight) {
+        dirty = true;
+        return runInFlight;
       }
+      const runOnce = async () => {
+        const generation = currentAccountGeneration();
+        const account = pendingStore.forAccount(did);
+        try {
+          await pipeline.reconcileAll({ did, spaceId, generation }, "reconcile", (note) => {
+            if (transcriber) transcribeSavedNote(transcriber, note, () => generation === currentAccountGeneration());
+          });
+          await account.refresh(null);
+        } catch (error) {
+          const message = messageOf(error);
+          // Network errors are already logged by messageOf through the redacting formatter.
+          if (!isTinyCloudNetworkFailure(error)) logVoiceNoteError("Saving notes left on this phone failed", error);
+          account.reportError(`Could not save notes on this phone: ${message}`);
+        }
+      };
+      runInFlight = (async () => {
+        do {
+          dirty = false;
+          await runOnce();
+        } while (dirty);
       })().finally(() => { runInFlight = null; });
       return runInFlight;
     };

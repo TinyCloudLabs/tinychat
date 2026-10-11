@@ -57,7 +57,7 @@ test("space lane snapshot reports busy state and queued depth", async () => {
   expect(notifications).toBeGreaterThan(0);
   unsubscribe();
 });
-import { pendingStore } from "./recorderSaves";
+import { pendingStore, saveNoteForAccount } from "./recorderSaves";
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
 import { loadNote, saveNote } from "./recordingNotes";
 import { readRecordingNoteFromSpace, syncRecordingNote, voiceNoteAudioKvKey, voiceNoteMarkdownKvKey } from "./voiceNoteStore";
@@ -519,6 +519,7 @@ test("reconcile refreshes the pending count after each note save", async () => {
     const pipeline = createVoiceNotePipeline(tcw);
     const reconcile = pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
     await secondStarted;
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === second.id)?.waitingBehind).toBe(1);
     expect(pendingStore.snapshot().lastError).toBeNull();
     expect(pendingStore.snapshot().notes?.find((note) => note.id === second.id)?.failed).toBeUndefined();
     expect(pendingStore.snapshot().listing).toEqual({ state: "ok", count: 1 });
@@ -593,7 +594,7 @@ test("a wrapped audio upload network error shows friendly copy and logs only a r
   try {
     await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
       transcriber: "off", identifySpeakers: false });
-    await fake.plugin.start();
+    const { id } = await fake.plugin.start();
     await fake.plugin.stop();
     tcw.kv.put = (async (key, value, options) => key.includes("/audio/")
       ? { ok: false, error: { code: "NETWORK_ERROR",
@@ -609,6 +610,7 @@ test("a wrapped audio upload network error shows friendly copy and logs only a r
       "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
     );
     expect(pendingStore.snapshot().lastError).not.toContain(rawUrl);
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === id)?.failed?.kind).toBe("offline");
     const output = warnings.map((args) => args.join(" ")).join(" ");
     expect(output).toContain("TinyCloud network failure");
     expect(output).toContain("<url>");
@@ -616,6 +618,77 @@ test("a wrapped audio upload network error shows friendly copy and logs only a r
     expect(output).not.toContain("private-token");
   } finally {
     console.warn = originalWarn;
+    __setVoiceNotesForTests(original, { available: null });
+    pendingStore.setAccount(null);
+    await pendingStore.refresh(null);
+  }
+});
+
+test("a real source-read failure is reported as non-retryable source with its message intact", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    const { id } = await fake.plugin.start();
+    await fake.plugin.stop();
+    const readAudioChunk = fake.plugin.readAudioChunk.bind(fake.plugin);
+    fake.plugin.readAudioChunk = (async (options: Parameters<typeof readAudioChunk>[0]) => {
+      if (options.id === id) throw new Error("device source unavailable");
+      return readAudioChunk(options);
+    }) as typeof fake.plugin.readAudioChunk;
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh(null);
+    await createVoiceNotePipeline(tcw, { retryDelaysMs: [] }).reconcileAll({
+      did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration(),
+    });
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === id)?.failed).toMatchObject({
+      kind: "source", message: expect.stringContaining("device source unavailable"),
+    });
+  } finally {
+    __setVoiceNotesForTests(original, { available: null });
+    pendingStore.setAccount(null);
+    await pendingStore.refresh(null);
+  }
+});
+
+test("upload state starts before the first part completes and survives relist and in-flight callers", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  let releasePart!: () => void;
+  let enteredPart!: () => void;
+  const partGate = new Promise<void>((resolve) => { releasePart = resolve; });
+  const partStarted = new Promise<void>((resolve) => { enteredPart = resolve; });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    await fake.plugin.start();
+    const recording = await fake.plugin.stop();
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh(null);
+    const put = tcw.kv.put.bind(tcw.kv);
+    tcw.kv.put = (async (key, value, options) => {
+      if (key.includes("/audio/") && key.includes("/p/")) { enteredPart(); await partGate; }
+      return put(key, value, options);
+    }) as typeof tcw.kv.put;
+    const ctx = { did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() };
+    const ownerRun = createVoiceNotePipeline(tcw, { retryDelaysMs: [] }).process(ctx, recording.id);
+    await partStarted;
+    expect(pendingStore.snapshot().uploadingId).toBe(recording.id);
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === recording.id)?.upload?.state).toBe("uploading");
+    await pendingStore.refresh();
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === recording.id)?.upload?.state).toBe("uploading");
+    const listed = (await fake.plugin.listPending()).recordings.find((note) => note.id === recording.id)!;
+    expect(await saveNoteForAccount(tcw, ctx, listed)).toEqual({ kind: "in-flight" });
+    expect(pendingStore.snapshot().uploadingId).toBe(recording.id);
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === recording.id)?.upload?.state).toBe("uploading");
+    releasePart();
+    await ownerRun;
+    expect(pendingStore.snapshot().uploadingId).toBeNull();
+  } finally {
+    releasePart();
     __setVoiceNotesForTests(original, { available: null });
     pendingStore.setAccount(null);
     await pendingStore.refresh(null);

@@ -2,8 +2,8 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { assertCurrent, StaleAccountContext, type AccountContext } from "./accountContext";
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
 import { VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
-import { isDiscarded, pendingStore, saveNoteForAccount } from "./recorderSaves";
-import { ensureVoiceNoteIdentity, spaceLaneSnapshot, sweepArchived } from "./voiceNoteRows";
+import { errorCode, isDiscarded, pendingStore, saveNoteForAccount } from "./recorderSaves";
+import { ensureVoiceNoteIdentity, sweepArchived } from "./voiceNoteRows";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { syncRecordingNote } from "./voiceNoteStore";
 import type { StoreAudioOptions } from "./voiceNoteStore";
@@ -48,7 +48,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     assertCurrent(ctx);
     if (tcw.did !== ctx.did || tcw.spaceId !== ctx.spaceId) throw new Error("Voice-note space changed");
   };
-  const processOne = async (ctx: AccountContext, id: string, epoch: number, trackPending = false): Promise<VoiceNoteRecording | null> => {
+  const processOne = async (ctx: AccountContext, id: string, epoch: number, trackPending = false, waitingBehind = 0): Promise<VoiceNoteRecording | null> => {
     const check = checkFor(ctx, epoch);
     check();
     const gate = await ensureVoiceNoteIdentity(tcw, check);
@@ -65,35 +65,21 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     pendingStore.clearNoteFailure(id);
     const finish = trackPending && note.ledger?.audio.state !== "saved"
       ? pendingStore.beginAutomaticSave() : () => undefined;
-    const tracksUpload = note.ledger?.audio.state !== "saved";
-    if (tracksUpload) {
-      pendingStore.setUpload(id, { state: "waiting", bytes: 0, total: note.sizeBytes },
-        { startedAt: note.startedAt, durationMs: note.durationMs });
-      pendingStore.setWaitingBehind(id, spaceLaneSnapshot().depth);
-    }
-    let lastPublishAt = 0;
-    let lastPercent = -1;
     try {
       const result = await saveNoteForAccount(tcw, ctx, note, check, {
         ...testOptions,
-        onProgress: (bytes, total) => {
-          const now = Date.now();
-          const percent = total > 0 ? Math.floor(bytes / total * 100) : 0;
-          if (percent - lastPercent < 1 && now - lastPublishAt < 250) return;
-          lastPercent = percent;
-          lastPublishAt = now;
-          pendingStore.setUpload(id, { state: "uploading", bytes, total });
-        },
-        onRetry: (_attempt, _code) => {
-          const current = pendingStore.snapshot().notes?.find((item) => item.id === id)?.upload;
-          pendingStore.setUpload(id, { state: "retrying", bytes: current?.bytes ?? 0, total: current?.total ?? note.sizeBytes });
-        },
+        waitingBehind,
       });
-      if (result.kind === "failed") { check(); throw new Error(result.failure); }
+      if (result.kind === "failed") {
+        check();
+        throw Object.assign(new Error(result.failure), {
+          code: errorCode(result.failureCause), cause: result.failureCause, failureKind: result.failureKind,
+        });
+      }
       if (result.kind === "discarded" && result.cleanupError) throw new Error(result.cleanupError);
       if (result.kind === "held") pendingStore.setHeld(id, result.reason);
       return result.kind === "saved" ? note : null;
-    } finally { if (tracksUpload) pendingStore.clearUpload(id); finish(); }
+    } finally { finish(); }
   };
   return {
     process(ctx, id, trigger = "stop") {
@@ -128,18 +114,21 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
         check();
         await associateLegacyNotes(tcw, ctx.did, notes, check);
         let discardError: unknown;
+        const saveQueue = notes.filter((note) => note.owner === ctx.did && !note.ownerUnknown &&
+          note.ledger?.audio.state !== "saved" && !isDiscarded(note.id)).sort((a, b) => a.startedAt - b.startedAt);
+        const waitingBehind = new Map(saveQueue.map((note, index) => [note.id, index]));
         for (const note of [...notes].sort((a, b) => a.startedAt - b.startedAt)) {
           check();
           if (note.owner === ctx.did && !note.ownerUnknown) {
             let saved: VoiceNoteRecording | null = null;
             try {
               logSaveStart(note.id, trigger);
-              saved = await processOne(ctx, note.id, epoch, true);
+              saved = await processOne(ctx, note.id, epoch, true, waitingBehind.get(note.id) ?? 0);
             }
             catch (error) {
               check();
               if (isDiscarded(note.id)) discardError ??= error;
-              else pendingStore.reportNoteFailure(note.id, error instanceof Error ? error.message : String(error));
+              else pendingStore.reportNoteFailure(note.id, error);
             } finally {
               // The native ledger is authoritative for the In progress count. Publish
               // each completed note during a long reconcile pass, not only at the end.

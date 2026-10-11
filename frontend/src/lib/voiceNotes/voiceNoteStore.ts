@@ -179,6 +179,7 @@ export function voiceNoteAudioSourceFromBase64(audio: VoiceNoteAudio): VoiceNote
 
 export interface StoreAudioOptions {
   partSize?: number;
+  onUploadStart?: (totalBytes: number) => void;
   onProgress?: (storedBytes: number, totalBytes: number) => void;
   /** Injected in tests. */
   retryDelaysMs?: readonly number[];

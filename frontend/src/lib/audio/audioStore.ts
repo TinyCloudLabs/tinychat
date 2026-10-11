@@ -104,6 +104,8 @@ export interface PutAudioOptions extends RetryOptions {
   sha256?: string | null;
   /** Bytes per stored part, at most (and by default) {@link MAX_AUDIO_PART_SIZE}. */
   partSize?: number;
+  /** Called after resumable-part discovery and before the first audio transfer. */
+  onUploadStart?: (totalBytes: number) => void;
   onProgress?: (storedBytes: number, totalBytes: number) => void;
 }
 
@@ -267,6 +269,7 @@ export async function putAudio(
   }
 
   const existing = new Set(await listKeys(kv, `${base}/p/`, opts));
+  opts.onUploadStart?.(total);
 
   const parts: StoredAudioPart[] = [];
   let stored = 0;

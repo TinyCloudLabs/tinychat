@@ -13,7 +13,7 @@ import {
 import { VoiceNotes, __setVoiceNotesForTests, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { OnDeviceStt, __setOnDeviceSttForTests, type OnDeviceSttPlugin, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
-import { PendingVoiceNotesSaver } from "@/chat/PendingVoiceNotesSaver";
+import { PendingVoiceNotesSaver, schedulePendingVoiceNotesRecovery } from "@/chat/PendingVoiceNotesSaver";
 import { CaptureEngineGate } from "./CaptureEngineGate";
 import { useOnDeviceReceipt } from "./SavedReceipt";
 import { RecorderProvider, useRecorder, type RecorderValue } from "./RecorderProvider";
@@ -89,6 +89,7 @@ const saved = {
   window: global.window, act: global.IS_REACT_ACT_ENVIRONMENT,
   MediaRecorder: global.MediaRecorder, voiceNotes: VoiceNotes, onDevice: OnDeviceStt,
   mediaDevices: Object.getOwnPropertyDescriptor(navigator, "mediaDevices"),
+  online: Object.getOwnPropertyDescriptor(navigator, "onLine"),
   storage: global.localStorage,
 };
 beforeAll(() => {
@@ -118,6 +119,7 @@ afterEach(async () => {
   global.window = saved.window;
   if (saved.MediaRecorder === undefined) delete global.MediaRecorder; else global.MediaRecorder = saved.MediaRecorder;
   if (saved.mediaDevices) Object.defineProperty(navigator, "mediaDevices", saved.mediaDevices); else delete (navigator as unknown as Record<string, unknown>).mediaDevices;
+  if (saved.online) Object.defineProperty(navigator, "onLine", saved.online); else delete (navigator as unknown as Record<string, unknown>).onLine;
   __setVoiceNotesForTests(saved.voiceNotes, { available: null });
   __setOnDeviceSttForTests(saved.onDevice);
 });
@@ -171,6 +173,76 @@ test("pending saver retries reconciliation when the device comes online", async 
   await act(async () => { listeners.get("online")?.(); await tick(); });
   expect(reconciles).toBe(2);
   expect((await import("@/lib/voiceNotes/recorderSaves")).pendingStore.snapshot().online).toBe(true);
+});
+
+test("pending saver reads the current navigator online state on mount", async () => {
+  Object.defineProperty(navigator, "onLine", { configurable: true, value: false });
+  const listeners = new Map<string, () => void>();
+  const pipeline = { resume() {}, cancelAll() {}, reconcileAll: async () => {} };
+  await mountWith("native", ALL, undefined, "ready", { listeners, pipeline });
+  expect((await import("@/lib/voiceNotes/recorderSaves")).pendingStore.snapshot().online).toBe(false);
+});
+
+test("forced session-swap recovery queues one trailing reconcile while a run is active", async () => {
+  const listeners = new Map<string, () => void>();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const { pendingStore } = await import("@/lib/voiceNotes/recorderSaves");
+  let finishSave: (() => void) | undefined;
+  let reconciles = 0;
+  let active = 0;
+  let maximumActive = 0;
+  const pipeline = { resume() {}, cancelAll() {}, reconcileAll: async () => {
+    reconciles++;
+    active++;
+    maximumActive = Math.max(maximumActive, active);
+    try {
+      if (reconciles === 1) {
+        finishSave = pendingStore.beginAutomaticSave();
+        await gate;
+        finishSave();
+        finishSave = undefined;
+      }
+    } finally { active--; }
+  } };
+  await mountWith("native", ALL, undefined, "ready", { listeners, pipeline });
+  expect(reconciles).toBe(1);
+  await act(async () => { schedulePendingVoiceNotesRecovery(); await tick(); });
+  expect(reconciles).toBe(1);
+  release();
+  await act(async () => { await tick(); await tick(); });
+  expect(reconciles).toBe(2);
+  expect(maximumActive).toBe(1);
+  release();
+});
+
+test("online during an offline backoff queues one trailing reconcile", async () => {
+  const listeners = new Map<string, () => void>();
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  let reconciles = 0;
+  let active = 0;
+  let maximumActive = 0;
+  const pipeline = { resume() {}, cancelAll() {}, reconcileAll: async () => {
+    reconciles++;
+    active++;
+    maximumActive = Math.max(maximumActive, active);
+    try {
+      if (reconciles === 1) { entered(); await gate; throw Object.assign(new Error("offline backoff ended"), { code: "NETWORK_ERROR" }); }
+    } finally { active--; }
+  } };
+  await mountWith("native", ALL, undefined, "ready", { listeners, pipeline });
+  await started;
+  expect(reconciles).toBe(1);
+  await act(async () => { listeners.get("online")?.(); await tick(); });
+  expect(reconciles).toBe(1);
+  release();
+  await act(async () => { await tick(); await tick(); });
+  expect(reconciles).toBe(2);
+  expect(maximumActive).toBe(1);
+  release();
 });
 
 for (const kind of ["web", "tauri"] as const) {

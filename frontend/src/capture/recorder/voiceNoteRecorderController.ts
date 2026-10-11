@@ -27,6 +27,7 @@ import {
 import { captureCapabilities, captureEngineKind, onDeviceTranscriptionAvailable } from "@/lib/voiceNotes/captureEngine";
 import { levelFromAmplitude } from "@/lib/voiceNotes/web/webLevels";
 import { isOnDeviceReady } from "@/lib/voiceNotes/onDeviceStt";
+import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { setQuarantineAccount } from "@/lib/voiceNotes/quarantine";
 import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { effectiveCaptureOptions, localModelSubstituted, readTranscriberPreference, refreshEffectiveTranscriber,
@@ -415,7 +416,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     }
     if (pipeline) {
       if (recording.owner !== tcw.did || !tcw.did || !tcw.spaceId) {
-        const reason = !tcw.did || !tcw.spaceId ? "signed-out" : recording.owner ? "other-account" : "unowned";
+        const reason = !tcw.did || !tcw.spaceId ? "signed-out" : isLegacyNote(recording) ? "legacy" : recording.owner ? "other-account" : "unowned";
         pendingStore.setHeld(recording.id, reason);
         send({ type: "LOCAL_UPLOAD_HELD", id: recording.id, reason });
         return;
@@ -437,7 +438,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         const failure = messageOf(caught);
         send({ type: "SAVE_FAILED", error: saveFailureCopy(failure),
           recording: { id: recording.id, durationMs: recording.durationMs } });
-        pendingStore.reportNoteFailure(recording.id, failure);
+        pendingStore.reportNoteFailure(recording.id, caught);
         void pendingStore.refresh();
         return;
       }
@@ -462,7 +463,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           error: saveFailureCopy(outcome.failure),
           recording: { id: recording.id, durationMs: recording.durationMs },
         });
-        pendingStore.reportNoteFailure(recording.id, outcome.failure);
+        pendingStore.reportNoteFailure(recording.id, { message: outcome.failure, failureKind: outcome.failureKind, cause: outcome.failureCause });
         void pendingStore.refresh();
         return;
       case "already-saved":
@@ -501,7 +502,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           landed(generation, recording);
         } catch (caught) {
           if (!saveDeferredForAccountTransition(caught) && pipeline.isAccepting()) {
-            pendingStore.reportNoteFailure(recording.id, messageOf(caught));
+            pendingStore.reportNoteFailure(recording.id, caught);
             void pendingStore.refresh();
             return;
           }
@@ -514,7 +515,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     if (outcome.kind === "saved") reportSavedNoteSyncError(recording.id, outcome.noteSyncError);
     if (outcome.kind === "saved") landed(generation, recording, outcome.audio ?? undefined);
     if (outcome.kind === "failed") {
-      pendingStore.reportNoteFailure(recording.id, outcome.failure);
+      pendingStore.reportNoteFailure(recording.id, { message: outcome.failure, failureKind: outcome.failureKind, cause: outcome.failureCause });
       void pendingStore.refresh();
     }
     else if (outcome.kind === "already-saved" || outcome.kind === "discarded") void pendingStore.refresh(outcome.cleanupError ?? undefined);

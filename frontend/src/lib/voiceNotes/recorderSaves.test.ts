@@ -92,6 +92,9 @@ describe("pipeline save signals", () => {
     [{ code: "SPACE_LANE_QUEUE_TIMEOUT", message: "waited" }, "timeout"],
     [{ name: "VoiceNoteSaveTimeout", message: "waited" }, "timeout"],
     [{ code: "STORAGE_QUOTA_EXCEEDED", message: "full" }, "quota"],
+    [{ code: "VOICE_NOTE_SOURCE_READ_FAILED", message: "source unavailable" }, "source"],
+    [{ code: "VOICE_NOTE_AUDIO_TOO_LARGE", message: "too large" }, "source"],
+    [{ code: "STORE_CORRUPT_AUDIO", message: "corrupt" }, "source"],
     [{ code: "AUTH_UNAUTHORIZED", message: "denied", meta: { status: 403 } }, "auth"],
     [{ code: "NETWORK_ERROR", message: "Failed to execute query: 403 - capability denied" }, "auth"],
     [{ code: "SQL_ERROR", message: "error", meta: { status: 503 } }, "server"],
@@ -302,7 +305,8 @@ describe("saveRecording", () => {
     await Promise.resolve();
     expect(idle).toBe(false);
     finish();
-    expect(await saving).toEqual({ kind: "failed", failure: "Couldn't reach your TinyCloud space. This note is still on your phone — try again." });
+    expect(await saving).toMatchObject({ kind: "failed", failure: "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
+      failureKind: "offline", failureCause: { code: "NETWORK", message: "The network connection was lost." } });
     await waiting;
     expect(idle).toBe(true);
     expect(saves.voiceNoteSaveBusy()).toBe(false);
