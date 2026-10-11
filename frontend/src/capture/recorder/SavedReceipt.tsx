@@ -4,7 +4,7 @@
 // out and offline, so its text (or "Couldn't transcribe on this phone" plus
 // Retry) comes from the native STT queue directly, not from the space's
 // transcript, which may still be unsaved or unsynced here.
-import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
+import { FINAL_COPY, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Capacitor } from "@capacitor/core";
 import { Loader2Icon, RefreshCwIcon } from "lucide-react";
@@ -156,7 +156,7 @@ export function NeedsOnDeviceModel(props: { guide: ReturnType<typeof localModelG
   const { action } = props.guide;
   return (
     <div className="flex flex-col gap-2" data-testid="voice-note-on-device-needs-model">
-      <p role="status" className="text-callout text-muted-foreground">{action ? "Needs the on-device model" : props.guide.reason}</p>
+      <p role="status" className="text-callout text-muted-foreground">{action?.label === FINAL_COPY.modelUnavailable ? "Needs the on-device model" : props.guide.reason}</p>
       {(action || props.onUsePrivate) && (
         <div className="flex flex-wrap gap-2">
           {action && (

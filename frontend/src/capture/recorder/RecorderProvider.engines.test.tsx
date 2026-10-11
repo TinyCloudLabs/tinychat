@@ -325,11 +325,11 @@ describe("engine-aware transcription default", () => {
     expect((await existing.fake.plugin.getCaptureDefaults()).transcriber).toBe("on-device");
   });
 
-  test("a fresh signed-in profile does not default to Local: Audio only here, with nothing else offered", async () => {
+  test("a fresh signed-in profile with the model absent stays on the engine's default: nothing is swapped for Audio only", async () => {
     withStorage({});
     const { fake } = await mount("native", ALL, "absent");
-    expect((await fake.plugin.getCaptureDefaults()).transcriber).toBe("off");
-    expect(value?.transcriber).toMatchObject({ id: "off", localModelNeeded: true });
+    expect((await fake.plugin.getCaptureDefaults()).transcriber).toBe("on-device");
+    expect(value?.transcriber).toMatchObject({ id: "on-device" });
   });
 
   test("a stored Local choice stays Local, never swapped for Private or Audio only", async () => {
@@ -337,7 +337,6 @@ describe("engine-aware transcription default", () => {
     const { fake } = await mount("native", ALL, "absent");
     expect((await fake.plugin.getCaptureDefaults()).transcriber).toBe("on-device");
     expect(value?.transcriber).toMatchObject({ id: "on-device", source: "default" });
-    expect(value?.transcriber.localModelNeeded).toBeUndefined();
   });
 });
 

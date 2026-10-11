@@ -38,7 +38,7 @@ export interface VoiceNoteRecorder {
   noteSyncError: string | null;
   setNoteText(md: string): Promise<void>;
   markMoment(): number;
-  setTranscriber(id: TranscriberId, options: { scope: TranscriberChoiceScope; waitForModel?: boolean }): Promise<TranscriberChoiceResult>;
+  setTranscriber(id: TranscriberId, options: { scope: TranscriberChoiceScope }): Promise<TranscriberChoiceResult>;
   setIdentifySpeakers(on: boolean, scope: "recording" | "default"): Promise<"ok" | "needs_consent" | "locked_signed_out" | "unavailable">;
   pending: PendingSnapshot;
   transcription: VoiceNoteTranscriptionProps | undefined;

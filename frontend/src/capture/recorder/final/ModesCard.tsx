@@ -153,7 +153,7 @@ export function ModesCard({
                 <span className="pr-mpbody">
                   {explanationFor?.[stop.id] ??
                     stop.explanations[shell]({ modelName: "" })}
-                  {!available && reason ? (
+                  {reason ? (
                     <>
                       <br />
                       {reason}

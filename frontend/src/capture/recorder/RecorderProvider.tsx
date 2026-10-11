@@ -88,7 +88,7 @@ export interface RecorderValue {
   markMoment(): number;
   /** Keeps an automatically stopped receipt open until an active moment commits or cancels. */
   setMomentFieldFocused(focused: boolean): void;
-  setTranscriber(id: TranscriberId, options: { scope: TranscriberChoiceScope; waitForModel?: boolean }): Promise<TranscriberChoiceResult>;
+  setTranscriber(id: TranscriberId, options: { scope: TranscriberChoiceScope }): Promise<TranscriberChoiceResult>;
   setIdentifySpeakers(on: boolean, scope: "recording" | "default"): Promise<"ok" | "needs_consent" | "locked_signed_out" | "unavailable">;
   /** Capture always forces on-device while signed out (CaptureEngine), so the transcription route
    * must too — never offer "Off" or "Private cloud" without an account. */

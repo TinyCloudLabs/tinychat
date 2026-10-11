@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
+import { isOnDeviceReady, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import {
   availableStops,
   identifySpeakersControl,
@@ -207,7 +207,11 @@ describe("transcription modes availability", () => {
       model(state),
       false,
     ).available;
-    expect(available).toBe(shell === "phone" && state === "ready");
+    expect(available).toBe(shell === "phone");
+  });
+
+  test("phone Local is not offered only while the phone's model status is unknown", () => {
+    expect(modeAvailability("local", "phone", null).available).toBe(false);
   });
 
   test.each(modelStates)(
@@ -262,9 +266,9 @@ describe("transcription modes availability", () => {
     });
   });
 
-  describe("Local readiness is native's own predicate", () => {
+  describe("on-device readiness is native's own predicate", () => {
     const local = (status: OnDeviceSttStatus) =>
-      modeAvailability("local", "phone", status).available;
+      isOnDeviceReady(status);
     const withModels = (
       patch: Partial<OnDeviceSttStatus>,
       ...models: OnDeviceSttStatus["models"]

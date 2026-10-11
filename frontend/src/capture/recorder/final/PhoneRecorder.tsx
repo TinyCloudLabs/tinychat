@@ -31,6 +31,7 @@ import { finishRecording, type DoneGate } from "./doneGate";
 import { useMomentFlow } from "./useMomentFlow";
 import { useNoteSaver } from "./useNoteSaver";
 import { PrivacyScale } from "./PrivacyScale";
+import { modelActionLabel } from "./localModelGuide";
 import { RecorderRing } from "./RecorderRing";
 import { TimerDigits } from "./TimerDigits";
 import { selectRecorderView } from "./recorderView";
@@ -494,7 +495,28 @@ export function PhoneRecorder({
             <span>more private</span>
             <span>more capable</span>
           </div>
-          <div className="pr-capline">{choice.restingNote ?? stop.captions[shell]}</div>
+          <div className={choice.modelNote ? "pr-capline pr-capline-wrap" : "pr-capline"}>
+            {choice.modelNote ? (
+              <>
+                <span data-testid="local-model-note">{choice.modelNote.reason}</span>
+                {choice.modelNote.action && (
+                  <>
+                    {" "}
+                    <button
+                      type="button"
+                      className="pr-caplink"
+                      data-testid="local-model-action"
+                      onClick={choice.modelNote.action.run}
+                    >
+                      {modelActionLabel(choice.modelNote.action)}
+                    </button>
+                  </>
+                )}
+              </>
+            ) : (
+              stop.captions[shell]
+            )}
+          </div>
           {!idleDenied && !audio.unsupported && (
             <ViaMenu
               inputs={audio.inputs}

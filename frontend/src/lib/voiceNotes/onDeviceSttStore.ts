@@ -2,7 +2,7 @@
 // pattern as `pendingStore` in recorderSaves.ts. Used by the recorder's transcription route
 // control and by the Settings "Voice notes" card, so both show the same model state live.
 import { localTranscriptionUnavailable } from "./captureEngine";
-import { OnDeviceStt, type OnDeviceSttStatus } from "./onDeviceStt";
+import { isOnDeviceReady, OnDeviceStt, type OnDeviceSttStatus } from "./onDeviceStt";
 
 const EMPTY_STATUS: OnDeviceSttStatus = {
   models: [],
@@ -17,10 +17,18 @@ const EMPTY_STATUS: OnDeviceSttStatus = {
 let snapshot: OnDeviceSttStatus = EMPTY_STATUS;
 const listeners = new Set<() => void>();
 let started = false;
+let downloadInFlight: Promise<string | null> | null = null;
+let downloadError: string | null = null;
+
+function notifyListeners(): void {
+  for (const listener of listeners) listener();
+}
 
 function publish(status: OnDeviceSttStatus): void {
   snapshot = status;
-  for (const listener of listeners) listener();
+  notifyListeners();
+  // A note already waiting for the model (queued before a relaunch, or recorded on Local mid-download) restarts the download.
+  if (status.queue.some((job) => job.state === "waiting_for_model")) ensureOnDeviceModel();
 }
 
 // An engine without on-device speech never reaches OnDeviceStt; the store stays on its empty snapshot.
@@ -54,7 +62,17 @@ export const onDeviceSttStore = {
     if (localTranscriptionUnavailable()) return Promise.resolve();
     return OnDeviceStt.status().then(publish);
   },
+  /** Why the last attempt to start or finish the download failed; null once a download is running or done. */
+  downloadError(): string | null {
+    return downloadError;
+  },
 };
+
+export function __resetOnDeviceSttStoreForTests(): void {
+  snapshot = EMPTY_STATUS;
+  downloadInFlight = null;
+  downloadError = null;
+}
 
 /** The primary model this phone's RAM tier uses (plan §2.9: full ≥ 6 GB RAM, else small). */
 export function primaryOnDeviceModel(status: OnDeviceSttStatus): OnDeviceSttStatus["models"][number] | null {
@@ -83,15 +101,52 @@ export function onDeviceModelLine(status: OnDeviceSttStatus): { text: string; pe
   return { text: `Downloading… ${totalMb} MB`, percent };
 }
 
-/** Starts the model download (Wi-Fi only). The reason it could not start, or null once it has; the model's own failures arrive through the status. */
-export async function downloadOnDeviceModel(): Promise<string | null> {
+/**
+ * Starts the model download (Wi-Fi only) and resolves when it ends: the reason it failed, or null once the model is
+ * on the phone. A download already running in this process is joined, never started twice. The model's own states
+ * arrive through the status.
+ */
+export function downloadOnDeviceModel(): Promise<string | null> {
+  if (downloadInFlight) return downloadInFlight;
+  downloadError = null;
+  const run = finishDownload().then((error) => {
+    downloadInFlight = null;
+    downloadError = error;
+    notifyListeners();
+    return error;
+  });
+  downloadInFlight = run;
+  notifyListeners();
+  return run;
+}
+
+async function finishDownload(): Promise<string | null> {
   try {
     await OnDeviceStt.downloadNow({ allowCellular: false });
-    return null;
+    await onDeviceSttStore.refresh();
   } catch (caught) {
     console.error("[OnDeviceStt] downloadNow failed", caught);
-    return `Could not start the download: ${caught instanceof Error ? caught.message : String(caught)}`;
+    return `Couldn't download the on-device model: ${caught instanceof Error ? caught.message : String(caught)}`;
   }
+  if (isOnDeviceReady(snapshot)) return null;
+  console.error("[OnDeviceStt] The download finished but the model is not ready", snapshot);
+  return "Couldn't download the on-device model: it finished downloading but is not ready";
+}
+
+/**
+ * Makes sure the on-device model is on its way, without anyone asking for a "Get model" step: a no-op once it is
+ * ready or already moving. A download that failed is left showing its error (no silent retry loop) unless `retry`
+ * says the user just asked again. Unknown status (not read yet) does nothing; the next status tries again.
+ */
+export function ensureOnDeviceModel({ retry = false }: { retry?: boolean } = {}): void {
+  if (localTranscriptionUnavailable() || downloadInFlight) return;
+  const status = snapshot;
+  if (status.models.length === 0 || isOnDeviceReady(status)) return;
+  const needed = [primaryOnDeviceModel(status), status.models.find((model) => model.id === "silero-vad")];
+  if (needed.some((model) => model && ["queued", "downloading", "verifying", "checking"].includes(model.state))) return;
+  if (["running", "waiting_for_network", "low_data_mode"].includes(status.download.state)) return;
+  if (!retry && (downloadError !== null || status.download.state === "failed" || needed.some((model) => model?.state === "failed"))) return;
+  void downloadOnDeviceModel();
 }
 
 /** Starts transcribing a note on this phone again. The reason it could not, or null. */

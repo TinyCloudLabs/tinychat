@@ -1,9 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import {
+  isOnDeviceReady,
   OnDeviceStt,
   type OnDeviceSttStatus,
 } from "@/lib/voiceNotes/onDeviceStt";
-import { downloadOnDeviceModel } from "@/lib/voiceNotes/onDeviceSttStore";
+import {
+  downloadOnDeviceModel,
+  onDeviceSttStore,
+} from "@/lib/voiceNotes/onDeviceSttStore";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { VoiceNoteTranscriptionProps } from "../transcriptionProps";
@@ -14,7 +18,7 @@ import {
   type ModeShell,
   type ModeStop,
 } from "./transcriptionModes";
-import { CHECK_AGAIN, FINAL_COPY, privateNotOffered, TRANSCRIBER_NAME } from "./finalCopy";
+import { CHECK_AGAIN, FINAL_COPY, privateNotOffered } from "./finalCopy";
 import {
   localModelGuide,
   type OnDeviceDownload,
@@ -39,7 +43,6 @@ export const unavailableNow = (what: string) =>
   `${what} isn't available right now`;
 export const DESKTOP_SIGNED_OUT_CAPTION =
   "Just the recording, kept on this Mac.";
-export const LOCAL_NEEDS_MODEL = `${TRANSCRIBER_NAME["on-device"]} needs the on-device model. Get it from the ${TRANSCRIBER_NAME["on-device"]} row, or pick another mode.`;
 export const SPEAKERS_NEEDS_CONSENT = "Turn on private transcription first";
 
 export const TRANSCRIBER_FOR: Record<ModeId, TranscriberId> = {
@@ -76,7 +79,11 @@ export function useOnDeviceModel(): {
 } {
   const [model, setModel] = useState<OnDeviceSttStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const downloadError = useSyncExternalStore(
+    onDeviceSttStore.subscribe,
+    onDeviceSttStore.downloadError,
+    onDeviceSttStore.downloadError,
+  );
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (!captureCapabilities().localTranscription) return;
@@ -113,8 +120,7 @@ export function useOnDeviceModel(): {
     setAttempt((n) => n + 1);
   }, []);
   const start = useCallback(() => {
-    setDownloadError(null);
-    void downloadOnDeviceModel().then(setDownloadError);
+    void downloadOnDeviceModel();
   }, []);
   const download = useMemo(
     () => ({ start, error: downloadError }),
@@ -166,6 +172,11 @@ export function useTranscriptionChoice({
   const [pending, setPending] = useState<ModeId | null>(null);
   const [retry, setRetry] = useState<ModeId | null>(null);
 
+  const localModelStatus: { reason?: string; action?: StopAction } =
+    shell === "phone" && model && !isOnDeviceReady(model)
+      ? localModelGuide(model, download)
+      : {};
+
   const stops: ScaleStop[] = scaleStops(shell, model, whisperReady).map(
     ({ availability, ...stop }) => {
       if (desktopSignedOut) {
@@ -180,7 +191,8 @@ export function useTranscriptionChoice({
       }
       if (!signedIn && stop.id !== "local")
         return { stop, available: false, reason: SIGNED_OUT };
-      if (!signedIn) return { stop, available: true };
+      if (!signedIn)
+        return { stop, available: true, ...(stop.id === "local" ? localModelStatus : {}) };
       if (stop.id === "private" && !offered) {
         const { reason, canRecheck } = privateNotOffered(transcription?.availability);
         return {
@@ -190,6 +202,8 @@ export function useTranscriptionChoice({
           ...(canRecheck && transcription ? { action: { label: CHECK_AGAIN, run: transcription.onRecheck } } : {}),
         };
       }
+      if (stop.id === "local" && shell === "phone" && availability.available)
+        return { stop, available: true, ...localModelStatus };
       if (availability.available) return { stop, available: true };
       if (stop.id === "local" && shell === "phone")
         return { stop, available: false, ...localModelGuide(model, download) };
@@ -197,15 +211,8 @@ export function useTranscriptionChoice({
     },
   );
 
-  // The knob never rests on a mode that cannot run, or stands in for one, without saying so.
-  const localModelMissing =
-    shell === "phone" &&
-    model !== null &&
-    scaleStops(shell, model).find((s) => s.id === "local")?.availability.available === false;
-  const restingNote =
-    api.transcriber.localModelNeeded || (mode === "local" && localModelMissing)
-      ? LOCAL_NEEDS_MODEL
-      : null;
+  // Local can always be chosen and recorded on: while the model downloads, this says where it stands.
+  const modelNote = mode === "local" && localModelStatus.reason ? localModelStatus : null;
 
   const failed = (what: string, caught: unknown) => {
     console.error(`[Recorder] Could not ${what}`, caught);
@@ -320,7 +327,7 @@ export function useTranscriptionChoice({
         }
       : undefined,
     stops,
-    restingNote,
+    modelNote,
     select,
     step,
     identifySpeakers: api.transcriber.identifySpeakers,
