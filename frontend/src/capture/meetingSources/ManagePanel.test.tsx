@@ -2,6 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { initialBackgroundSyncState, type BackgroundSyncState } from "@/chat/backgroundSyncState";
+import {
+  BACKEND_INGEST_CONSENT_COPY,
+  BACKEND_INGEST_TRANSCRIPT_CONSENT_COPY,
+  BACKGROUND_SYNC_CONSENT_COPY,
+  BACKGROUND_SYNC_TRANSCRIPT_CONSENT_COPY,
+} from "@/lib/connectors/consentCopy";
 import { DisconnectRow, FirefliesManage, type FirefliesManageProps } from "./ManagePanel";
 
 const noop = () => {};
@@ -86,6 +92,28 @@ describe("Fireflies Manage panel", () => {
     const cohort = render(off, { consentOpen: true, consentVariant: "B-ingest" });
     expect(cohort.match(/type="checkbox"/g)).toHaveLength(1);
     expect(cohort).toContain('aria-disabled="true"');
+  });
+
+  test("the consent discloses the transcript-writer grant unless delivery is known to be inactive (TC-641)", () => {
+    const off: BackgroundSyncState = { ...initialBackgroundSyncState(), phase: "off" };
+    const text = (html: string) => html.replace(/<[^>]+>/g, "").replace(/&#x27;/g, "'").replace(/&quot;/g, '"');
+    for (const [variant, original, disclosed] of [
+      ["C", BACKGROUND_SYNC_CONSENT_COPY, BACKGROUND_SYNC_TRANSCRIPT_CONSENT_COPY],
+      ["B-ingest", BACKEND_INGEST_CONSENT_COPY, BACKEND_INGEST_TRANSCRIPT_CONSENT_COPY],
+    ] as const) {
+      // No observed status (the default) and an active grant both disclose.
+      for (const transcriptConsent of [undefined, "unknown", "active"] as const) {
+        const body = text(render(off, { consentOpen: true, consentVariant: variant, transcriptConsent }));
+        for (const bullet of disclosed.bullets) expect(body).toContain(text(bullet.replace(/\*/g, "")));
+        expect(body).toContain("Notetaker permission");
+      }
+      // Only a status that says no courier will act keeps the original copy.
+      const inactive = text(render(off, { consentOpen: true, consentVariant: variant, transcriptConsent: "inactive" }));
+      for (const bullet of original.bullets) expect(inactive).toContain(text(bullet.replace(/\*/g, "")));
+      expect(inactive).not.toContain("Notetaker permission");
+    }
+    const cohort = text(render(off, { consentOpen: true, consentVariant: "B-ingest" }));
+    expect(cohort).toContain("Disconnecting Fireflies does not remove the separate Notetaker permission");
   });
 
   test("other sources get Disconnect alone, in red", () => {

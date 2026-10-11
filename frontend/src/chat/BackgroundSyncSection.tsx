@@ -30,7 +30,7 @@
 // custody (the token, the 90-day copy), so the button stays inert until the
 // box is checked.
 
-import { useSyncExternalStore, type FC } from "react";
+import type { FC } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CopyIcon, Loader2Icon, RadioIcon } from "lucide-react";
 
@@ -43,9 +43,7 @@ import {
   transcriptAwareConsentCopy,
   type BackgroundSyncConsentCopy,
 } from "@/lib/connectors/consentCopy";
-import {
-  subscribeTranscriptConsent, transcriptConsentState, type TranscriptConsentState,
-} from "@/lib/transcriptDeliveryState";
+import type { TranscriptConsentState } from "@/lib/transcriptDeliveryState";
 import type { ConnectorWebhooksClient } from "@/lib/connectors/webhooksApi";
 import type { ConnectorMeetingsClient } from "@/lib/connectors/meetingsApi";
 import type { ConnectorDescriptor } from "@/lib/connectors/types";
@@ -108,15 +106,12 @@ export { consentVariantForProbe, type OffStateConsentVariant };
 export function BackgroundSyncSection(props: BackgroundSyncSectionProps) {
   const sync = useBackgroundSync(props);
   const { state, deps, emit } = sync;
-  const transcriptConsent = useSyncExternalStore(
-    subscribeTranscriptConsent, transcriptConsentState, transcriptConsentState,
-  );
   return (
     <BackgroundSyncView
       state={state}
       connectorName={props.descriptor.name}
       consentVariant={sync.consentVariant}
-      transcriptConsent={transcriptConsent}
+      transcriptConsent={sync.transcriptConsent}
       ingestConsentChecked={sync.ingestConsentChecked}
       onIngestConsentChange={sync.setIngestConsentChecked}
       onEnable={() => void enableBackgroundSync(deps, emit)}

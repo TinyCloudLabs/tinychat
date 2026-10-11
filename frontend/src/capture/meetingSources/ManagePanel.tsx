@@ -8,8 +8,10 @@ import { CircleAlertIcon, CopyIcon } from "lucide-react";
 import {
   BACKEND_INGEST_CONSENT_COPY,
   BACKGROUND_SYNC_CONSENT_COPY,
+  transcriptAwareConsentCopy,
   type BackgroundSyncConsentCopy,
 } from "@/lib/connectors/consentCopy";
+import type { TranscriptConsentState } from "@/lib/transcriptDeliveryState";
 import {
   backgroundSyncStatus,
   queueNotices,
@@ -60,6 +62,8 @@ export interface FirefliesManageProps {
   connectorName: string;
   state: BackgroundSyncState;
   consentVariant: OffStateConsentVariant;
+  /** TC-641: unknown shows the transcript-writer disclosure, not an untrue denial. */
+  transcriptConsent?: TranscriptConsentState;
   ingestConsentChecked: boolean;
   /** The user pressed the switch while it was off: the consent is showing, nothing is enabled yet. */
   consentOpen: boolean;
@@ -83,6 +87,10 @@ export function FirefliesManage(props: FirefliesManageProps) {
   const settled = state.phase === "off" || enabled;
   const notices = queueNotices(state);
   const busy = state.busy !== null;
+  const consentCopy = transcriptAwareConsentCopy(
+    props.consentVariant === "B-ingest" ? BACKEND_INGEST_CONSENT_COPY : BACKGROUND_SYNC_CONSENT_COPY,
+    props.transcriptConsent ?? "unknown",
+  );
 
   return (
     <>
@@ -133,18 +141,12 @@ export function FirefliesManage(props: FirefliesManageProps) {
 
       {state.phase === "off" && props.consentOpen && (
         <div className="ms-subpanel">
-          <ConsentBlock
-            copy={
-              props.consentVariant === "B-ingest"
-                ? BACKEND_INGEST_CONSENT_COPY
-                : BACKGROUND_SYNC_CONSENT_COPY
-            }
-          />
+          <ConsentBlock copy={consentCopy} />
           {props.consentVariant === "B-ingest" && (
             <>
-              {BACKEND_INGEST_CONSENT_COPY.disconnectNote && (
+              {consentCopy.disconnectNote && (
                 <p className="ms-consent-note">
-                  <Marked text={BACKEND_INGEST_CONSENT_COPY.disconnectNote} />
+                  <Marked text={consentCopy.disconnectNote} />
                 </p>
               )}
               <label className="ms-check">
@@ -153,7 +155,7 @@ export function FirefliesManage(props: FirefliesManageProps) {
                   checked={props.ingestConsentChecked}
                   onChange={(event) => props.onIngestConsentChange(event.target.checked)}
                 />
-                <span>{BACKEND_INGEST_CONSENT_COPY.consentCheckbox}</span>
+                <span>{consentCopy.consentCheckbox}</span>
               </label>
             </>
           )}
