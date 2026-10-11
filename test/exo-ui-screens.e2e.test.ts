@@ -550,11 +550,25 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
               if (screen.minViewportWidth !== undefined && viewport.width < screen.minViewportWidth) continue;
               const page = await context.newPage();
               const errors: string[] = [];
+              const expectedRecorderStopError = [
+                "capture-recording-minimised-error",
+                "capture-stopped-minimised-error",
+              ].includes(screen.id);
+              let expectedRecorderStopErrors = 0;
               page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
               page.on("console", (message) => {
-                if (message.type() === "error" && !ignoredConsoleError(message)) {
-                  const url = message.location().url;
-                  errors.push(`console.error: ${message.text()}${url ? ` (${url})` : ""}`);
+                if (message.type() === "error") {
+                  const text = message.text();
+                  if (
+                    expectedRecorderStopError &&
+                    text.startsWith("[Recorder]") &&
+                    text.includes("The recorder could not stop")
+                  ) {
+                    expectedRecorderStopErrors += 1;
+                  } else if (!ignoredConsoleError(message)) {
+                    const url = message.location().url;
+                    errors.push(`console.error: ${text}${url ? ` (${url})` : ""}`);
+                  }
                 }
               });
               await page.goto(`http://127.0.0.1:${server.port}/?screen=${screen.id}&theme=${theme}&platform=${screen.platform ?? "web"}&freeze=1`);
@@ -711,6 +725,9 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                     findings.push({ check: "chat-banner-helper", detail: `${viewport.width}px phone should hide the helper line` });
                   }
                 }
+              }
+              if (expectedRecorderStopError && expectedRecorderStopErrors === 0) {
+                findings.push({ check: "expected-recorder-stop-error", detail: "error fixture did not log its intentional stop failure" });
               }
               for (const error of errors) findings.push({ check: "errors", detail: error });
 

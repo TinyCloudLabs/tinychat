@@ -195,6 +195,9 @@
 .pr:not(.dr) .pr-time-slot:not(:disabled):not([aria-disabled="true"]):active {
   transform: scale(0.86);
 }
+.pr[data-mic-denied="true"] .pr-mark {
+  visibility: hidden;
+}
 .pr-countdown {
   margin-top: 6px;
   font-size: 12px;
@@ -254,6 +257,9 @@
   display: grid;
   place-items: center;
   transition: transform 0.35s cubic-bezier(0.3, 1.7, 0.4, 1);
+}
+.pr[data-mic-denied="true"] .pr-ring {
+  opacity: 0.35;
 }
 .pr-ring:not(:disabled):active {
   transform: scale(0.94);
@@ -404,6 +410,10 @@
   display: flex;
   max-width: 100%;
   justify-content: center;
+}
+.pr-via-placeholder {
+  width: 100%;
+  height: 28px;
 }
 .pr-srcbtn {
   display: inline-flex;
@@ -895,27 +905,97 @@
 
 .pr-toast {
   position: absolute;
+  bottom: 100%;
   left: 50%;
-  bottom: 150px;
   transform: translateX(-50%);
+  translate: 0 -4px;
+  width: min(100%, 420px);
+  max-width: calc(100vw - 32px);
   z-index: 50;
-  padding: 9px 16px;
-  border-radius: 999px;
+  min-height: 44px;
+  max-height: var(--pr-toast-max-height, none);
+  padding: 0 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 4px;
+  border-radius: 16px;
   background: var(--ink);
   color: var(--bgc);
   font-size: 12.5px;
   font-weight: 600;
-  white-space: nowrap;
-  max-width: calc(100vw - 32px);
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
   animation: pr-toast 0.4s cubic-bezier(0.3, 1.6, 0.5, 1);
-  pointer-events: none;
+  pointer-events: auto;
+}
+.pr-toast-copy {
+  min-width: 0;
+  min-height: var(--pr-toast-copy-min-height, 0px);
+  max-height: var(--pr-toast-copy-max-height, none);
+  flex: 0 1 auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding-right: 28px;
+  /* Give fractional WebKit line boxes enough scroll range to clear the clip edge. */
+  padding-bottom: 1px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.pr-toast-icon {
+  display: none;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+}
+.pr-toast-message {
+  display: block;
+  min-width: 0;
+  flex: 1 1 auto;
+  text-align: center;
+  line-height: 1.2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.pr-toast-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+}
+.pr-toast button {
+  min-height: 44px;
+  padding: 6px;
+  line-height: 1.1;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px currentColor;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.pr-toast .pr-toast-dismiss {
+  position: absolute;
+  top: 0;
+  right: 2px;
+  width: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  box-shadow: none;
+  font-size: 18px;
+  line-height: 1;
 }
 @keyframes pr-toast {
   from {
     opacity: 0;
-    transform: translate(-50%, 10px);
+    translate: 0 10px;
   }
 }
 
@@ -973,5 +1053,35 @@
     padding-top: 8px;
     flex-wrap: wrap;
     row-gap: 8px;
+  }
+}
+
+/* On a short, narrow phone, shrink the stage disc with its tick reach to make room above the dock and keep two toast message lines clear of the scale. */
+@media (orientation: portrait) and (max-width: 360px) and (max-height: 600px) {
+  .pr-toast {
+    max-width: calc(100vw - 16px);
+  }
+  .pr:not(.dr) .pr-stage {
+    min-height: 145px;
+  }
+  .pr-dock .pr-controls {
+    padding-top: 8px;
+    padding-bottom: calc(env(safe-area-inset-bottom) + 6px);
+  }
+}
+
+/* Landscape places the timer in the left column, so keep the actionable toast over the right column. At 2×, the actions stay on one compact row and clear the mode labels. */
+@media (orientation: landscape) and (max-height: 520px) {
+  .pr-toast {
+    left: 50%;
+    width: min(100%, 420px);
+    max-width: calc(50vw - 16px);
+    translate: 0 -4px;
+  }
+  .pr-toast-icon {
+    display: grid;
+  }
+  .pr-toast-copy {
+    padding-right: 32px;
   }
 }

@@ -82,6 +82,32 @@ export const captureScreens: HarnessScreen[] = [
     readyWhen: LISTED,
     render: () => <CaptureShell library recorder={MINIMISED} />,
   },
+  {
+    ...CAPTURE,
+    id: "capture-recording-minimised-error",
+    readyWhen: LISTED,
+    render: () => (
+      <CaptureShell
+        library
+        recorder={{ ...MINIMISED, error: "The recorder could not stop. Try again." }}
+      />
+    ),
+  },
+  {
+    ...CAPTURE,
+    id: "capture-stopped-minimised-error",
+    readyWhen: LISTED,
+    render: () => (
+      <CaptureShell
+        library
+        recorder={{
+          ...MINIMISED,
+          phase: "stopping",
+          error: "The recorder could not stop. Try again.",
+        }}
+      />
+    ),
+  },
   { ...CAPTURE, id: "capture-web", platform: "web", readyWhen: LISTED, render: () => <CaptureShell /> },
 ];
 

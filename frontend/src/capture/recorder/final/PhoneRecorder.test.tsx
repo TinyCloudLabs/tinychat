@@ -146,6 +146,8 @@ describe("PhoneRecorder", () => {
     });
     expect(html).toContain("Microphone off");
     expect(html).toContain("Open Settings");
+    expect(html).toContain('data-mic-denied="true"');
+    expect(html).toContain('aria-hidden="true"');
     expect(html).not.toContain('aria-label="Discard recording"');
     expect(html).not.toContain('aria-label="Record from');
   });
