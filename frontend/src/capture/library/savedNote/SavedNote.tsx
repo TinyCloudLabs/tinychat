@@ -4,6 +4,9 @@ import { PlatformContext } from "@/lib/platform";
 import { voiceNoteTitle } from "@/lib/voiceNotes/voiceNoteStore";
 import { useResolvedTheme } from "@/lib/theme";
 import { useRecorder } from "../../recorder/RecorderProvider";
+import { NotePipelineContext } from "../../pipeline/NotePipelineContext";
+import { PipelineStepper } from "../../pipeline/PipelineStepper";
+import { useNotePipeline, type NotePipelineSource } from "@/lib/voiceNotes/useNotePipeline";
 import type { MeetingMetadataRead } from "@/lib/connectors/meetingExplorer";
 import type { NoteAudio } from "../NoteDetailView";
 import type { LibraryItem } from "../LibraryRow";
@@ -50,6 +53,12 @@ export default function SavedNote({
   hasSpaceRow.current = item.onPhone !== true;
   const space = useMemo(() => store ?? savedNoteStoreFor(tcw, () => hasSpaceRow.current), [store, tcw]);
   const screen = useSavedNoteScreen(item.sourceId, space);
+  const rowMetadata = metadata?.status === "ok" ? metadata.metadata : null;
+  const pipelineSource = useMemo<NotePipelineSource>(
+    () => ({ tcw, saved: item.onPhone !== true, metadata: rowMetadata }),
+    [tcw, item.onPhone, rowMetadata],
+  );
+  const pipeline = useNotePipeline(item.sourceId, pipelineSource);
   const view = {
     screen,
     layout,
@@ -57,11 +66,15 @@ export default function SavedNote({
     id: item.id,
     recordingId: item.sourceId,
     title: item.title ?? voiceNoteTitle(Date.parse(item.startedAt ?? "") || Date.now()),
-    meta: savedNoteMeta(
-      item,
-      metadata?.status === "ok" ? metadata.metadata : null,
-      platform,
-    ),
+    meta: savedNoteMeta(item, rowMetadata, platform, pipeline?.pipeline.done === true),
+    stepper:
+      pipeline !== null && !pipeline.pipeline.done ? (
+        <PipelineStepper
+          pipeline={pipeline.pipeline}
+          onAction={pipeline.onAction}
+          actionError={pipeline.actionError}
+        />
+      ) : null,
     audio,
     transcript,
     footer,
@@ -69,9 +82,13 @@ export default function SavedNote({
       recorder.captureIssues[item.sourceId]?.kind === "partial_audio",
     onBack,
   } as const;
-  return layout === "page" ? (
-    <SavedNotePage {...view} />
-  ) : (
-    <SavedNoteSheet {...view} />
+  return (
+    <NotePipelineContext.Provider value={pipeline}>
+      {layout === "page" ? (
+        <SavedNotePage {...view} />
+      ) : (
+        <SavedNoteSheet {...view} />
+      )}
+    </NotePipelineContext.Provider>
   );
 }

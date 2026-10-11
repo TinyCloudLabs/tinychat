@@ -11,6 +11,7 @@ import { OnDeviceStt, __setOnDeviceSttForTests, type OnDeviceSttPlugin } from "@
 import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { BROWSER_MIC_GUIDANCE, MicrophoneAccessOff } from "./MicrophoneAccessOff";
 import { ReceiptView } from "./ReceiptView";
+import { StaticRecorderProvider } from "./RecorderProvider";
 import type { RecorderValue } from "./RecorderProvider";
 import { TranscriptionRouteControl } from "./TranscriptionRouteControl";
 
@@ -63,7 +64,9 @@ const recorder = (patch: Partial<RecorderValue> = {}): RecorderValue => ({
 });
 
 const view = (patch: Partial<RecorderValue> = {}) => renderToStaticMarkup(
-  <MemoryRouter><ReceiptView recorder={recorder(patch)} /></MemoryRouter>,
+  <StaticRecorderProvider value={recorder(patch)}>
+    <MemoryRouter><ReceiptView recorder={recorder(patch)} /></MemoryRouter>
+  </StaticRecorderProvider>,
 );
 
 describe("web engine, opened overlay", () => {

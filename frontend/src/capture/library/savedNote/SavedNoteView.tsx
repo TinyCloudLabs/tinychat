@@ -34,6 +34,8 @@ export interface SavedNoteViewProps {
   recordingId: string;
   title: string;
   meta: string;
+  /** Where the note is on its way to the space, under the meta line; null once it is all done. */
+  stepper: ReactNode;
   /** Reads the recording's audio; null when it has none stored. */
   audio: NoteAudio | null;
   /** The transcript section (the Library's own). */
@@ -356,6 +358,7 @@ export function SavedNotePage(props: SavedNoteViewProps) {
           {props.title}
         </h1>
         <p className="sn-meta">{props.meta}</p>
+        {props.stepper}
         <SavedNoteBody {...props} {...refs} toolbarHost={undefined} />
       </div>
       <Confirm {...props} {...refs} />
@@ -415,6 +418,7 @@ export function SavedNoteSheet(props: SavedNoteViewProps) {
               <Dialog.Description className="sn-meta">
                 {props.meta}
               </Dialog.Description>
+              {props.stepper}
               <SavedNoteBody {...props} {...refs} toolbarHost={toolbarHost} />
             </div>
           </div>

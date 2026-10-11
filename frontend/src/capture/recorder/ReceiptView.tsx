@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { useNotePipeline } from "@/lib/voiceNotes/useNotePipeline";
 import { VoiceNotes, type NoteSttState, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { MicrophoneAccessOff } from "./MicrophoneAccessOff";
 import { honestRecorderError, receiptPartialNotice } from "./final/honestRecorderError";
@@ -20,20 +21,22 @@ import { SavedReceipt } from "./SavedReceipt";
  * and on a phone with many notes that reliably outran the saved receipt's fixed display window,
  * closing it before anything useful rendered (TC-781, "Stop loses the local playback receipt").
  */
-function useSavedNote(id: string | undefined): { transcriber: TranscriberId | null; stt: NoteSttState | null } {
-  const [note, setNote] = useState<{ transcriber: TranscriberId | null; stt: NoteSttState | null }>({ transcriber: null, stt: null });
+function useSavedNote(id: string | undefined): { transcriber: TranscriberId | null; stt: NoteSttState | null; read: boolean } {
+  const [note, setNote] = useState<{ transcriber: TranscriberId | null; stt: NoteSttState | null; read: boolean }>({ transcriber: null, stt: null, read: false });
   useEffect(() => {
-    setNote({ transcriber: null, stt: null });
+    setNote({ transcriber: null, stt: null, read: false });
     if (!id) return;
     let active = true;
     VoiceNotes.listPending()
       .then(({ recordings }) => {
         if (!active) return;
         const found = recordings.find((recording) => recording.id === id);
-        setNote({ transcriber: (found?.options?.transcriber as TranscriberId | undefined) ?? null, stt: found?.stt ?? null });
+        setNote({ transcriber: (found?.options?.transcriber as TranscriberId | undefined) ?? null, stt: found?.stt ?? null, read: true });
       })
-      .catch(() => {
-        // Best-effort: the receipt falls back to the private-cloud/off line below.
+      .catch((caught: unknown) => {
+        console.error("[Receipt] Could not read this note's on-device state", id, caught);
+        // The receipt falls back to the private-cloud/off line below.
+        if (active) setNote({ transcriber: null, stt: null, read: true });
       });
     return () => {
       active = false;
@@ -79,6 +82,12 @@ export function ReceiptView({ recorder, onOpenNote }: ReceiptViewProps) {
   // recording lands as "local" and must still show its real route and transcript.
   const savedNote = useSavedNote(lastSaved?.id);
   const savedTranscriber = savedNote.transcriber;
+  // The receipt's one native read is handed to the pipeline, so it is not read twice.
+  const pipelineSource = useMemo(
+    () => ({ tcw: recorder.tcw, saved: outcome === "saved", metadata: null, native: { transcriber: savedNote.transcriber, stt: savedNote.stt } }),
+    [recorder.tcw, outcome, savedNote.transcriber, savedNote.stt],
+  );
+  const pipeline = useNotePipeline(lastSaved && savedNote.read && outcome !== "failed" ? lastSaved.id : null, pipelineSource);
   const { transcribing, movedToPrivate, savedRoute, privateJob, privateOutcome, canUsePrivate } = receiptRouting({ outcome, lastSaved, transcription: recorder.transcription, savedTranscriber });
   const transcription = recorder.transcription;
   const usePrivate = canUsePrivate && lastSaved && transcription ? () => switchToPrivate(transcription, lastSaved.id) : undefined;
@@ -106,7 +115,7 @@ export function ReceiptView({ recorder, onOpenNote }: ReceiptViewProps) {
         </div>
 
         <div className="flex min-h-0 flex-col justify-start land:col-start-2 land:row-start-1 land:justify-end">
-          <SavedReceipt outcome={outcome} localUpload={recorder.localUpload} saved={lastSaved} route={voiceNoteRoute(savedRoute)} transcriber={savedTranscriber} sttHint={savedNote.stt} transcribing={transcribing} held={privateJob?.kind === "held" ? privateJob.message : null} movedToPrivate={movedToPrivate} privateFailure={savedTranscriber !== "off" && privateJob?.kind === "failed" ? privateJob.message : null} privateOutcome={privateOutcome} error={honestRecorderError(recorder)} notice={receiptPartialNotice(recorder, lastSaved?.id)} retrying={recorder.pending.running}
+          <SavedReceipt outcome={outcome} localUpload={recorder.localUpload} saved={lastSaved} route={voiceNoteRoute(savedRoute)} pipeline={pipeline} pipelineReading={lastSaved !== null && pipeline === null} transcriber={savedTranscriber} sttHint={savedNote.stt} transcribing={transcribing} held={privateJob?.kind === "held" ? privateJob.message : null} movedToPrivate={movedToPrivate} privateFailure={savedTranscriber !== "off" && privateJob?.kind === "failed" ? privateJob.message : null} privateOutcome={privateOutcome} error={honestRecorderError(recorder)} notice={receiptPartialNotice(recorder, lastSaved?.id)} retrying={recorder.pending.running}
             onOpen={onOpenNote && lastSaved ? () => { recorder.dismissOutcome(); onOpenNote(lastSaved.id); } : undefined}
             onDone={recorder.dismissOutcome} onSaveNow={recorder.retryPending} onPlayingChange={recorder.setReceiptPlaying} onReady={recorder.setReceiptReady} onUsePrivate={usePrivate} onActionableChange={recorder.setReceiptActionable} />
         </div>

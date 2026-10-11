@@ -26,3 +26,13 @@ export const privateRunning = (completed: number, total: number) =>
   pipelineOf({ space: SAVED, transcript: { inSpace: null, onDevice: null, cloud: { kind: "active", status: { kind: "processing", completed, total } } } });
 export const allDone = () =>
   pipelineOf({ space: SAVED, transcript: { inSpace: "transcribed", onDevice: null, cloud: null }, notes: { state: "synced" } });
+export const waitingForModel = () =>
+  pipelineOf({
+    route: "on-device",
+    space: SAVED,
+    transcript: {
+      inSpace: null,
+      cloud: null,
+      onDevice: { stt: { state: "waiting_for_model", error: null }, queue: null, model: { state: "absent", bytes: 0, totalBytes: 640, error: null }, download: "idle", sync: null },
+    },
+  });

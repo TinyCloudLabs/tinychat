@@ -5,6 +5,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { honestSourceRoute, NeedsOnDeviceModel, onDeviceOffer, SavedReceipt } from "./SavedReceipt";
 import { voiceNoteRoute } from "./RouteLine";
+import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
+import { allDone, signedOut, uploading, waitingForModel } from "@/capture/pipeline/pipelineFixtures";
 import { RECEIPT_ACTION_MS, RECEIPT_MS, receiptWindowMs } from "./RecorderProvider";
 
 const noop = () => {};
@@ -149,3 +151,51 @@ describe("the receipt's wording", () => {
   });
 });
 
+
+describe("the receipt's pipeline stepper", () => {
+  const view = (pipeline: NotePipeline, actionError: string | null = null) => ({ pipeline, onAction: noop, actionError });
+  const render = (pipeline: NotePipeline, patch: Partial<Parameters<typeof SavedReceipt>[0]> = {}, actionError: string | null = null) => renderToStaticMarkup(
+    <SavedReceipt outcome="local" saved={{ id: "rec-1", durationMs: 65_000, at: Date.UTC(2026, 9, 9, 9, 41) }}
+      route={voiceNoteRoute("private-cloud")} transcriber="private-cloud" onDone={noop} onSaveNow={noop} pipeline={view(pipeline, actionError)} {...patch} />,
+  );
+
+  test("an uploading note shows the stepper in place of the route line and the saving line", () => {
+    const html = render(uploading(40), { localUpload: "in-flight" });
+    expect(html).toContain('data-testid="voice-note-receipt-pipeline"');
+    expect(html).toContain('aria-label="Where this note is"');
+    expect(html).not.toContain("Saving to your TinyCloud space…");
+    expect(html).not.toContain("Another save is finishing");
+  });
+
+  test("a signed-out note says so from the selector, not 'needs an ownership check'", () => {
+    const pipeline = signedOut();
+    const html = render(pipeline, { localUpload: "held" });
+    expect(html).toContain(pipeline.blocker!.cause.replace("'", "&#x27;"));
+    expect(html).toContain(pipeline.blocker!.action!.label);
+    expect(html).not.toContain("ownership check");
+  });
+
+  test("a note waiting for the model offers the download from the stepper, once", () => {
+    const html = render(waitingForModel(), { outcome: "saved", transcriber: "on-device", route: voiceNoteRoute("on-device") });
+    expect(html.match(/Get the model/g) ?? []).toHaveLength(1);
+    expect(html).not.toContain("Needs the on-device model");
+  });
+
+  test("a rejected action's message shows in the blocker line", () => {
+    expect(render(signedOut(), {}, "Sign-in failed: offline")).toContain("Sign-in failed: offline");
+  });
+
+  test("done shows no stepper and the landed state", () => {
+    const html = render(allDone(), { outcome: "saved" });
+    expect(html).not.toContain("voice-note-receipt-pipeline");
+    expect(html).toContain("Saved to your TinyCloud space");
+  });
+
+  test("while the pipeline is still being read, neither the stepper nor the old saving line flashes", () => {
+    const html = renderToStaticMarkup(
+      <SavedReceipt outcome="local" saved={{ id: "rec-1", durationMs: 65_000, at: 0 }} route={voiceNoteRoute("private-cloud")} transcriber="private-cloud" onDone={noop} onSaveNow={noop} pipeline={null} pipelineReading />,
+    );
+    expect(html).not.toContain("voice-note-receipt-pipeline");
+    expect(html).not.toContain("Saving to your TinyCloud space…");
+  });
+});
