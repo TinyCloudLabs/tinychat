@@ -30,14 +30,14 @@ const ICON_BUTTON = "size-[44px] shrink-0 rounded-full text-muted-foreground hov
 export function ChatHeader({ onOpenChats, recorder, newChat, verification }: ChatHeaderProps) {
   const title = useAuiState((s) => s.threadListItem.title);
   return (
-    <header className="flex min-h-[52px] shrink-0 items-center gap-1 py-1 border-b border-border/70 bg-background px-2 medium:px-3 expanded:px-4">
+    <header data-testid="chat-header" className="flex min-h-[52px] shrink-0 flex-wrap items-center gap-1 py-1 border-b border-border/70 bg-background px-2 medium:px-3 expanded:px-4">
       {onOpenChats && (
         <Button variant="ghost" size="icon" aria-label="Chats" title="Chats" onClick={onOpenChats} className={ICON_BUTTON}>
           <PanelLeftIcon />
         </Button>
       )}
       {/* Two lines at most: a long title (or large text) wraps before it truncates. */}
-      <h1 tabIndex={-1} className={cn("min-w-0 flex-1 break-words text-headline leading-tight outline-none", onOpenChats ? "px-1" : "px-2")}>
+      <h1 tabIndex={-1} className={cn("min-w-[8ch] flex-1 break-words text-headline leading-tight outline-none [overflow-wrap:anywhere]", onOpenChats ? "px-1" : "px-2")}>
         {title || "New chat"}
       </h1>
       {verification}

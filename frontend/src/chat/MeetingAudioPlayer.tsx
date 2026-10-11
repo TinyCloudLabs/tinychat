@@ -125,7 +125,7 @@ export function MeetingAudioPlayerView({ state, onPlay, onPlayingChange, onError
   }
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-      <Button type="button" variant="outline" onClick={onPlay} data-testid="note-audio-play">
+      <Button type="button" variant="outline" className="h-auto min-h-11 whitespace-normal text-left" onClick={onPlay} data-testid="note-audio-play">
         <PlayIcon aria-hidden />
         <span>{state.phase === "failed" ? "Try again" : "Play audio"}</span>
       </Button>

@@ -167,6 +167,11 @@
   font-weight: 600;
   cursor: pointer;
 }
+@media (pointer: coarse) {
+  .dch-chip {
+    min-height: 44px;
+  }
+}
 .dch-chip[aria-pressed="true"] {
   background: var(--ink);
   box-shadow: none;

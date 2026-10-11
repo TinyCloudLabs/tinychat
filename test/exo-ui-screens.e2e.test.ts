@@ -56,9 +56,55 @@ const VIEWPORTS: Viewport[] = [
       "recorder-final-phone-",
       "recorder-final-minimized-",
       "capture-soft-",
+      "capture-notetaker-route",
     ],
   },
+  {
+    id: "phone-360",
+    width: 360,
+    height: 740,
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    screenPrefixes: ["capture-soft-", "capture-notetaker-route"],
+  },
   { id: "text200-phone", group: "text200", width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true, textScale: 2, zoom: true },
+  {
+    id: "text200-phone-small",
+    group: "text200",
+    width: 320,
+    height: 640,
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    textScale: 2,
+    zoom: true,
+    screenPrefixes: ["recorder-landed", "capture-soft-", "capture-notetaker-route"],
+  },
+  {
+    id: "text200-phone-360",
+    group: "text200",
+    width: 360,
+    height: 740,
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    textScale: 2,
+    zoom: true,
+    screenPrefixes: ["capture-soft-", "capture-notetaker-route"],
+  },
+  {
+    id: "text200-rail",
+    group: "text200",
+    width: 844,
+    height: 600,
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    textScale: 2,
+    zoom: true,
+    screenPrefixes: ["shell-"],
+  },
   { id: "text200-desktop", group: "text200", width: 1280, height: 800, deviceScaleFactor: 2, textScale: 2, zoom: true },
   ...[0.8, 2.5, 3.3].map((scale) => ({
     id: `text${Math.round(scale * 100)}-phone`,
@@ -70,7 +116,7 @@ const VIEWPORTS: Viewport[] = [
     hasTouch: true,
     textScale: scale,
     zoom: true,
-    screenPrefixes: ["shell-", "recorder-final-phone-", "recorder-final-minimized-", "capture-soft-"],
+    screenPrefixes: ["shell-", "recorder-final-phone-", "recorder-final-minimized-", "capture-soft-", "capture-notetaker-route"],
   })),
 ];
 const THEMES = ["light", "dark"] as const;
@@ -146,7 +192,7 @@ function ignoredConsoleError(message: ConsoleMessage): boolean {
 }
 
 // Runs in the page: the automated checks of plan §8.2 (TC-761).
-function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: boolean; displayTitle: boolean; allow: Array<{ selector: string; check: string }> }) {
+function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: boolean; displayTitle: boolean; largeText: boolean; normalCaptureRow: boolean; routeMode: "stacked" | "horizontal" | null; allow: Array<{ selector: string; check: string }> }) {
   const findings: Array<{ check: string; element?: string; detail: string }> = [];
   const allowed = (el: Element, check: string) => args.allow.some((entry) => entry.check === check && el.matches(entry.selector));
   const describe = (el: Element) => {
@@ -208,6 +254,21 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
   const dialogs = document.querySelectorAll("[role=dialog]").length;
   if (dialogs > 1) findings.push({ check: "dialogs", detail: `${dialogs} dialogs` });
 
+  const receiptStatus = document.querySelector<HTMLElement>('[data-testid="voice-note-status"]');
+  const receiptStatusLabel = receiptStatus?.querySelector<HTMLElement>('[data-testid="voice-note-status-label"]');
+  if (receiptStatus && receiptStatusLabel && shown(receiptStatus)) {
+    const pillBounds = receiptStatus.getBoundingClientRect();
+    const range = document.createRange();
+    range.selectNodeContents(receiptStatusLabel);
+    const textEscapesPill = [...range.getClientRects()].some((rect) =>
+      rect.left < pillBounds.left - 1 || rect.right > pillBounds.right + 1 ||
+      rect.top < pillBounds.top - 1 || rect.bottom > pillBounds.bottom + 1
+    );
+    if (receiptStatus.scrollWidth > receiptStatus.clientWidth + 1 || textEscapesPill) {
+      findings.push({ check: "receipt-status-content", element: describe(receiptStatus), detail: "status text overflows the pill bounds" });
+    }
+  }
+
   // 7. Zoomed and scaled text: nothing cut off.
   if (args.zoom) {
     for (const el of document.querySelectorAll("body *")) {
@@ -216,6 +277,168 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
       const style = getComputedStyle(el);
       if (!/hidden|clip/.test(style.overflowX) || el.scrollWidth <= el.clientWidth + 1) continue;
       if (!allowed(el, "clipped-text")) findings.push({ check: "clipped-text", element: describe(el), detail: `${el.scrollWidth}px of text in ${el.clientWidth}px` });
+    }
+  }
+
+  // Large-text phone captures exercise the six audited layouts plus the
+  // Android action row, tab bar, and Ribbon. Keep each target inside the
+  // viewport, check sibling line boxes for collisions, and reject line-by-letter
+  // wrapping that technically stays inside the component.
+  if (args.largeText) {
+    const targets = [
+      "[data-route-line]",
+      '[data-testid="voice-note-receipt"]',
+      '[data-testid="voice-note-status"]',
+      '[data-testid="recorder-island"]',
+      '[data-testid="chat-header"]',
+      '[data-testid="connector-row"]',
+      'button[role="switch"][aria-label="Enable Conversation Canvas"]',
+      '[data-testid="capture-actions"]',
+      '[data-testid="capture-upload"]',
+      '[data-testid="voice-note-record"]',
+      '[data-testid="capture-meeting"]',
+      '[data-testid="tab-bar"]',
+      '[data-testid="ribbon"]',
+      '[data-testid="voice-note-recorder"] main',
+      '[data-recorder-timer]',
+      '[data-testid="canvas-setting-row"]',
+      '[data-testid="autojoin-control-row"]',
+    ];
+    for (const selector of targets) {
+      for (const el of document.querySelectorAll(selector)) {
+        const bounds = el.getBoundingClientRect();
+        const routeContainer = selector === "[data-route-line]" ? el.parentElement : null;
+        const routeInfo = routeContainer ? `; wrapper ${Math.round(routeContainer.getBoundingClientRect().width)}px/${getComputedStyle(routeContainer).fontSize}/${getComputedStyle(routeContainer).containerType}/${getComputedStyle(routeContainer).containerName}; tracks ${getComputedStyle(el).gridTemplateColumns}` : "";
+        const name = `${selector} (${Math.round(bounds.width)}x${Math.round(bounds.height)} at ${Math.round(bounds.left)},${Math.round(bounds.top)}${routeInfo})`;
+        if (bounds.left < -1 || bounds.right > window.innerWidth + 1) {
+          findings.push({ check: "text200-bounds", element: name, detail: "component extends beyond the phone width" });
+        }
+        const textRects: Array<{ parent: Element; rect: DOMRect; text: string }> = [];
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          if (!node.textContent?.trim()) continue;
+          if (node.parentElement?.closest(".sr-only,[aria-hidden=true]")) continue;
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          const rects = [...range.getClientRects()].filter((rect) => rect.width > 0 && rect.height > 0);
+          const text = node.textContent!.trim();
+          for (const rect of rects) {
+            if (rect.left < bounds.left - 1 || rect.right > bounds.right + 1) {
+              findings.push({ check: "text200-text-bounds", element: name, detail: `${text.slice(0, 48)} at ${Math.round(rect.left)},${Math.round(rect.top)} exceeds component width` });
+              break;
+            }
+            textRects.push({ parent: node.parentElement!, rect, text });
+          }
+          const wordCount = text.split(/\s+/).filter(Boolean).length;
+          const maxReasonableLines = wordCount * 2;
+          const letterByLetterWord = [...text.matchAll(/\S{6,}/g)].some((match) => {
+            const range = document.createRange();
+            range.setStart(node, match.index!);
+            range.setEnd(node, match.index! + match[0].length);
+            const wordRects = [...range.getClientRects()];
+            const lines = new Map<number, { width: number; height: number }>();
+            for (const rect of wordRects) {
+              const top = Math.round(rect.top);
+              const line = lines.get(top) ?? { width: 0, height: 0 };
+              line.width += rect.width;
+              line.height = Math.max(line.height, rect.height);
+              lines.set(top, line);
+            }
+            return [...lines.values()].some((line) => line.width < line.height * 0.75);
+          });
+          if (rects.length > maxReasonableLines || letterByLetterWord || getComputedStyle(node.parentElement!).wordBreak === "break-all") {
+            findings.push({ check: "text200-letter-wrap", element: name, detail: `"${text.slice(0, 48)}" occupies ${rects.length} lines for ${wordCount} word(s)` });
+          }
+        }
+        for (let i = 0; i < textRects.length; i++) {
+          const a = textRects[i]!;
+          for (const b of textRects.slice(i + 1)) {
+            if (a.parent === b.parent || a.parent.contains(b.parent) || b.parent.contains(a.parent)) continue;
+            const intersects = a.rect.left < b.rect.right - 1 && a.rect.right > b.rect.left + 1 && a.rect.top < b.rect.bottom - 1 && a.rect.bottom > b.rect.top + 1;
+            if (intersects) findings.push({ check: "text200-sibling-overlap", element: name, detail: `"${a.text.slice(0, 30)}" overlaps "${b.text.slice(0, 30)}"` });
+          }
+        }
+      }
+    }
+    const timer = document.querySelector('[data-recorder-timer]')?.getBoundingClientRect();
+    const receipt = document.querySelector('[data-testid="voice-note-receipt"]')?.getBoundingClientRect();
+    if (timer && receipt && receipt.top < timer.bottom - 1) {
+      findings.push({ check: "text200-receipt-timer", detail: `receipt top ${Math.round(receipt.top)} is above timer bottom ${Math.round(timer.bottom)}` });
+    }
+    const chatTitle = document.querySelector<HTMLElement>('[data-testid="chat-header"] h1');
+    if (chatTitle) {
+      const previous = chatTitle.textContent;
+      chatTitle.textContent = "https://example.com/a/very/long/unbroken/chat-title-that-must-wrap-at-large-text-size";
+      const titleBounds = chatTitle.getBoundingClientRect();
+      if (chatTitle.scrollWidth > chatTitle.clientWidth + 1 || titleBounds.right > window.innerWidth + 1) {
+        findings.push({ check: "text200-chat-url", element: describe(chatTitle), detail: "long URL title overflows its available width" });
+      }
+      chatTitle.textContent = previous;
+    }
+    const ribbonElement = document.querySelector<HTMLElement>('[data-testid="ribbon"][data-layout="rail"]');
+    if (ribbonElement) {
+      const ribbon = ribbonElement.getBoundingClientRect();
+      for (const scroller of document.querySelectorAll<HTMLElement>("[data-scroll-root], .dch-scroll")) {
+        const initialTop = scroller.scrollTop;
+        scroller.scrollTo({ top: scroller.scrollHeight, behavior: "instant" });
+        const walker = document.createTreeWalker(scroller, NodeFilter.SHOW_TEXT);
+        const textRects: DOMRect[] = [];
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          if (!node.textContent?.trim() || node.parentElement?.closest(".sr-only,[aria-hidden=true]")) continue;
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          for (const rect of range.getClientRects()) {
+            if (rect.width > 0 && rect.height > 0) textRects.push(rect);
+          }
+        }
+        const clip = scroller.getBoundingClientRect();
+        const overlapTop = Math.max(clip.top, ribbon.top);
+        const overlapBottom = Math.min(clip.bottom, ribbon.bottom);
+        if (overlapBottom > overlapTop && textRects.some((rect) =>
+          rect.bottom > overlapTop + 1 && rect.top < overlapBottom - 1 &&
+          rect.right > Math.max(clip.left, ribbon.left) + 1 && rect.left < Math.min(clip.right, ribbon.right) - 1
+        )) {
+          findings.push({ check: "ribbon-occlusion", element: describe(scroller), detail: `visible text intersects Ribbon between y=${Math.round(overlapTop)} and y=${Math.round(overlapBottom)} at scroll end` });
+        }
+        scroller.scrollTo({ top: initialTop, behavior: "instant" });
+      }
+    }
+  }
+
+  if (args.routeMode) {
+    const container = document.querySelector<HTMLElement>("[data-route-line-container]");
+    const route = container?.querySelector<HTMLElement>("[data-route-line]");
+    if (container && route) {
+      const tracks = getComputedStyle(route).gridTemplateColumns.trim().split(/\s+/);
+      const stacked = tracks.length === 2;
+      if (stacked !== (args.routeMode === "stacked")) {
+        findings.push({ check: "route-line-layout", detail: `expected ${args.routeMode}, got ${tracks.length} grid tracks (container ${Math.round(container.getBoundingClientRect().width)}px, font ${getComputedStyle(container).fontSize}, type ${getComputedStyle(container).containerType})` });
+      }
+      if (args.routeMode === "stacked") {
+        const indicators = [...container.querySelectorAll<HTMLElement>("[data-route-node-indicator]")];
+        const maxIndicator = Math.max(0, ...indicators.map((indicator) => indicator.getBoundingClientRect().width));
+        const twoRem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) * 2;
+        const connectorHeights = [...container.querySelectorAll<HTMLElement>("[data-route-node-indicator] > [data-route-connector]")]
+          .map((connector) => connector.getBoundingClientRect().height);
+        if (maxIndicator > twoRem + 1 || connectorHeights.some((height) => height <= 0)) {
+          findings.push({ check: "route-line-stack-geometry", detail: "indicator column max " + Math.round(maxIndicator) + "px (limit " + Math.round(twoRem) + "px), connector heights " + connectorHeights.map(Math.round).join(",") });
+        }
+      }
+    }
+  }
+
+  if (args.normalCaptureRow) {
+    const actions = document.querySelector('[data-testid="capture-actions"]');
+    const upload = actions?.querySelector('[data-testid="capture-upload"]')?.getBoundingClientRect();
+    const recorder = actions?.querySelector('[data-testid="voice-note-record"]')?.getBoundingClientRect();
+    const meeting = actions?.querySelector('[data-testid="capture-meeting"]')?.getBoundingClientRect();
+    if (upload && recorder && meeting) {
+      const uploadRatio = recorder.width / upload.width;
+      const meetingRatio = recorder.width / meeting.width;
+      const sameRow = Math.abs(upload.top - recorder.top) < 1 && Math.abs(meeting.top - recorder.top) < 1;
+      if (!sameRow || Math.abs(uploadRatio - 1.3) > 0.04 || Math.abs(meetingRatio - 1.3) > 0.04) {
+        findings.push({ check: "capture-normal-emphasis", detail: `same row: ${sameRow}; Recorder width ratios are ${uploadRatio.toFixed(2)}× Upload and ${meetingRatio.toFixed(2)}× Meeting; expected one row and 1.30×` });
+      }
     }
   }
   return findings;
@@ -322,9 +545,9 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 viewport.screenPrefixes &&
                 !viewport.screenPrefixes.some((prefix) => screen.id.startsWith(prefix))
               ) continue;
+              if (viewport.textScale !== undefined && viewport.textScale !== 2 && screen.platform !== "ios") continue;
               if (screen.viewports && !screen.viewports.includes(viewport.id)) continue;
               if (screen.minViewportWidth !== undefined && viewport.width < screen.minViewportWidth) continue;
-              if (viewport.textScale !== undefined && viewport.textScale !== 2 && screen.platform !== "ios") continue;
               const page = await context.newPage();
               const errors: string[] = [];
               page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
@@ -347,6 +570,9 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 touch: viewport.hasTouch ?? false,
                 zoom: viewport.zoom ?? false,
                 displayTitle: screen.displayTitle ?? false,
+                largeText: (viewport.textScale ?? 1) >= 2,
+                normalCaptureRow: ["phone", "phone-small", "phone-360"].includes(viewport.id),
+                routeMode: screen.id === "capture-notetaker-route" ? (viewport.textScale && viewport.width <= 400 ? "stacked" : "horizontal") : null,
                 allow,
               });
               // The native Capture home must finish recorder setup; generic layout checks missed a missing Record button.
