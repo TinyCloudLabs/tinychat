@@ -1117,6 +1117,8 @@ export interface VoiceNoteTranscriberSnapshot {
   capabilities: PrivateCloudCapabilities | null;
   consented: boolean;
   jobs: ReadonlyMap<string, NoteTranscriptionState>;
+  /** The error of the last availability check when it failed (`availability` "failed"). */
+  checkError?: string;
 }
 
 /** `saved`: a note's outcome was written to the space (refresh the list). */
@@ -1410,7 +1412,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           return caps === null ? ({ availability: "hidden" } as const) : ({ availability: "available", caps } as const);
         } catch (err) {
           console.warn("Checking private cloud transcription failed", err);
-          return { availability: "failed" } as const;
+          return { availability: "failed", error: err instanceof Error ? err.message : String(err) } as const;
         }
       };
       const stale = () => {
@@ -1431,6 +1433,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           ...state,
           availability: result.availability,
           capabilities: result.availability === "available" ? result.caps : null,
+          checkError: result.availability === "failed" ? result.error : undefined,
         };
         emit();
         resume();

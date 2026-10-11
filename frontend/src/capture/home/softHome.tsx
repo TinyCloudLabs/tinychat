@@ -16,6 +16,10 @@ export interface SoftHomeValue {
   issues: CaptureIssues;
   /** Reading the sessions native parked failed (not for lack of support). */
   quarantineFailed: boolean;
+  /** The original error of that failed read (null when it did not fail). */
+  quarantineError: unknown;
+  /** Reads the parked sessions again through the provider's own reader. */
+  refreshQuarantine: () => void;
   /** A tap on a row whose issue has a sheet: the recording's id, and the control to return focus to (or, if it is gone, the row, else its list's heading). */
   openIssue: (id: string, opener: HTMLElement) => void;
 }
@@ -42,10 +46,10 @@ export function SoftHomeProvider(props: {
     props.issues,
     props.onDismissIssue,
   );
-  const { issues, quarantineFailed, openIssue } = controller;
+  const { issues, quarantineFailed, quarantineError, refreshQuarantine, openIssue } = controller;
   const value = useMemo<SoftHomeValue | null>(
-    () => (enabled ? { issues, quarantineFailed, openIssue } : null),
-    [enabled, issues, quarantineFailed, openIssue],
+    () => (enabled ? { issues, quarantineFailed, quarantineError, refreshQuarantine, openIssue } : null),
+    [enabled, issues, quarantineFailed, quarantineError, refreshQuarantine, openIssue],
   );
   return (
     <SoftHomeContext.Provider value={value}>

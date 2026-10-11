@@ -238,6 +238,8 @@ export function OnDeviceNoteStatusView(props: {
   fallback: ReactNode;
   /** Present when private cloud is on offer for this note; moves it off the phone's model. */
   onUsePrivate?: () => Promise<string | null>;
+  /** The note's pipeline stepper is on screen: it already says queued, running, done, waiting and failed, with their retry and model actions, so only the way off the phone's model is left here. */
+  stepperShown?: boolean;
 }) {
   const { note, error, reload } = props.view;
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -250,6 +252,9 @@ export function OnDeviceNoteStatusView(props: {
         </Button>
       </div>
     );
+  }
+  if (props.stepperShown) {
+    return note?.kind === "waiting_for_model" || note?.kind === "failed" ? <PrivateInstead onUse={props.onUsePrivate} /> : null;
   }
   if (note === null) {
     return (
@@ -311,17 +316,17 @@ export function OnDeviceNoteStatusView(props: {
   }
 }
 
-function OnDeviceNoteStatusReading(props: { noteId: string; fallback: ReactNode; transcription?: VoiceNoteTranscriptionProps; durationSecs?: number | null }) {
+function OnDeviceNoteStatusReading(props: { noteId: string; fallback: ReactNode; transcription?: VoiceNoteTranscriptionProps; durationSecs?: number | null; stepperShown?: boolean }) {
   const view = useOnDeviceNote(props.noteId);
   const { transcription } = props;
   const onUsePrivate = transcription && privateInsteadOffered(transcription, props.noteId, props.durationSecs ?? null)
     ? () => switchToPrivate(transcription, props.noteId)
     : undefined;
-  return <OnDeviceNoteStatusView noteId={props.noteId} view={view} fallback={props.fallback} onUsePrivate={onUsePrivate} />;
+  return <OnDeviceNoteStatusView noteId={props.noteId} view={view} fallback={props.fallback} onUsePrivate={onUsePrivate} stepperShown={props.stepperShown} />;
 }
 
 /** Only a phone with on-device speech has a state to read; elsewhere the fallback stands. A note private cloud has taken is the fallback's to show. */
-export function OnDeviceNoteStatus(props: { noteId: string; fallback: ReactNode; transcription?: VoiceNoteTranscriptionProps; durationSecs?: number | null }) {
+export function OnDeviceNoteStatus(props: { noteId: string; fallback: ReactNode; transcription?: VoiceNoteTranscriptionProps; durationSecs?: number | null; stepperShown?: boolean }) {
   if (!captureCapabilities().localTranscription) return <>{props.fallback}</>;
   if (props.transcription?.jobs.has(props.noteId)) return <>{props.fallback}</>;
   return <OnDeviceNoteStatusReading {...props} />;

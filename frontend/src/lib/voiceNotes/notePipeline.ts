@@ -16,7 +16,8 @@ export type PipelineDevice = "phone" | "mac";
 export type PipelineRoute = "off" | "on-device" | "private-cloud";
 export type StepKey = "phone" | "space" | "transcript" | "notes";
 export type StepState = "done" | "active" | "waiting" | "blocked" | "failed" | "upcoming" | "skipped";
-export type PipelineActionKind = "sign-in" | "retry" | "get-model" | "check-again";
+/** `reread`: read again what failed to read (it belongs to no one step). */
+export type PipelineActionKind = "sign-in" | "retry" | "get-model" | "check-again" | "reread";
 
 // --- Input: mirrors of the signals --------------------------------------------------------------------------
 
@@ -87,13 +88,15 @@ export type PipelineCloud =
   | { kind: "held"; message: string }
   | { kind: "blocked"; reason: PipelineBlockedReason };
 
-/** Note sync (`syncRecordingNote`, `recordingNoteSyncError/Syncing/Skip`). `idle`: not synced and no sync running. */
+/** Note sync (`syncRecordingNote`, `recordingNoteSyncError/Syncing/Skip`). `idle`: not synced and no sync running; nothing has started one. */
 export type PipelineNotesSync =
   | { state: "idle" }
   | { state: "syncing" }
   | { state: "synced" }
   | { state: "failed" }
-  | { state: "skipped"; reason: "no-row" | "no-note" };
+  | { state: "skipped"; reason: "no-row" | "no-note" }
+  /** The note's local text could not be read, so nothing is known about its sync. `cause` is the read's own error. */
+  | { state: "unreadable"; cause: string };
 
 export interface NotePipelineInput {
   device: PipelineDevice;
@@ -101,13 +104,19 @@ export interface NotePipelineInput {
   /** The note has written notes or moments, so "Notes" is a step. */
   hasNotesOrMoments: boolean;
   online: boolean;
-  capture: { finalizing: boolean; issue: PipelineCaptureIssue | null };
+  /** `readError`: the list of recordings that failed to save could not be read (the read's own error); a quarantined session could be missing. */
+  capture: { finalizing: boolean; issue: PipelineCaptureIssue | null; readError?: string | null };
   space: { saved: boolean; pending: PipelinePending | null; lane: PipelineSpaceLane };
   transcript: {
     /** The space row already has a transcript outcome. */
     inSpace: "transcribed" | "no_speech" | null;
     onDevice: PipelineOnDevice | null;
     cloud: PipelineCloud | null;
+    /**
+     * Reading what decides this step failed (the phone's note ledger, its on-device listeners, the space row): the
+     * read's own error. The route and the transcript are unknown then, never "absent" or "ready".
+     */
+    readError?: string | null;
   };
   notes: PipelineNotesSync;
 }
@@ -151,6 +160,7 @@ export function pipelineActionPriority(kind: PipelineActionKind | undefined): nu
     case "get-model": return 3;
     case "retry": return 2;
     case "check-again": return 1;
+    case "reread": return 0;
     case undefined: return 0;
   }
 }
@@ -312,15 +322,17 @@ function transcriptStep(input: NotePipelineInput): Result {
   return onDeviceStep(input, onDevice);
 }
 
-function notesStep(input: NotePipelineInput): Result {
+function notesStep(input: NotePipelineInput, transcript: StepState): Result {
   const sync = input.notes;
   if (sync.state === "synced") return { state: "done" };
+  if (sync.state === "unreadable") return failed(NOTES_COPY.unreadable(sync.cause), "retry");
   if (!input.space.saved) return { state: "upcoming" };
   switch (sync.state) {
     case "syncing": return { state: "active", caption: NOTES_COPY.syncing };
     case "failed": return failed(NOTES_COPY.failed, "retry");
     case "skipped": return sync.reason === "no-note" ? { state: "skipped" } : { state: "waiting", caption: NOTES_COPY.waitingForRow };
-    case "idle": return { state: "waiting", caption: NOTES_COPY.notStarted };
+    // Nothing has started the sync. Behind a transcript that is still running or needs you, it is not its turn: that step owns the blocker.
+    case "idle": return transcript === "done" || transcript === "skipped" ? blocked(NOTES_COPY.notSynced, "retry") : { state: "upcoming" };
   }
 }
 
@@ -331,8 +343,12 @@ export function notePipeline(input: NotePipelineInput): NotePipeline {
   const phone = phoneStep(input);
   const phoneDone = phone.state === "done";
   const space = phoneDone ? spaceStep(input) : UNREACHED;
-  const transcript: Result = input.route === "off" ? { state: "skipped" } : phoneDone ? transcriptStep(input) : UNREACHED;
-  const notes: Result = !input.hasNotesOrMoments ? { state: "skipped" } : phoneDone ? notesStep(input) : UNREACHED;
+  const { readError, inSpace } = input.transcript;
+  // A failed read leaves the route unknown: with no transcript in the space that is a failure, with one the transcript is done (and the failure is shown below).
+  const transcript: Result = readError != null && inSpace === null
+    ? phoneDone ? failed(LOCAL_COPY.readFailed(readError), "retry") : UNREACHED
+    : input.route === "off" && readError == null ? { state: "skipped" } : phoneDone ? transcriptStep(input) : UNREACHED;
+  const notes: Result = !input.hasNotesOrMoments && input.notes.state !== "unreadable" ? { state: "skipped" } : phoneDone ? notesStep(input, transcript.state) : UNREACHED;
 
   const results: [StepKey, string, Result][] = [
     ["phone", STEP_LABEL.phone(input.device), phone],
@@ -368,8 +384,18 @@ export function notePipeline(input: NotePipelineInput): NotePipeline {
     current ??= live.find(([, , result]) => result.state === "active")?.[0] ?? live.find(([, , result]) => result.state !== "done")?.[0] ?? null;
   }
 
-  const pipeline: NotePipeline = { steps, current, done };
+  // A read that failed is never dropped because other evidence already settles a step: it is shown, and the note is not "done" until it reads.
+  const failedReads = [
+    input.capture.readError == null ? null : PHONE_COPY.quarantineReadFailed(input.capture.readError),
+    readError != null && inSpace !== null ? LOCAL_COPY.otherReadFailed(readError) : null,
+  ].filter((cause): cause is string => cause !== null);
+  const unread = failedReads.length > 0;
+  const notices = input.capture.issue === "partial_audio" ? [PHONE_COPY.partialAudio] : [];
+  if (unread && blocker === undefined) blocker = block(failedReads.join(" "), "reread");
+  else if (unread) notices.push(...failedReads);
+
+  const pipeline: NotePipeline = { steps, current, done: done && !unread };
   if (blocker !== undefined) pipeline.blocker = blocker;
-  if (input.capture.issue === "partial_audio") pipeline.notice = PHONE_COPY.partialAudio;
+  if (notices.length > 0) pipeline.notice = notices.join(" ");
   return pipeline;
 }

@@ -37,6 +37,7 @@ import {
   recordingNoteSyncError,
   recordingNoteSyncSkip,
   recordingNoteSyncing,
+  recordingNoteSyncedAt,
   subscribeRecordingNoteSync,
   type VoiceNoteAudioSource,
 } from "./voiceNoteStore";
@@ -189,6 +190,27 @@ describe("note sync state", () => {
     expect(seen[0]).toBe(true);
     expect(seen[seen.length - 1]).toBe(false);
     expect(recordingNoteSyncSkip(space.tcw, withNote.id)).toBeNull();
+  });
+
+  test("a sync that worked records the note revision it wrote; a later edit is not covered by it (the pipeline's evidence for \"synced\")", async () => {
+    const space = fakeSpace();
+    const withNote = { ...recording, id: `rec-note-synced-${++fakeSpaceNumber}` };
+    await saveNote(withNote.id, "# Draft");
+    expect(recordingNoteSyncedAt(space.tcw, withNote.id)).toBeNull();
+    await saveVoiceNote(space.tcw, withNote,
+      voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
+    const first = (await loadNote(withNote.id))!;
+    expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
+    expect(recordingNoteSyncedAt(space.tcw, withNote.id)).toBe(first.editedAt);
+    expect(recordingNoteSyncedAt({ ...space.tcw, did: "did:other" } as TinyCloudWeb, withNote.id)).toBeNull();
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await saveNote(withNote.id, "# Draft, edited");
+    const second = (await loadNote(withNote.id))!;
+    expect(second.editedAt).not.toBe(first.editedAt);
+    expect(recordingNoteSyncedAt(space.tcw, withNote.id)).toBe(first.editedAt);
+    expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
+    expect(recordingNoteSyncedAt(space.tcw, withNote.id)).toBe(second.editedAt);
   });
 
   test("syncing clears when a sync fails", async () => {

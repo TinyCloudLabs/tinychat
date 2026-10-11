@@ -11,6 +11,7 @@ import { OnDeviceStt, __setOnDeviceSttForTests, type OnDeviceSttPlugin } from "@
 import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { BROWSER_MIC_GUIDANCE, MicrophoneAccessOff } from "./MicrophoneAccessOff";
 import { ReceiptView } from "./ReceiptView";
+import { StaticRecorderProvider } from "./RecorderProvider";
 import type { RecorderValue } from "./RecorderProvider";
 import { TranscriptionRouteControl } from "./TranscriptionRouteControl";
 
@@ -58,12 +59,14 @@ const recorder = (patch: Partial<RecorderValue> = {}): RecorderValue => ({
   transcriber: { id: "private-cloud", identifySpeakers: false, source: "default" },
   setTranscriber: async () => "ok",
   record: noop, stop: noop, pause: noop, resume: noop, discard: noop, retryPending: noop, openSettings: async () => {},
-  dismissOutcome: noop, openSheet: noop, minimiseSheet: noop, setReceiptPlaying: noop,
+  dismissOutcome: noop, openSheet: noop, minimiseSheet: noop, setReceiptPlaying: noop, tcw: null,
   subscribeLevel: () => noop, ...patch,
 });
 
 const view = (patch: Partial<RecorderValue> = {}) => renderToStaticMarkup(
-  <MemoryRouter><ReceiptView recorder={recorder(patch)} /></MemoryRouter>,
+  <StaticRecorderProvider value={recorder(patch)}>
+    <MemoryRouter><ReceiptView recorder={recorder(patch)} /></MemoryRouter>
+  </StaticRecorderProvider>,
 );
 
 describe("web engine, opened overlay", () => {
