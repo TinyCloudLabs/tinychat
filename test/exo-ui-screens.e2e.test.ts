@@ -254,6 +254,21 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
   const dialogs = document.querySelectorAll("[role=dialog]").length;
   if (dialogs > 1) findings.push({ check: "dialogs", detail: `${dialogs} dialogs` });
 
+  const receiptStatus = document.querySelector<HTMLElement>('[data-testid="voice-note-status"]');
+  const receiptStatusLabel = receiptStatus?.querySelector<HTMLElement>('[data-testid="voice-note-status-label"]');
+  if (receiptStatus && receiptStatusLabel && shown(receiptStatus)) {
+    const pillBounds = receiptStatus.getBoundingClientRect();
+    const range = document.createRange();
+    range.selectNodeContents(receiptStatusLabel);
+    const textEscapesPill = [...range.getClientRects()].some((rect) =>
+      rect.left < pillBounds.left - 1 || rect.right > pillBounds.right + 1 ||
+      rect.top < pillBounds.top - 1 || rect.bottom > pillBounds.bottom + 1
+    );
+    if (receiptStatus.scrollWidth > receiptStatus.clientWidth + 1 || textEscapesPill) {
+      findings.push({ check: "receipt-status-content", element: describe(receiptStatus), detail: "status text overflows the pill bounds" });
+    }
+  }
+
   // 7. Zoomed and scaled text: nothing cut off.
   if (args.zoom) {
     for (const el of document.querySelectorAll("body *")) {
@@ -273,6 +288,7 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
     const targets = [
       "[data-route-line]",
       '[data-testid="voice-note-receipt"]',
+      '[data-testid="voice-note-status"]',
       '[data-testid="recorder-island"]',
       '[data-testid="chat-header"]',
       '[data-testid="connector-row"]',
@@ -358,15 +374,6 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
         findings.push({ check: "text200-chat-url", element: describe(chatTitle), detail: "long URL title overflows its available width" });
       }
       chatTitle.textContent = previous;
-    }
-    const receiptStatus = document.querySelector<HTMLElement>('[data-testid="voice-note-status"]');
-    if (receiptStatus) {
-      const range = document.createRange();
-      range.selectNodeContents(receiptStatus.querySelector('[data-testid="voice-note-status-label"]') ?? receiptStatus);
-      const lineCount = new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size;
-      if (lineCount > 2) {
-        findings.push({ check: "text200-receipt-status", element: describe(receiptStatus), detail: "status text occupies " + lineCount + " lines; expected at most two" });
-      }
     }
     const ribbonElement = document.querySelector<HTMLElement>('[data-testid="ribbon"][data-layout="rail"]');
     if (ribbonElement) {

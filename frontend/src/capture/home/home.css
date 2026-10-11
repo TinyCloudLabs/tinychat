@@ -426,8 +426,8 @@ button.soft-row:focus-visible {
   box-shadow: none;
   color: var(--bgc);
 }
-/* A compact row fits when its available width is at least 17 em of its text size. */
-@container capture-actions (min-width: 17em) {
+/* A compact row fits when its available width is at least 18 em of its text size. */
+@container capture-actions (min-width: 18em) {
   .soft-actions {
     display: grid;
     grid-template-columns: 1fr 1.3fr 1fr;

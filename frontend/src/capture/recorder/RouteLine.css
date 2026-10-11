@@ -41,6 +41,15 @@
     grid-row: auto;
     align-self: start;
     padding-bottom: 0.5rem;
-    font-size: min(0.875rem, 14px);
+  }
+}
+
+/* Keep compact labels legible on phones. Only cap them in the narrow desktop
+   detail pane, where a desktop-sized route can be exceptionally constrained. */
+@media (min-width: 768px) {
+  @container route-line (max-width: 16rem) {
+    .route-line-container > .route-line > li > [data-route-label] {
+      font-size: min(0.875rem, 14px);
+    }
   }
 }

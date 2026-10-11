@@ -266,6 +266,36 @@ html [data-vaul-overlay][data-state="closed"] {
   }
 }
 
+.receipt-status-header {
+  container: receipt-status-header / inline-size;
+  font-size: 1rem;
+}
+
+@container receipt-status-header (max-width: 17em) {
+  .receipt-status-header.receipt-status-header {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    row-gap: 0.5rem;
+    padding-bottom: 0.5rem;
+  }
+
+  .receipt-status-header > [data-testid="recorder-minimise"] {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .receipt-status-header > [aria-hidden="true"] {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+
+  .receipt-status-header > [data-testid="voice-note-status"] {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+
 .aui-root {
   height: 100%;
 }

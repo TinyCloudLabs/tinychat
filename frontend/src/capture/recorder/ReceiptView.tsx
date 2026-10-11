@@ -88,11 +88,11 @@ export function ReceiptView({ recorder, onOpenNote }: ReceiptViewProps) {
 
   return (
     <div data-testid="voice-note-recorder" data-phase={phase} className="flex h-full min-h-0 flex-col bg-background text-foreground">
-      <header className="relative flex min-h-14 shrink-0 items-center justify-between gap-3 px-4 pt-[env(safe-area-inset-top)] land:px-[max(1.25rem,env(safe-area-inset-left))]">
+      <header className="receipt-status-header relative grid min-h-14 shrink-0 grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center gap-3 px-4 pt-[env(safe-area-inset-top)] land:px-[max(1.25rem,env(safe-area-inset-left))]">
         <Button type="button" variant="ghost" size="icon" className="size-11 shrink-0" aria-label="Minimise recorder" onClick={recorder.minimiseSheet} data-testid="recorder-minimise"><ChevronDownIcon className="!size-5" /></Button>
-        <p role="status" data-testid="voice-note-status" data-mic-state="idle" data-mic-reason="" className="absolute left-1/2 top-1/2 flex w-fit max-w-[calc(100%-7.5rem)] -translate-x-1/2 -translate-y-1/2 items-center justify-center gap-2 rounded-xl bg-surface-2 px-3 py-1.5 text-[min(1rem,16px)] font-semibold leading-snug text-foreground">
+        <p role="status" data-testid="voice-note-status" data-mic-state="idle" data-mic-reason="" className="w-fit min-w-0 max-w-full justify-self-center flex items-center justify-center gap-2 rounded-xl bg-surface-2 px-3 py-1.5 text-callout font-semibold text-foreground">
           <CheckIcon className="size-4 text-primary" aria-hidden />
-          <span data-testid="voice-note-status-label" className="min-w-0 whitespace-nowrap">Saved on this phone</span>
+          <span data-testid="voice-note-status-label" className="min-w-0 [overflow-wrap:anywhere]">Saved on this phone</span>
         </p>
         <span className="size-11" aria-hidden />
       </header>

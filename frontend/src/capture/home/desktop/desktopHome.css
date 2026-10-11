@@ -155,7 +155,7 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  min-height: 44px;
+  min-height: 36px;
   padding: 0 14px;
   border: 0;
   border-radius: 999px;
@@ -166,6 +166,11 @@
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+}
+@media (pointer: coarse) {
+  .dch-chip {
+    min-height: 44px;
+  }
 }
 .dch-chip[aria-pressed="true"] {
   background: var(--ink);
