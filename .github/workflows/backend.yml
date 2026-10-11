@@ -1,0 +1,61 @@
+name: Backend
+
+# The backend suite and the shared-package suites on every PR that touches
+# the backend, the shared packages, the dependency pins or the patched
+# node-sdk. `packages/server` runs node-session-renewal.test.ts against the
+# installed (patched) node-sdk dist, so a stale or misapplied patch fails here
+# even though the Docker image still builds.
+#
+# The backend suite also reads the Phala deploy workflow, compose file and
+# deploy scripts, so changes to those run it too.
+#
+# Lint stays out: the repo-wide `bun run lint` still has errors in backend/
+# and artifacts/.
+
+on:
+  pull_request:
+    paths:
+      - "backend/**"
+      - "packages/**"
+      - "patches/**"
+      - "package.json"
+      - "bun.lock"
+      - "turbo.json"
+      - "docker-compose*.yml"
+      - ".github/scripts/**"
+      - ".github/deploy-tools/**"
+      - ".github/workflows/deploy-backend-phala.yml"
+      - ".github/workflows/backend.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend and package tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+
+      - name: Install JS deps
+        run: bun install --frozen-lockfile
+
+      - name: Build workspace packages
+        run: bun run build:packages
+
+      - name: Package tests (core, client, server incl. node-sdk renewal)
+        run: bun run test:packages
+
+      - name: Backend tests
+        run: bun run --cwd backend test

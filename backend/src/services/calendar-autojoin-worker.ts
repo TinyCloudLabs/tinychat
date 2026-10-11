@@ -1,5 +1,6 @@
+import { onInvite, shareDecision, windowsOverlap, type ShareDecision } from "./calendar-autojoin-share.js";
 import {
-  type CalendarAutojoinStore, type CalendarConnection, type CalendarOccurrence, TenantCoordinator,
+  type CalendarAutojoinStore, type CalendarConnection, type CalendarOccurrence, type SharedCapture, TenantCoordinator,
 } from "./calendar-autojoin-store.js";
 import {
   calendarOccurrenceIdentity, dispatchCutoff, eligibleCalendarEvent, ExternalOperationLimiter,
@@ -7,13 +8,30 @@ import {
 } from "./google-calendar.js";
 import {
   computeCreateRequestHash, TERMINAL_MEETING_STATUSES, TranscriptionApiError,
-  type TranscriptionApiClient, type TranscriptionMeeting,
+  type TranscriptionApiClient, type TranscriptionMeeting, type TranscriptionMeetingStatus,
 } from "./transcription-api.js";
+import { CalendarAutojoinError } from "./calendar-autojoin-connection.js";
+import { GoogleOAuthError } from "./google-oauth.js";
 import type { TranscriberIndexStore } from "./transcriber-index.js";
+
+/** ptx statuses in which the owner's bot is in, or about to be in, the call. From `processing` on, it has left. */
+const BOT_IN_CALL: ReadonlySet<TranscriptionMeetingStatus> = new Set(["queued", "joining", "waiting_for_admission", "in_progress"]);
+/** TC-581: the one liveness rule, for attaching and for an attached recipient. `meeting` is the owner's
+ *  ptx meeting when it was read (null = 404), undefined when it was not read. */
+function ownerCapturing(owner: CalendarOccurrence | null, meeting: TranscriptionMeeting | null | undefined, now: number): boolean {
+  if (!owner || owner.phase === "terminal") return false;
+  if (!owner.meetingId) return !owner.stopRequested && now < dispatchCutoff(owner) + 60_000;
+  return meeting === undefined || (meeting !== null && BOT_IN_CALL.has(meeting.status));
+}
+const SHARE_CHECK_DEADLINE_MS = 86_400_000;
 
 export interface CalendarAutojoinWorkerOptions {
   store: CalendarAutojoinStore;
   coordinator: TenantCoordinator;
+  /** TC-581: serializes the cross-tenant capture claim per normalized Meet URL. Lock order: tenant, then URL. */
+  meetingCoordinator?: TenantCoordinator;
+  /** TC-581 `CALENDAR_AUTOJOIN_SHARING`: gates only the transcript grant. Default off. */
+  sharingEnabled?: boolean;
   calendar: GoogleCalendarPort;
   connection: {
     accessToken(tenant: string, forceRefresh?: boolean): Promise<string>;
@@ -38,7 +56,9 @@ export class CalendarAutojoinWorker {
   private readonly random: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly limiter: ExternalOperationLimiter;
+  private readonly meetingCoordinator: TenantCoordinator;
   constructor(private readonly options: CalendarAutojoinWorkerOptions) {
+    this.meetingCoordinator = options.meetingCoordinator ?? new TenantCoordinator();
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
     this.sleep = options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
@@ -132,7 +152,7 @@ export class CalendarAutojoinWorker {
       for (const event of events) {
         const id = calendarOccurrenceIdentity(connection.tenant, connection.subject!, event);
         const old = known.find(row => row.subject === connection.subject && (row.id === id || row.eventId === event.id));
-        if (old?.idempotencyKey || old?.meetingId) continue; // Frozen attempts are checked individually.
+        if (old?.idempotencyKey || old?.meetingId || old?.sharedCapture) continue; // Frozen attempts are checked individually.
         const eligible = eligibleCalendarEvent(event);
         if (!eligible || !id) {
           if (old && old.phase !== "terminal") await this.finish(old, "event_ineligible");
@@ -158,6 +178,7 @@ export class CalendarAutojoinWorker {
   private async reconcileOccurrence(original: CalendarOccurrence): Promise<void> {
     let row = await this.options.store.getOccurrence(original.tenant, original.id);
     if (!row) return;
+    if (row.sharedCapture) { await this.reconcileShared(row); return; }
     if (row.meetingId) { await this.reconcileRecording(row); return; }
     if (row.idempotencyKey) {
       // Even disabled tenants and expired Google grants retain this read-only recovery path.
@@ -209,6 +230,8 @@ export class CalendarAutojoinWorker {
         else await this.options.store.updateOccurrence(row.tenant, row.id, current => current && { ...current, ...eligible, nextAttemptAt: eligible.start - 60_000 });
         return;
       }
+      // TC-581: read owners' ptx meetings BEFORE the locks; never do upstream I/O while holding them.
+      const observed = row.idempotencyKey ? new Map<string, TranscriptionMeeting | null>() : await this.observeOwners(row);
       // Reserve external capacity BEFORE entering tenant coordination. A queued dispatch may
       // not leave the lock and then send after a disable; the actual POST begins inside it.
       const response = await this.limiter.run(async () => {
@@ -218,6 +241,8 @@ export class CalendarAutojoinWorker {
           const current = await this.options.store.getConnection(row.tenant);
           if (!latest || !this.canDispatch(current, { ...row, stopRequested: latest.stopRequested, meetingId: latest.meetingId })) return;
           if (!row.idempotencyKey) {
+            // TC-581: another tenant's live capture of this Meet in an overlapping window means no POST.
+            if (await this.claimOrAttach(row, current!, event!, observed)) return;
             const body = {
               meeting_url: row.meetingUrl, platform: "google_meet", bot_name: this.options.botName ?? "TinyCloud Private Notetaker",
               metadata: { tinychat_address: row.tenant, source: "google-calendar-autojoin", calendar_occurrence_id: row.id, calendar_title: row.title, scheduled_start: new Date(row.start).toISOString() },
@@ -295,7 +320,12 @@ export class CalendarAutojoinWorker {
       if (error instanceof TranscriptionApiError && error.status === 404) { await this.finish(row, "recording_deleted"); return; }
       throw error;
     }
-    if (TERMINAL_MEETING_STATUSES.has(meeting.status)) { await this.finish(row, meeting.status); return; }
+    if (TERMINAL_MEETING_STATUSES.has(meeting.status)) {
+      // TC-581 backstop: ptx found another bot from this service already in the call (a manual send,
+      // or a race the claim map missed). Never share here: drop our own empty meeting.
+      if (meeting.status === "failed" && meeting.error?.code === "meeting_already_captured") { await this.alreadyCaptured(row); return; }
+      await this.finish(row, meeting.status); return;
+    }
     // Reread stop intent: disable can have run during either upstream GET.
     row = (await store.getOccurrence(row.tenant, row.id))!;
     const latest = await store.getConnection(row.tenant);
@@ -312,8 +342,153 @@ export class CalendarAutojoinWorker {
     });
   }
   private async finish(row: CalendarOccurrence, disposition: string): Promise<void> {
-    if (row.meetingId || row.idempotencyKey) await this.options.store.putMarker({ tenant: row.tenant, id: row.id, meetingId: row.meetingId, disposition });
-    await this.options.store.updateOccurrence(row.tenant, row.id, current => current && { ...current, phase: "terminal", disposition, createBody: undefined, requestHash: undefined, updatedAt: this.now(), errorCode: disposition === "completed" && !current.stopRequested ? undefined : current.errorCode });
+    if (row.meetingId || row.idempotencyKey || row.sharedCapture) await this.options.store.putMarker({ tenant: row.tenant, id: row.id, meetingId: row.meetingId, disposition });
+    // Every code on a shared row (pending, unverified, a deferred retry) is superseded by its disposition.
+    const clears = (current: CalendarOccurrence) => !!current.sharedCapture || (disposition === "completed" && !current.stopRequested) || disposition === "already_recorded";
+    await this.options.store.updateOccurrence(row.tenant, row.id, current => current && { ...current, phase: "terminal", disposition, createBody: undefined, requestHash: undefined, updatedAt: this.now(), errorCode: clears(current) ? undefined : current.errorCode });
+  }
+  /**
+   * TC-581. Under the URL lock: attach to another tenant's live, overlapping capture of this Meet,
+   * or record this occurrence's own claim. Returns true when attached (no POST may follow).
+   */
+  private claimOrAttach(row: CalendarOccurrence, connection: CalendarConnection, event: GoogleCalendarEvent,
+    observed: Map<string, TranscriptionMeeting | null>): Promise<boolean> {
+    const { store } = this.options;
+    return this.meetingCoordinator.run(row.meetingUrl, async () => {
+      const now = this.now();
+      const tenant = row.tenant.toLowerCase();
+      for (const claim of await store.getCaptureClaims(row.meetingUrl)) {
+        if (claim.tenant.toLowerCase() === tenant || !windowsOverlap(claim, row)) continue;
+        const owner = await store.getOccurrence(claim.tenant, claim.occurrenceId);
+        if (!ownerCapturing(owner, owner?.meetingId ? observed.get(owner.meetingId) : undefined, now)) continue;
+        // Finding 2: only a capture my OWN fresh invite corroborates can ever lead to a grant.
+        const ownerConnection = await store.getConnection(claim.tenant);
+        const corroborated = ownerConnection?.subject === owner!.subject && onInvite(event, ownerConnection.verifiedEmail);
+        const sharedCapture: SharedCapture = { ownerTenant: claim.tenant, ownerOccurrenceId: claim.occurrenceId, attachedAt: now, corroborated };
+        await store.updateOccurrence(row.tenant, row.id, current => current && {
+          ...current, start: row.start, end: row.end, meetingUrl: row.meetingUrl, title: row.title, generation: connection.generation,
+          sharedCapture, errorCode: this.pendingCode(sharedCapture), nextAttemptAt: now + 30_000, updatedAt: now,
+        });
+        console.log(`[calendar-autojoin] code=shared_capture_attached corroborated=${corroborated}`);
+        return true;
+      }
+      await store.updateCaptureClaims(row.meetingUrl, claims => [
+        ...claims.filter(claim => !(claim.tenant.toLowerCase() === tenant && claim.occurrenceId === row.id)),
+        { tenant: row.tenant, occurrenceId: row.id, start: row.start, end: row.end, updatedAt: now },
+      ], now);
+      return false;
+    });
+  }
+  /** TC-581. Never stops or deletes the owner's meeting. */
+  private async reconcileShared(row: CalendarOccurrence): Promise<void> {
+    const { store } = this.options;
+    const shared = row.sharedCapture!;
+    const connection = await store.getConnection(row.tenant);
+    if (connection?.state !== "enabled" || connection.subject !== row.subject || connection.generation !== row.generation) {
+      // B never sent a bot: become a plain pending row (no marker), so re-enabling rediscovers it, as before TC-581.
+      await this.detach(row); await this.reconcileOccurrence(row); return;
+    }
+    const owner = await store.getOccurrence(shared.ownerTenant, shared.ownerOccurrenceId);
+    const meeting = owner?.meetingId ? await this.ownerMeeting(owner.meetingId) : undefined;
+    if (ownerCapturing(owner, meeting, this.now())) { await this.retryShared(row, owner?.meetingId ? 60_000 : 30_000); return; }
+    // The owner's bot has left or never came. While B can still send, it sends its own, now.
+    if (inDispatchWindow(row, this.now())) { await this.detach(row); await this.reconcileOccurrence(row); return; }
+    if (!owner || meeting === undefined) { await this.finish(row, "missed_window"); return; }
+    if (meeting === null) { await this.settleShared(row, "already_recorded", { ok: false, reason: "recording_deleted" }); return; }
+    if (!TERMINAL_MEETING_STATUSES.has(meeting.status)) { await this.retryShared(row, 60_000); return; } // processing
+    // An uncorroborated capture never gets a grant, and the owner's calendar is never read for it.
+    if (shared.corroborated !== true) { await this.settleShared(row, "unverified_capture", { ok: false, reason: "owner_not_on_invite" }); return; }
+    const decision = await this.authorizeShare(row, owner, connection);
+    if (decision === "deferred") return;
+    if (!decision.ok) { await this.settleShared(row, "already_recorded", decision); return; }
+    if (meeting.status !== "completed") { await this.settleShared(row, "failed", { ok: false, reason: `meeting_${meeting.status}` }); return; }
+    const checkedAt = this.now();
+    await this.options.index.addShared(row.tenant, owner.meetingId!, {
+      ownerTenant: owner.tenant, ownerOccurrenceId: owner.id, recipientOccurrenceId: row.id, checkedAt,
+      title: row.title, scheduledStart: new Date(row.start).toISOString(),
+    });
+    await this.settleShared(row, "shared", decision, checkedAt);
+  }
+  /** The single grant-time check (TC-581). Fails closed on anything but an affirmative answer. */
+  private async authorizeShare(row: CalendarOccurrence, owner: CalendarOccurrence, recipient: CalendarConnection): Promise<ShareDecision | "deferred"> {
+    if (this.options.sharingEnabled !== true) return { ok: false, reason: "sharing_disabled" };
+    if (!recipient.verifiedEmail) return { ok: false, reason: "no_verified_email" };
+    const ownerConnection = await this.options.store.getConnection(owner.tenant);
+    if (ownerConnection?.state !== "enabled" || !ownerConnection.subject || ownerConnection.subject !== owner.subject) {
+      return { ok: false, reason: "owner_autojoin_disabled" };
+    }
+    try {
+      const event = await this.google(ownerConnection, token => this.options.calendar.getEvent(token, owner.eventId));
+      return shareDecision(event, owner, recipient.verifiedEmail);
+    } catch (error) {
+      // Only an explicit authorization answer denies; KV, decryption, network and unknown errors retry.
+      const denied = error instanceof CalendarAutojoinError
+        || (error instanceof GoogleCalendarError && !error.retryable)
+        || (error instanceof GoogleOAuthError && error.status >= 400 && error.status < 500 && error.status !== 429);
+      if (denied) return { ok: false, reason: "owner_authorization_lost" };
+      if (this.now() >= row.end + SHARE_CHECK_DEADLINE_MS) return { ok: false, reason: "owner_calendar_unavailable" };
+      await this.options.store.updateOccurrence(row.tenant, row.id, current => {
+        if (!current || current.phase === "terminal") return current;
+        const count = current.attemptCount + 1;
+        return { ...current, attemptCount: count, errorCode: this.pendingCode(current.sharedCapture), updatedAt: this.now(),
+          nextAttemptAt: Math.max(current.nextAttemptAt, this.now() + Math.max(60_000, this.retryDelay(error, count))) };
+      });
+      return "deferred";
+    }
+  }
+  private async settleShared(row: CalendarOccurrence, disposition: "shared" | "already_recorded" | "failed" | "unverified_capture", decision: ShareDecision, checkedAt = this.now()): Promise<void> {
+    await this.options.store.updateOccurrence(row.tenant, row.id, current => current?.sharedCapture ? {
+      ...current, sharedCapture: { ...current.sharedCapture, checkedAt, result: disposition === "shared" ? "shared" : "not_shared",
+        ...(decision.ok ? {} : { reason: decision.reason }) },
+    } : current);
+    if (disposition === "shared") console.log("[calendar-autojoin] code=share_granted");
+    else console.log(`[calendar-autojoin] code=share_denied reason=${decision.ok ? "unknown" : decision.reason}`);
+    await this.finish(row, disposition);
+  }
+  /**
+   * The visible state of an attached row. Unverified captures never promise a transcript, and with
+   * sharing off neither does a corroborated one.
+   */
+  private pendingCode(shared: SharedCapture | undefined): string {
+    if (shared?.corroborated !== true) return "unverified_capture";
+    return this.options.sharingEnabled === true ? "shared_capture_pending" : "capture_in_progress";
+  }
+  /** TC-581: back to a plain pending row. B never sent a bot: nothing to unwind upstream, no marker. */
+  private async detach(row: CalendarOccurrence): Promise<void> {
+    await this.options.store.updateOccurrence(row.tenant, row.id, current => current && current.phase !== "terminal" ? {
+      ...current, sharedCapture: undefined, generation: undefined, phase: "pending", errorCode: undefined,
+      attemptCount: 0, nextAttemptAt: this.now(), updatedAt: this.now() } : current);
+  }
+  private async ownerMeeting(id: string): Promise<TranscriptionMeeting | null> {
+    try { return await this.limiter.run(() => this.options.api.getMeeting(id)); }
+    catch (error) {
+      if (error instanceof TranscriptionApiError && error.status === 404) return null;
+      throw error;
+    }
+  }
+  /** The ptx meetings of other tenants' live, overlapping claims on this Meet, read outside any lock. */
+  private async observeOwners(row: CalendarOccurrence): Promise<Map<string, TranscriptionMeeting | null>> {
+    const { store } = this.options;
+    const observed = new Map<string, TranscriptionMeeting | null>();
+    const tenant = row.tenant.toLowerCase();
+    for (const claim of await store.getCaptureClaims(row.meetingUrl)) {
+      if (claim.tenant.toLowerCase() === tenant || !windowsOverlap(claim, row)) continue;
+      const owner = await store.getOccurrence(claim.tenant, claim.occurrenceId);
+      if (owner?.meetingId && owner.phase !== "terminal") observed.set(owner.meetingId, await this.ownerMeeting(owner.meetingId));
+    }
+    return observed;
+  }
+  private async retryShared(row: CalendarOccurrence, delay: number): Promise<void> {
+    await this.options.store.updateOccurrence(row.tenant, row.id, current => current && current.phase !== "terminal" ? {
+      ...current, errorCode: this.pendingCode(current.sharedCapture), nextAttemptAt: this.now() + delay, updatedAt: this.now(),
+    } : current);
+  }
+  private async alreadyCaptured(row: CalendarOccurrence): Promise<void> {
+    await this.options.index.remove(row.tenant, row.meetingId!);
+    try { await this.limiter.run(() => this.options.api.deleteMeeting(row.meetingId!)); }
+    catch { /* best effort: our own meeting never joined */ }
+    console.log("[calendar-autojoin] code=already_captured");
+    await this.finish(row, "already_recorded");
   }
   private retryable(error: unknown): boolean {
     return !(error instanceof TranscriptionApiError) || error.status === 429 || error.status >= 500;

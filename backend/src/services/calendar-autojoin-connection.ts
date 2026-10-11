@@ -47,7 +47,7 @@ export class CalendarAutojoinConnection {
     // read past the client's 20s abort, showing a never-connected account an error.
     if (!connection) return { state: "off" as const, enabled: false, lastScanAt: null, errorCode: null, outcomes: [] };
     const outcomes = (await this.options.store.listOccurrences(tenant))
-      .filter(row => !!row.errorCode || ["missed", "missed_window", "failed", "event_ineligible", "event_changed"].includes(row.disposition ?? ""))
+      .filter(row => !!row.errorCode || ["missed", "missed_window", "failed", "event_ineligible", "event_changed", "already_recorded", "unverified_capture"].includes(row.disposition ?? ""))
       .sort((a, b) => b.start - a.start).slice(0, 30)
       .map(row => ({ id: row.id, title: row.title, start: row.start,
         reason: row.errorCode ?? row.disposition ?? "failed", ...(row.meetingId ? { meetingId: row.meetingId } : {}) }));
@@ -110,6 +110,8 @@ export class CalendarAutojoinConnection {
         ...disabled, subject: tokens.subject!, state: "enabling", consentAt: transaction.consentAt,
         scopes, credentialRef: GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, setupId,
         setupExpiresAt: this.now() + SETUP_TTL_MS, errorCode: undefined,
+        // Always overwrite: a reconnect to another Google account must not keep a stale email.
+        verifiedEmail: tokens.email?.toLowerCase(),
       };
       // A crash after this write but before custody remains disabled and is cleaned on expiry.
       await this.options.store.putConnection(enabling);

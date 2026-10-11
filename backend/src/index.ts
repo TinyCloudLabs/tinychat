@@ -815,6 +815,9 @@ async function main() {
     calendarAutojoinWorker = new CalendarAutojoinWorker({
       store, coordinator, calendar, connection: calendarAutojoin, api: transcriberApi,
       index: transcriberIndex, limiter, botName: process.env.TRANSCRIPTION_BOT_NAME || undefined,
+      // TC-581: one capture per Meet across tenants. The flag gates only sharing the transcript.
+      meetingCoordinator: new TenantCoordinator(),
+      sharingEnabled: process.env.CALENDAR_AUTOJOIN_SHARING === "true",
     });
     app.use("/api/connectors/google/autojoin", authMiddleware, createCalendarAutojoinRouter({ connection: calendarAutojoin }));
     console.log("[startup] calendar-autojoin enabled; deployment requires one backend writer, with stop-and-drain replacement.");

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import type { SessionStore } from "@tinyboilerplate/client";
-import { createCalendarAutojoinClient, type CalendarAutojoinStatus } from "./calendarAutojoinApi";
+import { calendarOutcomeLabel, createCalendarAutojoinClient, type CalendarAutojoinStatus } from "./calendarAutojoinApi";
 
 const session = { getToken: () => "tinychat-session", isExpired: () => false } as SessionStore;
 const off: CalendarAutojoinStatus = { state: "off", enabled: false, lastScanAt: null, errorCode: null, outcomes: [] };
@@ -71,4 +71,32 @@ describe("Calendar autojoin read deadline", () => {
       }
     });
   }
+});
+
+describe("TC-581 shared capture outcome labels", () => {
+  test("a capture pending on another account's bot is told without alarm", () => {
+    expect(calendarOutcomeLabel("shared_capture_pending")).toBe(
+      "Already being recorded by another TinyCloud account. If you accepted that account's calendar invite, the transcript will be added to your meetings after it ends.",
+    );
+  });
+  test("an already-recorded meeting is neutral, true with sharing on or off", () => {
+    expect(calendarOutcomeLabel("already_recorded")).toBe(
+      "Already recorded by another TinyCloud account. Only one notetaker can join a meeting.",
+    );
+  });
+  test("with sharing off, a capture in progress promises nothing", () => {
+    expect(calendarOutcomeLabel("capture_in_progress")).toBe(
+      "Already being recorded by another TinyCloud account. Only one notetaker can join a meeting.",
+    );
+  });
+  test("an unverified capture says nothing it records will be added", () => {
+    expect(calendarOutcomeLabel("unverified_capture")).toBe(
+      "A TinyCloud notetaker from an account we couldn't match to your invite is already in this meeting, and only one can join. Nothing it records will be added to your meetings.",
+    );
+  });
+  test("none reads as a failure", () => {
+    for (const reason of ["shared_capture_pending", "already_recorded", "capture_in_progress", "unverified_capture"]) {
+      expect(calendarOutcomeLabel(reason)).not.toMatch(/fail|could not|error/i);
+    }
+  });
 });

@@ -369,9 +369,11 @@ function MeetingRow(props: {
   const active = ACTIVE_STATUSES.has(meeting.status);
   const stoppable = active && meeting.status !== "processing";
   const when = formatWhen(meeting.metadata?.scheduled_start ?? meeting.created_at);
+  const shared = meeting.metadata?.shared === true;
   const meta = [
     statusLabel(meeting.status),
     when,
+    shared ? "Shared recording" : null,
     meeting.bot?.name,
     props.saveState === "saved" ? "Saved to your space" : null,
     props.saveState === "saving" ? "Saving to your space…" : null,
@@ -441,7 +443,7 @@ function MeetingRow(props: {
               onClick={() => props.onRemove(meeting.id)}
               className="text-muted-foreground"
             >
-              Remove
+              {shared ? "Remove from my list" : "Remove"}
             </Button>
           )}
         </div>
