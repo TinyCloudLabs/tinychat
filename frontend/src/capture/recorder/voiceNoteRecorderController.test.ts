@@ -627,6 +627,25 @@ describe("voice-note recorder controller", () => {
     expect(deleteCalls).toBe(0);
   });
 
+  test("a WebKit network failure shows one friendly message and logs once", async () => {
+    fakeVoiceNoteStore.save = async () => { throw new TypeError("Load failed"); };
+    const warnings: unknown[][] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args); };
+    const { recorder, detach } = await attached();
+    try {
+      await recorder.record();
+      await recorder.stop();
+      await tick();
+      const friendly = "Couldn't reach your TinyCloud space. This note is still on your phone — try again.";
+      expect(recorder.getState().error).toBe(friendly);
+      expect(warnings.filter(([message]) => String(message).includes("TinyCloud network failure"))).toHaveLength(1);
+    } finally {
+      detach();
+      console.warn = originalWarn;
+    }
+  });
+
   test("Stop during sign-out keeps the receipt held even when a cancelled save rejects after re-arm", async () => {
     const account = { ...tcw, spaceId: "tinycloud:space" } as TinyCloudWeb;
     let attempted = 0;

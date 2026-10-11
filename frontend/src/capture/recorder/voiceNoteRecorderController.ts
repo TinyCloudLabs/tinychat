@@ -42,6 +42,7 @@ import {
   pendingStore,
   saveRecording,
   savePendingRecordings,
+  TINYCLOUD_NETWORK_FAILURE_MESSAGE,
 } from "@/lib/voiceNotes/recorderSaves";
 import type { VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { saveDeferredForAccountTransition, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
@@ -73,6 +74,12 @@ function partialFromSidecar(recording: VoiceNoteRecording): Extract<RecorderCapt
 
 const micFromStatus = (status: CaptureStatus | MicStateEvent): RecorderMic =>
   ({ state: status.state, reason: status.reason, input: status.input ?? null });
+
+function saveFailureCopy(message: string): string {
+  return message === TINYCLOUD_NETWORK_FAILURE_MESSAGE
+    ? message
+    : `Saved on this phone, but uploading to your space failed: ${message}`;
+}
 
 export interface VoiceNoteRecorderControllerOptions {
   tcw: TinyCloudWeb | null;
@@ -419,9 +426,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           void pendingStore.refresh();
           return;
         }
-        send({ type: "SAVE_FAILED", error: `Saved on this phone, but uploading to your space failed: ${messageOf(caught)}`,
+        const failure = messageOf(caught);
+        send({ type: "SAVE_FAILED", error: saveFailureCopy(failure),
           recording: { id: recording.id, durationMs: recording.durationMs } });
-        pendingStore.reportNoteFailure(recording.id, messageOf(caught));
+        pendingStore.reportNoteFailure(recording.id, failure);
         void pendingStore.refresh();
         return;
       }
@@ -443,7 +451,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         // The committed audio stays on the device and is playable.
         send({
           type: "SAVE_FAILED",
-          error: `Saved on this phone, but uploading to your space failed: ${outcome.failure}`,
+          error: saveFailureCopy(outcome.failure),
           recording: { id: recording.id, durationMs: recording.durationMs },
         });
         pendingStore.reportNoteFailure(recording.id, outcome.failure);

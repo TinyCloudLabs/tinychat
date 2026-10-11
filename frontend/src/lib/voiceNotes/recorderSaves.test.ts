@@ -19,6 +19,73 @@ mock.module("./voiceNoteStore", () => ({
 afterAll(() => mock.module("./voiceNoteStore", () => realStore));
 const saves = await import("./recorderSaves");
 
+describe("voice-note network error copy", () => {
+  test.each([
+    "Load failed",
+    "The network connection was lost.",
+    "Failed to fetch",
+    "saveVoiceNote(audio): audioStore put part 0 failed: NETWORK_ERROR: Failed to fetch",
+    "Fetch API cannot load https://space.example/path?token=do-not-log due to access control checks.",
+  ])("maps WebKit network failures to actionable copy (%s)", (raw) => {
+    const original = console.warn;
+    const logged: unknown[][] = [];
+    console.warn = (...args: unknown[]) => { logged.push(args); };
+    try {
+      expect(saves.messageOf(new TypeError(raw))).toBe(
+        "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
+      );
+      const output = logged.map((args) => args.join(" ")).join(" ");
+      expect(output).toContain(raw.startsWith("Fetch") ? "<url>" : raw);
+      expect(output).not.toContain("do-not-log");
+      expect(output).not.toContain("https://space.example");
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test("log redaction removes bearer tokens instead of leaving them after the scheme", () => {
+    const original = console.warn;
+    const logged: unknown[][] = [];
+    console.warn = (...args: unknown[]) => { logged.push(args); };
+    try {
+      saves.logVoiceNoteError("reconcile failed", new Error("authorization: Bearer private-token"));
+      expect(logged).toHaveLength(1);
+      expect(logged[0]).toHaveLength(1);
+      expect(String(logged[0]?.[0])).toContain("authorization: <redacted>");
+      expect(String(logged[0]?.[0])).not.toContain("private-token");
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test("does not map SDK NETWORK_ERROR codes for HTTP or SQL server failures", () => {
+    expect(saves.messageOf(Object.assign(new Error("Failed to list keys: 403 - capability denied"),
+      { code: "NETWORK_ERROR" }))).toBe("Failed to list keys: 403 - capability denied");
+    expect(saves.messageOf(Object.assign(new Error("Failed to execute query: 500 - internal error"),
+      { code: "NETWORK_ERROR" }))).toBe("Failed to execute query: 500 - internal error");
+  });
+
+  test("redacts quoted JSON credential keys and logs non-network error codes", () => {
+    const original = console.warn;
+    const logged: unknown[][] = [];
+    console.warn = (...args: unknown[]) => { logged.push(args); };
+    try {
+      saves.logVoiceNoteError("reconcile failed", Object.assign(
+        new Error('{"token":"secret-token","authorization":"Bearer private-bearer"}'),
+        { code: "discard_migration_failed" },
+      ));
+      const output = logged.map((args) => args.join(" ")).join(" ");
+      expect(output).toContain("code=discard_migration_failed");
+      expect(output).toContain('"token":"<redacted>"');
+      expect(output).toContain('"authorization":"<redacted>"');
+      expect(output).not.toContain("secret-token");
+      expect(output).not.toContain("private-bearer");
+    } finally {
+      console.warn = original;
+    }
+  });
+});
+
 /** A fresh copy of the module, as after a WebView reload: its in-memory guards and store are new. */
 let instances = 0;
 const reloaded = () => import(`./recorderSaves.ts?reload=${++instances}`) as Promise<typeof saves>;
@@ -102,6 +169,21 @@ afterEach(() => {
 });
 
 describe("savePendingRecordings", () => {
+  test("starting Save now clears the old failure and failed-row marker", async () => {
+    phone.pending = [recording("retrying", 1)];
+    await saves.pendingStore.refresh(null);
+    saves.pendingStore.reportNoteFailure("retrying", "Load failed");
+    expect(saves.pendingStore.snapshot()).toMatchObject({
+      lastError: "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
+      notes: [{ id: "retrying", failed: true }],
+    });
+    const finish = saves.pendingStore.beginManualSave();
+    try {
+      expect(saves.pendingStore.snapshot()).toMatchObject({ running: true, lastError: null, notes: [{ id: "retrying" }] });
+      expect(saves.pendingStore.snapshot().notes?.[0]?.failed).toBeUndefined();
+    } finally { finish(); }
+  });
+
   test("a manual owner-aware save keeps the shared saving and idle state until it settles", async () => {
     const finish = saves.pendingStore.beginManualSave();
     expect(saves.pendingStore.snapshot().running).toBe(true);
@@ -141,11 +223,11 @@ describe("savePendingRecordings", () => {
     const run = await saves.savePendingRecordings(tcw);
     expect(run.saved).toEqual([]);
     expect(run.left.map((r) => r.id)).toEqual(["a", "b"]);
-    expect(run.lastError).toBe("The network connection was lost.");
+    expect(run.lastError).toBe("Couldn't reach your TinyCloud space. This note is still on your phone — try again.");
     expect(saves.pendingStore.snapshot()).toMatchObject({
       listing: { state: "ok", count: 2 },
       running: false,
-      lastError: "The network connection was lost.",
+      lastError: "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
     });
   });
 
@@ -184,7 +266,7 @@ describe("saveRecording", () => {
     await Promise.resolve();
     expect(idle).toBe(false);
     finish();
-    expect(await saving).toEqual({ kind: "failed", failure: "The network connection was lost." });
+    expect(await saving).toEqual({ kind: "failed", failure: "Couldn't reach your TinyCloud space. This note is still on your phone — try again." });
     await waiting;
     expect(idle).toBe(true);
     expect(saves.voiceNoteSaveBusy()).toBe(false);

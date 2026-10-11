@@ -19,7 +19,7 @@ import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
 import type { VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { messageOf, pendingStore, whenVoiceNoteSavesIdle, type PendingRun } from "@/lib/voiceNotes/recorderSaves";
+import { isTinyCloudNetworkFailure, logVoiceNoteError, messageOf, pendingStore, whenVoiceNoteSavesIdle, type PendingRun } from "@/lib/voiceNotes/recorderSaves";
 import { advanceAccountGeneration, currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
 import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 
@@ -111,8 +111,10 @@ export function PendingVoiceNotesSaver({
         await pipeline.reconcileAll({ did, spaceId, generation: currentAccountGeneration() });
         await account.refresh(null);
       } catch (error) {
-        console.warn("[VoiceNotes] Saving notes left on this phone failed", error);
-        account.reportError(`Could not save notes on this phone: ${messageOf(error)}`);
+        const message = messageOf(error);
+        // Network errors are already logged by messageOf through the redacting formatter.
+        if (!isTinyCloudNetworkFailure(error)) logVoiceNoteError("Saving notes left on this phone failed", error);
+        account.reportError(`Could not save notes on this phone: ${message}`);
       }
     };
     const unregister = registerPendingVoiceNotesRecovery(run);
