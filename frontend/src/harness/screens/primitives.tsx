@@ -128,7 +128,7 @@ const TYPE_ROLES = [
   { className: "font-display text-title-2", spec: "Title 2 · Literata 20/26 · 600", sample: "Transcription" },
   { className: "text-headline", spec: "Headline · sans 17/22 · 600", sample: "In progress" },
   { className: "text-body", spec: "Body · sans 16/24", sample: "Your conversations are private and stored in your TinyCloud space." },
-  { className: "text-callout", spec: "Callout · sans 15/20", sample: "After you stop, TinyCloud Private Transcription turns notes up to 10 minutes into text." },
+  { className: "text-callout", spec: "Callout · sans 15/20", sample: "After you stop, TinyCloud Private Transcription turns your note into text." },
   { className: "text-meta", spec: "Meta · sans 13/18", sample: "Voice note · 4:12 · 09:41" },
   { className: "text-label", spec: "Label · sans 11/14 · 500", sample: "Connectors" },
 ] as const;

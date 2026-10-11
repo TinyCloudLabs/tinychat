@@ -66,7 +66,7 @@ describe("TranscriptionRouteControl", () => {
     expect(html).toMatch(/aria-checked="true"[^>]*>.*?Private/);
     expect(html).toContain('data-route="private-cloud"');
     expect(html).toContain(">Private</span>");
-    expect(html).toContain("Private transcribes notes up to 10 minutes.");
+    expect(html).toContain("Private transcribes your notes.");
     expect(html).not.toContain("voice-note-transcription-consent");
   });
 
@@ -76,7 +76,8 @@ describe("TranscriptionRouteControl", () => {
     expect(off).not.toContain("voice-note-transcription-enable");
     const asking = render(transcription({ consented: false }), true);
     expect(asking).toContain('data-testid="voice-note-transcription-consent"');
-    expect(asking).toContain("After you stop, TinyCloud Private Transcription turns notes up to 10 minutes into text.");
+    expect(asking).toContain("After you stop, TinyCloud Private Transcription turns your note into text.");
+    expect(asking).not.toContain("minutes");
     expect(asking).toContain(">Use private cloud</button>");
     // The disclosure itself is on How it works, not here.
     expect(asking).not.toContain("Tinfoil");

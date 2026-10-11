@@ -257,10 +257,11 @@ describe("gating", () => {
     }
   });
 
-  test("the longest note offered is the phone's limit, or PTX's when lower", () => {
-    expect(maxTranscriptionSeconds(null)).toBe(600);
-    expect(maxTranscriptionSeconds(CAPS)).toBe(600);
+  test("the supported duration comes from PTX", () => {
+    expect(maxTranscriptionSeconds(null)).toBe(Number.POSITIVE_INFINITY);
+    expect(maxTranscriptionSeconds(CAPS)).toBe(7_200);
     expect(maxTranscriptionSeconds({ ...CAPS, max_duration_seconds: 120 })).toBe(120);
+    expect(maxTranscriptionSeconds({ ...CAPS, max_duration_seconds: 10_800 })).toBe(10_800);
   });
 });
 
@@ -313,6 +314,14 @@ describe("interpretUploadResponse (desktop upload_result)", () => {
 });
 
 describe("createVoiceNoteCloud.transcribe", () => {
+  test.each([3_600, 10_800])("uploads a %i-second note when PTX advertises that duration", async (durationSeconds) => {
+    const h = harness({});
+    await h.cloud.transcribe({ sourceId: "rec-1", capabilities: { ...CAPS, max_duration_seconds: durationSeconds },
+      loadAudio: async () => AUDIO, durationSeconds }, () => {});
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+  });
+
   test("happy path: create (metadata only) → one PUT of the WAV to the build's origin → poll → result", async () => {
     const h = harness({});
     const statuses: VoiceNoteTranscriptionStatus[] = [];
@@ -438,12 +447,12 @@ describe("createVoiceNoteCloud.transcribe", () => {
     expect(voiceNoteTranscriptionFailure(err)).toEqual(expect.objectContaining({ retryable: true }));
   });
 
-  test("a note over the phone's limit is refused before any job exists", async () => {
+  test("a note over PTX's advertised duration is refused before any job exists", async () => {
     const h = harness({});
     const err = await h.cloud
       .transcribe({ sourceId: "rec-1", capabilities: { ...CAPS, max_duration_seconds: 0.5 }, loadAudio: async () => AUDIO }, () => {})
       .catch((e: unknown) => e);
-    expect((err as { code: string }).code).toBe("recording_too_long_for_phone");
+    expect((err as { code: string }).code).toBe("recording_too_long");
     expect(h.creates).toHaveLength(0);
     expect(h.pending.read("rec-1")).toBeNull();
     expect(voiceNoteTranscriptionFailure(err)).toEqual(expect.objectContaining({ retryable: false }));
@@ -944,9 +953,9 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     expect(h.pending.read("rec-1")).toBeNull();
   });
 
-  test("the note's own length is checked before its audio is read", async () => {
+  test("the note's own length is checked against PTX before its audio is read", async () => {
     const space = sqliteSpace();
-    await saveVoiceNote(space.tcw, { ...RECORDING, durationMs: 11 * 60_000 }, AUDIO, "android");
+    await saveVoiceNote(space.tcw, { ...RECORDING, durationMs: 7_201_000 }, AUDIO, "android");
     const h = harness({});
     let loads = 0;
     const realGet = (space.tcw as { kv: { get: (k: string) => Promise<unknown> } }).kv.get;
@@ -956,7 +965,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     };
     const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} })
       .catch((e: unknown) => e);
-    expect((err as { code: string }).code).toBe("recording_too_long_for_phone");
+    expect((err as { code: string }).code).toBe("recording_too_long");
     expect(loads).toBe(0);
     expect(h.creates).toHaveLength(0);
   });
@@ -981,7 +990,48 @@ describe("transcribeVoiceNote (one note end to end)", () => {
 });
 
 describe("transcribeVoiceNote reads the note's stored audio (TC-517)", () => {
-  beforeEach(() => _resetConnectorSchemaMemoForTests());
+  beforeEach(() => {
+    _resetConnectorSchemaMemoForTests();
+    const fake = createFakeVoiceNotes();
+    fake.plugin.listPending = async () => ({ recordings: [] });
+    fake.plugin.getTranscript = async () => ({ transcript: null });
+    __setVoiceNotesForTests(fake.plugin, { available: true });
+  });
+
+  test("internal audio read details are logged through errors, never shown in transcription copy", () => {
+    const failure = voiceNoteTranscriptionFailure(new Error("loadVoiceNoteAudio: Key not found: private/key"));
+    expect(failure.message).toBe("Transcription failed. Try again.");
+    expect(failure.message).not.toContain("private/key");
+  });
+
+  test("uses retained local audio before the space copy when the KV key is missing", async () => {
+    const space = sqliteSpace();
+    const localBytes = new Uint8Array([9, 8, 7, 6, 5]);
+    await storeVoiceNote(space.tcw, RECORDING, AUDIO, "android");
+    for (const key of [...space.kv.keys()]) if (key.startsWith(`${voiceNoteAudioKvKey("rec-1")}/`)) space.kv.delete(key);
+    space.kv.delete(voiceNoteAudioKvKey("rec-1"));
+
+    const fake = createFakeVoiceNotes();
+    fake.plugin.listPending = async () => ({ recordings: [{ ...RECORDING, sizeBytes: localBytes.byteLength, ledger: {
+      audio: { state: "saved" }, transcriptSync: { state: "pending", rev: 0, at: null },
+    } } as never] });
+    fake.plugin.getTranscript = async () => ({ transcript: null });
+    fake.plugin.readAudioChunk = async ({ id, offset, length }) => {
+      const bytes = localBytes.slice(offset, offset + length);
+      return { id, offset, base64: bytesToBase64(bytes), bytesRead: bytes.byteLength, size: localBytes.byteLength,
+        eof: offset + bytes.byteLength >= localBytes.byteLength };
+    };
+    __setVoiceNotesForTests(fake.plugin, { available: true });
+
+    let decoded: Uint8Array | null = null;
+    const quiet = silentDecoder();
+    const h = harness({ decode: async (buffer, rate) => {
+      decoded = new Uint8Array(buffer.slice(0));
+      return quiet(buffer, rate);
+    } });
+    await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} });
+    expect(decoded).toEqual(localBytes);
+  });
 
   test("a note stored in parts is reassembled, in order, for the upload", async () => {
     const space = sqliteSpace();
@@ -1010,7 +1060,7 @@ describe("transcribeVoiceNote reads the note's stored audio (TC-517)", () => {
     expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
   });
 
-  test("a note of unknown length that is too large is refused from its manifest, before any part is read", async () => {
+  test("a note of unknown length over PTX's byte limit is refused from its manifest before any part is read", async () => {
     const space = sqliteSpace();
     // 10 min at twice the phone's bitrate is the most read back; this note claims more.
     const big = new Uint8Array(600 * 16_000 + 1);
@@ -1022,9 +1072,9 @@ describe("transcribeVoiceNote reads the note's stored audio (TC-517)", () => {
       gets.push(k);
       return realGet(k);
     };
-    const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} })
+    const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: { ...CAPS, max_bytes: 1_000 }, explicit: true, sourceId: "rec-1", report: () => {} })
       .catch((e: unknown) => e);
-    expect((err as { code: string }).code).toBe("recording_too_long_for_phone");
+    expect((err as { code: string }).code).toBe("recording_too_large");
     expect(gets.filter((k) => k.includes("/p/"))).toEqual([]);
     expect(h.creates).toHaveLength(0);
   });

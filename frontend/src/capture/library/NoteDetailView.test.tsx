@@ -154,11 +154,11 @@ describe("a voice note's transcription", () => {
     expect(html).not.toContain('data-testid="voice-note-transcribe"');
   });
 
-  test("chosen: Transcribe; a note over the limit says so instead", () => {
+  test("chosen: Transcribe remains available for long notes", () => {
     expect(render({ transcription: transcription() })).toContain('data-testid="voice-note-transcribe"');
     const long = render({ item: { ...VOICE, durationSecs: 900 }, transcription: transcription() });
-    expect(long).toContain("Notes up to 10 minutes can be transcribed from the phone.");
-    expect(long).not.toContain('data-testid="voice-note-transcribe"');
+    expect(long).toContain('data-testid="voice-note-transcribe"');
+    expect(long).not.toContain("minutes can be transcribed");
   });
 
   test("no speech, progress, just saved, and a failure with Retry only when it can help", () => {

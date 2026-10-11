@@ -99,10 +99,6 @@ function routeOptions(signedIn: boolean, offered: boolean): { value: Route; labe
       ];
 }
 
-function minutes(seconds: number): number {
-  return Math.round(seconds / 60);
-}
-
 /** Round-2 finding 2: while a recording is already live (picked up after minimizing/reopening, or
  * a remount for any other reason), its own `options.transcriber` is the ground truth for what
  * route to show — not the stored default, which this same recording may have been overridden away
@@ -209,7 +205,7 @@ export function TranscriptionRouteControl(props: {
   let line: string;
   if (askingNow) line = "";
   else if (route === "on-device") line = isOnDeviceReady(sttStatus) ? "Transcribed on this phone." : `Transcribed on this phone, once the model finishes downloading. ${modelLine.text}`;
-  else if (offered && consented) line = `${ROUTE_NAME["private-cloud"]} transcribes notes up to ${minutes(transcription!.maxSeconds)} minutes.`;
+  else if (offered && consented) line = `${ROUTE_NAME["private-cloud"]} transcribes your notes.`;
   else if (transcription?.availability === "checking" && consented) line = `Checking ${ROUTE_NAME["private-cloud"]}…`;
   else if (transcription?.availability === "failed" && consented) line = `${ROUTE_NAME["private-cloud"]} isn't available right now.`;
   else line = "Audio only.";
@@ -227,8 +223,7 @@ export function TranscriptionRouteControl(props: {
       {askingNow ? (
         <div className="flex flex-col gap-3" data-testid="voice-note-transcription-consent">
           <p className="text-callout text-muted-foreground">
-            After you stop, TinyCloud Private Transcription turns notes up to {minutes(transcription!.maxSeconds)} minutes
-            into text.
+            After you stop, TinyCloud Private Transcription turns your note into text.
           </p>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
             <Button type="button" onClick={() => {

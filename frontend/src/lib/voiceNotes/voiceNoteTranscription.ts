@@ -48,13 +48,12 @@ import {
   type PtxPutResponse,
 } from "../privateCloud";
 import { captureEngineKind } from "./captureEngine";
-import { nativeHttpFileUploadSupported, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
+import { nativeHttpFileUploadSupported, nativeRecordingSource, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import {
   base64ToBytes,
-  MAX_ENCODED_BYTES_PER_SECOND,
+  bytesToBase64,
   prepareTranscriptionAudio,
-  VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS,
   VoiceNoteAudioError,
   type AudioDecoder,
 } from "./voiceNoteAudio";
@@ -510,6 +509,7 @@ const NOT_RETRYABLE_CODES: ReadonlySet<string> = new Set([
   "decode_unavailable",
   "feature_unavailable",
   "service_misconfigured",
+  "VOICE_NOTE_AUDIO_CORRUPT",
   "invalid_argument",
   "voice_note_not_found",
   "transcription_off",
@@ -543,10 +543,10 @@ export function acceptedContentTypes(capabilities: PrivateCloudCapabilities): st
     : ["audio/mpeg", "audio/wav", "audio/ogg"];
 }
 
-/** The longest note offered: this app's v1 limit, or PTX's when lower. */
+/** The duration capability reported by PTX for this account. */
 export function maxTranscriptionSeconds(capabilities: PrivateCloudCapabilities | null): number {
   const ptx = capabilities?.max_duration_seconds;
-  return typeof ptx === "number" && ptx > 0 ? Math.min(ptx, VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS) : VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS;
+  return typeof ptx === "number" && ptx > 0 ? ptx : Number.POSITIVE_INFINITY;
 }
 
 export interface VoiceNoteCloudDeps {
@@ -634,7 +634,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
     if (transcriptionId !== null) await cancelQuietly(transcriptionId);
   };
 
-  /** Rides out transient failures for up to 10 minutes, then "connection lost". */
+  /** Rides out transient failures for a bounded period, then reports "connection lost". */
   const transientTolerance = () => {
     let failingSince: number | null = null;
     return {
@@ -649,7 +649,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
         if (failingFor >= polling.giveUpAfterMs) {
           throw new PrivateCloudError(
             "connection_lost",
-            "Lost contact with private cloud transcription for 10 minutes. The job may still be running.",
+            "Lost contact with private cloud transcription. The job may still be running.",
           );
         }
         await sleep(failingFor >= polling.slowAfterMs ? polling.slowIntervalMs : polling.intervalMs);
@@ -771,7 +771,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
     let audio: Awaited<ReturnType<typeof prepareTranscriptionAudio>>;
     try {
       if (typeof durationSeconds === "number" && durationSeconds > maxSeconds) {
-        throw new VoiceNoteAudioError("recording_too_long_for_phone", "This note is too long to transcribe from the phone.");
+        throw new VoiceNoteAudioError("recording_too_long", "This recording exceeds the private cloud duration limit.");
       }
       guard();
       if (!allowed()) throw transcriptionOffError();
@@ -921,13 +921,12 @@ export interface VoiceNoteTranscriptionFailure {
 export function voiceNoteTranscriptionFailure(err: unknown): VoiceNoteTranscriptionFailure {
   const code = voiceNoteErrorCode(err);
   const reference = err instanceof PrivateCloudError ? err.correlationId : null;
-  const minutes = Math.round(VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS / 60);
   let message: string;
   switch (code) {
     case "recording_too_long_for_phone":
     case "recording_too_long":
     case "recording_too_large":
-      message = `Notes up to ${minutes} minutes can be transcribed from the phone.`;
+      message = "Private cloud can't transcribe a recording this long or large.";
       break;
     case "decode_failed":
     case "decode_unavailable":
@@ -955,6 +954,12 @@ export function voiceNoteTranscriptionFailure(err: unknown): VoiceNoteTranscript
     case "note_unreadable":
       message = "Could not read this note from your space just now. Retry tries again.";
       break;
+    case "audio_read_failed":
+      message = "Could not read this note's audio from this device or your space. Retry tries again.";
+      break;
+    case "VOICE_NOTE_AUDIO_CORRUPT":
+      message = "This note's audio is damaged and can't be transcribed.";
+      break;
     case "transcription_off":
       message = "Transcription was turned off.";
       break;
@@ -962,7 +967,7 @@ export function voiceNoteTranscriptionFailure(err: unknown): VoiceNoteTranscript
       message =
         err instanceof PrivateCloudError
           ? privateCloudMessage(err)
-          : `Transcription failed: ${err instanceof Error ? err.message : String(err)}`;
+          : "Transcription failed. Try again.";
   }
   return { code, message, retryable: !NOT_RETRYABLE_CODES.has(code), reference };
 }
@@ -1045,13 +1050,41 @@ export async function transcribeVoiceNote(args: {
 
   const loadAudio = async (): Promise<VoiceNoteAudio> => {
     if (args.audio) return args.audio;
-    // Bounded like the decode: a note over the phone's limit is refused from its manifest, unread.
-    const res = await loadVoiceNoteAudio(tcw, sourceId, { maxBytes: VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS * MAX_ENCODED_BYTES_PER_SECOND });
+    let local: VoiceNoteRecording | undefined;
+    try {
+      local = (await VoiceNotes.listPending()).recordings.find((recording) => recording.id === sourceId);
+    } catch (cause) {
+      console.error("[VoiceNotes] Could not check for local audio before transcription", { sourceId, cause });
+      throw new VoiceNoteAudioError("audio_read_failed", "Could not check this device for local audio");
+    }
+    if (local) {
+      try {
+        const source = nativeRecordingSource(local);
+        const bytes = new Uint8Array(source.size);
+        for (let offset = 0; offset < source.size; offset += 1024 * 1024) {
+          const part = await source.readPart(offset, Math.min(1024 * 1024, source.size - offset));
+          bytes.set(part, offset);
+        }
+        return { mimeType: source.mimeType, base64: bytesToBase64(bytes) };
+      } catch (cause) {
+        const code = typeof cause === "object" && cause !== null && "code" in cause ? String(cause.code) : "";
+        if (code === "not_found") {
+          console.warn("[VoiceNotes] The local recording is no longer available; reading its space copy", { sourceId });
+        } else {
+          console.error("[VoiceNotes] Could not read local audio before transcription", { sourceId, cause });
+          throw new VoiceNoteAudioError("audio_read_failed", "Could not read this note's local audio");
+        }
+      }
+    }
+    // Refuse a file larger than PTX accepts from its manifest, before reading its parts.
+    const res = await loadVoiceNoteAudio(tcw, sourceId, { maxBytes: args.capabilities.max_bytes });
     if (!res.ok) {
       if (res.error.code === VOICE_NOTE_AUDIO_TOO_LARGE) {
-        throw new VoiceNoteAudioError("recording_too_long_for_phone", "This note is too long to transcribe from the phone.");
+        throw new VoiceNoteAudioError("recording_too_large", "This recording exceeds the private cloud upload limit.");
       }
-      throw new Error(`Could not read the note's audio: ${res.error.message}`);
+      console.error("[VoiceNotes] Could not read note audio from the space", { sourceId, error: res.error });
+      throw new VoiceNoteAudioError(res.error.code === "VOICE_NOTE_AUDIO_CORRUPT" ? res.error.code : "audio_read_failed",
+        "Could not read this note's audio from your space");
     }
     return res.data;
   };
@@ -1495,7 +1528,6 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         block(recording.id);
         return;
       }
-      if (recording.durationMs / 1000 > maxTranscriptionSeconds(state.capabilities)) return; // the card says why
       enqueue(recording.id, audio, false);
     },
   };

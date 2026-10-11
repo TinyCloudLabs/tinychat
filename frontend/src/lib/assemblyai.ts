@@ -555,7 +555,7 @@ export function createHostedAssemblyAiClient(config: {
 
 /**
  * Polls a transcript to `completed`: 3 s, growing by half up to 15 s.
- * Network failures, rate limits and 5xx are ridden out for 10 minutes;
+ * Network failures, rate limits and 5xx are ridden out for a bounded period;
  * an `error` transcript or a rejected key ends it, and so does an aborted `signal`.
  */
 export async function pollAssemblyAiTranscript(
@@ -582,7 +582,7 @@ export async function pollAssemblyAiTranscript(
       if (!transient) throw err;
       failingSince ??= clock.now();
       if (clock.now() - failingSince >= 10 * 60_000) {
-        throw new AssemblyAiError("network", "Lost contact with AssemblyAI for 10 minutes. The transcript may still be running; Retry keeps waiting.");
+        throw new AssemblyAiError("network", "Lost contact with AssemblyAI. The transcript may still be running; Retry keeps waiting.");
       }
     }
     await clock.sleep(delayMs);
