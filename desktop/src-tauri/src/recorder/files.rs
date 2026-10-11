@@ -995,25 +995,32 @@ mod tests {
             } else {
                 assert!(mean > 0.10, "mic channel was lost: {mean}");
             }
-            let probe = std::process::Command::new("ffprobe")
-                .args([
-                    "-v",
-                    "error",
-                    "-select_streams",
-                    "a:0",
-                    "-show_entries",
-                    "stream=channels,sample_rate,bit_rate",
-                    "-of",
-                    "default=noprint_wrappers=1",
-                ])
-                .arg(&note)
-                .output()
-                .expect("ffprobe is required to verify the real capture encode");
-            assert!(probe.status.success());
-            let report = String::from_utf8(probe.stdout).unwrap();
-            assert!(report.contains("channels=1"), "{report}");
-            assert!(report.contains("sample_rate=16000"), "{report}");
-            assert!(report.contains("bit_rate=64000"), "{report}");
+            let spec = hound::WavReader::open(&decoded).unwrap().spec();
+            assert_eq!(spec.channels, 1);
+            assert_eq!(spec.sample_rate, 16_000);
+            // MPEG-2 Layer III at 16 kHz uses bitrate index 8 for 64 kb/s.
+            // Inspect the produced frame instead of requiring ffprobe on CI.
+            let mp3 = fs::read(&note).unwrap();
+            let offset = if mp3.starts_with(b"ID3") {
+                let size = mp3.get(6..10).expect("complete ID3 header");
+                10 + size
+                    .iter()
+                    .fold(0usize, |n, byte| (n << 7) | usize::from(byte & 0x7f))
+            } else {
+                0
+            };
+            let header = u32::from_be_bytes(
+                mp3.get(offset..offset + 4)
+                    .expect("MP3 frame header")
+                    .try_into()
+                    .unwrap(),
+            );
+            assert_eq!(header >> 21, 0x7ff, "invalid MP3 frame");
+            assert_eq!((header >> 19) & 0b11, 0b10, "expected MPEG-2");
+            assert_eq!((header >> 17) & 0b11, 0b01, "expected Layer III");
+            assert_eq!((header >> 12) & 0b1111, 8, "expected 64 kb/s");
+            assert_eq!((header >> 10) & 0b11, 2, "expected 16 kHz");
+            assert_eq!((header >> 6) & 0b11, 3, "expected mono");
             fs::remove_dir_all(base).unwrap();
         }
     }

@@ -433,25 +433,26 @@ async fn admission_orders_resolution_snapshot_and_concurrent_capture() {
             "{state}"
         );
     }
-    // A fake root serializes StartSession and GetSnapshot on the same lock.
+    // Keep the fake recorder's lock held until the snapshot has observed it;
+    // elapsed-time sleeps made this assertion race on loaded CI runners.
     let lock = Arc::new(parking_lot::Mutex::new(()));
     let writer_lock = lock.clone();
     let reader_lock = lock.clone();
     let (ready, locked) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
     let writer = std::thread::spawn(move || {
         let _guard = writer_lock.lock();
         ready.send(()).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(150));
+        released.recv().unwrap();
     });
     locked.recv().unwrap();
     let outcome = admit_transcription(&sessions, ID, || async move {
-        Ok(reader_lock
-            .try_lock_for(std::time::Duration::from_millis(100))
-            .is_none())
+        Ok(reader_lock.try_lock().is_none())
     })
     .await;
-    assert_eq!(code(outcome), "recording_busy");
+    release.send(()).unwrap();
     writer.join().unwrap();
+    assert_eq!(code(outcome), "recording_busy");
 }
 
 #[cfg(target_os = "macos")]
