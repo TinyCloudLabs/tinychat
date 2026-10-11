@@ -52,7 +52,7 @@ const SHEET = { screen: "interactive-sheet", platform: "ios", width: 390, height
 const PAGE_EMPTY = { ...PAGE, screen: "interactive-page-empty" };
 const SHEET_EMPTY = { ...SHEET, screen: "interactive-sheet-empty" };
 
-async function open(target: typeof PAGE, theme = "light") {
+async function open(target: { screen: string; platform: string; width: number; height: number }, theme = "light") {
   const page = await (
     await browser.newContext({
       viewport: { width: target.width, height: target.height },
@@ -202,14 +202,60 @@ describe.serial(`recorder-final saved note, ${engineName}`, () => {
     expect(errors).toEqual([]);
   });
 
+  for (const { name, width, textScale } of [
+    { name: "320 px wide", width: 320, textScale: "100%" },
+    { name: "320 px wide at 200% text", width: 320, textScale: "200%" },
+    { name: "390 px wide at 200% text", width: 390, textScale: "200%" },
+  ]) {
+    test(`sheet: the player fits ${name}`, async () => {
+      const { page, errors } = await open({ ...SHEET, width });
+      await page.addStyleTag({ content: `:root:root { font-size: ${textScale} !important; }` });
+      expect(await page.evaluate(() => getComputedStyle(document.documentElement).fontSize)).toBe(textScale === "200%" ? "32px" : "16px");
+      await page.getByTestId("note-audio-play").click();
+      const controls = page.getByTestId("note-audio-controls");
+      await shown(controls);
+      await until("the player to know its length", () =>
+        page.getByTestId("note-audio-player").evaluate((el: HTMLAudioElement) => el.readyState >= 1),
+      );
+      const fit = await controls.evaluate((el) => {
+        const box = el.getBoundingClientRect();
+        const parts = ["note-audio-toggle", "note-audio-time"].map((id) => el.querySelector(`[data-testid=${id}]`)!.getBoundingClientRect());
+        const range = el.querySelector("input[type=range]")!.getBoundingClientRect();
+        const all = [...parts, range];
+        const overlap = all.some((a, i) => all.some((b, j) => i < j && a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1));
+        const root = document.scrollingElement!;
+        return {
+          pageOverflow: root.scrollWidth - root.clientWidth,
+          left: box.left,
+          right: box.right,
+          viewport: window.innerWidth,
+          overlap,
+          partsInside: all.every((part) => part.left >= box.left - 1 && part.right <= box.right + 1),
+          rangeWidth: range.width,
+          rangeHeight: range.height,
+          timeText: el.querySelector("[data-testid=note-audio-time]")!.textContent,
+        };
+      });
+      expect(fit.pageOverflow).toBe(0);
+      expect(fit.left).toBeGreaterThanOrEqual(0);
+      expect(fit.right).toBeLessThanOrEqual(fit.viewport);
+      expect(fit.partsInside).toBe(true);
+      expect(fit.overlap).toBe(false);
+      expect(fit.rangeWidth).toBeGreaterThanOrEqual(96);
+      expect(fit.rangeHeight).toBeGreaterThanOrEqual(24);
+      expect(fit.timeText).toMatch(/^0:0\d \/ 0:\d\d$/);
+      expect(errors).toEqual([]);
+    });
+  }
+
   test("page: a moment button seeks the player", async () => {
     const { page, errors } = await open(PAGE);
     await shown(rendered(page));
     const moment = rendered(page).getByRole("button", { name: "Play from 0:08" });
     await shown(moment);
     await moment.click();
+    await shown(page.getByTestId("note-audio-controls"));
     const audio = page.getByTestId("note-audio-player");
-    await shown(audio);
     await until("the player to be at or past 0:08", () =>
       audio.evaluate((el: HTMLAudioElement) => el.readyState >= 1 && el.currentTime >= 8),
     );

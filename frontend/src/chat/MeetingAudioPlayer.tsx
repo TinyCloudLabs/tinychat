@@ -3,7 +3,7 @@ import { Loader2Icon, PauseIcon, PlayIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { formatClockDuration } from "@/capture/library/formatters";
-import { playbackDuration, scrubTarget } from "./audioPlayback";
+import { PHONE_AUDIO_UNAVAILABLE, playbackDuration, scrubTarget } from "./audioPlayback";
 
 interface MeetingAudioPlayerProps {
   /**
@@ -36,12 +36,13 @@ export type PlayerState =
   | { phase: "missing" }
   | { phase: "failed"; reason?: string };
 
-/** Ready with the resolved URL, or failed with the real reason it could not be resolved. */
+/** Ready with the resolved URL, or failed with calm copy; the real reason it could not be resolved goes to the console. */
 export async function stateForResolvedUrl(resolveUrl: () => Promise<string>): Promise<PlayerState> {
   try {
     return { phase: "ready", url: await resolveUrl() };
   } catch (error) {
-    return { phase: "failed", reason: error instanceof Error ? error.message : String(error) };
+    console.error("[Audio] Could not resolve this phone's audio", error);
+    return { phase: "failed", reason: PHONE_AUDIO_UNAVAILABLE };
   }
 }
 
@@ -215,14 +216,14 @@ function ReadyPlayer({ url, durationSecs, audioRef, onLoadedMetadata, onPlayingC
   };
 
   return (
-    <div className="flex min-h-11 items-center gap-2 rounded-lg bg-muted/50 pr-3" data-testid="note-audio-controls" data-loading={loading || undefined}>
+    <div className="flex min-h-11 flex-wrap items-center gap-x-2 rounded-lg bg-muted/50 py-0.5 pr-3" data-testid="note-audio-controls" data-loading={loading || undefined}>
       <Button type="button" variant="ghost" size="icon" onClick={toggle} aria-label={playing ? "Pause" : "Play"} data-testid="note-audio-toggle">
         {playing ? <PauseIcon aria-hidden /> : <PlayIcon aria-hidden />}
       </Button>
       <input
         type="range"
         aria-label="Seek"
-        className="h-11 min-w-0 flex-1 cursor-pointer accent-primary disabled:cursor-default disabled:opacity-50"
+        className="h-11 min-w-[96px] flex-1 basis-[96px] cursor-pointer accent-primary disabled:cursor-default disabled:opacity-50"
         min={0}
         max={total ?? 1}
         step={0.1}
@@ -236,7 +237,7 @@ function ReadyPlayer({ url, durationSecs, audioRef, onLoadedMetadata, onPlayingC
           setElapsed(target);
         }}
       />
-      <span className="tnum flex shrink-0 items-center gap-1.5 text-meta text-muted-foreground" data-testid="note-audio-time">
+      <span className="tnum ml-auto flex shrink-0 items-center gap-1.5 pl-3 text-meta text-muted-foreground" data-testid="note-audio-time">
         {loading && <Loader2Icon className="size-3.5 motion-safe:animate-spin" aria-hidden />}
         {readout}
       </span>

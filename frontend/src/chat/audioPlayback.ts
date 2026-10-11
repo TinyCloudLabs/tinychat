@@ -1,3 +1,6 @@
+/** What the user is told when a note's audio file on this phone cannot be opened; the detail goes to the console. */
+export const PHONE_AUDIO_UNAVAILABLE = "Couldn\u2019t open this note\u2019s audio on this phone.";
+
 /**
  * The length a player shows: the media's own once it reports a real one, else the length the
  * recording was saved with. A streamed or header-less file reports Infinity or NaN (and some

@@ -1,12 +1,12 @@
 // A note's audio player (TC-761; moved from the Voice notes card's tests):
 // Play audio, then how much of a long file has loaded, then the player.
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { installDom } from "@/test/dom";
-import { playbackDuration, scrubTarget } from "./audioPlayback";
+import { PHONE_AUDIO_UNAVAILABLE, playbackDuration, scrubTarget } from "./audioPlayback";
 import { MeetingAudioPlayer, MeetingAudioPlayerView, stateForResolvedUrl, type PlayerState } from "./MeetingAudioPlayer";
 
 const render = (state: PlayerState, durationSecs?: number | null) => renderToStaticMarkup(<MeetingAudioPlayerView state={state} onPlay={() => {}} durationSecs={durationSecs} />);
@@ -38,10 +38,9 @@ describe("MeetingAudioPlayerView", () => {
     expect(render({ phase: "missing" })).toContain("The audio is no longer stored.");
   });
 
-  test("a local URL that could not be resolved shows the real reason, with Try again", () => {
-    const html = render({ phase: "failed", reason: "Could not open this phone's audio: the file is gone" });
-    expect(html).toContain("Could not open this phone&#x27;s audio: the file is gone");
-    expect(html).not.toContain("Couldn");
+  test("a local URL that could not be resolved shows calm copy, with Try again, and no internal text", () => {
+    const html = render({ phase: "failed", reason: PHONE_AUDIO_UNAVAILABLE });
+    expect(html).toContain("Couldn\u2019t open this note\u2019s audio on this phone.");
     expect(html).toContain("Try again");
   });
 
@@ -50,7 +49,14 @@ describe("MeetingAudioPlayerView", () => {
       phase: "ready",
       url: "capacitor://localhost/_capacitor_file_/a.m4a",
     });
-    expect(await stateForResolvedUrl(async () => { throw new Error("tombstoned"); })).toEqual({ phase: "failed", reason: "tombstoned" });
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const cause = new Error("Could not open this phone's audio: loadVoiceNoteAudio: Key not found: xyz/abc");
+      expect(await stateForResolvedUrl(async () => { throw cause; })).toEqual({ phase: "failed", reason: PHONE_AUDIO_UNAVAILABLE });
+      expect(logged).toHaveBeenCalledWith("[Audio] Could not resolve this phone's audio", cause);
+    } finally {
+      logged.mockRestore();
+    }
   });
 });
 
