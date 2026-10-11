@@ -52,6 +52,9 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
         if (savedInstanceState != null) consumedCommandId = savedInstanceState.getString("consumedCommandId");
         consumeIntent(getIntent());
         super.onCreate(savedInstanceState);
+        getBridge().addWebViewListener(new WebViewRecovery(this, getBridge().getAppUrl()));
+        String recoveredUrl = WebViewRecovery.takePendingUrl();
+        if (recoveredUrl != null) getBridge().getWebView().post(() -> getBridge().getWebView().loadUrl(recoveredUrl));
         CaptureEngine.get(this).addListener(this);
     }
     @Override protected void onNewIntent(Intent intent) {
