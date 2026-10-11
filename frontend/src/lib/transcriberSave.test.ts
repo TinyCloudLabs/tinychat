@@ -101,6 +101,7 @@ import { saveTranscriberMeeting, listSavedTranscriberMeetingIds } from "./transc
 import { transcriptKvKey } from "./connectors/connectorStore";
 import { syncTranscriberLibrary } from "../chat/useTranscriberLibrarySync";
 import type { TranscriberClient } from "./transcriberApi";
+import { resetSpaceLaneForTests, runOnSpaceLane } from "./spaceWriteLane";
 
 function libraryFixture() {
   const sql = new Database(":memory:");
@@ -220,4 +221,160 @@ test("a failed completeness read is isolated and never overwrites the unreadable
   expect(states).toEqual({ [meeting.id]: "error", [second.id]: "saved" });
   expect(f.writes()).toBe(2);
   f.sql.close();
+});
+
+test("a voice-note lane save runs while the meetings list request is pending", async () => {
+  resetSpaceLaneForTests();
+  let releaseList!: (result: Awaited<ReturnType<TranscriberClient["list"]>>) => void;
+  let announceList!: () => void;
+  const listStarted = new Promise<void>((resolve) => { announceList = resolve; });
+  const client = { list: () => {
+    announceList();
+    return new Promise((resolve) => { releaseList = resolve; });
+  } } as unknown as TranscriberClient;
+  const sync = syncTranscriberLibrary({
+    tcw: {} as TinyCloudWeb,
+    client,
+    saver: { listSaved: async () => ({ ok: true, data: [] }), save: async () => ({ ok: true }) },
+  });
+  await listStarted;
+
+  await expect(runOnSpaceLane(async () => "voice note saved", {
+    operation: "voice-note save while transcriber list is pending",
+  })).resolves.toBe("voice note saved");
+
+  releaseList({ status: "ok", value: { meetings: [] } });
+  await sync;
+});
+
+test("transcriber space reads and writes use the lane, while transcript HTTP stays outside it", async () => {
+  resetSpaceLaneForTests();
+  let releaseLane!: () => void;
+  let enteredLane!: () => void;
+  const laneGate = new Promise<void>((resolve) => { releaseLane = resolve; });
+  const laneEntered = new Promise<void>((resolve) => { enteredLane = resolve; });
+  const occupying = runOnSpaceLane(async () => { enteredLane(); await laneGate; });
+  await laneEntered;
+  let listCalled = false;
+  let listSavedCalled = false;
+  let releaseTranscript!: (result: Awaited<ReturnType<TranscriberClient["transcript"]>>) => void;
+  let announceTranscript!: () => void;
+  const transcriptStarted = new Promise<void>((resolve) => { announceTranscript = resolve; });
+  let saveCalled = false;
+  let releaseWriteLane: () => void = () => {};
+  const client = {
+    list: async () => { listCalled = true; return { status: "ok", value: { meetings: [meeting] } }; },
+    transcript: () => {
+      announceTranscript();
+      return new Promise((resolve) => { releaseTranscript = resolve; });
+    },
+  } as unknown as TranscriberClient;
+  const sync = syncTranscriberLibrary({
+    tcw: {} as TinyCloudWeb,
+    client,
+    saver: {
+      listSaved: async () => { listSavedCalled = true; return { ok: true, data: [] }; },
+      save: async () => { saveCalled = true; return { ok: true }; },
+    },
+  });
+
+  try {
+    expect(listCalled).toBe(true);
+    expect(listSavedCalled).toBe(false);
+    releaseLane();
+    await occupying;
+    await transcriptStarted;
+
+    let enteredWriteLane!: () => void;
+    const writeGate = new Promise<void>((resolve) => { releaseWriteLane = resolve; });
+    const writeLaneEntered = new Promise<void>((resolve) => { enteredWriteLane = resolve; });
+    const otherWrite = runOnSpaceLane(async () => { enteredWriteLane(); await writeGate; });
+    await writeLaneEntered;
+    releaseTranscript({ status: "ok", value: { status: "ready", transcript } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(saveCalled).toBe(false);
+    releaseWriteLane();
+    await otherWrite;
+    await sync;
+    expect(saveCalled).toBe(true);
+  } finally {
+    releaseLane();
+    releaseWriteLane();
+  }
+});
+
+test("transcriber sync rechecks the account in the queued lane job before saving", async () => {
+  let current = true;
+  let writes = 0;
+  const client = {
+    list: async () => ({ status: "ok", value: { meetings: [meeting] } }),
+    transcript: async () => {
+      current = false; // The account changes while the network read is in flight.
+      return { status: "ok", value: { status: "ready", transcript } };
+    },
+  } as unknown as TranscriberClient;
+  await syncTranscriberLibrary({
+    tcw: {} as TinyCloudWeb,
+    client,
+    isCurrent: () => current,
+    saver: {
+      listSaved: async () => ({ ok: true, data: [] }),
+      save: async () => { writes++; return { ok: true }; },
+    },
+  });
+  expect(writes).toBe(0);
+});
+
+test("an account switch while a fetched transcript waits for the lane prevents its write", async () => {
+  resetSpaceLaneForTests();
+  let releaseRead!: () => void;
+  let enteredRead!: () => void;
+  const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+  const readEntered = new Promise<void>((resolve) => { enteredRead = resolve; });
+  const blockingRead = runOnSpaceLane(async () => { enteredRead(); await readGate; });
+  await readEntered;
+
+  let current = true;
+  let releaseTranscript!: (result: Awaited<ReturnType<TranscriberClient["transcript"]>>) => void;
+  let announceTranscript!: () => void;
+  const transcriptStarted = new Promise<void>((resolve) => { announceTranscript = resolve; });
+  let writes = 0;
+  const client = {
+    list: async () => ({ status: "ok", value: { meetings: [meeting] } }),
+    transcript: () => {
+      announceTranscript();
+      return new Promise((resolve) => { releaseTranscript = resolve; });
+    },
+  } as unknown as TranscriberClient;
+  const sync = syncTranscriberLibrary({
+    tcw: {} as TinyCloudWeb,
+    client,
+    isCurrent: () => current,
+    saver: {
+      listSaved: async () => ({ ok: true, data: [] }),
+      save: async () => { writes++; return { ok: true }; },
+    },
+  });
+
+  let releaseOtherWrite: () => void = () => {};
+  try {
+    releaseRead();
+    await blockingRead;
+    await transcriptStarted;
+    let enterOtherWrite!: () => void;
+    const otherWriteStarted = new Promise<void>((resolve) => { enterOtherWrite = resolve; });
+    const otherWriteGate = new Promise<void>((resolve) => { releaseOtherWrite = resolve; });
+    const otherWrite = runOnSpaceLane(async () => { enterOtherWrite(); await otherWriteGate; });
+    await otherWriteStarted;
+    releaseTranscript({ status: "ok", value: { status: "ready", transcript } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    current = false;
+    releaseOtherWrite();
+    await otherWrite;
+    await sync;
+    expect(writes).toBe(0);
+  } finally {
+    releaseRead();
+    releaseOtherWrite();
+  }
 });

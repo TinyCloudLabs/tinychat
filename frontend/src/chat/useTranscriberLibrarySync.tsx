@@ -5,7 +5,7 @@ import { createTranscriberClient, type TranscriberClient, type TranscriberMeetin
 import { listSavedTranscriberMeetingIds, saveTranscriberMeeting } from "@/lib/transcriberSave";
 import { isSecretsUnlocked, onSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
 import { secretsAvailable } from "@/lib/openkeyNative";
-import { enqueueDrainWork } from "./useBackgroundDrain";
+import { runOnSpaceLane } from "@/lib/spaceWriteLane";
 
 export type TranscriberSaveState = "saving" | "saved" | "error";
 export const TRANSCRIBER_LIBRARY_RETRY_MS = 30_000;
@@ -28,10 +28,17 @@ export async function syncTranscriberLibrary(input: {
 }): Promise<void> {
   const { tcw, client, saver = defaultSaver, isCurrent = () => true, onState = () => {} } = input;
   if (!isCurrent()) return;
+  // This API call can be slow or retry for tens of seconds; it does not touch
+  // the user's space and must never occupy the serial space-write lane.
   const listed = await client.list();
   if (listed.status !== "ok" || !isCurrent()) return;
-  const complete = await saver.listSaved(tcw);
-  if (!complete.ok || !isCurrent()) return;
+  // Only actual space reads/writes take the lane. Recheck after queueing so an
+  // account switch while waiting cannot make this pass inspect the new space.
+  const complete = await runOnSpaceLane(async () => {
+    if (!isCurrent()) return null;
+    return saver.listSaved(tcw);
+  }, { operation: "Transcriber library: list saved meetings" });
+  if (!complete?.ok || !isCurrent()) return;
   const saved = new Set(complete.data ?? []);
   for (const row of listed.value.meetings) {
     if (!isCurrent()) return;
@@ -41,8 +48,15 @@ export async function syncTranscriberLibrary(input: {
     try {
       const result = await client.transcript(row.id);
       if (!isCurrent()) return;
-      const ok = result.status === "ok" && result.value.status === "ready"
-        && (await saver.save(tcw, row, result.value.transcript)).ok;
+      let ok = false;
+      if (result.status === "ok" && result.value.status === "ready") {
+        const fetchedTranscript = result.value.transcript;
+        const saved = await runOnSpaceLane(async () => {
+          if (!isCurrent()) return null;
+          return saver.save(tcw, row, fetchedTranscript);
+        }, { operation: `Transcriber library: save meeting ${row.id}` });
+        ok = saved?.ok === true;
+      }
       if (isCurrent()) onState(row.id, ok ? "saved" : "error");
     } catch {
       // One broken recording must not starve the rest or leak error payloads.
@@ -69,11 +83,9 @@ export function useTranscriberLibrarySync(input: {
     const run = () => {
       if (!isCurrent() || running.current) return;
       running.current = true;
-      void enqueueDrainWork(async () => {
-        await syncTranscriberLibrary({ tcw, client: api, isCurrent, onState: (id, state) => {
-          if (!cancelled) setSaved((old) => ({ ...old, [id]: state }));
-        } });
-      }).catch(() => { /* The next wake retries failures outside an individual recording. */ })
+      void syncTranscriberLibrary({ tcw, client: api, isCurrent, onState: (id, state) => {
+        if (!cancelled) setSaved((old) => ({ ...old, [id]: state }));
+      } }).catch(() => { /* The next wake retries failures outside an individual recording. */ })
         .finally(() => { running.current = false; });
     };
     run();
