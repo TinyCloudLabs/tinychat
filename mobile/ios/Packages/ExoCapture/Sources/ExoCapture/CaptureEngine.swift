@@ -536,7 +536,7 @@ public final class CaptureEngine {
                             DispatchQueue.main.async { self.writerFailed(error) }
                         }
                     }
-                    self.lastTapAt = ProcessInfo.processInfo.systemUptime
+                    self.lastTapAt = self.retryNow
                     self.tapDeliveryCount &+= 1
                     if when.isSampleTimeValid {
                         self.lastTapEndSample = when.sampleTime + AVAudioFramePosition(buffer.frameLength)
