@@ -1,7 +1,7 @@
 import { MicIcon } from "lucide-react";
 
 import { pipelineActionPriority, type NotePipeline, type PipelineActionKind } from "@/lib/voiceNotes/notePipeline";
-import { haloLabel, PipelineHalo } from "../pipeline/PipelineHalo";
+import { PipelineTrackSummary, pipelineTrackLabel } from "../pipeline/PipelineTrackSummary";
 import { HOME_COPY } from "./homeCopy";
 
 export interface InProgressNoteRow {
@@ -87,15 +87,14 @@ export function InProgressVoiceCard(props: {
       <ul className="soft-progress-rows" data-testid="voice-note-progress-rows">
         {rows.map((row) => (
           <li key={row.id}>
-            <button type="button" className="soft-progress-row" aria-label={`${row.title}. ${haloLabel(row.pipeline)}${row.spokenDuration ? `. ${row.spokenDuration}` : ""}`} onClick={() => props.onOpen(row.id)}>
+            <button type="button" className="soft-progress-row" aria-label={`${row.title}. ${pipelineTrackLabel(row.pipeline)}${row.spokenDuration ? `. ${row.spokenDuration}` : ""}`} onClick={() => props.onOpen(row.id)}>
               <span className="soft-tile" aria-hidden="true"><MicIcon className="soft-ico" /></span>
               <span className="soft-row-text">
                 <b className="soft-row-title">{row.title}</b>
-                <span className="soft-row-meta">{currentCaption(row.pipeline)}</span>
+                <span className="soft-row-meta"><PipelineTrackSummary pipeline={row.pipeline} /></span>
               </span>
               <span className="soft-row-aside" aria-hidden="true">
                 {row.duration && <span className="tnum">{row.duration}</span>}
-                <PipelineHalo pipeline={row.pipeline} />
               </span>
             </button>
           </li>

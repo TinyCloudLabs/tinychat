@@ -18,7 +18,7 @@ const pipeline = (patch: Partial<NotePipeline> = {}): NotePipeline => ({
   steps: [
     { key: "phone", label: "On this phone", state: "done" },
     { key: "space", label: "In your space", state: "active", caption: "Uploading · 42%", progress: 0.42 },
-    { key: "transcript", label: "Transcript", state: "upcoming" },
+    { key: "transcript", label: "Transcript", state: "done" },
     { key: "notes", label: "Notes", state: "skipped" },
   ], current: "space", done: false, ...patch,
 });

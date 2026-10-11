@@ -1,5 +1,5 @@
-// One pure selector from everything the app knows about a note to the four-step picture of where it is:
-// on this phone -> in your space -> transcript -> notes. The surfaces (stepper, row halo, In progress card)
+// One pure selector from everything the app knows about a note to its independent audio and transcript tracks.
+// The surfaces (stepper, row halo, In progress card)
 // render this and nothing else. `NotePipelineInput` mirrors, structurally, the signals the stores publish; the
 // wiring that fills it from the stores is separate.
 import {
@@ -346,14 +346,18 @@ const needsYou = (state: StepState) => state === "blocked" || state === "failed"
 
 export function notePipeline(input: NotePipelineInput): NotePipeline {
   const phone = phoneStep(input);
-  const phoneDone = phone.state === "done";
-  const space = phoneDone ? spaceStep(input) : UNREACHED;
+  // A quarantined or unwritten capture has no audio that the uploader can read yet; this is a capture fact, not a
+  // dependency on the phone track's position in a sequence.
+  const audioUnavailable = input.capture.issue === "recoveryFailed" || input.capture.issue === "quarantined" || input.capture.issue === "write_failed";
+  const space = audioUnavailable ? UNREACHED : spaceStep(input);
   const { readError, inSpace } = input.transcript;
   // A failed read leaves the route unknown: with no transcript in the space that is a failure, with one the transcript is done (and the failure is shown below).
   const transcript: Result = readError != null && inSpace === null
-    ? phoneDone ? failed(LOCAL_COPY.readFailed(readError), "retry") : UNREACHED
-    : input.route === "off" && readError == null ? { state: "skipped" } : phoneDone ? transcriptStep(input) : UNREACHED;
-  const notes: Result = !input.hasNotesOrMoments && input.notes.state !== "unreadable" ? { state: "skipped" } : phoneDone ? notesStep(input, transcript.state) : UNREACHED;
+    ? failed(LOCAL_COPY.readFailed(readError), "retry")
+    : input.route === "off" && readError == null ? { state: "skipped" } : transcriptStep(input);
+  const notes: Result = !input.hasNotesOrMoments && input.notes.state !== "unreadable"
+    ? { state: "skipped" }
+    : input.space.saved ? notesStep(input, transcript.state) : UNREACHED;
 
   const results: [StepKey, string, Result][] = [
     ["phone", STEP_LABEL.phone(input.device), phone],

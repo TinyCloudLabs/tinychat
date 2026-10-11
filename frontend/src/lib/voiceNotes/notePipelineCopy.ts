@@ -5,8 +5,8 @@ import type { PipelineActionKind, PipelineDevice, StepKey } from "./notePipeline
 export const deviceName = (device: PipelineDevice): string => (device === "mac" ? "this Mac" : "this phone");
 
 export const STEP_LABEL = {
-  phone: (device: PipelineDevice) => (device === "mac" ? "On this Mac" : "On this phone"),
-  space: "In your space",
+  phone: (device: PipelineDevice) => (device === "mac" ? "Audio on this Mac" : "Audio on this phone"),
+  space: "Audio in your space",
   transcript: "Transcript",
   notes: "Notes",
 } as const satisfies Record<StepKey, string | ((device: PipelineDevice) => string)>;
