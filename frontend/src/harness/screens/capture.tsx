@@ -142,7 +142,19 @@ declare global {
 }
 const ON_PHONE: Partial<RecorderValue> = {
   ...SOFT_IDLE,
-  pending: { listing: { state: "ok", count: 2 }, running: false, lastError: null, uploadingId: null, online: true },
+  pending: {
+    listing: { state: "ok", count: 2 },
+    notes: ["rec-waiting-1", "rec-waiting-2"].map((id, index) => ({
+      id,
+      startedAt: FROZEN_NOW - (index + 1) * 60_000,
+      durationMs: 42_000,
+      upload: { state: "waiting" as const, bytes: 0, total: 0 },
+    })),
+    running: false,
+    lastError: null,
+    uploadingId: null,
+    online: true,
+  },
   retryPending: () => {
     window.exoUiRetryPending = (window.exoUiRetryPending ?? 0) + 1;
   },

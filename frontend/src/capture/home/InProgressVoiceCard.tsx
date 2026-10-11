@@ -77,8 +77,8 @@ export function InProgressVoiceCard(props: {
       )}
       {!action && props.onSaveNow && (
         <span className="soft-pill-hit" data-hit-area="">
-          <button type="button" className="soft-pill" onClick={props.onSaveNow} data-testid="voice-note-save-now">
-            {HOME_COPY.saveNow}
+          <button type="button" className="soft-pill" onClick={props.onSaveNow} data-testid="voice-note-retry">
+            <span data-testid="voice-note-save-now">{HOME_COPY.saveNow}</span>
           </button>
         </span>
       )}

@@ -49,7 +49,7 @@ function SoftFrame(props: { children: React.ReactNode; title: string }) {
   const theme = useSoftTheme();
   return (
     <SoftHomeProvider enabled issues={{}} onDismissIssue={() => true}>
-      <main className={`soft-home soft-skin ${theme} min-h-full px-4 pb-6`} data-layout="phone">
+      <main className={`soft-home soft-skin ${theme} h-full overflow-y-auto px-4 pb-6`} data-layout="phone">
         <h1 className="py-4 font-display text-title-1">{props.title}</h1>
         {props.children}
       </main>
