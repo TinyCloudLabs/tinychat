@@ -24,7 +24,10 @@ import type { HarnessScreen } from "../screen";
 const noop = () => {};
 
 // A steady moderate level, re-sent so the halo stays active (it goes quiet 450ms after the last sample).
-const STEADY_LEVEL = 0.15;
+// ?level=<0..1> turns the source up, to see how far the loudest ticks reach.
+const STEADY_LEVEL = Number(
+  new URLSearchParams(location.search).get("level") ?? 0.15,
+);
 const steadyLevel: RecorderValue["subscribeLevel"] = (listener) => {
   listener(STEADY_LEVEL);
   const timer = setInterval(() => listener(STEADY_LEVEL), 100);
@@ -38,6 +41,7 @@ const PRIVATE_CLOUD_ON: VoiceNoteTranscriptionProps = {
   maxSeconds: 600,
   jobs: new Map(),
   onTranscribe: noop,
+  onTranscribePrivately: noop,
   onConsent: noop,
   onTurnOff: noop,
   onRecheck: noop,

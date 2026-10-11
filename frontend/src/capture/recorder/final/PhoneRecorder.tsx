@@ -32,6 +32,7 @@ import { useMomentFlow } from "./useMomentFlow";
 import { useNoteSaver } from "./useNoteSaver";
 import { PrivacyScale } from "./PrivacyScale";
 import { RecorderRing } from "./RecorderRing";
+import { TimerDigits } from "./TimerDigits";
 import { selectRecorderView } from "./recorderView";
 import { shellForPlatform } from "./shellCapabilities";
 import { honestRecorderError } from "./honestRecorderError";
@@ -138,6 +139,7 @@ export function PhoneRecorder({
     shell,
     transcription: recorder.transcription,
     model: onDevice.model,
+    download: onDevice.download,
     transcriber: transcriberApi ?? recorder,
     signedIn: recorder.signedIn,
     notify: showToast,
@@ -335,15 +337,8 @@ export function PhoneRecorder({
         className="pr-main"
         data-noting={momentField !== null}
         inert={sheetOpen}
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          flex: 1,
-          minHeight: 0,
-          width: "100%",
-        }}
       >
+        <div className="pr-col pr-col-a">
         <div className="pr-top">
           <button
             type="button"
@@ -367,9 +362,10 @@ export function PhoneRecorder({
           <div
             className="pr-time soft-timer"
             role="timer"
+            aria-label={view.timer.text}
             data-dim={view.ring === "paused"}
           >
-            <span>{view.timer.text}</span>
+            <TimerDigits text={view.timer.text} />
             <button
               ref={markButton}
               type="button"
@@ -459,6 +455,8 @@ export function PhoneRecorder({
           />
         </div>
 
+        </div>
+        <div className="pr-col pr-col-b">
         <div className="pr-controls-wrap">
           <div className="pr-mrow">
             <button
@@ -496,7 +494,7 @@ export function PhoneRecorder({
             <span>more private</span>
             <span>more capable</span>
           </div>
-          <div className="pr-capline">{stop.captions[shell]}</div>
+          <div className="pr-capline">{choice.restingNote ?? stop.captions[shell]}</div>
           {!idleDenied && !audio.unsupported && (
             <ViaMenu
               inputs={audio.inputs}
@@ -530,6 +528,7 @@ export function PhoneRecorder({
           )}
         </div>
 
+        <div className="pr-dock">
         {alerts.map(({ message, retry }) => (
           <p key={message} className="pr-alert" role="alert">
             {message}
@@ -605,6 +604,8 @@ export function PhoneRecorder({
             </div>
           </>
         )}
+        </div>
+        </div>
       </div>
 
       {notesOpen && (

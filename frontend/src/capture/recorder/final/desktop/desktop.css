@@ -142,6 +142,10 @@
   text-overflow: ellipsis;
   animation: dr-toast 0.4s cubic-bezier(0.3, 1.6, 0.5, 1);
 }
+.dr .dr-toasts {
+  top: 50%;
+  translate: -50% -50%;
+}
 @keyframes dr-toast {
   from {
     opacity: 0;

@@ -16,7 +16,7 @@ import {
   type DesktopWhisperJob,
   type DesktopWhisperQueue,
 } from "@/lib/voiceNotes/desktop/desktopWhisper";
-import type { NoteTranscriptionState } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { HELD_NOTE_MESSAGE, type NoteTranscriptionState } from "@/lib/voiceNotes/voiceNoteTranscription";
 import type { LibraryItem } from "./LibraryRow";
 import { NoteDetailView, transcriptBlocks, type NoteDetailViewProps } from "./NoteDetailView";
 
@@ -176,6 +176,18 @@ describe("a voice note's transcription", () => {
     const unavailable = render({ transcription: transcription({ jobs: new Map([["rec-1", { kind: "failed", code: "upload_interrupted", message: "The upload did not complete.", retryable: true, reference: "cid-7" }]]), availability: "failed" }) });
     expect(unavailable).toContain("The upload did not complete.");
     expect(unavailable).not.toContain('data-testid="voice-note-transcribe-retry"');
+  });
+
+  test("a note held back says why and offers Transcribe with Private only while it can be sent", () => {
+    const held = (extra: Partial<Parameters<typeof transcription>[0]> = {}) =>
+      transcription({ jobs: new Map([["rec-1", { kind: "held", message: HELD_NOTE_MESSAGE }]]), ...extra });
+    const html = render({ transcription: held() });
+    expect(html).toContain("started from a shortcut, so it was not sent for transcription");
+    expect(html).toContain('data-testid="voice-note-transcribe-held"');
+    expect(html).toContain("Transcribe with Private");
+    const unconsented = render({ transcription: held({ consented: false }) });
+    expect(unconsented).toContain("so it was not sent for transcription");
+    expect(unconsented).not.toContain('data-testid="voice-note-transcribe-held"');
   });
 
   test("what the reads can't tell is never offered Transcribe", () => {

@@ -53,6 +53,7 @@
     --live-foreground: 0 0% 98%;
     --warning: 26 90% 37%;
     --destructive: 0 72% 51%;
+    --red-text: hsl(var(--destructive));
     --destructive-foreground: 0 0% 98%;
     --border: 240 5.9% 90%;
     --input: 240 5.9% 90%;
@@ -86,6 +87,7 @@
     --live-foreground: 240 10% 3.9%;
     --warning: 43 96% 56%;
     --destructive: 0 62.8% 50%;
+    --red-text: hsl(0 100% 70%);
     --destructive-foreground: 0 0% 98%;
     --border: 240 3.7% 15.9%;
     --input: 240 3.7% 15.9%;
@@ -261,6 +263,40 @@ html [data-vaul-overlay][data-state="closed"] {
   }
   html [data-vaul-overlay][data-state] {
     animation-duration: var(--dur-quick);
+  }
+}
+
+.receipt-status-header {
+  min-width: 0;
+}
+
+.receipt-status-header-container {
+  container: receipt-status-header / inline-size;
+  font-size: 1rem;
+}
+
+@container receipt-status-header (max-width: 17em) {
+  .receipt-status-header-container > .receipt-status-header {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    row-gap: 0.5rem;
+    padding-bottom: 0.5rem;
+  }
+
+  .receipt-status-header > [data-testid="recorder-minimise"] {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .receipt-status-header > [aria-hidden="true"] {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+
+  .receipt-status-header > [data-testid="voice-note-status"] {
+    grid-column: 1 / -1;
+    grid-row: 2;
   }
 }
 

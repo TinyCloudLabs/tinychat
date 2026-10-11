@@ -39,14 +39,15 @@ const PRIVATE_CLOUD_ON: VoiceNoteTranscriptionProps = {
   maxSeconds: 600,
   jobs: new Map(),
   onTranscribe: noop,
+  onTranscribePrivately: noop,
   onConsent: noop,
   onTurnOff: noop,
   onRecheck: noop,
 };
 const TRANSCRIBES: Partial<RecorderValue> = { available: true, transcription: PRIVATE_CLOUD_ON };
 
-// The Library sits under the Soft header, set in Fraunces, so the Literata font check does not apply.
-const LIBRARY = { group: "library", layout: "pane", displayTitle: false, path: "/chat/capture/library", platform: "ios" } as const;
+// The Library sits under the Soft header, set in the app's Literata.
+const LIBRARY = { group: "library", layout: "pane", displayTitle: true, path: "/chat/capture/library", platform: "ios" } as const;
 const LISTED = '[data-testid="library-list"][data-state="ready"]';
 /** Only voice notes are listed: the Notes filter has applied. */
 const NOTES_ONLY = `${LISTED}:has([data-testid="voice-note-item"]):not(:has([data-testid="library-item"]))`;

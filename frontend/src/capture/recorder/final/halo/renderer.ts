@@ -6,6 +6,12 @@ const ATLAS_SIZE = 1024;
 const SPECTRUM_SIZE = 32;
 const DATA_SIZE = 128;
 const RA = 1 / BLEED;
+/**
+ * The furthest a tick can reach, as a multiple of the disc's diameter: the ticks start 0.055 beyond the disc and
+ * are at most 0.012 + 0.30 + 0.025 long (TICKS_SHADER, loudest tick of the loudest source), and a tick is
+ * (0.0115 + 0.003) * the 1.45 weight wide at its rounded end. All in the shader's units, where the disc's radius is RA.
+ */
+export const TICK_REACH = (RA + 0.055 + 0.337 + (0.0115 + 0.003) * 1.45) / RA;
 const compareByPixelSize = (a: HaloEntry, b: HaloEntry) =>
   b.pixelSize - a.pixelSize;
 
@@ -101,6 +107,8 @@ interface HaloEntry {
   uploadedTheme: HaloConfig["theme"] | null;
   discCanvas: HTMLCanvasElement | null;
   discTheme: HaloConfig["theme"] | null;
+  neutral: Rgb | null;
+  neutralTheme: HaloConfig["theme"] | null;
   source: HaloSource;
   frozenSource: HaloSource;
   data: Uint8Array;
@@ -128,6 +136,7 @@ interface Uniforms {
   level: WebGLUniformLocation | null;
   act: WebGLUniformLocation | null;
   light: WebGLUniformLocation | null;
+  neutral: WebGLUniformLocation | null;
   reduced: WebGLUniformLocation | null;
   avatar: WebGLUniformLocation | null;
   data: WebGLUniformLocation | null;
@@ -153,6 +162,7 @@ uniform vec2 uOrig;
 uniform float uLevel;
 uniform float uAct;
 uniform float uLight;
+uniform vec3 uNeutral;
 uniform float uReduce;
 uniform float uPause;
 uniform float uStill;
@@ -236,7 +246,7 @@ void main() {
   float tick = 1.0 - smoothstep(-px, px, distance);
 
   vec3 hot = mix(uAccA, uAccB, mirror);
-  vec3 neutral = uLight > 0.5 ? vec3(0.62, 0.62, 0.70) : vec3(0.30, 0.30, 0.38);
+  vec3 neutral = uNeutral;
   vec3 color = mix(neutral, hot, uAct);
 
   float breathe = 0.62 + 0.38 * (0.5 + 0.5 * sin(uClock * 2.4));
@@ -320,6 +330,26 @@ export function selectRenderSurface(
   return { canvas, gl, path };
 }
 
+type Rgb = [number, number, number];
+
+export function hslTripletToRgb(triplet: string): Rgb {
+  const match = /^(-?[\d.]+)(?:deg)?[\s,]+([\d.]+)%[\s,]+([\d.]+)%$/.exec(
+    triplet,
+  );
+  if (!match) {
+    throw new Error(`Halo tick token is not an "H S% L%" triplet: ${triplet}`);
+  }
+  const hue = (((Number(match[1]) % 360) + 360) % 360) / 30;
+  const saturation = Number(match[2]) / 100;
+  const lightness = Number(match[3]) / 100;
+  const chroma = saturation * Math.min(lightness, 1 - lightness);
+  const channel = (offset: number) => {
+    const k = (offset + hue) % 12;
+    return lightness - chroma * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+  };
+  return [channel(0), channel(8), channel(4)];
+}
+
 function makeDisc(fill: string, highlight: string): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = 256;
@@ -383,8 +413,8 @@ class SharedHaloRenderer {
   private startTime = performance.now();
   private lost = false;
 
-  constructor() {
-    const selected = selectRenderSurface(
+  constructor(selectedSurface?: SelectedSurface) {
+    const selected = selectedSurface ?? selectRenderSurface(
       () =>
         typeof OffscreenCanvas === "undefined"
           ? null
@@ -428,6 +458,8 @@ class SharedHaloRenderer {
       uploadedTheme: null,
       discCanvas: null,
       discTheme: null,
+      neutral: null,
+      neutralTheme: null,
       source: config.sourceRef.current,
       frozenSource: sourceSnapshot(config.sourceRef.current),
       data: new Uint8Array(DATA_SIZE * 4),
@@ -559,6 +591,7 @@ class SharedHaloRenderer {
       level: gl.getUniformLocation(program, "uLevel"),
       act: gl.getUniformLocation(program, "uAct"),
       light: gl.getUniformLocation(program, "uLight"),
+      neutral: gl.getUniformLocation(program, "uNeutral"),
       reduced: gl.getUniformLocation(program, "uReduce"),
       avatar: gl.getUniformLocation(program, "uAvatar"),
       data: gl.getUniformLocation(program, "uData"),
@@ -639,15 +672,23 @@ class SharedHaloRenderer {
     const view = canvas.ownerDocument.defaultView;
     if (!view) throw new Error("Halo disc cannot read the document theme");
     const styles = view.getComputedStyle(canvas);
-    const fillToken = styles.getPropertyValue("--solid").trim();
-    const foregroundToken = styles.getPropertyValue("--foreground").trim();
-    if (!fillToken || !foregroundToken) {
+    const rawDiscToken = styles.getPropertyValue("--disc").trim();
+    const rawForegroundToken = styles.getPropertyValue("--foreground").trim();
+    if (!rawDiscToken || !rawForegroundToken) {
       throw new Error(
-        `Halo disc theme tokens are missing for ${config.theme} mode (fill: ${fillToken || "missing"}, foreground: ${foregroundToken || "missing"})`,
+        `Halo disc theme tokens are missing for ${config.theme} mode (disc: ${rawDiscToken || "missing"}, foreground: ${rawForegroundToken || "missing"})`,
       );
     }
-    const fill = fillToken;
-    const highlight = `hsl(${foregroundToken} / 0.06)`;
+    const resolveVars = (value: string, seen = new Set<string>()): string =>
+      value.replace(/var\((--[\w-]+)\)/g, (_match, name: string) => {
+        if (seen.has(name)) throw new Error(`Halo disc theme token cycle at ${name}`);
+        const token = styles.getPropertyValue(name).trim();
+        if (!token) throw new Error(`Halo disc theme token ${name} is missing`);
+        return resolveVars(token, new Set([...seen, name]));
+      });
+    const fill = resolveVars(rawDiscToken);
+    const foreground = resolveVars(rawForegroundToken);
+    const highlight = `hsl(${foreground} / 0.06)`;
     const key = `${config.theme}|${fill}|${highlight}`;
     let disc = this.discCanvases.get(key);
     if (!disc) {
@@ -657,6 +698,27 @@ class SharedHaloRenderer {
     entry.discCanvas = disc;
     entry.discTheme = config.theme;
     return disc;
+  }
+
+  private getNeutral(entry: HaloEntry): Rgb {
+    const { canvas, config } = entry;
+    if (entry.neutral && entry.neutralTheme === config.theme) {
+      return entry.neutral;
+    }
+    const view = canvas.ownerDocument.defaultView;
+    if (!view) throw new Error("Halo ticks cannot read the document theme");
+    const token = view
+      .getComputedStyle(canvas)
+      .getPropertyValue("--muted-foreground")
+      .trim();
+    if (!token) {
+      throw new Error(
+        `Halo tick theme token --muted-foreground is missing for ${config.theme} mode`,
+      );
+    }
+    entry.neutral = hslTripletToRgb(token);
+    entry.neutralTheme = config.theme;
+    return entry.neutral;
   }
 
   private uploadSource(entry: HaloEntry, dt: number) {
@@ -898,6 +960,7 @@ class SharedHaloRenderer {
     gl.uniform1f(uniforms.level, entry.source.level);
     gl.uniform1f(uniforms.act, entry.source.act);
     gl.uniform1f(uniforms.light, config.theme === "day" ? 1 : 0);
+    gl.uniform3fv(uniforms.neutral, this.getNeutral(entry));
     gl.uniform1f(uniforms.reduced, entry.reduced ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
@@ -946,9 +1009,7 @@ class SharedHaloRenderer {
 
       const [accentA, accentB] = ACCENTS[config.theme];
       const light = config.theme === "day";
-      const neutralR = light ? 0.62 : 0.3;
-      const neutralG = light ? 0.62 : 0.3;
-      const neutralB = light ? 0.7 : 0.38;
+      const [neutralR, neutralG, neutralB] = this.getNeutral(entry);
       const restR = (accentA[0] + accentB[0]) / 2;
       const restG = (accentA[1] + accentB[1]) / 2;
       const restB = (accentA[2] + accentB[2]) / 2;
@@ -1039,9 +1100,7 @@ class SharedHaloRenderer {
       context.globalAlpha = 1;
       context.beginPath();
       context.arc(center, center, discSize / 2, 0, Math.PI * 2);
-      context.strokeStyle = light
-        ? "rgb(158 158 179 / 0.12)"
-        : "rgb(77 77 97 / 0.12)";
+      context.strokeStyle = `rgb(${Math.round(neutralR * 255)} ${Math.round(neutralG * 255)} ${Math.round(neutralB * 255)} / 0.12)`;
       context.lineWidth = 1;
       context.stroke();
       entry.lastDraw = now;
@@ -1075,6 +1134,21 @@ class SharedHaloRenderer {
 }
 
 let sharedRenderer: SharedHaloRenderer | undefined;
+
+/**
+ * Creates an isolated renderer around an explicitly selected surface. This is
+ * used by renderer tests that need to exercise WebGL-only behavior without
+ * depending on the host runtime's browser globals or the shared app singleton.
+ */
+export function createIsolatedHaloRendererForTests(surface: SelectedSurface) {
+  const renderer = new SharedHaloRenderer(surface);
+  return {
+    register: (canvas: HTMLCanvasElement, config: HaloConfig) =>
+      renderer.add(canvas, config),
+    renderPath: () => renderer.renderPath,
+    drawCount: (canvas: HTMLCanvasElement) => renderer.drawCount(canvas),
+  };
+}
 
 export function registerHalo(canvas: HTMLCanvasElement, config: HaloConfig) {
   sharedRenderer ??= new SharedHaloRenderer();

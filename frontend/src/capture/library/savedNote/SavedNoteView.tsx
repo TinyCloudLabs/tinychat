@@ -189,6 +189,7 @@ function Notes({
               initialValue={draft.draft ?? ""}
               onChange={draft.type}
               autoFocus
+              autoGrow
               disabled={note.saving}
               label={COPY.noteField}
               toolbarHost={toolbarHost}

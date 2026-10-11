@@ -4,9 +4,10 @@
 // out and offline, so its text (or "Couldn't transcribe on this phone" plus
 // Retry) comes from the native STT queue directly, not from the space's
 // transcript, which may still be unsaved or unsynced here.
+import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Capacitor } from "@capacitor/core";
-import { CheckIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
+import { Loader2Icon, RefreshCwIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
@@ -14,7 +15,8 @@ import { cn } from "@/lib/utils";
 import { VoiceNotes, type LocalTranscript, type NoteSttState, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { localTranscriptionUnavailable } from "@/lib/voiceNotes/captureEngine";
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
-import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
+import { downloadOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
+import { localModelGuide, modelActionLabel } from "./final/localModelGuide";
 import { receiptMetaText } from "./recorderCopy";
 import { RouteLine, type RouteNode } from "./RouteLine";
 
@@ -33,11 +35,23 @@ export interface SavedReceiptProps {
   sttHint?: NoteSttState | null;
   /** Private cloud has the note now. */
   transcribing?: boolean;
+  /** A note committed to Local that the user moved to private cloud: its on-device state steps aside. */
+  movedToPrivate?: boolean;
+  /** Why private cloud could not transcribe the note, once it has failed. */
+  privateFailure?: string | null;
+  /** How private cloud's job for the note ended, once it has finished. */
+  privateOutcome?: "transcribed" | "no_speech" | null;
+  /** Why this note was not sent for transcription (it began outside the app); the note's own Transcribe sends it. */
+  held?: string | null;
   error?: string | null;
   /** Saved, but some audio could not be written: an informational line, not an error. */
   notice?: string | null;
   /** A save of the notes on this phone is running. */
   retrying?: boolean;
+  /** Moves a note committed to Local over to private cloud ("Use Private instead"); the reason it could not, or null. Absent unless private cloud is on offer for this saved note. */
+  onUsePrivate?: () => Promise<string | null>;
+  /** The receipt is offering something to press (so the sheet stays open longer). */
+  onActionableChange?: (actionable: boolean) => void;
   onOpen?: () => void;
   onDone: () => void;
   onSaveNow: () => void;
@@ -112,6 +126,56 @@ export function useOnDeviceReceipt(id: string | undefined, wantsOnDevice: boolea
   return { kind: "pending" as const, state: durable?.state ?? "queued", retry };
 }
 
+type OnDeviceReceipt = ReturnType<typeof useOnDeviceReceipt>;
+
+/** What the receipt offers for a Local note: whether it is waiting on the model, and whether anything is there to press. */
+export function onDeviceOffer(args: {
+  onDevice: OnDeviceReceipt;
+  guide: { action?: unknown };
+  saved: boolean;
+  hasNote: boolean;
+  movedToPrivate: boolean;
+  canUsePrivate: boolean;
+  /** The receipt shows an Open button for the note. */
+  canOpen: boolean;
+}) {
+  const { onDevice, movedToPrivate } = args;
+  const needsModel = !movedToPrivate && onDevice.kind === "pending" && onDevice.state === "waiting_for_model";
+  const usePrivate = needsModel && args.saved && args.canUsePrivate;
+  const actionable = args.canOpen || (needsModel && (args.guide.action !== undefined || usePrivate)) || (!movedToPrivate && onDevice.kind === "failed" && args.hasNote);
+  return { needsModel, usePrivate, actionable };
+}
+
+/** The source reads "This phone" until a transcript made there exists. */
+export function honestSourceRoute(route: readonly RouteNode[], transcribedHere: boolean): RouteNode[] {
+  return route.map((node) => (node.kind === "source" && node.label === "This phone (transcribed here)" && !transcribedHere ? { ...node, label: "This phone" } : node));
+}
+
+/** A Local note whose model is not on the phone: what it needs and what can be done, with no spinner (nothing is running). */
+export function NeedsOnDeviceModel(props: { guide: ReturnType<typeof localModelGuide>; error: string | null; onUsePrivate?: () => void; switching?: boolean }) {
+  const { action } = props.guide;
+  return (
+    <div className="flex flex-col gap-2" data-testid="voice-note-on-device-needs-model">
+      <p role="status" className="text-callout text-muted-foreground">{action ? "Needs the on-device model" : props.guide.reason}</p>
+      {(action || props.onUsePrivate) && (
+        <div className="flex flex-wrap gap-2">
+          {action && (
+            <Button type="button" variant="outline" onClick={action.run} data-testid="voice-note-model-download-action">
+              {modelActionLabel(action)}
+            </Button>
+          )}
+          {props.onUsePrivate && (
+            <Button type="button" variant="outline" disabled={props.switching} onClick={props.onUsePrivate} data-testid="voice-note-use-private">
+              {props.switching ? `Switching to ${TRANSCRIBER_NAME["private-cloud"]}…` : `Use ${TRANSCRIBER_NAME["private-cloud"]} instead`}
+            </Button>
+          )}
+        </div>
+      )}
+      {props.error && <p role="alert" className="text-callout text-destructive">{props.error}</p>}
+    </div>
+  );
+}
+
 export function SavedReceipt(props: SavedReceiptProps) {
   const saved = props.outcome === "saved";
   const [localUrl, setLocalUrl] = useState<string | null>(null);
@@ -133,6 +197,27 @@ export function SavedReceipt(props: SavedReceiptProps) {
     return () => { active = false; };
   }, [props.saved?.id]);
   const onDevice = useOnDeviceReceipt(props.saved?.id, props.transcriber === "on-device", props.sttHint);
+  const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
+  const [modelError, setModelError] = useState<string | null>(null);
+  const [switching, setSwitching] = useState(false);
+  const guide = localModelGuide(sttStatus.models.length > 0 ? sttStatus : null, {
+    start: () => {
+      setModelError(null);
+      void downloadOnDeviceModel().then(setModelError);
+    },
+    error: null,
+  });
+  // A Local note moved to private cloud: that line below says so, and the on-device ones step aside.
+  const movedToPrivate = props.movedToPrivate === true;
+  const offer = onDeviceOffer({ onDevice, guide, saved, hasNote: !!props.saved, movedToPrivate, canUsePrivate: props.onUsePrivate !== undefined, canOpen: (saved || props.outcome === "local") && props.onOpen !== undefined });
+  const { needsModel, actionable } = offer;
+  const usePrivate = offer.usePrivate ? props.onUsePrivate : undefined;
+  const onActionableChange = props.onActionableChange;
+  useEffect(() => {
+    onActionableChange?.(actionable);
+    return () => onActionableChange?.(false);
+  }, [actionable, onActionableChange]);
+  const route = honestSourceRoute(props.route, onDevice.kind === "transcribed" && onDevice.transcript.outcome !== "no_speech");
   return (
     <section
       aria-label="Saved on this phone"
@@ -141,9 +226,6 @@ export function SavedReceipt(props: SavedReceiptProps) {
       className={cn("flex flex-col gap-3 rounded-xl border border-border p-4 motion-safe:animate-rise-in", props.className)}
     >
       <div className="flex flex-col gap-0.5">
-        <h3 className="flex items-center gap-2 text-headline">
-          <CheckIcon className="size-5 text-primary" aria-hidden="true" /> Saved on this phone
-        </h3>
         {props.saved && <p className="tnum text-meta text-muted-foreground">{receiptMetaText(props.saved.durationMs, props.saved.at)}</p>}
         {props.notice && (
           <p className="text-meta text-muted-foreground" data-testid="voice-note-partial-audio">
@@ -159,7 +241,7 @@ export function SavedReceipt(props: SavedReceiptProps) {
       {localUrl && <MeetingAudioPlayer url={localUrl} onPlayingChange={props.onPlayingChange} />}
       {localError && <p role="alert" className="text-callout text-destructive">{localError}</p>}
       {!localUrl && !localError && props.saved && <p role="status" className="text-meta text-muted-foreground">Getting this phone&apos;s audio…</p>}
-      <RouteLine nodes={props.route} landed={saved} />
+      <RouteLine nodes={route} landed={saved} />
       {props.outcome === "local" && <p className="text-meta text-muted-foreground">{
         props.localUpload === "held" ? "Kept on this phone. This note needs an ownership check before upload."
           : props.localUpload === "in-flight" ? "Another save is finishing in your TinyCloud space…"
@@ -167,10 +249,34 @@ export function SavedReceipt(props: SavedReceiptProps) {
       }</p>}
       {saved && <p className="text-meta text-muted-foreground">Saved to your TinyCloud space</p>}
       {saved && props.transcribing && <p className="text-meta text-muted-foreground">Transcribing in private cloud…</p>}
-      {onDevice.kind === "pending" && (
+      {saved && props.held && <p role="status" className="text-meta text-muted-foreground" data-testid="voice-note-held">{props.held}</p>}
+      {saved && props.privateOutcome && (
+        <p className="text-meta text-muted-foreground" data-testid="voice-note-private-done">
+          {props.privateOutcome === "no_speech" ? "No speech was found in this note." : "Transcribed in private cloud"}
+        </p>
+      )}
+      {props.privateFailure && (
+        <p role="alert" className="text-callout text-destructive" data-testid="voice-note-private-failed">Couldn&apos;t transcribe in private cloud: {props.privateFailure}</p>
+      )}
+      {needsModel && (
+        <NeedsOnDeviceModel
+          guide={guide}
+          error={modelError}
+          switching={switching}
+          onUsePrivate={usePrivate && (() => {
+            setModelError(null);
+            setSwitching(true);
+            void usePrivate().then((failure) => {
+              setModelError(failure);
+              setSwitching(false);
+            });
+          })}
+        />
+      )}
+      {!movedToPrivate && onDevice.kind === "pending" && !needsModel && (
         <p role="status" className="flex items-center gap-2 text-meta text-muted-foreground" data-testid="voice-note-on-device-pending">
           <Loader2Icon className="size-3.5 shrink-0 motion-safe:animate-spin" aria-hidden />
-          {onDevice.state === "waiting_for_model" ? "Waiting for the on-device model…" : "Transcribing on this phone…"}
+          Transcribing on this phone…
         </p>
       )}
       {onDevice.kind === "transcribed" && (
@@ -185,7 +291,7 @@ export function SavedReceipt(props: SavedReceiptProps) {
           </div>
         )
       )}
-      {onDevice.kind === "failed" && (
+      {!movedToPrivate && onDevice.kind === "failed" && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2" data-testid="voice-note-on-device-failed">
           <p role="alert" className="min-w-0 flex-1 text-callout text-destructive">Couldn&apos;t transcribe on this phone.</p>
           {props.saved && (

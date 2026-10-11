@@ -84,8 +84,8 @@ export function CalendarAutojoinSection(props: {
   // A short label and a one-line hint; when it joins, what it can reach and
   // what turning it off removes are How it works → Connectors.
   return <div className="mt-3 border-t border-border pt-3 text-xs">
-    <div className="flex items-center justify-between gap-2">
-      <div className="flex flex-wrap items-center gap-x-2">
+    <div data-testid="autojoin-control-row" className="flex flex-wrap items-center justify-between gap-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2">
         <span className="flex items-center font-medium">
           Calendar autojoin
           <InfoTip label="About calendar autojoin" className="-my-3 fine:-my-1">

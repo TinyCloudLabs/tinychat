@@ -7,10 +7,11 @@ import type { VoiceNoteTranscriptionProps } from "../transcriptionProps";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { SetTranscriberResult } from "../voiceNoteRecorderController";
 import type { ModeShell } from "./transcriptionModes";
-import { FINAL_COPY } from "./finalCopy";
+import { CHECK_AGAIN, FINAL_COPY, privateNotOffered } from "./finalCopy";
 import { localDesktopCaption, LOCAL_DESKTOP_NO_MODEL_EXPLANATION, type DesktopWhisperState } from "./desktop/useDesktopWhisper";
 import {
   DESKTOP_SIGNED_OUT_CAPTION,
+  LOCAL_NEEDS_MODEL,
   PRIVATE_UNAVAILABLE,
   SIGNED_OUT,
   SPEAKERS_NEEDS_CONSENT,
@@ -85,6 +86,7 @@ function choice(
   signedIn = true,
   shell: ModeShell = "phone",
   whisper?: DesktopWhisperState,
+  download?: { start: () => void; error: string | null },
 ) {
   const notices: string[] = [];
   let result!: ReturnType<typeof useTranscriptionChoice>;
@@ -93,6 +95,7 @@ function choice(
       shell,
       transcription: props,
       model,
+      download,
       transcriber: api,
       signedIn,
       whisper,
@@ -529,5 +532,107 @@ describe("useTranscriptionChoice on the Mac with Whisper", () => {
 
   test("the caption helper falls back to the generic line without a label", () => {
     expect(localDesktopCaption(null)).toBe(FINAL_COPY.modes.localDesktopCaption);
+  });
+});
+
+describe("Private while its availability is checked", () => {
+  const privateStop = (availability: VoiceNoteTranscriptionProps["availability"], onRecheck = noop) =>
+    choice(transcription({ availability, onRecheck }), fakeApi("on-device").api).result.stops.find((s) => s.stop.id === "private")!;
+
+  test("a pending check reads as checking, not as unavailable", () => {
+    const stop = privateStop("checking");
+    expect(stop.available).toBe(false);
+    expect(stop.reason).toBe(privateNotOffered("checking").reason);
+    expect(stop.action).toBeUndefined();
+  });
+
+  test("a failed check says so and offers Check again, which asks the transcriber to check", () => {
+    let rechecks = 0;
+    const stop = privateStop("failed", () => void rechecks++);
+    expect(stop.available).toBe(false);
+    expect(stop.reason).toBe(privateNotOffered("failed").reason);
+    expect(stop.action?.label).toBe(CHECK_AGAIN);
+    stop.action!.run();
+    expect(rechecks).toBe(1);
+  });
+
+  test("only a settled 'not offered' answer (or no transcriber) reads as not available right now", () => {
+    expect(privateStop("hidden").reason).toBe(PRIVATE_UNAVAILABLE);
+    const none = choice(undefined, fakeApi("on-device").api).result.stops.find((s) => s.stop.id === "private")!;
+    expect(none.reason).toBe(PRIVATE_UNAVAILABLE);
+  });
+
+  test("choosing Private while the check is out or failed returns why and asks for nothing", async () => {
+    for (const [availability, reason] of [["checking", privateNotOffered("checking").reason], ["failed", privateNotOffered("failed").reason]] as const) {
+      const { api, calls } = fakeApi("on-device");
+      const { result } = choice(transcription({ availability }), api);
+      expect(result.select("private")).toBe(reason);
+      await settle();
+      expect(calls).toEqual([]);
+    }
+  });
+});
+
+describe("Local without its on-device model", () => {
+  const ABSENT: OnDeviceSttStatus = {
+    ...MODEL,
+    models: MODEL.models.map((m) => ({ ...m, state: "absent" as const, bytes: 0, totalBytes: 1024 * 1024 })),
+    engine: "none",
+  };
+  const localStop = (model: OnDeviceSttStatus | null, download?: { start: () => void; error: string | null }, shell: ModeShell = "phone") =>
+    choice(transcription(), fakeApi("on-device").api, model, true, shell, undefined, download).result.stops.find((s) => s.stop.id === "local")!;
+
+  test("the row carries a control that starts the download", () => {
+    let started = 0;
+    const stop = localStop(ABSENT, { start: () => void started++, error: null });
+    expect(stop.available).toBe(false);
+    expect(stop.action?.label).toBe(FINAL_COPY.modelUnavailable);
+    stop.action!.run();
+    expect(started).toBe(1);
+  });
+
+  test("a download that could not start is the row's reason, with Try again", () => {
+    const stop = localStop(ABSENT, { start: noop, error: "Could not start the download: offline" });
+    expect(stop.reason).toBe("Could not start the download: offline");
+    expect(stop.action).toBeDefined();
+  });
+
+  test("a ready model needs no control", () => {
+    const stop = localStop(MODEL, { start: noop, error: null });
+    expect(stop.available).toBe(true);
+    expect(stop.action).toBeUndefined();
+  });
+
+  test("the Mac and the web never get a model download control", () => {
+    expect(localStop(ABSENT, { start: noop, error: null }, "web").action).toBeUndefined();
+  });
+});
+
+describe("useTranscriptionChoice: the knob never rests on Local without saying the model is missing", () => {
+  const NO_MODEL: OnDeviceSttStatus = { ...MODEL, engine: "none", models: [] };
+
+  test("resting on Local with the model absent shows the needs-model note", () => {
+    const { result } = choice(transcription(), fakeApi("on-device").api, NO_MODEL);
+    expect(result.mode).toBe("local");
+    expect(result.stops.find((s) => s.stop.id === "local")!.available).toBe(false);
+    expect(result.restingNote).toBe(LOCAL_NEEDS_MODEL);
+  });
+
+  test("a default that stands in for Local carries the note even though the knob is on another stop", () => {
+    const api = fakeApi("private-cloud").api;
+    api.transcriber = { id: "private-cloud", identifySpeakers: false, source: "default", localModelNeeded: true };
+    const { result } = choice(transcription(), api, NO_MODEL);
+    expect(result.mode).toBe("private");
+    expect(result.restingNote).toBe(LOCAL_NEEDS_MODEL);
+  });
+
+  test("no note when Local can run, or when another mode rests on its own choice", () => {
+    expect(choice(transcription(), fakeApi("on-device").api, MODEL).result.restingNote).toBeNull();
+    expect(choice(transcription(), fakeApi("private-cloud").api, NO_MODEL).result.restingNote).toBeNull();
+    expect(choice(transcription(), fakeApi("off").api, NO_MODEL).result.restingNote).toBeNull();
+  });
+
+  test("no note while the model's state is still unknown", () => {
+    expect(choice(transcription(), fakeApi("on-device").api, null).result.restingNote).toBeNull();
   });
 });

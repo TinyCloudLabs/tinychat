@@ -166,6 +166,7 @@ function Interactive({
     maxSeconds: 600,
     jobs: new Map(),
     onTranscribe: () => {},
+    onTranscribePrivately: () => {},
     onConsent: () => {
       log.calls.push("consent");
       setConsented(true);
@@ -330,6 +331,7 @@ function RouteControl() {
     maxSeconds: 600,
     jobs: new Map(),
     onTranscribe: () => {},
+    onTranscribePrivately: () => {},
     onConsent: () => {
       control.calls.push("consent");
       if (control.rejectConsent) throw new Error("Consent was not saved");

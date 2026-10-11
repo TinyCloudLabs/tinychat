@@ -80,10 +80,16 @@ public final class CaptureEngine {
     var debugInputRoute: (id: String?, sampleRate: Double?)?
     var debugNow: (() -> TimeInterval)?
     var debugMuxWaitTimeout: TimeInterval?
-    var debugMuxOperationTimeout: TimeInterval?
-    var debugScheduleTimedOutRetry: ((String) -> Void)?
+    var debugMuxStallTimeout: TimeInterval?
+    var debugMuxCeiling: TimeInterval?
+    /// Receives the id, the backoff delay and the retry itself; the test decides when it runs.
+    var debugScheduleTimedOutRetry: ((String, TimeInterval, @escaping () -> Void) -> Void)?
     var debugMuxWaitSeam: RecordingFinalizer.WaitSeam?
     #endif
+    /// Recovery of one note runs at most once at a time: launch sweep, automatic retry and
+    /// "Try again" all claim the id first. The mux itself runs outside the library's queue.
+    private let recoveryClaimLock = NSLock()
+    private var recoveryClaims = Set<String>()
     /// False only for the Debug-simulator synthetic source, which never acquires the recording
     /// session, applies a preferred input or deactivates a session it did not activate.
     private var usesHardwareSession: Bool {
@@ -182,11 +188,25 @@ public final class CaptureEngine {
     }
     #endif
 
-    private var muxWaitTimeout: TimeInterval {
+    /// The single mux rule for Stop, launch recovery and "Try again".
+    private func claimRecovery(_ id: String) -> Bool {
+        recoveryClaimLock.lock(); defer { recoveryClaimLock.unlock() }
+        return recoveryClaims.insert(id).inserted
+    }
+
+    private func releaseRecovery(_ id: String) {
+        recoveryClaimLock.lock(); recoveryClaims.remove(id); recoveryClaimLock.unlock()
+    }
+
+    private func muxConfig() -> RecordingFinalizer.Config {
+        var config = RecordingFinalizer.Config()
         #if DEBUG
-        if let debugMuxWaitTimeout { return debugMuxWaitTimeout }
+        if let debugMuxWaitTimeout { config.waitTimeout = debugMuxWaitTimeout }
+        if let debugMuxStallTimeout { config.stallTimeout = debugMuxStallTimeout }
+        config.ceilingOverride = debugMuxCeiling
+        if let debugMuxWaitSeam { config.seam = debugMuxWaitSeam }
         #endif
-        return 30
+        return config
     }
 
     private func emitAutoStopped(id: String, reason: String, result: Result<[String: Any], Error>,
@@ -258,6 +278,11 @@ public final class CaptureEngine {
                 }
                 CaptureRecoverySweep.run(ids: ids, recover: { id in
                     guard !library.isLiveCapture(id) else { return }
+                    guard claimRecovery(id) else {
+                        log.notice("recovery skipped id=\(id, privacy: .public) reason=already_recovering")
+                        return
+                    }
+                    defer { releaseRecovery(id) }
                     try library.beginRecoveryAttempt(id)
                     try recoverSession(id)
                     try library.clearRecoveryFailure(id)
@@ -536,7 +561,7 @@ public final class CaptureEngine {
                             DispatchQueue.main.async { self.writerFailed(error) }
                         }
                     }
-                    self.lastTapAt = ProcessInfo.processInfo.systemUptime
+                    self.lastTapAt = self.retryNow
                     self.tapDeliveryCount &+= 1
                     if when.isSampleTimeValid {
                         self.lastTapEndSample = when.sampleTime + AVAudioFramePosition(buffer.frameLength)
@@ -1048,6 +1073,11 @@ public final class CaptureEngine {
             captureSessionEnded?()
             emitState()
             DispatchQueue.global(qos: .utility).async { [self] in
+                guard claimRecovery(session.id) else {
+                    log.notice("recovery skipped id=\(session.id, privacy: .public) reason=already_recovering")
+                    return
+                }
+                defer { releaseRecovery(session.id) }
                 do { try recoverSession(session.id) }
                 catch {
                     log.error("Write-failure recovery failed: \(String(describing: error), privacy: .public)")
@@ -1073,14 +1103,7 @@ public final class CaptureEngine {
         let noSignal = noSignalMs
         let firstAudio = firstAudioAt
         let inputStopped = captureStoppedAt
-        let muxWaitTimeout = self.muxWaitTimeout
-        #if DEBUG
-        let muxWaitSeam = debugMuxWaitSeam
-        let muxOperationTimeout = debugMuxOperationTimeout
-        #else
-        let muxWaitSeam: RecordingFinalizer.WaitSeam? = nil
-        let muxOperationTimeout: TimeInterval? = nil
-        #endif
+        let muxConfig = self.muxConfig()
         limitTimer?.invalidate(); limitTimer = nil
         writer = nil; info = nil; intent = "stopped"; availability = "available"; reason = stopReason
         captureSessionEnded?()
@@ -1116,10 +1139,7 @@ public final class CaptureEngine {
                 log.notice("finalize stage=mux_start id=\(session.id, privacy: .public) durationMs=\(duration)")
                 let committed = try library.commit(session.id, sidecar: sidecar) { staged in
                     try RecordingFinalizer.mux(segments: RecordingFinalizer.segments(in: library.sessionURL(session.id)),
-                                               expectedAudioMs: duration, to: staged,
-                                               waitTimeout: muxWaitTimeout,
-                                               seam: muxWaitSeam ?? RecordingFinalizer.WaitSeam(),
-                                               operationTimeout: muxOperationTimeout)
+                                               expectedAudioMs: duration, to: staged, config: muxConfig)
                 }
                 log.notice("finalize stage=committed id=\(session.id, privacy: .public)")
                 let flushes = library.syncMetrics()
@@ -1146,24 +1166,56 @@ public final class CaptureEngine {
         }
     }
 
-    private func retryTimedOutSession(_ id: String) {
-        log.notice("finalize stage=recovery_scheduled id=\(id, privacy: .public) delaySeconds=2")
+    /// A timed-out Stop is retried automatically with backoff (2 s, 30 s) and then left to the
+    /// next launch's recovery sweep. Every attempt writes the recovery marker, so the note can
+    /// be retried from the UI ("Try again") at any point and quarantine accounting stays exact.
+    private func retryTimedOutSession(_ id: String, afterFailures failures: Int = 0) {
+        guard let delay = FinalizeRetrySchedule.delay(afterFailures: failures) else { return }
+        log.notice("finalize stage=recovery_scheduled id=\(id, privacy: .public) attempt=\(failures + 1) delaySeconds=\(delay)")
+        let run: () -> Void = { [weak self] in self?.runTimedOutRetry(id, failures: failures) }
         #if DEBUG
         if let debugScheduleTimedOutRetry {
-            debugScheduleTimedOutRetry(id)
+            debugScheduleTimedOutRetry(id, delay) { run() }
             return
         }
         #endif
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) { [weak self] in
-            guard let self else { return }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) { run() }
+    }
+
+    private func runTimedOutRetry(_ id: String, failures: Int) {
+        guard claimRecovery(id) else {
+            log.notice("finalize stage=recovery_skipped id=\(id, privacy: .public) reason=already_recovering")
+            return
+        }
+        defer { releaseRecovery(id) }
+        guard FileManager.default.fileExists(atPath: library.sessionURL(id).path),
+              !FileManager.default.fileExists(atPath: library.sidecarURL(id).path),
+              !library.isLiveCapture(id) else {
+            log.notice("finalize stage=recovery_skipped id=\(id, privacy: .public) reason=session_resolved_elsewhere")
+            return
+        }
+        do {
+            try library.beginRecoveryAttempt(id)
+            try recoverSession(id)
+            try library.clearRecoveryFailure(id)
+            log.notice("finalize stage=recovery_completed id=\(id, privacy: .public) attempt=\(failures + 1)")
+        } catch {
+            log.error("finalize stage=recovery_failed id=\(id, privacy: .public) attempt=\(failures + 1) error=\(String(describing: error), privacy: .public)")
+            var parked = false
             do {
-                try self.recoverSession(id)
-                self.log.notice("finalize stage=recovery_completed id=\(id, privacy: .public)")
-            } catch {
-                self.log.error("finalize stage=recovery_failed id=\(id, privacy: .public) error=\(String(describing: error), privacy: .public)")
-                DispatchQueue.main.async {
-                    self.emit("recoveryFailed", ["id": id, "reason": String(describing: error)], retained: true)
+                try library.noteRecoveryFailure(id, reason: String(describing: error))
+                parked = try library.listRecoveryFailures().contains {
+                    $0["id"] as? String == id && $0["quarantined"] as? Bool == true
                 }
+            } catch {
+                log.error("finalize stage=recovery_marker_failed id=\(id, privacy: .public) error=\(String(describing: error), privacy: .public)")
+            }
+            if !parked, FinalizeRetrySchedule.delay(afterFailures: failures + 1) != nil {
+                retryTimedOutSession(id, afterFailures: failures + 1)
+                return
+            }
+            DispatchQueue.main.async {
+                self.emit("recoveryFailed", ["id": id, "reason": String(describing: error)], retained: true)
             }
         }
     }
@@ -1401,7 +1453,8 @@ public final class CaptureEngine {
             return
         }
         if !FileManager.default.fileExists(atPath: library.journalURL(id).path) {
-            try library.delete(id)
+            // A concurrent commit may have published the note after the sidecar check above.
+            try library.deleteUncommitted(id)
             return
         }
         let events = try library.readJournal(id)
@@ -1428,7 +1481,7 @@ public final class CaptureEngine {
         }
         let segments = try RecordingFinalizer.segments(in: library.sessionURL(id))
         let frames = try segments.reduce(0) { sum, path in sum + ADTS.fullFrameCount(try Data(contentsOf: path)) }
-        guard frames > 0 else { try library.delete(id); return }
+        guard frames > 0 else { try library.deleteUncommitted(id); return }
         let option = events.last(where: { $0["e"] as? String == "options" }) ??
             (first["options"] as? [String: Any] ?? [:])
         let session = SessionInfo(id: id, rate: first["rate"] as? Int ?? 48_000,
@@ -1449,9 +1502,11 @@ public final class CaptureEngine {
         if events.last(where: { $0["e"] as? String == "stop" })?["reason"] as? String == "pause_timeout" {
             sidecar["exitReason"] = "pause_timeout"
         }
+        let muxConfig = self.muxConfig()
         let committed = try library.commit(id, sidecar: sidecar) { staged in
             try RecordingFinalizer.mux(segments: segments,
-                                       expectedAudioMs: sidecar["durationMs"] as? Int64 ?? 0, to: staged)
+                                       expectedAudioMs: sidecar["durationMs"] as? Int64 ?? 0, to: staged,
+                                       config: muxConfig)
         }
         try library.clearRecoveryFailure(id)
         DispatchQueue.main.async { [weak self] in
@@ -1475,7 +1530,7 @@ public final class CaptureEngine {
         let frames = try segments.reduce(Int64(0)) { sum, path in
             sum + Int64(try ADTS.fullFrameCount(Data(contentsOf: path)))
         }
-        guard frames > 0 else { try library.delete(id); return }
+        guard frames > 0 else { try library.deleteUncommitted(id); return }
         let choice = events.last(where: { $0["e"] as? String == "options" }) ??
             (first["options"] as? [String: Any] ?? [:])
         let session = SessionInfo(id: id, rate: first["rate"] as? Int ?? 48_000,
@@ -1513,6 +1568,8 @@ public final class CaptureEngine {
 
     public func retryRecovery(_ id: String) throws {
         guard RecordingLibrary.validID(id) else { throw CaptureError.invalidArgument }
+        guard claimRecovery(id) else { throw CaptureError.recordingInProgress }
+        defer { releaseRecovery(id) }
         try library.prepareRecoveryRetry(id)
         try library.beginRecoveryAttempt(id)
         do { try recoverSession(id); try library.clearRecoveryFailure(id) }

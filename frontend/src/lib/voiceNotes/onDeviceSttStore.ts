@@ -76,8 +76,42 @@ export function onDeviceModelLine(status: OnDeviceSttStatus): { text: string; pe
   if (!primary || primary.state === "absent") return { text: `Not downloaded (${totalMb} MB)`, percent: null };
   if (primary.state === "failed") return { text: primary.error ? `Couldn't download: ${primary.error}` : "Couldn't download the model", percent: null };
   if (primary.state === "ready") return { text: "Ready", percent: null };
+  if (primary.state === "checking") return { text: "Checking the downloaded model…", percent: null };
   if (status.download.state === "waiting_for_network") return { text: "Waiting for Wi-Fi…", percent: null };
   const totalBytes = onDeviceDownloadTotalBytes(status);
   const percent = totalBytes > 0 ? Math.min(100, Math.round((primary.bytes / totalBytes) * 100)) : null;
   return { text: `Downloading… ${totalMb} MB`, percent };
+}
+
+/** Starts the model download (Wi-Fi only). The reason it could not start, or null once it has; the model's own failures arrive through the status. */
+export async function downloadOnDeviceModel(): Promise<string | null> {
+  try {
+    await OnDeviceStt.downloadNow({ allowCellular: false });
+    return null;
+  } catch (caught) {
+    console.error("[OnDeviceStt] downloadNow failed", caught);
+    return `Could not start the download: ${caught instanceof Error ? caught.message : String(caught)}`;
+  }
+}
+
+/** Starts transcribing a note on this phone again. The reason it could not, or null. */
+export async function retryOnDeviceNote(id: string): Promise<string | null> {
+  try {
+    await OnDeviceStt.enqueue({ id });
+    return null;
+  } catch (caught) {
+    console.error("[OnDeviceStt] enqueue failed", id, caught);
+    return `Could not retry: ${caught instanceof Error ? caught.message : String(caught)}`;
+  }
+}
+
+/** Stops transcribing a note on this phone. The reason it could not, or null. */
+export async function cancelOnDeviceNote(id: string): Promise<string | null> {
+  try {
+    await OnDeviceStt.cancel({ id });
+    return null;
+  } catch (caught) {
+    console.error("[OnDeviceStt] cancel failed", id, caught);
+    return `Could not stop the on-device transcription: ${caught instanceof Error ? caught.message : String(caught)}`;
+  }
 }

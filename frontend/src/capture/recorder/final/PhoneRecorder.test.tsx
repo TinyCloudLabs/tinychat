@@ -69,7 +69,10 @@ describe("PhoneRecorder", () => {
 
   test("recording shows the timer, the pause ring, the scale and the controls", () => {
     const html = render();
-    expect(html).toContain("12:48");
+    expect(html).toContain('role="timer" aria-label="12:48"');
+    expect(html).toContain(
+      '<span class="pr-digit">1</span><span class="pr-digit">2</span><span class="pr-colon">:</span><span class="pr-digit">4</span><span class="pr-digit">8</span>',
+    );
     expect(html).toContain('aria-label="Pause recording"');
     expect(html).toContain('role="slider"');
     expect(html).toContain('aria-valuetext="Private"');

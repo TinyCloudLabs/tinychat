@@ -117,7 +117,7 @@ import { RecordingOverlay } from "./capture/recorder/RecordingOverlay";
 import { handoffBeforeCredentialClear, withCaptureDeadline } from "./lib/voiceNotes/accountHandoff";
 import { createVoiceNotePipeline } from "./lib/voiceNotes/voiceNotePipeline";
 import { nextTransitionGen } from "./lib/voiceNotes/accountHandoff";
-import { effectiveCaptureOptions, readTranscriberPreference } from "./lib/voiceNotes/transcriberPreference";
+import { writeAccountDefaults } from "./lib/voiceNotes/transcriberPreference";
 import { advanceAccountGeneration } from "./lib/voiceNotes/accountContext";
 import { GmeetSessionSync } from "./chat/useGmeetSessionSync";
 import type {
@@ -264,10 +264,7 @@ export function App() {
   const restoreCaptureAfterAuthAbort = useCallback(async () => {
     if (!did || !tcw || !captureEngineAvailable()) return;
     try {
-      const current = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
-      const transitionGen = nextTransitionGen(current.transitionGen);
-      await withCaptureDeadline(VoiceNotes.setCaptureDefaults({ ...current, ...effectiveCaptureOptions(readTranscriberPreference(), true),
-        accountDid: did, transitionGen }));
+      await withCaptureDeadline(writeAccountDefaults((current) => ({ accountDid: did, transitionGen: nextTransitionGen(current.transitionGen) })));
       if (voiceNotePipeline && tcw.spaceId) {
         voiceNotePipeline.resume();
         const generation = advanceAccountGeneration();

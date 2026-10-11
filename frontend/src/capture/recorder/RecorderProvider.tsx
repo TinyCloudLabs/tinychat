@@ -12,9 +12,9 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { Button } from "@/components/ui/button";
 import { hapticRecordStarted, hapticSaved, hapticWarning } from "@/lib/haptics";
-import { VOICE_NOTE_MAX_DURATION_MS, VoiceNotes, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { VOICE_NOTE_MAX_DURATION_MS, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
-import { effectiveCaptureOptions, readTranscriberPreference } from "@/lib/voiceNotes/transcriberPreference";
+import { writeAccountDefaults } from "@/lib/voiceNotes/transcriberPreference";
 import type { PendingSnapshot } from "@/lib/voiceNotes/recorderSaves";
 import { DISCARDED, micWarning, recorderStatusText, RECEIPT_KEPT } from "./recorderCopy";
 import type { RecorderCaptureIssue, RecorderMic, RecorderPhase, RecorderState } from "./recorderReducer";
@@ -29,9 +29,15 @@ import { shouldScheduleReceiptDismissal } from "./receiptBehavior";
 /** How long a saved receipt stays, once its content is actually visible, before the sheet closes
  * and the island lets go. */
 export const RECEIPT_MS = 3000;
+/** The same, while the receipt offers something to press (Get model, Use Private instead, Retry). */
+export const RECEIPT_ACTION_MS = 10000;
+
 /** A hard ceiling on how long a receipt may hold the sheet open waiting for that content — a
  * native read that never resolves must not keep Stop from ever returning to Capture home. */
 export const RECEIPT_MAX_MS = 15000;
+
+/** How long a receipt with everything on show stays open: longer while it offers something to press. */
+export const receiptWindowMs = (actionable: boolean) => (actionable ? RECEIPT_ACTION_MS : RECEIPT_MS);
 
 export function permissionDeniedAnnouncement(wasDenied: boolean, denied: boolean): string | null {
   return !wasDenied && denied ? "Microphone access is off" : null;
@@ -101,6 +107,8 @@ export interface RecorderValue {
   openSheet(): void;
   minimiseSheet(): void | Promise<void>;
   setReceiptPlaying(playing: boolean): void;
+  /** The receipt is offering something to press: it stays open longer (RECEIPT_ACTION_MS). */
+  setReceiptActionable(actionable: boolean): void;
   /** The receipt's local Play control is ready (or has visibly failed to load): starts the
    * display clock, so it can never close the sheet before there is anything to show. */
   setReceiptReady(): void;
@@ -158,17 +166,17 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     setConfigured(null);
     void (async () => {
       try {
-        const native = await VoiceNotes.getCaptureDefaults();
-        if (!active) return;
         const key = "exo.capture.transitionGen";
-        const local = Number(globalThis.localStorage?.getItem(key) ?? 0) || 0;
-        // A preference sync is not an account transition. Only an owner change advances the generation.
-        const transitionGen = native.accountDid === (tcw.did ?? null) && native.status === "signed_in"
-          ? native.transitionGen : Math.max(native.transitionGen, local) + 1;
-        await VoiceNotes.setCaptureDefaults({ ...native,
-          ...effectiveCaptureOptions(readTranscriberPreference(), tcw.did != null),
-          accountDid: tcw.did ?? null, transitionGen });
-        globalThis.localStorage?.setItem(key, String(transitionGen));
+        const written = await writeAccountDefaults((native) => {
+          if (!active) return null;
+          const local = Number(globalThis.localStorage?.getItem(key) ?? 0) || 0;
+          // A preference sync is not an account transition. Only an owner change advances the generation.
+          const transitionGen = native.accountDid === (tcw.did ?? null) && native.status === "signed_in"
+            ? native.transitionGen : Math.max(native.transitionGen, local) + 1;
+          return { accountDid: tcw.did ?? null, transitionGen };
+        });
+        if (!written) return;
+        globalThis.localStorage?.setItem(key, String(written.transitionGen));
         if (active) { setDefaultsError(null); setConfigured({ tcw, did: tcw.did ?? null }); if (tcw.did) onAccountReady?.(tcw); }
       } catch (caught) {
         if (active) setDefaultsError(`Could not set this phone's recording account: ${caught instanceof Error ? caught.message : String(caught)}`);
@@ -180,6 +188,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   const { state, dismissOutcome, subscribeLevel, record: startRecording } = recorder;
   const [sheetOpen, setSheetOpen] = useState(false);
   const [receiptPlaying, setReceiptPlaying] = useState(false);
+  const [receiptActionable, setReceiptActionable] = useState(false);
   const [receiptReady, setReceiptReadyState] = useState(false);
   const [momentFieldFocused, setMomentFieldFocused] = useState(false);
   const setReceiptReady = useCallback(() => setReceiptReadyState(true), []);
@@ -246,9 +255,9 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     const timer = setTimeout(() => {
       setSheetOpen(false);
       dismissOutcome();
-    }, RECEIPT_MS);
+    }, receiptWindowMs(receiptActionable));
     return () => clearTimeout(timer);
-  }, [dismissOutcome, momentFieldFocused, receiptPlaying, receiptReady, state.outcome, state.lastSaved, state.permissionDenied, state.limitNotice]);
+  }, [dismissOutcome, momentFieldFocused, receiptActionable, receiptPlaying, receiptReady, state.outcome, state.lastSaved, state.permissionDenied, state.limitNotice]);
 
   useEffect(() => recorder.setOnPresent(() => setSheetOpen(true)), [recorder.setOnPresent]);
 
@@ -316,6 +325,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       openSheet,
       minimiseSheet,
       setReceiptPlaying,
+      setReceiptActionable,
       setReceiptReady,
       subscribeLevel,
     }),
@@ -435,6 +445,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       openSheet: noop,
       minimiseSheet: noop,
       setReceiptPlaying: noop,
+      setReceiptActionable: noop,
       setReceiptReady: noop,
       subscribeLevel: (listener) => {
         for (const level of levels ?? []) listener(level);

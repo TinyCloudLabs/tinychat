@@ -25,6 +25,8 @@ export interface NoteWriterProps {
   autoFocus?: boolean;
   /** Nothing can be typed or formatted (the note is not ready); `aria-disabled` keeps the field focusable. */
   disabled?: boolean;
+  /** Grow the field to fit its Markdown content, up to the viewport limit. */
+  autoGrow?: boolean;
   label?: string;
   placeholder?: string;
   /** Where the formatting bar renders, outside the writer: an element to portal into, or null while that element is not mounted yet (no bar until it is). Omitted: the bar sits under the field. */
@@ -47,6 +49,7 @@ export function NoteWriter({
   textareaRef,
   autoFocus = false,
   disabled = false,
+  autoGrow = false,
   label = NOTES_COPY.noteField,
   placeholder = NOTES_COPY.notePlaceholder,
   toolbarHost,
@@ -59,9 +62,18 @@ export function NoteWriter({
     target.focus({ preventScroll: true });
     target.setSelectionRange(target.value.length, target.value.length);
   }, [autoFocus]);
+  const resizeToContent = (target: HTMLTextAreaElement) => {
+    if (!autoGrow) return;
+    target.style.height = "auto";
+    target.style.height = `${target.scrollHeight}px`;
+  };
+  useEffect(() => {
+    if (autoGrow && field.current) resizeToContent(field.current);
+  }, [autoGrow, initialValue]);
   const apply = (target: HTMLTextAreaElement, edit: TextEdit) => {
     target.setRangeText(edit.text, edit.from, edit.to, "end");
     target.setSelectionRange(edit.select[0], edit.select[1]);
+    resizeToContent(target);
     onChange(target.value);
   };
   const toolbar = (
@@ -103,7 +115,7 @@ export function NoteWriter({
     </div>
   );
   return (
-    <div className="nt-writer">
+    <div className={`nt-writer${autoGrow ? " nt-writer-autogrow" : ""}`}>
       <textarea
         ref={field}
         className="nt-wta"
@@ -113,7 +125,10 @@ export function NoteWriter({
         readOnly={disabled}
         aria-disabled={disabled || undefined}
         defaultValue={initialValue}
-        onChange={(event) => onChange(event.target.value)}
+        onChange={(event) => {
+          resizeToContent(event.currentTarget);
+          onChange(event.target.value);
+        }}
         onKeyDown={(event) => {
           if (disabled) return;
           const target = event.currentTarget;

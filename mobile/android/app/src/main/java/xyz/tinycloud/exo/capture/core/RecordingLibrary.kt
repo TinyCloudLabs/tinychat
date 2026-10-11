@@ -366,6 +366,12 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
             }
         } finally { if (tmp.exists()) tmp.delete(); end(id) }
     }
+    /** Marks the note's on-device job cancelled, unless it already has a transcript: a finished note keeps `done`. */
+    fun markSttCancelled(id: String): Boolean = lock.withLock {
+        if (getTranscript(id) != null) return@withLock false
+        mutate(id, "stt.write") { note -> note.getJSONObject("stt").put("state", "cancelled") }
+        true
+    }
     fun getTranscript(id: String): JSONObject? = lock.withLock {
         requireId(id); ensureAlive(id)
         File(root, "$id.transcript.json").takeIf { it.isFile }?.let { JSONObject(it.readText()) }

@@ -8,10 +8,9 @@ import { SIGNED_OUT } from "@/capture/recorder/final/useTranscriptionChoice";
 import { useRecorder } from "@/capture/recorder/RecorderProvider";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Button } from "@/components/ui/button";
-import { onDeviceSttStore, onDeviceModelLine, primaryOnDeviceModel } from "@/lib/voiceNotes/onDeviceSttStore";
-import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
+import { downloadOnDeviceModel, onDeviceSttStore, onDeviceModelLine, primaryOnDeviceModel } from "@/lib/voiceNotes/onDeviceSttStore";
 import { nativeVoiceNotesAvailable, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { readDefaultTranscriber, setDefaultTranscriber } from "@/lib/voiceNotes/transcriberPreference";
+import { readDefaultTranscriber, setDefaultTranscriber, subscribeTranscriberPreference } from "@/lib/voiceNotes/transcriberPreference";
 
 type Transcription = ReturnType<typeof useRecorder>["transcription"];
 
@@ -44,23 +43,40 @@ export function PrivateUnavailable(props: { signedIn: boolean; transcription: Tr
   );
 }
 
+/** The default mode as the engine holds it. A choice moves it only once the engine has taken it; a refusal is shown. */
+export function useDefaultTranscriber() {
+  const [value, setValue] = useState<TranscriberId | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const read = () => {
+      readDefaultTranscriber().then(setValue).catch((err: unknown) => {
+        console.error("[VoiceNotes] Could not read the default transcriber", err);
+        setError(`Could not read the default transcriber: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    };
+    read();
+    return subscribeTranscriberPreference(read);
+  }, []);
+  const choose = (next: TranscriberId) => {
+    setError(null);
+    // The control follows the engine's default through the preference listener, so it only moves once the engine has it.
+    setDefaultTranscriber(next).catch((err: unknown) => {
+      console.error("[VoiceNotes] Could not save the default transcriber", err);
+      setError(`Could not save the default transcriber: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  };
+  return { value, error, choose };
+}
+
 export function VoiceNotesTranscriberSettings() {
   const { transcription, signedIn } = useRecorder();
-  const [value, setValue] = useState<TranscriberId | null>(null);
+  const { value, error, choose } = useDefaultTranscriber();
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const model = primaryOnDeviceModel(sttStatus);
   const modelLine = onDeviceModelLine(sttStatus);
 
-  useEffect(() => {
-    void readDefaultTranscriber().then(setValue).catch((err: unknown) => console.warn("[VoiceNotes] Could not read the default transcriber", err));
-  }, []);
-
   if (!nativeVoiceNotesAvailable() || value === null) return null;
-
-  const choose = (next: TranscriberId) => {
-    setValue(next);
-    void setDefaultTranscriber(next).catch((err: unknown) => console.warn("[VoiceNotes] Could not save the default transcriber", err));
-  };
 
   const { privateOffered, options } = transcriberOptions(signedIn, transcription);
 
@@ -69,16 +85,18 @@ export function VoiceNotesTranscriberSettings() {
       <p className="text-xs text-muted-foreground">New recordings are transcribed this way by default. Each recording can still choose a different route.</p>
       <SegmentedControl<TranscriberId> aria-label="Default transcriber" value={value} onValueChange={choose} options={options} />
       {!privateOffered && <PrivateUnavailable signedIn={signedIn} transcription={transcription} />}
+      {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
       {value === "on-device" && (
         <div className="flex items-center justify-between gap-3 text-xs">
           <span className="text-muted-foreground">On-device model: {modelLine.text}</span>
-          {model && model.state !== "ready" && model.state !== "downloading" && model.state !== "queued" && (
-            <Button type="button" variant="outline" size="sm" onClick={() => void OnDeviceStt.downloadNow({ allowCellular: false })}>
+          {model && model.state !== "ready" && model.state !== "checking" && model.state !== "downloading" && model.state !== "queued" && (
+            <Button type="button" variant="outline" size="sm" onClick={() => { setDownloadError(null); void downloadOnDeviceModel().then(setDownloadError); }}>
               Download
             </Button>
           )}
         </div>
       )}
+      {value === "on-device" && downloadError && <p role="alert" className="text-xs text-destructive">{downloadError}</p>}
     </div>
   );
 }

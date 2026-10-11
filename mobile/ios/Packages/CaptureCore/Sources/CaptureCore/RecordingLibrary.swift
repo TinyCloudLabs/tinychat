@@ -663,22 +663,37 @@ public final class RecordingLibrary {
 
     public func delete(_ id: String) throws {
         guard Self.validID(id) else { throw CaptureError.invalidArgument }
-        try queue.sync {
-            generations[id, default: 0] += 1
-            try check("delete.tombstone")
-            let tombstone = url("tombstones/\(id)")
-            if !FileManager.default.fileExists(atPath: tombstone.path) {
-                guard FileManager.default.createFile(atPath: tombstone.path, contents: Data()) else {
-                    throw CaptureError.io("create tombstone")
-                }
-                try sync(url("tombstones"))
-            }
-            if let item = try? readSidecarUnlocked(id) {
-                try moveRemoteToOutboxUnlocked(item)
-            }
-            try unlinkArtifactsUnlocked(id)
-            liveSessions.remove(id)
+        try queue.sync { try deleteUnlocked(id) }
+    }
+
+    /// Recovery cleanup of a session that has nothing to publish. The committed check and the
+    /// delete share one critical section, so a concurrent commit can never be tombstoned: a
+    /// published note is reported (false) and left untouched.
+    @discardableResult
+    public func deleteUncommitted(_ id: String) throws -> Bool {
+        guard Self.validID(id) else { throw CaptureError.invalidArgument }
+        return try queue.sync {
+            guard !FileManager.default.fileExists(atPath: sidecarURL(id).path) else { return false }
+            try deleteUnlocked(id)
+            return true
         }
+    }
+
+    private func deleteUnlocked(_ id: String) throws {
+        generations[id, default: 0] += 1
+        try check("delete.tombstone")
+        let tombstone = url("tombstones/\(id)")
+        if !FileManager.default.fileExists(atPath: tombstone.path) {
+            guard FileManager.default.createFile(atPath: tombstone.path, contents: Data()) else {
+                throw CaptureError.io("create tombstone")
+            }
+            try sync(url("tombstones"))
+        }
+        if let item = try? readSidecarUnlocked(id) {
+            try moveRemoteToOutboxUnlocked(item)
+        }
+        try unlinkArtifactsUnlocked(id)
+        liveSessions.remove(id)
     }
 
     private func moveRemoteToOutboxUnlocked(_ item: [String: Any]) throws {

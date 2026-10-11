@@ -13,6 +13,7 @@ import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
 import { Button } from "@/components/ui/button";
 import { Empty } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { TranscriptionRouteControl } from "@/capture/recorder/TranscriptionRouteControl";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import type { FirefliesSentence } from "@/lib/connectors/firefliesClient";
@@ -24,6 +25,7 @@ import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 import { detailWhen, formatSpokenDuration } from "./formatters";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { DesktopWhisperStatus } from "./DesktopWhisperStatus";
+import { OnDeviceNoteStatus } from "./OnDeviceNoteStatus";
 import { HowThisGotHere } from "./HowThisGotHere";
 import { librarySourceLabel } from "./libraryKinds";
 import type { LibraryItem } from "./LibraryRow";
@@ -122,6 +124,18 @@ export function VoiceNoteTranscriptionStatus(props: {
     );
   }
   const offered = transcription.availability === "available" && transcription.consented;
+  if (job?.kind === "held") {
+    return (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2" data-testid="voice-note-transcription-held">
+        <p role="status" className="min-w-0 flex-1 text-callout text-muted-foreground">{job.message}</p>
+        {offered && (
+          <Button type="button" variant="outline" onClick={() => transcription.onTranscribe(item.sourceId)} data-testid="voice-note-transcribe-held">
+            <FileTextIcon aria-hidden /> Transcribe with {TRANSCRIBER_NAME["private-cloud"]}
+          </Button>
+        )}
+      </div>
+    );
+  }
   if (job?.kind === "failed") {
     return (
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2" data-testid="voice-note-transcription-failed">
@@ -157,6 +171,19 @@ export function VoiceNoteTranscriptionStatus(props: {
       </Button>
     </div>
   );
+}
+
+/** A voice note with no transcript yet: what the phone says about its on-device transcription, else where private cloud stands, else "No transcript.". */
+function NoTranscript(props: { item: LibraryItem; metadata: MeetingMetadataRead; transcription: VoiceNoteTranscriptionProps | undefined }) {
+  const outcome = voiceNoteTranscriptState(props.metadata.status === "ok" ? props.metadata.metadata : null).status;
+  // A plain function of its props (no hooks), so its "nothing to say" is known here.
+  const status = VoiceNoteTranscriptionStatus({ item: props.item, outcome, transcription: props.transcription }) ?? (
+    <p className="text-callout text-muted-foreground" data-testid={props.item.onPhone ? "note-transcript-on-phone" : undefined}>
+      {props.item.onPhone ? "No transcript yet. It shows here once this note is saved to your space." : "No transcript."}
+    </p>
+  );
+  if (outcome === "no_speech") return status;
+  return <OnDeviceNoteStatus noteId={props.item.sourceId} fallback={status} transcription={props.transcription} durationSecs={props.item.durationSecs} />;
 }
 
 /** The transcript text a voice note's row carries (`transcript_text`), for when its body can't be read. */
@@ -233,18 +260,7 @@ function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
           <DesktopWhisperStatus
             noteId={item.sourceId}
             enabled={props.desktopWhisper}
-            fallback={
-              // A plain function of its props (no hooks), so its "nothing to say" is known here.
-              VoiceNoteTranscriptionStatus({
-                item,
-                outcome: voiceNoteTranscriptState(metadata.status === "ok" ? metadata.metadata : null).status,
-                transcription: props.transcription,
-              }) ?? (
-                <p className="text-callout text-muted-foreground" data-testid={item.onPhone ? "note-transcript-on-phone" : undefined}>
-                  {item.onPhone ? "No transcript yet. It shows here once this note is saved to your space." : "No transcript."}
-                </p>
-              )
-            }
+            fallback={<NoTranscript item={item} metadata={metadata} transcription={props.transcription} />}
           />
         )
       ) : (

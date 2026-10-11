@@ -45,7 +45,6 @@
 .dock-timer {
   font-family: var(--soft-title-font);
   font-optical-sizing: auto;
-  font-variation-settings: "SOFT" 100;
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }

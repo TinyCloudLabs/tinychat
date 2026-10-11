@@ -76,7 +76,7 @@
 .soft-skin .nt-alert {
   margin: 0;
   font-size: 13px;
-  color: var(--red);
+  color: var(--red-text);
 }
 .soft-skin .nt-retry {
   margin-left: 8px;
@@ -106,7 +106,6 @@
 .soft-skin .fmd h3,
 .soft-skin .fmd h4 {
   font-family: var(--soft-title-font);
-  font-variation-settings: "SOFT" 100;
   font-weight: 450;
   line-height: 1.15;
   margin: 0.95em 0 0.35em;
@@ -137,17 +136,18 @@
 .soft-skin .fmd li.task {
   list-style: none;
   margin-left: -1.3em;
-  display: flex;
-  gap: 0.55em;
-  align-items: flex-start;
+  position: relative;
+  padding-left: 1.5em;
 }
 .soft-skin .fmd li.task input {
   appearance: none;
   -webkit-appearance: none;
-  flex: none;
+  position: absolute;
+  left: 0;
+  top: 0.24em;
   width: 15px;
   height: 15px;
-  margin: 0.24em 0 0;
+  margin: 0;
   border-radius: 5px;
   box-shadow: inset 0 0 0 1.5px var(--dim);
   display: grid;

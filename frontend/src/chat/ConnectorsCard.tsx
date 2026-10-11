@@ -586,21 +586,21 @@ const ConnectorRow: FC<{
   const Icon = d.icon ?? PlugIcon;
 
   return (
-    <div className={containerCls} {...groupProps}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 items-start gap-2">
+    <div className={containerCls} data-testid="connector-row" {...groupProps}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-[1_1_12rem] items-start gap-2">
           <Icon
             className={`mt-0.5 size-4 shrink-0 text-muted-foreground${comingSoon ? " opacity-50" : ""}`}
             aria-hidden
           />
-          <div className="min-w-0">
-            <span className="text-sm font-medium text-foreground">{d.name}</span>
-            <p className="mt-0.5 text-xs text-muted-foreground">{d.description}</p>
+          <div className="min-w-0 flex-1">
+            <span className="[overflow-wrap:anywhere] text-sm font-medium text-foreground">{d.name}</span>
+            <p className="mt-0.5 [overflow-wrap:anywhere] text-xs text-muted-foreground">{d.description}</p>
             {status && (
               <StatusDot
                 tone={status.tone}
                 data-row-status={status.label}
-                className={`mt-1 text-xs text-muted-foreground${comingSoon ? " [&>[data-tone]]:opacity-50" : ""}`}
+                className={`mt-1 text-xs text-muted-foreground [overflow-wrap:anywhere]${comingSoon ? " [&>[data-tone]]:opacity-50" : ""}`}
               >
                 {status.label}
               </StatusDot>
@@ -608,7 +608,7 @@ const ConnectorRow: FC<{
           </div>
         </div>
         {!comingSoon && (
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 items-center justify-end gap-2">
             {/* Withhold the action area until the persisted connection row has
                 loaded — avoids flashing "Connect" for an already-connected
                 connector before the SQL query resolves. */}
