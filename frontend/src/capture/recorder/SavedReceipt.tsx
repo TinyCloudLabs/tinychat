@@ -273,7 +273,7 @@ export function SavedReceipt(props: SavedReceiptProps) {
           </p>
         )}
       </div>
-      {localUrl && <MeetingAudioPlayer url={localUrl} onPlayingChange={props.onPlayingChange} />}
+      {localUrl && <MeetingAudioPlayer url={localUrl} durationSecs={props.saved ? props.saved.durationMs / 1000 : null} onPlayingChange={props.onPlayingChange} />}
       {localError && <p role="alert" className="text-callout text-destructive">{localError}</p>}
       {!localUrl && !localError && props.saved && <p role="status" className="text-meta text-muted-foreground">Getting this phone&apos;s audio…</p>}
       {stepperShown ? <ReceiptStepper view={pipelineView} /> : pipelineWaiting ? null : (

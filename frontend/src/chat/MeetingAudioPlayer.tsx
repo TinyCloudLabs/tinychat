@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useRef, useState, type Ref } from "react";
-import { Loader2Icon, PlayIcon } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { Loader2Icon, PauseIcon, PlayIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { formatClockDuration } from "@/capture/library/formatters";
+import { playbackDuration, scrubTarget } from "./audioPlayback";
 
 interface MeetingAudioPlayerProps {
   /**
@@ -20,6 +22,8 @@ interface MeetingAudioPlayerProps {
    * is shown as the reason.
    */
   resolveUrl?: () => Promise<string>;
+  /** How long the recording is, in seconds, when it is known before the audio loads. */
+  durationSecs?: number | null;
   onPlayingChange?: (playing: boolean) => void;
   /** Plays from `seconds` in: loads the audio first if it is not loaded yet. A new `nonce` is a new request. */
   seek?: { seconds: number; nonce: number } | null;
@@ -47,7 +51,7 @@ export async function stateForResolvedUrl(resolveUrl: () => Promise<string>): Pr
  * Unmounting (closing the meeting) aborts an in-flight read and releases the
  * object URL.
  */
-export function MeetingAudioPlayer({ load, url, resolveUrl, onPlayingChange, seek }: MeetingAudioPlayerProps) {
+export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, onPlayingChange, seek }: MeetingAudioPlayerProps) {
   const [state, setState] = useState<PlayerState>({ phase: "idle" });
   const controllerRef = useRef<AbortController | null>(null);
   const urlRef = useRef<string | null>(null);
@@ -124,15 +128,25 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, onPlayingChange, see
     playFrom(audio, seconds);
   };
 
-  return <MeetingAudioPlayerView state={state} onPlay={() => void onPlay()} onPlayingChange={onPlayingChange}
+  return <MeetingAudioPlayerView state={state} onPlay={() => void onPlay()} durationSecs={durationSecs} onPlayingChange={onPlayingChange}
     audioRef={audioRef} onLoadedMetadata={onLoadedMetadata}
     onError={() => { onPlayingChange?.(false); setState({ phase: "failed" }); }} />;
 }
 
+interface ViewProps {
+  state: PlayerState;
+  onPlay: () => void;
+  durationSecs?: number | null;
+  onPlayingChange?: (playing: boolean) => void;
+  onError?: () => void;
+  audioRef?: RefObject<HTMLAudioElement | null>;
+  onLoadedMetadata?: () => void;
+}
+
 /** What the player shows in each state (rendered on the server in the tests). */
-export function MeetingAudioPlayerView({ state, onPlay, onPlayingChange, onError, audioRef, onLoadedMetadata }: { state: PlayerState; onPlay: () => void; onPlayingChange?: (playing: boolean) => void; onError?: () => void; audioRef?: Ref<HTMLAudioElement>; onLoadedMetadata?: () => void }) {
+export function MeetingAudioPlayerView({ state, onPlay, durationSecs, onPlayingChange, onError, audioRef, onLoadedMetadata }: ViewProps) {
   if (state.phase === "ready") {
-    return <audio ref={audioRef} onLoadedMetadata={onLoadedMetadata} controls autoPlay src={state.url} onPlay={() => onPlayingChange?.(true)} onPause={() => onPlayingChange?.(false)} onEnded={() => onPlayingChange?.(false)} onError={onError} className="h-11 w-full" data-testid="note-audio-player" />;
+    return <ReadyPlayer url={state.url} durationSecs={durationSecs} audioRef={audioRef} onLoadedMetadata={onLoadedMetadata} onPlayingChange={onPlayingChange} onError={onError} />;
   }
   if (state.phase === "loading") {
     return (
@@ -156,6 +170,100 @@ export function MeetingAudioPlayerView({ state, onPlay, onPlayingChange, onError
           {state.reason ?? "Couldn\u2019t load the audio just now."}
         </p>
       )}
+    </div>
+  );
+}
+
+/**
+ * One player for every note: play or pause, elapsed over total, and a scrubber. The audio element
+ * is the engine and stays out of sight, because the native controls show 00:00 for the length
+ * until the file's header has been read.
+ */
+function ReadyPlayer({ url, durationSecs, audioRef, onLoadedMetadata, onPlayingChange, onError }: Pick<ViewProps, "durationSecs" | "audioRef" | "onLoadedMetadata" | "onPlayingChange" | "onError"> & { url: string }) {
+  const ownRef = useRef<HTMLAudioElement>(null);
+  const ref = audioRef ?? ownRef;
+  const [metadataLoaded, setMetadataLoaded] = useState(false);
+  const [waiting, setWaiting] = useState(false);
+  const [playing, setPlaying] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [mediaSecs, setMediaSecs] = useState(NaN);
+  const total = playbackDuration(durationSecs, mediaSecs);
+  const loading = !metadataLoaded || waiting;
+  const shownElapsed = total === null ? elapsed : Math.min(elapsed, total);
+  const elapsedText = formatClockDuration(Math.floor(shownElapsed));
+  const readout = total !== null ? `${elapsedText} / ${formatClockDuration(total)}` : loading ? "Loading…" : elapsedText;
+
+  const readClock = (audio: HTMLAudioElement) => {
+    setElapsed(audio.currentTime);
+    setMediaSecs(audio.duration);
+  };
+  const setPlayingState = (next: boolean) => {
+    setPlaying(next);
+    onPlayingChange?.(next);
+  };
+  const toggle = () => {
+    const audio = ref.current;
+    if (!audio) return;
+    if (!audio.paused) {
+      audio.pause();
+      return;
+    }
+    audio.play().catch((error: unknown) => {
+      console.error("[Audio] Could not play", error);
+      onError?.();
+    });
+  };
+
+  return (
+    <div className="flex min-h-11 items-center gap-2 rounded-lg bg-muted/50 pr-3" data-testid="note-audio-controls" data-loading={loading || undefined}>
+      <Button type="button" variant="ghost" size="icon" onClick={toggle} aria-label={playing ? "Pause" : "Play"} data-testid="note-audio-toggle">
+        {playing ? <PauseIcon aria-hidden /> : <PlayIcon aria-hidden />}
+      </Button>
+      <input
+        type="range"
+        aria-label="Seek"
+        className="h-11 min-w-0 flex-1 cursor-pointer accent-primary disabled:cursor-default disabled:opacity-50"
+        min={0}
+        max={total ?? 1}
+        step={0.1}
+        value={total === null ? 0 : shownElapsed}
+        disabled={!metadataLoaded || total === null}
+        onChange={(event) => {
+          const audio = ref.current;
+          if (!audio) return;
+          const target = scrubTarget(Number(event.currentTarget.value), total);
+          audio.currentTime = target;
+          setElapsed(target);
+        }}
+      />
+      <span className="tnum flex shrink-0 items-center gap-1.5 text-meta text-muted-foreground" data-testid="note-audio-time">
+        {loading && <Loader2Icon className="size-3.5 motion-safe:animate-spin" aria-hidden />}
+        {readout}
+      </span>
+      {loading && <span className="sr-only" role="status">Loading audio…</span>}
+      <audio
+        ref={ref}
+        autoPlay
+        preload="auto"
+        src={url}
+        className="sr-only"
+        data-testid="note-audio-player"
+        onLoadedMetadata={(event) => {
+          setMetadataLoaded(true);
+          readClock(event.currentTarget);
+          onLoadedMetadata?.();
+        }}
+        onDurationChange={(event) => setMediaSecs(event.currentTarget.duration)}
+        onTimeUpdate={(event) => setElapsed(event.currentTarget.currentTime)}
+        onSeeked={(event) => readClock(event.currentTarget)}
+        onWaiting={() => setWaiting(true)}
+        onCanPlay={() => setWaiting(false)}
+        onPlaying={() => setWaiting(false)}
+        onPlay={() => setPlayingState(true)}
+        onPause={() => setPlayingState(false)}
+        onEnded={() => setPlayingState(false)}
+        onError={onError}
+      />
     </div>
   );
 }
