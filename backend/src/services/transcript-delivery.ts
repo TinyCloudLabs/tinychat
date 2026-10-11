@@ -22,13 +22,24 @@ function capacityEnded(meeting: TranscriptionMeeting): boolean {
 }
 /** Final for the sweep; a completion wake may still ask upstream (only `cancelled` is reopened up front). */
 const WAKE_RECHECKS = new Set<DeliveryOutcome>(["cancelled", "capacity_exhausted"]);
+/** The retry classes' schedule: 1 min doubling to 6 h, a day after ten attempts, with 20 % jitter. */
+function backoffMs(attempts: number): number {
+  const base = attempts >= 10 ? 86_400_000 : Math.min(21_600_000, 60_000 * 2 ** (attempts - 1));
+  return base * (1 + Math.random() * 0.2);
+}
 export interface DeliveryState {
   v: 1;
   done: Record<string, { at: number; how: DeliveryOutcome }>;
   watch: Record<string, { since: number; nextAt: number; checks: number }>;
   retry: Record<string, { attempts: number; nextAt: number; code: string }>;
+  /**
+   * TC-907: a completion wake on a `capacity_exhausted` meeting, waiting for our own upstream read
+   * to confirm it. It survives the read throttle, upstream errors and restarts, and the sweep honours
+   * it when due; the terminal marker stays until the read confirms completion for this owner.
+   */
+  confirm?: Record<string, { attempts: number; nextAt: number }>;
 }
-const emptyState = (): DeliveryState => ({ v: 1, done: {}, watch: {}, retry: {} });
+const emptyState = (): DeliveryState => ({ v: 1, done: {}, watch: {}, retry: {}, confirm: {} });
 const stateKey = (address: string) => `transcriber/delivery/${address.toLowerCase()}`;
 
 /** Backend-owned KV; reads (including missing records) are cached for 60 seconds. */
@@ -51,6 +62,7 @@ export class KvTranscriptDeliveryStore {
       done: raw.done ?? {},
       watch: raw.watch ?? {},
       retry: raw.retry ?? {},
+      confirm: raw.confirm ?? {},
     } : emptyState();
     this.remember(address, value);
     return value;
@@ -218,7 +230,7 @@ export class TranscriptDeliveryWorker {
   async wake(address: string, id: string, kind: WakeKind): Promise<void> {
     address = address.toLowerCase();
     if (this.stopped || !this.options.eligibility(address)) return;
-    if (!(await this.options.index.list(address)).includes(id)) return;
+    if (!(await this.ownedIds(address)).includes(id)) return;
     const state = this.dirty.get(address) ?? await this.state.read(address);
     const final = state.done[id];
     if (final && !WAKE_RECHECKS.has(final.how)) return;
@@ -298,7 +310,7 @@ export class TranscriptDeliveryWorker {
   private prune(address: string, state: DeliveryState, ids: string[]): Set<string> {
     const indexed = new Set(ids);
     let changed = false;
-    for (const markers of [state.done, state.watch, state.retry]) {
+    for (const markers of [state.done, state.watch, state.retry, state.confirm ?? {}]) {
       for (const key of Object.keys(markers)) {
         if (!indexed.has(key)) { delete markers[key]; changed = true; }
       }
@@ -319,13 +331,13 @@ export class TranscriptDeliveryWorker {
   }
   private done(address: string, state: DeliveryState, id: string, how: DeliveryOutcome): void {
     state.done[id] = { at: Date.now(), how };
-    delete state.retry[id]; delete state.watch[id];
+    delete state.retry[id]; delete state.watch[id]; delete state.confirm?.[id];
     this.changed(address, state);
   }
   private retry(address: string, state: DeliveryState, id: string, code: string, retryAfter = 0): void {
     const attempts = (state.retry[id]?.attempts ?? 0) + 1;
-    const base = code === "storage_quota" || attempts >= 10 ? 86_400_000 : Math.min(21_600_000, 60_000 * 2 ** (attempts - 1));
-    state.retry[id] = { attempts, code, nextAt: Date.now() + Math.max(base * (1 + Math.random() * 0.2), retryAfter) };
+    const wait = code === "storage_quota" ? 86_400_000 * (1 + Math.random() * 0.2) : backoffMs(attempts);
+    state.retry[id] = { attempts, code, nextAt: Date.now() + Math.max(wait, retryAfter) };
     this.changed(address, state);
     if (code === "schema_missing") console.info(`[transcript-delivery] op=deliver result=schema_missing id=${id}`);
   }
@@ -349,6 +361,16 @@ export class TranscriptDeliveryWorker {
     return !!error && typeof error === "object" &&
       (("code" in error && error.code === "SCHEMA_MISSING") ||
       ("message" in error && /no such table\b|relation [^\n]{1,128} does not exist\b/i.test(String(error.message))));
+  }
+
+  /**
+   * The ids this address owns, from ONE read of its index document. A meeting shared into it
+   * (TC-581) is its owner's to deliver, whatever the upstream record says, so it is never admitted,
+   * delivered or swept here.
+   */
+  private async ownedIds(address: string): Promise<string[]> {
+    const { ids, shared } = await this.options.index.entries(address);
+    return ids.filter((id) => !Object.hasOwn(shared, id));
   }
 
   private async grant(address: string): Promise<{ envelope: string; verified: VerifiedTranscriptWriter } | null> {
@@ -403,29 +425,40 @@ export class TranscriptDeliveryWorker {
 
   private async deliverOne(address: string, id: string, kind?: WakeKind): Promise<boolean> {
     if (!this.options.eligibility(address)) return false;
-    const ids = await this.options.index.list(address);
+    const ids = await this.ownedIds(address);
     const state = await this.loadState(address);
     const indexed = this.prune(address, state, ids);
     if (!indexed.has(id)) return false;
     const previous = state.done[id];
-    if (previous && (!WAKE_RECHECKS.has(previous.how) || !kind)) return false;
-    // A completion wake, or an observation of completion (our own owner-checked upstream read),
-    // reopens cancelled/failed meetings even when the throttle postpones the upstream read;
-    // retry history remains until actual success. A capacity-ended meeting (TC-907) is reopened
-    // only below, once our own upstream read confirms it completed for this owner.
-    if (kind && ((previous && previous.how !== "capacity_exhausted") || state.watch[id])) {
-      delete state.done[id]; delete state.watch[id];
-      this.changed(address, state);
-    }
+    const capacity = previous?.how === "capacity_exhausted";
+    if (previous && !capacity && (!WAKE_RECHECKS.has(previous.how) || !kind)) return false;
     const now = Date.now();
-    // Only a completion wake skips the durable retry backoff (storage errors included); an
-    // observation still skips the not-yet-completed re-check, which it has just disproved.
-    if (kind !== "completed" && (state.retry[id]?.nextAt ?? 0) > now) return false;
-    if (!kind && ((state.watch[id]?.nextAt ?? 0) > now || (this.nextCheckAt.get(`${address}:${id}`) ?? 0) > now)) return false;
+    const throttleKey = `${address}:${id}`;
+    const throttledUntil = (this.lastUpstream.get(throttleKey) ?? -Infinity) + 60_000;
+    if (capacity) {
+      // TC-907: only our own read of a completed meeting, matching id and owner, reopens it. A wake
+      // becomes a durable pending confirmation; throttling or an upstream error only reschedules it.
+      const confirm = (state.confirm ??= {});
+      if (kind && !confirm[id]) { confirm[id] = { attempts: 0, nextAt: now }; this.changed(address, state); }
+      const pending = confirm[id];
+      if (!pending || pending.nextAt > now) return false;
+      if (throttledUntil > now) { pending.nextAt = throttledUntil; this.changed(address, state); return false; }
+    } else {
+      // A completion wake, or an observation of completion (our own owner-checked upstream read),
+      // reopens cancelled/failed meetings even when the throttle postpones the upstream read;
+      // retry history remains until actual success.
+      if (kind && (previous || state.watch[id])) {
+        delete state.done[id]; delete state.watch[id];
+        this.changed(address, state);
+      }
+      // Only a completion wake skips the durable retry backoff (storage errors included); an
+      // observation still skips the not-yet-completed re-check, which it has just disproved.
+      if (kind !== "completed" && (state.retry[id]?.nextAt ?? 0) > now) return false;
+      if (!kind && ((state.watch[id]?.nextAt ?? 0) > now || (this.nextCheckAt.get(throttleKey) ?? 0) > now)) return false;
+    }
     const grant = await this.grant(address);
     if (!grant) return false;
-    const throttleKey = `${address}:${id}`;
-    if ((this.lastUpstream.get(throttleKey) ?? -Infinity) + 60_000 > now) return false;
+    if (throttledUntil > now) return false;
     this.lastUpstream.delete(throttleKey);
     this.lastUpstream.set(throttleKey, now);
     if (this.lastUpstream.size > 10_000) {
@@ -437,14 +470,29 @@ export class TranscriptDeliveryWorker {
     let meeting: TranscriptionMeeting;
     try { meeting = await this.limiter.run(() => this.options.api.getMeeting(id)); }
     catch (error) {
-      if (error instanceof TranscriptionApiError && error.status === 404) this.done(address, state, id, "gone");
+      const gone = error instanceof TranscriptionApiError && error.status === 404;
+      if (capacity) {
+        const pending = state.confirm![id]!;
+        // A 404 answers the confirmation (nothing can complete); any other failure retries it later.
+        if (gone) delete state.confirm![id];
+        else { pending.attempts++; pending.nextAt = now + Math.max(backoffMs(pending.attempts), this.retryAfter(error)); }
+        this.changed(address, state);
+        return true;
+      }
+      if (gone) this.done(address, state, id, "gone");
       else this.retry(address, state, id, "upstream_unavailable", this.retryAfter(error));
       return true;
     }
-    if (capacityEnded(meeting)) {
-      if (previous?.how !== "capacity_exhausted") this.done(address, state, id, "capacity_exhausted");
-      return true;
+    const ownedCompletion = meeting.status === "completed" && meeting.id === id &&
+      typeof meeting.metadata?.tinychat_address === "string" && meeting.metadata.tinychat_address.toLowerCase() === address;
+    if (capacity) {
+      // Every answer but an owned completion keeps the terminal marker; the confirmation is answered.
+      delete state.confirm![id];
+      if (ownedCompletion) delete state.done[id];
+      this.changed(address, state);
+      if (!ownedCompletion) return true;
     }
+    if (capacityEnded(meeting)) { this.done(address, state, id, "capacity_exhausted"); return true; }
     if (meeting.status === "failed") {
       const watch = state.watch[id] ?? { since: now, nextAt: now, checks: 0 };
       const elapsed = now - watch.since;
@@ -459,10 +507,7 @@ export class TranscriptDeliveryWorker {
     if (meeting.status !== "completed") {
       this.nextCheckAt.set(throttleKey, now + this.sweepMs); return true;
     }
-    if (meeting.id !== id || typeof meeting.metadata?.tinychat_address !== "string" ||
-      meeting.metadata.tinychat_address.toLowerCase() !== address) {
-      this.done(address, state, id, "owner_mismatch"); return true;
-    }
+    if (!ownedCompletion) { this.done(address, state, id, "owner_mismatch"); return true; }
     if (state.watch[id] || state.done[id]) {
       delete state.watch[id]; delete state.done[id]; this.changed(address, state);
     }
@@ -557,7 +602,9 @@ export class TranscriptDeliveryWorker {
         continue;
       }
       if (cursor.idOffset === 0) {
-        const pending = await this.options.index.listPending(address);
+        let pending: Awaited<ReturnType<TranscriberIndexStore["listPending"]>>;
+        try { pending = await this.options.index.listPending(address); }
+        catch { this.skipUnreadable(cursor); continue; }
         const intent = pending[cursor.pendingOffset];
         if (intent) {
           let attempted: number;
@@ -571,24 +618,33 @@ export class TranscriptDeliveryWorker {
             console.warn("[transcript-delivery] op=intent result=error");
           }
           cursor.calls += attempted;
-          if ((await this.options.index.listPending(address)).some((row) => row.key === intent.key)) cursor.pendingOffset++;
+          const still = await this.options.index.listPending(address).catch(() => null);
+          if (!still) { this.skipUnreadable(cursor); continue; }
+          if (still.some((row) => row.key === intent.key)) cursor.pendingOffset++;
           if (attempted) return { kind: "intent" };
           continue;
         }
       }
-      const ids = await this.options.index.list(address);
-      const state = await this.loadState(address);
+      let ids: string[];
+      let state: DeliveryState;
+      try { ids = await this.ownedIds(address); state = await this.loadState(address); }
+      catch { this.skipUnreadable(cursor); continue; }
       if (cursor.idOffset === 0) this.prune(address, state, ids);
       if (cursor.idOffset >= ids.length) { this.advanceAddress(cursor); continue; }
       const id = ids[cursor.idOffset++];
       const now = Date.now();
       const marker = state.done[id];
-      if (marker && marker.how !== "cancelled") continue;
-      if (marker || (state.retry[id]?.nextAt ?? 0) > now || (state.watch[id]?.nextAt ?? 0) > now ||
-        (this.nextCheckAt.get(`${address}:${id}`) ?? 0) > now ||
-        (this.lastUpstream.get(`${address}:${id}`) ?? -Infinity) + 60_000 > now) continue;
+      // A capacity-ended meeting with a due confirmation gets its one upstream read (TC-907).
+      const confirming = marker?.how === "capacity_exhausted" && (state.confirm?.[id]?.nextAt ?? Infinity) <= now;
+      if (marker && !confirming) continue;
+      if (!confirming && ((state.retry[id]?.nextAt ?? 0) > now || (state.watch[id]?.nextAt ?? 0) > now ||
+        (this.nextCheckAt.get(`${address}:${id}`) ?? 0) > now)) continue;
+      if ((this.lastUpstream.get(`${address}:${id}`) ?? -Infinity) + 60_000 > now) continue;
       // An address with no verified grant is skipped without contacting ptx.
-      if (!await this.coordinator.run(address, () => this.grant(address))) { this.advanceAddress(cursor); continue; }
+      let granted: boolean;
+      try { granted = !!await this.coordinator.run(address, () => this.grant(address)); }
+      catch { this.skipUnreadable(cursor); continue; }
+      if (!granted) { this.advanceAddress(cursor); continue; }
       cursor.calls++;
       return { address, id };
     }
@@ -603,6 +659,11 @@ export class TranscriptDeliveryWorker {
     if (cursor.scanned >= cursor.addresses.length) this.cursor = undefined;
     else { cursor.calls = 0; cursor.scanned = 0; }
     return null;
+  }
+  /** An address whose index, delivery state or grant cannot be read is passed over, not retried here. */
+  private skipUnreadable(cursor: SweepCursor): void {
+    console.warn("[transcript-delivery] op=sweep result=unreadable_address");
+    this.advanceAddress(cursor);
   }
   private advanceAddress(cursor: SweepCursor): void {
     cursor.ai = (cursor.ai + 1) % cursor.addresses.length;

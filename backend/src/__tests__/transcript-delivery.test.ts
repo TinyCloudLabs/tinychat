@@ -599,6 +599,147 @@ describe("durable transcript delivery", () => {
     expect(f.counts.transcript).toBe(1);
   });
 
+  it("a meeting shared into this address (TC-581) is never read upstream or written, even if its record names the recipient", async () => {
+    const f = await fixture();
+    const owner = "0x00000000000000000000000000000000000000aa";
+    await f.index.addShared(f.grant.address, "shared", { ownerTenant: owner, ownerOccurrenceId: "o", recipientOccurrenceId: "r",
+      checkedAt: 1, title: "Team sync", scheduledStart: "2026-09-25T12:00:00.000Z" });
+    // Inconsistent upstream metadata: completed, and naming the recipient as its owner.
+    f.meetings.set("shared", f.meeting("shared"));
+    await admit(f, "own");
+    const reads: string[] = [];
+    const getMeeting = f.api.getMeeting.bind(f.api);
+    f.api.getMeeting = async (id) => { reads.push(id); return getMeeting(id); };
+    const worker = f.worker();
+    await worker.sweep();
+    await worker.wake(f.grant.address, "shared", "completed");
+    await worker.wake(f.grant.address, "shared", "observed");
+    await worker.sweep();
+    await worker.deliver(f.grant.address, "shared", "completed");
+    await worker.stop();
+    expect(reads).toEqual(["own"]);
+    expect(f.state().done.own.how).toBe("written");
+    expect(f.state().done.shared).toBeUndefined();
+    expect(f.counts.execute).toBe(1);
+    expect(f.counts.put).toBe(1);
+    expect([...f.bodies.keys()].some((key) => key.endsWith("/shared"))).toBe(false);
+  });
+
+  /** A capacity-ended meeting (TC-907): the first read records the terminal marker. */
+  const capacityFailed = (f: Fixture, id: string): TranscriptionMeeting => ({ ...f.meeting(id), status: "failed",
+    error: { type: "provider_error", code: "capacity_exhausted", message: "All meeting notetakers were busy." } });
+  async function capacityEndedFixture(id: string) {
+    const f = await fixture();
+    await admit(f, id);
+    let upstream: TranscriptionMeeting | Error = capacityFailed(f, id);
+    let reads = 0;
+    f.api.getMeeting = async () => { reads++; if (upstream instanceof Error) throw upstream; return upstream; };
+    const first = f.worker();
+    await first.deliver(f.grant.address, id);
+    await first.stop();
+    expect(f.state().done[id]!.how).toBe("capacity_exhausted");
+    return { f, reads: () => reads, answer: (next: TranscriptionMeeting | Error) => { upstream = next; } };
+  }
+  const later = async <T>(ms: number, run: () => Promise<T>): Promise<T> => {
+    const realNow = Date.now;
+    Date.now = () => realNow() + ms;
+    try { return await run(); } finally { Date.now = realNow; }
+  };
+
+  it("a capacity-ended marker survives every completion-wake answer but an owned completion", async () => {
+    const { f, answer } = await capacityEndedFixture("busy");
+    const own = f.meeting("busy");
+    for (const [label, next] of [
+      ["404", new TranscriptionApiError(404, "meeting_not_found", "Missing")],
+      ["cancelled", { ...own, status: "cancelled" }],
+      ["another owner", f.meeting("busy", "0x00000000000000000000000000000000000000bb")],
+      ["no owner", { ...own, metadata: {} }],
+      ["another id", { ...own, id: "other" }],
+      ["failed", { ...own, status: "failed" }],
+      ["processing", { ...own, status: "processing" }],
+    ] as const) {
+      answer(next as TranscriptionMeeting | Error);
+      const worker = f.worker();
+      await worker.wake(f.grant.address, "busy", "completed");
+      await worker.sweep();
+      await worker.stop();
+      expect({ label, how: f.state().done.busy?.how, pending: f.state().confirm?.busy })
+        .toEqual({ label, how: "capacity_exhausted", pending: undefined });
+    }
+    expect(f.counts.transcript).toBe(0);
+    answer(own);
+    const confirmed = f.worker();
+    await confirmed.wake(f.grant.address, "busy", "completed");
+    await confirmed.sweep();
+    await confirmed.stop();
+    expect(f.state().done.busy.how).toBe("written");
+  });
+
+  it("a completion wake inside the read throttle is kept and delivered by the sweep once due, without another wake", async () => {
+    const { f, reads, answer } = await capacityEndedFixture("busy");
+    // One long-running worker: it reads (capacity), and the genuine completion arrives seconds later.
+    const worker = f.worker();
+    answer(capacityFailed(f, "busy"));
+    await worker.deliver(f.grant.address, "busy", "completed");
+    expect(reads()).toBe(2);
+    answer(f.meeting("busy"));
+    await worker.wake(f.grant.address, "busy", "completed");
+    await worker.sweep();
+    expect(reads()).toBe(2);
+    expect(f.state().done.busy.how).toBe("capacity_exhausted");
+    expect(f.state().confirm?.busy?.nextAt).toBeGreaterThan(Date.now());
+    // Undelivered 24 h later with no further wake was the bug; the due confirmation is swept.
+    await later(86_400_000, () => worker.sweep());
+    await worker.stop();
+    expect(reads()).toBe(3);
+    expect(f.state().done.busy.how).toBe("written");
+    expect(f.state().confirm?.busy).toBeUndefined();
+  });
+
+  it("a confirmation read that fails is retried by the sweep with backoff, keeping the marker until confirmed", async () => {
+    const { f, reads, answer } = await capacityEndedFixture("busy");
+    answer(new TranscriptionApiError(503, "provider_unavailable", "Unavailable"));
+    const worker = f.worker();
+    await worker.wake(f.grant.address, "busy", "completed");
+    await worker.sweep();
+    await worker.stop();
+    expect(reads()).toBe(2);
+    expect(f.state().done.busy.how).toBe("capacity_exhausted");
+    expect(f.state().confirm?.busy).toMatchObject({ attempts: 1 });
+    expect(f.state().confirm!.busy!.nextAt).toBeGreaterThan(Date.now());
+    answer(f.meeting("busy"));
+    // Not due yet: a restarted worker's sweep leaves it alone.
+    const restarted = f.worker();
+    await restarted.sweep();
+    expect(reads()).toBe(2);
+    await later(86_400_000, () => restarted.sweep());
+    await restarted.stop();
+    expect(reads()).toBe(3);
+    expect(f.state().done.busy.how).toBe("written");
+  });
+
+  it("an address whose index cannot be read is passed over, so later addresses are still swept", async () => {
+    const f = await fixture();
+    const broken = "0x00000000000000000000000000000000000000cc";
+    await f.index.add(broken, "unreachable");
+    await admit(f, "ok");
+    for (const method of ["entries", "listPending", "list"] as const) {
+      const original = f.index[method].bind(f.index) as (address: string) => Promise<unknown>;
+      (f.index as unknown as Record<string, unknown>)[method] = async (address: string) => {
+        if (address.toLowerCase() === broken) throw new Error("transcriber_index_invalid");
+        return original(address);
+      };
+    }
+    const random = Math.random;
+    Math.random = () => 0; // start the pass at the unreadable address
+    try {
+      const worker = f.worker();
+      await worker.sweep();
+      await worker.stop();
+    } finally { Math.random = random; }
+    expect(f.state().done.ok.how).toBe("written");
+  });
+
   it("an observed completion does not bypass a storage-error retry backoff, across a restart", async () => {
     const f = await fixture();
     await admit(f, "backoff");
