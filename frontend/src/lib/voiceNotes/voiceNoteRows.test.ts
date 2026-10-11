@@ -11,7 +11,7 @@ import { __setVoiceNotesForTests, VoiceNotes } from "./nativeVoiceNotes";
 import { createVoiceNotePipeline, VoiceNoteSaveDeferred } from "./voiceNotePipeline";
 import { handoffBeforeCredentialClear } from "./accountHandoff";
 import { advanceAccountGeneration, currentAccountGeneration } from "./accountContext";
-import { runOnSpaceLane } from "../spaceWriteLane";
+import { runOnSpaceLane, spaceLaneSnapshot, subscribeSpaceLane } from "../spaceWriteLane";
 import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
 
 test("a healthy long drain does not consume the next save's call deadline", async () => {
@@ -39,7 +39,25 @@ test("a lane job that rejects without a reason rejects its caller", async () => 
   const result = await Promise.allSettled([runOnSpaceLane(() => Promise.reject(undefined))]);
   expect(result).toEqual([{ status: "rejected", reason: undefined }]);
 });
-import { pendingStore } from "./recorderSaves";
+
+test("space lane snapshot reports busy state and queued depth", async () => {
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  let notifications = 0;
+  const unsubscribe = subscribeSpaceLane(() => { notifications++; });
+  const first = runOnSpaceLane(async () => { entered(); await gate; });
+  await started;
+  const second = runOnSpaceLane(async () => undefined);
+  expect(spaceLaneSnapshot()).toEqual({ busy: true, depth: 1 });
+  release();
+  await Promise.all([first, second]);
+  expect(spaceLaneSnapshot()).toEqual({ busy: false, depth: 0 });
+  expect(notifications).toBeGreaterThan(0);
+  unsubscribe();
+});
+import { pendingStore, saveNoteForAccount } from "./recorderSaves";
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
 import { loadNote, saveNote } from "./recordingNotes";
 import { readRecordingNoteFromSpace, syncRecordingNote, voiceNoteAudioKvKey, voiceNoteMarkdownKvKey } from "./voiceNoteStore";
@@ -497,10 +515,11 @@ test("reconcile refreshes the pending count after each note save", async () => {
     await pendingStore.refresh();
     expect(pendingStore.snapshot().listing).toEqual({ state: "ok", count: 2 });
     pendingStore.reportNoteFailure(second.id, "previous attempt failed");
-    expect(pendingStore.snapshot().notes?.find((note) => note.id === second.id)?.failed).toBe(true);
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === second.id)?.failed).toMatchObject({ kind: "other" });
     const pipeline = createVoiceNotePipeline(tcw);
     const reconcile = pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
     await secondStarted;
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === second.id)?.waitingBehind).toBe(0);
     expect(pendingStore.snapshot().lastError).toBeNull();
     expect(pendingStore.snapshot().notes?.find((note) => note.id === second.id)?.failed).toBeUndefined();
     expect(pendingStore.snapshot().listing).toEqual({ state: "ok", count: 1 });
@@ -509,6 +528,57 @@ test("reconcile refreshes the pending count after each note save", async () => {
     await reconcile;
     expect(pendingStore.snapshot().listing).toEqual({ state: "ok", count: 0 });
   } finally {
+    releaseSecond();
+    pendingStore.setAccount(null);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+test("reconcile publishes the full upload queue and decrements notes ahead as they settle", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  const recordings: Awaited<ReturnType<typeof fake.plugin.stop>>[] = [];
+  let releaseFirst!: () => void;
+  let releaseSecond!: () => void;
+  let enterFirst!: () => void;
+  let enterSecond!: () => void;
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve; });
+  const firstStarted = new Promise<void>((resolve) => { enterFirst = resolve; });
+  const secondStarted = new Promise<void>((resolve) => { enterSecond = resolve; });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    for (let index = 0; index < 3; index++) {
+      await fake.plugin.start();
+      recordings.push(await fake.plugin.stop());
+    }
+    const readAudioChunk = fake.plugin.readAudioChunk.bind(fake.plugin);
+    fake.plugin.readAudioChunk = (async (options: Parameters<typeof readAudioChunk>[0]) => {
+      if (options.id === recordings[0]!.id) { enterFirst(); await firstGate; }
+      if (options.id === recordings[1]!.id) { enterSecond(); await secondGate; }
+      return readAudioChunk(options);
+    }) as typeof fake.plugin.readAudioChunk;
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh();
+    const pipeline = createVoiceNotePipeline(tcw, { retryDelaysMs: [] });
+    const reconcile = pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
+    await firstStarted;
+    const queued = pendingStore.snapshot().notes ?? [];
+    expect(recordings.map(({ id }) => queued.find((note) => note.id === id)?.waitingBehind)).toEqual([0, 1, 2]);
+    expect(recordings.map(({ id }) => queued.find((note) => note.id === id)?.upload?.state)).toEqual([
+      "uploading", "waiting", "waiting",
+    ]);
+    releaseFirst();
+    await secondStarted;
+    const afterFirst = pendingStore.snapshot().notes ?? [];
+    expect(recordings.map(({ id }) => afterFirst.find((note) => note.id === id)?.waitingBehind)).toEqual([undefined, 0, 1]);
+    expect(afterFirst.find((note) => note.id === recordings[1]!.id)?.upload?.state).toBe("uploading");
+    releaseSecond();
+    await reconcile;
+  } finally {
+    releaseFirst();
     releaseSecond();
     pendingStore.setAccount(null);
     __setVoiceNotesForTests(original, { available: null });
@@ -575,7 +645,7 @@ test("a wrapped audio upload network error shows friendly copy and logs only a r
   try {
     await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
       transcriber: "off", identifySpeakers: false });
-    await fake.plugin.start();
+    const { id } = await fake.plugin.start();
     await fake.plugin.stop();
     tcw.kv.put = (async (key, value, options) => key.includes("/audio/")
       ? { ok: false, error: { code: "NETWORK_ERROR",
@@ -591,6 +661,7 @@ test("a wrapped audio upload network error shows friendly copy and logs only a r
       "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
     );
     expect(pendingStore.snapshot().lastError).not.toContain(rawUrl);
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === id)?.failed?.kind).toBe("offline");
     const output = warnings.map((args) => args.join(" ")).join(" ");
     expect(output).toContain("TinyCloud network failure");
     expect(output).toContain("<url>");
@@ -598,6 +669,122 @@ test("a wrapped audio upload network error shows friendly copy and logs only a r
     expect(output).not.toContain("private-token");
   } finally {
     console.warn = originalWarn;
+    __setVoiceNotesForTests(original, { available: null });
+    pendingStore.setAccount(null);
+    await pendingStore.refresh(null);
+  }
+});
+
+test("a real source-read failure is reported as non-retryable source with its message intact", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    const { id } = await fake.plugin.start();
+    await fake.plugin.stop();
+    const readAudioChunk = fake.plugin.readAudioChunk.bind(fake.plugin);
+    fake.plugin.readAudioChunk = (async (options: Parameters<typeof readAudioChunk>[0]) => {
+      if (options.id === id) throw new Error("device source unavailable");
+      return readAudioChunk(options);
+    }) as typeof fake.plugin.readAudioChunk;
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh(null);
+    await createVoiceNotePipeline(tcw, { retryDelaysMs: [] }).reconcileAll({
+      did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration(),
+    });
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === id)?.failed).toMatchObject({
+      kind: "source", message: expect.stringContaining("device source unavailable"),
+    });
+  } finally {
+    __setVoiceNotesForTests(original, { available: null });
+    pendingStore.setAccount(null);
+    await pendingStore.refresh(null);
+  }
+});
+
+test("upload state starts before the first part completes and survives relist and in-flight callers", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  let releasePart!: () => void;
+  let enteredPart!: () => void;
+  const partGate = new Promise<void>((resolve) => { releasePart = resolve; });
+  const partStarted = new Promise<void>((resolve) => { enteredPart = resolve; });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    await fake.plugin.start();
+    const recording = await fake.plugin.stop();
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh(null);
+    const put = tcw.kv.put.bind(tcw.kv);
+    tcw.kv.put = (async (key, value, options) => {
+      if (key.includes("/audio/") && key.includes("/p/")) { enteredPart(); await partGate; }
+      return put(key, value, options);
+    }) as typeof tcw.kv.put;
+    const ctx = { did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() };
+    const ownerRun = createVoiceNotePipeline(tcw, { retryDelaysMs: [] }).process(ctx, recording.id);
+    await partStarted;
+    expect(pendingStore.snapshot().uploadingId).toBe(recording.id);
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === recording.id)?.upload?.state).toBe("uploading");
+    await pendingStore.refresh();
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === recording.id)?.upload?.state).toBe("uploading");
+    const listed = (await fake.plugin.listPending()).recordings.find((note) => note.id === recording.id)!;
+    expect(await saveNoteForAccount(tcw, ctx, listed)).toEqual({ kind: "in-flight" });
+    expect(pendingStore.snapshot().uploadingId).toBe(recording.id);
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === recording.id)?.upload?.state).toBe("uploading");
+    releasePart();
+    await ownerRun;
+    expect(pendingStore.snapshot().uploadingId).toBeNull();
+  } finally {
+    releasePart();
+    __setVoiceNotesForTests(original, { available: null });
+    pendingStore.setAccount(null);
+    await pendingStore.refresh(null);
+  }
+});
+
+test("reconcile publishes per-note upload progress and retrying state", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  const states: Array<{ state: string; bytes: number; total: number }> = [];
+  const activeIds: Array<string | null> = [];
+  const unsubscribe = pendingStore.subscribe(() => {
+    const upload = pendingStore.snapshot().notes?.[0]?.upload;
+    if (upload) states.push(upload);
+    if (pendingStore.snapshot().uploadingId) activeIds.push(pendingStore.snapshot().uploadingId);
+  });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "off", identifySpeakers: false });
+    const { id } = await fake.plugin.start();
+    await fake.plugin.stop();
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh(null);
+    const put = tcw.kv.put.bind(tcw.kv);
+    let failedOnce = false;
+    tcw.kv.put = (async (key, value, options) => {
+      if (key.includes("/audio/") && key.includes("/p/") && !failedOnce) {
+        failedOnce = true;
+        return { ok: false, error: { code: "NETWORK_ERROR", message: "temporary network failure" } };
+      }
+      return put(key, value, options);
+    }) as typeof tcw.kv.put;
+    await createVoiceNotePipeline(tcw, { retryDelaysMs: [0] }).reconcileAll({
+      did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration(),
+    });
+    expect(states.some((item) => item.state === "waiting")).toBe(true);
+    expect(states.some((item) => item.state === "retrying")).toBe(true);
+    expect(states.some((item) => item.state === "uploading" && item.total > 0 && item.bytes > 0)).toBe(true);
+    expect(activeIds).toContain(id);
+    expect(pendingStore.snapshot().uploadingId).toBeNull();
+    expect(pendingStore.snapshot().notes?.some((note) => note.id === id)).toBe(false);
+  } finally {
+    unsubscribe();
     __setVoiceNotesForTests(original, { available: null });
     pendingStore.setAccount(null);
     await pendingStore.refresh(null);
@@ -707,7 +894,7 @@ test("a never-settling audio KV put reports a visible timeout and clears Saving 
     setVoiceNoteSaveDeadlineForTests(25);
     await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
     await fake.plugin.start();
-    await fake.plugin.stop();
+    const recording = await fake.plugin.stop();
     tcw.kv.put = ((_key, _value, options) => {
       putStarted();
       return new Promise((_resolve, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
@@ -719,10 +906,39 @@ test("a never-settling audio KV put reports a visible timeout and clears Saving 
     await reconcile;
     expect(pendingStore.snapshot().running).toBe(false);
     expect(pendingStore.snapshot().lastError).toContain("saving it is taking too long");
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === recording.id)?.failed?.kind).toBe("timeout");
     // The disabled={saving} condition is now false, so Save now is enabled again.
   } finally {
     setVoiceNoteSaveDeadlineForTests(null);
     __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+test("a real audio KV failure with meta.status 500 is reported as server", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  const put = tcw.kv.put.bind(tcw.kv);
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    await fake.plugin.start();
+    const recording = await fake.plugin.stop();
+    tcw.kv.put = (async (key, value, options) => key.includes("/audio/")
+      ? { ok: false, error: { code: "KV_ERROR", message: "The storage service rejected this write", meta: { status: 500 } } }
+      : put(key, value, options)) as typeof tcw.kv.put;
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh(null);
+    await createVoiceNotePipeline(tcw, { retryDelaysMs: [] }).reconcileAll({
+      did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration(),
+    });
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === recording.id)?.failed).toMatchObject({
+      kind: "server", message: expect.stringContaining("The storage service rejected this write"),
+    });
+  } finally {
+    __setVoiceNotesForTests(original, { available: null });
+    pendingStore.setAccount(null);
+    await pendingStore.refresh(null);
   }
 });
 
