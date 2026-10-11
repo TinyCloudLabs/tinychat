@@ -389,8 +389,8 @@ class SharedHaloRenderer {
   private startTime = performance.now();
   private lost = false;
 
-  constructor() {
-    const selected = selectRenderSurface(
+  constructor(selectedSurface?: SelectedSurface) {
+    const selected = selectedSurface ?? selectRenderSurface(
       () =>
         typeof OffscreenCanvas === "undefined"
           ? null
@@ -1081,6 +1081,21 @@ class SharedHaloRenderer {
 }
 
 let sharedRenderer: SharedHaloRenderer | undefined;
+
+/**
+ * Creates an isolated renderer around an explicitly selected surface. This is
+ * used by renderer tests that need to exercise WebGL-only behavior without
+ * depending on the host runtime's browser globals or the shared app singleton.
+ */
+export function createIsolatedHaloRendererForTests(surface: SelectedSurface) {
+  const renderer = new SharedHaloRenderer(surface);
+  return {
+    register: (canvas: HTMLCanvasElement, config: HaloConfig) =>
+      renderer.add(canvas, config),
+    renderPath: () => renderer.renderPath,
+    drawCount: (canvas: HTMLCanvasElement) => renderer.drawCount(canvas),
+  };
+}
 
 export function registerHalo(canvas: HTMLCanvasElement, config: HaloConfig) {
   sharedRenderer ??= new SharedHaloRenderer();
