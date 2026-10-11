@@ -286,7 +286,7 @@ function deriveOAuthHost(host: string): string {
   try {
     url = new URL(host);
   } catch {
-    throw new Error(`VITE_OPENKEY_HOST is not a valid URL: ${JSON.stringify(host)}`);
+    throw new Error(`Native sign-in is not configured in this build (VITE_OPENKEY_HOST is not a valid URL: ${JSON.stringify(host)}).`);
   }
   if (url.hostname === "localhost" || url.hostname === "127.0.0.1") {
     return host.replace(/\/$/, "");

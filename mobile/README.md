@@ -696,7 +696,7 @@ The session JWK never touches WebView localStorage. Details:
   `openkeyNative.ts`. The OpenKey API issuer is derived from the same
   `VITE_OPENKEY_HOST` the web widget reads (`api.` + host + `/api/auth`, so
   `https://api.openkey.so/api/auth` for the default `https://openkey.so`); a
-  malformed host fails sign-in with a configuration error. The backend nonce for the session SIWE is address-less: `GET
+  malformed host fails sign-in with the "not configured in this build" error. The backend nonce for the session SIWE is address-less: `GET
   /api/auth/nonce` without `?address=` issues an unbound, single-use,
   5-minute nonce that `/verify` binds to the recovered signer.
 - The delegation covers the manifest's applications-space KV/SQL entries plus

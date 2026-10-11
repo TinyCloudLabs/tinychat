@@ -251,7 +251,19 @@ describe("nativeClientOptions", () => {
     expect(() => nativeClientOptions(
       { VITE_OPENKEY_NATIVE_CLIENT_ID: CLIENT_ID, VITE_OPENKEY_HOST: "openkey.example.com" },
       HOST,
-    )).toThrow('VITE_OPENKEY_HOST is not a valid URL: "openkey.example.com"');
+    )).toThrow('Native sign-in is not configured in this build (VITE_OPENKEY_HOST is not a valid URL: "openkey.example.com").');
+  });
+
+  const malformedHost = { ...config, env: { ...config.env, VITE_OPENKEY_HOST: "openkey.example.com" } };
+
+  test("signInNative surfaces a malformed host as the configuration error, not a generic failure", async () => {
+    await expect(signInNative(malformedHost, makeFlow().deps)).rejects.toThrow(
+      'Native sign-in is not configured in this build (VITE_OPENKEY_HOST is not a valid URL: "openkey.example.com").',
+    );
+  });
+
+  test("restoreNativeAtBoot classifies a malformed host as configuration, not unavailable", async () => {
+    expect((await restoreNativeAtBoot(malformedHost, true, makeFlow().deps)).kind).toBe("configuration");
   });
 });
 
