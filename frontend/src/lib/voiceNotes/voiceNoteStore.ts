@@ -24,6 +24,7 @@
 // follow the commit record, so a late old-client PUT cannot change their view.
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { captureEvents } from "@/capture/captureEvents";
 
 import {
   AUDIO_CORRUPT,
@@ -53,6 +54,7 @@ import { readLegacyTranscriptWinner, readTranscriptCommit, legacyTranscriptMetad
 import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio,
   patchVoiceNoteMarkdown, resolveVoiceNoteRow } from "./voiceNoteRows";
 import { runOnSpaceLane } from "../spaceWriteLane";
+import { currentAccountGeneration } from "./accountContext";
 import { base64ToBytes, bytesToBase64 } from "./voiceNoteAudio";
 import { adoptNote, loadNote, noteMarkdown, parseNoteMarkdown, type RecordingNote } from "./recordingNotes";
 
@@ -453,6 +455,7 @@ export async function saveVoiceNoteTranscript(
   sourceId: string,
   transcript: VoiceNoteTranscriptSave,
 ): Promise<StoreResult<UpsertMeetingOutcome>> {
+  const accountGeneration = currentAccountGeneration();
   if (!Number.isSafeInteger(transcript.rev) || transcript.rev < 1)
     return { ok: false, error: { code: "VOICE_NOTE_REV_REQUIRED", message: "The note's transcript revision is missing" } };
   const schema = await ensureSchema(tcw);
@@ -482,6 +485,9 @@ export async function saveVoiceNoteTranscript(
       participants: transcript.speakers,
       transcribedAt: typeof m.transcribed_at === "string" ? m.transcribed_at : null, metadata: m,
     });
+    if (accountGeneration === currentAccountGeneration()) {
+      captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId });
+    }
     return { ok: true, data: { id: String(existing.data.rows[0]?.[0]), inserted: false,
       createdAt: new Date().toISOString() } };
   } catch (caught) {

@@ -12,6 +12,7 @@ import {
   transcriberMeetingTitle,
 } from "./transcriberSave";
 import { EXPLORER_MEETING_SOURCES, meetingSourceLabel } from "./connectors/meetingExplorer";
+import { captureEvents } from "../capture/captureEvents";
 import type { TranscriberMeeting, TranscriberTranscript } from "./transcriberApi";
 
 const meeting: TranscriberMeeting = {
@@ -326,6 +327,72 @@ test("per-recording failures are isolated, and a locked/unmounted session perfor
   await syncTranscriberLibrary({ tcw: f.tcw, client, onState: (id, state) => { states[id] = state; } });
   expect(states).toEqual({ broken: "error", [meeting.id]: "saved" });
   f.sql.close();
+});
+
+test("notetaker sync refreshes for newly imported and newly observed remote meetings, not mount history or failures", async () => {
+  const f = libraryFixture();
+  const changed: Array<{ source: string; sourceId: string } | undefined> = [];
+  const unsubscribe = captureEvents.on("library-changed", (detail) => changed.push(detail));
+  const savedIds = ["initial"];
+  const observedSaved = { initialized: false, ids: new Set<string>() };
+  const rows = [{ ...meeting, id: "initial" }, meeting, { ...meeting, id: "broken" }];
+  const client = {
+    list: async () => ({ status: "ok", value: { meetings: rows } }),
+    transcript: async () => ({ status: "ok", value: { status: "ready", transcript } }),
+  } as unknown as TranscriberClient;
+  const saver = {
+    listSaved: async () => ({ ok: true, data: savedIds }),
+    save: async (_: TinyCloudWeb, row: TranscriberMeeting) => {
+      if (row.id === "broken") return { ok: false };
+      savedIds.push(row.id);
+      return { ok: true };
+    },
+  };
+  try {
+    await syncTranscriberLibrary({ tcw: f.tcw, client, saver, observedSaved });
+    expect(changed).toEqual([{ source: TRANSCRIBER_MEETING_SOURCE, sourceId: meeting.id }]);
+    rows.push({ ...meeting, id: "external" });
+    savedIds.push("external"); // Another tab saved it; this tab has never observed it.
+    await syncTranscriberLibrary({ tcw: f.tcw, client, saver, observedSaved });
+    expect(changed).toEqual([
+      { source: TRANSCRIBER_MEETING_SOURCE, sourceId: meeting.id },
+      { source: TRANSCRIBER_MEETING_SOURCE, sourceId: "external" },
+    ]);
+    await syncTranscriberLibrary({ tcw: f.tcw, client, saver, observedSaved });
+    expect(changed).toHaveLength(2);
+  } finally {
+    unsubscribe();
+    f.sql.close();
+  }
+});
+test("notetaker save finishing after sign-out does not refresh the next account", async () => {
+  const f = libraryFixture();
+  const pending = Promise.withResolvers<{ ok: boolean }>();
+  const started = Promise.withResolvers<void>();
+  let current = true;
+  const changed: string[] = [];
+  const unsubscribe = captureEvents.on("library-changed", () => changed.push("refresh"));
+  const client = {
+    list: async () => ({ status: "ok", value: { meetings: [meeting] } }),
+    transcript: async () => ({ status: "ok", value: { status: "ready", transcript } }),
+  } as unknown as TranscriberClient;
+  try {
+    const run = syncTranscriberLibrary({
+      tcw: f.tcw, client, isCurrent: () => current,
+      saver: {
+        listSaved: async () => ({ ok: true, data: [] }),
+        save: () => { started.resolve(); return pending.promise; },
+      },
+    });
+    await started.promise;
+    current = false;
+    pending.resolve({ ok: true });
+    await run;
+    expect(changed).toEqual([]);
+  } finally {
+    unsubscribe();
+    f.sql.close();
+  }
 });
 
 test("an unreadable completeness check cannot overwrite an existing body or stall other meetings", async () => {

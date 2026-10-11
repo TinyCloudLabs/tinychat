@@ -117,16 +117,4 @@ describe("CaptureSurface", () => {
     expect(source).toContain("if (!homeShown) setSheet(null);");
   });
 
-  test("something landing re-lists the Library: the recorder's save, an upload's, a notetaker's", () => {
-    const source = readFileSync(join(import.meta.dir, "CaptureSurface.tsx"), "utf8");
-    // Every source of "something landed" emits: the recorder's save (App), an
-    // upload's saved stage, and a rise in the transcriber's saved count.
-    expect(source).toContain('if (uploadStage === "saved" && lastStage.current !== "saved") emitLibraryChanged();');
-    expect(source).toContain("if (savedCount > lastSavedCount.current) emitLibraryChanged();");
-    const app = readFileSync(join(import.meta.dir, "../App.tsx"), "utf8");
-    expect(app).toContain('onSaved={() => captureEvents.emit("library-changed")}');
-    // useLibrary hears it (library/useLibrary.source.test.ts pins the reads).
-    const library = readFileSync(join(import.meta.dir, "library/useLibrary.ts"), "utf8");
-    expect(library).toContain('captureEvents.on("library-changed"');
-  });
 });

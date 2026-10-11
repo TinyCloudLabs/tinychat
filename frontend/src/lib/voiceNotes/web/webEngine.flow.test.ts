@@ -122,6 +122,7 @@ let rig: Rig;
 
 beforeEach(() => {
   __resetCaptureEngineForTests();
+  __setVoiceNotesForTests(original, { available: false });
   _resetConnectorSchemaMemoForTests();
   FakeMediaRecorder.instances = [];
 });

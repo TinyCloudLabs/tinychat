@@ -5,10 +5,12 @@
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { captureEvents } from "@/capture/captureEvents";
 
 import type { VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
 import { pendingStore, type PendingSnapshot } from "@/lib/voiceNotes/recorderSaves";
+import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
 import type { RecorderState } from "./recorderReducer";
 import { HIDDEN_SNAPSHOT, noSubscription, transcriptionProps, type VoiceNoteTranscriptionProps } from "./transcriptionProps";
@@ -59,7 +61,12 @@ export interface VoiceNoteRecorder {
   subscribeLevel(listener: (level: number) => void): () => void;
 }
 
-export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionStore, onSaved, pipeline }: VoiceNoteRecorderOptions): VoiceNoteRecorder {
+/** Default for every mounted recorder, including the app and browser harness. */
+export function notifySavedVoiceNote(recording: VoiceNoteRecording): void {
+  captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId: recording.id });
+}
+
+export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionStore, onSaved = notifySavedVoiceNote, pipeline }: VoiceNoteRecorderOptions): VoiceNoteRecorder {
   const available = enabled && captureEngineAvailable();
 
   // Private cloud transcription for this account (null without one), shared across mounts.
@@ -71,7 +78,10 @@ export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionS
     [available, backendUrl, sessionStore, tcw],
   );
   const controller = useMemo(() => createVoiceNoteRecorderController({ tcw, available, transcriber, pipeline }), [available, tcw, transcriber, pipeline]);
-  useEffect(() => controller.setOnSaved(onSaved), [controller, onSaved]);
+  useEffect(() => {
+    controller.setOnSaved(onSaved);
+    return () => controller.setOnSaved(undefined);
+  }, [controller, onSaved]);
   useEffect(() => controller.attach(), [controller]);
 
   const state = useSyncExternalStore(controller.subscribe, controller.getState);
