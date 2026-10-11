@@ -68,12 +68,7 @@ export function createTinyCloudWeb(
     manifest,
     capabilityRequest: config?.capabilityRequest,
     includeAccountRegistryPermissions: config?.includeAccountRegistryPermissions,
-    // web-sdk 2.4.x account auto-bootstrap retries /invoke every ~2s for
-    // minutes on a fresh origin, outliving the backend's 5-minute SIWE nonce
-    // TTL. Disable it (same mitigation as the billing app) until the SDK is
-    // on 2.5.x, which gates bootstrap on interactive signers. The option is
-    // read at runtime but absent from the published Config type.
-    ...({ autoBootstrapAccount: false } as Partial<TinyCloudWebSdkConfig>),
+    autoBootstrapAccount: false,
   };
 
   return new TinyCloudWeb(tcwConfig);
