@@ -21,7 +21,7 @@ export function NoteDetail(props: {
   savedNote?: NoteDetailViewProps["savedNote"];
 }) {
   const { library } = props;
-  const { item, reads, loadAudio } = library.note;
+  const { item, reads, audio } = library.note;
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mounted = useRef(true);
@@ -56,7 +56,7 @@ export function NoteDetail(props: {
       listStatus={item === null && library.listing ? "loading" : library.status}
       metadata={reads.metadata}
       transcript={reads.transcript}
-      loadAudio={loadAudio}
+      audio={audio}
       // A note only on this phone is not in the space to transcribe from.
       transcription={item?.source === VOICE_NOTE_SOURCE && !item.onPhone ? props.transcription : undefined}
       copyState={copyState}

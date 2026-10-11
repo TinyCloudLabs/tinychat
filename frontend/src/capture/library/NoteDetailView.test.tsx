@@ -24,7 +24,7 @@ const noop = () => {};
 const VOICE: LibraryItem = { id: "row-1", source: "exo-voice-note", sourceId: "rec-1", title: "Voice note · Oct 6, 9:28 AM", startedAt: "2026-10-06T09:28:00.000Z", durationSecs: 42 };
 const MEETING: LibraryItem = { id: "row-2", source: "tinycloud-transcriber", sourceId: "mtg-2", title: "Weekly sync", startedAt: "2026-10-05T14:00:00.000Z", durationSecs: 1880 };
 const UPLOAD: LibraryItem = { id: "row-3", source: "exo-upload", sourceId: "up-3", title: "Interview", startedAt: "2026-10-01T11:00:00.000Z", durationSecs: 600 };
-const loadAudio = async () => null;
+const audio = { load: async () => null };
 
 function transcription(patch: Partial<VoiceNoteTranscriptionProps> = {}): VoiceNoteTranscriptionProps {
   return { availability: "available", consented: true, maxSeconds: 600, jobs: new Map(), onTranscribe: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop, ...patch };
@@ -38,7 +38,7 @@ function render(patch: Partial<NoteDetailViewProps> = {}) {
         listStatus="ready"
         metadata={{ status: "ok", metadata: { capture: { platform: "ios" }, audio: { stored: true, base: "b" } } }}
         transcript={{ status: "ok", sentences: [] }}
-        loadAudio={loadAudio}
+        audio={audio}
         copyState="idle"
         onCopy={noop}
         onRetry={noop}
@@ -62,7 +62,7 @@ describe("NoteDetailView", () => {
     expect(html).not.toContain("How this got here");
   });
   test("an inserted voice-note row awaiting its audio explains its state", () => {
-    expect(render({ item: VOICE, loadAudio: null, metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" } }))
+    expect(render({ item: VOICE, audio: null, metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" } }))
       .toContain("Saving from your phone…");
   });
   test("a committed transcript with a missing body does not show its preview as full text", () => {
@@ -81,7 +81,7 @@ describe("NoteDetailView", () => {
   });
 
   test("title, meta, Play audio and How this got here", () => {
-    const html = render({ item: MEETING, loadAudio: null, metadata: { status: "ok", metadata: { platform: "google_meet" } }, transcript: { status: "absent" } });
+    const html = render({ item: MEETING, audio: null, metadata: { status: "ok", metadata: { platform: "google_meet" } }, transcript: { status: "absent" } });
     expect(html).toContain(">Back</button>");
     expect(html).toContain("Weekly sync");
     expect(html).toContain("31 min · Notetaker");
@@ -115,7 +115,7 @@ describe("NoteDetailView", () => {
   });
 
   test("an upload whose audio was not stored says so", () => {
-    const html = render({ item: UPLOAD, loadAudio: null, metadata: { status: "ok", metadata: { audio: { stored: false } } } });
+    const html = render({ item: UPLOAD, audio: null, metadata: { status: "ok", metadata: { audio: { stored: false } } } });
     expect(html).toContain('data-testid="note-audio-missing"');
   });
 
