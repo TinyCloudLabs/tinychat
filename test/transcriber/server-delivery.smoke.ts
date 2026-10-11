@@ -12,8 +12,10 @@ const passkeyPath = resolve(process.env.PASSKEY_PATH ?? "/tmp/e2e/.passkey.json"
 const logPath = resolve(process.env.BACKEND_LOG_PATH ?? new URL("./.backend.log", import.meta.url).pathname);
 const timeoutMs = Number(process.env.SMOKE_AUTH_TIMEOUT_MS ?? "120000");
 const here = new URL(".", import.meta.url);
-const meetingUrl = "https://meet.ffmuc.net/tc641-smoke";
-const meetingTitle = "tc641-smoke (meet.ffmuc.net)";
+// A per-run room, so a re-run on the same throwaway account finds exactly this run's Library row.
+const room = `tc641-smoke-${Date.now().toString(36)}`;
+const meetingUrl = `https://meet.ffmuc.net/${room}`;
+const meetingTitle = `${room} (meet.ffmuc.net)`;
 const expectedText = "Hello from Alice.";
 
 function requireFile(path: string, description: string): void {
