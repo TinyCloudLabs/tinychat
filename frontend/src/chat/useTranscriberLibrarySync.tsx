@@ -13,7 +13,7 @@ const SavedContext = createContext<Readonly<Record<string, TranscriberSaveState>
 export const useTranscriberSavedState = () => useContext(SavedContext);
 
 export interface TranscriberLibrarySaver {
-  listSaved(tcw: TinyCloudWeb): Promise<{ ok: boolean; data?: string[] }>;
+  listSaved(tcw: TinyCloudWeb, scheduleRead?: <T>(read: () => Promise<T>) => Promise<T>): Promise<{ ok: boolean; data?: string[] }>;
   save(tcw: TinyCloudWeb, meeting: TranscriberMeeting, transcript: TranscriberTranscript): Promise<{ ok: boolean }>;
 }
 const defaultSaver: TranscriberLibrarySaver = { listSaved: listSavedTranscriberMeetingIds, save: saveTranscriberMeeting };
@@ -28,10 +28,14 @@ export async function syncTranscriberLibrary(input: {
 }): Promise<void> {
   const { tcw, client, saver = defaultSaver, isCurrent = () => true, onState = () => {} } = input;
   if (!isCurrent()) return;
+  // This API call can be slow or retry for tens of seconds; it does not touch
+  // the user's space and must never occupy the serial space-write lane.
   const listed = await client.list();
   if (listed.status !== "ok" || !isCurrent()) return;
-  const complete = await saver.listSaved(tcw);
-  if (!complete.ok || !isCurrent()) return;
+  // Each SQL/KV completeness read takes its own turn. A library with many
+  // saved recordings therefore yields the lane between keys for voice notes.
+  const complete = await saver.listSaved(tcw, (read) => enqueueDrainWork(read));
+  if (!complete?.ok || !isCurrent()) return;
   const saved = new Set(complete.data ?? []);
   for (const row of listed.value.meetings) {
     if (!isCurrent()) return;
@@ -41,8 +45,15 @@ export async function syncTranscriberLibrary(input: {
     try {
       const result = await client.transcript(row.id);
       if (!isCurrent()) return;
-      const ok = result.status === "ok" && result.value.status === "ready"
-        && (await saver.save(tcw, row, result.value.transcript)).ok;
+      let ok = false;
+      if (result.status === "ok" && result.value.status === "ready") {
+        const fetchedTranscript = result.value.transcript;
+        const saved = await enqueueDrainWork(async () => {
+          if (!isCurrent()) return null;
+          return saver.save(tcw, row, fetchedTranscript);
+        });
+        ok = saved?.ok === true;
+      }
       if (isCurrent()) onState(row.id, ok ? "saved" : "error");
     } catch {
       // One broken recording must not starve the rest or leak error payloads.
@@ -69,11 +80,9 @@ export function useTranscriberLibrarySync(input: {
     const run = () => {
       if (!isCurrent() || running.current) return;
       running.current = true;
-      void enqueueDrainWork(async () => {
-        await syncTranscriberLibrary({ tcw, client: api, isCurrent, onState: (id, state) => {
-          if (!cancelled) setSaved((old) => ({ ...old, [id]: state }));
-        } });
-      }).catch(() => { /* The next wake retries failures outside an individual recording. */ })
+      void syncTranscriberLibrary({ tcw, client: api, isCurrent, onState: (id, state) => {
+        if (!cancelled) setSaved((old) => ({ ...old, [id]: state }));
+      } }).catch(() => { /* The next wake retries failures outside an individual recording. */ })
         .finally(() => { running.current = false; });
     };
     run();
