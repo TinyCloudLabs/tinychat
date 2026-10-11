@@ -150,10 +150,17 @@ function align(ref: readonly Token[], out: readonly Token[]) {
 export function scoreTranscript(input: EvalInput): EvalScore {
   const { expected, sentences } = input;
   if (expected.version !== 1) throw new Error("Unsupported expected.json version");
-  const reference: Token[] = expected.turns.flatMap((turn, turnIndex) => turn.words.map(word => ({
-    text: word.w, key: key(word.w), start: word.start, end: word.end, speaker: turn.speaker,
-    sentence: -1, timing: "token" as const, tags: [...new Set([...turn.tags, ...(word.tag ? [word.tag] : [])])], turn: turnIndex,
-  })));
+  const reference: Token[] = [];
+  const referenceTurnEnds: number[] = [];
+  for (const [turnIndex, turn] of expected.turns.entries()) {
+    for (const word of turn.words) {
+      const normalized = key(word.w);
+      if (!normalized) continue;
+      reference.push({ text: word.w, key: normalized, start: word.start, end: word.end, speaker: turn.speaker,
+        sentence: -1, timing: "token", tags: [...new Set([...turn.tags, ...(word.tag ? [word.tag] : [])])], turn: turnIndex });
+    }
+    referenceTurnEnds.push(reference.length);
+  }
   const output: Token[] = sentences.flatMap((sentence, sentenceIndex) => {
     const parts = sentence.text.split(/\s+/u).filter(Boolean);
     const lineage = sentence.words;
@@ -207,20 +214,32 @@ export function scoreTranscript(input: EvalInput): EvalScore {
     if (!matchedRef.has(word)) item.lost++;
   }
   // Coverage uses aligned reference words, not another greedy token search.
-  // A word spliced into an adjacent sentence is not evidence for a missing turn.
-  const covered = expected.turns.map((turn, index) => turn.words.length > 0 &&
-    (matchedByTurn.get(index)?.filter(word => {
+  // A word spliced into a neighbouring sentence is not evidence for a missing turn;
+  // allow the same 0.5 s timing error that G16 permits for genuine short turns.
+  const covered = expected.turns.map((turn, index) => {
+    const wordCount = referenceTurnEnds[index] - (referenceTurnEnds[index - 1] ?? 0);
+    return wordCount > 0 && (matchedByTurn.get(index)?.filter(word => {
       const sentence = sentences[word.sentence];
-      return sentence.start_time <= turn.end && sentence.end_time >= turn.start;
-    }).length ?? 0) / turn.words.length >= .5);
+      return sentence.start_time <= turn.end + .5 && sentence.end_time >= turn.start - .5;
+    }).length ?? 0) / wordCount >= .5;
+  });
   const outputPositions = new Map(output.map((word, index) => [word, index]));
-  const cluster = new Array<number>(expected.turns.length);
-  const byStart = expected.turns.map((turn, index) => ({ turn, index })).sort((a, b) => a.turn.start - b.turn.start);
-  let clusterId = -1, clusterEnd = -Infinity;
-  for (const { turn, index } of byStart) {
-    if (Math.min(clusterEnd, turn.end) - turn.start <= .3) { clusterId++; clusterEnd = turn.end; }
-    else clusterEnd = Math.max(clusterEnd, turn.end);
-    cluster[index] = clusterId;
+  // A contained short turn cannot break a longer turn's cluster. Close the
+  // >0.3 s overlap relation transitively, irrespective of reference order.
+  const cluster = expected.turns.map((_, index) => index);
+  const root = (index: number): number => {
+    while (cluster[index] !== index) {
+      cluster[index] = cluster[cluster[index]];
+      index = cluster[index];
+    }
+    return index;
+  };
+  for (let i = 0; i < expected.turns.length; i++) {
+    for (let j = i + 1; j < expected.turns.length; j++) {
+      const a = expected.turns[i], b = expected.turns[j];
+      if (Math.min(a.end, b.end) - Math.max(a.start, b.start) > .3)
+        cluster[root(j)] = root(i);
+    }
   }
   const order = expected.turns.flatMap((turn, index) => {
     if (!covered[index]) return [];
@@ -230,7 +249,7 @@ export function scoreTranscript(input: EvalInput): EvalScore {
   let concordant = 0, discordant = 0;
   for (let i = 0; i < order.length; i++) for (let j = i + 1; j < order.length; j++) {
     const a = order[i], b = order[j];
-    if (cluster[a.index] === cluster[b.index] || a.turn.start === b.turn.start || a.at === b.at) continue;
+    if (root(a.index) === root(b.index) || a.turn.start === b.turn.start || a.at === b.at) continue;
     if ((a.turn.start - b.turn.start) * (a.at - b.at) > 0) concordant++;
     else discordant++;
   }
@@ -238,10 +257,11 @@ export function scoreTranscript(input: EvalInput): EvalScore {
   for (const [turnIndex, turn] of expected.turns.entries()) {
     const ends = [...new Set([...turn.sentenceEnds, turn.words.length])].filter(n => n > 0 && n <= turn.words.length).sort((a, b) => a - b);
     referenceSentences += ends.length;
-    const refWords = reference.slice(refOffset, refOffset += turn.words.length);
-    let from = 0;
+    const refWords = reference.slice(refOffset, refOffset = referenceTurnEnds[turnIndex]);
+    let from = 0, normalizedFrom = 0, normalizedEnd = 0;
     for (const end of ends) {
-      const sequence = refWords.slice(from, end).flatMap(ref => {
+      for (let i = from; i < end; i++) if (key(turn.words[i].w)) normalizedEnd++;
+      const sequence = refWords.slice(normalizedFrom, normalizedEnd).flatMap(ref => {
         const found = alignedOutByRef.get(ref);
         return found ? [found] : [];
       });
@@ -252,6 +272,7 @@ export function scoreTranscript(input: EvalInput): EvalScore {
         if (!explained) unexplainedSplits++;
       }
       from = end;
+      normalizedFrom = normalizedEnd;
     }
   }
   for (let i = 0; i < sentences.length; i++) {

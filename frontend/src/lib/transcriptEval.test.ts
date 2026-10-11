@@ -22,9 +22,10 @@ function sentence(input: EvalInput, index: number, words: NonNullable<EvalSenten
   const old = input.sentences[index];
   return { ...old, text: words.map(w => w.text).join(" "), words, ...changes };
 }
-const A3 = new Set<EvalPr>(["A3"]);
-const BR = new Set<EvalPr>(["A3", "BR"]);
-const B2 = new Set<EvalPr>(["A3", "BR", "B2"]);
+const A3 = new Set<EvalPr>(["A1", "A2", "A3"]);
+const BR = new Set<EvalPr>([...A3, "B0", "BR"]);
+const B2 = new Set<EvalPr>([...BR, "B1", "B2"]);
+const E_BEFORE_BR = new Set<EvalPr>([...A3, "B1", "E"]);
 function assertGate(input: EvalInput, mutate: (input: EvalInput) => EvalInput, gate: EvalGateId,
   landed: ReadonlySet<EvalPr> = A3, fixtureName = "speech") {
   const baseline = scoreTranscript(input);
@@ -88,6 +89,14 @@ describe("TC-813 adversarial scoring cases 1–28", () => {
   test("7 reversing separated turns fails Kendall tau", () => {
     const input = fixture(Array.from({ length: 3 }, (_, i) => ({ speaker: "You", count: 3, start: i * 3 })));
     assertGate(input, x => ({ ...x, sentences: [...x.sentences].reverse() }), "G9");
+  });
+  test("G9 permits a mono candidate against its own mono baseline", () => {
+    const input = two();
+    const mono = { ...input, sentences: input.sentences.map(s => ({ ...s, speaker_name: "You" })) };
+    const { candidate, results } = assertPass(mono, mono);
+    expect(candidate.turnCovered).toBe(1);
+    expect(candidate.kendallTau).toBe(-1);
+    expect(results.find(r => r.id === "G9")).toMatchObject({ applicable: true, passed: true });
   });
   test("8 simultaneous overlapping turns pass in either output order", () => {
     const input = fixture([{ speaker: "You", count: 5, start: 0 }, { speaker: "Others", count: 5, start: 5 }]);
@@ -187,6 +196,14 @@ describe("TC-813 adversarial scoring cases 1–28", () => {
     assertPass(split, input, BR);
     assertGate(split, () => input, "G19", BR);
   });
+  test("G19 rejects a 119 s timed sentence, but accepts the 60 s boundary", () => {
+    const input = fixture([{ speaker: "You", count: 4, start: 0 }]);
+    const timed60 = { ...input, sentences: [{ ...input.sentences[0], start_time: 0, end_time: 60 }] };
+    const timed119 = { ...input, sentences: [{ ...input.sentences[0], start_time: 0, end_time: 119 }] };
+    expect(scoreTranscript(timed60).sentenceSpanValid).toBe(true);
+    expect(scoreTranscript(timed119).sentenceSpanValid).toBe(false);
+    assertGate(timed60, () => timed119, "G19", BR);
+  });
   test("23 an interjection at the split explains an otherwise internal cut", () => {
     const input = fixture([{ speaker: "You", count: 4, start: 0 }, { speaker: "Others", count: 1, start: 4 }]);
     input.expected.turns[1].start = .3; input.expected.turns[1].end = .5;
@@ -259,7 +276,7 @@ describe("TC-813 adversarial scoring cases 1–28", () => {
     noise.sentences = [{ index: 0, text: "quasar", speaker_name: "You", start_time: 0, end_time: 150 }];
     noise.glossaryTerms = ["quasar"];
     const baseline = scoreTranscript(noise);
-    const options = { baseline, landed: new Set<EvalPr>(["A3", "E"]), fixtureName: "silence-only", goldenProductionInputHash: "hash" };
+    const options = { baseline, landed: E_BEFORE_BR, fixtureName: "silence-only", goldenProductionInputHash: "hash" };
     const gates = evaluateTranscriptGates(baseline, options);
     expect(gates.find(g => g.id === "G13")?.passed).toBe(false);
     expect(gates.find(g => g.id === "G14")?.passed).toBe(false);

@@ -8,9 +8,24 @@ export interface EvalGateOptions {
   /** A3 supplies the frozen mono/golden baseline; never synthesized from the candidate. */
   baseline: EvalScore;
   goldenProductionInputHash: string;
-  /** PRs already landed; independent E ratchets persist if D lands later. */
+  /** PRs landed including the candidate PR; independent E ratchets persist if D lands later. */
   landed: ReadonlySet<EvalPr>;
   fixtureName: string;
+}
+
+/** Internal prerequisites; external TC-777 and real-capture evidence are checked by their own workflows. */
+const prerequisites: Record<EvalPr, readonly EvalPr[]> = {
+  A1: [], A2: ["A1"], A3: ["A2"], B0: ["A1", "A3"],
+  B1: ["A3"], BR: ["A3", "B0"], B2: ["BR", "B1"],
+  C: ["B2"], E: ["B1"], X: ["B2"], D: ["B2", "X"],
+};
+
+function validateLanded(landed: ReadonlySet<EvalPr>): void {
+  for (const pr of landed) {
+    for (const dependency of prerequisites[pr]) {
+      if (!landed.has(dependency)) throw new Error(`${pr} requires landed ${dependency}`);
+    }
+  }
 }
 
 /** One percentage point or two reference words, whichever is larger. */
@@ -19,6 +34,7 @@ function delta(words: number): number { return Math.max(.01, 2 / Math.max(1, wor
 /** A gate with missing required evidence fails closed rather than silently passing. */
 export function evaluateTranscriptGates(score: EvalScore, options: EvalGateOptions): EvalGateResult[] {
   const { baseline: base, landed, fixtureName } = options;
+  validateLanded(landed);
   const results: EvalGateResult[] = [];
   const hasBaseline = landed.has("A3");
   const add = (id: EvalGateId, passed: boolean, detail: string, applicable = hasBaseline) =>
@@ -43,7 +59,7 @@ export function evaluateTranscriptGates(score: EvalScore, options: EvalGateOptio
   const tags = new Set([...Object.keys(base.tagged), ...Object.keys(score.tagged)]);
   add("G7", [...tags].every(tag => (score.tagged[tag]?.lost ?? 0) <= (base.tagged[tag]?.lost ?? 0) + Math.max(1, .02 * (base.tagged[tag]?.total ?? 0))), "tagged lost words ≤ baseline lost + max(1, 2% tagged)");
   add("G8", score.turnCovered >= base.turnCovered - 1, "turn coverage ≥ baseline − 1 turn");
-  add("G9", !(score.turnCount >= 2 && score.turnCovered < 2) && score.kendallTau >= base.kendallTau - .02, "Kendall τ ≥ baseline − 0.02; at least 2 covered reference turns");
+  add("G9", !(base.turnCovered >= 2 && score.turnCovered < 2) && score.kendallTau >= base.kendallTau - .02, "Kendall τ ≥ baseline − 0.02; at least 2 covered turns when baseline has 2");
   add("G10", score.unexplainedSplits * 100 / Math.max(1, score.referenceSentences) <= base.unexplainedSplits * 100 / Math.max(1, base.referenceSentences) + 2, "unexplained splits per 100 reference sentences ≤ baseline + 2");
   add("G11", score.mergedTurns <= base.mergedTurns + Math.max(1, .01 * base.turnCount, 2), "merged turns ≤ baseline + Δ (max of 1% turns, 2 turns)");
   add("G12", score.bleedRate <= base.bleedRate + delta(base.speakers.Others?.reference ?? 0), "bleed ≤ baseline + Δ");
