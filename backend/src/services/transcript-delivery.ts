@@ -508,9 +508,13 @@ export class TranscriptDeliveryWorker {
       await this.confirmRefusal(address, state, id, grant);
       return;
     }
-    // SQL 402 surfaces as the SDK's NETWORK_ERROR, so the HTTP status decides quota first.
+    // SDK 3.1 reports every storage failure with its HTTP status, so the status decides quota: 402
+    // (STORAGE_QUOTA_EXCEEDED) and 413 are the day-long quota backoff, while SQL 429
+    // (SQL_QUOTA_EXCEEDED, a rate limit) takes the short storage retry. The code is consulted only
+    // when there is no status.
     this.retry(address, state, id, result.code === "SCHEMA_MISSING" ? "schema_missing" :
-      result.status === 402 || result.status === 413 || /QUOTA|PAYMENT_REQUIRED|402/i.test(result.code)
+      result.status === 402 || result.status === 413 ||
+      (result.status === undefined && /QUOTA|PAYMENT_REQUIRED|402/i.test(result.code))
         ? "storage_quota" : "storage_error");
   }
   /**

@@ -226,8 +226,9 @@ function sdkActivationFailure(result: { success: boolean; status: number; error?
 /**
  * A TinyCloud node behind the REAL SDK: activation is `activateSessionWithHost` on `POST /delegate`
  * (failing exactly as `useDelegation` does), and storage is a real `DelegatedAccess`, so every
- * storage failure is mapped by the SDK's own services: SQL 403 → SQL_PERMISSION_DENIED, KV put
- * 403 → KV_WRITE_FAILED with meta.status 403, SQL 402 → NETWORK_ERROR with meta.status 402.
+ * storage failure is mapped by the SDK's own (3.1) services, each with meta.status: SQL 403 →
+ * SQL_PERMISSION_DENIED, KV put 403 → AUTH_UNAUTHORIZED, 402 → STORAGE_QUOTA_EXCEEDED, SQL 429 →
+ * SQL_QUOTA_EXCEEDED.
  * The stub `invoke` puts the service in the header so this node can answer SQL and KV apart.
  * `delegate: 0` drops the activation connection (a network failure, no status). The stored grant
  * is re-signed without a bundle host so it verifies against this node as the configured host.
@@ -1302,6 +1303,19 @@ describe("durable transcript delivery", () => {
         await worker.stop();
       });
     }
+  });
+
+  it("an SDK 3.1 SQL 429 (SQL_QUOTA_EXCEEDED) takes the short storage retry, not the day-long quota backoff", async () => {
+    const f = await fixture();
+    await withStorageNode(f, { delegate: 200, sql: 429, kv: 200 }, async (host) => {
+      const worker = f.worker({ configuredHost: host });
+      await admit(f, "throttled");
+      await worker.deliver(f.grant.address, "throttled");
+      expect(f.state().retry.throttled.code).toBe("storage_error");
+      expect(f.state().retry.throttled.nextAt - Date.now()).toBeLessThan(2 * 60_000);
+      expect(f.counts.removal).toBe(0);
+      await worker.stop();
+    });
   });
 
   it("governs each of the five fresh-space writes individually at one token per fake minute", async () => {

@@ -10,8 +10,9 @@ export function delegatedConnectorPort(access: DelegatedAccess, meter: MeteredWr
   const assertKey = (key: string) => {
     if (!key.startsWith(prefix)) throw new Error("Transcript key outside delegated prefix");
   };
-  // Keep the SDK's HTTP status: a 403 surfaces as SQL_PERMISSION_DENIED or, for a KV put,
-  // KV_WRITE_FAILED with `meta.status = 403`, and only the status says the grant was refused.
+  // Keep the SDK's HTTP status (`meta.status`): SDK 3.1 codes alone are ambiguous. A refusal is
+  // SQL_PERMISSION_DENIED (403) or AUTH_UNAUTHORIZED (401, and a KV 403); a full space is
+  // STORAGE_QUOTA_EXCEEDED (402); a SQL 429 is SQL_QUOTA_EXCEEDED, a rate limit, not a full space.
   const convert = <T>(result: { ok: boolean; data?: T; error?: { code?: string; message?: string; meta?: { status?: unknown } } }): PortResult<T> => {
     if (result.ok) return { ok: true, data: result.data as T };
     const status = result.error?.meta?.status;
