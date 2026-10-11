@@ -593,6 +593,9 @@ import XCTest
             XCTAssertTrue(try events(engine, id).contains {
                 $0["e"] as? String == "stop" && $0["reason"] as? String == "max_duration"
             })
+            // Recovery runs under the same mux rule as Stop; drop the injected faults so it can succeed.
+            engine.debugMuxWaitSeam = nil
+            engine.debugMuxWaitTimeout = nil
             cancelGate.signal()
             wait(for: [recovered, committed], timeout: 30)
             XCTAssertEqual(recoveredNote?["id"] as? String, id)
@@ -617,13 +620,13 @@ import XCTest
         let clock = TestClock()
         try withEngine(clock: clock) { engine in
             engine.debugSuppressTaps()
-            engine.debugMuxOperationTimeout = 0.1
+            engine.debugMuxStallTimeout = 0.1
             let muxGate = DispatchSemaphore(value: 0)
             defer { muxGate.signal() }
             let workerEntered = expectation(description: "mux worker entered")
             let workerReleased = expectation(description: "abandoned mux worker released")
             let retryScheduled = expectation(description: "timed-out recording scheduled for recovery")
-            engine.debugScheduleTimedOutRetry = { _ in retryScheduled.fulfill() }
+            engine.debugScheduleTimedOutRetry = { _, _, _ in retryScheduled.fulfill() }
             var seam = RecordingFinalizer.WaitSeam()
             seam.beforeMuxWorker = {
                 workerEntered.fulfill()
@@ -650,6 +653,222 @@ import XCTest
             XCTAssertFalse(FileManager.default.fileExists(atPath: engine.library.sidecarURL(id).path))
             muxGate.signal()
             wait(for: [workerReleased], timeout: 5)
+        }
+    }
+
+    private final class Locked<Value> {
+        private let lock = NSLock()
+        private var stored: Value
+        init(_ value: Value) { stored = value }
+        func update<R>(_ body: (inout Value) -> R) -> R { lock.lock(); defer { lock.unlock() }; return body(&stored) }
+        var value: Value { lock.lock(); defer { lock.unlock() }; return stored }
+    }
+
+    private func stubbedMux(stall: TimeInterval, ceiling: TimeInterval? = nil,
+                            worker: @escaping (URL, RecordingFinalizer.MuxProgress) throws -> Void) throws -> URL {
+        let output = FileManager.default.temporaryDirectory.appendingPathComponent("mux-\(UUID().uuidString).m4a")
+        var config = RecordingFinalizer.Config()
+        config.stallTimeout = stall
+        config.ceilingOverride = ceiling
+        config.seam.workerOverride = worker
+        try RecordingFinalizer.mux(segments: [URL(fileURLWithPath: "/dev/null")], expectedAudioMs: 1_000,
+                                   to: output, config: config)
+        return output
+    }
+
+    func testSlowButProgressingMuxOutlastsTheStallTimeout() throws {
+        let started = ProcessInfo.processInfo.systemUptime
+        let output = try stubbedMux(stall: 2) { output, progress in
+            for _ in 0..<25 {
+                try progress.tick()
+                Thread.sleep(forTimeInterval: 0.2)
+            }
+            try Data("m4a".utf8).write(to: output)
+        }
+        defer { try? FileManager.default.removeItem(at: output) }
+        XCTAssertGreaterThan(ProcessInfo.processInfo.systemUptime - started, 2,
+                             "the mux must run longer than the no-progress timeout to prove the rule")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
+    }
+
+    func testMuxThatOnlyGrowsItsOutputCountsAsProgress() throws {
+        let started = ProcessInfo.processInfo.systemUptime
+        let output = try stubbedMux(stall: 2) { output, _ in
+            FileManager.default.createFile(atPath: output.path, contents: nil)
+            let handle = try FileHandle(forWritingTo: output)
+            defer { try? handle.close() }
+            for _ in 0..<25 {
+                try handle.write(contentsOf: Data([1]))
+                Thread.sleep(forTimeInterval: 0.2)
+            }
+        }
+        defer { try? FileManager.default.removeItem(at: output) }
+        XCTAssertGreaterThan(ProcessInfo.processInfo.systemUptime - started, 2)
+    }
+
+    func testStalledMuxFailsVisiblyAndTheLateWorkerIsCancelledAndDiscarded() throws {
+        let gate = DispatchSemaphore(value: 0)
+        let workerEnded = expectation(description: "abandoned worker ended")
+        let workerResult = Locked<Error?>(nil)
+        let output = FileManager.default.temporaryDirectory.appendingPathComponent("mux-\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: output) }
+        var config = RecordingFinalizer.Config()
+        config.stallTimeout = 0.5
+        config.seam.workerOverride = { output, progress in
+            defer { workerEnded.fulfill() }
+            for _ in 0..<3 { try progress.tick(); Thread.sleep(forTimeInterval: 0.05) }
+            gate.wait()
+            // A worker that wakes after Stop gave up must be told to stop and must not leave a file.
+            try Data("late".utf8).write(to: output)
+            do { try progress.tick() } catch { workerResult.update { $0 = error }; throw error }
+        }
+        let started = ProcessInfo.processInfo.systemUptime
+        XCTAssertThrowsError(try RecordingFinalizer.mux(segments: [URL(fileURLWithPath: "/dev/null")],
+                                                        expectedAudioMs: 1_000, to: output, config: config)) {
+            XCTAssertEqual($0 as? CaptureError, .finalizationTimedOut("mux"))
+        }
+        XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - started, 0.5)
+        gate.signal()
+        wait(for: [workerEnded], timeout: 10)
+        XCTAssertEqual(workerResult.value as? CaptureError, .cancelled)
+        let deadline = ProcessInfo.processInfo.systemUptime + 10
+        while FileManager.default.fileExists(atPath: output.path), ProcessInfo.processInfo.systemUptime < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path), "a late worker must never leave output")
+    }
+
+    func testAbsoluteCeilingStopsAMuxThatNeverStopsProgressing() throws {
+        let output = FileManager.default.temporaryDirectory.appendingPathComponent("mux-\(UUID().uuidString).m4a")
+        var config = RecordingFinalizer.Config()
+        config.stallTimeout = 1
+        config.ceilingOverride = 0.6
+        config.seam.workerOverride = { _, progress in
+            while true { try progress.tick(); Thread.sleep(forTimeInterval: 0.02) }
+        }
+        XCTAssertThrowsError(try RecordingFinalizer.mux(segments: [URL(fileURLWithPath: "/dev/null")],
+                                                        expectedAudioMs: 1_000, to: output, config: config)) {
+            XCTAssertEqual($0 as? CaptureError, .finalizationTimedOut("mux_ceiling"))
+        }
+    }
+
+    func testSlowProgressingStopPublishesTheNoteExactlyOnce() throws {
+        let clock = TestClock()
+        try withEngine(clock: clock) { engine in
+            engine.debugSuppressTaps()
+            engine.debugMuxStallTimeout = 2
+            let calls = Locked(0)
+            var seam = RecordingFinalizer.WaitSeam()
+            seam.workerOverride = { output, progress in
+                calls.update { $0 += 1 }
+                for _ in 0..<25 { try progress.tick(); Thread.sleep(forTimeInterval: 0.2) }
+                try Data("m4a".utf8).write(to: output)
+            }
+            engine.debugMuxWaitSeam = seam
+            engine.debugScheduleTimedOutRetry = { _, _, _ in XCTFail("a progressing mux must not time out") }
+            let id = try XCTUnwrap(engine.start(requestedLimitMs: 1_000)["id"] as? String)
+            try enqueueTone(engine)
+            let stopped = expectation(description: "stop reports success")
+            let committed = Locked(0)
+            var stoppedNote: [String: Any]?
+            let token = engine.observe { name, data, _ in
+                if name == "committed", data["id"] as? String == id { committed.update { $0 += 1 } }
+                if name == "autoStopped", data["reason"] as? String == "max_duration" {
+                    stoppedNote = data
+                    stopped.fulfill()
+                }
+            }
+            defer { engine.removeObserver(token) }
+            clock.advance(by: 1_000)
+            engine.debugWatchdogTick()
+            wait(for: [stopped], timeout: 60)
+            XCTAssertNil(stoppedNote?["error"])
+            XCTAssertEqual(stoppedNote?["id"] as? String, id)
+            XCTAssertEqual(calls.value, 1)
+            XCTAssertEqual(committed.value, 1)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: engine.library.audioURL(id).path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: engine.library.sidecarURL(id).path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: engine.library.sessionURL(id).path))
+        }
+    }
+
+    func testTimedOutStopBacksOffRecordsEveryAttemptAndTryAgainStillWorks() throws {
+        let clock = TestClock()
+        try withEngine(clock: clock) { engine in
+            engine.debugSuppressTaps()
+            engine.debugMuxStallTimeout = 0.2
+            let stallGate = DispatchSemaphore(value: 0)
+            defer { for _ in 0..<8 { stallGate.signal() } }
+            let calls = Locked(0)
+            let succeedFromCall = Locked(Int.max)
+            var seam = RecordingFinalizer.WaitSeam()
+            seam.workerOverride = { output, progress in
+                let call = calls.update { $0 += 1; return $0 }
+                if call >= succeedFromCall.value {
+                    try progress.tick()
+                    try Data("m4a".utf8).write(to: output)
+                    return
+                }
+                stallGate.wait()
+            }
+            engine.debugMuxWaitSeam = seam
+            let scheduled = Locked([(delay: TimeInterval, run: () -> Void)]())
+            let firstScheduled = expectation(description: "first automatic retry scheduled")
+            engine.debugScheduleTimedOutRetry = { _, delay, run in
+                scheduled.update { $0.append((delay, run)) }
+                if scheduled.value.count == 1 { firstScheduled.fulfill() }
+            }
+            let id = try XCTUnwrap(engine.start(requestedLimitMs: 1_000)["id"] as? String)
+            try enqueueTone(engine)
+            let stopFailed = expectation(description: "stop reports the timeout")
+            let givenUp = expectation(description: "recovery reported failed after the last automatic retry")
+            let failures = Locked(0)
+            let token = engine.observe { name, data, _ in
+                if name == "autoStopped", data["reason"] as? String == "max_duration",
+                   data["error"] as? String == "finalization_timed_out" { stopFailed.fulfill() }
+                if name == "recoveryFailed", data["id"] as? String == id {
+                    failures.update { $0 += 1 }
+                    givenUp.fulfill()
+                }
+            }
+            defer { engine.removeObserver(token) }
+            clock.advance(by: 1_000)
+            engine.debugWatchdogTick()
+            wait(for: [stopFailed, firstScheduled], timeout: 15)
+            XCTAssertEqual(scheduled.value.map(\.delay), [2])
+            XCTAssertTrue(FileManager.default.fileExists(atPath: engine.library.sessionURL(id).path))
+
+            // Automatic retry 1 (2 s) fails too: the attempt is recorded and the next one is 30 s out.
+            DispatchQueue.global().async { scheduled.value[0].run() }
+            let deadline = ProcessInfo.processInfo.systemUptime + 15
+            while scheduled.value.count < 2, ProcessInfo.processInfo.systemUptime < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+            }
+            XCTAssertEqual(scheduled.value.map(\.delay), [2, 30])
+            var marker = try XCTUnwrap(engine.library.listRecoveryFailures().first { $0["id"] as? String == id })
+            XCTAssertEqual(marker["attempts"] as? Int, 1)
+            XCTAssertEqual(marker["inFlight"] as? Bool, false)
+            XCTAssertEqual(failures.value, 0, "the user is only told once the automatic retries are exhausted")
+
+            // Automatic retry 2 (30 s) fails: nothing more is scheduled until the next launch.
+            DispatchQueue.global().async { scheduled.value[1].run() }
+            wait(for: [givenUp], timeout: 15)
+            XCTAssertEqual(scheduled.value.count, 2)
+            marker = try XCTUnwrap(engine.library.listRecoveryFailures().first { $0["id"] as? String == id })
+            XCTAssertEqual(marker["attempts"] as? Int, 2)
+            XCTAssertEqual(marker["inFlight"] as? Bool, false)
+            XCTAssertEqual(marker["quarantined"] as? Bool, false)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: engine.library.sessionURL(id).path),
+                          "segments are kept until a commit succeeds")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: engine.library.sidecarURL(id).path))
+
+            // "Try again" finds the marker and now succeeds under the same rule.
+            succeedFromCall.update { $0 = calls.value + 1 }
+            try engine.retryRecovery(id)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: engine.library.sidecarURL(id).path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: engine.library.audioURL(id).path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: engine.library.sessionURL(id).path))
+            XCTAssertTrue(try engine.library.listRecoveryFailures().filter { $0["id"] as? String == id }.isEmpty)
         }
     }
 
