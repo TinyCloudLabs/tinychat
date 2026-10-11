@@ -88,6 +88,11 @@ jobs:
         working-directory: test
         run: SCROLL_ENGINE=chromium bun test connectors-scroll.e2e.test.ts
 
+      - name: Mobile screens fit the viewport (Chromium)
+        if: ${{ !cancelled() }}
+        working-directory: test
+        run: bun test no-horizontal-drag.e2e.test.ts
+
       - name: Agent banner across navigation (Chromium)
         if: ${{ !cancelled() }}
         run: bun run --cwd test agent-banner:browser
