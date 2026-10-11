@@ -64,7 +64,7 @@ const props = (screen: SavedNoteScreen, over: Partial<SavedNoteViewProps> = {}):
   recordingId: "rec-1",
   title: "Standup",
   meta: "1 min · saved to your space",
-  loadAudio: null,
+  audio: null,
   transcript: <p>the transcript</p>,
   partialAudio: false,
   onBack: noop,
@@ -161,7 +161,7 @@ describe("SavedNotePage", () => {
 
   test("the player is there only when the recording has audio", () => {
     expect(html(screenOf({ md: "hi" }))).not.toContain("Play");
-    expect(html(screenOf({ md: "hi" }), { loadAudio: async () => ({ blob: new Blob() }) as never })).toContain('class="sn-player"');
+    expect(html(screenOf({ md: "hi" }), { audio: { load: async () => ({ blob: new Blob() }) as never } })).toContain('class="sn-player"');
   });
 
   test("a discard confirmation makes the page behind it inert", () => {
@@ -184,7 +184,7 @@ describe("SavedNoteBody's player", () => {
   };
   const load = async () => new Blob();
   const player = (over: Partial<SavedNoteViewProps>) => {
-    const view = props(screenOf({ md: "hi" }), { loadAudio: load, ...over });
+    const view = props(screenOf({ md: "hi" }), { audio: { load }, ...over });
     const refs = { editButton: { current: null }, cancelButton: { current: null } };
     return playerIn(SavedNoteBody({ ...view, ...refs, toolbarHost: undefined }));
   };
@@ -194,6 +194,16 @@ describe("SavedNoteBody's player", () => {
     const row = player({ id: "9", recordingId: "rec-9" });
     expect(standIn?.key).not.toBeNull();
     expect(row?.key).toBe(standIn?.key ?? "");
+  });
+
+  test("a note still on the phone gives the player a local URL to resolve, not a load, and its moments seek", () => {
+    const localUrl = async () => "capacitor://localhost/_capacitor_file_/rec-1.m4a";
+    const seek = { seconds: 12, nonce: 1 };
+    const view = props({ ...screenOf({ md: "hi" }), seek }, { audio: { localUrl } });
+    const refs = { editButton: { current: null }, cancelButton: { current: null } };
+    const found = playerIn(SavedNoteBody({ ...view, ...refs, toolbarHost: undefined }));
+    expect(found?.props).toMatchObject({ resolveUrl: localUrl, seek });
+    expect((found?.props as { load?: unknown }).load).toBeUndefined();
   });
 
   test("is a new player for another recording", () => {
