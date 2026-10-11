@@ -165,7 +165,7 @@ function recordRestoredSession(storage: ISessionStorage): RecordingStorage {
 }
 
 /**
- * @tinycloud/web-sdk 2.11.0 restores a session without an auth instance into
+ * @tinycloud/web-sdk 3.1.0 (still, as in 2.11.0) restores a session without an auth instance into
  * `_restoredTcSession`, but its `spaceId` getter only reads the auth instance,
  * so a restored `tcw.spaceId` is undefined. Fall back to the space of the very
  * record the SDK restored from, and fail the restore when it has none. To be
