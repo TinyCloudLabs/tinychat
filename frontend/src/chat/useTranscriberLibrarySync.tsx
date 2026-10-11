@@ -5,7 +5,7 @@ import { createTranscriberClient, type TranscriberClient, type TranscriberMeetin
 import { listSavedTranscriberMeetingIds, saveTranscriberMeeting } from "@/lib/transcriberSave";
 import { isSecretsUnlocked, onSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
 import { secretsAvailable } from "@/lib/openkeyNative";
-import { runOnSpaceLane } from "@/lib/spaceWriteLane";
+import { enqueueDrainWork } from "./useBackgroundDrain";
 
 export type TranscriberSaveState = "saving" | "saved" | "error";
 export const TRANSCRIBER_LIBRARY_RETRY_MS = 30_000;
@@ -13,7 +13,7 @@ const SavedContext = createContext<Readonly<Record<string, TranscriberSaveState>
 export const useTranscriberSavedState = () => useContext(SavedContext);
 
 export interface TranscriberLibrarySaver {
-  listSaved(tcw: TinyCloudWeb): Promise<{ ok: boolean; data?: string[] }>;
+  listSaved(tcw: TinyCloudWeb, scheduleRead?: <T>(read: () => Promise<T>) => Promise<T>): Promise<{ ok: boolean; data?: string[] }>;
   save(tcw: TinyCloudWeb, meeting: TranscriberMeeting, transcript: TranscriberTranscript): Promise<{ ok: boolean }>;
 }
 const defaultSaver: TranscriberLibrarySaver = { listSaved: listSavedTranscriberMeetingIds, save: saveTranscriberMeeting };
@@ -32,12 +32,9 @@ export async function syncTranscriberLibrary(input: {
   // the user's space and must never occupy the serial space-write lane.
   const listed = await client.list();
   if (listed.status !== "ok" || !isCurrent()) return;
-  // Only actual space reads/writes take the lane. Recheck after queueing so an
-  // account switch while waiting cannot make this pass inspect the new space.
-  const complete = await runOnSpaceLane(async () => {
-    if (!isCurrent()) return null;
-    return saver.listSaved(tcw);
-  }, { operation: "Transcriber library: list saved meetings" });
+  // Each SQL/KV completeness read takes its own turn. A library with many
+  // saved recordings therefore yields the lane between keys for voice notes.
+  const complete = await saver.listSaved(tcw, (read) => enqueueDrainWork(read));
   if (!complete?.ok || !isCurrent()) return;
   const saved = new Set(complete.data ?? []);
   for (const row of listed.value.meetings) {
@@ -51,10 +48,10 @@ export async function syncTranscriberLibrary(input: {
       let ok = false;
       if (result.status === "ok" && result.value.status === "ready") {
         const fetchedTranscript = result.value.transcript;
-        const saved = await runOnSpaceLane(async () => {
+        const saved = await enqueueDrainWork(async () => {
           if (!isCurrent()) return null;
           return saver.save(tcw, row, fetchedTranscript);
-        }, { operation: `Transcriber library: save meeting ${row.id}` });
+        });
         ok = saved?.ok === true;
       }
       if (isCurrent()) onState(row.id, ok ? "saved" : "error");

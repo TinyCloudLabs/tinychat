@@ -102,6 +102,7 @@ import { transcriptKvKey } from "./connectors/connectorStore";
 import { syncTranscriberLibrary } from "../chat/useTranscriberLibrarySync";
 import type { TranscriberClient } from "./transcriberApi";
 import { resetSpaceLaneForTests, runOnSpaceLane } from "./spaceWriteLane";
+import { setVoiceNoteSaveDeadlineForTests } from "./voiceNotes/saveDeadline";
 
 function libraryFixture() {
   const sql = new Database(":memory:");
@@ -223,6 +224,47 @@ test("a failed completeness read is isolated and never overwrites the unreadable
   f.sql.close();
 });
 
+test("each saved-meeting completeness read gets its own scheduled lane turn", async () => {
+  const f = libraryFixture(); f.allowWrites();
+  expect((await saveTranscriberMeeting(f.tcw, meeting, transcript)).ok).toBe(true);
+  let reads = 0;
+  const result = await listSavedTranscriberMeetingIds(f.tcw, async (read) => {
+    reads++;
+    return read();
+  });
+  expect(result).toEqual({ ok: true, data: [meeting.id] });
+  // One SQL source-id query plus one KV body check for this saved meeting.
+  expect(reads).toBe(2);
+  f.sql.close();
+});
+
+test("slow listSaved is not subject to the per-call voice-note deadline", async () => {
+  resetSpaceLaneForTests();
+  setVoiceNoteSaveDeadlineForTests(5);
+  let release!: (result: { ok: boolean; data: string[] }) => void;
+  let settleKind: "resolved" | "rejected" | null = null;
+  const client = { list: async () => ({ status: "ok", value: { meetings: [] } }) } as unknown as TranscriberClient;
+  const sync = syncTranscriberLibrary({
+    tcw: {} as TinyCloudWeb,
+    client,
+    saver: {
+      listSaved: async (_tcw, scheduleRead) => scheduleRead!(
+        () => new Promise((resolve) => { release = resolve; }),
+      ),
+      save: async () => ({ ok: true }),
+    },
+  }).then(() => { settleKind = "resolved" as const; }, () => { settleKind = "rejected" as const; });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(settleKind).toBeNull();
+    release({ ok: true, data: [] });
+    await sync;
+    expect(settleKind).toBe("resolved");
+  } finally {
+    setVoiceNoteSaveDeadlineForTests(null);
+  }
+});
+
 test("a voice-note lane save runs while the meetings list request is pending", async () => {
   resetSpaceLaneForTests();
   let releaseList!: (result: Awaited<ReturnType<TranscriberClient["list"]>>) => void;
@@ -273,7 +315,10 @@ test("transcriber space reads and writes use the lane, while transcript HTTP sta
     tcw: {} as TinyCloudWeb,
     client,
     saver: {
-      listSaved: async () => { listSavedCalled = true; return { ok: true, data: [] }; },
+      listSaved: async (_tcw, scheduleRead) => scheduleRead!(async () => {
+        listSavedCalled = true;
+        return { ok: true, data: [] };
+      }),
       save: async () => { saveCalled = true; return { ok: true }; },
     },
   });
