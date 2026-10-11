@@ -32,7 +32,7 @@ export interface PrivacyScaleProps {
   onChoose: (id: ModeId) => string | null;
   /** The next available stop in a direction. */
   step: (direction: -1 | 1) => ModeId;
-  onUnavailable: (reason: string) => void;
+  onUnavailable: (reason: string, id: ModeId) => void;
   ref?: Ref<HTMLDivElement>;
 }
 
@@ -56,7 +56,7 @@ export function PrivacyScale({
   const choose = (id: ModeId) => {
     if (id === mode) return;
     const reason = onChoose(id);
-    if (reason !== null) onUnavailable(reason);
+    if (reason !== null) onUnavailable(reason, id);
   };
 
   const fractionAt = (event: PointerEvent) => {

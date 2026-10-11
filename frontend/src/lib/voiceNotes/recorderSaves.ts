@@ -670,6 +670,10 @@ export const pendingStore = {
   refresh(lastError?: string | null): Promise<void> {
     return relistPending(lastError);
   },
+  /** The failure no single note owns (the account is not ready, the defaults could not be claimed); null when there is none. */
+  generalError(): string | null {
+    return generalFailure;
+  },
   /** A retry that cannot start still needs a visible result beside Save now. */
   reportError(message: string): void {
     generalFailure = message;

@@ -1064,6 +1064,7 @@ export function App() {
       pipeline={voiceNotePipeline}
       signedOut={state === "unauthenticated" && !sessionStoreRef.current.hasSession()}
       onSignedOut={captureHandoff}
+      onSignIn={authAction}
     >
     <div
       className="flex flex-col overflow-hidden bg-background text-foreground"

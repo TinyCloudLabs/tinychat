@@ -98,6 +98,7 @@ describe("halo renderer selection", () => {
       pauseBreathOpacity(1, 1, false),
     );
     expect(TICKS_SHADER).toContain("uPause * (1.0 - uReduce)");
+    expect(TICKS_SHADER).toContain("if (uTickN < 0.5)");
   });
 
   test("reads the resting tick colour from the theme, not shader literals", () => {

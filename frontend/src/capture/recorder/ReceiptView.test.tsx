@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
 import { ReceiptView, receiptRouting } from "./ReceiptView";
+import { StaticRecorderProvider } from "./RecorderProvider";
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
 import type { RecorderValue } from "./RecorderProvider";
 import { FINALIZATION_PENDING } from "./recorderCopy";
@@ -18,12 +19,14 @@ const recorder = (patch: Partial<RecorderValue> = {}): RecorderValue => ({
   captureIssues: {}, transcriber: { id: "on-device", identifySpeakers: false, source: "recording" },
   setTranscriber: async () => "ok",
   record: noop, stop: noop, pause: noop, resume: noop, discard: noop, retryPending: noop, openSettings: async () => {},
-  dismissOutcome: noop, openSheet: noop, minimiseSheet: noop, setReceiptPlaying: noop,
+  dismissOutcome: noop, openSheet: noop, minimiseSheet: noop, setReceiptPlaying: noop, tcw: null,
   subscribeLevel: () => noop, ...patch,
 });
 
 const render = (patch: Partial<RecorderValue> = {}) => renderToStaticMarkup(
-  <MemoryRouter><ReceiptView recorder={recorder(patch)} /></MemoryRouter>,
+  <StaticRecorderProvider value={recorder(patch)}>
+    <MemoryRouter><ReceiptView recorder={recorder(patch)} /></MemoryRouter>
+  </StaticRecorderProvider>,
 );
 
 describe("ReceiptView", () => {
@@ -32,7 +35,8 @@ describe("ReceiptView", () => {
       lastSaved: { id: "rec-1", durationMs: 42_000, at: Date.now() } });
     expect(html).toContain("Saved on this phone");
     expect(html).toContain(">0:42</span>");
-    expect(html).toContain("Saving to your TinyCloud space…");
+    // The old saving line is gone: the pipeline stepper takes its place once the note has been read.
+    expect(html).not.toContain("Saving to your TinyCloud space…");
     expect(html).toContain('data-testid="recorder-minimise"');
     expect(html).not.toContain('data-testid="voice-note-stop"');
     expect(html).not.toContain('data-testid="voice-note-pause"');

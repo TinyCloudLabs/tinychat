@@ -82,6 +82,8 @@ const noteSyncErrors = new Map<string, NoteSyncErrorCode>();
 export type NoteSyncSkipReason = "no-row" | "no-note";
 const noteSyncing = new Set<string>();
 const noteSyncSkips = new Map<string, NoteSyncSkipReason>();
+/** The local note revision (`editedAt`) the space last confirmed holding, per account and note. */
+const noteSynced = new Map<string, string>();
 const noteSyncListeners = new Set<() => void>();
 const noteSyncKey = (tcw: TinyCloudWeb, id: string) => JSON.stringify([tcw.spaceId, tcw.did, id]);
 
@@ -96,6 +98,10 @@ export function recordingNoteSyncing(tcw: TinyCloudWeb, id: string): boolean {
 /** Why the last sync of this note did nothing; null after a sync that worked or before any. */
 export function recordingNoteSyncSkip(tcw: TinyCloudWeb, id: string): NoteSyncSkipReason | null {
   return noteSyncSkips.get(noteSyncKey(tcw, id)) ?? null;
+}
+/** The `editedAt` of the local note revision the last sync wrote or found already in the space; null before one did. */
+export function recordingNoteSyncedAt(tcw: TinyCloudWeb, id: string): string | null {
+  return noteSynced.get(noteSyncKey(tcw, id)) ?? null;
 }
 export function subscribeRecordingNoteSync(listener: () => void): () => void {
   noteSyncListeners.add(listener);
@@ -113,6 +119,11 @@ function setNoteSyncing(key: string, syncing: boolean): void {
   if (syncing === noteSyncing.has(key)) return;
   if (syncing) noteSyncing.add(key);
   else noteSyncing.delete(key);
+  for (const listener of [...noteSyncListeners]) listener();
+}
+function setNoteSynced(key: string, editedAt: string): void {
+  if (noteSynced.get(key) === editedAt) return;
+  noteSynced.set(key, editedAt);
   for (const listener of [...noteSyncListeners]) listener();
 }
 function setNoteSyncSkip(key: string, reason: NoteSyncSkipReason | null): void {
@@ -138,7 +149,7 @@ export function syncRecordingNote(tcw: TinyCloudWeb, id: string,
       const row = await resolveVoiceNoteRow(tcw, id, checkpoint);
       if (!row) { skip = "no-row"; return false; }
       const key = voiceNoteMarkdownKvKey(id);
-      if (row.metadata.note_kv_key === key && row.metadata.note_edited_at === note.editedAt) return true;
+      if (row.metadata.note_kv_key === key && row.metadata.note_edited_at === note.editedAt) { setNoteSynced(syncKey, note.editedAt); return true; }
       // The space may hold a saved-edit time this device has not seen; a put must never erase it.
       const remote = await readRecordingNoteFromSpace(tcw, id);
       checkpoint();
@@ -153,7 +164,7 @@ export function syncRecordingNote(tcw: TinyCloudWeb, id: string,
       checkpoint();
       await patchVoiceNoteMarkdown(tcw, id, key, note.editedAt, checkpoint);
       const latest = await loadNote(id);
-      if (!latest || latest.revision === note.revision) return true;
+      if (!latest || latest.revision === note.revision) { setNoteSynced(syncKey, note.editedAt); return true; }
     }
   })().then((result) => {
     if (result) { checkpoint(); reportRecordingNoteSyncError(tcw, id, null); }

@@ -175,7 +175,7 @@
     /* Android WebView applies the clamped system scale to every font via textZoom. */
     font-size: 16px;
   }
-  .exo-tab-label {
+  .exo-tab-label.text-label {
     font-size: min(0.6875rem, 12px);
     line-height: min(0.875rem, 14px);
   }

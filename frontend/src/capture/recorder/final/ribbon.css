@@ -136,15 +136,18 @@
 /* Beside the tab bar the Ribbon fills the width; floating on the rail it sits centred. */
 .ribbon-float {
   position: relative;
-  height: 0;
+  box-sizing: border-box;
+  min-height: 0;
+  height: auto;
+  padding: 14px;
   pointer-events: none;
+}
+.ribbon-float[data-ribbon="true"] {
+  min-height: 84px;
 }
 
 .ribbon-float > .ribbon-float-inner {
-  position: absolute;
-  right: 14px;
-  bottom: 14px;
-  left: 14px;
+  position: relative;
   z-index: 40;
   max-width: 440px;
   margin-inline: auto;

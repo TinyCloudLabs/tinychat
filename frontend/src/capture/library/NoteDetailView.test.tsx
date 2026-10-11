@@ -18,7 +18,11 @@ import {
 } from "@/lib/voiceNotes/desktop/desktopWhisper";
 import { HELD_NOTE_MESSAGE, type NoteTranscriptionState } from "@/lib/voiceNotes/voiceNoteTranscription";
 import type { LibraryItem } from "./LibraryRow";
-import { NoteDetailView, transcriptBlocks, type NoteDetailViewProps } from "./NoteDetailView";
+import { NotePipelineContext } from "@/capture/pipeline/NotePipelineContext";
+import { allDone, signedOut, uploading, waitingForModel } from "@/capture/pipeline/pipelineFixtures";
+import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
+import { SAVED_NOTE_COPY } from "./savedNote/savedNoteCopy";
+import { NoteDetailView, transcriptBlocks, transcriptStepLine, type NoteDetailViewProps } from "./NoteDetailView";
 
 const noop = () => {};
 const VOICE: LibraryItem = { id: "row-1", source: "exo-voice-note", sourceId: "rec-1", title: "Voice note · Oct 6, 9:28 AM", startedAt: "2026-10-06T09:28:00.000Z", durationSecs: 42 };
@@ -260,5 +264,44 @@ describe("a voice note with an after-stop Whisper job on the Mac", () => {
   test("without a job the page is unchanged", () => {
     expect(withJob(null)).toBe(render());
     expect(withJob(null)).toContain("No transcript.");
+  });
+});
+
+describe("the transcript placeholder while the note's pipeline is not done", () => {
+  const onPhone: LibraryItem = { ...VOICE, id: "on-phone:rec-1", title: null, onPhone: true };
+  const withContext = (pipeline: NotePipeline) =>
+    renderToStaticMarkup(
+      <NotePipelineContext.Provider value={{ pipeline, onAction: noop, actionError: null }}>
+        <MemoryRouter>
+          <NoteDetailView item={onPhone} listStatus="ready" metadata={{ status: "ok", metadata: {} }} transcript={{ status: "absent" }} audio={audio} copyState="idle" onCopy={noop} onRetry={noop} pushed onBack={noop} />
+        </MemoryRouter>
+      </NotePipelineContext.Provider>,
+    );
+
+  test("a note still uploading says where the transcript will show, not 'No transcript yet'", () => {
+    const html = withContext(uploading(30));
+    expect(html).toContain('data-testid="note-transcript-pipeline"');
+    expect(html).toContain(SAVED_NOTE_COPY.transcriptAfterSpace);
+    expect(html).not.toContain("No transcript yet");
+    expect(html).not.toContain('data-testid="note-transcript-on-phone"');
+  });
+
+  test("a signed-out note names the sign-in blocker as the transcript's reason", () => {
+    const pipeline = signedOut();
+    const html = withContext(pipeline);
+    expect(html).toContain(pipeline.steps.find((s) => s.key === "transcript")!.blocker?.cause ?? SAVED_NOTE_COPY.transcriptAfterSpace);
+    expect(html).not.toContain("No transcript yet");
+  });
+
+  test("a note waiting for the model: the transcript step is the current one, so the line says where it will appear", () => {
+    const pipeline = waitingForModel();
+    expect(pipeline.current).toBe("transcript");
+    expect(withContext(pipeline)).toContain(SAVED_NOTE_COPY.transcriptHere);
+  });
+
+  test("done, or no pipeline at all: the plain empty state stands", () => {
+    expect(transcriptStepLine(allDone())).toBeNull();
+    expect(withContext(allDone())).not.toContain('data-testid="note-transcript-pipeline"');
+    expect(render({ item: onPhone, metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" }, transcription: undefined })).toContain("No transcript yet.");
   });
 });

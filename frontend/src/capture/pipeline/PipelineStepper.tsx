@@ -71,7 +71,13 @@ function Node(props: { step: PipelineStep }) {
   );
 }
 
-export function PipelineStepper(props: { pipeline: NotePipeline; onAction: (kind: PipelineActionKind) => void; className?: string }) {
+export function PipelineStepper(props: {
+  pipeline: NotePipeline;
+  onAction: (kind: PipelineActionKind) => void;
+  /** Why the last action did not work, shown with the blocker it belongs to. */
+  actionError?: string | null;
+  className?: string;
+}) {
   const { pipeline, onAction } = props;
   const causeId = useId();
   if (pipeline.done) return null;
@@ -130,6 +136,11 @@ export function PipelineStepper(props: { pipeline: NotePipeline; onAction: (kind
                 {blocker.action.label}
               </button>
             </span>
+          )}
+          {props.actionError != null && props.actionError !== "" && (
+            <p className="pipeline-stepper-action-error" role="alert" data-pipeline-action-error="">
+              {props.actionError}
+            </p>
           )}
         </div>
       )}

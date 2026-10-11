@@ -221,6 +221,10 @@ export const TICKS_SHADER = `
 void main() {
   vec2 p = P();
   float r = length(p);
+  if (uTickN < 0.5) {
+    gl_FragColor = avatarAt(p, 1.0) * EF(p);
+    return;
+  }
   if (r < RA - 2.0 * px) {
     gl_FragColor = avatarAt(p, 1.0) * EF(p);
     return;
