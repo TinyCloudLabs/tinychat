@@ -7,19 +7,18 @@
 // Pushed (a phone): the page header with Back. Beside the list (wide): the
 // title as the pane's heading.
 import { useContext, type ReactNode } from "react";
-import { CheckIcon, CopyIcon, FileTextIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
 
 import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
 import { Button } from "@/components/ui/button";
 import { Empty } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
-import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { NotePipelineContext } from "@/capture/pipeline/NotePipelineContext";
-import { TranscriptionRouteControl } from "@/capture/recorder/TranscriptionRouteControl";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import type { FirefliesSentence } from "@/lib/connectors/firefliesClient";
 import type { MeetingMetadataRead, TranscriptRead } from "@/lib/connectors/meetingExplorer";
 import { UPLOAD_MEETING_SOURCE } from "@/lib/audioUpload";
+import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 import { transcriptionStatusText } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { voiceNoteTitle, voiceNoteTranscriptState, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
@@ -28,6 +27,7 @@ import { detailWhen, formatSpokenDuration } from "./formatters";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { DesktopWhisperStatus } from "./DesktopWhisperStatus";
 import { OnDeviceNoteStatus } from "./OnDeviceNoteStatus";
+import { TranscribeAction } from "./TranscribeAction";
 import { HowThisGotHere } from "./HowThisGotHere";
 import { librarySourceLabel } from "./libraryKinds";
 import type { LibraryItem } from "./LibraryRow";
@@ -116,8 +116,7 @@ export function VoiceNoteTranscriptionStatus(props: {
       </p>
     );
   }
-  if (!transcription) return null;
-  const job = transcription.jobs.get(item.sourceId);
+  const job = transcription?.jobs.get(item.sourceId);
   // Saved just now; the reads have not caught up yet. Never offer Transcribe again meanwhile.
   if (job?.kind === "done") {
     return (
@@ -133,40 +132,30 @@ export function VoiceNoteTranscriptionStatus(props: {
       </p>
     );
   }
-  const offered = transcription.availability === "available" && transcription.consented;
   if (job?.kind === "held") {
     return (
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2" data-testid="voice-note-transcription-held">
-        <p role="status" className="min-w-0 flex-1 text-callout text-muted-foreground">{job.message}</p>
-        {offered && (
-          <Button type="button" variant="outline" onClick={() => transcription.onTranscribe(item.sourceId)} data-testid="voice-note-transcribe-held">
-            <FileTextIcon aria-hidden /> Transcribe with {TRANSCRIBER_NAME["private-cloud"]}
-          </Button>
-        )}
+      <div className="flex flex-col gap-2" data-testid="voice-note-transcription-held">
+        <p role="status" className="min-w-0 text-callout text-muted-foreground">{job.message}</p>
+        <TranscribeAction noteId={item.sourceId} transcription={transcription} />
       </div>
     );
   }
   if (job?.kind === "failed") {
     return (
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2" data-testid="voice-note-transcription-failed">
-        <p role="alert" className="min-w-0 flex-1 text-callout text-destructive">
+      <div className="flex flex-col gap-2" data-testid="voice-note-transcription-failed">
+        <p role="alert" className="min-w-0 text-callout text-destructive">
           {job.message}
           {job.reference && <span className="text-muted-foreground"> Reference: {job.reference}</span>}
         </p>
-        {offered && job.retryable && (
-          <Button type="button" variant="outline" onClick={() => transcription.onTranscribe(item.sourceId)} data-testid="voice-note-transcribe-retry">
-            <RefreshCwIcon aria-hidden /> Retry
-          </Button>
-        )}
+        {job.retryable && <TranscribeAction noteId={item.sourceId} transcription={transcription} label="Try again" />}
       </div>
     );
   }
-  // Private cloud is available but not chosen (or chosen and unreachable): the recorder's route control.
-  const choosable = transcription.availability === "available" || (transcription.availability === "failed" && transcription.consented);
-  // Reached only when private cloud is "available"/"failed", which requires a signed-in account
-  // (voiceNoteTranscriberFor) — transcription itself would be absent otherwise.
-  if (!offered) return choosable ? <TranscriptionRouteControl transcription={transcription} signedIn /> : null;
-  if (item.durationSecs !== null && item.durationSecs > transcription.maxSeconds) {
+  // Nothing to choose from: Local needs the phone's engine, Private needs private cloud on offer (or unreachable, with its own Check again).
+  const localCapable = captureCapabilities().localTranscription;
+  const choosable = transcription?.availability === "available" || (transcription?.availability === "failed" && transcription.consented);
+  if (!localCapable && !choosable) return null;
+  if (!localCapable && transcription && item.durationSecs !== null && item.durationSecs > transcription.maxSeconds) {
     return (
       <p data-testid="voice-note-too-long" className="text-callout text-muted-foreground">
         Notes up to {Math.round(transcription.maxSeconds / 60)} minutes can be transcribed from the phone.
@@ -174,11 +163,9 @@ export function VoiceNoteTranscriptionStatus(props: {
     );
   }
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+    <div className="flex flex-col gap-2">
       <p className="text-callout text-muted-foreground">Not transcribed</p>
-      <Button type="button" variant="outline" onClick={() => transcription.onTranscribe(item.sourceId)} data-testid="voice-note-transcribe">
-        <FileTextIcon aria-hidden /> Transcribe
-      </Button>
+      <TranscribeAction noteId={item.sourceId} transcription={transcription} />
     </div>
   );
 }

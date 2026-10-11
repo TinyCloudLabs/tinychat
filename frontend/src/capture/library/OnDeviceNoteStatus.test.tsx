@@ -182,14 +182,14 @@ describe("a saved note's on-device state, gated by the note's committed mode", (
     expect((await mount("n1")).latest().note).toEqual({ kind: "none" });
   });
 
-  test("a failed Local note names why and offers Retry", async () => {
+  test("a failed Local note names why; its Try again is the Transcribe action", async () => {
     await iosStt();
     fakeVoiceNotes({ recordings: () => [recording("n1", "on-device", stt("failed", "decoder_error"))] });
     const { latest } = await mount("n1");
     expect(latest().note).toEqual({ kind: "failed", reason: "decoder_error" });
     const html = view(latest().note);
     expect(html).toContain("Couldn&#x27;t transcribe on this phone: decoder_error");
-    expect(html).toContain('data-testid="voice-note-on-device-retry"');
+    expect(html).not.toContain("voice-note-on-device-retry");
   });
 });
 
@@ -333,7 +333,6 @@ describe("an older queue snapshot against newer events", () => {
       expect(latest().note).toEqual({ kind: "failed", reason: "decode_failed" });
       const html = view(latest().note);
       expect(html).toContain("decode_failed");
-      expect(html).toContain('data-testid="voice-note-on-device-retry"');
     });
 
     test("the event's reason stands before the sidecar rescan returns", async () => {

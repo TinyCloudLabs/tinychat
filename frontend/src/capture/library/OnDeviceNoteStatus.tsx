@@ -15,12 +15,12 @@ import { OnDeviceStt, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceSt
 import {
   downloadOnDeviceModel,
   onDeviceSttStore,
-  retryOnDeviceNote,
 } from "@/lib/voiceNotes/onDeviceSttStore";
 import { onDeviceQueuePlace } from "@/lib/voiceNotes/onDeviceQueue";
 import { localModelGuide, modelActionLabel, waitingForModelSentence } from "@/capture/recorder/final/localModelGuide";
 import { privateInsteadOffered, switchToPrivate } from "@/capture/recorder/privateInstead";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
+import { TranscribeAction } from "./TranscribeAction";
 
 export type OnDeviceNote =
   | { kind: "none" }
@@ -231,11 +231,12 @@ export function OnDeviceNoteStatusView(props: {
   fallback: ReactNode;
   /** Present when private cloud is on offer for this note; moves it off the phone's model. */
   onUsePrivate?: () => Promise<string | null>;
-  /** The note's pipeline stepper is on screen: it already says queued, running, done, waiting and failed, with their retry and model actions, so only the way off the phone's model is left here. */
+  /** Where a failed note is retried, with a choice of provider. */
+  transcription?: VoiceNoteTranscriptionProps;
+  /** The note's pipeline stepper is on screen: it already says queued, running, done, waiting and failed, with their retry (and its provider choice) and model actions, so only the way off the phone's model while it waits is left here. */
   stepperShown?: boolean;
 }) {
   const { note, error, reload } = props.view;
-  const [retryError, setRetryError] = useState<string | null>(null);
   if (error !== null) {
     return (
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2" data-testid="voice-note-on-device-read-failed">
@@ -247,7 +248,7 @@ export function OnDeviceNoteStatusView(props: {
     );
   }
   if (props.stepperShown) {
-    return note?.kind === "waiting_for_model" || note?.kind === "failed" ? <PrivateInstead onUse={props.onUsePrivate} /> : null;
+    return note?.kind === "waiting_for_model" ? <PrivateInstead onUse={props.onUsePrivate} /> : null;
   }
   if (note === null) {
     return (
@@ -276,22 +277,8 @@ export function OnDeviceNoteStatusView(props: {
     case "failed":
       return (
         <div className="flex flex-col gap-2" data-testid="voice-note-on-device-failed">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <p role="alert" className="min-w-0 flex-1 text-callout text-destructive">Couldn&apos;t transcribe on this phone: {note.reason}</p>
-            <Button
-              type="button"
-              variant="outline"
-              data-testid="voice-note-on-device-retry"
-              onClick={() => {
-                setRetryError(null);
-                void retryOnDeviceNote(props.noteId).then(setRetryError);
-              }}
-            >
-              <RefreshCwIcon aria-hidden /> Retry
-            </Button>
-          </div>
-          {retryError && <p role="alert" className="text-callout text-destructive">{retryError}</p>}
-          <PrivateInstead onUse={props.onUsePrivate} />
+          <p role="alert" className="min-w-0 text-callout text-destructive">Couldn&apos;t transcribe on this phone: {note.reason}</p>
+          <TranscribeAction noteId={props.noteId} transcription={props.transcription} label="Try again" />
         </div>
       );
     case "no_speech":
@@ -315,7 +302,7 @@ function OnDeviceNoteStatusReading(props: { noteId: string; fallback: ReactNode;
   const onUsePrivate = transcription && privateInsteadOffered(transcription, props.noteId, props.durationSecs ?? null)
     ? () => switchToPrivate(transcription, props.noteId)
     : undefined;
-  return <OnDeviceNoteStatusView noteId={props.noteId} view={view} fallback={props.fallback} onUsePrivate={onUsePrivate} stepperShown={props.stepperShown} />;
+  return <OnDeviceNoteStatusView noteId={props.noteId} view={view} fallback={props.fallback} onUsePrivate={onUsePrivate} transcription={transcription} stepperShown={props.stepperShown} />;
 }
 
 /** Only a phone with on-device speech has a state to read; elsewhere the fallback stands. A note private cloud has taken is the fallback's to show. */

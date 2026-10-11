@@ -1,15 +1,14 @@
 // A note (TC-761; moved from MeetingsPage.test.tsx and VoiceNotesListCard.test.tsx):
 //   1. reads that did not land are told, with Try again, never shown as "no transcript";
 //   2. the transcript with Copy; a missing transcript and missing audio said plainly;
-//   3. transcription is offered only when available to this build AND account, and only after
-//      the one-time private cloud consent; a hidden or still-checking engine offers nothing;
+//   3. transcription is offered only when available to this build AND account (consent is asked when
+//      Private is chosen); a hidden or still-checking engine offers nothing;
 //   4. a voice note shows its progress, "No speech", or its failure (with Retry when it can help).
 import { afterEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
-import { aboutHref } from "@/lib/about";
 import {
   __desktopWhisperQueueReadsForTests,
   registerDesktopWhisperQueue,
@@ -134,7 +133,7 @@ describe("NoteDetailView", () => {
 });
 
 describe("a voice note's transcription", () => {
-  const TRANSCRIBE_UI = ['data-testid="voice-note-transcribe"', 'data-testid="transcription-route"', "Private cloud transcribes"];
+  const TRANSCRIBE_UI = ['data-testid="transcribe-button"', 'data-testid="transcription-route"', "Private cloud transcribes"];
   const offersNothing = (html: string) => {
     for (const marker of TRANSCRIBE_UI) expect(html).not.toContain(marker);
   };
@@ -147,24 +146,24 @@ describe("a voice note's transcription", () => {
     expect(render()).toContain("No transcript.");
   });
 
-  test("available but not chosen: the route control with On this phone (native's own default), and How it works; no Transcribe", () => {
+  test("available but not yet consented: Transcribe with Private, which asks for consent when pressed", () => {
     const html = render({ transcription: transcription({ consented: false }) });
-    expect(html).toContain('data-route="on-device"');
-    expect(html).toContain(`href="${aboutHref("transcription")}"`);
-    expect(html).not.toContain('data-testid="voice-note-transcribe"');
+    expect(html).toContain('data-testid="transcribe-button"');
+    expect(html).toContain('data-testid="transcribe-provider-static"');
+    expect(html).not.toContain('data-testid="transcribe-consent"');
   });
 
   test("chosen: Transcribe; a note over the limit says so instead", () => {
-    expect(render({ transcription: transcription() })).toContain('data-testid="voice-note-transcribe"');
+    expect(render({ transcription: transcription() })).toContain('data-testid="transcribe-button"');
     const long = render({ item: { ...VOICE, durationSecs: 900 }, transcription: transcription() });
     expect(long).toContain("Notes up to 10 minutes can be transcribed from the phone.");
-    expect(long).not.toContain('data-testid="voice-note-transcribe"');
+    expect(long).not.toContain('data-testid="transcribe-button"');
   });
 
   test("no speech, progress, just saved, and a failure with Retry only when it can help", () => {
     const silent = render({ metadata: { status: "ok", metadata: { transcription_outcome: "no_speech" } }, transcription: transcription() });
     expect(silent).toContain("No speech was found in this note.");
-    expect(silent).not.toContain('data-testid="voice-note-transcribe"');
+    expect(silent).not.toContain('data-testid="transcribe-button"');
     const job = (state: NoteTranscriptionState) => transcription({ jobs: new Map([["rec-1", state]]) });
     expect(render({ transcription: job({ kind: "active", status: { kind: "processing", completed: 1, total: 3 } }) })).toContain(
       "Transcribing in private cloud… 1/3",
@@ -174,31 +173,33 @@ describe("a voice note's transcription", () => {
       job({ kind: "failed", code: "upload_interrupted", message: "The upload did not complete.", retryable, reference: "cid-7" });
     const retry = render({ transcription: failed(true) });
     expect(retry).toContain("Reference: cid-7");
-    expect(retry).toContain('data-testid="voice-note-transcribe-retry"');
-    expect(render({ transcription: failed(false) })).not.toContain('data-testid="voice-note-transcribe-retry"');
+    expect(retry).toContain('data-testid="transcribe-button"');
+    expect(retry).toContain("Try again");
+    expect(render({ transcription: failed(false) })).not.toContain('data-testid="transcribe-button"');
     // Private cloud unavailable right now: the failure is told, but Retry can't help.
     const unavailable = render({ transcription: transcription({ jobs: new Map([["rec-1", { kind: "failed", code: "upload_interrupted", message: "The upload did not complete.", retryable: true, reference: "cid-7" }]]), availability: "failed" }) });
     expect(unavailable).toContain("The upload did not complete.");
-    expect(unavailable).not.toContain('data-testid="voice-note-transcribe-retry"');
+    expect(unavailable).not.toContain('data-testid="transcribe-button"');
+    expect(unavailable).toContain('data-testid="transcribe-private-recheck"');
   });
 
-  test("a note held back says why and offers Transcribe with Private only while it can be sent", () => {
+  test("a note held back says why and offers Transcribe with Private only while private cloud is on offer", () => {
     const held = (extra: Partial<Parameters<typeof transcription>[0]> = {}) =>
       transcription({ jobs: new Map([["rec-1", { kind: "held", message: HELD_NOTE_MESSAGE }]]), ...extra });
     const html = render({ transcription: held() });
     expect(html).toContain("started from a shortcut, so it was not sent for transcription");
-    expect(html).toContain('data-testid="voice-note-transcribe-held"');
-    expect(html).toContain("Transcribe with Private");
-    const unconsented = render({ transcription: held({ consented: false }) });
-    expect(unconsented).toContain("so it was not sent for transcription");
-    expect(unconsented).not.toContain('data-testid="voice-note-transcribe-held"');
+    expect(html).toContain('data-testid="voice-note-transcription-held"');
+    expect(html).toContain('data-testid="transcribe-button"');
+    const unavailable = render({ transcription: held({ availability: "checking" }) });
+    expect(unavailable).toContain("so it was not sent for transcription");
+    expect(unavailable).not.toContain('data-testid="transcribe-button"');
   });
 
   test("what the reads can't tell is never offered Transcribe", () => {
     // The metadata read failed: transcribed, or no speech, is unknown.
     const unknown = render({ metadata: { status: "failed" }, transcription: transcription() });
     expect(unknown).toContain('data-testid="voice-note-transcript-unknown"');
-    expect(unknown).not.toContain('data-testid="voice-note-transcribe"');
+    expect(unknown).not.toContain('data-testid="transcribe-button"');
     // How this got here offers Try again, with no route; the player still plays.
     expect(unknown).toContain('data-testid="how-this-got-here-retry"');
     expect(unknown).not.toContain('aria-label="Where your audio goes"');
@@ -210,7 +211,7 @@ describe("a voice note's transcription", () => {
       transcription: transcription(),
     });
     expect(marked).toContain("Book the venue.");
-    expect(marked).not.toContain('data-testid="voice-note-transcribe"');
+    expect(marked).not.toContain('data-testid="transcribe-button"');
   });
 
   test("a transcribed note shows its transcript whatever the engine's state", () => {
@@ -218,7 +219,7 @@ describe("a voice note's transcription", () => {
     for (const t of [undefined, transcription({ availability: "hidden" }), transcription()]) {
       const html = render({ transcript: { status: "ok", sentences }, transcription: t });
       expect(html).toContain("Book the venue.");
-      expect(html).not.toContain('data-testid="voice-note-transcribe"');
+      expect(html).not.toContain('data-testid="transcribe-button"');
     }
   });
 });
@@ -320,14 +321,14 @@ describe("the transcript placeholder while the note's pipeline is not done", () 
     test("the stepper's 'Adding to this note…' is not contradicted by 'Not transcribed' and Transcribe", () => {
       const html = offer("on-device");
       expect(html).not.toContain("Not transcribed");
-      expect(html).not.toContain("voice-note-transcribe");
+      expect(html).not.toContain("transcribe-action");
       expect(html).toContain(SAVED_NOTE_COPY.transcriptHere);
     });
 
     test("where the pipeline would not run the transcript itself, the Transcribe offer stands", () => {
       const html = offer("private-cloud");
       expect(html).toContain("Not transcribed");
-      expect(html).toContain('data-testid="voice-note-transcribe"');
+      expect(html).toContain('data-testid="transcribe-button"');
     });
   });
 

@@ -9,6 +9,7 @@ import { PipelineStepper } from "../../pipeline/PipelineStepper";
 import { useNotePipeline, type NotePipelineSource } from "@/lib/voiceNotes/useNotePipeline";
 import type { MeetingMetadataRead } from "@/lib/connectors/meetingExplorer";
 import type { NoteAudio } from "../NoteDetailView";
+import { TranscribeAction } from "../TranscribeAction";
 import type { LibraryItem } from "../LibraryRow";
 import { savedNoteMeta } from "./savedNoteMeta";
 import { savedNoteStoreFor, type SavedNoteStore } from "./savedNoteStore";
@@ -73,6 +74,7 @@ export default function SavedNote({
         pipeline={pipeline.pipeline}
         onAction={pipeline.onAction}
         actionError={pipeline.actionError}
+        transcribeAction={<TranscribeAction noteId={item.sourceId} transcription={recorder.transcription} label="Try again" />}
       />
     ) : null,
     audio,
