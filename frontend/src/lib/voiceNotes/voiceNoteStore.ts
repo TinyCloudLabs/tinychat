@@ -78,12 +78,24 @@ export function voiceNoteMarkdownKvKey(id: string): string {
 const noteSyncs = new Map<string, Promise<boolean>>();
 export type NoteSyncErrorCode = "sync_failed";
 const noteSyncErrors = new Map<string, NoteSyncErrorCode>();
+/** Why a sync ended without syncing anything: this device has no such note (`no-note`) or the space has no row for it yet (`no-row`). */
+export type NoteSyncSkipReason = "no-row" | "no-note";
+const noteSyncing = new Set<string>();
+const noteSyncSkips = new Map<string, NoteSyncSkipReason>();
 const noteSyncListeners = new Set<() => void>();
 const noteSyncKey = (tcw: TinyCloudWeb, id: string) => JSON.stringify([tcw.spaceId, tcw.did, id]);
 
 /** Account-scoped status; UI never receives a raw storage or network error. */
 export function recordingNoteSyncError(tcw: TinyCloudWeb, id: string): NoteSyncErrorCode | null {
   return noteSyncErrors.get(noteSyncKey(tcw, id)) ?? null;
+}
+/** True while `syncRecordingNote` runs for this account's note. */
+export function recordingNoteSyncing(tcw: TinyCloudWeb, id: string): boolean {
+  return noteSyncing.has(noteSyncKey(tcw, id));
+}
+/** Why the last sync of this note did nothing; null after a sync that worked or before any. */
+export function recordingNoteSyncSkip(tcw: TinyCloudWeb, id: string): NoteSyncSkipReason | null {
+  return noteSyncSkips.get(noteSyncKey(tcw, id)) ?? null;
 }
 export function subscribeRecordingNoteSync(listener: () => void): () => void {
   noteSyncListeners.add(listener);
@@ -97,19 +109,34 @@ export function reportRecordingNoteSyncError(tcw: TinyCloudWeb, id: string, code
   for (const listener of [...noteSyncListeners]) listener();
 }
 
+function setNoteSyncing(key: string, syncing: boolean): void {
+  if (syncing === noteSyncing.has(key)) return;
+  if (syncing) noteSyncing.add(key);
+  else noteSyncing.delete(key);
+  for (const listener of [...noteSyncListeners]) listener();
+}
+function setNoteSyncSkip(key: string, reason: NoteSyncSkipReason | null): void {
+  if ((noteSyncSkips.get(key) ?? null) === reason) return;
+  if (reason) noteSyncSkips.set(key, reason);
+  else noteSyncSkips.delete(key);
+  for (const listener of [...noteSyncListeners]) listener();
+}
+
 /** The T18 row and its audio prefix own note sync; there is no separate upload queue. */
 export function syncRecordingNote(tcw: TinyCloudWeb, id: string,
   checkpoint: () => void = () => undefined): Promise<boolean> {
   const syncKey = noteSyncKey(tcw, id);
   const inFlight = noteSyncs.get(syncKey);
   if (inFlight) return inFlight;
+  let skip: NoteSyncSkipReason | null = null;
   const sync = (async () => {
     checkpoint();
+    setNoteSyncing(syncKey, true);
     for (;;) {
       const note = await loadNote(id);
-      if (!note) return false;
+      if (!note) { skip = "no-note"; return false; }
       const row = await resolveVoiceNoteRow(tcw, id, checkpoint);
-      if (!row) return false;
+      if (!row) { skip = "no-row"; return false; }
       const key = voiceNoteMarkdownKvKey(id);
       if (row.metadata.note_kv_key === key && row.metadata.note_edited_at === note.editedAt) return true;
       // The space may hold a saved-edit time this device has not seen; a put must never erase it.
@@ -130,12 +157,17 @@ export function syncRecordingNote(tcw: TinyCloudWeb, id: string,
     }
   })().then((result) => {
     if (result) { checkpoint(); reportRecordingNoteSyncError(tcw, id, null); }
+    setNoteSyncSkip(syncKey, result ? null : skip);
     return result;
   }, (error: unknown) => {
     checkpoint(); // A cancelled account never publishes a note status for its old client.
     reportRecordingNoteSyncError(tcw, id, "sync_failed");
+    setNoteSyncSkip(syncKey, null);
     throw error;
-  }).finally(() => { if (noteSyncs.get(syncKey) === sync) noteSyncs.delete(syncKey); });
+  }).finally(() => {
+    if (noteSyncs.get(syncKey) === sync) noteSyncs.delete(syncKey);
+    setNoteSyncing(syncKey, false);
+  });
   noteSyncs.set(syncKey, sync);
   return sync;
 }

@@ -140,7 +140,7 @@ describe("availability and consent", () => {
     s.transcriber.transcribePrivately("moved");
     await tick();
     expect(s.runs).toHaveLength(0);
-    expect(s.job("moved")).toBeUndefined();
+    expect(s.job("moved")).toEqual({ kind: "blocked", reason: "no-consent" });
   });
 
   test("no PTX origin in this build: hidden, never checked, nothing queued", async () => {
@@ -181,7 +181,7 @@ describe("availability and consent", () => {
     s.transcriber.transcribe("rec-before");
     await tick();
     expect(s.runs).toHaveLength(0);
-    expect(s.transcriber.snapshot().jobs.size).toBe(0);
+    expect(s.job("rec-before")).toEqual({ kind: "blocked", reason: "no-consent" });
 
     s.transcriber.consent();
     expect(s.consent.value).toBe(true);
@@ -223,7 +223,7 @@ describe("one at a time, and the post-success window", () => {
     s.transcriber.noteSaved({ id: "b", durationMs: 5_000, source: "in_app" }, AUDIO);
     await tick();
     expect(s.runs.map((r) => r.sourceId)).toEqual(["a"]);
-    expect(s.job("b")).toEqual({ kind: "active", status: { kind: "waiting" } });
+    expect(s.job("b")).toEqual({ kind: "active", status: { kind: "waiting", position: 1 } });
     s.runs[0]!.report({ kind: "uploading" });
     expect(s.job("a")).toEqual({ kind: "active", status: { kind: "uploading" } });
 
@@ -252,6 +252,91 @@ describe("one at a time, and the post-success window", () => {
     s.transcriber.transcribe("a");
     await tick();
     expect(s.runs).toHaveLength(2);
+  });
+});
+
+describe("blocked notes and waiting positions", () => {
+  const note = (id: string) => ({ id, durationMs: 5_000, source: "in_app" as const });
+
+  test("a note offered while the check is running, failed, hidden or unconsented is recorded as blocked, with the reason", async () => {
+    const checking = setup({ consented: true });
+    checking.transcriber.noteSaved(note("n"), AUDIO);
+    expect(checking.job("n")).toEqual({ kind: "blocked", reason: "checking" });
+
+    const failed = setup({ consented: true, capabilities: async () => { throw new PrivateCloudError("offline", "x"); } });
+    await failed.transcriber.check();
+    failed.transcriber.noteSaved(note("n"), AUDIO);
+    expect(failed.job("n")).toEqual({ kind: "blocked", reason: "check-failed" });
+
+    const dark = setup({ consented: true, capabilities: async () => null });
+    await dark.transcriber.check();
+    dark.transcriber.noteSaved(note("n"), AUDIO);
+    expect(dark.job("n")).toEqual({ kind: "blocked", reason: "hidden" });
+
+    const noCloud = setup({ cloud: null, consented: true });
+    noCloud.transcriber.noteSaved(note("n"), AUDIO);
+    expect(noCloud.job("n")).toEqual({ kind: "blocked", reason: "hidden" });
+
+    const unconsented = setup({ consented: false });
+    await unconsented.transcriber.check();
+    unconsented.transcriber.noteSaved(note("n"), AUDIO);
+    expect(unconsented.job("n")).toEqual({ kind: "blocked", reason: "no-consent" });
+    expect([checking, failed, dark, noCloud, unconsented].flatMap((t) => t.runs)).toHaveLength(0);
+  });
+
+  test("a blocked note's reason follows the state, and it never starts on its own once private cloud is on", async () => {
+    const s = setup({ consented: true });
+    s.transcriber.noteSaved(note("n"), AUDIO);
+    expect(s.job("n")).toEqual({ kind: "blocked", reason: "checking" });
+    const seen: (string | undefined)[] = [];
+    s.transcriber.subscribe(() => { const job = s.job("n"); seen.push(job?.kind === "blocked" ? job.reason : job?.kind); });
+    await s.transcriber.check();
+    await tick();
+    expect(s.runs).toHaveLength(0);
+    expect(s.job("n")).toBeUndefined();
+    expect(seen).not.toContain("active");
+  });
+
+  test("a blocked note's reason changes from checking to no-consent when the check settles without consent", async () => {
+    const s = setup({ consented: false });
+    s.transcriber.noteSaved(note("n"), AUDIO);
+    expect(s.job("n")).toEqual({ kind: "blocked", reason: "checking" });
+    await s.transcriber.check();
+    expect(s.job("n")).toEqual({ kind: "blocked", reason: "no-consent" });
+    s.transcriber.consent();
+    expect(s.job("n")).toBeUndefined();
+    expect(s.runs).toHaveLength(0);
+  });
+
+  test("a blocked offer does not replace a held or finished job", async () => {
+    const s = setup({ consented: true });
+    await s.transcriber.check();
+    s.transcriber.noteSaved({ id: "held", durationMs: 5_000, source: "intent" }, AUDIO);
+    s.transcriber.transcribe("done");
+    await tick();
+    s.runs[0]!.resolve("transcribed");
+    await tick();
+    await s.transcriber.turnOff();
+    s.transcriber.transcribe("held");
+    s.transcriber.transcribe("done");
+    s.transcriber.noteSaved(note("later"), AUDIO);
+    expect(s.job("held")).toEqual({ kind: "held", message: HELD_NOTE_MESSAGE });
+    expect(s.job("done")).toEqual({ kind: "done", outcome: "transcribed" });
+    expect(s.job("later")).toEqual({ kind: "blocked", reason: "no-consent" });
+  });
+
+  test("waiting notes are numbered from 1 in line order, and move up as notes start", async () => {
+    const s = setup({ consented: true });
+    await s.transcriber.check();
+    for (const id of ["a", "b", "c", "d"]) s.transcriber.noteSaved(note(id), AUDIO);
+    await tick();
+    const place = (id: string) => { const job = s.job(id); return job?.kind === "active" && job.status.kind === "waiting" ? job.status.position : null; };
+    expect(s.runs.map((r) => r.sourceId)).toEqual(["a"]);
+    expect([place("b"), place("c"), place("d")]).toEqual([1, 2, 3]);
+    s.runs[0]!.resolve("transcribed");
+    await tick();
+    expect(s.runs.map((r) => r.sourceId)).toEqual(["a", "b"]);
+    expect([place("c"), place("d")]).toEqual([1, 2]);
   });
 });
 
