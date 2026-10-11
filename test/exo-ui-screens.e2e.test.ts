@@ -615,6 +615,65 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 const expected = Math.max(16, Math.min(32, 16 * viewport.textScale));
                 if (Math.abs(rootSize - expected) > 0.1) findings.push({ check: "ios-text-scale", detail: `root font-size ${rootSize}px; expected ${expected}px at scale ${viewport.textScale}` });
               }
+              if (screen.group === "pipeline") {
+                // Stepper text is rem (0.78125rem at any root), stays inside its box, and stacks exactly when the
+                // case is no wider than the stylesheet's 14rem container query.
+                const sizing = await page.evaluate(() => {
+                  const root = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
+                  const texts = [...document.querySelectorAll<HTMLElement>(
+                    ".pipeline-stepper-label, .pipeline-stepper-sublabel, .pipeline-stepper-caption, .pipeline-stepper-notice, .pipeline-stepper-cause, .pipeline-stepper .soft-pill",
+                  )];
+                  const textRects = (el: HTMLElement) => {
+                    const range = document.createRange();
+                    range.selectNodeContents(el);
+                    return [...range.getClientRects()].filter((rect) => rect.width > 0 && rect.height > 0);
+                  };
+                  const outside = (rect: DOMRect, bounds: DOMRect) =>
+                    rect.left < bounds.left - 1 || rect.right > bounds.right + 1 || rect.top < bounds.top - 1 || rect.bottom > bounds.bottom + 1;
+                  // The pill's ::after hit area inflates its scrollWidth, so its text is measured with a Range against the
+                  // button itself and the case that holds it, not with scrollWidth.
+                  const overflowing = texts.map((el) => {
+                    if (el.matches(".soft-pill")) {
+                      const button = el.getBoundingClientRect();
+                      const box = el.closest<HTMLElement>("[data-pipeline-case]")!.getBoundingClientRect();
+                      return textRects(el).some((rect) => outside(rect, button) || outside(rect, box)) ? el.className : null;
+                    }
+                    return el.scrollWidth > el.clientWidth + 1 ? el.className : null;
+                  }).filter((name) => name !== null);
+                  const layouts = [...document.querySelectorAll<HTMLElement>(".pipeline-stepper")].map((stepper) => {
+                    const items = [...stepper.querySelectorAll<HTMLElement>(".pipeline-stepper-list > li")].map((li) => ({
+                      indicator: li.querySelector(".pipeline-stepper-indicator")!.getBoundingClientRect(),
+                      label: li.querySelector(".pipeline-stepper-label")!.getBoundingClientRect(),
+                    }));
+                    const width = stepper.getBoundingClientRect().width;
+                    const sameLeft = items.every((item) => Math.abs(item.label.left - items[0]!.label.left) < 1);
+                    const below = items.every((item, i) => i === 0 || item.label.top >= items[i - 1]!.label.bottom - 1);
+                    const beside = items.every((item) => item.indicator.right <= item.label.left + 1 && Math.abs(item.indicator.top - item.label.top) < item.label.height);
+                    const sameTop = items.every((item) => Math.abs(item.label.top - items[0]!.label.top) < 1);
+                    const across = items.every((item, i) => i === 0 || item.label.left >= items[i - 1]!.label.right - 1);
+                    return { width, rem: root, stacked: sameLeft && below && beside, inline: sameTop && across };
+                  });
+                  return {
+                    root,
+                    texts: texts.length,
+                    wrong: texts.filter((el) => Math.abs(Number.parseFloat(getComputedStyle(el).fontSize) - root * 0.78125) > 0.01)
+                      .map((el) => `${el.className} ${getComputedStyle(el).fontSize}`),
+                    overflowing,
+                    layouts,
+                  };
+                });
+                const expectedRoot = 16 * (viewport.textScale ?? 1);
+                if (Math.abs(sizing.root - expectedRoot) > 0.1) findings.push({ check: "pipeline-text-scale", detail: `root font-size ${sizing.root}px; expected ${expectedRoot}px` });
+                if (sizing.texts === 0) findings.push({ check: "pipeline-text-scale", detail: "no stepper text found" });
+                if (sizing.wrong.length > 0) findings.push({ check: "pipeline-text-scale", detail: `not 0.78125rem: ${sizing.wrong.join("; ")}` });
+                if (sizing.overflowing.length > 0) findings.push({ check: "pipeline-text-wrap", detail: `text outside its box: ${sizing.overflowing.join("; ")}` });
+                for (const layout of sizing.layouts) {
+                  const shouldStack = layout.width <= 14 * layout.rem;
+                  if (shouldStack ? !layout.stacked : !layout.inline) {
+                    findings.push({ check: "pipeline-stack", detail: `a ${Math.round(layout.width)}px stepper at a ${layout.rem}px root should be ${shouldStack ? "stacked (14rem query)" : "inline"}; stacked ${layout.stacked}, inline ${layout.inline}` });
+                  }
+                }
+              }
               if (screen.id === "shell-chat" && ["phone", "phone-small"].includes(viewport.id)) {
                 const bannerLayout = await page.evaluate(() => {
                   const banner = document.querySelector('[aria-label="Agent tools"]');
