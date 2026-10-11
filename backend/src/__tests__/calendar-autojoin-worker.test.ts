@@ -625,7 +625,12 @@ async function twoTenants(options: { sharing?: boolean; bResponse?: string | nul
       if (!meeting) throw new TranscriptionApiError(404, "meeting_not_found", "Missing");
       return structuredClone(meeting);
     },
-    async stopMeeting(id) { stops.push(id); throw new Error("a shared capture must never stop a meeting"); },
+    async stopMeeting(id) {
+      stops.push(id);
+      const meeting = [...records.values()].find(m => m.id === id)!;
+      meeting.status = "processing";
+      return { id, status: meeting.status };
+    },
     async deleteMeeting(id) { deletes.push(id); },
     async getTranscript() { return { pending: true, status: "processing" }; },
   };
@@ -660,7 +665,9 @@ async function twoTenants(options: { sharing?: boolean; bResponse?: string | nul
   const holdA = () => store.updateOccurrence(A, idOf(A, SUBJECT_A), r => r && { ...r, nextAttemptAt: now + 86_400_000 * 10 });
   return { store, index, events, posts, stops, deletes, records, gets, googleErrors, tokenErrors, api, calendar, worker, connect,
     connectB, rowA, rowB, meeting, status, attach, holdA, idOf,
-    now: () => now, setNow: (value: number) => { now = value; }, advance: (ms: number) => { now += ms; } };
+    now: () => now, setNow: (value: number) => { now = value; }, advance: (ms: number) => { now += ms; },
+    /** Past B's dispatch window (start + 5 min): a dead owner can no longer be replaced by B's own bot. */
+    afterWindow: () => { now = START + 300_000; } };
 }
 
 describe("TC-581 shared capture across tenants", () => {
@@ -682,7 +689,7 @@ describe("TC-581 shared capture across tenants", () => {
     const f = await twoTenants();
     await f.attach();
     f.meeting().status = "completed";
-    f.advance(60_000);
+    f.afterWindow();
     await f.worker().tick();
     expect(await f.index.list(B)).toEqual(["mtg_1"]);
     const provenance = (await f.index.shares(B))["mtg_1"];
@@ -710,7 +717,7 @@ describe("TC-581 shared capture across tenants", () => {
       const f = await twoTenants({ bResponse: response });
       await f.attach();
       f.meeting().status = "completed";
-      f.advance(60_000);
+      f.afterWindow();
       await f.worker().tick();
       expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition: "already_recorded",
         sharedCapture: { result: "not_shared", reason: "not_accepted_attendee" } });
@@ -726,7 +733,7 @@ describe("TC-581 shared capture across tenants", () => {
     const f = await twoTenants({ bEmail: "" });
     await f.attach();
     f.meeting().status = "completed";
-    f.advance(60_000);
+    f.afterWindow();
     await f.worker().tick();
     expect(await f.rowB()).toMatchObject({ disposition: "already_recorded", sharedCapture: { reason: "no_verified_email" } });
     expect(await f.index.list(B)).toEqual([]);
@@ -737,7 +744,7 @@ describe("TC-581 shared capture across tenants", () => {
     await f.attach();
     expect(f.posts.map(p => p.tenant)).toEqual([A]);
     f.meeting().status = "completed";
-    f.advance(60_000);
+    f.afterWindow();
     await f.worker().tick();
     expect(await f.rowB()).toMatchObject({ disposition: "already_recorded", sharedCapture: { reason: "sharing_disabled" } });
     expect(await f.index.list(B)).toEqual([]);
@@ -755,7 +762,7 @@ describe("TC-581 shared capture across tenants", () => {
       f.meeting().status = "completed";
       await f.holdA();
       await revoke(f);
-      f.advance(60_000);
+      f.afterWindow();
       await f.worker().tick();
       expect(await f.rowB()).toMatchObject({ disposition: "already_recorded", sharedCapture: { result: "not_shared" } });
       expect(await f.index.list(B)).toEqual([]);
@@ -769,7 +776,7 @@ describe("TC-581 shared capture across tenants", () => {
     f.meeting().status = "completed";
     await f.holdA();
     f.googleErrors[A] = () => { throw new GoogleCalendarError("calendar_unavailable", 503, null, false, true); };
-    f.advance(60_000);
+    f.afterWindow();
     await f.worker().tick();
     expect(await f.rowB()).toMatchObject({ phase: "pending", errorCode: "shared_capture_pending" });
     const deferredUntil = (await f.rowB())!.nextAttemptAt;
@@ -889,8 +896,8 @@ describe("TC-581 shared capture across tenants", () => {
   test("after B's window: a dead owner is missed_window", async () => {
     const f = await twoTenants();
     await f.attach();
-    await f.store.updateOccurrence(A, f.idOf(A, SUBJECT_A), r => r && { ...r, phase: "terminal", disposition: "failed" });
-    f.setNow(START + 300_000);
+    await f.store.deleteOccurrence(A, f.idOf(A, SUBJECT_A));
+    f.afterWindow();
     await f.worker().tick();
     expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition: "missed_window" });
     expect(f.posts.map(p => p.tenant)).toEqual([A]);
@@ -944,6 +951,80 @@ describe("TC-581 shared capture across tenants", () => {
     expect(f.records.size).toBe(1);
   });
 
+  test("1a: an owner whose long block already completed does not hold B off; B sends its own bot", async () => {
+    const f = await twoTenants();
+    f.events[A] = [event({ id: "event-a", start: { dateTime: new Date(START - 3_600_000).toISOString() },
+      end: { dateTime: new Date(START + 3 * 3_600_000).toISOString() } })];
+    f.setNow(START - 3_600_000 - 30_000);
+    await f.worker().tick();
+    expect(f.posts.map(p => p.tenant)).toEqual([A]);
+    f.meeting().status = "completed";
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(await f.rowA()).toMatchObject({ phase: "terminal", disposition: "completed" });
+    f.setNow(START - 30_000);
+    await f.connectB();
+    await f.worker().tick();
+    expect(f.posts.map(p => p.tenant)).toEqual([A, B]);
+    expect((await f.rowB())?.sharedCapture).toBeUndefined();
+    expect((await f.rowB())?.meetingId).toBe("mtg_2");
+    f.meeting("mtg_2").status = "completed";
+    f.afterWindow();
+    await f.worker().tick();
+    expect(await f.index.shares(B)).toEqual({});
+    expect(await f.index.list(B)).toEqual(["mtg_2"]);
+  });
+
+  test("1a: an owner row lagging behind a meeting that is already processing does not hold B off", async () => {
+    const f = await twoTenants();
+    await f.worker().tick();
+    f.meeting().status = "processing";
+    await f.holdA();
+    await f.connectB();
+    await f.worker().tick();
+    expect(f.posts.map(p => p.tenant)).toEqual([A, B]);
+    expect((await f.rowA())?.phase).toBe("sent");
+  });
+
+  test("1b: the owner disabling auto-join mid-call releases an attached B to send its own bot", async () => {
+    const f = await twoTenants();
+    await f.attach();
+    await f.store.updateConnection(A, c => c && { ...c, state: "disabled", generation: c.generation + 1 });
+    await f.store.updateOccurrence(A, f.idOf(A, SUBJECT_A), r => r && { ...r, stopRequested: true, nextAttemptAt: f.now() });
+    for (let i = 0; i < 3 && f.posts.length < 2; i++) { f.advance(30_000); await f.worker().tick(); }
+    expect(f.posts.map(p => p.tenant)).toEqual([A, B]);
+    // Only A's own bot is ever stopped (A's worker repeats its idempotent stop while ptx is processing).
+    expect(f.stops.length).toBeGreaterThan(0);
+    expect(new Set(f.stops)).toEqual(new Set(["mtg_1"]));
+    expect((await f.rowB())?.meetingId).toBe("mtg_2");
+  });
+
+  test("4: an attached B released inside its window sends its own bot in the same pass, without re-attaching", async () => {
+    const f = await twoTenants();
+    await f.attach();
+    f.meeting().status = "failed";
+    await f.holdA();
+    f.advance(30_000);
+    await f.worker().tick();
+    expect(f.posts.map(p => p.tenant)).toEqual([A, B]);
+    expect((await f.rowB())?.sharedCapture).toBeUndefined();
+    expect((await f.rowB())?.meetingId).toBe("mtg_2");
+  });
+
+  test("4: an owner that never got a meeting id does not keep B pending forever", async () => {
+    const f = await twoTenants();
+    f.api.createMeeting = async () => { throw new TranscriptionApiError(503, "unavailable", "Unavailable"); };
+    f.api.lookupMeetingByIdempotencyKey = async () => null;
+    await f.worker().tick();
+    expect((await f.rowA())?.meetingId).toBeUndefined();
+    await f.connectB();
+    await f.worker().tick();
+    expect((await f.rowB())?.sharedCapture?.ownerTenant).toBe(A);
+    f.setNow(START + 360_000);
+    await f.worker().tick();
+    expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition: "missed_window" });
+  });
+
   test("reconcileShared running twice (lost finish) leaves one index entry", async () => {
     const f = await twoTenants();
     await f.attach();
@@ -955,7 +1036,7 @@ describe("TC-581 shared capture across tenants", () => {
       if (fail && next?.disposition === "shared") { fail = false; throw new Error("finish lost"); }
       return next;
     });
-    f.advance(60_000);
+    f.afterWindow();
     await f.worker().tick();
     expect(await f.index.list(B)).toEqual(["mtg_1"]);
     expect((await f.rowB())?.phase).not.toBe("terminal");

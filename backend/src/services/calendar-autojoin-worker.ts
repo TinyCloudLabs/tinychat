@@ -8,16 +8,19 @@ import {
 } from "./google-calendar.js";
 import {
   computeCreateRequestHash, TERMINAL_MEETING_STATUSES, TranscriptionApiError,
-  type TranscriptionApiClient, type TranscriptionMeeting,
+  type TranscriptionApiClient, type TranscriptionMeeting, type TranscriptionMeetingStatus,
 } from "./transcription-api.js";
 import { GoogleOAuthError } from "./google-oauth.js";
 import type { TranscriberIndexStore } from "./transcriber-index.js";
 
-/** An owner occurrence still stands for its capture unless it is gone, ended without a completed recording, or stopped before sending. */
-function ownerLive(owner: CalendarOccurrence | null): owner is CalendarOccurrence {
-  if (!owner) return false;
-  if (owner.phase === "terminal" && owner.disposition !== "completed") return false;
-  return !(owner.stopRequested && !owner.meetingId);
+/** ptx statuses in which the owner's bot is in, or about to be in, the call. From `processing` on, it has left. */
+const BOT_IN_CALL: ReadonlySet<TranscriptionMeetingStatus> = new Set(["queued", "joining", "waiting_for_admission", "in_progress"]);
+/** TC-581: the one liveness rule, for attaching and for an attached recipient. `meeting` is the owner's
+ *  ptx meeting when it was read (null = 404), undefined when it was not read. */
+function ownerCapturing(owner: CalendarOccurrence | null, meeting: TranscriptionMeeting | null | undefined, now: number): boolean {
+  if (!owner || owner.phase === "terminal") return false;
+  if (!owner.meetingId) return !owner.stopRequested && now < dispatchCutoff(owner) + 60_000;
+  return meeting === undefined || (meeting !== null && BOT_IN_CALL.has(meeting.status));
 }
 const SHARE_CHECK_DEADLINE_MS = 86_400_000;
 
@@ -226,6 +229,8 @@ export class CalendarAutojoinWorker {
         else await this.options.store.updateOccurrence(row.tenant, row.id, current => current && { ...current, ...eligible, nextAttemptAt: eligible.start - 60_000 });
         return;
       }
+      // TC-581: read owners' ptx meetings BEFORE the locks; never do upstream I/O while holding them.
+      const observed = row.idempotencyKey ? new Map<string, TranscriptionMeeting | null>() : await this.observeOwners(row);
       // Reserve external capacity BEFORE entering tenant coordination. A queued dispatch may
       // not leave the lock and then send after a disable; the actual POST begins inside it.
       const response = await this.limiter.run(async () => {
@@ -236,7 +241,7 @@ export class CalendarAutojoinWorker {
           if (!latest || !this.canDispatch(current, { ...row, stopRequested: latest.stopRequested, meetingId: latest.meetingId })) return;
           if (!row.idempotencyKey) {
             // TC-581: another tenant's live capture of this Meet in an overlapping window means no POST.
-            if (await this.claimOrAttach(row, current!)) return;
+            if (await this.claimOrAttach(row, current!, observed)) return;
             const body = {
               meeting_url: row.meetingUrl, platform: "google_meet", bot_name: this.options.botName ?? "TinyCloud Private Notetaker",
               metadata: { tinychat_address: row.tenant, source: "google-calendar-autojoin", calendar_occurrence_id: row.id, calendar_title: row.title, scheduled_start: new Date(row.start).toISOString() },
@@ -344,14 +349,15 @@ export class CalendarAutojoinWorker {
    * TC-581. Under the URL lock: attach to another tenant's live, overlapping capture of this Meet,
    * or record this occurrence's own claim. Returns true when attached (no POST may follow).
    */
-  private claimOrAttach(row: CalendarOccurrence, connection: CalendarConnection): Promise<boolean> {
+  private claimOrAttach(row: CalendarOccurrence, connection: CalendarConnection, observed: Map<string, TranscriptionMeeting | null>): Promise<boolean> {
     const { store } = this.options;
     return this.meetingCoordinator.run(row.meetingUrl, async () => {
       const now = this.now();
       const tenant = row.tenant.toLowerCase();
       for (const claim of await store.getCaptureClaims(row.meetingUrl)) {
         if (claim.tenant.toLowerCase() === tenant || !windowsOverlap(claim, row)) continue;
-        if (!ownerLive(await store.getOccurrence(claim.tenant, claim.occurrenceId))) continue;
+        const owner = await store.getOccurrence(claim.tenant, claim.occurrenceId);
+        if (!ownerCapturing(owner, owner?.meetingId ? observed.get(owner.meetingId) : undefined, now)) continue;
         const sharedCapture: SharedCapture = { ownerTenant: claim.tenant, ownerOccurrenceId: claim.occurrenceId, attachedAt: now };
         await store.updateOccurrence(row.tenant, row.id, current => current && {
           ...current, start: row.start, end: row.end, meetingUrl: row.meetingUrl, title: row.title, generation: connection.generation,
@@ -376,25 +382,19 @@ export class CalendarAutojoinWorker {
       await this.finish(row, "autojoin_disabled"); return;
     }
     const owner = await store.getOccurrence(shared.ownerTenant, shared.ownerOccurrenceId);
-    if (!ownerLive(owner)) { await this.ownerGone(row); return; }
-    if (!owner.meetingId) { await this.retryShared(row, 30_000); return; }
-    let meeting: TranscriptionMeeting;
-    try { meeting = await this.limiter.run(() => this.options.api.getMeeting(owner.meetingId!)); }
-    catch (error) {
-      if (error instanceof TranscriptionApiError && error.status === 404) {
-        await this.settleShared(row, "already_recorded", { ok: false, reason: "recording_deleted" }); return;
-      }
-      throw error;
-    }
-    if (!TERMINAL_MEETING_STATUSES.has(meeting.status)) { await this.retryShared(row, 60_000); return; }
-    // A capture that ended without a recording while B can still send is the same as a dead owner.
-    if (meeting.status !== "completed" && inDispatchWindow(row, this.now())) { await this.ownerGone(row); return; }
+    const meeting = owner?.meetingId ? await this.ownerMeeting(owner.meetingId) : undefined;
+    if (ownerCapturing(owner, meeting, this.now())) { await this.retryShared(row, owner?.meetingId ? 60_000 : 30_000); return; }
+    // The owner's bot has left or never came. While B can still send, it sends its own, now.
+    if (inDispatchWindow(row, this.now())) { await this.detach(row); await this.reconcileOccurrence(row); return; }
+    if (!owner || meeting === undefined) { await this.finish(row, "missed_window"); return; }
+    if (meeting === null) { await this.settleShared(row, "already_recorded", { ok: false, reason: "recording_deleted" }); return; }
+    if (!TERMINAL_MEETING_STATUSES.has(meeting.status)) { await this.retryShared(row, 60_000); return; } // processing
     const decision = await this.authorizeShare(row, owner, connection);
     if (decision === "deferred") return;
     if (!decision.ok) { await this.settleShared(row, "already_recorded", decision); return; }
     if (meeting.status !== "completed") { await this.settleShared(row, "failed", { ok: false, reason: `meeting_${meeting.status}` }); return; }
     const checkedAt = this.now();
-    await this.options.index.addShared(row.tenant, owner.meetingId, {
+    await this.options.index.addShared(row.tenant, owner.meetingId!, {
       ownerTenant: owner.tenant, ownerOccurrenceId: owner.id, recipientOccurrenceId: row.id, checkedAt,
       title: row.title, scheduledStart: new Date(row.start).toISOString(),
     });
@@ -434,12 +434,30 @@ export class CalendarAutojoinWorker {
     else console.log(`[calendar-autojoin] code=share_denied reason=${decision.ok ? "unknown" : decision.reason}`);
     await this.finish(row, disposition);
   }
-  /** The owner's capture is gone: send our own bot while we still can, else the window is missed. */
-  private async ownerGone(row: CalendarOccurrence): Promise<void> {
-    if (!inDispatchWindow(row, this.now())) { await this.finish(row, "missed_window"); return; }
+  /** TC-581: back to a plain pending row. B never sent a bot: nothing to unwind upstream, no marker. */
+  private async detach(row: CalendarOccurrence): Promise<void> {
     await this.options.store.updateOccurrence(row.tenant, row.id, current => current && current.phase !== "terminal" ? {
-      ...current, sharedCapture: undefined, phase: "pending", errorCode: undefined, nextAttemptAt: this.now(), updatedAt: this.now(),
-    } : current);
+      ...current, sharedCapture: undefined, generation: undefined, phase: "pending", errorCode: undefined,
+      attemptCount: 0, nextAttemptAt: this.now(), updatedAt: this.now() } : current);
+  }
+  private async ownerMeeting(id: string): Promise<TranscriptionMeeting | null> {
+    try { return await this.limiter.run(() => this.options.api.getMeeting(id)); }
+    catch (error) {
+      if (error instanceof TranscriptionApiError && error.status === 404) return null;
+      throw error;
+    }
+  }
+  /** The ptx meetings of other tenants' live, overlapping claims on this Meet, read outside any lock. */
+  private async observeOwners(row: CalendarOccurrence): Promise<Map<string, TranscriptionMeeting | null>> {
+    const { store } = this.options;
+    const observed = new Map<string, TranscriptionMeeting | null>();
+    const tenant = row.tenant.toLowerCase();
+    for (const claim of await store.getCaptureClaims(row.meetingUrl)) {
+      if (claim.tenant.toLowerCase() === tenant || !windowsOverlap(claim, row)) continue;
+      const owner = await store.getOccurrence(claim.tenant, claim.occurrenceId);
+      if (owner?.meetingId && owner.phase !== "terminal") observed.set(owner.meetingId, await this.ownerMeeting(owner.meetingId));
+    }
+    return observed;
   }
   private async retryShared(row: CalendarOccurrence, delay: number): Promise<void> {
     await this.options.store.updateOccurrence(row.tenant, row.id, current => current && current.phase !== "terminal" ? {
