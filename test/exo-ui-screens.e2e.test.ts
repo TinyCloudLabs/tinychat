@@ -70,6 +70,22 @@ const VIEWPORTS: Viewport[] = [
   },
   { id: "text200-phone", group: "text200", width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true, textScale: 2, zoom: true },
   {
+    id: "text150-phone",
+    group: "text150",
+    width: 390,
+    height: 844,
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    textScale: 1.5,
+    zoom: true,
+    screenPrefixes: [
+      "capture-soft-",
+      "saved-note-",
+      "recorder-final-phone-",
+    ],
+  },
+  {
     id: "text200-phone-small",
     group: "text200",
     width: 320,
@@ -614,6 +630,37 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 const rootSize = await page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).fontSize));
                 const expected = Math.max(16, Math.min(32, 16 * viewport.textScale));
                 if (Math.abs(rootSize - expected) > 0.1) findings.push({ check: "ios-text-scale", detail: `root font-size ${rootSize}px; expected ${expected}px at scale ${viewport.textScale}` });
+              }
+              if (screen.platform === "ios") {
+                const scale = Math.min(2, viewport.textScale ?? 1);
+                const typography = screen.id.startsWith("capture-soft-")
+                  ? [
+                      [".soft-sect", 14],
+                      [".soft-row-title", 13.5],
+                      [".soft-row-meta", 12],
+                    ] as const
+                  : screen.id.startsWith("saved-note-")
+                    ? [[".sn-title", screen.id.includes("sheet") ? 26 : 34]] as const
+                    : screen.id.startsWith("recorder-final-phone-")
+                      ? [
+                          [".pr-mname", 20],
+                          [".pr-time", 60, 100],
+                        ] as const
+                      : [];
+                for (const [selector, baseSize, cap] of typography) {
+                  const actual = await page.evaluate((sel) => {
+                    const element = document.querySelector(sel);
+                    return element
+                      ? Number.parseFloat(getComputedStyle(element).fontSize)
+                      : null;
+                  }, selector);
+                  if (actual !== null) {
+                    const expected = Math.min(baseSize * scale, cap ?? Infinity);
+                    if (Math.abs(actual - expected) > 0.5) {
+                      findings.push({ check: "ios-rem-typography", element: selector, detail: `${actual}px; expected ${expected}px at ${scale}×` });
+                    }
+                  }
+                }
               }
               if (screen.id === "shell-chat" && ["phone", "phone-small"].includes(viewport.id)) {
                 const bannerLayout = await page.evaluate(() => {

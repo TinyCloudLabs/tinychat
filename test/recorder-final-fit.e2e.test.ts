@@ -1,11 +1,12 @@
 // The recorder fits every viewport it can be shown in: a phone upright (390 and 320 wide), on its side (844x390
-// and 740x360) and at a large font scale (2.0). Each assertion is geometry: no two parts of the screen
+// and 740x360) and at large font scales (1.5 and 2.0). Each assertion is geometry: no two parts of the screen
 // meet, the ring and its ticks stay inside their stage, the controls can be reached, nothing runs off the
 // screen sideways, and what does not fit scrolls. The desktop and web recorders keep Done and Discard when the
 // microphone is lost mid-recording, and their toasts keep clear of the pill, the timer and the controls.
 //
 //   EXO_UI_ENGINE=chromium   webkit (default: Exo's WKWebView) or chromium
 //   EXO_UI_SHOTS=<dir>       also write a screenshot of every case there
+//   EXO_UI_FIT_VIEWPORTS=<name> comma-separated viewport names, useful for focused reruns
 import {
   afterAll,
   beforeAll,
@@ -67,6 +68,26 @@ const VIEWPORTS = [
   { name: "320x545 portrait", width: 320, height: 545, fontScale: 1 },
   { name: "844x390 landscape", width: 844, height: 390, fontScale: 1 },
   { name: "740x360 landscape", width: 740, height: 360, fontScale: 1 },
+  { name: "390x844 font 1.5", width: 390, height: 844, fontScale: 1.5 },
+  { name: "320x545 font 1.5", width: 320, height: 545, fontScale: 1.5 },
+  {
+    name: "844x390 landscape font 1.5",
+    width: 844,
+    height: 390,
+    fontScale: 1.5,
+  },
+  {
+    name: "740x360 landscape font 1.5",
+    width: 740,
+    height: 360,
+    fontScale: 1.5,
+  },
+  {
+    name: "545x320 landscape font 1.5",
+    width: 545,
+    height: 320,
+    fontScale: 1.5,
+  },
   { name: "390x844 font 2.0", width: 390, height: 844, fontScale: 2 },
   { name: "320x545 font 2.0", width: 320, height: 545, fontScale: 2 },
   { name: "844x390 landscape font 2.0", width: 844, height: 390, fontScale: 2 },
@@ -74,6 +95,12 @@ const VIEWPORTS = [
   { name: "545x320 landscape", width: 545, height: 320, fontScale: 1 },
   { name: "545x320 landscape font 2.0", width: 545, height: 320, fontScale: 2 },
 ] as const;
+const viewportFilter = process.env.EXO_UI_FIT_VIEWPORTS?.split(",").map(
+  (name) => name.trim(),
+);
+const fitViewports = viewportFilter?.length
+  ? VIEWPORTS.filter((viewport) => viewportFilter.includes(viewport.name))
+  : VIEWPORTS;
 
 const SCREENS = [
   { id: "recording", ready: ".pr-ring" },
@@ -198,7 +225,7 @@ async function parts(page: Page) {
 const BY_DESIGN = new Set(["timer|plus"]);
 
 for (const theme of ["light", "dark"] as const) {
-  for (const viewport of VIEWPORTS) {
+  for (const viewport of fitViewports) {
     describe.serial(`${viewport.name}, ${theme}, ${engineName}`, () => {
       for (const { id, ready } of SCREENS) {
         test(`${id}: nothing overlaps, nothing runs off the side, the ring stays in its stage`, async () => {
@@ -366,7 +393,7 @@ for (const theme of ["light", "dark"] as const) {
 
 // The timer sits centred in its row with the ＋ ten pixels past its last digit, on the same line, wherever it fits.
 describe.serial(`the timer and its ＋ (${engineName})`, () => {
-  for (const viewport of VIEWPORTS.filter((v) => v.fontScale === 1)) {
+  for (const viewport of fitViewports.filter((v) => v.fontScale === 1)) {
     test(`${viewport.name}: the timer is centred and the ＋ is beside it`, async () => {
       const page = await open("recording", "light", viewport, ".pr-ring");
       const layout = await page.evaluate(() => {
@@ -460,7 +487,7 @@ describe.serial(`the loudest ticks stay in the stage (${engineName})`, () => {
     expect(reach).toBeGreaterThanOrEqual(TICK_REACH);
     await page.context().close();
   });
-  for (const viewport of VIEWPORTS) {
+  for (const viewport of fitViewports) {
     test(`${viewport.name}: painted at level 1, the ticks are inside the stage`, async () => {
       const page = await open(
         "recording",
