@@ -15,8 +15,9 @@
 // two minutes away. One read at a time: asks that arrive while one is out
 // become a single read after it; a read already out is never thrown away.
 //
-// A note's settled reads are cached; a failed one is read again when the note
-// is next opened (or on Try again), never pinned.
+// A note's settled reads are cached. Failed revalidation keeps a prior
+// successful read visible but marks only that field stale for Try again or
+// reopening; initial failures are retried on the same actions.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
@@ -81,6 +82,9 @@ export function useLibrary(
   const reading = useRef(new Set<string>());
   const readVersions = useRef(new Map<string, number>());
   const invalidated = useRef(new Set<string>());
+  // A failed revalidation keeps the last successful value on screen, but the
+  // failed field must still be fetched on Try again or when reopening.
+  const staleReads = useRef(new Map<string, Set<keyof NoteReads>>());
   const [invalidationRevision, setInvalidationRevision] = useState(0);
   const [, setRevision] = useState(0);
   const bump = useCallback(() => setRevision((n) => n + 1), []);
@@ -168,7 +172,9 @@ export function useLibrary(
       const version = readVersions.current.get(note.id) ?? 0;
       if (reading.current.has(note.id)) return;
       const stale = invalidated.current.delete(note.id);
-      if (!stale && settled(cached.metadata) && settled(cached.transcript)) return;
+      const staleFields = staleReads.current.get(note.id);
+      staleReads.current.delete(note.id);
+      if (!stale && !staleFields?.size && settled(cached.metadata) && settled(cached.transcript)) return;
       // A saved note retains its reads during revalidation; only prior failures show loading.
       if (!stale) {
         reads.current.set(note.id, {
@@ -182,13 +188,18 @@ export function useLibrary(
         try {
           const locator = note.source === VOICE_NOTE_SOURCE
             ? await voiceNoteTranscriptLocator(space, note.sourceId) : null;
-          if (version === (readVersions.current.get(note.id) ?? 0) && (stale || !settled(reads.current.get(note.id)?.metadata))) {
+          if (version === (readVersions.current.get(note.id) ?? 0) && (stale || staleFields?.has("metadata") || !settled(reads.current.get(note.id)?.metadata))) {
             let metadata = await readMeetingMetadata(space, note.id);
             if (locator && metadata.status === "ok") metadata = { status: "ok", metadata: {
               ...metadata.metadata, transcription_outcome: locator.outcome,
               // The preview is bounded; only the body read may supply full transcript text.
               transcript_text: locator.committed ? null : locator.expectedText,
             } };
+            if (version === (readVersions.current.get(note.id) ?? 0) && metadata.status === "failed" && cached.metadata?.status === "ok") {
+              const fields = staleReads.current.get(note.id) ?? new Set<keyof NoteReads>();
+              fields.add("metadata");
+              staleReads.current.set(note.id, fields);
+            }
             if (version === (readVersions.current.get(note.id) ?? 0)) {
               reads.current.set(note.id, {
                 ...reads.current.get(note.id),
@@ -198,11 +209,16 @@ export function useLibrary(
               if (mounted.current) bump();
             }
           }
-          if (version === (readVersions.current.get(note.id) ?? 0) && (stale || !settled(reads.current.get(note.id)?.transcript))) {
+          if (version === (readVersions.current.get(note.id) ?? 0) && (stale || staleFields?.has("transcript") || !settled(reads.current.get(note.id)?.transcript))) {
             const transcript = locator
               ? locator.bodyKey ? await readTranscript(space, note.source, note.sourceId, locator.bodyKey, locator.expectedText)
                 : { status: "absent" as const }
               : await readTranscript(space, note.source, note.sourceId);
+            if (version === (readVersions.current.get(note.id) ?? 0) && transcript.status === "failed" && cached.transcript?.status === "ok") {
+              const fields = staleReads.current.get(note.id) ?? new Set<keyof NoteReads>();
+              fields.add("transcript");
+              staleReads.current.set(note.id, fields);
+            }
             if (version === (readVersions.current.get(note.id) ?? 0)) {
               reads.current.set(note.id, {
                 ...reads.current.get(note.id),

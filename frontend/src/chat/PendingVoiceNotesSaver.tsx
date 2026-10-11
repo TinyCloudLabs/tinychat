@@ -20,7 +20,7 @@ import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
 import type { VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { messageOf, pendingStore, whenVoiceNoteSavesIdle, type PendingRun } from "@/lib/voiceNotes/recorderSaves";
-import { advanceAccountGeneration, currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
+import { advanceAccountGeneration, currentAccountGeneration, mountVoiceNoteAccount } from "@/lib/voiceNotes/accountContext";
 import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 
 let recovery: (() => Promise<void>) | null = null;
@@ -104,6 +104,7 @@ export function PendingVoiceNotesSaver({
     const spaceId = tcw.spaceId;
     if (!did || !spaceId) return;
     pendingStore.setAccount(did);
+    const unmountAccount = mountVoiceNoteAccount(did);
     pipeline.resume();
     const run = async () => {
       const finish = pendingStore.beginAutomaticSave();
@@ -118,7 +119,7 @@ export function PendingVoiceNotesSaver({
     };
     const unregister = registerPendingVoiceNotesRecovery(run);
     void run();
-    return () => { unregister(); pipeline.cancelAll(); pendingStore.setAccount(null); };
+    return () => { unregister(); unmountAccount(); pipeline.cancelAll(); pendingStore.setAccount(null); };
   }, [pipeline, tcw]);
   return null;
 }

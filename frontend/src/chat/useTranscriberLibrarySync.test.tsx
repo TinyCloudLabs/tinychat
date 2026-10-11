@@ -173,6 +173,25 @@ test("an in-flight save cannot emit into a different account", async () => {
   } finally { unsubscribe(); }
 });
 
+test("a cleared token without an address change cannot publish an in-flight import", async () => {
+  const f = setup();
+  f.rows.push(row("signed-out"));
+  f.client.transcript = async () => ({ status: "ok", value: { status: "ready", transcript: {} } }) as never;
+  const started = Promise.withResolvers<void>();
+  const pending = Promise.withResolvers<{ ok: boolean }>();
+  f.saver.save = () => { started.resolve(); return pending.promise; };
+  const changes: string[] = [];
+  const unsubscribe = captureEvents.on("library-changed", (detail) => changes.push(detail?.sourceId ?? ""));
+  try {
+    await mount(f);
+    await started.promise;
+    f.identity.token = "";
+    pending.resolve({ ok: true });
+    await act(async () => {});
+    expect(changes).toEqual([]);
+  } finally { unsubscribe(); }
+});
+
 test("changing the mounted DID also suppresses a late save", async () => {
   const f = setup();
   f.rows.push(row("old-did"));

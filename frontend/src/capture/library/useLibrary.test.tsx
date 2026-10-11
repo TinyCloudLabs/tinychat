@@ -196,6 +196,43 @@ describe("useLibrary, mounted", () => {
     expect(space.most()).toBe(1);
   });
 
+  test("a matching save during an in-flight note read rechecks it after a failed list read", async () => {
+    const space = fakeSpace();
+    const seen: Library[] = [];
+    await render({ tcw: space.tcw, visible: true, noteId: "a", now: () => 0, seen });
+    await space.answer("list", listed("a"));
+    expect(space.kinds).toEqual(["list", "metadata"]);
+
+    await act(async () => captureEvents.emit("library-changed", { source: SOURCE, sourceId: "rec-a" }));
+    await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+    expect(seen.at(-1)!.note.reads).toEqual({});
+    await space.answer("list", { ok: false, error: { code: "NETWORK", message: "offline" } });
+    expect(space.kinds).toEqual(["list", "metadata", "list", "metadata"]);
+    await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+    await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Saved during read" }]) } });
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({
+      status: "ok", sentences: [{ text: "Saved during read" }],
+    });
+    expect(space.outstanding()).toBe(0);
+  });
+
+  test("a matching save re-reads an already open note even when the list fails", async () => {
+    const space = fakeSpace();
+    const seen: Library[] = [];
+    await render({ tcw: space.tcw, visible: true, noteId: "a", now: () => 0, seen });
+    await space.answer("list", listed("a"));
+    await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+    await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Old" }]) } });
+
+    await act(async () => captureEvents.emit("library-changed", { source: SOURCE, sourceId: "rec-a" }));
+    await space.answer("list", { ok: false, error: { code: "NETWORK", message: "offline" } });
+    expect(space.kinds).toEqual(["list", "metadata", "transcript", "list", "metadata"]);
+    await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+    await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "New" }]) } });
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ status: "ok", sentences: [{ text: "New" }] });
+    expect(space.outstanding()).toBe(0);
+  });
+
   test("a save re-reads an already open note's cached transcript", async () => {
     const space = fakeSpace();
     const seen: Library[] = [];
@@ -299,6 +336,76 @@ describe("useLibrary, mounted", () => {
     await space.answer("transcript", { ok: false, error: { code: "NETWORK", message: "offline" } });
     expect(seen.at(-1)!.note.reads.transcript).toBe(before.reads.transcript);
     expect(seen.at(-1)!.note.loadAudio).toBe(before.loadAudio);
+    expect(space.kinds).toEqual(["list", "metadata", "transcript", "list", "metadata", "transcript"]);
+    expect(space.outstanding()).toBe(0); // Failure does not start a busy retry loop.
+
+    await act(async () => seen.at(-1)!.retry());
+    expect(space.kinds).toEqual(["list", "metadata", "transcript", "list", "metadata", "transcript", "metadata"]);
+    await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({ audio: { stored: true, base: "audio/a" } })]] } });
+    await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Recovered" }]) } });
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({
+      status: "ok", sentences: [{ text: "Recovered" }],
+    });
+    expect(seen.at(-1)!.note.loadAudio).toBe(before.loadAudio);
+    expect(space.outstanding()).toBe(0);
+  });
+
+  test("Try again re-reads only failed metadata when the transcript refresh succeeded", async () => {
+    const space = fakeSpace();
+    const seen: Library[] = [];
+    await render({ tcw: space.tcw, visible: true, noteId: "a", now: () => 0, seen });
+    await space.answer("list", listed("a"));
+    await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({ audio: { stored: true, base: "audio/a" } })]] } });
+    await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Old" }]) } });
+    const oldMeta = seen.at(-1)!.note.reads.metadata;
+    const audio = seen.at(-1)!.note.loadAudio;
+    await act(async () => captureEvents.emit("library-changed", { source: SOURCE, sourceId: "rec-a" }));
+    await space.answer("list", listed("a"));
+    await space.answer("metadata", { ok: false, error: { code: "NETWORK", message: "offline" } });
+    await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "New" }]) } });
+    const newTranscript = seen.at(-1)!.note.reads.transcript;
+    expect(seen.at(-1)!.note.reads.metadata).toBe(oldMeta);
+    expect(seen.at(-1)!.note.loadAudio).toBe(audio);
+    expect(space.outstanding()).toBe(0);
+
+    await act(async () => seen.at(-1)!.retry());
+    expect(space.kinds).toEqual(["list", "metadata", "transcript", "list", "metadata", "transcript", "metadata"]);
+    await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({ audio: { stored: true, base: "audio/a" }, revision: 2 })]] } });
+    expect(seen.at(-1)!.note.reads.metadata).toMatchObject({ status: "ok", metadata: { revision: 2 } });
+    expect(seen.at(-1)!.note.reads.transcript).toBe(newTranscript);
+    expect(seen.at(-1)!.note.loadAudio).toBe(audio);
+    expect(space.outstanding()).toBe(0);
+  });
+
+  test("reopening a note re-reads only its failed transcript after a successful metadata refresh", async () => {
+    const space = fakeSpace();
+    const seen: Library[] = [];
+    const props = { tcw: space.tcw, visible: true, now: () => 0, seen };
+    await render({ ...props, noteId: "a" });
+    await space.answer("list", listed("a"));
+    await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({ audio: { stored: true, base: "audio/a" } })]] } });
+    await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Old" }]) } });
+    const oldTranscript = seen.at(-1)!.note.reads.transcript;
+    await act(async () => captureEvents.emit("library-changed", { source: SOURCE, sourceId: "rec-a" }));
+    await space.answer("list", listed("a"));
+    await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({ audio: { stored: true, base: "audio/a" }, revision: 2 })]] } });
+    const newMeta = seen.at(-1)!.note.reads.metadata;
+    const audio = seen.at(-1)!.note.loadAudio;
+    await space.answer("transcript", { ok: false, error: { code: "NETWORK", message: "offline" } });
+    expect(seen.at(-1)!.note.reads.transcript).toBe(oldTranscript);
+    expect(seen.at(-1)!.note.reads.metadata).toBe(newMeta);
+    expect(seen.at(-1)!.note.loadAudio).toBe(audio);
+    expect(space.outstanding()).toBe(0);
+
+    await render({ ...props, noteId: null });
+    await render({ ...props, noteId: "a" });
+    expect(space.kinds).toEqual(["list", "metadata", "transcript", "list", "metadata", "transcript", "transcript"]);
+    await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "New" }]) } });
+    expect(seen.at(-1)!.note.reads.metadata).toBe(newMeta);
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ status: "ok", sentences: [{ text: "New" }] });
+    expect(seen.at(-1)!.note.loadAudio).toBeFunction();
+    expect(space.outstanding()).toBe(0);
+
   });
 
   test("a closed note whose transcript was absent is re-read on reopening after its save", async () => {

@@ -10,6 +10,7 @@
 import { describe, expect, test } from "bun:test";
 import { captureEvents } from "@/capture/captureEvents";
 
+import type { StoreResult, UpsertMeetingOutcome } from "./connectors/connectorStore";
 import { AssemblyAiError, createHostedAssemblyAiClient, type AssemblyAiClient } from "./assemblyai";
 import { AudioStoreQuotaError, type StoredAudioManifest } from "./audio/audioStore";
 import {
@@ -591,6 +592,35 @@ describe("upload runner: sign-out and remote cleanup", () => {
     expect(events).not.toContain("A create");
     expect(events).toContain("delete tB");
     expect(pending.value).toBeNull();
+  });
+
+  test("an upload committed after sign-out cannot refresh the next account's Library", async () => {
+    const saveStarted = Promise.withResolvers<void>();
+    const finishSave = Promise.withResolvers<StoreResult<UpsertMeetingOutcome>>();
+    const changed: unknown[] = [];
+    const off = captureEvents.on("library-changed", (detail) => changed.push(detail));
+    const client = {
+      upload: async () => "https://cdn.assemblyai.com/upload/a",
+      createTranscript: async () => ({ id: "tA", status: "queued" }),
+      getTranscript: async () => ({ id: "tA", status: "completed", utterances: [{ speaker: "A", text: "Old account.", start: 0, end: 900 }] }),
+      getSentences: async () => [],
+      deleteTranscript: async () => {},
+    } as unknown as AssemblyAiClient;
+    const pending = memoryPending();
+    const a = deps({ pending, audio: audioFake().audio, assemblyAiClient: async () => client,
+      save: () => { saveStarted.resolve(); return finishSave.promise; } });
+    const runner = createUploadRunner();
+    try {
+      runner.start(a.deps, { file: file("old.mp3", "audio/mpeg"), engine: "assemblyai", diarize: true });
+      await saveStarted.promise;
+      runner.reset();
+      finishSave.resolve({ ok: true, data: { id: "old-row", inserted: true, createdAt: "now" } });
+      await finishSave.promise;
+      expect(changed).toEqual([]);
+      expect(runner.snapshot()).toBeNull();
+    } finally {
+      off();
+    }
   });
 
   test("a Private create that fails never claims the audio is being stored, and stores nothing", async () => {

@@ -7,6 +7,7 @@
 // a failed save lands the receipt; a discarded recording is deleted and never
 // saved, even when the limit races it or the phone keeps its copy.
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { createElement, act } from "react";
 import { createRoot } from "react-dom/client";
@@ -19,8 +20,9 @@ import { fakeVoiceNoteStore } from "@/harness/fakeVoiceNoteStore";
 import { __setVoiceNotesForTests, type CaptureSource, type VoiceNoteRecording, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { setDefaultTranscriber } from "@/lib/voiceNotes/transcriberPreference";
 import { createVoiceNoteTranscriber, type VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { VoiceNoteSaveDeferred, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
+import { createVoiceNotePipeline, VoiceNoteSaveDeferred, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { advanceAccountGeneration } from "@/lib/voiceNotes/accountContext";
+import { CONNECTORS_SQL_DB_NAME } from "@/lib/connectors/connectorStore";
 import { consentToRecordingPrivateCloud, setRecordingRoute } from "./TranscriptionRouteControl";
 import { loadNote } from "@/lib/voiceNotes/recordingNotes";
 import { reportRecordingNoteSyncError } from "@/lib/voiceNotes/voiceNoteStore";
@@ -1115,6 +1117,85 @@ const hostContainer = () => ({ nodeType: 1, nodeName: "DIV", tagName: "DIV", own
   textContent: "", addEventListener() {}, removeEventListener() {}, appendChild() {}, removeChild() {}, insertBefore() {} }) as unknown as HTMLElement;
 const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
   addEventListener() {}, removeEventListener() {}, setTimeout, clearTimeout });
+
+  test("RecorderProvider with the App pipeline emits once for Save now and once for a new Stop", async () => {
+    const previousWindow = globalThis.window;
+    const previousAct = Reflect.get(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+    Reflect.set(globalThis, "window", hostWindow());
+    Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+    const sqlite = new Database(":memory:");
+    const values = new Map<string, string>();
+    const account = { did: tcw.did, spaceId: tcw.spaceId,
+      sql: { db(name: string) {
+        expect(name).toBe(CONNECTORS_SQL_DB_NAME);
+        return {
+          async query(statement: string, params: unknown[] = []) {
+            try { return { ok: true, data: { rows: sqlite.query(statement).values(...params as never[]) } }; }
+            catch (error) { return { ok: false, error: { code: "SQL_ERROR", message: String(error) } }; }
+          },
+          async execute(statement: string, params: unknown[] = []) {
+            try { return { ok: true, data: { changes: sqlite.query(statement).run(...params as never[]).changes } }; }
+            catch (error) { return { ok: false, error: { code: "SQL_ERROR", message: String(error) } }; }
+          },
+        };
+      } },
+      kv: {
+        async put(key: string, value: string) { values.set(key, value); return { ok: true, data: {} }; },
+        async get(key: string) { return values.has(key) ? { ok: true, data: { data: values.get(key) } }
+          : { ok: false, error: { code: "KV_NOT_FOUND", message: "missing" } }; },
+        async list({ path }: { path: string }) {
+          return { ok: true, data: { keys: [...values.keys()].filter((key) => key.startsWith(path)), truncated: false } };
+        },
+      },
+    } as unknown as TinyCloudWeb;
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base, async updateLedger({ id, patch }) {
+      const note = onPhone.find((item) => item.id === id)!;
+      note.ledger = { ...note.ledger, ...patch } as VoiceNoteRecording["ledger"];
+      note.rev = (note.rev ?? 0) + 1;
+      return { rev: note.rev };
+    } }, { available: true });
+    const pipeline = createVoiceNotePipeline(account);
+    const root = createRoot(hostContainer());
+    const changed: Array<{ source: string; sourceId: string } | undefined> = [];
+    const unsubscribe = captureEvents.on("library-changed", (detail) => changed.push(detail));
+    let recorder: RecorderValue | null = null;
+    function Probe() { recorder = useRecorder(); return null; }
+    try {
+      fakeVoiceNoteStore.save = fails;
+      await act(async () => root.render(createElement(RecorderProvider, { tcw: account, pipeline }, createElement(Probe))));
+      await act(async () => { await tick(); await tick(); });
+      await act(async () => recorder!.record());
+      await act(async () => { await tick(); });
+      await act(async () => recorder!.stop());
+      await act(async () => { await tick(); });
+      expect(recorder!.outcome).toBe("failed");
+      expect(changed).toEqual([]);
+      const failedId = onPhone[0]!.id;
+
+      fakeVoiceNoteStore.save = ok;
+      await act(async () => { recorder!.retryPending(); await tick(); await tick(); });
+      expect(onPhone[0]?.ledger?.audio.state).toBe("saved");
+      expect(changed).toEqual([{ source: "exo-voice-note", sourceId: failedId }]);
+      await act(async () => { recorder!.retryPending(); await tick(); await tick(); });
+      expect(changed).toHaveLength(1);
+
+      await act(async () => recorder!.dismissOutcome());
+      await act(async () => recorder!.record());
+      await act(async () => { await tick(); });
+      await act(async () => recorder!.stop());
+      await act(async () => { await tick(); });
+      expect(recorder!.lastSaved?.id).toBe(onPhone[1]?.id);
+      expect(changed).toEqual([{ source: "exo-voice-note", sourceId: failedId },
+        { source: "exo-voice-note", sourceId: onPhone[1]!.id }]);
+    } finally {
+      await act(async () => root.unmount());
+      unsubscribe();
+      sqlite.close();
+      Reflect.set(globalThis, "window", previousWindow);
+      Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
+    }
+  });
 
   test("RecorderProvider defaults to one identified Library event after a successful save, including a retry", async () => {
     const previousWindow = globalThis.window;
