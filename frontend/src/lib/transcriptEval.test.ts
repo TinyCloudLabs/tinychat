@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { scoreTranscript, type EvalExpected, type EvalInput, type EvalSentence } from "./transcriptEval";
-import { evaluateTranscriptGates, type EvalGateId, type EvalGateOptions } from "./transcriptEvalGates";
+import { evaluateTranscriptGates, type EvalGateId, type EvalPr } from "./transcriptEvalGates";
 import { localTranscriptSentences } from "./localTranscriptTurns";
 
 const word = (n: number) => `word${n}`;
@@ -22,25 +22,34 @@ function sentence(input: EvalInput, index: number, words: NonNullable<EvalSenten
   const old = input.sentences[index];
   return { ...old, text: words.map(w => w.text).join(" "), words, ...changes };
 }
-function assertGate(input: EvalInput, mutate: (input: EvalInput) => EvalInput, gate: EvalGateId, stage: EvalGateOptions["stage"] = "A3", fixtureName = "speech") {
+const A3 = new Set<EvalPr>(["A3"]);
+const BR = new Set<EvalPr>(["A3", "BR"]);
+const B2 = new Set<EvalPr>(["A3", "BR", "B2"]);
+function assertGate(input: EvalInput, mutate: (input: EvalInput) => EvalInput, gate: EvalGateId,
+  landed: ReadonlySet<EvalPr> = A3, fixtureName = "speech") {
   const baseline = scoreTranscript(input);
   const candidate = scoreTranscript(mutate(input));
-  const results = evaluateTranscriptGates(candidate, { baseline, stage, fixtureName, goldenProductionInputHash: "hash" });
+  const results = evaluateTranscriptGates(candidate, { baseline, landed, fixtureName, goldenProductionInputHash: "hash" });
   expect(results.find(r => r.id === gate)?.applicable).toBe(true);
   expect(results.find(r => r.id === gate)?.passed).toBe(false);
   return { baseline, candidate, results };
 }
-function assertPass(input: EvalInput, stage: EvalGateOptions["stage"] = "A3") {
-  const baseline = scoreTranscript(input);
-  const results = evaluateTranscriptGates(baseline, { baseline, stage, fixtureName: "speech", goldenProductionInputHash: "hash" });
+function assertPass(input: EvalInput, baselineInput: EvalInput, landed: ReadonlySet<EvalPr> = A3) {
+  const baseline = scoreTranscript(baselineInput);
+  const candidate = scoreTranscript(input);
+  const results = evaluateTranscriptGates(candidate, { baseline, landed, fixtureName: "speech", goldenProductionInputHash: "hash" });
   expect(results.filter(r => !r.passed).map(r => r.id)).toEqual([]);
+  return { baseline, candidate, results };
 }
 const without = (s: EvalSentence, n: number): EvalSentence => ({ ...s, words: s.words!.slice(0, -n), text: s.words!.slice(0, -n).map(w => w.text).join(" ") });
 
 describe("TC-813 adversarial scoring cases 1–28", () => {
-  test("1 deleted tails raise WER, deletion and lost-turn coverage", () => {
-    const input = fixture(Array.from({ length: 4 }, (_, i) => ({ speaker: "You", count: 5, start: i * 5 })));
-    const result = assertGate(input, x => ({ ...x, sentences: x.sentences.slice(0, 2) }), "G8");
+  test("1 deleting tails in every turn fails WER, deletion and ≥50% coverage", () => {
+    const input = fixture(Array.from({ length: 4 }, (_, i) => ({ speaker: "You", count: 10, start: i * 10 })));
+    const result = assertGate(input, x => ({ ...x, sentences: x.sentences.map(s => ({
+      ...s, words: s.words!.slice(0, 2), text: s.words!.slice(0, 2).map(w => w.text).join(" "),
+    })) }), "G8");
+    expect(result.candidate.turnCovered).toBe(0);
     expect(result.results.find(r => r.id === "G1")?.passed).toBe(false);
     expect(result.results.find(r => r.id === "G2")?.passed).toBe(false);
   });
@@ -49,21 +58,28 @@ describe("TC-813 adversarial scoring cases 1–28", () => {
     const result = assertGate(input, x => ({ ...x, sentences: x.sentences.slice(0, 1) }), "G2");
     expect(result.results.find(r => r.id === "G5")?.passed).toBe(false);
   });
-  test("3 duplicated turns fail pooled WER", () => {
+  test("3 duplicated turns fail per-speaker and pooled WER", () => {
     const input = two();
-    assertGate(input, x => ({ ...x, sentences: [...x.sentences, { ...x.sentences[0], index: 2 }] }), "G4");
+    const result = assertGate(input, x => ({ ...x, sentences: [...x.sentences, { ...x.sentences[0], index: 2 }] }), "G4");
+    expect(result.results.find(r => r.id === "G1")?.passed).toBe(false);
   });
   test("4 swapped speaker labels fail misattribution and recall", () => {
     const input = two();
     const result = assertGate(input, x => ({ ...x, sentences: x.sentences.map(s => ({ ...s, speaker_name: s.speaker_name === "You" ? "Others" : "You" })) }), "G6");
     expect(result.results.find(r => r.id === "G5")?.passed).toBe(false);
   });
-  test("5 substituting 20/20 then deleting ten and substituting 30/10 never rewards deletion", () => {
-    const input = long();
-    const baseline = { ...input, sentences: [sentence(input, 0, input.sentences[0].words!.map((w, i) => i < 20 ? { ...w, text: `different${i}` } : w))] };
-    const current = sentence(input, 0, input.sentences[0].words!.slice(10).map((w, i) => i < 30 ? { ...w, text: `replacement${i}` } : w));
-    const result = assertGate(baseline, x => ({ ...x, sentences: [current] }), "G1");
-    expect(result.candidate.speakers.You.deletions).toBeGreaterThan(result.baseline.speakers.You.deletions);
+  test("5 per-speaker WER catches 20/20 → 30/10 substitutions when pooled WER stays equal", () => {
+    const input = fixture([{ speaker: "You", count: 100, start: 0 }, { speaker: "Others", count: 100, start: 100 }]);
+    const replace = (ny: number, no: number): EvalInput => ({ ...input, sentences: input.sentences.map((s, index) => {
+      const words = s.words!.map((w, i) => i < (index === 0 ? ny : no) ? { ...w, text: `different${index}-${i}` } : w);
+      return sentence(input, index, words);
+    }) });
+    const baseline = replace(20, 20);
+    const candidate = replace(30, 10);
+    const result = assertGate(baseline, () => candidate, "G1");
+    expect(result.candidate.pooledWer).toBe(result.baseline.pooledWer);
+    expect(result.results.find(r => r.id === "G4")?.passed).toBe(true);
+    expect(result.candidate.speakers.You.wer).toBeGreaterThan(result.baseline.speakers.You.wer!);
   });
   test("6 dropping two short turns fails turn coverage", () => {
     const input = fixture(Array.from({ length: 4 }, (_, i) => ({ speaker: "You", count: 2, start: i * 2 })));
@@ -81,8 +97,9 @@ describe("TC-813 adversarial scoring cases 1–28", () => {
     simultaneous.words = simultaneous.words.map((word, i) => ({ ...word, start: i * .2, end: i * .2 + .15 }));
     input.sentences[1] = { ...input.sentences[1], start_time: 0, end_time: 1,
       words: input.sentences[1].words!.map((word, i) => ({ ...word, start: i * .2, end: i * .2 + .15 })) };
-    assertPass(input, "BR");
-    assertPass({ ...input, sentences: [...input.sentences].reverse() }, "BR");
+    const reversed = { ...input, sentences: [...input.sentences].reverse() };
+    assertPass(input, reversed, BR);
+    assertPass(reversed, input, BR);
   });
   test("9 artificial split inside a sentence fails unexplained splits", () => {
     const input = long();
@@ -95,13 +112,15 @@ describe("TC-813 adversarial scoring cases 1–28", () => {
     const merged = sentence(input, 0, input.sentences.flatMap(s => s.words ?? []), { end_time: 64 });
     assertGate(input, x => ({ ...x, sentences: [merged] }), "G11");
   });
-  test("11 empty output is WER 1, deletion 1, coverage zero", () => {
-    const input = long();
-    const { candidate, results } = assertGate(input, x => ({ ...x, sentences: [] }), "G2");
+  test("11 empty multi-turn output is WER 1, deletion 1, coverage zero and invalid τ", () => {
+    const input = fixture(Array.from({ length: 4 }, (_, i) => ({ speaker: "You", count: 10, start: i * 10 })));
+    const { candidate, results } = assertGate(input, x => ({ ...x, sentences: [] }), "G8");
     expect(candidate.speakers.You.wer).toBe(1);
     expect(candidate.speakers.You.deletionRate).toBe(1);
     expect(candidate.turnCovered).toBe(0);
-    expect(results.find(r => r.id === "G5")?.passed).toBe(false);
+    expect(candidate.kendallTau).toBe(-1);
+    for (const gate of ["G2", "G5", "G9"] as const)
+      expect(results.find(r => r.id === gate)?.passed).toBe(false);
   });
   test("12 inserted words under zero-reference speaker fail G3", () => {
     const input = long();
@@ -115,9 +134,11 @@ describe("TC-813 adversarial scoring cases 1–28", () => {
     const input = { ...long(), glossaryTerms: ["quasar"] };
     assertGate(input, x => ({ ...x, sentences: [...x.sentences, { index: 1, speaker_name: "You", text: "quasar", start_time: 1, end_time: 2 }] }), "G14");
   });
-  test("15 cross-speaker echo duplication fails bleed", () => {
-    const input = long();
-    assertGate(input, x => ({ ...x, sentences: [...x.sentences, { ...x.sentences[0], speaker_name: "Others", index: 1 }] }), "G12");
+  test("15 extra You content copied from Others fails bleed", () => {
+    const input = two();
+    const result = assertGate(input, x => ({ ...x, sentences: [...x.sentences,
+      { ...x.sentences[1], speaker_name: "You", index: 2 }] }), "G12");
+    expect(result.candidate.bleedRate).toBe(1);
   });
   for (const [number, tag] of [[16, "double-talk"], [17, "backchannel"], [16, "repeat"], [17, "correction"]] as const) {
     test(`${number} dropped ${tag} words fail tagged recall`, () => {
@@ -131,12 +152,12 @@ describe("TC-813 adversarial scoring cases 1–28", () => {
   });
   test("19 shifted token starts fail p90 timing", () => {
     const input = long();
-    assertGate(input, x => ({ ...x, sentences: [sentence(x, 0, x.sentences[0].words!.map(w => ({ ...w, start: w.start + 1 })))] }), "G16", "B2");
+    assertGate(input, x => ({ ...x, sentences: [sentence(x, 0, x.sentences[0].words!.map(w => ({ ...w, start: w.start + 1 })))] }), "G16", B2);
   });
   test("fallback timing over 20% fails G16 without losing lexical words", () => {
     const input = long();
     const result = assertGate(input, x => ({ ...x, sentences: [sentence(x, 0,
-      x.sentences[0].words!.map((w, i) => i < 21 ? { ...w, timing: "fallback" as const } : w))] }), "G16", "B2");
+      x.sentences[0].words!.map((w, i) => i < 21 ? { ...w, timing: "fallback" as const } : w))] }), "G16", B2);
     expect(result.candidate.speakers.You.deletions).toBe(0);
   });
   test("20 SSE gap, real-time factor, memory budgets fail G17", () => {
@@ -157,11 +178,14 @@ describe("TC-813 adversarial scoring cases 1–28", () => {
     input.expected.turns[0].end = 120;
     input.expected.turns[0].words = input.expected.turns[0].words.map((word, i) =>
       ({ ...word, start: i * 30, end: (i + 1) * 30 }));
+    input.sentences[0].end_time = 120;
     const words = input.sentences[0].words!.map((word, i) =>
       ({ ...word, start: i * 30, end: (i + 1) * 30 }));
     const a = sentence(input, 0, words.slice(0, 2), { end_time: 60 });
     const b = sentence(input, 0, words.slice(2), { index: 1, start_time: 60, end_time: 120 });
-    assertPass({ ...input, sentences: [a, b] }, "BR");
+    const split = { ...input, sentences: [a, b] };
+    assertPass(split, input, BR);
+    assertGate(split, () => input, "G19", BR);
   });
   test("23 an interjection at the split explains an otherwise internal cut", () => {
     const input = fixture([{ speaker: "You", count: 4, start: 0 }, { speaker: "Others", count: 1, start: 4 }]);
@@ -171,20 +195,26 @@ describe("TC-813 adversarial scoring cases 1–28", () => {
       words: [{ ...input.sentences[1].words![0], start: .35, end: .45 }] };
     const a = sentence(input, 0, input.sentences[0].words!.slice(0, 2), { end_time: .4 });
     const b = sentence(input, 0, input.sentences[0].words!.slice(2), { index: 2, start_time: .4 });
-    assertPass({ ...input, sentences: [a, input.sentences[1], b] }, "BR");
+    assertPass({ ...input, sentences: [a, input.sentences[1], b] }, input, BR);
   });
-  test("24 perfect transcript passes all applicable G1–G20", () => assertPass(long()));
+  test("24 perfect transcript passes all applicable G1–G20 against an imperfect baseline", () => {
+    const input = long();
+    const baseline = { ...input, sentences: [sentence(input, 0, input.sentences[0].words!.map((w, i) =>
+      i === 0 ? { ...w, text: "wrong" } : w))] };
+    assertPass(input, baseline);
+  });
   test("25 untimed 150 s transcript keeps full-note range and passes G19", () => {
     const input = fixture([{ speaker: "You", count: 3, start: 0 }]);
     input.sentences[0] = { ...input.sentences[0], words: input.sentences[0].words!.map(w => ({ ...w, timing: "none" as const })), start_time: 0, end_time: 150 };
     input.expected.landmarks = [{ kind: "tone", segment: 0, source_offset_s: 1 }];
     input.playback = { landmarks: [{ engine: "chromium", kind: "tone", segment: 0, source_offset_s: 1, stereoOnset: 1, monoOnset: 1 }] };
-    assertPass(input, "BR");
+    const baseline = fixture([{ speaker: "You", count: 3, start: 0 }]);
+    assertPass(input, baseline, BR);
   });
   test("26 invented sub-ranges on untimed text fail G19", () => {
     const input = fixture([{ speaker: "You", count: 3, start: 0 }]);
     input.sentences[0] = { ...input.sentences[0], words: input.sentences[0].words!.map(w => ({ ...w, timing: "none" as const })), start_time: 0, end_time: 150 };
-    assertGate(input, x => ({ ...x, sentences: [{ ...x.sentences[0], end_time: 60 }] }), "G19", "BR");
+    assertGate(input, x => ({ ...x, sentences: [{ ...x.sentences[0], end_time: 60 }] }), "G19", BR);
   });
   test("27 dropped untimed text fails deletion and coverage", () => {
     const input = fixture([{ speaker: "You", count: 3, start: 0 }, { speaker: "Others", count: 3, start: 3 }, { speaker: "Others", count: 3, start: 6 }]);
@@ -199,7 +229,7 @@ describe("TC-813 adversarial scoring cases 1–28", () => {
     input.expected.landmarks = Array.from({ length: 12 }, (_, segment) => ({ kind: "tone" as const, segment, source_offset_s: 1 }));
     input.playback = { landmarks: input.expected.landmarks.map(l => ({ engine: "chromium", kind: "tone" as const, segment: l.segment, source_offset_s: 1,
       stereoOnset: l.segment * 4 + 1, monoOnset: l.segment * 4 + 1 })) };
-    assertGate(input, x => ({ ...x, playback: { landmarks: x.playback!.landmarks.map(l => ({ ...l, monoOnset: l.monoOnset + l.segment * .1 })) } }), "G20", "BR", "multi-segment-landmarks");
+    assertGate(input, x => ({ ...x, playback: { landmarks: x.playback!.landmarks.map(l => ({ ...l, monoOnset: l.monoOnset + l.segment * .1 })) } }), "G20", BR, "multi-segment-landmarks");
   });
   test("G20 BR word containment and B2 word-start maximum use saved playback evidence", () => {
     const input = long();
@@ -212,9 +242,9 @@ describe("TC-813 adversarial scoring cases 1–28", () => {
       { engine: "chromium", kind: "word", segment: 0, source_offset_s: 2, stereoOnset: 2, monoOnset: 2, sentenceIndex: 0, savedStart: 2 },
     ] };
     assertGate(input, x => ({ ...x, playback: { landmarks: x.playback!.landmarks.map(l =>
-      l.kind === "word" ? { ...l, monoOnset: 25 } : l) } }), "G20", "BR", "multi-segment-landmarks");
+      l.kind === "word" ? { ...l, monoOnset: 25 } : l) } }), "G20", BR, "multi-segment-landmarks");
     assertGate(input, x => ({ ...x, playback: { landmarks: x.playback!.landmarks.map(l =>
-      l.kind === "word" ? { ...l, savedStart: 2.51 } : l) } }), "G20", "B2", "multi-segment-landmarks");
+      l.kind === "word" ? { ...l, savedStart: 2.51 } : l) } }), "G20", B2, "multi-segment-landmarks");
   });
   test("cross-speaker identical tokens match only within ±15 seconds", () => {
     const input = fixture([{ speaker: "You", count: 1, start: 0 }]);
@@ -229,7 +259,7 @@ describe("TC-813 adversarial scoring cases 1–28", () => {
     noise.sentences = [{ index: 0, text: "quasar", speaker_name: "You", start_time: 0, end_time: 150 }];
     noise.glossaryTerms = ["quasar"];
     const baseline = scoreTranscript(noise);
-    const options = { baseline, stage: "E" as const, fixtureName: "silence-only", goldenProductionInputHash: "hash" };
+    const options = { baseline, landed: new Set<EvalPr>(["A3", "E"]), fixtureName: "silence-only", goldenProductionInputHash: "hash" };
     const gates = evaluateTranscriptGates(baseline, options);
     expect(gates.find(g => g.id === "G13")?.passed).toBe(false);
     expect(gates.find(g => g.id === "G14")?.passed).toBe(false);

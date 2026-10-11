@@ -140,6 +140,11 @@ function isContentToken(token: string): boolean {
   return token !== "" && !FUNCTION_WORDS.has(token);
 }
 
+/** Shared content-word definition for echo diagnostics and G12 bleed scoring. */
+export function isLocalContentWord(text: string): boolean {
+  return isContentToken(normalizedToken(text));
+}
+
 function contentWords(unit: readonly LocalWord[]): number {
   return unit.filter((w) => isContentToken(normalizedToken(w.text))).length;
 }
@@ -350,8 +355,9 @@ interface Turn {
  * more than MAX_TURN_SECONDS unless a single word does.
  */
 export function localTranscriptTurns(
-  words: readonly LocalWord[], options: { echo?: "off" | "b0"; detail?: boolean } = {},
+  words: readonly LocalWord[], options: { echo?: "off"; detail?: boolean } = {},
 ): FirefliesSentence[] {
+  if (options.echo !== undefined && options.echo !== "off") throw new Error("B0 echo policy has not landed");
   const echo = options.echo === "off" ? new Set<LocalWord>() : findMicEcho(words);
 
   // Segments are created in order of their first word, i.e. by start time.
@@ -408,7 +414,7 @@ export function localTranscriptTurns(
 
 /** Extract the existing per-channel normalization and its no-timing fallback. */
 export function localTranscriptSentences(
-  response: BatchResponse, options: { detail?: boolean; echo?: "off" | "b0" } = {},
+  response: BatchResponse, options: { detail?: boolean; echo?: "off" } = {},
 ): FirefliesSentence[] {
   const words: LocalWord[] = [];
   for (const channel of response.results?.channels ?? []) {

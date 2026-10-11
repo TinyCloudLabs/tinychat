@@ -1,4 +1,5 @@
 import type { FirefliesSentence } from "./connectors/firefliesClient";
+import { isLocalContentWord } from "./localTranscriptTurns";
 
 /** expected.json v1. Times are seconds; sentenceEnds are exclusive word indices. */
 export interface EvalExpected {
@@ -49,13 +50,15 @@ export interface EvalInput {
 }
 export interface SpeakerScore {
   reference: number; output: number; substitutions: number; deletions: number; insertions: number;
-  correct: number; wer: number; deletionRate: number; attributedRecall: number;
+  correct: number; /** Null when this speaker has no reference words; G3 counts insertions. */
+  wer: number | null; deletionRate: number; attributedRecall: number;
 }
 export interface EvalScore {
   speakers: Record<string, SpeakerScore>;
   referenceWords: number;
   outputWords: number;
-  pooledWer: number;
+  /** Null when there are no reference words; G3/G13 cover insertions. */
+  pooledWer: number | null;
   attributedRecall: number;
   misattributionRate: number;
   bleedRate: number;
@@ -75,15 +78,14 @@ export interface EvalScore {
   fallbackTimedShare: number;
   sentenceSpanValid: boolean;
   runtime?: EvalRuntime;
-  playback?: { maxToneGap: number; speechContained: boolean; maxWordStartError: number; complete: boolean };
+  playback?: { maxToneGap: number | null; speechContained: boolean; maxWordStartError: number | null; complete: boolean };
   productionInputHash?: string;
 }
 
 interface Token { text: string; key: string; start: number | null; end: number | null; speaker: string; sentence: number; timing: EvalWordLineage["timing"]; tags?: readonly string[]; turn?: number }
-const key = (s: string) => s.toLocaleLowerCase("en-US").replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+const key = (s: string) => s.normalize("NFKC").toLocaleLowerCase("en-US").replace(/[^\p{L}\p{N}]+/gu, "");
 const tokens = (s: string) => s.split(/\s+/u).map(key).filter(Boolean);
 const rate = (n: number, d: number) => d ? n / d : 0;
-const proximity = (a: Token, b: Token) => a.start === null || b.start === null || Math.abs(a.start - b.start) <= 15;
 const crossSpeakerWindow = (a: Token, b: Token) => a.start !== null && b.start !== null && Math.abs(a.start - b.start) <= 15;
 /** A glossary term is an entire contiguous phrase within one turn/sentence. */
 function glossaryOccurrences(words: readonly Token[], terms: readonly string[][], group: "turn" | "sentence"): Token[][] {
@@ -155,9 +157,11 @@ export function scoreTranscript(input: EvalInput): EvalScore {
   const output: Token[] = sentences.flatMap((sentence, sentenceIndex) => {
     const parts = sentence.text.split(/\s+/u).filter(Boolean);
     const lineage = sentence.words;
-    const complete = lineage?.length === parts.length && lineage.every((word, index) => key(word.text) === key(parts[index]));
+    if (lineage !== undefined && (lineage.length !== parts.length ||
+      lineage.some((word, index) => key(word.text) !== key(parts[index]))))
+      throw new Error(`Sentence ${sentenceIndex} source words do not match saved text`);
     return parts.map((text, index) => {
-      const word = complete ? lineage![index] : undefined;
+      const word = lineage?.[index];
       return { text, key: key(text), start: word && word.timing !== "none" ? word.start : null,
         end: word && word.timing !== "none" ? word.end : null, speaker: sentence.speaker_name ?? "You",
         sentence: sentenceIndex, timing: word?.timing ?? "none" };
@@ -168,38 +172,22 @@ export function scoreTranscript(input: EvalInput): EvalScore {
   const matchedOut = new Set<Token>();
   const matchedByTurn = new Map<number, Token[]>();
   const alignedOutByRef = new Map<Token, Token>();
-  const turnOutByRef = new Map<Token, Token>();
   for (const speaker of new Set([...reference.map(t => t.speaker), ...output.map(t => t.speaker)])) {
     const ref = reference.filter(t => t.speaker === speaker);
     const out = output.filter(t => t.speaker === speaker);
     const edit = align(ref, out);
     for (const [ri, oi] of edit.pairs) {
-      matchedRef.add(ref[ri]); matchedOut.add(out[oi]);
-      alignedOutByRef.set(ref[ri], out[oi]);
+      const referenceWord = ref[ri], outputWord = out[oi];
+      matchedRef.add(referenceWord); matchedOut.add(outputWord);
+      alignedOutByRef.set(referenceWord, outputWord);
+      const turn = referenceWord.turn!;
+      const matches = matchedByTurn.get(turn);
+      if (matches) matches.push(outputWord); else matchedByTurn.set(turn, [outputWord]);
     }
     speakers[speaker] = { reference: ref.length, output: out.length, substitutions: edit.sub,
       deletions: edit.del, insertions: edit.ins, correct: edit.pairs.length,
-      wer: ref.length ? edit.cost / ref.length : out.length ? Infinity : 0,
+      wer: ref.length ? edit.cost / ref.length : null,
       deletionRate: rate(edit.del, ref.length), attributedRecall: rate(edit.pairs.length, ref.length) };
-  }
-  // Turn order is scored independently of edit-distance alignment: a reordered
-  // same-speaker turn must not disappear from Kendall's denominator.
-  const unclaimed = new Set(output);
-  for (const ref of reference) {
-    let closest: Token | undefined;
-    let distance = Infinity;
-    for (const candidate of unclaimed) {
-      if (candidate.speaker !== ref.speaker || candidate.key !== ref.key || !proximity(ref, candidate)) continue;
-      const gap = candidate.start === null ? 0 : Math.abs(ref.start! - candidate.start);
-      if (gap < distance) { closest = candidate; distance = gap; }
-    }
-    if (closest) {
-      unclaimed.delete(closest);
-      turnOutByRef.set(ref, closest);
-      const turn = ref.turn!;
-      const found = matchedByTurn.get(turn);
-      if (found) found.push(closest); else matchedByTurn.set(turn, [closest]);
-    }
   }
   const crossRef = reference.filter(t => !matchedRef.has(t));
   const crossOut = output.filter(t => !matchedOut.has(t));
@@ -208,27 +196,41 @@ export function scoreTranscript(input: EvalInput): EvalScore {
     const i = crossRef.findIndex(t => t.speaker !== word.speaker && t.key === word.key && crossSpeakerWindow(t, word));
     if (i !== -1) { misattributed++; crossRef.splice(i, 1); }
   }
-  // Echo/bleed is the extra copy on a different speaker, even when the correct copy remains.
-  let bleed = 0;
-  const extra = output.filter(t => !matchedOut.has(t));
-  for (const word of extra) {
-    const i = reference.findIndex(t => matchedRef.has(t) && t.speaker !== word.speaker && t.key === word.key && crossSpeakerWindow(t, word));
-    if (i !== -1) bleed++;
-  }
+  // G12 measures only extra mic content echoed from the remote reference.
+  const otherWords = reference.filter(word => word.speaker === "Others");
+  const bleed = crossOut.filter(word => word.speaker === "You" && isLocalContentWord(word.text) &&
+    otherWords.some(ref => ref.key === word.key && crossSpeakerWindow(ref, word))).length;
   const tagged: EvalScore["tagged"] = {};
   for (const word of reference) for (const tag of word.tags ?? []) {
     const item = tagged[tag] ??= { total: 0, lost: 0 };
     item.total++;
     if (!matchedRef.has(word)) item.lost++;
   }
-  const covered = expected.turns.map((_, index) => (matchedByTurn.get(index)?.length ?? 0) > 0);
-  const order = expected.turns.map((turn, index) => ({ index, turn,
-    at: Math.min(...(matchedByTurn.get(index) ?? []).map(t => t.sentence)) })).filter(t => Number.isFinite(t.at));
+  // Coverage uses aligned reference words, not another greedy token search.
+  // A word spliced into an adjacent sentence is not evidence for a missing turn.
+  const covered = expected.turns.map((turn, index) => turn.words.length > 0 &&
+    (matchedByTurn.get(index)?.filter(word => {
+      const sentence = sentences[word.sentence];
+      return sentence.start_time <= turn.end && sentence.end_time >= turn.start;
+    }).length ?? 0) / turn.words.length >= .5);
+  const outputPositions = new Map(output.map((word, index) => [word, index]));
+  const cluster = new Array<number>(expected.turns.length);
+  const byStart = expected.turns.map((turn, index) => ({ turn, index })).sort((a, b) => a.turn.start - b.turn.start);
+  let clusterId = -1, clusterEnd = -Infinity;
+  for (const { turn, index } of byStart) {
+    if (Math.min(clusterEnd, turn.end) - turn.start <= .3) { clusterId++; clusterEnd = turn.end; }
+    else clusterEnd = Math.max(clusterEnd, turn.end);
+    cluster[index] = clusterId;
+  }
+  const order = expected.turns.flatMap((turn, index) => {
+    if (!covered[index]) return [];
+    const positions = matchedByTurn.get(index)!.map(word => outputPositions.get(word)!).sort((a, b) => a - b);
+    return [{ index, turn, at: (positions[(positions.length - 1) >> 1] + positions[positions.length >> 1]) / 2 }];
+  });
   let concordant = 0, discordant = 0;
   for (let i = 0; i < order.length; i++) for (let j = i + 1; j < order.length; j++) {
     const a = order[i], b = order[j];
-    if (Math.min(a.turn.end, b.turn.end) - Math.max(a.turn.start, b.turn.start) > .3) continue;
-    if (a.at === b.at) continue;
+    if (cluster[a.index] === cluster[b.index] || a.turn.start === b.turn.start || a.at === b.at) continue;
     if ((a.turn.start - b.turn.start) * (a.at - b.at) > 0) concordant++;
     else discordant++;
   }
@@ -240,7 +242,7 @@ export function scoreTranscript(input: EvalInput): EvalScore {
     let from = 0;
     for (const end of ends) {
       const sequence = refWords.slice(from, end).flatMap(ref => {
-        const found = turnOutByRef.get(ref);
+        const found = alignedOutByRef.get(ref);
         return found ? [found] : [];
       });
       for (let i = 1; i < sequence.length; i++) if (sequence[i].sentence !== sequence[i - 1].sentence) {
@@ -284,18 +286,19 @@ export function scoreTranscript(input: EvalInput): EvalScore {
   const wordErrors = spoken.map(l => l.savedStart === undefined ? null : Math.abs(l.savedStart - l.monoOnset)).filter((n): n is number => n !== null);
   return {
     speakers, referenceWords: reference.length, outputWords: output.length,
-    pooledWer: reference.length ? Object.values(speakers).reduce((n, s) => n + s.substitutions + s.deletions + s.insertions, 0) / reference.length : output.length ? Infinity : 0,
+    pooledWer: reference.length ? Object.values(speakers).reduce((n, s) => n + s.substitutions + s.deletions + s.insertions, 0) / reference.length : null,
     attributedRecall: rate(matchedRef.size, reference.length), misattributionRate: rate(misattributed, reference.length),
-    bleedRate: rate(bleed, reference.length), tagged, turnCount: expected.turns.length,
-    turnCovered: covered.filter(Boolean).length, kendallTau: concordant + discordant ? (concordant - discordant) / (concordant + discordant) : 1,
+    bleedRate: rate(bleed, otherWords.length), tagged, turnCount: expected.turns.length,
+    turnCovered: covered.filter(Boolean).length, kendallTau: expected.turns.length >= 2 && order.length < 2 ? -1
+      : concordant + discordant ? (concordant - discordant) / (concordant + discordant) : 1,
     referenceSentences, unexplainedSplits, mergedTurns,
     noiseInsertions: expected.kind === "noise" ? output.length : 0, glossaryFalsePositives,
     vocabularyTotal: vocabularyOccurrences.length, vocabularyFound: vocabularyOccurrences.filter(occurrence => occurrence.every(word => matchedRef.has(word))).length,
     timingP90StartError: timedErrors.length ? timedErrors[Math.ceil(.9 * timedErrors.length) - 1] : null,
     fallbackTimedShare: rate(output.filter(t => t.timing === "fallback").length, output.length), sentenceSpanValid,
     runtime: input.runtime, productionInputHash: input.productionInputHash,
-    playback: input.playback && { maxToneGap: tones.length ? Math.max(...tones.map(l => Math.abs(l.stereoOnset - l.monoOnset))) : Infinity,
-      speechContained, maxWordStartError: spoken.length && spoken.length === wordErrors.length ? Math.max(...wordErrors) : Infinity,
+    playback: input.playback && { maxToneGap: tones.length ? Math.max(...tones.map(l => Math.abs(l.stereoOnset - l.monoOnset))) : null,
+      speechContained, maxWordStartError: spoken.length && spoken.length === wordErrors.length ? Math.max(...wordErrors) : null,
       complete: !!expected.landmarks?.length && !!landmarks.length &&
         landmarks.length === expected.landmarks.length * engines.size &&
         [...engines].every(engine => expected.landmarks!.every(expectedLandmark =>
