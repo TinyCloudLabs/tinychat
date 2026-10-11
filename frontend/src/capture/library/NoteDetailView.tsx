@@ -228,7 +228,7 @@ function savedText(metadata: MeetingMetadataRead): string | null {
   return typeof text === "string" && text.trim().length > 0 ? text.trim() : null;
 }
 
-function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
+export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
   const { item, transcript, metadata } = props;
   const sentences = transcript?.status === "ok" ? transcript.sentences : [];
   const voiceNote = item.source === VOICE_NOTE_SOURCE;
