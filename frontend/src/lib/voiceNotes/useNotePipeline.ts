@@ -10,7 +10,8 @@ import { useRecorder } from "@/capture/recorder/RecorderProvider";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { PlatformContext } from "@/lib/platform";
 import { localTranscriptionUnavailable } from "./captureEngine";
-import { resolveVoiceNoteRow, spaceLaneSnapshot, subscribeSpaceLane } from "./voiceNoteRows";
+import { resolveVoiceNoteRows, spaceLaneSnapshot, subscribeSpaceLane } from "./voiceNoteRows";
+import { legacyTranscriptMetadata, readTranscriptCommits } from "./voiceNoteCommits";
 import {
   VoiceNotes,
   nativeVoiceNotesAvailable,
@@ -50,7 +51,6 @@ import {
   recordingNoteSyncing,
   subscribeRecordingNoteSync,
   syncRecordingNote,
-  readVoiceNoteTranscriptState,
   voiceNoteMarkdownKvKey,
   voiceNoteTranscriptState,
   type NoteSyncSkipReason,
@@ -100,7 +100,8 @@ export interface NotePipelineFacts {
   native: NativeNote | null;
   /** Reading the phone's ledger, following its jobs, or reading the space row failed: the error. The route and transcript are unknown. */
   readError?: string | null;
-  capture: { finalizing: boolean; issue: HomeIssue | null };
+  /** `readError`: the list of parked recordings could not be read (its own error; "" when only the fact that it failed is known). */
+  capture: { finalizing: boolean; issue: HomeIssue | null; readError?: string | null };
   pending: PendingNote | null;
   lane: ReturnType<typeof spaceLaneSnapshot>;
   /** Null when this build has no on-device speech. */
@@ -108,7 +109,11 @@ export interface NotePipelineFacts {
   transcriptSync: OnDeviceTranscriptSyncState | null;
   /** This note's private-cloud job (`transcriber.snapshot().jobs`). */
   cloudJob: NoteTranscriptionState | null;
-  noteSync: { syncing: boolean; failed: boolean; skip: NoteSyncSkipReason | null; syncedAt: string | null };
+  /**
+   * `attempting`: this revision of the note has not had its automatic sync attempt settle yet (the hook runs one when a saved
+   * note with text has nothing syncing it, see `useAutoNoteSync`). Until it settles the notes step is "syncing", not a blocker.
+   */
+  noteSync: { syncing: boolean; failed: boolean; skip: NoteSyncSkipReason | null; syncedAt: string | null; attempting: boolean };
 }
 
 // --- Route -----------------------------------------------------------------------------------------------------
@@ -175,8 +180,8 @@ export function combinedModel(status: OnDeviceSttStatus): PipelineOnDevice["mode
  *      (`recordingNoteSyncedAt` equals `editedAt`), which covers the moment before the row is read again.
  * A note with nothing written locally, whose row carries a note pointer (written on another device), has nothing to
  * send and is synced by the row alone. Without evidence the answer is a running sync, a failed sync, a skip, or
- * "idle" (nothing has synced this revision and nothing is syncing); the notes step turns "idle" into a blocker with a
- * "Try again" that runs `syncRecordingNote`, so an unsynced note never waits without an action. An edit after the last
+ * "idle" (an automatic attempt for this revision has settled and nothing has synced it); the notes step turns "idle" into
+ * a blocker with a "Try again" that runs `syncRecordingNote`. Before that first attempt settles the state is "syncing". An edit after the last
  * sync changes `editedAt`, so it correctly stops being synced.
  */
 export function notesSyncState(facts: Pick<NotePipelineFacts, "id" | "saved" | "rowMetadata" | "localNote" | "noteSync">): PipelineNotesSync {
@@ -189,6 +194,7 @@ export function notesSyncState(facts: Pick<NotePipelineFacts, "id" | "saved" | "
   if (noteSync.syncing) return { state: "syncing" };
   if (noteSync.failed) return { state: "failed" };
   if (noteSync.skip !== null) return { state: "skipped", reason: noteSync.skip };
+  if (noteSync.attempting) return { state: "syncing" };
   return { state: "idle" };
 }
 
@@ -230,7 +236,11 @@ export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineIn
     route,
     hasNotesOrMoments,
     online: facts.online,
-    capture: { finalizing: facts.capture.finalizing, issue: facts.capture.issue === null ? null : CAPTURE_ISSUE[facts.capture.issue.kind] },
+    capture: {
+      finalizing: facts.capture.finalizing,
+      issue: facts.capture.issue === null ? null : CAPTURE_ISSUE[facts.capture.issue.kind],
+      readError: facts.capture.readError ?? null,
+    },
     space: {
       saved: facts.saved,
       pending: facts.pending === null ? null : {
@@ -298,6 +308,9 @@ export async function runPipelineAction(kind: PipelineActionKind, env: PipelineA
         const after = env.latestTranscription();
         return after?.availability === "failed" ? `Couldn't check private transcription: ${after.checkError ?? "no details were kept"}` : null;
       }
+      case "reread":
+        env.reread();
+        return null;
       case "retry":
         switch (env.pipeline.current) {
           case "space": {
@@ -450,32 +463,116 @@ function useLocalNotes(ids: readonly string[], reread: unknown): ReadonlyMap<str
 
 type RowRead = { metadata: Record<string, unknown> | null } | { error: string };
 
+const clientIds = new WeakMap<object, number>();
+let clientCount = 0;
+/** Who a space read is for: this client, its account and its space. Evidence read under one identity is never used under another. */
+function spaceIdentity(tcw: TinyCloudWeb): string {
+  let client = clientIds.get(tcw);
+  if (client === undefined) {
+    client = ++clientCount;
+    clientIds.set(tcw, client);
+  }
+  return `${client}|${tcw.did}|${tcw.spaceId}`;
+}
+
 /**
- * The space rows of notes whose caller has not read them (the receipt): the row, and the transcript outcome the same
- * way the library reads it (a transcript commit is authoritative). This is the durable evidence that a transcript or a
- * note reached the space, rather than the session's own sync stores. Read again when `signal` changes. A failed read is its error.
+ * The rows of a set of notes and each one's transcript outcome (a transcript commit is authoritative, as in the library):
+ * one rows query and one commits query for the whole set, however many notes.
  */
-function useSpaceRows(wanted: readonly { id: string; tcw: TinyCloudWeb }[], signal: string): ReadonlyMap<string, RowRead> {
-  const [rows, setRows] = useState<ReadonlyMap<string, RowRead>>(new Map());
-  const key = wanted.map((entry) => entry.id).join("\n");
+async function readSpaceRows(tcw: TinyCloudWeb, ids: readonly string[]): Promise<Map<string, RowRead>> {
+  const [rows, commits] = await Promise.all([resolveVoiceNoteRows(tcw, ids), readTranscriptCommits(tcw, ids)]);
+  return new Map(ids.map((id): [string, RowRead] => {
+    const row = rows.get(id)?.row ?? null;
+    const commit = commits.get(id) ?? null;
+    const transcript = commit ? voiceNoteTranscriptState(null, commit) : voiceNoteTranscriptState(legacyTranscriptMetadata(rows.get(id)?.legacy ?? null));
+    return [id, { metadata: row === null ? null : transcript.status === "none" ? row.metadata : { ...row.metadata, transcription_outcome: transcript.status } }];
+  }));
+}
+
+interface RowEntry { identity: string; signal: string; read: RowRead }
+
+/**
+ * The space rows of notes whose caller has not read them (the receipt, a list without row metadata): the durable evidence
+ * that a transcript or a note reached the space, rather than this session's own sync stores. Each note's entry belongs to the
+ * identity (client, account, space) and the `signal` it was read under. A note is read again only when its own identity or
+ * signal changed, and all the notes that need it go in one batch. An answer that comes back after its note moved on (another
+ * signal, another account) is dropped. A failed read is its error, never an empty row.
+ */
+function useSpaceRows(wanted: readonly { id: string; tcw: TinyCloudWeb; signal: string }[]): ReadonlyMap<string, RowEntry> {
+  const [rows, setRows] = useState<ReadonlyMap<string, RowEntry>>(new Map());
+  const cache = useRef(new Map<string, RowEntry>());
+  const inFlight = useRef(new Map<string, { token: number; identity: string; signal: string }>());
+  const tokens = useRef(0);
+  const dead = useRef(false);
   useEffect(() => {
-    if (wanted.length === 0) return;
-    let alive = true;
-    Promise.all(
-      wanted.map(async ({ id, tcw }): Promise<[string, RowRead]> => {
-        try {
-          const [row, transcript] = await Promise.all([resolveVoiceNoteRow(tcw, id), readVoiceNoteTranscriptState(tcw, id)]);
-          const metadata = row === null ? null : transcript.status === "none" ? row.metadata : { ...row.metadata, transcription_outcome: transcript.status };
-          return [id, { metadata }];
-        } catch (caught) {
-          console.error("[NotePipeline] Could not read the note's row in the space", id, caught);
-          return [id, { error: `Your space's copy of this note wouldn't open: ${messageOf(caught)}` }];
+    dead.current = false;
+    return () => { dead.current = true; };
+  }, []);
+  const key = wanted.map(({ id, tcw, signal }) => `${id}\t${spaceIdentity(tcw)}\t${signal}`).join("\n");
+  useEffect(() => {
+    const byClient = new Map<TinyCloudWeb, { id: string; identity: string; signal: string }[]>();
+    for (const { id, tcw, signal } of wanted) {
+      const identity = spaceIdentity(tcw);
+      const have = cache.current.get(id);
+      const reading = inFlight.current.get(id);
+      if ((have?.identity === identity && have.signal === signal) || (reading?.identity === identity && reading.signal === signal)) continue;
+      byClient.set(tcw, [...(byClient.get(tcw) ?? []), { id, identity, signal }]);
+    }
+    for (const [tcw, due] of byClient) {
+      const token = ++tokens.current;
+      for (const { id, identity, signal } of due) inFlight.current.set(id, { token, identity, signal });
+      const settle = (reads: ReadonlyMap<string, RowRead>) => {
+        let changed = false;
+        for (const { id, identity, signal } of due) {
+          if (dead.current || inFlight.current.get(id)?.token !== token) continue;
+          inFlight.current.delete(id);
+          cache.current.set(id, { identity, signal, read: reads.get(id) ?? { error: "Your space's copy of this note wouldn't open: no answer" } });
+          changed = true;
         }
-      }),
-    ).then((entries) => { if (alive) setRows(new Map(entries)); });
-    return () => { alive = false; };
-  }, [key, signal]);
+        if (changed) setRows(new Map(cache.current));
+      };
+      readSpaceRows(tcw, due.map((entry) => entry.id)).then(settle, (caught: unknown) => {
+        console.error("[NotePipeline] Could not read the notes' rows in the space", due.map((entry) => entry.id), caught);
+        settle(new Map(due.map(({ id }): [string, RowRead] => [id, { error: `Your space's copy of this note wouldn't open: ${messageOf(caught)}` }])));
+      });
+    }
+  }, [key]);
   return rows;
+}
+
+// --- The first note-sync attempt ----------------------------------------------------------------------------------
+
+const autoSync = { started: new Set<string>(), settled: new Set<string>(), listeners: new Set<() => void>() };
+const subscribeAutoSync = (listener: () => void) => {
+  autoSync.listeners.add(listener);
+  return () => { autoSync.listeners.delete(listener); };
+};
+const autoSyncKey = (tcw: TinyCloudWeb, id: string, editedAt: string) => JSON.stringify([spaceIdentity(tcw), id, editedAt]);
+
+export function __resetAutoNoteSyncForTests(): void {
+  autoSync.started.clear();
+  autoSync.settled.clear();
+}
+
+/**
+ * A saved note with text and nothing syncing it gets one sync attempt per revision, started here, so that "idle" never
+ * means "waiting for something that may never come". Until that attempt settles the notes step reads "Syncing notes…";
+ * after it, whatever the sync stores say stands (synced, failed, skipped), and an attempt that changed nothing is a blocker
+ * with "Try again". The sync stores keep a failure, so it shows; the attempt's own rejection is logged here.
+ */
+function useAutoNoteSync(candidates: readonly { tcw: TinyCloudWeb; id: string; key: string }[]): void {
+  useEffect(() => {
+    for (const { tcw, id, key } of candidates) {
+      if (autoSync.started.has(key)) continue;
+      autoSync.started.add(key);
+      syncRecordingNote(tcw, id)
+        .catch((caught: unknown) => { console.error("[NotePipeline] Syncing the note failed", id, caught); })
+        .finally(() => {
+          autoSync.settled.add(key);
+          for (const listener of [...autoSync.listeners]) listener();
+        });
+    }
+  }, [candidates]);
 }
 
 export interface NotePipelineSource {
@@ -526,62 +623,79 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
     () => soft?.issues ?? withQuarantine(recorder.captureIssues, quarantine.items, new Set()),
     [soft, recorder.captureIssues, quarantine.items],
   );
+  const captureReadError = soft !== null ? (soft.quarantineFailed ? "" : null) : quarantine.error != null ? messageOf(quarantine.error) : null;
   const [rowAttempt, setRowAttempt] = useState(0);
-  const wantedRows = useMemo(
-    () => entries.flatMap(({ id, source }) => (source.metadata === undefined && source.tcw !== null ? [{ id, tcw: source.tcw }] : [])),
-    [entries],
-  );
-  const rowSignal = `${rowAttempt}\n` + wantedRows.map(({ id, tcw }) => [
-    id,
-    pending.notes?.some((note) => note.id === id) ? "pending" : "settled",
-    recorder.transcription?.jobs.get(id)?.kind ?? "",
-    natives.get(id)?.stt?.state ?? "",
-    onDeviceTranscriptSyncState(tcw, id)?.state ?? "",
-    recordingNoteSyncedAt(tcw, id) ?? "",
-  ].join("|")).join("\n");
-  const rows = useSpaceRows(wantedRows, rowSignal);
+  const wantedRows = entries.flatMap(({ id, source }) => {
+    const tcw = source.tcw;
+    // Not before the phone has answered: its job state is part of what makes a note's row worth reading again.
+    if (source.metadata !== undefined || tcw === null || !nativeRead.ready) return [];
+    const signal = [
+      rowAttempt,
+      pending.notes?.some((note) => note.id === id) ? "pending" : "settled",
+      recorder.transcription?.jobs.get(id)?.kind ?? "",
+      natives.get(id)?.stt?.state ?? "",
+      onDeviceTranscriptSyncState(tcw, id)?.state ?? "",
+      recordingNoteSyncedAt(tcw, id) ?? "",
+    ].join("|");
+    return [{ id, tcw, signal }];
+  });
+  const rows = useSpaceRows(wantedRows);
+  const autoSyncVersion = useStoreVersion(subscribeAutoSync);
   const reread = useCallback(() => {
     nativeRead.reread();
+    quarantine.refresh();
     setLocalAttempt((count) => count + 1);
     setRowAttempt((count) => count + 1);
-  }, [nativeRead.reread]);
+  }, [nativeRead.reread, quarantine.refresh]);
   const device: PipelineDevice = platform === "tauri" ? "mac" : "phone";
   const hasOnDevice = !localTranscriptionUnavailable() && nativeVoiceNotesAvailable();
-  const states = useMemo(() => {
+  const { states, autoSyncs } = useMemo(() => {
     const out = new Map<string, PipelineState>();
+    const wantsSync: { tcw: TinyCloudWeb; id: string; key: string }[] = [];
     for (const { id, source } of entries) {
       const local = locals.get(id);
-      const row = source.metadata === undefined && source.tcw !== null ? rows.get(id) : undefined;
-      if (local === undefined || !nativeRead.ready || (source.metadata === undefined && source.tcw !== null && row === undefined)) continue;
-      const issue = issues[id] ?? null;
       const tcw = source.tcw;
+      const rowEntry = source.metadata === undefined && tcw !== null ? rows.get(id) : undefined;
+      const row = rowEntry !== undefined && tcw !== null && rowEntry.identity === spaceIdentity(tcw) ? rowEntry.read : undefined;
+      if (local === undefined || !nativeRead.ready || (source.metadata === undefined && tcw !== null && row === undefined)) continue;
+      const issue = issues[id] ?? null;
       const native = natives.get(id) ?? null;
       const rowError = row !== undefined && "error" in row ? row.error : null;
-      const input = buildNotePipelineInput({
+      const localNote = "note" in local ? local.note : null;
+      const storeSync = tcw === null
+        ? { syncing: false, failed: false, skip: null, syncedAt: null }
+        : { syncing: recordingNoteSyncing(tcw, id), failed: recordingNoteSyncError(tcw, id) !== null, skip: recordingNoteSyncSkip(tcw, id), syncedAt: recordingNoteSyncedAt(tcw, id) };
+      const facts: Omit<NotePipelineFacts, "noteSync"> = {
         id,
         device,
         online: pending.online,
         saved: source.saved,
         rowMetadata: source.metadata !== undefined ? source.metadata : row !== undefined && "metadata" in row ? row.metadata : null,
-        localNote: "note" in local ? local.note : null,
+        localNote,
         localNoteError: "error" in local ? local.error : null,
         native,
         readError: nativeRead.error ?? rowError,
-        capture: { finalizing: recorder.finalizationPendingId === id && issue === null, issue },
+        capture: { finalizing: recorder.finalizationPendingId === id && issue === null, issue, readError: captureReadError },
         pending: pending.notes?.find((note) => note.id === id) ?? null,
         lane: { busy: laneBusy, depth: spaceLaneSnapshot().depth },
         onDeviceStatus: hasOnDevice ? onDeviceStatus : null,
         transcriptSync: tcw === null ? null : onDeviceTranscriptSyncState(tcw, id),
         cloudJob: recorder.transcription?.jobs.get(id) ?? null,
-        noteSync: tcw === null
-          ? { syncing: false, failed: false, skip: null, syncedAt: null }
-          : { syncing: recordingNoteSyncing(tcw, id), failed: recordingNoteSyncError(tcw, id) !== null, skip: recordingNoteSyncSkip(tcw, id), syncedAt: recordingNoteSyncedAt(tcw, id) },
-      });
+      };
+      // A saved note with text and no sync of this revision gets its automatic attempt (`useAutoNoteSync`); until it settles it is "syncing".
+      let attempting = false;
+      if (tcw !== null && source.saved && localNote !== null && localNote.hasContent && notesSyncState({ ...facts, noteSync: { ...storeSync, attempting: false } }).state === "idle") {
+        const key = autoSyncKey(tcw, id, localNote.editedAt);
+        attempting = !autoSync.settled.has(key);
+        if (attempting) wantsSync.push({ tcw, id, key });
+      }
+      const input = buildNotePipelineInput({ ...facts, noteSync: { ...storeSync, attempting } });
       out.set(id, { input, pipeline: notePipeline(input) });
     }
-    return out;
+    return { states: out, autoSyncs: wantsSync };
     // The store versions say the per-key getters read above have new answers.
-  }, [entries, locals, rows, natives, nativeRead.ready, nativeRead.error, pending, laneBusy, onDeviceStatus, issues, recorder.finalizationPendingId, recorder.transcription, device, hasOnDevice, syncVersion, transcriptSyncVersion]);
+  }, [entries, locals, rows, natives, nativeRead.ready, nativeRead.error, captureReadError, pending, laneBusy, onDeviceStatus, issues, recorder.finalizationPendingId, recorder.transcription, device, hasOnDevice, syncVersion, transcriptSyncVersion, autoSyncVersion]);
+  useAutoNoteSync(autoSyncs);
   return { states, natives, nativeReady: nativeRead.ready, reread };
 }
 

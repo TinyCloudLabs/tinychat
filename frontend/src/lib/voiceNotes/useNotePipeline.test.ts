@@ -41,7 +41,7 @@ function facts(patch: Partial<NotePipelineFacts> = {}): NotePipelineFacts {
     id: ID, device: "phone", online: true, saved: true, rowMetadata: null, localNote: null, native: null,
     capture: { finalizing: false, issue: null }, pending: null, lane: IDLE_LANE, onDeviceStatus: null,
     transcriptSync: null, cloudJob: null,
-    noteSync: { syncing: false, failed: false, skip: null, syncedAt: null },
+    noteSync: { syncing: false, failed: false, skip: null, syncedAt: null, attempting: false },
     ...patch,
   };
 }
@@ -178,7 +178,7 @@ describe("decision (b): primary model and VAD combine into one model", () => {
 });
 
 describe("decision (a): notes are synced on positive evidence only", () => {
-  const base = { id: ID, saved: true, noteSync: { syncing: false, failed: false, skip: null, syncedAt: null } };
+  const base = { id: ID, saved: true, noteSync: { syncing: false, failed: false, skip: null, syncedAt: null, attempting: false } };
   const local = { editedAt: EDITED, hasContent: true };
 
   test("no error is not evidence", () => {
@@ -200,6 +200,10 @@ describe("decision (a): notes are synced on positive evidence only", () => {
   test("running, failed and skipped syncs say so; nothing written and no row pointer is skipped", () => {
     expect(notesSyncState({ ...base, rowMetadata: null, localNote: local, noteSync: { ...base.noteSync, syncing: true } })).toEqual({ state: "syncing" });
     expect(notesSyncState({ ...base, rowMetadata: null, localNote: local, noteSync: { ...base.noteSync, failed: true } })).toEqual({ state: "failed" });
+    expect(notesSyncState({ ...base, rowMetadata: null, localNote: local, noteSync: { ...base.noteSync, attempting: true } })).toEqual({ state: "syncing" });
+    // The first attempt only stands in for "idle": a settled outcome in the stores outranks it.
+    expect(notesSyncState({ ...base, rowMetadata: null, localNote: local, noteSync: { ...base.noteSync, attempting: true, failed: true } })).toEqual({ state: "failed" });
+    expect(notesSyncState({ ...base, rowMetadata: null, localNote: local, noteSync: { ...base.noteSync, attempting: true, syncedAt: EDITED } })).toEqual({ state: "synced" });
     expect(notesSyncState({ ...base, rowMetadata: null, localNote: null })).toEqual({ state: "skipped", reason: "no-note" });
     expect(notesSyncState({ ...base, rowMetadata: { note_kv_key: "elsewhere" }, localNote: null })).toEqual({ state: "synced" });
   });
@@ -367,6 +371,16 @@ describe("actions", () => {
     const env = envFor({ saved: true, native: null, readError: "The phone's note list wouldn't open: busy" }, { reread: () => { rereads += 1; } });
     expect(env.pipeline.current).toBe("transcript");
     expect(await runPipelineAction("retry", env)).toBeNull();
+    expect(rereads).toBe(1);
+  });
+
+  test("a failed parked-recordings read reaches the pipeline, and its action rereads", async () => {
+    let rereads = 0;
+    const env = envFor({ saved: true, native: null, capture: { finalizing: false, issue: null, readError: "EIO" } }, { reread: () => { rereads += 1; } });
+    expect(env.pipeline.blocker?.cause).toBe("Couldn't check for recordings that failed to save · EIO");
+    expect(env.pipeline.blocker?.action?.kind).toBe("reread");
+    expect(env.pipeline.done).toBe(false);
+    expect(await runPipelineAction("reread", env)).toBeNull();
     expect(rereads).toBe(1);
   });
 

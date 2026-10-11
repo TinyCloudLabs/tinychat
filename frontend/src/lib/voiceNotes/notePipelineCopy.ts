@@ -16,6 +16,7 @@ export const ACTION_LABEL: Record<PipelineActionKind, string> = {
   retry: "Try again",
   "get-model": "Get the model",
   "check-again": "Check again",
+  reread: "Try again",
 };
 
 export function ordinal(n: number): string {
@@ -44,6 +45,7 @@ export const PHONE_COPY = {
   recoveryFailed: "Couldn't recover · audio kept",
   writeFailed: (detail: string | null | undefined) => withDetail("Couldn't write the recording", detail),
   partialAudio: "Saved · part of this recording couldn't be written",
+  quarantineReadFailed: (detail: string | null | undefined) => withDetail("Couldn't check for recordings that failed to save", detail),
 };
 
 export const SPACE_COPY = {
@@ -84,6 +86,7 @@ export const LOCAL_COPY = {
   notStarted: "Waiting to transcribe",
   noSpeech: "No speech found",
   readFailed: (detail: string | null | undefined) => withDetail("Couldn't check this note's transcript", detail),
+  otherReadFailed: (detail: string | null | undefined) => withDetail("Some details about this note couldn't be read", detail),
 };
 
 export const PRIVATE_COPY = {

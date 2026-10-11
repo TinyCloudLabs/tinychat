@@ -3,7 +3,7 @@ import type { FirefliesSentence } from "../connectors/firefliesClient";
 import { CONNECTORS_KV_PREFIX, CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connectors/connectorStore";
 import { runOnSpaceLane, spaceLaneSnapshot, subscribeSpaceLane } from "../spaceWriteLane";
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
-import { hasTranscriptCommitTable, LEGACY_TRANSCRIPT_KEYS, legacyTranscriptWinner, readTranscriptCommit, type TranscriptCommit } from "./voiceNoteCommits";
+import { hasTranscriptCommitTable, LEGACY_TRANSCRIPT_KEYS, legacyTranscriptWinner, readTranscriptCommit, SQL_CHUNK, type LegacyTranscriptRow, type TranscriptCommit } from "./voiceNoteCommits";
 
 export { spaceLaneSnapshot, subscribeSpaceLane };
 
@@ -217,6 +217,28 @@ export async function resolveVoiceNoteRow(tcw: TinyCloudWeb, sourceId: string, c
   const rows = await query(tcw, "SELECT id, source_id, metadata, created_at FROM connector_meeting WHERE source = 'exo-voice-note' AND source_id = ? LIMIT 1", [sourceId], checkpoint);
   const r = rows[0];
   return r ? { id: String(r[0]), sourceId: String(r[1]), metadata: parseMetadata(r[2]), createdAt: String(r[3]) } : null;
+}
+/**
+ * `resolveVoiceNoteRow` for a set of notes: one query per chunk of ids. Each note has its row (null when the space has none)
+ * and the legacy transcript winner among its rows (what `readLegacyTranscriptWinner` finds, chosen the same way).
+ */
+export async function resolveVoiceNoteRows(tcw: TinyCloudWeb, sourceIds: readonly string[],
+  checkpoint: () => void = () => undefined): Promise<Map<string, { row: VoiceNoteRow | null; legacy: LegacyTranscriptRow | null }>> {
+  const found = new Map<string, { row: VoiceNoteRow | null; group: { id: string; metadata: Record<string, unknown> }[] }>();
+  for (const id of sourceIds) found.set(id, { row: null, group: [] });
+  for (let from = 0; from < sourceIds.length; from += SQL_CHUNK) {
+    const chunk = sourceIds.slice(from, from + SQL_CHUNK);
+    const rows = await query(tcw, `SELECT id, source_id, source, metadata, created_at FROM connector_meeting
+      WHERE source_id IN (${chunk.map(() => "?").join(",")}) AND source IN ('exo-voice-note', 'exo-voice-note-dup')`, chunk, checkpoint);
+    for (const r of rows) {
+      const entry = found.get(String(r[1]));
+      if (entry === undefined) continue;
+      const metadata = parseMetadata(r[3]);
+      entry.group.push({ id: String(r[0]), metadata });
+      if (r[2] === "exo-voice-note") entry.row = { id: String(r[0]), sourceId: String(r[1]), metadata, createdAt: String(r[4]) };
+    }
+  }
+  return new Map([...found].map(([id, { row, group }]) => [id, { row, legacy: legacyTranscriptWinner(group) }]));
 }
 export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNoteRecording, title: string,
   checkpoint: () => void = () => undefined): Promise<VoiceNoteRow & { inserted: boolean }> {

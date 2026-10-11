@@ -22,7 +22,7 @@ import {
   type VoiceNotesPlugin,
 } from "./nativeVoiceNotes";
 import { recordingNoteSyncError } from "./voiceNoteStore";
-import { useNotePipeline, useNotePipelines, type NotePipelineSource, type NotePipelineView } from "./useNotePipeline";
+import { __resetAutoNoteSyncForTests, useNotePipeline, useNotePipelines, type NotePipelineSource, type NotePipelineView } from "./useNotePipeline";
 
 const plugins = { voiceNotes: VoiceNotes, onDeviceStt: OnDeviceStt };
 const saved = { window: (globalThis as { window?: unknown }).window, act: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT };
@@ -54,6 +54,8 @@ const phone = {
   recordings: [] as VoiceNoteRecording[],
   listError: null as Error | null,
   quarantine: [] as { id: string; reason: string; sizeBytes: number }[],
+  quarantineError: null as Error | null,
+  quarantineReads: 0,
   reads: 0,
 };
 
@@ -79,7 +81,7 @@ async function installPhone() {
   __setVoiceNotesForTests(
     {
       listPending: async () => { phone.reads += 1; if (phone.listError) throw phone.listError; return { recordings: phone.recordings }; },
-      listQuarantine: async () => ({ items: phone.quarantine }),
+      listQuarantine: async () => { phone.quarantineReads += 1; if (phone.quarantineError) throw phone.quarantineError; return { items: phone.quarantine }; },
     } as unknown as VoiceNotesPlugin,
     { available: true },
   );
@@ -101,9 +103,10 @@ let warnings: ReturnType<typeof spyOn>;
 beforeEach(async () => {
   errors = spyOn(console, "error").mockImplementation(() => {});
   warnings = spyOn(console, "warn").mockImplementation(() => {});
-  phone.recordings = []; phone.listError = null; phone.quarantine = []; phone.reads = 0;
+  phone.recordings = []; phone.listError = null; phone.quarantine = []; phone.quarantineError = null; phone.quarantineReads = 0; phone.reads = 0;
   queue = []; refuseListening = new Map(); callbacks.clear();
   __resetOnDeviceSttStoreForTests();
+  __resetAutoNoteSyncForTests();
   await installPhone();
 });
 afterEach(async () => {
@@ -183,21 +186,50 @@ describe("a read that fails is shown with its cause, never read as done", () => 
   });
 });
 
-describe("notes that were never synced do not wait without an action", () => {
-  test("the notes step is blocked with Try again, which runs the sync and shows how it ended", async () => {
+describe("notes that were never synced", () => {
+  test("the first sync attempt is started by the hook; until it settles the step is Syncing notes, never a blocker", async () => {
+    phone.recordings = [recording(SYNC_ID, "off")];
+    await saveNote(SYNC_ID, "Book the venue before Friday.");
+    const history: NotePipeline[] = [];
+    function Probe() { const view = useNotePipeline(SYNC_ID, IN_SPACE); if (view) history.push(view.pipeline); return null; }
+    root = createRoot(container);
+    await act(async () => root!.render(<StaticRecorderProvider value={recorder()}><Probe /></StaticRecorderProvider>));
+    await settle();
+    // The fake space has no KV, so the attempt fails: that is the store's word, reached with no one pressing anything.
+    expect(recordingNoteSyncError(SPACE, SYNC_ID)).toBe("sync_failed");
+    expect(history.length).toBeGreaterThan(1);
+    expect(history.some((pipeline) => pipeline.blocker?.cause === "Your notes haven't reached your space yet")).toBe(false);
+    const first = stepOf(history[0]!, "notes");
+    expect(first.state).toBe("active");
+    expect(first.caption).toBe("Syncing notes…");
+    expect(history[0]!.blocker).toBeUndefined();
+    const last = history.at(-1)!;
+    expect(stepOf(last, "notes").state).toBe("failed");
+    expect(last.blocker?.action?.kind).toBe("retry");
+  });
+
+  test("Try again after a failed attempt runs the sync again and shows how it ended", async () => {
     phone.recordings = [recording(SYNC_ID, "off")];
     await saveNote(SYNC_ID, "Book the venue before Friday.");
     const { seen } = await mountOne(IN_SPACE, {}, SYNC_ID);
-    expect(stepOf(seen.view!.pipeline, "notes").state).toBe("blocked");
-    expect(seen.view!.pipeline.blocker?.cause).toBe("Your notes haven't reached your space yet");
-    expect(seen.view!.pipeline.blocker?.action?.kind).toBe("retry");
-    // The fake space has no KV, so the sync itself fails: that reason is what the blocker line shows.
+    expect(stepOf(seen.view!.pipeline, "notes").state).toBe("failed");
     await act(async () => seen.view!.onAction("retry"));
     await settle();
-    expect(recordingNoteSyncError(SPACE, SYNC_ID)).toBe("sync_failed");
     expect(seen.view!.pipeline.blocker?.action?.kind).toBe("retry");
     expect(seen.view!.actionError).not.toBeNull();
     expect(seen.view!.pipeline.done).toBe(false);
+  });
+
+  test("with no account to sync to there is no attempt: the step is blocked with Try again, which says to sign in", async () => {
+    const ID_SIGNED_OUT = "note-signed-out-text";
+    phone.recordings = [recording(ID_SIGNED_OUT, "off")];
+    await saveNote(ID_SIGNED_OUT, "Call the caterer.");
+    const { seen } = await mountOne(SIGNED_OUT, {}, ID_SIGNED_OUT);
+    expect(stepOf(seen.view!.pipeline, "notes").state).toBe("blocked");
+    expect(seen.view!.pipeline.blocker?.cause).toBe("Your notes haven't reached your space yet");
+    await act(async () => seen.view!.onAction("retry"));
+    await settle();
+    expect(seen.view!.actionError).toBe("Sign in to sync this note.");
   });
 });
 
@@ -316,5 +348,176 @@ describe("the list hook", () => {
     const pipeline = seen.at(-1)!.pipeline;
     expect(pipeline.done).toBe(false);
     expect(pipeline.blocker?.cause).toContain("Your space's copy of this note wouldn't open");
+  });
+});
+
+describe("a failed read that other evidence outranks is still shown", () => {
+  test("a quarantine list that will not open: the cause, a working Try again, and the note is not done meanwhile", async () => {
+    phone.recordings = [recording(ID, "off")];
+    phone.quarantineError = new Error("parked list unreadable");
+    const { seen } = await mountOne(SIGNED_OUT);
+    const pipeline = seen.view!.pipeline;
+    expect(pipeline.done).toBe(false);
+    expect(pipeline.blocker?.cause).toBe("Couldn't check for recordings that failed to save · parked list unreadable");
+    expect(pipeline.blocker?.action?.kind).toBe("reread");
+    const reads = phone.quarantineReads;
+    phone.quarantineError = null;
+    await act(async () => seen.view!.onAction("reread"));
+    await settle();
+    expect(phone.quarantineReads).toBeGreaterThan(reads);
+    expect(seen.view!.pipeline.done).toBe(true);
+    expect(seen.view!.pipeline.blocker).toBeUndefined();
+  });
+
+  test("a phone ledger that will not open while the row already holds the transcript: the transcript stays done, the failure shows", async () => {
+    phone.listError = new Error("ledger unreadable");
+    const withTranscript: NotePipelineSource = { tcw: SPACE, saved: true, metadata: { transcription_outcome: "transcribed" } };
+    const { seen } = await mountOne(withTranscript);
+    const pipeline = seen.view!.pipeline;
+    expect(pipeline.done).toBe(false);
+    expect(pipeline.blocker?.cause).toBe("Some details about this note couldn't be read · The phone's note list wouldn't open: ledger unreadable");
+    expect(pipeline.blocker?.action?.kind).toBe("reread");
+    expect(stepOf(pipeline, "transcript").state).toBe("done");
+    phone.listError = null;
+    phone.recordings = [recording(ID, "on-device")];
+    await act(async () => seen.view!.onAction("reread"));
+    await settle();
+    expect(seen.view!.pipeline.done).toBe(true);
+  });
+
+  test("with another blocker standing, the failed read shows as a notice beside it", async () => {
+    phone.recordings = [recording(ID, "private-cloud")];
+    phone.quarantineError = new Error("parked list unreadable");
+    const { seen } = await mountOne(SIGNED_OUT, { transcription: checkFailing("the service is down") });
+    const pipeline = seen.view!.pipeline;
+    expect(pipeline.blocker?.action?.kind).toBe("check-again");
+    expect(pipeline.notice).toBe("Couldn't check for recordings that failed to save · parked list unreadable");
+    expect(pipeline.done).toBe(false);
+  });
+});
+
+// --- A space of fake rows ------------------------------------------------------------------------------------------
+
+function fakeSpace(did: string, rowOf: (id: string) => Record<string, unknown> | null, gate: Promise<void> | null = null) {
+  const log = { rowQueries: [] as string[][], schemaChecks: 0 };
+  const tcw = {
+    did,
+    spaceId: `space-${did}`,
+    sql: {
+      db: () => ({
+        query: async (sql: string, params: string[]) => {
+          if (gate !== null) await gate;
+          if (sql.includes("sqlite_schema")) { log.schemaChecks += 1; return { ok: true, data: { rows: [] } }; }
+          if (sql.includes("FROM connector_meeting")) {
+            log.rowQueries.push([...params]);
+            return { ok: true, data: { rows: params.flatMap((id) => { const metadata = rowOf(id); return metadata === null ? [] : [[`row-${id}`, id, "exo-voice-note", JSON.stringify(metadata), "2026-01-01"]]; }) } };
+          }
+          throw new Error(`unexpected query: ${sql}`);
+        },
+      }),
+    },
+  } as unknown as TinyCloudWeb;
+  return { tcw, log };
+}
+
+describe("the space row is evidence for one account and space only", () => {
+  test("switching the same mounted note from account A to B drops A's evidence and reads B", async () => {
+    phone.recordings = [recording(ID, "on-device", stt("queued"))];
+    const a = fakeSpace("did:a", () => ({ transcription_outcome: "transcribed" }));
+    const b = fakeSpace("did:b", () => ({}));
+    const sourceA: NotePipelineSource = { tcw: a.tcw, saved: true };
+    const sourceB: NotePipelineSource = { tcw: b.tcw, saved: true };
+    const seen: { view: NotePipelineView | null } = { view: null };
+    let afterSwitch: (string | null)[] | null = null;
+    function Probe(props: { source: NotePipelineSource }) {
+      seen.view = useNotePipeline(ID, props.source);
+      afterSwitch?.push(seen.view === null ? null : stepOf(seen.view.pipeline, "transcript").state);
+      return null;
+    }
+    root = createRoot(container);
+    const render = (source: NotePipelineSource) => act(async () => root!.render(<StaticRecorderProvider value={recorder()}><Probe source={source} /></StaticRecorderProvider>));
+    await render(sourceA);
+    await settle();
+    expect(stepOf(seen.view!.pipeline, "transcript").state).toBe("done");
+    expect(a.log.rowQueries).toHaveLength(1);
+    afterSwitch = [];
+    await render(sourceB);
+    // No render under B ever drew on A's row.
+    expect(afterSwitch.length).toBeGreaterThan(0);
+    expect(afterSwitch).not.toContain("done");
+    await settle();
+    expect(b.log.rowQueries).toEqual([[ID]]);
+    expect(stepOf(seen.view!.pipeline, "transcript").state).not.toBe("done");
+    expect(seen.view!.pipeline.done).toBe(false);
+  });
+
+  test("an answer from A that arrives after the switch to B is dropped", async () => {
+    phone.recordings = [recording(ID, "on-device", stt("queued"))];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const a = fakeSpace("did:a", () => ({ transcription_outcome: "transcribed" }), gate);
+    const b = fakeSpace("did:b", () => ({}));
+    const sourceA: NotePipelineSource = { tcw: a.tcw, saved: true };
+    const sourceB: NotePipelineSource = { tcw: b.tcw, saved: true };
+    const seen: { view: NotePipelineView | null } = { view: null };
+    function Probe(props: { source: NotePipelineSource }) { seen.view = useNotePipeline(ID, props.source); return null; }
+    root = createRoot(container);
+    const render = (source: NotePipelineSource) => act(async () => root!.render(<StaticRecorderProvider value={recorder()}><Probe source={source} /></StaticRecorderProvider>));
+    await render(sourceA);
+    await settle();
+    expect(seen.view).toBeNull();
+    await render(sourceB);
+    await act(async () => { release(); });
+    await settle();
+    expect(seen.view).not.toBeNull();
+    expect(stepOf(seen.view!.pipeline, "transcript").state).not.toBe("done");
+  });
+});
+
+describe("a list of 100 notes without row metadata", () => {
+  const IDS = Array.from({ length: 100 }, (_, index) => `list-note-${index}`);
+
+  test("reads every row in one query, and a note's own native transition reads only that note again", async () => {
+    phone.recordings = IDS.map((id) => recording(id, "on-device", stt("queued")));
+    const space = fakeSpace("did:list", () => ({}));
+    const entries = IDS.map((id) => ({ id, source: { tcw: space.tcw, saved: true } as NotePipelineSource }));
+    let views: ReadonlyMap<string, NotePipelineView> = new Map();
+    function Probe() { views = useNotePipelines(entries); return null; }
+    root = createRoot(container);
+    await act(async () => root!.render(<StaticRecorderProvider value={recorder()}><Probe /></StaticRecorderProvider>));
+    await settle();
+    expect(views.size).toBe(100);
+    expect(space.log.rowQueries).toHaveLength(1);
+    expect(space.log.rowQueries[0]).toEqual(IDS);
+    expect(space.log.schemaChecks).toBe(1);
+    expect(phone.reads).toBe(1);
+
+    phone.recordings = IDS.map((id) => recording(id, "on-device", stt(id === IDS[7] ? "failed" : "queued", id === IDS[7] ? "decoder crashed" : null)));
+    await act(async () => emit("failed", { id: IDS[7] }));
+    await settle();
+    expect(space.log.rowQueries).toHaveLength(2);
+    expect(space.log.rowQueries[1]).toEqual([IDS[7]]);
+    expect(views.get(IDS[7]!)!.pipeline.blocker?.cause).toContain("decoder crashed");
+  });
+
+  test("another account's cache is not reused: the same notes under a new identity are read once more, in one query", async () => {
+    phone.recordings = IDS.map((id) => recording(id, "off"));
+    const a = fakeSpace("did:a", () => ({}));
+    const b = fakeSpace("did:b", () => ({}));
+    const entriesFor = (tcw: TinyCloudWeb) => IDS.map((id) => ({ id, source: { tcw, saved: true } as NotePipelineSource }));
+    const entriesA = entriesFor(a.tcw);
+    const entriesB = entriesFor(b.tcw);
+    let views: ReadonlyMap<string, NotePipelineView> = new Map();
+    function Probe(props: { entries: typeof entriesA }) { views = useNotePipelines(props.entries); return null; }
+    root = createRoot(container);
+    const render = (entries: typeof entriesA) => act(async () => root!.render(<StaticRecorderProvider value={recorder()}><Probe entries={entries} /></StaticRecorderProvider>));
+    await render(entriesA);
+    await settle();
+    await render(entriesB);
+    await settle();
+    expect(a.log.rowQueries).toHaveLength(1);
+    expect(b.log.rowQueries).toHaveLength(1);
+    expect(b.log.rowQueries[0]).toEqual(IDS);
+    expect(views.size).toBe(100);
   });
 });

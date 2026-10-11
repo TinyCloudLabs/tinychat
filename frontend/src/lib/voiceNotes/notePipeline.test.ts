@@ -366,3 +366,30 @@ describe("stuck-state contract", () => {
     for (const [name, pipeline] of all) if (pipeline.blocker?.action) expect(pipeline.blocker.action.label.length, name).toBeGreaterThan(0);
   });
 });
+
+describe("a failed read that other evidence outranks", () => {
+  test("a transcript in the space with a failed ledger read: the transcript is done, the failure is a blocker with its own action, and the note is not done", () => {
+    const pipeline = notePipeline(input({ space: SAVED, transcript: { inSpace: "transcribed", readError: "The phone's note list wouldn't open: busy" } }));
+    expect(pipeline.steps.find((step) => step.key === "transcript")?.state).toBe("done");
+    expect(pipeline.blocker).toEqual({ cause: "Some details about this note couldn't be read · The phone's note list wouldn't open: busy", action: { kind: "reread", label: "Try again" } });
+    expect(pipeline.done).toBe(false);
+  });
+
+  test("a failed read of the parked-recordings list is shown with its cause, with or without other blockers", () => {
+    const alone = notePipeline(input({ space: SAVED, capture: { readError: "EIO" } }));
+    expect(alone.blocker?.cause).toBe("Couldn't check for recordings that failed to save · EIO");
+    expect(alone.blocker?.action?.kind).toBe("reread");
+    expect(alone.done).toBe(false);
+    const beside = notePipeline(input({ route: "private-cloud", space: SAVED, transcript: { cloud: { kind: "blocked", reason: "check-failed" } }, capture: { readError: "EIO" } }));
+    expect(beside.blocker?.action?.kind).toBe("check-again");
+    expect(beside.notice).toBe("Couldn't check for recordings that failed to save · EIO");
+  });
+
+  test("a read error with no detail still says that the read failed", () => {
+    expect(notePipeline(input({ space: SAVED, capture: { readError: "" } })).blocker?.cause).toBe("Couldn't check for recordings that failed to save");
+  });
+
+  test("reread never outranks a step's own action", () => {
+    expect(pipelineActionPriority("reread")).toBe(0);
+  });
+});
