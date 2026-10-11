@@ -1439,9 +1439,27 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       }
       if (!on()) return;
       if (recording.durationMs / 1000 > maxTranscriptionSeconds(state.capabilities)) return; // the card says why
+      // Another path (Stop, or a later save of the same note) already handed it over: a failure waits for the user's Retry.
+      if (jobs.get(recording.id)?.kind === "failed") return;
       enqueue(recording.id, audio, false);
     },
   };
+}
+
+/**
+ * Hand a note that was saved to the space later than its Stop (a relaunch, the sign-in claim, Save now) to
+ * transcription. As for a fresh Stop, the account's availability answer must be in before `noteSaved`, and the
+ * note is dropped if its account is no longer the current one by then.
+ */
+export function transcribeSavedNote(
+  transcriber: Pick<VoiceNoteTranscriber, "check" | "noteSaved">,
+  recording: Parameters<VoiceNoteTranscriber["noteSaved"]>[0],
+  isCurrent: () => boolean,
+): void {
+  transcriber.check({ automatic: true }).then(
+    () => { if (isCurrent()) transcriber.noteSaved(recording); },
+    (caught: unknown) => console.error("[VoiceNotes] The private transcription check threw; this note was not handed to transcription", { id: recording.id, caught }),
+  );
 }
 
 /** One transcriber per signed-in account, kept across mounts (StrictMode, tab switches). */

@@ -44,7 +44,7 @@ import {
   savePendingRecordings,
   TINYCLOUD_NETWORK_FAILURE_MESSAGE,
 } from "@/lib/voiceNotes/recorderSaves";
-import type { VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { transcribeSavedNote, type VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { saveDeferredForAccountTransition, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { adoptNote, deleteNote, loadNote, parseMomentLines, saveNote, type RecordingMoment } from "@/lib/voiceNotes/recordingNotes";
 import { readRecordingNoteFromSpace, recordingNoteSyncError, reportRecordingNoteSyncError,
@@ -87,7 +87,7 @@ export interface VoiceNoteRecorderControllerOptions {
   /** The Exo mobile app with its VoiceNotes plugin; nothing else records. */
   available: boolean;
   /** Private cloud transcription for this account; null without one. */
-  transcriber: Pick<VoiceNoteTranscriber, "noteSaved"> & Partial<Pick<VoiceNoteTranscriber, "snapshot" | "subscribe">> | null;
+  transcriber: Pick<VoiceNoteTranscriber, "check" | "noteSaved"> & Partial<Pick<VoiceNoteTranscriber, "snapshot" | "subscribe">> | null;
   /** Test seam for model readiness; production reads the shared native STT snapshot. */
   onDeviceReady?: () => boolean;
   appleInterim?: () => boolean;
@@ -1033,7 +1033,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
               return;
             }
             pipeline.resume();
-            await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation }, "manual");
+            await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation }, "manual", (recording) => {
+              if (transcriber) transcribeSavedNote(transcriber, recording, () => generation === currentAccountGeneration());
+              onSaved?.(recording);
+            });
             await account.refresh(null);
           } catch (caught) {
             account.reportError(`Could not save notes on this phone: ${messageOf(caught)}`);

@@ -78,7 +78,7 @@ function controller(options: { tcw?: TinyCloudWeb | null; pipeline?: VoiceNotePi
     tcw: options.tcw === undefined ? tcw : options.tcw,
     pipeline: options.pipeline,
     available: true,
-    transcriber: options.transcriber ?? { noteSaved: (recording) => noted.push(recording.id),
+    transcriber: options.transcriber ?? { check: async () => {}, noteSaved: (recording) => noted.push(recording.id),
       snapshot: () => ({ availability: "available", consented: typeof options.consented === "function" ? options.consented() : options.consented ?? false,
         capabilities: null, jobs: new Map() }) },
     onDeviceReady: () => options.onDeviceReady ?? true,

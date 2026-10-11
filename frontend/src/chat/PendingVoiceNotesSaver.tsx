@@ -18,8 +18,8 @@ import { captureCapabilities, captureEngineAvailable } from "@/lib/voiceNotes/ca
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
-import type { VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { isTinyCloudNetworkFailure, logVoiceNoteError, messageOf, pendingStore, whenVoiceNoteSavesIdle, type PendingRun } from "@/lib/voiceNotes/recorderSaves";
+import { transcribeSavedNote, voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { isTinyCloudNetworkFailure, logVoiceNoteError, messageOf, pendingStore, whenVoiceNoteSavesIdle } from "@/lib/voiceNotes/recorderSaves";
 import { advanceAccountGeneration, currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
 import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 
@@ -56,24 +56,11 @@ function installOnDeviceTranscriptSync(tcw: TinyCloudWeb): () => void {
   };
 }
 
-/**
- * Save what is on the phone, and hand each saved note to transcription. The availability check
- * runs alongside the save, so a note is offered to private cloud only once the account's
- * answer is in (`noteSaved` ignores it otherwise, as for the card).
- */
-export async function savePendingVoiceNotes(deps: {
-  save: () => Promise<PendingRun>;
-  transcriber: Pick<VoiceNoteTranscriber, "check" | "noteSaved"> | null;
-}): Promise<PendingRun> {
-  const [run] = await Promise.all([deps.save(), deps.transcriber?.check()]);
-  // noteSaved uses each committed sidecar's options, including Off; legacy notes have none.
-  for (const recording of run.saved) deps.transcriber?.noteSaved(recording);
-  return run;
-}
-
 export function PendingVoiceNotesSaver({
   tcw,
   pipeline,
+  backendUrl,
+  sessionStore,
 }: {
   tcw: TinyCloudWeb;
   pipeline: VoiceNotePipeline;
@@ -105,10 +92,14 @@ export function PendingVoiceNotesSaver({
     if (!did || !spaceId) return;
     pendingStore.setAccount(did);
     pipeline.resume();
+    const transcriber = voiceNoteTranscriberFor(tcw, backendUrl, sessionStore);
     const run = async () => {
       const account = pendingStore.forAccount(did);
+      const generation = currentAccountGeneration();
       try {
-        await pipeline.reconcileAll({ did, spaceId, generation: currentAccountGeneration() });
+        await pipeline.reconcileAll({ did, spaceId, generation }, "reconcile", (note) => {
+          if (transcriber) transcribeSavedNote(transcriber, note, () => generation === currentAccountGeneration());
+        });
         await account.refresh(null);
       } catch (error) {
         const message = messageOf(error);
@@ -120,6 +111,6 @@ export function PendingVoiceNotesSaver({
     const unregister = registerPendingVoiceNotesRecovery(run);
     void run();
     return () => { unregister(); pipeline.cancelAll(); pendingStore.setAccount(null); };
-  }, [pipeline, tcw]);
+  }, [backendUrl, pipeline, sessionStore, tcw]);
   return null;
 }

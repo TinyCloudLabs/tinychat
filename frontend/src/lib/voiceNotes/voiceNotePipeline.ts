@@ -1,7 +1,7 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { assertCurrent, StaleAccountContext, type AccountContext } from "./accountContext";
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
-import { VoiceNotes } from "./nativeVoiceNotes";
+import { VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { isDiscarded, pendingStore, saveNoteForAccount } from "./recorderSaves";
 import { ensureVoiceNoteIdentity, sweepArchived } from "./voiceNoteRows";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
@@ -11,7 +11,7 @@ import type { StoreAudioOptions } from "./voiceNoteStore";
 export interface VoiceNotePipeline {
   process(ctx: AccountContext, id: string, trigger?: "stop" | "background"): Promise<void>;
   /** T19 calls setCaptureDefaults on ready before this association and upload pass. */
-  reconcileAll(ctx: AccountContext, trigger?: "reconcile" | "manual"): Promise<void>;
+  reconcileAll(ctx: AccountContext, trigger?: "reconcile" | "manual", onSaved?: (note: VoiceNoteRecording) => void): Promise<void>;
   cancelAll(): void;
   resume(): void;
   isAccepting(): boolean;
@@ -48,7 +48,8 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     assertCurrent(ctx);
     if (tcw.did !== ctx.did || tcw.spaceId !== ctx.spaceId) throw new Error("Voice-note space changed");
   };
-  const processOne = async (ctx: AccountContext, id: string, epoch: number, trackPending = false) => {
+  /** The note when this call saved it to the space; null when it was already there, gone or discarded. */
+  const processOne = async (ctx: AccountContext, id: string, epoch: number, trackPending = false): Promise<VoiceNoteRecording | null> => {
     const check = checkFor(ctx, epoch);
     check();
     const gate = await ensureVoiceNoteIdentity(tcw, check);
@@ -57,11 +58,11 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     // Identity does the initial archive repair, and reconcileAll sweeps once for the
     // session. A fresh Stop must not repeat that space-wide work before its upload.
     const note = (await withVoiceNoteSaveDeadline(`native listPending id=${id}`, () => VoiceNotes.listPending())).recordings.find((r) => r.id === id);
-    if (!note) return;
+    if (!note) return null;
     check();
     // Reconcile's post-upload pass retries Markdown sync for saved notes. Stop and
     // background paths also avoid repeating that round trip for already-saved audio.
-    if (note.ledger?.audio.state === "saved" && !isDiscarded(id)) return;
+    if (note.ledger?.audio.state === "saved" && !isDiscarded(id)) return null;
     pendingStore.clearNoteFailure(id);
     const finish = trackPending && note.ledger?.audio.state !== "saved"
       ? pendingStore.beginAutomaticSave() : () => undefined;
@@ -69,6 +70,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
       const result = await saveNoteForAccount(tcw, ctx, note, check, testOptions);
       if (result.kind === "failed") { check(); throw new Error(result.failure); }
       if (result.kind === "discarded" && result.cleanupError) throw new Error(result.cleanupError);
+      return result.kind === "saved" ? note : null;
     } finally { finish(); }
   };
   return {
@@ -76,9 +78,9 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
       if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());
       const epoch = cancellation;
       logSaveStart(id, trigger);
-      return run(() => processOne(ctx, id, epoch));
+      return run(async () => { await processOne(ctx, id, epoch); });
     },
-    reconcileAll(ctx, trigger = "reconcile") {
+    reconcileAll(ctx, trigger = "reconcile", onSaved) {
       if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());
       const epoch = cancellation;
       return run(async () => {
@@ -107,9 +109,10 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
         for (const note of [...notes].sort((a, b) => a.startedAt - b.startedAt)) {
           check();
           if (note.owner === ctx.did && !note.ownerUnknown) {
+            let saved: VoiceNoteRecording | null = null;
             try {
               logSaveStart(note.id, trigger);
-              await processOne(ctx, note.id, epoch, true);
+              saved = await processOne(ctx, note.id, epoch, true);
             }
             catch (error) {
               check();
@@ -121,6 +124,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
               check();
               await pendingStore.refresh();
             }
+            if (saved) onSaved?.(saved);
           }
         }
         // Pending audio uploads went first. This untracked catch-up pass restores
