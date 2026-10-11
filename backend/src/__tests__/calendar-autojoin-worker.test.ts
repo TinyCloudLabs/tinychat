@@ -672,6 +672,72 @@ async function twoTenants(options: { sharing?: boolean; bResponse?: string | nul
     afterWindow: () => { now = START + 300_000; } };
 }
 
+describe("TC-907 ptx capacity_exhausted", () => {
+  const busy = () => new TranscriptionApiError(429, "capacity_exhausted", "All 2 meeting notetakers are busy right now.", 60_000);
+  const status = (f: Awaited<ReturnType<typeof fixture>>) => new CalendarAutojoinConnection({ store: f.store, coordinator: f.coordinator,
+    credentials: null as never, oauth: null as never, calendar: null as never, now: f.now }).getStatus(TENANT);
+
+  test("each create attempt increments attemptCount exactly once", async () => {
+    const f = await fixture();
+    let creates = 0;
+    f.api.createMeeting = async () => { creates++; throw busy(); };
+    for (let tick = 1; tick <= 3; tick++) {
+      await f.worker().tick();
+      expect(creates).toBe(tick);
+      expect((await f.row())?.attemptCount).toBe(tick);
+      f.advance(60_000);
+    }
+  });
+
+  test("a lookup failure after a failed create does not count the attempt twice", async () => {
+    const f = await fixture();
+    f.api.createMeeting = async () => { throw busy(); };
+    f.api.lookupMeetingByIdempotencyKey = async () => { throw new Error("network reset"); };
+    await f.worker().tick();
+    expect((await f.row())?.attemptCount).toBe(1);
+  });
+
+  test("an occurrence ptx kept refusing for capacity ends as capacity_exhausted after its window, then is cleaned up", async () => {
+    const f = await fixture();
+    let creates = 0;
+    f.api.createMeeting = async () => { creates++; throw busy(); };
+    for (let i = 0; i < 20 && (await f.row())?.phase !== "terminal"; i++) {
+      await f.worker().tick();
+      f.advance(60_000);
+    }
+    expect(f.now()).toBeLessThan(START + 600_000);
+    // Retried at ptx's Retry-After for the whole joining window.
+    expect(creates).toBe(6);
+    expect(await f.row()).toMatchObject({ phase: "terminal", disposition: "capacity_exhausted", errorCode: undefined });
+    expect(await f.store.getMarker(TENANT, f.id)).toMatchObject({ disposition: "capacity_exhausted" });
+    expect((await status(f)).outcomes).toEqual([expect.objectContaining({ reason: "capacity_exhausted" })]);
+    const lookups = f.lookups.length;
+    f.advance(900_000);
+    await f.worker().tick();
+    expect(f.lookups).toHaveLength(lookups);
+    // Terminal rows are compacted after 30 days; the marker keeps it from being re-sent.
+    f.advance(31 * 86_400_000);
+    await f.worker().tick();
+    expect(await f.row()).toBeNull();
+    expect(creates).toBe(6);
+  });
+
+  test("a create whose last outcome is unknown keeps lookup-only recovery past the window", async () => {
+    const f = await fixture();
+    let creates = 0;
+    f.api.createMeeting = async () => { creates++; if (creates === 1) throw busy(); throw new Error("socket closed"); };
+    for (let i = 0; i < 10; i++) {
+      await f.worker().tick();
+      f.advance(60_000);
+    }
+    expect(f.now()).toBeGreaterThan(START + 300_000);
+    expect(creates).toBeGreaterThan(1);
+    const row = (await f.row())!;
+    expect(row.phase).not.toBe("terminal");
+    expect(row.capacityExhausted).toBeUndefined();
+  });
+});
+
 describe("TC-581 shared capture across tenants", () => {
   test("A dispatches and B overlaps: B makes zero POSTs, shows shared_capture_pending, and its status has no meeting id", async () => {
     const f = await twoTenants();

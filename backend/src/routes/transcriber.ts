@@ -89,8 +89,8 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
   }
 
   /** Upstream failures become our own codes; only a 400-class validation message (benign by
-   *  upstream's taxonomy — detail-carrying errors are 5xx and go down the generic path) is
-   *  passed through so the form can say why a link was refused. */
+   *  upstream's taxonomy — detail-carrying errors are 5xx and go down the generic path) and the
+   *  429 `capacity_exhausted` message are passed through so the form can say why a send failed. */
   function upstreamFailure(res: Response, error: unknown, what: string): void {
     if (error instanceof TranscriptionApiError) {
       if (error.status === 404) {
@@ -102,7 +102,16 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
         return;
       }
       if (error.status === 429) {
-        res.status(429).json({ error: "upstream_rate_limited" });
+        // TC-907: Retry-After is relayed, and a capacity refusal keeps upstream's fixed message
+        // ("All N meeting notetakers are busy right now…") so the form can show it.
+        const retryAfter = error.retryAfterMs === null ? undefined : Math.ceil(error.retryAfterMs / 1000);
+        if (retryAfter !== undefined) res.setHeader("Retry-After", String(retryAfter));
+        res.status(429).json({
+          ...(error.code === "capacity_exhausted"
+            ? { error: "capacity_exhausted", message: error.message }
+            : { error: "upstream_rate_limited" }),
+          ...(retryAfter === undefined ? {} : { retry_after_seconds: retryAfter }),
+        });
         return;
       }
     }

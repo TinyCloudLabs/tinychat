@@ -192,6 +192,9 @@ export class CalendarAutojoinWorker {
         await this.acceptRecording(row, lookup.meeting);
         return;
       }
+      // TC-907: ptx checks the key before capacity, so a capacity 429 created nothing. Past the
+      // cutoff no further create is sent, so nothing can appear: end it instead of polling forever.
+      if (row.capacityExhausted && this.now() >= dispatchCutoff(row)) { await this.finish(row, "capacity_exhausted"); return; }
     }
     const connection = await this.options.store.getConnection(row.tenant);
     if (!this.canDispatch(connection, row)) {
@@ -249,7 +252,8 @@ export class CalendarAutojoinWorker {
             };
             row = { ...row, generation: current!.generation, createBody: body, requestHash: computeCreateRequestHash(body), idempotencyKey: `calendar-v1-${row.id}` };
           }
-          row = { ...row, phase: "outcome_unknown", attemptCount: row.attemptCount + 1, updatedAt: this.now(), nextAttemptAt: this.now() + 60_000 };
+          // The one attemptCount increment for this attempt (TC-907): defer() does not count it again.
+          row = { ...row, phase: "outcome_unknown", attemptCount: row.attemptCount + 1, capacityExhausted: undefined, updatedAt: this.now(), nextAttemptAt: this.now() + 60_000 };
           await this.options.store.putOccurrence(row); // Failure here MUST imply zero POSTs.
           // Durable storage can take us past the deadline. Do not send a now-ineligible
           // request; keep its frozen intent so a restart can conservatively recover it.
@@ -266,13 +270,17 @@ export class CalendarAutojoinWorker {
       }).then(meeting => ({ meeting, error: undefined as unknown }), error => ({ meeting: null, error }));
       if (response.meeting) { await this.acceptRecording(row, response.meeting); return; }
       if (!response.error) return;
-      await this.defer(row, response.error);
+      await this.defer(row, response.error, true);
       // A permanent create rejection must never become another POST on the next tick.
       // Retain lookup-only recovery in case any earlier transport attempt committed.
       if (!this.retryable(response.error)) await this.requestStop(row, "create_rejected");
       const delay = this.retryDelay(response.error, attempt);
       // A lost response may already have committed. Always lookup before any further POST.
-      const lookup = await this.limiter.run(() => this.options.api.lookupMeetingByIdempotencyKey(row.idempotencyKey!));
+      let lookup: Awaited<ReturnType<TranscriptionApiClient["lookupMeetingByIdempotencyKey"]>>;
+      // The attempt is already deferred; a failed lookup must not defer (and count) it again.
+      // The next tick looks up before it can POST.
+      try { lookup = await this.limiter.run(() => this.options.api.lookupMeetingByIdempotencyKey(row.idempotencyKey!)); }
+      catch { return; }
       if (lookup) {
         if (lookup.requestHash !== row.requestHash || !this.matchesMetadata(row, lookup.meeting)) { await this.requestStop(row, "lookup_identity_mismatch"); return; }
         if (!inDispatchWindow(row, this.now())) row = (await this.requestStop(row, "missed_window"))!;
@@ -344,7 +352,8 @@ export class CalendarAutojoinWorker {
   private async finish(row: CalendarOccurrence, disposition: string): Promise<void> {
     if (row.meetingId || row.idempotencyKey || row.sharedCapture) await this.options.store.putMarker({ tenant: row.tenant, id: row.id, meetingId: row.meetingId, disposition });
     // Every code on a shared row (pending, unverified, a deferred retry) is superseded by its disposition.
-    const clears = (current: CalendarOccurrence) => !!current.sharedCapture || (disposition === "completed" && !current.stopRequested) || disposition === "already_recorded";
+    const clears = (current: CalendarOccurrence) => !!current.sharedCapture || (disposition === "completed" && !current.stopRequested)
+      || disposition === "already_recorded" || disposition === "capacity_exhausted";
     await this.options.store.updateOccurrence(row.tenant, row.id, current => current && { ...current, phase: "terminal", disposition, createBody: undefined, requestHash: undefined, updatedAt: this.now(), errorCode: clears(current) ? undefined : current.errorCode });
   }
   /**
@@ -497,17 +506,19 @@ export class CalendarAutojoinWorker {
     const retryAfter = error instanceof GoogleCalendarError || error instanceof TranscriptionApiError ? error.retryAfterMs : null;
     return Math.max(retryAfter ?? 0, Math.min(900_000, 500 * 2 ** Math.min(attemptCount, 11) * (1 + this.random() * 0.2)));
   }
-  private async defer(row: CalendarOccurrence, error: unknown): Promise<void> {
+  /** `afterCreate`: the error is a create's, whose attempt was counted when it was sent (TC-907). */
+  private async defer(row: CalendarOccurrence, error: unknown, afterCreate = false): Promise<void> {
     await this.options.store.updateOccurrence(row.tenant, row.id, current => {
       if (!current || current.phase === "terminal") return current;
-      const count = current.attemptCount + 1;
+      const count = afterCreate ? current.attemptCount : current.attemptCount + 1;
+      const capacity = afterCreate && error instanceof TranscriptionApiError && error.status === 429 && error.code === "capacity_exhausted";
       // Outside the create window, lookup-only recovery remains durable at low rate forever.
       const delay = this.retryDelay(error, count);
       const recoveryOnly = current.stopRequested || this.now() >= dispatchCutoff(current);
       // A later recovery/read failure must not shorten a Retry-After already persisted
       // for the create. Only successful reconciliation can reset that durable deadline.
       const nextAttemptAt = Math.max(current.nextAttemptAt, this.now() + (recoveryOnly ? Math.max(60_000, delay) : delay));
-      return { ...current, attemptCount: count, errorCode: current.stopRequested ? current.errorCode : error instanceof GoogleCalendarError ? error.code : "autojoin_retry", nextAttemptAt, updatedAt: this.now() };
+      return { ...current, attemptCount: count, ...(capacity ? { capacityExhausted: true } : {}), errorCode: current.stopRequested ? current.errorCode : error instanceof GoogleCalendarError ? error.code : "autojoin_retry", nextAttemptAt, updatedAt: this.now() };
     });
   }
 }
