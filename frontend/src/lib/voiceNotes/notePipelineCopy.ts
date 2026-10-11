@@ -62,6 +62,7 @@ export const SPACE_COPY = {
   server: (detail: string | null | undefined, device: PipelineDevice) =>
     withDetail(`Your space couldn't take this note. It is safe on ${deviceName(device)}.`, detail),
   unreachable: (device: PipelineDevice) => `Couldn't reach your space. This note is safe on ${deviceName(device)}.`,
+  source: (message: string | null | undefined) => (hasText(message) ? message.trim() : "Couldn't read the recording"),
   unknown: (message: string | null | undefined) => (hasText(message) ? message.trim() : "Saving failed with no details"),
 };
 

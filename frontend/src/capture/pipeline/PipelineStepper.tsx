@@ -106,6 +106,9 @@ export function PipelineStepper(props: { pipeline: NotePipeline; onAction: (kind
           );
         })}
       </ol>
+      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-pipeline-announce="">
+        {blocker?.cause ?? ""}
+      </p>
       {caption !== undefined && (
         <p className="pipeline-stepper-caption" data-pipeline-caption="" aria-live="polite">
           {caption}

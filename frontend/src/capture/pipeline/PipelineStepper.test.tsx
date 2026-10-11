@@ -100,8 +100,31 @@ describe("PipelineStepper", () => {
     expect(html).not.toContain("data-pipeline-caption");
   });
 
+  test("a polite status region carries the blocker's cause, and is empty without one", () => {
+    expect(render(signedOut())).toContain(
+      'role="status" aria-live="polite" aria-atomic="true" data-pipeline-announce="">You&#x27;re signed out. This note is safe on this phone.</p>',
+    );
+    expect(render(uploading(40))).toContain('data-pipeline-announce=""></p>');
+  });
+
+  test("the status region updates in place when the blocker changes", async () => {
+    const dom = installDom();
+    cleanupDom = dom.cleanup;
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const announce = () => host.querySelector("[data-pipeline-announce]");
+    await act(async () => { root.render(createElement(PipelineStepper, { pipeline: uploading(40), onAction: noop })); });
+    const region = announce();
+    expect(region?.textContent).toBe("");
+    await act(async () => { root.render(createElement(PipelineStepper, { pipeline: signedOut(), onAction: noop })); });
+    expect(announce()).toBe(region);
+    expect(region?.textContent).toBe("You're signed out. This note is safe on this phone.");
+    await act(async () => { root.unmount(); });
+  });
+
   test("a blocker without an action has no button", () => {
-    const html = render(pipelineOf({ space: { saved: false, pending: { held: "other-account" } } }));
+    const html = render(pipelineOf({ space: { saved: false, pending: { held: "other-account" }, lane: { busy: false, depth: 0 } } }));
     expect(html).toContain("Recorded on another account");
     expect(html).not.toContain("<button");
   });
@@ -136,6 +159,9 @@ describe("PipelineStepper", () => {
     expect(css).toContain("container-type: inline-size");
     expect(css).toMatch(/@container pipeline-stepper \(max-width: 14rem\)/);
     expect(css).toContain("prefers-reduced-motion: no-preference");
+    expect(css).not.toMatch(/font-size:\s*[\d.]+px/);
+    expect(css.match(/font-size:\s*0\.78125rem/g)?.length).toBeGreaterThanOrEqual(4);
+    expect(css).toMatch(/\.pipeline-stepper \.soft-pill \{[^}]*font-size: 0\.78125rem/);
     expect(css).not.toMatch(/(?:#[0-9a-f]{3,6}\b|rgb|hsl\(var\(--(?:warning|destructive)\))/i);
   });
 

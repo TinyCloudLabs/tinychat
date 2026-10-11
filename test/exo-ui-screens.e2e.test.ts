@@ -615,6 +615,33 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 const expected = Math.max(16, Math.min(32, 16 * viewport.textScale));
                 if (Math.abs(rootSize - expected) > 0.1) findings.push({ check: "ios-text-scale", detail: `root font-size ${rootSize}px; expected ${expected}px at scale ${viewport.textScale}` });
               }
+              if (screen.group === "pipeline") {
+                // Stepper text is rem: 0.78125rem at any root, wrapping inside its case, and stacked once the root is doubled.
+                const sizing = await page.evaluate(() => {
+                  const root = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
+                  const texts = [...document.querySelectorAll<HTMLElement>(
+                    ".pipeline-stepper-label, .pipeline-stepper-caption, .pipeline-stepper-cause, .pipeline-stepper .soft-pill",
+                  )];
+                  return {
+                    root,
+                    texts: texts.length,
+                    wrong: texts.filter((el) => Math.abs(Number.parseFloat(getComputedStyle(el).fontSize) - root * 0.78125) > 0.01)
+                      .map((el) => `${el.className} ${getComputedStyle(el).fontSize}`),
+                    overflowing: texts.filter((el) => !el.matches(".soft-pill") && el.scrollWidth > el.clientWidth + 1).map((el) => el.className),
+                    tracks: [...document.querySelectorAll<HTMLElement>(".pipeline-stepper-list")]
+                      .map((list) => getComputedStyle(list).gridTemplateColumns.trim().split(/\s+/).length),
+                  };
+                });
+                const expectedRoot = 16 * (viewport.textScale ?? 1);
+                if (Math.abs(sizing.root - expectedRoot) > 0.1) findings.push({ check: "pipeline-text-scale", detail: `root font-size ${sizing.root}px; expected ${expectedRoot}px` });
+                if (sizing.texts === 0) findings.push({ check: "pipeline-text-scale", detail: "no stepper text found" });
+                if (sizing.wrong.length > 0) findings.push({ check: "pipeline-text-scale", detail: `not 0.78125rem: ${sizing.wrong.join("; ")}` });
+                if (sizing.overflowing.length > 0) findings.push({ check: "pipeline-text-wrap", detail: `text wider than its box: ${sizing.overflowing.join("; ")}` });
+                const stacked = sizing.root >= 32;
+                if (sizing.tracks.some((count) => (count === 2) !== stacked)) {
+                  findings.push({ check: "pipeline-stack", detail: `expected ${stacked ? "stacked" : "inline"} at a ${sizing.root}px root; grid tracks ${sizing.tracks.join(",")}` });
+                }
+              }
               if (screen.id === "shell-chat" && ["phone", "phone-small"].includes(viewport.id)) {
                 const bannerLayout = await page.evaluate(() => {
                   const banner = document.querySelector('[aria-label="Agent tools"]');

@@ -42,7 +42,7 @@ function input(patch: Patch = {}): NotePipelineInput {
     hasNotesOrMoments: patch.hasNotesOrMoments ?? false,
     online: patch.online ?? true,
     capture: { finalizing: false, issue: null, ...patch.capture },
-    space: { saved: false, pending: {}, ...patch.space },
+    space: { saved: false, pending: {}, lane: { busy: false, depth: 0 }, ...patch.space },
     transcript: { inSpace: null, onDevice: null, cloud: null, ...patch.transcript },
     notes: patch.notes ?? { state: "idle" },
   };
@@ -82,9 +82,11 @@ const ROWS: Row[] = [
 
   // 2. In your space
   { name: "space: waiting to upload", patch: {}, states: { phone: "done", space: "waiting" }, current: "space", caption: "Waiting to upload" },
-  { name: "space: next in line behind a busy lane", patch: { space: { pending: { upload: { state: "waiting", bytes: 0, total: 100 }, lane: { busy: true, depth: 0 } } } }, current: "space", caption: "Waiting to upload · next in line" },
-  { name: "space: 2nd in line", patch: { space: { pending: { lane: { busy: true, depth: 1 } } } }, current: "space", caption: "Waiting to upload · 2nd in line" },
-  { name: "space: 12th in line", patch: { space: { pending: { lane: { busy: true, depth: 11 } } } }, current: "space", caption: "Waiting to upload · 12th in line" },
+  { name: "space: next in line when the lane is busy and nothing is ahead", patch: { space: { pending: { upload: { state: "waiting", bytes: 0, total: 100 }, waitingBehind: 0 }, lane: { busy: true, depth: 3 } } }, current: "space", caption: "Waiting to upload · next in line" },
+  { name: "space: nothing ahead and an idle lane is just waiting", patch: { space: { pending: { waitingBehind: 0 }, lane: { busy: false, depth: 0 } } }, current: "space", caption: "Waiting to upload" },
+  { name: "space: 2nd in line is one note ahead", patch: { space: { pending: { waitingBehind: 1 }, lane: { busy: true, depth: 2 } } }, current: "space", caption: "Waiting to upload · 2nd in line" },
+  { name: "space: 12th in line is eleven notes ahead", patch: { space: { pending: { waitingBehind: 11 }, lane: { busy: true, depth: 12 } } }, current: "space", caption: "Waiting to upload · 12th in line" },
+  { name: "space: a busy lane with no per-note position never invents one", patch: { space: { pending: {}, lane: { busy: true, depth: 5 } } }, current: "space", caption: "Waiting to upload" },
   { name: "space: uploading 42%", patch: { space: { pending: { upload: { state: "uploading", bytes: 42, total: 100 } } } }, states: { space: "active" }, current: "space", caption: "Uploading · 42%" },
   { name: "space: retrying", patch: { space: { pending: { upload: { state: "retrying", bytes: 42, total: 100 } } } }, states: { space: "active" }, current: "space", caption: "Retrying…" },
   { name: "space: signed out", patch: { space: { pending: { held: "signed-out" } } }, states: { space: "blocked" }, current: "space", cause: "You're signed out. This note is safe on this phone.", action: "sign-in" },
@@ -99,7 +101,9 @@ const ROWS: Row[] = [
   { name: "space: server error is Try again, with its message", patch: { space: { pending: { failed: { kind: "server", message: "503 from kv" } } } }, states: { space: "failed" }, current: "space", cause: "Your space couldn't take this note. It is safe on this phone. · 503 from kv", action: "retry" },
   { name: "space: quota is full (no action)", patch: { space: { pending: { failed: { kind: "quota", message: "quota" } } } }, states: { space: "blocked" }, current: "space", cause: "Your space is full" },
   { name: "space: an expired session is Sign in", patch: { space: { pending: { failed: { kind: "auth", message: "401" } } } }, states: { space: "blocked" }, current: "space", cause: "Your session ended. This note is safe on this phone.", action: "sign-in" },
-  { name: "space: an unknown error shows its own message", patch: { space: { pending: { failed: { kind: "other", message: "Audio file is too large to read" } } } }, states: { space: "failed" }, current: "space", cause: "Audio file is too large to read", action: "retry" },
+  { name: "space: a source failure keeps its message and has no action", patch: { space: { pending: { failed: { kind: "source", message: "Audio file is too large to read" } } } }, states: { space: "failed" }, current: "space", cause: "Audio file is too large to read" },
+  { name: "space: a source failure with no message still names it", patch: { space: { pending: { failed: { kind: "source", message: " " } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't read the recording" },
+  { name: "space: an unknown error shows its own message and stays retryable", patch: { space: { pending: { failed: { kind: "other", message: "Mount point is read only" } } } }, states: { space: "failed" }, current: "space", cause: "Mount point is read only", action: "retry" },
   { name: "space: an unknown error with no message says so", patch: { space: { pending: { failed: { kind: "other", message: "  " } } } }, states: { space: "failed" }, current: "space", cause: "Saving failed with no details", action: "retry" },
 
   // 3. Transcript, Local
@@ -111,6 +115,12 @@ const ROWS: Row[] = [
   { name: "local: download failed is Try again", patch: local({ onDevice: od({ stt: stt("waiting_for_model"), download: "failed", model: { state: "queued", bytes: 0, totalBytes: 640, error: null } }) }, { space: SAVED }), states: { transcript: "failed" }, current: "transcript", cause: "The on-device model couldn't download", action: "retry" },
   { name: "local: waiting for Wi-Fi", patch: local({ onDevice: od({ stt: stt("waiting_for_model"), download: "waiting_for_network", model: { state: "queued", bytes: 0, totalBytes: 640, error: null } }) }, { space: SAVED }), states: { transcript: "waiting" }, current: "transcript", caption: "Waiting for Wi-Fi" },
   { name: "local: Low Data Mode", patch: local({ onDevice: od({ stt: stt("waiting_for_model"), download: "low_data_mode", model: { state: "queued", bytes: 0, totalBytes: 640, error: null } }) }, { space: SAVED }), states: { transcript: "waiting" }, current: "transcript", caption: "Waiting for Wi-Fi · Low Data Mode is on" },
+  { name: "local: no native job, model downloading shows percent", patch: local({ onDevice: od({ model: { state: "downloading", bytes: 268, totalBytes: 640, error: null }, download: "running" }) }, { space: SAVED }), states: { transcript: "active" }, current: "transcript", caption: "Waiting for the on-device model · 42%" },
+  { name: "local: no native job, model verifying", patch: local({ onDevice: od({ model: { state: "verifying", bytes: 640, totalBytes: 640, error: null }, download: "running" }) }, { space: SAVED }), states: { transcript: "active" }, current: "transcript", caption: "Checking the on-device model…" },
+  { name: "local: no native job, waiting for Wi-Fi", patch: local({ onDevice: od({ download: "waiting_for_network", model: { state: "queued", bytes: 0, totalBytes: 640, error: null } }) }, { space: SAVED }), states: { transcript: "waiting" }, current: "transcript", caption: "Waiting for Wi-Fi" },
+  { name: "local: no native job, Low Data Mode", patch: local({ onDevice: od({ download: "low_data_mode", model: { state: "queued", bytes: 0, totalBytes: 640, error: null } }) }, { space: SAVED }), states: { transcript: "waiting" }, current: "transcript", caption: "Waiting for Wi-Fi · Low Data Mode is on" },
+  { name: "local: no native job, model absent is Get the model", patch: local({ onDevice: od({ model: { state: "absent", bytes: 0, totalBytes: 640, error: null } }) }, { space: SAVED }), states: { transcript: "blocked" }, current: "transcript", cause: "Transcripts on this phone need the on-device model", action: "get-model" },
+  { name: "local: no native job, model download in the background before upload", patch: local({ onDevice: od({ model: { state: "downloading", bytes: 64, totalBytes: 640, error: null }, download: "running" }) }), states: { space: "waiting", transcript: "active" }, current: "transcript", caption: "Waiting for the on-device model · 10%" },
   { name: "local: queued 2nd", patch: local({ onDevice: od({ stt: stt("queued"), queue: { position: 2, inLine: 3, percent: null } }) }, { space: SAVED }), states: { transcript: "waiting" }, current: "transcript", caption: "Queued · 2nd" },
   { name: "local: queued next", patch: local({ onDevice: od({ stt: stt("queued"), queue: { position: 1, inLine: 1, percent: null } }) }, { space: SAVED }), current: "transcript", caption: "Queued · next" },
   { name: "local: transcribing 63%", patch: local({ onDevice: od({ stt: stt("running"), queue: { position: 1, inLine: 1, percent: 63 } }) }, { space: SAVED }), states: { transcript: "active" }, current: "transcript", caption: "Transcribing · 63%" },
@@ -146,6 +156,9 @@ const ROWS: Row[] = [
   { name: "private: a failure that cannot be retried shows its reason and reference", patch: cloud({ kind: "failed", code: "recording_too_long", message: "This recording is too long to transcribe.", retryable: false, reference: "ref-9" }), states: { transcript: "failed" }, current: "transcript", cause: "This recording is too long to transcribe. · Reference ref-9" },
   { name: "private: no speech found is done", patch: cloud({ kind: "done", outcome: "no_speech" }), states: { transcript: "done" }, current: null },
   { name: "private: saved but no job yet", patch: { route: "private-cloud", space: SAVED }, states: { transcript: "waiting" }, current: "transcript", caption: "Waiting for private transcription" },
+  { name: "private: a transcript in the space is not done before the note is saved", patch: { route: "private-cloud", transcript: { inSpace: "transcribed" } }, states: { space: "waiting", transcript: "upcoming" }, current: "space" },
+  { name: "private: no speech in the space is not done before the note is saved", patch: { route: "private-cloud", transcript: { inSpace: "no_speech" } }, states: { space: "waiting", transcript: "upcoming" }, current: "space" },
+  { name: "local: a transcript found in the space still counts", patch: local({ inSpace: "transcribed" }, { space: SAVED }), states: { transcript: "done" }, current: null },
   { name: "private: transcript is in the space", patch: { route: "private-cloud", space: SAVED, transcript: { inSpace: "transcribed" } }, states: { space: "done", transcript: "done" }, current: null },
 
   // 4. Notes synced
@@ -261,12 +274,58 @@ describe("pipelineActionPriority", () => {
 describe("stuck-state contract", () => {
   const all = ROWS.map((row) => [row.name, notePipeline(input(row.patch))] as const);
 
-  test("every blocked or failed step has a non-empty cause, and a stuck pipeline has a blocker", () => {
+  test("every blocked or failed step has its own non-empty cause, and only those steps do", () => {
     for (const [name, pipeline] of all) {
-      const stuck = pipeline.steps.some((s) => s.state === "blocked" || s.state === "failed");
-      if (stuck) expect(pipeline.blocker?.cause.trim().length, name).toBeGreaterThan(0);
+      for (const step of pipeline.steps) {
+        const stuck = step.state === "blocked" || step.state === "failed";
+        if (stuck) expect(step.blocker?.cause.trim().length, `${name}: ${step.key}`).toBeGreaterThan(0);
+        else expect(step.blocker, `${name}: ${step.key}`).toBeUndefined();
+      }
+      const anyStuck = pipeline.steps.some((s) => s.state === "blocked" || s.state === "failed");
+      if (anyStuck) expect(pipeline.blocker?.cause.trim().length, name).toBeGreaterThan(0);
       else expect(pipeline.blocker, name).toBeUndefined();
     }
+  });
+
+  test("the visible blocker is exactly the current step's blocker", () => {
+    for (const [name, pipeline] of all) {
+      if (pipeline.blocker === undefined) continue;
+      expect(pipeline.steps.find((s) => s.key === pipeline.current)?.blocker, name).toEqual(pipeline.blocker);
+    }
+  });
+
+  test("simultaneous failures: every step keeps its cause and action; one is visible", () => {
+    const pipeline = notePipeline(input({
+      route: "on-device", hasNotesOrMoments: true,
+      space: { saved: true, pending: null },
+      transcript: { onDevice: od({ stt: stt("failed", "decoder crashed") }) },
+      notes: { state: "failed" },
+    }));
+    const byKey = Object.fromEntries(pipeline.steps.map((s) => [s.key, s]));
+    expect(byKey.transcript!.blocker).toEqual({ cause: "Couldn't transcribe on this phone · decoder crashed", action: { kind: "retry", label: "Try again" } });
+    expect(byKey.notes!.blocker).toEqual({ cause: "Couldn't sync your notes", action: { kind: "retry", label: "Try again" } });
+    expect(pipeline.current).toBe("transcript");
+    expect(pipeline.blocker).toEqual(byKey.transcript!.blocker);
+  });
+
+  test("signed-out upload plus a failed Local transcription keep both causes and actions", () => {
+    const pipeline = notePipeline(input(local({ onDevice: od({ stt: stt("failed", "boom") }) }, { space: { pending: { held: "signed-out" } } })));
+    const byKey = Object.fromEntries(pipeline.steps.map((s) => [s.key, s]));
+    expect(byKey.space!.blocker?.action?.kind).toBe("sign-in");
+    expect(byKey.transcript!.blocker).toEqual({ cause: "Couldn't transcribe on this phone · boom", action: { kind: "retry", label: "Try again" } });
+    expect(pipeline.blocker).toEqual(byKey.space!.blocker);
+  });
+
+  test("three stuck steps at once all keep their blocker", () => {
+    const pipeline = notePipeline(input({
+      route: "private-cloud", hasNotesOrMoments: true,
+      space: { saved: true, pending: null },
+      transcript: { cloud: { kind: "blocked", reason: "unavailable" } },
+      notes: { state: "failed" },
+    }));
+    expect(pipeline.steps.filter((s) => s.blocker !== undefined).map((s) => [s.key, s.blocker!.action?.kind])).toEqual([["transcript", "check-again"], ["notes", "retry"]]);
+    expect(pipeline.blocker?.action?.kind).toBe("retry");
+    expect(pipeline.current).toBe("notes");
   });
 
   test("the current step of a stuck pipeline is the stuck one", () => {

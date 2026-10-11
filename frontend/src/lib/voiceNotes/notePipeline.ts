@@ -23,8 +23,11 @@ export type PipelineActionKind = "sign-in" | "retry" | "get-model" | "check-agai
 /** The recorder's capture issues for this recording (`RecorderCaptureIssue` kinds, plus a quarantined session). */
 export type PipelineCaptureIssue = "finalization_timed_out" | "recoveryFailed" | "quarantined" | "write_failed" | "partial_audio";
 
-/** `PendingNote.failed.kind` (P1). */
-export type PipelineFailureKind = "offline" | "timeout" | "quota" | "auth" | "server" | "other";
+/**
+ * `PendingNote.failed.kind` (P1). `source` (P1 revision, design §9): the audio could not be read, is too large or is
+ * corrupt. It is not retryable, so it carries no action. `other` is an unclassified error and stays retryable.
+ */
+export type PipelineFailureKind = "offline" | "timeout" | "quota" | "auth" | "server" | "source" | "other";
 /** `PendingNote.held` (P1; `SaveOutcome.held.reason` plus signed-out). */
 export type PipelineHeldReason = "signed-out" | "other-account" | "legacy" | "unowned";
 
@@ -33,9 +36,15 @@ export interface PipelinePending {
   upload?: { state: "waiting" | "uploading" | "retrying"; bytes: number; total: number };
   failed?: { kind: PipelineFailureKind; message: string };
   held?: PipelineHeldReason;
-  /** The space write lane. `depth` is how many other saves are ahead of this note (0 = it is next). */
-  lane?: { busy: boolean; depth: number };
+  /** Per note: how many notes are ahead of this one in the save queue (0 = next). This is the only queue position. */
+  waitingBehind?: number;
 }
+
+/**
+ * `spaceLaneSnapshot()` (P1): the global write lane. `busy`: a job is running or queued. `depth`: every queued job,
+ * including this note and the ones behind it, so it is NOT a position and is never shown. Only `busy` is read.
+ */
+export interface PipelineSpaceLane { busy: boolean; depth: number }
 
 /** `NoteSttState["state"]`. */
 export type PipelineSttState = "waiting_for_model" | "queued" | "running" | "done" | "failed" | "cancelled";
@@ -93,7 +102,7 @@ export interface NotePipelineInput {
   hasNotesOrMoments: boolean;
   online: boolean;
   capture: { finalizing: boolean; issue: PipelineCaptureIssue | null };
-  space: { saved: boolean; pending: PipelinePending | null };
+  space: { saved: boolean; pending: PipelinePending | null; lane: PipelineSpaceLane };
   transcript: {
     /** The space row already has a transcript outcome. */
     inSpace: "transcribed" | "no_speech" | null;
@@ -109,6 +118,8 @@ export interface PipelineStep {
   key: StepKey;
   label: string;
   state: StepState;
+  /** Why this step is blocked or failed, and its action. Every blocked or failed step has one. */
+  blocker?: PipelineBlocker;
   /** What this step is doing now, for the surfaces to show when it is the current step. */
   caption?: string;
   /** 0..1 for an active step that knows how far along it is. */
@@ -127,6 +138,7 @@ export interface NotePipeline {
   /** The step to show a caption and blocker for; null when everything is done. */
   current: StepKey | null;
   done: boolean;
+  /** The one blocker to show: the blocker of `current`, chosen by action priority across all stuck steps. */
   blocker?: PipelineBlocker;
   /** Information that is not a problem and not a step ("part of this recording couldn't be written"). */
   notice?: string;
@@ -145,7 +157,7 @@ export function pipelineActionPriority(kind: PipelineActionKind | undefined): nu
 
 // --- Selector -------------------------------------------------------------------------------------------------
 
-type Result = Omit<PipelineStep, "key" | "label"> & { blocker?: PipelineBlocker };
+type Result = Omit<PipelineStep, "key" | "label">;
 
 const block = (cause: string, kind?: PipelineActionKind): PipelineBlocker =>
   kind === undefined ? { cause } : { cause, action: { kind, label: ACTION_LABEL[kind] } };
@@ -191,6 +203,7 @@ function spaceStep(input: NotePipelineInput): Result {
         return failed(SPACE_COPY.unreachable(device), "retry");
       case "timeout": return failed(SPACE_COPY.timeout(device), "retry");
       case "server": return failed(SPACE_COPY.server(failure.message, device), "retry");
+      case "source": return failed(SPACE_COPY.source(failure.message));
       case "other": return failed(SPACE_COPY.unknown(failure.message), "retry");
     }
   }
@@ -200,8 +213,8 @@ function spaceStep(input: NotePipelineInput): Result {
     return withProgress("active", SPACE_COPY.uploading(fraction(upload.bytes, upload.total)), fraction(upload.bytes, upload.total));
   }
   if (upload?.state === "retrying") return withProgress("active", SPACE_COPY.retrying, fraction(upload.bytes, upload.total));
-  const lane = pending?.lane;
-  if (lane !== undefined && lane.busy) return { state: "waiting", caption: SPACE_COPY.waitingInLine(lane.depth + 1) };
+  const ahead = pending?.waitingBehind;
+  if (ahead !== undefined && (ahead > 0 || input.space.lane.busy)) return { state: "waiting", caption: SPACE_COPY.waitingInLine(ahead + 1) };
   return { state: "waiting", caption: SPACE_COPY.waiting };
 }
 
@@ -235,7 +248,7 @@ function onDeviceStep(input: NotePipelineInput, od: PipelineOnDevice): Result {
   if (sync?.state === "synced") return { state: "done" };
   if (stt === null) {
     const model = modelStep(od, input.device);
-    if (model !== null && model.state !== "active" && model.state !== "waiting") return model;
+    if (model !== null) return model;
     return saved ? { state: "waiting", caption: LOCAL_COPY.notStarted } : { state: "upcoming" };
   }
   switch (stt.state) {
@@ -292,6 +305,7 @@ function cloudStep(cloud: PipelineCloud | null, spaceSaved: boolean): Result {
 
 function transcriptStep(input: NotePipelineInput): Result {
   const { inSpace, onDevice, cloud } = input.transcript;
+  if (input.route === "private-cloud" && !input.space.saved) return { state: "upcoming" };
   if (inSpace !== null) return inSpace === "no_speech" ? { state: "done", caption: LOCAL_COPY.noSpeech } : { state: "done" };
   if (input.route === "private-cloud") return cloudStep(cloud, input.space.saved);
   if (onDevice === null) return input.space.saved ? { state: "waiting", caption: LOCAL_COPY.notStarted } : { state: "upcoming" };
@@ -328,6 +342,7 @@ export function notePipeline(input: NotePipelineInput): NotePipeline {
   ];
   const steps: PipelineStep[] = results.map(([key, label, result]) => {
     const step: PipelineStep = { key, label, state: result.state };
+    if (result.blocker !== undefined) step.blocker = result.blocker;
     if (result.caption !== undefined) step.caption = result.caption;
     if (result.progress !== undefined) step.progress = result.progress;
     if (result.sublabel !== undefined) step.sublabel = result.sublabel;
