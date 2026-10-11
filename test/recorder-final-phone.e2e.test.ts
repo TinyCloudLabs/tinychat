@@ -798,8 +798,11 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
 
       await copy.focus();
       await focused(copy);
-      await copy.evaluate((element) => {
+      await copy.evaluate(async (element) => {
         element.scrollTop = element.scrollHeight;
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => resolve()),
+        );
       });
       expect(
         await copy.evaluate((element) => element.scrollTop),

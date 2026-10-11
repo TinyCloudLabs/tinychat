@@ -939,6 +939,8 @@
   align-items: flex-start;
   gap: 6px;
   padding-right: 28px;
+  /* Give fractional WebKit line boxes enough scroll range to clear the clip edge. */
+  padding-bottom: 1px;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
