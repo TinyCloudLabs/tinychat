@@ -42,27 +42,53 @@ in full even when they exceed the ordinary 15-minute retry backoff limit.
 ptx runs one bot per Meet, so two connected accounts that auto-join the same meeting must not
 both send one. Before a calendar dispatch, the worker takes a per-Meet-link claim (under
 `calendar-autojoin/v1/captures/`, keyed by a hash of the normalized link, with the occurrence's
-time window). If another account holds a live claim whose window overlaps, this account sends no
-bot and its Transcriber shows "Already being recorded by another TinyCloud account". Back-to-back
-meetings in the same room and last week's occurrence of a recurring meeting do not overlap.
-Dedupe and that non-alarming state ship unconditionally. The claim relies on the single writer
-above; with more than one writer a race falls through to the ptx backstop below.
+time window). The claim relies on the single writer above; with more than one writer a race falls
+through to the ptx backstop below. Dedupe and the states below ship unconditionally.
 
-**Share if on the invite.** With `CALENDAR_AUTOJOIN_SHARING=true` (default off), when the owner's
-capture ends the worker checks once, server-side, whether the other account's verified Google
-email is an **accepted** attendee on the **owner's own** calendar event for that meeting. A's
-calendar is the trust anchor: copying a Meet link into your own calendar gets you nothing. If the
-check passes, the recording is added to the other account's Transcriber list as a "Shared
-recording": it can read the transcript and remove the recording from its own list, but cannot end
-the bot or delete the owner's recording. The owner's address and occurrence id are never sent to
-the other account's browser. Otherwise the other account sees "Already being recorded" and gets
-nothing; it never learns whether or how the owner's capture finished.
+**Liveness.** Another account's overlapping claim holds this account off only while that
+account's bot is actually in, or about to be in, the call: its ptx meeting is `queued`, `joining`,
+`waiting_for_admission` or `in_progress`. From `processing` on, the bot has left. An owner that
+never got a meeting id counts only until its dispatch cutoff plus one minute. The owner's ptx
+status is read before any lock is taken. If the other bot leaves (finished, failed, stopped,
+deleted) while this account is still inside its own dispatch window (one minute before start to
+five minutes after), this account sends its own bot straight away. Back-to-back meetings in the
+same room and last week's occurrence of a recurring meeting never overlap.
 
-The check fails closed when the owner's Google access is revoked or needs reconnect, the owner
-turned auto-join off, the owner's event was cancelled, moved, relinked or deleted, Google truncated
-the guest list, or the other account has no verified email. A transient Google outage retries until
-24 hours after the meeting's scheduled end, then denies. Email matching is exact and
-case-insensitive; aliases and `+tag` addresses do not match.
+**Corroboration.** When an account attaches to another account's capture, it checks its OWN
+fresh calendar event for that meeting. The attach is corroborated only if the capturing account's
+verified Google email is that event's organizer or an accepted attendee. Otherwise the account
+still sends no bot (only one can join), but the attach is **unverified**: it never receives a
+transcript, the capturing account's calendar is never read for it, and the Transcriber says "A
+TinyCloud notetaker from an account we couldn't match to your invite is already in this meeting"
+(`unverified_capture`). This stops an account from putting someone's address on its own event,
+joining their room early, and collecting their transcript. Until both accounts have reconnected
+for the `email` scope, every collision is unverified.
+
+**Share if on the invite.** With `CALENDAR_AUTOJOIN_SHARING=true` (default off), a corroborated
+attach shows "Already being recorded by another TinyCloud account. If you accepted that account's
+calendar invite, the transcript will be added..." (`shared_capture_pending`). With the flag off it
+shows "Already being recorded by another TinyCloud account. Only one notetaker can join a meeting."
+(`capture_in_progress`) and never promises a transcript. When the owner's capture ends, the
+worker checks once, server-side, whether the attached account's verified Google email is an
+**accepted** attendee on the **owner's own** calendar event for that meeting. If it is, the
+recording is added to the attached account's Transcriber list as a "Shared recording": it can read
+the transcript and remove the recording from its own list. It cannot end the bot or delete the
+owner's recording. Stop and delete reach ptx only when the meeting's `tinychat_address` is the
+caller's own address. The owner's address and occurrence id are never sent to the attached
+account's browser. Otherwise the attached account sees "Already being recorded" and gets nothing;
+it never learns whether or how the owner's capture finished.
+
+The check fails closed when:
+- the owner's Google access is revoked or needs a reconnect;
+- the owner turned auto-join off;
+- the owner's event was cancelled, moved, relinked or deleted;
+- Google truncated the guest list;
+- the attached account has no verified email.
+
+Storage, network and other non-authorization errors retry until 24 hours after the meeting's
+scheduled end, then deny. Email matching is exact and case-insensitive; aliases and `+tag`
+addresses do not match. Turning auto-join off while attached returns the occurrence to its normal
+lifecycle (no "already handled" marker), so turning it back on inside the window can still send.
 
 - **Verified email.** The email is stored only when Google's ID token marks it verified, and only
   for connections made after the `email` scope was added. Existing connections fail closed until
@@ -75,11 +101,20 @@ case-insensitive; aliases and `+tag` addresses do not match.
   shared.
 - There is no revocation after a grant. If the owner deletes the recording upstream, it drops out
   of the other account's list the next time that list loads.
-- Logs carry only `code=share_granted` or `code=share_denied reason=...`, never an email or address.
+- Logs carry only codes (`share_granted`, `share_denied reason=...`, `shared_capture_attached
+  corroborated=...`, `already_captured`), never an email or address.
+
+Accepted limitations:
+- **Claim documents.** There is one tiny claim document per distinct auto-joined Meet link. Claims
+  are pruned 24 hours after their window ends, on the next write for that link; a link nobody
+  auto-joins again keeps its last document. Liveness never trusts a claim alone.
+- **Reassigned addresses.** A stale verified email could matter only if a Workspace address is
+  reassigned, the new holder accepts the invite, and the stale account has the same Meet on its own
+  calendar in an overlapping window. Reconnecting refreshes the stored email.
 
 Rollout: deploy with the flag off, update the consent screen's scope list, have the test accounts
 reconnect Google auto-join so their verified email is stored, turn the flag on in dev, prove it
-live, then production. Turning the flag off is the rollback; dedupe stays on.
+live, then production. Turning the flag off is the rollback; dedupe and corroboration stay on.
 
 ## Storage and retention
 
