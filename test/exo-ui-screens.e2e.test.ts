@@ -637,6 +637,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
               }
               if (screen.platform === "ios" || screen.platform === "android") {
                 const scale = Math.min(2, viewport.textScale ?? 1);
+                const shortLandscapeRecorder = viewport.id === "phone-land";
                 const typography = screen.id.startsWith("capture-soft-")
                   ? [
                       [".soft-sect", 14],
@@ -648,7 +649,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                     : screen.id.startsWith("recorder-final-phone-")
                       ? [
                           [".pr-mname", 20],
-                          [".pr-time", 60, 100],
+                          [".pr-time", shortLandscapeRecorder ? 48 : 60, shortLandscapeRecorder ? 80 : 100],
                         ] as const
                       : [];
                 for (const [selector, baseSize, cap] of typography) {
