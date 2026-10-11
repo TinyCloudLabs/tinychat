@@ -6,8 +6,8 @@ and a successful primary-calendar probe. The browser importer remains independen
 ## Configuration
 
 - Enable `GOOGLE_MEET_OAUTH_ENABLED` and configure the existing Google client and callback.
-- Enable Calendar API in that Google project. Register `calendar.events.owned.readonly` and
-  `openid` alongside the existing Meet, Drive, and Docs scopes. Complete applicable Google
+- Enable Calendar API in that Google project. Register `calendar.events.owned.readonly`,
+  `openid` and `email` alongside the existing Meet, Drive, and Docs scopes. Complete applicable Google
   publishing and verification requirements; Testing refresh tokens commonly last seven days.
   See Google's [Calendar authorization scopes](https://developers.google.com/workspace/calendar/api/auth)
   and [refresh-token expiration rules](https://developers.google.com/identity/protocols/oauth2#expiration).
@@ -36,6 +36,50 @@ The timer ticks every 30 seconds. Calendar discovery runs roughly once a minute,
 events; an incomplete scan suppresses new dispatches until a complete scan succeeds. Four external
 operations can run concurrently, with at most one dispatch per tenant. Retry-After delays are kept
 in full even when they exceed the ordinary 15-minute retry backoff limit.
+
+## Two accounts in the same meeting (TC-581)
+
+ptx runs one bot per Meet, so two connected accounts that auto-join the same meeting must not
+both send one. Before a calendar dispatch, the worker takes a per-Meet-link claim (under
+`calendar-autojoin/v1/captures/`, keyed by a hash of the normalized link, with the occurrence's
+time window). If another account holds a live claim whose window overlaps, this account sends no
+bot and its Transcriber shows "Already being recorded by another TinyCloud account". Back-to-back
+meetings in the same room and last week's occurrence of a recurring meeting do not overlap.
+Dedupe and that non-alarming state ship unconditionally. The claim relies on the single writer
+above; with more than one writer a race falls through to the ptx backstop below.
+
+**Share if on the invite.** With `CALENDAR_AUTOJOIN_SHARING=true` (default off), when the owner's
+capture ends the worker checks once, server-side, whether the other account's verified Google
+email is an **accepted** attendee on the **owner's own** calendar event for that meeting. A's
+calendar is the trust anchor: copying a Meet link into your own calendar gets you nothing. If the
+check passes, the recording is added to the other account's Transcriber list as a "Shared
+recording": it can read the transcript and remove the recording from its own list, but cannot end
+the bot or delete the owner's recording. The owner's address and occurrence id are never sent to
+the other account's browser. Otherwise the other account sees "Already being recorded" and gets
+nothing; it never learns whether or how the owner's capture finished.
+
+The check fails closed when the owner's Google access is revoked or needs reconnect, the owner
+turned auto-join off, the owner's event was cancelled, moved, relinked or deleted, Google truncated
+the guest list, or the other account has no verified email. A transient Google outage retries until
+24 hours after the meeting's scheduled end, then denies. Email matching is exact and
+case-insensitive; aliases and `+tag` addresses do not match.
+
+- **Verified email.** The email is stored only when Google's ID token marks it verified, and only
+  for connections made after the `email` scope was added. Existing connections fail closed until
+  the user reconnects Google auto-join.
+- **Hidden guest lists.** If the organizer hides the guest list, the owner's copy of the event may
+  not list the other account, so the share is denied.
+- **ptx backstop.** A bot sent outside this claim (a manual send, or another writer) makes ptx
+  fail the second meeting with `meeting_already_captured`. That account's empty meeting is removed
+  from its list and deleted upstream, and the occurrence shows "Already being recorded". It is never
+  shared.
+- There is no revocation after a grant. If the owner deletes the recording upstream, it drops out
+  of the other account's list the next time that list loads.
+- Logs carry only `code=share_granted` or `code=share_denied reason=...`, never an email or address.
+
+Rollout: deploy with the flag off, update the consent screen's scope list, have the test accounts
+reconnect Google auto-join so their verified email is stored, turn the flag on in dev, prove it
+live, then production. Turning the flag off is the rollback; dedupe stays on.
 
 ## Storage and retention
 
