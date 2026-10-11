@@ -18,6 +18,7 @@ import {
   type NotePipelineFacts,
   type PipelineActionEnv,
 } from "./useNotePipeline";
+import { pendingStore } from "./recorderSaves";
 import { voiceNoteMarkdownKvKey } from "./voiceNoteStore";
 
 const ID = "note-1";
@@ -107,7 +108,8 @@ describe("the pipeline from composed stores", () => {
   test("a note with written notes that never synced offers to sync them (idle), then synced on the row's own evidence", () => {
     const local = { editedAt: EDITED, hasContent: true };
     const before = run({ saved: true, native: { transcriber: "off", stt: null }, rowMetadata: {}, localNote: local });
-    expect(stateOf(before, "notes")).not.toBe("done");
+    expect(stateOf(before, "notes")).toBe("blocked");
+    expect(before.blocker?.action?.kind).toBe("retry");
     expect(before.done).toBe(false);
     const after = run({
       saved: true, native: { transcriber: "off", stt: null }, localNote: local,
@@ -203,6 +205,77 @@ describe("decision (a): notes are synced on positive evidence only", () => {
   });
 });
 
+describe("failed reads are never read as absent or ready", () => {
+  const local = { editedAt: EDITED, hasContent: true };
+
+  test("a failed ledger read shows its cause on the transcript step, and the note is not done", () => {
+    const pipeline = run({ saved: true, native: null, readError: "The phone's note list wouldn't open: busy" });
+    expect(stateOf(pipeline, "transcript")).toBe("failed");
+    expect(pipeline.blocker?.cause).toBe("Couldn't check this note's transcript · The phone's note list wouldn't open: busy");
+    expect(pipeline.blocker?.action?.kind).toBe("retry");
+    expect(pipeline.done).toBe(false);
+  });
+
+  test("a failed read of the note's own text is a failed notes step with its cause, never skipped", () => {
+    const pipeline = run({ saved: true, native: { transcriber: "off", stt: null }, localNote: null, localNoteError: "EIO" });
+    expect(stateOf(pipeline, "notes")).toBe("failed");
+    expect(pipeline.blocker?.cause).toBe("Couldn't read this note's text on this phone · EIO");
+    expect(pipeline.done).toBe(false);
+  });
+
+  test("a read that worked and found nothing is still skipped (absence is not an error)", () => {
+    const pipeline = run({ saved: true, native: { transcriber: "off", stt: null }, localNote: null });
+    expect(stateOf(pipeline, "notes")).toBe("skipped");
+    expect(pipeline.done).toBe(true);
+  });
+
+  test("unsynced local notes offer Try again once the transcript is settled; they wait their turn behind a running one", () => {
+    const idle = run({ saved: true, native: { transcriber: "off", stt: null }, rowMetadata: {}, localNote: local });
+    expect(idle.blocker?.cause).toBe("Your notes haven't reached your space yet");
+    const behind = run({ saved: true, native: { transcriber: "private-cloud", stt: null }, rowMetadata: {}, localNote: local, cloudJob: { kind: "active", status: { kind: "processing", completed: 1, total: 3 } } as never });
+    expect(stateOf(behind, "notes")).toBe("upcoming");
+    expect(behind.current).toBe("transcript");
+  });
+});
+
+describe("durable transcript evidence without a library row (the receipt)", () => {
+  const onDevice = { transcriber: "on-device" as const, stt: { state: "done" as const, error: null } };
+
+  test("the ledger's saved transcript sync covers the outcome it was written for", () => {
+    const pipeline = run({
+      saved: true, rowMetadata: null, onDeviceStatus: BOTH_READY,
+      native: { ...onDevice, transcriptSync: { state: "saved" } as never, transcriptOutcome: "transcribed" },
+    });
+    expect(stateOf(pipeline, "transcript")).toBe("done");
+  });
+
+  test("a ledger sync that is not saved proves nothing", () => {
+    const pipeline = run({
+      saved: true, rowMetadata: null, onDeviceStatus: BOTH_READY,
+      native: { ...onDevice, transcriptSync: { state: "pending" } as never, transcriptOutcome: "transcribed" },
+    });
+    expect(stateOf(pipeline, "transcript")).not.toBe("done");
+  });
+
+  test("the space row's own outcome is the evidence when a row was read", () => {
+    const pipeline = run({ saved: true, rowMetadata: { transcription_outcome: "no_speech" }, native: { ...onDevice, transcriptSync: null, transcriptOutcome: null }, onDeviceStatus: BOTH_READY });
+    expect(stateOf(pipeline, "transcript")).toBe("done");
+  });
+});
+
+describe("a parked recording", () => {
+  test("shows Couldn't recover with the audio kept, and no upload progress", () => {
+    const pipeline = run({
+      saved: false, native: { transcriber: "off", stt: null },
+      capture: { finalizing: false, issue: { kind: "quarantined" } },
+      pending: { id: ID, startedAt: 0, durationMs: 1000, upload: { state: "uploading", bytes: 40, total: 100 } },
+    });
+    expect(stateOf(pipeline, "phone")).toBe("failed");
+    expect(pipeline.blocker?.cause).toBe("Couldn't recover · audio kept");
+    expect(stateOf(pipeline, "space")).toBe("upcoming");
+  });
+});
+
 describe("transcriptRetryTarget", () => {
   test("says which retry the transcript step means", () => {
     const input = (patch: Partial<NotePipelineFacts>) => buildNotePipelineInput(facts(patch));
@@ -226,7 +299,7 @@ describe("actions", () => {
   } as VoiceNoteTranscriptionProps);
   const envFor = (patch: Partial<NotePipelineFacts>, env: Partial<PipelineActionEnv> = {}): PipelineActionEnv => {
     const input = buildNotePipelineInput(facts(patch));
-    return { id: ID, tcw: null, pipeline: notePipeline(input), input, transcription: undefined, saveNow: () => {}, signIn: null, ...env };
+    return { id: ID, tcw: null, pipeline: notePipeline(input), input, transcription: undefined, latestTranscription: () => env.transcription, saveNow: () => {}, signIn: null, reread: () => {}, ...env };
   };
   const signedOutEnv = (env: Partial<PipelineActionEnv> = {}) => envFor({
     saved: false, native: { transcriber: "off", stt: null }, pending: { id: ID, startedAt: 0, durationMs: 1, held: "signed-out" },
@@ -265,6 +338,36 @@ describe("actions", () => {
     expect(checks).toBe(1);
     expect(await runPipelineAction("check-again", envFor({}, { transcription: transcription({ onRecheck: async () => { throw new Error("offline"); } }) }))).toBe("offline");
     expect(await runPipelineAction("check-again", envFor({}))).toBe("Private transcription isn't available here.");
+  });
+
+  test("check-again shows the cause the transcriber kept when its check settles on a failure", async () => {
+    const failed = transcription({ availability: "failed", checkError: "the capability request timed out" });
+    expect(await runPipelineAction("check-again", envFor({}, { transcription: failed, latestTranscription: () => failed })))
+      .toBe("Couldn't check private transcription: the capability request timed out");
+    const noCause = transcription({ availability: "failed" });
+    expect(await runPipelineAction("check-again", envFor({}, { transcription: noCause, latestTranscription: () => noCause })))
+      .toBe("Couldn't check private transcription: no details were kept");
+    const ok = transcription();
+    expect(await runPipelineAction("check-again", envFor({}, { transcription: ok, latestTranscription: () => ok }))).toBeNull();
+  });
+
+  test("space retry awaits Save now: its rejection, and a failure the store reports instead of throwing, both come back", async () => {
+    const env = (saveNow: PipelineActionEnv["saveNow"]) => envFor({ saved: false, native: { transcriber: "off", stt: null }, pending: { id: ID, startedAt: 0, durationMs: 1, failed: { kind: "timeout", message: "deadline" } } }, { saveNow });
+    expect(await runPipelineAction("retry", env(async () => { throw new Error("the account is not ready"); }))).toBe("the account is not ready");
+    pendingStore.reportError("Couldn't set up your space defaults");
+    try {
+      expect(await runPipelineAction("retry", env(async () => { await Promise.resolve(); }))).toBe("Couldn't set up your space defaults");
+    } finally {
+      await pendingStore.refresh(null);
+    }
+  });
+
+  test("retry on a failed read reads again; it does not pretend to do more", async () => {
+    let rereads = 0;
+    const env = envFor({ saved: true, native: null, readError: "The phone's note list wouldn't open: busy" }, { reread: () => { rereads += 1; } });
+    expect(env.pipeline.current).toBe("transcript");
+    expect(await runPipelineAction("retry", env)).toBeNull();
+    expect(rereads).toBe(1);
   });
 
   test("get-model and the on-device retry go to the on-device plugin, and a refusal keeps its message", async () => {

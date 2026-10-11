@@ -104,7 +104,7 @@ export interface RecorderValue {
   resume(): void;
   /** Stop the live recording and delete it; the sheet closes once it is gone. */
   discard(): void;
-  retryPending(): void;
+  retryPending(): void | Promise<void>;
   openSettings(): Promise<void>;
   /** The receipt was read (Done, Open): it goes, and the sheet closes. */
   dismissOutcome(): void;

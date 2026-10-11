@@ -73,7 +73,7 @@ export const LOCAL_COPY = {
   verifyingModel: "Checking the on-device model…",
   waitingForWifi: "Waiting for Wi-Fi",
   lowDataMode: "Waiting for Wi-Fi · Low Data Mode is on",
-  needsModel: (device: PipelineDevice) => `Transcripts on ${deviceName(device)} need the on-device model`,
+  needsModel: (device: PipelineDevice) => `Transcripts on ${deviceName(device)} need the on-device model.`,
   modelFailed: (detail: string | null | undefined) => withDetail("The on-device model couldn't download", detail),
   queued: (position: number | null) => (position === null ? "Queued" : `Queued · ${place(position)}`),
   transcribing: (fraction: number | null) => (fraction === null ? "Transcribing…" : `Transcribing · ${percentText(fraction)}`),
@@ -83,6 +83,7 @@ export const LOCAL_COPY = {
   syncFailed: (detail: string | null | undefined) => withDetail("Couldn't add the transcript to this note", detail),
   notStarted: "Waiting to transcribe",
   noSpeech: "No speech found",
+  readFailed: (detail: string | null | undefined) => withDetail("Couldn't check this note's transcript", detail),
 };
 
 export const PRIVATE_COPY = {
@@ -109,5 +110,6 @@ export const NOTES_COPY = {
   syncing: "Syncing notes…",
   failed: "Couldn't sync your notes",
   waitingForRow: "Waiting for the note to reach your space",
-  notStarted: "Waiting to sync notes",
+  notSynced: "Your notes haven't reached your space yet",
+  unreadable: (detail: string | null | undefined) => withDetail("Couldn't read this note's text on this phone", detail),
 };

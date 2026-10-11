@@ -32,6 +32,8 @@ const ITEM: LibraryItem = {
   durationSecs: 42,
   onPhone: true,
 };
+const { onPhone: _onPhone, ...SAVED_FIELDS } = ITEM;
+const SAVED_ITEM: LibraryItem = { ...SAVED_FIELDS, id: "row-1" };
 const STORE: SavedNoteStore = {
   load: async () => ({ md: "- **0:08** Book the venue before Friday", savedEditAt: null }),
   save: async (_id, md) => ({ record: { md, savedEditAt: null }, synced: Promise.resolve() }),
@@ -44,6 +46,7 @@ function Sheet(props: { pipeline: NotePipeline; actionError?: string }) {
   const theme = useResolvedTheme() === "dark" ? "night" : "day";
   const view = viewOf(props.pipeline, props.actionError ?? null);
   const showing = !props.pipeline.done;
+  const item = showing ? ITEM : SAVED_ITEM;
   return (
     <StaticRecorderProvider value={{}}>
       <NotePipelineContext.Provider value={view}>
@@ -51,18 +54,18 @@ function Sheet(props: { pipeline: NotePipeline; actionError?: string }) {
           screen={screen}
           layout="sheet"
           theme={theme}
-          id={ITEM.id}
+          id={item.id}
           recordingId={NOTE_ID}
           title="Standup"
-          meta={savedNoteMeta(ITEM, null, "ios", !showing)}
+          meta={savedNoteMeta(item, null, "ios", !showing)}
           stepper={showing ? <PipelineStepper pipeline={view.pipeline} onAction={view.onAction} actionError={view.actionError} /> : null}
           audio={null}
           transcript={
             <Transcript
-              item={ITEM}
+              item={item}
               listStatus="ready"
               metadata={{ status: "ok", metadata: {} }}
-              transcript={{ status: "absent" }}
+              transcript={showing ? { status: "absent" } : { status: "ok", sentences: [{ index: 0, speaker_name: null, text: "Book the venue before Friday.", start_time: 8, end_time: 12 }] }}
               audio={null}
               copyState="idle"
               onCopy={noop}

@@ -59,7 +59,7 @@ const recorder = (patch: Partial<RecorderValue> = {}): RecorderValue => ({
   transcriber: { id: "private-cloud", identifySpeakers: false, source: "default" },
   setTranscriber: async () => "ok",
   record: noop, stop: noop, pause: noop, resume: noop, discard: noop, retryPending: noop, openSettings: async () => {},
-  dismissOutcome: noop, openSheet: noop, minimiseSheet: noop, setReceiptPlaying: noop,
+  dismissOutcome: noop, openSheet: noop, minimiseSheet: noop, setReceiptPlaying: noop, tcw: null,
   subscribeLevel: () => noop, ...patch,
 });
 

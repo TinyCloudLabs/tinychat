@@ -15,6 +15,8 @@ import {
  */
 export interface VoiceNoteTranscriptionProps {
   availability: TranscriptionAvailability;
+  /** Why the availability check failed (`availability` "failed"). */
+  checkError?: string;
   consented: boolean;
   /** The longest note offered, in seconds. */
   maxSeconds: number;
@@ -45,6 +47,7 @@ export function transcriptionProps(
   if (transcriber === null) return undefined;
   return {
     availability: snapshot.availability,
+    ...(snapshot.checkError === undefined ? {} : { checkError: snapshot.checkError }),
     consented: snapshot.consented,
     maxSeconds: maxTranscriptionSeconds(snapshot.capabilities),
     jobs: snapshot.jobs,

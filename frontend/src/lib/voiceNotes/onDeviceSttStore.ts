@@ -23,6 +23,18 @@ function publish(status: OnDeviceSttStatus): void {
   for (const listener of listeners) listener();
 }
 
+/**
+ * iOS reports a running job's decode percent on its own `progress` event, which carries no status (the queue's
+ * state does not change), so the snapshot's queue entry is updated here. A percent is applied only when its whole
+ * number moves, as native already throttles them: nothing re-renders for a repeat.
+ */
+function applyProgress({ id, percent }: { id: string; percent: number }): void {
+  const entry = snapshot.queue.find((job) => job.id === id);
+  if (!entry || entry.state !== "running") return;
+  if (entry.percent !== null && Math.floor(entry.percent) === Math.floor(percent)) return;
+  publish({ ...snapshot, queue: snapshot.queue.map((job) => (job === entry ? { ...job, percent } : job)) });
+}
+
 // An engine without on-device speech never reaches OnDeviceStt; the store stays on its empty snapshot.
 function start(): void {
   if (started || localTranscriptionUnavailable()) return;
@@ -33,9 +45,17 @@ function start(): void {
   try {
     OnDeviceStt.status().then(publish).catch((err: unknown) => console.warn("[OnDeviceStt] status() failed", err));
     OnDeviceStt.addListener("status", publish).catch((err: unknown) => console.warn("[OnDeviceStt] addListener failed", err));
+    OnDeviceStt.addListener("progress", applyProgress).catch((err: unknown) => console.warn("[OnDeviceStt] progress addListener failed", err));
   } catch (err) {
     console.warn("[OnDeviceStt] not available", err);
   }
+}
+
+/** Tests only: forgets the plugin the store followed, so the next subscriber follows the current one from an empty snapshot. */
+export function __resetOnDeviceSttStoreForTests(): void {
+  started = false;
+  snapshot = EMPTY_STATUS;
+  listeners.clear();
 }
 
 export const onDeviceSttStore = {

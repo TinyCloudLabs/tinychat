@@ -4,17 +4,20 @@
 import { useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
+import { recoveryFailedKey, withQuarantine, type HomeIssue } from "@/capture/home/captureIssues";
+import { useSoftHome } from "@/capture/home/softHome";
 import { useRecorder } from "@/capture/recorder/RecorderProvider";
-import type { RecorderCaptureIssue } from "@/capture/recorder/recorderReducer";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { PlatformContext } from "@/lib/platform";
 import { localTranscriptionUnavailable } from "./captureEngine";
-import { spaceLaneSnapshot, subscribeSpaceLane } from "./voiceNoteRows";
+import { resolveVoiceNoteRow, spaceLaneSnapshot, subscribeSpaceLane } from "./voiceNoteRows";
 import {
   VoiceNotes,
   nativeVoiceNotesAvailable,
+  type NoteLedger,
   type NoteSttState,
   type TranscriberId,
+  type VoiceNoteRecording,
 } from "./nativeVoiceNotes";
 import {
   notePipeline,
@@ -37,6 +40,7 @@ import {
   syncOnDeviceTranscript,
   type OnDeviceTranscriptSyncState,
 } from "./onDeviceTranscriber";
+import { useQuarantinedRecordings } from "./quarantine";
 import { loadNote } from "./recordingNotes";
 import { pendingStore, type PendingNote } from "./recorderSaves";
 import {
@@ -46,6 +50,7 @@ import {
   recordingNoteSyncing,
   subscribeRecordingNoteSync,
   syncRecordingNote,
+  readVoiceNoteTranscriptState,
   voiceNoteMarkdownKvKey,
   voiceNoteTranscriptState,
   type NoteSyncSkipReason,
@@ -54,10 +59,24 @@ import type { NoteTranscriptionState } from "./voiceNoteTranscription";
 
 // --- Facts: the stores' answers, as plain data ----------------------------------------------------------------
 
-/** What the phone's own ledger says about a note (`VoiceNotes.listPending`): its committed route and its on-device job. */
+/**
+ * What the phone's own ledger says about a note (`VoiceNotes.listPending`): its committed route, its on-device job,
+ * and the ledger's record of the transcript reaching the space (`transcriptSync`, with the outcome it covers).
+ */
 export interface NativeNote {
   transcriber: TranscriberId | null;
   stt: NoteSttState | null;
+  transcriptSync: NoteLedger["transcriptSync"] | null;
+  transcriptOutcome: "transcribed" | "no_speech" | null;
+}
+
+export function nativeNoteOf(recording: VoiceNoteRecording): NativeNote {
+  return {
+    transcriber: (recording.options?.transcriber as TranscriberId | undefined) ?? null,
+    stt: recording.stt ?? null,
+    transcriptSync: recording.ledger?.transcriptSync ?? null,
+    transcriptOutcome: recording.ledger?.transcript.outcome ?? null,
+  };
 }
 
 /** The local Markdown of a note (`loadNote`): the revision, and whether there is anything written (text or moments). */
@@ -75,9 +94,13 @@ export interface NotePipelineFacts {
   /** The row's metadata as the library read it (`transcription_outcome`, `note_kv_key`, `note_edited_at`); null before it is read. */
   rowMetadata: Record<string, unknown> | null;
   localNote: LocalNoteFacts | null;
-  /** Null: not read, or this build has no phone ledger. */
+  /** Reading the local Markdown failed: the error. The note's text, and so its notes step, is unknown. */
+  localNoteError?: string | null;
+  /** Null: the phone has no ledger entry for the note, or this build has no phone ledger. */
   native: NativeNote | null;
-  capture: { finalizing: boolean; issue: RecorderCaptureIssue | null };
+  /** Reading the phone's ledger, following its jobs, or reading the space row failed: the error. The route and transcript are unknown. */
+  readError?: string | null;
+  capture: { finalizing: boolean; issue: HomeIssue | null };
   pending: PendingNote | null;
   lane: ReturnType<typeof spaceLaneSnapshot>;
   /** Null when this build has no on-device speech. */
@@ -152,7 +175,9 @@ export function combinedModel(status: OnDeviceSttStatus): PipelineOnDevice["mode
  *      (`recordingNoteSyncedAt` equals `editedAt`), which covers the moment before the row is read again.
  * A note with nothing written locally, whose row carries a note pointer (written on another device), has nothing to
  * send and is synced by the row alone. Without evidence the answer is a running sync, a failed sync, a skip, or
- * "idle" (not started); an edit after the last sync changes `editedAt`, so it correctly stops being synced.
+ * "idle" (nothing has synced this revision and nothing is syncing); the notes step turns "idle" into a blocker with a
+ * "Try again" that runs `syncRecordingNote`, so an unsynced note never waits without an action. An edit after the last
+ * sync changes `editedAt`, so it correctly stops being synced.
  */
 export function notesSyncState(facts: Pick<NotePipelineFacts, "id" | "saved" | "rowMetadata" | "localNote" | "noteSync">): PipelineNotesSync {
   const { id, rowMetadata, localNote, noteSync } = facts;
@@ -169,9 +194,10 @@ export function notesSyncState(facts: Pick<NotePipelineFacts, "id" | "saved" | "
 
 // --- The input --------------------------------------------------------------------------------------------------
 
-const CAPTURE_ISSUE: Record<RecorderCaptureIssue["kind"], PipelineCaptureIssue> = {
+const CAPTURE_ISSUE: Record<HomeIssue["kind"], PipelineCaptureIssue> = {
   finalization_timed_out: "finalization_timed_out",
   recoveryFailed: "recoveryFailed",
+  quarantined: "quarantined",
   write_failed: "write_failed",
   partial_audio: "partial_audio",
 };
@@ -193,8 +219,12 @@ function onDeviceInput(facts: NotePipelineFacts): PipelineOnDevice | null {
 
 export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineInput {
   const route = pipelineRoute(facts.native, facts.cloudJob !== null);
-  const outcome = facts.rowMetadata === null ? "none" : voiceNoteTranscriptState(facts.rowMetadata).status;
-  const hasNotesOrMoments = facts.localNote?.hasContent === true || typeof facts.rowMetadata?.note_kv_key === "string";
+  const rowOutcome = facts.rowMetadata === null ? "none" : voiceNoteTranscriptState(facts.rowMetadata).status;
+  // The ledger's own record that the transcript reached the space is durable evidence too (a receipt has no library row read).
+  const ledgerOutcome = facts.native?.transcriptSync?.state === "saved" ? facts.native.transcriptOutcome ?? "none" : "none";
+  const outcome = rowOutcome !== "none" ? rowOutcome : ledgerOutcome;
+  const localNoteError = facts.localNoteError ?? null;
+  const hasNotesOrMoments = localNoteError !== null || facts.localNote?.hasContent === true || typeof facts.rowMetadata?.note_kv_key === "string";
   return {
     device: facts.device,
     route,
@@ -215,15 +245,17 @@ export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineIn
       inSpace: outcome === "none" ? null : outcome,
       onDevice: route === "on-device" ? onDeviceInput(facts) : null,
       cloud: route === "private-cloud" ? facts.cloudJob : null,
+      readError: facts.readError ?? null,
     },
-    notes: notesSyncState(facts),
+    notes: localNoteError !== null ? { state: "unreadable", cause: localNoteError } : notesSyncState(facts),
   };
 }
 
 // --- Actions ----------------------------------------------------------------------------------------------------
 
 /** What the transcript step's "Try again" means right now: write the transcript again, fetch the model, or transcribe again. */
-export function transcriptRetryTarget(input: NotePipelineInput): "private-cloud" | "sync" | "model" | "note" {
+export function transcriptRetryTarget(input: NotePipelineInput): "reread" | "private-cloud" | "sync" | "model" | "note" {
+  if (input.transcript.readError != null && input.transcript.inSpace === null) return "reread";
   if (input.route === "private-cloud") return "private-cloud";
   const od = input.transcript.onDevice;
   if (od?.sync?.state === "failed") return "sync";
@@ -237,10 +269,14 @@ export interface PipelineActionEnv {
   pipeline: NotePipeline;
   input: NotePipelineInput;
   transcription: VoiceNoteTranscriptionProps | undefined;
-  /** The existing Save now / recovery trigger (`recorder.retryPending`). */
-  saveNow: () => void;
+  /** The transcription props as they are now, after an action ran (`transcription` is as they were when it began). */
+  latestTranscription: () => VoiceNoteTranscriptionProps | undefined;
+  /** The existing Save now / recovery trigger (`recorder.retryPending`); its promise is awaited. */
+  saveNow: () => void | Promise<void>;
   /** The app's sign-in entry; absent where there is none. */
   signIn: (() => void | Promise<void>) | null;
+  /** Reads the facts that failed to read again. */
+  reread: () => void;
 }
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -255,21 +291,33 @@ export async function runPipelineAction(kind: PipelineActionKind, env: PipelineA
         return null;
       case "get-model":
         return await downloadOnDeviceModel();
-      case "check-again":
+      case "check-again": {
         if (!env.transcription) return "Private transcription isn't available here.";
         await env.transcription.onRecheck();
-        return null;
+        // `check()` settles on its own failure and keeps the cause in the snapshot.
+        const after = env.latestTranscription();
+        return after?.availability === "failed" ? `Couldn't check private transcription: ${after.checkError ?? "no details were kept"}` : null;
+      }
       case "retry":
         switch (env.pipeline.current) {
-          case "space":
-            env.saveNow();
-            return null;
+          case "space": {
+            await env.saveNow();
+            // Failures no single note owns (the account is not ready, the defaults could not be claimed) are reported to the store, not thrown.
+            return pendingStore.generalError();
+          }
           case "notes":
+            if (env.input.notes.state === "unreadable") {
+              env.reread();
+              return null;
+            }
             if (env.tcw === null) return "Sign in to sync this note.";
             await syncRecordingNote(env.tcw, env.id);
             return null;
           case "transcript":
             switch (transcriptRetryTarget(env.input)) {
+              case "reread":
+                env.reread();
+                return null;
               case "private-cloud":
                 if (!env.transcription) return "Private transcription isn't available here.";
                 env.transcription.onTranscribe(env.id);
@@ -307,18 +355,31 @@ function useStoreVersion(subscribe: (listener: () => void) => () => void): numbe
   return useSyncExternalStore(subscribeCounting, () => version.current, () => version.current);
 }
 
+interface NativeRead {
+  /** The phone has been read for these notes (successfully or not). */
+  ready: boolean;
+  notes: ReadonlyMap<string, NativeNote>;
+  /** The read or its live updates failed: the cause. Never to be taken for "the phone has nothing". */
+  error: string | null;
+  reread: () => void;
+}
+
 /**
  * The notes' native ledger entries, read once per list of ids and again when the plugin says a job ended. `ready`
  * is false until the first read has answered: the route (and so the whole transcript step) depends on it. A read
- * that fails is logged and counts as answered with nothing found, so the pipeline still shows.
+ * that fails, or a listener that cannot register, is kept as `error` with its own message; it is never read as the
+ * phone having no entry for the note.
  */
-function useNativeNotes(ids: readonly string[], enabled: boolean): { ready: boolean; notes: ReadonlyMap<string, NativeNote> } {
+function useNativeNotes(ids: readonly string[]): NativeRead {
   const key = ids.join("\n");
-  const needed = enabled && ids.length > 0 && nativeVoiceNotesAvailable();
-  const [read, setRead] = useState<{ key: string; notes: ReadonlyMap<string, NativeNote> }>({ key: "", notes: new Map() });
+  const needed = ids.length > 0 && nativeVoiceNotesAvailable();
+  const [attempt, setAttempt] = useState(0);
+  const [read, setRead] = useState<{ key: string; notes: ReadonlyMap<string, NativeNote>; error: string | null }>({ key: "", notes: new Map(), error: null });
+  const [listenError, setListenError] = useState<{ key: string; message: string } | null>(null);
   useEffect(() => {
     if (!needed) return;
     let alive = true;
+    setListenError(null);
     const load = () => {
       VoiceNotes.listPending().then(
         ({ recordings }) => {
@@ -326,13 +387,13 @@ function useNativeNotes(ids: readonly string[], enabled: boolean): { ready: bool
           const next = new Map<string, NativeNote>();
           for (const id of ids) {
             const found = recordings.find((recording) => recording.id === id);
-            if (found) next.set(id, { transcriber: (found.options?.transcriber as TranscriberId | undefined) ?? null, stt: found.stt ?? null });
+            if (found) next.set(id, nativeNoteOf(found));
           }
-          setRead({ key, notes: next });
+          setRead({ key, notes: next, error: null });
         },
         (caught: unknown) => {
           console.error("[NotePipeline] Could not read the phone's note ledger", caught);
-          if (alive) setRead((previous) => ({ key, notes: previous.notes }));
+          if (alive) setRead((previous) => ({ key, notes: previous.key === key ? previous.notes : new Map(), error: `The phone's note list wouldn't open: ${messageOf(caught)}` }));
         },
       );
     };
@@ -341,30 +402,44 @@ function useNativeNotes(ids: readonly string[], enabled: boolean): { ready: bool
       OnDeviceStt.addListener("transcribed", (event) => { if (ids.includes(event.id)) load(); }),
       OnDeviceStt.addListener("failed", (event) => { if (ids.includes(event.id)) load(); }),
     ];
-    for (const sub of subs) sub.catch((caught: unknown) => console.error("[NotePipeline] Could not follow on-device transcription", caught));
+    for (const sub of subs) {
+      sub.catch((caught: unknown) => {
+        console.error("[NotePipeline] Could not follow on-device transcription", caught);
+        if (alive) setListenError({ key, message: `Updates from the phone failed to start: ${messageOf(caught)}` });
+      });
+    }
     return () => {
       alive = false;
       for (const sub of subs) sub.then((handle) => handle.remove()).catch(() => {});
     };
     // `ids` is keyed by its content.
-  }, [key, needed]);
-  return { ready: !needed || read.key === key, notes: read.notes };
+  }, [key, needed, attempt]);
+  const reread = useCallback(() => setAttempt((count) => count + 1), []);
+  const error = read.key === key ? read.error : null;
+  return {
+    ready: !needed || read.key === key,
+    notes: read.notes,
+    error: error ?? (listenError?.key === key ? listenError.message : null),
+    reread,
+  };
 }
 
-/** Each note's local Markdown, read again whenever a note sync finishes (an edit syncs after it is written). */
-function useLocalNotes(ids: readonly string[], reread: unknown): ReadonlyMap<string, LocalNoteFacts | null> {
-  const [notes, setNotes] = useState<ReadonlyMap<string, LocalNoteFacts | null>>(new Map());
+type LocalRead = { note: LocalNoteFacts | null } | { error: string };
+
+/** Each note's local Markdown, read again whenever a note sync finishes (an edit syncs after it is written) or on `reread`. A failed read is kept as its error, not as "no note". */
+function useLocalNotes(ids: readonly string[], reread: unknown): ReadonlyMap<string, LocalRead> {
+  const [notes, setNotes] = useState<ReadonlyMap<string, LocalRead>>(new Map());
   const key = ids.join("\n");
   useEffect(() => {
     let alive = true;
     Promise.all(
-      ids.map(async (id): Promise<[string, LocalNoteFacts | null]> => {
+      ids.map(async (id): Promise<[string, LocalRead]> => {
         try {
           const note = await loadNote(id);
-          return [id, note === null ? null : { editedAt: note.editedAt, hasContent: note.md.trim().length > 0 || note.moments.length > 0 }];
+          return [id, { note: note === null ? null : { editedAt: note.editedAt, hasContent: note.md.trim().length > 0 || note.moments.length > 0 } }];
         } catch (caught) {
           console.error("[NotePipeline] Could not read the local note", id, caught);
-          return [id, null];
+          return [id, { error: `The note's text wouldn't open on this phone: ${messageOf(caught)}` }];
         }
       }),
     ).then((entries) => { if (alive) setNotes(new Map(entries)); });
@@ -373,14 +448,46 @@ function useLocalNotes(ids: readonly string[], reread: unknown): ReadonlyMap<str
   return notes;
 }
 
+type RowRead = { metadata: Record<string, unknown> | null } | { error: string };
+
+/**
+ * The space rows of notes whose caller has not read them (the receipt): the row, and the transcript outcome the same
+ * way the library reads it (a transcript commit is authoritative). This is the durable evidence that a transcript or a
+ * note reached the space, rather than the session's own sync stores. Read again when `signal` changes. A failed read is its error.
+ */
+function useSpaceRows(wanted: readonly { id: string; tcw: TinyCloudWeb }[], signal: string): ReadonlyMap<string, RowRead> {
+  const [rows, setRows] = useState<ReadonlyMap<string, RowRead>>(new Map());
+  const key = wanted.map((entry) => entry.id).join("\n");
+  useEffect(() => {
+    if (wanted.length === 0) return;
+    let alive = true;
+    Promise.all(
+      wanted.map(async ({ id, tcw }): Promise<[string, RowRead]> => {
+        try {
+          const [row, transcript] = await Promise.all([resolveVoiceNoteRow(tcw, id), readVoiceNoteTranscriptState(tcw, id)]);
+          const metadata = row === null ? null : transcript.status === "none" ? row.metadata : { ...row.metadata, transcription_outcome: transcript.status };
+          return [id, { metadata }];
+        } catch (caught) {
+          console.error("[NotePipeline] Could not read the note's row in the space", id, caught);
+          return [id, { error: `Your space's copy of this note wouldn't open: ${messageOf(caught)}` }];
+        }
+      }),
+    ).then((entries) => { if (alive) setRows(new Map(entries)); });
+    return () => { alive = false; };
+  }, [key, signal]);
+  return rows;
+}
+
 export interface NotePipelineSource {
   tcw: TinyCloudWeb | null;
   /** The note is a row in the space (not the phone-only stand-in, nor a receipt that has not saved yet). */
   saved: boolean;
-  /** The space row's metadata; null before it is read or when the note has no row. */
-  metadata: Record<string, unknown> | null;
-  /** A caller that already read the phone's ledger for this note (the receipt) hands it over, so it is not read twice. */
-  native?: NativeNote | null;
+  /**
+   * The space row's metadata as the caller read it; null when it has no row or the read is not available.
+   * Left out (undefined) when the caller has not read the row (the receipt): the hook reads it itself, and again
+   * when the note's transcript or notes change, so completion rests on the space and not on this session's stores.
+   */
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface NotePipelineView {
@@ -392,8 +499,13 @@ export interface NotePipelineView {
 
 interface PipelineState { input: NotePipelineInput; pipeline: NotePipeline }
 
-/** Each note's input and pipeline, off one set of subscriptions. Notes the local Markdown read has not answered for are left out. */
-function usePipelineStates(entries: readonly { id: string; source: NotePipelineSource }[]): ReadonlyMap<string, PipelineState> {
+/** Each note's input and pipeline, off one set of subscriptions. Notes the reads have not answered for are left out. */
+function usePipelineStates(entries: readonly { id: string; source: NotePipelineSource }[]): {
+  states: ReadonlyMap<string, PipelineState>;
+  natives: ReadonlyMap<string, NativeNote>;
+  nativeReady: boolean;
+  reread: () => void;
+} {
   const recorder = useRecorder();
   const platform = useContext(PlatformContext);
   const ids = useMemo(() => entries.map((entry) => entry.id), [entries]);
@@ -402,25 +514,59 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
   const onDeviceStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const syncVersion = useStoreVersion(subscribeRecordingNoteSync);
   const transcriptSyncVersion = useStoreVersion(subscribeOnDeviceTranscriptSync);
-  const nativeRead = useNativeNotes(ids, entries.some((entry) => entry.source.native === undefined));
+  const nativeRead = useNativeNotes(ids);
   const natives = nativeRead.notes;
-  const locals = useLocalNotes(ids, syncVersion);
+  const [localAttempt, setLocalAttempt] = useState(0);
+  const locals = useLocalNotes(ids, `${syncVersion}:${localAttempt}`);
+  // The capture issues the home shows: the recorder's, with the sessions native parked (account-filtered). Where the
+  // Soft home is on it already holds them; elsewhere (wide layouts, the receipt) they are read here.
+  const soft = useSoftHome();
+  const quarantine = useQuarantinedRecordings(soft === null, recoveryFailedKey(recorder.captureIssues));
+  const issues = useMemo(
+    () => soft?.issues ?? withQuarantine(recorder.captureIssues, quarantine.items, new Set()),
+    [soft, recorder.captureIssues, quarantine.items],
+  );
+  const [rowAttempt, setRowAttempt] = useState(0);
+  const wantedRows = useMemo(
+    () => entries.flatMap(({ id, source }) => (source.metadata === undefined && source.tcw !== null ? [{ id, tcw: source.tcw }] : [])),
+    [entries],
+  );
+  const rowSignal = `${rowAttempt}\n` + wantedRows.map(({ id, tcw }) => [
+    id,
+    pending.notes?.some((note) => note.id === id) ? "pending" : "settled",
+    recorder.transcription?.jobs.get(id)?.kind ?? "",
+    natives.get(id)?.stt?.state ?? "",
+    onDeviceTranscriptSyncState(tcw, id)?.state ?? "",
+    recordingNoteSyncedAt(tcw, id) ?? "",
+  ].join("|")).join("\n");
+  const rows = useSpaceRows(wantedRows, rowSignal);
+  const reread = useCallback(() => {
+    nativeRead.reread();
+    setLocalAttempt((count) => count + 1);
+    setRowAttempt((count) => count + 1);
+  }, [nativeRead.reread]);
   const device: PipelineDevice = platform === "tauri" ? "mac" : "phone";
   const hasOnDevice = !localTranscriptionUnavailable() && nativeVoiceNotesAvailable();
-  return useMemo(() => {
+  const states = useMemo(() => {
     const out = new Map<string, PipelineState>();
     for (const { id, source } of entries) {
-      if (!locals.has(id) || !nativeRead.ready) continue;
-      const issue = recorder.captureIssues[id] ?? null;
+      const local = locals.get(id);
+      const row = source.metadata === undefined && source.tcw !== null ? rows.get(id) : undefined;
+      if (local === undefined || !nativeRead.ready || (source.metadata === undefined && source.tcw !== null && row === undefined)) continue;
+      const issue = issues[id] ?? null;
       const tcw = source.tcw;
+      const native = natives.get(id) ?? null;
+      const rowError = row !== undefined && "error" in row ? row.error : null;
       const input = buildNotePipelineInput({
         id,
         device,
         online: pending.online,
         saved: source.saved,
-        rowMetadata: source.metadata,
-        localNote: locals.get(id) ?? null,
-        native: source.native !== undefined ? source.native : natives.get(id) ?? null,
+        rowMetadata: source.metadata !== undefined ? source.metadata : row !== undefined && "metadata" in row ? row.metadata : null,
+        localNote: "note" in local ? local.note : null,
+        localNoteError: "error" in local ? local.error : null,
+        native,
+        readError: nativeRead.error ?? rowError,
         capture: { finalizing: recorder.finalizationPendingId === id && issue === null, issue },
         pending: pending.notes?.find((note) => note.id === id) ?? null,
         lane: { busy: laneBusy, depth: spaceLaneSnapshot().depth },
@@ -435,13 +581,17 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
     }
     return out;
     // The store versions say the per-key getters read above have new answers.
-  }, [entries, locals, natives, nativeRead.ready, pending, laneBusy, onDeviceStatus, recorder.captureIssues, recorder.finalizationPendingId, recorder.transcription, device, hasOnDevice, syncVersion, transcriptSyncVersion]);
+  }, [entries, locals, rows, natives, nativeRead.ready, nativeRead.error, pending, laneBusy, onDeviceStatus, issues, recorder.finalizationPendingId, recorder.transcription, device, hasOnDevice, syncVersion, transcriptSyncVersion]);
+  return { states, natives, nativeReady: nativeRead.ready, reread };
 }
 
-/** Several notes' pipelines at once. A note is absent until its local Markdown and the phone's ledger have been read. */
-export function useNotePipelines(entries: readonly { id: string; source: NotePipelineSource }[]): ReadonlyMap<string, NotePipeline> {
-  const states = usePipelineStates(entries);
-  return useMemo(() => new Map([...states].map(([id, state]) => [id, state.pipeline])), [states]);
+/**
+ * Several notes' pipelines at once, each with its own action. A note is absent until its local Markdown and the phone's ledger
+ * have been read. A note's `onAction` runs against the very input its `pipeline` was drawn from (not a later one), and its
+ * rejection shows as that note's `actionError`. Memoise `entries`.
+ */
+export function useNotePipelines(entries: readonly { id: string; source: NotePipelineSource }[]): ReadonlyMap<string, NotePipelineView> {
+  return useNotePipelinesWithLedger(entries).views;
 }
 
 /**
@@ -449,32 +599,59 @@ export function useNotePipelines(entries: readonly { id: string; source: NotePip
  * step and the route depend on them, so a stepper shown earlier would flash steps in or out).
  */
 export function useNotePipeline(id: string | null, source: NotePipelineSource): NotePipelineView | null {
-  const recorder = useRecorder();
+  return useNotePipelineWithLedger(id, source).view;
+}
+
+/**
+ * `useNotePipeline`, and the phone's ledger entry for the note as soon as the shared read has answered (before the
+ * space row has, which the pipeline also waits for). The receipt's route and "Use Private instead" offer need only the ledger.
+ * `ledgerReady` false: not read yet. `ledger` null once read: the phone has no entry for the note.
+ */
+export function useNotePipelineWithLedger(id: string | null, source: NotePipelineSource): { view: NotePipelineView | null; ledger: NativeNote | null; ledgerReady: boolean } {
   const entries = useMemo(() => (id === null ? [] : [{ id, source }]), [id, source]);
-  const states = usePipelineStates(entries);
-  const state = id === null ? null : states.get(id) ?? null;
-  const [failure, setFailure] = useState<string | null>(null);
+  const { views, natives, nativeReady } = useNotePipelinesWithLedger(entries);
+  return { view: id === null ? null : views.get(id) ?? null, ledger: id === null ? null : natives.get(id) ?? null, ledgerReady: id !== null && nativeReady };
+}
+
+function useNotePipelinesWithLedger(entries: readonly { id: string; source: NotePipelineSource }[]): {
+  views: ReadonlyMap<string, NotePipelineView>;
+  natives: ReadonlyMap<string, NativeNote>;
+  nativeReady: boolean;
+} {
+  const recorder = useRecorder();
+  const { states, natives, nativeReady, reread } = usePipelineStates(entries);
+  const [failures, setFailures] = useState<ReadonlyMap<string, string>>(() => new Map());
   const live = useRef(true);
   useEffect(() => {
     live.current = true;
     return () => { live.current = false; };
   }, []);
-  const latest = useRef({ state, source, recorder });
-  latest.current = { state, source, recorder };
-  const onAction = useCallback((kind: PipelineActionKind) => {
-    const { state: current, source: from, recorder: rec } = latest.current;
-    if (current === null || id === null) return;
-    setFailure(null);
+  const latest = useRef({ entries, recorder, reread });
+  latest.current = { entries, recorder, reread };
+  const run = useCallback((id: string, state: PipelineState, kind: PipelineActionKind) => {
+    const { entries: current, recorder: rec } = latest.current;
+    const source = current.find((entry) => entry.id === id)?.source;
+    if (source === undefined) return;
+    setFailures((before) => { const next = new Map(before); next.delete(id); return next; });
     void runPipelineAction(kind, {
       id,
-      tcw: from.tcw,
-      pipeline: current.pipeline,
-      input: current.input,
+      tcw: source.tcw,
+      pipeline: state.pipeline,
+      input: state.input,
       transcription: rec.transcription,
+      latestTranscription: () => latest.current.recorder.transcription,
       saveNow: rec.retryPending,
       signIn: rec.signIn,
-    }).then((reason) => { if (live.current) setFailure(reason); });
-  }, [id]);
-  if (state === null) return null;
-  return { pipeline: state.pipeline, onAction, actionError: state.pipeline.blocker === undefined ? null : failure };
+      reread: () => latest.current.reread(),
+    }).then((reason) => {
+      if (!live.current) return;
+      setFailures((before) => { const next = new Map(before); if (reason === null) next.delete(id); else next.set(id, reason); return next; });
+    });
+  }, []);
+  const views = useMemo(() => new Map([...states].map(([id, state]): [string, NotePipelineView] => [id, {
+    pipeline: state.pipeline,
+    onAction: (kind) => run(id, state, kind),
+    actionError: state.pipeline.blocker === undefined ? null : failures.get(id) ?? null,
+  }])), [states, failures, run]);
+  return { views, natives, nativeReady };
 }

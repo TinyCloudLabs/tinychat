@@ -19,7 +19,7 @@ const recorder = (patch: Partial<RecorderValue> = {}): RecorderValue => ({
   captureIssues: {}, transcriber: { id: "on-device", identifySpeakers: false, source: "recording" },
   setTranscriber: async () => "ok",
   record: noop, stop: noop, pause: noop, resume: noop, discard: noop, retryPending: noop, openSettings: async () => {},
-  dismissOutcome: noop, openSheet: noop, minimiseSheet: noop, setReceiptPlaying: noop,
+  dismissOutcome: noop, openSheet: noop, minimiseSheet: noop, setReceiptPlaying: noop, tcw: null,
   subscribeLevel: () => noop, ...patch,
 });
 

@@ -48,7 +48,7 @@ export interface VoiceNoteRecorder {
   resume(): void;
   /** Stop the live recording and delete it; nothing is saved. */
   discard(): void;
-  retryPending(): void;
+  retryPending(): void | Promise<void>;
   openSettings(): Promise<void>;
   dismissShortcutRecovery(): Promise<void>;
   /** The receipt was read. */
@@ -122,7 +122,7 @@ export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionS
       pause: () => void controller.pause(),
       resume: () => void controller.resume(),
       discard: () => void controller.discard(),
-      retryPending: () => void controller.retryPending(),
+      retryPending: () => controller.retryPending(),
       openSettings: () => controller.openSettings(),
       dismissShortcutRecovery: () => controller.dismissShortcutRecovery(),
       dismissOutcome: controller.dismissOutcome,
