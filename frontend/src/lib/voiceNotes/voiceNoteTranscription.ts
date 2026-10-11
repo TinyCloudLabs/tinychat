@@ -231,6 +231,54 @@ export function localStorageVoiceNotePendingStore(
   };
 }
 
+export const VOICE_NOTE_PRIVATE_CHOICES_KEY = "exo.voiceNotes.privateChoices";
+
+/** Notes the user explicitly moved to private cloud from another committed mode (per account). */
+export interface VoiceNotePrivateChoiceStore {
+  has(sourceId: string): boolean;
+  add(sourceId: string): void;
+  remove(sourceId: string): void;
+  ids(): string[];
+}
+
+export function memoryVoiceNotePrivateChoiceStore(): VoiceNotePrivateChoiceStore {
+  const set = new Set<string>();
+  return { has: (id) => set.has(id), add: (id) => void set.add(id), remove: (id) => void set.delete(id), ids: () => [...set] };
+}
+
+/** Without it a relaunch would treat the user's choice as an unauthorized leftover and delete its job. */
+export function localStorageVoiceNotePrivateChoiceStore(
+  accountDid: string,
+  storage: KeyValueStorage | undefined = globalThis.localStorage,
+): VoiceNotePrivateChoiceStore {
+  const key = accountStorageKey(VOICE_NOTE_PRIVATE_CHOICES_KEY, accountDid);
+  const read = (): string[] => {
+    try {
+      const parsed = JSON.parse(storage?.getItem(key) ?? "null") as unknown;
+      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+    } catch {
+      return [];
+    }
+  };
+  const write = (ids: string[]) => {
+    try {
+      if (ids.length === 0) storage?.removeItem(key);
+      else storage?.setItem(key, JSON.stringify(ids));
+    } catch {
+      // Best-effort: the choice then lasts for this session only.
+    }
+  };
+  return {
+    has: (id) => read().includes(id),
+    add: (id) => {
+      const ids = read();
+      if (!ids.includes(id)) write([...ids, id]);
+    },
+    remove: (id) => write(read().filter((other) => other !== id)),
+    ids: read,
+  };
+}
+
 export interface VoiceNoteConsentStore {
   get(): boolean;
   set(consented: boolean): void;
@@ -933,6 +981,8 @@ export async function transcribeVoiceNote(args: {
   sourceId: string;
   audio?: VoiceNoteAudio;
   allowed?: (scope?: "account") => boolean;
+  /** The user chose private cloud for a note committed to another mode: skip the committed-mode checks. */
+  overrideCommitted?: boolean;
   /** The user asked for this note to be transcribed. Without it, only a note recorded in the app goes. */
   explicit?: boolean;
   report: (status: VoiceNoteTranscriptionStatus) => void;
@@ -959,7 +1009,7 @@ export async function transcribeVoiceNote(args: {
     await finish();
     throw new PrivateCloudError("voice_note_not_found", "The voice note no longer exists");
   }
-  if (note.data.captureVersion === 2 && note.data.captureTranscriber !== "private-cloud") {
+  if (!args.overrideCommitted && note.data.captureVersion === 2 && note.data.captureTranscriber !== "private-cloud") {
     await finish();
     throw new PrivateCloudError("transcription_off", "This note was not recorded for private-cloud transcription");
   }
@@ -970,7 +1020,7 @@ export async function transcribeVoiceNote(args: {
   const nativeNote = (await VoiceNotes.listPending()).recordings.find((recording) => recording.id === sourceId);
   // A manual Retry must obey the committed choice too. V1 notes have no options and retain
   // their historical, consent-gated private-cloud behaviour.
-  if (nativeNote?.options && nativeNote.options.transcriber !== "private-cloud") {
+  if (!args.overrideCommitted && nativeNote?.options && nativeNote.options.transcriber !== "private-cloud") {
     await finish();
     throw new PrivateCloudError("transcription_off", "This note was not recorded for private-cloud transcription");
   }
@@ -1089,6 +1139,11 @@ export interface VoiceNoteTranscriber {
   /** Transcribe / Retry for one note. Only while available and consented. */
   transcribe(sourceId: string, audio?: VoiceNoteAudio): void;
   /**
+   * The user's "Use Private instead" for a note committed to another mode (its on-device job is
+   * cancelled by the caller first). Runs like `transcribe`, and its Retry keeps the choice.
+   */
+  transcribePrivately(sourceId: string): void;
+  /**
    * Use the committed native options. A note that did not begin in the app (a shortcut, intent or widget start, or a
    * source this app does not know) is never sent from here, whatever the defaults say: it is held, and only
    * `transcribe` for that note releases it.
@@ -1100,6 +1155,8 @@ export interface VoiceNoteTranscriberDeps {
   /** Null when this build cannot transcribe (no PTX origin): always hidden. */
   cloud: VoiceNoteCloud | null;
   consent: VoiceNoteConsentStore;
+  /** The user's "Transcribe privately instead" choices; in memory when omitted. */
+  choices?: VoiceNotePrivateChoiceStore;
   /** Which notes were held back from transcription, kept across launches. */
   holds: VoiceNoteHoldStore;
   /** The current session's space client. */
@@ -1167,6 +1224,16 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   const identityCurrent = () => accountCurrent === null || accountCurrent();
   const on = () => identityCurrent() && state.availability === "available" && state.consented && state.capabilities !== null;
 
+  /** Notes the user moved to private cloud from another committed mode. */
+  const choices = deps.choices ?? memoryVoiceNotePrivateChoiceStore();
+  /** This session's choices, so a Retry after a released failure keeps the choice. */
+  const chosenPrivate = new Set<string>();
+  const isChosen = (sourceId: string) => chosenPrivate.has(sourceId) || choices.has(sourceId);
+  /** The persisted choice goes once the note is done or its job can no longer be retried; a pending job keeps it. */
+  const settleChoice = (sourceId: string) => {
+    if (cloud !== null && !cloud.pendingSourceIds().includes(sourceId)) choices.remove(sourceId);
+  };
+
   /** A note that did not begin in the app: kept from every automatic job until the user's own Transcribe on it. */
   const hold = (sourceId: string) => {
     if (!isHeld(sourceId)) {
@@ -1175,6 +1242,14 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     }
     jobs.set(sourceId, { kind: "held", message: HELD_NOTE_MESSAGE });
     emit();
+  };
+
+  /** The user's own start on a note lifts its hold, so a relaunch resumes it. */
+  const release = (sourceId: string) => {
+    if (jobs.get(sourceId)?.kind === "active" && holdStates.get(sourceId) !== "released") {
+      holdStates.set(sourceId, "released");
+      saveHolds();
+    }
   };
 
   /** Every job, new or resumed, starts here. Only `explicit` (the user's Transcribe on this note) may pass a held note. */
@@ -1208,6 +1283,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           sourceId,
           audio,
           allowed: (scope) => identityCurrent() && (scope === "account" || state.consented),
+          overrideCommitted: isChosen(sourceId),
           explicit: authorised,
           report: (status) => {
             if (jobs.get(sourceId)?.kind !== "active") return;
@@ -1216,6 +1292,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           },
         });
         jobs.set(sourceId, { kind: "done", outcome });
+        settleChoice(sourceId);
         emit({ kind: "saved", sourceId });
       } catch (err) {
         if (voiceNoteErrorCode(err) === "note_held") {
@@ -1228,8 +1305,15 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           resumed = false;
           jobs.delete(sourceId);
           console.warn("[Transcription] Stopped a private cloud job: its account is no longer the signed-in one", sourceId);
-        } else if (!state.consented || voiceNoteErrorCode(err) === "transcription_off") jobs.delete(sourceId);
-        else jobs.set(sourceId, { kind: "failed", ...voiceNoteTranscriptionFailure(err) });
+        } else if (!state.consented || voiceNoteErrorCode(err) === "transcription_off") {
+          jobs.delete(sourceId);
+          settleChoice(sourceId);
+        } else {
+          const failure = voiceNoteTranscriptionFailure(err);
+          jobs.set(sourceId, { kind: "failed", ...failure });
+          // A failure Retry can fix keeps the choice, so a relaunch does not turn it back into Local.
+          if (!failure.retryable) settleChoice(sourceId);
+        }
         emit();
       }
     });
@@ -1239,7 +1323,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   const resume = () => {
     if (resumed || !on() || cloud === null) return;
     resumed = true;
-    for (const sourceId of cloud.pendingSourceIds()) enqueue(sourceId, undefined, false);
+    for (const sourceId of new Set([...cloud.pendingSourceIds(), ...choices.ids()])) enqueue(sourceId, undefined, false);
   };
 
   return {
@@ -1320,6 +1404,9 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       // A failure shown with Retry is no longer actionable once off.
       for (const [sourceId, job] of jobs) if (job.kind === "failed") jobs.delete(sourceId);
       resumed = false;
+      // Turning private cloud off revokes the choices too.
+      chosenPrivate.clear();
+      for (const sourceId of choices.ids()) choices.remove(sourceId);
       emit();
       try {
         await cloud?.releaseUnsent();
@@ -1330,10 +1417,14 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
 
     transcribe(sourceId, audio) {
       enqueue(sourceId, audio, true);
-      if (jobs.get(sourceId)?.kind === "active" && holdStates.get(sourceId) !== "released") {
-        holdStates.set(sourceId, "released");
-        saveHolds();
-      }
+      release(sourceId);
+    },
+
+    transcribePrivately(sourceId) {
+      chosenPrivate.add(sourceId);
+      choices.add(sourceId);
+      enqueue(sourceId, undefined, true);
+      release(sourceId);
     },
 
     noteSaved(recording, audio) {
@@ -1373,6 +1464,7 @@ export function voiceNoteTranscriberFor(
   const transcriber = createVoiceNoteTranscriber({
     cloud: createVoiceNoteCloudForBuild(backendUrl, sessionStore, did),
     consent: localStorageVoiceNoteConsentStore(did),
+    choices: localStorageVoiceNotePrivateChoiceStore(did),
     holds: localStorageVoiceNoteHoldStore(did),
     tcw: () => ref.current,
   });

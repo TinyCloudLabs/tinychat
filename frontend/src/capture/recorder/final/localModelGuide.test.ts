@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
-import { localModelGuide } from "./localModelGuide";
+import { localModelGuide, modelActionLabel, waitingForModelSentence } from "./localModelGuide";
 
 const MB = 1024 * 1024;
 const status = (patch: Partial<OnDeviceSttStatus> = {}, primary: Partial<OnDeviceSttStatus["models"][number]> = {}): OnDeviceSttStatus => ({
@@ -72,5 +72,30 @@ describe("localModelGuide", () => {
 
   test("without a status there is only the plain reason", () => {
     expect(localModelGuide(null, download().download)).toEqual({ reason: "Get the on-device model" });
+  });
+});
+
+describe("the waiting-for-model copy", () => {
+  test("a model not yet downloaded is one sentence with its size, and the control reads Get model", () => {
+    const model = status();
+    const guide = localModelGuide(model, download().download);
+    expect(waitingForModelSentence(model, guide)).toBe("Transcribe on this phone — needs a 602 MB download");
+    expect(modelActionLabel(guide.action!)).toBe("Get model");
+  });
+
+  test("with no size known it still names what is needed", () => {
+    const model = status({}, { totalBytes: 0 });
+    model.models[1]!.totalBytes = 0;
+    expect(waitingForModelSentence(model, localModelGuide(model, download().download))).toBe("Transcribe on this phone — needs the on-device model");
+  });
+
+  test("a download underway, a failure or a pause is the guide's own line, and a retry keeps its label", () => {
+    const running = status({ download: { policy: "wifi", state: "running" } }, { state: "downloading", bytes: 301 * MB });
+    expect(waitingForModelSentence(running, localModelGuide(running, download().download))).toBe("Downloading the model: 50% of 602 MB");
+    const failed = localModelGuide(status(), download("No space left").download);
+    expect(waitingForModelSentence(status(), failed)).toBe("No space left");
+    expect(modelActionLabel(failed.action!)).toBe("Try the download again");
+    const checking = status({}, { state: "checking" });
+    expect(waitingForModelSentence(checking, localModelGuide(checking, download().download))).toBe("Checking the downloaded model…");
   });
 });

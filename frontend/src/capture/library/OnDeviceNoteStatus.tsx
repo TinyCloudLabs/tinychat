@@ -4,6 +4,7 @@
 // Shown in place of "No transcript." for a Local note that is waiting for the
 // model, queued, running, failed, silent, or done but not yet in the space.
 // While the note's mode and state are still being read, it says so.
+import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { useCallback, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Loader2Icon, RefreshCwIcon } from "lucide-react";
 
@@ -16,7 +17,9 @@ import {
   onDeviceSttStore,
   retryOnDeviceNote,
 } from "@/lib/voiceNotes/onDeviceSttStore";
-import { localModelGuide } from "@/capture/recorder/final/localModelGuide";
+import { localModelGuide, modelActionLabel, waitingForModelSentence } from "@/capture/recorder/final/localModelGuide";
+import { privateInsteadOffered, switchToPrivate } from "@/capture/recorder/privateInstead";
+import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 
 export type OnDeviceNote =
   | { kind: "none" }
@@ -165,25 +168,65 @@ export function onDeviceNote(scan: Scan | null, live: Live | null, jobEntry: Que
   }
 }
 
-function ModelDownload() {
+/**
+ * The saved-note sheet sits on `--solid`, which in the dark theme is the same colour as the outline variant's
+ * `--input` border (1:1, so the button vanishes). The sheet's own glass fill and ring, the ones "Add a note"
+ * uses, stay visible in both themes; the fallbacks keep it an outline button outside that skin.
+ */
+const SHEET_BUTTON = "w-full border-transparent bg-[color:var(--glass,transparent)] shadow-[inset_0_0_0_1px_var(--gedge,hsl(var(--input)))]";
+
+/** A note waiting for the model: one sentence, then the way forward as full-width buttons. Nothing is running, so no spinner. */
+function WaitingForModel(props: { onUsePrivate?: () => Promise<string | null> }) {
   const status = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
-  const [startError, setStartError] = useState<string | null>(null);
-  const guide = localModelGuide(status.models.length > 0 ? status : null, {
+  const [error, setError] = useState<string | null>(null);
+  const model = status.models.length > 0 ? status : null;
+  const guide = localModelGuide(model, {
     start: () => {
-      setStartError(null);
-      void downloadOnDeviceModel().then(setStartError);
+      setError(null);
+      void downloadOnDeviceModel().then(setError);
     },
-    error: startError,
+    error: null,
   });
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-2" data-testid="voice-note-model-download">
-      <p className="min-w-0 flex-1 text-callout text-muted-foreground">{guide.reason}</p>
+    <div className="flex flex-col gap-3" data-testid="voice-note-on-device-waiting">
+      <p role="status" className="text-callout text-muted-foreground">{waitingForModelSentence(model, guide)}</p>
       {guide.action && (
-        <Button type="button" variant="outline" onClick={guide.action.run} data-testid="voice-note-model-download-action">
-          {guide.action.label}
+        <Button type="button" variant="outline" className={SHEET_BUTTON} onClick={guide.action.run} data-testid="voice-note-model-download-action">
+          {modelActionLabel(guide.action)}
         </Button>
       )}
+      <PrivateInstead onUse={props.onUsePrivate} />
+      {error && <p role="alert" className="text-callout text-destructive">{error}</p>}
     </div>
+  );
+}
+
+/** "Transcribe with Private instead", full width, when private cloud is on offer for this note. */
+function PrivateInstead(props: { onUse?: () => Promise<string | null> }) {
+  const [error, setError] = useState<string | null>(null);
+  const [switching, setSwitching] = useState(false);
+  if (!props.onUse) return null;
+  return (
+    <>
+      <Button
+        type="button"
+        variant="outline"
+        className={SHEET_BUTTON}
+        data-testid="voice-note-use-private"
+        disabled={switching}
+        onClick={() => {
+          setError(null);
+          setSwitching(true);
+          void props.onUse!().then((failure) => {
+            setError(failure);
+            setSwitching(false);
+          });
+        }}
+      >
+        {switching ? `Switching to ${TRANSCRIBER_NAME["private-cloud"]}…` : `Transcribe with ${TRANSCRIBER_NAME["private-cloud"]} instead`}
+      </Button>
+      {error && <p role="alert" className="text-callout text-destructive">{error}</p>}
+    </>
   );
 }
 
@@ -191,6 +234,8 @@ export function OnDeviceNoteStatusView(props: {
   noteId: string;
   view: OnDeviceNoteView;
   fallback: ReactNode;
+  /** Present when private cloud is on offer for this note; moves it off the phone's model. */
+  onUsePrivate?: () => Promise<string | null>;
 }) {
   const { note, error, reload } = props.view;
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -215,14 +260,7 @@ export function OnDeviceNoteStatusView(props: {
     case "none":
       return <>{props.fallback}</>;
     case "waiting_for_model":
-      return (
-        <div className="flex flex-col gap-2" data-testid="voice-note-on-device-waiting">
-          <p role="status" className="flex items-center gap-2 text-callout text-muted-foreground">
-            <Loader2Icon className="size-4 shrink-0 motion-safe:animate-spin" aria-hidden /> Waiting for the on-device model. This note is transcribed on this phone once it has downloaded.
-          </p>
-          <ModelDownload />
-        </div>
-      );
+      return <WaitingForModel onUsePrivate={props.onUsePrivate} />;
     case "queued":
       return (
         <p role="status" className="flex items-center gap-2 text-callout text-muted-foreground" data-testid="voice-note-on-device-queued">
@@ -253,6 +291,7 @@ export function OnDeviceNoteStatusView(props: {
             </Button>
           </div>
           {retryError && <p role="alert" className="text-callout text-destructive">{retryError}</p>}
+          <PrivateInstead onUse={props.onUsePrivate} />
         </div>
       );
     case "no_speech":
@@ -270,13 +309,18 @@ export function OnDeviceNoteStatusView(props: {
   }
 }
 
-function OnDeviceNoteStatusReading(props: { noteId: string; fallback: ReactNode }) {
+function OnDeviceNoteStatusReading(props: { noteId: string; fallback: ReactNode; transcription?: VoiceNoteTranscriptionProps; durationSecs?: number | null }) {
   const view = useOnDeviceNote(props.noteId);
-  return <OnDeviceNoteStatusView noteId={props.noteId} view={view} fallback={props.fallback} />;
+  const { transcription } = props;
+  const onUsePrivate = transcription && privateInsteadOffered(transcription, props.noteId, props.durationSecs ?? null)
+    ? () => switchToPrivate(transcription, props.noteId)
+    : undefined;
+  return <OnDeviceNoteStatusView noteId={props.noteId} view={view} fallback={props.fallback} onUsePrivate={onUsePrivate} />;
 }
 
-/** Only a phone with on-device speech has a state to read; elsewhere the fallback stands. */
-export function OnDeviceNoteStatus(props: { noteId: string; fallback: ReactNode }) {
+/** Only a phone with on-device speech has a state to read; elsewhere the fallback stands. A note private cloud has taken is the fallback's to show. */
+export function OnDeviceNoteStatus(props: { noteId: string; fallback: ReactNode; transcription?: VoiceNoteTranscriptionProps; durationSecs?: number | null }) {
   if (!captureCapabilities().localTranscription) return <>{props.fallback}</>;
+  if (props.transcription?.jobs.has(props.noteId)) return <>{props.fallback}</>;
   return <OnDeviceNoteStatusReading {...props} />;
 }

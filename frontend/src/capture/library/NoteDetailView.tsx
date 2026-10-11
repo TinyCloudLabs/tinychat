@@ -183,7 +183,7 @@ function NoTranscript(props: { item: LibraryItem; metadata: MeetingMetadataRead;
     </p>
   );
   if (outcome === "no_speech") return status;
-  return <OnDeviceNoteStatus noteId={props.item.sourceId} fallback={status} />;
+  return <OnDeviceNoteStatus noteId={props.item.sourceId} fallback={status} transcription={props.transcription} durationSecs={props.item.durationSecs} />;
 }
 
 /** The transcript text a voice note's row carries (`transcript_text`), for when its body can't be read. */

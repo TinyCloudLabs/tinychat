@@ -41,6 +41,7 @@ const PRIVATE_CLOUD_ON: VoiceNoteTranscriptionProps = {
   maxSeconds: 600,
   jobs: new Map(),
   onTranscribe: noop,
+  onTranscribePrivately: noop,
   onConsent: noop,
   onTurnOff: noop,
   onRecheck: noop,

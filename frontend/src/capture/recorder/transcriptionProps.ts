@@ -21,6 +21,8 @@ export interface VoiceNoteTranscriptionProps {
   /** Notes being transcribed, waiting their turn, or whose last attempt failed. */
   jobs: ReadonlyMap<string, NoteTranscriptionState>;
   onTranscribe: (sourceId: string) => void;
+  /** Private cloud for a note committed to another mode (Local); see `VoiceNoteTranscriber.transcribePrivately`. */
+  onTranscribePrivately: (sourceId: string) => void;
   onConsent: () => void;
   onTurnOff: () => void;
   onRecheck: () => void;
@@ -46,6 +48,7 @@ export function transcriptionProps(
     maxSeconds: maxTranscriptionSeconds(snapshot.capabilities),
     jobs: snapshot.jobs,
     onTranscribe: (sourceId) => transcriber.transcribe(sourceId),
+    onTranscribePrivately: (sourceId) => transcriber.transcribePrivately(sourceId),
     onConsent: () => transcriber.consent(),
     onTurnOff: () => void transcriber.turnOff(),
     onRecheck: () => void transcriber.check(),

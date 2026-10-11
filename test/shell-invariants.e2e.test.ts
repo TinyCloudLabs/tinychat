@@ -305,12 +305,13 @@ describe.serial(`shell invariants (${name})`, () => {
     await page.close();
   }, 60_000);
 
-  test("a receipt that becomes ready near the 15 s ceiling still gets its own full 3 s, not whatever the ceiling had left", async () => {
+  test("a receipt that becomes ready near the 15 s ceiling still gets its own full window, not whatever the ceiling had left", async () => {
     // Round 2: the hard ceiling (RECEIPT_MAX_MS, 15 s) bounds only the *wait* for readiness — it
     // used to keep running after Play appeared, so a read landing at 14 s got cut to ~1 s instead
-    // of its own full 3 s window, and a user who pressed Play near the ceiling could have playback
+    // of its own full window, and a user who pressed Play near the ceiling could have playback
     // itself interrupted. Delaying the native read to 14 s (close enough to the 15 s ceiling that
-    // the display window, 3 s from readiness, runs well past it) exercises exactly that boundary.
+    // the display window, from readiness, runs well past it) exercises exactly that boundary. This
+    // receipt offers Open, so its window is RECEIPT_ACTION_MS (10 s), not RECEIPT_MS (3 s).
     // The check point below is an absolute time from Stop, not relative to when the Play control
     // was detected, so it isn't eaten into by that detection's own polling/IPC latency.
     const { page, errors } = await open("/chat/capture?nativeReadDelayMs=14000&unownedNotes=1");
@@ -328,14 +329,18 @@ describe.serial(`shell invariants (${name})`, () => {
     expect(Date.now() - stoppedAt).toBeGreaterThan(12_000); // genuinely waited for the slow read, not a fluke
 
     // 16 s from Stop: a full 1 s past the old, still-running ceiling (15 s) — which would have
-    // closed the sheet by now — and comfortably inside the ready-based window, due to run out
-    // around 17 s (3 s after a ~14 s-late readiness).
+    // closed the sheet by now — and inside the ready-based window.
     await page.waitForTimeout(Math.max(0, stoppedAt + 16_000 - Date.now()));
     expect(await page.getByTestId("voice-note-receipt").count()).toBe(1);
     expect(await page.getByTestId("note-audio-play").count()).toBe(1);
 
+    // 20 s from Stop is 6+ s after the ~14 s-late readiness: past the 3 s window, so only the
+    // longer Open window (10 s from readiness) keeps it open.
+    await page.waitForTimeout(Math.max(0, stoppedAt + 20_000 - Date.now()));
+    expect(await page.getByTestId("voice-note-receipt").count()).toBe(1);
+
     // And it still closes eventually, once that window actually elapses.
-    await page.waitForFunction(() => document.querySelector('[data-testid="recording-overlay"]') === null, undefined, { timeout: 3_000 });
+    await page.waitForFunction(() => document.querySelector('[data-testid="recording-overlay"]') === null, undefined, { timeout: 10_000 });
     expect(errors).toEqual([]);
     await page.close();
   }, 60_000);

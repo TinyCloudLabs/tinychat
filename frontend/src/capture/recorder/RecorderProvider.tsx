@@ -29,9 +29,15 @@ import { shouldScheduleReceiptDismissal } from "./receiptBehavior";
 /** How long a saved receipt stays, once its content is actually visible, before the sheet closes
  * and the island lets go. */
 export const RECEIPT_MS = 3000;
+/** The same, while the receipt offers something to press (Get model, Use Private instead, Retry). */
+export const RECEIPT_ACTION_MS = 10000;
+
 /** A hard ceiling on how long a receipt may hold the sheet open waiting for that content — a
  * native read that never resolves must not keep Stop from ever returning to Capture home. */
 export const RECEIPT_MAX_MS = 15000;
+
+/** How long a receipt with everything on show stays open: longer while it offers something to press. */
+export const receiptWindowMs = (actionable: boolean) => (actionable ? RECEIPT_ACTION_MS : RECEIPT_MS);
 
 export function permissionDeniedAnnouncement(wasDenied: boolean, denied: boolean): string | null {
   return !wasDenied && denied ? "Microphone access is off" : null;
@@ -101,6 +107,8 @@ export interface RecorderValue {
   openSheet(): void;
   minimiseSheet(): void | Promise<void>;
   setReceiptPlaying(playing: boolean): void;
+  /** The receipt is offering something to press: it stays open longer (RECEIPT_ACTION_MS). */
+  setReceiptActionable(actionable: boolean): void;
   /** The receipt's local Play control is ready (or has visibly failed to load): starts the
    * display clock, so it can never close the sheet before there is anything to show. */
   setReceiptReady(): void;
@@ -180,6 +188,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   const { state, dismissOutcome, subscribeLevel, record: startRecording } = recorder;
   const [sheetOpen, setSheetOpen] = useState(false);
   const [receiptPlaying, setReceiptPlaying] = useState(false);
+  const [receiptActionable, setReceiptActionable] = useState(false);
   const [receiptReady, setReceiptReadyState] = useState(false);
   const [momentFieldFocused, setMomentFieldFocused] = useState(false);
   const setReceiptReady = useCallback(() => setReceiptReadyState(true), []);
@@ -246,9 +255,9 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     const timer = setTimeout(() => {
       setSheetOpen(false);
       dismissOutcome();
-    }, RECEIPT_MS);
+    }, receiptWindowMs(receiptActionable));
     return () => clearTimeout(timer);
-  }, [dismissOutcome, momentFieldFocused, receiptPlaying, receiptReady, state.outcome, state.lastSaved, state.permissionDenied, state.limitNotice]);
+  }, [dismissOutcome, momentFieldFocused, receiptActionable, receiptPlaying, receiptReady, state.outcome, state.lastSaved, state.permissionDenied, state.limitNotice]);
 
   useEffect(() => recorder.setOnPresent(() => setSheetOpen(true)), [recorder.setOnPresent]);
 
@@ -316,6 +325,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       openSheet,
       minimiseSheet,
       setReceiptPlaying,
+      setReceiptActionable,
       setReceiptReady,
       subscribeLevel,
     }),
@@ -435,6 +445,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       openSheet: noop,
       minimiseSheet: noop,
       setReceiptPlaying: noop,
+      setReceiptActionable: noop,
       setReceiptReady: noop,
       subscribeLevel: (listener) => {
         for (const level of levels ?? []) listener(level);

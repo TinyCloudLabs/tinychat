@@ -61,6 +61,7 @@ type Run = {
   sourceId: string;
   audio: unknown;
   allowed: () => boolean;
+  overrideCommitted: boolean;
   explicit: boolean;
   report: (s: VoiceNoteTranscriptionStatus) => void;
   resolve: (outcome: "transcribed" | "no_speech") => void;
@@ -84,7 +85,7 @@ function setup(opts: { consented?: boolean; cloud?: VoiceNoteCloud | null; pendi
     },
     runNote: (args) =>
       new Promise((resolve, reject) => {
-        runs.push({ sourceId: args.sourceId, audio: args.audio, allowed: args.allowed ?? (() => true), explicit: args.explicit ?? false, report: args.report, resolve, reject });
+        runs.push({ sourceId: args.sourceId, audio: args.audio, allowed: args.allowed ?? (() => true), overrideCommitted: args.overrideCommitted === true, explicit: args.explicit ?? false, report: args.report, resolve, reject });
       }),
   });
   transcriber.subscribe((e) => events.push(e));
@@ -113,6 +114,33 @@ describe("availability and consent", () => {
     s.runs[0]!.resolve("transcribed");
     await tick();
     expect(s.runs.map((run) => run.sourceId)).toEqual(["cloud", "legacy"]);
+  });
+
+  test("Use Private instead runs a Local note in private cloud, past its committed mode, and Retry keeps the choice", async () => {
+    const s = setup({ consented: true });
+    await s.transcriber.check();
+    s.transcriber.transcribe("plain");
+    s.transcriber.transcribePrivately("moved");
+    await tick();
+    expect(s.runs.map((run) => [run.sourceId, run.overrideCommitted])).toEqual([["plain", false]]);
+    s.runs[0]!.resolve("transcribed");
+    await tick();
+    expect(s.runs.map((run) => [run.sourceId, run.overrideCommitted])).toEqual([["plain", false], ["moved", true]]);
+    s.runs[1]!.reject(new PrivateCloudError("service_busy", "busy"));
+    await tick();
+    expect(s.job("moved")).toEqual(expect.objectContaining({ kind: "failed" }));
+    s.transcriber.transcribe("moved");
+    await tick();
+    expect(s.runs[2]).toEqual(expect.objectContaining({ sourceId: "moved", overrideCommitted: true }));
+  });
+
+  test("Use Private instead offers nothing while private cloud is off", async () => {
+    const s = setup({ consented: false });
+    await s.transcriber.check();
+    s.transcriber.transcribePrivately("moved");
+    await tick();
+    expect(s.runs).toHaveLength(0);
+    expect(s.job("moved")).toBeUndefined();
   });
 
   test("no PTX origin in this build: hidden, never checked, nothing queued", async () => {
@@ -382,6 +410,18 @@ describe("notes that did not begin in the app are held, per note", () => {
     const later = setup({ consented: true, holds });
     expect(later.job("n")).toBeUndefined();
     expect(later.job("other")?.kind).toBe("held");
+  });
+
+  test("the user's own Use Private on a held note sends it as an explicit job and clears the hold", async () => {
+    const holds = memoryHoldStore();
+    const s = setup({ consented: true, holds });
+    await s.transcriber.check();
+    s.transcriber.noteSaved({ id: "n", durationMs: 5_000, source: "quick_action" }, AUDIO);
+    expect(s.job("n")?.kind).toBe("held");
+    s.transcriber.transcribePrivately("n");
+    await tick();
+    expect(s.runs.map((run) => ({ id: run.sourceId, explicit: run.explicit, overrideCommitted: run.overrideCommitted }))).toEqual([{ id: "n", explicit: true, overrideCommitted: true }]);
+    expect(holds.held).toEqual([]);
   });
 
   test("Transcribe without consent sends nothing and leaves the hold in place", async () => {
