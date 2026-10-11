@@ -6,6 +6,7 @@ import { isDiscarded, pendingStore, saveNoteForAccount } from "./recorderSaves";
 import { ensureVoiceNoteIdentity, sweepArchived } from "./voiceNoteRows";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { syncRecordingNote } from "./voiceNoteStore";
+import type { StoreAudioOptions } from "./voiceNoteStore";
 
 export interface VoiceNotePipeline {
   process(ctx: AccountContext, id: string, trigger?: "stop" | "background"): Promise<void>;
@@ -31,7 +32,8 @@ function logSaveStart(id: string, trigger: "stop" | "background" | "reconcile" |
 }
 
 /** T22 extends these lanes with transcription and cleanup, retaining this API. */
-export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
+export function createVoiceNotePipeline(tcw: TinyCloudWeb,
+  testOptions: Pick<StoreAudioOptions, "retryDelaysMs"> = {}): VoiceNotePipeline {
   let cancellation = 0;
   let accepting = true;
   const active = new Set<Promise<void>>();
@@ -60,10 +62,11 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
     // Reconcile's post-upload pass retries Markdown sync for saved notes. Stop and
     // background paths also avoid repeating that round trip for already-saved audio.
     if (note.ledger?.audio.state === "saved" && !isDiscarded(id)) return;
+    pendingStore.clearNoteFailure(id);
     const finish = trackPending && note.ledger?.audio.state !== "saved"
       ? pendingStore.beginAutomaticSave() : () => undefined;
     try {
-      const result = await saveNoteForAccount(tcw, ctx, note, check);
+      const result = await saveNoteForAccount(tcw, ctx, note, check, testOptions);
       if (result.kind === "failed") { check(); throw new Error(result.failure); }
       if (result.kind === "discarded" && result.cleanupError) throw new Error(result.cleanupError);
     } finally { finish(); }

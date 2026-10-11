@@ -39,8 +39,8 @@ export function withOnPhone(
   lingering: readonly PendingNote[] = [],
 ): LibraryItem[] {
   if (notes.length === 0 && lingering.length === 0) return [...items];
-  // A failed note is still pending on this device, but it is not actively saving.
-  // Keep it in the pending set for its stand-in while withholding the misleading row badge.
+  // A failed note still gets its on-phone stand-in below, but it is not actively saving.
+  // Withhold the misleading badge from a matching space row.
   const pending = new Set(notes.filter((note) => !note.failed).map((note) => note.id));
   const rowIds = new Set<string>();
   const rows = items.map((item) => {

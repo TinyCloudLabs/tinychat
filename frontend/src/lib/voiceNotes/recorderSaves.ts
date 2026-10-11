@@ -22,13 +22,13 @@ import {
 } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { bytesToBase64, VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS } from "@/lib/voiceNotes/voiceNoteAudio";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
-import { saveVoiceNote, type NoteSyncErrorCode, type VoiceNoteAudio, type VoiceNoteAudioSource } from "@/lib/voiceNotes/voiceNoteStore";
+import { saveVoiceNote, type NoteSyncErrorCode, type VoiceNoteAudio, type VoiceNoteAudioSource, type StoreAudioOptions } from "@/lib/voiceNotes/voiceNoteStore";
 import { assertCurrent, type AccountContext } from "@/lib/voiceNotes/accountContext";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { deleteNote } from "@/lib/voiceNotes/recordingNotes";
 import { withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
 
-const TINYCLOUD_NETWORK_FAILURE =
+export const TINYCLOUD_NETWORK_FAILURE_MESSAGE =
   "Couldn't reach your TinyCloud space. This note is still on your phone — try again.";
 
 function rawErrorMessage(error: unknown): string {
@@ -40,19 +40,31 @@ function rawErrorMessage(error: unknown): string {
 function redactedRawError(message: string): string {
   return message
     .replace(/https?:\/\/[^\s"'<>]+/gi, "<url>")
-    .replace(/\b(authorization|token|api[_-]?key|secret)(\s*[:=]\s*)[^\s&]+/gi, "$1$2<redacted>")
+    .replace(/\b(authorization\s*[:=]\s*)(?:bearer\s+)?[^\s,;]+/gi, "$1<redacted>")
+    .replace(/\b(bearer\s+)[^\s,;]+/gi, "$1<redacted>")
+    .replace(/\b(token|api[_-]?key|secret)(\s*[:=]\s*)[^\s&;,]+/gi, "$1$2<redacted>")
     .slice(0, 240);
+}
+
+const WEBKIT_NETWORK_FAILURE_SUFFIX = /(?:^|:\s)(?:Load failed|The network connection was lost\.|Fetch API cannot load .+? due to access control checks\.)\s*$/i;
+
+export function isTinyCloudNetworkFailure(error: unknown): boolean {
+  return errorCode(error) === "NETWORK_ERROR" || WEBKIT_NETWORK_FAILURE_SUFFIX.test(rawErrorMessage(error));
+}
+
+/** Log a diagnostic message without passing arbitrary error objects or credential-bearing strings to the console. */
+export function logVoiceNoteError(operation: string, error: unknown): void {
+  console.warn(`[VoiceNotes] ${operation}: ${redactedRawError(rawErrorMessage(error))}`);
 }
 
 /** Map WebKit's unhelpful network messages to specific recovery copy. */
 export function messageOf(error: unknown): string {
   const message = rawErrorMessage(error);
-  if (/^(?:Load failed|The network connection was lost\.)$/i.test(message) ||
-    /^Fetch API cannot load .+ due to access control checks\.$/i.test(message)) {
+  if (isTinyCloudNetworkFailure(error)) {
     // The access-control variant can include a credential-bearing URL. Keep the raw diagnostic useful,
     // but never pass an Error object or an unredacted URL to the log.
-    console.warn(`[VoiceNotes] TinyCloud network failure: ${redactedRawError(message)}`);
-    return TINYCLOUD_NETWORK_FAILURE;
+    logVoiceNoteError("TinyCloud network failure", error);
+    return TINYCLOUD_NETWORK_FAILURE_MESSAGE;
   }
   return message;
 }
@@ -342,7 +354,8 @@ export async function saveRecording(
 
 /** The one owner-aware upload entry point used by the T18 pipeline. */
 export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
-  recording: VoiceNoteRecording, checkpoint: () => void = () => undefined): Promise<SaveOutcome> {
+  recording: VoiceNoteRecording, checkpoint: () => void = () => undefined,
+  audioOptions: Pick<StoreAudioOptions, "retryDelaysMs"> = {}): Promise<SaveOutcome> {
   const check = () => { assertCurrent(ctx); checkpoint(); };
   const checkActive = () => { check(); if (isDiscarded(recording.id)) throw new Error("Recording was discarded"); };
   check();
@@ -360,7 +373,7 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
       checkActive();
       return source.readPart(offset, length);
     } };
-    const saved = await saveVoiceNote(tcw, recording, checkedSource, nativePlatform(), { checkpoint: checkActive });
+    const saved = await saveVoiceNote(tcw, recording, checkedSource, nativePlatform(), { ...audioOptions, checkpoint: checkActive });
     if (!saved.ok) return isDiscarded(recording.id)
       ? { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) }
       : { kind: "failed", failure: messageOf(saved.error) };
@@ -568,6 +581,15 @@ export const pendingStore = {
       lastError: currentFailure(),
       notes: pendingSnapshot.notes?.map((note) => note.id === id ? { ...note, failed: true } : note),
     });
+  },
+  clearNoteFailure(id: string): void {
+    if (!noteFailures.delete(id)) return;
+    const notes = pendingSnapshot.notes?.map((note) => {
+      if (note.id !== id || !note.failed) return note;
+      const { failed: _failed, ...rest } = note;
+      return rest;
+    });
+    publishPending({ lastError: currentFailure(), notes });
   },
   setAccount(did: string | null): void {
     if (activeAccountDid !== did) {

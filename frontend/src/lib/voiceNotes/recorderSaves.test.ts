@@ -40,6 +40,21 @@ describe("voice-note network error copy", () => {
       console.warn = original;
     }
   });
+
+  test("log redaction removes bearer tokens instead of leaving them after the scheme", () => {
+    const original = console.warn;
+    const logged: unknown[][] = [];
+    console.warn = (...args: unknown[]) => { logged.push(args); };
+    try {
+      saves.logVoiceNoteError("reconcile failed", new Error("authorization: Bearer private-token"));
+      expect(logged).toHaveLength(1);
+      expect(logged[0]).toHaveLength(1);
+      expect(String(logged[0]?.[0])).toContain("authorization: <redacted>");
+      expect(String(logged[0]?.[0])).not.toContain("private-token");
+    } finally {
+      console.warn = original;
+    }
+  });
 });
 
 /** A fresh copy of the module, as after a WebView reload: its in-memory guards and store are new. */
@@ -127,7 +142,7 @@ afterEach(() => {
 describe("savePendingRecordings", () => {
   test("starting Save now clears the old failure and failed-row marker", async () => {
     phone.pending = [recording("retrying", 1)];
-    await saves.pendingStore.refresh();
+    await saves.pendingStore.refresh(null);
     saves.pendingStore.reportNoteFailure("retrying", "Load failed");
     expect(saves.pendingStore.snapshot()).toMatchObject({
       lastError: "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
