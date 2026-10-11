@@ -977,7 +977,8 @@ describe("TC-907 capacity refusals and TC-641 manual-create intents", () => {
   });
 
   /** The real client against a fake ptx: the first create attempt's socket closes, the retry is refused. */
-  function retriedCapacityRefusal() {
+  function retriedCapacityRefusal(options: { firstAttemptFails?: boolean; refusal?: { status: number; code: string } } = {}) {
+    const { firstAttemptFails = true, refusal = { status: 429, code: "capacity_exhausted" } } = options;
     const posts: string[] = [];
     const committed = new Map<string, { meeting: TranscriptionMeeting; hash: string }>();
     const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -985,8 +986,8 @@ describe("TC-907 capacity refusals and TC-641 manual-create intents", () => {
       const headers = new Headers(init?.headers);
       if (init?.method === "POST" && path === "/v1/meetings") {
         posts.push(headers.get("idempotency-key")!);
-        if (posts.length === 1) throw new TypeError("fetch failed: socket closed unexpectedly");
-        return new Response(JSON.stringify({ error: { code: "capacity_exhausted", message: busy } }), { status: 429, headers: { "retry-after": "60" } });
+        if (firstAttemptFails && posts.length === 1) throw new TypeError("fetch failed: socket closed unexpectedly");
+        return new Response(JSON.stringify({ error: { code: refusal.code, message: busy } }), { status: refusal.status, headers: { "retry-after": "60" } });
       }
       if (path === "/v1/meetings/by-idempotency-key") {
         const found = committed.get(headers.get("idempotency-key")!);
@@ -1025,6 +1026,23 @@ describe("TC-907 capacity refusals and TC-641 manual-create intents", () => {
     expect(await f.index.list(owner)).toEqual(["mtg_late"]);
     expect(await f.index.listPending(owner)).toEqual([]);
     expect(f.posts).toHaveLength(2);
+  });
+
+  test("any 4xx clears the intent only when it answered the send's only attempt", async () => {
+    // A timeout whose replay meets a 409 while the first attempt may still commit: keep the intent.
+    const retried = retriedCapacityRefusal({ refusal: { status: 409, code: "idempotency_conflict" } });
+    await withServer(retried.app, async (base) => {
+      expect((await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/replay" })).status).toBe(503);
+    });
+    expect(retried.posts).toHaveLength(2);
+    expect(await retried.index.listPending(owner)).toHaveLength(1);
+    // The same 409 on a lone attempt is definitive: nothing was created, so the intent goes.
+    const lone = retriedCapacityRefusal({ firstAttemptFails: false, refusal: { status: 409, code: "idempotency_conflict" } });
+    await withServer(lone.app, async (base) => {
+      await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/replay" });
+    });
+    expect(lone.posts).toHaveLength(1);
+    expect(await lone.index.listPending(owner)).toEqual([]);
   });
 
   test("after a transport retry with nothing committed, recovery abandons once the grace has passed", async () => {
