@@ -912,13 +912,13 @@
   width: min(100%, 420px);
   max-width: calc(100vw - 32px);
   z-index: 50;
-  min-height: 44px;
+  max-height: var(--pr-toast-max-height, none);
   padding: 0 8px;
-  display: inline-flex;
-  align-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   justify-content: center;
-  flex-wrap: wrap;
-  gap: 0 4px;
+  gap: 4px;
   border-radius: 16px;
   background: var(--ink);
   color: var(--bgc);
@@ -931,11 +931,15 @@
 }
 .pr-toast-copy {
   min-width: 0;
-  flex: 1 1 100%;
+  max-height: var(--pr-toast-copy-max-height, none);
+  flex: 0 1 auto;
   display: flex;
   align-items: flex-start;
   gap: 6px;
   padding-right: 28px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .pr-toast-icon {
   display: none;
@@ -954,6 +958,13 @@
   line-height: 1.2;
   white-space: normal;
   overflow-wrap: anywhere;
+}
+.pr-toast-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
 }
 .pr-toast button {
   min-height: 44px;
@@ -1041,18 +1052,17 @@
   }
 }
 
-/* On a short, narrow phone, the gap above the dock is smaller than the actionable toast. Use the clear lower ring-stage area; the pause target stays visible. */
+/* On a short, narrow phone, shrink the stage disc with its tick reach to make room above the dock. */
 @media (orientation: portrait) and (max-width: 360px) and (max-height: 600px) {
   .pr-toast {
-    position: fixed;
-    top: 12vh;
-    bottom: auto;
-    flex-wrap: wrap;
-    gap: 0 4px;
-    padding: 0 6px;
+    max-width: calc(100vw - 16px);
   }
-  .pr-toast-copy {
-    padding-right: 28px;
+  .pr:not(.dr) .pr-stage {
+    min-height: 160px;
+  }
+  .pr-dock .pr-controls {
+    padding-top: 8px;
+    padding-bottom: calc(env(safe-area-inset-bottom) + 6px);
   }
 }
 
@@ -1062,10 +1072,7 @@
     left: 50%;
     width: min(100%, 420px);
     max-width: calc(50vw - 16px);
-    flex-wrap: wrap;
-    gap: 0 4px;
-    padding: 0 6px;
-    translate: 0 6px;
+    translate: 0 -4px;
   }
   .pr-toast-icon {
     display: grid;

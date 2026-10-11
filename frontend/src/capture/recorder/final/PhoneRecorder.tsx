@@ -171,85 +171,65 @@ export function PhoneRecorder({
     setToast({ message, key, actions });
     return key;
   };
-  const positionShortToast = useCallback(() => {
+  const sizeToastForDock = useCallback(() => {
     const element = toastElement.current;
     if (!element) return;
-    const shortPortrait = window.matchMedia(
-      "(orientation: portrait) and (max-width: 360px) and (max-height: 600px)",
-    ).matches;
-    if (!window.matchMedia("(orientation: portrait)").matches) {
-      element.style.removeProperty("top");
-      element.style.removeProperty("position");
-      element.style.removeProperty("bottom");
-      return;
-    }
-
-    const timer = document.querySelector(".pr-time")?.getBoundingClientRect();
-    const ring = document.querySelector(".pr-ring")?.getBoundingClientRect();
-    const scale = document.querySelector(".pr-scale")?.getBoundingClientRect();
-    const dock = document
-      .querySelector(".pr-controls")
-      ?.getBoundingClientRect();
-    const labels = document.querySelector(".pr-ends")?.getBoundingClientRect();
-    if (!timer || !ring || !scale || !dock || !labels) return;
+    const dock = element.parentElement?.getBoundingClientRect();
+    if (!dock) return;
 
     const toast = element.getBoundingClientRect();
-    const height = toast.height;
-    const viewportBottom = window.innerHeight - 8;
-    if (!shortPortrait) {
-      const overlapsLabels =
-        toast.top < labels.bottom && toast.bottom > labels.top;
-      const top = timer.bottom + 8;
+    const protectedElements = document.querySelectorAll<HTMLElement>(
+      ".pr-top, .pr-time-row, .pr-extra, .pr-notes, .pr-ring, .pr-stage button, .pr-mrow, .pr-scale",
+    );
+    const lastProtectedBottom = [...protectedElements].reduce((bottom, item) => {
       if (
-        overlapsLabels &&
-        top >= 8 &&
-        top + height <= ring.top - 8 &&
-        top + height <= viewportBottom
-      ) {
-        element.style.position = "fixed";
-        element.style.bottom = "auto";
-        element.style.top = `${top}px`;
-      } else {
-        element.style.removeProperty("top");
-        element.style.removeProperty("position");
-        element.style.removeProperty("bottom");
-      }
-      return;
-    }
+        (item.matches(".pr-extra, .pr-notes") && !item.textContent?.trim()) ||
+        item.hidden
+      )
+        return bottom;
+      const bounds = item.getBoundingClientRect();
+      const overlapsHorizontally =
+        toast.left < bounds.right && toast.right > bounds.left;
+      return overlapsHorizontally && bounds.top < dock.top
+        ? Math.max(bottom, bounds.bottom)
+        : bottom;
+    }, 0);
+    const available = Math.max(0, dock.top - 4 - lastProtectedBottom);
+    const actions = element.querySelector<HTMLElement>(".pr-toast-actions");
+    const actionsHeight = actions?.getBoundingClientRect().height ?? 0;
+    const actionGap = actions ? 4 : 0;
 
-    const candidates = [
-      { top: timer.bottom + 8, bottom: ring.top - 8 },
-      { top: timer.bottom + 8, bottom: scale.top - 8 },
-      { top: scale.bottom + 8, bottom: dock.top - 8 },
-    ];
-    const placement = candidates.find(
-      ({ top, bottom }) =>
-        top >= 8 && top + height <= bottom && top + height <= viewportBottom,
+    element.style.setProperty("--pr-toast-max-height", `${available}px`);
+    element.style.setProperty(
+      "--pr-toast-copy-max-height",
+      `${Math.max(0, available - actionsHeight - actionGap)}px`,
     );
-    const fallback = Math.max(
-      8,
-      Math.min(candidates[1]!.top, viewportBottom - height),
-    );
-    element.style.top = `${(placement ?? { top: fallback }).top}px`;
   }, []);
   useLayoutEffect(() => {
     const element = toastElement.current;
     if (!element) return;
+    const main = element.closest<HTMLElement>(".pr-main");
     let frame = 0;
     const schedule = () => {
       cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(positionShortToast);
+      frame = requestAnimationFrame(sizeToastForDock);
     };
     const observer = new ResizeObserver(schedule);
     observer.observe(element);
+    for (const target of document.querySelectorAll<HTMLElement>(
+      ".pr-top, .pr-time-row, .pr-extra, .pr-notes, .pr-ring, .pr-stage button, .pr-mrow, .pr-scale, .pr-dock",
+    ))
+      observer.observe(target);
     window.addEventListener("resize", schedule);
+    main?.addEventListener("scroll", schedule);
     schedule();
     return () => {
       cancelAnimationFrame(frame);
       observer.disconnect();
       window.removeEventListener("resize", schedule);
+      main?.removeEventListener("scroll", schedule);
     };
-  }, [positionShortToast, toast?.key, toast?.message]);
+  }, [sizeToastForDock, toast?.key, toast?.message]);
   const showModelProgressToast = () => {
     modelDownloadStartingFrom.current = onDevice.model;
     const key = showToast("Starting the download…");
@@ -849,21 +829,25 @@ export function PhoneRecorder({
                 resumeToast("focus");
             }}
           >
-            <div className="pr-toast-copy">
+            <div className="pr-toast-copy" tabIndex={0}>
               <span className="pr-toast-icon" aria-hidden="true">
                 !
               </span>
               <span className="pr-toast-message">{toast.message}</span>
             </div>
-            {toast.actions.map((action) => (
-              <button
-                key={action.label}
-                type="button"
-                onClick={() => runToastAction(action.run)}
-              >
-                {action.label}
-              </button>
-            ))}
+            {toast.actions.length > 0 && (
+              <div className="pr-toast-actions">
+                {toast.actions.map((action) => (
+                  <button
+                    key={action.label}
+                    type="button"
+                    onClick={() => runToastAction(action.run)}
+                  >
+                    {action.label}
+                  </button>
+                ))}
+              </div>
+            )}
             <button
               type="button"
               className="pr-toast-dismiss"

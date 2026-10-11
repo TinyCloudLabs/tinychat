@@ -225,14 +225,23 @@ const assertToastMessageVisible = async (page: Page, expected: string) => {
   expect(layout.width).toBeGreaterThan(1);
   expect(layout.height).toBeGreaterThan(layout.fontSize * 0.9);
   expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth + 1);
-  expect(layout.scrollHeight).toBeLessThanOrEqual(layout.clientHeight + 2);
   expect(layout.whiteSpace).not.toBe("nowrap");
   expect(layout.textOverflow).not.toBe("ellipsis");
-  expect(layout.overflow).not.toBe("hidden");
+  expect(layout.overflow).toBe("visible");
   expect(layout.clipPath).toBe("none");
   expect(layout.lineCount).toBeGreaterThanOrEqual(1);
-  expect(layout.lineCount).toBeLessThanOrEqual(3);
   const toast = await page.locator(".pr-toast").boundingBox();
+  const copy = await page.locator(".pr-toast-copy").evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      overflowY: style.overflowY,
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+    };
+  });
+  expect(copy.overflowY).toBe("auto");
+  expect(copy.clientHeight).toBeGreaterThan(0);
+  expect(copy.scrollHeight).toBeGreaterThanOrEqual(copy.clientHeight);
   const viewport = page.viewportSize()!;
   expect(toast).not.toBeNull();
   expect(toast!.x).toBeGreaterThanOrEqual(0);
@@ -245,7 +254,7 @@ const assertToastMessageVisible = async (page: Page, expected: string) => {
       const actionBox = await action.boundingBox();
       expect(actionBox).not.toBeNull();
       expect(actionBox!.y).toBeGreaterThanOrEqual(
-        toast!.y + toast!.height - actionBox!.height - 1,
+        toast!.y + toast!.height - actionBox!.height - 5,
       );
     }
   }
@@ -253,6 +262,7 @@ const assertToastMessageVisible = async (page: Page, expected: string) => {
 const assertToastClearOfRecorderControls = async (
   page: Page,
   fontScale: number,
+  allowMissingRingButton = false,
 ) => {
   const toast = await page.locator(".pr-toast").boundingBox();
   expect(toast).not.toBeNull();
@@ -262,12 +272,15 @@ const assertToastClearOfRecorderControls = async (
     ["Listening pill", page.getByTestId("phone-recorder-pill")],
     ["Minimise", page.getByRole("button", { name: "Minimise recorder" })],
     ["ring", page.locator(".pr-stage button")],
+    ["ring body", page.locator(".pr-ring")],
+    ["status line", page.locator(".pr-extra")],
+    ["notes row", page.locator(".pr-notes")],
     ["mode row", page.locator(".pr-mrow")],
     ["modes button", page.locator(".pr-minfo")],
     ["mode name", page.locator(".pr-mname")],
     ["mode detail", page.locator(".pr-mshort")],
     ["privacy scale", page.locator(".pr-scale")],
-    ["privacy labels", page.locator(".pr-ends")],
+    ["privacy labels (allowed)", page.locator(".pr-ends")],
     // The toast is anchored above the sticky dock. The caption and Via row
     // may sit behind it while the dismissible notification is present.
     ["caption (allowed)", page.locator(".pr-capline")],
@@ -275,11 +288,17 @@ const assertToastClearOfRecorderControls = async (
     ["Via control (allowed)", page.locator(".pr-srcbtn")],
     ["control buttons", page.locator(".pr-controls button")],
   ];
+  expect(await page.locator(".pr-ends").getAttribute("aria-hidden")).toBe(
+    "true",
+  );
   const viewport = page.viewportSize()!;
   const overlaps: { name: string; target: NonNullable<typeof toast> }[] = [];
   for (const [name, locator] of targets) {
     const count = await locator.count();
+    if (name === "notes row" && count === 0) continue;
+    if (name === "ring" && count === 0 && allowMissingRingButton) continue;
     expect(count).toBeGreaterThan(0);
+    if (name === "status line" && !(await locator.innerText()).trim()) continue;
     for (let index = 0; index < count; index++) {
       const target = await locator.nth(index).boundingBox();
       expect(target).not.toBeNull();
@@ -301,9 +320,6 @@ const assertToastClearOfRecorderControls = async (
   expect(
     overlaps.filter(({ name }) => {
       if (name.includes("(allowed)")) return false;
-      if (name === "privacy labels" && fontScale === 2) return false;
-      if (name === "ring" && viewport.width === 320 && viewport.height === 545)
-        return false;
       return true;
     }),
   ).toEqual([]);
@@ -700,6 +716,109 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
         fullPage: true,
       });
     await dark.page.context().close();
+  });
+
+  test("a five-line toast scrolls without covering the ring or scale on a short phone", async () => {
+    const { page } = await open("model-unavailable");
+    const messageText =
+      "This recording cannot switch to the on-device model until the model download finishes. Check your connection and try again when the download is complete. The recording stays available while you wait.";
+    const message = page.locator(".pr-toast-message");
+    const copy = page.locator(".pr-toast-copy");
+    await page.setViewportSize({ width: 320, height: 545 });
+
+    for (const fontScale of [1, 2]) {
+      await setFontScale(page, 1);
+      if (fontScale === 2) await setFontScale(page, fontScale);
+      const stop = page.locator('.pr-stop[data-stop="local"]');
+      await stop.scrollIntoViewIfNeeded();
+      await stop.click();
+      await shown(page.getByRole("button", { name: "Get model" }));
+      await message.evaluate((element, value) => {
+        element.textContent = value;
+      }, messageText);
+      if (fontScale === 2) await setToastFontScale(page, fontScale);
+      await settleToastPlacement(page);
+
+      await assertToastMessageVisible(page, messageText);
+      const lineCount = await message.evaluate((element) => {
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        return new Set(
+          [...range.getClientRects()].map(({ top }) => Math.round(top)),
+        ).size;
+      });
+      expect(lineCount).toBeGreaterThanOrEqual(5);
+      await assertToastClearOfRecorderControls(page, fontScale);
+
+      await copy.focus();
+      await focused(copy);
+      await copy.evaluate((element) => {
+        element.scrollTop = element.scrollHeight;
+      });
+      expect(
+        await copy.evaluate((element) => element.scrollTop),
+      ).toBeGreaterThan(0);
+      const finalLineVisible = await message.evaluate((element) => {
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        const rects = [...range.getClientRects()];
+        const last = rects.at(-1);
+        const copy = element.parentElement!.getBoundingClientRect();
+        return Boolean(
+          last && last.bottom <= copy.bottom && last.top >= copy.top,
+        );
+      });
+      expect(finalLineVisible).toBe(true);
+      const evidenceDir = process.env.EXO_POLISH_EVIDENCE;
+      if (evidenceDir) {
+        mkdirSync(evidenceDir, { recursive: true });
+        await page.screenshot({
+          path: `${evidenceDir}/recorder-long-toast-320x545-font-${fontScale}.png`,
+          fullPage: true,
+        });
+      }
+      await page
+        .locator(".pr-toast")
+        .getByRole("button", { name: "Dismiss notification" })
+        .click();
+      await gone(page.locator(".pr-toast"));
+    }
+    await page.context().close();
+  });
+
+  test("an interrupted recording keeps its status and notes row clear of the toast", async () => {
+    const { page } = await open("consented");
+    await page.evaluate(() => {
+      const harness = (window as unknown as Harness).exoRecorder;
+      harness.patch({
+        mic: { state: "interrupted", reason: "call" },
+        note: {
+          md: "- **0:12** Keep this note visible",
+          moments: [{ atMs: 12_000, label: "Keep this note visible" }],
+        },
+        noteStatus: "ready",
+      });
+      harness.transcriberResult = "unavailable";
+    });
+    await shown(page.getByText("Resumes when the call ends"));
+    await shown(page.locator(".pr-notes .pr-vnotes"));
+    await slider(page).focus();
+    await page.keyboard.press("ArrowLeft");
+    const toast = page.locator(".pr-toast");
+    await shown(toast);
+    await page.locator(".pr-toast-message").evaluate((element) => {
+      element.textContent =
+        "This unavailable mode can be selected after the recording resumes.";
+    });
+    await settleToastPlacement(page);
+    await assertToastClearOfRecorderControls(page, 1, true);
+    expect(await page.locator(".pr-extra").innerText()).toContain(
+      "Resumes when the call ends",
+    );
+    expect(await page.locator(".pr-notes .pr-vnotes").innerText()).toContain(
+      "View notes",
+    );
+    await page.context().close();
   });
 
   test("Get model starts the shared Wi-Fi download and replaces the toast with its waiting state", async () => {
