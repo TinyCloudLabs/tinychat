@@ -157,24 +157,27 @@ const modeIs = (page: Page, value: string) =>
   until(`mode ${value}`, async () => (await mode(page)) === value);
 const setFontScale = (page: Page, scale: number) =>
   page.evaluate((nextScale) => {
-    const root = document.querySelector<HTMLElement>(
-      '[data-testid="phone-recorder"]',
-    );
-    if (!root) throw new Error("phone recorder is missing");
-    for (const element of root.querySelectorAll<HTMLElement>(
+    for (const element of document.querySelectorAll<HTMLElement>(
       "[data-font-base]",
     )) {
       element.style.removeProperty("font-size");
       element.removeAttribute("data-font-base");
     }
     if (nextScale === 1) return;
-    for (const element of root.querySelectorAll<HTMLElement>("*")) {
-      const base = Number.parseFloat(getComputedStyle(element).fontSize);
+    const elements = [...document.querySelectorAll<HTMLElement>("*")];
+    const sizes = elements.map((element) =>
+      Number.parseFloat(getComputedStyle(element).fontSize),
+    );
+    elements.forEach((element, index) => {
+      const base = sizes[index]!;
       element.dataset.fontBase = String(base);
       element.style.fontSize = `${base * nextScale}px`;
-    }
+    });
   }, scale);
-const assertToastClearOfRecorderControls = async (page: Page) => {
+const assertToastClearOfRecorderControls = async (
+  page: Page,
+  fontScale: number,
+) => {
   const toast = await page.locator(".pr-toast").boundingBox();
   expect(toast).not.toBeNull();
   const targets: [string, Locator][] = [
@@ -182,21 +185,43 @@ const assertToastClearOfRecorderControls = async (page: Page) => {
     ["moment button", page.locator(".pr-time-slot")],
     ["Listening pill", page.getByTestId("phone-recorder-pill")],
     ["Minimise", page.getByRole("button", { name: "Minimise recorder" })],
+    ["ring", page.locator(".pr-stage button")],
+    ["mode row", page.locator(".pr-mrow")],
+    ["modes button", page.locator(".pr-minfo")],
+    ["mode name", page.locator(".pr-mname")],
+    ["mode detail", page.locator(".pr-mshort")],
+    ["privacy scale", page.locator(".pr-scale")],
     ["privacy labels", page.locator(".pr-ends")],
+    ["mode caption", page.locator(".pr-capline")],
+    ["via row", page.locator(".pr-src-wrap")],
+    ["via control", page.locator(".pr-srcbtn")],
+    ["controls row", page.locator(".pr-controls")],
+    ["control buttons", page.locator(".pr-controls button")],
   ];
+  const overlaps: { name: string; target: NonNullable<typeof toast> }[] = [];
   for (const [name, locator] of targets) {
-    const target = await locator.boundingBox();
-    expect(target).not.toBeNull();
-    const overlaps =
-      toast!.x < target!.x + target!.width &&
-      toast!.x + toast!.width > target!.x &&
-      toast!.y < target!.y + target!.height &&
-      toast!.y + toast!.height > target!.y;
-    if (overlaps)
-      throw new Error(
-        `toast overlaps ${name} at ${page.viewportSize()?.width}x${page.viewportSize()?.height}: ${JSON.stringify({ toast, target })}`,
-      );
+    const count = await locator.count();
+    expect(count).toBeGreaterThan(0);
+    for (let index = 0; index < count; index++) {
+      const target = await locator.nth(index).boundingBox();
+      expect(target).not.toBeNull();
+      if (
+        toast!.x < target!.x + target!.width &&
+        toast!.x + toast!.width > target!.x &&
+        toast!.y < target!.y + target!.height &&
+        toast!.y + toast!.height > target!.y
+      )
+        overlaps.push({
+          name: count > 1 ? `${name}[${index}]` : name,
+          target: target!,
+        });
+    }
   }
+  const viewport = page.viewportSize()!;
+  console.log(
+    `toast-overlap-check ${viewport.width}x${viewport.height} font=${fontScale}x toast=${JSON.stringify(toast)} overlaps=${JSON.stringify(overlaps)}`,
+  );
+  expect(overlaps).toEqual([]);
 };
 const storedMode = (page: Page) =>
   page.evaluate(() => localStorage.getItem("exo.recorder.transcription-mode"));
@@ -397,49 +422,30 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     const getModelAction = toast.getByRole("button", { name: "Get model" });
     await shown(privateAction);
     await shown(getModelAction);
-    await assertToastClearOfRecorderControls(page);
 
     await page.clock.fastForward(10_000);
     await shown(privateAction);
     const evidenceDir = process.env.EXO_POLISH_EVIDENCE;
-    if (evidenceDir) {
-      mkdirSync(evidenceDir, { recursive: true });
-      await page.screenshot({
-        path: `${evidenceDir}/recorder-toast-phone.png`,
-        fullPage: true,
-      });
+    if (evidenceDir) mkdirSync(evidenceDir, { recursive: true });
+    const viewports = [
+      { width: 390, height: 844 },
+      { width: 320, height: 545 },
+      { width: 844, height: 390 },
+      { width: 740, height: 360 },
+    ];
+    for (const viewport of viewports) {
+      await page.setViewportSize(viewport);
+      for (const fontScale of [1, 2]) {
+        await setFontScale(page, 1);
+        if (fontScale === 2) await setFontScale(page, fontScale);
+        await assertToastClearOfRecorderControls(page, fontScale);
+        if (evidenceDir)
+          await page.screenshot({
+            path: `${evidenceDir}/recorder-toast-${viewport.width}x${viewport.height}-font-${fontScale}.png`,
+            fullPage: true,
+          });
+      }
     }
-    await page.setViewportSize({ width: 844, height: 390 });
-    await assertToastClearOfRecorderControls(page);
-    if (evidenceDir)
-      await page.screenshot({
-        path: `${evidenceDir}/recorder-toast-phone-land.png`,
-        fullPage: true,
-      });
-    await page.setViewportSize({ width: 740, height: 360 });
-    await assertToastClearOfRecorderControls(page);
-    await page.setViewportSize({ width: 844, height: 390 });
-    await setFontScale(page, 2);
-    await assertToastClearOfRecorderControls(page);
-    await page.setViewportSize({ width: 740, height: 360 });
-    await assertToastClearOfRecorderControls(page);
-    await page.setViewportSize({ width: 390, height: 844 });
-    await setFontScale(page, 1);
-    await setFontScale(page, 2);
-    const portraitLargeToast = (await toast.boundingBox())!;
-    expect(portraitLargeToast.x).toBeGreaterThanOrEqual(0);
-    expect(portraitLargeToast.y).toBeGreaterThanOrEqual(0);
-    expect(portraitLargeToast.x + portraitLargeToast.width).toBeLessThanOrEqual(
-      390,
-    );
-    expect(
-      portraitLargeToast.y + portraitLargeToast.height,
-    ).toBeLessThanOrEqual(844);
-    if (evidenceDir)
-      await page.screenshot({
-        path: `${evidenceDir}/recorder-toast-phone-font2.png`,
-        fullPage: true,
-      });
     await setFontScale(page, 1);
     await page.setViewportSize({ width: 390, height: 844 });
     await privateAction.click();

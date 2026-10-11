@@ -745,7 +745,47 @@ export function PhoneRecorder({
           )}
         </div>
 
-        <div className="pr-dock">
+        <div className="pr-dock" data-toast-present={toast ? "true" : undefined}>
+        {toast && (
+          <div
+            key={toast.key}
+            className="pr-toast"
+            role="status"
+            onPointerEnter={() => pauseToast("pointer")}
+            onPointerLeave={(event) => {
+              if (
+                !event.currentTarget.contains(event.relatedTarget as Node | null)
+              )
+                resumeToast("pointer");
+            }}
+            onFocusCapture={() => pauseToast("focus")}
+            onBlurCapture={(event) => {
+              if (
+                !event.currentTarget.contains(event.relatedTarget as Node | null)
+              )
+                resumeToast("focus");
+            }}
+          >
+            <span className="pr-toast-message">{toast.message}</span>
+            {toast.actions.map((action) => (
+              <button
+                key={action.label}
+                type="button"
+                onClick={() => runToastAction(action.run)}
+              >
+                {action.label}
+              </button>
+            ))}
+            <button
+              type="button"
+              className="pr-toast-dismiss"
+              aria-label="Dismiss notification"
+              onClick={dismissToast}
+            >
+              ×
+            </button>
+          </div>
+        )}
         {alerts.map(({ message, retry }) => (
           <p key={message} className="pr-alert" role="alert">
             {message}
@@ -926,46 +966,6 @@ export function PhoneRecorder({
         </SheetDialog>
       )}
 
-      {toast && (
-        <div
-          key={toast.key}
-          className="pr-toast"
-          role="status"
-          onPointerEnter={() => pauseToast("pointer")}
-          onPointerLeave={(event) => {
-            if (
-              !event.currentTarget.contains(event.relatedTarget as Node | null)
-            )
-              resumeToast("pointer");
-          }}
-          onFocusCapture={() => pauseToast("focus")}
-          onBlurCapture={(event) => {
-            if (
-              !event.currentTarget.contains(event.relatedTarget as Node | null)
-            )
-              resumeToast("focus");
-          }}
-        >
-          <span className="pr-toast-message">{toast.message}</span>
-          {toast.actions.map((action) => (
-            <button
-              key={action.label}
-              type="button"
-              onClick={() => runToastAction(action.run)}
-            >
-              {action.label}
-            </button>
-          ))}
-          <button
-            type="button"
-            className="pr-toast-dismiss"
-            aria-label="Dismiss notification"
-            onClick={dismissToast}
-          >
-            ×
-          </button>
-        </div>
-      )}
     </div>
   );
 }

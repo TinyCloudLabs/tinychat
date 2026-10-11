@@ -70,6 +70,11 @@
   justify-items: center;
   background: var(--bgc);
 }
+/* Keep an actionable toast in flow instead of letting the sticky dock cover Via. */
+.pr-dock[data-toast-present="true"] {
+  position: static;
+  margin-top: 12px;
+}
 .pr-top {
   position: relative;
   width: 100%;
@@ -904,10 +909,10 @@
 }
 
 .pr-toast {
-  position: absolute;
-  left: 50%;
-  bottom: calc(env(safe-area-inset-bottom) + 220px);
-  transform: translateX(-50%);
+  position: relative;
+  width: min(100%, 420px);
+  max-width: calc(100vw - 32px);
+  justify-self: center;
   z-index: 50;
   padding: 9px 16px;
   display: inline-flex;
@@ -921,8 +926,6 @@
   font-size: 12.5px;
   font-weight: 600;
   white-space: normal;
-  width: min(calc(100vw - 32px), 420px);
-  max-width: calc(100vw - 32px);
   overflow-wrap: anywhere;
   animation: pr-toast 0.4s cubic-bezier(0.3, 1.6, 0.5, 1);
   pointer-events: auto;
@@ -947,38 +950,10 @@
   font-size: 18px;
   line-height: 1;
 }
-@media (orientation: portrait) and (min-height: 700px) {
-  .pr-toast {
-    top: calc(env(safe-area-inset-top) + 130px);
-    bottom: auto;
-  }
-}
-@media (orientation: landscape) and (max-height: 520px) {
-  .pr-toast {
-    top: calc(env(safe-area-inset-top) + 8px);
-    right: 14px;
-    bottom: auto;
-    left: calc(50% + 8px);
-    transform: none;
-    width: auto;
-    max-width: none;
-    animation-name: pr-toast-landscape;
-  }
-  .pr-toast-message {
-    flex-basis: 100%;
-    text-align: center;
-  }
-}
-@keyframes pr-toast-landscape {
-  from {
-    opacity: 0;
-    translate: 0 10px;
-  }
-}
 @keyframes pr-toast {
   from {
     opacity: 0;
-    transform: translate(-50%, 10px);
+    translate: 0 10px;
   }
 }
 
