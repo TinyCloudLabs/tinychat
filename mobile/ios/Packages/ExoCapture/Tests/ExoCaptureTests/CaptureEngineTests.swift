@@ -403,7 +403,9 @@ import XCTest
 
     func testPersistentStallBacksOffAndBlocksAtTenMinutes() throws {
         try withEngine { engine in
-            var clock = ProcessInfo.processInfo.systemUptime
+            // Whole seconds only: `clock += 599; clock += 1` is exact for these values, while a
+            // fractional uptime start can round to 599.999… and leave the 10-minute cap unreached.
+            var clock: TimeInterval = 1_000
             engine.debugNow = { clock }
             suppressLiveTaps(engine)
             let id = try XCTUnwrap(engine.start()["id"] as? String)
