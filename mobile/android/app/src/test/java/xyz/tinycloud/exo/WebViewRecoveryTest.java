@@ -28,4 +28,19 @@ public class WebViewRecoveryTest {
     @Test public void takingThePendingAddressClearsIt() {
         assertNull(WebViewRecovery.takePendingUrl());
     }
+
+    @Test public void aHeldPageDeathNeverRecreatesOrSpendsBudget() {
+        RecoveryBudget budget = new RecoveryBudget();
+        for (int i = 0; i < 10; i++) {
+            assertEquals(WebViewRecovery.Death.DETACH_ONLY, WebViewRecovery.onDeath(true, budget, i));
+        }
+        assertEquals(WebViewRecovery.Death.RECREATE, WebViewRecovery.onDeath(false, budget, 20));
+    }
+
+    @Test public void exhaustingTheBudgetRecreatesOnceAndHolds() {
+        RecoveryBudget budget = new RecoveryBudget();
+        assertEquals(WebViewRecovery.Death.RECREATE, WebViewRecovery.onDeath(false, budget, 0));
+        assertEquals(WebViewRecovery.Death.RECREATE, WebViewRecovery.onDeath(false, budget, 1));
+        assertEquals(WebViewRecovery.Death.RECREATE_AND_HOLD, WebViewRecovery.onDeath(false, budget, 2));
+    }
 }

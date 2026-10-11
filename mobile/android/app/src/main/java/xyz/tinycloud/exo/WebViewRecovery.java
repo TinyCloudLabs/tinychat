@@ -16,8 +16,8 @@ import java.net.URI;
  * Android can kill the WebView's renderer while Exo is backgrounded. With no listener claiming that, the whole app
  * process is killed. This claims it, remembers the address the user was on, detaches the dead WebView, and
  * recreates the activity (a WebView whose renderer is gone cannot be reused); MainActivity loads the remembered
- * address into the new WebView. Repeated deaths in a short window still recreate (so Capacitor releases the dead
- * WebView), but the new activity holds the page back and asks the user to reload instead of loading it.
+ * address into the new WebView. Once deaths in a short window exhaust the budget, the new activity holds the page
+ * back and asks the user to reload instead of loading it; a death of that held page only detaches it.
  */
 final class WebViewRecovery extends WebViewListener {
     private static final String TAG = "ExoWebView";
@@ -67,15 +67,30 @@ final class WebViewRecovery extends WebViewListener {
         new Handler(Looper.getMainLooper()).post(this::askToReload);
     }
 
+    enum Death { RECREATE, RECREATE_AND_HOLD, DETACH_ONLY }
+
+    /** A held page never recreates: the death budget is already spent, so recreating here could loop. */
+    static Death onDeath(boolean prompting, RecoveryBudget budget, long nowMs) {
+        if (prompting) return Death.DETACH_ONLY;
+        return budget.recordDeath(nowMs) ? Death.RECREATE : Death.RECREATE_AND_HOLD;
+    }
+
     @Override public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
         Log.w(TAG, "WebView renderer gone (crashed=" + detail.didCrash() + ")");
-        if (!prompting) pendingUrl = restorableUrl(view.getUrl(), appUrl);
+        Death death = onDeath(prompting, BUDGET, SystemClock.elapsedRealtime());
+        if (death != Death.DETACH_ONLY) pendingUrl = restorableUrl(view.getUrl(), appUrl);
         // Detach only: Capacitor's BridgeActivity.onDetachedFromWindow -> Bridge.onDetachedFromWindow destroys the
         // bridge's WebView when the activity is torn down, and WebView methods must not be called after destroy().
         if (view.getParent() instanceof ViewGroup) ((ViewGroup) view.getParent()).removeView(view);
-        // A held page loads nothing, so this should not happen; if it does, release it the same way and keep holding.
-        holdNextPage = prompting || !BUDGET.recordDeath(SystemClock.elapsedRealtime());
-        new Handler(Looper.getMainLooper()).post(activity::recreate);
+        Handler main = new Handler(Looper.getMainLooper());
+        if (death == Death.DETACH_ONLY) {
+            // Bounded retention: the held WebView is the one dead view kept (never recreated) while the dialog is
+            // up; Reload recreates the activity and Capacitor's teardown destroys it.
+            main.post(this::askToReload);
+            return true;
+        }
+        holdNextPage = death == Death.RECREATE_AND_HOLD;
+        main.post(activity::recreate);
         return true;
     }
 
@@ -86,6 +101,7 @@ final class WebViewRecovery extends WebViewListener {
 
     private void askToReload() {
         if (activity.isFinishing() || activity.isDestroyed()) return;
+        if (prompt != null && prompt.isShowing()) return;
         Log.w(TAG, "WebView renderer keeps dying; waiting for the user to reload");
         prompt = new AlertDialog.Builder(activity)
             .setTitle("Exo needs to reload")
