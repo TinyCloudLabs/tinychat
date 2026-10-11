@@ -41,6 +41,10 @@ afterAll(() => {
 
 const container = { nodeType: 1, nodeName: "DIV", tagName: "DIV", ownerDocument: null, textContent: "", addEventListener() {}, removeEventListener() {} } as unknown as HTMLElement;
 const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+/** Settles until something that follows a chain of lane and store hops has happened. */
+async function settleUntil(done: () => boolean) {
+  for (let turn = 0; turn < 50 && !done(); turn++) await settle();
+}
 
 // --- The phone -----------------------------------------------------------------------------------------------------
 
@@ -58,6 +62,7 @@ const phone = {
   quarantineError: null as Error | null,
   quarantineReads: 0,
   reads: 0,
+  transcriptReads: [] as string[],
 };
 
 /** The plugin as iOS drives it: the queue never holds a finished job, and events arrive through `emit`. */
@@ -82,6 +87,7 @@ async function installPhone() {
   __setVoiceNotesForTests(
     {
       listPending: async () => { phone.reads += 1; if (phone.listError) throw phone.listError; return { recordings: phone.recordings }; },
+      getTranscript: async ({ id }: { id: string }) => { phone.transcriptReads.push(id); return { transcript: null }; },
       listQuarantine: async () => { phone.quarantineReads += 1; if (phone.quarantineError) throw phone.quarantineError; return { items: phone.quarantine }; },
     } as unknown as VoiceNotesPlugin,
     { available: true },
@@ -104,7 +110,7 @@ let warnings: ReturnType<typeof spyOn>;
 beforeEach(async () => {
   errors = spyOn(console, "error").mockImplementation(() => {});
   warnings = spyOn(console, "warn").mockImplementation(() => {});
-  phone.recordings = []; phone.listError = null; phone.quarantine = []; phone.quarantineError = null; phone.quarantineReads = 0; phone.reads = 0;
+  phone.recordings = []; phone.listError = null; phone.quarantine = []; phone.quarantineError = null; phone.quarantineReads = 0; phone.reads = 0; phone.transcriptReads = [];
   queue = []; refuseListening = new Map(); callbacks.clear();
   __resetOnDeviceSttStoreForTests();
   __resetAutoNoteSyncForTests();
@@ -494,7 +500,9 @@ describe("the space row is evidence for one account and space only", () => {
     const render = (source: NotePipelineSource) => act(async () => root!.render(<StaticRecorderProvider value={recorder()}><Probe source={source} /></StaticRecorderProvider>));
     await render(sourceA);
     await settle();
-    expect(seen.view).toBeNull();
+    // A's row has not answered: the pipeline is up on what the phone knows, and says it is still checking.
+    expect(seen.view).not.toBeNull();
+    expect(stepOf(seen.view!.pipeline, "transcript").state).not.toBe("done");
     await render(sourceB);
     await act(async () => { release(); });
     await settle();
@@ -514,7 +522,7 @@ describe("a list of 100 notes without row metadata", () => {
     function Probe() { views = useNotePipelines(entries); return null; }
     root = createRoot(container);
     await act(async () => root!.render(<StaticRecorderProvider value={recorder()}><Probe /></StaticRecorderProvider>));
-    await settle();
+    await settleUntil(() => space.log.rowQueries.length > 0);
     expect(views.size).toBe(100);
     expect(space.log.rowQueries).toHaveLength(1);
     expect(space.log.rowQueries[0]).toEqual(IDS);
@@ -523,7 +531,7 @@ describe("a list of 100 notes without row metadata", () => {
 
     phone.recordings = IDS.map((id) => recording(id, "on-device", stt(id === IDS[7] ? "failed" : "queued", id === IDS[7] ? "decoder crashed" : null)));
     await act(async () => emit("failed", { id: IDS[7] }));
-    await settle();
+    await settleUntil(() => space.log.rowQueries.length > 1);
     expect(space.log.rowQueries).toHaveLength(2);
     expect(space.log.rowQueries[1]).toEqual([IDS[7]]);
     expect(views.get(IDS[7]!)!.pipeline.blocker?.cause).toContain("decoder crashed");
@@ -541,12 +549,85 @@ describe("a list of 100 notes without row metadata", () => {
     root = createRoot(container);
     const render = (entries: typeof entriesA) => act(async () => root!.render(<StaticRecorderProvider value={recorder()}><Probe entries={entries} /></StaticRecorderProvider>));
     await render(entriesA);
-    await settle();
+    await settleUntil(() => a.log.rowQueries.length > 0);
     await render(entriesB);
-    await settle();
+    await settleUntil(() => b.log.rowQueries.length > 0);
     expect(a.log.rowQueries).toHaveLength(1);
     expect(b.log.rowQueries).toHaveLength(1);
     expect(b.log.rowQueries[0]).toEqual(IDS);
     expect(views.size).toBe(100);
+  });
+});
+
+describe("a saved Local note whose transcript is done on the phone but not in the space (P6 sim pass, item 1)", () => {
+  const rowWithoutTranscript = () => ({ capture: { platform: "ios" } });
+
+  test("the hook starts the one first attempt; its failure is a blocker with the cause and Try again, never an endless Adding", async () => {
+    phone.recordings = [recording(ID, "on-device", stt("done"))];
+    const space = fakeSpace("did:p6-item1", rowWithoutTranscript);
+    const source: NotePipelineSource = { tcw: space.tcw, saved: true };
+    const history: NotePipeline[] = [];
+    function Probe() { const view = useNotePipeline(ID, source); if (view) history.push(view.pipeline); return null; }
+    root = createRoot(container);
+    await act(async () => root!.render(<StaticRecorderProvider value={recorder()}><Probe /></StaticRecorderProvider>));
+    await settleUntil(() => phone.transcriptReads.length > 0);
+    await settleUntil(() => stepOf(history.at(-1)!, "transcript").state === "failed");
+    expect(phone.transcriptReads).toEqual([ID]);
+    const last = history.at(-1)!;
+    expect(stepOf(last, "transcript").state).toBe("failed");
+    expect(last.blocker?.cause).toBe("Couldn't add the transcript to this note · this phone says it finished transcribing but has no transcript for the note");
+    expect(last.blocker?.action?.kind).toBe("retry");
+    // While the attempt ran it was Adding; at no point did it stand "Adding" with nothing running.
+    expect(history.some((pipeline) => stepOf(pipeline, "transcript").caption === "Adding to this note…")).toBe(true);
+    expect(last.done).toBe(false);
+  });
+
+  test("a rerender does not start a second attempt; Try again runs one more", async () => {
+    phone.recordings = [recording(ID, "on-device", stt("done"))];
+    const space = fakeSpace("did:p6-item1b", rowWithoutTranscript);
+    const { seen } = await mountOne({ tcw: space.tcw, saved: true });
+    await settleUntil(() => seen.view !== null && stepOf(seen.view.pipeline, "transcript").state === "failed");
+    await settle();
+    expect(phone.transcriptReads).toEqual([ID]);
+    await act(async () => seen.view!.onAction("retry"));
+    await settleUntil(() => phone.transcriptReads.length > 1);
+    expect(phone.transcriptReads).toEqual([ID, ID]);
+  });
+
+  test("a note whose row already has the transcript is not synced again", async () => {
+    phone.recordings = [recording(ID, "on-device", stt("done"))];
+    const space = fakeSpace("did:p6-item1c", () => ({ transcription_outcome: "transcribed" }));
+    const { seen } = await mountOne({ tcw: space.tcw, saved: true });
+    await settleUntil(() => seen.view !== null && stepOf(seen.view.pipeline, "transcript").state === "done");
+    expect(stepOf(seen.view!.pipeline, "transcript").state).toBe("done");
+    expect(phone.transcriptReads).toEqual([]);
+  });
+});
+
+describe("a saved note's pipeline does not wait for its space row (P6 sim pass, items 2 and 5)", () => {
+  test("while the row's read is queued behind uploads, the pipeline is already up and says it is checking; no attempt is made on a guess", async () => {
+    phone.recordings = [recording(ID, "on-device", stt("done"))];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const space = fakeSpace("did:p6-item2", () => ({ transcription_outcome: "transcribed" }), gate);
+    const { seen } = await mountOne({ tcw: space.tcw, saved: true });
+    expect(seen.view).not.toBeNull();
+    const waiting = stepOf(seen.view!.pipeline, "transcript");
+    expect([waiting.state, waiting.caption]).toEqual(["waiting", "Checking your space…"]);
+    expect(seen.view!.pipeline.blocker).toBeUndefined();
+    expect(phone.transcriptReads).toEqual([]);
+    await act(async () => { release(); });
+    await settleUntil(() => stepOf(seen.view!.pipeline, "transcript").state === "done");
+    expect(stepOf(seen.view!.pipeline, "transcript").state).toBe("done");
+    expect(phone.transcriptReads).toEqual([]);
+  });
+
+  test("a note that is not in the space has no row to read", async () => {
+    phone.recordings = [recording(ID, "on-device", stt("queued"))];
+    const space = fakeSpace("did:p6-item2b", () => ({}));
+    const { seen } = await mountOne({ tcw: space.tcw, saved: false });
+    await settle();
+    expect(seen.view).not.toBeNull();
+    expect(space.log.rowQueries).toEqual([]);
   });
 });

@@ -59,6 +59,7 @@ export default function SavedNote({
     [tcw, item.onPhone, rowMetadata],
   );
   const pipeline = useNotePipeline(item.sourceId, pipelineSource);
+  const stepperShown = pipeline !== null && !pipeline.pipeline.done;
   const view = {
     screen,
     layout,
@@ -67,17 +68,17 @@ export default function SavedNote({
     recordingId: item.sourceId,
     title: item.title ?? voiceNoteTitle(Date.parse(item.startedAt ?? "") || Date.now()),
     meta: savedNoteMeta(item, rowMetadata, platform, pipeline?.pipeline.done === true),
-    stepper:
-      pipeline !== null && !pipeline.pipeline.done ? (
-        <PipelineStepper
-          pipeline={pipeline.pipeline}
-          onAction={pipeline.onAction}
-          actionError={pipeline.actionError}
-        />
-      ) : null,
+    stepper: stepperShown ? (
+      <PipelineStepper
+        pipeline={pipeline.pipeline}
+        onAction={pipeline.onAction}
+        actionError={pipeline.actionError}
+      />
+    ) : null,
     audio,
     transcript,
-    footer,
+    // The stepper is the route while the note is still getting here; the legacy route line would say it twice.
+    footer: stepperShown ? null : footer,
     partialAudio:
       recorder.captureIssues[item.sourceId]?.kind === "partial_audio",
     onBack,

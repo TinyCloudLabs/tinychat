@@ -49,6 +49,7 @@ export function InProgressVoiceCard(props: {
     const current = row.pipeline.steps.find((step) => step.key === row.pipeline.current);
     return current?.key === "space" && current.state === "active" && current.caption?.startsWith("Uploading") === true;
   }).length;
+  const onPhone = unfinished.filter((row) => row.pipeline.steps.find((step) => step.key === "space")?.state !== "done").length;
   const action = unfinished
     .flatMap((row) => {
       const kind = row.pipeline.blocker?.action?.kind;
@@ -63,7 +64,8 @@ export function InProgressVoiceCard(props: {
     <div className="soft-card soft-progress-card" data-testid="voice-note-pending">
       <MicIcon className="soft-ico soft-card-icon" aria-hidden="true" />
       <div className="soft-card-text">
-        <b data-testid="voice-note-summary">{unfinished.length} {unfinished.length === 1 ? "note" : "notes"} on this phone</b>
+        <b data-testid="voice-note-summary">{HOME_COPY.inProgressCount(unfinished.length)}</b>
+        {onPhone > 0 && <span data-testid="voice-note-on-phone">{HOME_COPY.onPhoneCount(onPhone)}</span>}
         {uploading > 0 && <span data-testid="voice-note-uploading">{uploading} uploading</span>}
         {hasOffline && <span data-testid="voice-note-offline">Waiting for a connection. Exo continues automatically.</span>}
         {props.actionError && <span role="alert" data-testid="voice-note-action-error">{props.actionError}</span>}
