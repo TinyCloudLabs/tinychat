@@ -25,7 +25,8 @@ export interface VoiceNoteTranscriptionProps {
   onTranscribePrivately: (sourceId: string) => void;
   onConsent: () => void;
   onTurnOff: () => void;
-  onRecheck: () => void;
+  /** Asks again; resolves once the check has answered. */
+  onRecheck: () => void | Promise<void>;
 }
 
 export const HIDDEN_SNAPSHOT: VoiceNoteTranscriberSnapshot = {
@@ -51,6 +52,6 @@ export function transcriptionProps(
     onTranscribePrivately: (sourceId) => transcriber.transcribePrivately(sourceId),
     onConsent: () => transcriber.consent(),
     onTurnOff: () => void transcriber.turnOff(),
-    onRecheck: () => void transcriber.check(),
+    onRecheck: () => transcriber.check(),
   };
 }
