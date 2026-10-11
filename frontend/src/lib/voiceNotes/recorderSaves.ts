@@ -40,21 +40,22 @@ function rawErrorMessage(error: unknown): string {
 function redactedRawError(message: string): string {
   return message
     .replace(/https?:\/\/[^\s"'<>]+/gi, "<url>")
-    .replace(/\b(authorization\s*[:=]\s*)(?:bearer\s+)?[^\s,;]+/gi, "$1<redacted>")
+    .replace(/\b(authorization)(["']?\s*[:=]\s*["']?)(?:bearer\s+)?[^\s"'&,;}]+/gi, "$1$2<redacted>")
     .replace(/\b(bearer\s+)[^\s,;]+/gi, "$1<redacted>")
-    .replace(/\b(token|api[_-]?key|secret)(\s*[:=]\s*)[^\s&;,]+/gi, "$1$2<redacted>")
+    .replace(/\b(token|api[_-]?key|secret)(["']?\s*[:=]\s*["']?)[^\s"'&,;}]+/gi, "$1$2<redacted>")
     .slice(0, 240);
 }
 
-const WEBKIT_NETWORK_FAILURE_SUFFIX = /(?:^|:\s)(?:Load failed|The network connection was lost\.|Fetch API cannot load .+? due to access control checks\.)\s*$/i;
+const NETWORK_FAILURE_SUFFIX = /(?:^|:\s)(?:Load failed|The network connection was lost\.|Fetch API cannot load .+? due to access control checks\.|Failed to fetch|NetworkError when attempting to fetch resource\.)\s*$/i;
 
 export function isTinyCloudNetworkFailure(error: unknown): boolean {
-  return errorCode(error) === "NETWORK_ERROR" || WEBKIT_NETWORK_FAILURE_SUFFIX.test(rawErrorMessage(error));
+  return NETWORK_FAILURE_SUFFIX.test(rawErrorMessage(error));
 }
 
 /** Log a diagnostic message without passing arbitrary error objects or credential-bearing strings to the console. */
 export function logVoiceNoteError(operation: string, error: unknown): void {
-  console.warn(`[VoiceNotes] ${operation}: ${redactedRawError(rawErrorMessage(error))}`);
+  const code = errorCode(error);
+  console.warn(`[VoiceNotes] ${operation}${code ? ` (code=${code})` : ""}: ${redactedRawError(rawErrorMessage(error))}`);
 }
 
 /** Map WebKit's unhelpful network messages to specific recovery copy. */

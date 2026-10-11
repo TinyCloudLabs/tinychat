@@ -515,6 +515,54 @@ test("reconcile refreshes the pending count after each note save", async () => {
   }
 });
 
+async function pipelineFailureMessage(failure: "kv-403" | "sql-500"): Promise<string | null> {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "off", identifySpeakers: false });
+    await fake.plugin.start();
+    await fake.plugin.stop();
+    if (failure === "kv-403") {
+      tcw.kv.list = (async () => ({ ok: false, error: {
+        code: "NETWORK_ERROR", message: "Failed to list keys: 403 - capability tinycloud.kv/list not granted",
+      } })) as typeof tcw.kv.list;
+    } else {
+      const db = tcw.sql.db.bind(tcw.sql);
+      tcw.sql.db = ((name: string) => {
+        const connection = db(name);
+        const execute = connection.execute.bind(connection);
+        return { ...connection, execute: (async (statement: string, ...args: unknown[]) => {
+          if (statement.startsWith("INSERT INTO connector_meeting")) {
+            return { ok: false, error: { code: "NETWORK_ERROR", message: "Failed to execute query: 500 - internal server error" } };
+          }
+          return execute(statement, ...args as never[]);
+        }) as typeof connection.execute };
+      }) as typeof tcw.sql.db;
+    }
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh(null);
+    await createVoiceNotePipeline(tcw, { retryDelaysMs: [] }).reconcileAll({
+      did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration(),
+    });
+    return pendingStore.snapshot().lastError;
+  } finally {
+    __setVoiceNotesForTests(original, { available: null });
+    pendingStore.setAccount(null);
+    await pendingStore.refresh(null);
+  }
+}
+
+test("a kv.list 403 stays visible as its own message", async () => {
+  expect(await pipelineFailureMessage("kv-403")).toContain("Failed to list keys: 403 - capability tinycloud.kv/list not granted");
+});
+
+test("a SQL 500 stays visible as its own message", async () => {
+  expect(await pipelineFailureMessage("sql-500")).toContain("Failed to execute query: 500 - internal server error");
+});
+
 test("a wrapped audio upload network error shows friendly copy and logs only a redacted diagnostic", async () => {
   const original = VoiceNotes;
   const { tcw } = space();
