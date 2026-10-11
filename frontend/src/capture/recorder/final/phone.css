@@ -604,10 +604,10 @@ html[data-platform="android"] .pr-srcbtn {
 }
 
 .pr-modes {
-  position: fixed;
+  position: absolute;
   left: 10px;
   right: 10px;
-  bottom: max(10px, env(safe-area-inset-bottom));
+  bottom: 8px;
   z-index: 30;
   padding: 11px 10px 0;
   border-radius: 26px;
@@ -617,12 +617,21 @@ html[data-platform="android"] .pr-srcbtn {
     0 22px 50px rgba(0, 0, 0, 0.35);
   transform-origin: 50% 100%;
   animation: pr-rise 0.34s cubic-bezier(0.3, 1.45, 0.5, 1);
-  max-height: calc(
-    100dvh - max(20px, env(safe-area-inset-top)) -
-      max(20px, env(safe-area-inset-bottom))
-  );
+  max-height: calc(100dvh - 140px);
   overflow-y: auto;
   text-align: left;
+}
+/* Keep the phone panel above the measured recorder dock; scroll its contents when space is short. */
+.pr:not(.dr) .pr-modes {
+  position: fixed;
+  bottom: var(--pr-dock-reserve, 90px);
+  max-height: max(
+    0px,
+    calc(
+      100dvh - max(20px, env(safe-area-inset-top)) -
+        var(--pr-dock-reserve, 90px) - max(20px, env(safe-area-inset-bottom))
+    )
+  );
 }
 @keyframes pr-rise {
   from {
@@ -653,9 +662,7 @@ html[data-platform="android"] .pr-srcbtn {
 }
 .pr-mplg {
   display: grid;
-  grid-template-columns:
-    max(58px, calc(3.25rem * var(--android-body-scale, 1)))
-    max(68px, calc(4.25rem * var(--android-body-scale, 1)));
+  grid-template-columns: 58px 58px;
   justify-content: flex-end;
   gap: 10px;
   padding: 2px 8px 2px;
@@ -667,6 +674,11 @@ html[data-platform="android"] .pr-srcbtn {
 }
 .pr-mplg span {
   text-align: center;
+}
+html[data-large-text] .pr:not(.dr) .pr-mplg {
+  grid-template-columns:
+    max(58px, calc(3.25rem * var(--android-body-scale, 1)))
+    max(58px, calc(4.25rem * var(--android-body-scale, 1)));
 }
 .pr-mprow {
   display: grid;
@@ -737,10 +749,16 @@ html[data-platform="android"] .pr-srcbtn {
   align-items: center;
 }
 .pr-dots-col:nth-child(1) {
-  width: max(58px, calc(3.25rem * var(--android-body-scale, 1)));
+  width: 58px;
 }
 .pr-dots-col:nth-child(2) {
-  width: max(68px, calc(4.25rem * var(--android-body-scale, 1)));
+  width: 58px;
+}
+html[data-large-text] .pr:not(.dr) .pr-dots-col:nth-child(1) {
+  width: max(58px, calc(3.25rem * var(--android-body-scale, 1)));
+}
+html[data-large-text] .pr:not(.dr) .pr-dots-col:nth-child(2) {
+  width: max(58px, calc(4.25rem * var(--android-body-scale, 1)));
 }
 .pr-dots-col i {
   width: 6px;

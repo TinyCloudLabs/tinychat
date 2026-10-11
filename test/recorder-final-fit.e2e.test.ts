@@ -121,6 +121,7 @@ async function open(
   viewport: { width: number; height: number; fontScale: number },
   ready: string,
   options: { level?: number; keyboard?: number } = {},
+  platform: "android" | "ios" = "android",
 ): Promise<Page> {
   const page = await (
     await browser.newContext({
@@ -132,26 +133,44 @@ async function open(
     })
   ).newPage();
   await page.goto(
-    `http://127.0.0.1:${server.port}/?screen=recorder-final-phone-${screen}&theme=${theme}&platform=android&freeze=1${options.level === undefined ? "" : `&level=${options.level}`}`,
+    `http://127.0.0.1:${server.port}/?screen=recorder-final-phone-${screen}&theme=${theme}&platform=${platform}&freeze=1${options.level === undefined ? "" : `&level=${options.level}`}`,
   );
   await page.waitForSelector(ready);
   if (viewport.fontScale !== 1) {
-    // Android WebView scales text only. Emulate textZoom without changing
-    // layout units, preserving the explicit CSS compensation for timer slots.
-    await page.evaluate((scale) => {
-      const root = document.documentElement;
-      root.style.setProperty("--android-body-scale", String(scale));
-      root.toggleAttribute("data-large-text", scale > 1.25);
-      const slots = [...document.querySelectorAll<HTMLElement>(".pr-digit, .pr-colon")];
-      const widths = slots.map((slot) => getComputedStyle(slot).width);
-      const fonts = [...document.querySelectorAll<HTMLElement>("body *")].map((element) =>
-        [element, Number.parseFloat(getComputedStyle(element).fontSize)] as const,
-      );
-      for (const [element, size] of fonts) {
-        if (Number.isFinite(size) && size > 0) element.style.fontSize = `${size * scale}px`;
-      }
-      slots.forEach((slot, index) => { slot.style.width = widths[index]!; });
-    }, viewport.fontScale);
+    await page.evaluate(
+      ({ scale, platform }) => {
+        const root = document.documentElement;
+        root.style.removeProperty("font-size");
+        root.toggleAttribute("data-large-text", scale > 1.25);
+        if (platform === "ios") {
+          root.style.setProperty("--ios-body-scale", String(scale));
+          return;
+        }
+
+        // Android WebView scales text only. Emulate textZoom without changing
+        // layout units, preserving the explicit CSS compensation for timer slots.
+        root.style.setProperty("--android-body-scale", String(scale));
+        const slots = [
+          ...document.querySelectorAll<HTMLElement>(".pr-digit, .pr-colon"),
+        ];
+        const widths = slots.map((slot) => getComputedStyle(slot).width);
+        const fonts = [...document.querySelectorAll<HTMLElement>("body *")].map(
+          (element) =>
+            [
+              element,
+              Number.parseFloat(getComputedStyle(element).fontSize),
+            ] as const,
+        );
+        for (const [element, size] of fonts) {
+          if (Number.isFinite(size) && size > 0)
+            element.style.fontSize = `${size * scale}px`;
+        }
+        slots.forEach((slot, index) => {
+          slot.style.width = widths[index]!;
+        });
+      },
+      { scale: viewport.fontScale, platform },
+    );
   }
   if (options.keyboard) {
     // What iOS does when the keyboard rises: the visual viewport shrinks, the layout viewport does not.
@@ -232,257 +251,372 @@ async function parts(page: Page) {
 // and the minimise button and the pill share the top row.
 const BY_DESIGN = new Set(["timer|plus"]);
 
-for (const viewport of fitViewports.filter((candidate) => candidate.fontScale === 2)) {
-  test(`${viewport.name}, android, timer digit slots and plus do not overlap`, async () => {
-    const page = await open("recording", "light", viewport, ".pr-ring");
-    const overlaps = await page.evaluate(() => {
-      const intersect = (a: DOMRect, b: DOMRect) =>
-        a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
-      const digits = [...document.querySelectorAll<HTMLElement>(".pr-digits > span")];
-      const boxes = digits.map((digit) => digit.getBoundingClientRect());
-      const plus = document.querySelector<HTMLElement>(".pr-time-slot")?.getBoundingClientRect();
-      return {
-        digitPairs: boxes.some((box, index) => boxes.slice(index + 1).some((other) => intersect(box, other))),
-        plus: Boolean(plus && boxes.some((box) => intersect(box, plus))),
-        rootSize: getComputedStyle(document.documentElement).fontSize,
-        timerSize: Number.parseFloat(
-          getComputedStyle(document.querySelector<HTMLElement>(".pr-time")!).fontSize,
-        ),
-        landscape: window.matchMedia(
-          "(orientation: landscape) and (max-height: 520px)",
-        ).matches,
-      };
+for (const platform of ["android", "ios"] as const) {
+  for (const viewport of fitViewports.filter(
+    (candidate) => candidate.fontScale === 2,
+  )) {
+    test(`${viewport.name}, ${platform}, timer digit slots and plus do not overlap`, async () => {
+      const page = await open(
+        "recording",
+        "light",
+        viewport,
+        ".pr-ring",
+        {},
+        platform,
+      );
+      const overlaps = await page.evaluate(() => {
+        const intersect = (a: DOMRect, b: DOMRect) =>
+          a.left < b.right &&
+          a.right > b.left &&
+          a.top < b.bottom &&
+          a.bottom > b.top;
+        const digits = [
+          ...document.querySelectorAll<HTMLElement>(".pr-digits > span"),
+        ];
+        const boxes = digits.map((digit) => digit.getBoundingClientRect());
+        const plus = document
+          .querySelector<HTMLElement>(".pr-time-slot")
+          ?.getBoundingClientRect();
+        return {
+          digitPairs: boxes.some((box, index) =>
+            boxes.slice(index + 1).some((other) => intersect(box, other)),
+          ),
+          plus: Boolean(plus && boxes.some((box) => intersect(box, plus))),
+          rootSize: getComputedStyle(document.documentElement).fontSize,
+          timerSize: Number.parseFloat(
+            getComputedStyle(document.querySelector<HTMLElement>(".pr-time")!)
+              .fontSize,
+          ),
+          landscape: window.matchMedia(
+            "(orientation: landscape) and (max-height: 520px)",
+          ).matches,
+        };
+      });
+      expect(overlaps.digitPairs).toBe(false);
+      expect(overlaps.plus).toBe(false);
+      expect(overlaps.rootSize).toBe(platform === "ios" ? "32px" : "16px");
+      expect(overlaps.timerSize).toBeLessThanOrEqual(
+        overlaps.landscape ? 80 : 100,
+      );
+      await page.context().close();
     });
-    expect(overlaps.digitPairs).toBe(false);
-    expect(overlaps.plus).toBe(false);
-    expect(overlaps.rootSize).toBe("16px");
-    expect(overlaps.timerSize).toBeLessThanOrEqual(overlaps.landscape ? 80 : 100);
-    await page.context().close();
-  });
+  }
 }
 
-for (const theme of ["light", "dark"] as const) {
-  for (const viewport of fitViewports) {
-    describe.serial(`${viewport.name}, ${theme}, ${engineName}`, () => {
-      for (const { id, ready } of SCREENS) {
-        test(`${id}: nothing overlaps, nothing runs off the side, the ring stays in its stage`, async () => {
-          const page = await open(id, theme, viewport, ready);
-          if (shotsDir)
-            await page.screenshot({
-              path: join(shotsDir, `${slug(viewport.name)}-${id}-${theme}.png`),
-            });
+for (const platform of ["android", "ios"] as const) {
+  for (const theme of ["light", "dark"] as const) {
+    for (const viewport of fitViewports) {
+      describe.serial(
+        `${viewport.name}, ${theme}, ${platform}, ${engineName}`,
+        () => {
+          for (const { id, ready } of SCREENS) {
+            test(`${id}: nothing overlaps, nothing runs off the side, the ring stays in its stage`, async () => {
+              const page = await open(id, theme, viewport, ready, {}, platform);
+              if (shotsDir)
+                await page.screenshot({
+                  path: join(
+                    shotsDir,
+                    `${slug(viewport.name)}-${id}-${theme}.png`,
+                  ),
+                });
 
-          if (id === "modes") {
-            const layout = await page.evaluate(() => {
-              const panel = document.querySelector<HTMLElement>(".pr-modes")!;
-              const rect = panel.getBoundingClientRect();
-              const headings = [...document.querySelectorAll<HTMLElement>(".pr-mplg span")];
-              const dots = [...document.querySelectorAll<HTMLElement>(".pr-dots-col")].slice(0, 2);
-              return {
-                panel: { top: rect.top, bottom: rect.bottom },
-                headings: headings.map((heading) => ({
-                  width: heading.getBoundingClientRect().width,
-                  clientWidth: heading.clientWidth,
-                  scrollWidth: heading.scrollWidth,
-                })),
-                dotWidths: dots.map((dot) => dot.getBoundingClientRect().width),
-              };
-            });
-            expect(layout.panel.top).toBeGreaterThanOrEqual(0);
-            expect(layout.panel.bottom).toBeLessThanOrEqual(viewport.height + 0.5);
-            expect(layout.headings.every((heading) => heading.scrollWidth <= heading.clientWidth + 1)).toBe(true);
-            expect(layout.headings.every((heading, index) => Math.abs(heading.width - layout.dotWidths[index]!) < 1)).toBe(true);
-            await page.context().close();
-            return;
-          }
-
-          if (id === "long-device-menu") {
-            const menu = await page.evaluate(() => {
-              const panel = document.querySelector<HTMLElement>(".pr-menu")!;
-              const device = [...document.querySelectorAll<HTMLElement>(".pr-item .label > span:last-child")]
-                .find((label) => label.textContent?.includes("sdk_gphone64_arm64"))!;
-              const range = document.createRange();
-              range.selectNodeContents(device);
-              const lines = new Map<number, { left: number; right: number }>();
-              for (const rect of range.getClientRects()) {
-                const top = Math.round(rect.top);
-                const line = lines.get(top);
-                if (line) {
-                  line.left = Math.min(line.left, rect.left);
-                  line.right = Math.max(line.right, rect.right);
-                } else lines.set(top, { left: rect.left, right: rect.right });
+              if (id === "modes") {
+                const layout = await page.evaluate(() => {
+                  const panel =
+                    document.querySelector<HTMLElement>(".pr-modes")!;
+                  const rect = panel.getBoundingClientRect();
+                  const headings = [
+                    ...document.querySelectorAll<HTMLElement>(".pr-mplg span"),
+                  ];
+                  const dots = [
+                    ...document.querySelectorAll<HTMLElement>(".pr-dots-col"),
+                  ].slice(0, 2);
+                  return {
+                    panel: { top: rect.top, bottom: rect.bottom },
+                    dockTop: document
+                      .querySelector<HTMLElement>(".pr-dock")!
+                      .getBoundingClientRect().top,
+                    headings: headings.map((heading) => ({
+                      text: heading.textContent,
+                      width: heading.getBoundingClientRect().width,
+                      clientWidth: heading.clientWidth,
+                      scrollWidth: heading.scrollWidth,
+                      textBox: (() => {
+                        const range = document.createRange();
+                        range.selectNodeContents(heading);
+                        const rect = range.getBoundingClientRect();
+                        return { left: rect.left, right: rect.right };
+                      })(),
+                    })),
+                    dotWidths: dots.map(
+                      (dot) => dot.getBoundingClientRect().width,
+                    ),
+                  };
+                });
+                expect(layout.panel.top).toBeGreaterThanOrEqual(0);
+                expect(layout.panel.bottom).toBeLessThanOrEqual(
+                  viewport.height + 0.5,
+                );
+                expect(layout.panel.bottom).toBeLessThanOrEqual(
+                  layout.dockTop + 0.5,
+                );
+                if (viewport.fontScale > 1) {
+                  expect(
+                    layout.headings.every(
+                      (heading) =>
+                        heading.scrollWidth <= heading.clientWidth + 1,
+                    ),
+                  ).toBe(true);
+                } else {
+                  expect(
+                    layout.headings.every(
+                      (heading) => Math.abs(heading.width - 58) < 1,
+                    ),
+                  ).toBe(true);
+                  expect(layout.headings[0]!.textBox.right).toBeLessThanOrEqual(
+                    layout.headings[1]!.textBox.left,
+                  );
+                }
+                expect(
+                  layout.headings.every(
+                    (heading, index) =>
+                      Math.abs(heading.width - layout.dotWidths[index]!) < 1,
+                  ),
+                ).toBe(true);
+                await page.context().close();
+                return;
               }
-              return {
-                width: panel.getBoundingClientRect().width,
-                expectedWidth: Math.min(358, window.innerWidth - 16),
-                lineWidths: [...lines.values()].map((line) => line.right - line.left),
-                fontSize: Number.parseFloat(getComputedStyle(device).fontSize),
-              };
-            });
-            expect(Math.abs(menu.width - menu.expectedWidth)).toBeLessThanOrEqual(1);
-            expect(menu.lineWidths.length).toBeLessThanOrEqual(2);
-            expect(Math.min(...menu.lineWidths)).toBeGreaterThan(menu.fontSize * 1.5);
-            await page.context().close();
-            return;
-          }
 
-          expect(
-            await page.evaluate(
-              () => document.documentElement.scrollWidth <= window.innerWidth,
-            ),
-          ).toBe(true);
-          expect(
-            await page.$eval(
-              ".pr-main",
-              (el) => el.scrollWidth <= el.clientWidth + 1,
-            ),
-          ).toBe(true);
-
-          // The screen scrolls inside .pr-main: compare the parts as laid out, from the top.
-          const laidOut = await parts(page);
-
-          const stage = await page.$eval(".pr-stage", (el) => {
-            const r = el.getBoundingClientRect();
-            return {
-              left: r.left,
-              top: r.top,
-              right: r.right,
-              bottom: r.bottom,
-            };
-          });
-          const ring = laidOut.find((p) => p.name === "ring");
-          expect(ring).toBeDefined();
-          expect(within(ring!.box, stage)).toBe(true);
-
-          // The dock holds the controls and is the last thing in the flow; the rest of the screen is above it.
-          const dock = await page.$eval(".pr-dock", (el) => {
-            const r = el.getBoundingClientRect();
-            return {
-              left: r.left,
-              top: r.top,
-              right: r.right,
-              bottom: r.bottom,
-            };
-          });
-          const flow = laidOut.filter(
-            (p) =>
-              p.name !== "controls" &&
-              p.name !== "alert" &&
-              p.name !== "guidance",
-          );
-          for (let i = 0; i < flow.length; i++) {
-            for (let j = i + 1; j < flow.length; j++) {
-              const a = flow[i]!;
-              const b = flow[j]!;
-              if (BY_DESIGN.has(`${a.name}|${b.name}`)) continue;
-              if (!apart(a.box, b.box))
-                throw new Error(
-                  `${a.name} ${JSON.stringify(a.box)} meets ${b.name} ${JSON.stringify(b.box)}`,
+              if (id === "long-device-menu") {
+                const menu = await page.evaluate(() => {
+                  const panel =
+                    document.querySelector<HTMLElement>(".pr-menu")!;
+                  const device = [
+                    ...document.querySelectorAll<HTMLElement>(
+                      ".pr-item .label > span:last-child",
+                    ),
+                  ].find((label) =>
+                    label.textContent?.includes("sdk_gphone64_arm64"),
+                  )!;
+                  const range = document.createRange();
+                  range.selectNodeContents(device);
+                  const lines = new Map<
+                    number,
+                    { left: number; right: number }
+                  >();
+                  for (const rect of range.getClientRects()) {
+                    const top = Math.round(rect.top);
+                    const line = lines.get(top);
+                    if (line) {
+                      line.left = Math.min(line.left, rect.left);
+                      line.right = Math.max(line.right, rect.right);
+                    } else
+                      lines.set(top, { left: rect.left, right: rect.right });
+                  }
+                  return {
+                    width: panel.getBoundingClientRect().width,
+                    expectedWidth: Math.min(358, window.innerWidth - 16),
+                    lineWidths: [...lines.values()].map(
+                      (line) => line.right - line.left,
+                    ),
+                    fontSize: Number.parseFloat(
+                      getComputedStyle(device).fontSize,
+                    ),
+                  };
+                });
+                expect(
+                  Math.abs(menu.width - menu.expectedWidth),
+                ).toBeLessThanOrEqual(1);
+                expect(menu.lineWidths.length).toBeLessThanOrEqual(2);
+                expect(Math.min(...menu.lineWidths)).toBeGreaterThan(
+                  menu.fontSize * 1.5,
                 );
-            }
-          }
-          const controls = laidOut.filter((p) => p.name === "controls");
-          for (let i = 0; i < controls.length; i++)
-            for (let j = i + 1; j < controls.length; j++)
-              expect(apart(controls[i]!.box, controls[j]!.box)).toBe(true);
-          expect(dock.bottom).toBeLessThanOrEqual(viewport.height + 0.5);
-          await page.context().close();
-        });
+                await page.context().close();
+                return;
+              }
 
-        test(`${id}: every control can be reached`, async () => {
-          const page = await open(id, theme, viewport, ready);
-          if (id === "modes" || id === "long-device-menu") {
-            await page.context().close();
-            return;
-          }
-          const dockHolds = id !== "moment-field";
-          if (dockHolds) {
-            // Done and Discard are in reach without scrolling, at any size, and nothing covers them.
-            for (const label of ["Discard recording"]) {
-              const hit = await page.evaluate((name) => {
-                const el = document.querySelector(`[aria-label="${name}"]`);
-                if (!el) return "missing";
+              expect(
+                await page.evaluate(
+                  () =>
+                    document.documentElement.scrollWidth <= window.innerWidth,
+                ),
+              ).toBe(true);
+              expect(
+                await page.$eval(
+                  ".pr-main",
+                  (el) => el.scrollWidth <= el.clientWidth + 1,
+                ),
+              ).toBe(true);
+
+              // The screen scrolls inside .pr-main: compare the parts as laid out, from the top.
+              const laidOut = await parts(page);
+
+              const stage = await page.$eval(".pr-stage", (el) => {
                 const r = el.getBoundingClientRect();
-                const inside =
-                  r.left >= 0 &&
-                  r.top >= 0 &&
-                  r.right <= window.innerWidth &&
-                  r.bottom <= window.innerHeight;
-                const top = document.elementFromPoint(
-                  r.left + r.width / 2,
-                  r.top + r.height / 2,
-                );
-                return inside && top && el.contains(top) ? "ok" : "covered";
-              }, label);
-              if (id === "mic-denied") expect(hit).toBe("missing");
-              else expect(hit).toBe("ok");
-            }
-            if (id !== "mic-denied") {
-              const done = await page.evaluate(() => {
-                const el = [...document.querySelectorAll(".pr-b.main")][0];
-                if (!el) return "missing";
-                const r = el.getBoundingClientRect();
-                const top = document.elementFromPoint(
-                  r.left + r.width / 2,
-                  r.top + r.height / 2,
-                );
-                const inside =
-                  r.left >= 0 &&
-                  r.top >= 0 &&
-                  r.right <= window.innerWidth &&
-                  r.bottom <= window.innerHeight;
-                return inside && top && el.contains(top) ? "ok" : "covered";
+                return {
+                  left: r.left,
+                  top: r.top,
+                  right: r.right,
+                  bottom: r.bottom,
+                };
               });
-              expect(done).toBe("ok");
-            }
+              const ring = laidOut.find((p) => p.name === "ring");
+              expect(ring).toBeDefined();
+              expect(within(ring!.box, stage)).toBe(true);
+
+              // The dock holds the controls and is the last thing in the flow; the rest of the screen is above it.
+              const dock = await page.$eval(".pr-dock", (el) => {
+                const r = el.getBoundingClientRect();
+                return {
+                  left: r.left,
+                  top: r.top,
+                  right: r.right,
+                  bottom: r.bottom,
+                };
+              });
+              const flow = laidOut.filter(
+                (p) =>
+                  p.name !== "controls" &&
+                  p.name !== "alert" &&
+                  p.name !== "guidance",
+              );
+              for (let i = 0; i < flow.length; i++) {
+                for (let j = i + 1; j < flow.length; j++) {
+                  const a = flow[i]!;
+                  const b = flow[j]!;
+                  if (BY_DESIGN.has(`${a.name}|${b.name}`)) continue;
+                  if (!apart(a.box, b.box))
+                    throw new Error(
+                      `${a.name} ${JSON.stringify(a.box)} meets ${b.name} ${JSON.stringify(b.box)}`,
+                    );
+                }
+              }
+              const controls = laidOut.filter((p) => p.name === "controls");
+              for (let i = 0; i < controls.length; i++)
+                for (let j = i + 1; j < controls.length; j++)
+                  expect(apart(controls[i]!.box, controls[j]!.box)).toBe(true);
+              expect(dock.bottom).toBeLessThanOrEqual(viewport.height + 0.5);
+              await page.context().close();
+            });
+
+            test(`${id}: every control can be reached`, async () => {
+              const page = await open(id, theme, viewport, ready, {}, platform);
+              if (id === "long-device-menu") {
+                await page.context().close();
+                return;
+              }
+              const dockHolds = id !== "moment-field";
+              if (dockHolds) {
+                // Done and Discard are in reach without scrolling, at any size, and nothing covers them.
+                const dockAction =
+                  id === "paused" ? "Resume recording" : "Pause recording";
+                for (const label of ["Discard recording", dockAction]) {
+                  const hit = await page.evaluate((name) => {
+                    const el =
+                      name === "Pause recording" ||
+                      name === "Resume recording"
+                        ? document.querySelector(
+                            `.pr-dock [aria-label="${name}"]`,
+                          )
+                        : document.querySelector(`[aria-label="${name}"]`);
+                    if (!el) return "missing";
+                    const r = el.getBoundingClientRect();
+                    const inside =
+                      r.left >= 0 &&
+                      r.top >= 0 &&
+                      r.right <= window.innerWidth &&
+                      r.bottom <= window.innerHeight;
+                    const top = document.elementFromPoint(
+                      r.left + r.width / 2,
+                      r.top + r.height / 2,
+                    );
+                    return inside && top && el.contains(top)
+                      ? "ok"
+                      : JSON.stringify({
+                          inside,
+                          target: r.toJSON(),
+                          top: top?.outerHTML.slice(0, 160) ?? null,
+                        });
+                  }, label);
+                  if (id === "mic-denied" || (id === "revoked" && label === dockAction))
+                    expect(hit).toBe("missing");
+                  else if (hit !== "ok")
+                    throw new Error(
+                      `${label} is covered while modes are open: ${hit}`,
+                    );
+                }
+                if (id !== "mic-denied") {
+                  const done = await page.evaluate(() => {
+                    const el = [...document.querySelectorAll(".pr-b.main")][0];
+                    if (!el) return "missing";
+                    const r = el.getBoundingClientRect();
+                    const top = document.elementFromPoint(
+                      r.left + r.width / 2,
+                      r.top + r.height / 2,
+                    );
+                    const inside =
+                      r.left >= 0 &&
+                      r.top >= 0 &&
+                      r.right <= window.innerWidth &&
+                      r.bottom <= window.innerHeight;
+                    return inside && top && el.contains(top) ? "ok" : "covered";
+                  });
+                  expect(done).toBe("ok");
+                }
+              }
+              if (id === "modes") {
+                await page.context().close();
+                return;
+              }
+              // The rest scrolls into view, above the dock, and is not covered when it does.
+              const targets = [
+                'button[aria-label="Minimise recorder"]',
+                ".pr-minfo",
+                ".pr-scale",
+                ".pr-srcbtn",
+                ".pr-ring",
+                ".pr-vnotes",
+                ".pr-moment input",
+              ];
+              for (const selector of targets) {
+                const result = await page.evaluate((sel) => {
+                  const el = document.querySelector(sel);
+                  if (!el) return "absent";
+                  const own = el.getBoundingClientRect();
+                  if (own.width === 0 || own.height === 0) return "absent";
+                  const main = document.querySelector<HTMLElement>(".pr-main")!;
+                  const dockEl = document.querySelector(".pr-dock")!;
+                  // Bring the control as far from the dock as the scroll allows, then see what is at its centre.
+                  const rect = el.getBoundingClientRect();
+                  const mainTop = main.getBoundingClientRect().top;
+                  main.scrollTop += rect.top - mainTop - 8;
+                  const after = el.getBoundingClientRect();
+                  const dockRect = dockEl.getBoundingClientRect();
+                  // In landscape the dock is a column of its own: it only limits what shares its columns.
+                  const dockTop =
+                    after.left < dockRect.right && after.right > dockRect.left
+                      ? dockRect.top
+                      : window.innerHeight;
+                  const x = after.left + after.width / 2;
+                  const y = after.top + Math.min(after.height / 2, 20);
+                  const hit = document.elementFromPoint(x, y);
+                  const visible =
+                    after.top >= mainTop - 0.5 && after.top + 1 < dockTop;
+                  // The ring's canvas paints the disc and ticks around its button.
+                  const owner = sel === ".pr-ring" ? el.parentElement! : el;
+                  return hit && owner.contains(hit) && visible
+                    ? "ok"
+                    : `blocked by ${hit?.className || hit?.tagName} (visible ${visible})`;
+                }, selector);
+                if (result !== "absent")
+                  expect([selector, result]).toEqual([selector, "ok"]);
+              }
+              await page.context().close();
+            });
           }
-          // The rest scrolls into view, above the dock, and is not covered when it does.
-          const targets = [
-            'button[aria-label="Minimise recorder"]',
-            ".pr-minfo",
-            ".pr-scale",
-            ".pr-srcbtn",
-            ".pr-ring",
-            ".pr-vnotes",
-            ".pr-moment input",
-          ];
-          for (const selector of targets) {
-            const result = await page.evaluate((sel) => {
-              const el = document.querySelector(sel);
-              if (!el) return "absent";
-              const own = el.getBoundingClientRect();
-              if (own.width === 0 || own.height === 0) return "absent";
-              const main = document.querySelector<HTMLElement>(".pr-main")!;
-              const dockEl = document.querySelector(".pr-dock")!;
-              // Bring the control as far from the dock as the scroll allows, then see what is at its centre.
-              const rect = el.getBoundingClientRect();
-              const mainTop = main.getBoundingClientRect().top;
-              main.scrollTop += rect.top - mainTop - 8;
-              const after = el.getBoundingClientRect();
-              const dockRect = dockEl.getBoundingClientRect();
-              // In landscape the dock is a column of its own: it only limits what shares its columns.
-              const dockTop =
-                after.left < dockRect.right && after.right > dockRect.left
-                  ? dockRect.top
-                  : window.innerHeight;
-              const x = after.left + after.width / 2;
-              const y = after.top + Math.min(after.height / 2, 20);
-              const hit = document.elementFromPoint(x, y);
-              const visible =
-                after.top >= mainTop - 0.5 && after.top + 1 < dockTop;
-              // The ring's canvas paints the disc and ticks around its button.
-              const owner = sel === ".pr-ring" ? el.parentElement! : el;
-              return hit && owner.contains(hit) && visible
-                ? "ok"
-                : `blocked by ${hit?.className || hit?.tagName} (visible ${visible})`;
-            }, selector);
-            if (result !== "absent")
-              expect([selector, result]).toEqual([selector, "ok"]);
-          }
-          await page.context().close();
-        });
-      }
-    });
+        },
+      );
+    }
   }
 }
 

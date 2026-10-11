@@ -186,6 +186,34 @@ export function PhoneRecorder({
   const keyboardInset = useKeyboardInset();
   const markButton = useRef<HTMLButtonElement>(null);
   const viewNotesButton = useRef<HTMLButtonElement>(null);
+  const recorderRoot = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const root = recorderRoot.current;
+    const dock = root?.querySelector<HTMLElement>(".pr-dock");
+    if (!root || !dock) return;
+
+    const updateDockReserve = () => {
+      const gap = 8;
+      const reserve =
+        window.innerHeight - dock.getBoundingClientRect().top + gap;
+      root.style.setProperty(
+        "--pr-dock-reserve",
+        `${Math.max(gap, Math.ceil(reserve))}px`,
+      );
+    };
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(updateDockReserve);
+    observer?.observe(root);
+    observer?.observe(dock);
+    window.addEventListener("resize", updateDockReserve);
+    updateDockReserve();
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", updateDockReserve);
+    };
+  }, []);
   const recordingNow = phase === "recording";
   useEffect(() => {
     if (!recordingNow) return;
@@ -319,6 +347,7 @@ export function PhoneRecorder({
   return (
     <div
       className={`soft-skin soft-${theme === "night" ? "night" : "day"} pr`}
+      ref={recorderRoot}
       data-layout="phone"
       data-testid="phone-recorder"
       data-ring={view.ring}
@@ -339,272 +368,282 @@ export function PhoneRecorder({
         inert={sheetOpen}
       >
         <div className="pr-col pr-col-a">
-        <div className="pr-top">
-          <button
-            type="button"
-            className="pr-ibtn"
-            aria-label="Minimise recorder"
-            onClick={() => void recorder.minimiseSheet()}
-          >
-            <ChevronDownIcon size={19} />
-          </button>
-          <div className="pr-pill" data-testid="phone-recorder-pill">
-            <span
-              className="pr-dot"
-              data-dot={view.pill.dot}
-              aria-hidden="true"
-            />
-            <span>{view.pill.label}</span>
-          </div>
-        </div>
-
-        <div className="pr-time-row">
-          <div
-            className="pr-time soft-timer"
-            role="timer"
-            aria-label={view.timer.text}
-            data-dim={view.ring === "paused"}
-          >
-            <TimerDigits text={view.timer.text} />
+          <div className="pr-top">
             <button
-              ref={markButton}
               type="button"
-              className="pr-time-slot pr-mark"
-              aria-label={
-                recorder.noteStatus === "ready"
-                  ? NOTES_COPY.noteThisMoment
-                  : recorder.noteStatus === "loading"
-                    ? NOTES_COPY.noteLoading
-                    : NOTES_COPY.noteLoadFailed
-              }
-              aria-disabled={recorder.noteStatus !== "ready" || undefined}
-              disabled={phase !== "recording"}
-              onClick={() => {
-                if (recorder.noteStatus !== "ready") return;
-                hapticLight();
-                moment.begin();
-              }}
+              className="pr-ibtn"
+              aria-label="Minimise recorder"
+              onClick={() => void recorder.minimiseSheet()}
             >
-              <PlusIcon />
+              <ChevronDownIcon size={19} />
             </button>
-          </div>
-          {view.timer.countdown && (
-            <div className="pr-countdown">{view.timer.countdown.text}</div>
-          )}
-        </div>
-        <div
-          className="pr-extra"
-          data-emphasis={mustSave}
-          data-collapsed={
-            !view.statusLine && (momentField !== null || hasNote(noteMd))
-          }
-          data-testid="phone-recorder-status"
-        >
-          {view.statusLine}
-        </div>
-        {phase !== "starting" && (momentField !== null || hasNote(noteMd)) && (
-          <div className="pr-notes">
-            {momentField ? (
-              <MomentField
-                field={momentField}
-                flow={moment}
-                onFocus={() => recorder.setMomentFieldFocused(true)}
-                onClosed={(result, refocus) => {
-                  recorder.setMomentFieldFocused(false);
-                  if (result === "saved") say(NOTES_COPY.momentNoted);
-                  if (refocus)
-                    markButton.current?.focus({ preventScroll: true });
-                }}
+            <div className="pr-pill" data-testid="phone-recorder-pill">
+              <span
+                className="pr-dot"
+                data-dot={view.pill.dot}
+                aria-hidden="true"
               />
-            ) : (
+              <span>{view.pill.label}</span>
+            </div>
+          </div>
+
+          <div className="pr-time-row">
+            <div
+              className="pr-time soft-timer"
+              role="timer"
+              aria-label={view.timer.text}
+              data-dim={view.ring === "paused"}
+            >
+              <TimerDigits text={view.timer.text} />
               <button
-                ref={viewNotesButton}
+                ref={markButton}
                 type="button"
-                className="pr-vnotes"
-                data-failed={ui.saveFailed || undefined}
+                className="pr-time-slot pr-mark"
+                aria-label={
+                  recorder.noteStatus === "ready"
+                    ? NOTES_COPY.noteThisMoment
+                    : recorder.noteStatus === "loading"
+                      ? NOTES_COPY.noteLoading
+                      : NOTES_COPY.noteLoadFailed
+                }
+                aria-disabled={recorder.noteStatus !== "ready" || undefined}
+                disabled={phase !== "recording"}
                 onClick={() => {
-                  ui.openNotes(readNotesView());
+                  if (recorder.noteStatus !== "ready") return;
+                  hapticLight();
+                  moment.begin();
                 }}
               >
-                <NotesListIcon />
-                {ui.saveFailed ? NOTES_COPY.noteNotSaved : NOTES_COPY.viewNotes}
+                <PlusIcon />
               </button>
-            )}
-            {noteSyncFailed && !momentField && !ui.saveFailed && (
-              <p className="pr-nsync" role="status">
-                {NOTES_COPY.noteNotSynced}
-              </p>
+            </div>
+            {view.timer.countdown && (
+              <div className="pr-countdown">{view.timer.countdown.text}</div>
             )}
           </div>
-        )}
-
-        <div className="pr-stage">
-          <RecorderRing
-            ring={view.ring}
-            flat={view.flat}
-            theme={theme}
-            subscribeLevel={recorder.subscribeLevel}
-            action={ringAction}
-            glyph={
-              ringKind === "pause"
-                ? "pause"
-                : ringKind === "resume"
-                  ? "play"
-                  : null
+          <div
+            className="pr-extra"
+            data-emphasis={mustSave}
+            data-collapsed={
+              !view.statusLine && (momentField !== null || hasNote(noteMd))
             }
-          />
-        </div>
+            data-testid="phone-recorder-status"
+          >
+            {view.statusLine}
+          </div>
+          {phase !== "starting" &&
+            (momentField !== null || hasNote(noteMd)) && (
+              <div className="pr-notes">
+                {momentField ? (
+                  <MomentField
+                    field={momentField}
+                    flow={moment}
+                    onFocus={() => recorder.setMomentFieldFocused(true)}
+                    onClosed={(result, refocus) => {
+                      recorder.setMomentFieldFocused(false);
+                      if (result === "saved") say(NOTES_COPY.momentNoted);
+                      if (refocus)
+                        markButton.current?.focus({ preventScroll: true });
+                    }}
+                  />
+                ) : (
+                  <button
+                    ref={viewNotesButton}
+                    type="button"
+                    className="pr-vnotes"
+                    data-failed={ui.saveFailed || undefined}
+                    onClick={() => {
+                      ui.openNotes(readNotesView());
+                    }}
+                  >
+                    <NotesListIcon />
+                    {ui.saveFailed
+                      ? NOTES_COPY.noteNotSaved
+                      : NOTES_COPY.viewNotes}
+                  </button>
+                )}
+                {noteSyncFailed && !momentField && !ui.saveFailed && (
+                  <p className="pr-nsync" role="status">
+                    {NOTES_COPY.noteNotSynced}
+                  </p>
+                )}
+              </div>
+            )}
 
-        </div>
-        <div className="pr-col pr-col-b">
-        <div className="pr-controls-wrap">
-          <div className="pr-mrow">
-            <button
-              ref={opener}
-              type="button"
-              className="pr-minfo"
-              aria-label="Transcription modes: compare and choose"
-              aria-expanded={modesOpen}
-              aria-haspopup="dialog"
-              aria-controls={`${ids}-modes`}
-              onClick={() => (modesOpen ? closeModes() : setModesOpen(true))}
-            >
-              <InfoChevronIcon />
-            </button>
-            <span className="pr-mname soft-title">
-              {modeShortLabel(
-                choice.mode,
-                choice.identifySpeakers && !speakers.disabled,
-              )}
-            </span>
-            <span className="pr-mshort">{stop.subLabel[shell]}</span>
-          </div>
-          <PrivacyScale
-            ref={scale}
-            stops={choice.stops}
-            mode={choice.mode}
-            onChoose={(id) => {
-              consentOpener.current = scale.current;
-              return choose(id);
-            }}
-            step={choice.step}
-            onUnavailable={() => {}}
-          />
-          <div className="pr-ends" aria-hidden="true">
-            <span>more private</span>
-            <span>more capable</span>
-          </div>
-          <div className="pr-capline">{choice.restingNote ?? stop.captions[shell]}</div>
-          {!idleDenied && !audio.unsupported && (
-            <ViaMenu
-              inputs={audio.inputs}
-              currentId={input?.id ?? null}
-              currentName={inputName}
-              recording={view.ring === "live"}
+          <div className="pr-stage">
+            <RecorderRing
+              ring={view.ring}
+              flat={view.flat}
               theme={theme}
               subscribeLevel={recorder.subscribeLevel}
-              emphasis={view.emphasis === "input"}
-              disabled={view.controls.busy}
-              defaultOpen={defaultOpen === "via"}
-              onSelect={(id) => void audio.select(id)}
+              action={ringAction}
+              glyph={
+                ringKind === "pause"
+                  ? "pause"
+                  : ringKind === "resume"
+                    ? "play"
+                    : null
+              }
             />
-          )}
-          {modesOpen && (
-            <div id={`${ids}-modes`} style={{ display: "contents" }}>
-              <ModesCard
-                stops={choice.stops}
-                mode={choice.mode}
-                shell={shell}
-                identifySpeakers={choice.identifySpeakers}
-                opener={opener}
-                onClose={closeModes}
-                onChoose={(id) => {
-                  consentOpener.current = opener.current;
-                  if (choose(id) === null) closeModes();
-                }}
-                onToggleSpeakers={choice.setIdentifySpeakers}
-              />
-            </div>
-          )}
+          </div>
         </div>
-
-        <div className="pr-dock">
-        {alerts.map(({ message, retry }) => (
-          <p key={message} className="pr-alert" role="alert">
-            {message}
-            {retry && (
-              <button type="button" className="pr-retry" onClick={retry}>
-                Try again
+        <div className="pr-col pr-col-b">
+          <div className="pr-controls-wrap">
+            <div className="pr-mrow">
+              <button
+                ref={opener}
+                type="button"
+                className="pr-minfo"
+                aria-label="Transcription modes: compare and choose"
+                aria-expanded={modesOpen}
+                aria-haspopup="dialog"
+                aria-controls={`${ids}-modes`}
+                onClick={() => (modesOpen ? closeModes() : setModesOpen(true))}
+              >
+                <InfoChevronIcon />
               </button>
-            )}
-          </p>
-        ))}
-        {idleDenied ? (
-          <div className="pr-controls">
-            <MicDeniedAction
-              idle={phase === "idle"}
-              onOpenSettings={openSettings}
-              onTryAgain={recorder.record}
+              <span className="pr-mname soft-title">
+                {modeShortLabel(
+                  choice.mode,
+                  choice.identifySpeakers && !speakers.disabled,
+                )}
+              </span>
+              <span className="pr-mshort">{stop.subLabel[shell]}</span>
+            </div>
+            <PrivacyScale
+              ref={scale}
+              stops={choice.stops}
+              mode={choice.mode}
+              onChoose={(id) => {
+                consentOpener.current = scale.current;
+                return choose(id);
+              }}
+              step={choice.step}
+              onUnavailable={() => {}}
             />
+            <div className="pr-ends" aria-hidden="true">
+              <span>more private</span>
+              <span>more capable</span>
+            </div>
+            <div className="pr-capline">
+              {choice.restingNote ?? stop.captions[shell]}
+            </div>
+            {!idleDenied && !audio.unsupported && (
+              <ViaMenu
+                inputs={audio.inputs}
+                currentId={input?.id ?? null}
+                currentName={inputName}
+                recording={view.ring === "live"}
+                theme={theme}
+                subscribeLevel={recorder.subscribeLevel}
+                emphasis={view.emphasis === "input"}
+                disabled={view.controls.busy}
+                defaultOpen={defaultOpen === "via"}
+                onSelect={(id) => void audio.select(id)}
+              />
+            )}
+            {modesOpen && (
+              <div id={`${ids}-modes`} style={{ display: "contents" }}>
+                <ModesCard
+                  stops={choice.stops}
+                  mode={choice.mode}
+                  shell={shell}
+                  identifySpeakers={choice.identifySpeakers}
+                  opener={opener}
+                  onClose={closeModes}
+                  onChoose={(id) => {
+                    consentOpener.current = opener.current;
+                    if (choose(id) === null) closeModes();
+                  }}
+                  onToggleSpeakers={choice.setIdentifySpeakers}
+                />
+              </div>
+            )}
           </div>
-        ) : phase === "idle" ? (
-          <div className="pr-controls">
-            <button type="button" className="pr-b primary" disabled={!recorder.ready || recorder.outcome !== null}
-              onClick={() => void recorder.record()}>
-              Record
-            </button>
-          </div>
-        ) : (
-          <>
-            {view.controls.openSettings && (
-              <div className="pr-controls" style={{ paddingBottom: 0 }}>
+
+          <div className="pr-dock">
+            {alerts.map(({ message, retry }) => (
+              <p key={message} className="pr-alert" role="alert">
+                {message}
+                {retry && (
+                  <button type="button" className="pr-retry" onClick={retry}>
+                    Try again
+                  </button>
+                )}
+              </p>
+            ))}
+            {idleDenied ? (
+              <div className="pr-controls">
                 <MicDeniedAction
-                  idle={false}
+                  idle={phase === "idle"}
                   onOpenSettings={openSettings}
                   onTryAgain={recorder.record}
                 />
               </div>
-            )}
-            <div className="pr-controls">
-              <button
-                ref={discardButton}
-                type="button"
-                className="pr-b"
-                aria-label="Discard recording"
-                disabled={!(view.controls.discard || discardUnknown)}
-                onClick={() => setDiscardOpen(true)}
-              >
-                <CloseIcon />
-              </button>
-              {!denied && (
+            ) : phase === "idle" ? (
+              <div className="pr-controls">
                 <button
                   type="button"
-                  className="pr-b"
-                  aria-label={resume ? "Resume recording" : "Pause recording"}
-                  disabled={!(resume || view.controls.pause)}
-                  onClick={() => {
-                    hapticLight();
-                    control(resume ? "resume" : "pause");
-                  }}
+                  className="pr-b primary"
+                  disabled={!recorder.ready || recorder.outcome !== null}
+                  onClick={() => void recorder.record()}
                 >
-                  {resume ? <PlayIcon /> : <PauseIcon />}
+                  Record
                 </button>
-              )}
-              <button
-                type="button"
-                className="pr-b main"
-                data-emphasis={mustSave}
-                data-secondary={view.controls.openSettings}
-                disabled={!(view.controls.stop || stopUnknown)}
-                onClick={() => void finish()}
-              >
-                <CheckIcon />
-                Done
-              </button>
-            </div>
-          </>
-        )}
-        </div>
+              </div>
+            ) : (
+              <>
+                {view.controls.openSettings && (
+                  <div className="pr-controls" style={{ paddingBottom: 0 }}>
+                    <MicDeniedAction
+                      idle={false}
+                      onOpenSettings={openSettings}
+                      onTryAgain={recorder.record}
+                    />
+                  </div>
+                )}
+                <div className="pr-controls">
+                  <button
+                    ref={discardButton}
+                    type="button"
+                    className="pr-b"
+                    aria-label="Discard recording"
+                    disabled={!(view.controls.discard || discardUnknown)}
+                    onClick={() => setDiscardOpen(true)}
+                  >
+                    <CloseIcon />
+                  </button>
+                  {!denied && (
+                    <button
+                      type="button"
+                      className="pr-b"
+                      aria-label={
+                        resume ? "Resume recording" : "Pause recording"
+                      }
+                      disabled={!(resume || view.controls.pause)}
+                      onClick={() => {
+                        hapticLight();
+                        control(resume ? "resume" : "pause");
+                      }}
+                    >
+                      {resume ? <PlayIcon /> : <PauseIcon />}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="pr-b main"
+                    data-emphasis={mustSave}
+                    data-secondary={view.controls.openSettings}
+                    disabled={!(view.controls.stop || stopUnknown)}
+                    onClick={() => void finish()}
+                  >
+                    <CheckIcon />
+                    Done
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
