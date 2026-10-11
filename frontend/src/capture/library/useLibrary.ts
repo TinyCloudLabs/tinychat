@@ -51,7 +51,7 @@ import { captureEvents } from "../captureEvents";
 import type { LibraryFilter } from "./libraryKinds";
 import type { LibraryStatus } from "./LibraryListView";
 import type { LibraryItem } from "./LibraryRow";
-import type { AudioLoad } from "./NoteDetailView";
+import type { NoteAudio } from "./NoteDetailView";
 import { noteSnippet, recordingIdOfOnPhoneId, withOnPhone } from "./onPhone";
 
 export interface NoteReads {
@@ -68,7 +68,7 @@ export interface Library {
   setFilter: (filter: LibraryFilter) => void;
   refresh: () => void;
   /** The open note's row (null until the list has it), its reads, and its audio. */
-  note: { item: LibraryItem | null; reads: NoteReads; loadAudio: AudioLoad | null };
+  note: { item: LibraryItem | null; reads: NoteReads; audio: NoteAudio | null };
   /** Reads again what failed: the list, and the open note's reads. */
   retry: () => void;
 }
@@ -76,13 +76,21 @@ export interface Library {
 /** Capture away for longer than this re-reads the list when it comes back (plan §4.11). */
 export const RELIST_AFTER_MS = 2 * 60 * 1000;
 
-/** The note's audio from the phone's own file, which the player reads as a whole. */
-function localAudioLoad(recordingId: string): AudioLoad {
-  return async (signal) => {
-    const { url } = await VoiceNotes.localAudioUrl({ id: recordingId });
-    const response = await fetch(Capacitor.convertFileSrc(url), { signal });
-    if (!response.ok) throw new Error(`Could not read this phone's copy of the audio (${response.status}).`);
-    return response.blob();
+/**
+ * The note's audio from the phone's own file, resolved when the user taps Play and handed to the
+ * audio element as a URL. It is never fetched: the WKWebView scheme handler answers a fetch of it
+ * with status 0 although the audio element loads it.
+ */
+function localAudio(recordingId: string): NoteAudio {
+  return {
+    localUrl: async () => {
+      try {
+        const { url } = await VoiceNotes.localAudioUrl({ id: recordingId });
+        return Capacitor.convertFileSrc(url);
+      } catch (caught) {
+        throw new Error(`Could not open this phone's audio: ${caught instanceof Error ? caught.message : String(caught)}`, { cause: caught });
+      }
+    },
   };
 }
 
@@ -379,17 +387,19 @@ export function useLibrary(
   const onThisPhone = voiceSourceId !== null && (item?.onPhone === true || item?.saving === true);
   // The stored file is read only when the player asks, one part per queued
   // call; the player's signal stops it when the note closes.
-  const loadAudio = useMemo<AudioLoad | null>(() => {
+  const noteAudio = useMemo<NoteAudio | null>(() => {
     // The phone's own copy, until the space has the audio.
-    if (voiceSourceId !== null && onThisPhone) return localAudioLoad(voiceSourceId);
+    if (voiceSourceId !== null && onThisPhone) return localAudio(voiceSourceId);
     if (voiceSourceId !== null && !pendingAudioRow) {
-      return async (signal, onProgress) => {
-        const res = await loadVoiceNoteAudioBlob(space, voiceSourceId, { signal, onProgress });
-        if (!res.ok) throw new Error(res.error.message);
-        return res.data;
+      return {
+        load: async (signal, onProgress) => {
+          const res = await loadVoiceNoteAudioBlob(space, voiceSourceId, { signal, onProgress });
+          if (!res.ok) throw new Error(res.error.message);
+          return res.data;
+        },
       };
     }
-    if (audioBase !== null) return (signal, onProgress) => getAudio(space.kv, audioBase, { signal, onProgress });
+    if (audioBase !== null) return { load: (signal, onProgress) => getAudio(space.kv, audioBase, { signal, onProgress }) };
     return null;
   }, [audioBase, onThisPhone, pendingAudioRow, space, voiceSourceId]);
 
@@ -405,7 +415,7 @@ export function useLibrary(
     filter,
     setFilter,
     refresh,
-    note: { item, reads: noteReads, loadAudio },
+    note: { item, reads: noteReads, audio: noteAudio },
     retry,
   };
 }

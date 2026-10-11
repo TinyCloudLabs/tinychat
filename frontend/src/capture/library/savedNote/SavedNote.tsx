@@ -5,7 +5,7 @@ import { voiceNoteTitle } from "@/lib/voiceNotes/voiceNoteStore";
 import { useResolvedTheme } from "@/lib/theme";
 import { useRecorder } from "../../recorder/RecorderProvider";
 import type { MeetingMetadataRead } from "@/lib/connectors/meetingExplorer";
-import type { AudioLoad } from "../NoteDetailView";
+import type { NoteAudio } from "../NoteDetailView";
 import type { LibraryItem } from "../LibraryRow";
 import { savedNoteMeta } from "./savedNoteMeta";
 import { savedNoteStoreFor, type SavedNoteStore } from "./savedNoteStore";
@@ -19,7 +19,7 @@ import { useSavedNoteScreen } from "./useSavedNoteScreen";
 export interface SavedNoteProps {
   item: LibraryItem;
   metadata: MeetingMetadataRead | undefined;
-  loadAudio: AudioLoad | null;
+  audio: NoteAudio | null;
   tcw: TinyCloudWeb;
   /** Where the note is read and saved; the device's note store and the space. */
   store?: SavedNoteStore;
@@ -34,7 +34,7 @@ export interface SavedNoteProps {
 export default function SavedNote({
   item,
   metadata,
-  loadAudio,
+  audio,
   tcw,
   store,
   layout,
@@ -62,7 +62,7 @@ export default function SavedNote({
       metadata?.status === "ok" ? metadata.metadata : null,
       platform,
     ),
-    loadAudio,
+    audio,
     transcript,
     footer,
     partialAudio:
