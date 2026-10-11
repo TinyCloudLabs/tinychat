@@ -466,6 +466,144 @@ test("another account's retained notes do not delay a fresh Stop with a space pr
   } finally { __setVoiceNotesForTests(previous, { available: null }); }
 });
 
+test("reconcile refreshes the pending count after each note save", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  let now = 100;
+  const fake = createFakeVoiceNotes(() => now);
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  let releaseSecond!: () => void;
+  const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve; });
+  let enteredSecond!: () => void;
+  const secondStarted = new Promise<void>((resolve) => { enteredSecond = resolve; });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "off", identifySpeakers: false });
+    await fake.plugin.start();
+    const first = await fake.plugin.stop();
+    now++;
+    await fake.plugin.start();
+    const second = await fake.plugin.stop();
+    const readAudioChunk = fake.plugin.readAudioChunk.bind(fake.plugin);
+    fake.plugin.readAudioChunk = (async (options: Parameters<typeof readAudioChunk>[0]) => {
+      if (options.id === second.id) {
+        enteredSecond();
+        await secondGate;
+      }
+      return readAudioChunk(options);
+    }) as typeof fake.plugin.readAudioChunk;
+
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh();
+    expect(pendingStore.snapshot().listing).toEqual({ state: "ok", count: 2 });
+    pendingStore.reportNoteFailure(second.id, "previous attempt failed");
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === second.id)?.failed).toBe(true);
+    const pipeline = createVoiceNotePipeline(tcw);
+    const reconcile = pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
+    await secondStarted;
+    expect(pendingStore.snapshot().lastError).toBeNull();
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === second.id)?.failed).toBeUndefined();
+    expect(pendingStore.snapshot().listing).toEqual({ state: "ok", count: 1 });
+    expect((await fake.plugin.listPending()).recordings.find((note) => note.id === first.id)?.ledger?.audio.state).toBe("saved");
+    releaseSecond();
+    await reconcile;
+    expect(pendingStore.snapshot().listing).toEqual({ state: "ok", count: 0 });
+  } finally {
+    releaseSecond();
+    pendingStore.setAccount(null);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+async function pipelineFailureMessage(failure: "kv-403" | "sql-500"): Promise<string | null> {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "off", identifySpeakers: false });
+    await fake.plugin.start();
+    await fake.plugin.stop();
+    if (failure === "kv-403") {
+      tcw.kv.list = (async () => ({ ok: false, error: {
+        code: "NETWORK_ERROR", message: "Failed to list keys: 403 - capability tinycloud.kv/list not granted",
+      } })) as typeof tcw.kv.list;
+    } else {
+      const db = tcw.sql.db.bind(tcw.sql);
+      tcw.sql.db = ((name: string) => {
+        const connection = db(name);
+        const execute = connection.execute.bind(connection);
+        return { ...connection, execute: (async (statement: string, ...args: unknown[]) => {
+          if (statement.startsWith("INSERT INTO connector_meeting")) {
+            return { ok: false, error: { code: "NETWORK_ERROR", message: "Failed to execute query: 500 - internal server error" } };
+          }
+          return execute(statement, ...args as never[]);
+        }) as typeof connection.execute };
+      }) as typeof tcw.sql.db;
+    }
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh(null);
+    await createVoiceNotePipeline(tcw, { retryDelaysMs: [] }).reconcileAll({
+      did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration(),
+    });
+    return pendingStore.snapshot().lastError;
+  } finally {
+    __setVoiceNotesForTests(original, { available: null });
+    pendingStore.setAccount(null);
+    await pendingStore.refresh(null);
+  }
+}
+
+test("a kv.list 403 stays visible as its own message", async () => {
+  expect(await pipelineFailureMessage("kv-403")).toContain("Failed to list keys: 403 - capability tinycloud.kv/list not granted");
+});
+
+test("a SQL 500 stays visible as its own message", async () => {
+  expect(await pipelineFailureMessage("sql-500")).toContain("Failed to execute query: 500 - internal server error");
+});
+
+test("a wrapped audio upload network error shows friendly copy and logs only a redacted diagnostic", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  const originalPut = tcw.kv.put.bind(tcw.kv);
+  const rawUrl = "https://space.example/kv?token=private-token";
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "off", identifySpeakers: false });
+    await fake.plugin.start();
+    await fake.plugin.stop();
+    tcw.kv.put = (async (key, value, options) => key.includes("/audio/")
+      ? { ok: false, error: { code: "NETWORK_ERROR",
+        message: `Fetch API cannot load ${rawUrl} due to access control checks.` } }
+      : originalPut(key, value, options)) as typeof tcw.kv.put;
+    console.warn = (...args: unknown[]) => { warnings.push(args); };
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh(null);
+    const pipeline = createVoiceNotePipeline(tcw, { retryDelaysMs: [] });
+    await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
+
+    expect(pendingStore.snapshot().lastError).toBe(
+      "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
+    );
+    expect(pendingStore.snapshot().lastError).not.toContain(rawUrl);
+    const output = warnings.map((args) => args.join(" ")).join(" ");
+    expect(output).toContain("TinyCloud network failure");
+    expect(output).toContain("<url>");
+    expect(output).not.toContain("space.example");
+    expect(output).not.toContain("private-token");
+  } finally {
+    console.warn = originalWarn;
+    __setVoiceNotesForTests(original, { available: null });
+    pendingStore.setAccount(null);
+    await pendingStore.refresh(null);
+  }
+});
+
 test("a user-choice claimed legacy note uploads once and keeps its owner", async () => {
   const original = VoiceNotes;
   const { tcw, sqlite } = space();
