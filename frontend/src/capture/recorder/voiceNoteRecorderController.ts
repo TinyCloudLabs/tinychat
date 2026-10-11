@@ -395,9 +395,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     }
   };
 
-  const landed = (recording: VoiceNoteRecording, audio?: Parameters<VoiceNoteTranscriber["noteSaved"]>[1]) => {
+  /** `generation` is the account generation when the save began: a save finishing after an account change never transcribes. */
+  const landed = (generation: number, recording: VoiceNoteRecording, audio?: Parameters<VoiceNoteTranscriber["noteSaved"]>[1]) => {
     if (transcriber) {
-      const generation = currentAccountGeneration();
       transcribeSavedNote(transcriber, recording, () => generation === currentAccountGeneration(), audio);
     }
     onSaved?.(recording);
@@ -405,6 +405,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
 
   /** A native commit is enough for the receipt; cloud work follows independently. */
   const saveStopped = async (recording: VoiceNoteRecording) => {
+    const generation = currentAccountGeneration();
     send({ type: "LOCAL_COMMITTED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
     void pendingStore.refresh();
     if (!tcw || (pipeline && !pipeline.isAccepting())) {
@@ -421,7 +422,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         try {
           await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id);
           send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
-          landed(recording);
+          landed(generation, recording);
         } finally { finish(); }
       } catch (caught) {
         if (!pipeline.isAccepting() || saveDeferredForAccountTransition(caught)) {
@@ -447,7 +448,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       case "saved":
         reportSavedNoteSyncError(recording.id, outcome.noteSyncError);
         send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
-        landed(recording, outcome.audio ?? undefined);
+        landed(generation, recording, outcome.audio ?? undefined);
         void pendingStore.refresh(outcome.cleanupError);
         return;
       case "failed":
@@ -485,13 +486,14 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
    * and is counted there.
    */
   const saveInBackground = async (recording: VoiceNoteRecording) => {
+    const generation = currentAccountGeneration();
     if (!tcw || (pipeline && !pipeline.isAccepting())) { void pendingStore.refresh(); return; }
     if (pipeline) {
       if (recording.owner === tcw.did && tcw.did && tcw.spaceId) {
         const finish = pendingStore.beginAutomaticSave();
         try {
           await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id, "background");
-          landed(recording);
+          landed(generation, recording);
         } catch (caught) {
           if (!saveDeferredForAccountTransition(caught) && pipeline.isAccepting()) {
             pendingStore.reportNoteFailure(recording.id, messageOf(caught));
@@ -505,7 +507,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     }
     const outcome = await saveRecording(tcw, recording);
     if (outcome.kind === "saved") reportSavedNoteSyncError(recording.id, outcome.noteSyncError);
-    if (outcome.kind === "saved") landed(recording, outcome.audio ?? undefined);
+    if (outcome.kind === "saved") landed(generation, recording, outcome.audio ?? undefined);
     if (outcome.kind === "failed") {
       pendingStore.reportNoteFailure(recording.id, outcome.failure);
       void pendingStore.refresh();
@@ -1047,6 +1049,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           return;
         }
         const account = pendingStore.forAccount(tcw.did);
+        const generation = currentAccountGeneration();
         let savedRun;
         try {
           savedRun = await savePendingRecordings(tcw);
@@ -1054,7 +1057,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           account.reportError(`Could not save notes on this phone: ${messageOf(caught)}`);
           return;
         }
-        for (const recording of savedRun.saved) landed(recording);
+        for (const recording of savedRun.saved) landed(generation, recording);
         // The note behind a "Kept on this phone" receipt is in the space now: the receipt says so.
         const failed = state.failedRecording;
         if (failed && state.outcome === "failed" && savedRun.saved.some((recording) => recording.id === failed.id)) {

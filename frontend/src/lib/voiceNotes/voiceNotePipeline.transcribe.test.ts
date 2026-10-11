@@ -13,6 +13,7 @@ import { advanceAccountGeneration, currentAccountGeneration } from "./accountCon
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __setVoiceNotesForTests, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { createVoiceNotePipeline } from "./voiceNotePipeline";
+import { createVoiceNoteRecorderController } from "@/capture/recorder/voiceNoteRecorderController";
 import { createVoiceNoteCloud, createVoiceNoteTranscriber, transcribeSavedNote, type VoiceNoteCloud } from "./voiceNoteTranscription";
 
 const CAPS: PrivateCloudCapabilities = { max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/wav"] };
@@ -320,5 +321,97 @@ describe("the recorder's hand-off and reconcile's while the first availability c
     await checking;
     await tick();
     expect(d.runs).toEqual([note.id]);
+  });
+});
+
+describe("a recorder save that finishes after the account changed never transcribes", () => {
+  // The final native ledger acknowledgement is held while the account leaves; the old controller then lands A's note.
+  const lateSave = async (variant: "stopped" | "background" | "no-pipeline") => {
+    const s = await setup("private-cloud");
+    const note = await s.recordFor(s.tcw.did);
+    const original = s.fake.plugin.updateLedger.bind(s.fake.plugin);
+    let release: () => void = () => {};
+    let entered: () => void = () => {};
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    s.fake.plugin.updateLedger = async (request) => {
+      const result = await original(request);
+      if (request.id === note.id && request.patch.audio?.state === "saved") { entered(); await gate; }
+      return result;
+    };
+    let autoStopped: (event: unknown) => void = () => { throw new Error("autoStopped listener not installed"); };
+    const add = s.fake.plugin.addListener.bind(s.fake.plugin);
+    s.fake.plugin.addListener = ((event: string, callback: (event: unknown) => void) => {
+      if (event === "autoStopped") autoStopped = callback;
+      return (add as (event: string, callback: (event: unknown) => void) => unknown)(event, callback);
+    }) as typeof s.fake.plugin.addListener;
+    const switchAccount = async () => {
+      await started;
+      advanceAccountGeneration();
+      s.pipeline.cancelAll();
+      release();
+      for (let i = 0; i < 8; i++) await tick();
+    };
+    const attach = (transcriber: ReturnType<typeof createVoiceNoteTranscriber>) => {
+      const recorder = createVoiceNoteRecorderController({ tcw: s.tcw, available: true, transcriber,
+        pipeline: variant === "no-pipeline" ? undefined : s.pipeline, onDeviceReady: () => true });
+      return { recorder, detach: recorder.attach() };
+    };
+    const fire = async (recorder: ReturnType<typeof attach>["recorder"]) => {
+      if (variant === "background") await recorder.record();
+      autoStopped({ reason: "max_duration", maxDurationMs: 60000, at: Date.now(), recording: note });
+    };
+    return { s, note, attach, fire, switchAccount };
+  };
+
+  for (const variant of ["stopped", "background", "no-pipeline"] as const) {
+    test(`${variant}: A's note starts no job once the generation has moved on, even though B's guard is the current one`, async () => {
+      const { s, attach, fire, switchAccount } = await lateSave(variant);
+      let account = "A";
+      const runs: string[] = [];
+      const cloud = { capabilities: async () => CAPS, pendingSourceIds: () => [] } as unknown as VoiceNoteCloud;
+      const transcriber = createVoiceNoteTranscriber({ cloud, holds: memoryHoldStore(), tcw: () => s.tcw,
+        consent: { get: () => true, set() {} },
+        runNote: async (args) => { runs.push(`${args.sourceId}:${account}:${args.allowed!("account")}`); return "no_speech"; } });
+      await transcriber.check({ current: () => account === "A" });
+      const { recorder, detach } = attach(transcriber);
+      await tick();
+      await fire(recorder);
+      account = "B";
+      await switchAccount();
+      detach();
+      expect(runs).toEqual([]);
+    });
+  }
+
+  test("A's persisted job sends no request with B's bearer and its pending record is not cleared", async () => {
+    const { s, note, attach, fire, switchAccount } = await lateSave("stopped");
+    let account = "A";
+    const requests: string[] = [];
+    const cleared: string[] = [];
+    let pendingJob: { attemptId: string; transcriptionId: string } | null = null;
+    const api = createPrivateCloudApi("https://backend.example", {
+      sessionStore: { getToken: () => account, isExpired: () => false } as unknown as SessionStore,
+      fetchImpl: (async (url: string, init: RequestInit) => {
+        requests.push(`${init.method}:${new Headers(init.headers).get("Authorization")}`);
+        return new Response(JSON.stringify(url.endsWith("/capabilities") ? CAPS : {}),
+          { status: url.endsWith("/capabilities") ? 200 : 404, headers: { "Content-Type": "application/json" } });
+      }) as typeof fetch,
+    });
+    const cloud = createVoiceNoteCloud({ api, origin: "https://ptx.example",
+      pending: { read: () => pendingJob, write() {}, clear: (id) => { cleared.push(id); pendingJob = null; }, sourceIds: () => pendingJob ? [note.id] : [] },
+      create: async () => { throw new Error("unexpected create"); }, put: async () => { throw new Error("unexpected upload"); },
+      decode: async () => { throw new Error("injected decoder stops after the wrong-account GET"); },
+    });
+    const transcriber = createVoiceNoteTranscriber({ cloud, holds: memoryHoldStore(), tcw: () => s.tcw, consent: { get: () => true, set() {} } });
+    await transcriber.check({ current: () => account === "A" });
+    const { recorder, detach } = attach(transcriber);
+    await tick();
+    await fire(recorder);
+    pendingJob = { attemptId: "attempt-A", transcriptionId: "trn_A" };
+    account = "B";
+    await switchAccount();
+    detach();
+    expect({ afterSwitch: requests.filter((request) => request.endsWith("Bearer B")), cleared }).toEqual({ afterSwitch: [], cleared: [] });
   });
 });
