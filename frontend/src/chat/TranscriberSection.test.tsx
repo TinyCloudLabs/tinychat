@@ -277,6 +277,13 @@ describe("TranscriberView", () => {
     );
     expect(describeFailure({ status: "feature-dark" })).toContain("configured");
   });
+
+  test("TC-907: a capacity refusal shows ptx's busy message, not the generic outage copy", () => {
+    const message = "All 2 meeting notetakers are busy right now. Try again when one of the current meetings ends.";
+    expect(describeFailure({ status: "retryable", httpStatus: 429, code: "capacity_exhausted", message })).toBe(message);
+    expect(describeFailure({ status: "retryable", httpStatus: 429, code: "capacity_exhausted" })).toContain("notetakers are busy");
+    expect(describeFailure({ status: "retryable", httpStatus: 429, code: "upstream_rate_limited" })).toContain("temporarily unavailable");
+  });
 });
 
 describe("TranscriberView in the Meeting sheet", () => {

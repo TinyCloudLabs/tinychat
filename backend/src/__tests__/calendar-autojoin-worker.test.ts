@@ -672,6 +672,121 @@ async function twoTenants(options: { sharing?: boolean; bResponse?: string | nul
     afterWindow: () => { now = START + 300_000; } };
 }
 
+describe("TC-907 ptx capacity_exhausted", () => {
+  const busy = () => new TranscriptionApiError(429, "capacity_exhausted", "All 2 meeting notetakers are busy right now.", 60_000);
+  const status = (f: Awaited<ReturnType<typeof fixture>>) => new CalendarAutojoinConnection({ store: f.store, coordinator: f.coordinator,
+    credentials: null as never, oauth: null as never, calendar: null as never, now: f.now }).getStatus(TENANT);
+
+  test("each create attempt increments attemptCount exactly once", async () => {
+    const f = await fixture();
+    let creates = 0;
+    f.api.createMeeting = async () => { creates++; throw busy(); };
+    for (let tick = 1; tick <= 3; tick++) {
+      await f.worker().tick();
+      expect(creates).toBe(tick);
+      expect((await f.row())?.attemptCount).toBe(tick);
+      f.advance(60_000);
+    }
+  });
+
+  test("a lookup failure after a failed create does not count the attempt twice", async () => {
+    const f = await fixture();
+    f.api.createMeeting = async () => { throw busy(); };
+    f.api.lookupMeetingByIdempotencyKey = async () => { throw new Error("network reset"); };
+    await f.worker().tick();
+    expect((await f.row())?.attemptCount).toBe(1);
+  });
+
+  /** Ticks every minute until `until`. */
+  const runUntil = async (f: Awaited<ReturnType<typeof fixture>>, until: number) => {
+    while (f.now() < until) { await f.worker().tick(); f.advance(60_000); }
+  };
+  const CUTOFF = START + 300_000;
+  const MARGIN = 600_000;
+
+  test("an occurrence ptx kept refusing for capacity ends as capacity_exhausted after its window and margin, then is cleaned up", async () => {
+    const f = await fixture();
+    let creates = 0;
+    f.api.createMeeting = async () => { creates++; throw busy(); };
+    await runUntil(f, CUTOFF + 60_000);
+    // Retried at ptx's Retry-After for the whole joining window, then lookup-only inside the margin.
+    expect(creates).toBe(6);
+    expect((await f.row())?.phase).not.toBe("terminal");
+    let endedAt = 0;
+    for (let i = 0; i < 60 && (await f.row())?.phase !== "terminal"; i++) {
+      endedAt = f.now();
+      await f.worker().tick();
+      f.advance(60_000);
+    }
+    expect(endedAt).toBeGreaterThanOrEqual(CUTOFF + MARGIN);
+    expect(endedAt).toBeLessThan(CUTOFF + MARGIN + 900_000);
+    expect(creates).toBe(6);
+    expect(await f.row()).toMatchObject({ phase: "terminal", disposition: "capacity_exhausted", errorCode: undefined });
+    expect(await f.store.getMarker(TENANT, f.id)).toMatchObject({ disposition: "capacity_exhausted" });
+    expect((await status(f)).outcomes).toEqual([expect.objectContaining({ reason: "capacity_exhausted" })]);
+    const lookups = f.lookups.length;
+    f.advance(900_000);
+    await f.worker().tick();
+    expect(f.lookups).toHaveLength(lookups);
+    // Terminal rows are compacted after 30 days; the marker keeps it from being re-sent.
+    f.advance(31 * 86_400_000);
+    await f.worker().tick();
+    expect(await f.row()).toBeNull();
+    expect(creates).toBe(6);
+  });
+
+  test("a slow earlier POST that commits late, inside the margin, is found by lookup and owned normally", async () => {
+    const f = await fixture();
+    const create = f.api.createMeeting;
+    f.api.createMeeting = async () => { throw busy(); };
+    await runUntil(f, CUTOFF + 60_000);
+    const row = (await f.row())!;
+    expect(row).toMatchObject({ capacityExhausted: true });
+    expect(row.phase).not.toBe("terminal");
+    // The late commit: ptx now has a meeting under this occurrence's key.
+    const late = await create(row.createBody!, { idempotencyKey: row.idempotencyKey });
+    await runUntil(f, CUTOFF + MARGIN + 900_000);
+    expect(await f.index.list(TENANT)).toEqual([late.id]);
+    expect(await f.store.getMarker(TENANT, f.id)).toMatchObject({ meetingId: late.id });
+    expect((await f.row())?.meetingId).toBe(late.id);
+    expect((await f.row())?.disposition).not.toBe("capacity_exhausted");
+  });
+
+  test("a failure before any POST is sent still grows the backoff", async () => {
+    const f = await fixture();
+    const put = f.store.putOccurrence.bind(f.store);
+    f.store.putOccurrence = async row => {
+      if (row.idempotencyKey) throw new Error("write failed");
+      return put(row);
+    };
+    let creates = 0;
+    f.api.createMeeting = async () => { creates++; throw busy(); };
+    // A failed intent write is retryable: three immediate attempts per tick, each counted once.
+    await f.worker().tick();
+    expect((await f.row())?.attemptCount).toBe(3);
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(creates).toBe(0);
+    expect((await f.row())?.attemptCount).toBe(6);
+    expect((await f.row())?.capacityExhausted).toBeUndefined();
+  });
+
+  test("a create whose last outcome is unknown keeps lookup-only recovery past the window", async () => {
+    const f = await fixture();
+    let creates = 0;
+    f.api.createMeeting = async () => { creates++; if (creates === 1) throw busy(); throw new Error("socket closed"); };
+    for (let i = 0; i < 10; i++) {
+      await f.worker().tick();
+      f.advance(60_000);
+    }
+    expect(f.now()).toBeGreaterThan(START + 300_000);
+    expect(creates).toBeGreaterThan(1);
+    const row = (await f.row())!;
+    expect(row.phase).not.toBe("terminal");
+    expect(row.capacityExhausted).toBeUndefined();
+  });
+});
+
 describe("TC-581 shared capture across tenants", () => {
   test("A dispatches and B overlaps: B makes zero POSTs, shows shared_capture_pending, and its status has no meeting id", async () => {
     const f = await twoTenants();

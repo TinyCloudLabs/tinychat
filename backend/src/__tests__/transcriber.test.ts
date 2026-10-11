@@ -349,6 +349,34 @@ describe("per-meeting routes", () => {
       expect(r.text).not.toContain("ECONNREFUSED");
     });
   });
+
+  test("TC-907: a ptx capacity 429 passes its busy message and Retry-After through", async () => {
+    const h = harness();
+    const busy = "All 2 meeting notetakers are busy right now. Try again when one of the current meetings ends.";
+    h.api.createMeeting = async () => {
+      throw new TranscriptionApiError(429, "capacity_exhausted", busy, 60_000);
+    };
+    await withServer(h.app, async (base) => {
+      const response = await fetch(`${base}/api/transcriber/meetings`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ meeting_url: "https://meet.google.com/abc-defg-hij" }),
+      });
+      expect(response.status).toBe(429);
+      expect(response.headers.get("retry-after")).toBe("60");
+      expect(await response.json()).toEqual({ error: "capacity_exhausted", message: busy, retry_after_seconds: 60 });
+    });
+    // Any other 429 keeps its own code and never relays upstream text.
+    h.api.createMeeting = async () => {
+      throw new TranscriptionApiError(429, "rate_limited", "upstream detail");
+    };
+    await withServer(h.app, async (base) => {
+      const r = await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/x" });
+      expect(r.status).toBe(429);
+      expect(r.body).toEqual({ error: "upstream_rate_limited" });
+    });
+    expect(await h.index.list(ADDRESS_A.toLowerCase())).toEqual([]);
+  });
 });
 
 describe("transcription api client", () => {
