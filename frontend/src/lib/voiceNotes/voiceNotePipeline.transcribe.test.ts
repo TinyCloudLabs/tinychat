@@ -13,6 +13,7 @@ import { advanceAccountGeneration, currentAccountGeneration } from "./accountCon
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __setVoiceNotesForTests, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { createVoiceNotePipeline } from "./voiceNotePipeline";
+import { pendingStore, whenVoiceNoteSavesIdle } from "./recorderSaves";
 import { createVoiceNoteRecorderController } from "@/capture/recorder/voiceNoteRecorderController";
 import { createVoiceNoteCloud, createVoiceNoteTranscriber, transcribeSavedNote, type VoiceNoteCloud } from "./voiceNoteTranscription";
 
@@ -325,9 +326,16 @@ describe("the recorder's hand-off and reconcile's while the first availability c
 });
 
 describe("a recorder save that finishes after the account changed never transcribes", () => {
+  afterEach(async () => {
+    pendingStore.setAccount(null);
+    await pendingStore.refresh(null);
+  });
+
   // The final native ledger acknowledgement is held while the account leaves; the old controller then lands A's note.
   const lateSave = async (variant: "stopped" | "background" | "no-pipeline") => {
     const s = await setup("private-cloud");
+    // The no-pipeline save remembers saved ids for the whole process, and every fake numbers its notes from 1: use a high id.
+    if (variant === "no-pipeline") for (let i = 0; i < 49; i++) { await s.recordFor(s.tcw.did); }
     const note = await s.recordFor(s.tcw.did);
     const original = s.fake.plugin.updateLedger.bind(s.fake.plugin);
     let release: () => void = () => {};
@@ -351,6 +359,7 @@ describe("a recorder save that finishes after the account changed never transcri
       s.pipeline.cancelAll();
       release();
       for (let i = 0; i < 8; i++) await tick();
+      await whenVoiceNoteSavesIdle();
     };
     const attach = (transcriber: ReturnType<typeof createVoiceNoteTranscriber>) => {
       const recorder = createVoiceNoteRecorderController({ tcw: s.tcw, available: true, transcriber,
