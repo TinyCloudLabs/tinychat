@@ -1,7 +1,7 @@
 // TC-581: share-if-on-invite. The bot owner's (A's) own calendar event is the trust anchor; the
 // recipient (B) gets the transcript only as an accepted attendee on it, by verified email.
 import { describe, expect, test } from "bun:test";
-import { shareDecision, windowsOverlap } from "../services/calendar-autojoin-share.js";
+import { onInvite, shareDecision, windowsOverlap } from "../services/calendar-autojoin-share.js";
 import type { CalendarOccurrence } from "../services/calendar-autojoin-store.js";
 import { calendarOccurrenceIdentity, eligibleCalendarEvent, type GoogleCalendarEvent } from "../services/google-calendar.js";
 
@@ -98,5 +98,30 @@ describe("windowsOverlap", () => {
   test("overlapping and contained windows overlap", () => {
     expect(windowsOverlap({ start: at(10, 0), end: at(10, 31) }, { start: at(10, 30), end: at(11, 0) })).toBe(true);
     expect(windowsOverlap({ start: at(10, 0), end: at(11, 0) }, { start: at(10, 15), end: at(10, 45) })).toBe(true);
+  });
+});
+
+describe("onInvite (attach-time corroboration on the attaching account's own event)", () => {
+  const own = (patch: Partial<GoogleCalendarEvent> = {}) => ownerEvent({ organizer: { self: false, email: "Owner@Example.TEST" },
+    attendees: [{ email: RECIPIENT, self: true, responseStatus: "accepted" }, { email: "guest@example.test", responseStatus: "accepted" },
+      { email: "maybe@example.test", responseStatus: "tentative" }], ...patch });
+  test("the organizer, matched case-insensitively, corroborates", () => {
+    expect(onInvite(own(), "owner@example.test")).toBe(true);
+  });
+  test("an accepted attendee corroborates", () => {
+    expect(onInvite(own(), "Guest@example.test")).toBe(true);
+  });
+  test("a tentative attendee does not", () => {
+    expect(onInvite(own(), "maybe@example.test")).toBe(false);
+  });
+  test("an undefined or empty email does not", () => {
+    expect(onInvite(own(), undefined)).toBe(false);
+    expect(onInvite(own(), "")).toBe(false);
+  });
+  test("an accepted attendee on a truncated list does not", () => {
+    expect(onInvite(own({ attendeesOmitted: true }), "guest@example.test")).toBe(false);
+  });
+  test("an account absent from the invite does not", () => {
+    expect(onInvite(own(), "stranger@example.test")).toBe(false);
   });
 });

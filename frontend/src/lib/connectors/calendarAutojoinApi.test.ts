@@ -84,8 +84,18 @@ describe("TC-581 shared capture outcome labels", () => {
       "Already being recorded by another TinyCloud account. Its transcripts are shared only with people who accepted that account's calendar invite.",
     );
   });
-  test("neither reads as a failure", () => {
-    for (const reason of ["shared_capture_pending", "already_recorded"]) {
+  test("with sharing off, a capture in progress promises nothing", () => {
+    expect(calendarOutcomeLabel("capture_in_progress")).toBe(
+      "Already being recorded by another TinyCloud account. Only one notetaker can join a meeting.",
+    );
+  });
+  test("an unverified capture says nothing it records will be added", () => {
+    expect(calendarOutcomeLabel("unverified_capture")).toBe(
+      "A TinyCloud notetaker from an account we couldn't match to your invite is already in this meeting, and only one can join. Nothing it records will be added to your meetings.",
+    );
+  });
+  test("none reads as a failure", () => {
+    for (const reason of ["shared_capture_pending", "already_recorded", "capture_in_progress", "unverified_capture"]) {
       expect(calendarOutcomeLabel(reason)).not.toMatch(/fail|could not|error/i);
     }
   });

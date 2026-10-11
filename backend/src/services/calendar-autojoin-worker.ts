@@ -1,4 +1,4 @@
-import { shareDecision, windowsOverlap, type ShareDecision } from "./calendar-autojoin-share.js";
+import { onInvite, shareDecision, windowsOverlap, type ShareDecision } from "./calendar-autojoin-share.js";
 import {
   type CalendarAutojoinStore, type CalendarConnection, type CalendarOccurrence, type SharedCapture, TenantCoordinator,
 } from "./calendar-autojoin-store.js";
@@ -241,7 +241,7 @@ export class CalendarAutojoinWorker {
           if (!latest || !this.canDispatch(current, { ...row, stopRequested: latest.stopRequested, meetingId: latest.meetingId })) return;
           if (!row.idempotencyKey) {
             // TC-581: another tenant's live capture of this Meet in an overlapping window means no POST.
-            if (await this.claimOrAttach(row, current!, observed)) return;
+            if (await this.claimOrAttach(row, current!, event!, observed)) return;
             const body = {
               meeting_url: row.meetingUrl, platform: "google_meet", bot_name: this.options.botName ?? "TinyCloud Private Notetaker",
               metadata: { tinychat_address: row.tenant, source: "google-calendar-autojoin", calendar_occurrence_id: row.id, calendar_title: row.title, scheduled_start: new Date(row.start).toISOString() },
@@ -350,7 +350,8 @@ export class CalendarAutojoinWorker {
    * TC-581. Under the URL lock: attach to another tenant's live, overlapping capture of this Meet,
    * or record this occurrence's own claim. Returns true when attached (no POST may follow).
    */
-  private claimOrAttach(row: CalendarOccurrence, connection: CalendarConnection, observed: Map<string, TranscriptionMeeting | null>): Promise<boolean> {
+  private claimOrAttach(row: CalendarOccurrence, connection: CalendarConnection, event: GoogleCalendarEvent,
+    observed: Map<string, TranscriptionMeeting | null>): Promise<boolean> {
     const { store } = this.options;
     return this.meetingCoordinator.run(row.meetingUrl, async () => {
       const now = this.now();
@@ -359,12 +360,15 @@ export class CalendarAutojoinWorker {
         if (claim.tenant.toLowerCase() === tenant || !windowsOverlap(claim, row)) continue;
         const owner = await store.getOccurrence(claim.tenant, claim.occurrenceId);
         if (!ownerCapturing(owner, owner?.meetingId ? observed.get(owner.meetingId) : undefined, now)) continue;
-        const sharedCapture: SharedCapture = { ownerTenant: claim.tenant, ownerOccurrenceId: claim.occurrenceId, attachedAt: now };
+        // Finding 2: only a capture my OWN fresh invite corroborates can ever lead to a grant.
+        const ownerConnection = await store.getConnection(claim.tenant);
+        const corroborated = ownerConnection?.subject === owner!.subject && onInvite(event, ownerConnection.verifiedEmail);
+        const sharedCapture: SharedCapture = { ownerTenant: claim.tenant, ownerOccurrenceId: claim.occurrenceId, attachedAt: now, corroborated };
         await store.updateOccurrence(row.tenant, row.id, current => current && {
           ...current, start: row.start, end: row.end, meetingUrl: row.meetingUrl, title: row.title, generation: connection.generation,
-          sharedCapture, errorCode: "shared_capture_pending", nextAttemptAt: now + 30_000, updatedAt: now,
+          sharedCapture, errorCode: this.pendingCode(sharedCapture), nextAttemptAt: now + 30_000, updatedAt: now,
         });
-        console.log("[calendar-autojoin] code=shared_capture_attached");
+        console.log(`[calendar-autojoin] code=shared_capture_attached corroborated=${corroborated}`);
         return true;
       }
       await store.updateCaptureClaims(row.meetingUrl, claims => [
@@ -391,6 +395,8 @@ export class CalendarAutojoinWorker {
     if (!owner || meeting === undefined) { await this.finish(row, "missed_window"); return; }
     if (meeting === null) { await this.settleShared(row, "already_recorded", { ok: false, reason: "recording_deleted" }); return; }
     if (!TERMINAL_MEETING_STATUSES.has(meeting.status)) { await this.retryShared(row, 60_000); return; } // processing
+    // An uncorroborated capture never gets a grant, and the owner's calendar is never read for it.
+    if (shared.corroborated !== true) { await this.settleShared(row, "unverified_capture", { ok: false, reason: "owner_not_on_invite" }); return; }
     const decision = await this.authorizeShare(row, owner, connection);
     if (decision === "deferred") return;
     if (!decision.ok) { await this.settleShared(row, "already_recorded", decision); return; }
@@ -421,13 +427,13 @@ export class CalendarAutojoinWorker {
       await this.options.store.updateOccurrence(row.tenant, row.id, current => {
         if (!current || current.phase === "terminal") return current;
         const count = current.attemptCount + 1;
-        return { ...current, attemptCount: count, errorCode: "shared_capture_pending", updatedAt: this.now(),
+        return { ...current, attemptCount: count, errorCode: this.pendingCode(current.sharedCapture), updatedAt: this.now(),
           nextAttemptAt: Math.max(current.nextAttemptAt, this.now() + Math.max(60_000, this.retryDelay(error, count))) };
       });
       return "deferred";
     }
   }
-  private async settleShared(row: CalendarOccurrence, disposition: "shared" | "already_recorded" | "failed", decision: ShareDecision, checkedAt = this.now()): Promise<void> {
+  private async settleShared(row: CalendarOccurrence, disposition: "shared" | "already_recorded" | "failed" | "unverified_capture", decision: ShareDecision, checkedAt = this.now()): Promise<void> {
     await this.options.store.updateOccurrence(row.tenant, row.id, current => current?.sharedCapture ? {
       ...current, sharedCapture: { ...current.sharedCapture, checkedAt, result: disposition === "shared" ? "shared" : "not_shared",
         ...(decision.ok ? {} : { reason: decision.reason }) },
@@ -435,6 +441,14 @@ export class CalendarAutojoinWorker {
     if (disposition === "shared") console.log("[calendar-autojoin] code=share_granted");
     else console.log(`[calendar-autojoin] code=share_denied reason=${decision.ok ? "unknown" : decision.reason}`);
     await this.finish(row, disposition);
+  }
+  /**
+   * The visible state of an attached row. Unverified captures never promise a transcript, and with
+   * sharing off neither does a corroborated one.
+   */
+  private pendingCode(shared: SharedCapture | undefined): string {
+    if (shared?.corroborated !== true) return "unverified_capture";
+    return this.options.sharingEnabled === true ? "shared_capture_pending" : "capture_in_progress";
   }
   /** TC-581: back to a plain pending row. B never sent a bot: nothing to unwind upstream, no marker. */
   private async detach(row: CalendarOccurrence): Promise<void> {
@@ -463,7 +477,7 @@ export class CalendarAutojoinWorker {
   }
   private async retryShared(row: CalendarOccurrence, delay: number): Promise<void> {
     await this.options.store.updateOccurrence(row.tenant, row.id, current => current && current.phase !== "terminal" ? {
-      ...current, errorCode: "shared_capture_pending", nextAttemptAt: this.now() + delay, updatedAt: this.now(),
+      ...current, errorCode: this.pendingCode(current.sharedCapture), nextAttemptAt: this.now() + delay, updatedAt: this.now(),
     } : current);
   }
   private async alreadyCaptured(row: CalendarOccurrence): Promise<void> {

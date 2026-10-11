@@ -28,8 +28,20 @@ export function shareDecision(
   }
   if (ownerEvent.attendeesOmitted) return { ok: false, reason: "attendees_omitted" };
   if (!recipientEmail) return { ok: false, reason: "no_verified_email" };
-  const email = recipientEmail.toLowerCase();
-  const accepted = ownerEvent.attendees?.some(attendee =>
-    typeof attendee.email === "string" && attendee.email.toLowerCase() === email && attendee.responseStatus === "accepted");
-  return accepted ? { ok: true } : { ok: false, reason: "not_accepted_attendee" };
+  return acceptedAttendee(ownerEvent, recipientEmail) ? { ok: true } : { ok: false, reason: "not_accepted_attendee" };
+}
+
+/** An attendee with exactly this email (case-insensitive) who accepted. */
+export function acceptedAttendee(event: GoogleCalendarEvent, email: string): boolean {
+  const want = email.toLowerCase();
+  return event.attendees?.some(attendee =>
+    typeof attendee.email === "string" && attendee.email.toLowerCase() === want && attendee.responseStatus === "accepted") ?? false;
+}
+
+/** TC-581 attach-time corroboration: the capturing account is on MY OWN invite (organizer or accepted guest). */
+export function onInvite(event: GoogleCalendarEvent, email: string | undefined): boolean {
+  if (!email) return false;
+  const want = email.toLowerCase();
+  if (event.organizer?.email?.toLowerCase() === want) return true;
+  return !event.attendeesOmitted && acceptedAttendee(event, want);
 }

@@ -570,9 +570,10 @@ const B = "0xbbbb";
 const SUBJECT_A = "subject-a";
 const SUBJECT_B = "subject-b";
 const B_EMAIL = "bee@example.test";
+const A_EMAIL = "owner@example.test";
 const ROOM = "https://meet.google.com/abc-defg-hij";
 
-async function twoTenants(options: { sharing?: boolean; bResponse?: string | null; bEmail?: string } = {}) {
+async function twoTenants(options: { sharing?: boolean; bResponse?: string | null; bEmail?: string; aEmail?: string | null } = {}) {
   let now = START - 30_000;
   const store = new MemoryCalendarAutojoinStore();
   const index = new MemoryTranscriberIndexStore();
@@ -584,7 +585,8 @@ async function twoTenants(options: { sharing?: boolean; bResponse?: string | nul
   ];
   const events: Record<string, GoogleCalendarEvent[]> = {
     [A]: [event({ id: "event-a", attendees: ownerAttendees(options.bResponse === undefined ? "accepted" : options.bResponse) })],
-    [B]: [event({ id: "event-b", organizer: { self: false }, attendees: [{ email: B_EMAIL, self: true, responseStatus: "accepted" }] })],
+    [B]: [event({ id: "event-b", organizer: { self: false }, attendees: [
+      { email: B_EMAIL, self: true, responseStatus: "accepted" }, { email: A_EMAIL, responseStatus: "accepted" }] })],
   };
   const tenantOf = (token: string) => token.slice("tok:".length);
   const googleErrors: Record<string, (() => never) | undefined> = {};
@@ -645,7 +647,7 @@ async function twoTenants(options: { sharing?: boolean; bResponse?: string | nul
     sharingEnabled: options.sharing ?? true, now: () => now, random: () => 0, sleep: async ms => { now += ms; } });
   const connect = (tenant: string, subject: string, patch: Partial<CalendarConnection> = {}) => store.putConnection({
     tenant, subject, state: "enabled", generation: 1, scopes: [], nextScanAt: 0, scanComplete: true, ...patch });
-  await connect(A, SUBJECT_A);
+  await connect(A, SUBJECT_A, options.aEmail === null ? {} : { verifiedEmail: options.aEmail ?? A_EMAIL });
   const connectB = () => connect(B, SUBJECT_B, { verifiedEmail: options.bEmail ?? B_EMAIL });
   const idOf = (tenant: string, subject: string) => calendarOccurrenceIdentity(tenant, subject, events[tenant]![0]!)!;
   const rowA = () => store.getOccurrence(A, idOf(A, SUBJECT_A));
@@ -676,6 +678,7 @@ describe("TC-581 shared capture across tenants", () => {
     await f.attach();
     expect(f.posts.map(p => p.tenant)).toEqual([A]);
     expect(await f.rowB()).toMatchObject({ phase: "pending", errorCode: "shared_capture_pending" });
+    expect((await f.rowB())?.sharedCapture?.corroborated).toBe(true);
     expect((await f.rowB())?.meetingId).toBeUndefined();
     const status = await f.status(B);
     expect(status.outcomes).toEqual([expect.objectContaining({ reason: "shared_capture_pending" })]);
@@ -1045,6 +1048,77 @@ describe("TC-581 shared capture across tenants", () => {
     await f.worker().tick();
     expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition: "missed_window" });
     expect((await f.rowB())?.errorCode).toBeUndefined();
+  });
+
+  test("with sharing off, a corroborated attach shows capture_in_progress and never promises a transcript", async () => {
+    const f = await twoTenants({ sharing: false });
+    await f.attach();
+    expect((await f.rowB())?.sharedCapture?.corroborated).toBe(true);
+    expect((await f.rowB())?.errorCode).toBe("capture_in_progress");
+    expect((await f.status(B)).outcomes[0]?.reason).toBe("capture_in_progress");
+    f.advance(30_000);
+    await f.worker().tick();
+    expect(await f.rowB()).toMatchObject({ phase: "pending", errorCode: "capture_in_progress" });
+  });
+
+  test("with sharing on, a corroborated attach shows shared_capture_pending", async () => {
+    const f = await twoTenants({ sharing: true });
+    await f.attach();
+    expect((await f.status(B)).outcomes[0]?.reason).toBe("shared_capture_pending");
+    f.advance(30_000);
+    await f.worker().tick();
+    expect(await f.rowB()).toMatchObject({ phase: "pending", errorCode: "shared_capture_pending" });
+  });
+
+  /** B's long block in A's room, which A's own invite does not corroborate. B sends first. */
+  async function hijack() {
+    const f = await twoTenants({ bResponse: null });
+    f.events[B] = [{ ...f.events[B]![0]!, start: { dateTime: new Date(START - 600_000).toISOString() },
+      end: { dateTime: new Date(START + 4 * 3_600_000).toISOString() } }];
+    await f.connectB();
+    f.setNow(START - 630_000);
+    await f.worker().tick();
+    expect(f.posts.map(p => p.tenant)).toEqual([B]);
+    f.setNow(START - 30_000);
+    await f.worker().tick();
+    return f;
+  }
+
+  test("2: an attach the attaching account's own invite does not corroborate is unverified and never shared", async () => {
+    const f = await hijack();
+    expect((await f.rowA())?.sharedCapture).toMatchObject({ ownerTenant: B, corroborated: false });
+    expect((await f.rowA())?.errorCode).toBe("unverified_capture");
+    expect(f.posts.map(p => p.tenant)).toEqual([B]);
+    expect((await f.status(A)).outcomes[0]?.reason).toBe("unverified_capture");
+    f.meeting().status = "completed";
+    f.afterWindow();
+    await f.worker().tick();
+    expect(await f.rowA()).toMatchObject({ phase: "terminal", disposition: "unverified_capture",
+      sharedCapture: { result: "not_shared", reason: "owner_not_on_invite" } });
+    expect((await f.rowA())?.errorCode).toBeUndefined();
+    expect(await f.index.list(A)).toEqual([]);
+    expect(await f.store.getMarker(A, f.idOf(A, SUBJECT_A))).toMatchObject({ disposition: "unverified_capture" });
+  });
+
+  test("2: an unverified capture that ends inside the window lets the attached account send its own bot", async () => {
+    const f = await hijack();
+    expect((await f.rowA())?.sharedCapture?.corroborated).toBe(false);
+    f.setNow(START + 60_000);
+    f.meeting().status = "failed";
+    for (let i = 0; i < 3 && f.posts.length < 2; i++) { await f.worker().tick(); f.advance(30_000); }
+    expect(f.posts.map(p => p.tenant)).toEqual([B, A]);
+  });
+
+  test("2: an owner with no verified email can only be attached to as unverified", async () => {
+    const f = await twoTenants({ aEmail: null });
+    await f.attach();
+    expect((await f.rowB())?.sharedCapture?.corroborated).toBe(false);
+    expect((await f.rowB())?.errorCode).toBe("unverified_capture");
+    f.meeting().status = "completed";
+    f.afterWindow();
+    await f.worker().tick();
+    expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition: "unverified_capture" });
+    expect(await f.index.list(B)).toEqual([]);
   });
 
   test("reconcileShared running twice (lost finish) leaves one index entry", async () => {

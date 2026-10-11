@@ -52,6 +52,8 @@ export function calendarOutcomeLabel(reason: string): string {
     case "failed": case "create_failed": case "recording_failed": return "The notetaker could not complete this recording.";
     // TC-581: another account's calendar bot is already capturing this meeting.
     case "shared_capture_pending": return "Already being recorded by another TinyCloud account. If you accepted that account's calendar invite, the transcript will be added to your meetings after it ends.";
+    case "capture_in_progress": return "Already being recorded by another TinyCloud account. Only one notetaker can join a meeting.";
+    case "unverified_capture": return "A TinyCloud notetaker from an account we couldn't match to your invite is already in this meeting, and only one can join. Nothing it records will be added to your meetings.";
     case "already_recorded": return "Already being recorded by another TinyCloud account. Its transcripts are shared only with people who accepted that account's calendar invite.";
     default: return "This occurrence could not be recorded automatically.";
   }

@@ -34,6 +34,8 @@ export interface SharedCapture {
   ownerTenant: string;
   ownerOccurrenceId: string;
   attachedAt: number;
+  /** True only when the capturing account is on the attaching account's OWN invite. Anything else is unverified. */
+  corroborated?: boolean;
   checkedAt?: number;
   result?: "shared" | "not_shared";
   reason?: string;
