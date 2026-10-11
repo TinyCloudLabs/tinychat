@@ -1,12 +1,10 @@
 import { describe, expect, mock, test } from "bun:test";
 import {
   easePause,
-  haloDrawCount,
   haloFrameInterval,
   HaloRafLoop,
-  haloRenderPath,
   pauseBreathOpacity,
-  registerHalo,
+  createIsolatedHaloRendererForTests,
   selectRenderSurface,
   TICKS_SHADER,
   type HaloConfig,
@@ -121,7 +119,6 @@ describe("halo renderer bitmap hold", () => {
   test("holds a bitmap for one frame and closes it when the last ring unmounts", () => {
     const g = globalThis as any;
     const saved = {
-      OffscreenCanvas: g.OffscreenCanvas,
       document: g.document,
       window: g.window,
       matchMedia: g.matchMedia,
@@ -175,11 +172,10 @@ describe("halo renderer bitmap hold", () => {
     } as unknown as Document;
     let intersect: (items: { isIntersecting: boolean }[]) => void = () => {};
     let frame: FrameRequestCallback | null = null;
-    g.OffscreenCanvas = class {
+    const offscreen = {
       getContext() {
         return gl;
-      }
-      addEventListener() {}
+      },
       transferToImageBitmap() {
         const bitmap = {
           closed: false,
@@ -189,8 +185,9 @@ describe("halo renderer bitmap hold", () => {
         };
         bitmaps.push(bitmap);
         return bitmap;
-      }
-    };
+      },
+      addEventListener() {},
+    } as unknown as OffscreenCanvas;
     g.document = document;
     g.window = { devicePixelRatio: 1 };
     g.matchMedia = () => ({
@@ -229,6 +226,13 @@ describe("halo renderer bitmap hold", () => {
         getContext: () => permissive(),
         ownerDocument: document,
       } as unknown as HTMLCanvasElement;
+      const surface = selectRenderSurface(
+        () => offscreen,
+        () => { throw new Error("The explicit bitmap test surface should be WebGL-capable"); },
+        () => {},
+      );
+      expect(surface.path).toBe("webgl-atlas");
+      const renderer = createIsolatedHaloRendererForTests(surface);
       const config: HaloConfig = {
         size: 100,
         ticks: 40,
@@ -239,8 +243,8 @@ describe("halo renderer bitmap hold", () => {
         weight: 1,
         spread: 1,
       };
-      const unmount = registerHalo(canvas, config);
-      expect(haloRenderPath()).toBe("webgl-atlas");
+      const unmount = renderer.register(canvas, config);
+      expect(renderer.renderPath()).toBe("webgl-atlas");
       expect(uploadedDiscs.length).toBeGreaterThan(0);
       expect(discFills).toContain("hsl(240 3.7% 15.9%)");
       const nightDisc = uploadedDiscs.at(-1);
@@ -249,7 +253,7 @@ describe("halo renderer bitmap hold", () => {
       run(1000);
       expect(bitmaps).toHaveLength(1);
       expect(bitmaps[0].closed).toBe(false);
-      expect(haloDrawCount(canvas)).toBe(1);
+      expect(renderer.drawCount(canvas)).toBe(1);
 
       run(2000);
       expect(bitmaps).toHaveLength(2);
