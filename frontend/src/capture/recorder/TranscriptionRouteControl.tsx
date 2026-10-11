@@ -31,7 +31,7 @@ type RecordingRoute = Pick<RecorderValue, "transcriber" | "setTranscriber">;
 
 /** The default recorder changes this note's journaled native options, not its JS default. */
 export function setRecordingRoute(recorder: RecordingRoute, id: Route) {
-  return recorder.setTranscriber(id, { scope: "recording", ...(id === "on-device" ? { waitForModel: true } : {}) });
+  return recorder.setTranscriber(id, { scope: "recording" });
 }
 
 export function consentToRecordingPrivateCloud(recorder: RecordingRoute, onConsent: () => void) {

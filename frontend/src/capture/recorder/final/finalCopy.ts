@@ -79,7 +79,7 @@ export const FINAL_COPY = {
   powerfulOnly: "Powerful only",
   whisperUnavailable: "Get Whisper for this Mac",
   modelUnavailable: "Get the on-device model",
-  modelTryAgain: "Try the download again",
+  modelTryAgain: "Try again",
   modes: {
     skipName: MODE_NAMES.skip,
     localName: MODE_NAMES.local,

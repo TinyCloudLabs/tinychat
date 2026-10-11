@@ -29,10 +29,10 @@ import { levelFromAmplitude } from "@/lib/voiceNotes/web/webLevels";
 import { isOnDeviceReady } from "@/lib/voiceNotes/onDeviceStt";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { setQuarantineAccount } from "@/lib/voiceNotes/quarantine";
-import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
-import { effectiveCaptureOptions, localModelSubstituted, readTranscriberPreference, refreshEffectiveTranscriber,
-  setDefaultIdentifySpeakers, setDefaultTranscriber, setEffectiveContextSource, settleDefaults, subscribeTranscriberPreference, writeAccountDefaults,
-  type EffectiveContext } from "@/lib/voiceNotes/transcriberPreference";
+import { ensureOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
+import { effectiveCaptureOptions, readTranscriberPreference,
+  setDefaultIdentifySpeakers, setDefaultTranscriber, settleDefaults, subscribeTranscriberPreference, writeAccountDefaults,
+  } from "@/lib/voiceNotes/transcriberPreference";
 import {
   clearDiscarded,
   unmarkDiscarded,
@@ -106,8 +106,6 @@ export interface RecorderTranscriberChoice {
   id: TranscriberId;
   identifySpeakers: boolean;
   source: TranscriberChoiceScope;
-  /** This mode stands in for Local, whose on-device model is not on the phone. */
-  localModelNeeded?: boolean;
 }
 export type SetTranscriberResult = TranscriberChoiceResult;
 export type TranscriberScope = TranscriberChoiceScope;
@@ -125,7 +123,7 @@ export interface VoiceNoteRecorderController {
   setNoteText(md: string): Promise<void>;
   /** Tap-time recorded clock only. The UI writes a Markdown line if the moment is kept. */
   markMoment(): number;
-  setTranscriber(id: TranscriberId, options: { scope: TranscriberChoiceScope; waitForModel?: boolean }): Promise<TranscriberChoiceResult>;
+  setTranscriber(id: TranscriberId, options: { scope: TranscriberChoiceScope }): Promise<TranscriberChoiceResult>;
   setIdentifySpeakers(on: boolean, scope: "recording" | "default"): Promise<"ok" | "needs_consent" | "locked_signed_out" | "unavailable">;
   subscribe(listener: () => void): () => void;
   setOnPresent(onPresent: (() => void) | undefined): void;
@@ -161,18 +159,16 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   const signedIn = tcw?.did != null;
   const defaultChoice = (): RecorderTranscriberChoice => {
     const options = effectiveCaptureOptions(preference, signedIn);
-    return { id: options.transcriber, identifySpeakers: options.identifySpeakers, source: "default",
-      ...(localModelSubstituted(preference.transcriber, signedIn) ? { localModelNeeded: true } : {}) };
+    return { id: options.transcriber, identifySpeakers: options.identifySpeakers, source: "default" };
   };
   let choice = defaultChoice();
-  // The mode a recording started in stood in for Local: that note says so until the recorder is idle again.
-  let startedWithoutModel: TranscriberId | null = null;
-  const effectiveContext = (): EffectiveContext => {
-    const status = onDeviceSttStore.snapshot();
-    const modelKnown = onDeviceReady !== undefined || status.engine !== "none" || status.models.length > 0;
-    const offer = transcriber?.snapshot?.();
-    return { localModelReady: modelKnown ? (onDeviceReady?.() ?? isOnDeviceReady(status)) : null,
-      privateOffered: offer?.availability === "available" && offer.consented };
+  // Local needs the on-device model: this starts its download once the user has chosen Local or recorded on it, and
+  // the model is not on the phone. Merely being on Local by default starts nothing. Recording never waits for the
+  // download; the note's Local transcription queues natively until the model is ready.
+  const ensureLocalModel = (retry = false) => {
+    if (!available || !captureCapabilities().localTranscription) return;
+    if (onDeviceReady?.() ?? isOnDeviceReady(onDeviceSttStore.snapshot())) return;
+    ensureOnDeviceModel({ retry });
   };
   let note: RecorderNote | null = null;
   let noteId: string | null = null;
@@ -314,11 +310,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     // mode the note was recorded under stays on screen until the receipt.
     const live = state.recordingId !== null && nativeOptions !== null;
     const next: RecorderTranscriberChoice = live
-      ? { id: nativeOptions!.transcriber, identifySpeakers: nativeOptions!.identifySpeakers, source: "recording",
-        ...(startedWithoutModel === nativeOptions!.transcriber ? { localModelNeeded: true } : {}) }
+      ? { id: nativeOptions!.transcriber, identifySpeakers: nativeOptions!.identifySpeakers, source: "recording" }
       : defaultChoice();
-    if (choice.id === next.id && choice.identifySpeakers === next.identifySpeakers && choice.source === next.source
-      && choice.localModelNeeded === next.localModelNeeded) return false;
+    if (choice.id === next.id && choice.identifySpeakers === next.identifySpeakers && choice.source === next.source) return false;
     choice = next;
     return true;
   };
@@ -588,7 +582,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       if (state.phase !== "recording" || !state.recordingId) throw new Error("No live recording to mark");
       return Math.floor(recordedElapsedAt(state));
     },
-    async setTranscriber(id, { scope, waitForModel = false }) {
+    async setTranscriber(id, { scope }) {
       if (!available || id === "assemblyai") return "unavailable";
       if (id === "on-device" && captureEngineKind() === "tauri") {
         try { await (await import("@/lib/voiceNotes/desktop/desktopVoiceNotes")).refreshDesktopWhisperCapability(); }
@@ -596,8 +590,6 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       }
       if (id === "on-device" && !onDeviceTranscriptionAvailable()) return "unavailable";
       if (!signedIn && id !== "on-device") return "locked_signed_out";
-      if (id === "on-device" && captureCapabilities().localTranscription && !waitForModel && !(onDeviceReady?.() ?? isOnDeviceReady(onDeviceSttStore.snapshot())))
-        return "unavailable";
       if (id === "private-cloud") {
         const snapshot = transcriber?.snapshot?.();
         if (!snapshot?.consented) return "needs_consent";
@@ -615,6 +607,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         preference = readTranscriberPreference();
         if (refreshChoice()) notify();
       }
+      // Choosing Local again is also the way to retry a download that failed.
+      if (id === "on-device") ensureLocalModel(true);
       return "ok";
     },
     async setIdentifySpeakers(on, scope) {
@@ -698,21 +692,6 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         preference = readTranscriberPreference();
         if (refreshChoice()) notify();
       });
-      // The default for a phone that never chose a mode follows its model and its private-cloud offer.
-      const releaseContext = setEffectiveContextSource(effectiveContext);
-      let syncedDefault = "none";
-      const syncDefault = () => {
-        const substituted = localModelSubstituted(preference.transcriber, signedIn);
-        const key = substituted ? effectiveCaptureOptions(preference, signedIn).transcriber : "none";
-        if (key === syncedDefault) return;
-        syncedDefault = key;
-        if (refreshChoice()) notify();
-        refreshEffectiveTranscriber().catch((caught: unknown) =>
-          console.error("[VoiceNotes] Could not update the default transcription mode", caught));
-      };
-      syncDefault();
-      const unsubscribeModel = onDeviceSttStore.subscribe(syncDefault);
-      const unsubscribeOffer = transcriber?.subscribe?.(syncDefault);
       const handles = [
         VoiceNotes.addListener("micState", (event) => {
           if (event.id && state.recordingId && event.id !== state.recordingId) return;
@@ -842,9 +821,6 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         }
         if (typeof window !== "undefined") window.removeEventListener("exo:captureIssueDeleted", onCaptureDeleted);
         unsubscribePreference();
-        unsubscribeModel();
-        unsubscribeOffer?.();
-        releaseContext();
         unsubscribeNoteSync();
         if (appActiveHandle) void appActiveHandle.then((handle) => handle?.remove());
         for (const handle of handles) void handle.then((h) => h.remove());
@@ -854,7 +830,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       // Never before the recorder is reconciled, over a recording, or over a receipt still being shown.
       if (!available || !state.ready || state.phase !== "idle" || state.outcome !== null) return;
       send({ type: "START_REQUESTED" });
-      startedWithoutModel = choice.localModelNeeded ? choice.id : null;
+      if (choice.id === "on-device") ensureLocalModel(true);
       const requested = voiceNoteMaxDurationMs();
       try {
         // The recording starts from the engine's default: wait for any default write in flight, and refuse to start on one that could not be put right.

@@ -39,17 +39,17 @@ export function localModelGuide(
   if (failed || model.download.state === "failed") {
     const why = failed?.error ?? null;
     return {
-      reason: why ? `Couldn't download the model: ${why}` : "Couldn't download the model",
+      reason: why ? `Couldn't download the on-device model: ${why}` : "Couldn't download the on-device model",
       action: get(FINAL_COPY.modelTryAgain),
     };
   }
   if (needed.some((entry) => entry.state === "checking")) {
-    return { reason: "Checking the downloaded model…" };
+    return { reason: "Checking the on-device model…" };
   }
   const total = onDeviceDownloadTotalBytes(model);
   const size = total > 0 ? ` (${mb(total)} MB)` : "";
   if (model.download.state === "waiting_for_network") {
-    return { reason: `Waiting for Wi-Fi to download the model${size}` };
+    return { reason: `Waiting for Wi-Fi to download the on-device model${size}` };
   }
   if (model.download.state === "low_data_mode") {
     return { reason: `Paused: Low Data Mode is on${size}` };
@@ -58,7 +58,7 @@ export function localModelGuide(
   if (moving || model.download.state === "running") {
     const done = needed.reduce((sum, entry) => sum + entry.bytes, 0);
     const percent = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : null;
-    return { reason: percent === null ? `Downloading the model${size}` : `Downloading the model: ${percent}% of ${mb(total)} MB` };
+    return { reason: percent === null ? `Downloading on-device model${size}` : `Downloading on-device model · ${percent}%` };
   }
   return {
     reason: `The on-device model isn't downloaded${size}`,
