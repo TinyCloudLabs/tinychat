@@ -225,13 +225,15 @@ describe("nothing is written on mount", () => {
 describe("the phone app's system bars", () => {
   const recorder = (platform: SystemBarsTarget["platform"]) => {
     const styles: string[] = [];
+    const backgrounds: string[] = [];
     const target: SystemBarsTarget = {
       platform,
       setStyle: async (options: SystemBarsStyleOptions) => {
         styles.push(options.style);
       },
+      setBackgroundColor: async (color) => { backgrounds.push(color); },
     };
-    return { styles, target };
+    return { styles, backgrounds, target };
   };
 
   test("follow the theme on iOS and Android: light bar content at Night, dark by Day", () => {
@@ -245,6 +247,7 @@ describe("the phone app's system bars", () => {
       expect(bars.styles).toEqual([SystemBarsStyle.Dark, SystemBarsStyle.Light, SystemBarsStyle.Dark, SystemBarsStyle.Light]);
       // Capacitor's DARK is light content for a dark page.
       expect(bars.styles).toEqual(["DARK", "LIGHT", "DARK", "LIGHT"]);
+      expect(bars.backgrounds).toEqual(platform === "android" ? ["#09090B", "#FFFFFF", "#09090B", "#FFFFFF"] : []);
     }
   });
 

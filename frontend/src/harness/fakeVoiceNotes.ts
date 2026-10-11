@@ -7,6 +7,7 @@
 import type {
   CaptureDefaults,
   CaptureOptions,
+  CaptureSource,
   CaptureStatus,
   MicState,
   MicStateEvent,
@@ -31,6 +32,8 @@ export interface FakeVoiceNotes {
   emit(event: "autoStopped", payload: VoiceNoteAutoStopEvent): void;
   /** Capacitor hands a retained presentRecorder event to the first listener only. */
   retainPresentRecorder(payload: { id: string | null; reason?: string }): void;
+  /** A start the app did not make: a shortcut, intent or widget takes the engine's own default, as the native engines do. */
+  startFromSource(source: CaptureSource): Promise<string>;
 }
 
 export interface FakeVoiceNotesOptions {
@@ -51,7 +54,7 @@ export function createFakeVoiceNotes(options: FakeVoiceNotesOptions = {}): FakeV
   let retainedPresent: { id: string | null; reason?: string } | null = null;
   let adds = 0;
   let active = 0;
-  let current: { id: string; startedAt: number; options: CaptureOptions } | null = null;
+  let current: { id: string; startedAt: number; options: CaptureOptions; source: CaptureSource } | null = null;
   let state: MicState = "idle";
   let counter = 0;
   let maxDurationMs = 10_800_000;
@@ -64,21 +67,23 @@ export function createFakeVoiceNotes(options: FakeVoiceNotesOptions = {}): FakeV
     throw Object.assign(new Error("This action is not implemented in the browser harness"), { code: "not_implemented_in_harness" });
   };
 
+  const begin = async (options: Parameters<VoiceNotesPlugin["start"]>[0] | undefined, source: CaptureSource) => {
+    if (current) throw Object.assign(new Error("Already recording"), { code: "already_recording" });
+    counter += 1;
+    current = { id: `fake-${counter}`, startedAt: Date.now(), source, options: {
+      transcriber: defaults.accountDid ? (options?.transcriber ?? defaults.transcriber) : "on-device",
+      identifySpeakers: options?.identifySpeakers ?? defaults.identifySpeakers,
+    } };
+    maxDurationMs = options?.maxDurationMs ?? 10_800_000;
+    state = "recording";
+    return { ...current, maxDurationMs };
+  };
+
   const plugin: VoiceNotesPlugin = {
     openSettings: unsupported,
     dismissShortcutRecovery: unsupported,
     consumeShortcutRecord: unsupported,
-    async start(options?: Parameters<VoiceNotesPlugin["start"]>[0]) {
-      if (current) throw Object.assign(new Error("Already recording"), { code: "already_recording" });
-      counter += 1;
-      current = { id: `fake-${counter}`, startedAt: Date.now(), options: {
-        transcriber: defaults.accountDid ? (options?.transcriber ?? defaults.transcriber) : "on-device",
-        identifySpeakers: options?.identifySpeakers ?? defaults.identifySpeakers,
-      } };
-      maxDurationMs = options?.maxDurationMs ?? 10_800_000;
-      state = "recording";
-      return { ...current, maxDurationMs };
-    },
+    start: (options?: Parameters<VoiceNotesPlugin["start"]>[0]) => begin(options, "in_app"),
     async stop() {
       if (!current) throw Object.assign(new Error("Not recording"), { code: "not_recording" });
       const recording: VoiceNoteRecording = {
@@ -93,6 +98,7 @@ export function createFakeVoiceNotes(options: FakeVoiceNotesOptions = {}): FakeV
         version: 2,
         owner: unownedNotes ? null : defaults.accountDid,
         rev: 1,
+        source: current.source,
         options: current.options,
       };
       current = null;
@@ -116,6 +122,7 @@ export function createFakeVoiceNotes(options: FakeVoiceNotesOptions = {}): FakeV
         maxDurationMs,
         spans: [],
         openSpan: null,
+        source: current?.source,
         options: current?.options,
         transitionGen: defaults.transitionGen,
       };
@@ -207,5 +214,6 @@ export function createFakeVoiceNotes(options: FakeVoiceNotesOptions = {}): FakeV
       for (const listener of listeners.get(event) ?? []) (listener as (value: unknown) => void)(payload);
     },
     retainPresentRecorder(payload) { retainedPresent = payload; },
+    async startFromSource(source) { return (await begin(undefined, source)).id; },
   };
 }

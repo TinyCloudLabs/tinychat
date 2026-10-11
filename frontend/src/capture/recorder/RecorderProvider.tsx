@@ -12,9 +12,9 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { Button } from "@/components/ui/button";
 import { hapticRecordStarted, hapticSaved, hapticWarning } from "@/lib/haptics";
-import { VOICE_NOTE_MAX_DURATION_MS, VoiceNotes, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { VOICE_NOTE_MAX_DURATION_MS, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
-import { effectiveCaptureOptions, readTranscriberPreference } from "@/lib/voiceNotes/transcriberPreference";
+import { writeAccountDefaults } from "@/lib/voiceNotes/transcriberPreference";
 import type { PendingSnapshot } from "@/lib/voiceNotes/recorderSaves";
 import { DISCARDED, micWarning, recorderStatusText, RECEIPT_KEPT } from "./recorderCopy";
 import type { RecorderCaptureIssue, RecorderMic, RecorderPhase, RecorderState } from "./recorderReducer";
@@ -24,6 +24,7 @@ import type { RecorderNote, RecorderNoteStatus } from "./voiceNoteRecorderContro
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { useVoiceNoteRecorder } from "./useVoiceNoteRecorder";
+import { shouldScheduleReceiptDismissal } from "./receiptBehavior";
 
 /** How long a saved receipt stays, once its content is actually visible, before the sheet closes
  * and the island lets go. */
@@ -85,6 +86,8 @@ export interface RecorderValue {
   noteSyncError: string | null;
   setNoteText(md: string): Promise<void>;
   markMoment(): number;
+  /** Keeps an automatically stopped receipt open until an active moment commits or cancels. */
+  setMomentFieldFocused(focused: boolean): void;
   setTranscriber(id: TranscriberId, options: { scope: TranscriberChoiceScope; waitForModel?: boolean }): Promise<TranscriberChoiceResult>;
   setIdentifySpeakers(on: boolean, scope: "recording" | "default"): Promise<"ok" | "needs_consent" | "locked_signed_out" | "unavailable">;
   /** Capture always forces on-device while signed out (CaptureEngine), so the transcription route
@@ -163,17 +166,17 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     setConfigured(null);
     void (async () => {
       try {
-        const native = await VoiceNotes.getCaptureDefaults();
-        if (!active) return;
         const key = "exo.capture.transitionGen";
-        const local = Number(globalThis.localStorage?.getItem(key) ?? 0) || 0;
-        // A preference sync is not an account transition. Only an owner change advances the generation.
-        const transitionGen = native.accountDid === (tcw.did ?? null) && native.status === "signed_in"
-          ? native.transitionGen : Math.max(native.transitionGen, local) + 1;
-        await VoiceNotes.setCaptureDefaults({ ...native,
-          ...effectiveCaptureOptions(readTranscriberPreference(), tcw.did != null),
-          accountDid: tcw.did ?? null, transitionGen });
-        globalThis.localStorage?.setItem(key, String(transitionGen));
+        const written = await writeAccountDefaults((native) => {
+          if (!active) return null;
+          const local = Number(globalThis.localStorage?.getItem(key) ?? 0) || 0;
+          // A preference sync is not an account transition. Only an owner change advances the generation.
+          const transitionGen = native.accountDid === (tcw.did ?? null) && native.status === "signed_in"
+            ? native.transitionGen : Math.max(native.transitionGen, local) + 1;
+          return { accountDid: tcw.did ?? null, transitionGen };
+        });
+        if (!written) return;
+        globalThis.localStorage?.setItem(key, String(written.transitionGen));
         if (active) { setDefaultsError(null); setConfigured({ tcw, did: tcw.did ?? null }); if (tcw.did) onAccountReady?.(tcw); }
       } catch (caught) {
         if (active) setDefaultsError(`Could not set this phone's recording account: ${caught instanceof Error ? caught.message : String(caught)}`);
@@ -187,11 +190,13 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   const [receiptPlaying, setReceiptPlaying] = useState(false);
   const [receiptActionable, setReceiptActionable] = useState(false);
   const [receiptReady, setReceiptReadyState] = useState(false);
+  const [momentFieldFocused, setMomentFieldFocused] = useState(false);
   const setReceiptReady = useCallback(() => setReceiptReadyState(true), []);
   // A new note's receipt starts unready again — each one waits for its own Play control (or
   // load error), not whatever the previous note left behind.
   useEffect(() => { setReceiptReadyState(false); }, [state.lastSaved?.id]);
   const [announcement, setAnnouncement] = useState("");
+
 
   // Feedback for each change: a haptic and a polite announcement.
   const previous = useRef(state);
@@ -232,17 +237,19 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   useEffect(() => {
     if (state.outcome !== "local" && state.outcome !== "saved") return;
     if (state.permissionDenied) return;
+    if (!shouldScheduleReceiptDismissal(state, momentFieldFocused)) return;
     if (receiptReady) return;
     const ceiling = setTimeout(() => {
       setSheetOpen(false);
       dismissOutcome();
     }, RECEIPT_MAX_MS);
     return () => clearTimeout(ceiling);
-  }, [dismissOutcome, receiptReady, state.outcome, state.lastSaved, state.permissionDenied]);
+  }, [dismissOutcome, momentFieldFocused, receiptReady, state.outcome, state.lastSaved, state.permissionDenied, state.limitNotice]);
 
   useEffect(() => {
     if (state.outcome !== "local" && state.outcome !== "saved") return;
     if (state.permissionDenied) return;
+    if (!shouldScheduleReceiptDismissal(state, momentFieldFocused)) return;
     if (!receiptReady) return;
     if (receiptPlaying) return;
     const timer = setTimeout(() => {
@@ -250,21 +257,24 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       dismissOutcome();
     }, receiptWindowMs(receiptActionable));
     return () => clearTimeout(timer);
-  }, [dismissOutcome, receiptActionable, receiptPlaying, receiptReady, state.outcome, state.lastSaved, state.permissionDenied]);
+  }, [dismissOutcome, momentFieldFocused, receiptActionable, receiptPlaying, receiptReady, state.outcome, state.lastSaved, state.permissionDenied, state.limitNotice]);
 
   useEffect(() => recorder.setOnPresent(() => setSheetOpen(true)), [recorder.setOnPresent]);
 
   const record = useCallback(() => {
+    setMomentFieldFocused(false);
     setSheetOpen(true);
     startRecording();
   }, [startRecording]);
   const dismiss = useCallback(() => {
+    setMomentFieldFocused(false);
     setSheetOpen(false);
     dismissOutcome();
   }, [dismissOutcome]);
   const openSheet = useCallback(() => setSheetOpen(true), []);
   const minimiseSheet = useCallback(async () => {
     if (state.permissionDenied) await recorder.dismissShortcutRecovery();
+    setMomentFieldFocused(false);
     setSheetOpen(false);
   }, [recorder.dismissShortcutRecovery, state.permissionDenied]);
 
@@ -299,6 +309,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       noteSyncError: recorder.noteSyncError,
       setNoteText: recorder.setNoteText,
       markMoment: recorder.markMoment,
+      setMomentFieldFocused,
       setTranscriber: recorder.setTranscriber,
       setIdentifySpeakers: recorder.setIdentifySpeakers,
       signedIn: tcw?.did != null,
@@ -331,6 +342,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       recorder.noteSyncError,
       recorder.setNoteText,
       recorder.markMoment,
+      setMomentFieldFocused,
       recorder.pending,
       recorder.retryPending,
       recorder.openSettings,
@@ -417,6 +429,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       noteSyncError: null,
       setNoteText: async () => {},
       markMoment: () => 0,
+      setMomentFieldFocused: noop,
       setTranscriber: async () => "unavailable",
       setIdentifySpeakers: async () => "unavailable",
       signedIn: true,

@@ -225,6 +225,8 @@
 
 .ms-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
   align-items: flex-start;
 }
@@ -629,6 +631,25 @@
   font-weight: 700;
   color: var(--ink);
 }
+.ms-confirm-choice {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: -6px 0 16px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  box-shadow: inset 0 0 0 1px var(--gedge);
+  font-size: 12.5px;
+  line-height: 1.4;
+  text-align: left;
+  color: var(--dim);
+  cursor: pointer;
+}
+.ms-confirm-choice input {
+  margin-top: 2px;
+  flex: none;
+  accent-color: var(--ink);
+}
 .ms-confirm-keep,
 .ms-confirm-drop {
   appearance: none;
@@ -661,6 +682,22 @@
 .ms-entry:focus-visible {
   outline: 2px solid var(--ink);
   outline-offset: 2px;
+}
+
+/* Phone widths: the row's actions go under its text (the window is ~358px wide at 390, which left the text about 90px). */
+@media (max-width: 560px) {
+  .ms-row {
+    grid-template-columns: 40px minmax(0, 1fr);
+  }
+  .ms-actions {
+    grid-column: 2;
+    flex-wrap: wrap;
+    margin-top: 12px;
+  }
+  .ms-panel,
+  .ms-extra {
+    grid-column: 2 / -1;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

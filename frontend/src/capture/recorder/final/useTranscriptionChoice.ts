@@ -14,7 +14,7 @@ import {
   type ModeShell,
   type ModeStop,
 } from "./transcriptionModes";
-import { FINAL_COPY } from "./finalCopy";
+import { CHECK_AGAIN, FINAL_COPY, privateNotOffered, TRANSCRIBER_NAME } from "./finalCopy";
 import {
   localModelGuide,
   type OnDeviceDownload,
@@ -34,14 +34,12 @@ export type TranscriberApi = Pick<
   "transcriber" | "setTranscriber" | "setIdentifySpeakers"
 >;
 export const PRIVATE_UNAVAILABLE = "Not available right now";
-export const PRIVATE_CHECKING = "Checking…";
-export const PRIVATE_CHECK_FAILED = "Couldn't check right now";
-export const PRIVATE_CHECK_AGAIN = "Check again";
 export const SIGNED_OUT = "Sign in to choose another mode";
 export const unavailableNow = (what: string) =>
   `${what} isn't available right now`;
 export const DESKTOP_SIGNED_OUT_CAPTION =
   "Just the recording, kept on this Mac.";
+export const LOCAL_NEEDS_MODEL = `${TRANSCRIBER_NAME["on-device"]} needs the on-device model. Get it from the ${TRANSCRIBER_NAME["on-device"]} row, or pick another mode.`;
 export const SPEAKERS_NEEDS_CONSENT = "Turn on private transcription first";
 
 export const TRANSCRIBER_FOR: Record<ModeId, TranscriberId> = {
@@ -184,22 +182,13 @@ export function useTranscriptionChoice({
         return { stop, available: false, reason: SIGNED_OUT };
       if (!signedIn) return { stop, available: true };
       if (stop.id === "private" && !offered) {
-        switch (transcription?.availability) {
-          case "checking":
-            return { stop, available: false, reason: PRIVATE_CHECKING };
-          case "failed":
-            return {
-              stop,
-              available: false,
-              reason: PRIVATE_CHECK_FAILED,
-              action: {
-                label: PRIVATE_CHECK_AGAIN,
-                run: transcription.onRecheck,
-              },
-            };
-          default:
-            return { stop, available: false, reason: PRIVATE_UNAVAILABLE };
-        }
+        const { reason, canRecheck } = privateNotOffered(transcription?.availability);
+        return {
+          stop,
+          available: false,
+          reason,
+          ...(canRecheck && transcription ? { action: { label: CHECK_AGAIN, run: transcription.onRecheck } } : {}),
+        };
       }
       if (availability.available) return { stop, available: true };
       if (stop.id === "local" && shell === "phone")
@@ -207,6 +196,16 @@ export function useTranscriptionChoice({
       return { stop, available: false, reason: availability.reason };
     },
   );
+
+  // The knob never rests on a mode that cannot run, or stands in for one, without saying so.
+  const localModelMissing =
+    shell === "phone" &&
+    model !== null &&
+    scaleStops(shell, model).find((s) => s.id === "local")?.availability.available === false;
+  const restingNote =
+    api.transcriber.localModelNeeded || (mode === "local" && localModelMissing)
+      ? LOCAL_NEEDS_MODEL
+      : null;
 
   const failed = (what: string, caught: unknown) => {
     console.error(`[Recorder] Could not ${what}`, caught);
@@ -321,6 +320,7 @@ export function useTranscriptionChoice({
         }
       : undefined,
     stops,
+    restingNote,
     select,
     step,
     identifySpeakers: api.transcriber.identifySpeakers,

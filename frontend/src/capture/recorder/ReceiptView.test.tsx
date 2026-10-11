@@ -49,6 +49,19 @@ describe("ReceiptView", () => {
     expect(() => render({ phase: "idle", outcome: null, startedAt: null })).toThrow("ReceiptView mounted without an outcome");
   });
 
+  test("a note held back from transcription is not announced as transcribing", () => {
+    const route = (jobs: NonNullable<RecorderValue["transcription"]>["jobs"]) => render({ phase: "idle", outcome: "saved", startedAt: null,
+      lastSaved: { id: "rec-1", durationMs: 42_000, at: Date.now() },
+      transcription: { availability: "available", consented: true, maxSeconds: 600, jobs, onTranscribe: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop } });
+    const active = route(new Map([["rec-1", { kind: "active", status: { kind: "waiting" } }]]));
+    expect(active).toContain("Transcribing in private cloud…");
+    const held = route(new Map([["rec-1", { kind: "held", message: "Held: not sent for transcription" }]]));
+    expect(held).not.toContain("Transcribing in private cloud…");
+    expect(held).toContain('data-testid="voice-note-held"');
+    expect(held).toContain("Held: not sent for transcription");
+    expect(route(new Map())).not.toContain('data-testid="voice-note-held"');
+  });
+
   describe("the receipt's error line is the honest one", () => {
     const escaped = (text: string) => text.replace("'", "&#x27;");
     const receipt = (patch: Partial<RecorderValue>) => render({ phase: "idle", outcome: "local", startedAt: null,

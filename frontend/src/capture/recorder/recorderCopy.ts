@@ -24,6 +24,16 @@ export function limitNoticeText(maxDurationMs: number): string {
   return `Stopped at the ${formatLimit(maxDurationMs)} limit.`;
 }
 
+/** What stopped an automatic capture; the duration limit is only one of the possible causes. */
+export function autoStopNoticeText(reason: "max_duration" | "disk_full" | "write_failed" | "permission_revoked", maxDurationMs: number): string {
+  switch (reason) {
+    case "max_duration": return limitNoticeText(maxDurationMs);
+    case "disk_full": return "Recording stopped because device storage is full.";
+    case "write_failed": return "Recording stopped because audio could not be written.";
+    case "permission_revoked": return "Recording stopped because microphone access was revoked.";
+  }
+}
+
 // The card's mic-problem clauses, shared with the recorder's sentence under the timer.
 const SILENCED_CLAUSE = "the system is blocking the microphone (a call, another app, or the mic privacy toggle)";
 const NO_SIGNAL_CLAUSE = "no sound is reaching the microphone";

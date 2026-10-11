@@ -81,6 +81,7 @@ export function SheetDialog({
         className="pr-sheet"
         role={role}
         aria-modal="true"
+        data-overlay-open="true"
         aria-labelledby={titleId}
         aria-describedby={descriptionId}
         tabIndex={-1}

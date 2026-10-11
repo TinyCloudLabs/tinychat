@@ -33,7 +33,13 @@ import {
   groupByDay,
 } from "../../library/formatters";
 import type { LibraryItem } from "../../library/LibraryRow";
-import { libraryRowMeta } from "../../library/LibraryRow";
+import {
+  libraryRowAsideDuration,
+  libraryRowBadge,
+  libraryRowMeta,
+  libraryRowTitle,
+} from "../../library/LibraryRow";
+import { RowBadge } from "../../library/RowBadge";
 import { KIND_ICON, libraryKind } from "../../library/libraryKinds";
 import { CaptureSettings } from "../../recorder/final/desktop/CaptureSettings";
 import { Toasts } from "../../recorder/final/desktop/Toasts";
@@ -58,6 +64,7 @@ import {
   DESKTOP_HOME_COPY as COPY,
   forPlace,
   homePlace,
+  placeWhere,
   type HomePlace,
 } from "./desktopCopy";
 import {
@@ -293,12 +300,13 @@ function InProgress(props: {
 
 function rowLabel(parts: {
   title: string;
+  badge: string | null;
   meta: string;
   durationSecs: number | null;
   attention: boolean;
   opensDetails: boolean;
 }): string {
-  const label = [parts.title, parts.meta];
+  const label = [parts.title, parts.badge, parts.meta];
   if (parts.durationSecs !== null)
     label.push(formatSpokenDuration(parts.durationSecs));
   if (parts.attention) label.push(HOME_COPY.needsAttention);
@@ -394,6 +402,7 @@ export function RecentRow(props: {
   let title: string = COPY.voiceNoteTitle;
   let meta: string;
   let durationSecs: number | null = null;
+  let badge: string | null = null;
   let href: string | undefined;
   let attention = false;
   let dismissId: string | undefined;
@@ -404,21 +413,28 @@ export function RecentRow(props: {
   if (entry.type === "item") {
     const { item } = entry;
     icon = KIND_ICON[libraryKind(item.source)];
-    title = item.title ?? "Untitled";
-    durationSecs = item.durationSecs;
+    title = libraryRowTitle(item);
+    badge = libraryRowBadge(item, placeWhere(place));
     href = notePath(item.id);
     if (libraryKind(item.source) === "note") sourceId = item.sourceId;
     meta = libraryRowMeta(item, props.now, props.grouped);
+    durationSecs = libraryRowAsideDuration(item, false);
     if (entry.partialId !== undefined) {
       meta = COPY.partialAudio;
+      badge = null;
+      durationSecs = item.durationSecs;
       dismissId = entry.partialId;
       issueKind = "partial_audio";
     } else if (entry.issue) {
+      badge = null;
+      durationSecs = item.durationSecs;
       meta = desktopIssueMeta(entry.issue, place);
       attention = issueNeedsAttention(entry.issue);
       issueKind = entry.issue.kind;
       if (issueHasSheet(entry.issue)) sheetId = item.sourceId;
     } else if (whisperJob && whisperJobMeta(whisperJob) !== null) {
+      badge = null;
+      durationSecs = item.durationSecs;
       meta = whisperJobMeta(whisperJob)!;
       attention = whisperJob.state === "failed";
       if (whisperJob.state === "failed") retryId = item.sourceId;
@@ -458,6 +474,7 @@ export function RecentRow(props: {
           {issueKind === "finalization_timed_out" && (
             <span className="soft-spinner" aria-hidden="true" />
           )}
+          {badge && <RowBadge>{badge}</RowBadge>}
           {meta}
         </span>
       </span>
@@ -477,6 +494,7 @@ export function RecentRow(props: {
   );
   const label = rowLabel({
     title,
+    badge,
     meta,
     durationSecs,
     attention,

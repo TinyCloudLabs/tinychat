@@ -25,6 +25,10 @@ export interface ConfirmDialogProps {
   busy?: boolean;
   /** A failed attempt, shown above the buttons. The sheet stays open. */
   error?: string | null;
+  /** An extra choice shown under the message (e.g. delete the data too). */
+  children?: ReactNode;
+  /** The destructive action cannot start yet; Keep still works. */
+  dropDisabled?: boolean;
   /** Where focus goes when the sheet closes, if not the element that opened it (e.g. it is about to be removed). */
   returnFocus?: () => HTMLElement | null;
   testId?: string;
@@ -40,6 +44,8 @@ export function ConfirmDialog({
   onDrop,
   busy = false,
   error = null,
+  children,
+  dropDisabled = false,
   returnFocus,
   testId,
 }: ConfirmDialogProps) {
@@ -78,6 +84,7 @@ export function ConfirmDialog({
         >
           <AlertDialog.Title className="soft-title ms-confirm-title">{title}</AlertDialog.Title>
           <AlertDialog.Description className="ms-confirm-message">{message}</AlertDialog.Description>
+          {children}
           {error && (
             <p role="alert" className="ms-confirm-error">
               {error}
@@ -97,9 +104,9 @@ export function ConfirmDialog({
           <button
             type="button"
             className="ms-confirm-drop"
-            aria-disabled={busy}
+            aria-disabled={busy || dropDisabled}
             onClick={() => {
-              if (!busy) onDrop();
+              if (!busy && !dropDisabled) onDrop();
             }}
           >
             {dropLabel}

@@ -57,7 +57,8 @@ export function NoteDetail(props: {
       metadata={reads.metadata}
       transcript={reads.transcript}
       loadAudio={loadAudio}
-      transcription={item?.source === VOICE_NOTE_SOURCE ? props.transcription : undefined}
+      // A note only on this phone is not in the space to transcribe from.
+      transcription={item?.source === VOICE_NOTE_SOURCE && !item.onPhone ? props.transcription : undefined}
       copyState={copyState}
       onCopy={() => void onCopy()}
       onRetry={library.retry}

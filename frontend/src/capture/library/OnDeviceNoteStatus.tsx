@@ -4,6 +4,7 @@
 // Shown in place of "No transcript." for a Local note that is waiting for the
 // model, queued, running, failed, silent, or done but not yet in the space.
 // While the note's mode and state are still being read, it says so.
+import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { useCallback, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Loader2Icon, RefreshCwIcon } from "lucide-react";
 
@@ -222,7 +223,7 @@ function PrivateInstead(props: { onUse?: () => Promise<string | null> }) {
           });
         }}
       >
-        {switching ? "Switching to Private…" : "Transcribe with Private instead"}
+        {switching ? `Switching to ${TRANSCRIBER_NAME["private-cloud"]}…` : `Transcribe with ${TRANSCRIBER_NAME["private-cloud"]} instead`}
       </Button>
       {error && <p role="alert" className="text-callout text-destructive">{error}</p>}
     </>

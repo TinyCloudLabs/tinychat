@@ -117,7 +117,7 @@ import { RecordingOverlay } from "./capture/recorder/RecordingOverlay";
 import { handoffBeforeCredentialClear, withCaptureDeadline } from "./lib/voiceNotes/accountHandoff";
 import { createVoiceNotePipeline } from "./lib/voiceNotes/voiceNotePipeline";
 import { nextTransitionGen } from "./lib/voiceNotes/accountHandoff";
-import { effectiveCaptureOptions, readTranscriberPreference } from "./lib/voiceNotes/transcriberPreference";
+import { writeAccountDefaults } from "./lib/voiceNotes/transcriberPreference";
 import { advanceAccountGeneration } from "./lib/voiceNotes/accountContext";
 import { GmeetSessionSync } from "./chat/useGmeetSessionSync";
 import type {
@@ -125,10 +125,11 @@ import type {
   SelectionView,
 } from "./chat/modelSelection";
 import { clearAgentSessionCache } from "./lib/agentDelegation";
+import { isSignInCancelled } from "./lib/authErrors";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import { clearSessionAfterHandoff, registerSessionSignedOutHook } from "./lib/sessionSignedOut";
 import {
-  isNativeOpenKeySession, isNativeOpenKeySignIn, isNativeStorageError, logNativeOpenKeyError,
+  describeAuthFailure, isNativeOpenKeySession, isNativeOpenKeySignIn, isNativeStorageError, logNativeOpenKeyError,
   nativeSessionWasActive, restoreNativeAtBoot, nativeRenewalServices, secretsAvailable,
   setNativeSessionActive, signInNative, signOutNative,
   type NativeSignInConfig,
@@ -148,7 +149,7 @@ export { stateLabel, type AppState } from "./lib/appState";
 
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const LOCAL_VALIDATION = resolveLocalValidation(import.meta.env, globalThis.location?.hostname);
-const APP_NAME = "TinyCloud Chat";
+const APP_NAME = "Exo";
 const BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL ||
   `${globalThis.location?.protocol ?? "http:"}//localhost:3014`;
@@ -263,10 +264,7 @@ export function App() {
   const restoreCaptureAfterAuthAbort = useCallback(async () => {
     if (!did || !tcw || !captureEngineAvailable()) return;
     try {
-      const current = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
-      const transitionGen = nextTransitionGen(current.transitionGen);
-      await withCaptureDeadline(VoiceNotes.setCaptureDefaults({ ...current, ...effectiveCaptureOptions(readTranscriberPreference(), true),
-        accountDid: did, transitionGen }));
+      await withCaptureDeadline(writeAccountDefaults((current) => ({ accountDid: did, transitionGen: nextTransitionGen(current.transitionGen) })));
       if (voiceNotePipeline && tcw.spaceId) {
         voiceNotePipeline.resume();
         const generation = advanceAccountGeneration();
@@ -530,7 +528,7 @@ export function App() {
           return;
       }
     } catch (caught) {
-      setError(errorMessage(caught));
+      setError(describeAuthFailure(caught));
       setState("recoverableError");
     } finally {
       restoreInFlightRef.current = false;
@@ -834,7 +832,12 @@ export function App() {
       setSpaceId(signedTcw.spaceId ?? null);
       setState("ready");
     } catch (caught) {
-      setError(errorMessage(caught));
+      if (isSignInCancelled(caught)) {
+        setError(null);
+        setState("unauthenticated");
+        return;
+      }
+      setError(describeAuthFailure(caught));
       setState("recoverableError");
     }
   }, []);
@@ -882,34 +885,26 @@ export function App() {
           openKeyWarning = NATIVE_SIGN_OUT_WARNING;
         }
       } else if (!nativeSession && !options.terminal) {
-        let openKeyOutcome: Awaited<ReturnType<typeof signOutOpenKeySession>>;
         const openKeyClient = openkeyRef.current ?? new OpenKey({ appName: APP_NAME, host: OPENKEY_HOST,
           passkeysSupported: openkeyPasskeysSupported() });
-        try {
-          const pendingSignOut = signOutOpenKeySession(openKeyClient, () => openKeyClient);
-          openKeyOutcome = captureEngineAvailable()
-            ? await withCaptureDeadline(pendingSignOut)
-            : await pendingSignOut;
-        } catch {
-          openKeyClient.disconnect();
-          openKeyOutcome = { status: "unverified", reason: "timed out" };
-        }
+        // The user answers OpenKey's own confirmation here, so no deadline runs.
+        // signOutOpenKeySession reports every failure as an outcome rather than throwing.
+        const openKeyOutcome = await signOutOpenKeySession(openKeyClient, () => openKeyClient);
         // OpenKey clears this client's local auth before showing its widget, even
         // when the user cancels. Never retain that spent client for another flow.
         openkeyRef.current = null;
 
         if (openKeyOutcome.status === "cancelled") {
           openKeyWarning =
-            "OpenKey stayed signed in on this device. TinyChat is signed out locally. " +
+            "OpenKey stayed signed in on this device. Exo is signed out locally. " +
             "Sign out at openkey.so before choosing another account.";
         } else if (openKeyOutcome.status === "remote-unavailable") {
           openKeyWarning =
-            "Remote OpenKey sign-out is unavailable in this app right now. TinyChat is signed out locally. " +
+            "Remote OpenKey sign-out is unavailable in this app right now. Exo is signed out locally. " +
             "Sign out at openkey.so before choosing another account.";
         } else if (openKeyOutcome.status === "unverified") {
-          const detail = openKeyOutcome.reason ? ` (${openKeyOutcome.reason})` : "";
           openKeyWarning =
-            `OpenKey sign-out could not be verified${detail}. TinyChat is signed out locally. ` +
+            "OpenKey sign-out could not be verified. Exo is signed out locally. " +
             "Sign out at openkey.so before choosing another account.";
         }
       }

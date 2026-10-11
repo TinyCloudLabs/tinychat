@@ -4,6 +4,7 @@
 // out and offline, so its text (or "Couldn't transcribe on this phone" plus
 // Retry) comes from the native STT queue directly, not from the space's
 // transcript, which may still be unsaved or unsynced here.
+import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Capacitor } from "@capacitor/core";
 import { Loader2Icon, RefreshCwIcon } from "lucide-react";
@@ -40,6 +41,8 @@ export interface SavedReceiptProps {
   privateFailure?: string | null;
   /** How private cloud's job for the note ended, once it has finished. */
   privateOutcome?: "transcribed" | "no_speech" | null;
+  /** Why this note was not sent for transcription (it began outside the app); the note's own Transcribe sends it. */
+  held?: string | null;
   error?: string | null;
   /** Saved, but some audio could not be written: an informational line, not an error. */
   notice?: string | null;
@@ -163,7 +166,7 @@ export function NeedsOnDeviceModel(props: { guide: ReturnType<typeof localModelG
           )}
           {props.onUsePrivate && (
             <Button type="button" variant="outline" disabled={props.switching} onClick={props.onUsePrivate} data-testid="voice-note-use-private">
-              {props.switching ? "Switching to Private…" : "Use Private instead"}
+              {props.switching ? `Switching to ${TRANSCRIBER_NAME["private-cloud"]}…` : `Use ${TRANSCRIBER_NAME["private-cloud"]} instead`}
             </Button>
           )}
         </div>
@@ -246,6 +249,7 @@ export function SavedReceipt(props: SavedReceiptProps) {
       }</p>}
       {saved && <p className="text-meta text-muted-foreground">Saved to your TinyCloud space</p>}
       {saved && props.transcribing && <p className="text-meta text-muted-foreground">Transcribing in private cloud…</p>}
+      {saved && props.held && <p role="status" className="text-meta text-muted-foreground" data-testid="voice-note-held">{props.held}</p>}
       {saved && props.privateOutcome && (
         <p className="text-meta text-muted-foreground" data-testid="voice-note-private-done">
           {props.privateOutcome === "no_speech" ? "No speech was found in this note." : "Transcribed in private cloud"}

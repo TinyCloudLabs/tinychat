@@ -1,3 +1,36 @@
+import type { AppPlatform } from "@/lib/platform";
+import type { TranscriptionAvailability } from "@/lib/voiceNotes/voiceNoteTranscription";
+
+const MODE_NAMES = {
+  skip: "Audio only",
+  local: "Local",
+  private: "Private",
+  powerful: "Powerful",
+} as const;
+
+/** One name per transcription mode, keyed by the provider's transcriber id; every surface that names a mode reads this. */
+export const TRANSCRIBER_NAME = {
+  off: MODE_NAMES.skip,
+  "on-device": MODE_NAMES.local,
+  "private-cloud": MODE_NAMES.private,
+  assemblyai: MODE_NAMES.powerful,
+} as const;
+
+/** The first stop of a route diagram: the device the audio starts on. */
+export function routeSourceName(platform: AppPlatform): string {
+  if (platform === "ios" || platform === "android") return "This phone";
+  return platform === "tauri" ? "This Mac" : "This browser";
+}
+
+/** Why Private cannot be chosen right now, and whether checking again can change it. */
+export function privateNotOffered(availability: TranscriptionAvailability | undefined): { reason: string; canRecheck: boolean } {
+  if (availability === "checking") return { reason: "Checking…", canRecheck: false };
+  if (availability === "failed") return { reason: "Couldn't check right now", canRecheck: true };
+  return { reason: "Not available right now", canRecheck: false };
+}
+
+export const CHECK_AGAIN = "Check again";
+
 export const FINAL_COPY = {
   listening: "Listening",
   resting: "Resting · tap to continue",
@@ -48,10 +81,10 @@ export const FINAL_COPY = {
   modelUnavailable: "Get the on-device model",
   modelTryAgain: "Try the download again",
   modes: {
-    skipName: "Audio only",
-    localName: "Local",
-    privateName: "Private",
-    powerfulName: "Powerful",
+    skipName: MODE_NAMES.skip,
+    localName: MODE_NAMES.local,
+    privateName: MODE_NAMES.private,
+    powerfulName: MODE_NAMES.powerful,
     speakersName: "AssemblyAI · speakers",
     noTranscript: "no transcript",
     skipCaption: {

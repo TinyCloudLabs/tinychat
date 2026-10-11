@@ -27,4 +27,5 @@ export const SAVED_NOTE_COPY = {
   discardTitle: "Discard your changes?",
   discardBody: "The note stays as it was last saved.",
   savedToSpace: "saved to your space",
+  notInSpace: "not in your space yet",
 } as const;

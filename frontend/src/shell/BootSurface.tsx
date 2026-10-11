@@ -2,6 +2,7 @@ import { BuildInfoLine } from "@/components/BuildInfoLine";
 import { Button } from "@/components/ui/button";
 import { InfoTip } from "@/components/ui/info-tip";
 import type { AppState } from "../lib/appState";
+import { errorLinkFor } from "../lib/authErrors";
 
 export function BootSurface(props: {
   state: AppState;
@@ -22,8 +23,9 @@ export function BootSurface(props: {
             ? (props.error ?? "Something went wrong.")
             : props.state === "offline"
               ? (props.error ?? "You're offline.")
-              : (props.error ?? "Sign in to start chatting.");
+              : (props.error ?? "Sign in to continue.");
 
+  const errorLink = props.state === "unauthenticated" || props.state === "recoverableError" ? errorLinkFor(props.error) : null;
   const busy = props.state === "booting" || props.state === "connecting" || props.state === "signing";
 
   return (
@@ -34,11 +36,9 @@ export function BootSurface(props: {
     <div className="grid h-full grid-rows-[minmax(0,1fr)_auto_minmax(0,1fr)] overflow-y-auto p-6">
       <div aria-hidden />
       <div className="mx-auto flex w-full min-w-0 max-w-sm flex-col items-center gap-5 text-center">
-        <span className="flex size-12 items-center justify-center rounded-2xl bg-primary text-xl font-bold text-primary-foreground">
-          T
-        </span>
+        <img src="/icons/pwa-192.png" alt="" className="size-12 rounded-2xl" />
         <div className="flex flex-col gap-1.5">
-          <h1 className="font-display text-title-2">TinyCloud Chat</h1>
+          <h1 className="font-display text-title-2">Exo</h1>
           <p className="flex items-center justify-center text-callout text-muted-foreground">
             {message}
             {/* Where conversations live, as a hint: before sign-in there is no How it works page to link to. */}
@@ -49,9 +49,14 @@ export function BootSurface(props: {
             )}
           </p>
         </div>
+        {errorLink && (
+          <a href={errorLink.href} target="_blank" rel="noreferrer" className="text-callout text-primary underline underline-offset-4">
+            {errorLink.label}
+          </a>
+        )}
         {(props.state === "unauthenticated" || props.state === "recoverableError" || props.state === "offline") && (
           <Button onClick={props.onAction} className="h-11 px-6 fine:h-9 fine:px-4">
-            {props.state === "unauthenticated" ? "Sign in" : "Try again"}
+            {props.state === "offline" ? "Try again" : "Sign in"}
           </Button>
         )}
         {busy && (

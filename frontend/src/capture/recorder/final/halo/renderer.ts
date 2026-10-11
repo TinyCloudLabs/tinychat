@@ -6,6 +6,12 @@ const ATLAS_SIZE = 1024;
 const SPECTRUM_SIZE = 32;
 const DATA_SIZE = 128;
 const RA = 1 / BLEED;
+/**
+ * The furthest a tick can reach, as a multiple of the disc's diameter: the ticks start 0.055 beyond the disc and
+ * are at most 0.012 + 0.30 + 0.025 long (TICKS_SHADER, loudest tick of the loudest source), and a tick is
+ * (0.0115 + 0.003) * the 1.45 weight wide at its rounded end. All in the shader's units, where the disc's radius is RA.
+ */
+export const TICK_REACH = (RA + 0.055 + 0.337 + (0.0115 + 0.003) * 1.45) / RA;
 const compareByPixelSize = (a: HaloEntry, b: HaloEntry) =>
   b.pixelSize - a.pixelSize;
 

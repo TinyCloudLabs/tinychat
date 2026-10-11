@@ -1,4 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   signOutOpenKeySession,
   type OpenKeySignOutClient,
@@ -37,7 +39,7 @@ describe("signOutOpenKeySession", () => {
       };
     });
 
-    expect(result).toEqual({ status: "unverified", reason: null });
+    expect(result).toEqual({ status: "unverified" });
     expect(calls).toEqual(["fallback-created", "fallback-sign-out"]);
   });
 
@@ -66,7 +68,6 @@ describe("signOutOpenKeySession", () => {
       signOutOpenKeySession(current, () => current),
     ).resolves.toEqual({
       status: "unverified",
-      reason: "OpenKey timed out",
     });
   });
 
@@ -85,5 +86,45 @@ describe("signOutOpenKeySession", () => {
     const current: OpenKeySignOutClient = { signOut: async () => new Promise(() => {}) };
     await expect(withCaptureDeadline(signOutOpenKeySession(current, () => current), 5))
       .rejects.toBeInstanceOf(AccountStateTimeout);
+  });
+
+  test("a raw sign-out failure never reaches the UI copy and is logged only through the redacting logger", async () => {
+    const secret = "HTTP 500 at https://internal.invalid/revoke?token=tok-secret";
+    const failures: unknown[] = [
+      new Error(secret),
+      { code: "SERVER_ERROR", message: secret },
+      { message: secret },
+      secret,
+    ];
+    const sinks = (["log", "warn", "error"] as const).map((name) => spyOn(console, name).mockImplementation(() => undefined));
+    try {
+      for (const failure of failures) {
+        const current: OpenKeySignOutClient = { signOut: async () => { throw failure; } };
+        const outcome = await signOutOpenKeySession(current, () => current);
+        expect(JSON.stringify(outcome)).not.toContain("internal.invalid");
+        expect(JSON.stringify(outcome)).not.toContain("tok-secret");
+      }
+      const [log, warn, error] = sinks;
+      expect(log.mock.calls).toEqual([]);
+      expect(error.mock.calls).toEqual([]);
+      // Only the redacting logger writes, as one string — never an error object or its cause chain.
+      expect(warn.mock.calls).toHaveLength(failures.length);
+      for (const call of warn.mock.calls) {
+        expect(call).toHaveLength(1);
+        expect(typeof call[0]).toBe("string");
+        expect(call[0]).toStartWith("[OpenKey native] OpenKey sign-out: ");
+      }
+    } finally {
+      sinks.forEach((sink) => sink.mockRestore());
+    }
+  });
+
+  test("App shows only fixed warning copy and never interpolates a sign-out failure", () => {
+    const app = readFileSync(join(import.meta.dir, "..", "App.tsx"), "utf8");
+    const signOut = app.slice(app.indexOf("const signOut = useCallback"), app.indexOf("const isReady"));
+    const warnings = signOut.slice(signOut.indexOf('if (openKeyOutcome.status === "cancelled")'), signOut.indexOf("if (tcw && !nativeSession"));
+    expect(warnings).toContain('openKeyOutcome.status === "unverified"');
+    expect(warnings).not.toMatch(/\$\{|openKeyOutcome\.reason|openKeyErrorMessage|\.message/);
+    expect(warnings.match(/Exo is signed out locally/g)?.length).toBe(3);
   });
 });

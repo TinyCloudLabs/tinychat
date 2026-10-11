@@ -37,7 +37,10 @@ describe("Connectors page composition under the new IA", () => {
 
   test("Connectors owns the connector rows; Capture owns capture and the Library", () => {
     const page = read("ConnectorsPage.tsx");
-    expect(page).toContain("<ConnectorsCard");
+    // One view for every width: the one Capture's Connect meetings opens, with its one How it works.
+    expect(page).toContain("<MeetingSourcesFeature");
+    expect(page).not.toContain("<ConnectorsCard");
+    expect(page).not.toContain("HowItWorksLink");
     expect(page).not.toContain("<TranscriberSection");
     expect(page).not.toContain("<LibraryScreen");
     expect(page).not.toContain("VoiceNotesListCard");

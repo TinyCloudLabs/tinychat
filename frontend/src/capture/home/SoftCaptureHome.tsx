@@ -29,6 +29,7 @@ export interface SoftCaptureHomeProps {
   /** The recorder's `recoveryScanFailure`: the start-up check for unfinished recordings failed. */
   scanFailure: string | null;
   onRetryRecent: () => void;
+  onOpenRecentNote?: (id: string) => void;
   now: Date;
 }
 
@@ -163,6 +164,7 @@ function Recent(props: SoftCaptureHomeProps) {
                 now={props.now}
                 grouped={false}
                 testId="recent-item"
+                onRecentOpen={props.onOpenRecentNote}
               />
             ) : (
               <SoftIssueRow

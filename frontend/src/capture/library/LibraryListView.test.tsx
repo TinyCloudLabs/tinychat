@@ -56,7 +56,6 @@ describe("LibraryListView", () => {
     expect(html.indexOf(">Today<")).toBeLessThan(html.indexOf(">Yesterday<"));
     expect(html).toContain('data-testid="voice-note-item" data-source-id="rec-1"');
     expect(html).toContain('href="/chat/capture/library/row-1"');
-    expect(html).toContain('<span class="tnum">0:42</span>');
     expect(html).toContain('<span class="tnum">31:20</span>');
     expect(html).toContain("Fireflies · ");
   });

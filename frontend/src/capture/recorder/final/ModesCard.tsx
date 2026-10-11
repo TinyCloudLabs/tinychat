@@ -104,6 +104,7 @@ export function ModesCard({
       ref={root}
       className="pr-modes"
       role="dialog"
+      data-overlay-open="true"
       aria-label="Transcription modes"
       data-testid="modes-card"
       onKeyDown={key}

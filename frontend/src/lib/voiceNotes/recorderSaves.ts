@@ -26,6 +26,7 @@ import { saveVoiceNote, type NoteSyncErrorCode, type VoiceNoteAudio, type VoiceN
 import { assertCurrent, type AccountContext } from "@/lib/voiceNotes/accountContext";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { deleteNote } from "@/lib/voiceNotes/recordingNotes";
+import { withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
 
 export function messageOf(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -140,11 +141,25 @@ export function isDiscarded(id: string): boolean {
   return discardedThisSession.has(id) || storedDiscarded().includes(id);
 }
 
-/** Its device copy is gone: nothing is left to guard. */
-export function clearDiscarded(id: string): void {
+/** Recordings whose discard went through and whose device copy is gone, this session. */
+const deletedThisSession = new Set<string>();
+
+/** The user discarded this recording, and it is still marked or its copy has been deleted: it never became a saved note. */
+export function wasDiscarded(id: string): boolean {
+  return isDiscarded(id) || deletedThisSession.has(id);
+}
+
+/** It was not discarded after all (the discard failed): the guard goes, the recording stays. */
+export function unmarkDiscarded(id: string): void {
   discardedThisSession.delete(id);
   const ids = storedDiscarded();
   if (ids.includes(id)) storeDiscarded(ids.filter((stored) => stored !== id));
+}
+
+/** Its device copy is gone: nothing is left to guard, and `wasDiscarded` still remembers it. */
+export function clearDiscarded(id: string): void {
+  deletedThisSession.add(id);
+  unmarkDiscarded(id);
 }
 
 const discardDeletes = new Map<string, Promise<string | null>>();
@@ -165,7 +180,7 @@ export async function deleteDiscarded(id: string): Promise<string | null> {
 
 async function deleteDiscardedOnce(id: string): Promise<string | null> {
   try {
-    await VoiceNotes.deleteAudio({ id });
+    await withVoiceNoteSaveDeadline(`native deleteAudio id=${id}`, () => VoiceNotes.deleteAudio({ id }));
   } catch (caught) {
     return `Discarded, but this phone kept its copy: ${messageOf(caught)}`;
   }
@@ -265,16 +280,18 @@ export async function saveRecording(
     persistCloudSaved();
     let cleanupError: string | null = null;
     if (recording.owner) {
+      const owner = recording.owner;
       try {
         const patch = { audio: { state: "saved" as const, rowId: saved.data.id, at: Date.now() } };
         try {
-          await VoiceNotes.updateLedger({ id: recording.id, did: recording.owner, rev: recording.rev ?? 0, patch });
+          await withVoiceNoteSaveDeadline(`native updateLedger id=${recording.id}`, () => VoiceNotes.updateLedger({ id: recording.id, did: owner, rev: recording.rev ?? 0, patch }));
         } catch (caught) {
           if (errorCode(caught) !== "rev_conflict") throw caught;
-          const fresh = (await VoiceNotes.listPending()).recordings.find((note) => note.id === recording.id);
-          if (!fresh || isLegacyNote(fresh) || fresh.owner !== recording.owner || fresh.rev === undefined) throw caught;
+          const fresh = (await withVoiceNoteSaveDeadline(`native listPending id=${recording.id}`, () => VoiceNotes.listPending())).recordings.find((note) => note.id === recording.id);
+          if (!fresh || isLegacyNote(fresh) || fresh.owner !== owner || fresh.rev === undefined) throw caught;
           if (fresh.ledger?.audio?.state !== "saved") {
-            await VoiceNotes.updateLedger({ id: recording.id, did: recording.owner, rev: fresh.rev, patch });
+            const rev = fresh.rev;
+            await withVoiceNoteSaveDeadline(`native updateLedger id=${recording.id}`, () => VoiceNotes.updateLedger({ id: recording.id, did: owner, rev, patch }));
           }
         }
         savedThisSession.add(recording.id);
@@ -330,12 +347,12 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
     for (let attempt = 0; attempt < 2; attempt++) {
       check();
       try {
-        await VoiceNotes.updateLedger({ id: recording.id, did: ctx.did, rev: fresh.rev ?? 0, patch });
+        await withVoiceNoteSaveDeadline(`native updateLedger id=${recording.id}`, () => VoiceNotes.updateLedger({ id: recording.id, did: ctx.did, rev: fresh.rev ?? 0, patch }));
         return { kind: "saved", audio: null, cleanupError: null, noteSyncError: saved.data.noteSyncError };
       } catch (caught) {
         if (errorCode(caught) !== "rev_conflict") throw caught;
         check();
-        const current = (await VoiceNotes.listPending()).recordings.find((note) => note.id === recording.id);
+        const current = (await withVoiceNoteSaveDeadline(`native listPending id=${recording.id}`, () => VoiceNotes.listPending())).recordings.find((note) => note.id === recording.id);
         if (!current || current.owner !== ctx.did || isLegacyNote(current)) throw caught;
         if (current.ledger?.audio.state === "saved") return { kind: "saved", audio: null, cleanupError: null,
           noteSyncError: saved.data.noteSyncError };
@@ -385,7 +402,7 @@ export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
   pendingRunInFlight = (async () => {
     let recordings: VoiceNoteRecording[];
     try {
-      ({ recordings } = await VoiceNotes.listPending());
+      ({ recordings } = await withVoiceNoteSaveDeadline("native listPending for pending saves", () => VoiceNotes.listPending()));
     } catch (caught) {
       // Nothing is known about the phone: told as such, never as "nothing pending".
       const message = listingFailure(caught);
@@ -422,9 +439,18 @@ export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
 /** What the phone last listed as pending: not yet asked, a count, or a listing that failed. */
 export type PendingListing = { state: "unknown" } | { state: "ok"; count: number } | { state: "error"; message: string };
 
+/** One recording still on the device, as the Library lists it until its space row lands. */
+export interface PendingNote {
+  id: string;
+  startedAt: number;
+  durationMs: number;
+}
+
 /** Recordings awaiting a space save, as the recorder views show them. */
 export interface PendingSnapshot {
   listing: PendingListing;
+  /** The recordings behind a `listing` of state "ok" (this account's); absent until listed, after a failed listing, and in screen fixtures. */
+  notes?: PendingNote[];
   /** Which signed-in account this listing was filtered for. */
   accountDid?: string | null;
   /** A save of them is running (savePendingRecordings). */
@@ -506,7 +532,7 @@ export const pendingStore = {
       accountChanges++;
       noteFailures.clear();
       generalFailure = null;
-      publishPending({ accountDid: did, listing: { state: "unknown" }, lastError: null });
+      publishPending({ accountDid: did, listing: { state: "unknown" }, notes: undefined, lastError: null });
     }
     activeAccountDid = did;
     void relistPending(null);
@@ -525,7 +551,7 @@ function listingFailure(caught: unknown): string {
 async function relistPending(lastError?: string | null): Promise<void> {
   if (lastError !== undefined) generalFailure = lastError;
   try {
-    const { recordings } = await VoiceNotes.listPending();
+    const { recordings } = await withVoiceNoteSaveDeadline("native listPending for pending count", () => VoiceNotes.listPending());
     const visible = activeAccountDid
       ? recordings.filter((recording) => !recording.owner || recording.owner === activeAccountDid)
       : recordings;
@@ -534,8 +560,11 @@ async function relistPending(lastError?: string | null): Promise<void> {
     );
     const pendingIds = new Set(pending.map((note) => note.id));
     for (const id of noteFailures.keys()) if (!pendingIds.has(id)) noteFailures.delete(id);
-    publishPending({ accountDid: activeAccountDid, listing: { state: "ok", count: pending.length }, lastError: currentFailure() });
+    const notes = pending
+      .filter((recording) => !isDiscarded(recording.id))
+      .map((recording) => ({ id: recording.id, startedAt: recording.startedAt, durationMs: recording.durationMs }));
+    publishPending({ accountDid: activeAccountDid, listing: { state: "ok", count: pending.length }, notes, lastError: currentFailure() });
   } catch (caught) {
-    publishPending({ listing: { state: "error", message: listingFailure(caught) }, lastError: currentFailure() });
+    publishPending({ listing: { state: "error", message: listingFailure(caught) }, notes: undefined, lastError: currentFailure() });
   }
 }

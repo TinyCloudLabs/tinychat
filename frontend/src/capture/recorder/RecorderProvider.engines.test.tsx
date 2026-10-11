@@ -11,7 +11,8 @@ import {
   type CaptureCapabilities, type CaptureEngine, type CaptureEngineKind,
 } from "@/lib/voiceNotes/captureEngine";
 import { VoiceNotes, __setVoiceNotesForTests, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { OnDeviceStt, __setOnDeviceSttForTests, type OnDeviceSttPlugin } from "@/lib/voiceNotes/onDeviceStt";
+import { OnDeviceStt, __setOnDeviceSttForTests, type OnDeviceSttPlugin, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
+import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { PendingVoiceNotesSaver } from "@/chat/PendingVoiceNotesSaver";
 import { CaptureEngineGate } from "./CaptureEngineGate";
 import { useOnDeviceReceipt } from "./SavedReceipt";
@@ -56,12 +57,21 @@ function strictEngine(capabilities: CaptureCapabilities) {
   return { engine, calls, violations, fake };
 }
 
-function strictOnDeviceStt(supported: boolean) {
+/** What the native plugin reports: a model entry per model even when absent, so "not downloaded" differs from "not read yet". */
+function sttStatus(model: "ready" | "absent"): OnDeviceSttStatus {
+  return {
+    models: ["parakeet-tdt-0.6b-v3-int8", "silero-vad"].map((id) => ({ id, state: model, bytes: 0, totalBytes: 1, error: null })) as OnDeviceSttStatus["models"],
+    pack: "full", autoDownload: false, download: { policy: "wifi", state: "idle" }, engine: "parakeet", appleSpeech: "unsupported", queue: [],
+  };
+}
+const EMPTY_STT: OnDeviceSttStatus = { models: [], pack: "full", autoDownload: false, download: { policy: "wifi", state: "idle" }, engine: "none", appleSpeech: "unsupported", queue: [] };
+
+function strictOnDeviceStt(supported: boolean, model: "ready" | "absent" = "ready") {
   const calls: string[] = [];
   const plugin = new Proxy({}, { get: (_t, property: string) => () => {
     calls.push(property);
     if (!supported) throw new Error(`${property} is unsupported`);
-    return Promise.resolve({ remove: async () => {} });
+    return Promise.resolve(property === "status" ? sttStatus(model) : { remove: async () => {} });
   } });
   return { plugin: plugin as unknown as OnDeviceSttPlugin, calls };
 }
@@ -101,6 +111,9 @@ beforeEach(() => { value = null; __resetCaptureEngineForTests(); });
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = null;
+  // The model store is shared by every file in the run: leave it on its empty snapshot.
+  __setOnDeviceSttForTests({ status: async () => EMPTY_STT } as unknown as OnDeviceSttPlugin);
+  await onDeviceSttStore.refresh();
   __resetCaptureEngineForTests();
   global.window = saved.window;
   if (saved.MediaRecorder === undefined) delete global.MediaRecorder; else global.MediaRecorder = saved.MediaRecorder;
@@ -109,18 +122,19 @@ afterEach(async () => {
   __setOnDeviceSttForTests(saved.onDevice);
 });
 
-async function mount(kind: CaptureEngineKind, capabilities: CaptureCapabilities) {
-  return mountWith(kind, capabilities);
+async function mount(kind: CaptureEngineKind, capabilities: CaptureCapabilities, model: "ready" | "absent" = "ready") {
+  return mountWith(kind, capabilities, undefined, model);
 }
 
-async function mountWith(kind: CaptureEngineKind, capabilities: CaptureCapabilities, prepare?: (plugin: VoiceNotesPlugin) => void) {
-  const stt = strictOnDeviceStt(kind === "native");
+async function mountWith(kind: CaptureEngineKind, capabilities: CaptureCapabilities, prepare?: (plugin: VoiceNotesPlugin) => void, model: "ready" | "absent" = "ready") {
+  const stt = strictOnDeviceStt(kind === "native", model);
   __setOnDeviceSttForTests(stt.plugin);
   const strict = strictEngine(capabilities);
   prepare?.(strict.fake.plugin);
   if (kind === "native") {
     global.window = windowStub();
     __setVoiceNotesForTests(strict.engine, { available: true });
+    await onDeviceSttStore.refresh();
   } else {
     __setVoiceNotesForTests(saved.voiceNotes, { available: false });
     global.window = windowStub(kind === "tauri" ? { __TAURI_INTERNALS__: {} } : {});
@@ -309,6 +323,21 @@ describe("engine-aware transcription default", () => {
     withStorage({ "exo.voiceNotes.transcriber": "on-device" });
     const existing = await mount("native", ALL);
     expect((await existing.fake.plugin.getCaptureDefaults()).transcriber).toBe("on-device");
+  });
+
+  test("a fresh signed-in profile does not default to Local: Audio only here, with nothing else offered", async () => {
+    withStorage({});
+    const { fake } = await mount("native", ALL, "absent");
+    expect((await fake.plugin.getCaptureDefaults()).transcriber).toBe("off");
+    expect(value?.transcriber).toMatchObject({ id: "off", localModelNeeded: true });
+  });
+
+  test("a stored Local choice stays Local, never swapped for Private or Audio only", async () => {
+    withStorage({ "exo.voiceNotes.transcriber": "on-device" });
+    const { fake } = await mount("native", ALL, "absent");
+    expect((await fake.plugin.getCaptureDefaults()).transcriber).toBe("on-device");
+    expect(value?.transcriber).toMatchObject({ id: "on-device", source: "default" });
+    expect(value?.transcriber.localModelNeeded).toBeUndefined();
   });
 });
 

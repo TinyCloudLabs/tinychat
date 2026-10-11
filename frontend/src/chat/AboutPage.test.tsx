@@ -8,6 +8,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { ABOUT_PATH, ABOUT_SECTIONS, aboutHref } from "@/lib/about";
+import { VOICE_NOTE_MAX_DURATION_MS } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { ABOUT_BODY, AboutPage, sectionFromHash } from "./AboutPage";
 
 const render = (path: string) =>
@@ -101,8 +102,10 @@ describe("How it works: the canonical claims", () => {
       .replace(/\s+/g, " ");
   };
 
-  test("voice notes: 60 minutes, saved to the space", () => {
-    expect(text("capture")).toContain("A note can run up to 60 minutes; the recorder stops at the limit.");
+  test("voice notes: the recorder's three-hour limit, saved to the space", () => {
+    expect(VOICE_NOTE_MAX_DURATION_MS).toBe(3 * 60 * 60 * 1000);
+    expect(text("capture")).toContain("A note can run up to 3 hours; the recorder stops at the limit.");
+    expect(text("capture")).not.toContain("60 minutes");
     expect(text("capture")).toContain("It is saved to your TinyCloud space and shows up in Library.");
   });
 

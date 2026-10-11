@@ -9,6 +9,7 @@ import { useLocation } from "react-router-dom";
 
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { ABOUT_SECTIONS, type AboutSectionId } from "@/lib/about";
+import { VOICE_NOTE_MAX_DURATION_MS } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 
 /** A link to another section of this page, on its own line (a 44 px target on touch). */
@@ -29,6 +30,8 @@ function List(props: { children: ReactNode }) {
   return <ul className="flex list-disc flex-col gap-2 pl-5 marker:text-muted-foreground">{props.children}</ul>;
 }
 
+const VOICE_NOTE_MAX_HOURS = VOICE_NOTE_MAX_DURATION_MS / (60 * 60 * 1000);
+
 /** Each section's text, keyed by its id, so a section in lib/about.ts cannot ship without words. */
 export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
   capture: (
@@ -36,7 +39,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
       <p>Exo records audio in two ways.</p>
       <List>
         <li>
-          <strong className="font-semibold">Voice notes</strong>, in the phone app. A note can run up to 60 minutes; the
+          <strong className="font-semibold">Voice notes</strong>, in the phone app. A note can run up to {VOICE_NOTE_MAX_HOURS} hours; the
           recorder stops at the limit. It is saved to your TinyCloud space and shows up in Library. While Exo records,
           your phone shows its microphone indicator and a notification.
         </li>

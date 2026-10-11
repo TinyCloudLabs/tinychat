@@ -26,17 +26,36 @@ export function syncedAgo(iso: string | null | undefined, now: number = Date.now
   return `${days} ${days === 1 ? "day" : "days"} ago`;
 }
 
+/** The last finished sync's persisted outcome, when it was not clean. */
+export type PersistedSyncProblem = "error" | "partial";
+
+export function persistedSyncProblem(
+  connection: { status: string; lastSyncStatus: string | null; lastSyncError: string | null } | null,
+): { kind: PersistedSyncProblem; message: string | null } | null {
+  if (connection?.status !== "connected") return null;
+  if (connection.lastSyncStatus !== "error" && connection.lastSyncStatus !== "partial") return null;
+  return { kind: connection.lastSyncStatus, message: connection.lastSyncError };
+}
+
 export function meetingSourceStatus(
   state: MeetingSourceState,
   syncedAgoText?: string | null,
   count = 0,
+  problem: PersistedSyncProblem | null = null,
 ): MeetingSourceStatus {
   switch (state) {
-    case "connected":
+    case "connected": {
+      const lead =
+        problem === "error"
+          ? "Last sync failed"
+          : problem === "partial"
+            ? "Last sync incomplete"
+            : "Connected";
       return {
         tone: "on",
-        text: `Connected · synced ${syncedAgoText ?? "never"} · ${meetingCount(count)}`,
+        text: `${lead} · synced ${syncedAgoText ?? "never"} · ${meetingCount(count)}`,
       };
+    }
     case "syncing":
       return { tone: "busy", text: "Syncing…" };
     case "connecting":
@@ -58,4 +77,43 @@ export function meetingSourcesSummary(
   if (connected.length === 0) return "Nothing connected yet";
   const total = connected.reduce((sum, source) => sum + source.count, 0);
   return `${connected.map((source) => source.name).join(" and ")} connected · ${meetingCount(total)}`;
+}
+
+/** What one source row shows: its state, its status line, and the one error to put under it. */
+export function sourceRowDisplay(input: {
+  comingSoon: boolean;
+  connection: {
+    status: string;
+    lastSyncedAt: string | null;
+    lastSyncStatus: string | null;
+    lastSyncError: string | null;
+    itemCount: number;
+  } | null;
+  syncing: boolean;
+  connecting: boolean;
+  /** This window's own sync failure for the row, if the last attempt failed. */
+  syncError: string | null;
+  /** A disconnect warning left on the row. */
+  rowNote: string | null;
+}): { state: MeetingSourceState; status: MeetingSourceStatus | null; error: string | null } {
+  const { connection } = input;
+  const connected = connection?.status === "connected";
+  const state: MeetingSourceState = input.syncing
+    ? "syncing"
+    : input.connecting
+      ? "connecting"
+      : connected
+        ? "connected"
+        : "disconnected";
+  const problem = persistedSyncProblem(connection);
+  const status = input.comingSoon
+    ? null
+    : meetingSourceStatus(
+        state,
+        syncedAgo(connection?.lastSyncedAt),
+        connection?.itemCount ?? 0,
+        problem?.kind ?? null,
+      );
+  // The current attempt's failure wins over what the last finished sync saved.
+  return { state, status, error: input.syncError ?? input.rowNote ?? problem?.message ?? null };
 }
