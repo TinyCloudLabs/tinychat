@@ -351,10 +351,19 @@ describe("saveRecording", () => {
   test("owned v2 upload updates the native audio ledger and retains local audio", async () => {
     const note = { ...recording("owned-v2", 3), version: 2 as const, owner: "did:example:alice", rev: 2 };
     phone.pending = [note];
-    fakeVoiceNoteStore.save = async () => ({ ok: true, data: { id: "actual-row", inserted: true, createdAt: "2026-10-07T00:00:00Z" } }) as never;
+    const rowVersion = saves.pendingStore.snapshot().rowVersion;
+    fakeVoiceNoteStore.save = async (...args) => {
+      await args[4]?.onRowCreated?.("actual-row");
+      expect(phone.ledgerUpdates[0]).toEqual({ id: note.id, did: note.owner, rev: 2,
+        patch: { audio: { state: "pending", rowId: "actual-row", at: null } } });
+      expect(saves.pendingStore.snapshot().rowVersion).toBe(rowVersion + 1);
+      return { ok: true, data: { id: "actual-row", inserted: true, createdAt: "2026-10-07T00:00:00Z" } } as never;
+    };
     expect((await saves.saveRecording(tcw, note)).kind).toBe("saved");
-    expect(phone.ledgerUpdates).toEqual([{ id: note.id, did: note.owner, rev: 2,
-      patch: { audio: { state: "saved", rowId: "actual-row", at: expect.any(Number) } } }]);
+    expect(phone.ledgerUpdates).toEqual([
+      { id: note.id, did: note.owner, rev: 2, patch: { audio: { state: "pending", rowId: "actual-row", at: null } } },
+      { id: note.id, did: note.owner, rev: 2, patch: { audio: { state: "saved", rowId: "actual-row", at: expect.any(Number) } } },
+    ]);
     expect(phone.pending).toEqual([note]);
     expect(phone.deletes).toBe(0);
   });
@@ -408,6 +417,7 @@ describe("after a reload", () => {
       lastError: null,
       notes: undefined,
       uploadingId: null,
+      rowVersion: 0,
       online: true,
     });
     expect(cold.pendingCount(cold.pendingStore.snapshot())).toBe(0);

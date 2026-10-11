@@ -55,7 +55,7 @@ export default function SavedNote({
   const screen = useSavedNoteScreen(item.sourceId, space);
   const rowMetadata = metadata?.status === "ok" ? metadata.metadata : null;
   const pipelineSource = useMemo<NotePipelineSource>(
-    () => ({ tcw, saved: item.onPhone !== true, metadata: rowMetadata }),
+    () => ({ tcw, rowExists: item.onPhone !== true, metadata: rowMetadata }),
     [tcw, item.onPhone, rowMetadata],
   );
   const pipeline = useNotePipeline(item.sourceId, pipelineSource);

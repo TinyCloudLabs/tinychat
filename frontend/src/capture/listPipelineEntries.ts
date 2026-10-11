@@ -13,6 +13,6 @@ export function listPipelineEntries(items: readonly LibraryItem[], tcw: TinyClou
       // Preserve the listing's three pipeline fields when present. `null`
       // means the query confirmed no row metadata; `undefined` lets P4 batch
       // read metadata when the listing could not provide it.
-      source: { tcw, saved: !item.onPhone, metadata: item.metadata } satisfies NotePipelineSource,
+      source: { tcw, rowExists: !item.onPhone, metadata: item.metadata } satisfies NotePipelineSource,
     }));
 }

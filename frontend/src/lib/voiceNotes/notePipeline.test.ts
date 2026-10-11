@@ -232,6 +232,13 @@ describe("notePipeline: shape", () => {
     expect(mac.steps.find((s) => s.key === "transcript")?.sublabel).toBe("Ready on this Mac");
   });
 
+  test("a transcript already in the space names its location explicitly", () => {
+    const localResult = notePipeline(input(local({ inSpace: "transcribed" }, { space: SAVED })));
+    expect(localResult.steps.find((s) => s.key === "transcript")).toMatchObject({ state: "done", sublabel: "Saved in your space" });
+    const privateResult = notePipeline(input({ ...cloud({ kind: "done", outcome: "no_speech" }), space: SAVED }));
+    expect(privateResult.steps.find((s) => s.key === "transcript")).toMatchObject({ state: "done", sublabel: "No speech found in your space" });
+  });
+
   test("progress is carried as 0..1 for uploads, model downloads, local and private transcription", () => {
     const progress = (patch: Patch) => notePipeline(input(patch)).steps.find((s) => s.state === "active")?.progress;
     expect(progress({ space: { pending: { upload: { state: "uploading", bytes: 25, total: 100 } } } })).toBe(0.25);

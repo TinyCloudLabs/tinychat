@@ -24,7 +24,13 @@ const store: SavedNoteStore = {
   save: async (_id, md) => ({ record: { md, savedEditAt: "2026-10-09T10:00:00Z" }, synced: Promise.resolve() }),
 };
 const recording = (transcriber: "on-device" | "off", stt: unknown): VoiceNoteRecording =>
-  ({ id: "rec-1", startedAt: 0, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0, options: { transcriber, identifySpeakers: false }, ...(stt === null ? {} : { stt }) }) as VoiceNoteRecording;
+  ({ id: "rec-1", startedAt: 0, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+    owner: "did:test:1", rev: 1, ledger: {
+      audio: { state: "saved", rowId: "row-1", at: 1 },
+      transcript: { state: "pending", outcome: null, reason: null, attempts: 0, nextAttemptAt: null },
+      transcriptSync: { state: "pending", rev: 0, at: null }, landed: { state: "none", eventId: null }, remote: [],
+    },
+    options: { transcriber, identifySpeakers: false }, ...(stt === null ? {} : { stt }) }) as VoiceNoteRecording;
 
 let cleanupDom: (() => void) | undefined;
 let root: Root | null = null;

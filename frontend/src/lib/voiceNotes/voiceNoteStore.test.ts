@@ -172,6 +172,21 @@ const AUDIO_BASE = `${APP_ID}/connectors/exo-voice-note/audio/rec-1`;
 beforeEach(() => _resetConnectorSchemaMemoForTests());
 
 describe("note sync state", () => {
+  test("records the remote row before reading audio for its upload", async () => {
+    const space = fakeSpace();
+    const events: string[] = [];
+    const source: VoiceNoteAudioSource = {
+      mimeType: "audio/mp4", size: 4,
+      async readPart() { events.push("audio read"); return new Uint8Array([1, 2, 3, 4]); },
+    };
+    const result = await saveVoiceNote(space.tcw, { ...recording, id: `rec-row-first-${++fakeSpaceNumber}` }, source, "android", {
+      retryDelaysMs: [0], onRowCreated: async (rowId) => { events.push(`row ${rowId}`); },
+    });
+    expect(result.ok).toBe(true);
+    expect(events[0]).toStartWith("row vn-rec-row-first-");
+    expect(events.slice(1).every((event) => event === "audio read")).toBe(true);
+  });
+
   test("syncing is true only while a sync runs, and subscribers hear both edges", async () => {
     const space = fakeSpace();
     const withNote = { ...recording, id: `rec-note-syncing-${++fakeSpaceNumber}` };

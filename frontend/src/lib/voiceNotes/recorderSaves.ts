@@ -23,7 +23,7 @@ import {
 import { bytesToBase64, VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS } from "@/lib/voiceNotes/voiceNoteAudio";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { saveVoiceNote, type NoteSyncErrorCode, type VoiceNoteAudio, type VoiceNoteAudioSource, type StoreAudioOptions } from "@/lib/voiceNotes/voiceNoteStore";
-import { assertCurrent, type AccountContext } from "@/lib/voiceNotes/accountContext";
+import { assertAccountContext, assertCurrent, captureAccountContext, type AccountContext } from "@/lib/voiceNotes/accountContext";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { deleteNote } from "@/lib/voiceNotes/recordingNotes";
 import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
@@ -286,6 +286,11 @@ export async function saveRecording(
   if (isLegacyNote(recording)) return { kind: "held", reason: "legacy" };
   if (!recording.owner) return { kind: "held", reason: "unowned" };
   if (recording.owner !== tcw.did) return { kind: "held", reason: "other-account" };
+  const ctx = captureAccountContext({ did: tcw.did, spaceId: tcw.spaceId });
+  const checkActive = () => {
+    assertAccountContext(ctx, tcw);
+    if (isDiscarded(recording.id)) throw new Error("Recording was discarded");
+  };
   if (recording.ledger?.audio.state === "saved") {
     void syncOnDeviceTranscript(tcw, recording);
     return { kind: "already-saved", cleanupError: null };
@@ -309,7 +314,35 @@ export async function saveRecording(
         }
       : native;
     const saved = await saveVoiceNote(tcw, recording, source, nativePlatform(), { onProgress,
-      checkpoint: () => { if (isDiscarded(recording.id)) throw new Error("Recording was discarded"); } });
+      onRowCreated: async (rowId) => {
+        let fresh = recording;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          checkActive();
+          const patch = { audio: { ...(fresh.ledger?.audio ?? { state: "pending" as const, rowId: null, at: null }), rowId } };
+          try {
+            await withVoiceNoteSaveDeadline(`native updateLedger row id=${recording.id}`, () => {
+              checkActive();
+              return VoiceNotes.updateLedger({ id: recording.id, did: ctx.did, rev: fresh.rev ?? 0, patch });
+            });
+            checkActive();
+            pendingStore.recordRowCreated();
+            return;
+          } catch (caught) {
+            if (errorCode(caught) !== "rev_conflict") throw caught;
+            checkActive();
+            const current = (await withVoiceNoteSaveDeadline(`native listPending row id=${recording.id}`, () => {
+              checkActive();
+              return VoiceNotes.listPending();
+            })).recordings.find((note) => note.id === recording.id);
+            checkActive();
+            if (!current || current.owner !== ctx.did || isLegacyNote(current)) throw caught;
+            if (current.ledger?.audio.rowId === rowId) { pendingStore.recordRowCreated(); return; }
+            fresh = current;
+          }
+        }
+        throw Object.assign(new Error("Could not record this phone's TinyCloud row"), { code: "STORE_ERROR" });
+      },
+      checkpoint: checkActive });
     if (!saved.ok) return isDiscarded(recording.id)
       ? { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) }
       : failedOutcome(saved.error);
@@ -389,6 +422,34 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
     } };
     const saved = await saveVoiceNote(tcw, recording, checkedSource, nativePlatform(), {
       ...audioOptions,
+      onRowCreated: async (rowId) => {
+        let fresh = recording;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          checkActive();
+          const patch = { audio: { ...(fresh.ledger?.audio ?? { state: "pending" as const, rowId: null, at: null }), rowId } };
+          try {
+            await withVoiceNoteSaveDeadline(`native updateLedger row id=${recording.id}`, () => {
+              checkActive();
+              return VoiceNotes.updateLedger({ id: recording.id, did: ctx.did, rev: fresh.rev ?? 0, patch });
+            });
+            checkActive();
+            pendingStore.recordRowCreated();
+            return;
+          } catch (caught) {
+            if (errorCode(caught) !== "rev_conflict") throw caught;
+            checkActive();
+            const current = (await withVoiceNoteSaveDeadline(`native listPending row id=${recording.id}`, () => {
+              checkActive();
+              return VoiceNotes.listPending();
+            })).recordings.find((note) => note.id === recording.id);
+            checkActive();
+            if (!current || current.owner !== ctx.did || isLegacyNote(current)) throw caught;
+            if (current.ledger?.audio.rowId === rowId) { pendingStore.recordRowCreated(); return; }
+            fresh = current;
+          }
+        }
+        throw Object.assign(new Error("Could not record this phone's TinyCloud row"), { code: "STORE_ERROR" });
+      },
       onUploadStart: (total) => {
         pendingStore.publishUpload(recording.id, uploadOwner, { state: "uploading", bytes: 0, total });
         audioOptions.onUploadStart?.(total);
@@ -596,6 +657,8 @@ export interface PendingSnapshot {
   lastError: string | null;
   uploadingId: string | null;
   online: boolean;
+  /** Bumped when a new space row id is written to the phone ledger. */
+  rowVersion?: number;
 }
 
 /** How many notes await a space save (0 when unknown or the listing failed). */
@@ -604,7 +667,7 @@ export function pendingCount(snapshot: Pick<PendingSnapshot, "listing">): number
 }
 
 let pendingSnapshot: PendingSnapshot = { listing: { state: "unknown" }, accountDid: null, running: false, lastError: null,
-  uploadingId: null, online: typeof navigator === "undefined" ? true : navigator.onLine !== false };
+  uploadingId: null, rowVersion: 0, online: typeof navigator === "undefined" ? true : navigator.onLine !== false };
 const pendingListeners = new Set<() => void>();
 
 function publishPending(patch: Partial<PendingSnapshot>): void {
@@ -659,6 +722,9 @@ export const pendingStore = {
   /** The same object until something changes (useSyncExternalStore). */
   snapshot(): PendingSnapshot {
     return pendingSnapshot;
+  },
+  recordRowCreated(): void {
+    publishPending({ rowVersion: (pendingSnapshot.rowVersion ?? 0) + 1 });
   },
   subscribe(listener: () => void): () => void {
     pendingListeners.add(listener);

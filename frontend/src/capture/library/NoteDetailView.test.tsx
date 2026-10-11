@@ -281,15 +281,16 @@ describe("the transcript placeholder while the note's pipeline is not done", () 
   test("a note still uploading says where the transcript will show, not 'No transcript yet'", () => {
     const html = withContext(uploading(30));
     expect(html).toContain('data-testid="note-transcript-pipeline"');
-    expect(html).toContain(SAVED_NOTE_COPY.transcriptAfterSpace);
+    expect(html).toContain("After audio uploads");
     expect(html).not.toContain("No transcript yet");
     expect(html).not.toContain('data-testid="note-transcript-on-phone"');
   });
 
-  test("a signed-out note names the sign-in blocker as the transcript's reason", () => {
+  test("a signed-out note does not repeat the sign-in blocker under Transcript", () => {
     const pipeline = signedOut();
     const html = withContext(pipeline);
-    expect(html).toContain(pipeline.steps.find((s) => s.key === "transcript")!.blocker?.cause ?? SAVED_NOTE_COPY.transcriptAfterSpace);
+    expect(html).toContain("After audio uploads");
+    expect(html).not.toContain("Sign in");
     expect(html).not.toContain("No transcript yet");
   });
 

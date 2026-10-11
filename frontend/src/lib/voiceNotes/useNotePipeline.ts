@@ -44,7 +44,7 @@ import {
 } from "./onDeviceTranscriber";
 import { useQuarantinedRecordings } from "./quarantine";
 import { loadNote } from "./recordingNotes";
-import { isAccountWorkAllowed, subscribeAccountWork } from "./accountContext";
+import { captureAccountContext, isAccountWorkAllowed, subscribeAccountWork } from "./accountContext";
 import { VOICE_NOTE_READ_TIMEOUT_MESSAGE, VoiceNoteSaveTimeout, withVoiceNoteReadDeadline } from "./saveDeadline";
 import { pendingStore, type PendingNote } from "./recorderSaves";
 import {
@@ -67,16 +67,20 @@ import type { NoteTranscriptionState } from "./voiceNoteTranscription";
  * and the ledger's record of the transcript reaching the space (`transcriptSync`, with the outcome it covers).
  */
 export interface NativeNote {
+  recording?: VoiceNoteRecording;
   transcriber: TranscriberId | null;
   stt: NoteSttState | null;
+  audio?: NoteLedger["audio"] | null;
   transcriptSync: NoteLedger["transcriptSync"] | null;
   transcriptOutcome: "transcribed" | "no_speech" | null;
 }
 
 export function nativeNoteOf(recording: VoiceNoteRecording): NativeNote {
   return {
+    recording,
     transcriber: (recording.options?.transcriber as TranscriberId | undefined) ?? null,
     stt: recording.stt ?? null,
+    audio: recording.ledger?.audio ?? null,
     transcriptSync: recording.ledger?.transcriptSync ?? null,
     transcriptOutcome: recording.ledger?.transcript.outcome ?? null,
   };
@@ -287,6 +291,7 @@ export interface PipelineActionEnv {
   tcw: TinyCloudWeb | null;
   pipeline: NotePipeline;
   input: NotePipelineInput;
+  native: NativeNote | null;
   transcription: VoiceNoteTranscriptionProps | undefined;
   /** The transcription props as they are now, after an action ran (`transcription` is as they were when it began). */
   latestTranscription: () => VoiceNoteTranscriptionProps | undefined;
@@ -350,7 +355,8 @@ export async function runPipelineAction(kind: PipelineActionKind, env: PipelineA
                 return null;
               case "sync":
                 if (env.tcw === null) return "Sign in to add the transcript to this note.";
-                await syncOnDeviceTranscript(env.tcw, { id: env.id, ledger: { audio: { state: "saved" } }, stt: { state: "done" } });
+                await syncOnDeviceTranscript(env.tcw, { id: env.id, owner: env.tcw.did,
+                  ledger: env.native?.audio == null ? undefined : { audio: env.native.audio }, stt: { state: "done" } });
                 return null;
               case "model":
                 return await downloadOnDeviceModel();
@@ -396,7 +402,7 @@ interface NativeRead {
  * that fails, or a listener that cannot register, is kept as `error` with its own message; it is never read as the
  * phone having no entry for the note.
  */
-function useNativeNotes(ids: readonly string[]): NativeRead {
+function useNativeNotes(ids: readonly string[], rowVersion: number): NativeRead {
   const key = ids.join("\n");
   const needed = ids.length > 0 && nativeVoiceNotesAvailable();
   const [attempt, setAttempt] = useState(0);
@@ -439,7 +445,7 @@ function useNativeNotes(ids: readonly string[]): NativeRead {
       for (const sub of subs) sub.then((handle) => handle.remove()).catch(() => {});
     };
     // `ids` is keyed by its content.
-  }, [key, needed, attempt]);
+  }, [key, needed, attempt, rowVersion]);
   const reread = useCallback(() => setAttempt((count) => count + 1), []);
   const error = read.key === key ? read.error : null;
   return {
@@ -606,16 +612,16 @@ function useAutoNoteSync(candidates: readonly { tcw: TinyCloudWeb; id: string; k
  * "Try again" runs it again. A transcript already in the space that the phone's ledger never recorded (a write that failed
  * before the last quit) gets one ledger repair per session, `kind: "record"`.
  */
-function useAutoTranscriptSync(candidates: readonly { tcw: TinyCloudWeb; id: string; key: string; kind: "add" | "record" }[]): void {
+function useAutoTranscriptSync(candidates: readonly { tcw: TinyCloudWeb; id: string; key: string; kind: "add" | "record"; recording: VoiceNoteRecording; context: ReturnType<typeof captureAccountContext> }[]): void {
   useEffect(() => subscribeAccountWork(notifyAutoSync), []);
   useEffect(() => {
-    for (const { tcw, id, key, kind } of candidates) {
+    for (const { tcw, id, key, kind, recording, context } of candidates) {
       if (!isAccountWorkAllowed(tcw)) continue;
       if (autoSync.started.has(key)) continue;
       autoSync.started.add(key);
       const attempt = kind === "add"
-        ? syncOnDeviceTranscript(tcw, { id, ledger: { audio: { state: "saved" } }, stt: { state: "done" } })
-        : recordOnDeviceTranscript(tcw, id);
+        ? syncOnDeviceTranscript(tcw, recording, context)
+        : recordOnDeviceTranscript(tcw, id, context);
       void attempt.then((abandoned) => {
         if (abandoned) { autoSync.started.delete(key); autoSync.settled.delete(key); }
         else autoSync.settled.add(key);
@@ -629,8 +635,10 @@ function useAutoTranscriptSync(candidates: readonly { tcw: TinyCloudWeb; id: str
 
 export interface NotePipelineSource {
   tcw: TinyCloudWeb | null;
-  /** The note is a row in the space (not the phone-only stand-in, nor a receipt that has not saved yet). */
-  saved: boolean;
+  /** The identity row exists in the space. It may exist before the audio manifest is committed. */
+  rowExists: boolean;
+  /** Authoritative when known; otherwise taken from the phone ledger's committed audio state. */
+  audioSaved?: boolean;
   /**
    * The space row's metadata as the caller read it; null when it has no row or the read is not available.
    * Left out (undefined) when the caller has not read the row (the receipt): the hook reads it itself, and again
@@ -648,7 +656,7 @@ export interface NotePipelineView {
   actionError: string | null;
 }
 
-interface PipelineState { input: NotePipelineInput; pipeline: NotePipeline }
+interface PipelineState { input: NotePipelineInput; pipeline: NotePipeline; native: NativeNote | null }
 
 /** Each note's input and pipeline, off one set of subscriptions. Notes the reads have not answered for are left out. */
 function usePipelineStates(entries: readonly { id: string; source: NotePipelineSource }[]): {
@@ -665,7 +673,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
   const onDeviceStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const syncVersion = useStoreVersion(subscribeRecordingNoteSync);
   const transcriptSyncVersion = useStoreVersion(subscribeOnDeviceTranscriptSync);
-  const nativeRead = useNativeNotes(ids);
+  const nativeRead = useNativeNotes(ids, pending.rowVersion ?? 0);
   const natives = nativeRead.notes;
   const [localAttempt, setLocalAttempt] = useState(0);
   const locals = useLocalNotes(ids, `${syncVersion}:${localAttempt}`);
@@ -684,9 +692,11 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
   const [rowRetries, setRowRetries] = useState<ReadonlyMap<string, number>>(new Map());
   const wantedRows = entries.flatMap(({ id, source }) => {
     const tcw = source.tcw;
+    const native = natives.get(id);
+    const rowExists = source.rowExists || native?.audio?.rowId != null || native?.audio?.state === "saved";
     // Not before the phone has answered: its job state is part of what makes a note's row worth reading again.
     // A note that is not in the space has no row to read.
-    if (source.metadata !== undefined || tcw === null || !source.saved || !nativeRead.ready) return [];
+    if (source.metadata !== undefined || tcw === null || !rowExists || !nativeRead.ready) return [];
     const signal = [
       rowAttempt,
       rowRetries.get(id) ?? 0,
@@ -727,17 +737,20 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
   const { states, autoSyncs, autoTranscriptSyncs } = useMemo(() => {
     const out = new Map<string, PipelineState>();
     const wantsSync: { tcw: TinyCloudWeb; id: string; key: string }[] = [];
-    const wantsTranscriptSync: { tcw: TinyCloudWeb; id: string; key: string; kind: "add" | "record" }[] = [];
+    const wantsTranscriptSync: { tcw: TinyCloudWeb; id: string; key: string; kind: "add" | "record"; recording: VoiceNoteRecording; context: ReturnType<typeof captureAccountContext> }[] = [];
     for (const { id, source } of entries) {
       const local = locals.get(id);
       const tcw = source.tcw;
-      const rowEntry = source.metadata === undefined && tcw !== null && source.saved ? rows.get(id) : undefined;
+      const native = natives.get(id) ?? null;
+      const nativeRecording = native?.recording;
+      const rowExists = source.rowExists || native?.audio?.rowId != null || native?.audio?.state === "saved";
+      const audioSaved = source.audioSaved ?? native?.audio?.state === "saved";
+      const rowEntry = source.metadata === undefined && tcw !== null && rowExists ? rows.get(id) : undefined;
       const row = rowEntry !== undefined && tcw !== null && rowEntry.identity === spaceIdentity(tcw) ? rowEntry.read : undefined;
       // The row's answer queues behind uploads on the write lane; the pipeline is shown from what the phone knows meanwhile (`spaceReading`).
-      const spaceReading = source.metadata === undefined && tcw !== null && source.saved && row === undefined;
+      const spaceReading = source.metadata === undefined && tcw !== null && rowExists && row === undefined;
       if (local === undefined || !nativeRead.ready) continue;
       const issue = issues[id] ?? null;
-      const native = natives.get(id) ?? null;
       const rowError = row !== undefined && "error" in row ? row.error : null;
       const localNote = "note" in local ? local.note : null;
       const storeSync = tcw === null
@@ -747,7 +760,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
         id,
         device,
         online: pending.online,
-        saved: source.saved,
+        saved: audioSaved,
         rowMetadata: source.metadata !== undefined ? source.metadata : row !== undefined && "metadata" in row ? row.metadata : null,
         localNote,
         localNoteError: "error" in local ? local.error : null,
@@ -764,7 +777,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
       };
       // A saved note with text and no sync of this revision gets its automatic attempt (`useAutoNoteSync`); until it settles it is "syncing".
       let attempting = false;
-      if (tcw !== null && source.saved && !spaceReading && localNote !== null && localNote.hasContent && notesSyncState({ ...facts, noteSync: { ...storeSync, attempting: false } }).state === "idle") {
+      if (tcw !== null && audioSaved && !spaceReading && localNote !== null && localNote.hasContent && notesSyncState({ ...facts, noteSync: { ...storeSync, attempting: false } }).state === "idle") {
         const key = autoSyncKey(tcw, id, localNote.editedAt);
         attempting = !autoSync.settled.has(key);
         if (attempting) wantsSync.push({ tcw, id, key });
@@ -773,18 +786,18 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
       // A saved note whose on-device transcript is done, with none in the space and no write of it in this session, gets one
       // attempt (`useAutoTranscriptSync`); until it settles the transcript step is "adding", never a blocker.
       const onDevice = input.transcript.onDevice;
-      if (tcw !== null && isAccountWorkAllowed(tcw) && !spaceReading && input.space.saved && input.transcript.inSpace === null && input.transcript.readError == null && onDevice !== null && onDevice.sync === null && onDevice.stt?.state === "done") {
+      if (tcw !== null && nativeRecording !== undefined && rowExists && (!audioSaved || !spaceReading) && isAccountWorkAllowed(tcw) && input.transcript.inSpace === null && input.transcript.readError == null && onDevice !== null && onDevice.sync === null && onDevice.stt?.state === "done") {
         const key = autoTranscriptKey(tcw, id, "add");
         if (!autoSync.settled.has(key)) {
-          wantsTranscriptSync.push({ tcw, id, key, kind: "add" });
+          wantsTranscriptSync.push({ tcw, id, key, kind: "add", recording: nativeRecording, context: captureAccountContext(tcw) });
           input = buildNotePipelineInput({ ...facts, transcriptSync: { state: "syncing" }, noteSync: { ...storeSync, attempting } });
         }
-      } else if (tcw !== null && isAccountWorkAllowed(tcw) && !spaceReading && input.space.saved && input.transcript.inSpace !== null && onDevice !== null && onDevice.sync === null && onDevice.stt?.state === "done" && native?.transcriptSync != null && native.transcriptSync.state !== "saved") {
+      } else if (tcw !== null && nativeRecording !== undefined && rowExists && isAccountWorkAllowed(tcw) && input.transcript.inSpace !== null && onDevice !== null && onDevice.sync === null && onDevice.stt?.state === "done" && native?.transcriptSync != null && native.transcriptSync.state !== "saved") {
         // The space has it, the phone's ledger does not know: one repair of the ledger. Its failure is published and shown (`unrecorded`).
         const key = autoTranscriptKey(tcw, id, "record");
-        if (!autoSync.settled.has(key)) wantsTranscriptSync.push({ tcw, id, key, kind: "record" });
+        if (!autoSync.settled.has(key)) wantsTranscriptSync.push({ tcw, id, key, kind: "record", recording: nativeRecording, context: captureAccountContext(tcw) });
       }
-      out.set(id, { input, pipeline: notePipeline(input) });
+      out.set(id, { input, pipeline: notePipeline(input), native });
     }
     return { states: out, autoSyncs: wantsSync, autoTranscriptSyncs: wantsTranscriptSync };
     // The store versions say the per-key getters read above have new answers.
@@ -847,6 +860,7 @@ function useNotePipelinesWithLedger(entries: readonly { id: string; source: Note
       tcw: source.tcw,
       pipeline: state.pipeline,
       input: state.input,
+      native: state.native,
       transcription: rec.transcription,
       latestTranscription: () => latest.current.recorder.transcription,
       saveNow: rec.retryPending,

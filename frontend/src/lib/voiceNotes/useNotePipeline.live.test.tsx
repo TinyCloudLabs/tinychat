@@ -65,6 +65,14 @@ const recording = (id: string, transcriber: TranscriberId, sttState: NoteSttStat
     id, startedAt: 0, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
     options: { transcriber, identifySpeakers: false }, ...(sttState === null ? {} : { stt: sttState }),
   }) as VoiceNoteRecording;
+const withSpaceRow = (note: VoiceNoteRecording, owner: string, audioState: "pending" | "saved" = "pending"): VoiceNoteRecording => ({
+  ...note, owner, rev: 4,
+  ledger: {
+    audio: { state: audioState, rowId: `vn-${note.id}`, at: null },
+    transcript: { state: note.stt?.state === "done" ? "done" : "pending", outcome: null, reason: null, attempts: 0, nextAttemptAt: null },
+    transcriptSync: { state: "pending", rev: 0, at: null }, landed: { state: "none", eventId: null }, remote: [],
+  },
+});
 
 const phone = {
   recordings: [] as VoiceNoteRecording[],
@@ -124,8 +132,8 @@ const ID = "note-a";
 const OTHER = "note-b";
 const SYNC_ID = "note-with-unsynced-text";
 const SPACE = { spaceId: "space-1", did: "did:test:1" } as unknown as TinyCloudWeb;
-const SIGNED_OUT: NotePipelineSource = { tcw: null, saved: true, metadata: null };
-const IN_SPACE: NotePipelineSource = { tcw: SPACE, saved: true, metadata: {} };
+const SIGNED_OUT: NotePipelineSource = { tcw: null, rowExists: true, audioSaved: true, metadata: null };
+const IN_SPACE: NotePipelineSource = { tcw: SPACE, rowExists: true, audioSaved: true, metadata: {} };
 
 let root: Root | null = null;
 let errors: ReturnType<typeof spyOn>;
@@ -319,7 +327,7 @@ describe("a parked recording", () => {
   test("reads as Couldn't recover with its audio kept, on the sheet and receipt (no home provider)", async () => {
     phone.recordings = [recording(ID, "off")];
     phone.quarantine = [{ id: ID, reason: "recovery_failed", sizeBytes: 10 }];
-    const { seen } = await mountOne({ tcw: null, saved: false });
+    const { seen } = await mountOne({ tcw: null, rowExists: false, audioSaved: false });
     const pipeline = seen.view!.pipeline;
     expect(stepOf(pipeline, "phone").state).toBe("failed");
     expect(pipeline.blocker?.cause).toBe("Couldn't recover · audio kept");
@@ -380,7 +388,7 @@ describe("the list hook", () => {
   test("a caller that passes no row metadata is not read as null: the hook reads the row itself, and a failed read is shown", async () => {
     phone.recordings = [recording(ID, "off")];
     const seen: NotePipelineView[] = [];
-    const source: NotePipelineSource = { tcw: SPACE, saved: true };
+    const source: NotePipelineSource = { tcw: SPACE, rowExists: true, audioSaved: true };
     function Probe() { const view = useNotePipeline(ID, source); if (view) seen.push(view); return null; }
     root = createRoot(container);
     await act(async () => root!.render(<StaticRecorderProvider value={recorder()}><Probe /></StaticRecorderProvider>));
@@ -438,7 +446,7 @@ describe("a failed read that other evidence outranks is still shown", () => {
 
   test("a phone ledger that will not open while the row already holds the transcript: the transcript stays done, the failure shows", async () => {
     phone.listError = new Error("ledger unreadable");
-    const withTranscript: NotePipelineSource = { tcw: SPACE, saved: true, metadata: { transcription_outcome: "transcribed" } };
+    const withTranscript: NotePipelineSource = { tcw: SPACE, rowExists: true, audioSaved: true, metadata: { transcription_outcome: "transcribed" } };
     const { seen } = await mountOne(withTranscript);
     const pipeline = seen.view!.pipeline;
     expect(pipeline.done).toBe(false);
@@ -492,8 +500,8 @@ describe("the space row is evidence for one account and space only", () => {
     phone.recordings = [recording(ID, "on-device", stt("queued"))];
     const a = fakeSpace("did:a", () => ({ transcription_outcome: "transcribed" }));
     const b = fakeSpace("did:b", () => ({}));
-    const sourceA: NotePipelineSource = { tcw: a.tcw, saved: true };
-    const sourceB: NotePipelineSource = { tcw: b.tcw, saved: true };
+    const sourceA: NotePipelineSource = { tcw: a.tcw, rowExists: true, audioSaved: true };
+    const sourceB: NotePipelineSource = { tcw: b.tcw, rowExists: true, audioSaved: true };
     const seen: { view: NotePipelineView | null } = { view: null };
     let afterSwitch: (string | null)[] | null = null;
     function Probe(props: { source: NotePipelineSource }) {
@@ -524,8 +532,8 @@ describe("the space row is evidence for one account and space only", () => {
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const a = fakeSpace("did:a", () => ({ transcription_outcome: "transcribed" }), gate);
     const b = fakeSpace("did:b", () => ({}));
-    const sourceA: NotePipelineSource = { tcw: a.tcw, saved: true };
-    const sourceB: NotePipelineSource = { tcw: b.tcw, saved: true };
+    const sourceA: NotePipelineSource = { tcw: a.tcw, rowExists: true, audioSaved: true };
+    const sourceB: NotePipelineSource = { tcw: b.tcw, rowExists: true, audioSaved: true };
     const seen: { view: NotePipelineView | null } = { view: null };
     function Probe(props: { source: NotePipelineSource }) { seen.view = useNotePipeline(ID, props.source); return null; }
     root = createRoot(container);
@@ -549,7 +557,7 @@ describe("a list of 100 notes without row metadata", () => {
   test("reads every row in one query, and a note's own native transition reads only that note again", async () => {
     phone.recordings = IDS.map((id) => recording(id, "on-device", stt("queued")));
     const space = fakeSpace("did:list", () => ({}));
-    const entries = IDS.map((id) => ({ id, source: { tcw: space.tcw, saved: true } as NotePipelineSource }));
+    const entries = IDS.map((id) => ({ id, source: { tcw: space.tcw, rowExists: true, audioSaved: true } as NotePipelineSource }));
     let views: ReadonlyMap<string, NotePipelineView> = new Map();
     function Probe() { views = useNotePipelines(entries); return null; }
     root = createRoot(container);
@@ -573,7 +581,7 @@ describe("a list of 100 notes without row metadata", () => {
     phone.recordings = IDS.map((id) => recording(id, "off"));
     const a = fakeSpace("did:a", () => ({}));
     const b = fakeSpace("did:b", () => ({}));
-    const entriesFor = (tcw: TinyCloudWeb) => IDS.map((id) => ({ id, source: { tcw, saved: true } as NotePipelineSource }));
+    const entriesFor = (tcw: TinyCloudWeb) => IDS.map((id) => ({ id, source: { tcw, rowExists: true, audioSaved: true } as NotePipelineSource }));
     const entriesA = entriesFor(a.tcw);
     const entriesB = entriesFor(b.tcw);
     let views: ReadonlyMap<string, NotePipelineView> = new Map();
@@ -596,8 +604,8 @@ describe("a saved Local note whose transcript is done on the phone but not in th
 
   test("the hook starts the one first attempt; its failure is a blocker with the cause and Try again, never an endless Adding", async () => {
     const space = fakeSpace("did:p6-item1", rowWithoutTranscript);
-    phone.recordings = [{ ...recording(ID, "on-device", stt("done")), owner: space.tcw.did } as VoiceNoteRecording];
-    const source: NotePipelineSource = { tcw: space.tcw, saved: true };
+    phone.recordings = [withSpaceRow(recording(ID, "on-device", stt("done")), space.tcw.did)];
+    const source: NotePipelineSource = { tcw: space.tcw, rowExists: true, audioSaved: true };
     const history: NotePipeline[] = [];
     function Probe() { const view = useNotePipeline(ID, source); if (view) history.push(view.pipeline); return null; }
     root = createRoot(container);
@@ -616,8 +624,8 @@ describe("a saved Local note whose transcript is done on the phone but not in th
 
   test("a rerender does not start a second attempt; Try again runs one more", async () => {
     const space = fakeSpace("did:p6-item1b", rowWithoutTranscript);
-    phone.recordings = [{ ...recording(ID, "on-device", stt("done")), owner: space.tcw.did } as VoiceNoteRecording];
-    const { seen } = await mountOne({ tcw: space.tcw, saved: true });
+    phone.recordings = [withSpaceRow(recording(ID, "on-device", stt("done")), space.tcw.did)];
+    const { seen } = await mountOne({ tcw: space.tcw, rowExists: true, audioSaved: true });
     await settleUntil(() => seen.view !== null && stepOf(seen.view.pipeline, "transcript").state === "failed");
     await settle();
     expect(phone.transcriptReads).toEqual([ID]);
@@ -629,7 +637,7 @@ describe("a saved Local note whose transcript is done on the phone but not in th
   test("a note whose row already has the transcript is not synced again", async () => {
     const space = fakeSpace("did:p6-item1c", () => ({ transcription_outcome: "transcribed" }));
     phone.recordings = [{ ...recording(ID, "on-device", stt("done")), owner: space.tcw.did } as VoiceNoteRecording];
-    const { seen } = await mountOne({ tcw: space.tcw, saved: true });
+    const { seen } = await mountOne({ tcw: space.tcw, rowExists: true, audioSaved: true });
     await settleUntil(() => seen.view !== null && stepOf(seen.view.pipeline, "transcript").state === "done");
     expect(stepOf(seen.view!.pipeline, "transcript").state).toBe("done");
     expect(phone.transcriptReads).toEqual([]);
@@ -639,10 +647,10 @@ describe("a saved Local note whose transcript is done on the phone but not in th
     const space = fakeSpace("did:p6-resume-sync", () => null);
     const pipeline = createVoiceNotePipeline(space.tcw);
     phone.recordings = [{
-      ...recording(ID, "on-device", stt("done")), owner: space.tcw.did, rev: 4,
-      ledger: { audio: { state: "saved" }, transcript: { state: "done", outcome: "transcribed", attempts: 1 },
-        transcriptSync: { state: "pending" } },
-    } as VoiceNoteRecording];
+      ...withSpaceRow(recording(ID, "on-device", stt("done")), space.tcw.did, "saved"),
+      ledger: { ...withSpaceRow(recording(ID, "on-device", stt("done")), space.tcw.did, "saved").ledger!,
+        transcript: { state: "done", outcome: "transcribed", reason: null, attempts: 1, nextAttemptAt: null } },
+    }];
     phone.transcript = { version: 1, noteId: ID, transcriber: "on-device", rev: 1, engine: "parakeet-tdt-0.6b-v3",
       model: null, language: "en", outcome: "transcribed", diarized: false,
       segments: [{ start: 0, end: 1000, text: "hello", speaker: null }], createdAt: "2026-10-12T00:00:00Z" } as LocalTranscript;
@@ -651,7 +659,7 @@ describe("a saved Local note whose transcript is done on the phone but not in th
       ? new Promise((resolve) => { finishFirstRead = resolve; })
       : Promise.resolve({ transcript: phone.transcript });
     try {
-      const { seen } = await mountOne({ tcw: space.tcw, saved: true });
+      const { seen } = await mountOne({ tcw: space.tcw, rowExists: true, audioSaved: true });
       await waitFor(() => phone.transcriptReads.length === 1);
       pipeline.cancelAll();
       finishFirstRead({ transcript: phone.transcript });
@@ -670,13 +678,27 @@ describe("a saved Local note whose transcript is done on the phone but not in th
   });
 });
 
+describe("row existence and committed audio are independent pipeline inputs", () => {
+  test("reads a space transcript from the row while its audio manifest is still queued", async () => {
+    const space = fakeSpace("did:row-audio-independent", () => ({ transcription_outcome: "transcribed" }));
+    phone.recordings = [withSpaceRow(recording(ID, "on-device", stt("queued")), space.tcw.did)];
+    const { seen } = await mountOne({ tcw: space.tcw, rowExists: false });
+    await settleUntil(() => space.log.rowQueries.length > 0 && stepOf(seen.view!.pipeline, "transcript").state === "done");
+    expect(space.log.rowQueries).toEqual([[ID]]);
+    expect(stepOf(seen.view!.pipeline, "space").state).not.toBe("done");
+    expect(stepOf(seen.view!.pipeline, "transcript").state).toBe("done");
+    expect(seen.view!.pipeline.done).toBe(false);
+    expect(phone.transcriptReads).toEqual([]);
+  });
+});
+
 describe("a saved note's pipeline does not wait for its space row (P6 sim pass, items 2 and 5)", () => {
   test("while the row's read is queued behind uploads, the pipeline is already up and says it is checking; no attempt is made on a guess", async () => {
     phone.recordings = [recording(ID, "on-device", stt("done"))];
     let release: () => void = () => {};
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const space = fakeSpace("did:p6-item2", () => ({ transcription_outcome: "transcribed" }), gate);
-    const { seen } = await mountOne({ tcw: space.tcw, saved: true });
+    const { seen } = await mountOne({ tcw: space.tcw, rowExists: true, audioSaved: true });
     expect(seen.view).not.toBeNull();
     const waiting = stepOf(seen.view!.pipeline, "transcript");
     expect([waiting.state, waiting.caption]).toEqual(["waiting", "Checking your space…"]);
@@ -691,7 +713,7 @@ describe("a saved note's pipeline does not wait for its space row (P6 sim pass, 
   test("a note that is not in the space has no row to read", async () => {
     phone.recordings = [recording(ID, "on-device", stt("queued"))];
     const space = fakeSpace("did:p6-item2b", () => ({}));
-    const { seen } = await mountOne({ tcw: space.tcw, saved: false });
+    const { seen } = await mountOne({ tcw: space.tcw, rowExists: false, audioSaved: false });
     await settle();
     expect(seen.view).not.toBeNull();
     expect(space.log.rowQueries).toEqual([]);
@@ -706,7 +728,7 @@ describe("the space read is bounded (P6 r1 blocker 1, r2)", () => {
     phone.recordings = [recording(ID, "on-device", stt("done"))];
     const space = fakeSpace("did:p6-r1-stall", () => ({}), null, true);
     setVoiceNoteSaveDeadlineForTests(DEADLINE_MS);
-    const { seen } = await mountOne({ tcw: space.tcw, saved: true });
+    const { seen } = await mountOne({ tcw: space.tcw, rowExists: true, audioSaved: true });
     // The first render is the waiting state, whatever the clock does after it.
     expect(seen.history[0]).toBe("waiting:Checking your space…");
     // The stalled read times out, is read once more on its own (the lane is idle), and times out again: now it stays failed.
@@ -731,7 +753,7 @@ describe("the space read is bounded (P6 r1 blocker 1, r2)", () => {
     phone.recordings = [recording(ID, "on-device", stt("done"))];
     const space = fakeSpace("did:p6-r2-auto", () => ({ transcription_outcome: "transcribed" }), null, 1);
     setVoiceNoteSaveDeadlineForTests(DEADLINE_MS);
-    const { seen } = await mountOne({ tcw: space.tcw, saved: true });
+    const { seen } = await mountOne({ tcw: space.tcw, rowExists: true, audioSaved: true });
     expect(seen.history[0]).toBe("waiting:Checking your space…");
     await waitFor(() => stepOf(seen.view!.pipeline, "transcript").state === "done");
     expect(stepOf(seen.view!.pipeline, "transcript").state).toBe("done");
@@ -765,7 +787,7 @@ describe("a read queued behind uploads is not a failed read (P6 r2)", () => {
     // The read's own deadline is far shorter than this wait: it must not be running while the read is queued.
     setVoiceNoteSaveDeadlineForTests(150);
     const { upload } = await beginUpload();
-    const { seen } = await mountOne({ tcw: space.tcw, saved: true });
+    const { seen } = await mountOne({ tcw: space.tcw, rowExists: true, audioSaved: true });
     expect(spaceLaneSnapshot().busy).toBe(true);
     expect(seen.history[0]).toBe("waiting:Checking your space · after uploads");
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 600)); });
@@ -779,12 +801,31 @@ describe("a read queued behind uploads is not a failed read (P6 r2)", () => {
     expect(phone.transcriptReads).toEqual([]);
   });
 
+  test("a Local transcript write starts from the row ID while audio is queued", async () => {
+    const local = {
+      version: 1, noteId: ID, transcriber: "on-device", rev: 1, engine: "parakeet-tdt-0.6b-v3", model: null, language: "en",
+      outcome: "transcribed", diarized: false, segments: [{ start: 0, end: 1000, text: "hello", speaker: "You" }], createdAt: "2026-10-11T00:00:00Z",
+    } as unknown as LocalTranscript;
+    phone.recordings = [withSpaceRow(recording(ID, "on-device", stt("done")), "did:p6-r2-transcript-first", "pending"), recording(OTHER, "on-device", stt("queued"))];
+    phone.transcript = local;
+    const space = fakeSpace("did:p6-r2-transcript-first", () => ({ transcription_outcome: "transcribed" }));
+    const { upload } = await beginUpload();
+    const { seen } = await mountOne({ tcw: space.tcw, rowExists: false });
+    await settleUntil(() => phone.transcriptReads.length > 0);
+    expect(phone.transcriptReads).toEqual([ID]);
+    expect(stepOf(seen.view!.pipeline, "space").state).not.toBe("done");
+    expect(seen.view!.pipeline.done).toBe(false);
+    await act(async () => { finishUpload(); await upload; });
+    await settleUntil(() => stepOf(seen.view!.pipeline, "transcript").state === "done");
+    expect(stepOf(seen.view!.pipeline, "transcript").state).toBe("done");
+  });
+
   test("a wait that outlasts the lane's own limit says so, and the read is made again once the uploads are done", async () => {
     phone.recordings = [recording(ID, "on-device", stt("done")), recording(OTHER, "on-device", stt("queued"))];
     const space = fakeSpace("did:p6-r2-queue-limit", () => ({ transcription_outcome: "transcribed" }));
     setSpaceLaneQueueWaitForTests(40);
     const { upload } = await beginUpload();
-    const { seen } = await mountOne({ tcw: space.tcw, saved: true });
+    const { seen } = await mountOne({ tcw: space.tcw, rowExists: true, audioSaved: true });
     await waitFor(() => stepOf(seen.view!.pipeline, "transcript").state === "failed");
     const step = stepOf(seen.view!.pipeline, "transcript");
     expect(step.blocker?.cause).toBe("Couldn't check this note's transcript · Your space's copy of this note wouldn't open: Saving is waiting for another sync to finish. Try again shortly.");
@@ -818,7 +859,7 @@ describe("a transcript in the space that the phone's ledger never recorded (P6 r
     phone.transcript = LOCAL;
     phone.ledgerError = new Error("disk full");
     const space = fakeSpace("did:p6-r1-ledger-a", inSpace);
-    const { seen } = await mountOne({ tcw: space.tcw, saved: true });
+    const { seen } = await mountOne({ tcw: space.tcw, rowExists: true, audioSaved: true });
     await settleUntil(() => seen.view !== null && seen.view.pipeline.blocker !== undefined);
     const pipeline = seen.view!.pipeline;
     expect(stepOf(pipeline, "transcript").state).toBe("done");
@@ -840,7 +881,7 @@ describe("a transcript in the space that the phone's ledger never recorded (P6 r
     phone.recordings = [pendingLedger("did:p6-r1-ledger-b")];
     phone.transcript = LOCAL;
     const space = fakeSpace("did:p6-r1-ledger-b", inSpace);
-    const { seen } = await mountOne({ tcw: space.tcw, saved: true });
+    const { seen } = await mountOne({ tcw: space.tcw, rowExists: true, audioSaved: true });
     await settleUntil(() => phone.ledgerWrites.length > 0);
     await settle();
     expect(phone.ledgerWrites).toHaveLength(1);

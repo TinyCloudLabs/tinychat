@@ -304,7 +304,7 @@ describe("actions", () => {
   } as VoiceNoteTranscriptionProps);
   const envFor = (patch: Partial<NotePipelineFacts>, env: Partial<PipelineActionEnv> = {}): PipelineActionEnv => {
     const input = buildNotePipelineInput(facts(patch));
-    return { id: ID, tcw: null, pipeline: notePipeline(input), input, transcription: undefined, latestTranscription: () => env.transcription, saveNow: () => {}, signIn: null, reread: () => {}, ...env };
+    return { id: ID, tcw: null, pipeline: notePipeline(input), input, native: null, transcription: undefined, latestTranscription: () => env.transcription, saveNow: () => {}, signIn: null, reread: () => {}, ...env };
   };
   const signedOutEnv = (env: Partial<PipelineActionEnv> = {}) => envFor({
     saved: false, native: { transcriber: "off", stt: null }, pending: { id: ID, startedAt: 0, durationMs: 1, held: "signed-out" },

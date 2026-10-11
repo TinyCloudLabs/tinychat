@@ -69,6 +69,11 @@ export const SPACE_COPY = {
   unknown: (message: string | null | undefined) => (hasText(message) ? message.trim() : "Saving failed with no details"),
 };
 
+export const TRANSCRIPT_COPY = {
+  savedInSpace: "Saved in your space",
+  noSpeechInSpace: "No speech found in your space",
+};
+
 export const LOCAL_COPY = {
   readyOnDevice: (device: PipelineDevice) => `Ready on ${deviceName(device)}`,
   waitingForModel: (fraction: number | null) =>

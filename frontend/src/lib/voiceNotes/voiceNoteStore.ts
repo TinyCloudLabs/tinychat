@@ -231,6 +231,7 @@ export interface StoreAudioOptions {
   schedule?: <T>(call: (signal?: AbortSignal) => Promise<T>, operation?: string, timeoutMs?: number,
     payloadBytes?: number) => Promise<T>;
   checkpoint?: () => void;
+  onRowCreated?: (rowId: string) => Promise<void>;
 }
 
 /** Storage error codes the voice notes UI tells apart. */
@@ -378,6 +379,8 @@ export async function saveVoiceNote(
     if (before.status !== "established") return { ok: false, error: { code: before.status, message: before.reason ?? before.status } };
     opts.checkpoint?.();
     const row = await createVoiceNoteRow(tcw, recording, voiceNoteTitle(recording.startedAt), opts.checkpoint);
+    opts.checkpoint?.();
+    await opts.onRowCreated?.(row.id);
     opts.checkpoint?.();
     // A timed-out KV request may still finish remotely. The indexed row uses a
     // deterministic id with ON CONFLICT DO NOTHING; parts use deterministic

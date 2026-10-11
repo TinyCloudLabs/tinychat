@@ -24,7 +24,7 @@ let seq = 0;
 let currentDid = "";
 const account = () => ({ did: (currentDid = `did:test:${++seq}`), spaceId: "space" }) as unknown as TinyCloudWeb;
 // The phone's ledger for rec-1 as the fake sidecar keeps it; updateLedger merges per top-level key under the rev check.
-type FakeLedger = { transcript: Record<string, unknown>; transcriptSync: { state: string; rev?: number; at?: number } };
+type FakeLedger = { audio?: { state: string; rowId?: string | null }; transcript: Record<string, unknown>; transcriptSync: { state: string; rev?: number; at?: number } };
 let phone: { rev: number; ledger: FakeLedger };
 let pendingOwner: string | null | undefined;
 let ledgerWrites: { rev: number; patch: Record<string, unknown> }[];
@@ -37,7 +37,7 @@ beforeEach(() => {
   save = async () => ({ ok: true, data: {} });
   pendingOwner = undefined;
   getTranscript = async () => ({ transcript });
-  phone = { rev: 4, ledger: { transcript: { state: "done", outcome: "transcribed", attempts: 1 }, transcriptSync: { state: "pending" } } };
+  phone = { rev: 4, ledger: { audio: { state: "pending", rowId: "vn-rec-1" }, transcript: { state: "done", outcome: "transcribed", attempts: 1 }, transcriptSync: { state: "pending" } } };
   ledgerWrites = [];
   updateLedger = async ({ rev, patch }) => {
     ledgerWrites.push({ rev, patch });
@@ -58,6 +58,42 @@ afterEach(() => {
 });
 
 describe("syncOnDeviceTranscript publishes the result", () => {
+  test("writes as soon as the row exists, while its audio manifest is still pending", async () => {
+    const tcw = account();
+    save = async () => ({ ok: true, data: {} });
+    const result = await syncOnDeviceTranscript(tcw, {
+      id: "rec-1", owner: tcw.did, ledger: { audio: { state: "pending", rowId: "vn-rec-1" } }, stt: { state: "done" },
+    });
+    expect(result).toBe(false);
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "synced" });
+    expect(ledgerWrites[0]?.patch).toHaveProperty("transcriptSync.state", "saved");
+    expect(phone.ledger.audio).toEqual({ state: "pending", rowId: "vn-rec-1" });
+  });
+
+  test("audio-first and transcript-first completion retain both ledger results", async () => {
+    for (const audioFirst of [false, true]) {
+      const tcw = account();
+      phone.ledger.audio = { state: "pending", rowId: "vn-rec-1" };
+      let finishWrite!: (result: SaveResult) => void;
+      let writeStarted!: () => void;
+      const started = new Promise<void>((resolve) => { writeStarted = resolve; });
+      save = async () => { writeStarted(); return new Promise((resolve) => { finishWrite = resolve; }); };
+      const sync = syncOnDeviceTranscript(tcw, {
+        id: "rec-1", owner: tcw.did, ledger: { audio: { state: "pending", rowId: "vn-rec-1" } }, stt: { state: "done" },
+      });
+      await started;
+      if (audioFirst) phone.ledger.audio = { state: "saved", rowId: "vn-rec-1" };
+      finishWrite({ ok: true, data: {} });
+      await sync;
+      expect(phone.ledger.transcriptSync.state).toBe("saved");
+      if (!audioFirst) {
+        phone.ledger.audio = { state: "saved", rowId: "vn-rec-1" };
+        expect(phone.ledger.transcriptSync.state).toBe("saved");
+      }
+      expect(phone.ledger.audio).toEqual({ state: "saved", rowId: "vn-rec-1" });
+    }
+  });
+
   test("r4 review: a stalled native read times out so a queued retry can run", async () => {
     const tcw = account();
     let release!: (result: { transcript: LocalTranscript | null }) => void;
