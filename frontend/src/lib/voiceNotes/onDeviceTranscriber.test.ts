@@ -101,7 +101,7 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     expect(ledgerWrites).toHaveLength(0);
   });
 
-  test("a space write queued before handoff checks its account generation when the lane starts it", async () => {
+  test("a stale queued space write clears syncing and a fresh same-account request retries", async () => {
     resetSpaceLaneForTests();
     const tcw = account();
     let releaseLane!: () => void;
@@ -125,12 +125,17 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     try {
       await queued;
       advanceAccountGeneration();
-      currentDid = "did:test:account-B";
       releaseLane();
       await occupying;
-      await sync;
+      expect(await sync).toBe(true);
       expect(writes).toBe(0);
       expect(ledgerWrites).toHaveLength(0);
+      expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toBeNull();
+
+      expect(await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did })).toBe(false);
+      expect(writes).toBe(1);
+      expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "synced" });
+      expect(ledgerWrites).toHaveLength(1);
     } finally {
       releaseLane();
     }
@@ -147,6 +152,20 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     expect(reads).toBe(0);
     expect(writes).toBe(0);
     expect(ledgerWrites).toHaveLength(0);
+  });
+
+  test("a note missing from the phone is quiet unless its ledger says transcription finished", async () => {
+    const tcw = account();
+    __setVoiceNotesForTests({
+      listPending: async () => ({ recordings: [] }),
+      getTranscript: async () => ({ transcript: null }),
+    } as unknown as VoiceNotesPlugin, { available: true });
+
+    await syncOnDeviceTranscript(tcw, { ...SAVED, stt: { state: "queued" } });
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toBeNull();
+
+    await syncOnDeviceTranscript(tcw, { ...SAVED, stt: { state: "done" } });
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "this phone says it finished transcribing but has no transcript for the note" });
   });
 
   test("attempts for one note run one after another: the second does not read or write until the first settles", async () => {

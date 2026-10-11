@@ -609,9 +609,16 @@ function useAutoTranscriptSync(candidates: readonly { tcw: TinyCloudWeb; id: str
     for (const { tcw, id, key, kind } of candidates) {
       if (autoSync.started.has(key)) continue;
       autoSync.started.add(key);
-      (kind === "add" ? syncOnDeviceTranscript(tcw, { id, ledger: { audio: { state: "saved" } }, stt: { state: "done" } }) : recordOnDeviceTranscript(tcw, id))
-        .finally(() => {
-          autoSync.settled.add(key);
+      const attempt = kind === "add"
+        ? syncOnDeviceTranscript(tcw, { id, ledger: { audio: { state: "saved" } }, stt: { state: "done" } })
+        : recordOnDeviceTranscript(tcw, id);
+      void attempt.then((abandoned) => {
+        if (abandoned) autoSync.started.delete(key);
+        else autoSync.settled.add(key);
+      }, (caught: unknown) => {
+        console.error("[NotePipeline] Syncing the on-device transcript failed", id, caught);
+        autoSync.settled.add(key);
+      }).finally(() => {
           for (const listener of [...autoSync.listeners]) listener();
         });
     }
