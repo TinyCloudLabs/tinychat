@@ -19,10 +19,9 @@ import { captureCapabilities, captureEngineAvailable } from "@/lib/voiceNotes/ca
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
-import type { VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { isTinyCloudNetworkFailure, logVoiceNoteError, messageOf, pendingStore, whenVoiceNoteSavesIdle, type PendingRun } from "@/lib/voiceNotes/recorderSaves";
+import { isTinyCloudNetworkFailure, logVoiceNoteError, messageOf, pendingStore, whenVoiceNoteSavesIdle } from "@/lib/voiceNotes/recorderSaves";
 import { advanceAccountGeneration, currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
-import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
+import { saveDeferredForAccountTransition, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { transcribeSavedNote, voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
 
 let recovery: (() => Promise<void>) | null = null;
@@ -58,24 +57,11 @@ function installOnDeviceTranscriptSync(tcw: TinyCloudWeb): () => void {
   };
 }
 
-/**
- * Save what is on the phone, and hand each saved note to transcription. The availability check
- * runs alongside the save, so a note is offered to private cloud only once the account's
- * answer is in (`noteSaved` ignores it otherwise, as for the card).
- */
-export async function savePendingVoiceNotes(deps: {
-  save: () => Promise<PendingRun>;
-  transcriber: Pick<VoiceNoteTranscriber, "check" | "noteSaved"> | null;
-}): Promise<PendingRun> {
-  const [run] = await Promise.all([deps.save(), deps.transcriber?.check()]);
-  // noteSaved uses each committed sidecar's options, including Off; legacy notes have none.
-  for (const recording of run.saved) deps.transcriber?.noteSaved(recording);
-  return run;
-}
-
 export function PendingVoiceNotesSaver({
   tcw,
   pipeline,
+  backendUrl,
+  sessionStore,
 }: {
   tcw: TinyCloudWeb;
   pipeline: VoiceNotePipeline;
@@ -111,6 +97,7 @@ export function PendingVoiceNotesSaver({
     const transcriber = voiceNoteTranscriberFor(tcw, backendUrl, sessionStore);
     let runInFlight: Promise<void> | null = null;
     let dirty = false;
+    let disposed = false;
     const run = (): Promise<void> => {
       if (runInFlight) {
         dirty = true;
@@ -125,6 +112,7 @@ export function PendingVoiceNotesSaver({
           });
           await account.refresh(null);
         } catch (error) {
+          if (saveDeferredForAccountTransition(error)) return;
           const message = messageOf(error);
           // Network errors are already logged by messageOf through the redacting formatter.
           if (!isTinyCloudNetworkFailure(error)) logVoiceNoteError("Saving notes left on this phone failed", error);
@@ -135,7 +123,7 @@ export function PendingVoiceNotesSaver({
         do {
           dirty = false;
           await runOnce();
-        } while (dirty);
+        } while (dirty && !disposed);
       })().finally(() => { runInFlight = null; });
       return runInFlight;
     };
@@ -146,7 +134,6 @@ export function PendingVoiceNotesSaver({
     window.addEventListener("online", onOnline);
     window.addEventListener("offline", onOffline);
     let appStateHandle: { remove(): Promise<void> } | null = null;
-    let disposed = false;
     if (Capacitor.isNativePlatform()) {
       void import("@capacitor/app").then(({ App }) => App.addListener("appStateChange", ({ isActive }) => {
         if (isActive) void run();

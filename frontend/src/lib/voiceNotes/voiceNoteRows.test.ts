@@ -519,7 +519,7 @@ test("reconcile refreshes the pending count after each note save", async () => {
     const pipeline = createVoiceNotePipeline(tcw);
     const reconcile = pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
     await secondStarted;
-    expect(pendingStore.snapshot().notes?.find((note) => note.id === second.id)?.waitingBehind).toBe(1);
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === second.id)?.waitingBehind).toBe(0);
     expect(pendingStore.snapshot().lastError).toBeNull();
     expect(pendingStore.snapshot().notes?.find((note) => note.id === second.id)?.failed).toBeUndefined();
     expect(pendingStore.snapshot().listing).toEqual({ state: "ok", count: 1 });
@@ -528,6 +528,57 @@ test("reconcile refreshes the pending count after each note save", async () => {
     await reconcile;
     expect(pendingStore.snapshot().listing).toEqual({ state: "ok", count: 0 });
   } finally {
+    releaseSecond();
+    pendingStore.setAccount(null);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+test("reconcile publishes the full upload queue and decrements notes ahead as they settle", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  const recordings: Awaited<ReturnType<typeof fake.plugin.stop>>[] = [];
+  let releaseFirst!: () => void;
+  let releaseSecond!: () => void;
+  let enterFirst!: () => void;
+  let enterSecond!: () => void;
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve; });
+  const firstStarted = new Promise<void>((resolve) => { enterFirst = resolve; });
+  const secondStarted = new Promise<void>((resolve) => { enterSecond = resolve; });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    for (let index = 0; index < 3; index++) {
+      await fake.plugin.start();
+      recordings.push(await fake.plugin.stop());
+    }
+    const readAudioChunk = fake.plugin.readAudioChunk.bind(fake.plugin);
+    fake.plugin.readAudioChunk = (async (options: Parameters<typeof readAudioChunk>[0]) => {
+      if (options.id === recordings[0]!.id) { enterFirst(); await firstGate; }
+      if (options.id === recordings[1]!.id) { enterSecond(); await secondGate; }
+      return readAudioChunk(options);
+    }) as typeof fake.plugin.readAudioChunk;
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh();
+    const pipeline = createVoiceNotePipeline(tcw, { retryDelaysMs: [] });
+    const reconcile = pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
+    await firstStarted;
+    const queued = pendingStore.snapshot().notes ?? [];
+    expect(recordings.map(({ id }) => queued.find((note) => note.id === id)?.waitingBehind)).toEqual([0, 1, 2]);
+    expect(recordings.map(({ id }) => queued.find((note) => note.id === id)?.upload?.state)).toEqual([
+      "uploading", "waiting", "waiting",
+    ]);
+    releaseFirst();
+    await secondStarted;
+    const afterFirst = pendingStore.snapshot().notes ?? [];
+    expect(recordings.map(({ id }) => afterFirst.find((note) => note.id === id)?.waitingBehind)).toEqual([undefined, 0, 1]);
+    expect(afterFirst.find((note) => note.id === recordings[1]!.id)?.upload?.state).toBe("uploading");
+    releaseSecond();
+    await reconcile;
+  } finally {
+    releaseFirst();
     releaseSecond();
     pendingStore.setAccount(null);
     __setVoiceNotesForTests(original, { available: null });
@@ -843,7 +894,7 @@ test("a never-settling audio KV put reports a visible timeout and clears Saving 
     setVoiceNoteSaveDeadlineForTests(25);
     await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
     await fake.plugin.start();
-    await fake.plugin.stop();
+    const recording = await fake.plugin.stop();
     tcw.kv.put = ((_key, _value, options) => {
       putStarted();
       return new Promise((_resolve, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
@@ -855,10 +906,39 @@ test("a never-settling audio KV put reports a visible timeout and clears Saving 
     await reconcile;
     expect(pendingStore.snapshot().running).toBe(false);
     expect(pendingStore.snapshot().lastError).toContain("saving it is taking too long");
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === recording.id)?.failed?.kind).toBe("timeout");
     // The disabled={saving} condition is now false, so Save now is enabled again.
   } finally {
     setVoiceNoteSaveDeadlineForTests(null);
     __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+test("a real audio KV failure with meta.status 500 is reported as server", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  const put = tcw.kv.put.bind(tcw.kv);
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    await fake.plugin.start();
+    const recording = await fake.plugin.stop();
+    tcw.kv.put = (async (key, value, options) => key.includes("/audio/")
+      ? { ok: false, error: { code: "KV_ERROR", message: "The storage service rejected this write", meta: { status: 500 } } }
+      : put(key, value, options)) as typeof tcw.kv.put;
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh(null);
+    await createVoiceNotePipeline(tcw, { retryDelaysMs: [] }).reconcileAll({
+      did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration(),
+    });
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === recording.id)?.failed).toMatchObject({
+      kind: "server", message: expect.stringContaining("The storage service rejected this write"),
+    });
+  } finally {
+    __setVoiceNotesForTests(original, { available: null });
+    pendingStore.setAccount(null);
+    await pendingStore.refresh(null);
   }
 });
 

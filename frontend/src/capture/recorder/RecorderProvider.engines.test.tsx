@@ -14,6 +14,7 @@ import { VoiceNotes, __setVoiceNotesForTests, type VoiceNotesPlugin } from "@/li
 import { OnDeviceStt, __setOnDeviceSttForTests, type OnDeviceSttPlugin, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { PendingVoiceNotesSaver, schedulePendingVoiceNotesRecovery } from "@/chat/PendingVoiceNotesSaver";
+import { VoiceNoteSaveDeferred } from "@/lib/voiceNotes/voiceNotePipeline";
 import { CaptureEngineGate } from "./CaptureEngineGate";
 import { useOnDeviceReceipt } from "./SavedReceipt";
 import { RecorderProvider, useRecorder, type RecorderValue } from "./RecorderProvider";
@@ -243,6 +244,30 @@ test("online during an offline backoff queues one trailing reconcile", async () 
   expect(reconciles).toBe(2);
   expect(maximumActive).toBe(1);
   release();
+});
+
+test("unmount during a dirty reconcile prevents the trailing pass and deferred error", async () => {
+  const listeners = new Map<string, () => void>();
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const { pendingStore } = await import("@/lib/voiceNotes/recorderSaves");
+  let reconciles = 0;
+  const pipeline = { resume() {}, cancelAll() {}, reconcileAll: async () => {
+    reconciles++;
+    if (reconciles === 1) { entered(); await gate; throw new VoiceNoteSaveDeferred(); }
+  } };
+  await mountWith("native", ALL, undefined, "ready", { listeners, pipeline });
+  await started;
+  await act(async () => { listeners.get("online")?.(); await tick(); });
+  expect(reconciles).toBe(1);
+  await act(async () => { root!.unmount(); root = null; });
+  release();
+  await act(async () => { await tick(); await tick(); });
+  expect(reconciles).toBe(1);
+  expect(pendingStore.snapshot().accountDid).toBeNull();
+  expect(pendingStore.snapshot().lastError).toBeNull();
 });
 
 for (const kind of ["web", "tauri"] as const) {

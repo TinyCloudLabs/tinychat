@@ -2,7 +2,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { assertCurrent, StaleAccountContext, type AccountContext } from "./accountContext";
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
 import { VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
-import { errorCode, isDiscarded, pendingStore, saveNoteForAccount } from "./recorderSaves";
+import { errorCode, isDiscarded, pendingStore, saveNoteForAccount, type PendingUploadTicket } from "./recorderSaves";
 import { ensureVoiceNoteIdentity, sweepArchived } from "./voiceNoteRows";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { syncRecordingNote } from "./voiceNoteStore";
@@ -48,7 +48,10 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     assertCurrent(ctx);
     if (tcw.did !== ctx.did || tcw.spaceId !== ctx.spaceId) throw new Error("Voice-note space changed");
   };
-  const processOne = async (ctx: AccountContext, id: string, epoch: number, trackPending = false, waitingBehind = 0): Promise<VoiceNoteRecording | null> => {
+  const processOne = async (ctx: AccountContext, id: string, epoch: number, trackPending = false,
+    uploadTicket?: PendingUploadTicket): Promise<VoiceNoteRecording | null> => {
+    if (uploadTicket && !uploadTicket.owns) return null;
+    try {
     const check = checkFor(ctx, epoch);
     check();
     const gate = await ensureVoiceNoteIdentity(tcw, check);
@@ -68,7 +71,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     try {
       const result = await saveNoteForAccount(tcw, ctx, note, check, {
         ...testOptions,
-        waitingBehind,
+        uploadTicket,
       });
       if (result.kind === "failed") {
         check();
@@ -80,13 +83,15 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
       if (result.kind === "held") pendingStore.setHeld(id, result.reason);
       return result.kind === "saved" ? note : null;
     } finally { finish(); }
+    } finally { if (uploadTicket) pendingStore.settleUploadQueue(uploadTicket); }
   };
   return {
     process(ctx, id, trigger = "stop") {
       if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());
       const epoch = cancellation;
+      const uploadTicket = pendingStore.enqueueUpload(id);
       logSaveStart(id, trigger);
-      return run(async () => { await processOne(ctx, id, epoch); });
+      return run(async () => { await processOne(ctx, id, epoch, false, uploadTicket); });
     },
     reconcileAll(ctx, trigger = "reconcile", onSaved) {
       if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());
@@ -116,14 +121,15 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
         let discardError: unknown;
         const saveQueue = notes.filter((note) => note.owner === ctx.did && !note.ownerUnknown &&
           note.ledger?.audio.state !== "saved" && !isDiscarded(note.id)).sort((a, b) => a.startedAt - b.startedAt);
-        const waitingBehind = new Map(saveQueue.map((note, index) => [note.id, index]));
+        const uploadTickets = new Map(saveQueue.map((note) => [note.id, pendingStore.enqueueUpload(note)]));
+        try {
         for (const note of [...notes].sort((a, b) => a.startedAt - b.startedAt)) {
           check();
           if (note.owner === ctx.did && !note.ownerUnknown) {
             let saved: VoiceNoteRecording | null = null;
             try {
               logSaveStart(note.id, trigger);
-              saved = await processOne(ctx, note.id, epoch, true, waitingBehind.get(note.id) ?? 0);
+              saved = await processOne(ctx, note.id, epoch, true, uploadTickets.get(note.id));
             }
             catch (error) {
               check();
@@ -137,6 +143,9 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
             }
             if (saved) onSaved?.(saved);
           }
+        }
+        } finally {
+          for (const ticket of uploadTickets.values()) pendingStore.settleUploadQueue(ticket);
         }
         // Pending audio uploads went first. This untracked catch-up pass restores
         // reconcile's Markdown retry without making saved audio look like an upload.

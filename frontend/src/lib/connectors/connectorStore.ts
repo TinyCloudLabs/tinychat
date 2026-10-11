@@ -68,6 +68,7 @@ export function meetingKvKey(source: string, sourceId: string): string {
 export interface StoreError {
   code: string;
   message: string;
+  cause?: unknown;
 }
 
 export type StoreResult<T> =

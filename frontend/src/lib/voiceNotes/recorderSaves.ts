@@ -360,7 +360,8 @@ export async function saveRecording(
 /** The one owner-aware upload entry point used by the T18 pipeline. */
 export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
   recording: VoiceNoteRecording, checkpoint: () => void = () => undefined,
-  audioOptions: Pick<StoreAudioOptions, "retryDelaysMs" | "onProgress" | "onRetry" | "onUploadStart"> & { waitingBehind?: number } = {}): Promise<SaveOutcome> {
+  audioOptions: Pick<StoreAudioOptions, "retryDelaysMs" | "onProgress" | "onRetry" | "onUploadStart"> &
+    { uploadTicket?: PendingUploadTicket } = {}): Promise<SaveOutcome> {
   const check = () => { assertCurrent(ctx); checkpoint(); };
   const checkActive = () => { check(); if (isDiscarded(recording.id)) throw new Error("Recording was discarded"); };
   check();
@@ -370,10 +371,16 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
   if (!recording.owner) return { kind: "held", reason: "unowned" };
   if (recording.owner !== ctx.did) return { kind: "held", reason: "other-account" };
   if (recording.ledger?.audio.state === "saved") return { kind: "already-saved", cleanupError: null };
+  if (audioOptions.uploadTicket && !audioOptions.uploadTicket.owns) return { kind: "in-flight" };
   if (savesInFlight.has(recording.id)) return { kind: "in-flight" };
   savesInFlight.add(recording.id);
-  const uploadOwner = Symbol(recording.id);
-  pendingStore.beginUpload(recording, uploadOwner, audioOptions.waitingBehind ?? 0);
+  const ticket = audioOptions.uploadTicket ?? pendingStore.enqueueUpload(recording);
+  if (!ticket.owns) {
+    savesInFlight.delete(recording.id);
+    return { kind: "in-flight" };
+  }
+  const uploadOwner = ticket.owner;
+  pendingStore.beginUpload(recording, ticket);
   try {
     const source = nativeRecordingSource(recording);
     const checkedSource: VoiceNoteAudioSource = { ...source, readPart: async (offset, length) => {
@@ -424,7 +431,7 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
       ? { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) }
       : failedOutcome(caught);
   } finally {
-    pendingStore.clearUpload(recording.id, uploadOwner);
+    if (!audioOptions.uploadTicket) pendingStore.settleUploadQueue(ticket);
     savesInFlight.delete(recording.id);
     publishSaveIdle();
   }
@@ -448,6 +455,7 @@ type NoteFailure = NonNullable<PendingNote["failed"]>;
 const noteFailures = new Map<string, NoteFailure>();
 const heldReasons = new Map<string, NonNullable<PendingNote["held"]>>();
 type UploadProgress = NonNullable<PendingNote["upload"]>;
+export interface PendingUploadTicket { id: string; owner: symbol; owns: boolean }
 const uploadStates = new Map<string, {
   owner: symbol;
   upload: UploadProgress;
@@ -468,25 +476,38 @@ function failureStatus(error: unknown): number | undefined {
     const status = (error as { status?: unknown }).status;
     if (typeof status === "number") return status;
   }
-  const match = rawErrorMessage(error).match(/\b([45]\d\d)\b/);
+  const match = rawErrorMessage(error).match(/Failed to execute query:\s*([45]\d\d)\b/i);
   return match ? Number(match[1]) : undefined;
 }
 
 export function classifyNoteFailure(error: unknown): NoteFailure["kind"] {
-  const fields = error && typeof error === "object" ? error as { failureKind?: unknown; cause?: unknown; name?: unknown } : {};
-  const cause = fields.cause && fields.cause !== error ? fields.cause : undefined;
-  const explicitKind = fields.failureKind;
-  if (explicitKind === "offline" || explicitKind === "timeout" || explicitKind === "quota" || explicitKind === "auth" || explicitKind === "server" || explicitKind === "source" || explicitKind === "other") return explicitKind;
-  const code = (errorCode(error) ?? errorCode(cause) ?? "").toUpperCase();
-  const message = rawErrorMessage(error);
-  const status = failureStatus(error) ?? failureStatus(cause);
-  if (code === "VOICE_NOTE_SOURCE_READ_FAILED" || code === "VOICE_NOTE_AUDIO_TOO_LARGE" || code === "STORE_CORRUPT_AUDIO" || code === "VOICE_NOTE_AUDIO_CORRUPT") return "source";
-  if (code === "STORAGE_QUOTA_EXCEEDED" || code === "STORAGE_LIMIT_REACHED" || /quota/i.test(code)) return "quota";
-  if (status === 401 || status === 403 || /AUTH|UNAUTHENTICATED|UNAUTHORIZED|FORBIDDEN|CAPABILITY/i.test(code)) return "auth";
-  if ((status !== undefined && status >= 500) || /SERVER_ERROR|INTERNAL_SERVER/i.test(code)) return "server";
-  if (error instanceof VoiceNoteSaveTimeout || cause instanceof VoiceNoteSaveTimeout || fields.name === "VoiceNoteSaveTimeout"
-    || code === "SPACE_LANE_QUEUE_TIMEOUT" || code === "VOICE_NOTE_OPERATION_TIMEOUT" || /timeout|timed out/i.test(code)) return "timeout";
-  if (isTinyCloudNetworkFailure(error) || code === "NETWORK_ERROR" || /offline|network|failed to fetch|load failed/i.test(message)) return "offline";
+  const chain: unknown[] = [];
+  let current = error;
+  for (let depth = 0; current !== undefined && current !== null && depth < 4 && !chain.includes(current); depth++) {
+    chain.push(current);
+    current = current && typeof current === "object" && "cause" in current
+      ? (current as { cause?: unknown }).cause : undefined;
+  }
+  const explicitKind = chain.map((item) => item && typeof item === "object"
+    ? (item as { failureKind?: unknown }).failureKind : undefined)
+    .find((kind) => kind === "offline" || kind === "timeout" || kind === "quota" || kind === "auth"
+      || kind === "server" || kind === "source" || kind === "other");
+  if (explicitKind) return explicitKind as NoteFailure["kind"];
+  const codes = chain.map((item) => errorCode(item)?.toUpperCase() ?? "");
+  const messages = chain.map(rawErrorMessage);
+  const statuses = chain.map(failureStatus);
+  if (codes.some((code) => code === "VOICE_NOTE_SOURCE_READ_FAILED" || code === "VOICE_NOTE_AUDIO_TOO_LARGE"
+    || code === "STORE_CORRUPT_AUDIO" || code === "VOICE_NOTE_AUDIO_CORRUPT")) return "source";
+  if (codes.some((code) => code === "STORAGE_QUOTA_EXCEEDED" || code === "STORAGE_LIMIT_REACHED" || /quota/i.test(code))) return "quota";
+  if (statuses.some((status) => status === 401 || status === 403)
+    || codes.some((code) => /AUTH|UNAUTHENTICATED|UNAUTHORIZED|FORBIDDEN|CAPABILITY/.test(code))) return "auth";
+  if (statuses.some((status) => status !== undefined && status >= 500)
+    || codes.some((code) => /SERVER_ERROR|INTERNAL_SERVER/.test(code))) return "server";
+  if (chain.some((item) => item instanceof VoiceNoteSaveTimeout
+    || (item && typeof item === "object" && (item as { name?: unknown }).name === "VoiceNoteSaveTimeout"))
+    || codes.some((code) => code === "SPACE_LANE_QUEUE_TIMEOUT" || code === "VOICE_NOTE_OPERATION_TIMEOUT" || /timeout|timed out/i.test(code))) return "timeout";
+  if (chain.some(isTinyCloudNetworkFailure) || codes.includes("NETWORK_ERROR")
+    || messages.some((message) => /offline|network|failed to fetch|load failed/i.test(message))) return "offline";
   return "other";
 }
 
@@ -603,6 +624,12 @@ function mergeUploadState(note: PendingNote): PendingNote {
   return state ? { ...note, upload: state.upload, waitingBehind: state.waitingBehind } : note;
 }
 
+function publishUploadQueue(): void {
+  let waitingBehind = 0;
+  for (const state of uploadStates.values()) state.waitingBehind = waitingBehind++;
+  publishPending({ uploadingId: activeUploadId(), notes: pendingSnapshot.notes?.map(mergeUploadState) });
+}
+
 function publishOwnedUpload(id: string, owner: symbol, upload: UploadProgress): void {
   const state = uploadStates.get(id);
   if (!state || state.owner !== owner) return;
@@ -682,24 +709,39 @@ export const pendingStore = {
     else heldReasons.delete(id);
     publishPending({ notes: pendingSnapshot.notes?.map((note) => note.id === id ? { ...note, held } : note) });
   },
-  beginUpload(recording: VoiceNoteRecording, owner: symbol, waitingBehind: number): void {
+  enqueueUpload(recording: VoiceNoteRecording | string): PendingUploadTicket {
+    const id = typeof recording === "string" ? recording : recording.id;
+    const existing = uploadStates.get(id);
+    if (existing) return { id, owner: existing.owner, owns: false };
+    const owner = Symbol(id);
+    heldReasons.delete(id);
+    uploadStates.set(id, { owner, upload: { state: "waiting", bytes: 0,
+      total: typeof recording === "string" ? 0 : recording.sizeBytes }, waitingBehind: 0, lastPublishedAt: 0, lastPercent: -1 });
+    publishUploadQueue();
+    return { id, owner, owns: true };
+  },
+  beginUpload(recording: VoiceNoteRecording, ticket: PendingUploadTicket): void {
+    const state = uploadStates.get(recording.id);
+    if (!ticket.owns || !state || state.owner !== ticket.owner) return;
     heldReasons.delete(recording.id);
-    uploadStates.set(recording.id, { owner, upload: { state: "waiting", bytes: 0, total: recording.sizeBytes }, waitingBehind,
-      lastPublishedAt: 0, lastPercent: -1 });
-    publishPending({ uploadingId: activeUploadId(), notes: pendingSnapshot.notes?.map((note) => note.id === recording.id ? mergeUploadState(note) : note) });
+    state.upload = { state: "waiting", bytes: 0, total: recording.sizeBytes };
+    publishUploadQueue();
   },
   publishUpload(id: string, owner: symbol, upload: UploadProgress): void {
     publishOwnedUpload(id, owner, upload);
   },
-  clearUpload(id: string, owner: symbol): void {
-    if (uploadStates.get(id)?.owner !== owner) return;
-    uploadStates.delete(id);
-    publishPending({ uploadingId: activeUploadId(),
-      notes: pendingSnapshot.notes?.map((note) => {
-        if (note.id !== id || !note.upload) return note;
+  settleUploadQueue(ticket: PendingUploadTicket): void {
+    if (!ticket.owns || uploadStates.get(ticket.id)?.owner !== ticket.owner) return;
+    uploadStates.delete(ticket.id);
+    const notes = pendingSnapshot.notes?.map((note) => {
+      if (note.id === ticket.id) {
         const { upload: _upload, waitingBehind: _waitingBehind, ...rest } = note;
         return rest;
-      }) });
+      }
+      return note;
+    });
+    publishPending({ notes });
+    publishUploadQueue();
   },
   clearNoteFailure(id: string): void {
     if (!noteFailures.delete(id)) return;
