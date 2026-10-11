@@ -92,8 +92,8 @@ export function PipelineHalo(props: { pipeline: NotePipeline; className?: string
       })}
       {needsYou && (
         <g data-halo-bang="">
-          <path d="M7 4.6 V7.6" stroke="var(--ink)" strokeWidth={1.25} strokeLinecap="round" fill="none" />
-          <circle cx={7} cy={9.4} r={0.8} fill="var(--ink)" />
+          <path d="M7 5.4 V7.2" stroke="var(--ink)" strokeWidth={1.1} strokeLinecap="round" fill="none" />
+          <circle cx={7} cy={8.6} r={0.65} fill="var(--ink)" />
         </g>
       )}
     </svg>

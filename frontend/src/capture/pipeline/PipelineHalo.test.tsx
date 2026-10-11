@@ -101,6 +101,16 @@ describe("PipelineHalo", () => {
     expect(html(signedOut())).not.toMatch(/red|amber|#[0-9a-f]{3,6}/i);
   });
 
+  test("the bang sits inside the centre, clear of the inner ends of the ticks", () => {
+    const markup = html(signedOut());
+    const stem = /<path d="M7 ([\d.]+) V([\d.]+)" stroke="var\(--ink\)" stroke-width="([\d.]+)"/.exec(markup)!;
+    const dot = /<circle cx="7" cy="([\d.]+)" r="([\d.]+)" fill="var\(--ink\)"/.exec(markup)!;
+    const top = 7 - (Number(stem[1]) - Number(stem[3]) / 2);
+    const bottom = Number(dot[1]) + Number(dot[2]) - 7;
+    const tickInnerReach = 4.6 - 1.4 / 2;
+    expect(Math.max(top, bottom)).toBeLessThanOrEqual(tickInnerReach - 1);
+  });
+
   test("the centre disc gives way to the bang", () => {
     expect(html(signedOut())).not.toContain("data-halo-disc");
     expect(html(uploading(10))).toContain("data-halo-disc");

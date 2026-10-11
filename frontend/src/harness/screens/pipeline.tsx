@@ -38,6 +38,7 @@ const CASES: [string, Partial<NotePipelineInput>][] = [
   ["Signed out and transcription failed", { route: "on-device", space: unsaved({ held: "signed-out" }), transcript: { inSpace: null, cloud: null, onDevice: onDevice({ stt: { state: "failed", error: "decoder crashed" } }) } }],
   ["Notes syncing", { route: "off", space: SAVED, notes: { state: "syncing" } }],
   ["Notes failed", { route: "off", space: SAVED, notes: { state: "failed" } }],
+  ["Saved, part of the audio lost (notice)", { route: "off", capture: { finalizing: false, issue: "partial_audio" } }],
   ["Finishing the recording", { capture: { finalizing: true, issue: null } }],
 ];
 

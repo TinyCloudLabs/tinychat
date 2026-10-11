@@ -108,8 +108,7 @@ describe("PipelineStepper", () => {
   });
 
   test("the status region updates in place when the blocker changes", async () => {
-    const dom = installDom();
-    cleanupDom = dom.cleanup;
+    cleanupDom = installDom();
     const host = document.createElement("div");
     document.body.appendChild(host);
     const root = createRoot(host);
