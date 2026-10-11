@@ -199,14 +199,18 @@ export function transcriptStepLine(pipeline: NotePipeline): string | null {
 function NoTranscript(props: { item: LibraryItem; metadata: MeetingMetadataRead; transcription: VoiceNoteTranscriptionProps | undefined }) {
   const outcome = voiceNoteTranscriptState(props.metadata.status === "ok" ? props.metadata.metadata : null).status;
   const view = useContext(NotePipelineContext);
-  const line = view === null || view.pipeline.done || outcome === "no_speech" ? null : transcriptStepLine(view.pipeline);
-  if (line !== null) {
+  const stepperShown = view !== null && !view.pipeline.done;
+  const line = !stepperShown || outcome === "no_speech" ? null : transcriptStepLine(view.pipeline);
+  // The phone is making this note's transcript and the stepper says where that stands. The private route's "Not transcribed"
+  // and Transcribe would contradict it, so they are not offered; only the pipeline's own actions are.
+  const onPhoneRoute = stepperShown && view.route === "on-device" && outcome !== "no_speech";
+  if (line !== null || onPhoneRoute) {
     // The stepper above says what is happening and offers its action; what is left here adds something it does not.
     const job = props.transcription?.jobs.get(props.item.sourceId);
-    const stepperCovers = job?.kind === "active" || job?.kind === "failed";
+    const stepperCovers = onPhoneRoute || job?.kind === "active" || job?.kind === "failed";
     return (
       <>
-        <p className="text-callout text-muted-foreground" data-testid="note-transcript-pipeline">{line}</p>
+        {line !== null && <p className="text-callout text-muted-foreground" data-testid="note-transcript-pipeline">{line}</p>}
         {!stepperCovers && VoiceNoteTranscriptionStatus({ item: props.item, outcome, transcription: props.transcription })}
         <OnDeviceNoteStatus noteId={props.item.sourceId} fallback={null} transcription={props.transcription} durationSecs={props.item.durationSecs} stepperShown />
       </>

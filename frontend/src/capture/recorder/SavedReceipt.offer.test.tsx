@@ -13,7 +13,7 @@ const noop = () => {};
 const guideWithAction = { reason: "The on-device model isn't downloaded (602 MB)", action: { label: "Get the on-device model", run: noop } };
 const waiting = { kind: "pending", state: "waiting_for_model", retry: noop } as const;
 const offer = (patch: Partial<Parameters<typeof onDeviceOffer>[0]> = {}) =>
-  onDeviceOffer({ onDevice: waiting, guide: guideWithAction, saved: true, hasNote: true, movedToPrivate: false, canUsePrivate: true, canOpen: false, ...patch });
+  onDeviceOffer({ onDevice: waiting, guide: guideWithAction, modelReady: false, saved: true, hasNote: true, movedToPrivate: false, canUsePrivate: true, canOpen: false, ...patch });
 
 describe("the needs-the-model block", () => {
   test("is static copy and two buttons, with no spinner", () => {
@@ -48,6 +48,10 @@ describe("what the receipt is offering", () => {
     expect(offer()).toEqual({ needsModel: true, usePrivate: true, actionable: true });
     expect(offer({ canUsePrivate: false })).toMatchObject({ needsModel: true, usePrivate: false, actionable: true });
     expect(offer({ guide: { reason: "Downloading…" }, canUsePrivate: false })).toMatchObject({ needsModel: true, actionable: false });
+  });
+
+  test("with the model on the phone the note's seeded waiting_for_model is not 'Needs the on-device model'", () => {
+    expect(offer({ modelReady: true })).toEqual({ needsModel: false, usePrivate: false, actionable: false });
   });
 
   test("Use Private instead needs a note that is saved", () => {

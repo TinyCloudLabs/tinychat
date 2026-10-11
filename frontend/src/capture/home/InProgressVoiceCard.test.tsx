@@ -42,11 +42,31 @@ describe("InProgressVoiceCard", () => {
       { key: "notes", label: "Notes", state: "skipped" },
     ] });
     const output = html([row("a"), row("b", waiting)]);
-    expect(output).toContain('data-testid="voice-note-summary">2 notes on this phone</b>');
+    expect(output).toContain('data-testid="voice-note-summary">2 in progress</b>');
+    expect(output).toContain('data-testid="voice-note-on-phone">2 on this phone</span>');
     expect(output).toContain('data-testid="voice-note-uploading">1 uploading</span>');
     expect(output).toContain("Uploading · 42%");
     expect(output).toContain("Waiting to upload");
     expect(output.match(/data-pipeline-halo=/g)).toHaveLength(2);
+  });
+
+  test("the summary counts what is in progress; only notes not yet in the space are on this phone, and none means no subline", () => {
+    const inSpace = pipeline({
+      steps: [
+        { key: "phone", label: "On this phone", state: "done" },
+        { key: "space", label: "In your space", state: "done" },
+        { key: "transcript", label: "Transcript", state: "active", caption: "Transcribing…" },
+        { key: "notes", label: "Notes", state: "skipped" },
+      ],
+      current: "transcript",
+    });
+    const mixed = html([row("a"), row("b", inSpace), row("c", inSpace)]);
+    expect(mixed).toContain('data-testid="voice-note-summary">3 in progress</b>');
+    expect(mixed).toContain('data-testid="voice-note-on-phone">1 on this phone</span>');
+    const allInSpace = html([row("b", inSpace), row("c", inSpace)]);
+    expect(allInSpace).toContain('data-testid="voice-note-summary">2 in progress</b>');
+    expect(allInSpace).not.toContain("voice-note-on-phone");
+    expect(allInSpace).not.toContain("on this phone</");
   });
 
   test("selects the highest priority action and keeps offline automatic", () => {
