@@ -162,9 +162,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     return { id: options.transcriber, identifySpeakers: options.identifySpeakers, source: "default" };
   };
   let choice = defaultChoice();
-  // Local needs the on-device model: this starts its download when the mode in use is Local and the model is not
-  // on the phone. Recording never waits for it; the note's Local transcription queues natively until it is ready.
+  // Local needs the on-device model: this starts its download once the user has chosen Local or recorded on it, and
+  // the model is not on the phone. Merely being on Local by default starts nothing. Recording never waits for the
+  // download; the note's Local transcription queues natively until the model is ready.
+  let localWanted = false;
   const ensureLocalModel = (retry = false) => {
+    localWanted = true;
     if (!available || !captureCapabilities().localTranscription) return;
     if (onDeviceReady?.() ?? isOnDeviceReady(onDeviceSttStore.snapshot())) return;
     ensureOnDeviceModel({ retry });
@@ -692,9 +695,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         if (refreshChoice()) notify();
         if (choice.id === "on-device") ensureLocalModel();
       });
-      // Local in use without its model: the download starts by itself, now and whenever the model's state changes.
-      const followModel = () => { if (choice.id === "on-device") ensureLocalModel(); };
-      followModel();
+      // Once Local was chosen or recorded on, the download follows the model's state (the first status may arrive late).
+      const followModel = () => { if (localWanted && choice.id === "on-device") ensureLocalModel(); };
       const unsubscribeModel = onDeviceSttStore.subscribe(followModel);
       const handles = [
         VoiceNotes.addListener("micState", (event) => {

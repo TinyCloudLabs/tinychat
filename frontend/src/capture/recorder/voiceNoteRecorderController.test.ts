@@ -1774,6 +1774,20 @@ describe("voice-note recorder controller", () => {
       detach();
     });
 
+    test("being on Local by default, without a choice or a recording, downloads nothing", async () => {
+      const calls = await phoneDownloading();
+      await seedNative();
+      await setDefaultTranscriber("on-device");
+      const recorder = controller({ transcriber: offer({ availability: "available", consented: true }).stub, onDeviceReady: false });
+      const detach = recorder.attach();
+      await tick();
+      await onDeviceSttStore.refresh();
+      await tick();
+      expect(recorder.getTranscriber().id).toBe("on-device");
+      expect(calls.downloadNow).toBe(0);
+      detach();
+    });
+
     test("recording on Local is allowed while the model downloads, and the note stays on Local", async () => {
       const calls = await phoneDownloading();
       await seedNative();
@@ -1781,6 +1795,7 @@ describe("voice-note recorder controller", () => {
       const recorder = controller({ transcriber: offer({ availability: "available", consented: true }).stub, onDeviceReady: false });
       const detach = recorder.attach();
       await tick();
+      expect(calls.downloadNow).toBe(0);
       await recorder.record();
       await tick();
       expect(calls.downloadNow).toBe(1);
