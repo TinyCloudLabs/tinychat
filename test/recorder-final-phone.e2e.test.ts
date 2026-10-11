@@ -193,7 +193,11 @@ const settleToastPlacement = (page: Page) =>
         requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
       ),
   );
-const assertToastMessageVisible = async (page: Page, expected: string) => {
+const assertToastMessageVisible = async (
+  page: Page,
+  expected: string,
+  requiredActions: string[] = [],
+) => {
   const message = page.locator(".pr-toast-message");
   await shown(message);
   const layout = await message.evaluate((element) => {
@@ -269,6 +273,11 @@ const assertToastMessageVisible = async (page: Page, expected: string) => {
   expect(toast!.y).toBeGreaterThanOrEqual(0);
   expect(toast!.x + toast!.width).toBeLessThanOrEqual(viewport.width);
   expect(toast!.y + toast!.height).toBeLessThanOrEqual(viewport.height);
+  for (const name of requiredActions) {
+    const action = page.locator(".pr-toast").getByRole("button", { name });
+    expect(await action.count()).toBe(1);
+    await shown(action);
+  }
   for (const name of ["Get model", "Use Private"]) {
     const action = page.locator(".pr-toast").getByRole("button", { name });
     if (await action.count()) {
@@ -644,12 +653,37 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await page.context().close();
   });
 
-  test("an unavailable mode toast stays readable and keeps fixed controls clear", async () => {
+  // A provider refusal has no actions; choosing the unavailable Powerful stop while on Audio only
+  // raises a toast whose Use Private action sits in an action row below the message.
+  const toastScenarios = [
+    {
+      suffix: "",
+      stop: "local",
+      refuse: true,
+      message: "Local isn't available right now",
+      actions: [] as string[],
+    },
+    {
+      suffix: " with an action row",
+      stop: "powerful",
+      refuse: false,
+      message: "Coming with the next update",
+      actions: ["Use Private"],
+    },
+  ];
+  const prepareToastScenario = (
+    page: Page,
+    scenario: (typeof toastScenarios)[number],
+  ) =>
+    page.evaluate((refuse) => {
+      (window as unknown as Harness).exoRecorder.transcriberResult = refuse
+        ? "unavailable"
+        : null;
+    }, scenario.refuse);
+
+  for (const scenario of toastScenarios) test(`an unavailable mode toast stays readable and keeps fixed controls clear${scenario.suffix}`, async () => {
     const { page } = await open("model-unavailable", { clock: true });
-    await page.evaluate(() => {
-      (window as unknown as Harness).exoRecorder.transcriberResult =
-        "unavailable";
-    });
+    await prepareToastScenario(page, scenario);
     const toast = page.locator(".pr-toast");
     const evidenceDir = process.env.EXO_POLISH_EVIDENCE;
     if (evidenceDir) mkdirSync(evidenceDir, { recursive: true });
@@ -664,12 +698,14 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
       for (const fontScale of [1, 2]) {
         await setFontScale(page, 1);
         if (fontScale === 2) await setFontScale(page, fontScale);
-        const stop = page.locator('.pr-stop[data-stop="local"]');
+        const stop = page.locator(`.pr-stop[data-stop="${scenario.stop}"]`);
         await stop.scrollIntoViewIfNeeded();
         const before = await measureToastLayout(page);
         await stop.click();
         await shown(toast);
         await holdToast(page);
+        for (const action of scenario.actions)
+          await shown(toast.getByRole("button", { name: action }));
         if (fontScale === 2) await setToastFontScale(page, fontScale);
         const message = page.locator(".pr-toast-message");
         const exerciseFontMetricFallback =
@@ -683,7 +719,8 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
         await settleToastPlacement(page);
         await assertToastMessageVisible(
           page,
-          "Local isn't available right now",
+          scenario.message,
+          scenario.actions,
         );
         const after = await measureToastLayout(page);
         expect(after.toast).not.toBeNull();
@@ -743,11 +780,8 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
       clock: true,
       theme: "dark",
     });
-    await dark.page.evaluate(() => {
-      (window as unknown as Harness).exoRecorder.transcriberResult =
-        "unavailable";
-    });
-    await dark.page.locator('.pr-stop[data-stop="local"]').click();
+    await prepareToastScenario(dark.page, scenario);
+    await dark.page.locator(`.pr-stop[data-stop="${scenario.stop}"]`).click();
     await shown(dark.page.locator(".pr-toast"));
     await holdToast(dark.page);
     if (evidenceDir)
@@ -762,14 +796,11 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
         fullPage: true,
       });
     await dark.page.context().close();
-  });
+  }, 120_000);
 
-  test("a five-line toast scrolls without covering the ring or scale on a short phone", async () => {
+  for (const scenario of toastScenarios) test(`a five-line toast scrolls without covering the ring or scale on a short phone${scenario.suffix}`, async () => {
     const { page } = await open("model-unavailable", { clock: true });
-    await page.evaluate(() => {
-      (window as unknown as Harness).exoRecorder.transcriberResult =
-        "unavailable";
-    });
+    await prepareToastScenario(page, scenario);
     const sentence =
       "This recording cannot switch to the on-device model until the model download finishes. Check your connection and try again when the download is complete. The recording stays available while you wait.";
     const messageText = `${sentence} ${sentence} ${sentence}`;
@@ -780,18 +811,22 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     for (const fontScale of [1, 2]) {
       await setFontScale(page, 1);
       if (fontScale === 2) await setFontScale(page, fontScale);
-      const stop = page.locator('.pr-stop[data-stop="local"]');
+      const stop = page.locator(`.pr-stop[data-stop="${scenario.stop}"]`);
       await stop.scrollIntoViewIfNeeded();
       await stop.click();
       await shown(page.locator(".pr-toast"));
       await holdToast(page);
+      for (const action of scenario.actions)
+        await shown(
+          page.locator(".pr-toast").getByRole("button", { name: action }),
+        );
       await message.evaluate((element, value) => {
         element.textContent = value;
       }, messageText);
       if (fontScale === 2) await setToastFontScale(page, fontScale);
       await settleToastPlacement(page);
 
-      await assertToastMessageVisible(page, messageText);
+      await assertToastMessageVisible(page, messageText, scenario.actions);
       const lineCount = await message.evaluate((element) => {
         const range = document.createRange();
         range.selectNodeContents(element);
@@ -820,7 +855,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
           ? 1
           : 2;
       if (fontScale === 1)
-        expect(reservedLines).toBe(2);
+        expect(reservedLines).toBe(scenario.actions.length > 0 ? 1 : 2);
       const reservedHeight =
         copySizing.lineHeight * reservedLines + copySizing.padding;
       expect(copySizing.minHeight).toBeGreaterThanOrEqual(reservedHeight);
