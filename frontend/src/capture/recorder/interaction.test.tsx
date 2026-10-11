@@ -1,13 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { act, createElement, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { BrowserRouter, useLocation, useNavigate } from "react-router-dom";
+import { BrowserRouter, MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
 import { installDom } from "@/test/dom";
+import { PlatformContext } from "@/lib/platform";
 import { SoftCaptureHome } from "../home/SoftCaptureHome";
 import { SoftHomeProvider } from "../home/softHome";
 import { LibraryRow, type LibraryItem } from "../library/LibraryRow";
+import { StaticRecorderProvider, type RecorderValue } from "./RecorderProvider";
 import type { InProgressRowsViewProps } from "../InProgressRows";
+import { PhoneRecorder } from "./final/PhoneRecorder";
 import type { MomentFlow } from "./final/momentController";
 import { MomentField } from "./final/MomentField";
 
@@ -90,6 +93,114 @@ describe("dogfood interaction regressions", () => {
     recorder.focus();
     await act(async () => dismissOverlay(recorder));
     expect(minimized).toBe(1);
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
+  test("Android Back sends Escape from a focused checkbox instead of blurring it", async () => {
+    cleanupDom = installDom();
+    const [{ SheetDialog }, { topOverlay, dismissOverlay }] = await Promise.all([
+      import("./final/SheetDialog"), import("@/shell/useAndroidBack"),
+    ]);
+    const host = document.createElement("div");
+    document.body.append(host);
+    let closed = 0;
+    let blurred = 0;
+    let escapes = 0;
+    const opener = { current: null as HTMLElement | null };
+    const fallback = { current: null as HTMLElement | null };
+    function CheckboxSheet() {
+      return createElement("div", null,
+        createElement("button", { ref: (element: HTMLButtonElement | null) => { opener.current = element; }, children: "Open options" }),
+        createElement(SheetDialog, {
+          role: "dialog", title: "Options", description: "Choose an option", titleId: "options-title", descriptionId: "options-description",
+          returnFocus: opener, fallbackFocus: fallback,
+          onCancel: () => { closed++; },
+          children: createElement("input", {
+            type: "checkbox",
+            onBlur: () => { blurred++; },
+            onKeyDown: (event: KeyboardEvent<HTMLInputElement>) => { if (event.key === "Escape") escapes++; },
+          }),
+        }),
+      );
+    }
+    const root = await mounted(host, createElement(CheckboxSheet));
+    const overlay = topOverlay()!;
+    overlay.querySelector<HTMLInputElement>('input[type="checkbox"]')!.focus();
+    await act(async () => dismissOverlay(overlay));
+    expect(blurred).toBe(0);
+    expect(escapes).toBe(1);
+    expect(closed).toBe(1);
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
+  test("a rejected moment mark clears the real moment field's focus flag", async () => {
+    cleanupDom = installDom();
+    const canvasPrototype = document.createElement("canvas").constructor.prototype as object;
+    const canvasGetContext = Object.getOwnPropertyDescriptor(canvasPrototype, "getContext");
+    const canvasContext = {
+      clearRect: noop, drawImage: noop, save: noop, beginPath: noop, arc: noop,
+      clip: noop, restore: noop, stroke: noop, moveTo: noop, lineTo: noop,
+      fillRect: noop, createRadialGradient: () => ({ addColorStop: noop }),
+    };
+    Object.defineProperty(canvasPrototype, "getContext", {
+      configurable: true,
+      value: (kind: string) => kind === "2d" ? canvasContext : null,
+    });
+    const oldGlobals = new Map<string, PropertyDescriptor | undefined>();
+    const testGlobals: Record<string, unknown> = {
+      matchMedia: () => ({ matches: true, addEventListener: noop, removeEventListener: noop }),
+      IntersectionObserver: class { observe() {} disconnect() {} },
+      ResizeObserver: class { observe() {} disconnect() {} },
+    };
+    for (const [name, value] of Object.entries(testGlobals)) {
+      oldGlobals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+      Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+    }
+    const capturedErrors: Parameters<typeof console.error>[] = [];
+    const originalConsoleError = console.error;
+    console.error = (...args) => { capturedErrors.push(args); };
+    const restoreDom = cleanupDom;
+    cleanupDom = () => {
+      if (canvasGetContext) Object.defineProperty(canvasPrototype, "getContext", canvasGetContext);
+      console.error = originalConsoleError;
+      for (const [name, descriptor] of oldGlobals) {
+        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+        else Reflect.deleteProperty(globalThis, name);
+      }
+      restoreDom?.();
+    };
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const focusChanges: boolean[] = [];
+    let rejectMark!: (error: Error) => void;
+    const markMoment = () => new Promise<number>((_resolve, reject) => { rejectMark = reject; });
+    const value: Partial<RecorderValue> = {
+      phase: "recording",
+      mic: { state: "recording", reason: null },
+      startedAt: 1,
+      recordingId: "rec-mark-rejected",
+      audioMs: 1_000,
+      elapsedMs: 1_000,
+      markMoment,
+      setMomentFieldFocused: (focused) => focusChanges.push(focused),
+    };
+    await act(async () => root.render(createElement(MemoryRouter, null,
+      createElement(PlatformContext.Provider, { value: "ios" },
+        createElement(StaticRecorderProvider, { value }, createElement(PhoneRecorder, { inputs: null })),
+      ),
+    )));
+    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Note this moment"]')!.click());
+    expect(host.querySelector('input[aria-label^="Note for"]')).not.toBeNull();
+    expect(focusChanges).toEqual([true]);
+    await act(async () => { rejectMark(new Error("recording stopped")); await Promise.resolve(); });
+    expect(host.querySelector('input[aria-label^="Note for"]')).toBeNull();
+    expect(focusChanges).toEqual([true, false]);
+    expect(host.textContent).toContain("Could not mark this moment: recording stopped");
+    expect(capturedErrors[0]?.[0]).toBe("[Recorder] Could not mark this moment");
+    expect(capturedErrors[0]?.[1]).toBeInstanceOf(Error);
     await act(async () => root.unmount());
     host.remove();
   });

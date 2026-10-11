@@ -18,7 +18,7 @@ import { ConfirmDialog } from "../../recorder/final/desktop/ConfirmDialog";
 import { NoteRenderer, NoteWriter } from "../../recorder/final/notes";
 import { useKeyboardInset } from "../../recorder/final/keyboardInset";
 import { SheetDialog } from "../../recorder/final/SheetDialog";
-import type { AudioLoad } from "../NoteDetailView";
+import { noteAudioPlayerProps, type NoteAudio } from "../NoteDetailView";
 import { SAVED_NOTE_COPY as COPY } from "./savedNoteCopy";
 import { editedLabel } from "./savedNoteMeta";
 import type { SavedNoteScreen } from "./useSavedNoteScreen";
@@ -35,7 +35,7 @@ export interface SavedNoteViewProps {
   title: string;
   meta: string;
   /** Reads the recording's audio; null when it has none stored. */
-  loadAudio: AudioLoad | null;
+  audio: NoteAudio | null;
   /** The transcript section (the Library's own). */
   transcript: ReactNode;
   /** Below the transcript. */
@@ -49,11 +49,11 @@ export interface SavedNoteViewProps {
 function Notes({
   screen,
   layout,
-  loadAudio,
+  audio,
   toolbarHost,
   editButton,
   cancelButton,
-}: Pick<SavedNoteViewProps, "screen" | "layout" | "loadAudio"> & {
+}: Pick<SavedNoteViewProps, "screen" | "layout" | "audio"> & {
   toolbarHost: HTMLElement | null | undefined;
   editButton: React.RefObject<HTMLButtonElement | null>;
   cancelButton: React.RefObject<HTMLButtonElement | null>;
@@ -211,7 +211,7 @@ function Notes({
             <NoteRenderer
               md={savedMd}
               label={COPY.notes}
-              onMoment={loadAudio ? screen.playFrom : undefined}
+              onMoment={audio ? screen.playFrom : undefined}
             />
           </div>
         ))}
@@ -239,12 +239,12 @@ export function SavedNoteBody(
     Refs & { toolbarHost: HTMLElement | null | undefined },
 ) {
   const { editButton, cancelButton, toolbarHost } = props;
-  const { screen, layout, loadAudio, recordingId } = props;
+  const { screen, layout, audio, recordingId } = props;
   const notes = (
     <Notes
       screen={screen}
       layout={layout}
-      loadAudio={loadAudio}
+      audio={audio}
       toolbarHost={toolbarHost}
       editButton={editButton}
       cancelButton={cancelButton}
@@ -262,9 +262,9 @@ export function SavedNoteBody(
           {DESKTOP_HOME_COPY.partialAudio}
         </p>
       )}
-      {loadAudio && (
+      {audio && (
         <div className="sn-player">
-          <MeetingAudioPlayer key={recordingId} load={loadAudio} seek={screen.seek} />
+          <MeetingAudioPlayer key={recordingId} {...noteAudioPlayerProps(audio)} seek={screen.seek} />
         </div>
       )}
       {layout === "page" ? (

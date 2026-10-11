@@ -171,6 +171,7 @@ export function PhoneRecorder({
       },
     },
     (error) => {
+      recorder.setMomentFieldFocused(false);
       console.error("[Recorder] Could not mark this moment", error);
       showToast(
         NOTES_COPY.momentFailed(
