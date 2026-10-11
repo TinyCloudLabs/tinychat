@@ -37,12 +37,14 @@ import { onDeviceQueuePlace } from "./onDeviceQueue";
 import { downloadOnDeviceModel, onDeviceSttStore, retryOnDeviceNote } from "./onDeviceSttStore";
 import {
   onDeviceTranscriptSyncState,
+  recordOnDeviceTranscript,
   subscribeOnDeviceTranscriptSync,
   syncOnDeviceTranscript,
   type OnDeviceTranscriptSyncState,
 } from "./onDeviceTranscriber";
 import { useQuarantinedRecordings } from "./quarantine";
 import { loadNote } from "./recordingNotes";
+import { withVoiceNoteReadDeadline } from "./saveDeadline";
 import { pendingStore, type PendingNote } from "./recorderSaves";
 import {
   recordingNoteSyncError,
@@ -267,10 +269,11 @@ export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineIn
 // --- Actions ----------------------------------------------------------------------------------------------------
 
 /** What the transcript step's "Try again" means right now: write the transcript again, fetch the model, or transcribe again. */
-export function transcriptRetryTarget(input: NotePipelineInput): "reread" | "private-cloud" | "sync" | "model" | "note" {
+export function transcriptRetryTarget(input: NotePipelineInput): "reread" | "private-cloud" | "record" | "sync" | "model" | "note" {
   if (input.transcript.readError != null && input.transcript.inSpace === null) return "reread";
   if (input.route === "private-cloud") return "private-cloud";
   const od = input.transcript.onDevice;
+  if (od?.sync?.state === "unrecorded") return "record";
   if (od?.sync?.state === "failed" || (od?.sync === null && od.stt?.state === "done")) return "sync";
   if (od !== null && (od.stt === null || od.stt.state === "waiting_for_model")) return "model";
   return "note";
@@ -337,6 +340,10 @@ export async function runPipelineAction(kind: PipelineActionKind, env: PipelineA
               case "private-cloud":
                 if (!env.transcription) return "Private transcription isn't available here.";
                 env.transcription.onTranscribe(env.id);
+                return null;
+              case "record":
+                if (env.tcw === null) return "Sign in to record the transcript on this phone.";
+                await recordOnDeviceTranscript(env.tcw, env.id);
                 return null;
               case "sync":
                 if (env.tcw === null) return "Sign in to add the transcript to this note.";
@@ -534,7 +541,9 @@ function useSpaceRows(wanted: readonly { id: string; tcw: TinyCloudWeb; signal: 
         }
         if (changed) setRows(new Map(cache.current));
       };
-      readSpaceRows(tcw, due.map((entry) => entry.id)).then(settle, (caught: unknown) => {
+      const dueIds = due.map((entry) => entry.id);
+      // The rows query waits in the write lane behind uploads, and the commit reads have no deadline of their own: the whole read is bounded here, so "Checking your space…" ends in a cause and a retry.
+      withVoiceNoteReadDeadline(`read the space rows of ${dueIds.length} notes`, () => readSpaceRows(tcw, dueIds)).then(settle, (caught: unknown) => {
         console.error("[NotePipeline] Could not read the notes' rows in the space", due.map((entry) => entry.id), caught);
         settle(new Map(due.map(({ id }): [string, RowRead] => [id, { error: `Your space's copy of this note wouldn't open: ${messageOf(caught)}` }])));
       });
@@ -551,7 +560,7 @@ const subscribeAutoSync = (listener: () => void) => {
   return () => { autoSync.listeners.delete(listener); };
 };
 const autoSyncKey = (tcw: TinyCloudWeb, id: string, editedAt: string) => JSON.stringify([spaceIdentity(tcw), id, editedAt]);
-const autoTranscriptKey = (tcw: TinyCloudWeb, id: string) => JSON.stringify([spaceIdentity(tcw), id, "on-device-transcript"]);
+const autoTranscriptKey = (tcw: TinyCloudWeb, id: string, kind: "add" | "record") => JSON.stringify([spaceIdentity(tcw), id, kind === "add" ? "on-device-transcript" : "on-device-transcript-ledger"]);
 
 export function __resetAutoNoteSyncForTests(): void {
   autoSync.started.clear();
@@ -583,14 +592,15 @@ function useAutoNoteSync(candidates: readonly { tcw: TinyCloudWeb; id: string; k
  * A saved note whose on-device transcript is finished but not in the space gets one write attempt per session, started
  * here: after a relaunch nothing else asks, and "adding" must never mean "waiting for something that may never come".
  * The attempt publishes its own progress and failure (`onDeviceTranscriptSyncState`); the failure keeps its cause and
- * "Try again" runs it again.
+ * "Try again" runs it again. A transcript already in the space that the phone's ledger never recorded (a write that failed
+ * before the last quit) gets one ledger repair per session, `kind: "record"`.
  */
-function useAutoTranscriptSync(candidates: readonly { tcw: TinyCloudWeb; id: string; key: string }[]): void {
+function useAutoTranscriptSync(candidates: readonly { tcw: TinyCloudWeb; id: string; key: string; kind: "add" | "record" }[]): void {
   useEffect(() => {
-    for (const { tcw, id, key } of candidates) {
+    for (const { tcw, id, key, kind } of candidates) {
       if (autoSync.started.has(key)) continue;
       autoSync.started.add(key);
-      syncOnDeviceTranscript(tcw, { id, ledger: { audio: { state: "saved" } }, stt: { state: "done" } })
+      (kind === "add" ? syncOnDeviceTranscript(tcw, { id, ledger: { audio: { state: "saved" } }, stt: { state: "done" } }) : recordOnDeviceTranscript(tcw, id))
         .finally(() => {
           autoSync.settled.add(key);
           for (const listener of [...autoSync.listeners]) listener();
@@ -681,7 +691,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
   const { states, autoSyncs, autoTranscriptSyncs } = useMemo(() => {
     const out = new Map<string, PipelineState>();
     const wantsSync: { tcw: TinyCloudWeb; id: string; key: string }[] = [];
-    const wantsTranscriptSync: { tcw: TinyCloudWeb; id: string; key: string }[] = [];
+    const wantsTranscriptSync: { tcw: TinyCloudWeb; id: string; key: string; kind: "add" | "record" }[] = [];
     for (const { id, source } of entries) {
       const local = locals.get(id);
       const tcw = source.tcw;
@@ -726,12 +736,16 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
       // A saved note whose on-device transcript is done, with none in the space and no write of it in this session, gets one
       // attempt (`useAutoTranscriptSync`); until it settles the transcript step is "adding", never a blocker.
       const onDevice = input.transcript.onDevice;
-      if (tcw !== null && !spaceReading && input.space.saved && input.transcript.inSpace === null && onDevice !== null && onDevice.sync === null && onDevice.stt?.state === "done") {
-        const key = autoTranscriptKey(tcw, id);
+      if (tcw !== null && !spaceReading && input.space.saved && input.transcript.inSpace === null && input.transcript.readError == null && onDevice !== null && onDevice.sync === null && onDevice.stt?.state === "done") {
+        const key = autoTranscriptKey(tcw, id, "add");
         if (!autoSync.settled.has(key)) {
-          wantsTranscriptSync.push({ tcw, id, key });
+          wantsTranscriptSync.push({ tcw, id, key, kind: "add" });
           input = buildNotePipelineInput({ ...facts, transcriptSync: { state: "syncing" }, noteSync: { ...storeSync, attempting } });
         }
+      } else if (tcw !== null && !spaceReading && input.space.saved && input.transcript.inSpace !== null && onDevice !== null && onDevice.sync === null && onDevice.stt?.state === "done" && native?.transcriptSync != null && native.transcriptSync.state !== "saved") {
+        // The space has it, the phone's ledger does not know: one repair of the ledger. Its failure is published and shown (`unrecorded`).
+        const key = autoTranscriptKey(tcw, id, "record");
+        if (!autoSync.settled.has(key)) wantsTranscriptSync.push({ tcw, id, key, kind: "record" });
       }
       out.set(id, { input, pipeline: notePipeline(input) });
     }

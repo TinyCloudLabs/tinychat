@@ -17,11 +17,13 @@ import { saveNote } from "./recordingNotes";
 import {
   __setVoiceNotesForTests,
   VoiceNotes,
+  type LocalTranscript,
   type NoteSttState,
   type TranscriberId,
   type VoiceNoteRecording,
   type VoiceNotesPlugin,
 } from "./nativeVoiceNotes";
+import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
 import { recordingNoteSyncError } from "./voiceNoteStore";
 import { __resetAutoNoteSyncForTests, useNotePipeline, useNotePipelines, type NotePipelineSource, type NotePipelineView } from "./useNotePipeline";
 
@@ -63,6 +65,10 @@ const phone = {
   quarantineReads: 0,
   reads: 0,
   transcriptReads: [] as string[],
+  /** What `getTranscript` answers with; null: the phone has none. */
+  transcript: null as LocalTranscript | null,
+  ledgerWrites: [] as { id: string; rev: number; patch: Record<string, unknown> }[],
+  ledgerError: null as Error | null,
 };
 
 /** The plugin as iOS drives it: the queue never holds a finished job, and events arrive through `emit`. */
@@ -87,7 +93,12 @@ async function installPhone() {
   __setVoiceNotesForTests(
     {
       listPending: async () => { phone.reads += 1; if (phone.listError) throw phone.listError; return { recordings: phone.recordings }; },
-      getTranscript: async ({ id }: { id: string }) => { phone.transcriptReads.push(id); return { transcript: null }; },
+      getTranscript: async ({ id }: { id: string }) => { phone.transcriptReads.push(id); return { transcript: phone.transcript }; },
+      updateLedger: async (args: { id: string; rev: number; patch: Record<string, unknown> }) => {
+        if (phone.ledgerError) throw phone.ledgerError;
+        phone.ledgerWrites.push({ id: args.id, rev: args.rev, patch: args.patch });
+        return {};
+      },
       listQuarantine: async () => { phone.quarantineReads += 1; if (phone.quarantineError) throw phone.quarantineError; return { items: phone.quarantine }; },
     } as unknown as VoiceNotesPlugin,
     { available: true },
@@ -110,7 +121,7 @@ let warnings: ReturnType<typeof spyOn>;
 beforeEach(async () => {
   errors = spyOn(console, "error").mockImplementation(() => {});
   warnings = spyOn(console, "warn").mockImplementation(() => {});
-  phone.recordings = []; phone.listError = null; phone.quarantine = []; phone.quarantineError = null; phone.quarantineReads = 0; phone.reads = 0; phone.transcriptReads = [];
+  phone.recordings = []; phone.listError = null; phone.quarantine = []; phone.quarantineError = null; phone.quarantineReads = 0; phone.reads = 0; phone.transcriptReads = []; phone.transcript = null; phone.ledgerWrites = []; phone.ledgerError = null;
   queue = []; refuseListening = new Map(); callbacks.clear();
   __resetOnDeviceSttStoreForTests();
   __resetAutoNoteSyncForTests();
@@ -433,7 +444,7 @@ describe("a failed read that other evidence outranks is still shown", () => {
 
 // --- A space of fake rows ------------------------------------------------------------------------------------------
 
-function fakeSpace(did: string, rowOf: (id: string) => Record<string, unknown> | null, gate: Promise<void> | null = null) {
+function fakeSpace(did: string, rowOf: (id: string) => Record<string, unknown> | null, gate: Promise<void> | null = null, stallSchema = false) {
   const log = { rowQueries: [] as string[][], schemaChecks: 0 };
   const tcw = {
     did,
@@ -442,7 +453,7 @@ function fakeSpace(did: string, rowOf: (id: string) => Record<string, unknown> |
       db: () => ({
         query: async (sql: string, params: string[]) => {
           if (gate !== null) await gate;
-          if (sql.includes("sqlite_schema")) { log.schemaChecks += 1; return { ok: true, data: { rows: [] } }; }
+          if (sql.includes("sqlite_schema")) { log.schemaChecks += 1; if (stallSchema) await new Promise(() => {}); return { ok: true, data: { rows: [] } }; }
           if (sql.includes("FROM connector_meeting")) {
             log.rowQueries.push([...params]);
             return { ok: true, data: { rows: params.flatMap((id) => { const metadata = rowOf(id); return metadata === null ? [] : [[`row-${id}`, id, "exo-voice-note", JSON.stringify(metadata), "2026-01-01"]]; }) } };
@@ -629,5 +640,76 @@ describe("a saved note's pipeline does not wait for its space row (P6 sim pass, 
     await settle();
     expect(seen.view).not.toBeNull();
     expect(space.log.rowQueries).toEqual([]);
+  });
+});
+
+describe("the space read is bounded (P6 r1, blocker 1)", () => {
+  afterEach(() => setVoiceNoteSaveDeadlineForTests(null));
+
+  test("a stalled commit read ends 'Checking your space…' in a cause and a Try again that reads again", async () => {
+    phone.recordings = [recording(ID, "on-device", stt("done"))];
+    const space = fakeSpace("did:p6-r1-stall", () => ({}), null, true);
+    setVoiceNoteSaveDeadlineForTests(20);
+    const { seen } = await mountOne({ tcw: space.tcw, saved: true });
+    expect(stepOf(seen.view!.pipeline, "transcript").caption).toBe("Checking your space…");
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 80)); });
+    const step = stepOf(seen.view!.pipeline, "transcript");
+    expect(step.state).toBe("failed");
+    expect(step.blocker?.cause).toContain("couldn't be loaded in time");
+    expect(step.blocker?.action?.kind).toBe("retry");
+    // No attempt is made on a guess about a space that could not be read.
+    expect(phone.transcriptReads).toEqual([]);
+    const before = space.log.schemaChecks;
+    await act(async () => seen.view!.onAction("retry"));
+    await settleUntil(() => space.log.schemaChecks > before);
+    expect(space.log.schemaChecks).toBeGreaterThan(before);
+  });
+});
+
+describe("a transcript in the space that the phone's ledger never recorded (P6 r1, blocker 3)", () => {
+  const LOCAL = {
+    version: 1, noteId: ID, transcriber: "on-device", rev: 1, engine: "parakeet-tdt-0.6b-v3", model: null, language: "en",
+    outcome: "no_speech", diarized: false, segments: [], createdAt: "2026-10-11T00:00:00Z",
+  } as unknown as LocalTranscript;
+  const pendingLedger = (did: string) => ({
+    ...recording(ID, "on-device", stt("done")),
+    owner: did, rev: 3,
+    ledger: { audio: { state: "saved" }, transcript: { state: "done", outcome: "none" }, transcriptSync: { state: "pending", rev: 0, at: null } },
+  }) as unknown as VoiceNoteRecording;
+  const inSpace = () => ({ transcription_outcome: "no_speech" });
+
+  test("a failed ledger write stays visible beside the finished transcript, with a repair that works", async () => {
+    phone.recordings = [pendingLedger("did:p6-r1-ledger-a")];
+    phone.transcript = LOCAL;
+    phone.ledgerError = new Error("disk full");
+    const space = fakeSpace("did:p6-r1-ledger-a", inSpace);
+    const { seen } = await mountOne({ tcw: space.tcw, saved: true });
+    await settleUntil(() => seen.view !== null && seen.view.pipeline.blocker !== undefined);
+    const pipeline = seen.view!.pipeline;
+    expect(stepOf(pipeline, "transcript").state).toBe("done");
+    expect(pipeline.blocker?.cause).toBe("The transcript is in your space, but this phone couldn't record that: disk full");
+    expect(pipeline.blocker?.action?.kind).toBe("retry");
+    expect(pipeline.done).toBe(false);
+    expect(phone.ledgerWrites).toEqual([]);
+
+    phone.ledgerError = null;
+    await act(async () => seen.view!.onAction("retry"));
+    await settleUntil(() => seen.view!.pipeline.done);
+    expect(phone.ledgerWrites).toHaveLength(1);
+    expect(phone.ledgerWrites[0]!.patch).toMatchObject({ transcriptSync: { state: "saved" }, transcript: { outcome: "no_speech" } });
+    expect(seen.view!.pipeline.done).toBe(true);
+    expect(seen.view!.pipeline.blocker).toBeUndefined();
+  });
+
+  test("on a later launch (a fresh session) a pending ledger is repaired once, without writing the space", async () => {
+    phone.recordings = [pendingLedger("did:p6-r1-ledger-b")];
+    phone.transcript = LOCAL;
+    const space = fakeSpace("did:p6-r1-ledger-b", inSpace);
+    const { seen } = await mountOne({ tcw: space.tcw, saved: true });
+    await settleUntil(() => phone.ledgerWrites.length > 0);
+    await settle();
+    expect(phone.ledgerWrites).toHaveLength(1);
+    expect(phone.transcriptReads).toEqual([ID]);
+    expect(seen.view!.pipeline.done).toBe(true);
   });
 });

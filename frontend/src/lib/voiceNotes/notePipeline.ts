@@ -55,7 +55,7 @@ export type PipelineModelState = "absent" | "queued" | "downloading" | "verifyin
 export type PipelineDownloadState = "idle" | "running" | "waiting_for_network" | "low_data_mode" | "failed";
 
 /** `OnDeviceTranscriptSyncState` (P2): the local transcript's write onto the space row. */
-export type PipelineTranscriptSync = { state: "syncing" } | { state: "synced" } | { state: "failed"; message: string };
+export type PipelineTranscriptSync = { state: "syncing" } | { state: "synced" } | { state: "failed"; message: string } | { state: "unrecorded"; message: string };
 
 export interface PipelineOnDevice {
   /** This note's native queue job; null when native has no job for it. */
@@ -257,7 +257,7 @@ function onDeviceStep(input: NotePipelineInput, od: PipelineOnDevice): Result {
   const { sync, stt, queue } = od;
   if (sync?.state === "failed") return failed(LOCAL_COPY.syncFailed(sync.message), "retry");
   if (sync?.state === "syncing") return { state: "active", caption: LOCAL_COPY.adding };
-  if (sync?.state === "synced") return { state: "done" };
+  if (sync?.state === "synced" || sync?.state === "unrecorded") return { state: "done" };
   if (stt === null) {
     const model = modelStep(od, input.device);
     if (model !== null) return model;
@@ -393,10 +393,19 @@ export function notePipeline(input: NotePipelineInput): NotePipeline {
   ].filter((cause): cause is string => cause !== null);
   const unread = failedReads.length > 0;
   const notices = input.capture.issue === "partial_audio" ? [PHONE_COPY.partialAudio] : [];
+  // The transcript is in the space but the phone could not record that: the step is done, the failure is not dropped, and it has its own repair.
+  const od = input.transcript.onDevice;
+  const unrecorded = od?.sync?.state === "unrecorded" ? LOCAL_COPY.unrecorded(od.sync.message) : null;
+  if (unrecorded !== null) {
+    if (blocker === undefined) {
+      blocker = block(unrecorded, "retry");
+      current = "transcript";
+    } else notices.push(unrecorded);
+  }
   if (unread && blocker === undefined) blocker = block(failedReads.join(" "), "reread");
   else if (unread) notices.push(...failedReads);
 
-  const pipeline: NotePipeline = { steps, current, done: done && !unread };
+  const pipeline: NotePipeline = { steps, current, done: done && !unread && unrecorded === null };
   if (blocker !== undefined) pipeline.blocker = blocker;
   if (notices.length > 0) pipeline.notice = notices.join(" ");
   return pipeline;

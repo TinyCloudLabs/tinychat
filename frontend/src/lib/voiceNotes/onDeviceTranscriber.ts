@@ -13,7 +13,12 @@ import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "./saveDeadline"
 import { LOCAL_COPY } from "./notePipelineCopy";
 
 /** One note's local transcript -> space write: running, written, or why it did not land (the local transcript stays valid). */
-export type OnDeviceTranscriptSyncState = { state: "syncing" } | { state: "synced" } | { state: "failed"; message: string };
+export type OnDeviceTranscriptSyncState =
+  | { state: "syncing" }
+  | { state: "synced" }
+  | { state: "failed"; message: string }
+  /** The transcript is in the space, but this phone's ledger could not be told (`message` is the cause). */
+  | { state: "unrecorded"; message: string };
 
 const syncStates = new Map<string, OnDeviceTranscriptSyncState>();
 /** The tail of each note's sync chain: attempts for one note run one after another. */
@@ -59,13 +64,50 @@ export function syncOnDeviceTranscript(
   if (recording.ledger?.audio.state !== "saved") return Promise.resolve();
   const key = syncKey(tcw, recording.id);
   const expected = recording.stt?.state === "done";
-  const run = (chains.get(key) ?? Promise.resolve()).then(() => syncOnce(tcw, key, recording.id, expected));
+  return enqueue(key, () => syncOnce(tcw, key, recording.id, expected));
+}
+
+function enqueue(key: string, attempt: () => Promise<void>): Promise<void> {
+  const run = (chains.get(key) ?? Promise.resolve()).then(attempt);
   // The chain goes on whatever this attempt does; the caller still sees this attempt's own outcome.
   const tail = run.then(() => undefined, () => undefined).then(() => {
     if (chains.get(key) === tail) chains.delete(key);
   });
   chains.set(key, tail);
   return run;
+}
+
+/**
+ * The space already has this note's transcript, but the phone's ledger was never told (`transcriptSync` is not "saved"): tell it,
+ * without writing the space again (what is there may be newer than the local copy). Publishes `synced`, or `unrecorded` with the cause.
+ */
+export function recordOnDeviceTranscript(tcw: TinyCloudWeb, id: string): Promise<void> {
+  const key = syncKey(tcw, id);
+  return enqueue(key, async () => {
+    let transcript: LocalTranscript | null;
+    try {
+      ({ transcript } = await withVoiceNoteSaveDeadline(`native getTranscript ${id}`, () => VoiceNotes.getTranscript({ id })));
+    } catch (err) {
+      console.warn("[OnDeviceStt] Could not read the local transcript", err);
+      publish(key, { state: "unrecorded", message: `Couldn't read the transcript on this phone: ${err instanceof VoiceNoteSaveTimeout ? "reading it timed out" : errorMessage(err)}` });
+      return;
+    }
+    if (!transcript) {
+      publish(key, { state: "unrecorded", message: LOCAL_COPY.missingTranscript });
+      return;
+    }
+    await recordAndPublish(tcw, key, id, transcript);
+  });
+}
+
+async function recordAndPublish(tcw: TinyCloudWeb, key: string, id: string, transcript: LocalTranscript): Promise<void> {
+  try {
+    await recordTranscriptSaved(tcw, id, transcript);
+    publish(key, { state: "synced" });
+  } catch (err) {
+    console.warn("[OnDeviceStt] The transcript is in the space but this phone's ledger was not updated", err);
+    publish(key, { state: "unrecorded", message: errorMessage(err) });
+  }
 }
 
 async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: boolean): Promise<void> {
@@ -86,8 +128,7 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
   try {
     const result = await saveVoiceNoteTranscript(tcw, id, localTranscriptToSave(transcript));
     if (result.ok) {
-      await recordTranscriptSaved(tcw, id, transcript);
-      publish(key, { state: "synced" });
+      await recordAndPublish(tcw, key, id, transcript);
     } else {
       console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", result.error);
       publish(key, { state: "failed", message: result.error.message });
@@ -115,7 +156,7 @@ async function recordTranscriptSaved(tcw: TinyCloudWeb, id: string, transcript: 
       await withVoiceNoteSaveDeadline(`native updateLedger id=${id}`, () => VoiceNotes.updateLedger({ id, did: tcw.did, rev, patch }));
       return;
     } catch (err) {
-      if ((err as { code?: string }).code !== "rev_conflict" || attempt > 0) throw new Error(`The transcript is in your space, but this phone couldn't record that: ${errorMessage(err)}`, { cause: err });
+      if ((err as { code?: string }).code !== "rev_conflict" || attempt > 0) throw err;
     }
   }
 }

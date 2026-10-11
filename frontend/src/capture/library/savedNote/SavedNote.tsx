@@ -77,8 +77,9 @@ export default function SavedNote({
     ) : null,
     audio,
     transcript,
-    // The stepper is the route while the note is still getting here; the legacy route line would say it twice.
-    footer: stepperShown ? null : footer,
+    // The stepper is the route while the note is still getting here; the legacy route line would say it twice. A failed
+    // metadata read is not a route: the footer's "Try again" is the only way to read it again, so it stays.
+    footer: stepperShown && metadata?.status !== "failed" ? null : footer,
     partialAudio:
       recorder.captureIssues[item.sourceId]?.kind === "partial_audio",
     onBack,

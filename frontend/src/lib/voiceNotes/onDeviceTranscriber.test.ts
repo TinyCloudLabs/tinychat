@@ -10,7 +10,7 @@ let save: (saved: { rev: number }) => Promise<SaveResult> = async () => ({ ok: t
 const realStore = { ...(await import("./voiceNoteStore")) };
 mock.module("./voiceNoteStore", () => ({ ...realStore, saveVoiceNoteTranscript: (_tcw: unknown, _id: string, saved: { rev: number }) => save(saved) }));
 afterAll(() => mock.module("./voiceNoteStore", () => realStore));
-const { onDeviceTranscriptSyncState, subscribeOnDeviceTranscriptSync, syncOnDeviceTranscript } = await import("./onDeviceTranscriber");
+const { onDeviceTranscriptSyncState, recordOnDeviceTranscript, subscribeOnDeviceTranscriptSync, syncOnDeviceTranscript } = await import("./onDeviceTranscriber");
 
 const SAVED = { id: "rec-1", ledger: { audio: { state: "saved" } } };
 const transcript: LocalTranscript = {
@@ -322,14 +322,39 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "synced" });
   });
 
-  test("a ledger write that fails is a failure with its cause, not a synced note the phone does not know about", async () => {
+  test("a ledger write that fails is `unrecorded` with its cause: the transcript is in the space, the phone does not know", async () => {
     const tcw = account();
     updateLedger = async () => { throw Object.assign(new Error("disk full"), { code: "io" }); };
     await syncOnDeviceTranscript(tcw, SAVED);
-    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({
-      state: "failed",
-      message: "The transcript is in your space, but this phone couldn't record that: disk full",
-    });
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "unrecorded", message: "disk full" });
+  });
+
+  test("recordOnDeviceTranscript tells the ledger without writing the space, and publishes synced", async () => {
+    const tcw = account();
+    let spaceWrites = 0;
+    save = async () => { spaceWrites += 1; return { ok: true, data: {} }; };
+    await recordOnDeviceTranscript(tcw, "rec-1");
+    expect(spaceWrites).toBe(0);
+    expect(ledgerWrites).toHaveLength(1);
+    expect(ledgerWrites[0]!.patch).toMatchObject({ transcriptSync: { state: "saved", rev: 1 }, transcript: { outcome: "transcribed" } });
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "synced" });
+  });
+
+  test("recordOnDeviceTranscript failing is `unrecorded` with its cause, and a later success clears it", async () => {
+    const tcw = account();
+    updateLedger = async () => { throw Object.assign(new Error("disk full"), { code: "io" }); };
+    await recordOnDeviceTranscript(tcw, "rec-1");
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "unrecorded", message: "disk full" });
+    updateLedger = async ({ rev, patch }) => { ledgerWrites.push({ rev, patch }); return {}; };
+    await recordOnDeviceTranscript(tcw, "rec-1");
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "synced" });
+  });
+
+  test("recordOnDeviceTranscript with no local transcript says so", async () => {
+    const tcw = account();
+    getTranscript = async () => ({ transcript: null });
+    await recordOnDeviceTranscript(tcw, "rec-1");
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "unrecorded", message: "this phone says it finished transcribing but has no transcript for the note" });
   });
 
   test("a recording whose transcription is done but has no transcript on the phone fails with that cause", async () => {

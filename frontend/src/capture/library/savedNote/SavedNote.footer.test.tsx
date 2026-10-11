@@ -11,6 +11,8 @@ import { __setVoiceNotesForTests, VoiceNotes, type VoiceNoteRecording, type Voic
 import { __setOnDeviceSttForTests, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { __resetOnDeviceSttStoreForTests } from "@/lib/voiceNotes/onDeviceSttStore";
 import { __resetAutoNoteSyncForTests } from "@/lib/voiceNotes/useNotePipeline";
+import type { MeetingMetadataRead } from "@/lib/connectors/meetingExplorer";
+import { HowThisGotHere } from "../HowThisGotHere";
 import type { LibraryItem } from "../LibraryRow";
 import SavedNote from "./SavedNote";
 import type { SavedNoteStore } from "./savedNoteStore";
@@ -57,7 +59,10 @@ afterAll(() => {
   __resetOnDeviceSttStoreForTests();
 });
 
-async function mount() {
+// Bun prints a failed matcher's DOM operand, and a React-attached element is cyclic: compare plain booleans only.
+const present = (scope: ParentNode, selector: string): boolean => scope.querySelector(selector) !== null;
+
+async function mount(options: { metadata?: MeetingMetadataRead; layout?: "page" | "sheet"; onRetry?: () => void } = {}) {
   const container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -65,14 +70,14 @@ async function mount() {
     <StaticRecorderProvider value={{ tcw: null, signIn: null, transcription: undefined }}>
       <SavedNote
         item={ITEM}
-        metadata={{ status: "ok", metadata: {} }}
+        metadata={options.metadata ?? { status: "ok", metadata: {} }}
         audio={null}
         tcw={null as never}
         store={store}
-        layout="page"
+        layout={options.layout ?? "page"}
         onBack={() => {}}
         transcript={<p>transcript</p>}
-        footer={<p data-testid="how-this-got-here">route line</p>}
+        footer={<HowThisGotHere source="exo-voice-note" read={options.metadata ?? { status: "ok", metadata: {} }} onRetry={options.onRetry ?? (() => {})} />}
       />
     </StaticRecorderProvider>,
   ));
@@ -84,14 +89,25 @@ describe("the saved note's footer", () => {
   test("while the stepper shows, the legacy route line is not drawn", async () => {
     recordings = [recording("on-device", { state: "queued", pack: null, engine: null, segmentsDone: 0, windowsDone: 0, error: null })];
     const container = await mount();
-    expect(container.querySelector('[data-testid="voice-note-pipeline"], [aria-label="Where this note is"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="how-this-got-here"]')).toBeNull();
+    expect(present(container, '[aria-label="Where this note is"]')).toBe(true);
+    expect(present(container, '[data-testid="how-this-got-here"]')).toBe(false);
+  });
+
+  test("a failed metadata read keeps its Try again beside the stepper", async () => {
+    recordings = [recording("on-device", { state: "queued", pack: null, engine: null, segmentsDone: 0, windowsDone: 0, error: null })];
+    let retries = 0;
+    const container = await mount({ metadata: { status: "failed", message: "boom" } as MeetingMetadataRead, onRetry: () => { retries += 1; } });
+    expect(present(container, '[aria-label="Where this note is"]')).toBe(true);
+    const retry = container.querySelector<HTMLButtonElement>('[data-testid="how-this-got-here-retry"]');
+    expect(retry !== null).toBe(true);
+    await act(async () => retry!.click());
+    expect(retries).toBe(1);
   });
 
   test("once the pipeline is done the footer is drawn", async () => {
     recordings = [recording("off", null)];
     const container = await mount();
-    expect(container.querySelector('[aria-label="Where this note is"]')).toBeNull();
-    expect(container.querySelector('[data-testid="how-this-got-here"]')).not.toBeNull();
+    expect(present(container, '[aria-label="Where this note is"]')).toBe(false);
+    expect(present(container, '[data-testid="how-this-got-here"]')).toBe(true);
   });
 });

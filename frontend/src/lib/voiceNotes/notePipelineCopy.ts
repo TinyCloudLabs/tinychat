@@ -85,6 +85,7 @@ export const LOCAL_COPY = {
   syncFailed: (detail: string | null | undefined) => withDetail("Couldn't add the transcript to this note", detail),
   notAdded: "The transcript is ready on this phone but hasn't been added to this note",
   missingTranscript: "this phone says it finished transcribing but has no transcript for the note",
+  unrecorded: (cause: string) => `The transcript is in your space, but this phone couldn't record that: ${cause}`,
   checkingSpace: "Checking your space…",
   notStarted: "Waiting to transcribe",
   noSpeech: "No speech found",

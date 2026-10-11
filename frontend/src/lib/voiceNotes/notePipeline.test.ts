@@ -396,3 +396,28 @@ describe("a failed read that other evidence outranks", () => {
     expect(pipelineActionPriority("reread")).toBe(0);
   });
 });
+
+describe("a transcript in the space that the phone could not record (P6 r1)", () => {
+  const unrecorded = { state: "unrecorded" as const, message: "disk full" };
+
+  test("the transcript step is done, the failure is the blocker with Try again, and the note is not done", () => {
+    const pipeline = notePipeline(input({ space: SAVED, notes: { state: "synced" }, ...local({ inSpace: "no_speech", onDevice: od({ stt: stt("done"), sync: unrecorded }) }) }));
+    expect(pipeline.steps.find((step) => step.key === "transcript")?.state).toBe("done");
+    expect(pipeline.blocker).toEqual({ cause: "The transcript is in your space, but this phone couldn't record that: disk full", action: { kind: "retry", label: "Try again" } });
+    expect(pipeline.current).toBe("transcript");
+    expect(pipeline.done).toBe(false);
+  });
+
+  test("before the row catches up the transcript is still done, not Adding", () => {
+    const pipeline = notePipeline(input({ space: SAVED, ...local({ onDevice: od({ stt: stt("done"), sync: unrecorded }) }) }));
+    expect(pipeline.steps.find((step) => step.key === "transcript")?.state).toBe("done");
+    expect(pipeline.blocker?.cause).toContain("couldn't record that");
+  });
+
+  test("beside another blocker it is a notice, never dropped", () => {
+    const pipeline = notePipeline(input({ space: SAVED, hasNotesOrMoments: true, notes: { state: "failed" }, ...local({ inSpace: "transcribed", onDevice: od({ stt: stt("done"), sync: unrecorded }) }) }));
+    expect(pipeline.current).toBe("notes");
+    expect(pipeline.notice).toBe("The transcript is in your space, but this phone couldn't record that: disk full");
+    expect(pipeline.done).toBe(false);
+  });
+});
