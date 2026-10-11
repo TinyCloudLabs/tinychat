@@ -10,7 +10,7 @@ import {
 export interface HaloRingProps {
   /** The disc's diameter in CSS px; the ticks reach out to TICK_REACH times that, at most. */
   size: number;
-  ticks: 44 | 40;
+  ticks: 44 | 40 | 0;
   paused?: boolean;
   /** Interrupted capture: show neutral ticks and freeze the last source. */
   still?: boolean;

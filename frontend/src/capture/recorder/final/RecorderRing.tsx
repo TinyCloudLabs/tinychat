@@ -11,6 +11,8 @@ export interface RecorderRingProps {
   /** The ring is the pause/resume button: its label and press handler. */
   action: { label: string; onPress: () => void; disabled: boolean } | null;
   glyph: "pause" | "play" | null;
+  /** Mic permission is denied: show the resting body without activity ticks. */
+  quiet?: boolean;
 }
 
 /** The ring is sized by CSS from its stage (.pr-ring in phone.css); this is only its size before the first measurement. */
@@ -23,6 +25,7 @@ export function RecorderRing({
   subscribeLevel,
   action,
   glyph,
+  quiet = false,
 }: RecorderRingProps) {
   const [ringEl, setRingEl] = useState<HTMLElement | null>(null);
   const [size, setSize] = useState(FIRST_SIZE);
@@ -48,7 +51,7 @@ export function RecorderRing({
     <>
       <HaloRing
         size={size}
-        ticks={44}
+        ticks={quiet ? 0 : 44}
         theme={theme}
         paused={ring === "paused"}
         still={

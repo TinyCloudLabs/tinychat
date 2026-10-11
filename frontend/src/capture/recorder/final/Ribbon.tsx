@@ -143,12 +143,12 @@ export function Ribbon({ layout }: { layout?: RibbonViewProps["layout"] }) {
 }
 
 /**
- * From 768 to 1023 px the Ribbon floats at the foot of the main area without taking any of its height.
- * Without the Ribbon (after Stop) it holds only the error, if there is one.
+ * From 768 to 1023 px the Ribbon sits in a reserved row at the foot of the main area.
+ * Without the Ribbon (after Stop) the row holds only the error, if there is one.
  */
 export function FloatingRibbon({ ribbon = true }: { ribbon?: boolean }) {
   return (
-    <div className="ribbon-float">
+    <div className="ribbon-float" data-ribbon={ribbon}>
       <div className="ribbon-float-inner">
         <MinimizedAlert layout="rail" />
         {ribbon && <Ribbon layout="rail" />}

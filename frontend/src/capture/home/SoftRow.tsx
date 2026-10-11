@@ -20,6 +20,8 @@ import {
 } from "./captureIssues";
 import { RowBadge } from "../library/RowBadge";
 import { HOME_COPY } from "./homeCopy";
+import { PipelineHalo, haloLabel } from "../pipeline/PipelineHalo";
+import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 
 export interface SoftRowProps {
   icon: LucideIcon;
@@ -39,6 +41,7 @@ export interface SoftRowProps {
   selected?: boolean;
   testId: string;
   sourceId?: string;
+  pipeline?: NotePipeline;
 }
 
 /** What sits under the title: the issue's line, except for an informational one, which has a line of its own below. */
@@ -50,11 +53,12 @@ function stateLine(issue: HomeIssue | undefined, meta: string): string {
 export function softRowLabel(
   props: Pick<
     SoftRowProps,
-    "title" | "meta" | "badge" | "durationSecs" | "issue" | "onActivate"
+    "title" | "meta" | "badge" | "durationSecs" | "issue" | "onActivate" | "pipeline"
   >,
 ): string {
   const parts = [props.title];
   if (props.badge) parts.push(props.badge);
+  if (props.pipeline && !props.pipeline.done) parts.push(haloLabel(props.pipeline));
   parts.push(stateLine(props.issue, props.meta));
   if (props.durationSecs != null)
     parts.push(formatSpokenDuration(props.durationSecs));
@@ -102,7 +106,7 @@ export function SoftRow(props: SoftRowProps) {
           data-testid="soft-row-meta"
           data-failed={failed ? "true" : undefined}
         >
-          {issue?.kind === "finalization_timed_out" && <Spinner />}
+          {issue?.kind === "finalization_timed_out" && !props.pipeline && <Spinner />}
           {props.badge && <RowBadge>{props.badge}</RowBadge>}
           {stateLine(issue, props.meta)}
         </span>
@@ -116,6 +120,7 @@ export function SoftRow(props: SoftRowProps) {
               {formatClockDuration(props.durationSecs)}
             </span>
           )}
+          {props.pipeline && <PipelineHalo pipeline={props.pipeline} />}
           {(props.href !== undefined || props.onActivate) && (
             <ChevronRightIcon className="soft-chev" />
           )}

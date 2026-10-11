@@ -3,22 +3,24 @@
 // card, app only, and the other In progress rows as they are), one quiet card
 // when the last unfinished-recordings check failed, then Recent with See all.
 // Rows with a capture issue show it; the recorder clears an issue itself.
-import { MicIcon } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 import { Skeleton } from "@/components/ui/skeleton";
-import { PATHS } from "@/shell/routes";
+import { notePath, PATHS } from "@/shell/routes";
 import {
   InProgressRowsView,
   inProgressShown,
   type InProgressRowsViewProps,
 } from "../InProgressRows";
 import type { LibraryStatus } from "../library/LibraryListView";
-import { LibraryRow, type LibraryItem } from "../library/LibraryRow";
-import { cardNote, recentEntries } from "./captureIssues";
+import { LibraryRow, libraryRowTitle, type LibraryItem } from "../library/LibraryRow";
+import { recentEntries } from "./captureIssues";
 import { HOME_COPY } from "./homeCopy";
 import { SoftIssueRow } from "./SoftIssueRow";
 import { useSoftHome } from "./softHome";
+import { InProgressVoiceCard, type InProgressNoteRow, type ModelProgress } from "./InProgressVoiceCard";
+import type { NotePipeline, PipelineActionKind } from "@/lib/voiceNotes/notePipeline";
+import { formatClockDuration, formatSpokenDuration } from "../library/formatters";
 
 /** How many captures Recent shows. */
 const RECENT_COUNT = 5;
@@ -30,48 +32,48 @@ export interface SoftCaptureHomeProps {
   scanFailure: string | null;
   onRetryRecent: () => void;
   onOpenRecentNote?: (id: string) => void;
+  pipelines?: ReadonlyMap<string, NotePipeline>;
+  pipelineNotes?: readonly LibraryItem[];
+  modelProgress?: ModelProgress | null;
+  onPipelineAction: (kind: PipelineActionKind, noteId: string) => void;
+  pipelineActionError?: string | null;
+  onOpenLibrary: () => void;
   now: Date;
 }
 
-function OnThisPhoneCard(props: {
-  count: number;
-  saving: boolean;
-  note: string;
-  onSaveNow: () => void;
-}) {
-  return (
-    <div className="soft-card" data-testid="voice-note-pending">
-      <MicIcon className="soft-ico soft-card-icon" aria-hidden="true" />
-      <div className="soft-card-text">
-        <b>
-          {props.count === 1
-            ? HOME_COPY.onPhoneOne
-            : HOME_COPY.onPhoneMany(props.count)}
-        </b>
-        <span data-testid="voice-note-pending-note">{props.note}</span>
-      </div>
-      <span className="soft-pill-hit" data-hit-area="">
-        <button
-          type="button"
-          className="soft-pill"
-          onClick={props.onSaveNow}
-          disabled={props.saving}
-          data-testid="voice-note-retry"
-        >
-          {HOME_COPY.saveNow}
-        </button>
-      </span>
-    </div>
-  );
-}
-
-function InProgress(props: { inProgress: InProgressRowsViewProps }) {
-  const soft = useSoftHome();
+function InProgress(props: Pick<SoftCaptureHomeProps, "inProgress" | "pipelineNotes" | "pipelines" | "modelProgress" | "onPipelineAction" | "pipelineActionError" | "onOpenRecentNote" | "onOpenLibrary">) {
+  const navigate = useNavigate();
   const { voice } = props.inProgress;
   const count = voice?.listing.state === "ok" ? voice.listing.count : 0;
-  const card = voice !== undefined && count > 0;
+  const cardRows: InProgressNoteRow[] = (props.pipelineNotes ?? [])
+    .filter((item) => item.source === "exo-voice-note")
+    .flatMap((item) => {
+      const pipeline = props.pipelines?.get(item.sourceId);
+      return pipeline && !pipeline.done ? [{
+        id: item.id,
+        pipelineId: item.sourceId,
+        title: libraryRowTitle(item),
+        duration: item.durationSecs === null ? null : formatClockDuration(item.durationSecs),
+        spokenDuration: item.durationSecs === null ? null : formatSpokenDuration(item.durationSecs),
+        pipeline,
+      }] : [];
+    });
+  const card = cardRows.length > 0;
+  const pendingNotes = voice?.pendingNotes ?? [];
+  const saveNowEligible = voice !== undefined
+    && voice.listing.state === "ok"
+    && voice.listing.count > 0
+    && voice.online === true
+    && !voice.saving
+    && !pendingNotes.some((note) => note.upload?.state === "uploading" || note.upload?.state === "retrying")
+    && !cardRows.some((row) => row.pipeline.steps.some((step) => step.state === "active"))
+    && !cardRows.some((row) => row.pipeline.blocker?.action !== undefined)
+    && cardRows.some((row) => {
+      const space = row.pipeline.steps.find((step) => step.key === "space");
+      return row.pipeline.current === "space" && space?.state === "waiting";
+    });
   // The card replaces the plain pending row; everything else still shows as it does.
-  const rest: InProgressRowsViewProps = card
+  const rest: InProgressRowsViewProps = voice !== undefined && count > 0
     ? {
         ...props.inProgress,
         voice: { ...voice, listing: { state: "unknown" } },
@@ -91,11 +93,14 @@ function InProgress(props: { inProgress: InProgressRowsViewProps }) {
           <h2 id="soft-in-progress-title" className="soft-sect">
             {HOME_COPY.inProgress}
           </h2>
-          <OnThisPhoneCard
-            count={count}
-            saving={voice.saving}
-            note={voice.lastError ?? (voice.saving ? HOME_COPY.savingToSpace : cardNote(soft?.issues ?? {}, null))}
-            onSaveNow={voice.onSaveNow}
+          <InProgressVoiceCard
+            rows={cardRows}
+            model={props.modelProgress}
+            onOpen={(id) => props.onOpenRecentNote ? props.onOpenRecentNote(id) : navigate(notePath(id))}
+            onAction={props.onPipelineAction}
+            {...(saveNowEligible && voice ? { onSaveNow: voice.onSaveNow } : {})}
+            actionError={props.pipelineActionError}
+            onOpenLibrary={props.onOpenLibrary}
           />
         </>
       )}
@@ -165,6 +170,7 @@ function Recent(props: SoftCaptureHomeProps) {
                 grouped={false}
                 testId="recent-item"
                 onRecentOpen={props.onOpenRecentNote}
+                pipeline={props.pipelines?.get(entry.item.sourceId)}
               />
             ) : (
               <SoftIssueRow
@@ -185,7 +191,7 @@ export function SoftCaptureHome(props: SoftCaptureHomeProps) {
   const soft = useSoftHome();
   return (
     <>
-      <InProgress inProgress={props.inProgress} />
+      <InProgress {...props} />
       {soft?.quarantineFailed && (
         <p role="alert" className="soft-quiet" data-testid="quarantine-failure">
           {HOME_COPY.quarantineFailure}
