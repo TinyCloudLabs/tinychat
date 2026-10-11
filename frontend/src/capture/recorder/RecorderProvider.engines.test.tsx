@@ -140,7 +140,7 @@ async function mount(kind: CaptureEngineKind, capabilities: CaptureCapabilities,
 }
 
 async function mountWith(kind: CaptureEngineKind, capabilities: CaptureCapabilities, prepare?: (plugin: VoiceNotesPlugin) => void,
-  model: "ready" | "absent" = "ready", recovery?: { listeners: Map<string, () => void>; pipeline: { resume(): void; cancelAll(): void; reconcileAll(): Promise<void> } }) {
+  model: "ready" | "absent" = "ready", recovery?: { listeners: Map<string, () => void>; pipeline: { resume(): void; cancelAll(): void; isAccepting?(): boolean; reconcileAll(): Promise<void> } }) {
   const stt = strictOnDeviceStt(kind === "native", model);
   __setOnDeviceSttForTests(stt.plugin);
   const strict = strictEngine(capabilities);
@@ -230,6 +230,38 @@ test("a transcribed event whose pending read crosses a generation bump does not 
   finishList({ recordings: [{ id: "local-note", owner: did, ledger: { audio: { state: "saved" } }, stt: { state: "done" } }] });
   await act(async () => { await tick(); await tick(); });
   expect(transcriptReads).toBe(0);
+});
+
+test("a transcribed event after sign-out pauses the pipeline does no phone read or write", async () => {
+  const did = "did:example:alice";
+  let phoneReads = 0;
+  let transcriptReads = 0;
+  let writes = 0;
+  let accepting = true;
+  const pipeline = {
+    resume() { accepting = true; },
+    cancelAll() { accepting = false; },
+    isAccepting() { return accepting; },
+    reconcileAll: async () => {},
+  };
+  const { stt } = await mountWith("native", ALL, (plugin) => {
+    Object.assign(plugin, {
+      listPending: async () => { phoneReads++; return { recordings: [{ id: "local-note", owner: did,
+        ledger: { audio: { state: "saved" } }, stt: { state: "done" } }] }; },
+      getTranscript: async () => { transcriptReads++; return { transcript: null }; },
+      updateLedger: async () => { writes++; return {}; },
+    });
+  }, "ready", { listeners: new Map(), pipeline });
+
+  // Recorder setup may inspect the phone before the event under test.
+  phoneReads = 0;
+  transcriptReads = 0;
+  writes = 0;
+  pipeline.cancelAll();
+  await act(async () => { stt.emit("transcribed", { id: "local-note" }); await tick(); });
+  expect(phoneReads).toBe(0);
+  expect(transcriptReads).toBe(0);
+  expect(writes).toBe(0);
 });
 
 test("forced session-swap recovery queues one trailing reconcile while a run is active", async () => {

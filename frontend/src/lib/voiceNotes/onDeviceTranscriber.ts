@@ -11,7 +11,7 @@ import { localTranscriptToSave, saveVoiceNoteTranscript } from "./voiceNoteStore
 import { VoiceNotes, type LocalTranscript, type NoteSttState } from "./nativeVoiceNotes";
 import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { LOCAL_COPY } from "./notePipelineCopy";
-import { assertAccountContext, captureAccountContext, isAccountContextCurrent, StaleAccountContext, type AccountContext } from "./accountContext";
+import { assertAccountContext, captureAccountContext, isAccountContextCurrent, isAccountWorkAllowed, StaleAccountContext, type AccountContext } from "./accountContext";
 
 /** One note's local transcript -> space write: running, written, or why it did not land (the local transcript stays valid). */
 export type OnDeviceTranscriptSyncState =
@@ -26,8 +26,11 @@ const syncStates = new Map<string, OnDeviceTranscriptSyncState>();
 const chains = new Map<string, Promise<void>>();
 const syncListeners = new Set<() => void>();
 const syncKey = (tcw: TinyCloudWeb, id: string) => JSON.stringify([tcw.spaceId, tcw.did, id]);
-const isCurrent = (tcw: TinyCloudWeb, ctx: AccountContext) => isAccountContextCurrent(ctx, tcw);
-const checkpoint = (tcw: TinyCloudWeb, ctx: AccountContext) => () => assertAccountContext(ctx, tcw);
+const isCurrent = (tcw: TinyCloudWeb, ctx: AccountContext) => isAccountContextCurrent(ctx, tcw) && isAccountWorkAllowed(tcw);
+const checkpoint = (tcw: TinyCloudWeb, ctx: AccountContext) => () => {
+  assertAccountContext(ctx, tcw);
+  if (!isAccountWorkAllowed(tcw)) throw new StaleAccountContext();
+};
 
 /** Account-scoped; null until a sync for this note has started in this session. */
 export function onDeviceTranscriptSyncState(tcw: TinyCloudWeb, id: string): OnDeviceTranscriptSyncState | null {
@@ -70,7 +73,7 @@ export function syncOnDeviceTranscript(
   const expected = recording.stt?.state === "done";
   return enqueue(key, async () => {
     const abandoned = await syncOnce(tcw, key, recording.id, expected, requestedAccount);
-    if (abandoned) abandonSync(key, recording.id);
+    if (abandoned) abandonSync(key, recording.id, tcw);
     return abandoned;
   });
 }
@@ -96,9 +99,9 @@ export function recordOnDeviceTranscript(
 ): Promise<boolean> {
   const key = syncKey(tcw, id);
   return enqueue(key, async () => {
-    if (!isCurrent(tcw, requestedAccount)) { abandonSync(key, id); return true; }
+    if (!isCurrent(tcw, requestedAccount)) { abandonSync(key, id, tcw); return true; }
     if (!await ownsNativeNote(tcw, key, id, requestedAccount, "unrecorded")) {
-      if (!isCurrent(tcw, requestedAccount)) { abandonSync(key, id); return true; }
+      if (!isCurrent(tcw, requestedAccount)) { abandonSync(key, id, tcw); return true; }
       return false;
     }
     let transcript: LocalTranscript | null;
@@ -110,7 +113,7 @@ export function recordOnDeviceTranscript(
       }));
       checkpoint(tcw, requestedAccount)();
     } catch (err) {
-      if (!isCurrent(tcw, requestedAccount)) { abandonSync(key, id); return true; }
+      if (!isCurrent(tcw, requestedAccount)) { abandonSync(key, id, tcw); return true; }
       console.warn("[OnDeviceStt] Could not read the local transcript", err);
       publish(key, { state: "unrecorded", message: `Couldn't read the transcript on this phone: ${err instanceof VoiceNoteSaveTimeout ? "reading it timed out" : errorMessage(err)}` });
       return false;
@@ -120,13 +123,13 @@ export function recordOnDeviceTranscript(
       return false;
     }
     const abandoned = await recordAndPublish(tcw, key, id, transcript, requestedAccount);
-    if (abandoned) abandonSync(key, id);
+    if (abandoned) abandonSync(key, id, tcw);
     return abandoned;
   });
 }
 
-function abandonSync(key: string, id: string): void {
-  console.warn(`[OnDeviceStt] Abandoned transcript sync id=${id}: account changed`);
+function abandonSync(key: string, id: string, tcw: TinyCloudWeb): void {
+  console.warn(`[OnDeviceStt] Abandoned transcript sync id=${id}: ${isAccountWorkAllowed(tcw) ? "account changed" : "account work paused"}`);
   publish(key, null);
 }
 

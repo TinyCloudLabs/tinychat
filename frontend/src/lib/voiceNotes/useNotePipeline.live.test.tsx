@@ -27,6 +27,8 @@ import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
 import { pendingStore, type PendingUploadTicket } from "./recorderSaves";
 import { resetSpaceLaneForTests, runOnSpaceLane, setSpaceLaneQueueWaitForTests, spaceLaneSnapshot } from "../spaceWriteLane";
 import { recordingNoteSyncError } from "./voiceNoteStore";
+import { createVoiceNotePipeline } from "./voiceNotePipeline";
+import { onDeviceTranscriptSyncState } from "./onDeviceTranscriber";
 import { __resetAutoNoteSyncForTests, useNotePipeline, useNotePipelines, type NotePipelineSource, type NotePipelineView } from "./useNotePipeline";
 
 const plugins = { voiceNotes: VoiceNotes, onDeviceStt: OnDeviceStt };
@@ -72,6 +74,7 @@ const phone = {
   quarantineReads: 0,
   reads: 0,
   transcriptReads: [] as string[],
+  transcriptRead: null as (() => Promise<{ transcript: LocalTranscript | null }>) | null,
   /** What `getTranscript` answers with; null: the phone has none. */
   transcript: null as LocalTranscript | null,
   ledgerWrites: [] as { id: string; rev: number; patch: Record<string, unknown> }[],
@@ -100,7 +103,10 @@ async function installPhone() {
   __setVoiceNotesForTests(
     {
       listPending: async () => { phone.reads += 1; if (phone.listError) throw phone.listError; return { recordings: phone.recordings }; },
-      getTranscript: async ({ id }: { id: string }) => { phone.transcriptReads.push(id); return { transcript: phone.transcript }; },
+      getTranscript: async ({ id }: { id: string }) => {
+        phone.transcriptReads.push(id);
+        return phone.transcriptRead ? phone.transcriptRead() : { transcript: phone.transcript };
+      },
       updateLedger: async (args: { id: string; rev: number; patch: Record<string, unknown> }) => {
         if (phone.ledgerError) throw phone.ledgerError;
         phone.ledgerWrites.push({ id: args.id, rev: args.rev, patch: args.patch });
@@ -128,7 +134,7 @@ let warnings: ReturnType<typeof spyOn>;
 beforeEach(async () => {
   errors = spyOn(console, "error").mockImplementation(() => {});
   warnings = spyOn(console, "warn").mockImplementation(() => {});
-  phone.recordings = []; phone.listError = null; phone.quarantine = []; phone.quarantineError = null; phone.quarantineReads = 0; phone.reads = 0; phone.transcriptReads = []; phone.transcript = null; phone.ledgerWrites = []; phone.ledgerError = null;
+  phone.recordings = []; phone.listError = null; phone.quarantine = []; phone.quarantineError = null; phone.quarantineReads = 0; phone.reads = 0; phone.transcriptReads = []; phone.transcriptRead = null; phone.transcript = null; phone.ledgerWrites = []; phone.ledgerError = null;
   queue = []; refuseListening = new Map(); callbacks.clear();
   __resetOnDeviceSttStoreForTests();
   __resetAutoNoteSyncForTests();
@@ -627,6 +633,40 @@ describe("a saved Local note whose transcript is done on the phone but not in th
     await settleUntil(() => seen.view !== null && stepOf(seen.view.pipeline, "transcript").state === "done");
     expect(stepOf(seen.view!.pipeline, "transcript").state).toBe("done");
     expect(phone.transcriptReads).toEqual([]);
+  });
+
+  test("an abandoned automatic sync waits for pipeline resume, then retries", async () => {
+    const space = fakeSpace("did:p6-resume-sync", () => null);
+    const pipeline = createVoiceNotePipeline(space.tcw);
+    phone.recordings = [{
+      ...recording(ID, "on-device", stt("done")), owner: space.tcw.did, rev: 4,
+      ledger: { audio: { state: "saved" }, transcript: { state: "done", outcome: "transcribed", attempts: 1 },
+        transcriptSync: { state: "pending" } },
+    } as VoiceNoteRecording];
+    phone.transcript = { version: 1, noteId: ID, transcriber: "on-device", rev: 1, engine: "parakeet-tdt-0.6b-v3",
+      model: null, language: "en", outcome: "transcribed", diarized: false,
+      segments: [{ start: 0, end: 1000, text: "hello", speaker: null }], createdAt: "2026-10-12T00:00:00Z" } as LocalTranscript;
+    let finishFirstRead!: (result: { transcript: LocalTranscript | null }) => void;
+    phone.transcriptRead = () => phone.transcriptReads.length === 1
+      ? new Promise((resolve) => { finishFirstRead = resolve; })
+      : Promise.resolve({ transcript: phone.transcript });
+    try {
+      const { seen } = await mountOne({ tcw: space.tcw, saved: true });
+      await waitFor(() => phone.transcriptReads.length === 1);
+      pipeline.cancelAll();
+      finishFirstRead({ transcript: phone.transcript });
+      await waitFor(() => warnings.mock.calls.some(([line]) => String(line).includes("Abandoned transcript sync")));
+      await settle();
+      expect(phone.transcriptReads).toHaveLength(1);
+      expect(onDeviceTranscriptSyncState(space.tcw, ID)).toBeNull();
+      expect(stepOf(seen.view!.pipeline, "transcript").state).not.toBe("active");
+
+      pipeline.resume();
+      await waitFor(() => phone.transcriptReads.length >= 2);
+      expect(phone.transcriptReads).toHaveLength(2);
+    } finally {
+      pipeline.resume();
+    }
   });
 });
 

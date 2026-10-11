@@ -10,6 +10,8 @@ export interface AccountIdentity {
 }
 
 let generation = 0;
+const pausedClients = new WeakSet<object>();
+const accountWorkListeners = new Set<() => void>();
 
 /** Call on every sign-in and sign-out, before starting another account's work. */
 export function advanceAccountGeneration(): number {
@@ -18,6 +20,24 @@ export function advanceAccountGeneration(): number {
 
 export function currentAccountGeneration(): number {
   return generation;
+}
+
+/** The save pipeline pauses account-scoped work during sign-out and resumes it on abort. */
+export function isAccountWorkAllowed(client: object): boolean {
+  return !pausedClients.has(client);
+}
+
+export function setAccountWorkPaused(client: object, paused: boolean): void {
+  const wasPaused = pausedClients.has(client);
+  if (wasPaused === paused) return;
+  if (paused) pausedClients.add(client);
+  else pausedClients.delete(client);
+  for (const listener of [...accountWorkListeners]) listener();
+}
+
+export function subscribeAccountWork(listener: () => void): () => void {
+  accountWorkListeners.add(listener);
+  return () => { accountWorkListeners.delete(listener); };
 }
 
 /** Capture the identity and generation before beginning asynchronous work. */
