@@ -109,6 +109,8 @@ const SCREENS = [
   { id: "revoked", ready: ".pr-ring" },
   { id: "mic-denied", ready: ".pr-ring" },
   { id: "moment-field", ready: ".pr-moment input" },
+  { id: "modes", ready: ".pr-modes" },
+  { id: "long-device-menu", ready: ".pr-menu" },
 ] as const;
 
 const slug = (text: string) => text.replace(/[^a-z0-9.]+/gi, "-");
@@ -134,9 +136,21 @@ async function open(
   );
   await page.waitForSelector(ready);
   if (viewport.fontScale !== 1) {
-    // Android textZoom is 100%; its system font scale is applied to the root, like iOS.
+    // Android WebView scales text only. Emulate textZoom without changing
+    // layout units, preserving the explicit CSS compensation for timer slots.
     await page.evaluate((scale) => {
-      document.documentElement.style.setProperty("--android-body-scale", String(scale));
+      const root = document.documentElement;
+      root.style.setProperty("--android-body-scale", String(scale));
+      root.toggleAttribute("data-large-text", scale > 1.25);
+      const slots = [...document.querySelectorAll<HTMLElement>(".pr-digit, .pr-colon")];
+      const widths = slots.map((slot) => getComputedStyle(slot).width);
+      const fonts = [...document.querySelectorAll<HTMLElement>("body *")].map((element) =>
+        [element, Number.parseFloat(getComputedStyle(element).fontSize)] as const,
+      );
+      for (const [element, size] of fonts) {
+        if (Number.isFinite(size) && size > 0) element.style.fontSize = `${size * scale}px`;
+      }
+      slots.forEach((slot, index) => { slot.style.width = widths[index]!; });
     }, viewport.fontScale);
   }
   if (options.keyboard) {
@@ -231,11 +245,18 @@ for (const viewport of fitViewports.filter((candidate) => candidate.fontScale ==
         digitPairs: boxes.some((box, index) => boxes.slice(index + 1).some((other) => intersect(box, other))),
         plus: Boolean(plus && boxes.some((box) => intersect(box, plus))),
         rootSize: getComputedStyle(document.documentElement).fontSize,
+        timerSize: Number.parseFloat(
+          getComputedStyle(document.querySelector<HTMLElement>(".pr-time")!).fontSize,
+        ),
+        landscape: window.matchMedia(
+          "(orientation: landscape) and (max-height: 520px)",
+        ).matches,
       };
     });
     expect(overlaps.digitPairs).toBe(false);
     expect(overlaps.plus).toBe(false);
-    expect(overlaps.rootSize).toBe("32px");
+    expect(overlaps.rootSize).toBe("16px");
+    expect(overlaps.timerSize).toBeLessThanOrEqual(overlaps.landscape ? 80 : 100);
     await page.context().close();
   });
 }
@@ -250,6 +271,60 @@ for (const theme of ["light", "dark"] as const) {
             await page.screenshot({
               path: join(shotsDir, `${slug(viewport.name)}-${id}-${theme}.png`),
             });
+
+          if (id === "modes") {
+            const layout = await page.evaluate(() => {
+              const panel = document.querySelector<HTMLElement>(".pr-modes")!;
+              const rect = panel.getBoundingClientRect();
+              const headings = [...document.querySelectorAll<HTMLElement>(".pr-mplg span")];
+              const dots = [...document.querySelectorAll<HTMLElement>(".pr-dots-col")].slice(0, 2);
+              return {
+                panel: { top: rect.top, bottom: rect.bottom },
+                headings: headings.map((heading) => ({
+                  width: heading.getBoundingClientRect().width,
+                  clientWidth: heading.clientWidth,
+                  scrollWidth: heading.scrollWidth,
+                })),
+                dotWidths: dots.map((dot) => dot.getBoundingClientRect().width),
+              };
+            });
+            expect(layout.panel.top).toBeGreaterThanOrEqual(0);
+            expect(layout.panel.bottom).toBeLessThanOrEqual(viewport.height + 0.5);
+            expect(layout.headings.every((heading) => heading.scrollWidth <= heading.clientWidth + 1)).toBe(true);
+            expect(layout.headings.every((heading, index) => Math.abs(heading.width - layout.dotWidths[index]!) < 1)).toBe(true);
+            await page.context().close();
+            return;
+          }
+
+          if (id === "long-device-menu") {
+            const menu = await page.evaluate(() => {
+              const panel = document.querySelector<HTMLElement>(".pr-menu")!;
+              const device = [...document.querySelectorAll<HTMLElement>(".pr-item .label > span:last-child")]
+                .find((label) => label.textContent?.includes("sdk_gphone64_arm64"))!;
+              const range = document.createRange();
+              range.selectNodeContents(device);
+              const lines = new Map<number, { left: number; right: number }>();
+              for (const rect of range.getClientRects()) {
+                const top = Math.round(rect.top);
+                const line = lines.get(top);
+                if (line) {
+                  line.left = Math.min(line.left, rect.left);
+                  line.right = Math.max(line.right, rect.right);
+                } else lines.set(top, { left: rect.left, right: rect.right });
+              }
+              return {
+                width: panel.getBoundingClientRect().width,
+                expectedWidth: Math.min(358, window.innerWidth - 16),
+                lineWidths: [...lines.values()].map((line) => line.right - line.left),
+                fontSize: Number.parseFloat(getComputedStyle(device).fontSize),
+              };
+            });
+            expect(Math.abs(menu.width - menu.expectedWidth)).toBeLessThanOrEqual(1);
+            expect(menu.lineWidths.length).toBeLessThanOrEqual(2);
+            expect(Math.min(...menu.lineWidths)).toBeGreaterThan(menu.fontSize * 1.5);
+            await page.context().close();
+            return;
+          }
 
           expect(
             await page.evaluate(
@@ -316,6 +391,10 @@ for (const theme of ["light", "dark"] as const) {
 
         test(`${id}: every control can be reached`, async () => {
           const page = await open(id, theme, viewport, ready);
+          if (id === "modes" || id === "long-device-menu") {
+            await page.context().close();
+            return;
+          }
           const dockHolds = id !== "moment-field";
           if (dockHolds) {
             // Done and Discard are in reach without scrolling, at any size, and nothing covers them.

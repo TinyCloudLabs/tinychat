@@ -548,9 +548,11 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 if (platform === "ios") {
                   root.style.removeProperty("font-size");
                   root.style.setProperty("--ios-body-scale", String(scale));
+                  root.toggleAttribute("data-large-text", scale > 1.25);
                 } else if (platform === "android") {
                   root.style.removeProperty("font-size");
                   root.style.setProperty("--android-body-scale", String(scale));
+                  root.toggleAttribute("data-large-text", scale > 1.25);
                 } else {
                   root.style.setProperty("font-size", `${scale * 100}%`);
                 }
@@ -583,6 +585,20 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
               });
               await page.waitForLoadState("networkidle");
               await page.waitForTimeout(300);
+              if (screen.platform === "android" && viewport.textScale && viewport.textScale > 1) {
+                // Android textZoom scales glyphs without changing rem layout units.
+                await page.evaluate((scale) => {
+                  const slots = [...document.querySelectorAll<HTMLElement>(".pr-digit, .pr-colon")];
+                  const slotWidths = slots.map((slot) => getComputedStyle(slot).width);
+                  const fonts = [...document.querySelectorAll<HTMLElement>("body *")].map((element) =>
+                    [element, Number.parseFloat(getComputedStyle(element).fontSize)] as const,
+                  );
+                  for (const [element, size] of fonts) {
+                    if (Number.isFinite(size) && size > 0) element.style.fontSize = `${size * scale}px`;
+                  }
+                  slots.forEach((slot, index) => { slot.style.width = slotWidths[index]!; });
+                }, viewport.textScale);
+              }
 
               const allow = allowlist.filter((entry) => entry.screen === screen.id).map(({ selector, check }) => ({ selector, check }));
               const findings: Finding[] = await page.evaluate(inspectPage, {
@@ -632,12 +648,14 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
               }
               if ((screen.platform === "ios" || screen.platform === "android") && viewport.textScale) {
                 const rootSize = await page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).fontSize));
-                const expected = Math.max(16, Math.min(32, 16 * viewport.textScale));
+                const expected = screen.platform === "android" ? 16 : Math.max(16, Math.min(32, 16 * viewport.textScale));
                 if (Math.abs(rootSize - expected) > 0.1) findings.push({ check: `${screen.platform}-text-scale`, detail: `root font-size ${rootSize}px; expected ${expected}px at scale ${viewport.textScale}` });
               }
               if (screen.platform === "ios" || screen.platform === "android") {
                 const scale = Math.min(2, viewport.textScale ?? 1);
-                const shortLandscapeRecorder = viewport.id === "phone-land";
+                const shortLandscapeRecorder = await page.evaluate(() =>
+                  window.matchMedia("(orientation: landscape) and (max-height: 520px)").matches,
+                );
                 const typography = screen.id.startsWith("capture-soft-")
                   ? [
                       [".soft-sect", 14],

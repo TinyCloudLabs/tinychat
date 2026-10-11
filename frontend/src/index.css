@@ -167,8 +167,8 @@
   }
   html[data-platform="android"] {
     line-height: 1.5;
-    /* Android textZoom is normalized to 100; its system fontScale drives rem and em sizing here. */
-    font-size: clamp(16px, calc(16px * var(--android-body-scale, 1)), 32px);
+    /* Android WebView applies the clamped system scale to every font via textZoom. */
+    font-size: 16px;
   }
   .dynamic-type-warning {
     position: fixed;

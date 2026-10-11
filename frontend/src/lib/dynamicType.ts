@@ -17,6 +17,7 @@ export function androidDynamicTypeScale(fontScale: number): number {
 export function setAndroidDynamicTypeScale(root: HTMLElement, fontScale: number): number {
   const scale = androidDynamicTypeScale(fontScale);
   root.style.setProperty("--android-body-scale", String(scale));
+  root.toggleAttribute("data-large-text", scale > 1.25);
   return scale;
 }
 
@@ -31,5 +32,6 @@ export function iosDynamicTypeScale(bodySizePx: number): number {
 export function setIOSDynamicTypeScale(root: HTMLElement, bodySizePx: number): number {
   const scale = iosDynamicTypeScale(bodySizePx);
   root.style.setProperty("--ios-body-scale", String(scale));
+  root.toggleAttribute("data-large-text", scale > 1.25);
   return scale;
 }

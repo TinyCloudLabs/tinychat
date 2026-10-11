@@ -53,7 +53,7 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
         if (savedInstanceState != null) consumedCommandId = savedInstanceState.getString("consumedCommandId");
         consumeIntent(getIntent());
         super.onCreate(savedInstanceState);
-        normalizeWebViewTextZoom();
+        applySystemTextZoom();
         CaptureEngine.get(this).addListener(this);
     }
     @Override protected void onNewIntent(Intent intent) {
@@ -72,7 +72,7 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
     }
     @Override public void onResume() {
         super.onResume();
-        normalizeWebViewTextZoom();
+        applySystemTextZoom();
         // Lifecycle reaches RESUMED after onResume returns.
         main.post(() -> {
             if (MicShortcutRecovery.denied(this)) {
@@ -87,10 +87,12 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
             handlePending();
         });
     }
-    /** The root CSS size applies Android's system font scale to rem/em consistently. */
-    private void normalizeWebViewTextZoom() {
+    /** Let WebView scale every font unit as Android does; CSS uses the same scale for timer slots. */
+    private void applySystemTextZoom() {
         if (bridge != null && bridge.getWebView() != null) {
-            bridge.getWebView().getSettings().setTextZoom(100);
+            float fontScale = getResources().getConfiguration().fontScale;
+            int textZoom = Math.round(Math.max(1f, Math.min(2f, fontScale)) * 100);
+            bridge.getWebView().getSettings().setTextZoom(textZoom);
         }
     }
     private void handlePending() {

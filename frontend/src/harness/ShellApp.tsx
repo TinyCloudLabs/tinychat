@@ -179,7 +179,7 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
   );
 
   return (
-    <div className="flex flex-col bg-background text-foreground" style={{ height: "var(--tc-app-height, 100dvh)" }}>
+    <div className="flex flex-col overflow-hidden bg-background text-foreground" style={{ height: "var(--tc-app-height, 100dvh)" }}>
       <div className="min-h-0 flex-1">
         {state === "ready" ? (
           <AgentAccessProvider

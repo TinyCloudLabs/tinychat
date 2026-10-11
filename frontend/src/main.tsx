@@ -97,7 +97,8 @@ registerWebCaptureEngine();
 void installEd25519Polyfill().catch((error: unknown) => {
   console.error(`[webcrypto] Ed25519 probe failed; WebCrypto left unchanged: ${error instanceof Error ? error.name : "unknown error"}`);
 }).then(async () => {
-  // Mount only after Android's system font scale is applied, so no shell screen jumps from 1×.
+  // Mount after the native font scale is read so timer slots and scaled columns
+  // use the same value as WebView's system text zoom from the first frame.
   await androidBodyScaleReady;
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
