@@ -274,4 +274,14 @@ final class CaptureTransitionTests: XCTestCase {
         schedule.reset()
         XCTAssertEqual(schedule.nextDelay(at: 700), 0.5)
     }
+
+    func testStallBackoffReachesTheCapExactlyAtTenMinutesOnAWholeSecondClock() {
+        var schedule = CaptureBackoffSchedule()
+        var clock: TimeInterval = 1_000
+        XCTAssertEqual(schedule.nextDelay(at: clock), 0.5)
+        clock += 599
+        XCTAssertEqual(schedule.nextDelay(at: clock), 1)
+        clock += 1
+        XCTAssertNil(schedule.nextDelay(at: clock))
+    }
 }
