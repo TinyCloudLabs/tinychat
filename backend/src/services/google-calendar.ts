@@ -8,8 +8,10 @@ export interface GoogleCalendarEvent {
   end?: { dateTime?: string; date?: string; timeZone?: string };
   recurringEventId?: string;
   originalStartTime?: { dateTime?: string; date?: string; timeZone?: string };
-  organizer?: { self?: boolean };
-  attendees?: { self?: boolean; responseStatus?: string }[];
+  organizer?: { self?: boolean; email?: string };
+  attendees?: { self?: boolean; responseStatus?: string; email?: string }[];
+  /** Google truncated the guest list (maxAttendees); a share check must not trust a partial list. */
+  attendeesOmitted?: boolean;
   hangoutLink?: string;
   conferenceData?: { entryPoints?: { entryPointType?: string; uri?: string }[] };
 }
