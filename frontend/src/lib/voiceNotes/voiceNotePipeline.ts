@@ -1,5 +1,5 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { assertCurrent, StaleAccountContext, type AccountContext } from "./accountContext";
+import { assertCurrent, setAccountWorkPaused, StaleAccountContext, type AccountContext } from "./accountContext";
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
 import { VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { errorCode, isDiscarded, pendingStore, saveNoteForAccount, type PendingUploadTicket } from "./recorderSaves";
@@ -34,6 +34,7 @@ function logSaveStart(id: string, trigger: "stop" | "background" | "reconcile" |
 /** T22 extends these lanes with transcription and cleanup, retaining this API. */
 export function createVoiceNotePipeline(tcw: TinyCloudWeb,
   testOptions: Pick<StoreAudioOptions, "retryDelaysMs"> = {}): VoiceNotePipeline {
+  setAccountWorkPaused(tcw, false);
   let cancellation = 0;
   let accepting = true;
   const active = new Set<Promise<unknown>>();
@@ -164,8 +165,8 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
         if (discardError) throw discardError;
       });
     },
-    cancelAll() { accepting = false; cancellation++; },
-    resume() { accepting = true; },
+    cancelAll() { accepting = false; cancellation++; setAccountWorkPaused(tcw, true); },
+    resume() { accepting = true; setAccountWorkPaused(tcw, false); },
     isAccepting() { return accepting; },
     async quiescent(timeoutMs) {
       if (active.size === 0) return true;
