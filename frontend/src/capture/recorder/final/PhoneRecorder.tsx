@@ -3,6 +3,7 @@ import {
   useContext,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -135,6 +136,7 @@ export function PhoneRecorder({
     key: number;
     actions: Array<{ label: string; run: () => void }>;
   } | null>(null);
+  const toastElement = useRef<HTMLDivElement | null>(null);
   const toastReturnFocus = useRef<HTMLElement | null>(null);
   const toastKey = useRef(0);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -169,6 +171,61 @@ export function PhoneRecorder({
     setToast({ message, key, actions });
     return key;
   };
+  const positionShortToast = useCallback(() => {
+    const element = toastElement.current;
+    if (!element) return;
+    if (
+      !window.matchMedia(
+        "(orientation: portrait) and (max-width: 360px) and (max-height: 600px)",
+      ).matches
+    ) {
+      element.style.removeProperty("top");
+      return;
+    }
+
+    const timer = document.querySelector(".pr-time")?.getBoundingClientRect();
+    const ring = document.querySelector(".pr-ring")?.getBoundingClientRect();
+    const scale = document.querySelector(".pr-scale")?.getBoundingClientRect();
+    const dock = document
+      .querySelector(".pr-controls")
+      ?.getBoundingClientRect();
+    if (!timer || !ring || !scale || !dock) return;
+
+    const height = element.getBoundingClientRect().height;
+    const viewportBottom = window.innerHeight - 8;
+    const candidates = [
+      { top: timer.bottom + 8, bottom: ring.top - 8 },
+      { top: timer.bottom + 8, bottom: scale.top - 8 },
+      { top: scale.bottom + 8, bottom: dock.top - 8 },
+    ];
+    const placement = candidates.find(
+      ({ top, bottom }) =>
+        top >= 8 && top + height <= bottom && top + height <= viewportBottom,
+    );
+    const fallback = Math.max(
+      8,
+      Math.min(candidates[1]!.top, viewportBottom - height),
+    );
+    element.style.top = `${(placement ?? { top: fallback }).top}px`;
+  }, []);
+  useLayoutEffect(() => {
+    const element = toastElement.current;
+    if (!element) return;
+    let frame = 0;
+    const schedule = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(positionShortToast);
+    };
+    const observer = new ResizeObserver(schedule);
+    observer.observe(element);
+    window.addEventListener("resize", schedule);
+    schedule();
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      window.removeEventListener("resize", schedule);
+    };
+  }, [positionShortToast, toast?.key, toast?.message]);
   const showModelProgressToast = () => {
     modelDownloadStartingFrom.current = onDevice.model;
     const key = showToast("Starting the download…");
@@ -750,6 +807,7 @@ export function PhoneRecorder({
         {toast && (
           <div
             key={toast.key}
+            ref={toastElement}
             className="pr-toast"
             role="status"
             onPointerEnter={() => pauseToast("pointer")}
@@ -767,7 +825,12 @@ export function PhoneRecorder({
                 resumeToast("focus");
             }}
           >
-            <span className="pr-toast-message">{toast.message}</span>
+            <div className="pr-toast-copy">
+              <span className="pr-toast-icon" aria-hidden="true">
+                !
+              </span>
+              <span className="pr-toast-message">{toast.message}</span>
+            </div>
             {toast.actions.map((action) => (
               <button
                 key={action.label}
