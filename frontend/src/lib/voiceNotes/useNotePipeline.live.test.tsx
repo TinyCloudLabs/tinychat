@@ -24,6 +24,8 @@ import {
   type VoiceNotesPlugin,
 } from "./nativeVoiceNotes";
 import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
+import { pendingStore, type PendingUploadTicket } from "./recorderSaves";
+import { resetSpaceLaneForTests, runOnSpaceLane, setSpaceLaneQueueWaitForTests, spaceLaneSnapshot } from "../spaceWriteLane";
 import { recordingNoteSyncError } from "./voiceNoteStore";
 import { __resetAutoNoteSyncForTests, useNotePipeline, useNotePipelines, type NotePipelineSource, type NotePipelineView } from "./useNotePipeline";
 
@@ -46,6 +48,11 @@ const settle = () => act(async () => { await new Promise((resolve) => setTimeout
 /** Settles until something that follows a chain of lane and store hops has happened. */
 async function settleUntil(done: () => boolean) {
   for (let turn = 0; turn < 50 && !done(); turn++) await settle();
+}
+/** For what waits on a real timer (a deadline): polls the wall clock, not a count of turns, so load cannot cut it short. */
+async function waitFor(done: () => boolean, limitMs = 5000) {
+  const until = Date.now() + limitMs;
+  while (!done() && Date.now() < until) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
 }
 
 // --- The phone -----------------------------------------------------------------------------------------------------
@@ -138,9 +145,17 @@ afterEach(async () => {
 const recorder = (patch: Partial<RecorderValue> = {}): Partial<RecorderValue> => ({ tcw: null, signIn: null, transcription: undefined, ...patch });
 
 async function mountOne(source: NotePipelineSource, value: Partial<RecorderValue> = {}, id: string = ID) {
-  const seen: { view: NotePipelineView | null } = { view: null };
+  const seen: { view: NotePipelineView | null; history: string[] } = { view: null, history: [] };
   let renders = 0;
-  function Probe() { seen.view = useNotePipeline(id, source); renders += 1; return null; }
+  function Probe() {
+    seen.view = useNotePipeline(id, source);
+    if (seen.view !== null) {
+      const transcript = stepOf(seen.view.pipeline, "transcript");
+      seen.history.push(`${transcript.state}:${transcript.caption ?? transcript.blocker?.cause ?? ""}`);
+    }
+    renders += 1;
+    return null;
+  }
   root = createRoot(container);
   await act(async () => root!.render(<StaticRecorderProvider value={recorder(value)}><Probe /></StaticRecorderProvider>));
   await settle();
@@ -444,7 +459,7 @@ describe("a failed read that other evidence outranks is still shown", () => {
 
 // --- A space of fake rows ------------------------------------------------------------------------------------------
 
-function fakeSpace(did: string, rowOf: (id: string) => Record<string, unknown> | null, gate: Promise<void> | null = null, stallSchema = false) {
+function fakeSpace(did: string, rowOf: (id: string) => Record<string, unknown> | null, gate: Promise<void> | null = null, stallSchema: boolean | number = false) {
   const log = { rowQueries: [] as string[][], schemaChecks: 0 };
   const tcw = {
     did,
@@ -453,7 +468,7 @@ function fakeSpace(did: string, rowOf: (id: string) => Record<string, unknown> |
       db: () => ({
         query: async (sql: string, params: string[]) => {
           if (gate !== null) await gate;
-          if (sql.includes("sqlite_schema")) { log.schemaChecks += 1; if (stallSchema) await new Promise(() => {}); return { ok: true, data: { rows: [] } }; }
+          if (sql.includes("sqlite_schema")) { log.schemaChecks += 1; if (stallSchema === true || (typeof stallSchema === "number" && log.schemaChecks <= stallSchema)) await new Promise(() => {}); return { ok: true, data: { rows: [] } }; }
           if (sql.includes("FROM connector_meeting")) {
             log.rowQueries.push([...params]);
             return { ok: true, data: { rows: params.flatMap((id) => { const metadata = rowOf(id); return metadata === null ? [] : [[`row-${id}`, id, "exo-voice-note", JSON.stringify(metadata), "2026-01-01"]]; }) } };
@@ -643,26 +658,106 @@ describe("a saved note's pipeline does not wait for its space row (P6 sim pass, 
   });
 });
 
-describe("the space read is bounded (P6 r1, blocker 1)", () => {
-  afterEach(() => setVoiceNoteSaveDeadlineForTests(null));
+describe("the space read is bounded (P6 r1 blocker 1, r2)", () => {
+  afterEach(() => { setVoiceNoteSaveDeadlineForTests(null); setSpaceLaneQueueWaitForTests(null); resetSpaceLaneForTests(); });
+  const DEADLINE_MS = 20;
 
   test("a stalled commit read ends 'Checking your space…' in a cause and a Try again that reads again", async () => {
     phone.recordings = [recording(ID, "on-device", stt("done"))];
     const space = fakeSpace("did:p6-r1-stall", () => ({}), null, true);
-    setVoiceNoteSaveDeadlineForTests(20);
+    setVoiceNoteSaveDeadlineForTests(DEADLINE_MS);
     const { seen } = await mountOne({ tcw: space.tcw, saved: true });
-    expect(stepOf(seen.view!.pipeline, "transcript").caption).toBe("Checking your space…");
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 80)); });
+    // The first render is the waiting state, whatever the clock does after it.
+    expect(seen.history[0]).toBe("waiting:Checking your space…");
+    // The stalled read times out, is read once more on its own (the lane is idle), and times out again: now it stays failed.
+    await waitFor(() => space.log.schemaChecks >= 2 && seen.view !== null && stepOf(seen.view.pipeline, "transcript").state === "failed");
     const step = stepOf(seen.view!.pipeline, "transcript");
     expect(step.state).toBe("failed");
     expect(step.blocker?.cause).toContain("couldn't be loaded in time");
     expect(step.blocker?.action?.kind).toBe("retry");
+    expect(space.log.schemaChecks).toBe(2);
     // No attempt is made on a guess about a space that could not be read.
     expect(phone.transcriptReads).toEqual([]);
-    const before = space.log.schemaChecks;
     await act(async () => seen.view!.onAction("retry"));
-    await settleUntil(() => space.log.schemaChecks > before);
-    expect(space.log.schemaChecks).toBeGreaterThan(before);
+    await waitFor(() => space.log.schemaChecks >= 3);
+    expect(space.log.schemaChecks).toBe(3);
+    // Try again is a manual read: the one automatic read was spent.
+    await waitFor(() => stepOf(seen.view!.pipeline, "transcript").state === "failed");
+    await settle();
+    expect(space.log.schemaChecks).toBe(3);
+  });
+
+  test("a read that timed out is read again once by itself, and the note recovers", async () => {
+    phone.recordings = [recording(ID, "on-device", stt("done"))];
+    const space = fakeSpace("did:p6-r2-auto", () => ({ transcription_outcome: "transcribed" }), null, 1);
+    setVoiceNoteSaveDeadlineForTests(DEADLINE_MS);
+    const { seen } = await mountOne({ tcw: space.tcw, saved: true });
+    expect(seen.history[0]).toBe("waiting:Checking your space…");
+    await waitFor(() => stepOf(seen.view!.pipeline, "transcript").state === "done");
+    expect(stepOf(seen.view!.pipeline, "transcript").state).toBe("done");
+    expect(space.log.schemaChecks).toBe(2);
+    expect(seen.view!.pipeline.blocker).toBeUndefined();
+    expect(phone.transcriptReads).toEqual([]);
+  });
+});
+
+describe("a read queued behind uploads is not a failed read (P6 r2)", () => {
+  let ticket: PendingUploadTicket | null = null;
+  let finishUpload: () => void = () => {};
+  const beginUpload = async () => {
+    // Another note is uploading: it holds the write lane, and the phone lists it as an upload in progress.
+    const held = new Promise<void>((resolve) => { finishUpload = resolve; });
+    ticket = pendingStore.enqueueUpload(OTHER);
+    const upload = runOnSpaceLane(() => held, { operation: "upload", timeoutMs: 60_000 });
+    await act(async () => { await pendingStore.refresh(); });
+    return { upload };
+  };
+  afterEach(async () => {
+    finishUpload();
+    if (ticket !== null) pendingStore.settleUploadQueue(ticket);
+    ticket = null;
+    setVoiceNoteSaveDeadlineForTests(null); setSpaceLaneQueueWaitForTests(null); resetSpaceLaneForTests();
+  });
+
+  test("it says it is checking after the uploads, is no error however long that takes, and completes when they finish", async () => {
+    phone.recordings = [recording(ID, "on-device", stt("done")), recording(OTHER, "on-device", stt("queued"))];
+    const space = fakeSpace("did:p6-r2-queued", () => ({ transcription_outcome: "transcribed" }));
+    // The read's own deadline is far shorter than this wait: it must not be running while the read is queued.
+    setVoiceNoteSaveDeadlineForTests(150);
+    const { upload } = await beginUpload();
+    const { seen } = await mountOne({ tcw: space.tcw, saved: true });
+    expect(spaceLaneSnapshot().busy).toBe(true);
+    expect(seen.history[0]).toBe("waiting:Checking your space · after uploads");
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 600)); });
+    expect(seen.history.every((entry) => entry === "waiting:Checking your space · after uploads")).toBe(true);
+    expect(seen.view!.pipeline.blocker).toBeUndefined();
+    expect(space.log.rowQueries).toEqual([]);
+    await act(async () => { finishUpload(); await upload; });
+    await waitFor(() => stepOf(seen.view!.pipeline, "transcript").state === "done");
+    expect(stepOf(seen.view!.pipeline, "transcript").state).toBe("done");
+    expect(space.log.rowQueries).toEqual([[ID]]);
+    expect(phone.transcriptReads).toEqual([]);
+  });
+
+  test("a wait that outlasts the lane's own limit says so, and the read is made again once the uploads are done", async () => {
+    phone.recordings = [recording(ID, "on-device", stt("done")), recording(OTHER, "on-device", stt("queued"))];
+    const space = fakeSpace("did:p6-r2-queue-limit", () => ({ transcription_outcome: "transcribed" }));
+    setSpaceLaneQueueWaitForTests(40);
+    const { upload } = await beginUpload();
+    const { seen } = await mountOne({ tcw: space.tcw, saved: true });
+    await waitFor(() => stepOf(seen.view!.pipeline, "transcript").state === "failed");
+    const step = stepOf(seen.view!.pipeline, "transcript");
+    expect(step.blocker?.cause).toBe("Couldn't check this note's transcript · Your space's copy of this note wouldn't open: Saving is waiting for another sync to finish. Try again shortly.");
+    expect(step.blocker?.cause).not.toContain("Check your connection");
+    expect(step.blocker?.action?.kind).toBe("retry");
+    // The lane is still held: the one automatic read waits for it to be idle.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 150)); });
+    expect(space.log.rowQueries).toEqual([]);
+    expect(stepOf(seen.view!.pipeline, "transcript").state).toBe("failed");
+    await act(async () => { finishUpload(); await upload; });
+    await waitFor(() => stepOf(seen.view!.pipeline, "transcript").state === "done");
+    expect(stepOf(seen.view!.pipeline, "transcript").state).toBe("done");
+    expect(space.log.rowQueries).toEqual([[ID]]);
   });
 });
 

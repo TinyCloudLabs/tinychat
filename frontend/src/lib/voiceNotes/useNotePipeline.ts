@@ -10,7 +10,7 @@ import { useRecorder } from "@/capture/recorder/RecorderProvider";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { PlatformContext } from "@/lib/platform";
 import { localTranscriptionUnavailable } from "./captureEngine";
-import { resolveVoiceNoteRows, spaceLaneSnapshot, subscribeSpaceLane } from "./voiceNoteRows";
+import { resolveVoiceNoteRows, SpaceLaneQueueWaitTimeout, spaceLaneSnapshot, subscribeSpaceLane } from "./voiceNoteRows";
 import { legacyTranscriptMetadata, readTranscriptCommits } from "./voiceNoteCommits";
 import {
   VoiceNotes,
@@ -44,7 +44,7 @@ import {
 } from "./onDeviceTranscriber";
 import { useQuarantinedRecordings } from "./quarantine";
 import { loadNote } from "./recordingNotes";
-import { withVoiceNoteReadDeadline } from "./saveDeadline";
+import { VOICE_NOTE_READ_TIMEOUT_MESSAGE, VoiceNoteSaveTimeout, withVoiceNoteReadDeadline } from "./saveDeadline";
 import { pendingStore, type PendingNote } from "./recorderSaves";
 import {
   recordingNoteSyncError,
@@ -111,6 +111,8 @@ export interface NotePipelineFacts {
   transcriptSync: OnDeviceTranscriptSyncState | null;
   /** The space row (read by the hook, behind the write lane) has not answered yet: `rowMetadata` is null for want of an answer, not for want of a row. */
   spaceReading?: boolean;
+  /** With `spaceReading`: uploads are ahead of the read in the write lane. */
+  spaceAfterUploads?: boolean;
   /** This note's private-cloud job (`transcriber.snapshot().jobs`). */
   cloudJob: NoteTranscriptionState | null;
   /**
@@ -260,7 +262,7 @@ export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineIn
       onDevice: route === "on-device" ? onDeviceInput(facts) : null,
       cloud: route === "private-cloud" ? facts.cloudJob : null,
       readError: facts.readError ?? null,
-      ...(facts.spaceReading === true ? { spaceReading: true } : {}),
+      ...(facts.spaceReading === true ? { spaceReading: true, ...(facts.spaceAfterUploads === true ? { afterUploads: true } : {}) } : {}),
     },
     notes: localNoteError !== null ? { state: "unreadable", cause: localNoteError } : notesSyncState(facts),
   };
@@ -471,7 +473,8 @@ function useLocalNotes(ids: readonly string[], reread: unknown): ReadonlyMap<str
   return notes;
 }
 
-type RowRead = { metadata: Record<string, unknown> | null } | { error: string };
+/** `timeout`: the read ran out of time (its call deadline, or its wait in the write lane): worth one automatic read once the lane is idle. */
+type RowRead = { metadata: Record<string, unknown> | null } | { error: string; timeout?: true };
 
 const clientIds = new WeakMap<object, number>();
 let clientCount = 0;
@@ -490,7 +493,12 @@ function spaceIdentity(tcw: TinyCloudWeb): string {
  * one rows query and one commits query for the whole set, however many notes.
  */
 async function readSpaceRows(tcw: TinyCloudWeb, ids: readonly string[]): Promise<Map<string, RowRead>> {
-  const [rows, commits] = await Promise.all([resolveVoiceNoteRows(tcw, ids), readTranscriptCommits(tcw, ids)]);
+  // The rows query runs on the write lane, which bounds its wait (`SpaceLaneQueueWaitTimeout`) and, once it is running, its call.
+  // The commit reads do not use the lane and have no deadline of their own, so they get the UI's.
+  const [rows, commits] = await Promise.all([
+    resolveVoiceNoteRows(tcw, ids),
+    withVoiceNoteReadDeadline(`read the transcript commits of ${ids.length} notes`, () => readTranscriptCommits(tcw, ids)),
+  ]);
   return new Map(ids.map((id): [string, RowRead] => {
     const row = rows.get(id)?.row ?? null;
     const commit = commits.get(id) ?? null;
@@ -541,11 +549,12 @@ function useSpaceRows(wanted: readonly { id: string; tcw: TinyCloudWeb; signal: 
         }
         if (changed) setRows(new Map(cache.current));
       };
-      const dueIds = due.map((entry) => entry.id);
-      // The rows query waits in the write lane behind uploads, and the commit reads have no deadline of their own: the whole read is bounded here, so "Checking your space…" ends in a cause and a retry.
-      withVoiceNoteReadDeadline(`read the space rows of ${dueIds.length} notes`, () => readSpaceRows(tcw, dueIds)).then(settle, (caught: unknown) => {
+      readSpaceRows(tcw, due.map((entry) => entry.id)).then(settle, (caught: unknown) => {
         console.error("[NotePipeline] Could not read the notes' rows in the space", due.map((entry) => entry.id), caught);
-        settle(new Map(due.map(({ id }): [string, RowRead] => [id, { error: `Your space's copy of this note wouldn't open: ${messageOf(caught)}` }])));
+        // A call that ran out of time says so as a read; a wait in the lane that ran out keeps its own cause.
+        const reason = caught instanceof VoiceNoteSaveTimeout ? VOICE_NOTE_READ_TIMEOUT_MESSAGE : messageOf(caught);
+        const timeout = caught instanceof VoiceNoteSaveTimeout || caught instanceof SpaceLaneQueueWaitTimeout;
+        settle(new Map(due.map(({ id }): [string, RowRead] => [id, { error: `Your space's copy of this note wouldn't open: ${reason}`, ...(timeout ? { timeout: true as const } : {}) }])));
       });
     }
   }, [key]);
@@ -663,6 +672,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
   const refreshQuarantine = soft !== null ? soft.refreshQuarantine : quarantine.refresh;
   const captureReadError = quarantineError != null ? messageOf(quarantineError) : null;
   const [rowAttempt, setRowAttempt] = useState(0);
+  const [rowRetries, setRowRetries] = useState<ReadonlyMap<string, number>>(new Map());
   const wantedRows = entries.flatMap(({ id, source }) => {
     const tcw = source.tcw;
     // Not before the phone has answered: its job state is part of what makes a note's row worth reading again.
@@ -670,6 +680,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
     if (source.metadata !== undefined || tcw === null || !source.saved || !nativeRead.ready) return [];
     const signal = [
       rowAttempt,
+      rowRetries.get(id) ?? 0,
       pending.notes?.some((note) => note.id === id) ? "pending" : "settled",
       recorder.transcription?.jobs.get(id)?.kind ?? "",
       natives.get(id)?.stt?.state ?? "",
@@ -679,6 +690,22 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
     return [{ id, tcw, signal }];
   });
   const rows = useSpaceRows(wantedRows);
+  // A read that ran out of time is tried once more when the write lane is idle (the uploads that held it up are done); Try again stays.
+  const autoRetried = useRef(new Set<string>());
+  useEffect(() => {
+    const due: string[] = [];
+    for (const { id, tcw } of wantedRows) {
+      const entry = rows.get(id);
+      const identity = spaceIdentity(tcw);
+      if (entry === undefined || entry.identity !== identity) continue;
+      const retryKey = `${identity}\t${id}`;
+      if (!("error" in entry.read)) { autoRetried.current.delete(retryKey); continue; }
+      if (laneBusy || entry.read.timeout !== true || autoRetried.current.has(retryKey)) continue;
+      autoRetried.current.add(retryKey);
+      due.push(id);
+    }
+    if (due.length > 0) setRowRetries((before) => { const next = new Map(before); for (const id of due) next.set(id, (before.get(id) ?? 0) + 1); return next; });
+  }, [rows, laneBusy, wantedRows]);
   const autoSyncVersion = useStoreVersion(subscribeAutoSync);
   const reread = useCallback(() => {
     nativeRead.reread();
@@ -723,6 +750,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
         onDeviceStatus: hasOnDevice ? onDeviceStatus : null,
         transcriptSync: tcw === null ? null : onDeviceTranscriptSyncState(tcw, id),
         spaceReading,
+        spaceAfterUploads: spaceReading && pending.notes?.some((note) => note.upload !== undefined) === true,
         cloudJob: recorder.transcription?.jobs.get(id) ?? null,
       };
       // A saved note with text and no sync of this revision gets its automatic attempt (`useAutoNoteSync`); until it settles it is "syncing".
