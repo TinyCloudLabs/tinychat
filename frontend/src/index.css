@@ -165,6 +165,23 @@
        2×: even at the cap, a 56px tab bar is 112px and a 64px ribbon is 128px. */
     font-size: clamp(16px, calc(16px * var(--ios-body-scale, 1)), 32px);
   }
+  html[data-platform="android"] {
+    line-height: 1.5;
+    /* Android textZoom is normalized to 100; its system fontScale drives rem and em sizing here. */
+    font-size: clamp(16px, calc(16px * var(--android-body-scale, 1)), 32px);
+  }
+  .dynamic-type-warning {
+    position: fixed;
+    z-index: 10000;
+    inset: max(8px, env(safe-area-inset-top)) 12px auto;
+    padding: 10px 14px;
+    border-radius: 12px;
+    background: hsl(var(--destructive));
+    color: hsl(var(--destructive-foreground));
+    box-shadow: 0 8px 24px rgb(0 0 0 / 20%);
+    font-size: 0.875rem;
+    line-height: 1.4;
+  }
   body {
     @apply bg-background text-foreground antialiased;
     caret-color: hsl(var(--primary));

@@ -544,9 +544,13 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
             await context.addInitScript((scale) => {
               const apply = () => {
                 const root = document.documentElement;
-                if (new URLSearchParams(location.search).get("platform") === "ios") {
+                const platform = new URLSearchParams(location.search).get("platform");
+                if (platform === "ios") {
                   root.style.removeProperty("font-size");
                   root.style.setProperty("--ios-body-scale", String(scale));
+                } else if (platform === "android") {
+                  root.style.removeProperty("font-size");
+                  root.style.setProperty("--android-body-scale", String(scale));
                 } else {
                   root.style.setProperty("font-size", `${scale * 100}%`);
                 }
@@ -626,12 +630,12 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                   findings.push({ check: "chat-empty-start", detail: "empty Chat showed the scroll-to-bottom overlay" });
                 }
               }
-              if (screen.platform === "ios" && viewport.textScale) {
+              if ((screen.platform === "ios" || screen.platform === "android") && viewport.textScale) {
                 const rootSize = await page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).fontSize));
                 const expected = Math.max(16, Math.min(32, 16 * viewport.textScale));
-                if (Math.abs(rootSize - expected) > 0.1) findings.push({ check: "ios-text-scale", detail: `root font-size ${rootSize}px; expected ${expected}px at scale ${viewport.textScale}` });
+                if (Math.abs(rootSize - expected) > 0.1) findings.push({ check: `${screen.platform}-text-scale`, detail: `root font-size ${rootSize}px; expected ${expected}px at scale ${viewport.textScale}` });
               }
-              if (screen.platform === "ios") {
+              if (screen.platform === "ios" || screen.platform === "android") {
                 const scale = Math.min(2, viewport.textScale ?? 1);
                 const typography = screen.id.startsWith("capture-soft-")
                   ? [

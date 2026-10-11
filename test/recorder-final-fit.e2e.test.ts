@@ -134,15 +134,9 @@ async function open(
   );
   await page.waitForSelector(ready);
   if (viewport.fontScale !== 1) {
-    // What Android's font scale does to a WebView: every font size is multiplied, whatever unit it was set in.
+    // Android textZoom is 100%; its system font scale is applied to the root, like iOS.
     await page.evaluate((scale) => {
-      const elements = [...document.querySelectorAll<HTMLElement>("*")];
-      const sizes = elements.map((el) =>
-        parseFloat(getComputedStyle(el).fontSize),
-      );
-      elements.forEach((el, i) => {
-        el.style.fontSize = `${sizes[i]! * scale}px`;
-      });
+      document.documentElement.style.setProperty("--android-body-scale", String(scale));
     }, viewport.fontScale);
   }
   if (options.keyboard) {
@@ -223,6 +217,28 @@ async function parts(page: Page) {
 // A part is only compared with the parts it does not contain by design: the plus lives at the timer's side,
 // and the minimise button and the pill share the top row.
 const BY_DESIGN = new Set(["timer|plus"]);
+
+for (const viewport of fitViewports.filter((candidate) => candidate.fontScale === 2)) {
+  test(`${viewport.name}, android, timer digit slots and plus do not overlap`, async () => {
+    const page = await open("recording", "light", viewport, ".pr-ring");
+    const overlaps = await page.evaluate(() => {
+      const intersect = (a: DOMRect, b: DOMRect) =>
+        a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+      const digits = [...document.querySelectorAll<HTMLElement>(".pr-digits > span")];
+      const boxes = digits.map((digit) => digit.getBoundingClientRect());
+      const plus = document.querySelector<HTMLElement>(".pr-time-slot")?.getBoundingClientRect();
+      return {
+        digitPairs: boxes.some((box, index) => boxes.slice(index + 1).some((other) => intersect(box, other))),
+        plus: Boolean(plus && boxes.some((box) => intersect(box, plus))),
+        rootSize: getComputedStyle(document.documentElement).fontSize,
+      };
+    });
+    expect(overlaps.digitPairs).toBe(false);
+    expect(overlaps.plus).toBe(false);
+    expect(overlaps.rootSize).toBe("32px");
+    await page.context().close();
+  });
+}
 
 for (const theme of ["light", "dark"] as const) {
   for (const viewport of fitViewports) {

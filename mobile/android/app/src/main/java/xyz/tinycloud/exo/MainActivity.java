@@ -45,6 +45,7 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
         registerPlugin(ThemeBarsPlugin.class);
         registerPlugin(OnDeviceSttPlugin.class);
         registerPlugin(HealthPlugin.class);
+        registerPlugin(AndroidDynamicTypePlugin.class);
         // TC-524 location spike. Registered in every build, but only the debug manifest declares
         // location permissions and the location foreground service; release cannot capture location.
         registerPlugin(LocationPlugin.class);
@@ -52,6 +53,7 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
         if (savedInstanceState != null) consumedCommandId = savedInstanceState.getString("consumedCommandId");
         consumeIntent(getIntent());
         super.onCreate(savedInstanceState);
+        normalizeWebViewTextZoom();
         CaptureEngine.get(this).addListener(this);
     }
     @Override protected void onNewIntent(Intent intent) {
@@ -70,6 +72,7 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
     }
     @Override public void onResume() {
         super.onResume();
+        normalizeWebViewTextZoom();
         // Lifecycle reaches RESUMED after onResume returns.
         main.post(() -> {
             if (MicShortcutRecovery.denied(this)) {
@@ -83,6 +86,12 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
             CaptureEngine.get(this).onAppActive();
             handlePending();
         });
+    }
+    /** The root CSS size applies Android's system font scale to rem/em consistently. */
+    private void normalizeWebViewTextZoom() {
+        if (bridge != null && bridge.getWebView() != null) {
+            bridge.getWebView().getSettings().setTextZoom(100);
+        }
     }
     private void handlePending() {
         if (!getLifecycle().getCurrentState().isAtLeast(Lifecycle.State.RESUMED)) return;
