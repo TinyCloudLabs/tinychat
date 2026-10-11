@@ -54,6 +54,7 @@ import {
 } from "./voiceNoteStore";
 import {
   accountStorageKey,
+  capacitorPtxPut,
   createVoiceNoteTranscriber,
   createVoiceNoteCloud,
   createVoiceNoteCloudForBuild,
@@ -88,6 +89,27 @@ const CAPS: PrivateCloudCapabilities = {
 };
 const AUDIO = { mimeType: "audio/mp4", base64: bytesToBase64(new Uint8Array([1, 2, 3, 4])) };
 const originalVoiceNotes = VoiceNotes;
+test("native PTX upload passes the file descriptor and progress across the JS boundary", async () => {
+  const fake = createFakeVoiceNotes();
+  let upload: unknown;
+  let progressListener: ((event: { uploadId: string; loaded: number; total: number }) => void) | undefined;
+  fake.plugin.uploadAudio = async (request) => { upload = request; return { status: 201, body: null }; };
+  fake.plugin.addListener = (async (_event: string, listener: never) => {
+    progressListener = listener as typeof progressListener;
+    return { remove: async () => {} };
+  }) as typeof fake.plugin.addListener;
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  const progress: number[] = [];
+  try {
+    const result = await capacitorPtxPut({ url: `${ORIGIN}/uploads/${ID}`, capability: CAP, contentType: "audio/mp4",
+      base64: "", nativeFileId: "rec-1", contentLength: 181_440_000, correlationId: "upload-1",
+      onProgress: (loaded, total) => progress.push(loaded / total) });
+    progressListener?.({ uploadId: "upload-1", loaded: 90_720_000, total: 181_440_000 });
+    expect(result.status).toBe(201);
+    expect(upload).toMatchObject({ id: "rec-1", contentLength: 181_440_000, contentType: "audio/mp4", uploadId: "upload-1" });
+    expect(progress).toEqual([0.5]);
+  } finally { __setVoiceNotesForTests(originalVoiceNotes, { available: null }); }
+});
 beforeEach(() => {
   const fake = createFakeVoiceNotes();
   fake.plugin.listPending = async () => ({ recordings: [{ ...RECORDING, ledger: {

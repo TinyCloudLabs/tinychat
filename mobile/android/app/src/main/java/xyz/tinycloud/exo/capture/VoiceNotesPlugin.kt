@@ -22,7 +22,11 @@ import org.json.JSONObject
 import xyz.tinycloud.exo.capture.core.MAX_DURATION_MS
 import xyz.tinycloud.exo.capture.core.AccountStateDebugFailure
 import java.io.FileNotFoundException
+import java.io.FileInputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.io.RandomAccessFile
+import java.util.concurrent.ConcurrentHashMap
 import java.util.UUID
 
 @CapacitorPlugin(name = "VoiceNotes", permissions = [
@@ -33,6 +37,7 @@ import java.util.UUID
 class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
     private lateinit var engine: CaptureEngine
     private val main = Handler(Looper.getMainLooper())
+    private val audioUploads = ConcurrentHashMap<String, HttpURLConnection>()
     @Volatile private var pendingStart: Pair<String, PluginCall>? = null
     override fun load() {
         engine = CaptureEngine.get(context)
@@ -161,6 +166,51 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
             JSONObject().put("id", id).put("offset", offset).put("base64", Base64.encodeToString(bytes, Base64.NO_WRAP))
                 .put("bytesRead", count).put("size", size).put("eof", offset + count >= size)
         } } catch (_: FileNotFoundException) { throw IllegalStateException("not_found") }
+    }
+    @PluginMethod fun audioMetadata(call: PluginCall) = async(call) {
+        val id = call.getString("id") ?: throw IllegalArgumentException("invalid_argument")
+        engine.library.requireId(id)
+        val file = engine.library.audio(id)
+        if (!file.isFile) throw IllegalStateException("not_found")
+        val mime = engine.library.list().firstOrNull { it.optString("id") == id }?.optString("mimeType") ?: "audio/mp4"
+        JSONObject().put("size", file.length()).put("mimeType", mime).put("sha256", AudioUploadFiles.sha256(file))
+    }
+    @PluginMethod fun uploadAudio(call: PluginCall) = async(call) {
+        val id = call.getString("id") ?: throw IllegalArgumentException("invalid_argument")
+        val uploadId = call.getString("uploadId") ?: throw IllegalArgumentException("invalid_argument")
+        val url = call.getString("url") ?: throw IllegalArgumentException("invalid_argument")
+        val capability = call.getString("capability") ?: throw IllegalArgumentException("invalid_argument")
+        val contentType = call.getString("contentType") ?: throw IllegalArgumentException("invalid_argument")
+        val contentLength = call.data.optLong("contentLength", -1)
+        val file = engine.library.audio(id)
+        if (!file.isFile || file.length() != contentLength) throw IllegalStateException("not_found")
+        val connection = URL(url).openConnection() as HttpURLConnection
+        connection.requestMethod = "PUT"; connection.doOutput = true; connection.instanceFollowRedirects = false
+        connection.connectTimeout = 60_000; connection.readTimeout = 180_000
+        connection.setFixedLengthStreamingMode(contentLength)
+        connection.setRequestProperty("Authorization", "Bearer $capability")
+        connection.setRequestProperty("Content-Type", contentType)
+        connection.setRequestProperty("X-Correlation-Id", call.getString("correlationId") ?: uploadId)
+        audioUploads[uploadId] = connection
+        try {
+            FileInputStream(file).use { input -> connection.outputStream.use { output ->
+                val buffer = ByteArray(1024 * 1024); var sent = 0L
+                while (true) {
+                    val count = input.read(buffer); if (count < 0) break
+                    output.write(buffer, 0, count); sent += count
+                    val loaded = sent
+                    main.post { notifyListeners("audioUploadProgress", JSObject().put("uploadId", uploadId).put("loaded", loaded).put("total", contentLength)) }
+                }
+            } }
+            val status = connection.responseCode
+            val stream = if (status >= 400) connection.errorStream else connection.inputStream
+            val text = stream?.bufferedReader()?.use { it.readText() }
+            JSONObject().put("status", status).put("body", try { if (text.isNullOrBlank()) JSONObject.NULL else JSONObject(text) } catch (_: Exception) { JSONObject.NULL })
+        } finally { audioUploads.remove(uploadId); connection.disconnect() }
+    }
+    @PluginMethod fun cancelAudioUpload(call: PluginCall) {
+        val uploadId = call.getString("uploadId") ?: run { call.reject("invalid_argument", "invalid_argument"); return }
+        audioUploads.remove(uploadId)?.disconnect(); call.resolve()
     }
     @PluginMethod fun setRecordingOptions(call: PluginCall) = async(call) {
         engine.setRecordingOptions(call.data)

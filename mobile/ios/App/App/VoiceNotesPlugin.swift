@@ -1,18 +1,19 @@
 import AVFoundation
 import Capacitor
 import CaptureCore
+import CryptoKit
 import ExoCapture
 import Foundation
 import UIKit
 
 @objc(VoiceNotesPlugin)
-public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
+public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionDataDelegate, URLSessionTaskDelegate {
     public let identifier = "VoiceNotesPlugin"
     public let jsName = "VoiceNotes"
     public let pluginMethods: [CAPPluginMethod] = [
         "start", "stop", "status", "readAudioChunk", "deleteAudio", "listPending",
         "pause", "resume", "discard", "setRecordingOptions", "getCaptureDefaults",
-        "setCaptureDefaults", "claim", "updateLedger", "localAudioUrl", "putTranscript",
+        "setCaptureDefaults", "claim", "updateLedger", "localAudioUrl", "audioMetadata", "uploadAudio", "cancelAudioUpload", "putTranscript",
         "getTranscript", "listInputs", "selectInput", "listQuarantine",
         "deleteQuarantined", "listOutbox", "completeOutbox", "setAccountState",
         "beginRemoteOp", "recordRemoteResult", "retryRecovery", "discardFailedRecording",
@@ -21,6 +22,10 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
 
     private let capture = CaptureEngine.shared
     private var observer: UUID?
+    private lazy var audioUploadSession = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+    private let uploadLock = NSLock()
+    private var uploadCalls: [Int: (CAPPluginCall, String, Data)] = [:]
+    private var uploadTasks: [String: URLSessionUploadTask] = [:]
 
     override public func load() {
         capture.recoverOnce()
@@ -272,6 +277,89 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         do { call.resolve(["url": try capture.library.localAudioURL(id).absoluteString]) }
         catch { reject(call, error) }
+    }
+
+    @objc func audioMetadata(_ call: CAPPluginCall) {
+        guard let id = call.getString("id") else { call.reject("id is required", "invalid_argument"); return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let url = try self.capture.library.localAudioURL(id)
+                let size = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
+                let digest = SHA256.hash(data: try Data(contentsOf: url, options: .mappedIfSafe))
+                call.resolve(["size": size, "mimeType": "audio/mp4", "sha256": digest.map { String(format: "%02x", $0) }.joined()])
+            } catch { self.reject(call, error) }
+        }
+    }
+
+    @objc func uploadAudio(_ call: CAPPluginCall) {
+        guard let id = call.getString("id"), let uploadId = call.getString("uploadId"),
+              let rawURL = call.getString("url"), let url = URL(string: rawURL),
+              let capability = call.getString("capability"), let contentType = call.getString("contentType"),
+              let contentLength = call.getInt("contentLength"), contentLength > 0 else {
+            call.reject("Invalid audio upload request", "invalid_argument"); return
+        }
+        do {
+            let fileURL = try capture.library.localAudioURL(id)
+            let actual = (try FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? NSNumber)?.intValue
+            guard actual == contentLength else { call.reject("not_found", "not_found"); return }
+            var request = URLRequest(url: url)
+            request.httpMethod = "PUT"
+            request.setValue("Bearer \(capability)", forHTTPHeaderField: "Authorization")
+            request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+            request.setValue(String(contentLength), forHTTPHeaderField: "Content-Length")
+            request.setValue(call.getString("correlationId") ?? uploadId, forHTTPHeaderField: "X-Correlation-Id")
+            let task = audioUploadSession.uploadTask(with: request, fromFile: fileURL)
+            uploadLock.lock()
+            uploadTasks[uploadId] = task
+            uploadCalls[task.taskIdentifier] = (call, uploadId, Data())
+            uploadLock.unlock()
+            task.resume()
+        } catch { reject(call, error) }
+    }
+
+    @objc func cancelAudioUpload(_ call: CAPPluginCall) {
+        guard let uploadId = call.getString("uploadId") else { call.reject("uploadId is required", "invalid_argument"); return }
+        uploadLock.lock()
+        let task = uploadTasks.removeValue(forKey: uploadId)
+        uploadLock.unlock()
+        task?.cancel()
+        call.resolve()
+    }
+
+    public func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
+                           totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        uploadLock.lock()
+        let entry = uploadCalls[task.taskIdentifier]
+        uploadLock.unlock()
+        guard let entry else { return }
+        DispatchQueue.main.async {
+            self.notifyListeners("audioUploadProgress", data: ["uploadId": entry.1, "loaded": totalBytesSent, "total": totalBytesExpectedToSend])
+        }
+    }
+
+    public func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        uploadLock.lock()
+        guard let entry = uploadCalls[dataTask.taskIdentifier] else { uploadLock.unlock(); return }
+        uploadCalls[dataTask.taskIdentifier] = (entry.0, entry.1, entry.2 + data)
+        uploadLock.unlock()
+    }
+
+    public func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                           newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+
+    public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        uploadLock.lock()
+        let entry = uploadCalls.removeValue(forKey: task.taskIdentifier)
+        if let entry { uploadTasks.removeValue(forKey: entry.1) }
+        uploadLock.unlock()
+        guard let entry else { return }
+        if let error { entry.0.reject("Upload connection failed", "upload_outcome_unknown", error); return }
+        let response = task.response as? HTTPURLResponse
+        var body: Any = NSNull()
+        if !entry.2.isEmpty { body = (try? JSONSerialization.jsonObject(with: entry.2)) ?? NSNull() }
+        entry.0.resolve(["status": response?.statusCode ?? 0, "body": body])
     }
 
     @objc func putTranscript(_ call: CAPPluginCall) {

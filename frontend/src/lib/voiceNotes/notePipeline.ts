@@ -10,6 +10,7 @@ import {
   PRIVATE_COPY,
   SPACE_COPY,
   STEP_LABEL,
+  percentText,
 } from "./notePipelineCopy";
 
 export type PipelineDevice = "phone" | "mac";
@@ -77,7 +78,7 @@ export type PipelineBlockedReason = "checking" | "unavailable" | "check-failed" 
 export type PipelineCloudStatus =
   | { kind: "waiting"; position: number }
   | { kind: "preparing" }
-  | { kind: "uploading" }
+  | { kind: "uploading"; progress?: number }
   | { kind: "queued"; position: number | null }
   | { kind: "processing"; completed: number | null; total: number | null }
   | { kind: "saving" };
@@ -315,7 +316,9 @@ function cloudStep(cloud: PipelineCloud | null, spaceSaved: boolean, checkingCap
       switch (status.kind) {
         case "waiting": return { state: "waiting", caption: PRIVATE_COPY.waiting(status.position) };
         case "preparing": return { state: "active", caption: PRIVATE_COPY.preparing };
-        case "uploading": return { state: "active", caption: PRIVATE_COPY.sending };
+        case "uploading": return status.progress === undefined
+          ? { state: "active", caption: PRIVATE_COPY.sending }
+          : withProgress("active", `${PRIVATE_COPY.sending} · ${percentText(status.progress)}`, status.progress);
         case "queued": return { state: "waiting", caption: PRIVATE_COPY.inQueue(status.position) };
         case "processing": {
           const progress = status.completed === null || status.total === null ? null : fraction(status.completed, status.total);
