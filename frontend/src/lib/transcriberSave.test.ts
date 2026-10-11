@@ -265,6 +265,47 @@ test("slow listSaved is not subject to the per-call voice-note deadline", async 
   }
 });
 
+test("a queued completeness read skips after sign-out so a new-session save can use the lane", async () => {
+  resetSpaceLaneForTests();
+  let releaseLane!: () => void;
+  let enteredLane!: () => void;
+  const laneGate = new Promise<void>((resolve) => { releaseLane = resolve; });
+  const laneEntered = new Promise<void>((resolve) => { enteredLane = resolve; });
+  const occupying = runOnSpaceLane(async () => { enteredLane(); await laneGate; });
+  await laneEntered;
+
+  let current = true;
+  let announceReadQueued!: () => void;
+  const readQueued = new Promise<void>((resolve) => { announceReadQueued = resolve; });
+  let oldAccountReads = 0;
+  const client = { list: async () => ({ status: "ok", value: { meetings: [] } }) } as unknown as TranscriberClient;
+  const sync = syncTranscriberLibrary({
+    tcw: {} as TinyCloudWeb,
+    client,
+    isCurrent: () => current,
+    saver: {
+      listSaved: async (_tcw, scheduleRead) => {
+        announceReadQueued();
+        await scheduleRead!(() => { oldAccountReads++; return Promise.resolve("old account read"); });
+        return { ok: true, data: [] };
+      },
+      save: async () => ({ ok: true }),
+    },
+  });
+  await readQueued;
+  current = false;
+  const newSessionSave = runOnSpaceLane(async () => "new session save");
+  releaseLane();
+  try {
+    await occupying;
+    await expect(newSessionSave).resolves.toBe("new session save");
+    await sync;
+    expect(oldAccountReads).toBe(0);
+  } finally {
+    releaseLane();
+  }
+});
+
 test("a voice-note lane save runs while the meetings list request is pending", async () => {
   resetSpaceLaneForTests();
   let releaseList!: (result: Awaited<ReturnType<TranscriberClient["list"]>>) => void;
