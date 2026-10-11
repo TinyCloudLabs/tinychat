@@ -794,10 +794,18 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
           height: element.getBoundingClientRect().height,
         };
       });
-      const twoLinesAndPadding = copySizing.lineHeight * 2 + copySizing.padding;
-      expect(copySizing.minHeight).toBeGreaterThanOrEqual(twoLinesAndPadding);
-      expect(copySizing.maxHeight).toBeGreaterThanOrEqual(twoLinesAndPadding);
-      expect(copySizing.height).toBeGreaterThanOrEqual(twoLinesAndPadding);
+      const reservedLines =
+        copySizing.maxHeight <
+        copySizing.lineHeight * 2 + copySizing.padding + 1
+          ? 1
+          : 2;
+      if (fontScale === 1)
+        expect(reservedLines).toBe(1);
+      const reservedHeight =
+        copySizing.lineHeight * reservedLines + copySizing.padding;
+      expect(copySizing.minHeight).toBeGreaterThanOrEqual(reservedHeight);
+      expect(copySizing.maxHeight).toBeGreaterThanOrEqual(reservedHeight);
+      expect(copySizing.height).toBeGreaterThanOrEqual(reservedHeight);
       const visibleLineCount = await message.evaluate((element) => {
         const range = document.createRange();
         range.selectNodeContents(element);
@@ -811,7 +819,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
             .map(({ top }) => Math.round(top)),
         ).size;
       });
-      expect(visibleLineCount).toBeGreaterThanOrEqual(2);
+      expect(visibleLineCount).toBeGreaterThanOrEqual(reservedLines);
       await assertToastClearOfRecorderControls(page, fontScale);
 
       await copy.focus();

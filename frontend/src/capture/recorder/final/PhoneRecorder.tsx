@@ -223,7 +223,12 @@ export function PhoneRecorder({
       ? Number.parseFloat(copyStyle.paddingTop) +
         Number.parseFloat(copyStyle.paddingBottom)
       : 0;
-    const twoLines = lineHeight * 2 + copyPadding;
+    // Fallback glyph boxes can extend a fraction past their nominal line box.
+    // Require one extra CSS pixel of headroom before reserving two visible
+    // lines; otherwise preserve one complete line and let the message scroll.
+    const twoLineReserve = lineHeight * 2 + copyPadding;
+    const reservedLines = copyAvailable < twoLineReserve + 1 ? 1 : 2;
+    const reservedCopyHeight = lineHeight * reservedLines + copyPadding;
 
     element.style.setProperty("--pr-toast-max-height", `${available}px`);
     element.style.setProperty(
@@ -232,7 +237,7 @@ export function PhoneRecorder({
     );
     element.style.setProperty(
       "--pr-toast-copy-min-height",
-      `${Math.min(twoLines, copyAvailable)}px`,
+      `${reservedCopyHeight}px`,
     );
   }, []);
   useLayoutEffect(() => {
