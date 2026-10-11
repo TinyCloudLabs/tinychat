@@ -1,7 +1,7 @@
 // "Transcribe" for a note with no transcript: one button and a small provider chip beside it, Local unless the user picks
 // another. Private asks once for consent first. Shown by the screens that know the note can be transcribed (no transcript,
 // nothing running); the label is "Try again" after a failure.
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ChevronDownIcon, Loader2Icon } from "lucide-react";
 
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
@@ -24,6 +24,8 @@ export const PHONE_READ_FAILED = "Couldn’t check whether this note is on this 
 // outline variant's border vanishes).
 const EDGE = "shadow-[inset_0_0_0_1px_var(--gedge,hsl(var(--input)))]";
 const CONTROL = "h-[var(--tc-control-height-sm)] min-h-9 rounded-full text-sm font-semibold";
+// The provider chip is a quiet secondary control: smaller than the button, its touch area widened by the select laid over it.
+const CHIP = "relative inline-flex h-7 items-center gap-1 rounded-full pl-3 pr-2 text-sm font-medium text-[color:var(--dim,hsl(var(--muted-foreground)))]";
 
 export type PhoneRead = { state: "reading" } | { state: "read"; phone: PhoneRecording | null } | { state: "failed" };
 
@@ -72,6 +74,8 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
   const providers = transcribeProviders(noteId, transcription, phone);
   const [chosen, setChosen] = useState<TranscribeProvider | null>(null);
   const [busy, setBusy] = useState(false);
+  // Set at the tap, ahead of any render: the start is still on its way until this note's job or queue entry replaces the action.
+  const starting = useRef(false);
   const [asking, setAsking] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const selectId = useId();
@@ -79,17 +83,22 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
   const recheck = transcription?.availability === "failed" && transcription.consented ? privateNotOffered("failed") : null;
 
   const run = (which: TranscribeProvider) => {
+    if (starting.current) return;
+    starting.current = true;
     setProblem(null);
     setBusy(true);
+    const failed = (reason: string) => {
+      starting.current = false;
+      setProblem(reason);
+      setBusy(false);
+    };
     void transcribeWith(which, noteId, transcription, phone).then(
       (failure) => {
-        setProblem(failure);
-        setBusy(false);
+        if (failure !== null) failed(failure);
       },
       (caught: unknown) => {
         console.error("[Library] Could not start the transcription of", noteId, caught);
-        setProblem("Couldn’t start the transcription. Try again in a moment.");
-        setBusy(false);
+        failed("Couldn’t start the transcription. Try again in a moment.");
       },
     );
   };
@@ -147,15 +156,17 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
             {props.label ?? "Transcribe"}
           </button>
           {providers.length > 1 ? (
-            <label className={cn("relative inline-flex items-center", CONTROL, EDGE)}>
+            <label className={cn(CHIP, EDGE, "focus-within:ring-2 focus-within:ring-ring")}>
               <span className="sr-only" id={selectId}>Transcribe with</span>
+              <span aria-hidden>{TRANSCRIBER_NAME[provider]}</span>
+              <ChevronDownIcon className="size-3.5 shrink-0" aria-hidden />
               <select
                 aria-labelledby={selectId}
                 data-testid="transcribe-provider"
                 value={provider}
                 disabled={busy}
                 onChange={(event) => setChosen(event.target.value as TranscribeProvider)}
-                className="h-full min-w-0 cursor-pointer appearance-none rounded-full bg-transparent py-0 pl-3 pr-8 text-base font-semibold text-[color:var(--ink,inherit)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="absolute inset-x-0 -inset-y-2 h-auto w-full cursor-pointer appearance-none rounded-full bg-transparent text-base opacity-0 focus-visible:outline-none"
               >
                 {providers.map((id) => (
                   <option key={id} value={id}>
@@ -163,10 +174,9 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
                   </option>
                 ))}
               </select>
-              <ChevronDownIcon className="pointer-events-none absolute right-3 size-4 text-[color:var(--dim,hsl(var(--muted-foreground)))]" aria-hidden />
             </label>
           ) : (
-            <span data-testid="transcribe-provider-static" className={cn("inline-flex items-center px-3 text-[color:var(--dim,hsl(var(--muted-foreground)))]", CONTROL, EDGE)}>
+            <span data-testid="transcribe-provider-static" className={cn(CHIP, EDGE, "pr-3")}>
               <span className="sr-only">Transcribe with </span>
               {TRANSCRIBER_NAME[provider]}
             </span>

@@ -194,11 +194,16 @@ function NoTranscript(props: { item: LibraryItem; metadata: MeetingMetadataRead;
   if (line !== null || onPhoneRoute) {
     // The stepper above says what is happening and offers its action; what is left here adds something it does not.
     const job = props.transcription?.jobs.get(props.item.sourceId);
-    const stepperCovers = onPhoneRoute || job?.kind === "active" || job?.kind === "failed";
+    // A note committed to private cloud with no job yet is about to start one by itself: only the stepper speaks for it.
+    const privateComing = stepperShown && view.route === "private-cloud" && job === undefined && outcome !== "no_speech";
+    const stepperCovers = onPhoneRoute || privateComing || job?.kind === "active" || job?.kind === "failed";
+    const status = stepperCovers ? null : VoiceNoteTranscriptionStatus({ item: props.item, outcome, transcription: props.transcription });
+    // "Will appear here" would sit beside a Transcribe action that says it won't unless asked.
+    const shownLine = status !== null && line === SAVED_NOTE_COPY.transcriptHere ? null : line;
     return (
       <>
-        {line !== null && <p className="text-callout text-muted-foreground" data-testid="note-transcript-pipeline">{line}</p>}
-        {!stepperCovers && VoiceNoteTranscriptionStatus({ item: props.item, outcome, transcription: props.transcription })}
+        {shownLine !== null && <p className="text-callout text-muted-foreground" data-testid="note-transcript-pipeline">{shownLine}</p>}
+        {status}
         <OnDeviceNoteStatus noteId={props.item.sourceId} fallback={null} transcription={props.transcription} durationSecs={props.item.durationSecs} stepperShown />
       </>
     );

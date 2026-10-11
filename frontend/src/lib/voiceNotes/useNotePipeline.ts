@@ -33,7 +33,7 @@ import {
   type PipelineRoute,
 } from "./notePipeline";
 import { OnDeviceStt, type OnDeviceSttStatus } from "./onDeviceStt";
-import { onDeviceQueuePlace } from "./onDeviceQueue";
+import { onDeviceQueuePlace, type OnDeviceQueuePlace } from "./onDeviceQueue";
 import { downloadOnDeviceModel, onDeviceSttStore, retryOnDeviceNote } from "./onDeviceSttStore";
 import {
   onDeviceTranscriptSyncState,
@@ -126,21 +126,22 @@ export interface NotePipelineFacts {
 // --- Route -----------------------------------------------------------------------------------------------------
 
 /**
- * Where this note's transcript comes from. The note's committed mode (`options.transcriber` in the phone's ledger)
- * decides; a Local note is in private cloud only once the user moved it ("Use Private instead"), which shows as a
- * cloud job for it. A note this phone has no ledger entry for (a Mac, a browser, another phone's note) has no
- * committed mode: a cloud job says private cloud, a native on-device job says on-device, and anything else is "off"
- * (nobody is transcribing it from here, so the transcript step is skipped, never invented).
+ * Where this note's transcript comes from. What is transcribing it wins, because the note's Transcribe action can run a
+ * provider other than the committed one: a live on-device job, then a private-cloud job, then an on-device attempt that
+ * finished (its failure or cancel is what the note shows until a cloud job takes over). With none, the note's committed mode
+ * (`options.transcriber` in the phone's ledger) decides. A note this phone has no ledger entry for (a Mac, a browser,
+ * another phone's note) has no committed mode: a native on-device job says on-device, and anything else is "off" (nobody
+ * is transcribing it from here, so the transcript step is skipped, never invented).
  */
-export function pipelineRoute(native: NativeNote | null, hasCloudJob: boolean): PipelineRoute {
+export function pipelineRoute(native: NativeNote | null, hasCloudJob: boolean, queue: OnDeviceQueuePlace | null = null): PipelineRoute {
+  if (queue !== null && (queue.position !== null || !hasCloudJob)) return "on-device";
+  if (hasCloudJob) return "private-cloud";
   switch (native?.transcriber ?? null) {
     case "off": return "off";
-    case "on-device": return hasCloudJob ? "private-cloud" : "on-device";
+    case "on-device": return "on-device";
     case "private-cloud":
     case "assemblyai": return "private-cloud";
-    case null:
-      if (hasCloudJob) return "private-cloud";
-      return native?.stt != null ? "on-device" : "off";
+    case null: return native?.stt != null ? "on-device" : "off";
   }
 }
 
@@ -231,7 +232,7 @@ function onDeviceInput(facts: NotePipelineFacts): PipelineOnDevice | null {
 }
 
 export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineInput {
-  const route = pipelineRoute(facts.native, facts.cloudJob !== null);
+  const route = pipelineRoute(facts.native, facts.cloudJob !== null, facts.onDeviceStatus === null ? null : onDeviceQueuePlace(facts.onDeviceStatus, facts.id));
   const rowOutcome = facts.rowMetadata === null ? "none" : voiceNoteTranscriptState(facts.rowMetadata).status;
   // The ledger's own record that the transcript reached the space is durable evidence too (a receipt has no library row read).
   const ledgerOutcome = facts.native?.transcriptSync?.state === "saved" ? facts.native.transcriptOutcome ?? "none" : "none";

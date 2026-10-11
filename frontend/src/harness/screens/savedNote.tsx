@@ -14,7 +14,7 @@ import {
 import type { RecorderValue } from "@/capture/recorder/RecorderProvider";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { PlatformContext } from "@/lib/platform";
-import { __setVoiceNotesForTests, VoiceNotes, type VoiceNoteRecording, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { __setVoiceNotesForTests, VoiceNotes, type TranscriberId, type VoiceNoteRecording, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { audioBaseKey, audioManifestKey, audioPartKey } from "@/lib/audio/audioStore";
 import { libraryTcw } from "../fixtures/library";
 import { createRuntimeShim } from "../runtimeShim";
@@ -150,9 +150,9 @@ const PRIVATE_CLOUD: VoiceNoteTranscriptionProps = {
 };
 
 /** The phone holds this note's recording (so Local is on offer), as the fake plugin reports it. */
-function holdUntranscribedRecording() {
+function holdUntranscribedRecording(committed: TranscriberId) {
   const base = VoiceNotes;
-  const recording = { id: UNTRANSCRIBED_ID, startedAt: FROZEN_NOW, durationMs: 192_000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0, options: { transcriber: "private-cloud", identifySpeakers: false } } as VoiceNoteRecording;
+  const recording = { id: UNTRANSCRIBED_ID, startedAt: FROZEN_NOW, durationMs: 192_000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0, options: { transcriber: committed, identifySpeakers: false } } as VoiceNoteRecording;
   const plugin = new Proxy(base, {
     get: (target, key) => (key === "listPending" ? async () => ({ recordings: [recording] }) : Reflect.get(target, key)),
   }) as VoiceNotesPlugin;
@@ -166,7 +166,7 @@ function Note(props: {
   audio?: boolean;
   press?: { selector: string; text?: string };
   /** A note with no transcript, offered Transcribe: Local too when the phone holds its recording. */
-  untranscribed?: { onPhone: boolean };
+  untranscribed?: { onPhone: boolean; committed?: TranscriberId };
 }) {
   const platform = useContext(PlatformContext);
   const shim = useMemo(() => createRuntimeShim(), []);
@@ -175,8 +175,8 @@ function Note(props: {
     __setSavedNoteStoreForTests(memoryStore({ failSave: props.failSave, empty: props.empty }));
     clearSavedNoteDrafts();
     if (props.draft) setSavedNoteDraft(NOTE_ID, props.draft);
-    if (props.untranscribed?.onPhone) holdUntranscribedRecording();
-  }, [props.draft, props.failSave, props.empty, props.untranscribed?.onPhone]);
+    if (props.untranscribed?.onPhone) holdUntranscribedRecording(props.untranscribed.committed ?? "off");
+  }, [props.draft, props.failSave, props.empty, props.untranscribed?.onPhone, props.untranscribed?.committed]);
   return (
     <>
       <ShellApp
@@ -249,6 +249,8 @@ export const savedNoteScreens: HarnessScreen[] = [
   // A note with no transcript: Transcribe with the provider chip, Local by default (and Private only, where the phone lacks the recording).
   screen("untranscribed-page", "tauri", TRANSCRIBE_DESKTOP, TRANSCRIBE, () => <Note untranscribed={{ onPhone: false }} />, UNTRANSCRIBED_PATH),
   screen("untranscribed-sheet", "ios", TRANSCRIBE_PHONE, TRANSCRIBE, () => <Note untranscribed={{ onPhone: true }} />, UNTRANSCRIBED_PATH),
+  // Committed to Private with no job yet: the stepper alone says it is about to start, with no Transcribe beside it.
+  screen("untranscribed-automatic", "ios", TRANSCRIBE_PHONE, '[data-testid="note-transcript-pipeline"]', () => <Note untranscribed={{ onPhone: true, committed: "private-cloud" }} />, UNTRANSCRIBED_PATH),
   screen("untranscribed-private-only", "ios", TRANSCRIBE_PHONE, TRANSCRIBE, () => <Note untranscribed={{ onPhone: false }} />, UNTRANSCRIBED_PATH),
   screen("sheet-editing", "ios", PHONE_VIEWPORTS, EDITOR, () => <Note press={EDIT} />),
   screen("sheet-confirm", "ios", PHONE_VIEWPORTS, '[role="alertdialog"]', () => (

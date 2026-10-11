@@ -309,11 +309,11 @@ describe("the transcript placeholder while the note's pipeline is not done", () 
         ? { inSpace: null, cloud: null, onDevice: { stt: { state: "done", error: null }, queue: null, model: { state: "ready", bytes: 640, totalBytes: 640, error: null }, download: "idle", sync: { state: "syncing" } } }
         : { inSpace: null, onDevice: null, cloud: null },
     });
-    const offer = (route: "on-device" | "private-cloud") =>
+    const offer = (route: "on-device" | "private-cloud", jobs: VoiceNoteTranscriptionProps["jobs"] = new Map()) =>
       renderToStaticMarkup(
         <NotePipelineContext.Provider value={{ pipeline: adding(route), route, onAction: noop, actionError: null }}>
           <MemoryRouter>
-            <NoteDetailView item={saved} listStatus="ready" metadata={{ status: "ok", metadata: { capture: { platform: "ios" } } }} transcript={{ status: "absent" }} audio={audio} copyState="idle" onCopy={noop} onRetry={noop} pushed onBack={noop} transcription={transcription()} />
+            <NoteDetailView item={saved} listStatus="ready" metadata={{ status: "ok", metadata: { capture: { platform: "ios" } } }} transcript={{ status: "absent" }} audio={audio} copyState="idle" onCopy={noop} onRetry={noop} pushed onBack={noop} transcription={transcription({ jobs })} />
           </MemoryRouter>
         </NotePipelineContext.Provider>,
       );
@@ -325,10 +325,17 @@ describe("the transcript placeholder while the note's pipeline is not done", () 
       expect(html).toContain(SAVED_NOTE_COPY.transcriptHere);
     });
 
-    test("where the pipeline would not run the transcript itself, the Transcribe offer stands", () => {
+    test("a note about to be transcribed in private cloud by itself shows only the stepper", () => {
       const html = offer("private-cloud");
-      expect(html).toContain("Not transcribed");
+      expect(html).not.toContain("Not transcribed");
+      expect(html).not.toContain("transcribe-button");
+      expect(html).toContain(SAVED_NOTE_COPY.transcriptHere);
+    });
+
+    test("a held note offers Transcribe and does not also say the transcript will appear by itself", () => {
+      const html = offer("private-cloud", new Map([["rec-1", { kind: "held", message: "This note did not start here." }]]));
       expect(html).toContain('data-testid="transcribe-button"');
+      expect(html).not.toContain(SAVED_NOTE_COPY.transcriptHere);
     });
   });
 

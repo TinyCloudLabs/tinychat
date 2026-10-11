@@ -138,7 +138,7 @@ describe("the pipeline from composed stores", () => {
 
 describe("route", () => {
   test("the committed mode decides; a Local note moved to private cloud shows as a cloud job", () => {
-    expect(pipelineRoute({ transcriber: "off", stt: null }, true)).toBe("off");
+    expect(pipelineRoute({ transcriber: "off", stt: null }, false)).toBe("off");
     expect(pipelineRoute({ transcriber: "on-device", stt: null }, false)).toBe("on-device");
     expect(pipelineRoute({ transcriber: "on-device", stt: null }, true)).toBe("private-cloud");
     expect(pipelineRoute({ transcriber: "private-cloud", stt: null }, false)).toBe("private-cloud");
@@ -149,6 +149,27 @@ describe("route", () => {
     expect(pipelineRoute(null, true)).toBe("private-cloud");
     expect(pipelineRoute(null, false)).toBe("off");
     expect(pipelineRoute({ transcriber: null, stt: { state: "queued", error: null } }, false)).toBe("on-device");
+  });
+});
+
+describe("route follows the provider the user picked", () => {
+  const place = (state: "queued" | "running" | "failed" | "cancelled", position: number | null) =>
+    ({ entry: { id: ID, state, error: null, percent: null }, position, inLine: position === null ? 0 : 1, percent: null }) as never;
+
+  test("Local on a note committed to Private or Audio only: a live on-device job is the route, cloud job or not", () => {
+    expect(pipelineRoute({ transcriber: "private-cloud", stt: null }, false, place("queued", 1))).toBe("on-device");
+    expect(pipelineRoute({ transcriber: "off", stt: null }, false, place("running", 1))).toBe("on-device");
+    expect(pipelineRoute({ transcriber: "private-cloud", stt: null }, true, place("queued", 1))).toBe("on-device");
+  });
+
+  test("a finished Local attempt stays the route until a cloud job takes over", () => {
+    expect(pipelineRoute({ transcriber: "private-cloud", stt: null }, false, place("failed", null))).toBe("on-device");
+    expect(pipelineRoute({ transcriber: "on-device", stt: null }, true, place("cancelled", null))).toBe("private-cloud");
+  });
+
+  test("Private on a note committed to Audio only or Local: the cloud job is the route", () => {
+    expect(pipelineRoute({ transcriber: "off", stt: null }, true)).toBe("private-cloud");
+    expect(pipelineRoute({ transcriber: "on-device", stt: null }, true)).toBe("private-cloud");
   });
 });
 

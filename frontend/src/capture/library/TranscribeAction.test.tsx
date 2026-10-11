@@ -130,6 +130,35 @@ describe("the Transcribe action", () => {
     expect(sent).toEqual([]);
   });
 
+  test("a second press while the start is on its way starts nothing more, and the provider cannot change", async () => {
+    const sent: string[] = [];
+    const host = await mount({ read: onPhone(), transcription: transcription({ onTranscribePrivately: (id) => sent.push(id) }) });
+    await act(async () => {
+      button(host).dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+      button(host).dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+    await click(button(host));
+    expect(enqueued).toEqual([NOTE]);
+    // The queue has not answered yet: the action stays locked, so Private cannot start beside Local.
+    expect(button(host).disabled).toBe(true);
+    expect(host.querySelector<HTMLSelectElement>('[data-testid="transcribe-provider"]')!.disabled).toBe(true);
+    expect(sent).toEqual([]);
+  });
+
+  test("a start that fails unlocks the action for another try", async () => {
+    OnDeviceStt.enqueue = async () => { throw new Error("busy"); };
+    const originalError = console.error;
+    console.error = noop;
+    try {
+      const host = await mount({ read: onPhone(), transcription: transcription() });
+      await click(button(host));
+      expect(host.querySelector('[data-testid="transcribe-problem"]')).not.toBeNull();
+      expect(button(host).disabled).toBe(false);
+    } finally {
+      console.error = originalError;
+    }
+  });
+
   test("choosing Private sends the note to private cloud and leaves the phone alone", async () => {
     const sent: string[] = [];
     const host = await mount({ read: onPhone({ committed: "private-cloud" }), transcription: transcription({ onTranscribe: (id) => sent.push(id) }) });
