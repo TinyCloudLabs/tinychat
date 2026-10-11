@@ -7,9 +7,8 @@ name: Frontend
 # Lint covers frontend/ and test/ only: the repo-wide `bun run lint` still has
 # errors in backend/ and artifacts/.
 #
-# WebKit runs locally (EXO_UI_ENGINE=webkit, SCROLL_ENGINE=webkit), not here,
-# except the recorder halo job below: a halo ring has gone blank intermittently
-# on WebKit, which iOS uses (TC-876).
+# WebKit runs locally for the broad harnesses; focused horizontal-overflow and
+# recorder halo regressions also run in the macOS WebKit job below.
 # The model-router browser suite stays out until TC-768 resolves its three
 # failures on main (since #107, stream before save).
 
@@ -185,6 +184,16 @@ jobs:
       - name: Install WebKit
         working-directory: test
         run: bunx playwright install webkit
+
+      - name: Mobile screens fit the viewport (WebKit)
+        working-directory: test
+        env:
+          NO_HORIZONTAL_ENGINE: webkit
+        run: |
+          NO_HORIZONTAL_SCREENS=shell-capture,shell-chat,shell-chat-ribbon,shell-chat-keyboard,shell-model-sheet,shell-connectors bun test no-horizontal-drag.e2e.test.ts
+          NO_HORIZONTAL_SCREENS=shell-settings,shell-settings-scrolled,shell-about,shell-boot-signed-out,mic-recovery-sign-in bun test no-horizontal-drag.e2e.test.ts
+          NO_HORIZONTAL_SCREENS=recorder-final-phone-interactive-consented,recorder-final-phone-interactive-first-run,recorder-final-phone-interactive-route-control,recorder-final-phone-interactive-notes,library-all,note-voice-transcribed bun test no-horizontal-drag.e2e.test.ts
+          NO_HORIZONTAL_SCREENS=saved-note-sheet,saved-note-sheet-long-title,saved-note-sheet-editing,capture-soft-long-titles,pipeline-wire-sheet-done,local-signed-out,local-offline bun test no-horizontal-drag.e2e.test.ts
 
       # The halo test file: the centre-pixel check, then 30 fresh loads under an
       # injected main-thread stall, each sampling every ring per frame for a
