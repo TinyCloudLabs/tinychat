@@ -258,6 +258,46 @@ describe("one at a time, and the post-success window", () => {
 describe("blocked notes and waiting positions", () => {
   const note = (id: string) => ({ id, durationMs: 5_000, source: "in_app" as const });
 
+  test("review: starting a note must not leave it in the waiting snapshot", async () => {
+    const s = setup({ consented: true });
+    await s.transcriber.check();
+    const snapshots: number[][] = [];
+    const unsubscribe = s.transcriber.subscribe(() => snapshots.push(
+      [...s.transcriber.snapshot().jobs.values()].flatMap((job) =>
+        job.kind === "active" && job.status.kind === "waiting" ? [job.status.position] : []),
+    ));
+    s.transcriber.noteSaved(note("a"), AUDIO);
+    s.transcriber.noteSaved(note("b"), AUDIO);
+    await tick();
+    unsubscribe();
+    expect(s.runs.map((run) => run.sourceId)).toEqual(["a"]);
+    expect(snapshots).not.toContainEqual([1, 1]);
+    const a = s.job("a");
+    expect(a?.kind === "active" && a.status.kind === "waiting").toBe(false);
+  });
+
+  test("every snapshot while notes start: a note is waiting only if it is in the line, positions are 1..n with no repeats", async () => {
+    const s = setup({ consented: true });
+    await s.transcriber.check();
+    const snapshots: (number | string)[][] = [];
+    const unsubscribe = s.transcriber.subscribe(() => snapshots.push(
+      [...s.transcriber.snapshot().jobs.entries()].map(([id, job]) =>
+        job.kind === "active" ? (job.status.kind === "waiting" ? job.status.position : `${id}:${job.status.kind}`) : `${id}:${job.kind}`)));
+    for (const id of ["a", "b", "c"]) s.transcriber.noteSaved(note(id), AUDIO);
+    await tick();
+    s.runs[0]!.resolve("transcribed");
+    await tick();
+    unsubscribe();
+    expect(s.runs.map((run) => run.sourceId)).toEqual(["a", "b"]);
+    for (const snapshot of snapshots) {
+      const positions = snapshot.filter((entry): entry is number => typeof entry === "number");
+      expect(positions).toEqual([...positions].sort((x, y) => x - y));
+      expect(positions).toEqual(positions.map((_, index) => index + 1));
+    }
+    expect(snapshots).toContainEqual(["a:preparing", 1, 2]);
+    expect(snapshots).toContainEqual(["a:done", "b:preparing", 1]);
+  });
+
   test("a note offered while the check is running, failed, hidden or unconsented is recorded as blocked, with the reason", async () => {
     const checking = setup({ consented: true });
     checking.transcriber.noteSaved(note("n"), AUDIO);

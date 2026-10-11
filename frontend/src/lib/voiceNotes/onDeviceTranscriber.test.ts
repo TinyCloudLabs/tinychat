@@ -34,6 +34,97 @@ afterEach(() => {
 });
 
 describe("syncOnDeviceTranscript publishes the result", () => {
+  test("review: an older failed attempt must not hide a newer successful sync", async () => {
+    const tcw = account();
+    const finishes: ((r: SaveResult) => void)[] = [];
+    save = () => new Promise((resolve) => finishes.push(resolve));
+    const old = syncOnDeviceTranscript(tcw, SAVED);
+    await new Promise((r) => setTimeout(r, 0));
+    const latest = syncOnDeviceTranscript(tcw, SAVED);
+    await new Promise((r) => setTimeout(r, 0));
+    finishes[1]!({ ok: true, data: {} });
+    await latest;
+    finishes[0]!({ ok: false, error: { code: "OFFLINE", message: "older request failed" } });
+    await old;
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "synced" });
+  });
+
+  test("review: an older revision's success must not hide the latest revision's failure", async () => {
+    const tcw = account();
+    const finishes: ((r: SaveResult) => void)[] = [];
+    save = () => new Promise((resolve) => finishes.push(resolve));
+    const old = syncOnDeviceTranscript(tcw, SAVED);
+    await new Promise((r) => setTimeout(r, 0));
+    getTranscript = async () => ({ transcript: { ...transcript, rev: 2 } });
+    const latest = syncOnDeviceTranscript(tcw, SAVED);
+    await new Promise((r) => setTimeout(r, 0));
+    finishes[1]!({ ok: false, error: { code: "OFFLINE", message: "revision 2 failed" } });
+    await latest;
+    finishes[0]!({ ok: true, data: {} });
+    await old;
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "revision 2 failed" });
+  });
+
+  test("overlapping attempts: only the newest owns the state, whatever order they finish", async () => {
+    const tcw = account();
+    const finishes: ((r: SaveResult) => void)[] = [];
+    save = () => new Promise((resolve) => finishes.push(resolve));
+    const first = syncOnDeviceTranscript(tcw, SAVED);
+    await new Promise((r) => setTimeout(r, 0));
+    const second = syncOnDeviceTranscript(tcw, SAVED);
+    await new Promise((r) => setTimeout(r, 0));
+    const third = syncOnDeviceTranscript(tcw, SAVED);
+    await new Promise((r) => setTimeout(r, 0));
+    finishes[2]!({ ok: false, error: { code: "OFFLINE", message: "third failed" } });
+    await third;
+    finishes[0]!({ ok: true, data: {} });
+    finishes[1]!({ ok: true, data: {} });
+    await Promise.all([first, second]);
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "third failed" });
+  });
+
+  test("an older write finishing while the newest still runs leaves the state syncing", async () => {
+    const tcw = account();
+    const finishes: ((r: SaveResult) => void)[] = [];
+    save = () => new Promise((resolve) => finishes.push(resolve));
+    const old = syncOnDeviceTranscript(tcw, SAVED);
+    await new Promise((r) => setTimeout(r, 0));
+    const latest = syncOnDeviceTranscript(tcw, SAVED);
+    await new Promise((r) => setTimeout(r, 0));
+    finishes[0]!({ ok: false, error: { code: "OFFLINE", message: "older failed" } });
+    await old;
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "syncing" });
+    finishes[1]!({ ok: true, data: {} });
+    await latest;
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "synced" });
+  });
+
+  test("a native-read failure is the newest result: an older write finishing after it does not hide it", async () => {
+    const tcw = account();
+    let finish!: (r: SaveResult) => void;
+    save = () => new Promise((resolve) => { finish = resolve; });
+    const old = syncOnDeviceTranscript(tcw, SAVED);
+    await new Promise((r) => setTimeout(r, 0));
+    getTranscript = async () => { throw new Error("sidecar busy"); };
+    await syncOnDeviceTranscript(tcw, SAVED);
+    finish({ ok: true, data: {} });
+    await old;
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't read the transcript on this phone: sidecar busy" });
+  });
+
+  test("a newer attempt with no local transcript does not strand an older write's result", async () => {
+    const tcw = account();
+    let finish!: (r: SaveResult) => void;
+    save = () => new Promise((resolve) => { finish = resolve; });
+    const old = syncOnDeviceTranscript(tcw, SAVED);
+    await new Promise((r) => setTimeout(r, 0));
+    getTranscript = async () => ({ transcript: null });
+    await syncOnDeviceTranscript(tcw, SAVED);
+    finish({ ok: true, data: {} });
+    await old;
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "synced" });
+  });
+
   test("syncing while the write runs, then synced; subscribers hear both", async () => {
     const tcw = account();
     let finish!: (r: SaveResult) => void;

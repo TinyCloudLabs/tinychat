@@ -1313,7 +1313,9 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     chain = chain.then(async () => {
       // Dropped by turn-off while it waited, or turned off since: never starts.
       if (!waiting.delete(sourceId)) return;
-      emit(); // the notes still waiting move up a place
+      // Leaving the line, starting, and the others moving up are one change: no snapshot shows the starting note as waiting.
+      if (jobs.get(sourceId)?.kind === "active") jobs.set(sourceId, { kind: "active", status: { kind: "preparing" } });
+      emit();
       if (!on() || state.capabilities === null) {
         jobs.delete(sourceId);
         if (!identityCurrent()) {
