@@ -9,7 +9,7 @@ import { syncRecordingNote } from "./voiceNoteStore";
 import type { StoreAudioOptions } from "./voiceNoteStore";
 
 export interface VoiceNotePipeline {
-  process(ctx: AccountContext, id: string, trigger?: "stop" | "background"): Promise<void>;
+  process(ctx: AccountContext, id: string, trigger?: "stop" | "background"): Promise<void | "owned-by-another-run">;
   /** T19 calls setCaptureDefaults on ready before this association and upload pass. */
   reconcileAll(ctx: AccountContext, trigger?: "reconcile" | "manual", onSaved?: (note: VoiceNoteRecording) => void): Promise<void>;
   cancelAll(): void;
@@ -36,8 +36,8 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
   testOptions: Pick<StoreAudioOptions, "retryDelaysMs"> = {}): VoiceNotePipeline {
   let cancellation = 0;
   let accepting = true;
-  const active = new Set<Promise<void>>();
-  const run = (job: () => Promise<void>): Promise<void> => {
+  const active = new Set<Promise<unknown>>();
+  const run = <T>(job: () => Promise<T>): Promise<T> => {
     const promise = job();
     active.add(promise);
     void promise.finally(() => active.delete(promise)).catch(() => undefined);
@@ -91,6 +91,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
       const epoch = cancellation;
       const uploadTicket = pendingStore.enqueueUpload(id);
       logSaveStart(id, trigger);
+      if (!uploadTicket.owns) return Promise.resolve("owned-by-another-run");
       return run(async () => { await processOne(ctx, id, epoch, false, uploadTicket); });
     },
     reconcileAll(ctx, trigger = "reconcile", onSaved) {

@@ -424,7 +424,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       try {
         const finish = pendingStore.beginAutomaticSave();
         try {
-          await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id);
+          const result = await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id);
+          if (result === "owned-by-another-run") {
+            send({ type: "LOCAL_UPLOAD_IN_FLIGHT", id: recording.id });
+            void pendingStore.refresh();
+            return;
+          }
           send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
           landed(generation, recording);
         } finally { finish(); }
@@ -498,7 +503,11 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       if (recording.owner === tcw.did && tcw.did && tcw.spaceId) {
         const finish = pendingStore.beginAutomaticSave();
         try {
-          await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id, "background");
+          const result = await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id, "background");
+          if (result === "owned-by-another-run") {
+            send({ type: "LOCAL_UPLOAD_IN_FLIGHT", id: recording.id });
+            return;
+          }
           landed(generation, recording);
         } catch (caught) {
           if (!saveDeferredForAccountTransition(caught) && pipeline.isAccepting()) {

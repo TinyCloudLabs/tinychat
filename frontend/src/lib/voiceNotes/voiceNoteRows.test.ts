@@ -566,14 +566,14 @@ test("reconcile publishes the full upload queue and decrements notes ahead as th
     const reconcile = pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
     await firstStarted;
     const queued = pendingStore.snapshot().notes ?? [];
-    expect(recordings.map(({ id }) => queued.find((note) => note.id === id)?.waitingBehind)).toEqual([0, 1, 2]);
+    expect(recordings.map(({ id }) => queued.find((note) => note.id === id)?.waitingBehind)).toEqual([0, 0, 1]);
     expect(recordings.map(({ id }) => queued.find((note) => note.id === id)?.upload?.state)).toEqual([
       "uploading", "waiting", "waiting",
     ]);
     releaseFirst();
     await secondStarted;
     const afterFirst = pendingStore.snapshot().notes ?? [];
-    expect(recordings.map(({ id }) => afterFirst.find((note) => note.id === id)?.waitingBehind)).toEqual([undefined, 0, 1]);
+    expect(recordings.map(({ id }) => afterFirst.find((note) => note.id === id)?.waitingBehind)).toEqual([undefined, 0, 0]);
     expect(afterFirst.find((note) => note.id === recordings[1]!.id)?.upload?.state).toBe("uploading");
     releaseSecond();
     await reconcile;

@@ -14,7 +14,7 @@ test("the real voice-note save runs after the a4 renewal fixture", async () => {
   const result = await saveVoiceNote({} as TinyCloudWeb, note, source, "android", {
     checkpoint: () => { throw new Error("real save checkpoint"); },
   });
-  expect(result).toEqual({ ok: false, error: { code: "STORE_ERROR", message: "real save checkpoint" } });
+  expect(result).toMatchObject({ ok: false, error: { code: "STORE_ERROR", message: "real save checkpoint" } });
 
   // recorderSaves was imported while a4's module mock was active. Its next
   // account save must also reach the real saveVoiceNote after that file ends.

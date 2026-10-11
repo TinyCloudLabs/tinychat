@@ -624,10 +624,13 @@ function mergeUploadState(note: PendingNote): PendingNote {
   return state ? { ...note, upload: state.upload, waitingBehind: state.waitingBehind } : note;
 }
 
-function publishUploadQueue(): void {
-  let waitingBehind = 0;
-  for (const state of uploadStates.values()) state.waitingBehind = waitingBehind++;
-  publishPending({ uploadingId: activeUploadId(), notes: pendingSnapshot.notes?.map(mergeUploadState) });
+function publishUploadQueue(notes = pendingSnapshot.notes): void {
+  let waitingAhead = 0;
+  for (const state of uploadStates.values()) {
+    if (state.upload.state === "waiting") state.waitingBehind = waitingAhead++;
+    else state.waitingBehind = 0;
+  }
+  publishPending({ uploadingId: activeUploadId(), notes: notes?.map(mergeUploadState) });
 }
 
 function publishOwnedUpload(id: string, owner: symbol, upload: UploadProgress): void {
@@ -639,7 +642,7 @@ function publishOwnedUpload(id: string, owner: symbol, upload: UploadProgress): 
   state.upload = upload;
   state.lastPublishedAt = now;
   state.lastPercent = percent;
-  publishPending({ uploadingId: activeUploadId(), notes: pendingSnapshot.notes?.map((note) => note.id === id ? mergeUploadState(note) : note) });
+  publishUploadQueue();
 }
 
 function beginTrackedSave(): () => void {
@@ -740,8 +743,7 @@ export const pendingStore = {
       }
       return note;
     });
-    publishPending({ notes });
-    publishUploadQueue();
+    publishUploadQueue(notes);
   },
   clearNoteFailure(id: string): void {
     if (!noteFailures.delete(id)) return;
