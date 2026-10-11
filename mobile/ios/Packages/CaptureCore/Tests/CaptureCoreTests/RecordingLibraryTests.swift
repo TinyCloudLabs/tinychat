@@ -81,6 +81,26 @@ final class RecordingLibraryTests: XCTestCase {
         XCTAssertThrowsError(try library.appendJournal(id, ["e": "stop", "t": 2, "a": 0, "reason": "user"]))
     }
 
+    func testDeleteUncommittedNeverTouchesAPublishedNote() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        _ = try library.commit(id, sidecar: sidecar(id)) { try Data("audio".utf8).write(to: $0) }
+        XCTAssertFalse(try library.deleteUncommitted(id))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: library.audioURL(id).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: library.sidecarURL(id).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: library.url("tombstones/\(id)").path))
+        XCTAssertEqual(try library.listCommitted().count, 1)
+    }
+
+    func testDeleteUncommittedRemovesASessionWithNothingToPublish() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try FileManager.default.createDirectory(at: library.sessionURL(id), withIntermediateDirectories: true)
+        XCTAssertTrue(try library.deleteUncommitted(id))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: library.sessionURL(id).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: library.url("tombstones/\(id)").path))
+    }
+
     func testMutationImportAndRetirementFailpoints() throws {
         let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
         let id = UUID().uuidString.lowercased()
