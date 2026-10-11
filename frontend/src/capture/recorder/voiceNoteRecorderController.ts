@@ -396,7 +396,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   };
 
   const landed = (recording: VoiceNoteRecording, audio?: Parameters<VoiceNoteTranscriber["noteSaved"]>[1]) => {
-    transcriber?.noteSaved(recording, audio);
+    if (transcriber) {
+      const generation = currentAccountGeneration();
+      transcribeSavedNote(transcriber, recording, () => generation === currentAccountGeneration(), audio);
+    }
     onSaved?.(recording);
   };
 

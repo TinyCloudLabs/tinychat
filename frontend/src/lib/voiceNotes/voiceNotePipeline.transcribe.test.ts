@@ -7,12 +7,13 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { memoryHoldStore } from "@/harness/memoryHoldStore";
 import { CONNECTORS_SQL_DB_NAME } from "../connectors/connectorStore";
-import { PrivateCloudError, type PrivateCloudCapabilities } from "../privateCloud";
+import { createPrivateCloudApi, PrivateCloudError, type PrivateCloudCapabilities } from "../privateCloud";
+import type { SessionStore } from "../session";
 import { advanceAccountGeneration, currentAccountGeneration } from "./accountContext";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __setVoiceNotesForTests, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { createVoiceNotePipeline } from "./voiceNotePipeline";
-import { createVoiceNoteTranscriber, transcribeSavedNote, type VoiceNoteCloud } from "./voiceNoteTranscription";
+import { createVoiceNoteCloud, createVoiceNoteTranscriber, transcribeSavedNote, type VoiceNoteCloud } from "./voiceNoteTranscription";
 
 const CAPS: PrivateCloudCapabilities = { max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/wav"] };
 const original = VoiceNotes;
@@ -203,5 +204,121 @@ describe("a note saved by reconcileAll is handed to the transcriber", () => {
     handOver(mine);
     await tick();
     expect(s.runs).toEqual([]);
+  });
+});
+
+const PRIVATE_NOTE = { durationMs: 1000, source: "in_app" as const, options: { transcriber: "private-cloud" as const, identifySpeakers: false } };
+
+test("a generation superseded while the hand-off's check is in flight resumes none of A's pending jobs with B's bearer", async () => {
+  let account = "A";
+  let answer: (response: Response) => void = () => {};
+  const requests: string[] = [];
+  const cleared: string[] = [];
+  let pendingJob: { attemptId: string; transcriptionId: string } | null = { attemptId: "attempt-A", transcriptionId: "trn_A" };
+  const api = createPrivateCloudApi("https://backend.example", {
+    sessionStore: { getToken: () => account, isExpired: () => false } as unknown as SessionStore,
+    fetchImpl: (async (url: string, init: RequestInit) => {
+      requests.push(`${init.method}:${new Headers(init.headers).get("Authorization")}`);
+      if (url.endsWith("/capabilities")) return new Promise<Response>((resolve) => { answer = resolve; });
+      return new Response("{}", { status: 404, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch,
+  });
+  const cloud = createVoiceNoteCloud({ api, origin: "https://ptx.example",
+    pending: { read: () => pendingJob, write() {}, clear: (id) => { cleared.push(id); pendingJob = null; }, sourceIds: () => pendingJob ? ["old-A-job"] : [] },
+    create: async () => { throw new Error("unexpected create"); }, put: async () => { throw new Error("unexpected upload"); },
+  });
+  const transcriber = createVoiceNoteTranscriber({ cloud, holds: memoryHoldStore(), tcw: () => ({ did: "A" }) as TinyCloudWeb,
+    consent: { get: () => true, set() {} },
+    runNote: async (args) => {
+      await cloud.transcribe({ sourceId: args.sourceId, capabilities: args.capabilities, allowed: args.allowed,
+        loadAudio: async () => { throw new Error("unexpected audio read"); } }, args.report);
+      return "no_speech";
+    },
+  });
+  const generation = currentAccountGeneration();
+  transcribeSavedNote(transcriber, { id: "new-A-note", ...PRIVATE_NOTE }, () => generation === currentAccountGeneration());
+  account = "B";
+  advanceAccountGeneration();
+  answer(new Response(JSON.stringify(CAPS), { status: 200, headers: { "Content-Type": "application/json" } }));
+  await tick();
+  expect({ afterSwitch: requests.filter((request) => request.endsWith("Bearer B")), cleared }).toEqual({ afterSwitch: [], cleared: [] });
+});
+
+test("a hand-off for a generation that is already superseded does not even start a check", async () => {
+  const checks: unknown[] = [];
+  const transcriber = { check: (options: unknown) => { checks.push(options); return Promise.resolve(); }, noteSaved: () => { throw new Error("must not hand over"); } };
+  transcribeSavedNote(transcriber, { id: "stale", ...PRIVATE_NOTE }, () => false);
+  await tick();
+  expect(checks).toEqual([]);
+});
+
+test("a hand-off's cached check leaves an earlier failed job waiting for Retry after an identity-paused job", async () => {
+  let current = true;
+  let interrupt: (error: unknown) => void = () => {};
+  const runs: string[] = [];
+  const cloud = { capabilities: async () => CAPS, pendingSourceIds: () => ["failed-note", "interrupted-note"] } as unknown as VoiceNoteCloud;
+  const transcriber = createVoiceNoteTranscriber({ cloud, holds: memoryHoldStore(), tcw: () => ({}) as TinyCloudWeb,
+    consent: { get: () => true, set() {} },
+    runNote: async (args) => {
+      runs.push(args.sourceId);
+      if (args.sourceId === "failed-note") throw new PrivateCloudError("service_busy", "busy");
+      if (args.sourceId === "interrupted-note" && runs.filter((id) => id === "interrupted-note").length === 1)
+        return new Promise((_, reject) => { interrupt = reject; });
+      return "no_speech";
+    },
+  });
+  await transcriber.check({ current: () => current });
+  await tick();
+  expect(transcriber.snapshot().jobs.get("failed-note")?.kind).toBe("failed");
+  current = false;
+  interrupt(new PrivateCloudError("account_changed", "account left"));
+  await tick();
+  current = true;
+  transcribeSavedNote(transcriber, { id: "saved-on-return", ...PRIVATE_NOTE }, () => current);
+  await tick();
+  expect(runs.filter((id) => id === "failed-note")).toEqual(["failed-note"]);
+  expect(runs).toContain("saved-on-return");
+  transcriber.transcribe("failed-note");
+  await tick();
+  expect(runs.filter((id) => id === "failed-note")).toEqual(["failed-note", "failed-note"]);
+});
+
+describe("the recorder's hand-off and reconcile's while the first availability check is still pending", () => {
+  const delayed = (s: Awaited<ReturnType<typeof setup>>) => {
+    let answer: (caps: PrivateCloudCapabilities) => void = () => {};
+    const runs: string[] = [];
+    const cloud = { capabilities: () => new Promise<PrivateCloudCapabilities>((resolve) => { answer = resolve; }), pendingSourceIds: () => [] } as unknown as VoiceNoteCloud;
+    const transcriber = createVoiceNoteTranscriber({ cloud, holds: memoryHoldStore(), tcw: () => s.tcw,
+      consent: { get: () => true, set() {} }, runNote: async (args) => { runs.push(args.sourceId); return "no_speech"; } });
+    return { transcriber, runs, answer: (caps = CAPS) => answer(caps) };
+  };
+
+  test("recorder first (the controller's landed): the note still gets exactly one job", async () => {
+    const s = await setup("private-cloud");
+    const note = await s.recordFor(s.tcw.did);
+    const d = delayed(s);
+    const checking = d.transcriber.check();
+    await s.pipeline.process(s.ctx(), note.id);
+    const generation = currentAccountGeneration();
+    transcribeSavedNote(d.transcriber, note, () => generation === currentAccountGeneration());
+    await s.pipeline.reconcileAll(s.ctx(), "reconcile", (saved) => transcribeSavedNote(d.transcriber, saved, () => true));
+    d.answer();
+    await checking;
+    await tick();
+    expect(d.runs).toEqual([note.id]);
+  });
+
+  test("reconcile first: the note still gets exactly one job when the recorder's hand-off follows", async () => {
+    const s = await setup("private-cloud");
+    const note = await s.recordFor(s.tcw.did);
+    const d = delayed(s);
+    const checking = d.transcriber.check();
+    await s.pipeline.reconcileAll(s.ctx(), "reconcile", (saved) => transcribeSavedNote(d.transcriber, saved, () => true));
+    await s.pipeline.process(s.ctx(), note.id);
+    transcribeSavedNote(d.transcriber, note, () => true);
+    d.answer();
+    await checking;
+    await tick();
+    expect(d.runs).toEqual([note.id]);
   });
 });

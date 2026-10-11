@@ -1259,6 +1259,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     // Queued, running, or just saved (the list may not show it yet): never a second job.
     const current = jobs.get(sourceId);
     if (current?.kind === "active" || current?.kind === "done") return;
+    // A failure waits for the user's Retry; no automatic hand-off or resume restarts it.
+    if (!explicit && current?.kind === "failed") return;
     jobs.set(sourceId, { kind: "active", status: { kind: "waiting" } });
     waiting.add(sourceId);
     emit();
@@ -1439,25 +1441,26 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       }
       if (!on()) return;
       if (recording.durationMs / 1000 > maxTranscriptionSeconds(state.capabilities)) return; // the card says why
-      // Another path (Stop, or a later save of the same note) already handed it over: a failure waits for the user's Retry.
-      if (jobs.get(recording.id)?.kind === "failed") return;
       enqueue(recording.id, audio, false);
     },
   };
 }
 
 /**
- * Hand a note that was saved to the space later than its Stop (a relaunch, the sign-in claim, Save now) to
- * transcription. As for a fresh Stop, the account's availability answer must be in before `noteSaved`, and the
- * note is dropped if its account is no longer the current one by then.
+ * Hand a note that was saved to the space to transcription (Stop, or later: a relaunch, the sign-in claim, Save
+ * now). The account's availability answer must be in before `noteSaved`. `isCurrent` says the note's account and
+ * generation are still the signed-in ones; it guards the check itself (so a superseded account resumes nothing) and
+ * the hand-off after it.
  */
 export function transcribeSavedNote(
   transcriber: Pick<VoiceNoteTranscriber, "check" | "noteSaved">,
   recording: Parameters<VoiceNoteTranscriber["noteSaved"]>[0],
   isCurrent: () => boolean,
+  audio?: VoiceNoteAudio,
 ): void {
-  transcriber.check({ automatic: true }).then(
-    () => { if (isCurrent()) transcriber.noteSaved(recording); },
+  if (!isCurrent()) return;
+  transcriber.check({ automatic: true, current: isCurrent }).then(
+    () => { if (isCurrent()) transcriber.noteSaved(recording, audio); },
     (caught: unknown) => console.error("[VoiceNotes] The private transcription check threw; this note was not handed to transcription", { id: recording.id, caught }),
   );
 }
