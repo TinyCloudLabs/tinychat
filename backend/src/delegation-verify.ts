@@ -102,7 +102,7 @@ export async function verifyTranscriptWriterGrant(input: GrantInput, deps: Grant
     const granted = Object.keys(abilities);
     if (granted.some((action) => !target.actions.includes(action))) return failure("overbroad_delegation");
     if (granted.length !== target.actions.length) return failure("insufficient_delegation");
-    // SDK 2.11 emits one empty nota-bene ({}) for an unrestricted action.
+    // SDK 2.11 and 3.1 emit one empty nota-bene ({}) for an unrestricted action.
     // An absent list is also unrestricted; any populated condition is not.
     if (granted.some((action) => {
       const clauses = abilities[action];

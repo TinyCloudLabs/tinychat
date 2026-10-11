@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { deserializeDelegation, type TinyCloudNode } from "@tinycloud/node-sdk";
 import type { ServerInfoPermission } from "@tinyboilerplate/core";
 import type { VerifiedTranscriptWriter } from "./delegation-verify.js";
@@ -85,7 +84,7 @@ export async function activateVerifiedDelegation(
   for (const resource of verified.resources) {
     await options.beforeNodeWrite?.();
     const actions = [...resource.actions];
-    const access = await observeActivation(options.host, () => node.useDelegation({
+    const access = await observeActivation(() => node.useDelegation({
       cid: verified.cid,
       delegationHeader: { Authorization: verified.authorization },
       spaceId: verified.spaceId,
@@ -111,10 +110,8 @@ export async function activateVerifiedDelegation(
 }
 
 /**
- * The node refused (or failed) a delegated-session activation. `useDelegation()` in the pinned
- * SDK throws a plain `Error("Failed to activate delegated session: <body>")` and drops the HTTP
- * status of its `POST {host}/delegate`; this carries the status it actually observed, so a
- * revoked grant (401/403) can be told apart from a node outage (5xx).
+ * The node refused (or failed) a delegated-session activation, with the HTTP status of its
+ * `POST {host}/delegate`, so a revoked grant (401/403) can be told apart from a node outage (5xx).
  */
 export class DelegationActivationError extends Error {
   readonly status: number;
@@ -125,49 +122,29 @@ export class DelegationActivationError extends Error {
   }
 }
 
-interface ActivationScope { url: string; statuses: number[] }
-const activationScope = new AsyncLocalStorage<ActivationScope>();
-const ACTIVATION_OBSERVER = Symbol.for("tinychat.delegation-activation-observer");
-type ObservedFetch = typeof fetch & { [ACTIVATION_OBSERVER]?: true };
+const ACTIVATION_FAILURE = "Failed to activate delegated session:";
 
 /**
- * The SDK resolves the global `fetch` at call time and accepts no injected one, so the status is
- * captured by a pass-through wrapper. It records only inside an `observeActivation` scope, only
- * for `POST {host}/delegate`, and never alters a request or response. Re-wrapped when something
- * else has replaced `globalThis.fetch` since.
+ * The status the node answered a refused activation with, or undefined. SDK 3.1 `useDelegation()`
+ * throws `Error("Failed to activate delegated session: …")` whose `cause` is the activation's
+ * `SpaceHostResult` (`{ success: false, status, error }`). Callers that joined a single-flighted
+ * identical `POST /delegate` get the same result as their cause, so this needs no request of its
+ * own. A network failure, or any other throw, has no such cause and is not a refusal.
  */
-function installActivationObserver(): void {
-  const current = globalThis.fetch as ObservedFetch;
-  if (current[ACTIVATION_OBSERVER]) return;
-  const observed = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const response = await current(input, init);
-    const scope = activationScope.getStore();
-    if (scope && requestMethod(input, init) === "POST" && requestUrl(input) === scope.url) {
-      scope.statuses.push(response.status);
-    }
-    return response;
-  }, current, { [ACTIVATION_OBSERVER]: true as const });
-  globalThis.fetch = observed;
+function refusedActivationStatus(error: unknown): number | undefined {
+  if (!(error instanceof Error) || !error.message.startsWith(ACTIVATION_FAILURE)) return undefined;
+  const cause: unknown = error.cause;
+  if (!cause || typeof cause !== "object" || !("success" in cause) || cause.success !== false
+    || !("status" in cause) || typeof cause.status !== "number" || !Number.isInteger(cause.status)) return undefined;
+  return cause.status < 200 || cause.status > 299 ? cause.status : undefined;
 }
 
-function requestUrl(input: RequestInfo | URL): string {
-  return typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-}
-
-function requestMethod(input: RequestInfo | URL, init?: RequestInit): string {
-  return (init?.method ?? (typeof input === "object" && "method" in input ? input.method : "GET")).toUpperCase();
-}
-
-/** Run one activation; if it throws after the node answered non-2xx, rethrow with that status. */
-async function observeActivation<T>(host: string, activate: () => Promise<T>): Promise<T> {
-  installActivationObserver();
-  // The same template the SDK uses for its activation request.
-  const scope: ActivationScope = { url: `${host}/delegate`, statuses: [] };
+/** Run one activation; if the node answered it non-2xx, rethrow with that status. */
+async function observeActivation<T>(activate: () => Promise<T>): Promise<T> {
   try {
-    return await activationScope.run(scope, activate);
+    return await activate();
   } catch (error) {
-    const rejected = [...scope.statuses].reverse().find((status) => status < 200 || status > 299);
-    // No observed answer (network failure, or a throw before the request) keeps the original.
+    const rejected = refusedActivationStatus(error);
     if (rejected !== undefined) throw new DelegationActivationError(rejected, { cause: error });
     throw error;
   }

@@ -285,10 +285,16 @@ describe("signed transcript-writer delegation acceptance", () => {
       node.post("/delegate", (_req, res) => { res.status(nodeStatus).send("refused"); });
       await withServer(node, async (host) => {
         const grant = await makeSignedTranscriptGrant({ host: null });
-        // The pinned SDK's activation step, verbatim: its real request and its status-less Error.
+        // SDK 3.1's activation step, verbatim: its real request, and an Error whose cause is the result.
         const fixture = appFor(grant, { configuredHost: host, onActivation: async (dto) => {
           const result = await activateSessionWithHost(dto.host!, { Authorization: "Bearer invoker-session" });
-          if (!result.success) throw new Error(`Failed to activate delegated session: ${result.error}`);
+          if (!result.success) {
+            const text = result.error?.trim();
+            throw Object.assign(
+              new Error(`Failed to activate delegated session: ${text ? `${result.status} - ${text}` : `${result.status}`}`),
+              { cause: result },
+            );
+          }
         } });
         await withServer(fixture.app, async (base) => {
           const response = await post(base, grant);

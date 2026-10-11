@@ -15,7 +15,6 @@ import { TenantCoordinator } from "../services/calendar-autojoin-store.js";
 import type { JsonKv } from "../services/transcriber-index.js";
 import { BackendStorageLane } from "../services/backend-storage-lane.js";
 import { MemoryTranscriberIndexStore } from "../services/transcriber-index.js";
-import { DelegationActivationError } from "../portable-delegation.js";
 import { KvTranscriptDeliveryStore, TranscriptDeliveryWorker, WriteGovernor, type DeliveryState, type TranscriptDeliveryOptions } from "../services/transcript-delivery.js";
 import { TranscriptionApiError, type TranscriptionApiClient, type TranscriptionMeeting } from "../services/transcription-api.js";
 import { makeSignedTranscriptGrant, type SignedTranscriptGrant } from "./helpers/transcript-grant.js";
@@ -208,12 +207,20 @@ async function withActivationNode(f: Fixture, answer: { status: number }, run: (
   let session = 0;
   node.useDelegation = async (delegation) => {
     const result = await activateSessionWithHost(delegation.host, { Authorization: `Bearer invoker-session-${++session}` });
-    // Verbatim from @tinycloud/node-sdk 2.11.0 `TinyCloudNode.useDelegation`.
-    if (!result.success) throw new Error(`Failed to activate delegated session: ${result.error}`);
+    if (!result.success) throw sdkActivationFailure(result);
     return access.call(node, delegation);
   };
   try { await withServer(app, run); } finally { node.useDelegation = access; }
   expect(requests.length).toBeGreaterThan(0);
+}
+
+/** Verbatim from @tinycloud/node-sdk 3.1.0 `TinyCloudNode.useDelegation`: the host result is the cause. */
+function sdkActivationFailure(result: { success: boolean; status: number; error?: string }): Error {
+  const text = result.error?.trim();
+  return Object.assign(
+    new Error(`Failed to activate delegated session: ${text ? `${result.status} - ${text}` : `${result.status}`}`),
+    { cause: result },
+  );
 }
 
 /**
@@ -255,8 +262,7 @@ async function withStorageNode(f: Fixture, answers: NodeAnswers, run: (host: str
     node.useDelegation = async (delegation) => {
       f.counts.activation++;
       const result = await activateSessionWithHost(delegation.host, { Authorization: `Bearer invoker-session-${++session}` });
-      // Verbatim from @tinycloud/node-sdk 2.11.0 `TinyCloudNode.useDelegation`.
-      if (!result.success) throw new Error(`Failed to activate delegated session: ${result.error}`);
+      if (!result.success) throw sdkActivationFailure(result);
       const sessionData = { delegationHeader: { Authorization: "Bearer session" }, delegationCid: "cid", spaceId: delegation.spaceId, verificationMethod: "did:key:z#z", jwk: {} };
       const invoke = (_session: unknown, service: string, _path: string, action: string) => ({ Authorization: `Bearer ${service}:${action}` });
       return new (DelegatedAccess as unknown as new (...args: unknown[]) => unknown)(sessionData, { path: "", spaceId: delegation.spaceId }, delegation.host, invoke, invoke, undefined);
@@ -675,7 +681,7 @@ describe("durable transcript delivery", () => {
     const node = f.node as unknown as { useDelegation: () => Promise<unknown> };
     const original = node.useDelegation;
     // What the activation boundary throws when the node refuses the grant (its SDK path is tested with a real node).
-    node.useDelegation = async () => { throw new DelegationActivationError(403, { cause: new Error("Failed to activate delegated session: revoked") }); };
+    node.useDelegation = async () => { throw sdkActivationFailure({ success: false, status: 403, error: "revoked" }); };
     let entered!: () => void;
     let release!: () => void;
     const waiting = new Promise<void>((resolve) => { entered = resolve; });
@@ -1130,7 +1136,7 @@ describe("durable transcript delivery", () => {
     const access = node.useDelegation;
     node.useDelegation = async (delegation) => {
       const result = await activateSessionWithHost(delegation.host, { Authorization: "Bearer invoker-session-offline" });
-      if (!result.success) throw new Error(`Failed to activate delegated session: ${result.error}`);
+      if (!result.success) throw sdkActivationFailure(result);
       return access.call(node, delegation);
     };
     const worker = f.worker({ configuredHost: host });

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { once } from "node:events";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Server } from "node:http";
 import express from "express";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
@@ -142,27 +145,43 @@ describe("activateVerifiedDelegation", () => {
   });
 });
 
-/** The pinned SDK's activation step: its real request, and its exact status-less Error. */
-function sdkShapedNode(before?: () => Promise<void>) {
+/**
+ * SDK 3.1's activation step, verbatim: the real (single-flighted) `activateSessionWithHost`, and
+ * `useDelegation()`'s exact throw. `header` lets two activations send byte-identical headers.
+ */
+function sdkShapedNode(options: { before?: () => Promise<void>; header?: () => string } = {}) {
   let session = 0;
   return {
     useDelegation: async (dto: DelegationDto) => {
-      await before?.();
-      const result = await activateSessionWithHost(dto.host!, { Authorization: `Bearer invoker-${++session}` });
-      if (!result.success) throw new Error(`Failed to activate delegated session: ${result.error}`);
+      await options.before?.();
+      const authorization = options.header?.() ?? `Bearer invoker-${++session}`;
+      const activateResult = await activateSessionWithHost(dto.host!, { Authorization: authorization });
+      if (!activateResult.success) {
+        const text = activateResult.error?.trim();
+        throw Object.assign(
+          new Error(`Failed to activate delegated session: ${text ? `${activateResult.status} - ${text}` : `${activateResult.status}`}`),
+          { cause: activateResult },
+        );
+      }
       return { kv: {}, sql: {} };
     },
   } as unknown as TinyCloudNode;
 }
 
-async function withNode<T>(statuses: Record<string, number>, run: (host: string) => Promise<T>): Promise<T> {
+async function withNode<T>(statuses: Record<string, number>, run: (host: string, posts: string[]) => Promise<T>,
+  hold?: Promise<void>): Promise<T> {
   const app = express();
-  app.post(/.*/, (req, res) => { res.status(statuses[req.path] ?? 404).send(`answer for ${req.path}`); });
+  const posts: string[] = [];
+  app.post(/.*/, async (req, res) => {
+    posts.push(req.path);
+    await hold;
+    res.status(statuses[req.path] ?? 404).send(`answer for ${req.path}`);
+  });
   const server: Server = app.listen(0, "127.0.0.1");
   await once(server, "listening");
   try {
     const { port } = server.address() as { port: number };
-    return await run(`http://127.0.0.1:${port}`);
+    return await run(`http://127.0.0.1:${port}`, posts);
   } finally {
     const closed = once(server, "close");
     server.close();
@@ -171,14 +190,22 @@ async function withNode<T>(statuses: Record<string, number>, run: (host: string)
 }
 
 describe("activation status at the SDK boundary", () => {
-  it("rethrows a node rejection with the HTTP status the SDK's own Error drops", async () => {
+  it("the installed node-sdk still throws the activation shape this boundary reads", () => {
+    const dist = dirname(fileURLToPath(import.meta.resolve("@tinycloud/node-sdk")));
+    const shape = /throw Object\.assign\(\s*new Error\(`Failed to activate delegated session: \$\{describeHostFailure\d*\(activateResult\)\}`\),\s*\{ cause: activateResult \}\s*\)/;
+    for (const file of ["index.js", "index.cjs", "core.js", "core.cjs"]) {
+      expect(readFileSync(join(dist, file), "utf8")).toMatch(shape);
+    }
+  });
+
+  it("rethrows a node rejection with the status from the SDK error's cause", async () => {
     for (const status of [401, 403, 503]) {
       await withNode({ "/delegate": status }, async (host) => {
         const error = await activateVerifiedDelegation(sdkShapedNode(), verifiedGrant(), { host }).catch((e: unknown) => e);
         expect(error).toBeInstanceOf(DelegationActivationError);
         expect((error as DelegationActivationError).status).toBe(status);
-        // The SDK's message carried the body and no status — that is why this boundary exists.
-        expect(((error as Error).cause as Error).message).toBe("Failed to activate delegated session: answer for /delegate");
+        expect(((error as Error).cause as Error).message)
+          .toBe(`Failed to activate delegated session: ${status} - answer for /delegate`);
         expect((error as Error).message).not.toContain("answer for");
       });
     }
@@ -190,42 +217,55 @@ describe("activation status at the SDK boundary", () => {
     });
   });
 
-  it("ignores other requests, other hosts and requests outside the activation scope", async () => {
-    await withNode({ "/delegate": 403, "/other": 403 }, async (host) => {
-      // A rejected non-activation POST inside the scope, then a throw before any activation request.
-      const otherPath = { useDelegation: async () => {
-        await fetch(`${host}/other`, { method: "POST" });
-        throw new Error("local failure");
-      } } as unknown as TinyCloudNode;
-      const error = await activateVerifiedDelegation(otherPath, verifiedGrant(), { host }).catch((e: unknown) => e);
-      expect(error).not.toBeInstanceOf(DelegationActivationError);
-      expect((error as Error).message).toBe("local failure");
-
-      // The same /delegate on a host other than the configured one is not this activation.
-      const otherHost = { useDelegation: async () => {
-        await fetch(`${host.replace("127.0.0.1", "localhost")}/delegate`, { method: "POST" });
-        throw new Error("other host");
-      } } as unknown as TinyCloudNode;
-      const second = await activateVerifiedDelegation(otherHost, verifiedGrant(), { host }).catch((e: unknown) => e);
-      expect(second).not.toBeInstanceOf(DelegationActivationError);
-
-      // Outside any activation the wrapper is transparent.
-      const response = await fetch(`${host}/delegate`, { method: "POST" });
-      expect(response.status).toBe(403);
-      expect(await response.text()).toBe("answer for /delegate");
-    });
+  it("a network failure, a local throw, or a look-alike error is never a refusal", async () => {
+    // Nothing listens here: the SDK's fetch rejects, and that error is kept as it is.
+    const closed = await withNode({}, async (host) => host);
+    const network = await activateVerifiedDelegation(sdkShapedNode(), verifiedGrant(), { host: closed }).catch((e: unknown) => e);
+    expect(network).not.toBeInstanceOf(DelegationActivationError);
+    expect((network as Error).message).not.toStartWith("Failed to activate delegated session");
+    const thrower = (error: unknown) => ({ useDelegation: async () => { throw error; } }) as unknown as TinyCloudNode;
+    for (const error of [
+      new Error("local failure"),
+      // The 2.x shape: a status-less message.
+      new Error("Failed to activate delegated session: answer for /delegate"),
+      // A host-result cause on some other operation.
+      Object.assign(new Error("Failed to host space: 403"), { cause: { success: false, status: 403 } }),
+      // A cause that is not a failed host result.
+      Object.assign(new Error("Failed to activate delegated session: 403"), { cause: { success: true, status: 403 } }),
+      Object.assign(new Error("Failed to activate delegated session: 403"), { cause: { success: false, status: "403" } }),
+      Object.assign(new Error("Failed to activate delegated session: 200"), { cause: { success: false, status: 200 } }),
+    ]) {
+      const caught = await activateVerifiedDelegation(thrower(error), verifiedGrant(), { host: HOST }).catch((e: unknown) => e);
+      expect(caught).toBe(error);
+    }
   });
 
-  it("does not attribute one activation's rejection to a concurrent one on the same host", async () => {
+  it("callers joined to one single-flighted activation each get its refusal status", async () => {
+    const release = Promise.withResolvers<void>();
+    await withNode({ "/delegate": 403 }, async (host, posts) => {
+      const header = () => "Bearer identical-invoker";
+      const first = activateVerifiedDelegation(sdkShapedNode({ header }), verifiedGrant(), { host }).catch((e: unknown) => e);
+      const second = activateVerifiedDelegation(sdkShapedNode({ header }), verifiedGrant(), { host }).catch((e: unknown) => e);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      release.resolve();
+      const [a, b] = await Promise.all([first, second]);
+      // One POST answered both callers; the joined one saw no request of its own.
+      expect(posts).toEqual(["/delegate"]);
+      for (const error of [a, b]) {
+        expect(error).toBeInstanceOf(DelegationActivationError);
+        expect((error as DelegationActivationError).status).toBe(403);
+      }
+    }, release.promise);
+  });
+
+  it("does not attribute one activation's rejection to a concurrent local failure", async () => {
     await withNode({ "/delegate": 403 }, async (host) => {
       const rejectedSeen = Promise.withResolvers<void>();
       const localFailure = { useDelegation: async () => {
-        // Still inside its own activation when the other one's 403 arrives.
         await rejectedSeen.promise;
         throw new Error("local failure");
       } } as unknown as TinyCloudNode;
-      const rejectedNode = sdkShapedNode();
-      const rejecting = activateVerifiedDelegation(rejectedNode, verifiedGrant(), { host })
+      const rejecting = activateVerifiedDelegation(sdkShapedNode(), verifiedGrant(), { host })
         .finally(() => rejectedSeen.resolve());
       const [rejected, local] = await Promise.allSettled([
         rejecting,
