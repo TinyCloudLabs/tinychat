@@ -38,9 +38,10 @@ import {
 } from "../privateCloud";
 import { base64ToBytes, bytesToBase64, type AudioDecoder } from "./voiceNoteAudio";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
-import { __setVoiceNotesForTests, VoiceNotes, type LocalTranscript } from "./nativeVoiceNotes";
+import { __setVoiceNotesForTests, VoiceNotes, type LocalTranscript, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
 import { readTranscriptCommit } from "./voiceNoteCommits";
+import { pendingStore } from "./recorderSaves";
 import {
   VOICE_NOTE_SOURCE,
   listVoiceNotes,
@@ -61,6 +62,7 @@ import {
   localStorageVoiceNotePendingStore,
   localStorageVoiceNotePrivateChoiceStore,
   maxTranscriptionSeconds,
+  privateCloudAccepts,
   prepareVoiceNoteTranscript,
   transcribeVoiceNote,
   transcriptionStatusText,
@@ -260,10 +262,15 @@ describe("gating", () => {
     }
   });
 
-  test("the longest note offered is the phone's limit, or PTX's when lower", () => {
-    expect(maxTranscriptionSeconds(null)).toBe(600);
-    expect(maxTranscriptionSeconds(CAPS)).toBe(600);
+  test("the supported duration comes from PTX", () => {
+    expect(maxTranscriptionSeconds(null)).toBe(Number.POSITIVE_INFINITY);
+    expect(maxTranscriptionSeconds(CAPS)).toBe(7_200);
     expect(maxTranscriptionSeconds({ ...CAPS, max_duration_seconds: 120 })).toBe(120);
+    expect(maxTranscriptionSeconds({ ...CAPS, max_duration_seconds: 10_800 })).toBe(10_800);
+    expect(privateCloudAccepts(7_200, CAPS)).toBe(true);
+    expect(privateCloudAccepts(7_201, CAPS)).toBe(false);
+    expect(privateCloudAccepts(null, CAPS)).toBe(true);
+    expect(privateCloudAccepts(1, null)).toBe(false);
   });
 });
 
@@ -316,6 +323,14 @@ describe("interpretUploadResponse (desktop upload_result)", () => {
 });
 
 describe("createVoiceNoteCloud.transcribe", () => {
+  test.each([3_600, 10_800])("uploads a %i-second note when PTX advertises that duration", async (durationSeconds) => {
+    const h = harness({});
+    await h.cloud.transcribe({ sourceId: "rec-1", capabilities: { ...CAPS, max_duration_seconds: durationSeconds },
+      loadAudio: async () => AUDIO, durationSeconds }, () => {});
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+  });
+
   test("happy path: create (metadata only) → one PUT of the WAV to the build's origin → poll → result", async () => {
     const h = harness({});
     const statuses: VoiceNoteTranscriptionStatus[] = [];
@@ -441,12 +456,12 @@ describe("createVoiceNoteCloud.transcribe", () => {
     expect(voiceNoteTranscriptionFailure(err)).toEqual(expect.objectContaining({ retryable: true }));
   });
 
-  test("a note over the phone's limit is refused before any job exists", async () => {
+  test("a note over PTX's advertised duration is refused before any job exists", async () => {
     const h = harness({});
     const err = await h.cloud
       .transcribe({ sourceId: "rec-1", capabilities: { ...CAPS, max_duration_seconds: 0.5 }, loadAudio: async () => AUDIO }, () => {})
       .catch((e: unknown) => e);
-    expect((err as { code: string }).code).toBe("recording_too_long_for_phone");
+    expect((err as { code: string }).code).toBe("recording_too_long");
     expect(h.creates).toHaveLength(0);
     expect(h.pending.read("rec-1")).toBeNull();
     expect(voiceNoteTranscriptionFailure(err)).toEqual(expect.objectContaining({ retryable: false }));
@@ -1036,9 +1051,9 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     expect(h.pending.read("rec-1")).toBeNull();
   });
 
-  test("the note's own length is checked before its audio is read", async () => {
+  test("the note's own length is checked against PTX before its audio is read", async () => {
     const space = sqliteSpace();
-    await saveVoiceNote(space.tcw, { ...RECORDING, durationMs: 11 * 60_000 }, AUDIO, "android");
+    await saveVoiceNote(space.tcw, { ...RECORDING, durationMs: 7_201_000 }, AUDIO, "android");
     const h = harness({});
     let loads = 0;
     const realGet = (space.tcw as { kv: { get: (k: string) => Promise<unknown> } }).kv.get;
@@ -1048,7 +1063,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     };
     const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} })
       .catch((e: unknown) => e);
-    expect((err as { code: string }).code).toBe("recording_too_long_for_phone");
+    expect((err as { code: string }).code).toBe("recording_too_long");
     expect(loads).toBe(0);
     expect(h.creates).toHaveLength(0);
   });
@@ -1073,7 +1088,103 @@ describe("transcribeVoiceNote (one note end to end)", () => {
 });
 
 describe("transcribeVoiceNote reads the note's stored audio (TC-517)", () => {
-  beforeEach(() => _resetConnectorSchemaMemoForTests());
+  beforeEach(() => {
+    _resetConnectorSchemaMemoForTests();
+    const fake = createFakeVoiceNotes();
+    fake.plugin.listPending = async () => ({ recordings: [] });
+    fake.plugin.getTranscript = async () => ({ transcript: null });
+    __setVoiceNotesForTests(fake.plugin, { available: true });
+  });
+
+  test("internal audio read details are logged through errors, never shown in transcription copy", () => {
+    const failure = voiceNoteTranscriptionFailure(new Error("loadVoiceNoteAudio: Key not found: private/key"));
+    expect(failure.message).toBe("Transcription failed. Try again.");
+    expect(failure.message).not.toContain("private/key");
+  });
+
+  test("uses retained local audio before the space copy when the KV key is missing", async () => {
+    const space = sqliteSpace();
+    const localBytes = new Uint8Array([9, 8, 7, 6, 5]);
+    await storeVoiceNote(space.tcw, RECORDING, AUDIO, "android");
+    for (const key of [...space.kv.keys()]) if (key.startsWith(`${voiceNoteAudioKvKey("rec-1")}/`)) space.kv.delete(key);
+    space.kv.delete(voiceNoteAudioKvKey("rec-1"));
+
+    const fake = createFakeVoiceNotes();
+    fake.plugin.listPending = async () => ({ recordings: [{ ...RECORDING, sizeBytes: localBytes.byteLength, ledger: {
+      audio: { state: "saved" }, transcriptSync: { state: "pending", rev: 0, at: null },
+    } } as never] });
+    fake.plugin.getTranscript = async () => ({ transcript: null });
+    fake.plugin.readAudioChunk = async ({ id, offset, length }) => {
+      const bytes = localBytes.slice(offset, offset + length);
+      return { id, offset, base64: bytesToBase64(bytes), bytesRead: bytes.byteLength, size: localBytes.byteLength,
+        eof: offset + bytes.byteLength >= localBytes.byteLength };
+    };
+    __setVoiceNotesForTests(fake.plugin, { available: true });
+
+    let decoded: Uint8Array | null = null;
+    const quiet = silentDecoder();
+    const h = harness({ decode: async (buffer, rate) => {
+      decoded = new Uint8Array(buffer.slice(0));
+      return quiet(buffer, rate);
+    } });
+    await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} });
+    expect(decoded).toEqual(localBytes);
+  });
+
+  for (const [platformShape, fail] of [
+    ["iOS not_found", async () => { throw Object.assign(new Error("gone"), { code: "not_found" }); }],
+    ["Android FileNotFoundException", async () => { throw Object.assign(new Error("gone"), { code: "java.io.FileNotFoundException: /recording.m4a" }); }],
+    ["web tombstoned", async () => { throw Object.assign(new Error("gone"), { code: "tombstoned" }); }],
+    ["truncated native read", async ({ id, offset }: { id: string; offset: number }) => ({
+      id, offset, base64: bytesToBase64(new Uint8Array([9, 8])), bytesRead: 2, size: 5, eof: false,
+    })],
+  ] as const) {
+    test(`falls back to the committed space copy for ${platformShape}`, async () => {
+      const space = sqliteSpace();
+      await saveVoiceNote(space.tcw as never, RECORDING, AUDIO, "android");
+      const fake = createFakeVoiceNotes();
+      fake.plugin.listPending = async () => ({ recordings: [{ ...RECORDING, sizeBytes: 5, ledger: {
+        audio: { state: "saved" }, transcriptSync: { state: "pending", rev: 0, at: null },
+      } } as never] });
+      fake.plugin.getTranscript = async () => ({ transcript: null });
+      fake.plugin.readAudioChunk = fail as typeof fake.plugin.readAudioChunk;
+      __setVoiceNotesForTests(fake.plugin, { available: true });
+      let decoded: Uint8Array | null = null;
+      const quiet = silentDecoder();
+      const h = harness({ decode: async (buffer, rate) => {
+        decoded = new Uint8Array(buffer.slice(0));
+        return quiet(buffer, rate);
+      } });
+      expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+      expect(decoded).toEqual(base64ToBytes(AUDIO.base64));
+    });
+  }
+
+  test("does not read the space copy after an unrecognized local read error", async () => {
+    const space = sqliteSpace();
+    await saveVoiceNote(space.tcw as never, RECORDING, AUDIO, "android");
+    const fake = createFakeVoiceNotes();
+    fake.plugin.listPending = async () => ({ recordings: [{ ...RECORDING, sizeBytes: 5, ledger: {
+      audio: { state: "saved" }, transcriptSync: { state: "pending", rev: 0, at: null },
+    } } as never] });
+    fake.plugin.getTranscript = async () => ({ transcript: null });
+    fake.plugin.readAudioChunk = async () => { throw Object.assign(new Error("denied"), { code: "permission_denied" }); };
+    __setVoiceNotesForTests(fake.plugin, { available: true });
+    let audioReads = 0;
+    const client = space.tcw as unknown as { kv: { get: (key: string) => Promise<unknown> } };
+    const originalGet = client.kv.get;
+    client.kv.get = async (key) => {
+      if (key.startsWith(voiceNoteAudioKvKey("rec-1"))) audioReads++;
+      return originalGet(key);
+    };
+    try {
+      const h = harness({});
+      await expect(transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} }))
+        .rejects.toThrow("Could not read this note's local audio");
+      expect(audioReads).toBe(0);
+      expect(h.creates).toHaveLength(0);
+    } finally { client.kv.get = originalGet; }
+  });
 
   test("a note stored in parts is reassembled, in order, for the upload", async () => {
     const space = sqliteSpace();
@@ -1102,7 +1213,7 @@ describe("transcribeVoiceNote reads the note's stored audio (TC-517)", () => {
     expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
   });
 
-  test("a note of unknown length that is too large is refused from its manifest, before any part is read", async () => {
+  test("a note of unknown length over PTX's byte limit is refused from its manifest before any part is read", async () => {
     const space = sqliteSpace();
     // 10 min at twice the phone's bitrate is the most read back; this note claims more.
     const big = new Uint8Array(600 * 16_000 + 1);
@@ -1114,9 +1225,9 @@ describe("transcribeVoiceNote reads the note's stored audio (TC-517)", () => {
       gets.push(k);
       return realGet(k);
     };
-    const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} })
+    const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: { ...CAPS, max_bytes: 1_000 }, explicit: true, sourceId: "rec-1", report: () => {} })
       .catch((e: unknown) => e);
-    expect((err as { code: string }).code).toBe("recording_too_long_for_phone");
+    expect((err as { code: string }).code).toBe("recording_too_large");
     expect(gets.filter((k) => k.includes("/p/"))).toEqual([]);
     expect(h.creates).toHaveLength(0);
   });
@@ -1435,4 +1546,49 @@ test("a retryable audio-read failure before the cloud job exists retains the use
   expect({ retainedAfterFailure, job: restarted.snapshot().jobs.get("rec-1") }).toMatchObject({
     retainedAfterFailure: true, job: { kind: "done", outcome: "transcribed" },
   });
+}, 15000);
+
+test("Library Transcribe uses local audio while the space upload is pending", async () => {
+  _resetConnectorSchemaMemoForTests();
+  const space = sqliteSpace();
+  expect((await saveVoiceNote(space.tcw, { ...RECORDING, version: 2, source: "in_app", options: { transcriber: "private-cloud", identifySpeakers: false } }, AUDIO, "ios")).ok).toBe(true);
+  space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata,
+    '$.capture.version', 2, '$.capture.options.transcriber', 'private-cloud') WHERE source_id = 'rec-1'`).run();
+  for (const key of [...space.kv.keys()]) if (key.startsWith(voiceNoteAudioKvKey("rec-1"))) space.kv.delete(key);
+
+  const recording = { ...RECORDING, version: 2 as const, owner: "did:test:voice", source: "in_app" as const, ledger: {
+    audio: { state: "pending" as const, rowId: null, at: null },
+    transcriptSync: { state: "pending" as const, rev: 0, at: null },
+  }, options: { transcriber: "private-cloud" as const, identifySpeakers: false } } as unknown as VoiceNoteRecording;
+  VoiceNotes.listPending = async () => ({ recordings: [recording] });
+  let audioReads = 0;
+  const client = space.tcw as unknown as { kv: { get: (key: string) => Promise<unknown> } };
+  const originalGet = client.kv.get;
+  client.kv.get = async (key) => {
+    if (key.startsWith(voiceNoteAudioKvKey("rec-1"))) audioReads++;
+    return originalGet(key);
+  };
+  VoiceNotes.readAudioChunk = async ({ id, offset, length }) => ({ id, offset,
+    base64: bytesToBase64(new Uint8Array(length)), bytesRead: length, size: RECORDING.sizeBytes, eof: offset + length >= RECORDING.sizeBytes });
+
+  const finishTrackedUpload = pendingStore.beginAutomaticSave();
+  try {
+    const h = harness({});
+    const transcriber = createVoiceNoteTranscriber({
+      cloud: h.cloud, consent: { get: () => true, set: () => {} }, tcw: () => space.tcw, holds: memoryHoldStore(),
+    });
+    await transcriber.check();
+    // The row is visible and the audio upload is pending, but its native file is valid.
+    // Keep a save busy to prove local-first transcription does not wait on the upload queue.
+    transcriber.transcribe("rec-1");
+    for (let i = 0; i < 100 && transcriber.snapshot().jobs.get("rec-1")?.kind === "active"; i++)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "done", outcome: "transcribed" });
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+    expect(audioReads).toBe(0);
+  } finally {
+    finishTrackedUpload();
+    client.kv.get = originalGet;
+  }
 }, 15000);

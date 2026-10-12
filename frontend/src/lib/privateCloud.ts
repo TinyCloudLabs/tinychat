@@ -134,7 +134,7 @@ export function privateCloudMessage(err: PrivateCloudError): string {
     case "recording_too_long_for_cloud":
     case "recording_too_long":
     case "recording_too_large":
-      return "Private cloud transcription takes recordings up to 2 hours.";
+      return "Private cloud can't transcribe a recording this long or large.";
     case "no_speech":
       return "No speech was found in the recording.";
     case "invalid_audio":
@@ -175,6 +175,10 @@ export function privateCloudMessage(err: PrivateCloudError): string {
       return "This recording is no longer available to upload.";
     case "unauthenticated":
       return "Your session expired. Sign in again, then retry.";
+    case "offline":
+    case "request_timeout":
+    case "service_unavailable":
+      return "Couldn't reach private cloud transcription. Check your connection and try again.";
     case "service_misconfigured":
       return "Private cloud transcription is misconfigured. The team has been alerted.";
     case "transcription_not_found":
@@ -182,7 +186,7 @@ export function privateCloudMessage(err: PrivateCloudError): string {
     case "cancelled":
       return "The upload was cancelled.";
     default:
-      return err.message || "Private cloud transcription failed.";
+      return "Private cloud transcription couldn't complete. Try again.";
   }
 }
 
@@ -678,8 +682,8 @@ export function putFileToPtx(input: PtxFileUpload): Promise<void> {
 
 // ── Polling ────────────────────────────────────────────────────────────
 
-/** Private cloud polling (plan §4.7): 5 s ± 20 %, 30 s after a minute of
- *  transient failures, and "connection lost" (not failed) after 10 minutes. */
+/** Private cloud polling: 5 s ± 20 %, 30 s after a minute of transient
+ *  failures, then "connection lost" (not failed). */
 export interface CloudPolling {
   intervalMs: number;
   slowIntervalMs: number;
@@ -719,7 +723,7 @@ export interface CloudJobPoller {
   /** The job's status, riding out transient failures. */
   readJob(id: string): Promise<PrivateCloudJob>;
   /** Poll a job to its transcript (plan §4.7): transient failures are ridden
-   *  out for 10 minutes, then `connectionLost()` is thrown, not a failure.
+   *  out for a bounded interval, then `connectionLost()` is thrown, not a failure.
    *  An aborted `signal` stops it with a `cancelled` error at the next step. */
   pollTranscript(id: string, onProgress: (p: CloudJobProgress) => void, signal?: AbortSignal): Promise<PrivateCloudTranscript>;
 }
@@ -733,7 +737,7 @@ export function createCloudJobPoller(
   const sleep = (baseMs: number) => clock.sleep(Math.round(baseMs * (0.8 + 0.4 * clock.random())));
 
   /** Rides out transient failures: waits and returns while they last under
-   *  10 minutes, backing off after one; then "connection lost". */
+ *  a bounded interval, backing off after one; then "connection lost". */
   const transientTolerance = () => {
     let failingSince: number | null = null;
     return {

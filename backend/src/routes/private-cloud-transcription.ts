@@ -20,7 +20,6 @@ import {
   CHANNEL_MODES,
   CONTENT_TYPES,
   LANGUAGE_RE,
-  MAX_RECORDING_BYTES,
   TRANSCRIPTION_ID_RE,
   parseCancelled,
   parseCapabilities,
@@ -104,7 +103,6 @@ function parseCreateBody(raw: unknown): CreateBody | PublicError["code"] {
   const { content_type, byte_size, sha256, language, channel_mode, channel_labels, diarize } = raw;
   if (typeof content_type !== "string" || !CONTENT_TYPES.includes(content_type)) return "invalid_request";
   if (typeof byte_size !== "number" || !Number.isSafeInteger(byte_size) || byte_size < 1) return "invalid_request";
-  if (byte_size > MAX_RECORDING_BYTES) return "recording_too_large";
   if (typeof sha256 !== "string" || !SHA256_RE.test(sha256)) return "invalid_request";
   const body: CreateBody = { content_type, byte_size, sha256 };
   if (language !== undefined) {

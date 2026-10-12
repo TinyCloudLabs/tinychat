@@ -69,6 +69,12 @@ describe("NoteDetailView", () => {
     expect(render({ item: VOICE, audio: null, metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" } }))
       .toContain("Saving from your phone…");
   });
+  test("an over-limit note explains the advertised maximum before offering Transcribe", () => {
+    const html = render({ item: { ...VOICE, durationSecs: 10_800 }, transcription: transcription({ maxSeconds: 7_200 }) });
+    expect(html).toContain('data-testid="voice-note-transcription-over-limit"');
+    expect(html).toContain("Private Transcription accepts notes up to 2 h. This note is 3 h.");
+    expect(html).not.toContain('data-testid="voice-note-transcribe"');
+  });
   test("a committed transcript with a missing body does not show its preview as full text", () => {
     const html = render({ item: VOICE, metadata: { status: "ok", metadata: {
       transcription_outcome: "transcribed", transcript_text: null,
@@ -154,11 +160,11 @@ describe("a voice note's transcription", () => {
     expect(html).not.toContain('data-testid="voice-note-transcribe"');
   });
 
-  test("chosen: Transcribe; a note over the limit says so instead", () => {
+  test("chosen: Transcribe remains available for long notes", () => {
     expect(render({ transcription: transcription() })).toContain('data-testid="voice-note-transcribe"');
-    const long = render({ item: { ...VOICE, durationSecs: 900 }, transcription: transcription() });
-    expect(long).toContain("Notes up to 10 minutes can be transcribed from the phone.");
-    expect(long).not.toContain('data-testid="voice-note-transcribe"');
+    const long = render({ item: { ...VOICE, durationSecs: 900 }, transcription: transcription({ maxSeconds: 7_200 }) });
+    expect(long).toContain('data-testid="voice-note-transcribe"');
+    expect(long).not.toContain("minutes can be transcribed");
   });
 
   test("no speech, progress, just saved, and a failure with Retry only when it can help", () => {

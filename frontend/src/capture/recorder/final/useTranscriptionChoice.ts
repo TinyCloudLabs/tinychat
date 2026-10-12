@@ -341,6 +341,5 @@ export function useTranscriptionChoice({
     asking,
     dismissConsent,
     confirmConsent,
-    maxMinutes: Math.round((transcription?.maxSeconds ?? 0) / 60),
   };
 }

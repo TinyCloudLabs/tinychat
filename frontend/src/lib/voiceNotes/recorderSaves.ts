@@ -20,7 +20,6 @@ import {
   nativeRecordingSource,
   type VoiceNoteRecording,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { bytesToBase64, VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS } from "@/lib/voiceNotes/voiceNoteAudio";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { saveVoiceNote, type NoteSyncErrorCode, type VoiceNoteAudio, type VoiceNoteAudioSource, type StoreAudioOptions } from "@/lib/voiceNotes/voiceNoteStore";
 import { assertCurrent, type AccountContext } from "@/lib/voiceNotes/accountContext";
@@ -257,22 +256,12 @@ function failedOutcome(error: unknown): Extract<SaveOutcome, { kind: "failed" }>
   return { kind: "failed", failure: messageOf(error), failureKind: classifyNoteFailure(error), failureCause: error };
 }
 
-function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {
-  const out = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
-  let at = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, at);
-    at += chunk.byteLength;
-  }
-  return out;
-}
-
 /**
  * Upload one committed recording, part by part from the device. The device copy
- * stays for local playback. A saved note carries its audio when it is short enough
- * to transcribe and every part was read in this attempt (handed to transcription, so it is
- * not read back). The in-flight guard matters because upsertMeeting's select-then-insert is
- * not atomic: two concurrent saves of one recording would write two rows.
+ * stays for local playback. Transcription reads the device copy after the upload,
+ * so this save never buffers another copy in memory. The in-flight guard matters
+ * because upsertMeeting's select-then-insert is not atomic: two concurrent saves
+ * of one recording would write two rows.
  */
 export async function saveRecording(
   tcw: TinyCloudWeb,
@@ -296,19 +285,7 @@ export async function saveRecording(
   savesInFlight.add(recording.id);
   try {
     const native = nativeRecordingSource(recording);
-    const kept: Uint8Array[] = [];
-    const keep = recording.durationMs <= VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS * 1000;
-    const source: VoiceNoteAudioSource = keep
-      ? {
-          ...native,
-          readPart: async (offset, length) => {
-            const bytes = await native.readPart(offset, length);
-            kept.push(bytes);
-            return bytes;
-          },
-        }
-      : native;
-    const saved = await saveVoiceNote(tcw, recording, source, nativePlatform(), { onProgress,
+    const saved = await saveVoiceNote(tcw, recording, native, nativePlatform(), { onProgress,
       checkpoint: () => { if (isDiscarded(recording.id)) throw new Error("Recording was discarded"); } });
     if (!saved.ok) return isDiscarded(recording.id)
       ? { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) }
@@ -340,10 +317,9 @@ export async function saveRecording(
       }
       void syncOnDeviceTranscript(tcw, { id: recording.id, ledger: { audio: { state: "saved" } } });
     }
-    const whole = keep && kept.reduce((n, c) => n + c.byteLength, 0) === native.size;
     return {
       kind: "saved",
-      audio: whole ? { mimeType: recording.mimeType, base64: bytesToBase64(concatBytes(kept)) } : null,
+      audio: null,
       cleanupError,
       noteSyncError: saved.data.noteSyncError,
     };

@@ -61,11 +61,11 @@ export const SPACE_COPY = {
   accountUnknown: (device: PipelineDevice) => `Exo can't tell which account this note belongs to. It stays on ${deviceName(device)}.`,
   quota: "Your space is full",
   timeout: (device: PipelineDevice) => `Saving timed out. This note is safe on ${deviceName(device)}.`,
-  server: (detail: string | null | undefined, device: PipelineDevice) =>
-    withDetail(`Your space couldn't take this note. It is safe on ${deviceName(device)}.`, detail),
+  server: (_detail: string | null | undefined, device: PipelineDevice) =>
+    `Your space couldn't take this note. It is safe on ${deviceName(device)}. Try again.`,
   unreachable: (device: PipelineDevice) => `Couldn't reach your space. This note is safe on ${deviceName(device)}.`,
-  source: (message: string | null | undefined) => (hasText(message) ? message.trim() : "Couldn't read the recording"),
-  unknown: (message: string | null | undefined) => (hasText(message) ? message.trim() : "Saving failed with no details"),
+  source: (_message: string | null | undefined) => "Couldn't read the recording on this phone.",
+  unknown: (_message: string | null | undefined) => "Couldn't save this note. It is safe on this phone. Try again.",
 };
 
 export const LOCAL_COPY = {
@@ -86,10 +86,13 @@ export const LOCAL_COPY = {
   adding: "Adding to this note…",
   failed: (detail: string | null | undefined, device: PipelineDevice) => withDetail(`Couldn't transcribe on ${deviceName(device)}`, detail),
   cancelled: (device: PipelineDevice) => `Transcribing on ${deviceName(device)} was cancelled`,
-  syncFailed: (detail: string | null | undefined) => withDetail("Couldn't add the transcript to this note", detail),
+  syncFailed: () => "Couldn't add the transcript to this note",
   notAdded: "The transcript is ready on this phone but hasn't been added to this note",
   missingTranscript: "this phone says it finished transcribing but has no transcript for the note",
-  unrecorded: (cause: string) => `The transcript is in your space, but this phone couldn't record that: ${cause}`,
+  transcriptReadFailed: "Couldn't read the transcript on this phone.",
+  transcriptCheckFailed: "Couldn't check this note on this phone.",
+  transcriptSyncFailed: "Couldn't add the transcript to this note.",
+  unrecorded: () => "The transcript is in your space, but this phone couldn't record it.",
   checkingSpace: "Checking your space…",
   checkingSpaceAfterUploads: "Checking your space · after uploads",
   notStarted: "Waiting to transcribe",
@@ -113,9 +116,10 @@ export const PRIVATE_COPY = {
   checking: "Checking private transcription…",
   noConsent: "Private transcription is turned off",
   hidden: "Private transcription isn't available for this account",
-  failed: (message: string | null | undefined, reference: string | null) =>
-    hasText(reference) ? withDetail(hasText(message) ? message.trim() : "Transcription failed", `Reference ${reference.trim()}`)
-      : hasText(message) ? message.trim() : "Transcription failed",
+  failed: (message: string | null | undefined, reference: string | null) => {
+    const copy = hasText(message) ? message.trim() : "Private transcription couldn't finish.";
+    return hasText(reference) ? `${copy} · Reference ${reference.trim()}` : copy;
+  },
 };
 
 export const NOTES_COPY = {

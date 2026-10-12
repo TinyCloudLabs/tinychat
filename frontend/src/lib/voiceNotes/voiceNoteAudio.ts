@@ -1,17 +1,13 @@
 // Voice-note audio in a form TinyCloud Private Transcription (PTX) accepts.
 //
-// The phone records AAC in MPEG-4 (`audio/mp4`, .m4a). PTX and the TinyChat
-// relay accept only `audio/mpeg`, `audio/wav` and `audio/ogg` (PTX checks the
-// container with ffprobe), and neither phone OS can encode MP3 or Ogg without
-// a bundled encoder. So the webview decodes the note with WebAudio, already
-// resampled to 16 kHz mono, and writes a 16-bit PCM WAV. 16 kHz mono s16le is
+// The phone records AAC in MPEG-4 (`audio/mp4`, .m4a), which PTX accepts
+// directly. Other accepted inputs are decoded with WebAudio, resampled to
+// 16 kHz mono, and written as 16-bit PCM WAV. 16 kHz mono s16le is
 // exactly what PTX decodes every upload to before its speech detection, so
 // the conversion loses nothing PTX would have kept.
 //
 // Cost: the WAV is 32 KB per second (1.9 MB per minute), about 4× the AAC,
-// and the decode holds the whole note in memory. VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS
-// bounds both. If PTX and the relay ever accept `audio/mp4`, the original
-// bytes are sent as they are (see `prepareTranscriptionAudio`).
+// and the decode holds the whole note in memory. Keep accepted formats as-is.
 
 /** The rate PTX decodes every upload to. */
 export const TRANSCRIPTION_SAMPLE_RATE = 16_000;
@@ -21,16 +17,8 @@ export const WAV_BYTES_PER_SECOND = TRANSCRIPTION_SAMPLE_RATE * 2;
 const WAV_HEADER_BYTES = 44;
 
 /**
- * Longest note this app converts and uploads (v1). Everything happens in the
- * webview: the decode, the WAV (19 MB at this cap) and its base64 copy for the
- * native HTTP bridge. Well under PTX's own limits (2 hours, ~121 MB).
- */
-export const VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS = 10 * 60;
-
-/**
- * Compressed bytes per second allowed before decoding: twice the phone's
- * 64 kbps AAC. A recording larger than `maxSeconds` of this is refused
- * without being decoded, even when its length is not known.
+ * Compressed bytes per second allowed before decoding, used with the current
+ * PTX duration capability when the container has no trusted duration.
  */
 export const MAX_ENCODED_BYTES_PER_SECOND = 16_000;
 
@@ -152,7 +140,7 @@ export interface PreparedTranscriptionAudio {
 /**
  * The note's audio as PTX will take it: as recorded when its type is
  * accepted, otherwise decoded and written as 16 kHz mono WAV. Refuses a
- * recording over `maxSeconds` or `maxBytes` before anything is uploaded.
+ * recording over the current PTX duration or byte capability before upload.
  */
 export async function prepareTranscriptionAudio(
   audio: { mimeType: string; base64: string },
@@ -163,7 +151,7 @@ export async function prepareTranscriptionAudio(
     decode?: AudioDecoder;
   },
 ): Promise<PreparedTranscriptionAudio> {
-  const maxSeconds = options.maxSeconds ?? VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS;
+  const maxSeconds = options.maxSeconds ?? Number.POSITIVE_INFINITY;
   const tooLarge = () => new VoiceNoteAudioError("recording_too_large", "The recording is larger than the private cloud limit.");
   const recorded = base64ToBytes(audio.base64);
   if (options.acceptedContentTypes.includes(audio.mimeType)) {
@@ -181,7 +169,7 @@ export async function prepareTranscriptionAudio(
   }
   // Refuse an over-long note before decoding it (the decode holds all of it in memory).
   if (recorded.byteLength > maxSeconds * MAX_ENCODED_BYTES_PER_SECOND) {
-    throw new VoiceNoteAudioError("recording_too_long_for_phone", "This note is too long to transcribe from the phone.");
+    throw new VoiceNoteAudioError("recording_too_long", "This recording exceeds the private cloud duration limit.");
   }
   const decoded = await (options.decode ?? webAudioDecoder)(recorded.buffer as ArrayBuffer, TRANSCRIPTION_SAMPLE_RATE);
   if (decoded.sampleRate !== TRANSCRIPTION_SAMPLE_RATE) {
@@ -191,7 +179,7 @@ export async function prepareTranscriptionAudio(
   const durationSeconds = mono.length / TRANSCRIPTION_SAMPLE_RATE;
   if (mono.length === 0) throw new VoiceNoteAudioError("no_speech", "The recording is empty.");
   if (durationSeconds > maxSeconds) {
-    throw new VoiceNoteAudioError("recording_too_long_for_phone", "This note is too long to transcribe from the phone.");
+    throw new VoiceNoteAudioError("recording_too_long", "This recording exceeds the private cloud duration limit.");
   }
   const wav = encodeWavPcm16(mono, TRANSCRIPTION_SAMPLE_RATE);
   if (wav.byteLength > options.maxBytes) throw tooLarge();

@@ -161,18 +161,18 @@ export function VoiceNoteTranscriptionStatus(props: {
       </div>
     );
   }
+  if (item.durationSecs !== null && item.durationSecs > transcription.maxSeconds) {
+    return (
+      <p className="text-callout text-muted-foreground" data-testid="voice-note-transcription-over-limit">
+        Private Transcription accepts notes up to {formatSpokenDuration(transcription.maxSeconds)}. This note is {formatSpokenDuration(item.durationSecs)}.
+      </p>
+    );
+  }
   // Private cloud is available but not chosen (or chosen and unreachable): the recorder's route control.
   const choosable = transcription.availability === "available" || (transcription.availability === "failed" && transcription.consented);
   // Reached only when private cloud is "available"/"failed", which requires a signed-in account
   // (voiceNoteTranscriberFor) — transcription itself would be absent otherwise.
   if (!offered) return choosable ? <TranscriptionRouteControl transcription={transcription} signedIn /> : null;
-  if (item.durationSecs !== null && item.durationSecs > transcription.maxSeconds) {
-    return (
-      <p data-testid="voice-note-too-long" className="text-callout text-muted-foreground">
-        Notes up to {Math.round(transcription.maxSeconds / 60)} minutes can be transcribed from the phone.
-      </p>
-    );
-  }
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
       <p className="text-callout text-muted-foreground">Not transcribed</p>
