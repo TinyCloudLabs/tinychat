@@ -29,7 +29,7 @@ let browser: Browser;
 /**
  * Chromium with its desktop autoplay policy on (headless Chromium waives it by default). Chromium
  * counts any earlier click on the page, so a play() that comes late still passes there: the
- * calls recorded by `recordPlays` are what show the first tap plays from inside the click, which
+ * calls recorded by `instrumentMedia` are what show the first tap plays from inside the click, which
  * is what iOS WebKit needs. `browser` waives the policy for the other specs.
  */
 let strictBrowser: Browser;
@@ -98,8 +98,33 @@ async function open(
   return { page, errors };
 }
 
-/** Records every media play() call: whether it ran inside a click's dispatch, and the element's source then. Everything stays muted. */
-function recordPlays() {
+/**
+ * Records every media play() call: whether it ran inside a click's dispatch, and the element's
+ * source then. Everything stays muted. While `window.__holdMetadata` is set, the audio answers late:
+ * readyState stays 0 and loadedmetadata/durationchange are held until `window.__releaseMetadata()`.
+ */
+function instrumentMedia() {
+  const hold = window as unknown as { __holdMetadata?: boolean; __releaseMetadata: () => void };
+  const held = new Set<HTMLMediaElement>();
+  const readyState = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "readyState")!;
+  Object.defineProperty(HTMLMediaElement.prototype, "readyState", {
+    get() { return hold.__holdMetadata ? 0 : readyState.get!.call(this); },
+  });
+  for (const type of ["loadedmetadata", "durationchange"]) {
+    addEventListener(type, (event) => {
+      if (!hold.__holdMetadata || !(event.target instanceof HTMLMediaElement)) return;
+      event.stopImmediatePropagation();
+      held.add(event.target);
+    }, true);
+  }
+  hold.__releaseMetadata = () => {
+    hold.__holdMetadata = false;
+    for (const media of held) {
+      media.dispatchEvent(new Event("durationchange"));
+      media.dispatchEvent(new Event("loadedmetadata"));
+    }
+    held.clear();
+  };
   const plays: { inClick: boolean; src: string | null }[] = [];
   let inClick = false;
   (window as unknown as { __plays: typeof plays }).__plays = plays;
@@ -284,7 +309,7 @@ describe.serial(`recorder-final saved note, ${engineName}`, () => {
 
   describe.serial("playback under the browser's own autoplay policy", () => {
     test("sheet: the first tap plays, from the tap itself, and the finished clip plays again", async () => {
-      const { page, errors } = await open(SHEET, "light", { browser: strictBrowser, init: recordPlays });
+      const { page, errors } = await open(SHEET, "light", { browser: strictBrowser, init: instrumentMedia });
       const audio = page.getByTestId("note-audio-player");
       await page.getByTestId("note-audio-play").click();
       await shown(page.getByTestId("note-audio-controls"));
@@ -315,17 +340,23 @@ describe.serial(`recorder-final saved note, ${engineName}`, () => {
     });
 
     test("sheet: a seek made while the audio is loading is applied once it is", async () => {
-      const { page, errors } = await open(SHEET, "light", { browser: strictBrowser, init: recordPlays });
+      const { page, errors } = await open(SHEET, "light", { browser: strictBrowser, init: instrumentMedia });
       const audio = page.getByTestId("note-audio-player");
+      await page.evaluate(() => { (window as unknown as { __holdMetadata: boolean }).__holdMetadata = true; });
       await page.getByTestId("note-audio-play").click();
       await shown(page.getByTestId("note-audio-controls"));
       const range = page.getByRole("slider", { name: "Seek" });
       await range.focus();
       await page.keyboard.press("End");
+      // The thumb holds the request, and the saved total stays, until the media answers.
+      expect(await range.getAttribute("aria-valuetext")).toBe("0:42 of 0:42");
+      await page.evaluate(() => (window as unknown as { __releaseMetadata: () => void }).__releaseMetadata());
       await until("the player to be at the end", () =>
         audio.evaluate((el: HTMLAudioElement) => el.readyState >= 1 && el.currentTime > el.duration - 1),
       );
-      expect(await range.getAttribute("aria-valuetext")).toMatch(/^0:\d\d of 0:\d\d$/);
+      // The saved length is 42 s and the stored clip 20 s: End lands on the clip's end, and the thumb agrees.
+      await until("the thumb to read the clip's end", async () => (await range.getAttribute("aria-valuetext")) === "0:20 of 0:20");
+      expect(Number(await range.inputValue())).toBeGreaterThanOrEqual(19.9);
       expect(errors).toEqual([]);
       await page.close();
     });

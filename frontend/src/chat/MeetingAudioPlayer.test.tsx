@@ -307,6 +307,19 @@ describe("the player in a DOM", () => {
     }
   });
 
+  test("a seek queued to the saved end lands on the media's end when the file is shorter", async () => {
+    const player = await mount({ url: "blob:note", durationSecs: 42 });
+    await act(async () => player.q("[data-testid=note-audio-play]").click());
+    await player.scrub(42);
+    expect(player.time()).toBe("0:42 / 0:42");
+    await player.metadata(20);
+    expect(player.fake.setTimes).toEqual([20]);
+    expect(player.time()).toBe("0:20 / 0:20");
+    player.fake.currentTime = 20;
+    await player.fire("seeked");
+    expect(player.time()).toBe("0:20 / 0:20");
+  });
+
   test("a queued seek the media cannot take once it answers is dropped", async () => {
     const warned = spyOn(console, "warn").mockImplementation(() => {});
     try {

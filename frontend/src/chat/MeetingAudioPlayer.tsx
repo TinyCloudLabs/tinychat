@@ -111,12 +111,14 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, onPlay
     });
   };
 
-  const seekTo = (audio: HTMLAudioElement, seconds: number) => {
+  const seekTo = (audio: HTMLAudioElement, requested: number) => {
     if (audio.readyState < 1) {
-      queuedSeek.current = seconds;
-      setPendingSeek(seconds);
+      queuedSeek.current = requested;
+      setPendingSeek(requested);
       return;
     }
+    // The saved length can be longer than the file; a seek past its real end lands on the end.
+    const seconds = Number.isFinite(audio.duration) && audio.duration > 0 ? Math.min(requested, audio.duration) : requested;
     if (!isSeekable(audio.seekable, seconds)) {
       console.warn("[Audio] The audio cannot seek to", seconds);
       setPendingSeek(null);
