@@ -346,25 +346,6 @@ export function nativeRecordingSource(
  */
 export const MIN_ANDROID_SDK_FOR_FILE_UPLOAD = 26;
 
-/**
- * Whether this device's native HTTP can send a voice note's bytes. iOS can.
- * Android asks the plugin for its API level; a shell too old to say is
- * treated as unable (fail closed).
- */
-export async function nativeHttpFileUploadSupported(
-  platform: string = Capacitor.getPlatform(),
-  status: () => Promise<{ androidSdkInt?: number }> = () => VoiceNotes.status(),
-): Promise<boolean> {
-  if (platform === "ios") return true;
-  if (platform !== "android") return false;
-  try {
-    const { androidSdkInt } = await status();
-    return typeof androidSdkInt === "number" && androidSdkInt >= MIN_ANDROID_SDK_FOR_FILE_UPLOAD;
-  } catch {
-    return false;
-  }
-}
-
 export type AudioInputsSnapshot = {
   inputs: AudioInput[];
   selectedId: string | null;

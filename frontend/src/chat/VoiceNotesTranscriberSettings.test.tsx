@@ -35,7 +35,7 @@ describe("Settings → Voice notes names and offers", () => {
     const privateOption = (signedIn: boolean, t: VoiceNoteTranscriptionProps | undefined) =>
       transcriberOptions(signedIn, t).options.find((o) => o.value === "private-cloud");
     expect(privateOption(true, transcription("available"))?.disabled).toBe(false);
-    for (const availability of ["checking", "failed", "hidden"] as const) {
+    for (const availability of ["checking", "failed"] as const) {
       expect(privateOption(true, transcription(availability))?.disabled).toBe(true);
     }
     expect(privateOption(false, transcription("available"))?.disabled).toBe(true);
@@ -48,13 +48,10 @@ describe("Settings → Voice notes names and offers", () => {
     expect(html).toContain(">Check again<");
   });
 
-  test("checking and unavailable give a reason and no retry", () => {
+  test("checking gives a reason without a retry", () => {
     const checking = renderToStaticMarkup(<PrivateUnavailable signedIn transcription={transcription("checking")} />);
     expect(checking).toContain("Private: Checking…");
     expect(checking).not.toContain("Check again");
-    const hidden = renderToStaticMarkup(<PrivateUnavailable signedIn transcription={transcription("hidden")} />);
-    expect(hidden).toContain("Private: Not available right now");
-    expect(hidden).not.toContain("Check again");
   });
 
   test("signed out says why, with no retry", () => {

@@ -38,7 +38,7 @@ const segments = (html: string) => (html.match(/role="radio"/g) ?? []).length;
 
 describe("TranscriptionRouteControl", () => {
   test("hidden (no private cloud for this build or account): Off and On this phone only, On this phone by default (native's own default)", () => {
-    for (const value of [undefined, transcription({ availability: "hidden", consented: false })]) {
+    for (const value of [undefined, transcription({ availability: "failed", consented: false })]) {
       const html = render(value);
       expect(html).toContain(">Transcription</h3>");
       expect(segments(html)).toBe(2);

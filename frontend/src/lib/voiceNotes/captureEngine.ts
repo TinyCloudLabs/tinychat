@@ -1,4 +1,5 @@
-import { installVoiceNotesEngine, nativeVoiceNotesAvailable, type VoiceNotesPlugin } from "./nativeVoiceNotes";
+import { Capacitor } from "@capacitor/core";
+import { installVoiceNotesEngine, nativeVoiceNotesAvailable, VoiceNotes, MIN_ANDROID_SDK_FOR_FILE_UPLOAD, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 
 export type CaptureEngineKind = "native" | "web" | "tauri";
 
@@ -20,6 +21,8 @@ export interface CaptureCapabilities {
   desktopWhisper: boolean;
   /** The local-only home that records while offline or signed out. */
   offlineRecorder: boolean;
+  /** The engine can stream its local recording to PTX without a webview copy. */
+  nativeFileUpload: boolean;
 }
 
 export type CaptureEngine = VoiceNotesPlugin & { capabilities: CaptureCapabilities };
@@ -34,6 +37,7 @@ const NATIVE_CAPABILITIES: CaptureCapabilities = {
   localTranscription: true,
   desktopWhisper: false,
   offlineRecorder: true,
+  nativeFileUpload: Capacitor.getPlatform() === "ios",
 };
 
 const NO_CAPABILITIES: CaptureCapabilities = {
@@ -45,6 +49,7 @@ const NO_CAPABILITIES: CaptureCapabilities = {
   localTranscription: false,
   desktopWhisper: false,
   offlineRecorder: false,
+  nativeFileUpload: false,
 };
 
 const factories = new Map<RegisterableKind, () => Promise<CaptureEngine>>();
@@ -66,15 +71,15 @@ export function captureEngineKind(): CaptureEngineKind | null {
   return null;
 }
 
-/** True once the engine for this shell is ready: native from the start, web and Tauri after installCaptureEngine(). */
+/** Whether this shell has a recorder; the gate resolves its capabilities before rendering. */
 export function captureEngineAvailable(): boolean {
   return installed !== null || nativeVoiceNotesAvailable();
 }
 
-/** Web and Tauri need installCaptureEngine() before anything renders; native and "no engine" do not. */
+/** Every recording shell resolves its capabilities before rendering the recorder. */
 export function captureEngineInstallPending(): boolean {
   const kind = captureEngineKind();
-  return (kind === "web" || kind === "tauri") && installed === null;
+  return kind !== null && installed === null;
 }
 
 export function captureCapabilities(): CaptureCapabilities {
@@ -119,8 +124,23 @@ export function installCaptureEngine(): Promise<void> {
   const kind = captureEngineKind();
   if (kind === null) return Promise.resolve();
   if (kind === "native") {
-    installed = { kind, capabilities: NATIVE_CAPABILITIES };
-    return Promise.resolve();
+    const attempt = (async () => {
+      const platform = Capacitor.getPlatform();
+      const capabilities = { ...NATIVE_CAPABILITIES, nativeFileUpload: platform === "ios" };
+      if (platform === "android") {
+        try {
+          const status = await VoiceNotes.status();
+          capabilities.nativeFileUpload = typeof status.androidSdkInt === "number"
+            && status.androidSdkInt >= MIN_ANDROID_SDK_FOR_FILE_UPLOAD;
+        } catch (error) {
+          console.error("[captureEngine] Could not determine Android file upload availability", error);
+        }
+      }
+      installed = { kind, capabilities };
+    })();
+    installing = attempt;
+    void attempt.finally(() => { installing = null; });
+    return attempt;
   }
   const factory = factories.get(kind);
   if (!factory) return Promise.reject(new Error(`No ${kind} capture engine is registered`));
