@@ -1,4 +1,5 @@
-import { dirname, resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { dirname, relative, resolve } from "node:path";
 
 // bun desktop/eval/transcript-quality/check-workspace-sync.ts [--platform linux|macos] [output.json]
 const desktop = resolve(import.meta.dir, "../..");
@@ -9,8 +10,9 @@ const featureParity = ["whisper-local", "transcribe-whisper-local", "audio-chunk
 // The eval tests pull in anarlog's sample `data` crate; it is not shipped by the app.
 const evalOnlyDevDependencies: Record<string, true> = { data: true };
 // The app enables Metal unconditionally. Linux compiles the CPU runner, so
-// only these accelerator features may differ; every other shared feature must
-// agree. macOS checks the runner's Metal build against the app with no exceptions.
+// only these accelerator features may differ among the six transcription
+// crates. Other shared packages allow app-only features, never eval-only ones.
+// macOS checks the runner's Metal build against the app with no exceptions.
 const linuxAcceleratorFeatures: Record<string, readonly string[]> = {
   "whisper-local": ["metal"],
   "transcribe-whisper-local": ["metal"],
@@ -21,10 +23,10 @@ type Platform = "linux" | "macos";
 
 type Table = Record<string, unknown>;
 type Package = { name: string; version: string; source?: string; checksum?: string };
-export type Identity = { name: string; version: string; source: string | null; checksum: string | null };
+export type Identity = { name: string; version: string; source: string | null; checksum: string | null; manifestPath: string | null };
 export type ClosureEntry = Identity & { dependencies: Identity[]; features: string[] };
 type CargoMetadata = {
-  packages: { id: string; name: string; version: string; source: string | null }[];
+  packages: { id: string; name: string; version: string; source: string | null; manifest_path: string }[];
   resolve: { nodes: { id: string; dependencies: string[]; features: string[] }[] };
 };
 
@@ -64,8 +66,11 @@ function same(label: string, paths: string[], left: unknown, right: unknown): vo
   }
 }
 
-function identity(pkg: Package): Identity {
-  return { name: pkg.name, version: pkg.version, source: pkg.source ?? null, checksum: pkg.checksum ?? null };
+function identity(pkg: Package, resolved: CargoMetadata["packages"][number]): Identity {
+  return {
+    name: pkg.name, version: pkg.version, source: pkg.source ?? null, checksum: pkg.checksum ?? null,
+    manifestPath: resolved.source === null ? relative(realpathSync(desktop), realpathSync(resolved.manifest_path)) : null,
+  };
 }
 
 function metadata(manifest: string, runnerMetal = false): CargoMetadata {
@@ -83,7 +88,7 @@ function metadata(manifest: string, runnerMetal = false): CargoMetadata {
   return JSON.parse(new TextDecoder().decode(result.stdout)) as CargoMetadata;
 }
 
-function closure(lock: Table, graph: CargoMetadata, path: string): ClosureEntry[] {
+export function closure(lock: Table, graph: CargoMetadata, path: string): ClosureEntry[] {
   if (!Array.isArray(lock.package)) throw new Error(`${path}: no [[package]] entries`);
   const locked = new Map<string, Package>();
   for (const pkg of lock.package as Package[]) {
@@ -94,6 +99,14 @@ function closure(lock: Table, graph: CargoMetadata, path: string): ClosureEntry[
   }
   const byId = new Map(graph.packages.map(pkg => [pkg.id, pkg]));
   const nodes = new Map(graph.resolve.nodes.map(node => [node.id, node]));
+  const identities = new Map<string, Identity>();
+  const resolvedIdentity = (pkg: Package, resolved: CargoMetadata["packages"][number]): Identity => {
+    const cached = identities.get(resolved.id);
+    if (cached) return cached;
+    const value = identity(pkg, resolved);
+    identities.set(resolved.id, value);
+    return value;
+  };
   const seen = new Set<string>();
   const pending = roots.map(name => {
     const matches = graph.packages.filter(pkg => pkg.name === name);
@@ -116,18 +129,22 @@ function closure(lock: Table, graph: CargoMetadata, path: string): ClosureEntry[
       const lockedChild = locked.get(JSON.stringify([child.name, child.version, child.source]));
       if (!lockedChild) throw new Error(`${path}: dependency ${childId} absent from lockfile`);
       pending.push(childId);
-      return identity(lockedChild);
+      return resolvedIdentity(lockedChild, child);
     }).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-    entries.push({ ...identity(lockPkg), dependencies, features: [...node.features].sort() });
+    entries.push({ ...resolvedIdentity(lockPkg, pkg), dependencies, features: [...node.features].sort() });
   }
-  return entries.sort((a, b) => JSON.stringify(identity(a)).localeCompare(JSON.stringify(identity(b))));
+  return entries.sort((a, b) => JSON.stringify([a.name, a.version, a.source, a.checksum, a.manifestPath])
+    .localeCompare(JSON.stringify([b.name, b.version, b.source, b.checksum, b.manifestPath])));
 }
 
 /** Compare shared code, not feature-only packages injected by the Tauri app.
+ * Path packages use Cargo's resolved manifest path (including dependency edges);
+ * name/version and lockfile source/checksum alone cannot distinguish path forks.
  * The only eval-only package is the upstream test-data crate. A same-named
- * package with a different version/source/checksum is never an exception.
- * Linux permits only the explicitly listed accelerator features; macOS
- * compares the Metal-enabled runner to the app exactly.
+ * package with a different version/source/checksum/path is never an exception.
+ * Every shared eval feature must be enabled in the app. The six transcription
+ * crates additionally match exactly: Linux permits only the listed app-only
+ * accelerator features; macOS compares the Metal-enabled runner exactly.
  */
 export function assertDependencyParity(evalClosure: ClosureEntry[], appClosure: ClosureEntry[], platform: Platform = "linux"): void {
   const appByName = new Map<string, ClosureEntry[]>();
@@ -139,8 +156,14 @@ export function assertDependencyParity(evalClosure: ClosureEntry[], appClosure: 
   for (const pkg of evalClosure) {
     const matches = appByName.get(pkg.name) ?? [];
     if (!matches.length && evalOnlyDevDependencies[pkg.name]) continue;
-    if (!matches.some(app => app.version === pkg.version && app.source === pkg.source && app.checksum === pkg.checksum))
-      throw new Error(`dependency parity: ${pkg.name} ${pkg.version} (${pkg.source ?? "path"}, ${pkg.checksum ?? "no checksum"}) is absent from the app closure`);
+    const app = matches.find(candidate =>
+      candidate.version === pkg.version && candidate.source === pkg.source &&
+      candidate.checksum === pkg.checksum && candidate.manifestPath === pkg.manifestPath);
+    if (!app)
+      throw new Error(`dependency parity: ${pkg.name} ${pkg.version} (${pkg.source ?? "path"}, ${pkg.checksum ?? "no checksum"}, manifest ${pkg.manifestPath ?? "n/a"}) is absent from the app closure`);
+    const missing = pkg.features.filter(feature => !app.features.includes(feature));
+    if (missing.length)
+      throw new Error(`feature parity (${platform}): ${pkg.name} eval-only=[${missing.join(", ")}] eval=[${pkg.features.join(", ")}] app=[${app.features.join(", ")}]`);
   }
   for (const name of featureParity) {
     const evalPackages = evalClosure.filter(pkg => pkg.name === name);

@@ -111,18 +111,27 @@ fixture and score the production-import response with A1:
 
 ```sh
 cargo run --locked --manifest-path desktop/Cargo.toml -p transcript-quality-runner -- \
-  --fixture desktop/eval/transcript-quality/fixtures/smoke-speech \
+  --fixture desktop/eval/transcript-quality/smoke \
   --model <model.bin> --input mono --vocabulary off --output <run-dir>
 bun desktop/eval/transcript-quality/score-smoke.ts \
-  desktop/eval/transcript-quality/fixtures/smoke-speech <run-dir>
+  desktop/eval/transcript-quality/smoke <run-dir>
 ```
+
+The runner reads the production `systemAudio` toggle from the fixture's
+`spec.json` and records it in `run.json`. The supported model filenames are
+`ggml-small-q8_0.bin` (`QuantizedSmall`) and
+`ggml-large-v3-turbo-q8_0.bin` (`QuantizedLargeTurbo`); `request.model` records
+the same WhisperModel ID that the desktop client sends. `smoke/` is excluded
+from A3's `fixtures/` baseline and G18 fixture namespace.
 
 The glossary file is data only; production keywords remain empty until E.
 `bun desktop/eval/transcript-quality/check-workspace-sync.ts <closure.json>`
 checks both manifests' patch targets and build profiles and both lockfiles.
 Each package in the eval dependency closure must have the same name, version,
-source and checksum in the app closure. The only allowed eval-only package is
-anarlog's test-data crate `data`; app-only feature-unified packages are allowed.
+source and checksum in the app closure; path packages must also resolve to the
+same manifest path. Shared packages cannot enable features absent from the app.
+The only allowed eval-only package is anarlog's test-data crate `data`;
+app-only feature-unified packages are allowed.
 
 On Linux, the CPU runner must match the app's enabled features on
 `whisper-local`, `transcribe-whisper-local`, `audio-chunking`,

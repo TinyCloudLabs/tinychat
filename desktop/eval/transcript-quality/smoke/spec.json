@@ -3,6 +3,7 @@
   "purpose": "A2 native runner plus A1 scorer wiring smoke only; not an A3 quality fixture or golden",
   "source": "FFmpeg lavfi Flite voice slt: The blue kite is flying today.",
   "channels": { "0": "synthetic microphone speech", "1": "silence (synthetic system audio)" },
+  "systemAudio": true,
   "sampleRate": 16000,
   "encoding": "anarlog mp3::encode_wav, stereo MP3, 128 kbps"
 }
