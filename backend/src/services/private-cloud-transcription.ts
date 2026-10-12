@@ -7,7 +7,7 @@ import { assertStrongSecret } from "./webhook-tokens.js";
  * Private cloud transcription for Exo desktop (plan: exo-private-cloud-transcription v2, §4.4 P4).
  *
  * TinyChat is a STATELESS authorizer in front of the TinyCloud Private Transcription batch CVM
- * (`ptx-batch`). It decides WHO may use it (dark flag + account allowlist), turns the session
+ * (`ptx-batch`). It turns the session
  * address into an HMAC `tenant_ref`, and relays job metadata. It never sees audio: Exo uploads the
  * recording straight to PTX with the job-scoped capability PTX minted, to an origin compiled into
  * the desktop app. TinyChat returns only the RELATIVE upload path, so it cannot steer an upload.
@@ -21,7 +21,6 @@ import { assertStrongSecret } from "./webhook-tokens.js";
 
 export const PRIVATE_CLOUD_TRANSCRIPTION_MOUNT = "/api/transcriber/private-cloud";
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ADDRESS_RE = /^0x[0-9a-f]{40}$/;
 
 // ── Config ───────────────────────────────────────────────────────────
 
@@ -33,7 +32,6 @@ export type PrivateCloudTranscriptionConfig =
       baseUrl: string;
       apiKey: string;
       tenantKey: string;
-      accountAllowed: (address: string) => boolean;
     };
 
 function fail(message: string): never {
@@ -42,7 +40,7 @@ function fail(message: string): never {
 
 function parseBaseUrl(raw: string | undefined): string {
   const value = raw?.trim() ?? "";
-  if (!value) fail("PRIVATE_CLOUD_TRANSCRIPTION_API_URL is required when PRIVATE_CLOUD_TRANSCRIPTION_ENABLED=true");
+  if (!value) fail("PRIVATE_CLOUD_TRANSCRIPTION_API_URL is required");
   let url: URL;
   try {
     url = new URL(value);
@@ -59,35 +57,25 @@ function parseBaseUrl(raw: string | undefined): string {
   return url.origin;
 }
 
-/** Empty = nobody. `*` (alone) = everyone. Otherwise 0x addresses, case-insensitive. */
-function parseAccounts(raw: string | undefined): (address: string) => boolean {
-  const entries = (raw ?? "").split(",").map((entry) => entry.trim().toLowerCase()).filter(Boolean);
-  if (entries.includes("*")) {
-    if (entries.length !== 1) fail("PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS: `*` must be the only entry");
-    return () => true;
-  }
-  entries.forEach((entry, i) => {
-    if (!ADDRESS_RE.test(entry)) fail(`PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS entry ${i + 1} is not an 0x address`);
-  });
-  const accounts = new Set(entries);
-  return (address: string) => accounts.has(address.toLowerCase());
-}
-
 /**
- * Unset or `false` = dark: the routes are never mounted. `true` = every other var is validated
- * and a bad one refuses boot. Error messages name variables, never values (public CVM logs).
+ * All three settings absent means a mounted service that answers 503. A partial configuration
+ * refuses boot. Error messages name variables, never values (public CVM logs).
  */
 export function privateCloudTranscriptionConfigFromEnv(
   env: Record<string, string | undefined>,
 ): PrivateCloudTranscriptionConfig {
-  const flag = env.PRIVATE_CLOUD_TRANSCRIPTION_ENABLED?.trim() ?? "";
-  if (flag === "" || flag === "false") return { enabled: false };
-  if (flag !== "true") fail("PRIVATE_CLOUD_TRANSCRIPTION_ENABLED must be `true` or `false`");
+  const url = env.PRIVATE_CLOUD_TRANSCRIPTION_API_URL?.trim() ?? "";
+  const key = env.PRIVATE_CLOUD_TRANSCRIPTION_API_KEY?.trim() ?? "";
+  const tenant = env.PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY?.trim() ?? "";
+  if (!url && !key && !tenant) return { enabled: false };
+  if (!url || !key || !tenant) {
+    fail("PRIVATE_CLOUD_TRANSCRIPTION_API_URL, PRIVATE_CLOUD_TRANSCRIPTION_API_KEY and PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY must be set together");
+  }
 
   const baseUrl = parseBaseUrl(env.PRIVATE_CLOUD_TRANSCRIPTION_API_URL);
   const apiKey = env.PRIVATE_CLOUD_TRANSCRIPTION_API_KEY?.trim() ?? "";
   if (!apiKey || /\s/.test(apiKey)) {
-    fail("PRIVATE_CLOUD_TRANSCRIPTION_API_KEY is required when PRIVATE_CLOUD_TRANSCRIPTION_ENABLED=true");
+    fail("PRIVATE_CLOUD_TRANSCRIPTION_API_KEY is invalid");
   }
   assertStrongSecret("PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY", env.PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY, {
     quiet: true,
@@ -103,7 +91,7 @@ export function privateCloudTranscriptionConfigFromEnv(
   if (meetingKey && tenantKey === meetingKey) {
     fail("PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY must not reuse TRANSCRIPTION_API_KEY");
   }
-  return { enabled: true, baseUrl, apiKey, tenantKey, accountAllowed: parseAccounts(env.PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS) };
+  return { enabled: true, baseUrl, apiKey, tenantKey };
 }
 
 /** HMAC-SHA256(tenant key, lower(address)), hex. What PTX sees instead of the address. */
@@ -352,25 +340,4 @@ export function createPtxClient(config: {
       return { status: response.status, body: parsed, retryAfter: response.headers.get("retry-after") };
     },
   };
-}
-
-// ── OpenAPI ──────────────────────────────────────────────────────────
-
-/** The served spec while dark: no private-cloud path or `PrivateCloud*` component is advertised. */
-export function withoutPrivateCloudOpenApi<T extends object>(spec: T): T {
-  const copy = structuredClone(spec) as T & {
-    paths?: Record<string, unknown>;
-    components?: Record<string, Record<string, unknown> | undefined>;
-  };
-  for (const path of Object.keys(copy.paths ?? {})) {
-    if (path === PRIVATE_CLOUD_TRANSCRIPTION_MOUNT || path.startsWith(`${PRIVATE_CLOUD_TRANSCRIPTION_MOUNT}/`)) {
-      delete copy.paths![path];
-    }
-  }
-  for (const section of Object.values(copy.components ?? {})) {
-    for (const name of Object.keys(section ?? {})) {
-      if (name.startsWith("PrivateCloud")) delete section![name];
-    }
-  }
-  return copy;
 }
