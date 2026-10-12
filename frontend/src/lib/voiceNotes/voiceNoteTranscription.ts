@@ -563,7 +563,8 @@ export function privateCloudAccepts(
 ): boolean {
   if (capabilities === null) return false;
   if (durationSecs === null) return true;
-  return Number.isFinite(durationSecs) && durationSecs >= 0 && durationSecs <= capabilities.max_duration_seconds;
+  return typeof capabilities.max_duration_seconds === "number"
+    && Number.isFinite(durationSecs) && durationSecs >= 0 && durationSecs <= capabilities.max_duration_seconds;
 }
 
 export interface VoiceNoteCloudDeps {

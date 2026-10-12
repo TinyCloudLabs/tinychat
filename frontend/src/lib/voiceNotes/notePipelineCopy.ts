@@ -85,6 +85,9 @@ export const LOCAL_COPY = {
   syncFailed: (detail: string | null | undefined) => withDetail("Couldn't add the transcript to this note", detail),
   notAdded: "The transcript is ready on this phone but hasn't been added to this note",
   missingTranscript: "this phone says it finished transcribing but has no transcript for the note",
+  transcriptReadFailed: "Couldn't read the transcript on this phone.",
+  transcriptCheckFailed: "Couldn't check this note on this phone.",
+  transcriptSyncFailed: "Couldn't add the transcript to this note.",
   unrecorded: (cause: string) => `The transcript is in your space, but this phone couldn't record that: ${cause}`,
   checkingSpace: "Checking your space…",
   checkingSpaceAfterUploads: "Checking your space · after uploads",
@@ -109,9 +112,10 @@ export const PRIVATE_COPY = {
   checking: "Checking private transcription…",
   noConsent: "Private transcription is turned off",
   hidden: "Private transcription isn't available for this account",
-  failed: (_message: string | null | undefined, reference: string | null) =>
-    hasText(reference) ? `Private transcription couldn't finish. Try again. · Reference ${reference.trim()}`
-      : "Private transcription couldn't finish. Try again.",
+  failed: (message: string | null | undefined, reference: string | null) => {
+    const copy = hasText(message) ? message.trim() : "Private transcription couldn't finish.";
+    return hasText(reference) ? `${copy} · Reference ${reference.trim()}` : copy;
+  },
 };
 
 export const NOTES_COPY = {

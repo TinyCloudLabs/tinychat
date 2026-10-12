@@ -9,7 +9,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { localTranscriptToSave, saveVoiceNoteTranscript } from "./voiceNoteStore";
 import { VoiceNotes, type LocalTranscript, type NoteSttState } from "./nativeVoiceNotes";
-import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "./saveDeadline";
+import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { LOCAL_COPY } from "./notePipelineCopy";
 import { assertAccountContext, captureAccountContext, isAccountContextCurrent, isAccountWorkAllowed, StaleAccountContext, type AccountContext } from "./accountContext";
 
@@ -115,7 +115,7 @@ export function recordOnDeviceTranscript(
     } catch (err) {
       if (!isCurrent(tcw, requestedAccount)) { abandonSync(key, id, tcw); return true; }
       console.warn("[OnDeviceStt] Could not read the local transcript", err);
-      publish(key, { state: "unrecorded", message: `Couldn't read the transcript on this phone: ${err instanceof VoiceNoteSaveTimeout ? "reading it timed out" : errorMessage(err)}` });
+      publish(key, { state: "unrecorded", message: LOCAL_COPY.transcriptReadFailed });
       return false;
     }
     if (!transcript) {
@@ -146,7 +146,7 @@ async function ownsNativeNote(tcw: TinyCloudWeb, key: string, id: string, ctx: A
   } catch (err) {
     if (!isCurrent(tcw, ctx)) return false;
     console.warn("[OnDeviceStt] Could not verify local note ownership", err);
-    publish(key, { state: failureState, message: `Couldn't check this note on this phone: ${errorMessage(err)}` });
+    publish(key, { state: failureState, message: LOCAL_COPY.transcriptCheckFailed });
     return false;
   }
   const note = recordings.find((recording) => recording.id === id);
@@ -172,7 +172,7 @@ async function recordAndPublish(tcw: TinyCloudWeb, key: string, id: string, tran
   } catch (err) {
     if (!isCurrent(tcw, ctx)) return true;
     console.warn("[OnDeviceStt] The transcript is in the space but this phone's ledger was not updated", err);
-    publish(key, { state: "unrecorded", message: errorMessage(err) });
+    publish(key, { state: "unrecorded", message: LOCAL_COPY.transcriptSyncFailed });
     return false;
   }
 }
@@ -191,8 +191,7 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
   } catch (err) {
     if (!isCurrent(tcw, ctx)) return true;
     console.warn("[OnDeviceStt] Could not read the local transcript", err);
-    const reason = err instanceof VoiceNoteSaveTimeout ? "reading it timed out" : errorMessage(err);
-    publish(key, { state: "failed", message: `Couldn't read the transcript on this phone: ${reason}` });
+    publish(key, { state: "failed", message: LOCAL_COPY.transcriptReadFailed });
     return false;
   }
   if (!transcript) {
@@ -210,13 +209,13 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
     } else {
       if (!isCurrent(tcw, ctx)) return true;
       console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", result.error);
-      publish(key, { state: "failed", message: result.error.message });
+      publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed });
       return false;
     }
   } catch (err) {
     if (!isCurrent(tcw, ctx) || err instanceof StaleAccountContext) return true;
     console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", err);
-    publish(key, { state: "failed", message: errorMessage(err) });
+    publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed });
     return false;
   }
 }
@@ -253,5 +252,3 @@ async function recordTranscriptSaved(tcw: TinyCloudWeb, id: string, transcript: 
     }
   }
 }
-
-const errorMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
