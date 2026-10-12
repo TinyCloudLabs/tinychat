@@ -3,6 +3,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use super::silence_sender::silence_sender;
 use audio_actual::{AudioProvider, CaptureConfig, CaptureStream, Error};
 use futures_util::StreamExt;
 
@@ -52,19 +53,6 @@ pub struct SelectableAudio {
     actual: audio_actual::ActualAudio,
     system_audio: Arc<AtomicBool>,
     meter: Arc<Mutex<Meter>>,
-}
-
-fn silence_sender(
-    system_audio: bool,
-    open_output: impl FnOnce() -> std::sync::mpsc::Sender<()>,
-) -> std::sync::mpsc::Sender<()> {
-    if system_audio {
-        open_output()
-    } else {
-        // listener-core retains this sender for the session. No output device is opened.
-        let (sender, _receiver) = std::sync::mpsc::channel();
-        sender
-    }
 }
 
 impl SelectableAudio {
@@ -141,22 +129,6 @@ impl AudioProvider for SelectableAudio {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn mic_only_silence_never_opens_an_output_stream() {
-        let mut opened = 0;
-        let sender = silence_sender(false, || {
-            opened += 1;
-            std::sync::mpsc::channel().0
-        });
-        assert_eq!(opened, 0);
-        assert!(sender.send(()).is_err());
-
-        let _sender = silence_sender(true, || {
-            opened += 1;
-            std::sync::mpsc::channel().0
-        });
-        assert_eq!(opened, 1);
-    }
     #[test]
     fn meter_uses_pcm_rms_and_peak() {
         let mut meter = Meter::default();
