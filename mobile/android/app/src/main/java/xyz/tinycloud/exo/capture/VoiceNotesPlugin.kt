@@ -38,6 +38,8 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
     private lateinit var engine: CaptureEngine
     private val main = Handler(Looper.getMainLooper())
     private val audioUploads = ConcurrentHashMap<String, HttpURLConnection>()
+    private val cancelledAudioUploads = AudioUploadCancellation()
+    private val audioUploadLock = Any()
     @Volatile private var pendingStart: Pair<String, PluginCall>? = null
     override fun load() {
         engine = CaptureEngine.get(context)
@@ -191,7 +193,13 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
         connection.setRequestProperty("Authorization", "Bearer $capability")
         connection.setRequestProperty("Content-Type", contentType)
         connection.setRequestProperty("X-Correlation-Id", call.getString("correlationId") ?: uploadId)
-        audioUploads[uploadId] = connection
+        synchronized(audioUploadLock) {
+            if (cancelledAudioUploads.consume(uploadId)) {
+                connection.disconnect()
+                throw IllegalStateException("transcription_off")
+            }
+            audioUploads[uploadId] = connection
+        }
         try {
             FileInputStream(file).use { input -> connection.outputStream.use { output ->
                 val buffer = ByteArray(1024 * 1024); var sent = 0L
@@ -206,11 +214,15 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
             val stream = if (status >= 400) connection.errorStream else connection.inputStream
             val text = stream?.bufferedReader()?.use { it.readText() }
             JSONObject().put("status", status).put("body", try { if (text.isNullOrBlank()) JSONObject.NULL else JSONObject(text) } catch (_: Exception) { JSONObject.NULL })
-        } finally { audioUploads.remove(uploadId); connection.disconnect() }
+        } finally { audioUploads.remove(uploadId); cancelledAudioUploads.clear(uploadId); connection.disconnect() }
     }
     @PluginMethod fun cancelAudioUpload(call: PluginCall) {
         val uploadId = call.getString("uploadId") ?: run { call.reject("invalid_argument", "invalid_argument"); return }
-        audioUploads.remove(uploadId)?.disconnect(); call.resolve()
+        synchronized(audioUploadLock) {
+            cancelledAudioUploads.cancel(uploadId)
+            audioUploads.remove(uploadId)?.disconnect()
+        }
+        call.resolve()
     }
     @PluginMethod fun setRecordingOptions(call: PluginCall) = async(call) {
         engine.setRecordingOptions(call.data)

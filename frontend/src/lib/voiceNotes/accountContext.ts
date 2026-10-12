@@ -12,10 +12,18 @@ export interface AccountIdentity {
 let generation = 0;
 const pausedClients = new WeakSet<object>();
 const accountWorkListeners = new Set<() => void>();
+const accountGenerationListeners = new Set<(generation: number) => void>();
 
 /** Call on every sign-in and sign-out, before starting another account's work. */
 export function advanceAccountGeneration(): number {
-  return ++generation;
+  generation++;
+  for (const listener of [...accountGenerationListeners]) listener(generation);
+  return generation;
+}
+
+export function subscribeAccountGeneration(listener: (generation: number) => void): () => void {
+  accountGenerationListeners.add(listener);
+  return () => { accountGenerationListeners.delete(listener); };
 }
 
 export function currentAccountGeneration(): number {

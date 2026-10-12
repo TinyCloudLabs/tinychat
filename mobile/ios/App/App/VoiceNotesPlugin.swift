@@ -26,6 +26,8 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionData
     private let uploadLock = NSLock()
     private var uploadCalls: [Int: (CAPPluginCall, String, Data)] = [:]
     private var uploadTasks: [String: URLSessionUploadTask] = [:]
+    private var cancelledAudioUploads = Set<String>()
+    private var uploadBackgroundTasks: [String: UIBackgroundTaskIdentifier] = [:]
 
     override public func load() {
         capture.recoverOnce()
@@ -309,8 +311,18 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionData
             request.setValue(String(contentLength), forHTTPHeaderField: "Content-Length")
             request.setValue(call.getString("correlationId") ?? uploadId, forHTTPHeaderField: "X-Correlation-Id")
             let task = audioUploadSession.uploadTask(with: request, fromFile: fileURL)
+            let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Voice note upload") { [weak self] in
+                self?.cancelNativeAudioUpload(uploadId)
+            }
             uploadLock.lock()
+            if cancelledAudioUploads.remove(uploadId) != nil {
+                uploadLock.unlock()
+                if backgroundTask != .invalid { UIApplication.shared.endBackgroundTask(backgroundTask) }
+                call.reject("The upload was cancelled before it started", "transcription_off")
+                return
+            }
             uploadTasks[uploadId] = task
+            uploadBackgroundTasks[uploadId] = backgroundTask
             uploadCalls[task.taskIdentifier] = (call, uploadId, Data())
             uploadLock.unlock()
             task.resume()
@@ -319,11 +331,16 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionData
 
     @objc func cancelAudioUpload(_ call: CAPPluginCall) {
         guard let uploadId = call.getString("uploadId") else { call.reject("uploadId is required", "invalid_argument"); return }
+        cancelNativeAudioUpload(uploadId)
+        call.resolve()
+    }
+
+    private func cancelNativeAudioUpload(_ uploadId: String) {
         uploadLock.lock()
+        cancelledAudioUploads.insert(uploadId)
         let task = uploadTasks.removeValue(forKey: uploadId)
         uploadLock.unlock()
         task?.cancel()
-        call.resolve()
     }
 
     public func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
@@ -352,8 +369,13 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionData
     public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         uploadLock.lock()
         let entry = uploadCalls.removeValue(forKey: task.taskIdentifier)
-        if let entry { uploadTasks.removeValue(forKey: entry.1) }
+        let backgroundTask = entry.flatMap { uploadBackgroundTasks.removeValue(forKey: $0.1) }
+        if let entry {
+            uploadTasks.removeValue(forKey: entry.1)
+            cancelledAudioUploads.remove(entry.1)
+        }
         uploadLock.unlock()
+        if let backgroundTask, backgroundTask != .invalid { UIApplication.shared.endBackgroundTask(backgroundTask) }
         guard let entry else { return }
         if let error { entry.0.reject("Upload connection failed", "upload_outcome_unknown", error); return }
         let response = task.response as? HTTPURLResponse
