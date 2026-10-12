@@ -365,6 +365,45 @@ test("notetaker sync refreshes for newly imported and newly observed remote meet
     f.sql.close();
   }
 });
+
+test("server-delivered notetaker transcript refreshes once without a browser fallback", async () => {
+  const f = libraryFixture(); f.allowWrites();
+  const completedAt = "2026-10-08T10:00:00Z";
+  const initial = { ...meeting, completed_at: completedAt };
+  const delivered = { ...meeting, id: "server-delivered", completed_at: completedAt };
+  const rows = [initial];
+  let fetches = 0;
+  const client = {
+    list: async () => ({ status: "ok", value: { meetings: rows } }),
+    transcript: async () => { fetches++; return { status: "error" }; },
+  } as unknown as TranscriberClient;
+  const observedSaved = { initialized: false, ids: new Set<string>() };
+  const changes: Array<{ source: string; sourceId: string } | undefined> = [];
+  const unsubscribe = captureEvents.on("library-changed", (detail) => changes.push(detail));
+  const sync = () => syncTranscriberLibrary({
+    tcw: f.tcw, client, observedSaved, deliveryActive: () => true,
+    now: () => Date.parse(completedAt) + 60_000,
+  });
+  try {
+    expect((await saveTranscriberMeeting(f.tcw, initial, transcript)).ok).toBe(true);
+    await sync();
+    expect(changes).toEqual([]); // Existing meeting is the mounted baseline.
+
+    const normalized = await normalizeTranscriberTranscript(delivered, transcript);
+    const access = { sql: f.tcw.sql, kv: f.tcw.kv } as unknown as DelegatedAccess;
+    expect(await writeTranscriberMeeting(
+      delegatedConnectorPort(access, async (operation) => operation()), normalized, { ensureSchema: false },
+    )).toMatchObject({ ok: true, data: { row: "inserted", body: "written" } });
+    rows.push(delivered);
+    await sync();
+    await sync();
+    expect(changes).toEqual([{ source: TRANSCRIBER_MEETING_SOURCE, sourceId: delivered.id }]);
+    expect(fetches).toBe(0); // The server already landed both the row and body inside the grace window.
+  } finally {
+    unsubscribe();
+    f.sql.close();
+  }
+});
 test("notetaker save finishing after sign-out does not refresh the next account", async () => {
   const f = libraryFixture();
   const pending = Promise.withResolvers<{ ok: boolean }>();
