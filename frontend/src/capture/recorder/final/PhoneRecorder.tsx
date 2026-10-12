@@ -53,7 +53,7 @@ import {
   MODE_STOPS,
   type ModeId,
 } from "./transcriptionModes";
-import { FINAL_COPY, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, privateConsentBody } from "./finalCopy";
+import { FINAL_COPY, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, privateConsentBody, privateConsentDevice } from "./finalCopy";
 import { useAudioInputs, type AudioInputsSource } from "./useAudioInputs";
 import { useSilencedSince } from "./useSilencedSince";
 import { MicDeniedAction } from "./shell/MicDeniedAction";
@@ -121,7 +121,8 @@ export function PhoneRecorder({
   notesViewSeed,
 }: PhoneRecorderProps) {
   const recorder = useRecorder();
-  const shell = shellForPlatform(useContext(PlatformContext));
+  const platform = useContext(PlatformContext);
+  const shell = shellForPlatform(platform);
   const theme = useResolvedTheme() === "dark" ? "night" : "day";
   const { phase, mic } = recorder;
 
@@ -1089,7 +1090,7 @@ export function PhoneRecorder({
           titleId={`${ids}-ct`}
           descriptionId={`${ids}-cd`}
           title={PRIVATE_CONSENT_TITLE}
-          description={privateConsentBody("phone")}
+          description={privateConsentBody(privateConsentDevice(platform))}
           onCancel={choice.dismissConsent}
           returnFocus={consentOpener}
           fallbackFocus={scale}

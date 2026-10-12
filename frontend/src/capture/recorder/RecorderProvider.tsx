@@ -16,6 +16,8 @@ import { getDesktopCaptureExtras, type DesktopCaptureExtras } from "@/lib/voiceN
 import { chooseSystemAudio, needsSystemAudioDisclosure, SYSTEM_AUDIO_BODY, SYSTEM_AUDIO_MIC_ONLY, SYSTEM_AUDIO_RECORD, SYSTEM_AUDIO_TITLE } from "@/capture/home/desktop/systemAudioDisclosure";
 import { SheetDialog } from "./final/SheetDialog";
 import { PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, privateConsentBody } from "./final/finalCopy";
+import { privateConsentDevice } from "./final/finalCopy";
+import { markPrivateConsentPrompted, privateConsentWasPrompted } from "./privateConsentPrompt";
 import "@/capture/home/desktop/systemAudioStart.css";
 import { hapticRecordStarted, hapticSaved, hapticWarning } from "@/lib/haptics";
 import { VOICE_NOTE_MAX_DURATION_MS, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -212,7 +214,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   const [disclosureBusy, setDisclosureBusy] = useState(false);
   const [disclosureError, setDisclosureError] = useState<string | null>(null);
   const disclosureOpener = useRef<HTMLElement | null>(null);
-  const heldConsentPromptedFor = useRef<string | null>(null);
+  const promptedAccounts = useRef(new Set<string>());
   const setReceiptReady = useCallback(() => setReceiptReadyState(true), []);
   // A new note's receipt starts unready again — each one waits for its own Play control (or
   // load error), not whatever the previous note left behind.
@@ -288,13 +290,19 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     setSheetOpen(true);
     startRecording();
   }, [startRecording]);
+  const maybePromptPrivate = useCallback((startAfter: boolean) => {
+    const did = tcw?.did;
+    if (!did || !recorder.transcription || recorder.transcription.consented) return false;
+    if (promptedAccounts.current.has(did) || privateConsentWasPrompted(did)) return false;
+    promptedAccounts.current.add(did);
+    markPrivateConsentPrompted(did);
+    setDisclosure({ kind: "private", startAfter });
+    return true;
+  }, [tcw?.did, recorder.transcription]);
   const afterSystemAudio = useCallback(() => {
-    if (recorder.transcriber.id === "private-cloud" && recorder.transcription && !recorder.transcription.consented) {
-      setDisclosure({ kind: "private", startAfter: true });
-      return;
-    }
+    if (recorder.transcriber.id === "private-cloud" && maybePromptPrivate(true)) return;
     beginRecording();
-  }, [beginRecording, recorder.transcriber.id, recorder.transcription]);
+  }, [beginRecording, maybePromptPrivate, recorder.transcriber.id]);
   const record = useCallback(() => {
     if (disclosureBusy || disclosure) return;
     disclosureOpener.current = typeof document !== "undefined" && document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -321,12 +329,10 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     const accountDid = tcw?.did;
     const transcription = recorder.transcription;
     if (!accountDid || !state.ready || state.phase !== "idle" || !transcription || transcription.consented || disclosure || disclosureBusy) return;
-    if (heldConsentPromptedFor.current === accountDid) return;
     if (![...transcription.jobs.values()].some((job) => job.kind === "blocked")) return;
-    heldConsentPromptedFor.current = accountDid;
     disclosureOpener.current = null;
-    setDisclosure({ kind: "private", startAfter: false });
-  }, [tcw?.did, recorder.transcription, state.ready, state.phase, disclosure, disclosureBusy]);
+    maybePromptPrivate(false);
+  }, [tcw?.did, recorder.transcription, state.ready, state.phase, disclosure, disclosureBusy, maybePromptPrivate]);
   const chooseAudio = useCallback((choice: "record" | "mic-only") => {
     if (disclosure?.kind !== "system-audio" || disclosureBusy) return;
     setDisclosureBusy(true);
@@ -461,7 +467,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       {disclosure && <div className="dch-system-audio" data-testid={disclosure.kind === "system-audio" ? "system-audio-disclosure" : "private-consent-disclosure"}>
         <SheetDialog role="dialog" titleId={disclosureTitleId} descriptionId={disclosureDescriptionId}
           title={disclosure.kind === "system-audio" ? SYSTEM_AUDIO_TITLE : PRIVATE_CONSENT_TITLE}
-          description={disclosure.kind === "system-audio" ? SYSTEM_AUDIO_BODY : privateConsentBody(platform === "tauri" ? "Mac" : "phone")}
+          description={disclosure.kind === "system-audio" ? SYSTEM_AUDIO_BODY : privateConsentBody(privateConsentDevice(platform))}
           onCancel={() => disclosure.kind === "private" ? closePrivate(false) : setDisclosure(null)} returnFocus={disclosureOpener}>
           {disclosureError && <p role="alert">{disclosureError}</p>}
           <div className="dch-system-audio-actions">

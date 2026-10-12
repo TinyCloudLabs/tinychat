@@ -76,7 +76,7 @@ describe("TranscriptionRouteControl", () => {
     expect(off).not.toContain("voice-note-transcription-enable");
     const asking = render(transcription({ consented: false }), true);
     expect(asking).toContain('data-testid="voice-note-transcription-consent"');
-    expect(asking).toContain("Private transcription sends this note&#x27;s audio from this phone to TinyCloud Private Transcription, a sealed hardware enclave. It&#x27;s deleted there once the transcript is ready. Exo never sees it.");
+    expect(asking).toContain("Private transcription sends this note&#x27;s audio from this browser to TinyCloud Private Transcription, a sealed hardware enclave. It&#x27;s deleted there once the transcript is ready. Exo never sees it.");
     expect(asking).not.toContain("minutes");
     expect(asking).toContain(">Use Private transcription</button>");
     expect(asking).toContain(">Not now</button>");

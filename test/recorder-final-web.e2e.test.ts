@@ -22,6 +22,7 @@ import {
   type Page,
 } from "playwright";
 import { buildHarness, serveHarness } from "./exo-ui/harness-server";
+import { HARNESS_DID } from "../frontend/src/harness/stubs";
 
 const engineName = process.env.EXO_UI_ENGINE ?? "webkit";
 const engine = engineName === "chromium" ? chromium : webkit;
@@ -53,12 +54,15 @@ afterEach(async () => {
   await Promise.all(contexts.splice(0).map((context) => context.close()));
 });
 
-async function open(size = DESKTOP) {
+async function open(size = DESKTOP, consented = true) {
   const context = await browser.newContext({
     viewport: size,
     reducedMotion: "reduce",
   });
   contexts.push(context);
+  if (consented) await context.addInitScript((did) => {
+    localStorage.setItem(`exo.voiceNotes.privateCloudConsent:${did}`, "2");
+  }, HARNESS_DID);
   const page = await context.newPage();
   const errors: string[] = [];
   page.on("console", (message) => {
@@ -120,7 +124,10 @@ const PAUSED = /^❚❚ \d+:\d\d · Exo$/;
 
 describe.serial(`web recorder chrome (${engineName})`, () => {
   test("the tab title follows the recording and is restored exactly after discard", async () => {
-    const { page, errors, title } = await open();
+    const { page, errors, title } = await open(DESKTOP, false);
+    await shown(page.getByTestId("private-consent-disclosure"));
+    await page.getByRole("dialog", { name: "Use Private transcription?" }).getByText("from this browser", { exact: false }).waitFor();
+    await page.getByRole("button", { name: "Use Private transcription", exact: true }).click();
     await shown(view(page));
     await titleIs(page, RECORDING);
     const first = await tabTitle(page);
@@ -158,6 +165,18 @@ describe.serial(`web recorder chrome (${engineName})`, () => {
       .getByRole("button", { name: "Discard recording" })
       .click();
     await until("the guard to be removed", async () => !(await leaveGuarded(page)));
+  });
+
+  test("Not now records and does not automatically ask again after a relaunch", async () => {
+    const { page } = await open(DESKTOP, false);
+    await shown(page.getByTestId("private-consent-disclosure"));
+    await page.getByRole("button", { name: "Not now" }).click();
+    await shown(view(page));
+    await page.getByRole("button", { name: "Discard recording" }).first().click();
+    await page.getByRole("alertdialog").getByRole("button", { name: "Discard recording" }).click();
+    await page.reload();
+    await shown(view(page));
+    expect(await page.getByTestId("private-consent-disclosure").count()).toBe(0);
   });
 
   test("the keep-open notice shows once at the start and not again on pause and resume", async () => {

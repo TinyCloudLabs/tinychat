@@ -46,7 +46,7 @@ import { secretsAvailable, SECRETS_UNAVAILABLE_IN_APP_MESSAGE } from "@/lib/open
 import type { PrivateCloudCapabilities } from "@/lib/privateCloud";
 import { PATHS } from "@/shell/routes";
 import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
-import { privateConsentBody } from "@/capture/recorder/final/finalCopy";
+import { privateConsentBody, privateConsentDevice } from "@/capture/recorder/final/finalCopy";
 import { useRecorder } from "@/capture/recorder/RecorderProvider";
 import { localStorageVoiceNoteConsentStore } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { PlatformContext } from "@/lib/platform";
@@ -109,7 +109,12 @@ export function routeText(engine: UploadEngine, assemblyAiMode: AssemblyAiKeyMod
 }
 
 /** The shared Build 1 Private disclosure before an account's first upload. */
-export const PRIVATE_CONSENT_TEXT = privateConsentBody("phone");
+export const PRIVATE_CONSENT_TEXT = privateConsentBody("browser");
+
+export function privateConsentAccountDid(did: string | null | undefined): string {
+  if (!did) throw Object.assign(new Error("Private consent requires an account DID."), { code: "private_consent_account_missing" as const });
+  return did;
+}
 
 function stageText(job: UploadState): string {
   const engine = ROUTE_LABELS[job.engine];
@@ -470,7 +475,9 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
   const navigate = useNavigate();
   const recorder = useRecorder();
   const platform = useContext(PlatformContext);
-  const consentStore = useMemo(() => localStorageVoiceNoteConsentStore(tcw.did ?? ""), [tcw.did]);
+  const consentStore = useMemo(() => {
+    return localStorageVoiceNoteConsentStore(privateConsentAccountDid(tcw.did));
+  }, [tcw.did]);
   const job = useSyncExternalStore(uploadRunner.subscribe, uploadRunner.snapshot, uploadRunner.snapshot);
   const paused = useSyncExternalStore(pausedUpload.subscribe, pausedUpload.snapshot, pausedUpload.snapshot);
   const { deps, origin, api, hosted } = useUploadDeps(tcw, backendUrl, sessionStore);
@@ -577,7 +584,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
       engines={{ "private-cloud": privateStatus, assemblyai: assemblyStatus }}
       assemblyAiMode={assemblyAiMode}
       privateConsent={privateConsent || recorder.transcription?.consented === true}
-      privateConsentText={privateConsentBody(platform === "tauri" ? "Mac" : "phone")}
+      privateConsentText={privateConsentBody(privateConsentDevice(platform))}
       diarize={diarize}
       diarizeUnavailable={diarizeUnavailable}
       fileProblem={fileProblem(file, engine, maxBytes, assemblyAiMode)}

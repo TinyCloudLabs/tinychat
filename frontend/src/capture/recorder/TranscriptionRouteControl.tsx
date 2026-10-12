@@ -7,7 +7,8 @@
 // already, and the only extra state to show is the model's download progress. Signed out, native
 // (CaptureEngine) forces on-device regardless of what's requested, so this control must too: only
 // "Local" is ever offered or shown selected — never "Audio only".
-import { useEffect, useId, useState, useSyncExternalStore } from "react";
+import { useContext, useEffect, useId, useState, useSyncExternalStore } from "react";
+import { PlatformContext } from "@/lib/platform";
 
 import { Button } from "@/components/ui/button";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
@@ -20,7 +21,7 @@ import { VoiceNotes, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNote
 import { downloadOnDeviceModel, onDeviceSttStore, onDeviceModelLine } from "@/lib/voiceNotes/onDeviceSttStore";
 import { isAppleSpeech, isOnDeviceReady, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { readDefaultTranscriber, setRecordingTranscriber } from "@/lib/voiceNotes/transcriberPreference";
-import { FINAL_COPY, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, privateConsentBody, TRANSCRIBER_NAME } from "./final/finalCopy";
+import { FINAL_COPY, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, privateConsentBody, privateConsentDevice, TRANSCRIBER_NAME } from "./final/finalCopy";
 import type { RecorderValue } from "./RecorderProvider";
 import type { SetTranscriberResult } from "./voiceNoteRecorderController";
 import { RouteLine, voiceNoteRoute } from "./RouteLine";
@@ -141,6 +142,7 @@ export function TranscriptionRouteControl(props: {
   className?: string;
 }) {
   const { transcription, signedIn, recorder } = props;
+  const platform = useContext(PlatformContext);
   const headingId = useId();
   const offered = signedIn && transcription?.availability === "available";
   const consented = transcription?.consented ?? false;
@@ -228,7 +230,7 @@ export function TranscriptionRouteControl(props: {
       {askingNow ? (
         <div className="flex flex-col gap-3" data-testid="voice-note-transcription-consent">
           <p className="text-callout text-muted-foreground">
-            <strong>{PRIVATE_CONSENT_TITLE}</strong> {privateConsentBody("phone")}
+            <strong>{PRIVATE_CONSENT_TITLE}</strong> {privateConsentBody(privateConsentDevice(platform))}
           </p>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
             <Button type="button" onClick={() => {

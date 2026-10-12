@@ -6,7 +6,7 @@ import { ChevronDownIcon, Loader2Icon } from "lucide-react";
 
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { PlatformContext } from "@/lib/platform";
-import { CHECK_AGAIN, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, privateConsentBody, privateNotOffered, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
+import { CHECK_AGAIN, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, privateConsentBody, privateConsentDevice, privateNotOffered, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -122,7 +122,7 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
     return (
       <div className={cn("flex min-w-0 flex-col gap-3", props.className)} data-testid="transcribe-consent">
         <p className="text-callout text-muted-foreground">
-          <strong>{PRIVATE_CONSENT_TITLE}</strong> {privateConsentBody(platform === "tauri" ? "Mac" : "phone")}
+          <strong>{PRIVATE_CONSENT_TITLE}</strong> {privateConsentBody(privateConsentDevice(platform))}
         </p>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <button

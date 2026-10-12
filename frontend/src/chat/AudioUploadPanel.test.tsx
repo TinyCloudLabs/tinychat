@@ -18,7 +18,7 @@ import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { SoftActions } from "@/capture/home/SoftActions";
 import { StaticRecorderProvider } from "@/capture/recorder/RecorderProvider";
 import { AboutPage } from "./AboutPage";
-import { assemblyAiStatus, AudioUploadView, fileProblem, PRIVATE_CONSENT_TEXT, type AudioUploadViewProps } from "./AudioUploadPanel";
+import { assemblyAiStatus, AudioUploadView, fileProblem, PRIVATE_CONSENT_TEXT, privateConsentAccountDid, type AudioUploadViewProps } from "./AudioUploadPanel";
 import { TranscriptionSettingsView, type TranscriptionSettingsViewProps } from "./TranscriptionSettings";
 import type { UploadState } from "@/lib/audioUpload";
 
@@ -187,6 +187,12 @@ describe("AudioUploadView", () => {
     // Once agreed, only the route line; never for AssemblyAI.
     expect(renderUpload()).not.toContain("upload-private-consent");
     expect(renderUpload({ privateConsent: false, engine: "assemblyai" })).not.toContain("upload-private-consent");
+  });
+
+  test("Private consent requires an account DID", () => {
+    expect(() => privateConsentAccountDid(null)).toThrow("Private consent requires an account DID.");
+    expect(privateConsentAccountDid("did:test:account")).toBe("did:test:account");
+    try { privateConsentAccountDid(undefined); } catch (error) { expect((error as { code: string }).code).toBe("private_consent_account_missing"); }
   });
 
   test("a file private cloud can't take is named before anything is sent", () => {

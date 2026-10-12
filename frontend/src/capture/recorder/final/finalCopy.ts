@@ -10,7 +10,11 @@ const MODE_NAMES = {
 
 export const PRIVATE_CONSENT_TITLE = "Use Private transcription?";
 export const PRIVATE_CONSENT_ACTION = "Use Private transcription";
-export function privateConsentBody(device: "phone" | "Mac"): string {
+export function privateConsentDevice(platform: AppPlatform): "phone" | "Mac" | "browser" {
+  return platform === "tauri" ? "Mac" : platform === "web" ? "browser" : "phone";
+}
+
+export function privateConsentBody(device: "phone" | "Mac" | "browser"): string {
   return `Private transcription sends this note's audio from this ${device} to TinyCloud Private Transcription, a sealed hardware enclave. It's deleted there once the transcript is ready. Exo never sees it.`;
 }
 
