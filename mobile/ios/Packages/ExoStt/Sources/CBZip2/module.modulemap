@@ -1,5 +1,0 @@
-module CBZip2 [system] {
-    header "shim.h"
-    link "bz2"
-    export *
-}

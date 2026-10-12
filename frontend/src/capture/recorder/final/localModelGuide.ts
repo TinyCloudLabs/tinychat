@@ -1,4 +1,4 @@
-import type { OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
+import { isAppleSpeech, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import {
   onDeviceDownloadTotalBytes,
   primaryOnDeviceModel,
@@ -18,6 +18,19 @@ export interface OnDeviceDownload {
 
 const mb = (bytes: number) => Math.max(1, Math.round(bytes / (1024 * 1024)));
 
+/** iOS has its speech built in: nothing to size or download, only assets the OS installs, or a phone or language it cannot do. */
+function appleSpeechGuide(model: OnDeviceSttStatus, start: StopAction["run"]): { reason: string; action?: StopAction } {
+  switch (model.appleSpeech) {
+    case "ready": return { reason: "Ready" };
+    case "unsupported": return { reason: FINAL_COPY.speechUnsupported };
+    case "locale_unsupported": return { reason: FINAL_COPY.speechLocaleUnsupported };
+    case "asset_missing":
+      if (model.download.state === "failed") return { reason: FINAL_COPY.speechFailed, action: { label: FINAL_COPY.modelTryAgain, run: start } };
+      if (model.download.state === "running") return { reason: FINAL_COPY.speechGetting };
+      return { reason: FINAL_COPY.speechNotInstalled, action: { label: FINAL_COPY.speechGet, run: start } };
+  }
+}
+
 /**
  * What the Local row says while the on-device model is not ready: where the
  * download stands, and the control that moves it on. With no status there is
@@ -32,6 +45,7 @@ export function localModelGuide(
   if (download.error) {
     return { reason: download.error, action: get(FINAL_COPY.modelTryAgain) };
   }
+  if (isAppleSpeech(model)) return appleSpeechGuide(model, download.start);
   const needed = [primaryOnDeviceModel(model), model.models.find((m) => m.id === "silero-vad")].filter(
     (entry): entry is OnDeviceSttStatus["models"][number] => entry !== null && entry !== undefined,
   );

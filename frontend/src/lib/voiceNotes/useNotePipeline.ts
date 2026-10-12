@@ -32,7 +32,7 @@ import {
   type PipelineOnDevice,
   type PipelineRoute,
 } from "./notePipeline";
-import { OnDeviceStt, type OnDeviceSttStatus } from "./onDeviceStt";
+import { isAppleSpeech, OnDeviceStt, type OnDeviceSttStatus } from "./onDeviceStt";
 import { onDeviceQueuePlace } from "./onDeviceQueue";
 import { downloadOnDeviceModel, onDeviceSttStore, retryOnDeviceNote } from "./onDeviceSttStore";
 import {
@@ -44,6 +44,7 @@ import {
 } from "./onDeviceTranscriber";
 import { useQuarantinedRecordings } from "./quarantine";
 import { loadNote } from "./recordingNotes";
+import { isAccountWorkAllowed, subscribeAccountWork } from "./accountContext";
 import { VOICE_NOTE_READ_TIMEOUT_MESSAGE, VoiceNoteSaveTimeout, withVoiceNoteReadDeadline } from "./saveDeadline";
 import { pendingStore, type PendingNote } from "./recorderSaves";
 import {
@@ -153,7 +154,7 @@ const MODEL_PROGRESS: readonly PipelineModelState[] = ["absent", "queued", "down
  * fetches both (`onDeviceDownloadTotalBytes`), so the stepper has a single model. Its state is the least-ready of
  * the two (failed beats everything, then absent, queued, downloading, verifying, checking; only both ready is ready),
  * its bytes and total are the sums (so the percent is of the whole download), and its error is the failed one's.
- * `models` empty means the status has not loaded, so the model is unknown (null) and nothing is claimed. A list with
+ * `models` empty means the status has not loaded, so the model is unknown (null) and nothing is claimed. iOS has no models at all (its built-in speech reports through `PipelineOnDevice.appleSpeech`), so it is null there too. A list with
  * a primary model but no VAD entry is judged on the primary alone: the status is the only authority on what exists.
  */
 export function combinedModel(status: OnDeviceSttStatus): PipelineOnDevice["model"] {
@@ -225,6 +226,7 @@ function onDeviceInput(facts: NotePipelineFacts): PipelineOnDevice | null {
     queue: place === null ? null : { position: place.position, inLine: place.inLine, percent: place.percent },
     model: combinedModel(status),
     download: status.download.state,
+    ...(isAppleSpeech(status) ? { appleSpeech: status.appleSpeech } : {}),
     sync: facts.transcriptSync,
   };
 }
@@ -568,6 +570,7 @@ const subscribeAutoSync = (listener: () => void) => {
   autoSync.listeners.add(listener);
   return () => { autoSync.listeners.delete(listener); };
 };
+const notifyAutoSync = () => { for (const listener of [...autoSync.listeners]) listener(); };
 const autoSyncKey = (tcw: TinyCloudWeb, id: string, editedAt: string) => JSON.stringify([spaceIdentity(tcw), id, editedAt]);
 const autoTranscriptKey = (tcw: TinyCloudWeb, id: string, kind: "add" | "record") => JSON.stringify([spaceIdentity(tcw), id, kind === "add" ? "on-device-transcript" : "on-device-transcript-ledger"]);
 
@@ -605,15 +608,22 @@ function useAutoNoteSync(candidates: readonly { tcw: TinyCloudWeb; id: string; k
  * before the last quit) gets one ledger repair per session, `kind: "record"`.
  */
 function useAutoTranscriptSync(candidates: readonly { tcw: TinyCloudWeb; id: string; key: string; kind: "add" | "record" }[]): void {
+  useEffect(() => subscribeAccountWork(notifyAutoSync), []);
   useEffect(() => {
     for (const { tcw, id, key, kind } of candidates) {
+      if (!isAccountWorkAllowed(tcw)) continue;
       if (autoSync.started.has(key)) continue;
       autoSync.started.add(key);
-      (kind === "add" ? syncOnDeviceTranscript(tcw, { id, ledger: { audio: { state: "saved" } }, stt: { state: "done" } }) : recordOnDeviceTranscript(tcw, id))
-        .finally(() => {
-          autoSync.settled.add(key);
-          for (const listener of [...autoSync.listeners]) listener();
-        });
+      const attempt = kind === "add"
+        ? syncOnDeviceTranscript(tcw, { id, ledger: { audio: { state: "saved" } }, stt: { state: "done" } })
+        : recordOnDeviceTranscript(tcw, id);
+      void attempt.then((abandoned) => {
+        if (abandoned) { autoSync.started.delete(key); autoSync.settled.delete(key); }
+        else autoSync.settled.add(key);
+      }, (caught: unknown) => {
+        console.error("[NotePipeline] Syncing the on-device transcript failed", id, caught);
+        autoSync.settled.add(key);
+        }).finally(notifyAutoSync);
     }
   }, [candidates]);
 }
@@ -764,13 +774,13 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
       // A saved note whose on-device transcript is done, with none in the space and no write of it in this session, gets one
       // attempt (`useAutoTranscriptSync`); until it settles the transcript step is "adding", never a blocker.
       const onDevice = input.transcript.onDevice;
-      if (tcw !== null && !spaceReading && input.space.saved && input.transcript.inSpace === null && input.transcript.readError == null && onDevice !== null && onDevice.sync === null && onDevice.stt?.state === "done") {
+      if (tcw !== null && isAccountWorkAllowed(tcw) && !spaceReading && input.space.saved && input.transcript.inSpace === null && input.transcript.readError == null && onDevice !== null && onDevice.sync === null && onDevice.stt?.state === "done") {
         const key = autoTranscriptKey(tcw, id, "add");
         if (!autoSync.settled.has(key)) {
           wantsTranscriptSync.push({ tcw, id, key, kind: "add" });
           input = buildNotePipelineInput({ ...facts, transcriptSync: { state: "syncing" }, noteSync: { ...storeSync, attempting } });
         }
-      } else if (tcw !== null && !spaceReading && input.space.saved && input.transcript.inSpace !== null && onDevice !== null && onDevice.sync === null && onDevice.stt?.state === "done" && native?.transcriptSync != null && native.transcriptSync.state !== "saved") {
+      } else if (tcw !== null && isAccountWorkAllowed(tcw) && !spaceReading && input.space.saved && input.transcript.inSpace !== null && onDevice !== null && onDevice.sync === null && onDevice.stt?.state === "done" && native?.transcriptSync != null && native.transcriptSync.state !== "saved") {
         // The space has it, the phone's ledger does not know: one repair of the ledger. Its failure is published and shown (`unrecorded`).
         const key = autoTranscriptKey(tcw, id, "record");
         if (!autoSync.settled.has(key)) wantsTranscriptSync.push({ tcw, id, key, kind: "record" });

@@ -13,6 +13,7 @@ import {
 import { VoiceNotes, __setVoiceNotesForTests, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { OnDeviceStt, __setOnDeviceSttForTests, type OnDeviceSttPlugin, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import { __resetOnDeviceSttStoreForTests, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
+import { advanceAccountGeneration } from "@/lib/voiceNotes/accountContext";
 import { PendingVoiceNotesSaver, schedulePendingVoiceNotesRecovery } from "@/chat/PendingVoiceNotesSaver";
 import { VoiceNoteSaveDeferred } from "@/lib/voiceNotes/voiceNotePipeline";
 import { CaptureEngineGate } from "./CaptureEngineGate";
@@ -69,12 +70,20 @@ const EMPTY_STT: OnDeviceSttStatus = { models: [], pack: "full", autoDownload: f
 
 function strictOnDeviceStt(supported: boolean, model: "ready" | "absent" = "ready") {
   const calls: string[] = [];
-  const plugin = new Proxy({}, { get: (_t, property: string) => () => {
+  const listeners = new Map<string, Set<(event: unknown) => void>>();
+  const plugin = new Proxy({}, { get: (_t, property: string) => (...args: unknown[]) => {
     calls.push(property);
     if (!supported) throw new Error(`${property} is unsupported`);
-    return Promise.resolve(property === "status" ? sttStatus(model) : { remove: async () => {} });
+    if (property === "addListener") {
+      const [event, callback] = args as [string, (event: unknown) => void];
+      if (!listeners.has(event)) listeners.set(event, new Set());
+      listeners.get(event)!.add(callback);
+      return Promise.resolve({ remove: async () => { listeners.get(event)?.delete(callback); } });
+    }
+    return Promise.resolve(property === "status" ? sttStatus(model) : {});
   } });
-  return { plugin: plugin as unknown as OnDeviceSttPlugin, calls };
+  return { plugin: plugin as unknown as OnDeviceSttPlugin, calls,
+    emit: (event: string, payload: unknown) => { for (const listener of [...(listeners.get(event) ?? [])]) listener(payload); } };
 }
 
 // A DOM that accepts everything React asks of it and keeps nothing.
@@ -131,7 +140,7 @@ async function mount(kind: CaptureEngineKind, capabilities: CaptureCapabilities,
 }
 
 async function mountWith(kind: CaptureEngineKind, capabilities: CaptureCapabilities, prepare?: (plugin: VoiceNotesPlugin) => void,
-  model: "ready" | "absent" = "ready", recovery?: { listeners: Map<string, () => void>; pipeline: { resume(): void; cancelAll(): void; reconcileAll(): Promise<void> } }) {
+  model: "ready" | "absent" = "ready", recovery?: { listeners: Map<string, () => void>; pipeline: { resume(): void; cancelAll(): void; isAccepting?(): boolean; reconcileAll(): Promise<void> } }) {
   const stt = strictOnDeviceStt(kind === "native", model);
   __setOnDeviceSttForTests(stt.plugin);
   const strict = strictEngine(capabilities);
@@ -183,6 +192,76 @@ test("pending saver reads the current navigator online state on mount", async ()
   const pipeline = { resume() {}, cancelAll() {}, reconcileAll: async () => {} };
   await mountWith("native", ALL, undefined, "ready", { listeners, pipeline });
   expect((await import("@/lib/voiceNotes/recorderSaves")).pendingStore.snapshot().online).toBe(false);
+});
+
+test("a transcribed event captures the current generation after a same-account generation bump", async () => {
+  const did = "did:example:alice";
+  let reads = 0;
+  const { stt } = await mountWith("native", ALL, (plugin) => {
+    Object.assign(plugin, {
+      listPending: async () => ({ recordings: [{ id: "local-note", owner: did,
+        ledger: { audio: { state: "saved" } }, stt: { state: "done" } }] }),
+      getTranscript: async () => { reads++; return { transcript: null }; },
+    });
+  });
+
+  // App can advance this during a cancelled/failed sign-out without remounting the saver.
+  advanceAccountGeneration();
+  await act(async () => { stt.emit("transcribed", { id: "local-note" }); await tick(); await tick(); });
+  expect(reads).toBe(1);
+});
+
+test("a transcribed event whose pending read crosses a generation bump does not start sync", async () => {
+  const did = "did:example:alice";
+  let finishList!: (result: { recordings: { id: string; owner: string; ledger: { audio: { state: string } }; stt: { state: string } }[] }) => void;
+  let listStarted!: () => void;
+  const started = new Promise<void>((resolve) => { listStarted = resolve; });
+  let transcriptReads = 0;
+  const { stt } = await mountWith("native", ALL, (plugin) => {
+    Object.assign(plugin, {
+      listPending: () => { listStarted(); return new Promise((resolve) => { finishList = resolve; }); },
+      getTranscript: async () => { transcriptReads++; return { transcript: null }; },
+    });
+  });
+
+  await act(async () => { stt.emit("transcribed", { id: "local-note" }); });
+  await started;
+  advanceAccountGeneration();
+  finishList({ recordings: [{ id: "local-note", owner: did, ledger: { audio: { state: "saved" } }, stt: { state: "done" } }] });
+  await act(async () => { await tick(); await tick(); });
+  expect(transcriptReads).toBe(0);
+});
+
+test("a transcribed event after sign-out pauses the pipeline does no phone read or write", async () => {
+  const did = "did:example:alice";
+  let phoneReads = 0;
+  let transcriptReads = 0;
+  let writes = 0;
+  let accepting = true;
+  const pipeline = {
+    resume() { accepting = true; },
+    cancelAll() { accepting = false; },
+    isAccepting() { return accepting; },
+    reconcileAll: async () => {},
+  };
+  const { stt } = await mountWith("native", ALL, (plugin) => {
+    Object.assign(plugin, {
+      listPending: async () => { phoneReads++; return { recordings: [{ id: "local-note", owner: did,
+        ledger: { audio: { state: "saved" } }, stt: { state: "done" } }] }; },
+      getTranscript: async () => { transcriptReads++; return { transcript: null }; },
+      updateLedger: async () => { writes++; return {}; },
+    });
+  }, "ready", { listeners: new Map(), pipeline });
+
+  // Recorder setup may inspect the phone before the event under test.
+  phoneReads = 0;
+  transcriptReads = 0;
+  writes = 0;
+  pipeline.cancelAll();
+  await act(async () => { stt.emit("transcribed", { id: "local-note" }); await tick(); });
+  expect(phoneReads).toBe(0);
+  expect(transcriptReads).toBe(0);
+  expect(writes).toBe(0);
 });
 
 test("forced session-swap recovery queues one trailing reconcile while a run is active", async () => {

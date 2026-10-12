@@ -29,7 +29,7 @@ import { levelFromAmplitude } from "@/lib/voiceNotes/web/webLevels";
 import { isOnDeviceReady } from "@/lib/voiceNotes/onDeviceStt";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { setQuarantineAccount } from "@/lib/voiceNotes/quarantine";
-import { ensureOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
+import { ensureAppleSpeechAssets, ensureOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { effectiveCaptureOptions, readTranscriberPreference,
   setDefaultIdentifySpeakers, setDefaultTranscriber, settleDefaults, subscribeTranscriberPreference, writeAccountDefaults,
   } from "@/lib/voiceNotes/transcriberPreference";
@@ -163,13 +163,17 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   };
   let choice = defaultChoice();
   // Local needs the on-device model: this starts its download once the user has chosen Local or recorded on it, and
-  // the model is not on the phone. Merely being on Local by default starts nothing. Recording never waits for the
-  // download; the note's Local transcription queues natively until the model is ready.
+  // the model is not on the phone. Merely being on Local by default starts no Android download (iOS fetches its free,
+  // OS-managed speech assets below). Recording never waits for the download; the note's Local transcription queues
+  // natively until the model is ready.
   const ensureLocalModel = (retry = false) => {
     if (!available || !captureCapabilities().localTranscription) return;
     if (onDeviceReady?.() ?? isOnDeviceReady(onDeviceSttStore.snapshot())) return;
     ensureOnDeviceModel({ retry });
   };
+  if (available && captureCapabilities().localTranscription && choice.id === "on-device") {
+    ensureAppleSpeechAssets().catch((caught: unknown) => console.warn("[Recorder] Could not start the iOS speech install", caught));
+  }
   let note: RecorderNote | null = null;
   let noteId: string | null = null;
   let noteStatus: RecorderNoteStatus = "ready";

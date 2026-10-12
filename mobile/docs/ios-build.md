@@ -1,8 +1,8 @@
 # iOS builds and device installs
 
-Exo requires iOS 18 or newer and Capacitor CLI requires Node.js 22 or newer.
+Exo requires iOS 26 or newer (Apple's on-device speech) and Capacitor CLI requires Node.js 22 or newer.
 Capacitor generates `CapApp-SPM/Package.swift`
-with Swift tools 6.0 from `mobile/capacitor.config.ts`. Run sync after building
+with Swift tools 6.2 from `mobile/capacitor.config.ts`. Run sync after building
 the web app, and commit any intentional generated manifest change. A repeat sync
 on a clean checkout should leave `git status` clean.
 

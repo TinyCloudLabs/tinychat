@@ -336,6 +336,19 @@ describe("useTranscriptionChoice", () => {
       expect(result.caption).toBeNull();
     });
 
+    test("signed out on an iPhone or language iOS speech cannot do: Local is unavailable with the calm reason", () => {
+      for (const [appleSpeech, reason] of [
+        ["unsupported", "On-device transcription isn't available on this iPhone"],
+        ["locale_unsupported", "On-device transcription doesn't support this language yet"],
+      ] as const) {
+        const apple: OnDeviceSttStatus = { ...MODEL, models: [], engine: "apple-speech", appleSpeech };
+        const { result } = choice(transcription(), fakeApi("on-device").api, apple, false, "phone");
+        const local = result.stops.find((s) => s.stop.id === "local")!;
+        expect(local.available).toBe(false);
+        expect(local.reason).toBe(reason);
+      }
+    });
+
     test("signed out, Audio only cannot be requested at all", async () => {
       const { api, calls } = fakeApi("on-device");
       const { result } = choice(transcription(), api, MODEL, false);
