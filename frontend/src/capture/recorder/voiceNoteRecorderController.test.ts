@@ -91,6 +91,7 @@ let shortcutPending: boolean;
 let microphoneGranted: boolean;
 
 function controller(options: { tcw?: TinyCloudWeb | null; pipeline?: VoiceNotePipeline; consented?: boolean | (() => boolean); onDeviceReady?: boolean;
+  diarization?: boolean;
   appleInterim?: boolean; transcriber?: VoiceNoteTranscriber; noteLoader?: typeof loadNote;
   noteRetryScheduler?: (delayMs: number, retry: () => void) => () => void;
   subscribeAppActive?: (listener: () => void) => Promise<{ remove(): Promise<void> }> } = {}) {
@@ -100,7 +101,7 @@ function controller(options: { tcw?: TinyCloudWeb | null; pipeline?: VoiceNotePi
     available: true,
     transcriber: options.transcriber ?? { check: async () => {}, noteSaved: (recording) => noted.push(recording.id),
       snapshot: () => ({ availability: "available", consented: typeof options.consented === "function" ? options.consented() : options.consented ?? false,
-        capabilities: null, jobs: new Map() }) },
+        capabilities: { max_bytes: 120_960_000, diarization: options.diarization ?? true }, jobs: new Map() }) },
     onDeviceReady: () => options.onDeviceReady ?? true,
     appleInterim: () => options.appleInterim ?? false,
     noteLoader: options.noteLoader,
@@ -499,6 +500,18 @@ describe("voice-note recorder controller", () => {
     await tick();
     expect(second.getTranscriber()).toEqual({ id: "private-cloud", identifySpeakers: true, source: "recording" });
     remove();
+  });
+
+  test("Private keeps speaker detection off when PTX reports no diarization", async () => {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "private-cloud", identifySpeakers: true });
+    const recorder = controller({ consented: true, diarization: false });
+    const detach = recorder.attach();
+    await tick();
+    await recorder.record();
+    expect((await fake.plugin.status()).options).toMatchObject({ transcriber: "private-cloud", identifySpeakers: false });
+    expect(await recorder.setIdentifySpeakers(true, "recording")).toBe("unavailable");
+    detach();
   });
 
   test("signed-out capture locks other modes and Off does not revoke private-cloud consent", async () => {
@@ -1933,7 +1946,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
         const detach = recorder.attach();
         await tick();
         await recorder.record();
-        expect(recorder.getTranscriber().id).toBe(from);
+        expect(recorder.getTranscriber().id).toBe(from === "assemblyai" ? "private-cloud" : from);
 
         expect(await recorder.setTranscriber(to, { scope: "recording" })).toBe("ok");
         expect(recorder.getTranscriber()).toMatchObject({ id: to, source: "recording" });

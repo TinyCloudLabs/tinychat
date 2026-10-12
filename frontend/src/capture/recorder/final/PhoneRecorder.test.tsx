@@ -17,6 +17,7 @@ import { clearNotesUi, readNotesUi, updateNotesUi } from "./notes";
 const noop = () => {};
 const PRIVATE_ON: VoiceNoteTranscriptionProps = {
   availability: "available",
+  diarization: true,
   consented: true,
   maxSeconds: 600,
   jobs: new Map(),
@@ -195,7 +196,6 @@ describe("PhoneRecorder", () => {
     expect(html).toContain('role="switch"');
     expect(html).toMatch(/role="switch"[^>]*aria-disabled="true"/);
     expect(html).toContain("Not supported");
-    expect(html).not.toContain("Coming with the next update");
   });
 
   test("the Identify speakers switch shows the provider's value, and on-device takes it back to the default", () => {

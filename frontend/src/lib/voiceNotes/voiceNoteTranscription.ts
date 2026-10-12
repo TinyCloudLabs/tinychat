@@ -892,7 +892,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       // Mono, and labelled so no other client on this account adopts the job (privateCloudJobClient).
       channel_mode: "mixed",
       channel_labels: [...VOICE_NOTE_CHANNEL_LABELS],
-      ...(identifySpeakers && channelCount === 1 ? { diarize: true } : {}),
+      ...(identifySpeakers && channelCount === 1 && capabilities.diarization === true ? { diarize: true } : {}),
     };
     const createdJob = await createJob(sourceId, job, body, guard);
     job = { ...createdJob.job, transcriptionId: createdJob.created.id };

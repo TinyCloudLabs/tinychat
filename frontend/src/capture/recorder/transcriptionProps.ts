@@ -20,6 +20,8 @@ export interface VoiceNoteTranscriptionProps {
   consented: boolean;
   /** The longest note offered, in seconds. */
   maxSeconds: number;
+  /** Whether this deployment can identify speaker turns in Private notes. */
+  diarization?: boolean;
   /** Notes being transcribed, waiting their turn, or whose last attempt failed. */
   jobs: ReadonlyMap<string, NoteTranscriptionState>;
   onTranscribe: (sourceId: string) => void;
@@ -50,6 +52,7 @@ export function transcriptionProps(
     ...(snapshot.checkError === undefined ? {} : { checkError: snapshot.checkError }),
     consented: snapshot.consented,
     maxSeconds: maxTranscriptionSeconds(snapshot.capabilities),
+    diarization: snapshot.capabilities?.diarization === true,
     jobs: snapshot.jobs,
     onTranscribe: (sourceId) => transcriber.transcribe(sourceId),
     onTranscribePrivately: (sourceId) => transcriber.transcribePrivately(sourceId),

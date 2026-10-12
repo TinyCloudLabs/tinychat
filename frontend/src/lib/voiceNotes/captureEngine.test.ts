@@ -148,6 +148,7 @@ test("a signed-in Local default stays Local while the model is unavailable", () 
   expect(effectiveTranscriber("on-device", true)).toBe("on-device");
   __setInstalledEngineForTests("web", none);
   expect(effectiveTranscriber("on-device", false)).toBe("on-device");
+  expect(effectiveTranscriber("on-device", true)).toBe("private-cloud");
 });
 
 test("Identify speakers defaults on, survives unsupported modes, and is committed only for Private", () => {
@@ -165,6 +166,9 @@ test("Identify speakers defaults on, survives unsupported modes, and is committe
     expect(effectiveCaptureOptions({ transcriber: "private-cloud", identifySpeakers: true }, true).identifySpeakers).toBe(true);
     values.set(key, "0");
     expect(readTranscriberPreference().identifySpeakers).toBe(false);
+    values.set("exo.voiceNotes.transcriber", "assemblyai");
+    values.set(key, "1");
+    expect(readTranscriberPreference()).toEqual({ transcriber: "private-cloud", identifySpeakers: true });
   } finally {
     if (previous) Object.defineProperty(globalThis, "localStorage", previous);
     else Reflect.deleteProperty(globalThis, "localStorage");

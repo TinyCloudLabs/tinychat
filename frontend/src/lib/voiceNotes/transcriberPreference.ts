@@ -22,8 +22,9 @@ export function readTranscriberPreference(): CaptureOptions {
   if (!store) return memoryPreference;
   try {
     const saved = store.getItem(TRANSCRIBER_KEY);
-    const transcriber: TranscriberId = saved === "off" || saved === "on-device" || saved === "private-cloud" || saved === "assemblyai"
-      ? saved : "on-device";
+    // Powerful voice notes were never wired up; migrate the old saved choice to Private.
+    const transcriber: TranscriberId = saved === "assemblyai" ? "private-cloud"
+      : saved === "off" || saved === "on-device" || saved === "private-cloud" ? saved : "on-device";
     return { transcriber, identifySpeakers: store.getItem(SPEAKERS_KEY) !== "0" };
   } catch { return memoryPreference; }
 }
@@ -31,6 +32,7 @@ export function readTranscriberPreference(): CaptureOptions {
 /** Signed-out Mac capture without Whisper records audio only. A signed-in saved choice stays selected. */
 export function effectiveTranscriber(pref: TranscriberId, signedIn: boolean): TranscriberId {
   const transcriber = signedIn ? pref : "on-device";
+  if (signedIn && transcriber === "on-device" && captureEngineKind() === "web") return "private-cloud";
   if (!signedIn && transcriber === "on-device" && captureEngineAvailable()
     && captureEngineKind() === "tauri" && !onDeviceTranscriptionAvailable()) return "off";
   return transcriber;

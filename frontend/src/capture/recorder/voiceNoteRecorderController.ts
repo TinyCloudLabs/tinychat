@@ -158,6 +158,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   let preference = readTranscriberPreference();
   let nativeOptions: CaptureOptions | null = null;
   const signedIn = tcw?.did != null;
+  const privateDiarization = () => transcriber?.snapshot?.().capabilities?.diarization === true;
   const defaultChoice = (): RecorderTranscriberChoice => {
     const options = effectiveCaptureOptions(preference, signedIn);
     return { id: options.transcriber, identifySpeakers: options.identifySpeakers, source: "default" };
@@ -315,7 +316,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     // mode the note was recorded under stays on screen until the receipt.
     const live = state.recordingId !== null && nativeOptions !== null;
     const next: RecorderTranscriberChoice = live
-      ? { id: nativeOptions!.transcriber, identifySpeakers: nativeOptions!.identifySpeakers, source: "recording" }
+      ? { id: nativeOptions!.transcriber === "assemblyai" ? "private-cloud" : nativeOptions!.transcriber,
+        identifySpeakers: nativeOptions!.identifySpeakers, source: "recording" }
       : defaultChoice();
     if (choice.id === next.id && choice.identifySpeakers === next.identifySpeakers && choice.source === next.source) return false;
     choice = next;
@@ -605,7 +607,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       }
       if (scope === "recording") {
         if (state.phase !== "recording" || !state.recordingId) return "unavailable";
-        const identifySpeakers = id === "private-cloud" && preference.identifySpeakers;
+        const identifySpeakers = id === "private-cloud" && privateDiarization() && preference.identifySpeakers;
         await VoiceNotes.setRecordingOptions({ transcriber: id, identifySpeakers });
         acceptNativeOptions(await VoiceNotes.status());
       } else {
@@ -623,6 +625,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       if (scope === "recording" && (state.phase !== "recording" || choice.source !== "recording")) return "unavailable";
       if (id !== "private-cloud" && id !== "assemblyai") return "unavailable";
       if (id === "assemblyai") return "unavailable";
+      if (!privateDiarization()) return "unavailable";
       if (scope === "recording") {
         await VoiceNotes.setRecordingOptions({ identifySpeakers: on });
         acceptNativeOptions(await VoiceNotes.status());
@@ -841,7 +844,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       try {
         // The recording starts from the engine's default: wait for any default write in flight, and refuse to start on one that could not be put right.
         await settleDefaults();
-        const started = await VoiceNotes.start({ maxDurationMs: requested });
+        const started = await VoiceNotes.start({ maxDurationMs: requested,
+          ...(!privateDiarization() ? { identifySpeakers: false } : {}) });
         const elapsedAt = Date.now();
         nativeOptions = null;
         try {

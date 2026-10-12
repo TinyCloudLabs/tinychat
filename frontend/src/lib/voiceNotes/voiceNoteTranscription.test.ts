@@ -87,6 +87,7 @@ const CAPS: PrivateCloudCapabilities = {
   max_duration_seconds: 7_200,
   content_types: ["audio/mpeg", "audio/wav", "audio/ogg"],
   admission: "open",
+  diarization: true,
 };
 const AUDIO = { mimeType: "audio/mp4", base64: bytesToBase64(new Uint8Array([1, 2, 3, 4])) };
 const originalVoiceNotes = VoiceNotes;
@@ -291,12 +292,12 @@ function harness(script: {
 const run = (h: ReturnType<typeof harness>, report: (s: VoiceNoteTranscriptionStatus) => void = () => {}) =>
   h.cloud.transcribe({ sourceId: "rec-1", capabilities: CAPS, loadAudio: async () => AUDIO }, report);
 
-test("Private asks PTX to identify speakers only when enabled on a mono note", async () => {
-  for (const [identifySpeakers, channelCount] of [[true, 1], [false, 1], [true, 2]] as const) {
+test("Private asks PTX to identify speakers only when enabled, mono, and supported", async () => {
+  for (const [identifySpeakers, channelCount, diarization] of [[true, 1, true], [false, 1, true], [true, 2, true], [true, 1, false]] as const) {
     const h = harness({});
-    await h.cloud.transcribe({ sourceId: `rec-${identifySpeakers}-${channelCount}`, capabilities: CAPS,
+    await h.cloud.transcribe({ sourceId: `rec-${identifySpeakers}-${channelCount}-${diarization}`, capabilities: { ...CAPS, diarization },
       loadAudio: async () => AUDIO, identifySpeakers, channelCount }, () => {});
-    expect(h.creates[0]?.body.diarize).toBe(identifySpeakers && channelCount === 1 ? true : undefined);
+    expect(h.creates[0]?.body.diarize).toBe(identifySpeakers && channelCount === 1 && diarization ? true : undefined);
   }
 });
 

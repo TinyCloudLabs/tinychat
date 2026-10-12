@@ -5,7 +5,7 @@ import {
   identifySpeakersControl,
   MODE_STOPS,
   modeAvailability,
-  modeShortLabel,
+  modeStop,
   moveMode,
   scaleStops,
   type ModeShell,
@@ -78,7 +78,6 @@ describe("transcription modes availability", () => {
       "local",
       "private",
     ]);
-    expect(stops.find(({ id }) => id === "powerful")).toBeUndefined();
     expect(stops.find(({ id }) => id === "local")?.availability).toEqual({
       available: false,
       reason: "needs the app",
@@ -87,6 +86,13 @@ describe("transcription modes availability", () => {
 
   test("Audio only is available", () => {
     expect(modeAvailability("skip", "phone")).toEqual({ available: true });
+  });
+
+  test("unknown mode ids fail with a typed error", () => {
+    expect(() => modeStop("powerful" as never)).toThrow("Unknown transcription mode: powerful");
+    try { modeStop("powerful" as never); } catch (error) {
+      expect(error).toMatchObject({ code: "unknown_transcription_mode" });
+    }
   });
 
   test("captions and explanations match the shell-specific mode copy", () => {
@@ -140,23 +146,6 @@ describe("transcription modes availability", () => {
           "Fast, accurate, and sealed from Exo.",
           "sealed enclave",
           "Transcribed in a sealed hardware enclave. Not even Exo can read it. Fast and accurate.",
-        ],
-      },
-      powerful: {
-        phone: [
-          "Most accurate. Audio deleted after processing.",
-          "AssemblyAI",
-          "Uploaded to AssemblyAI, a third-party service: the most accurate, with speaker labels. Audio is deleted after processing.",
-        ],
-        desktop: [
-          "Most accurate. Audio deleted after processing.",
-          "AssemblyAI",
-          "Uploaded to AssemblyAI, a third-party service: the most accurate, with speaker labels. Audio is deleted after processing.",
-        ],
-        web: [
-          "Most accurate. Audio deleted after processing.",
-          "AssemblyAI",
-          "Uploaded to AssemblyAI, a third-party service: the most accurate, with speaker labels. Audio is deleted after processing.",
         ],
       },
     } as const;
@@ -345,15 +334,17 @@ describe("transcription modes availability", () => {
 
 describe("Identify speakers", () => {
   test("is enabled for Private, and says Not supported for Local and Audio only", () => {
-    expect(identifySpeakersControl("private", true)).toMatchObject({
+    expect(identifySpeakersControl("private", true, true)).toMatchObject({
       checked: true,
       disabled: false,
     });
+    expect(identifySpeakersControl("private", true, false)).toMatchObject({
+      checked: false, disabled: true, subLabel: "Not supported",
+    });
     for (const mode of ["local", "skip"] as const) {
       expect(identifySpeakersControl(mode, true)).toMatchObject({
-        checked: true, disabled: true, subLabel: "Not supported",
+        checked: false, disabled: true, subLabel: "Not supported",
       });
     }
-    expect(modeShortLabel("powerful", true)).toBe("AssemblyAI · speakers");
   });
 });

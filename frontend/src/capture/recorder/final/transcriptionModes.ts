@@ -5,7 +5,7 @@ import { FINAL_COPY } from "./finalCopy";
 const COPY = FINAL_COPY.modes;
 
 export type ModeShell = "phone" | "desktop" | "web";
-export type ModeId = "skip" | "local" | "private" | "powerful";
+export type ModeId = "skip" | "local" | "private";
 export type DotCount = 0 | 1 | 2 | 3 | 4;
 export interface ModeExplanationContext {
   modelName: string;
@@ -95,6 +95,19 @@ export const MODE_STOPS: readonly ModeStop[] = [
   },
 ];
 
+/** Every picker mode has one stop. Reject unknown journal values with a typed error. */
+export function modeStop(id: ModeId): ModeStop {
+  switch (id) {
+    case "skip": return MODE_STOPS[0]!;
+    case "local": return MODE_STOPS[1]!;
+    case "private": return MODE_STOPS[2]!;
+    default: {
+      const exhaustive: never = id;
+      throw Object.assign(new Error(`Unknown transcription mode: ${String(exhaustive)}`), { code: "unknown_transcription_mode" as const });
+    }
+  }
+}
+
 export function modeAvailability(
   id: ModeId,
   shell: ModeShell,
@@ -103,7 +116,6 @@ export function modeAvailability(
 ): Availability {
   if (id === "skip") return { available: true };
   if (id === "private") return { available: true };
-  if (id === "powerful") return { available: false, reason: FINAL_COPY.notSupported };
   if (shell === "web") {
     return { available: false, reason: FINAL_COPY.needsApp };
   }
@@ -167,17 +179,14 @@ export function moveMode(
   ]!.id;
 }
 
-export function speakersEnabled(mode: ModeId): boolean {
-  return mode === "private" || mode === "powerful";
+export function speakersEnabled(mode: ModeId, privateDiarization = false): boolean {
+  return mode === "private" && privateDiarization;
 }
 
 export function modeShortLabel(
   mode: ModeId,
-  identifySpeakers: boolean,
+  _identifySpeakers: boolean,
 ): string {
-  if (mode === "powerful" && identifySpeakers) {
-    return COPY.speakersName;
-  }
   switch (mode) {
     case "skip":
       return COPY.skipName;
@@ -185,8 +194,6 @@ export function modeShortLabel(
       return COPY.localName;
     case "private":
       return COPY.privateName;
-    case "powerful":
-      return COPY.powerfulName;
     default: {
       const exhaustive: never = mode;
       throw new Error(`Unknown transcription mode: ${String(exhaustive)}`);
@@ -197,11 +204,13 @@ export function modeShortLabel(
 export function identifySpeakersControl(
   mode: ModeId,
   enabled: boolean,
+  privateDiarization = false,
 ) {
+  const supported = speakersEnabled(mode, privateDiarization);
   return {
     label: FINAL_COPY.identifySpeakers,
-    subLabel: speakersEnabled(mode) ? FINAL_COPY.speakerTurns : FINAL_COPY.notSupported,
-    checked: enabled,
-    disabled: !speakersEnabled(mode),
+    subLabel: supported ? FINAL_COPY.speakerTurns : FINAL_COPY.notSupported,
+    checked: enabled && supported,
+    disabled: !supported,
   };
 }
