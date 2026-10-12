@@ -630,7 +630,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 if (Math.abs(rootSize - expected) > 0.1) findings.push({ check: "ios-text-scale", detail: `root font-size ${rootSize}px; expected ${expected}px at scale ${viewport.textScale}` });
               }
               if (screen.group === "pipeline") {
-                // Pipeline labels and statuses keep an even two-column layout and fit their boxes at large text sizes.
+                // Pipeline labels and statuses fit their boxes and stack when text scaling leaves too little room.
                 const sizing = await page.evaluate(() => {
                   const root = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
                   const texts = [...document.querySelectorAll<HTMLElement>(
@@ -656,7 +656,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                   const layouts = [...document.querySelectorAll<HTMLElement>(".pipeline-stepper-list > li")].map((li) => {
                     const label = li.querySelector<HTMLElement>(".pipeline-stepper-label")?.getBoundingClientRect();
                     const status = li.querySelector<HTMLElement>(".pipeline-stepper-status")?.getBoundingClientRect();
-                    return { label, status, columns: getComputedStyle(li).gridTemplateColumns };
+                    return { label, status };
                   });
                   return {
                     root,
@@ -679,8 +679,13 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 if (sizing.wrong.length > 0) findings.push({ check: "pipeline-text-scale", detail: `not 0.78125rem: ${sizing.wrong.join("; ")}` });
                 if (sizing.overflowing.length > 0) findings.push({ check: "pipeline-text-wrap", detail: `text outside its box: ${sizing.overflowing.join("; ")}` });
                 for (const layout of sizing.layouts) {
-                  if (!layout.label || !layout.status || layout.status.left < layout.label.left - 1 || layout.status.top > layout.label.bottom + 1) {
-                    findings.push({ check: "pipeline-wrap", detail: "a pipeline row did not keep its label and status in the same two-column line" });
+                  const stacked = (viewport.textScale ?? 1) > 1;
+                  if (!layout.label || !layout.status || (stacked
+                    ? layout.status.top < layout.label.bottom - 1
+                    : layout.status.left < layout.label.left - 1 || layout.status.top > layout.label.bottom + 1)) {
+                    findings.push({ check: "pipeline-wrap", detail: stacked
+                      ? "a pipeline status did not sit below its label at large text size"
+                      : "a pipeline row did not keep its label and status on the same line" });
                   }
                 }
               }
