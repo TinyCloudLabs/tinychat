@@ -28,6 +28,22 @@ protocol TranscriptionSession {
                     onSegment: @escaping (Int) -> Void) throws -> [String: Any]
 }
 
+/// Whether a note's sidecar says on-device transcription is owed. A note committed to on-device always
+/// is; a note committed to another mode is too once the user chose Local for it, which `enqueue`
+/// records as `stt.requested` so the choice survives the app dying.
+enum ResumableWork {
+    static let unfinished = ["waiting_for_model", "queued", "running"]
+
+    static func owed(_ note: [String: Any]) -> Bool {
+        guard let stt = note["stt"] as? [String: Any], let state = stt["state"] as? String, unfinished.contains(state) else { return false }
+        let committed = (note["options"] as? [String: Any])?["transcriber"] as? String
+        return committed == "on-device" || stt["requested"] as? Bool == true
+    }
+
+    /// What an explicit enqueue writes: a fresh attempt, and the user's Local choice.
+    static let requested: [String: Any] = ["state": "queued", "error": NSNull(), "attempts": 0, "requested": true]
+}
+
 enum TranscriptionQueueError: Error {
     case captureStarted
     case cancelled
@@ -74,12 +90,7 @@ final class TranscriptionCore {
             let scanStartedAt = state.scanStarted()
             guard let notes = try? library.listCommitted() else { return }
             for note in notes {
-                guard let id = note["id"] as? String,
-                      let options = note["options"] as? [String: Any],
-                      options["transcriber"] as? String == "on-device",
-                      let stt = note["stt"] as? [String: Any],
-                      let sttState = stt["state"] as? String,
-                      ["waiting_for_model", "queued", "running"].contains(sttState) else { continue }
+                guard let id = note["id"] as? String, ResumableWork.owed(note) else { continue }
                 if (try? library.transcript(id)) != nil { continue }
                 state.addScanned(id, scanStartedAt: scanStartedAt)
             }
@@ -87,7 +98,7 @@ final class TranscriptionCore {
         }
     }
 
-    func enqueue(id: String, accepted: ((Bool) -> Void)? = nil) {
+    func enqueue(id: String, accepted: ((Bool) -> Void)? = nil, failed: ((Error) -> Void)? = nil) {
         controlQueue.async { [self] in
             // Reserve first: a note that is already pending or decoding keeps its own sidecar. The
             // transcript is read after the reservation, so a note finishing meanwhile is seen.
@@ -97,7 +108,13 @@ final class TranscriptionCore {
                 accepted?(false)
                 return
             }
-            try? library.updateStt(id, patch: ["state": "queued", "error": NSNull(), "attempts": 0])
+            do {
+                try library.updateStt(id, patch: ResumableWork.requested)
+            } catch {
+                state.releaseReserved(id)
+                failed?(error)
+                return
+            }
             state.publishReserved(id)
             onQueueChanged?()
             accepted?(true)

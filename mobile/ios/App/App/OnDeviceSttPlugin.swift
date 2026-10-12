@@ -64,9 +64,11 @@ public final class OnDeviceSttPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc public func enqueue(_ call: CAPPluginCall) {
         guard let id = call.getString("id") else { call.reject("id is required", "invalid_argument"); return }
-        queue.enqueue(id: id) { accepted in
+        queue.enqueue(id: id, accepted: { accepted in
             if accepted { call.resolve() } else { call.reject("This note already has a transcript", "already_transcribed") }
-        }
+        }, failed: { error in
+            call.reject("Could not queue this note", "enqueue_failed", error)
+        })
     }
 
     @objc public func cancel(_ call: CAPPluginCall) {

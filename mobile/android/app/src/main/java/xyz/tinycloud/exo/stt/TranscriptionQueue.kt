@@ -17,6 +17,7 @@ import xyz.tinycloud.exo.capture.CaptureEngine
 import xyz.tinycloud.exo.stt.core.AttemptGuard
 import xyz.tinycloud.exo.stt.core.CapturePauseGate
 import xyz.tinycloud.exo.stt.core.CaptureYieldingLoop
+import xyz.tinycloud.exo.stt.core.ResumableWork
 import xyz.tinycloud.exo.stt.core.SherpaVadSource
 import xyz.tinycloud.exo.stt.core.TimedWord
 import xyz.tinycloud.exo.stt.core.TokenWordAlignment
@@ -86,10 +87,7 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
             val notes = try { capture.library.list() } catch (e: Exception) { Log.e("ExoStt", "reconcile list failed", e); emptyList() }
             for (note in notes) {
                 val id = note.optString("id", "")
-                val options = note.optJSONObject("options") ?: continue
-                if (options.optString("transcriber") != "on-device") continue
-                val stt = note.optJSONObject("stt") ?: continue
-                if (stt.optString("state") !in listOf("waiting_for_model", "queued", "running")) continue
+                if (!ResumableWork.owed(note)) continue
                 if (capture.library.getTranscript(id) != null) continue
                 if (!pending.contains(id)) pending.addLast(id)
             }
@@ -97,19 +95,32 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
         }
     }
 
-    /** Explicit enqueue: the UI's Retry for a `failed` note, or a fresh on-device recording. Resets
-     * the attempt count, since this is a deliberate retry, not an automatic one. `accepted` says
-     * whether the note is now in line: false for a note that already has its transcript. */
-    fun enqueue(id: String, accepted: (Boolean) -> Unit) {
+    /** Explicit enqueue: the UI's Retry for a `failed` note, a Local choice for a note committed to
+     * another mode, or a fresh on-device recording. Resets the attempt count, since this is a deliberate
+     * retry, not an automatic one, and records the choice so a restart resumes it. A note already
+     * queued or decoding keeps its attempt. Exactly one of the callbacks runs: `accepted` says whether
+     * the note is now in line (false for a note that already has its transcript), `failed` that it
+     * could not be queued. */
+    fun enqueue(id: String, accepted: (Boolean) -> Unit, failed: (Exception) -> Unit) {
         executor.execute {
-            if (capture.library.getTranscript(id) != null) { accepted(false); return@execute }
-            try { capture.library.mutate(id, "stt.write") { note -> note.getJSONObject("stt")
-                .put("state", "queued").put("error", JSONObject.NULL).put("attempts", 0) } }
-            catch (e: Exception) { Log.w("ExoStt", "enqueue failed for $id", e) }
-            if (!pending.contains(id)) pending.addLast(id)
-            onQueueChanged?.invoke()
-            accepted(true)
-            pump()
+            val inLine = try {
+                when {
+                    id == current || pending.contains(id) -> true
+                    capture.library.getTranscript(id) != null -> false
+                    else -> {
+                        capture.library.mutate(id, "stt.write") { note -> ResumableWork.requested(note.getJSONObject("stt")) }
+                        pending.addLast(id)
+                        true
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("ExoStt", "enqueue failed for $id", e)
+                failed(e)
+                return@execute
+            }
+            if (inLine) onQueueChanged?.invoke()
+            accepted(inLine)
+            if (inLine) pump()
         }
     }
 
