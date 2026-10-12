@@ -1,4 +1,18 @@
 fn main() {
+    let production_env = include_str!("../../frontend/.env.production");
+    let origin = std::env::var("VITE_EXO_PTX_UPLOAD_ORIGIN")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            production_env.lines().find_map(|line| {
+                line.strip_prefix("VITE_EXO_PTX_UPLOAD_ORIGIN=")
+                    .map(str::to_owned)
+            })
+        })
+        .expect("VITE_EXO_PTX_UPLOAD_ORIGIN is required for the Mac uploader");
+    println!("cargo:rustc-env=EXO_PTX_UPLOAD_ORIGIN={origin}");
+    println!("cargo:rerun-if-env-changed=VITE_EXO_PTX_UPLOAD_ORIGIN");
+    println!("cargo:rerun-if-changed=../../frontend/.env.production");
     // The anarlog swift-lib crates emit `-Wl,-rpath,<swift toolchain>` via
     // `cargo:rustc-link-arg`, but Cargo only applies rustc-link-arg to the
     // emitting package's own targets — the final `exo-desktop` binary/test
@@ -20,6 +34,9 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "exo_desktop_smoke",
             "append_audio_chunk",
+            "ptx_audio_metadata",
+            "ptx_upload_audio",
+            "ptx_cancel_audio_upload",
             "audio_file_size",
             "read_audio_chunk",
             "finalize_audio_file",

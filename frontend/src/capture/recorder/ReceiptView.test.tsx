@@ -118,7 +118,7 @@ describe("receiptRouting: where a saved note stands", () => {
   });
 
   test("a Local note with Private unavailable offers no switch", () => {
-    for (const patch of [{ availability: "hidden" as const }, { consented: false }, { maxSeconds: 10 }]) {
+    for (const patch of [{ availability: "failed" as const }, { consented: false }, { maxSeconds: 10 }]) {
       expect(route({ transcription: transcription(patch) })).toMatchObject({ savedRoute: "on-device", canUsePrivate: false });
     }
     expect(route({ transcription: undefined }).canUsePrivate).toBe(false);

@@ -3,6 +3,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use super::silence_sender::silence_sender;
 use audio_actual::{AudioProvider, CaptureConfig, CaptureStream, Error};
 use futures_util::StreamExt;
 
@@ -110,7 +111,9 @@ impl AudioProvider for SelectableAudio {
         self.actual.list_mic_devices()
     }
     fn play_silence(&self) -> std::sync::mpsc::Sender<()> {
-        self.actual.play_silence()
+        silence_sender(self.system_audio.load(Ordering::SeqCst), || {
+            self.actual.play_silence()
+        })
     }
     fn play_bytes(&self, bytes: &'static [u8]) -> std::sync::mpsc::Sender<()> {
         self.actual.play_bytes(bytes)

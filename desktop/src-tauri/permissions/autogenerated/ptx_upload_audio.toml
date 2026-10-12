@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-ptx-upload-audio"
+description = "Enables the ptx_upload_audio command without any pre-configured scope."
+commands.allow = ["ptx_upload_audio"]
+
+[[permission]]
+identifier = "deny-ptx-upload-audio"
+description = "Denies the ptx_upload_audio command without any pre-configured scope."
+commands.deny = ["ptx_upload_audio"]

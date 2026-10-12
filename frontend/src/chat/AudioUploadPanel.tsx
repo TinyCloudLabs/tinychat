@@ -486,7 +486,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
   const [privateConsent, setPrivateConsent] = useState(readPrivateConsent);
 
   // Private: this build needs a PTX origin, and the backend must answer 200 for this account.
-  const [caps, setCaps] = useState<{ state: "checking" } | { state: "ok"; caps: PrivateCloudCapabilities } | { state: "absent" | "failed" }>(
+  const [caps, setCaps] = useState<{ state: "checking" } | { state: "ok"; caps: PrivateCloudCapabilities } | { state: "failed" }>(
     { state: "checking" },
   );
   const [capsRound, setCapsRound] = useState(0);
@@ -495,7 +495,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
     let cancelled = false;
     setCaps({ state: "checking" });
     api.capabilities().then(
-      (c) => !cancelled && setCaps(c === null ? { state: "absent" } : { state: "ok", caps: c }),
+      (c) => !cancelled && setCaps({ state: "ok", caps: c }),
       () => !cancelled && setCaps({ state: "failed" }),
     );
     return () => {
@@ -541,9 +541,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
       ? { state: "unavailable", reason: "Private transcription isn't set up in this version of Exo yet. Use Powerful instead." }
       : caps.state === "checking"
         ? { state: "checking" }
-        : caps.state === "absent"
-          ? { state: "unavailable", reason: "Private transcription isn't available for your account yet." }
-          : caps.state === "failed"
+        : caps.state === "failed"
             ? { state: "unavailable", reason: "Couldn't reach private transcription.", action: "recheck" }
             : { state: "available" };
   const assemblyStatus = assemblyAiStatus(assemblyAiMode, hostedCaps, keyStatus);

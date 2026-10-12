@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.41
+
+### Patch Changes
+
+- 8249402: Stop note playback whenever capture starts or its controls become unavailable, and avoid opening a Mac output stream for mic-only capture.
+
 ## 0.6.0-beta.40
 
 ### Patch Changes
