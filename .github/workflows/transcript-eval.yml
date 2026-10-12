@@ -6,12 +6,14 @@ on:
     paths: &eval_inputs
       # P: production transcription inputs.
       - "desktop/vendor/**"
+      - "desktop/.cargo/**"
       - "desktop/local-transcription/**"
       - "desktop/transcription-vocabulary.json"
       - "desktop/Cargo.toml"
       - "desktop/Cargo.lock"
       - "desktop/src-tauri/Cargo.toml"
       - "desktop/src-tauri/Cargo.lock"
+      - "desktop/src-tauri/.cargo/**"
       - "desktop/src-tauri/src/local.rs"
       - "desktop/src-tauri/src/session_audio.rs"
       - "desktop/src-tauri/src/recorder/session_audio.rs"
@@ -68,7 +70,7 @@ jobs:
           native=false
           while IFS= read -r -d '' path; do
             case "$path" in
-              desktop/vendor/*|desktop/local-transcription/*|desktop/transcription-vocabulary.json|desktop/Cargo.toml|desktop/Cargo.lock|desktop/src-tauri/Cargo.toml|desktop/src-tauri/Cargo.lock|desktop/src-tauri/src/local.rs|desktop/src-tauri/src/session_audio.rs|desktop/src-tauri/src/recorder/session_audio.rs|desktop/src-tauri/src/recorder/files.rs|desktop/src-tauri/src/recorder/engine.rs|desktop/eval/*|.github/workflows/transcript-eval.yml)
+              desktop/vendor/*|desktop/local-transcription/*|desktop/transcription-vocabulary.json|desktop/Cargo.toml|desktop/Cargo.lock|desktop/.cargo/*|desktop/src-tauri/Cargo.toml|desktop/src-tauri/Cargo.lock|desktop/src-tauri/.cargo/*|desktop/src-tauri/src/local.rs|desktop/src-tauri/src/session_audio.rs|desktop/src-tauri/src/recorder/session_audio.rs|desktop/src-tauri/src/recorder/files.rs|desktop/src-tauri/src/recorder/engine.rs|desktop/eval/*|.github/workflows/transcript-eval.yml)
                 native=true; break ;;
             esac
           done < <(git diff --name-only -z "$BASE" "$GITHUB_SHA")
@@ -159,7 +161,7 @@ jobs:
         env:
           MODEL_NAME: ${{ steps.model.outputs.filename }}
         run: |
-          cargo run --locked --manifest-path desktop/Cargo.toml -p transcript-quality-runner -- \
+          cargo run --release --locked --manifest-path desktop/Cargo.toml -p transcript-quality-runner -- \
             --fixture desktop/eval/transcript-quality/smoke \
             --model "$RUNNER_TEMP/transcript-models/$MODEL_NAME" --input mono --vocabulary off \
             --output "$RUNNER_TEMP/transcript-smoke"
@@ -200,11 +202,11 @@ jobs:
             echo "Metal compiler is still unavailable" >&2
             exit 1
           fi
-      - name: Build Metal-enabled production runner
-        run: cargo check --locked --manifest-path desktop/Cargo.toml -p transcript-quality-runner --features metal
+      - name: Build release-profile Metal-enabled production runner
+        run: cargo check --release --locked --manifest-path desktop/Cargo.toml -p transcript-quality-runner --features metal
       - name: Check exact Metal transcription feature parity
         run: bun desktop/eval/transcript-quality/check-workspace-sync.ts --platform macos "$RUNNER_TEMP/closure-metal.json"
       # The Tauri app enables Metal by default; Foundation is unavailable on Linux.
-      - name: Recorder files unit tests (macOS app)
+      - name: Recorder files and request-parity unit tests (macOS app)
         working-directory: desktop/src-tauri
-        run: cargo test --release --lib --locked recorder::files::tests
+        run: cargo test --release --lib --locked

@@ -110,7 +110,7 @@ shared `local-transcription` mono importer and the production
 fixture and score the production-import response with A1:
 
 ```sh
-cargo run --locked --manifest-path desktop/Cargo.toml -p transcript-quality-runner -- \
+cargo run --release --locked --manifest-path desktop/Cargo.toml -p transcript-quality-runner -- \
   --fixture desktop/eval/transcript-quality/smoke \
   --model <model.bin> --input mono --vocabulary off --output <run-dir>
 bun desktop/eval/transcript-quality/score-smoke.ts \
@@ -123,6 +123,13 @@ The runner reads the production `systemAudio` toggle from the fixture's
 `ggml-large-v3-turbo-q8_0.bin` (`QuantizedLargeTurbo`); `request.model` records
 the same WhisperModel ID that the desktop client sends. `smoke/` is excluded
 from A3's `fixtures/` baseline and G18 fixture namespace.
+
+Use the release profile for eval runs: the shipped app uses it too, and the
+Whisper C++ build and G17 runtime metrics differ under debug assertions.
+
+The app and runner both construct the native request with
+`RequestSpec::production`; macOS release tests verify the app's mapping to
+`TranscriptionParams` (language, keywords, model, and WhisperLocal provider).
 
 The glossary file is data only; production keywords remain empty until E.
 `bun desktop/eval/transcript-quality/check-workspace-sync.ts <closure.json>`
@@ -137,9 +144,12 @@ On Linux, the CPU runner must match the app's enabled features on
 `whisper-local`, `transcribe-whisper-local`, `audio-chunking`,
 `exo-local-transcription`, `whisper-rs`, and `whisper-rs-sys`, except for the
 explicit Metal/accelerator features listed in the checker. On macOS, run the
-runner with `--features metal` and check exact feature equality with
+runner with `--release --features metal` and check exact feature equality with
 `bun desktop/eval/transcript-quality/check-workspace-sync.ts --platform macos
 <closure.json>`. Unexpected features or package drift fail either check.
+The checker also rejects Cargo build/environment overrides in
+`src-tauri/.cargo/config.toml` except the existing `POSTHOG_API_KEY`, and
+requires no `desktop/.cargo/config.toml` for the eval workspace.
 
 ## Content-Security-Policy
 

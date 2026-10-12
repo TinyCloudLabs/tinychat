@@ -5,6 +5,8 @@ import { dirname, relative, resolve } from "node:path";
 const desktop = resolve(import.meta.dir, "../..");
 const manifests = [resolve(desktop, "Cargo.toml"), resolve(desktop, "src-tauri/Cargo.toml")];
 const locks = [resolve(desktop, "Cargo.lock"), resolve(desktop, "src-tauri/Cargo.lock")];
+const appCargoConfig = resolve(desktop, "src-tauri/.cargo/config.toml");
+const evalCargoConfig = resolve(desktop, ".cargo/config.toml");
 const roots = ["transcribe-whisper-local", "mp3", "owhisper-client", "exo-local-transcription"];
 const featureParity = ["whisper-local", "transcribe-whisper-local", "audio-chunking", "exo-local-transcription", "whisper-rs", "whisper-rs-sys"];
 // The eval tests pull in anarlog's sample `data` crate; it is not shipped by the app.
@@ -37,6 +39,22 @@ function table(value: unknown, label: string): Table {
 
 async function toml(path: string): Promise<Table> {
   return table(Bun.TOML.parse(await Bun.file(path).text()), path);
+}
+
+/** Cargo config is outside manifests/lockfiles but can change Rust and whisper.cpp builds.
+ * The app's only permitted override is its pre-existing empty PostHog build key;
+ * the eval workspace must not have a config file at all.
+ */
+export function assertCargoConfig(app: Table, evalConfigExists: boolean): void {
+  if (evalConfigExists) throw new Error(`${evalCargoConfig}: eval workspace must not have .cargo/config.toml`);
+  for (const section of ["env", "build"]) {
+    const settings = app[section];
+    if (settings === undefined) continue;
+    for (const key of Object.keys(table(settings, `${appCargoConfig} [${section}]`))) {
+      if (section !== "env" || key !== "POSTHOG_API_KEY")
+        throw new Error(`${appCargoConfig}: unsupported [${section}] key ${key}; only [env] POSTHOG_API_KEY is allowed`);
+    }
+  }
 }
 
 function patches(manifest: Table, path: string): Record<string, Record<string, string>> {
@@ -138,7 +156,7 @@ export function closure(lock: Table, graph: CargoMetadata, path: string): Closur
 }
 
 /** Compare shared code, not feature-only packages injected by the Tauri app.
- * Path packages use Cargo's resolved manifest path (including dependency edges);
+ * Path packages use Cargo's resolved manifest path;
  * name/version and lockfile source/checksum alone cannot distinguish path forks.
  * The only eval-only package is the upstream test-data crate. A same-named
  * package with a different version/source/checksum/path is never an exception.
@@ -185,6 +203,7 @@ async function main(): Promise<void> {
   const outputArg = args[0] === "--platform" ? args[2] : args[0];
   if (!["linux", "macos"].includes(platform) || args.length > (args[0] === "--platform" ? 3 : 1))
     throw new Error("usage: check-workspace-sync.ts [--platform linux|macos] [output.json]");
+  assertCargoConfig(await toml(appCargoConfig), await Bun.file(evalCargoConfig).exists());
   const [evalManifest, appManifest] = await Promise.all(manifests.map(toml));
   same("patch targets", manifests, patches(evalManifest, manifests[0]), patches(appManifest, manifests[1]));
   same("profiles", manifests, evalManifest.profile ?? {}, appManifest.profile ?? {});

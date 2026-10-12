@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { expect, test } from "bun:test";
-import { assertDependencyParity, closure, type ClosureEntry } from "./check-workspace-sync";
+import { assertCargoConfig, assertDependencyParity, closure, type ClosureEntry } from "./check-workspace-sync";
 
 const pkg = (name: string, version = "0.1.0"): ClosureEntry => ({
   name, version, source: null, checksum: null, manifestPath: "/workspace/shared/Cargo.toml",
@@ -80,4 +80,21 @@ test("eval-only symphonia-core opt-simd fails shared-package feature subset", ()
   const appClosure = resolvedClosure();
   expect(() => assertDependencyParity(evalClosure, appClosure, "linux"))
     .toThrow(/feature parity \(linux\): symphonia-core eval-only=\[opt-simd\]/);
+});
+
+test("GGML_NATIVE, WHISPER_NO_AVX and rustflags app-only overrides fail parity", () => {
+  const existing = { env: { POSTHOG_API_KEY: { value: "", force: true } } };
+  expect(() => assertCargoConfig(existing, false)).not.toThrow();
+  for (const key of ["GGML_NATIVE", "WHISPER_NO_AVX"]) {
+    expect(() => assertCargoConfig({ env: { ...existing.env, [key]: key === "GGML_NATIVE" ? "OFF" : "ON" } }, false))
+      .toThrow(new RegExp(`unsupported \\[env\\] key ${key}`));
+  }
+  expect(() => assertCargoConfig({
+    ...existing, build: { rustflags: ["-C", "target-cpu=x86-64"] },
+  }, false)).toThrow(/unsupported \[build\] key rustflags/);
+});
+
+test("the eval workspace cannot carry a Cargo config", () => {
+  expect(() => assertCargoConfig({ env: { POSTHOG_API_KEY: { value: "", force: true } } }, true))
+    .toThrow(/eval workspace must not have \.cargo\/config\.toml/);
 });
