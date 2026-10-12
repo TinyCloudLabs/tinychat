@@ -1,5 +1,11 @@
 # exo-desktop
 
+## 0.6.0-beta.30
+
+### Patch Changes
+
+- 3ad0aae: Confine desktop capture and on-device Whisper to vault sessions and identifiers supplied by the webview. Remove main's unrestricted transcription-start permission and core menu/tray defaults, deny image file-path reads, and enforce the release IPC permission gate. Guard Whisper stage cleanup against concurrent staging and recover orphaned note copies.
+
 ## 0.6.0-beta.29
 
 No changes in this release.
