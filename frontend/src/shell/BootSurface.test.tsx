@@ -40,7 +40,8 @@ test("live terminal renewal shows the session-ended message with working Sign in
   expect(completion).toContain("sessionStoreRef.current.clear()");
   expect(completion).toContain('terminal ? "unauthenticated"');
   expect(app).toMatch(/const signIn = useCallback\(async \(hints\?: NativeSignInHints\) => \{\s+setError\(null\);/);
-  expect(app).toContain('const authAction = state === "offline" ? restoreSession : nativeSignIn ? openNativeSignIn : signIn;');
+  expect(app).toContain("const authAction = nativeSignInFlow.authAction;");
+  expect(readFileSync(join(import.meta.dir, "../shell/useNativeSignIn.ts"), "utf8")).toContain('authAction: state === "offline" ? restoreSession : native ? openScreen : signIn,');
   signedOutSurface(NATIVE_SESSION_ENDED_MESSAGE);
 });
 
@@ -60,7 +61,8 @@ test("terminal boot restore shows the session-ended message with working Sign in
   expect(cleanup).toContain('if (boot.kind === "terminal") setError(NATIVE_SESSION_ENDED_MESSAGE)');
   expect(cleanup).toContain('setState("unauthenticated")');
   expect(app).toMatch(/const signIn = useCallback\(async \(hints\?: NativeSignInHints\) => \{\s+setError\(null\);/);
-  expect(app).toContain('const authAction = state === "offline" ? restoreSession : nativeSignIn ? openNativeSignIn : signIn;');
+  expect(app).toContain("const authAction = nativeSignInFlow.authAction;");
+  expect(readFileSync(join(import.meta.dir, "../shell/useNativeSignIn.ts"), "utf8")).toContain('authAction: state === "offline" ? restoreSession : native ? openScreen : signIn,');
   signedOutSurface(NATIVE_SESSION_ENDED_MESSAGE);
 });
 

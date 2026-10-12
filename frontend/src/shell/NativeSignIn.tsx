@@ -15,6 +15,10 @@ import { bootMessage } from "./BootSurface";
 export const NATIVE_SIGN_IN_SUBCOPY = "Your notes and recordings sync to your own TinyCloud space.";
 export const NATIVE_SIGN_IN_FINE_PRINT = "You'll finish on openkey.so. Exo never sees your code or passkey.";
 
+// The shared Button never wraps and has a fixed height; at large text sizes these
+// labels need to wrap and the button to grow with them.
+const WRAPPING_BUTTON = "h-auto min-h-12 w-full whitespace-normal py-2 text-center";
+
 function GoogleMark() {
   return (
     <svg viewBox="0 0 18 18" aria-hidden className="!size-[18px]">
@@ -81,26 +85,26 @@ export function NativeSignIn(props: {
             disabled={busy}
             className="h-12 w-full rounded-md border border-input bg-background px-3 text-base text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           />
-          <Button type="submit" size="lg" className="w-full" disabled={busy || loginHint === null}>Continue</Button>
+          <Button type="submit" size="lg" className={WRAPPING_BUTTON} disabled={busy || loginHint === null}>Continue</Button>
         </form>
         <div role="separator" className="flex items-center gap-3 text-meta text-muted-foreground">
           <span className="h-px flex-1 bg-border" />or<span className="h-px flex-1 bg-border" />
         </div>
         <div className="flex flex-col gap-3">
-          <Button type="button" variant="outline" size="lg" className="w-full" disabled={busy}
+          <Button type="button" variant="outline" size="lg" className={WRAPPING_BUTTON} disabled={busy}
             onClick={() => props.onSignIn({ loginMethod: "google" })}>
-            <GoogleMark />Continue with Google
+            <GoogleMark /><span className="min-w-0">Continue with Google</span>
           </Button>
-          <Button type="button" variant="outline" size="lg" className="w-full" disabled={busy}
+          <Button type="button" variant="outline" size="lg" className={WRAPPING_BUTTON} disabled={busy}
             onClick={() => props.onSignIn({ loginMethod: "passkey" })}>
-            <KeyRoundIcon aria-hidden />Use a passkey
+            <KeyRoundIcon aria-hidden /><span className="min-w-0">Use a passkey</span>
           </Button>
         </div>
       </div>
       <div className="mx-auto mt-8 flex w-full max-w-sm flex-col items-center gap-3 text-center">
-        {props.onClose && <Button type="button" variant="ghost" onClick={props.onClose}>Not now</Button>}
+        {props.onClose && <Button type="button" variant="ghost" disabled={busy} onClick={props.onClose}>Not now</Button>}
         <p className="text-meta text-muted-foreground">{NATIVE_SIGN_IN_FINE_PRINT}</p>
-        <BuildInfoLine />
+        <BuildInfoLine className="[overflow-wrap:anywhere]" />
       </div>
     </div>
   );

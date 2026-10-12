@@ -154,10 +154,12 @@ export interface RecorderProviderProps {
   signedOut?: boolean;
   onSignedOut?: () => Promise<boolean>;
   onSignIn?: () => void | Promise<void>;
+  /** The sign-in opens a screen of its own: the sheet minimises first, so it is not left covering it. */
+  minimiseOnSignIn?: boolean;
   children: ReactNode;
 }
 
-export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSaved, onAccountReady, pipeline, signedOut, onSignedOut, onSignIn, children }: RecorderProviderProps) {
+export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSaved, onAccountReady, pipeline, signedOut, onSignedOut, onSignIn, minimiseOnSignIn, children }: RecorderProviderProps) {
   const [configured, setConfigured] = useState<{ tcw: TinyCloudWeb; did: string | null } | null>(null);
   const [defaultsError, setDefaultsError] = useState<string | null>(null);
   const [defaultsAttempt, setDefaultsAttempt] = useState(0);
@@ -283,6 +285,15 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     setSheetOpen(false);
   }, [recorder.dismissShortcutRecovery, state.permissionDenied]);
 
+  const signIn = useMemo(() => {
+    if (!onSignIn) return null;
+    if (!minimiseOnSignIn) return onSignIn;
+    return async () => {
+      await minimiseSheet();
+      await onSignIn();
+    };
+  }, [minimiseOnSignIn, minimiseSheet, onSignIn]);
+
   const value = useMemo<RecorderValue>(
     () => ({
       available: recorder.available,
@@ -318,7 +329,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       setTranscriber: recorder.setTranscriber,
       setIdentifySpeakers: recorder.setIdentifySpeakers,
       signedIn: tcw?.did != null,
-      signIn: onSignIn ?? null,
+      signIn,
       tcw,
       sheetOpen,
       record,
@@ -361,7 +372,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       recorder.setTranscriber,
       recorder.setIdentifySpeakers,
       defaultsError,
-      onSignIn,
+      signIn,
       tcw,
       setReceiptReady,
       sheetOpen,

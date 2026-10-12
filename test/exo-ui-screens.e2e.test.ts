@@ -81,7 +81,7 @@ const VIEWPORTS: Viewport[] = [
     hasTouch: true,
     textScale: 2,
     zoom: true,
-    screenPrefixes: ["recorder-landed", "capture-soft-", "capture-notetaker-route"],
+    screenPrefixes: ["recorder-landed", "capture-soft-", "capture-notetaker-route", "native-sign-in"],
   },
   {
     id: "text200-phone-360",
@@ -305,6 +305,7 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
       '[data-recorder-timer]',
       '[data-testid="canvas-setting-row"]',
       '[data-testid="autojoin-control-row"]',
+      '[data-testid="native-sign-in"] button:not([data-testid="build-info"])',
     ];
     for (const selector of targets) {
       for (const el of document.querySelectorAll(selector)) {

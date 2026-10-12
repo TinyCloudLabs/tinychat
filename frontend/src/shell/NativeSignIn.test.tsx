@@ -203,15 +203,12 @@ describe("the native gate", () => {
     expect(showsNativeSignIn({ native: true, state: "unauthenticated", localHome: true, requested: true })).toBe(true);
   });
 
-  test("App shows it on native, for the local home's Sign in to sync and the recorder's sign-in", () => {
-    expect(app).toContain("const nativeSignIn = isNativeOpenKeySignIn();");
-    expect(app).toContain("showsNativeSignIn({ native: nativeSignIn, state, localHome: signedOutLocalHome, requested: nativeSignInRequested })");
-    // "Sign in to sync" and the recorder's onSignIn both run authAction, which on native opens the screen.
-    expect(app).toContain("signedOutLocalHome ? <LocalCaptureHome onSignIn={authAction}");
-    expect(app).toContain("onSignIn={authAction}");
-    expect(app).toContain('const authAction = state === "offline" ? restoreSession : nativeSignIn ? openNativeSignIn : signIn;');
-    // The screen's own buttons are the only thing that runs the sign-in with hints.
+  test("App runs the screen's sign-in with the hints it collected", () => {
     expect(app).toContain("onSignIn={(hints) => void signIn(hints)}");
     expect(app).toContain("await signInNative(nativeConfig, hints);");
+    // The wiring itself (who opens the screen, Not now, the microphone recovery) is tested through useNativeSignIn.
+    expect(app).toContain("onContinue={nativeSignInFlow.micRecoveryContinue}");
+    expect(app).toContain("onSignIn={authAction}");
+    expect(app).toContain("minimiseOnSignIn={nativeSignIn}");
   });
 });

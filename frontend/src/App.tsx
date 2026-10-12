@@ -136,7 +136,7 @@ import {
   NATIVE_SIGN_OUT_WARNING, NATIVE_SIGN_OUT_STORAGE_WARNING,
 } from "./lib/openkeyNative";
 import { NativeRenewal, guardNativeTinyCloudCalls, NATIVE_SESSION_ENDED_MESSAGE, NATIVE_STORAGE_MESSAGE } from "./lib/openkeyNativeRenewal";
-import { isAuthSettledSignedOut, showsNativeSignIn } from "./lib/authRouting";
+import { isAuthSettledSignedOut } from "./lib/authRouting";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
 import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
@@ -144,6 +144,7 @@ import { useLocalCanvasStorage } from "./lib/conversationCanvasStore";
 import type { AppState } from "./lib/appState";
 import { BootSurface } from "./shell/BootSurface";
 import { NativeSignIn } from "./shell/NativeSignIn";
+import { useNativeSignIn } from "./shell/useNativeSignIn";
 
 // AppState and stateLabel live in lib/appState; re-exported for imports from App.
 export { stateLabel, type AppState } from "./lib/appState";
@@ -933,12 +934,6 @@ export function App() {
   // runs `signIn` with the hints it collected. The screen is also asked for
   // by the signed-out local home and the recorder.
   const nativeSignIn = isNativeOpenKeySignIn();
-  const [nativeSignInRequested, setNativeSignInRequested] = useState(false);
-  const openNativeSignIn = useCallback(() => setNativeSignInRequested(true), []);
-  useEffect(() => {
-    if (state === "ready") setNativeSignInRequested(false);
-  }, [state]);
-  const authAction = state === "offline" ? restoreSession : nativeSignIn ? openNativeSignIn : signIn;
   // Authentication has answered, and the answer is "not signed in" — the
   // only condition under which a private surface may be redirected away.
   const authSettledSignedOut = isAuthSettledSignedOut(state);
@@ -976,6 +971,14 @@ export function App() {
   const offlineRecorder = voiceNotesInApp && capabilities.offlineRecorder && !LOCAL_VALIDATION && offlineCapture;
   const signedOutLocalHome = voiceNotesInApp && capabilities.offlineRecorder && !LOCAL_VALIDATION && state === "unauthenticated" && error === null
     && globalThis.localStorage?.getItem("exo.signIn.bypassed") === "1";
+  const settleSignedOut = useCallback(() => {
+    setError(null);
+    setState("unauthenticated");
+  }, []);
+  const nativeSignInFlow = useNativeSignIn({
+    native: nativeSignIn, state, localHome: signedOutLocalHome, signIn, restoreSession, settleSignedOut,
+  });
+  const authAction = nativeSignInFlow.authAction;
 
   // The pending-count badge follows the drain record's store directly — no
   // polling, no second count, no state of its own. Whichever path settles the
@@ -1074,6 +1077,7 @@ export function App() {
       signedOut={state === "unauthenticated" && !sessionStoreRef.current.hasSession()}
       onSignedOut={captureHandoff}
       onSignIn={authAction}
+      minimiseOnSignIn={nativeSignIn}
     >
     <div
       className="flex flex-col bg-background text-foreground"
@@ -1188,9 +1192,9 @@ export function App() {
         ) : (
           <main className="h-full overflow-y-auto pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
             {offlineRecorder ? <LocalCaptureHome did={did} offline onRetry={authAction} />
-              : showsNativeSignIn({ native: nativeSignIn, state, localHome: signedOutLocalHome, requested: nativeSignInRequested })
+              : nativeSignInFlow.screenShown
                 ? <NativeSignIn state={state} error={error} onSignIn={(hints) => void signIn(hints)}
-                  onClose={signedOutLocalHome ? () => setNativeSignInRequested(false) : undefined} />
+                  onClose={nativeSignInFlow.onClose} />
               : signedOutLocalHome ? <LocalCaptureHome onSignIn={authAction} />
                 : <BootSurface state={state} error={error} onAction={authAction} />}
           </main>
@@ -1201,7 +1205,7 @@ export function App() {
         Recordings are being kept unassigned until Exo can update this phone.
         <button type="button" className="ml-3 underline" onClick={() => void signOut()}>Retry</button>
       </div>}
-      <MicDeniedRecovery enabled={platform === "android" && voiceNotesInApp && capabilities.micDeniedPresentation && !LOCAL_VALIDATION && (authSettledSignedOut || state === "offline")} onContinue={authAction} />
+      <MicDeniedRecovery enabled={platform === "android" && voiceNotesInApp && capabilities.micDeniedPresentation && !LOCAL_VALIDATION && (authSettledSignedOut || state === "offline")} onContinue={nativeSignInFlow.micRecoveryContinue} />
       {storageReadOnly && (
         <div role="region" aria-label="Storage full: read-only" aria-live="polite" className="border-t border-border bg-muted px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] text-sm">
           <strong>Storage full: read-only.</strong>{" "}
