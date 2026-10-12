@@ -1,5 +1,11 @@
 # exo-desktop
 
+## 0.6.0-beta.38
+
+### Patch Changes
+
+- 12957c2: Show Mac recording inputs in Via and Capture settings, persist the selected microphone, and report disconnected devices while recording from the current default.
+
 ## 0.6.0-beta.37
 
 ### Patch Changes
