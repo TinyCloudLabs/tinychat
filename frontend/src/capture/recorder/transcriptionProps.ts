@@ -9,9 +9,7 @@ import {
 } from "@/lib/voiceNotes/voiceNoteTranscription";
 
 /**
- * Private cloud transcription as the card sees it. `hidden` (no PTX origin in
- * this build, or the backend's 404: dark or not in the cohort) and `checking`
- * offer nothing; `failed` means the check itself failed (offline, 5xx).
+ * Private cloud transcription as the card sees it. A failed check is retryable.
  */
 export interface VoiceNoteTranscriptionProps {
   availability: TranscriptionAvailability;
@@ -34,7 +32,7 @@ export interface VoiceNoteTranscriptionProps {
 }
 
 export const HIDDEN_SNAPSHOT: VoiceNoteTranscriberSnapshot = {
-  availability: "hidden",
+  availability: "failed",
   capabilities: null,
   consented: false,
   jobs: new Map(),

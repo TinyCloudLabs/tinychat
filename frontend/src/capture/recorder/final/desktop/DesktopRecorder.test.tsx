@@ -56,7 +56,7 @@ const withNotes = { onOpenNotes: () => {} };
 
 const MAC_CAPABILITIES = {
   nativeShortcuts: false, presentRecorder: false, openSettings: false, micDeniedPresentation: false,
-  background: true, localTranscription: false, desktopWhisper: true, offlineRecorder: true,
+  background: true, localTranscription: false, desktopWhisper: true, offlineRecorder: true, nativeFileUpload: true,
 };
 
 describe("DesktopRecorder", () => {

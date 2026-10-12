@@ -26,6 +26,7 @@ export const WEB_CAPABILITIES = {
   localTranscription: false,
   desktopWhisper: false,
   offlineRecorder: false,
+  nativeFileUpload: false,
 } as const;
 export type WebCapabilities = typeof WEB_CAPABILITIES;
 

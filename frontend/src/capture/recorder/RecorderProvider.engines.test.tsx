@@ -3,11 +3,12 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { Capacitor } from "@capacitor/core";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { createFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
 import {
-  __resetCaptureEngineForTests, installCaptureEngine, registerCaptureEngine,
+  __resetCaptureEngineForTests, captureCapabilities, installCaptureEngine, registerCaptureEngine,
   type CaptureCapabilities, type CaptureEngine, type CaptureEngineKind,
 } from "@/lib/voiceNotes/captureEngine";
 import { VoiceNotes, __setVoiceNotesForTests, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -25,7 +26,7 @@ const global = globalThis as Record<string, unknown>;
 
 const ALL: CaptureCapabilities = {
   nativeShortcuts: true, presentRecorder: true, openSettings: true, micDeniedPresentation: true,
-  background: true, localTranscription: true, desktopWhisper: false, offlineRecorder: true,
+  background: true, localTranscription: true, desktopWhisper: false, offlineRecorder: true, nativeFileUpload: true,
 };
 const NONE: CaptureCapabilities = Object.fromEntries(Object.keys(ALL).map((key) => [key, false])) as unknown as CaptureCapabilities;
 
@@ -96,6 +97,7 @@ const windowStub = (extra: object = {}) => ({ setTimeout, clearTimeout, event: u
   addEventListener: () => {}, removeEventListener: () => {}, ...extra });
 
 const saved = {
+  getPlatform: Capacitor.getPlatform,
   window: global.window, act: global.IS_REACT_ACT_ENVIRONMENT,
   MediaRecorder: global.MediaRecorder, voiceNotes: VoiceNotes, onDevice: OnDeviceStt,
   mediaDevices: Object.getOwnPropertyDescriptor(navigator, "mediaDevices"),
@@ -132,6 +134,7 @@ afterEach(async () => {
   if (saved.mediaDevices) Object.defineProperty(navigator, "mediaDevices", saved.mediaDevices); else delete (navigator as unknown as Record<string, unknown>).mediaDevices;
   if (saved.online) Object.defineProperty(navigator, "onLine", saved.online); else delete (navigator as unknown as Record<string, unknown>).onLine;
   __setVoiceNotesForTests(saved.voiceNotes, { available: null });
+  Capacitor.getPlatform = saved.getPlatform;
   __setOnDeviceSttForTests(saved.onDevice);
 });
 
@@ -470,13 +473,30 @@ describe("CaptureEngineGate", () => {
     expect(VoiceNotes).toBe(saved.voiceNotes);
   });
 
-  test("native renders at once, with nothing to install", async () => {
+  test("Android resolves file upload through the native install before rendering", async () => {
     rendered = 0;
-    __setVoiceNotesForTests(saved.voiceNotes, { available: true });
+    Capacitor.getPlatform = () => "android";
+    let resolveStatus!: (status: Awaited<ReturnType<VoiceNotesPlugin["status"]>>) => void;
+    const plugin = { ...saved.voiceNotes, status: () => new Promise<Awaited<ReturnType<VoiceNotesPlugin["status"]>>>((resolve) => { resolveStatus = resolve; }) };
+    __setVoiceNotesForTests(plugin, { available: true });
     global.window = windowStub();
     root = createRoot(container());
     await act(async () => root!.render(<CaptureEngineGate><Child /></CaptureEngineGate>));
+    expect(rendered).toBe(0);
+    await act(async () => { resolveStatus({ androidSdkInt: 35 } as Awaited<ReturnType<VoiceNotesPlugin["status"]>>); await tick(); });
     expect(rendered).toBeGreaterThan(0);
+    expect(captureCapabilities().nativeFileUpload).toBe(true);
+  });
+
+  test("iOS resolves native file upload through the same install", async () => {
+    rendered = 0;
+    Capacitor.getPlatform = () => "ios";
+    __setVoiceNotesForTests(saved.voiceNotes, { available: true });
+    global.window = windowStub();
+    root = createRoot(container());
+    await act(async () => { root!.render(<CaptureEngineGate><Child /></CaptureEngineGate>); await tick(); });
+    expect(rendered).toBeGreaterThan(0);
+    expect(captureCapabilities().nativeFileUpload).toBe(true);
   });
 });
 

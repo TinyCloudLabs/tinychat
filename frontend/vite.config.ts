@@ -2,7 +2,7 @@ import fs from "fs";
 import { execFileSync } from "node:child_process";
 import path from "path";
 import { fileURLToPath } from "url";
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
 import { VitePWA } from "vite-plugin-pwa";
@@ -36,7 +36,20 @@ const exoBuildInfo = {
   channel: firstNonEmpty(process.env.VITE_EXO_CHANNEL),
 };
 
-export default defineConfig(({ command }) => ({
+export default defineConfig(({ command, mode }) => {
+  if (command === "build") {
+    const origin = loadEnv(mode, rootDir, "VITE_").VITE_EXO_PTX_UPLOAD_ORIGIN;
+    let valid = false;
+    try {
+      const url = new URL(origin);
+      valid = url.protocol === "https:" && !!url.hostname && !url.username && !url.password
+        && !url.search && !url.hash && url.pathname === "/"
+        && origin.replace(/\/$/, "") === url.origin;
+    } catch { /* invalid origin */ }
+    if (!valid)
+      throw new Error("VITE_EXO_PTX_UPLOAD_ORIGIN must be a bare HTTPS origin for production builds");
+  }
+  return ({
   define: {
     __EXO_BUILD_INFO__: JSON.stringify({ ...exoBuildInfo, channel: exoBuildInfo.channel ?? (command === "serve" ? "dev" : undefined) }),
   },
@@ -172,4 +185,5 @@ export default defineConfig(({ command }) => ({
       },
     }),
   },
-}));
+  });
+});

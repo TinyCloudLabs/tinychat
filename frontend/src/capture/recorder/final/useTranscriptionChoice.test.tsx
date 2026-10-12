@@ -566,8 +566,7 @@ describe("Private while its availability is checked", () => {
     expect(rechecks).toBe(1);
   });
 
-  test("only a settled 'not offered' answer (or no transcriber) reads as not available right now", () => {
-    expect(privateStop("hidden").reason).toBe(PRIVATE_UNAVAILABLE);
+  test("no transcriber reads as not available right now", () => {
     const none = choice(undefined, fakeApi("on-device").api).result.stops.find((s) => s.stop.id === "private")!;
     expect(none.reason).toBe(PRIVATE_UNAVAILABLE);
   });

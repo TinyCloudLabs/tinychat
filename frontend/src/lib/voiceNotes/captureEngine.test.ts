@@ -20,7 +20,7 @@ import { effectiveCaptureOptions, effectiveTranscriber, readTranscriberPreferenc
 
 const none: CaptureCapabilities = {
   nativeShortcuts: false, presentRecorder: false, openSettings: false, micDeniedPresentation: false,
-  background: false, localTranscription: false, desktopWhisper: false, offlineRecorder: false,
+  background: false, localTranscription: false, desktopWhisper: false, offlineRecorder: false, nativeFileUpload: false,
 };
 const engine = (): CaptureEngine => ({ ...createFakeVoiceNotes().plugin, capabilities: none });
 
@@ -63,7 +63,7 @@ describe("captureEngineKind: native x tauri internals x MediaRecorder x register
           : mediaRecorder && registeredWeb ? "web"
           : null;
         expect(captureEngineKind()).toBe(expected);
-        expect(captureEngineInstallPending()).toBe(expected === "web" || expected === "tauri");
+        expect(captureEngineInstallPending()).toBe(expected !== null);
       });
     }
 
@@ -143,7 +143,7 @@ test("a signed-in Local default stays Local while the model is unavailable", () 
   __setInstalledEngineForTests("tauri", { ...none, offlineRecorder: true });
   expect(effectiveTranscriber("on-device", false)).toBe("off");
   expect(effectiveTranscriber("on-device", true)).toBe("on-device");
-  __setInstalledEngineForTests("tauri", { ...none, offlineRecorder: true, desktopWhisper: true });
+  __setInstalledEngineForTests("tauri", { ...none, offlineRecorder: true, nativeFileUpload: true, desktopWhisper: true });
   expect(effectiveTranscriber("on-device", false)).toBe("on-device");
   expect(effectiveTranscriber("on-device", true)).toBe("on-device");
   __setInstalledEngineForTests("web", none);
