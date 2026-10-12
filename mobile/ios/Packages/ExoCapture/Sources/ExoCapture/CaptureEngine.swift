@@ -1294,6 +1294,10 @@ public final class CaptureEngine {
     }
 
     public func routeChanged() {
+        defer {
+            do { emit("inputs", try listInputs()) }
+            catch { log.error("Could not publish inputs after route change (inputs_unavailable): \(String(describing: error), privacy: .public)") }
+        }
         guard info != nil else { return }
         if intent == "paused" {
             // The list is read afresh at Resume; an OS route event cannot activate the input.
