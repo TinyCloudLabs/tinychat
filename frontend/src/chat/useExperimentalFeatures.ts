@@ -4,10 +4,11 @@ import { getCanvasEnabled, setCanvasEnabled } from "../lib/conversationCanvasSto
 import type { BillingStatus } from "../lib/billingApi";
 
 const CACHE_KEY = "tinychat:experimental:conversation-canvas";
+const CONVERSATION_CANVAS_AVAILABLE = false;
 
-/** Testing rollout: every signed-in account can opt in from Settings. */
+/** Product kill switch. Keep persisted opt-ins dormant while the feature is paused. */
 export function isConversationCanvasEligible(_billingStatus: BillingStatus | null): boolean {
-  return true;
+  return CONVERSATION_CANVAS_AVAILABLE;
 }
 
 export function useConversationCanvasFeature(tcw: TinyCloudWeb, billingStatus: BillingStatus | null) {

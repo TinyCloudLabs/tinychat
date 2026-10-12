@@ -30,7 +30,7 @@ describe("listPipelineEntries", () => {
       id: entry.id,
       device: "phone",
       online: true,
-      saved: entry.source.saved,
+      saved: true,
       rowMetadata: entry.source.metadata,
       localNote: { editedAt, hasContent: true },
       native: { transcriber: "off", stt: null },

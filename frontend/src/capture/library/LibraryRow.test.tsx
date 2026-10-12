@@ -78,7 +78,7 @@ describe("a note not yet settled in the space", () => {
     expect(libraryRowBadge(meeting)).toBeNull();
   });
 
-  test("uses the Halo on Soft rows and keeps the old badge in the plain list", () => {
+  test("shows track statuses on Soft rows and keeps the old badge in the plain list", () => {
     const onPhone = voice({ id: "on-phone:rec-1", onPhone: true, title: null });
     const active: NotePipeline = { steps: [
       { key: "phone", label: "On this phone", state: "done" },
@@ -87,8 +87,10 @@ describe("a note not yet settled in the space", () => {
       { key: "notes", label: "Notes", state: "skipped" },
     ], current: "space", done: false };
     const html = render(onPhone, { pipeline: active });
-    expect(html).toContain('data-pipeline-halo=""');
-    expect(html).toContain('aria-label="Voice note. Waiting to upload. Today 7:16 PM · 0:14"');
+    expect(html).not.toContain('data-pipeline-halo=""');
+    expect(html).toContain("Audio in your space: Waiting to upload");
+    expect(html).toContain('data-pipeline-track-summary=""');
+    expect(html).toContain("Audio: Waiting to upload");
     expect(html).not.toContain("row-badge");
     const done: NotePipeline = { steps: [
       { key: "phone", label: "On this phone", state: "done" },
@@ -96,7 +98,7 @@ describe("a note not yet settled in the space", () => {
       { key: "transcript", label: "Transcript", state: "skipped" },
       { key: "notes", label: "Notes", state: "skipped" },
     ], current: null, done: true };
-    expect(render(voice(), { pipeline: done })).not.toContain("data-pipeline-halo");
+    expect(render(voice(), { pipeline: done })).not.toContain("data-pipeline-track-summary");
     expect(render(onPhone, { soft: false })).toContain('data-testid="row-badge"');
     expect(render(voice({ saving: true }))).not.toContain("Saving…");
     expect(render(voice())).not.toContain("row-badge");

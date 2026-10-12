@@ -114,8 +114,8 @@ describe("Recent", () => {
     const html = home({ recent: { status: "ready", items: [onPhone, note(2)] }, pipelines: new Map([["rec-1", pipeline()]]) });
     expect(html.match(/data-testid="recent-item"/g)).toHaveLength(2);
     expect(html).toContain('href="/chat/capture/library/on-phone%3Arec-1"');
-    expect(html.match(/data-pipeline-halo=/g)).toHaveLength(1);
-    expect(html).toContain('aria-label="Voice note. Uploading · 42%. Today 1:49 AM · 1:05"');
+    expect(html.match(/data-pipeline-track-summary=/g)).toHaveLength(1);
+    expect(html).toContain('aria-label="Voice note. Audio on this phone: Saved. Audio in your space: Uploading · 42%. Transcript: Not started. Today 1:49 AM · 1:05"');
   });
 
   test("shows the last five", () => {
@@ -154,12 +154,13 @@ describe("the in-progress card", () => {
     const a = note(1, { id: "on-phone:rec-1", sourceId: "rec-1", title: null, onPhone: true });
     const b = note(2, { id: "on-phone:rec-2", sourceId: "rec-2", title: null, onPhone: true });
     const html = home({ inProgress: voice(2), recent: { status: "ready", items: [a, b] }, pipelineNotes: [a, b], pipelines: new Map([["rec-1", pipeline()], ["rec-2", pipeline("Waiting to upload", { steps: [
-      { key: "phone", label: "On this phone", state: "done" }, { key: "space", label: "In your space", state: "waiting", caption: "Waiting to upload" }, { key: "transcript", label: "Transcript", state: "upcoming" }, { key: "notes", label: "Notes", state: "skipped" },
+      { key: "phone", label: "Audio on this phone", state: "done" }, { key: "space", label: "Audio in your space", state: "waiting", caption: "Waiting to upload" }, { key: "transcript", label: "Transcript", state: "done", sublabel: "Ready on this phone" }, { key: "notes", label: "Notes", state: "skipped" },
     ] })]]) });
     expect(html).toContain('data-testid="voice-note-summary">2 in progress</b>');
     expect(html).toContain('data-testid="voice-note-on-phone">2 on this phone</span>');
     expect(html).toContain('data-testid="voice-note-uploading">1 uploading</span>');
     expect(html).toContain("Waiting to upload");
+    expect(html).toContain("Transcript: Ready on this phone");
     expect(html).not.toContain("Save now");
     expect(html).toContain("In progress");
   });

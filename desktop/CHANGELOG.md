@@ -1,5 +1,19 @@
 # exo-desktop
 
+## 0.6.0-beta.41
+
+### Patch Changes
+
+- 8249402: Stop note playback whenever capture starts or its controls become unavailable, and avoid opening a Mac output stream for mic-only capture.
+
+## 0.6.0-beta.40
+
+No changes in this release.
+
+## 0.6.0-beta.39
+
+No changes in this release.
+
 ## 0.6.0-beta.38
 
 ### Patch Changes

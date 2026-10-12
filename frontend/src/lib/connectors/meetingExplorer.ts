@@ -158,7 +158,9 @@ export async function listMeetingsRead(
                 CASE WHEN json_valid(metadata) THEN json_object(
                   'transcription_outcome', json_extract(metadata, '$.transcription_outcome'),
                   'note_kv_key',           json_extract(metadata, '$.note_kv_key'),
-                  'note_edited_at',        json_extract(metadata, '$.note_edited_at'))
+                  'note_edited_at',        json_extract(metadata, '$.note_edited_at'),
+                  'audio_kv_key',          json_extract(metadata, '$.audio_kv_key'),
+                  'audio_stored',          json_extract(metadata, '$.audio.stored'))
                 ELSE 'invalid' END
               END AS pipeline_metadata
        FROM connector_meeting

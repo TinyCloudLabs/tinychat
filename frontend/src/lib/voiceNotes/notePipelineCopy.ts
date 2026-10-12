@@ -5,8 +5,8 @@ import type { PipelineActionKind, PipelineDevice, StepKey } from "./notePipeline
 export const deviceName = (device: PipelineDevice): string => (device === "mac" ? "this Mac" : "this phone");
 
 export const STEP_LABEL = {
-  phone: (device: PipelineDevice) => (device === "mac" ? "On this Mac" : "On this phone"),
-  space: "In your space",
+  phone: (device: PipelineDevice) => (device === "mac" ? "Audio on this Mac" : "Audio on this phone"),
+  space: "Audio in your space",
   transcript: "Transcript",
   notes: "Notes",
 } as const satisfies Record<StepKey, string | ((device: PipelineDevice) => string)>;
@@ -49,12 +49,13 @@ export const PHONE_COPY = {
 };
 
 export const SPACE_COPY = {
+  afterRecording: "After recording",
   waiting: "Waiting to upload",
   waitingInLine: (position: number) => `Waiting to upload · ${place(position)} in line`,
   uploading: (fraction: number | null) => (fraction === null ? "Uploading…" : `Uploading · ${percentText(fraction)}`),
   retrying: "Retrying…",
   offline: "Waiting for a connection",
-  offlineCaption: "Waiting for a connection · Exo continues automatically",
+  offlineCaption: "Offline · Resumes automatically",
   signedOut: (device: PipelineDevice) => `You're signed out. This note is safe on ${deviceName(device)}.`,
   sessionExpired: (device: PipelineDevice) => `Your session ended. This note is safe on ${deviceName(device)}.`,
   otherAccount: "Recorded on another account",
@@ -66,6 +67,11 @@ export const SPACE_COPY = {
   unreachable: (device: PipelineDevice) => `Couldn't reach your space. This note is safe on ${deviceName(device)}.`,
   source: (_message: string | null | undefined) => "Couldn't read the recording on this phone.",
   unknown: (_message: string | null | undefined) => "Couldn't save this note. It is safe on this phone. Try again.",
+};
+
+export const TRANSCRIPT_COPY = {
+  savedInSpace: "Saved in your space",
+  noSpeechInSpace: "No speech found in your space",
 };
 
 export const LOCAL_COPY = {
@@ -110,6 +116,7 @@ export const PRIVATE_COPY = {
     completed === null || total === null ? "Transcribing…" : `Transcribing · ${completed} of ${total}`,
   saving: "Saving transcript",
   notStarted: "Waiting for private transcription",
+  afterUpload: "After audio uploads",
   noSpeech: "No speech found",
   unavailable: "Private transcription isn't available right now",
   checkFailed: "Couldn't check whether private transcription is available",

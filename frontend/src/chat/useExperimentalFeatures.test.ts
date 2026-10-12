@@ -8,8 +8,8 @@ const status = (tier: BillingStatus["tier"]): BillingStatus => ({
   subscription: null,
 });
 
-test("Conversation Canvas is available to every signed-in account during testing", () => {
-  expect(isConversationCanvasEligible(null)).toBe(true);
-  expect(isConversationCanvasEligible(status("free"))).toBe(true);
-  expect(isConversationCanvasEligible(status("pro"))).toBe(true);
+test("Conversation Canvas stays hidden while the product kill switch is off", () => {
+  expect(isConversationCanvasEligible(null)).toBe(false);
+  expect(isConversationCanvasEligible(status("free"))).toBe(false);
+  expect(isConversationCanvasEligible(status("pro"))).toBe(false);
 });

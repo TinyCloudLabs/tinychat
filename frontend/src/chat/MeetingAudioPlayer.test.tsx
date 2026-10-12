@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { installDom } from "@/test/dom";
+import { setCapturePlaybackBlocked, stopAllPlayback } from "@/lib/audio/playback";
 import { PHONE_AUDIO_UNAVAILABLE, playbackDuration, scrubTarget } from "./audioPlayback";
 import { MeetingAudioPlayer, MeetingAudioPlayerView, stateForResolvedUrl, type PlayerState } from "./MeetingAudioPlayer";
 
@@ -111,6 +112,7 @@ describe("the player in a DOM", () => {
   let root: Root | null = null;
   let logged: ReturnType<typeof spyOn> | null = null;
   afterEach(async () => {
+    setCapturePlaybackBlocked(false);
     if (root) await act(async () => root!.unmount());
     root = null;
     logged?.mockRestore();
@@ -376,6 +378,42 @@ describe("the player in a DOM", () => {
     await player.render({ url: "blob:note", durationSecs: 42, seek: { seconds: 5, nonce: 2 } });
     expect(player.fake.setTimes).toEqual([20, 5]);
     expect(player.fake.plays.length).toBe(2);
+  });
+
+  test("a playing note pauses when its kept pane is hidden or its view closes", async () => {
+    const player = await mount({ url: "blob:note", durationSecs: 42 });
+    await act(async () => player.q("[data-testid=note-audio-play]").click());
+    expect(player.fake.paused).toBe(false);
+    player.host.classList.add("hidden");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(player.fake.paused).toBe(true);
+    player.host.classList.remove("hidden");
+    await act(async () => player.q("[data-testid=note-audio-toggle]").click());
+    expect(player.fake.paused).toBe(false);
+    await act(async () => root!.unmount());
+    root = null;
+    expect(player.fake.paused).toBe(true);
+  });
+
+  test("Play cannot start while capture is active", async () => {
+    const player = await mount({ url: "blob:note", durationSecs: 42 });
+    setCapturePlaybackBlocked(true);
+    await act(async () => player.q("[data-testid=note-audio-play]").click());
+    expect(player.fake.plays).toHaveLength(0);
+    setCapturePlaybackBlocked(false);
+    await act(async () => player.q("[data-testid=note-audio-play]").click());
+    expect(player.fake.plays).toHaveLength(1);
+  });
+
+  test("stopping a pending file load prevents it from playing after capture begins", async () => {
+    let resolve!: (url: string) => void;
+    const player = await mount({ resolveUrl: () => new Promise<string>((done) => { resolve = done; }) });
+    await act(async () => player.q("[data-testid=note-audio-play]").click());
+    await act(async () => stopAllPlayback());
+    expect(player.fake.paused).toBe(true);
+    await act(async () => resolve("blob:late-note"));
+    expect(player.fake.plays).toHaveLength(1);
+    expect(player.host.textContent).toContain("Play audio");
   });
 
   test("an element error ends in a calm Try again, not a stuck 0:00, and Try again reloads the file", async () => {
