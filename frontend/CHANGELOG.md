@@ -1,5 +1,12 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.34
+
+### Patch Changes
+
+- 5edd171: The note audio player shows how long the recording is as soon as it opens, with a loading state and a calm error, instead of 00:00 / 00:00. The receipt, the saved note, the Library detail and the on-phone note now share one player (play or pause, elapsed over total, scrubber).
+- db0a16d: Keep the Settings memory actions within narrow phone viewports.
+
 ## 0.6.0-beta.33
 
 ### Patch Changes
