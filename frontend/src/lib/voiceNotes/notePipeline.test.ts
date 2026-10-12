@@ -98,13 +98,13 @@ const ROWS: Row[] = [
   { name: "space: an offline failure while offline keeps waiting", patch: { online: false, space: { pending: { failed: { kind: "offline", message: "fetch failed" } } } }, states: { space: "waiting" }, current: "space", caption: "Waiting for a connection · Exo continues automatically" },
   { name: "space: an offline failure while online is Try again", patch: { space: { pending: { failed: { kind: "offline", message: "fetch failed" } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't reach your space. This note is safe on this phone.", action: "retry" },
   { name: "space: timeout is Try again", patch: { space: { pending: { failed: { kind: "timeout", message: "deadline" } } } }, states: { space: "failed" }, current: "space", cause: "Saving timed out. This note is safe on this phone.", action: "retry" },
-  { name: "space: server error is Try again, with its message", patch: { space: { pending: { failed: { kind: "server", message: "503 from kv" } } } }, states: { space: "failed" }, current: "space", cause: "Your space couldn't take this note. It is safe on this phone. · 503 from kv", action: "retry" },
+  { name: "space: server error is calm Try again copy", patch: { space: { pending: { failed: { kind: "server", message: "503 from kv" } } } }, states: { space: "failed" }, current: "space", cause: "Your space couldn't take this note. It is safe on this phone. Try again.", action: "retry" },
   { name: "space: quota is full (no action)", patch: { space: { pending: { failed: { kind: "quota", message: "quota" } } } }, states: { space: "blocked" }, current: "space", cause: "Your space is full" },
   { name: "space: an expired session is Sign in", patch: { space: { pending: { failed: { kind: "auth", message: "401" } } } }, states: { space: "blocked" }, current: "space", cause: "Your session ended. This note is safe on this phone.", action: "sign-in" },
-  { name: "space: a source failure keeps its message and has no action", patch: { space: { pending: { failed: { kind: "source", message: "Audio file is too large to read" } } } }, states: { space: "failed" }, current: "space", cause: "Audio file is too large to read" },
-  { name: "space: a source failure with no message still names it", patch: { space: { pending: { failed: { kind: "source", message: " " } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't read the recording" },
-  { name: "space: an unknown error shows its own message and stays retryable", patch: { space: { pending: { failed: { kind: "other", message: "Mount point is read only" } } } }, states: { space: "failed" }, current: "space", cause: "Mount point is read only", action: "retry" },
-  { name: "space: an unknown error with no message says so", patch: { space: { pending: { failed: { kind: "other", message: "  " } } } }, states: { space: "failed" }, current: "space", cause: "Saving failed with no details", action: "retry" },
+  { name: "space: a source failure has calm copy and no action", patch: { space: { pending: { failed: { kind: "source", message: "Audio file is too large to read" } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't read the recording on this phone." },
+  { name: "space: a source failure with no message has the same copy", patch: { space: { pending: { failed: { kind: "source", message: " " } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't read the recording on this phone." },
+  { name: "space: an unknown error has calm copy and stays retryable", patch: { space: { pending: { failed: { kind: "other", message: "Mount point is read only" } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't save this note. It is safe on this phone. Try again.", action: "retry" },
+  { name: "space: an unknown error with no message has the same copy", patch: { space: { pending: { failed: { kind: "other", message: "  " } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't save this note. It is safe on this phone. Try again.", action: "retry" },
 
   // 3. Transcript, Local
   { name: "local: before the note is in the space, nothing has started", patch: local({}), states: { space: "waiting", transcript: "upcoming" }, current: "space" },
@@ -140,14 +140,14 @@ const ROWS: Row[] = [
   { name: "private: the space row queued behind uploads says so", patch: { route: "private-cloud", space: SAVED, transcript: { spaceReading: true, afterUploads: true } }, states: { transcript: "waiting" }, current: "transcript", caption: "Checking your space · after uploads" },
   { name: "uploads ahead mean nothing once the row has been read", patch: local({ onDevice: od({ stt: stt("done") }), afterUploads: true }, { space: SAVED }), states: { transcript: "blocked" }, current: "transcript", cause: "The transcript is ready on this phone but hasn't been added to this note", action: "retry" },
   { name: "local: transcript syncing to the space", patch: local({ onDevice: od({ stt: stt("done"), sync: { state: "syncing" } }) }, { space: SAVED }), states: { transcript: "active" }, current: "transcript", caption: "Adding to this note…" },
-  { name: "local: transcript sync failed is Try again with its message", patch: local({ onDevice: od({ stt: stt("done"), sync: { state: "failed", message: "write lane timed out" } }) }, { space: SAVED }), states: { transcript: "failed" }, current: "transcript", cause: "Couldn't add the transcript to this note · write lane timed out", action: "retry" },
+  { name: "local: transcript sync failed has calm copy", patch: local({ onDevice: od({ stt: stt("done"), sync: { state: "failed", message: "write lane timed out" } }) }, { space: SAVED }), states: { transcript: "failed" }, current: "transcript", cause: "Couldn't add the transcript to this note", action: "retry" },
   { name: "local: transcript synced", patch: local({ onDevice: od({ stt: stt("done"), sync: { state: "synced" } }) }, { space: SAVED }), states: { space: "done", transcript: "done" }, current: null },
-  { name: "local: native transcription failed is Try again with its error", patch: local({ onDevice: od({ stt: stt("failed", "decoder crashed") }) }, { space: SAVED }), states: { transcript: "failed" }, current: "transcript", cause: "Couldn't transcribe on this phone · decoder crashed", action: "retry" },
+  { name: "local: native transcription failed has calm copy", patch: local({ onDevice: od({ stt: stt("failed", "decoder crashed") }) }, { space: SAVED }), states: { transcript: "failed" }, current: "transcript", cause: "Couldn't transcribe on this phone", action: "retry" },
   { name: "local: native transcription failed with no error still names the failure", patch: local({ onDevice: od({ stt: stt("failed") }) }, { space: SAVED }), current: "transcript", cause: "Couldn't transcribe on this phone", action: "retry" },
   { name: "local: cancelled is Try again", patch: local({ onDevice: od({ stt: stt("cancelled") }) }, { space: SAVED }), states: { transcript: "blocked" }, current: "transcript", cause: "Transcribing on this phone was cancelled", action: "retry" },
   { name: "local: saved but native never queued it", patch: local({ onDevice: od() }, { space: SAVED }), states: { transcript: "waiting" }, current: "transcript", caption: "Waiting to transcribe" },
   { name: "local: no speech found is done", patch: local({ inSpace: "no_speech" }, { space: SAVED }), states: { transcript: "done" }, current: null },
-  { name: "local on a Mac: ready on this Mac", patch: local({ onDevice: od({ stt: stt("failed", "boom") }) }, { device: "mac", space: SAVED }), current: "transcript", cause: "Couldn't transcribe on this Mac · boom", action: "retry" },
+  { name: "local on a Mac: transcription failure has calm copy", patch: local({ onDevice: od({ stt: stt("failed", "boom") }) }, { device: "mac", space: SAVED }), current: "transcript", cause: "Couldn't transcribe on this Mac", action: "retry" },
 
   // 3. Transcript, Private
   { name: "private: before the note is in the space it is upcoming", patch: { route: "private-cloud" }, states: { space: "waiting", transcript: "upcoming" }, current: "space" },
@@ -164,8 +164,8 @@ const ROWS: Row[] = [
   { name: "private: no consent (no action)", patch: cloud({ kind: "blocked", reason: "no-consent" }), states: { transcript: "blocked" }, current: "transcript", cause: "Private transcription is turned off" },
   { name: "private: hidden for this account (no action)", patch: cloud({ kind: "blocked", reason: "hidden" }), states: { transcript: "blocked" }, current: "transcript", cause: "Private transcription isn't available for this account" },
   { name: "private: held note shows its message (no action)", patch: cloud({ kind: "held", message: "This note began outside Exo. Transcribe it when you want." }), states: { transcript: "blocked" }, current: "transcript", cause: "This note began outside Exo. Transcribe it when you want." },
-  { name: "private: retryable failure is Try again", patch: cloud({ kind: "failed", code: "server_error", message: "Transcription hit a snag.", retryable: true, reference: "ref-1" }), states: { transcript: "failed" }, current: "transcript", cause: "Transcription hit a snag.", action: "retry" },
-  { name: "private: a failure that cannot be retried shows its reason and reference", patch: cloud({ kind: "failed", code: "recording_too_long", message: "This recording is too long to transcribe.", retryable: false, reference: "ref-9" }), states: { transcript: "failed" }, current: "transcript", cause: "This recording is too long to transcribe. · Reference ref-9" },
+  { name: "private: retryable failure keeps its mapped copy", patch: cloud({ kind: "failed", code: "server_error", message: "Transcription hit a snag.", retryable: true, reference: "ref-1" }), states: { transcript: "failed" }, current: "transcript", cause: "Transcription hit a snag.", action: "retry" },
+  { name: "private: non-retryable failure keeps its mapped copy and reference without retry action", patch: cloud({ kind: "failed", code: "recording_too_long", message: "This recording is too long to transcribe.", retryable: false, reference: "ref-9" }), states: { transcript: "failed" }, current: "transcript", cause: "This recording is too long to transcribe. · Reference ref-9" },
   { name: "private: no speech found is done", patch: cloud({ kind: "done", outcome: "no_speech" }), states: { transcript: "done" }, current: null },
   { name: "private: saved but no job yet", patch: { route: "private-cloud", space: SAVED }, states: { transcript: "waiting" }, current: "transcript", caption: "Waiting for private transcription" },
   { name: "private: a transcript in the space is not done before the note is saved", patch: { route: "private-cloud", transcript: { inSpace: "transcribed" } }, states: { space: "waiting", transcript: "upcoming" }, current: "space" },
@@ -318,7 +318,7 @@ describe("stuck-state contract", () => {
       notes: { state: "failed" },
     }));
     const byKey = Object.fromEntries(pipeline.steps.map((s) => [s.key, s]));
-    expect(byKey.transcript!.blocker).toEqual({ cause: "Couldn't transcribe on this phone · decoder crashed", action: { kind: "retry", label: "Try again" }, chooseProvider: true });
+    expect(byKey.transcript!.blocker).toEqual({ cause: "Couldn't transcribe on this phone", action: { kind: "retry", label: "Try again" }, chooseProvider: true });
     expect(byKey.notes!.blocker).toEqual({ cause: "Couldn't sync your notes", action: { kind: "retry", label: "Try again" } });
     expect(pipeline.current).toBe("transcript");
     expect(pipeline.blocker).toEqual(byKey.transcript!.blocker);
@@ -328,7 +328,7 @@ describe("stuck-state contract", () => {
     const pipeline = notePipeline(input(local({ onDevice: od({ stt: stt("failed", "boom") }) }, { space: { pending: { held: "signed-out" } } })));
     const byKey = Object.fromEntries(pipeline.steps.map((s) => [s.key, s]));
     expect(byKey.space!.blocker?.action?.kind).toBe("sign-in");
-    expect(byKey.transcript!.blocker).toEqual({ cause: "Couldn't transcribe on this phone · boom", action: { kind: "retry", label: "Try again" }, chooseProvider: true });
+    expect(byKey.transcript!.blocker).toEqual({ cause: "Couldn't transcribe on this phone", action: { kind: "retry", label: "Try again" }, chooseProvider: true });
     expect(pipeline.blocker).toEqual(byKey.space!.blocker);
   });
 
@@ -360,12 +360,12 @@ describe("stuck-state contract", () => {
     }
   });
 
-  test("an unknown error keeps its own message", () => {
+  test("an unknown error maps to calm copy", () => {
     const message = "Mount point /Volumes/odd is read only";
     const pipeline = notePipeline(input({ space: { pending: { failed: { kind: "other", message } } } }));
-    expect(pipeline.blocker?.cause).toBe(message);
+    expect(pipeline.blocker?.cause).toBe("Couldn't save this note. It is safe on this phone. Try again.");
     const transcript = notePipeline(input(local({ onDevice: od({ stt: stt("failed", message) }) }, { space: SAVED })));
-    expect(transcript.blocker?.cause).toContain(message);
+    expect(transcript.blocker?.cause).toBe("Couldn't transcribe on this phone");
   });
 
   test("a done pipeline has no current step and no blocker", () => {
@@ -412,7 +412,7 @@ describe("a transcript in the space that the phone could not record (P6 r1)", ()
   test("the transcript step is done, the failure is the blocker with Try again, and the note is not done", () => {
     const pipeline = notePipeline(input({ space: SAVED, notes: { state: "synced" }, ...local({ inSpace: "no_speech", onDevice: od({ stt: stt("done"), sync: unrecorded }) }) }));
     expect(pipeline.steps.find((step) => step.key === "transcript")?.state).toBe("done");
-    expect(pipeline.blocker).toEqual({ cause: "The transcript is in your space, but this phone couldn't record that: disk full", action: { kind: "retry", label: "Try again" } });
+    expect(pipeline.blocker).toEqual({ cause: "The transcript is in your space, but this phone couldn't record it.", action: { kind: "retry", label: "Try again" } });
     expect(pipeline.current).toBe("transcript");
     expect(pipeline.done).toBe(false);
   });
@@ -420,13 +420,13 @@ describe("a transcript in the space that the phone could not record (P6 r1)", ()
   test("before the row catches up the transcript is still done, not Adding", () => {
     const pipeline = notePipeline(input({ space: SAVED, ...local({ onDevice: od({ stt: stt("done"), sync: unrecorded }) }) }));
     expect(pipeline.steps.find((step) => step.key === "transcript")?.state).toBe("done");
-    expect(pipeline.blocker?.cause).toContain("couldn't record that");
+    expect(pipeline.blocker?.cause).toBe("The transcript is in your space, but this phone couldn't record it.");
   });
 
   test("beside another blocker it is a notice, never dropped", () => {
     const pipeline = notePipeline(input({ space: SAVED, hasNotesOrMoments: true, notes: { state: "failed" }, ...local({ inSpace: "transcribed", onDevice: od({ stt: stt("done"), sync: unrecorded }) }) }));
     expect(pipeline.current).toBe("notes");
-    expect(pipeline.notice).toBe("The transcript is in your space, but this phone couldn't record that: disk full");
+    expect(pipeline.notice).toBe("The transcript is in your space, but this phone couldn't record it.");
     expect(pipeline.done).toBe(false);
   });
 });

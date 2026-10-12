@@ -4,6 +4,7 @@ import { switchToPrivate } from "@/capture/recorder/privateInstead";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { privateCloudAccepts } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { onDeviceQueuePlace } from "@/lib/voiceNotes/onDeviceQueue";
 import { onDeviceSttStore, retryOnDeviceNote } from "@/lib/voiceNotes/onDeviceSttStore";
 
@@ -17,6 +18,11 @@ export interface PhoneRecording {
 
 export const LOCAL_START_FAILED = "Couldn’t start transcribing on this phone. Try again in a moment.";
 
+/** Whether private cloud's advertised length limit takes a note of this length. */
+export function privateCloudFits(transcription: VoiceNoteTranscriptionProps, durationSecs: number | null): boolean {
+  return privateCloudAccepts(durationSecs, { max_duration_seconds: transcription.maxSeconds });
+}
+
 /** Local first: it is the default. Private only for a note within the length private cloud advertises. */
 export function transcribeProviders(
   noteId: string,
@@ -27,8 +33,7 @@ export function transcribeProviders(
   const job = transcription?.jobs.get(noteId);
   const providers: TranscribeProvider[] = [];
   if (phone !== null && captureCapabilities().localTranscription) providers.push("on-device");
-  const withinLimit = durationSecs === null || transcription === undefined || durationSecs <= transcription.maxSeconds;
-  if (transcription?.availability === "available" && withinLimit && job?.kind !== "active" && job?.kind !== "done") providers.push("private-cloud");
+  if (transcription?.availability === "available" && privateCloudFits(transcription, durationSecs) && job?.kind !== "active" && job?.kind !== "done") providers.push("private-cloud");
   return providers;
 }
 

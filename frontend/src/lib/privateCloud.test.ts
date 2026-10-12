@@ -243,6 +243,6 @@ describe("private-cloud messages", () => {
       const text = privateCloudMessage(new PrivateCloudError(code, "x"));
       expect(text).not.toMatch(/verified|attested|end-to-end/i);
     }
-    expect(privateCloudMessage(new PrivateCloudError("recording_too_long_for_cloud", "x"))).toContain("up to 2 hours");
+    expect(privateCloudMessage(new PrivateCloudError("recording_too_long_for_cloud", "x"))).toContain("can't transcribe a recording");
   });
 });

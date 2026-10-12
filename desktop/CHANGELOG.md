@@ -1,5 +1,16 @@
 # exo-desktop
 
+## 0.6.0-beta.36
+
+No changes in this release.
+
+## 0.6.0-beta.35
+
+### Patch Changes
+
+- d780bde: Stream private voice-note uploads from native recording files instead of sending base64 audio through the WebView.
+- a3cade0: Read retained voice-note audio locally before the space copy, use safe transcription error copy, and remove the private transcription ten-minute cap.
+
 ## 0.6.0-beta.34
 
 No changes in this release.

@@ -1089,7 +1089,7 @@ export function PhoneRecorder({
           titleId={`${ids}-ct`}
           descriptionId={`${ids}-cd`}
           title="Use private cloud?"
-          description={`After you stop, TinyCloud Private Transcription turns notes up to ${choice.maxMinutes} minutes into text.`}
+          description="After you stop, TinyCloud Private Transcription turns your note into text."
           onCancel={choice.dismissConsent}
           returnFocus={consentOpener}
           fallbackFocus={scale}

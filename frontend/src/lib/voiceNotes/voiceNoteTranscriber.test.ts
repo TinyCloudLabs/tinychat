@@ -206,12 +206,12 @@ describe("availability and consent", () => {
     expect(s.runs).toHaveLength(1);
   });
 
-  test("a note over the phone's limit is not queued automatically", async () => {
+  test("an 11-minute note is queued automatically when PTX supports it", async () => {
     const s = setup({ consented: true });
     await s.transcriber.check();
     s.transcriber.noteSaved({ id: "rec-long", durationMs: 11 * 60_000, source: "in_app" }, AUDIO);
     await tick();
-    expect(s.runs).toHaveLength(0);
+    expect(s.runs.map((run) => run.sourceId)).toEqual(["rec-long"]);
   });
 });
 

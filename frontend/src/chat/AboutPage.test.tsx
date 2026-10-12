@@ -118,7 +118,7 @@ describe("How it works: the canonical claims", () => {
     expect(where).toContain("otherwise the transcript is scheduled for deletion 24 hours after transcription.");
     expect(where).toContain("It receives an anonymous account identifier, not your wallet address.");
     expect(where).toContain("It never receives your audio.");
-    expect(where).toContain("Private cloud takes voice notes up to 10 minutes, and uploads and desktop recordings up to 2 hours.");
+    expect(where).toContain("Private cloud transcribes voice notes, uploads and desktop recordings.");
     expect(where).toContain("Exo deletes it at AssemblyAI after saving the transcript to your TinyCloud space.");
     expect(where).toContain("it never stores or logs it.");
     expect(where).toContain("AssemblyAI is not part of TinyCloud’s private transcription.");

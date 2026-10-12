@@ -77,7 +77,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
           receives your audio.
         </li>
       </List>
-      <p>Private cloud takes voice notes up to 10 minutes, and uploads and desktop recordings up to 2 hours.</p>
+      <p>Private cloud transcribes voice notes, uploads and desktop recordings.</p>
       <Sub>On this Mac</Sub>
       <p>
         The desktop app can transcribe a local recording on-device with Whisper instead. Nothing leaves the machine until

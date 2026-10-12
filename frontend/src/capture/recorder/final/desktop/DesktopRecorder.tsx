@@ -465,7 +465,7 @@ export function DesktopRecorder({
           titleId={`${ids}-ct`}
           descriptionId={`${ids}-cd`}
           title="Use private cloud?"
-          description={`After you stop, TinyCloud Private Transcription turns notes up to ${choice.maxMinutes} minutes into text.`}
+          description="After you stop, TinyCloud Private Transcription turns your note into text."
           keep={{
             label: "Use private cloud",
             onPress: choice.confirmConsent,

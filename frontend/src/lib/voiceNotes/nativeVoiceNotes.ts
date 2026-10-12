@@ -237,6 +237,9 @@ export interface VoiceNotesPlugin {
    * call at 4 MiB). The audio crosses the bridge a part at a time, never whole.
    */
   readAudioChunk(options: { id: string; offset: number; length: number }): Promise<VoiceNoteAudioChunk>;
+  audioMetadata?(options: { id: string }): Promise<{ size: number; mimeType: string; sha256: string }>;
+  uploadAudio?(options: { id: string; uploadId: string; url: string; capability: string; contentType: string; contentLength: number; correlationId: string }): Promise<{ status: number; body: unknown }>;
+  cancelAudioUpload?(options: { uploadId: string }): Promise<void>;
   /** Delete after a confirmed save: until then the recording stays on the device. */
   deleteAudio(options: { id: string }): Promise<void>;
   /** Stopped recordings still on the device, i.e. not yet confirmed saved. */
@@ -327,9 +330,9 @@ export function nativeRecordingSource(
         () => plugin.readAudioChunk({ id: recording.id, offset, length }), voiceNoteCallDeadlineMs(length));
       const bytes = base64ToBytes(chunk.base64);
       if (bytes.byteLength !== length || chunk.size !== recording.sizeBytes) {
-        throw new Error(
+        throw Object.assign(new Error(
           `The recording on this phone changed while it was being saved (read ${bytes.byteLength} of ${length} bytes at ${offset}; file ${chunk.size} bytes, expected ${recording.sizeBytes}).`,
-        );
+        ), { code: "recording_changed" });
       }
       return bytes;
     },

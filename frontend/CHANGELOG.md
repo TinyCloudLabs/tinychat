@@ -1,5 +1,18 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.36
+
+### Patch Changes
+
+- 3d2d3a2: On iPhone and Android, signing in starts on Exo's own screen: an email field, Continue with Google and Use a passkey. The OpenKey sheet then opens straight on that step, and Android's browser bar is dark.
+
+## 0.6.0-beta.35
+
+### Patch Changes
+
+- d780bde: Stream private voice-note uploads from native recording files instead of sending base64 audio through the WebView.
+- a3cade0: Read retained voice-note audio locally before the space copy, use safe transcription error copy, and remove the private transcription ten-minute cap.
+
 ## 0.6.0-beta.34
 
 ### Patch Changes

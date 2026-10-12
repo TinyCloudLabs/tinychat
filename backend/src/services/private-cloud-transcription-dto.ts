@@ -11,7 +11,6 @@
  * error is rebuilt as `{ code, message }` with our own message for that code.
  */
 
-export const MAX_RECORDING_BYTES = 120_960_000;
 export const TRANSCRIPTION_ID_RE = /^trn_[0-9A-HJKMNP-TV-Z]{26}$/;
 export const UPLOAD_PATH_RE = /^\/uploads\/trn_[0-9A-HJKMNP-TV-Z]{26}$/;
 export const CAPABILITY_RE = /^tcu_[A-Za-z0-9_-]{16,256}$/;
@@ -208,7 +207,7 @@ function job(value: unknown, expectedId?: string) {
   return {
     id,
     status,
-    byte_size: int(o.byte_size, 1, MAX_RECORDING_BYTES),
+    byte_size: int(o.byte_size, 1),
     channel_mode: nullable(o.channel_mode, (v) => oneOf(v, CHANNEL_MODES)),
     channel_labels: nullable(o.channel_labels, channelLabels),
     duration_seconds: nullable(o.duration_seconds, (v) => num(v)),
@@ -232,7 +231,7 @@ export function parseCapabilities(body: unknown) {
     const contentTypes = (o.content_types as unknown[]).map((v) => oneOf(v, CONTENT_TYPES));
     check(new Set(contentTypes).size === contentTypes.length);
     return {
-      max_bytes: int(o.max_bytes, 1, MAX_RECORDING_BYTES),
+      max_bytes: int(o.max_bytes, 1),
       max_duration_seconds: int(o.max_duration_seconds, 1),
       max_channels: int(o.max_channels, 1, 2),
       content_types: contentTypes,

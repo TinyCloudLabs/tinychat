@@ -28,6 +28,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { DesktopWhisperStatus } from "./DesktopWhisperStatus";
 import { OnDeviceNoteStatus } from "./OnDeviceNoteStatus";
 import { TranscribeAction } from "./TranscribeAction";
+import { privateCloudFits } from "./transcribeProviders";
 import { HowThisGotHere } from "./HowThisGotHere";
 import { librarySourceLabel } from "./libraryKinds";
 import type { LibraryItem } from "./LibraryRow";
@@ -155,10 +156,10 @@ export function VoiceNoteTranscriptionStatus(props: {
   const localCapable = captureCapabilities().localTranscription;
   const choosable = transcription?.availability === "available" || (transcription?.availability === "failed" && transcription.consented);
   if (!localCapable && !choosable) return null;
-  if (!localCapable && transcription && item.durationSecs !== null && item.durationSecs > transcription.maxSeconds) {
+  if (!localCapable && transcription && item.durationSecs !== null && !privateCloudFits(transcription, item.durationSecs)) {
     return (
-      <p data-testid="voice-note-too-long" className="text-callout text-muted-foreground">
-        Notes up to {Math.round(transcription.maxSeconds / 60)} minutes can be transcribed from the phone.
+      <p className="text-callout text-muted-foreground" data-testid="voice-note-transcription-over-limit">
+        Private Transcription accepts notes up to {formatSpokenDuration(transcription.maxSeconds)}. This note is {formatSpokenDuration(item.durationSecs)}.
       </p>
     );
   }
