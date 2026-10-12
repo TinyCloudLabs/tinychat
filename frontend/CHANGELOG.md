@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.39
+
+### Patch Changes
+
+- 54d9510: Show audio upload and transcript progress as independent tracks, including transcripts saved before their audio upload finishes.
+
 ## 0.6.0-beta.38
 
 ### Patch Changes
