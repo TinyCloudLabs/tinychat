@@ -64,15 +64,16 @@ internal class WorkQueue {
     }
 
     /**
-     * A waiting note leaves the line and is marked cancelled ([markCancelled]) in one step. The note
-     * being decoded stays current and is flagged: the decode loop stops it at its next checkpoint.
+     * A waiting note is marked cancelled ([markCancelled]) and leaves the line in one step: if the
+     * ledger write throws, the note stays in line and the exception reaches the caller. The note being
+     * decoded stays current and is flagged: the decode loop stops it at its next checkpoint.
      */
     fun cancel(id: String, markCancelled: () -> Unit) = synchronized(lock) {
         if (id == current) {
             cancelRequested = true
         } else {
-            pending.remove(id)
             markCancelled()
+            pending.remove(id)
         }
     }
 
@@ -81,11 +82,21 @@ internal class WorkQueue {
 
     fun pendingIds(): List<String> = synchronized(lock) { pending.toList() }
 
-    /** Every waiting note, taken out of the line and marked failed ([markFailed]) in one step: only those it took. */
-    fun drainFailing(markFailed: (String) -> Unit): List<String> = synchronized(lock) {
-        pending.toList().also { ids ->
-            pending.clear()
-            ids.forEach(markFailed)
+    /**
+     * Every waiting note is marked failed ([markFailed]) and taken out of the line, one step per note:
+     * only the notes it took are returned. A note whose ledger write throws stays in line, reported to
+     * [unmarked], for the next pump to retry.
+     */
+    fun drainFailing(markFailed: (String) -> Unit, unmarked: (String, Exception) -> Unit): List<String> = synchronized(lock) {
+        pending.toList().filter { id ->
+            try {
+                markFailed(id)
+                pending.remove(id)
+                true
+            } catch (e: Exception) {
+                unmarked(id, e)
+                false
+            }
         }
     }
 
@@ -124,10 +135,17 @@ internal class Admission(private val work: WorkQueue, private val lane: Executor
         }
     }
 
-    fun cancel(id: String, markCancelled: () -> Unit, changed: () -> Unit) {
+    /** Exactly one of `cancelled` and `failed` runs. */
+    fun cancel(id: String, markCancelled: () -> Unit, cancelled: () -> Unit, failed: (Exception) -> Unit, changed: () -> Unit) {
         lane.execute {
-            work.cancel(id, markCancelled)
+            try {
+                work.cancel(id, markCancelled)
+            } catch (e: Exception) {
+                failed(e)
+                return@execute
+            }
             changed()
+            cancelled()
         }
     }
 }

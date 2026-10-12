@@ -6,6 +6,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -44,7 +45,7 @@ class WorkQueueRaceTest {
         assertEquals("a", work.pop()) // A is decoding; the decode thread is busy.
         work.admit("b", { false }, {})
         val changed = CountDownLatch(1)
-        admission.cancel("b", markCancelled = { ledger = "cancelled" }, changed = { changed.countDown() })
+        admission.cancel("b", markCancelled = { ledger = "cancelled" }, cancelled = {}, failed = { throw it }, changed = { changed.countDown() })
         assertTrue("the cancel does not wait for the decode", changed.await(2, TimeUnit.SECONDS))
         assertEquals("cancelled", ledger)
         assertEquals(listOf("a"), work.snapshotIds())
@@ -56,7 +57,7 @@ class WorkQueueRaceTest {
         work.admit("a", { false }, {})
         assertEquals("a", work.pop())
         val changed = CountDownLatch(1)
-        admission.cancel("a", markCancelled = { ledger = "cancelled" }, changed = { changed.countDown() })
+        admission.cancel("a", markCancelled = { ledger = "cancelled" }, cancelled = {}, failed = { throw it }, changed = { changed.countDown() })
         assertTrue(changed.await(2, TimeUnit.SECONDS))
         assertTrue(work.isCancelRequested())
         assertEquals("the decode still owns the note until it stops", listOf("a"), work.snapshotIds())
@@ -87,7 +88,10 @@ class WorkQueueRaceTest {
         val letDrainFinish = CountDownLatch(1)
         var drained = emptyList<String>()
         val draining = async {
-            drained = work.drainFailing { id -> insideDrain.countDown(); letDrainFinish.await(); failed.add(id); ledger = "failed" }
+            drained = work.drainFailing(
+                markFailed = { id -> insideDrain.countDown(); letDrainFinish.await(); failed.add(id); ledger = "failed" },
+                unmarked = { _, e -> throw e },
+            )
         }
         assertTrue(insideDrain.await(2, TimeUnit.SECONDS))
         // The same note is asked for again mid-drain: it must wait, then queue after the failure is written.
@@ -105,9 +109,41 @@ class WorkQueueRaceTest {
     @Test fun aNoteAdmittedAfterTheDrainIsNotMarkedFailed() {
         work.admit("b", { false }, {})
         val failed = mutableListOf<String>()
-        assertEquals(listOf("b"), work.drainFailing { failed.add(it) })
+        assertEquals(listOf("b"), work.drainFailing({ failed.add(it) }, { _, e -> throw e }))
         work.admit("c", { false }, {})
         assertEquals(listOf("b"), failed)
         assertEquals(listOf("c"), work.snapshotIds())
+    }
+
+    @Test fun aCancelWhoseLedgerWriteFailsLeavesTheNoteInLineAndRejects() {
+        work.admit("b", { false }, {})
+        val answers = CopyOnWriteArrayList<String>()
+        val answered = CountDownLatch(1)
+        admission.cancel(
+            "b",
+            markCancelled = { throw IllegalStateException("disk full") },
+            cancelled = { answers.add("cancelled"); answered.countDown() },
+            failed = { answers.add("failed:${it.message}"); answered.countDown() },
+            changed = { answers.add("changed") },
+        )
+        assertTrue(answered.await(2, TimeUnit.SECONDS))
+        assertEquals(listOf("failed:disk full"), answers)
+        assertEquals(listOf("b"), work.snapshotIds())
+        assertEquals("b", work.pop())
+    }
+
+    @Test fun aFailDrainWhoseLedgerWriteFailsLeavesThatNoteInLineAndMarksTheRest() {
+        work.admit("b", { false }, {})
+        work.admit("c", { false }, {})
+        val failed = mutableListOf<String>()
+        val unmarked = mutableListOf<String>()
+        val drained = work.drainFailing(
+            markFailed = { id -> if (id == "b") throw IllegalStateException("disk full"); failed.add(id) },
+            unmarked = { id, _ -> unmarked.add(id) },
+        )
+        assertEquals(listOf("c"), drained)
+        assertEquals(listOf("c"), failed)
+        assertEquals(listOf("b"), unmarked)
+        assertEquals(listOf("b"), work.snapshotIds())
     }
 }

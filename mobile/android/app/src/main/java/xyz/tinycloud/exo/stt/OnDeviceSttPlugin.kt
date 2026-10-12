@@ -121,8 +121,11 @@ class OnDeviceSttPlugin : Plugin() {
     @PluginMethod
     fun cancel(call: PluginCall) {
         val id = call.getString("id") ?: run { call.reject("id is required", "invalid_argument"); return }
-        queue.cancel(id)
-        call.resolve()
+        queue.cancel(
+            id,
+            cancelled = { call.resolve() },
+            failed = { error -> call.reject("Could not cancel this note", "cancel_failed", error) },
+        )
     }
 
     @PluginMethod

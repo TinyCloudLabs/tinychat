@@ -119,10 +119,12 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
 
     /** A waiting note is taken out of line and marked cancelled at once; the note being decoded is
      * stopped at the decode's next window. */
-    fun cancel(id: String) {
+    fun cancel(id: String, cancelled: () -> Unit, failed: (Exception) -> Unit) {
         admission.cancel(
             id,
-            markCancelled = { try { capture.library.markSttCancelled(id) } catch (_: Exception) {} },
+            markCancelled = { markCancelled(id) },
+            cancelled = cancelled,
+            failed = { e -> Log.w("ExoStt", "cancel failed for $id", e); failed(e) },
             changed = { onQueueChanged?.invoke() },
         )
     }
@@ -150,7 +152,11 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
         }
         running = true
         val engine = try { Engine(store, modelId) } catch (e: Exception) {
-            for (id in work.drainFailing { markFailed(it, "model_load_failed") }) reportFailed(id, "model_load_failed", e.message ?: "load failed")
+            val drained = work.drainFailing(
+                markFailed = { markFailed(it, "model_load_failed") },
+                unmarked = { id, error -> Log.e("ExoStt", "could not mark $id failed; it stays queued for the next pump", error) },
+            )
+            for (id in drained) reportFailed(id, "model_load_failed", e.message ?: "load failed")
             running = false
             onQueueChanged?.invoke()
             return
@@ -180,10 +186,10 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
                         work.yieldCurrent(
                             id,
                             markQueued = { try { capture.library.mutate(id, "stt.write") { it.getJSONObject("stt").put("state", "queued").put("attempts", previousAttempts) } } catch (_: Exception) {} },
-                            markCancelled = { markCancelled(id) },
+                            markCancelled = { writeLogged(id) { markCancelled(id) } },
                         )
                     } catch (e: CancelRequestedException) {
-                        work.finish { markCancelled(id) }
+                        work.finish { writeLogged(id) { markCancelled(id) } }
                         onQueueChanged?.invoke()
                     } catch (e: Exception) {
                         Log.e("ExoStt", "process() threw for id=$id", e)
@@ -212,16 +218,22 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
     }
 
     private fun markFailed(id: String, code: String) {
-        try { capture.library.mutate(id, "stt.write") { it.getJSONObject("stt").put("state", "failed").put("error", code) } } catch (_: Exception) {}
+        capture.library.mutate(id, "stt.write") { it.getJSONObject("stt").put("state", "failed").put("error", code) }
     }
 
     private fun markCancelled(id: String) {
-        try { capture.library.markSttCancelled(id) } catch (_: Exception) {}
+        capture.library.markSttCancelled(id)
+    }
+
+    /** A write for the note being decoded, which leaves the line either way: a failed write is logged, and the note
+     * stays `running` on disk for a restart's attempt count to handle. */
+    private fun writeLogged(id: String, write: () -> Unit) {
+        try { write() } catch (e: Exception) { Log.e("ExoStt", "ledger write failed for $id", e) }
     }
 
     /** The note being decoded failed: its ledger state is written as it leaves the line, so a concurrent re-admission is never overwritten. */
     private fun failCurrent(id: String, code: String, message: String) {
-        work.finish { markFailed(id, code) }
+        work.finish { writeLogged(id) { markFailed(id, code) } }
         reportFailed(id, code, message)
     }
 
