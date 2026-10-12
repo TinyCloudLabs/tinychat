@@ -241,7 +241,13 @@ jobs:
         timeout-minutes: 5
         working-directory: desktop/src-tauri
         run: |
-          CHAR_VAULT_BASE="$RUNNER_TEMP/st-vault" EXO_IPC_SELFTEST=1 target/release/exo-desktop
+          log="$RUNNER_TEMP/exo-ipc-selftest.log"
+          CHAR_VAULT_BASE="$RUNNER_TEMP/st-vault" EXO_IPC_SELFTEST=1 target/release/exo-desktop 2>&1 | tee "$log"
+          if ! grep -Fqx '[EXO_IPC_SELFTEST] ALL PASSED' "$log" ||
+             grep -Eq '^\[EXO_IPC_SELFTEST\] (FAIL|TIMEOUT)' "$log"; then
+            echo "::error::IPC self-test did not report all probes passing"
+            exit 1
+          fi
           if [ -d "$RUNNER_TEMP/st-vault/sessions" ]; then
             test -z "$(find "$RUNNER_TEMP/st-vault/sessions" -mindepth 1 -print -quit)"
           fi

@@ -96,6 +96,16 @@ fn acl_denied(command: &str, error: &str) -> bool {
             || error.contains("explicitly denied"))
 }
 
+fn denied_probe(command: &str, error: &str) -> bool {
+    if matches!(command, "local_capture_start" | "local_transcription_start") {
+        error == format!("Command {command} not found")
+            || error == format!("{command} not allowed. Command not found")
+            || acl_denied(command, error)
+    } else {
+        acl_denied(command, error)
+    }
+}
+
 fn assert_results(value: &serde_json::Value) -> bool {
     if let Some(fatal) = value.get("fatal") {
         eprintln!("[EXO_IPC_SELFTEST] FAIL: {fatal}");
@@ -107,13 +117,7 @@ fn assert_results(value: &serde_json::Value) -> bool {
             .get(command)
             .and_then(|v| v.get("error"))
             .and_then(|v| v.as_str());
-        let passed = error.is_some_and(|error| {
-            if matches!(command, "local_capture_start" | "local_transcription_start") {
-                error == format!("Command {command} not found") || acl_denied(command, error)
-            } else {
-                acl_denied(command, error)
-            }
-        });
+        let passed = error.is_some_and(|error| denied_probe(command, error));
         eprintln!(
             "[EXO_IPC_SELFTEST] {} {command}: {}",
             if passed { "PASS" } else { "FAIL" },
@@ -162,8 +166,7 @@ pub fn maybe_run(app: &tauri::App) {
             }
             if Instant::now() >= deadline {
                 eprintln!("[EXO_IPC_SELFTEST] TIMEOUT: root actor unavailable");
-                app.exit(2);
-                return;
+                std::process::exit(2);
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -173,15 +176,13 @@ pub fn maybe_run(app: &tauri::App) {
             }
             if Instant::now() >= deadline {
                 eprintln!("[EXO_IPC_SELFTEST] TIMEOUT: main webview unavailable");
-                app.exit(2);
-                return;
+                std::process::exit(2);
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
         if let Err(error) = window.eval(SCRIPT) {
             eprintln!("[EXO_IPC_SELFTEST] FAIL: eval: {error}");
-            app.exit(1);
-            return;
+            std::process::exit(1);
         }
         while Instant::now() < deadline {
             let response = Arc::new(Mutex::new(None::<String>));
@@ -192,8 +193,7 @@ pub fn maybe_run(app: &tauri::App) {
                 })
             {
                 eprintln!("[EXO_IPC_SELFTEST] FAIL: callback: {error}");
-                app.exit(1);
-                return;
+                std::process::exit(1);
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
             let result = response.lock().unwrap_or_else(|e| e.into_inner()).take();
@@ -201,13 +201,16 @@ pub fn maybe_run(app: &tauri::App) {
                 result.map(|raw| serde_json::from_str::<serde_json::Value>(&raw))
             {
                 if !value.is_null() {
-                    app.exit(if assert_results(&value) { 0 } else { 1 });
-                    return;
+                    if assert_results(&value) {
+                        eprintln!("[EXO_IPC_SELFTEST] ALL PASSED");
+                        std::process::exit(0);
+                    }
+                    std::process::exit(1);
                 }
             }
         }
         eprintln!("[EXO_IPC_SELFTEST] TIMEOUT: webview IPC did not finish");
-        app.exit(2);
+        std::process::exit(2);
     });
 }
 
@@ -250,6 +253,20 @@ mod tests {
         assert!(!acl_denied(
             "plugin:transcription|start_capture",
             "invalid args"
+        ));
+        for command in ["local_capture_start", "local_transcription_start"] {
+            assert!(denied_probe(
+                command,
+                &format!("{command} not allowed. Command not found")
+            ));
+            assert!(denied_probe(
+                command,
+                &format!("Command {command} not found")
+            ));
+        }
+        assert!(!denied_probe(
+            "plugin:transcription|start_capture",
+            "transcription.start_capture not allowed. Command not found"
         ));
     }
 }

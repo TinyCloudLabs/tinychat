@@ -33,6 +33,10 @@ export const FINAL_COPY = {
   savingAtLimit: "Saving at the limit…",
   savingAfterDiskFull: "Saving the audio captured before storage ran out…",
   writeFailed: "The recording could not be saved.",
+  unsafeSessionsFolder:
+    "Recording is blocked by an unsafe entry in the vault sessions folder. Remove unexpected links or files there, then try again.",
+  sessionExists:
+    "This recording session already exists. Discard this attempt and start a new recording.",
   stopAndSaveRecorded: "Stop and save what's recorded.",
   stopAt: (text: string) => `Stops at ${text}`,
   comingNextUpdate: "Coming with the next update",

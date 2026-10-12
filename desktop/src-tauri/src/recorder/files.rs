@@ -1,7 +1,9 @@
 //! File storage for the shared voice-note store. IDs, never paths, cross IPC.
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use rustix::fs::{Mode, OFlags};
 use sha2::{Digest, Sha256};
@@ -9,6 +11,9 @@ use tauri::Manager;
 use tauri_plugin_settings::SettingsPluginExt;
 
 const MAX_CHUNK: usize = 4 * 1024 * 1024;
+// All stage writers and removers, including launch cleanup and note deletion,
+// must agree on one lock. File descriptors still enforce the on-disk boundary.
+static STAGE_LOCK: Mutex<()> = Mutex::new(());
 
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
@@ -469,6 +474,102 @@ fn stage_marker(session: &rustix::fd::OwnedFd, stage_id: &str) -> Result<bool, S
     }
     Ok(true)
 }
+// An interrupted older removal can leave a marker-less derived session. Only
+// reclaim it when it contains nothing except a byte-for-byte copy (or partial
+// prefix) of this note; a squatted session with unrelated data stays untouched.
+fn orphan_matches_note(
+    root: &Path,
+    id: &str,
+    session: &rustix::fd::OwnedFd,
+) -> Result<bool, String> {
+    let mut entries = rustix::fs::Dir::read_from(session).map_err(|e| e.to_string())?;
+    while let Some(entry) = entries.read() {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let Some(name) = entry.file_name().to_str().ok() else {
+            return Ok(false);
+        };
+        if name == "." || name == ".." {
+            continue;
+        }
+        if !matches!(name, "audio.mp3" | "audio.mp3.tmp") {
+            return Ok(false);
+        }
+        let mut orphan = File::from(
+            rustix::fs::openat(
+                session,
+                name,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+                Mode::empty(),
+            )
+            .map_err(|e| e.to_string())?,
+        );
+        let length = orphan.metadata().map_err(|e| e.to_string())?;
+        if !length.is_file() {
+            return Ok(false);
+        }
+        let mut source = open_read(root, id)?;
+        let source_len = source.metadata().map_err(|e| e.to_string())?.len();
+        if length.len() > source_len || (name == "audio.mp3" && length.len() != source_len) {
+            return Ok(false);
+        }
+        let mut original = [0u8; 8192];
+        let mut copy = [0u8; 8192];
+        let mut remaining = length.len();
+        while remaining > 0 {
+            let count = remaining.min(original.len() as u64) as usize;
+            source
+                .read_exact(&mut original[..count])
+                .map_err(|e| e.to_string())?;
+            orphan
+                .read_exact(&mut copy[..count])
+                .map_err(|e| e.to_string())?;
+            if original[..count] != copy[..count] {
+                return Ok(false);
+            }
+            remaining -= count as u64;
+        }
+    }
+    Ok(true)
+}
+
+fn derived_stages(dir: &Path) -> Result<HashMap<String, (String, String)>, String> {
+    let mut stages = HashMap::new();
+    for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(id) = name.strip_suffix(".sealed") else {
+            continue;
+        };
+        if valid_id(id)
+            && !id.starts_with("whisper-")
+            && entry.file_type().map_err(|e| e.to_string())?.is_file()
+        {
+            let stage = whisper_stage_id(id)?;
+            stages.insert(stage_session_id(&stage)?, (stage, id.to_owned()));
+        }
+    }
+    Ok(stages)
+}
+
+fn remove_stage_for_note_locked(
+    root: &Path,
+    sessions: &Path,
+    id: &str,
+    stage_id: &str,
+) -> Result<u64, String> {
+    let session_id = stage_session_id(stage_id)?;
+    let session = match crate::session_audio::open_session_dir(sessions, &session_id) {
+        Ok(fd) => fd,
+        Err((_, rustix::io::Errno::NOENT)) => return Ok(0),
+        Err((_, e)) => return Err(e.to_string()),
+    };
+    let marked = stage_marker(&session, stage_id)?;
+    if !marked && !orphan_matches_note(root, id, &session)? {
+        return Err("unsafe_whisper_stage".into());
+    }
+    remove_stage_locked(sessions, stage_id, !marked)
+}
 
 pub(crate) fn staged_session(sessions: &Path, id: &str, stage_id: &str) -> Result<String, String> {
     if stage_id != whisper_stage_id(id)? {
@@ -484,6 +585,7 @@ pub(crate) fn staged_session(sessions: &Path, id: &str, stage_id: &str) -> Resul
 }
 
 fn stage_whisper_at(dir: &Path, sessions: &Path, id: &str, stage_id: &str) -> Result<(), String> {
+    let _guard = STAGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if stage_id != whisper_stage_id(id)? {
         return Err("invalid_whisper_stage".into());
     }
@@ -564,14 +666,24 @@ pub fn recorder_whisper_cleanup_stages(app: tauri::AppHandle) -> Result<u64, Str
     cleanup_whisper_stages_at(&root(&app)?, &sessions_root(&app)?)
 }
 
+#[cfg(test)]
 fn remove_stage_at(sessions: &Path, stage_id: &str) -> Result<u64, String> {
+    let _guard = STAGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    remove_stage_locked(sessions, stage_id, false)
+}
+
+fn remove_stage_locked(
+    sessions: &Path,
+    stage_id: &str,
+    verified_orphan: bool,
+) -> Result<u64, String> {
     let id = stage_session_id(stage_id)?;
     let session = match crate::session_audio::open_session_dir(sessions, &id) {
         Ok(fd) => fd,
         Err((_, rustix::io::Errno::NOENT)) => return Ok(0),
         Err((_, e)) => return Err(e.to_string()),
     };
-    if !stage_marker(&session, stage_id)? {
+    if !verified_orphan && !stage_marker(&session, stage_id)? {
         return Err("unsafe_whisper_stage".into());
     }
     for name in ["audio.mp3.tmp", "audio.mp3", STAGE_MARKER] {
@@ -592,6 +704,8 @@ fn remove_stage_at(sessions: &Path, stage_id: &str) -> Result<u64, String> {
 }
 
 fn cleanup_whisper_stages_at(dir: &Path, sessions: &Path) -> Result<u64, String> {
+    let _guard = STAGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut derived = None;
     let mut removed = 0;
     // Also clear pre-migration temporary copies in the old app-data store.
     for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
@@ -645,7 +759,18 @@ fn cleanup_whisper_stages_at(dir: &Path, sessions: &Path) -> Result<u64, String>
             Mode::empty(),
         ) {
             Ok(fd) => fd,
-            Err(rustix::io::Errno::NOENT) => continue,
+            Err(rustix::io::Errno::NOENT) => {
+                let stages = match &derived {
+                    Some(stages) => stages,
+                    None => derived.insert(derived_stages(dir)?),
+                };
+                if let Some((stage, id)) = stages.get(name) {
+                    if orphan_matches_note(dir, id, &session)? {
+                        removed += remove_stage_locked(sessions, stage, true)?;
+                    }
+                }
+                continue;
+            }
             Err(e) => return Err(e.to_string()),
         };
         let marker = File::from(marker);
@@ -660,7 +785,7 @@ fn cleanup_whisper_stages_at(dir: &Path, sessions: &Path) -> Result<u64, String>
         if stage_session_id(&stage_id)? != name {
             return Err("unsafe_whisper_stage".into());
         }
-        removed += remove_stage_at(sessions, &stage_id)?;
+        removed += remove_stage_locked(sessions, &stage_id, false)?;
     }
     Ok(removed)
 }
@@ -670,28 +795,32 @@ pub fn delete_audio_file(app: tauri::AppHandle, id: String) -> Result<(), String
     super::ensure(&app);
     let root = root(&app)?;
     let sessions = sessions_root(&app)?;
-    delete_note_at(&root, &sessions, &id)?;
-    if let Some(pending) = super::journal::load(&app)? {
-        if pending.id == id {
-            if let Some(segment_id) = pending.segment_id {
-                remove_source_session(&sessions, &segment_id)?;
-                super::journal::remove_failed_source(&app, &segment_id)?;
+    let note_cleanup = delete_note_at(&root, &sessions, &id);
+    let segment_cleanup = (|| {
+        if let Some(pending) = super::journal::load(&app)? {
+            if pending.id == id {
+                if let Some(segment_id) = pending.segment_id {
+                    remove_source_session(&sessions, &segment_id)?;
+                    super::journal::remove_failed_source(&app, &segment_id)?;
+                }
             }
         }
-    }
-    super::journal::delete_failed_for_note(&app, &id)
+        super::journal::delete_failed_for_note(&app, &id)
+    })();
+    note_cleanup.and(segment_cleanup)
 }
 
 fn delete_note_at(root: &Path, sessions: &Path, id: &str) -> Result<(), String> {
+    let _guard = STAGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if id.starts_with("whisper-") {
-        let stage_cleanup = remove_stage_at(sessions, id);
+        let stage_cleanup = remove_stage_locked(sessions, id, false);
         let note_cleanup = delete_at(root, sessions, id);
         stage_cleanup?;
         note_cleanup?;
         remove_if_present(&root.join(format!("{id}.mp3.tmp")))?;
     } else {
         let stage = whisper_stage_id(id)?;
-        let stage_cleanup = remove_stage_at(sessions, &stage)
+        let stage_cleanup = remove_stage_for_note_locked(root, sessions, id, &stage)
             .and_then(|_| delete_at(root, sessions, &stage))
             .and_then(|_| remove_if_present(&root.join(format!("{stage}.mp3.tmp"))));
         let note_cleanup = delete_at(root, sessions, id);
@@ -859,6 +988,108 @@ mod tests {
         assert!(root.join("note.mp3").exists());
         assert!(unrelated.join("audio.mp3").exists());
         assert!(staged_session(&sessions, "note", &stage).is_err());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn reclaims_only_derived_markerless_copies_and_allows_restaging() {
+        let base = std::env::temp_dir().join(format!("exo-orphan-stage-{}", uuid::Uuid::new_v4()));
+        let root = base.join("audio");
+        let sessions = base.join("sessions");
+        fs::create_dir_all(&root).unwrap();
+        append(&root, "note", b"durable recording").unwrap();
+        finalize_at(&root, "note").unwrap();
+        let stage = whisper_stage_id("note").unwrap();
+        let session = sessions.join(stage_session_id(&stage).unwrap());
+
+        stage_whisper_at(&root, &sessions, "note", &stage).unwrap();
+        fs::remove_file(session.join(STAGE_MARKER)).unwrap();
+        assert_eq!(cleanup_whisper_stages_at(&root, &sessions).unwrap(), 1);
+        assert!(!session.exists());
+        stage_whisper_at(&root, &sessions, "note", &stage).unwrap();
+        fs::remove_file(session.join(STAGE_MARKER)).unwrap();
+        fs::rename(session.join("audio.mp3"), session.join("audio.mp3.tmp")).unwrap();
+        assert_eq!(cleanup_whisper_stages_at(&root, &sessions).unwrap(), 1);
+        stage_whisper_at(&root, &sessions, "note", &stage).unwrap();
+        fs::remove_file(session.join(STAGE_MARKER)).unwrap();
+        delete_note_at(&root, &sessions, "note").unwrap();
+        assert!(!session.exists());
+        assert!(!root.join("note.mp3").exists());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn concurrent_stage_remove_and_cleanup_leave_no_markerless_copy() {
+        use std::sync::Barrier;
+
+        let base = std::env::temp_dir().join(format!("exo-stage-race-{}", uuid::Uuid::new_v4()));
+        let root = base.join("audio");
+        let sessions = base.join("sessions");
+        fs::create_dir_all(&root).unwrap();
+        let audio = vec![7u8; 64 * 1024];
+        append(&root, "note", &audio).unwrap();
+        finalize_at(&root, "note").unwrap();
+        let stage = whisper_stage_id("note").unwrap();
+        let session = sessions.join(stage_session_id(&stage).unwrap());
+
+        for cleanup in [false, true] {
+            for _ in 0..500 {
+                stage_whisper_at(&root, &sessions, "note", &stage).unwrap();
+                let barrier = Barrier::new(2);
+                std::thread::scope(|scope| {
+                    let writer = scope.spawn(|| {
+                        barrier.wait();
+                        stage_whisper_at(&root, &sessions, "note", &stage)
+                    });
+                    let remover = scope.spawn(|| {
+                        barrier.wait();
+                        if cleanup {
+                            cleanup_whisper_stages_at(&root, &sessions).map(|_| ())
+                        } else {
+                            remove_stage_at(&sessions, &stage).map(|_| ())
+                        }
+                    });
+                    writer.join().unwrap().unwrap();
+                    remover.join().unwrap().unwrap();
+                });
+                if session.exists() {
+                    assert!(session.join(STAGE_MARKER).is_file());
+                    assert_eq!(fs::read(session.join("audio.mp3")).unwrap(), audio);
+                }
+            }
+        }
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn deleting_while_staging_cannot_leave_a_note_copy() {
+        use std::sync::Barrier;
+
+        let base = std::env::temp_dir().join(format!("exo-delete-race-{}", uuid::Uuid::new_v4()));
+        let root = base.join("audio");
+        let sessions = base.join("sessions");
+        fs::create_dir_all(&root).unwrap();
+        let stage = whisper_stage_id("note").unwrap();
+        let session = sessions.join(stage_session_id(&stage).unwrap());
+        for _ in 0..150 {
+            append(&root, "note", &[7u8; 4096]).unwrap();
+            finalize_at(&root, "note").unwrap();
+            let barrier = Barrier::new(2);
+            std::thread::scope(|scope| {
+                let writer = scope.spawn(|| {
+                    barrier.wait();
+                    stage_whisper_at(&root, &sessions, "note", &stage)
+                });
+                let remover = scope.spawn(|| {
+                    barrier.wait();
+                    delete_note_at(&root, &sessions, "note")
+                });
+                let _ = writer.join().unwrap();
+                remover.join().unwrap().unwrap();
+            });
+            assert!(!session.exists());
+            assert!(!root.join("note.mp3").exists());
+        }
         fs::remove_dir_all(base).unwrap();
     }
 

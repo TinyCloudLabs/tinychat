@@ -83,14 +83,15 @@ On-device transcription takes identifiers, not a webview-selected audio path
 or URL: native code resolves regular audio without following symlinks, starts
 its own in-process Whisper server, validates the loopback URL, and forces the
 Whisper provider. The upstream server start/stop grants remain for the
-recorder's existing model lease; replacing them with a native lifetime lease
-is separate work needed to close the same-host stale-port race.
+recorder's existing model lease; TC-927 will replace them with a native
+lifetime lease to close the same-host stale-port race.
 
 `EXO_IPC_SELFTEST=1 bun run dev:desktop` probes the real webview ACL in
 debug builds. macOS CI runs `cargo test --release --lib --locked`, launches a
-release-profile app with `ipc-selftest` against an isolated vault, and fails
-when generated permissions (including untracked files) differ from the
-committed tree. Ordinary release builds compile the self-test out.
+release-profile app with `ipc-selftest` against an isolated vault, and requires
+its `[EXO_IPC_SELFTEST] ALL PASSED` sentinel with no FAIL/TIMEOUT lines. CI
+also fails when generated permissions (including untracked files) differ from
+the committed tree. Ordinary release builds compile the self-test out.
 
 The vault lives under `~/Library/Application Support/xyz.tinycloud.exo` in
 both dev and release builds. Exo's vendored anarlog storage crate uses the
