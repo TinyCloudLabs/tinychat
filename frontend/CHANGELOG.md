@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.31
+
+### Patch Changes
+
+- 7b17239: Refresh the Library when the new recorder lands a voice note through Stop, Save now, or sign-in recovery, and when on-device or private-cloud transcription (including recovery), a notetaker browser import or newly observed server delivery, or an audio upload commits a transcript. Revalidate only the saved note while preserving its audio and prior reads on failure, and retry failed reads on Try again or reopening. Ignore late saves from a previous account.
+
 ## 0.6.0-beta.30
 
 No changes in this release.
