@@ -2,7 +2,7 @@
 // pattern as `pendingStore` in recorderSaves.ts. Used by the recorder's transcription route
 // control and by the Settings "Voice notes" card, so both show the same model state live.
 import { localTranscriptionUnavailable } from "./captureEngine";
-import { isOnDeviceReady, OnDeviceStt, type OnDeviceSttStatus } from "./onDeviceStt";
+import { isAppleSpeech, isOnDeviceReady, isOnDeviceStatusLoaded, OnDeviceStt, type OnDeviceSttStatus } from "./onDeviceStt";
 
 const EMPTY_STATUS: OnDeviceSttStatus = {
   models: [],
@@ -118,8 +118,21 @@ export function onDeviceDownloadTotalBytes(status: OnDeviceSttStatus): number {
   return (primary?.totalBytes ?? 0) + (vad?.totalBytes ?? 0);
 }
 
+/** One line for iOS's built-in speech: iOS installs its own assets, so there is no size and no percent to show. */
+function appleSpeechLine(status: OnDeviceSttStatus): string {
+  switch (status.appleSpeech) {
+    case "ready": return "Ready";
+    case "unsupported": return "Not available on this iPhone";
+    case "locale_unsupported": return "Not available in this language";
+    case "asset_missing":
+      if (status.download.state === "failed") return "Couldn't get speech from iOS";
+      return status.download.state === "running" ? "Getting speech from iOS…" : "Speech from iOS isn't on this phone yet";
+  }
+}
+
 /** One line describing the primary model's state, for the recorder and Settings. */
 export function onDeviceModelLine(status: OnDeviceSttStatus): { text: string; percent: number | null } {
+  if (isAppleSpeech(status)) return { text: appleSpeechLine(status), percent: null };
   const primary = primaryOnDeviceModel(status);
   const totalMb = Math.round(onDeviceDownloadTotalBytes(status) / (1024 * 1024));
   if (!primary || primary.state === "absent") return { text: `Not downloaded (${totalMb} MB)`, percent: null };
@@ -135,7 +148,7 @@ export function onDeviceModelLine(status: OnDeviceSttStatus): { text: string; pe
 /**
  * Starts the model download (Wi-Fi only) and resolves when it ends: the reason it failed, or null once the model is
  * on the phone. A download already running in this process is joined, never started twice. The model's own states
- * arrive through the status.
+ * arrive through the status. On iOS the same call has the OS install its speech assets for this phone's language.
  */
 export function downloadOnDeviceModel(): Promise<string | null> {
   if (downloadInFlight) return downloadInFlight;
@@ -158,7 +171,23 @@ export function downloadOnDeviceModel(): Promise<string | null> {
   return run;
 }
 
+async function finishAppleSpeechInstall(): Promise<string | null> {
+  try {
+    await OnDeviceStt.installSpeechAssets();
+    await onDeviceSttStore.refresh();
+  } catch (caught) {
+    console.error("[OnDeviceStt] installSpeechAssets failed", caught);
+    await onDeviceSttStore.refresh().catch((refreshCaught: unknown) => console.warn("[OnDeviceStt] status() failed after a failed speech install", refreshCaught));
+    return "Couldn't get speech from iOS";
+  }
+  if (isOnDeviceReady(snapshot)) return null;
+  console.error("[OnDeviceStt] The speech install finished but speech is not ready", snapshot);
+  return "Couldn't get speech from iOS";
+}
+
 async function finishDownload(): Promise<string | null> {
+  if (!isOnDeviceStatusLoaded(snapshot)) await onDeviceSttStore.refresh();
+  if (isAppleSpeech(snapshot)) return finishAppleSpeechInstall();
   try {
     await OnDeviceStt.downloadNow({ allowCellular: false });
     await onDeviceSttStore.refresh();
@@ -173,7 +202,7 @@ async function finishDownload(): Promise<string | null> {
 }
 
 /**
- * Makes sure the on-device model is on its way, without anyone asking for a "Get model" step: a no-op once it is
+ * Makes sure the on-device model (on iOS, the OS's speech assets) is on its way, without anyone asking for a "Get model" step: a no-op once it is
  * ready or already moving. A download that failed is left showing its error (no silent retry loop) unless `retry`
  * says the user just asked again. Unknown status (not read yet) does nothing yet; the status that arrives tries again.
  * Only a Local choice, a recording on Local or a note waiting for the model may call this: a preference write that
@@ -185,12 +214,29 @@ export function ensureOnDeviceModel({ retry = false }: { retry?: boolean } = {})
   start();
   if (downloadInFlight) return;
   const status = snapshot;
-  if (status.models.length === 0 || isOnDeviceReady(status)) return;
+  if (!isOnDeviceStatusLoaded(status) || isOnDeviceReady(status)) return;
+  if (isAppleSpeech(status)) {
+    // Only missing assets are fetched; "unsupported" and "locale_unsupported" have nothing to install.
+    if (status.appleSpeech !== "asset_missing" || status.download.state === "running") return;
+    if (!retry && (downloadError !== null || status.download.state === "failed")) return;
+    void downloadOnDeviceModel();
+    return;
+  }
   const needed = [primaryOnDeviceModel(status), status.models.find((model) => model.id === "silero-vad")];
   if (needed.some((model) => model && ["queued", "downloading", "verifying", "checking"].includes(model.state))) return;
   if (["running", "waiting_for_network", "low_data_mode"].includes(status.download.state)) return;
   if (!retry && (downloadError !== null || status.download.state === "failed" || needed.some((model) => model?.state === "failed"))) return;
   void downloadOnDeviceModel();
+}
+
+/**
+ * iOS's speech assets are OS-managed and free, so a phone whose default is Local fetches them at launch instead of at
+ * the first recording. Android's model download is never started by a default: it waits for a choice or a note.
+ */
+export async function ensureAppleSpeechAssets(): Promise<void> {
+  if (localTranscriptionUnavailable()) return;
+  await onDeviceSttStore.refresh();
+  if (isAppleSpeech(snapshot)) ensureOnDeviceModel();
 }
 
 /** Starts transcribing a note on this phone again. The reason it could not, or null. */

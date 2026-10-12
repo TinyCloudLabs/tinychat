@@ -239,3 +239,57 @@ describe("the running job's percent, from the plugin's own progress event", () =
     run.unsubscribe();
   });
 });
+
+describe("iOS's built-in speech is fetched from the OS, not downloaded", () => {
+  test("a note waiting for speech assets installs them once, and is queued when they land", async () => {
+    const fake = createFakeOnDeviceStt();
+    fake.controls.useAppleSpeech("asset_missing");
+    const install = spyOn(fake.plugin, "installSpeechAssets");
+    const download = spyOn(fake.plugin, "downloadNow");
+    __setOnDeviceSttForTests(fake.plugin);
+    await fake.plugin.enqueue({ id: "n1" });
+    await onDeviceSttStore.refresh();
+    ensureOnDeviceModel();
+    await tick();
+    await tick();
+    expect(install).toHaveBeenCalledTimes(1);
+    expect(download).not.toHaveBeenCalled();
+    expect(isOnDeviceReady(onDeviceSttStore.snapshot())).toBe(true);
+    expect(onDeviceSttStore.snapshot().queue[0]?.state).toBe("queued");
+  });
+
+  test("an iPhone or language that cannot do it installs nothing", async () => {
+    for (const state of ["unsupported", "locale_unsupported"] as const) {
+      const fake = createFakeOnDeviceStt();
+      fake.controls.useAppleSpeech(state);
+      const install = spyOn(fake.plugin, "installSpeechAssets");
+      __setOnDeviceSttForTests(fake.plugin);
+      __resetOnDeviceSttStoreForTests();
+      await onDeviceSttStore.refresh();
+      ensureOnDeviceModel();
+      await tick();
+      expect(install).not.toHaveBeenCalled();
+    }
+  });
+
+  test("a failed install shows calm copy, is not retried on its own, and is retried when asked", async () => {
+    const fake = createFakeOnDeviceStt();
+    fake.controls.useAppleSpeech("asset_missing");
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    let calls = 0;
+    const plugin = { ...fake.plugin, async installSpeechAssets() { calls++; throw new Error("AssetInventory exploded"); } } as OnDeviceSttPlugin;
+    __setOnDeviceSttForTests(plugin);
+    await onDeviceSttStore.refresh();
+    ensureOnDeviceModel();
+    await tick();
+    await tick();
+    expect(onDeviceSttStore.downloadError()).toBe("Couldn't get speech from iOS");
+    ensureOnDeviceModel();
+    await tick();
+    expect(calls).toBe(1);
+    ensureOnDeviceModel({ retry: true });
+    await tick();
+    expect(calls).toBe(2);
+    error.mockRestore();
+  });
+});

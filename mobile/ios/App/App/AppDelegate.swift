@@ -21,13 +21,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
         return true
     }
 
-    func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String,
-                     completionHandler: @escaping () -> Void) {
-        if !AppLifecycleHooks.handleEventsForBackgroundURLSession(identifier, completionHandler: completionHandler) {
-            completionHandler()
-        }
-    }
-
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         AppLifecycleHooks.didReceive(response, completion: completionHandler)

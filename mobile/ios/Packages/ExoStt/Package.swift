@@ -3,25 +3,17 @@ import PackageDescription
 
 let package = Package(
     name: "ExoStt",
-    platforms: [.iOS("18.0"), .macOS(.v14)],
+    platforms: [.iOS("26.0"), .macOS(.v14)],
     products: [
-        .library(name: "ExoStt", targets: ["ExoStt"]),
-        .executable(name: "SttBenchMac", targets: ["SttBenchMac"])
+        .library(name: "ExoStt", targets: ["ExoStt"])
     ],
     dependencies: [
-        .package(path: "../SttCore"),
-        .package(path: "../ExoCapture"),
-        .package(url: "https://github.com/k2-fsa/sherpa-onnx", exact: "1.13.8")
+        .package(path: "../ExoCapture")
     ],
     targets: [
-        .systemLibrary(name: "CBZip2"),
         .target(name: "ExoStt", dependencies: [
-            .product(name: "SttCore", package: "SttCore"),
-            .product(name: "ExoCapture", package: "ExoCapture", condition: .when(platforms: [.iOS])),
-            .product(name: "sherpa-onnx", package: "sherpa-onnx"),
-            "CBZip2"
+            .product(name: "ExoCapture", package: "ExoCapture", condition: .when(platforms: [.iOS]))
         ]),
-        .executableTarget(name: "SttBenchMac", dependencies: ["ExoStt"]),
         .testTarget(name: "ExoSttTests", dependencies: ["ExoStt"])
     ]
 )

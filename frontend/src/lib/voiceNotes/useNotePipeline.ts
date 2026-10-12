@@ -32,7 +32,7 @@ import {
   type PipelineOnDevice,
   type PipelineRoute,
 } from "./notePipeline";
-import { OnDeviceStt, type OnDeviceSttStatus } from "./onDeviceStt";
+import { isAppleSpeech, OnDeviceStt, type OnDeviceSttStatus } from "./onDeviceStt";
 import { onDeviceQueuePlace } from "./onDeviceQueue";
 import { downloadOnDeviceModel, onDeviceSttStore, retryOnDeviceNote } from "./onDeviceSttStore";
 import {
@@ -154,7 +154,7 @@ const MODEL_PROGRESS: readonly PipelineModelState[] = ["absent", "queued", "down
  * fetches both (`onDeviceDownloadTotalBytes`), so the stepper has a single model. Its state is the least-ready of
  * the two (failed beats everything, then absent, queued, downloading, verifying, checking; only both ready is ready),
  * its bytes and total are the sums (so the percent is of the whole download), and its error is the failed one's.
- * `models` empty means the status has not loaded, so the model is unknown (null) and nothing is claimed. A list with
+ * `models` empty means the status has not loaded, so the model is unknown (null) and nothing is claimed. iOS has no models at all (its built-in speech reports through `PipelineOnDevice.appleSpeech`), so it is null there too. A list with
  * a primary model but no VAD entry is judged on the primary alone: the status is the only authority on what exists.
  */
 export function combinedModel(status: OnDeviceSttStatus): PipelineOnDevice["model"] {
@@ -226,6 +226,7 @@ function onDeviceInput(facts: NotePipelineFacts): PipelineOnDevice | null {
     queue: place === null ? null : { position: place.position, inLine: place.inLine, percent: place.percent },
     model: combinedModel(status),
     download: status.download.state,
+    ...(isAppleSpeech(status) ? { appleSpeech: status.appleSpeech } : {}),
     sync: facts.transcriptSync,
   };
 }
