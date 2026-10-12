@@ -959,13 +959,20 @@ mod tests {
     #[test]
     fn selected_input_and_missing_fallback_use_fake_devices() {
         let devices = vec!["MacBook Pro Microphone".into(), "BlackHole 2ch".into()];
+        let (selected, missing) = resolve_input(
+            &devices,
+            Some("BlackHole 2ch"),
+            Some("MacBook Pro Microphone"),
+        )
+        .unwrap();
+        assert_eq!(missing, None);
+        let (_, routed) = begin(&mut EngineState::default(), selected).unwrap();
         assert_eq!(
-            resolve_input(
-                &devices,
-                Some("BlackHole 2ch"),
-                Some("MacBook Pro Microphone")
-            ),
-            Ok(("BlackHole 2ch".into(), None))
+            capture_params("segment", routed)
+                .unwrap()
+                .mic_device
+                .as_deref(),
+            Some("BlackHole 2ch")
         );
         assert_eq!(
             resolve_input(&devices, Some("Bose"), Some("MacBook Pro Microphone")),
