@@ -50,8 +50,8 @@ function publish(key: string, next: OnDeviceTranscriptSyncState | null): void {
 }
 
 /**
- * If this note already has a local on-device transcript and a space row (`ledger.audio.state ===
- * "saved"`), write it onto that row through the existing path, publishing `syncing` then `synced`
+ * If this note already has a local on-device transcript and a space row (`ledger.audio.rowId` is
+ * present, or audio was already saved), write it onto that row through the existing path, publishing `syncing` then `synced`
  * or `failed` (see `onDeviceTranscriptSyncState`). A no-op, with nothing published, without either.
  * Failures are logged and published, not thrown: the local transcript stays valid, and the next
  * save or "transcribed" event tries again. A recording that says its on-device transcription is done (`stt.state ===
@@ -65,10 +65,10 @@ function publish(key: string, next: OnDeviceTranscriptSyncState | null): void {
  */
 export function syncOnDeviceTranscript(
   tcw: TinyCloudWeb,
-  recording: { id: string; owner?: string | null; ledger?: { audio: { state: string } }; stt?: Pick<NoteSttState, "state"> },
+  recording: { id: string; owner?: string | null; ledger?: { audio: { state: string; rowId?: string | null } }; stt?: Pick<NoteSttState, "state"> },
   requestedAccount: AccountContext = captureAccountContext(tcw),
 ): Promise<boolean> {
-  if (recording.ledger?.audio.state !== "saved") return Promise.resolve(false);
+  if (recording.ledger?.audio.state !== "saved" && !recording.ledger?.audio.rowId) return Promise.resolve(false);
   const key = syncKey(tcw, recording.id);
   const expected = recording.stt?.state === "done";
   return enqueue(key, async () => {

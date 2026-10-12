@@ -20,7 +20,7 @@ import {
 } from "./captureIssues";
 import { RowBadge } from "../library/RowBadge";
 import { HOME_COPY } from "./homeCopy";
-import { PipelineHalo, haloLabel } from "../pipeline/PipelineHalo";
+import { pipelineTrackLabel, PipelineTrackSummary } from "../pipeline/PipelineTrackSummary";
 import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 
 export interface SoftRowProps {
@@ -58,7 +58,7 @@ export function softRowLabel(
 ): string {
   const parts = [props.title];
   if (props.badge) parts.push(props.badge);
-  if (props.pipeline && !props.pipeline.done) parts.push(haloLabel(props.pipeline));
+  if (props.pipeline && !props.pipeline.done) parts.push(pipelineTrackLabel(props.pipeline));
   parts.push(stateLine(props.issue, props.meta));
   if (props.durationSecs != null)
     parts.push(formatSpokenDuration(props.durationSecs));
@@ -110,6 +110,7 @@ export function SoftRow(props: SoftRowProps) {
           {props.badge && <RowBadge>{props.badge}</RowBadge>}
           {stateLine(issue, props.meta)}
         </span>
+        {props.pipeline && !props.pipeline.done && <PipelineTrackSummary pipeline={props.pipeline} />}
       </span>
       {(props.durationSecs != null ||
         props.href !== undefined ||
@@ -120,7 +121,6 @@ export function SoftRow(props: SoftRowProps) {
               {formatClockDuration(props.durationSecs)}
             </span>
           )}
-          {props.pipeline && <PipelineHalo pipeline={props.pipeline} />}
           {(props.href !== undefined || props.onActivate) && (
             <ChevronRightIcon className="soft-chev" />
           )}
