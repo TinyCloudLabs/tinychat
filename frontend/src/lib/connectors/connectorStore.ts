@@ -23,29 +23,25 @@
 import { reportStorageError, reportStorageWriteSucceeded, storageSaveMessage, trackStorageWrites } from "../storageStatus";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import { APP_ID } from "../threadStore";
+import {
+  CONNECTORS_SQL_DB_NAME,
+  CONNECTORS_KV_PREFIX,
+  CONNECTOR_SCHEMA,
+  transcriptKvKey,
+  type NormalizedMeeting,
+} from "@tinyboilerplate/core";
+export {
+  CONNECTORS_SQL_DB_NAME,
+  CONNECTORS_KV_PREFIX,
+  transcriptKvKey,
+  type NormalizedMeeting,
+} from "@tinyboilerplate/core";
 import type {
   FirefliesSentence,
   FirefliesTranscript,
 } from "./firefliesClient";
 import type { ConnectorConnection, ConnectorId } from "./types";
 
-/** Full resolved SQL db path — must match the granted resource string. */
-export const CONNECTORS_SQL_DB_NAME = `${APP_ID}/connectors`;
-
-/**
- * Full resolved KV key prefix — must match the granted resource string.
- * The manifest grants `tinycloud.kv` on `connectors/`, which resolves to
- * `${APP_ID}/connectors/` (trailing slash = prefix match), so every key the
- * store writes has to start here. Single source of the prefix — callers build
- * keys through {@link transcriptKvKey}, never by hand.
- */
-export const CONNECTORS_KV_PREFIX = `${APP_ID}/connectors`;
-
-/** Full KV key for a source's transcript body. */
-export function transcriptKvKey(source: string, sourceId: string): string {
-  return `${CONNECTORS_KV_PREFIX}/${source}/transcript/${sourceId}`;
-}
 
 /** Connector-scoped Drive Changes cursor; it is not the UI sync timestamp. */
 export function driveCursorKvKey(source: string): string {
@@ -82,42 +78,6 @@ function fail(err: UnderlyingError, context: string): { ok: false; error: StoreE
   reportStorageError(err);
   return { ok: false, error: { code, message: storageSaveMessage(err) ?? `${context}: [${code}] ${msg}` } };
 }
-
-/** Schema statements, executed one at a time after the read-only probe. */
-const SCHEMA: { sql: string; table: string }[] = [
-  {
-    table: "connector_state",
-    sql: `CREATE TABLE IF NOT EXISTS connector_state (
-      connector_id TEXT PRIMARY KEY,
-      status TEXT NOT NULL,
-      last_synced_at TEXT,
-      last_sync_status TEXT,
-      last_sync_error TEXT,
-      item_count INTEGER NOT NULL DEFAULT 0,
-      updated_at TEXT NOT NULL
-    )`,
-  },
-  {
-    table: "connector_meeting",
-    sql: `CREATE TABLE IF NOT EXISTS connector_meeting (
-      id TEXT PRIMARY KEY,
-      source TEXT NOT NULL,
-      source_id TEXT NOT NULL,
-      title TEXT,
-      started_at TEXT,
-      duration_secs REAL,
-      organizer_email TEXT,
-      participants TEXT,
-      summary_overview TEXT,
-      summary_action_items TEXT,
-      keywords TEXT,
-      meeting_type TEXT,
-      metadata TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )`,
-  },
-];
 
 function store(tcw: TinyCloudWeb) {
   return trackStorageWrites(tcw.sql.db(CONNECTORS_SQL_DB_NAME));
@@ -175,7 +135,7 @@ export async function ensureSchema(tcw: TinyCloudWeb, checkpoint: () => void = (
 
   const run = (async (): Promise<StoreResult<void>> => {
     const db = store(tcw);
-    const tables = SCHEMA.map(({ table }) => table);
+    const tables = CONNECTOR_SCHEMA.map(({ table }) => table);
     checkCallers();
     const existingResult = await db.query(
       `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`,
@@ -184,7 +144,7 @@ export async function ensureSchema(tcw: TinyCloudWeb, checkpoint: () => void = (
     if (!existingResult.ok) return fail(existingResult.error, "ensureSchema probe");
     const existingRows = existingResult.data.rows as unknown as unknown[][];
     const existing = new Set(existingRows.map((row) => row[0]).filter((name): name is string => typeof name === "string"));
-    for (const { sql, table } of SCHEMA) {
+    for (const { sql, table } of CONNECTOR_SCHEMA) {
       if (existing.has(table)) continue;
       checkCallers();
       const created = await db.execute(sql);
@@ -294,22 +254,6 @@ export async function updateSyncState(
 
 // ── Meeting rows ────────────────────────────────────────────────────────
 
-export interface NormalizedMeeting {
-  /** crypto.randomUUID() — assigned by normalize, kept stable across retries. */
-  id: string;
-  source: string;
-  sourceId: string;
-  title: string | null;
-  startedAt: string | null;
-  durationSecs: number | null;
-  organizerEmail: string | null;
-  participants: { name: string; email: string | null }[];
-  summaryOverview: string | null;
-  summaryActionItems: string | null;
-  keywords: string[] | null;
-  meetingType: string | null;
-  metadata: Record<string, unknown>;
-}
 
 export async function listKnownSourceIds(
   tcw: TinyCloudWeb,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { CalendarAutojoinWorker } from "../services/calendar-autojoin-worker.js";
+import { CalendarAutojoinWorker, type CalendarAutojoinWorkerOptions } from "../services/calendar-autojoin-worker.js";
 import { CalendarAutojoinConnection, CalendarAutojoinError } from "../services/calendar-autojoin-connection.js";
 import { MemoryCalendarAutojoinStore, TenantCoordinator, type CalendarConnection, type CalendarOccurrence } from "../services/calendar-autojoin-store.js";
 import { calendarOccurrenceIdentity, eligibleCalendarEvent, ExternalOperationLimiter, GoogleCalendarError, type GoogleCalendarEvent, type GoogleCalendarPort } from "../services/google-calendar.js";
@@ -20,7 +20,7 @@ const deferred = <T>() => {
   return { promise, resolve };
 };
 
-async function fixture() {
+async function fixture(config: Pick<CalendarAutojoinWorkerOptions, "webhookUrl" | "onRecordingCompleted"> = {}) {
   let now = START - 30_000;
   const store = new MemoryCalendarAutojoinStore();
   const index = new MemoryTranscriberIndexStore();
@@ -77,7 +77,7 @@ async function fixture() {
     },
   };
   const worker = () => new CalendarAutojoinWorker({ store, index, coordinator, calendar, api, connection,
-    now: () => now, random: () => 0, sleep: async ms => { sleeps.push(ms); now += ms; } });
+    now: () => now, random: () => 0, sleep: async ms => { sleeps.push(ms); now += ms; }, ...config });
   await store.putConnection({ tenant: TENANT, subject: SUBJECT, state: "enabled", generation: 1,
     scopes: [], nextScanAt: 0, scanComplete: true });
   const id = calendarOccurrenceIdentity(TENANT, SUBJECT, current.events[0]!)!;
@@ -106,6 +106,33 @@ async function fixture() {
 }
 
 describe("calendar dispatch crash and policy boundaries", () => {
+  test("new calendar intents carry the webhook in their hash and completion wakes once", async () => {
+    const wakes: Array<[string, string]> = [];
+    const webhookUrl = "https://tinychat.example/api/transcriber/webhooks/ptx";
+    const f = await fixture({ webhookUrl, onRecordingCompleted: async (tenant, id) => { wakes.push([tenant, id]); } });
+    await f.worker().tick();
+    const sent = f.posts[0]!;
+    expect(sent.input.webhook_url).toBe(webhookUrl);
+    expect(f.hashes.get(sent.key)).toBe(computeCreateRequestHash(sent.input));
+    f.records.get(sent.key)!.status = "completed";
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(wakes).toEqual([[TENANT, "mtg_1"]]);
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(wakes).toEqual([[TENANT, "mtg_1"]]);
+  });
+
+  test("pre-existing frozen calendar intents retain their exact body across a webhook deployment", async () => {
+    const f = await fixture({ webhookUrl: "https://tinychat.example/api/transcriber/webhooks/ptx" });
+    const frozen = await f.seedUnknown();
+    await f.worker().tick();
+    expect(f.posts).toHaveLength(1);
+    expect(f.posts[0]!.input).toEqual(frozen.createBody);
+    expect(f.posts[0]!.input.webhook_url).toBeUndefined();
+    expect(f.hashes.get(f.posts[0]!.key)).toBe(frozen.requestHash);
+  });
+
   test("a failed intent write cannot POST; the next tick can retry safely", async () => {
     const f = await fixture();
     const put = f.store.putOccurrence.bind(f.store);
@@ -573,7 +600,8 @@ const B_EMAIL = "bee@example.test";
 const A_EMAIL = "owner@example.test";
 const ROOM = "https://meet.google.com/abc-defg-hij";
 
-async function twoTenants(options: { sharing?: boolean; bResponse?: string | null; bEmail?: string; aEmail?: string | null } = {}) {
+async function twoTenants(options: { sharing?: boolean; bResponse?: string | null; bEmail?: string; aEmail?: string | null }
+  & Pick<CalendarAutojoinWorkerOptions, "onRecordingCompleted"> = {}) {
   let now = START - 30_000;
   const store = new MemoryCalendarAutojoinStore();
   const index = new MemoryTranscriberIndexStore();
@@ -644,7 +672,8 @@ async function twoTenants(options: { sharing?: boolean; bResponse?: string | nul
     },
   };
   const worker = () => new CalendarAutojoinWorker({ store, index, coordinator, meetingCoordinator, calendar, api, connection,
-    sharingEnabled: options.sharing ?? true, now: () => now, random: () => 0, sleep: async ms => { now += ms; } });
+    sharingEnabled: options.sharing ?? true, onRecordingCompleted: options.onRecordingCompleted,
+    now: () => now, random: () => 0, sleep: async ms => { now += ms; } });
   const connect = (tenant: string, subject: string, patch: Partial<CalendarConnection> = {}) => store.putConnection({
     tenant, subject, state: "enabled", generation: 1, scopes: [], nextScanAt: 0, scanComplete: true, ...patch });
   await connect(A, SUBJECT_A, options.aEmail === null ? {} : { verifiedEmail: options.aEmail ?? A_EMAIL });
@@ -752,6 +781,31 @@ describe("TC-907 ptx capacity_exhausted", () => {
     expect((await f.row())?.disposition).not.toBe("capacity_exhausted");
   });
 
+  test("TC-641: an occurrence TC-907 ends for capacity never wakes server delivery and indexes nothing", async () => {
+    const wakes: Array<[string, string]> = [];
+    const f = await fixture({ webhookUrl: "https://tinychat.example/api/transcriber/webhooks/ptx",
+      onRecordingCompleted: async (tenant, id) => { wakes.push([tenant, id]); } });
+    f.api.createMeeting = async () => { throw busy(); };
+    await runUntil(f, CUTOFF + MARGIN + 900_000);
+    expect(await f.row()).toMatchObject({ phase: "terminal", disposition: "capacity_exhausted" });
+    expect((await f.row())?.meetingId).toBeUndefined();
+    expect(await f.index.list(TENANT)).toEqual([]);
+    expect(wakes).toEqual([]);
+  });
+
+  test("TC-641: a meeting ptx admitted and then failed for capacity finishes failed and never wakes delivery", async () => {
+    const wakes: Array<[string, string]> = [];
+    const f = await fixture({ onRecordingCompleted: async (tenant, id) => { wakes.push([tenant, id]); } });
+    await f.worker().tick();
+    const sent = f.posts[0]!;
+    Object.assign(f.records.get(sent.key)!, { status: "failed",
+      error: { type: "provider_error", code: "capacity_exhausted", message: "All meeting notetakers were busy when this meeting started." } });
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(await f.row()).toMatchObject({ phase: "terminal", disposition: "failed" });
+    expect(wakes).toEqual([]);
+  });
+
   test("a failure before any POST is sent still grows the backoff", async () => {
     const f = await fixture();
     const put = f.store.putOccurrence.bind(f.store);
@@ -788,6 +842,18 @@ describe("TC-907 ptx capacity_exhausted", () => {
 });
 
 describe("TC-581 shared capture across tenants", () => {
+  test("TC-641: only the owner's completion wakes server delivery; the shared recipient never does", async () => {
+    const wakes: Array<[string, string]> = [];
+    const f = await twoTenants({ onRecordingCompleted: async (tenant, id) => { wakes.push([tenant, id]); } });
+    await f.attach();
+    f.meeting().status = "completed";
+    f.afterWindow();
+    await f.worker().tick();
+    expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition: "shared" });
+    expect(await f.rowA()).toMatchObject({ phase: "terminal", disposition: "completed" });
+    expect(wakes).toEqual([[A, "mtg_1"]]);
+  });
+
   test("A dispatches and B overlaps: B makes zero POSTs, shows shared_capture_pending, and its status has no meeting id", async () => {
     const f = await twoTenants();
     await f.attach();
