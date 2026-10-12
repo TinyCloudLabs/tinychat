@@ -291,6 +291,15 @@ function harness(script: {
 const run = (h: ReturnType<typeof harness>, report: (s: VoiceNoteTranscriptionStatus) => void = () => {}) =>
   h.cloud.transcribe({ sourceId: "rec-1", capabilities: CAPS, loadAudio: async () => AUDIO }, report);
 
+test("Private asks PTX to identify speakers only when enabled on a mono note", async () => {
+  for (const [identifySpeakers, channelCount] of [[true, 1], [false, 1], [true, 2]] as const) {
+    const h = harness({});
+    await h.cloud.transcribe({ sourceId: `rec-${identifySpeakers}-${channelCount}`, capabilities: CAPS,
+      loadAudio: async () => AUDIO, identifySpeakers, channelCount }, () => {});
+    expect(h.creates[0]?.body.diarize).toBe(identifySpeakers && channelCount === 1 ? true : undefined);
+  }
+});
+
 describe("gating", () => {
   test("a PTX origin is a bare https origin; http only to a loopback port when allowed", () => {
     expect(parsePtxUploadOrigin(undefined, false)).toBeNull();
@@ -722,6 +731,20 @@ describe("per device capability and per account storage", () => {
 });
 
 describe("transcript normalization", () => {
+  test("diarized Private turns retain their speaker labels", () => {
+    const transcript: PrivateCloudTranscript = {
+      ...TRANSCRIPT, diarized: true,
+      speakers: [{ id: "speaker_0", name: "Speaker 1", channel: 0 }, { id: "speaker_1", name: "Speaker 2", channel: 0 }],
+      segments: [
+        { channel: 0, start: 0, end: 1, text: "hello", speaker_id: "speaker_0" },
+        { channel: 0, start: 1, end: 2, text: "hi", speaker_id: "speaker_1" },
+      ],
+    };
+    expect(voiceNoteSentences(transcript).map((sentence) => sentence.speaker_name)).toEqual(["Speaker 1", "Speaker 2"]);
+    expect(prepareVoiceNoteTranscript(transcript, "2026-10-12T00:00:00Z", 1)).toMatchObject({
+      speakers: ["Speaker 1", "Speaker 2"], metadata: { speaker_labels: "diarized" },
+    });
+  });
   test("segments become time-ordered 'You' turns of at most 60 s, trimmed, empty ones dropped", () => {
     expect(voiceNoteSentences(TRANSCRIPT)).toEqual([
       { index: 0, speaker_name: "You", text: "Remember to book the venue.", start_time: 0.5, end_time: 9 },

@@ -149,7 +149,7 @@ export interface VoiceNoteRecorderController {
 }
 
 export function createVoiceNoteRecorderController({ tcw, available, transcriber, pipeline, onDeviceReady,
-  appleInterim, subscribeAppActive, noteLoader = loadNote, noteRetryScheduler = (delayMs, retry) => {
+  subscribeAppActive, noteLoader = loadNote, noteRetryScheduler = (delayMs, retry) => {
     const timer = setTimeout(retry, delayMs);
     return () => clearTimeout(timer);
   } }: VoiceNoteRecorderControllerOptions): VoiceNoteRecorderController {
@@ -601,9 +601,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       }
       if (scope === "recording") {
         if (state.phase !== "recording" || !state.recordingId) return "unavailable";
-        const identifySpeakers = id === "on-device" && captureCapabilities().localTranscription
-          && !(appleInterim?.() ?? onDeviceSttStore.snapshot().engine === "apple-speech")
-          ? preference.identifySpeakers : false;
+        const identifySpeakers = id === "private-cloud" && preference.identifySpeakers;
         await VoiceNotes.setRecordingOptions({ transcriber: id, identifySpeakers });
         acceptNativeOptions(await VoiceNotes.status());
       } else {
@@ -619,10 +617,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       if (!available) return "unavailable";
       const id = scope === "recording" ? choice.id : effectiveCaptureOptions(preference, signedIn).transcriber;
       if (scope === "recording" && (state.phase !== "recording" || choice.source !== "recording")) return "unavailable";
-      if (id !== "on-device" && id !== "assemblyai") return "unavailable";
-      if (id === "on-device" && !captureCapabilities().localTranscription) return "unavailable";
-      if (id === "assemblyai" || (id === "on-device" && (appleInterim?.() ?? onDeviceSttStore.snapshot().engine === "apple-speech")))
-        return "unavailable";
+      if (id !== "private-cloud" && id !== "assemblyai") return "unavailable";
+      if (id === "assemblyai") return "unavailable";
       if (scope === "recording") {
         await VoiceNotes.setRecordingOptions({ identifySpeakers: on });
         acceptNativeOptions(await VoiceNotes.status());
