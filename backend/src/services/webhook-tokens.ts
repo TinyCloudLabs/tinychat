@@ -1,7 +1,7 @@
 import { createHmac, hkdfSync, randomBytes } from "node:crypto";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import * as serverPackage from "@tinyboilerplate/server";
-import { verifyFirefliesSignature } from "./webhook-verify.js";
+import { verifyHmacSha256Signature } from "./webhook-verify.js";
 
 const { assertKvResult, withSessionRefresh } = serverPackage;
 const { isKvMissingKeyResult } = serverPackage as typeof serverPackage & {
@@ -337,7 +337,7 @@ export function verifyWebhookDelivery(input: {
     sigKey: WebhookSigKey,
   ): WebhookVerifyResult | null => {
     if (
-      verifyFirefliesSignature(
+      verifyHmacSha256Signature(
         rawBody,
         signatureHeader,
         deriveWebhookSecretWithMaster(source, token, master),
@@ -347,7 +347,7 @@ export function verifyWebhookDelivery(input: {
       return { verified: true, sigKey, secretForm: "current" };
     }
     if (
-      verifyFirefliesSignature(
+      verifyHmacSha256Signature(
         rawBody,
         signatureHeader,
         deriveLegacyWebhookSecretWithMaster(source, token, master),

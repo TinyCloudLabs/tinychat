@@ -72,6 +72,27 @@ size and CRC32 before installation. The vendored Whisper transcription code
 reports work during receive, decode, VAD and inference, so long quiet notes do
 not look stalled. Its supported maximum is eight hours.
 
+The webview cannot invoke the transcription plugin's `start_capture` or
+`start_transcription`, nor the retired local capture/transcription commands.
+It also lacks plugin device/state/model-download grants. The main capability
+enumerates core APIs without menu or tray, and denies `core:image:from_path`,
+so an icon path cannot read an arbitrary local file. Native recorder capture
+reserves fresh session folders beneath the current vault's `sessions/`
+directory, rejecting symlinks and collisions before any batch-only capture.
+On-device transcription takes identifiers, not a webview-selected audio path
+or URL: native code resolves regular audio without following symlinks, starts
+its own in-process Whisper server, validates the loopback URL, and forces the
+Whisper provider. The upstream server start/stop grants remain for the
+recorder's existing model lease; TC-927 will replace them with a native
+lifetime lease to close the same-host stale-port race.
+
+`EXO_IPC_SELFTEST=1 bun run dev:desktop` probes the real webview ACL in
+debug builds. macOS CI runs `cargo test --release --lib --locked`, launches a
+release-profile app with `ipc-selftest` against an isolated vault, and requires
+its `[EXO_IPC_SELFTEST] ALL PASSED` sentinel with no FAIL/TIMEOUT lines. CI
+also fails when generated permissions (including untracked files) differ from
+the committed tree. Ordinary release builds compile the self-test out.
+
 The vault lives under `~/Library/Application Support/xyz.tinycloud.exo` in
 both dev and release builds. Exo's vendored anarlog storage crate uses the
 host bundle identifier, so it does not share an upstream app's vault. A
@@ -79,6 +100,58 @@ host bundle identifier, so it does not share an upstream app's vault. A
 
 macOS prompts for microphone and system-audio capture when those sources are
 used. `Entitlements.plist` grants audio input to signed bundles.
+
+## Native transcription eval (A2)
+
+`desktop/Cargo.toml` is a separate Linux evaluation workspace; the Tauri app
+keeps its own manifest and lockfile under `src-tauri/`. The runner uses the
+shared `local-transcription` mono importer and the production
+`owhisper-client`/`TranscribeService` path. Run the single synthetic smoke
+fixture and score the production-import response with A1:
+
+```sh
+cargo run --release --locked --manifest-path desktop/Cargo.toml -p transcript-quality-runner -- \
+  --fixture desktop/eval/transcript-quality/smoke \
+  --model <model.bin> --input mono --vocabulary off --output <run-dir>
+bun desktop/eval/transcript-quality/score-smoke.ts \
+  desktop/eval/transcript-quality/smoke <run-dir>
+```
+
+The runner reads the production `systemAudio` toggle from the fixture's
+`spec.json` and records it in `run.json`. The supported model filenames are
+`ggml-small-q8_0.bin` (`QuantizedSmall`) and
+`ggml-large-v3-turbo-q8_0.bin` (`QuantizedLargeTurbo`); `request.model` records
+the same WhisperModel ID that the desktop client sends. `smoke/` is excluded
+from A3's `fixtures/` baseline and G18 fixture namespace.
+
+Use the release profile for eval runs: the shipped app uses it too, and the
+Whisper C++ build and G17 runtime metrics differ under debug assertions.
+
+The app and runner both construct the native request with
+`RequestSpec::production`; macOS release tests verify the app's mapping to
+`TranscriptionParams` (language, keywords, model, and WhisperLocal provider).
+
+The glossary file is data only; production keywords remain empty until E.
+`bun desktop/eval/transcript-quality/check-workspace-sync.ts <closure.json>`
+checks both manifests' patch targets and build profiles and both lockfiles.
+Each package in the eval dependency closure must have the same name, version,
+source and checksum in the app closure; path packages must also resolve to the
+same manifest path. Shared packages cannot enable features absent from the app.
+The only allowed eval-only package is anarlog's test-data crate `data`;
+app-only feature-unified packages are allowed.
+
+On Linux, the CPU runner must match the app's enabled features on
+`whisper-local`, `transcribe-whisper-local`, `audio-chunking`,
+`exo-local-transcription`, `whisper-rs`, and `whisper-rs-sys`, except for the
+explicit Metal/accelerator features listed in the checker. On macOS, run the
+runner with `--release --features metal` and check exact feature equality with
+`bun desktop/eval/transcript-quality/check-workspace-sync.ts --platform macos
+<closure.json>`. Unexpected features or package drift fail either check.
+The checker requires `src-tauri/.cargo/` to contain only `config.toml`,
+whose sole table and key are `[env] POSTHOG_API_KEY`. Extra app config
+files (including extensionless `config`) and any eval-workspace `.cargo/`
+files fail parity: Cargo build, target, profile and patch overrides can
+otherwise change shipped code without changing the runner.
 
 ## Content-Security-Policy
 

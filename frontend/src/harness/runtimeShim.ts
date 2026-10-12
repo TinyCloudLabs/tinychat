@@ -160,6 +160,7 @@ export function createRuntimeShim({ scenario = "healthy", canvas = false }: { sc
   } as never);
 
   const sessionStore = {
+    getAddress: () => null,
     getToken: () => "test-token",
     isExpired: () => false,
     hasSession: () => true,

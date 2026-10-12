@@ -10,7 +10,6 @@ import { OFFERED_CHAT_MODELS } from "@tinyboilerplate/core";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { CaptureSurface } from "@/capture/CaptureSurface";
-import { captureEvents } from "@/capture/captureEvents";
 import { HeaderLiveChip } from "@/capture/recorder/HeaderLiveChip";
 import { RecordButton } from "@/capture/recorder/RecordButton";
 import { RecorderProvider, StaticRecorderProvider, type RecorderValue } from "@/capture/recorder/RecorderProvider";
@@ -197,7 +196,6 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
                   tcw={harnessTcw}
                   backendUrl={backendUrl}
                   sessionStore={harnessSessionStore}
-                  onSaved={() => captureEvents.emit("library-changed")}
                 >
                   {inside}
                   {recorderShell}

@@ -23,7 +23,8 @@ export type MicState = "idle" | "recording" | "silenced" | "paused" | "interrupt
 export type MicStateReason = "os_silenced" | "no_signal" | "input_muted" | "call" | "user" | "interruption"
   | "route_change" | "media_services_reset" | "read_error" | "stalled" | "app_suspended" | "writer_stalled"
   | "resume_blocked" | "resume_not_allowed" | "mic_unavailable" | "pause_timeout"
-  | "max_duration" | "disk_full" | "write_failed" | "permission_revoked" | null;
+  | "max_duration" | "disk_full" | "write_failed" | "permission_revoked"
+  | "unsafe_sessions_folder" | "session_exists" | null;
 
 export type TranscriberId = "off" | "on-device" | "private-cloud" | "assemblyai";
 export type CaptureSource = "in_app" | "quick_action" | "app_shortcut" | "intent" | "control" | "tile" | "widget" | "notification";
@@ -79,7 +80,10 @@ export interface LocalTranscript {
   engine: "parakeet-tdt-0.6b-v3" | "parakeet-tdt-110m-en" | "apple-speech" | "whispercpp" | "assemblyai" | "tinycloud-private-transcription";
   model: string | null; language: string | null; outcome: "transcribed" | "no_speech"; diarized: boolean;
   /** start/end are milliseconds: the native sidecar's canonical-JSON writer only accepts integers. */
-  segments: { start: number; end: number; text: string; speaker: string | null }[]; createdAt: string;
+  segments: { start: number; end: number; text: string; speaker: string | null;
+    /** Eval-only lineage. Not included in production transcripts. Times are seconds. */
+    words?: { text: string; start: number; end: number; channel: number | undefined;
+      timing: "token" | "fallback" | "none" }[] }[]; createdAt: string;
   provider?: Record<string, unknown>;
 }
 

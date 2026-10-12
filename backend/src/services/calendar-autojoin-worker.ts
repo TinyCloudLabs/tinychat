@@ -24,6 +24,9 @@ function ownerCapturing(owner: CalendarOccurrence | null, meeting: Transcription
   return meeting === undefined || (meeting !== null && BOT_IN_CALL.has(meeting.status));
 }
 const SHARE_CHECK_DEADLINE_MS = 86_400_000;
+/** TC-907: past the cutoff, how long a capacity-refused row keeps lookup-only recovery, so a slow
+ *  earlier POST that commits late is still found and owned. */
+const CAPACITY_RECOVERY_MARGIN_MS = 600_000;
 
 export interface CalendarAutojoinWorkerOptions {
   store: CalendarAutojoinStore;
@@ -40,6 +43,8 @@ export interface CalendarAutojoinWorkerOptions {
   };
   api: TranscriptionApiClient;
   index: TranscriberIndexStore;
+  webhookUrl?: string;
+  onRecordingCompleted?: (tenant: string, meetingId: string) => Promise<void>;
   limiter?: ExternalOperationLimiter;
   botName?: string;
   now?: () => number;
@@ -192,6 +197,10 @@ export class CalendarAutojoinWorker {
         await this.acceptRecording(row, lookup.meeting);
         return;
       }
+      // TC-907: ptx checks the key before capacity, so a capacity 429 created nothing. Past the
+      // cutoff no further create is sent; after a margin for a slow earlier POST that commits late,
+      // nothing can appear: end it instead of polling forever.
+      if (row.capacityExhausted && this.now() >= dispatchCutoff(row) + CAPACITY_RECOVERY_MARGIN_MS) { await this.finish(row, "capacity_exhausted"); return; }
     }
     const connection = await this.options.store.getConnection(row.tenant);
     if (!this.canDispatch(connection, row)) {
@@ -234,6 +243,7 @@ export class CalendarAutojoinWorker {
       const observed = row.idempotencyKey ? new Map<string, TranscriptionMeeting | null>() : await this.observeOwners(row);
       // Reserve external capacity BEFORE entering tenant coordination. A queued dispatch may
       // not leave the lock and then send after a disable; the actual POST begins inside it.
+      let sent = false; // TC-907: only a sent POST was counted when its intent was written.
       const response = await this.limiter.run(async () => {
         let posted: Promise<TranscriptionMeeting> | undefined;
         await this.options.coordinator.run(row.tenant, async () => {
@@ -246,10 +256,12 @@ export class CalendarAutojoinWorker {
             const body = {
               meeting_url: row.meetingUrl, platform: "google_meet", bot_name: this.options.botName ?? "TinyCloud Private Notetaker",
               metadata: { tinychat_address: row.tenant, source: "google-calendar-autojoin", calendar_occurrence_id: row.id, calendar_title: row.title, scheduled_start: new Date(row.start).toISOString() },
+              ...(this.options.webhookUrl ? { webhook_url: this.options.webhookUrl } : {}),
             };
             row = { ...row, generation: current!.generation, createBody: body, requestHash: computeCreateRequestHash(body), idempotencyKey: `calendar-v1-${row.id}` };
           }
-          row = { ...row, phase: "outcome_unknown", attemptCount: row.attemptCount + 1, updatedAt: this.now(), nextAttemptAt: this.now() + 60_000 };
+          // The one attemptCount increment for this attempt (TC-907): defer() does not count it again.
+          row = { ...row, phase: "outcome_unknown", attemptCount: row.attemptCount + 1, capacityExhausted: undefined, updatedAt: this.now(), nextAttemptAt: this.now() + 60_000 };
           await this.options.store.putOccurrence(row); // Failure here MUST imply zero POSTs.
           // Durable storage can take us past the deadline. Do not send a now-ineligible
           // request; keep its frozen intent so a restart can conservatively recover it.
@@ -259,6 +271,7 @@ export class CalendarAutojoinWorker {
           }
           // Do not await while holding the lock: disable must persist during an in-flight POST.
           posted = this.options.api.createMeeting(row.createBody!, { idempotencyKey: row.idempotencyKey, retryTransport: false });
+          sent = true;
           void posted.catch(() => {});
         });
         if (!posted) return null;
@@ -266,13 +279,17 @@ export class CalendarAutojoinWorker {
       }).then(meeting => ({ meeting, error: undefined as unknown }), error => ({ meeting: null, error }));
       if (response.meeting) { await this.acceptRecording(row, response.meeting); return; }
       if (!response.error) return;
-      await this.defer(row, response.error);
+      await this.defer(row, response.error, sent);
       // A permanent create rejection must never become another POST on the next tick.
       // Retain lookup-only recovery in case any earlier transport attempt committed.
       if (!this.retryable(response.error)) await this.requestStop(row, "create_rejected");
       const delay = this.retryDelay(response.error, attempt);
       // A lost response may already have committed. Always lookup before any further POST.
-      const lookup = await this.limiter.run(() => this.options.api.lookupMeetingByIdempotencyKey(row.idempotencyKey!));
+      let lookup: Awaited<ReturnType<TranscriptionApiClient["lookupMeetingByIdempotencyKey"]>>;
+      // The attempt is already deferred; a failed lookup must not defer (and count) it again.
+      // The next tick looks up before it can POST.
+      try { lookup = await this.limiter.run(() => this.options.api.lookupMeetingByIdempotencyKey(row.idempotencyKey!)); }
+      catch { return; }
       if (lookup) {
         if (lookup.requestHash !== row.requestHash || !this.matchesMetadata(row, lookup.meeting)) { await this.requestStop(row, "lookup_identity_mismatch"); return; }
         if (!inDispatchWindow(row, this.now())) row = (await this.requestStop(row, "missed_window"))!;
@@ -344,8 +361,12 @@ export class CalendarAutojoinWorker {
   private async finish(row: CalendarOccurrence, disposition: string): Promise<void> {
     if (row.meetingId || row.idempotencyKey || row.sharedCapture) await this.options.store.putMarker({ tenant: row.tenant, id: row.id, meetingId: row.meetingId, disposition });
     // Every code on a shared row (pending, unverified, a deferred retry) is superseded by its disposition.
-    const clears = (current: CalendarOccurrence) => !!current.sharedCapture || (disposition === "completed" && !current.stopRequested) || disposition === "already_recorded";
+    const clears = (current: CalendarOccurrence) => !!current.sharedCapture || (disposition === "completed" && !current.stopRequested)
+      || disposition === "already_recorded" || disposition === "capacity_exhausted";
     await this.options.store.updateOccurrence(row.tenant, row.id, current => current && { ...current, phase: "terminal", disposition, createBody: undefined, requestHash: undefined, updatedAt: this.now(), errorCode: clears(current) ? undefined : current.errorCode });
+    if (disposition === "completed" && row.meetingId) {
+      await this.options.onRecordingCompleted?.(row.tenant, row.meetingId);
+    }
   }
   /**
    * TC-581. Under the URL lock: attach to another tenant's live, overlapping capture of this Meet,
@@ -497,17 +518,19 @@ export class CalendarAutojoinWorker {
     const retryAfter = error instanceof GoogleCalendarError || error instanceof TranscriptionApiError ? error.retryAfterMs : null;
     return Math.max(retryAfter ?? 0, Math.min(900_000, 500 * 2 ** Math.min(attemptCount, 11) * (1 + this.random() * 0.2)));
   }
-  private async defer(row: CalendarOccurrence, error: unknown): Promise<void> {
+  /** `afterCreate`: the error is a create's, whose attempt was counted when it was sent (TC-907). */
+  private async defer(row: CalendarOccurrence, error: unknown, afterCreate = false): Promise<void> {
     await this.options.store.updateOccurrence(row.tenant, row.id, current => {
       if (!current || current.phase === "terminal") return current;
-      const count = current.attemptCount + 1;
+      const count = afterCreate ? current.attemptCount : current.attemptCount + 1;
+      const capacity = afterCreate && error instanceof TranscriptionApiError && error.status === 429 && error.code === "capacity_exhausted";
       // Outside the create window, lookup-only recovery remains durable at low rate forever.
       const delay = this.retryDelay(error, count);
       const recoveryOnly = current.stopRequested || this.now() >= dispatchCutoff(current);
       // A later recovery/read failure must not shorten a Retry-After already persisted
       // for the create. Only successful reconciliation can reset that durable deadline.
       const nextAttemptAt = Math.max(current.nextAttemptAt, this.now() + (recoveryOnly ? Math.max(60_000, delay) : delay));
-      return { ...current, attemptCount: count, errorCode: current.stopRequested ? current.errorCode : error instanceof GoogleCalendarError ? error.code : "autojoin_retry", nextAttemptAt, updatedAt: this.now() };
+      return { ...current, attemptCount: count, ...(capacity ? { capacityExhausted: true } : {}), errorCode: current.stopRequested ? current.errorCode : error instanceof GoogleCalendarError ? error.code : "autojoin_retry", nextAttemptAt, updatedAt: this.now() };
     });
   }
 }

@@ -8,7 +8,7 @@
 import { describe, expect, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import { APP_ID } from "../threadStore";
+import { APP_ID } from "@tinyboilerplate/core";
 import {
   HEALTH_RECORD_SCHEMA,
   healthDailyKvKey,

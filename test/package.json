@@ -7,6 +7,7 @@
     "install:browsers:ci": "playwright install --with-deps chromium",
     "real-auth": "bun real-auth-manual.ts",
     "connectors:browser": "bun connectors/browser-lane.ts",
+    "transcriber:smoke": "bun transcriber/server-delivery.smoke.ts",
     "model-router:browser": "bun test model-router-runtime.e2e.test.ts",
     "agent-banner:browser": "bun test agent-banner-route.e2e.test.ts",
     "connectors-scroll:browser": "bun test connectors-scroll.e2e.test.ts && SCROLL_ENGINE=chromium bun test connectors-scroll.e2e.test.ts",

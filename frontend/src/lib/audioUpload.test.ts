@@ -8,7 +8,9 @@
 //   - a reload resumes this account's job only, and silence saves nothing.
 
 import { describe, expect, test } from "bun:test";
+import { captureEvents } from "@/capture/captureEvents";
 
+import type { StoreResult, UpsertMeetingOutcome } from "./connectors/connectorStore";
 import { AssemblyAiError, createHostedAssemblyAiClient, type AssemblyAiClient } from "./assemblyai";
 import { AudioStoreQuotaError, type StoredAudioManifest } from "./audio/audioStore";
 import {
@@ -251,11 +253,15 @@ describe("upload runner: AssemblyAI", () => {
     const events: string[] = [];
     const { client, requests } = assemblyAi(events);
     const a = audioFake({ put: async () => Promise.reject(new AudioStoreQuotaError("full")) });
+    const refreshes: Array<{ source: string; sourceId: string } | undefined> = [];
+    const unsubscribe = captureEvents.on("library-changed", (detail) => refreshes.push(detail));
     const pending = memoryPending();
     const { deps: d, saved } = deps({ events, pending, audio: a.audio, assemblyAiClient: async () => client });
     const runner = createUploadRunner();
     runner.start(d, { file: file("standup.mp3", "audio/mpeg"), engine: "assemblyai", diarize: true });
     const done = await settled(runner);
+    unsubscribe();
+    expect(refreshes).toEqual([{ source: "exo-upload", sourceId: saved[0]!.meeting.sourceId }]);
 
     expect(done).toMatchObject({ stage: "saved", cleanupPending: false, audio: { stage: "quota", pct: null } });
     expect(requests).toEqual([{ url: "https://cdn.assemblyai.com/upload/u1", speakerLabels: true }]);
@@ -271,6 +277,8 @@ describe("upload runner: AssemblyAI", () => {
     let failSave = true;
     const { deps: d, saved } = deps({ events, audio: audioFake().audio, assemblyAiClient: async () => client });
     const save = d.save;
+    let refreshes = 0;
+    const unsubscribe = captureEvents.on("library-changed", () => { refreshes++; });
     d.save = async (p) => (failSave ? { ok: false, error: { code: "TRANSPORT", message: "node unreachable" } } : save(p));
     const runner = createUploadRunner();
     runner.start(d, { file: file("a.mp3", "audio/mpeg"), engine: "assemblyai", diarize: true });
@@ -278,10 +286,13 @@ describe("upload runner: AssemblyAI", () => {
     expect(failed.error).toMatchObject({ retry: true });
     expect(failed.error!.message).toContain("node unreachable");
     expect(events).not.toContain("aai delete t1");
+    expect(refreshes).toBe(0);
 
     failSave = false;
     runner.retry(d);
     expect((await settled(runner)).stage).toBe("saved");
+    unsubscribe();
+    expect(refreshes).toBe(1);
     expect(saved).toHaveLength(1);
     expect(events.filter((e) => e === "aai upload")).toHaveLength(1);
     expect(events.at(-1)).toBe("aai delete t1");
@@ -325,13 +336,18 @@ describe("upload runner: Private", () => {
     const p = privateCloud(events);
     const pending = memoryPending();
     const { deps: d, saved } = deps({ events, pending, audio: audioFake().audio, privateCloud: p.privateCloud, putFile: p.putFile });
+    let refreshes = 0;
+    const unsubscribe = captureEvents.on("library-changed", () => { refreshes++; });
     const runner = createUploadRunner();
     runner.start(d, { file: file("memo.m4a", "audio/x-m4a"), engine: "private-cloud", diarize: false });
     const failed = await settled(runner);
+    expect(refreshes).toBe(0);
     expect(failed.error).toMatchObject({ retry: true, reference: ID });
 
     runner.retry(d);
     expect((await settled(runner)).stage).toBe("saved");
+    unsubscribe();
+    expect(refreshes).toBe(1);
     const body = { content_type: "audio/mp4", byte_size: 3, sha256: "ab".repeat(32), channel_mode: "mixed", channel_labels: ["Exo upload"] };
     expect(p.creates.map((c) => c.body)).toEqual([body, body]);
     // Every client of the account reads those labels as Upload audio's job, never its own.
@@ -578,6 +594,35 @@ describe("upload runner: sign-out and remote cleanup", () => {
     expect(pending.value).toBeNull();
   });
 
+  test("an upload committed after sign-out cannot refresh the next account's Library", async () => {
+    const saveStarted = Promise.withResolvers<void>();
+    const finishSave = Promise.withResolvers<StoreResult<UpsertMeetingOutcome>>();
+    const changed: unknown[] = [];
+    const off = captureEvents.on("library-changed", (detail) => changed.push(detail));
+    const client = {
+      upload: async () => "https://cdn.assemblyai.com/upload/a",
+      createTranscript: async () => ({ id: "tA", status: "queued" }),
+      getTranscript: async () => ({ id: "tA", status: "completed", utterances: [{ speaker: "A", text: "Old account.", start: 0, end: 900 }] }),
+      getSentences: async () => [],
+      deleteTranscript: async () => {},
+    } as unknown as AssemblyAiClient;
+    const pending = memoryPending();
+    const a = deps({ pending, audio: audioFake().audio, assemblyAiClient: async () => client,
+      save: () => { saveStarted.resolve(); return finishSave.promise; } });
+    const runner = createUploadRunner();
+    try {
+      runner.start(a.deps, { file: file("old.mp3", "audio/mpeg"), engine: "assemblyai", diarize: true });
+      await saveStarted.promise;
+      runner.reset();
+      finishSave.resolve({ ok: true, data: { id: "old-row", inserted: true, createdAt: "now" } });
+      await finishSave.promise;
+      expect(changed).toEqual([]);
+      expect(runner.snapshot()).toBeNull();
+    } finally {
+      off();
+    }
+  });
+
   test("a Private create that fails never claims the audio is being stored, and stores nothing", async () => {
     const a = audioFake();
     const { deps: d } = deps({
@@ -604,12 +649,19 @@ describe("upload runner: sign-out and remote cleanup", () => {
       },
     } as unknown as AssemblyAiClient;
     const { deps: d, saved } = deps({ audio: audioFake().audio, assemblyAiClient: async () => client });
+    let refreshes = 0;
+    const unsubscribe = captureEvents.on("library-changed", () => { refreshes++; });
     const runner = createUploadRunner();
     runner.start(d, { file: file("a.mp3", "audio/mpeg"), engine: "assemblyai", diarize: true });
     const done = await settled(runner);
     expect(saved).toHaveLength(1);
     expect(deletes).toBe(1);
     expect(done).toMatchObject({ stage: "saved", cleanupPending: true, error: { message: "AssemblyAI rejected the key." } });
+    expect(refreshes).toBe(1);
+    runner.retry(d);
+    expect((await settled(runner)).cleanupPending).toBe(true);
+    unsubscribe();
+    expect(refreshes).toBe(1);
   });
 });
 
