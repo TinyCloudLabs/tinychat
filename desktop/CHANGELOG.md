@@ -1,5 +1,11 @@
 # exo-desktop
 
+## 0.6.0-beta.42
+
+### Patch Changes
+
+- 297ca1a: Restore Mac Private transcription uploads from the local recording and report service failures as retryable.
+
 ## 0.6.0-beta.41
 
 ### Patch Changes
