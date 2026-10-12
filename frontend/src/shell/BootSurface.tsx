@@ -4,6 +4,21 @@ import { InfoTip } from "@/components/ui/info-tip";
 import type { AppState } from "../lib/appState";
 import { errorLinkFor } from "../lib/authErrors";
 
+/** The line under the title for each state; the native sign-in screen shows the same busy and error copy. */
+export function bootMessage(state: AppState, error: string | null): string {
+  return state === "booting"
+    ? "Restoring your session…"
+    : state === "connecting"
+      ? "Finish the OpenKey prompt to continue."
+      : state === "signing"
+        ? "Creating your TinyCloud session…"
+        : state === "recoverableError"
+          ? (error ?? "Something went wrong.")
+          : state === "offline"
+            ? (error ?? "You're offline.")
+            : (error ?? "Sign in to continue.");
+}
+
 export function BootSurface(props: {
   state: AppState;
   error: string | null;
@@ -12,18 +27,7 @@ export function BootSurface(props: {
   /** The offline voice recorder (TC-515), under the action. */
   voiceNotes?: React.ReactNode;
 }) {
-  const message =
-    props.state === "booting"
-      ? "Restoring your session…"
-      : props.state === "connecting"
-        ? "Finish the OpenKey prompt to continue."
-        : props.state === "signing"
-          ? "Creating your TinyCloud session…"
-          : props.state === "recoverableError"
-            ? (props.error ?? "Something went wrong.")
-            : props.state === "offline"
-              ? (props.error ?? "You're offline.")
-              : (props.error ?? "Sign in to continue.");
+  const message = bootMessage(props.state, props.error);
 
   const errorLink = props.state === "unauthenticated" || props.state === "recoverableError" ? errorLinkFor(props.error) : null;
   const busy = props.state === "booting" || props.state === "connecting" || props.state === "signing";

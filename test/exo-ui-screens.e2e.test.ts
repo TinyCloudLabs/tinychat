@@ -44,6 +44,8 @@ const VIEWPORTS: Viewport[] = [
   // 1280x800 at 200% browser zoom.
   { id: "zoom200", width: 640, height: 400, deviceScaleFactor: 2, zoom: true },
   // The smallest phone the recorder-final screens must fit (an Android emulator's 320x640), scoped to those screens.
+  // The iPhone 17 Pro the simulator pass uses, scoped to the native sign-in screens.
+  { id: "phone-402", width: 402, height: 874, deviceScaleFactor: 3, isMobile: true, hasTouch: true, screenPrefixes: ["native-sign-in"] },
   {
     id: "phone-small",
     width: 320,
@@ -79,7 +81,7 @@ const VIEWPORTS: Viewport[] = [
     hasTouch: true,
     textScale: 2,
     zoom: true,
-    screenPrefixes: ["recorder-landed", "capture-soft-", "capture-notetaker-route"],
+    screenPrefixes: ["recorder-landed", "capture-soft-", "capture-notetaker-route", "native-sign-in"],
   },
   {
     id: "text200-phone-360",
@@ -303,6 +305,7 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
       '[data-recorder-timer]',
       '[data-testid="canvas-setting-row"]',
       '[data-testid="autojoin-control-row"]',
+      '[data-testid="native-sign-in"] button:not([data-testid="build-info"])',
     ];
     for (const selector of targets) {
       for (const el of document.querySelectorAll(selector)) {

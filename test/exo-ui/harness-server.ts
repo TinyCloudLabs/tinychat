@@ -129,7 +129,7 @@ export function serveHarness({ bundle, css, html }: HarnessAssets) {
         return new Response(Bun.file(franken("pkg/franken_markdown_bg.wasm")), {
           headers: { "content-type": "application/wasm" },
         });
-      if (url.pathname.startsWith("/fonts/")) {
+      if (url.pathname.startsWith("/fonts/") || url.pathname.startsWith("/icons/")) {
         const file = Bun.file(`${frontend}public${url.pathname}`);
         return (await file.exists())
           ? new Response(file)
