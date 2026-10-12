@@ -77,7 +77,6 @@ import {
   PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
   createPtxClient,
   privateCloudTranscriptionConfigFromEnv,
-  withoutPrivateCloudOpenApi,
   type PrivateCloudTranscriptionConfig,
 } from "./services/private-cloud-transcription.js";
 import { BackendStorageLane } from "./services/backend-storage-lane.js";
@@ -301,8 +300,8 @@ async function main() {
     return;
   }
 
-  // Exo private cloud transcription: dark unless PRIVATE_CLOUD_TRANSCRIPTION_ENABLED=true, and
-  // armed with a missing or weak var it refuses boot rather than mounting a half-configured proxy.
+  // Partial PTX configuration refuses boot; a fully absent configuration remains mounted and
+  // answers authenticated callers with service_misconfigured.
   let privateCloudTranscription: PrivateCloudTranscriptionConfig;
   try {
     privateCloudTranscription = privateCloudTranscriptionConfigFromEnv(process.env);
@@ -1016,25 +1015,19 @@ async function main() {
   app.use(ASSEMBLYAI_HOSTED_MOUNT, authMiddleware, createAssemblyAiHostedRouter({ config: assemblyAiHosted, store: hostedUploads }));
 
   // Exo private cloud transcription (routes/private-cloud-transcription.ts). A different PTX
-  // deployment (`ptx-batch`) and key from the meeting transcriber above. Flag off = never mounted,
-  // so every path 404s; a non-cohort address gets the same 404 from inside the router.
-  if (privateCloudTranscription.enabled) {
-    app.use(
-      PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
-      authMiddleware,
-      createPrivateCloudTranscriptionRouter({
-        client: createPtxClient(privateCloudTranscription),
-        tenantKey: privateCloudTranscription.tenantKey,
-        accountAllowed: privateCloudTranscription.accountAllowed,
-      }),
-    );
-    console.log("[startup] private cloud transcription enabled for its account allowlist.");
-  }
+  // deployment (`ptx-batch`) and key from the meeting transcriber above.
+  app.use(
+    PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
+    authMiddleware,
+    createPrivateCloudTranscriptionRouter({
+      client: privateCloudTranscription.enabled ? createPtxClient(privateCloudTranscription) : null,
+      tenantKey: privateCloudTranscription.enabled ? privateCloudTranscription.tenantKey : null,
+    }),
+  );
 
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const fullSpec = loadYaml(readFileSync(resolve(__dirname, "../openapi.yaml"), "utf-8")) as object;
-  // Dark means undiscoverable too: while the flag is off the served spec omits private cloud.
-  const spec = privateCloudTranscription.enabled ? fullSpec : withoutPrivateCloudOpenApi(fullSpec);
+  const spec = fullSpec;
   app.get("/api/openapi.json", (_req, res) => res.json(spec));
   app.use("/api/docs", apiReference({ spec: { content: spec } }));
 

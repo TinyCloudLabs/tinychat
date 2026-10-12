@@ -423,12 +423,9 @@ describe("backend index middleware wiring", () => {
     expect(block).toMatch(/process\.exit\(1\)/);
   });
 
-  test("private cloud transcription mounts once, inside its flag branch, behind auth, CSRF and the limiter", () => {
-    const gate = INDEX.indexOf("if (privateCloudTranscription.enabled) {");
-    const mount = INDEX.indexOf("PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,\n      authMiddleware,");
-    expect(gate).toBeGreaterThan(-1);
-    expect(mount).toBeGreaterThan(gate);
-    expect(INDEX.slice(gate, mount)).not.toMatch(/\n {2}\}/);
+  test("private cloud transcription mounts once for every account, behind auth, CSRF and limiter", () => {
+    const mount = INDEX.indexOf("PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,\n    authMiddleware,");
+    expect(mount).toBeGreaterThan(-1);
     expect(INDEX.match(/app\.use\(\s*PRIVATE_CLOUD_TRANSCRIPTION_MOUNT/g)).toHaveLength(1);
     expect(mount).toBeGreaterThan(INDEX.indexOf(API_BODY_PARSER));
     expect(mount).toBeGreaterThan(INDEX.indexOf("createCsrfMiddleware()"));
@@ -551,7 +548,6 @@ test("partial or empty diagnostic endpoint credentials fail before startup effec
 
 test("armed private cloud transcription with a bad or missing value refuses boot before startup effects, without logging values", async () => {
   const armed = {
-    PRIVATE_CLOUD_TRANSCRIPTION_ENABLED: "true",
     PRIVATE_CLOUD_TRANSCRIPTION_API_URL: "https://ptx-batch.invalid",
     PRIVATE_CLOUD_TRANSCRIPTION_API_KEY: "synthetic-ptx-batch-key",
     PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY: "q3Jm8V0t6n0bqK1i2Xz7cP4sWf9YhR5uLd2eA8gT1kM=",
@@ -560,7 +556,6 @@ test("armed private cloud transcription with a bad or missing value refuses boot
   expect(ok.logs).toEqual([]);
   expect(ok.calls).toContain("agent-router");
   for (const patch of [
-    { PRIVATE_CLOUD_TRANSCRIPTION_ENABLED: "yes" },
     { PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY: undefined },
     { PRIVATE_CLOUD_TRANSCRIPTION_API_URL: "http://ptx-batch.invalid" },
     { PRIVATE_CLOUD_TRANSCRIPTION_API_KEY: "" },
@@ -828,7 +823,6 @@ function post(base: string, path: string, body: string, headers: Record<string, 
 }
 
 const ptxEnv = {
-  PRIVATE_CLOUD_TRANSCRIPTION_ENABLED: "true",
   PRIVATE_CLOUD_TRANSCRIPTION_API_URL: "https://ptx.invalid",
   PRIVATE_CLOUD_TRANSCRIPTION_API_KEY: "test-ptx-secret-marker",
   PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY: "q3Jm8V0t6n0bqK1i2Xz7cP4sWf9YhR5uLd2eA8gT1kM=",
