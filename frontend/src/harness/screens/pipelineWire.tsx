@@ -60,6 +60,7 @@ function Sheet(props: { pipeline: NotePipeline; actionError?: string }) {
           meta={savedNoteMeta(item, null, "ios", !showing)}
           stepper={showing ? <PipelineStepper pipeline={view.pipeline} onAction={view.onAction} actionError={view.actionError} /> : null}
           audio={null}
+          durationSecs={null}
           transcript={
             <Transcript
               item={item}
