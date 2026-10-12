@@ -1,394 +1,76 @@
 import { describe, expect, it } from "bun:test";
 import { existsSync, readFileSync } from "fs";
+import { once } from "events";
+import type { Server } from "http";
 import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
+import express from "express";
+import type { NextFunction, Request, Response } from "express";
 import { DEFAULT_MANIFEST_SPACE } from "@tinycloud/node-sdk/core";
-import type { ServerInfoPermission } from "@tinyboilerplate/core";
-import { APP_ID, THREADS_KV_PREFIX, backendDelegationResolvedPermissions } from "../manifest.js";
-import { activatePortableDelegation } from "../portable-delegation.js";
+import { APP_ID, SESSION_EXPIRATION_MS, type DelegationResponse, type ServerInfoPermission } from "@tinyboilerplate/core";
+import type { TinyCloudNode } from "@tinycloud/node-sdk";
+import { backendDelegationResolvedPermissions } from "../manifest.js";
+import { verifyTranscriptWriterGrant } from "../delegation-verify.js";
+import { activateVerifiedDelegation } from "../portable-delegation.js";
+import { createDelegationRouter } from "../routes/delegations.js";
+import { transcriptDeliveryConfigFromEnv } from "../services/transcription-api.js";
 import { RETENTION_WINDOW_DAYS } from "../services/content-store.js";
 import { GOOGLE_MEET_SCOPES } from "../services/google-oauth.js";
+import { makeSignedTranscriptGrant, type SignedTranscriptGrant } from "./helpers/transcript-grant.js";
+import * as consentCopyModule from "../../../frontend/src/lib/connectors/consentCopy";
 import {
   BACKEND_INGEST_CONSENT_COPY,
   BACKGROUND_SYNC_CONSENT_COPY,
+  GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY,
   GOOGLE_MEET_CONSENT_COPY,
   GOOGLE_TESTING_MODE_REAUTH_COPY,
   consentCopyText,
+  googleConsentCopyForSystemBrowser,
+  transcriptAwareConsentCopy,
+  type BackgroundSyncConsentCopy,
 } from "../../../frontend/src/lib/connectors/consentCopy";
-
-/**
- * Consent/scope agreement (build task B2, §3.2/§3.8) — re-pointed at the SELECTED product.
- *
- * Operator decision 2026-08-04: **ingest shape C**. The server queues meeting ids, never receives
- * the Fireflies API key, never writes meeting content, and holds **no connector delegation**. So
- * the copy no longer describes a grant, and the job of this file changes shape with it:
- *
- *  - the backend policy must stay at v1's non-connector scope — no connector SQL/KV/secrets entry
- *    may appear, ever, and a widening fails here before it reaches a user;
- *  - the shipped copy must be C's, must claim no permission, and must carry no consent checkbox
- *    (Option B's checkbox is deleted from the bundle, not left dormant to drift);
- *  - the confinement deny-list stays exactly as it was. It is not conditional on there being a
- *    grant: a sentence asserting a permission cannot reach something is unprovable while
- *    `V3_VERDICT.json` records the escape, whichever option ships.
- *
- * INGEST-CUTOVER(plan §11) — Gate 6 landed and this file now covers TWO products. Backend
- * ingestion (`CONNECTOR_BACKEND_INGEST_ENABLED` + the per-address cohort) retires two shipped
- * sentences for cohort users: the server DOES hold a Fireflies credential and it DOES receive the
- * meeting. What it does NOT do is mint a connector delegation — custody is out of band (plan §6,
- * §9 row 3) — so every scope assertion below survives the reversal and is kept as an explicit
- * regression guard rather than deleted. The copy assertions are the ones that were factually
- * false for a cohort user; they are scoped to the non-cohort text, and the cohort text's own
- * claims are asserted positively in "the cohort consent copy tells the new truth".
- *
- * The Option-B grant is kept below as `REJECTED_OPTION_B_GRANT` — the thing C declined to mint.
- * The ability-semantics pins read against it because they are *why* the deny-list exists, and
- * because resurrecting the grant has to break them rather than pass quietly.
- *
- * Two things this test deliberately does NOT do, because doing them was the original defect
- * (§0a re-specified this task):
- *
- *  1. It does not inspect action strings. "No entry carries `del`" reads the KV list only and
- *     passes green over `tinycloud.sql/write`, which authorizes `Delete` AND the whole DDL arm
- *     including `DROP TABLE` (§3.2b). The assertion is against the ability → SQLite
- *     `AuthAction` table below, mined from the node authorizer.
- *  2. It does not treat a path assertion as a confinement proof. "No entry's path lies outside
- *     `connectors`" is a fact about what we ASK FOR. The node resolves an extended path's last
- *     segment to a database and the delegatee chooses the extension (§0a), so no inspection of
- *     our own policy can see the escape. Confinement is therefore a CLAIM this test refuses by
- *     default: any sentence asserting the grant cannot reach something fails, unless V3's
- *     checked-in verdict artifact records the node fix as live.
- */
+import {
+  beginTranscriptConsentStatus,
+  resolveTranscriptConsentStatus,
+  transcriptConsentState,
+  type TranscriptConsentState,
+} from "../../../frontend/src/lib/transcriptDeliveryState";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-
-// Owned and written by build task V3; read-only here (residual R4). Absent ⇒ fail, never skip.
+// Owned by V3; TC-641 reads this verdict but never rewrites it.
 const V3_VERDICT_PATH = resolve(__dirname, "../../../test/connectors/fixtures/V3_VERDICT.json");
-
 const BACKEND_DID = "did:key:z6MkConsentScopeProbe";
 
-const COPY = BACKGROUND_SYNC_CONSENT_COPY;
-const COPY_TEXT = normalize(consentCopyText(COPY));
-
-// INGEST-CUTOVER(plan §11) — the cohort text, read the same way C's is: normalized and matched
-// claim by claim, against the same deny-lists. It is a second product, not a second draft.
-const COHORT_COPY = BACKEND_INGEST_CONSENT_COPY;
-const COHORT_TEXT = normalize(consentCopyText(COHORT_COPY));
-
-// GMEET(connector plan §4.1/§4.3, WP-C) — the Google Meet CONNECT text, read the same way again.
-// A third product on this file's desk, and the first one that is not a background-sync variant:
-// google-meet has no webhook lane, so what it has to be honest about is the OAuth trust model.
-// The deny-lists are not relaxed for it — they never were about which lane a text belongs to.
-const GOOGLE_COPY = GOOGLE_MEET_CONSENT_COPY;
-const GOOGLE_TEXT = normalize(consentCopyText(GOOGLE_COPY));
-
-// ---------------------------------------------------------------------------------------------
-// The ability → authorized-SQLite-AuthAction table (§3.2b, acceptance half 1).
-//
-// Mined from `repositories/tinycloud-node/tinycloud-core/src/sql/authorizer.rs` (read against
-// the TC-119 registry-aware revision; the comments there state the gates are identical to the
-// `admin | write | *` and `write | schema | *` sets the finding was written against):
-//
-//   can_write_data(ability, is_admin) = is_admin || ability_matches(ability, "tinycloud.sql/write")
-//   Insert | Delete            → can_write_table(...)                       (so `write` deletes)
-//   Update                     → can_write_table(...)
-//   CreateTable | DropTable | AlterTable | CreateIndex | DropIndex | CreateTrigger | DropTrigger
-//     | CreateView | DropView | Reindex | …temp variants
-//                              → is_admin || matches `write` || matches `schema`
-//                                                                  (so `write` DROPs tables, and
-//                                                                   withholding `schema` buys
-//                                                                   none of what §3.2 claimed)
-//   Read | Select | Transaction | Savepoint
-//                              → allowed, except for a bare `schema` ability before its DDL
-//   Attach | Detach            → always denied
-//   everything else            → denied
-//
-// Caveats are the only table/read-only restriction and default permissive
-// (`sql/caveats.rs`: `tables: None ⇒ allowed`, `read_only: None ⇒ writes allowed`), and the
-// supported mint path carries no caveats parameter at all — so a delete-free SQL grant does not
-// exist today. This table is a pin: if the node changes, V2/V3 re-runs are what update it, and
-// the copy assertions below break the build until the copy is corrected with it.
-// ---------------------------------------------------------------------------------------------
-
-type AuthAction =
-  | "Select"
-  | "Read"
-  | "Transaction"
-  | "Savepoint"
-  | "Insert"
-  | "Update"
-  | "Delete"
-  | "CreateTable"
-  | "AlterTable"
-  | "CreateIndex"
-  | "DropIndex"
-  | "CreateTrigger"
-  | "DropTrigger"
-  | "CreateView"
-  | "DropView"
-  | "DropTable"
-  | "Reindex";
-
-const READ_ACTIONS: readonly AuthAction[] = ["Select", "Read", "Transaction", "Savepoint"];
-const DATA_WRITE_ACTIONS: readonly AuthAction[] = ["Insert", "Update", "Delete"];
-const DDL_ACTIONS: readonly AuthAction[] = [
-  "CreateTable",
-  "DropTable",
-  "AlterTable",
-  "CreateIndex",
-  "DropIndex",
-  "CreateTrigger",
-  "DropTrigger",
-  "CreateView",
-  "DropView",
-  "Reindex",
-];
-
-const SQL_ABILITY_AUTH_ACTIONS: Record<string, readonly AuthAction[]> = {
-  "tinycloud.sql/read": READ_ACTIONS,
-  "tinycloud.sql/write": [...READ_ACTIONS, ...DATA_WRITE_ACTIONS, ...DDL_ACTIONS],
-  // `schema` reaches the DDL arm and the sqlite schema tables, not the app's rows.
-  "tinycloud.sql/schema": DDL_ACTIONS,
-  "tinycloud.sql/admin": [...READ_ACTIONS, ...DATA_WRITE_ACTIONS, ...DDL_ACTIONS],
-  "tinycloud.sql/*": [...READ_ACTIONS, ...DATA_WRITE_ACTIONS, ...DDL_ACTIONS],
-};
-
-/** Removing data the user did not ask us to remove. What "cannot delete" would have to deny. */
-const DESTRUCTIVE_ACTIONS: readonly AuthAction[] = [
-  "Delete",
-  "Update",
-  "DropTable",
-  "AlterTable",
-  "DropIndex",
-  "DropTrigger",
-  "DropView",
-];
-
-/**
- * `SqlRequest::Export` is dispatched by the service before the per-statement authorizer runs and
- * is not gated on an ability (`sql/database.rs` — the authorizer never sees it). So ANY SQL
- * ability, read included, yields a full binary copy of the resolved database, and a copy that
- * names a SQL permission must disclose bulk export.
- */
-const SQL_EXPORT_IS_ABILITY_GATED = false;
-
-/** Bulk export follows the SQL grant itself, not the ability on it. */
-function exportIsReachable(scope: readonly ServerInfoPermission[]): boolean {
-  return scope.some(
-    (entry) =>
-      entry.service === "tinycloud.sql" &&
-      (SQL_EXPORT_IS_ABILITY_GATED ? selectedSqlAbility(entry.actions) !== undefined : true),
-  );
-}
-
-/** Ability selection at the node is highest-privilege-first: `[read,write]` IS `write`. */
-const SQL_ABILITY_PRECEDENCE = [
-  "tinycloud.sql/*",
-  "tinycloud.sql/admin",
-  "tinycloud.sql/write",
-  "tinycloud.sql/schema",
-  "tinycloud.sql/read",
-];
-
-function selectedSqlAbility(actions: readonly string[]): string | undefined {
-  return SQL_ABILITY_PRECEDENCE.find((ability) => actions.includes(ability));
-}
-
-function authorizedAuthActions(scope: readonly ServerInfoPermission[]): Set<AuthAction> {
-  const authorized = new Set<AuthAction>();
-  for (const entry of scope) {
-    if (entry.service !== "tinycloud.sql") continue;
-    const ability = selectedSqlAbility(entry.actions);
-    if (ability === undefined) continue;
-    for (const action of SQL_ABILITY_AUTH_ACTIONS[ability] ?? []) authorized.add(action);
-  }
-  return authorized;
-}
-
-// ---------------------------------------------------------------------------------------------
-// The grant the shipped copy describes, and the scope the backend actually activates.
-// ---------------------------------------------------------------------------------------------
-
-/**
- * The §3.2 connectors policy — the grant Option B's consent checkbox would have minted, resolved
- * to the paths the node sees. **Option C declines it.** Nothing in the shipped product asks for
- * it; it stays here as the counterfactual the ability-semantics pins read against, and as the
- * shape `scopeState` refuses if it ever turns up in the activated policy.
- */
-const REJECTED_OPTION_B_GRANT: readonly ServerInfoPermission[] = [
-  {
-    service: "tinycloud.sql",
-    space: DEFAULT_MANIFEST_SPACE,
-    path: `${APP_ID}/connectors`,
-    actions: ["tinycloud.sql/read", "tinycloud.sql/write"],
-  },
-  {
-    service: "tinycloud.kv",
-    space: DEFAULT_MANIFEST_SPACE,
-    path: `${APP_ID}/connectors/`,
-    actions: ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/list"],
-  },
-];
-
-/** v1's untouched backend policy — under Option C this is the FINAL shape, not an interim one. */
-const V1_NON_CONNECTOR_SCOPE: readonly ServerInfoPermission[] = [
-  {
-    service: "tinycloud.kv",
-    space: DEFAULT_MANIFEST_SPACE,
-    path: THREADS_KV_PREFIX,
-    actions: ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del", "tinycloud.kv/list"],
-  },
-];
-
-/** The Option-C truth pass: the records that must describe the selected product, not a prototype. */
-const DELEGATION_GATE_DOC = resolve(__dirname, "../../../docs/connector-webhooks-delegation-gate.md");
-const DEPLOYMENT_DOC = resolve(__dirname, "../../../docs/deployment.md");
-const RESIDUALS_DOC = resolve(__dirname, "../../../docs/connector-webhooks-p1-residuals.md");
-
-/**
- * INGEST-CUTOVER(plan §11) — the operator-facing mirror of the cohort copy. It exists so the text
- * approved at Gate 6 and the text the product would render cannot decouple: the fidelity test
- * below parses it and compares field for field against `BACKEND_INGEST_CONSENT_COPY`.
- */
-const COHORT_COPY_DOC = resolve(
-  __dirname,
-  "../../../docs/connector-webhooks-backend-ingest-consent-copy.md",
-);
-
-/** The one renderer of consent copy — read as SOURCE, because what it renders is the finding. */
-const CONSENT_RENDERER = resolve(
-  __dirname,
-  "../../../frontend/src/chat/BackgroundSyncSection.tsx",
-);
-
-function readDoc(path: string): string {
-  if (!existsSync(path)) throw new Error(`Missing record: ${path}`);
-  return readFileSync(path, "utf-8");
-}
-
-/**
- * Parse the approval mirror: `## <field>` followed by a single blockquote paragraph. Line wrapping
- * is the doc's own, so whitespace is collapsed on both sides before comparison — every other
- * character, including the `**bold**` markers that are part of the copy, must match exactly.
- */
-function parseApprovedCopy(markdown: string): Record<string, string> {
-  const fields: Record<string, string> = {};
-  let current: string | null = null;
-
-  for (const line of markdown.split("\n")) {
-    const headed = /^## (.+?)\s*$/.exec(line);
-    if (headed) {
-      current = headed[1];
-      continue;
-    }
-    if (current === null) continue;
-    if (line.startsWith("> ")) {
-      fields[current] = `${fields[current] ?? ""} ${line.slice(2).trim()}`.trim();
-    }
-  }
-
-  return Object.fromEntries(
-    Object.entries(fields).map(([key, value]) => [key, value.replace(/\s+/g, " ").trim()]),
-  );
-}
-
-function collapse(text: string): string {
-  return text.replace(/\s+/g, " ").trim();
-}
-
-/** Every action we could plausibly be handed, per service — the overbroad grant we clamp. */
-const OVERBROAD_ACTIONS: Record<string, readonly string[]> = {
-  "tinycloud.kv": ["get", "put", "del", "list"],
-  "tinycloud.sql": ["read", "write", "schema", "admin"],
-  "tinycloud.duckdb": ["read", "write", "schema", "admin"],
-  "tinycloud.capabilities": ["read", "write"],
-};
-
-/**
- * The ACTIVATED scope, not the policy (§3.2a): a maximal grant run through
- * `activatePortableDelegation`'s clamp, recorded as the node would see it. The two coincide only
- * while S2d's clamp is intact, and noticing when they stop coinciding is this test's job.
- */
+/** Observe the actual node activation DTO from a cryptographically verified session grant. */
 async function activatedScope(): Promise<ServerInfoPermission[]> {
-  const policy = backendDelegationResolvedPermissions(BACKEND_DID);
+  const grant = await makeSignedTranscriptGrant();
+  const result = await verifyTranscriptWriterGrant({
+    serialized: grant.serialized, siwe: grant.siwe, signature: grant.signature,
+    address: grant.address, backendDid: grant.backendDid, configuredHost: grant.configuredHost,
+  }, { computeDelegationCid: grant.computeDelegationCid });
+  if (!result.ok) throw new Error(`Signed fixture failed verification: ${result.code}`);
   const activated: ServerInfoPermission[] = [];
   const node = {
-    // `activateResource` sends one `useDelegation` per activated resource, with the service and
-    // space on `resources[0]` and the clamped path/actions hoisted to the top level.
     useDelegation: async (delegation: {
+      spaceId: string;
       path: string;
       actions: string[];
-      resources?: Array<{ service: string; space?: string }>;
+      resources: Array<{ service: string; space: string }>;
     }) => {
+      expect(delegation.spaceId).toBe(grant.spaceId);
+      const resource = delegation.resources[0]!;
+      expect(resource.space).toBe(grant.spaceId);
       activated.push({
-        service: delegation.resources?.[0]?.service ?? "",
-        space: delegation.resources?.[0]?.space,
+        service: resource.service.startsWith("tinycloud.") ? resource.service : `tinycloud.${resource.service}`,
+        space: DEFAULT_MANIFEST_SPACE,
         path: delegation.path,
         actions: [...delegation.actions],
       });
       return { kv: {}, sql: {} };
     },
   };
-
-  const granted = policy.map((entry) => ({
-    service: entry.service,
-    space: entry.space,
-    // A space-root path: the broadest thing a mint could hand us for this service.
-    path: "",
-    actions: [...(OVERBROAD_ACTIONS[entry.service] ?? entry.actions)],
-  }));
-
-  await activatePortableDelegation(
-    node as never,
-    { expiry: new Date(Date.now() + 60_000), resources: granted } as never,
-    { policy },
-  );
-
+  await activateVerifiedDelegation(node as unknown as TinyCloudNode, result.verified, { host: grant.configuredHost });
   return activated;
-}
-
-// ---------------------------------------------------------------------------------------------
-// Claim patterns.
-// ---------------------------------------------------------------------------------------------
-
-/**
- * Sentences that assert the grant CANNOT REACH something. Forbidden in every copy variant while
- * V3's verdict records the scope escape as reproducing (§0a). Saying what we *ask for* is still
- * permitted — that is the distinction these patterns are drawn along.
- */
-const CONFINEMENT_CLAIMS: ReadonlyArray<{ pattern: RegExp; label: string }> = [
-  { pattern: /\band nothing else\b/, label: "and nothing else" },
-  { pattern: /\bonly your connectors data\b/, label: "only your connectors data" },
-  { pattern: /\bnot your (?:chats|threads|memory|saved keys|key)\b/, label: "not your chats" },
-  { pattern: /\bcan(?:not|'t) reach\b/, label: "cannot reach" },
-  { pattern: /\bnever reaches\b/, label: "never reaches" },
-  { pattern: /\bconfined to\b/, label: "confined to" },
-  { pattern: /\bcan(?:not|'t) (?:touch|see|open|access|read) (?:your|anything|any)\b/, label: "cannot access X" },
-  { pattern: /\bnothing (?:but|other than) your connectors\b/, label: "nothing but your connectors" },
-  { pattern: /\b(?:limited|restricted) to your connectors\b/, label: "limited to your connectors" },
-  { pattern: /\bstays? (?:inside|within) (?:your |the )?connectors\b/, label: "stays inside connectors" },
-];
-
-/** Capability claims about deletion, falsified by `sql/write` ⇒ `Delete`/`DropTable` (§3.2b). */
-const DELETE_CAPABILITY_CLAIMS: ReadonlyArray<{ pattern: RegExp; label: string }> = [
-  { pattern: /\bcan(?:not|'t) delete\b/, label: "cannot delete" },
-  { pattern: /\bcan(?:not|'t) remove\b/, label: "cannot remove" },
-  { pattern: /\bonly you can delete\b/, label: "only you can delete" },
-  { pattern: /\bno (?:power|ability) to delete\b/, label: "no ability to delete" },
-];
-
-function normalize(text: string): string {
-  return text
-    .replace(/[*_`]/g, "")
-    .replace(/[‘’]/g, "'")
-    .replace(/\s+/g, " ")
-    .toLowerCase();
-}
-
-function matched(
-  claims: ReadonlyArray<{ pattern: RegExp; label: string }>,
-  text: string,
-): string[] {
-  return claims.filter(({ pattern }) => pattern.test(text)).map(({ label }) => label);
 }
 
 interface V3Verdict {
@@ -407,10 +89,7 @@ interface V3Verdict {
   notes?: string;
 }
 
-/**
- * Fail CLOSED. A missing artifact is not "unknown, so allow the confinement sentence" — it is a
- * build that deleted the evidence the sentence depends on.
- */
+/** A missing or malformed scope-escape verdict cannot license a confinement claim. */
 function readV3Verdict(): V3Verdict {
   if (!existsSync(V3_VERDICT_PATH)) {
     throw new Error(
@@ -467,384 +146,725 @@ describe("V3 verdict artifact (read-only here; owned by build task V3)", () => {
   });
 });
 
-describe("ability semantics — what the granted SQL ability actually authorizes (§3.2b)", () => {
-  it("pins `write` to the delete and DDL arms of the node authorizer", () => {
+describe("verified transcript-writer activation scope", () => {
+  it("activates exactly the two connector resources with no schema/admin or extra KV ability", async () => {
+    const activated = await activatedScope();
+    expect(sortScope(activated)).toEqual(sortScope([
+      { service: "tinycloud.sql", space: DEFAULT_MANIFEST_SPACE, path: `${APP_ID}/connectors`, actions: ["tinycloud.sql/read", "tinycloud.sql/write"] },
+      { service: "tinycloud.kv", space: DEFAULT_MANIFEST_SPACE, path: `${APP_ID}/connectors/tinycloud-transcriber/`, actions: ["tinycloud.kv/get", "tinycloud.kv/put"] },
+    ]));
+    expect(sortScope(activated)).toEqual(sortScope(backendDelegationResolvedPermissions(BACKEND_DID)));
+    expect(activated.some((entry) => entry.service === "tinycloud.secrets")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// The ability → authorized-SQLite-AuthAction table (§3.2b), restored from origin/main.
+//
+// Mined from `repositories/tinycloud-node/tinycloud-core/src/sql/authorizer.rs`:
+//   Insert | Delete | Update   → `write` (so `write` deletes)
+//   the DDL arm, DropTable too → `admin | write | schema`
+//   Read | Select | …          → any SQL ability
+// The transcript-writer grant asks for `tinycloud.sql/write` on `connectors`, so it authorizes
+// Delete and DROP TABLE, and "cannot delete" is never sayable while it can be active.
+// ---------------------------------------------------------------------------------------------
+
+type AuthAction =
+  | "Select" | "Read" | "Transaction" | "Savepoint"
+  | "Insert" | "Update" | "Delete"
+  | "CreateTable" | "AlterTable" | "CreateIndex" | "DropIndex" | "CreateTrigger" | "DropTrigger"
+  | "CreateView" | "DropView" | "DropTable" | "Reindex";
+
+const READ_ACTIONS: readonly AuthAction[] = ["Select", "Read", "Transaction", "Savepoint"];
+const DATA_WRITE_ACTIONS: readonly AuthAction[] = ["Insert", "Update", "Delete"];
+const DDL_ACTIONS: readonly AuthAction[] = [
+  "CreateTable", "DropTable", "AlterTable", "CreateIndex", "DropIndex",
+  "CreateTrigger", "DropTrigger", "CreateView", "DropView", "Reindex",
+];
+
+const SQL_ABILITY_AUTH_ACTIONS: Record<string, readonly AuthAction[]> = {
+  "tinycloud.sql/read": READ_ACTIONS,
+  "tinycloud.sql/write": [...READ_ACTIONS, ...DATA_WRITE_ACTIONS, ...DDL_ACTIONS],
+  "tinycloud.sql/schema": DDL_ACTIONS,
+  "tinycloud.sql/admin": [...READ_ACTIONS, ...DATA_WRITE_ACTIONS, ...DDL_ACTIONS],
+  "tinycloud.sql/*": [...READ_ACTIONS, ...DATA_WRITE_ACTIONS, ...DDL_ACTIONS],
+};
+
+/** Removing data the user did not ask us to remove. What "cannot delete" would have to deny. */
+const DESTRUCTIVE_ACTIONS: readonly AuthAction[] = [
+  "Delete", "Update", "DropTable", "AlterTable", "DropIndex", "DropTrigger", "DropView",
+];
+
+/** Ability selection at the node is highest-privilege-first: `[read,write]` IS `write`. */
+const SQL_ABILITY_PRECEDENCE = [
+  "tinycloud.sql/*", "tinycloud.sql/admin", "tinycloud.sql/write", "tinycloud.sql/schema", "tinycloud.sql/read",
+];
+
+function selectedSqlAbility(actions: readonly string[]): string | undefined {
+  return SQL_ABILITY_PRECEDENCE.find((ability) => actions.includes(ability));
+}
+
+function authorizedAuthActions(scope: readonly ServerInfoPermission[]): Set<AuthAction> {
+  const authorized = new Set<AuthAction>();
+  for (const entry of scope) {
+    if (entry.service !== "tinycloud.sql") continue;
+    const ability = selectedSqlAbility(entry.actions);
+    if (ability === undefined) continue;
+    for (const action of SQL_ABILITY_AUTH_ACTIONS[ability] ?? []) authorized.add(action);
+  }
+  return authorized;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Claim patterns, restored from origin/main unchanged.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Sentences that assert the grant CANNOT REACH something. Forbidden in every copy variant while
+ * V3's verdict records the scope escape as reproducing (§0a). Saying what we *ask for* is still
+ * permitted — that is the distinction these patterns are drawn along.
+ */
+const CONFINEMENT_CLAIMS: ReadonlyArray<{ pattern: RegExp; label: string }> = [
+  { pattern: /\band nothing else\b/, label: "and nothing else" },
+  { pattern: /\bonly your connectors data\b/, label: "only your connectors data" },
+  { pattern: /\bnot your (?:chats|threads|memory|saved keys|key)\b/, label: "not your chats" },
+  { pattern: /\bcan(?:not|'t) reach\b/, label: "cannot reach" },
+  { pattern: /\bnever reaches\b/, label: "never reaches" },
+  { pattern: /\bconfined to\b/, label: "confined to" },
+  { pattern: /\bcan(?:not|'t) (?:touch|see|open|access|read) (?:your|anything|any)\b/, label: "cannot access X" },
+  { pattern: /\bnothing (?:but|other than) your connectors\b/, label: "nothing but your connectors" },
+  { pattern: /\b(?:limited|restricted) to your connectors\b/, label: "limited to your connectors" },
+  { pattern: /\bstays? (?:inside|within) (?:your |the )?connectors\b/, label: "stays inside connectors" },
+];
+
+/** Capability claims about deletion, falsified by `sql/write` ⇒ `Delete`/`DropTable` (§3.2b). */
+const DELETE_CAPABILITY_CLAIMS: ReadonlyArray<{ pattern: RegExp; label: string }> = [
+  { pattern: /\bcan(?:not|'t) delete\b/, label: "cannot delete" },
+  { pattern: /\bcan(?:not|'t) remove\b/, label: "cannot remove" },
+  { pattern: /\bonly you can delete\b/, label: "only you can delete" },
+  { pattern: /\bno (?:power|ability) to delete\b/, label: "no ability to delete" },
+];
+
+/**
+ * TC-641: unscoped sentences saying the server does not or cannot write into the user's space.
+ * True of the inactive copy (the flag-off backend accepts no grant), false once delivery is
+ * active, so none may appear in an active-or-unknown disclosure. A sentence scoped to a toggle
+ * ("Turning this on gives our server no new permission") stays allowed next to the disclosure.
+ */
+const SERVER_WRITE_DENIALS: ReadonlyArray<{ pattern: RegExp; label: string }> = [
+  { pattern: /\bnothing is granted\b/, label: "nothing is granted" },
+  { pattern: /\bno standing that would let it\b/, label: "no standing to write" },
+  { pattern: /\bnever (?:saves|writes|stores) (?:a |any )?(?:meeting|transcript)/, label: "never saves a meeting" },
+  { pattern: /\bwrites no (?:meeting|transcript)/, label: "writes no meeting" },
+  { pattern: /\byour browser does that, every time\b/, label: "browser does that every time" },
+  { pattern: /\bserver (?:can(?:not|'t)|could not|will never|never|does not|doesn't) (?:write|save|store|add)\b/, label: "server cannot write" },
+  { pattern: /\bonly your browser (?:writes|saves|stores)\b/, label: "only your browser writes" },
+];
+
+/**
+ * What an active-or-unknown transcript-writer disclosure must say, each part pinned to the grant:
+ * `sql/write` on the whole connectors database is read, add, change AND delete (the ability table
+ * below), over every connector's meetings, plus the Notetaker transcripts, for the grant lifetime.
+ */
+const GRANT_LIFETIME_DAYS = SESSION_EXPIRATION_MS / 86_400_000 - 1;
+const TRANSCRIPT_WRITER_DISCLOSURE = [
+  "our server holds a permission on your space over the meeting records in your connectors library",
+  "the titles, participants, summaries and other details stored for every connector's meetings, fireflies and google included",
+  // Voice notes and local recordings are connector_meeting rows too (voiceNoteStore, localTranscriber).
+  "and for your local recordings and voice notes",
+  "our server can read, add, change or delete those records",
+  "it can also read and save notetaker transcripts there",
+  `each grant lasts up to ${GRANT_LIFETIME_DAYS} days`,
+  "renews it without asking while you are signed in",
+];
+const disclosesTranscriptWriter = (text: string) => TRANSCRIPT_WRITER_DISCLOSURE.every((part) => text.includes(part));
+
+/**
+ * Sentences the original copies carry that an active grant makes false, so no active-or-unknown
+ * disclosure may keep them (the inactive copies must, which keeps each pattern live).
+ */
+const GRANT_FALSIFIED_CLAIMS: ReadonlyArray<{ pattern: RegExp; label: string }> = [
+  { pattern: /\bnever receives the meeting itself\b/, label: "never receives the meeting itself" },
+  { pattern: /\bnever passes through tinychat's server\b/, label: "never passes through tinychat's server" },
+  { pattern: /\bstay in your space unless you also choose to delete them\b/, label: "stays unless you delete it" },
+  { pattern: /\bdisconnecting undoes all of it\b/, label: "disconnecting undoes all of it" },
+];
+
+/**
+ * The grant's KV half covers the Notetaker's transcript bodies, not other connectors': no sentence
+ * may give our server read, change or delete reach over transcripts other than the Notetaker's.
+ */
+const TRANSCRIPT_BODY_OVERCLAIMS: ReadonlyArray<{ pattern: RegExp; label: string }> = [
+  { pattern: /\b(?:read|change|delete)\b(?:(?!notetaker)[^.]){0,80}\btranscripts?\b/, label: "reach over non-Notetaker transcripts" },
+];
+
+function normalize(text: string): string {
+  return text
+    .replace(/[*_`]/g, "")
+    .replace(/[‘’]/g, "'")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+function matched(claims: ReadonlyArray<{ pattern: RegExp; label: string }>, text: string): string[] {
+  return claims.filter(({ pattern }) => pattern.test(text)).map(({ label }) => label);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Every consent-copy variant a renderer can select: each connector's original, through every
+// transcript-delivery state, in both Google authorize surfaces.
+// ---------------------------------------------------------------------------------------------
+
+const CONNECTOR_COPIES: readonly BackgroundSyncConsentCopy[] = [
+  BACKGROUND_SYNC_CONSENT_COPY,
+  BACKEND_INGEST_CONSENT_COPY,
+  GOOGLE_MEET_CONSENT_COPY,
+  GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY,
+];
+const DELIVERY_STATES: readonly TranscriptConsentState[] = ["inactive", "unknown", "active"];
+
+interface RenderedVariant {
+  connector: string;
+  state: TranscriptConsentState;
+  surface: "in-app" | "system-browser";
+  copy: BackgroundSyncConsentCopy;
+  text: string;
+}
+
+function renderedVariants(connectors: readonly BackgroundSyncConsentCopy[] = CONNECTOR_COPIES): RenderedVariant[] {
+  return connectors.flatMap((base) => DELIVERY_STATES.flatMap((state) => {
+    const copy = transcriptAwareConsentCopy(base, state);
+    return ([
+      ["in-app", copy],
+      ["system-browser", googleConsentCopyForSystemBrowser(copy)],
+    ] as const).map(([surface, rendered]) => ({
+      connector: base.variant, state, surface, copy: rendered, text: normalize(consentCopyText(rendered)),
+    }));
+  }));
+}
+
+/** Every exported copy object and string, so a new variant cannot ship unscanned. */
+function exportedCopies(): { objects: BackgroundSyncConsentCopy[]; strings: Array<[string, string]> } {
+  const objects: BackgroundSyncConsentCopy[] = [];
+  const strings: Array<[string, string]> = [];
+  for (const [name, value] of Object.entries(consentCopyModule)) {
+    if (typeof value === "string") strings.push([name, value]);
+    else if (typeof value === "object" && value !== null && "variant" in value) {
+      objects.push(value as BackgroundSyncConsentCopy);
+    }
+  }
+  return { objects, strings };
+}
+
+function claimsIn(variants: readonly RenderedVariant[], claims: ReadonlyArray<{ pattern: RegExp; label: string }>) {
+  return variants
+    .map(({ connector, state, surface, text }) => ({ connector, state, surface, found: matched(claims, text) }))
+    .filter(({ found }) => found.length > 0);
+}
+
+describe("ability semantics — what the transcript-writer SQL ability authorizes (§3.2b)", () => {
+  it("pins `write` to the delete and DDL arms, and `[read,write]` selects `write`", () => {
     const write = SQL_ABILITY_AUTH_ACTIONS["tinycloud.sql/write"]!;
-
     expect(write).toContain("Delete");
-    expect(write).toContain("Update");
     expect(write).toContain("DropTable");
-    expect(write).toContain("AlterTable");
-    expect(write).toContain("Select");
+    expect(SQL_ABILITY_AUTH_ACTIONS["tinycloud.sql/read"]).toEqual(READ_ACTIONS);
+    expect(selectedSqlAbility(["tinycloud.sql/read", "tinycloud.sql/write"])).toBe("tinycloud.sql/write");
   });
 
-  it("pins `read` to the read arm only", () => {
-    const read = SQL_ABILITY_AUTH_ACTIONS["tinycloud.sql/read"]!;
-
-    expect(read).toEqual(READ_ACTIONS);
-    expect(read).not.toContain("Delete");
-    expect(read).not.toContain("DropTable");
-  });
-
-  it("selects the highest-privilege ability: `[read,write]` is `write`", () => {
-    expect(selectedSqlAbility(["tinycloud.sql/read", "tinycloud.sql/write"])).toBe(
-      "tinycloud.sql/write",
-    );
-    expect(selectedSqlAbility(["tinycloud.sql/write", "tinycloud.sql/read"])).toBe(
-      "tinycloud.sql/write",
-    );
-    expect(selectedSqlAbility(["tinycloud.sql/read"])).toBe("tinycloud.sql/read");
-  });
-
-  // This is the whole reason B2 was re-specified. The string-level check reads green on exactly
-  // the scope that authorizes deletion; the semantic check does not.
-  it("is not a string check: a `del`-free action list still authorizes Delete and DROP TABLE", () => {
-    const actionStrings = REJECTED_OPTION_B_GRANT.flatMap((entry) => entry.actions);
-    expect(actionStrings.some((action) => action.endsWith("/del"))).toBe(false);
-
-    const authorized = authorizedAuthActions(REJECTED_OPTION_B_GRANT);
+  it("is not a string check: the `del`-free activated scope still authorizes Delete and DROP TABLE", async () => {
+    const activated = await activatedScope();
+    expect(activated.flatMap((entry) => entry.actions).some((action) => action.endsWith("/del"))).toBe(false);
+    const authorized = authorizedAuthActions(activated);
     expect(authorized.has("Delete")).toBe(true);
     expect(authorized.has("DropTable")).toBe(true);
   });
-
-  it("treats bulk export as reachable under any SQL ability, read included", () => {
-    expect(SQL_EXPORT_IS_ABILITY_GATED).toBe(false);
-    expect(
-      exportIsReachable([
-        { service: "tinycloud.sql", path: `${APP_ID}/connectors`, actions: ["tinycloud.sql/read"] },
-      ]),
-    ).toBe(true);
-    expect(
-      exportIsReachable(REJECTED_OPTION_B_GRANT),
-    ).toBe(true);
-    expect(
-      exportIsReachable([
-        { service: "tinycloud.kv", path: `${APP_ID}/connectors/`, actions: ["tinycloud.kv/get"] },
-      ]),
-    ).toBe(false);
-  });
 });
 
-describe("activated scope (§3.2a — the clamp's output, not the policy)", () => {
-  // INGEST-CUTOVER(plan §11) — re-rationalized, not relaxed. The clamp check is unchanged and
-  // still passes: backend ingestion (plan §5, §9 row 3) takes custody OUT OF BAND and mints no
-  // connector delegation, so the activated scope is the same v1 shape for a cohort address as
-  // for anyone else. What changed is why this matters — a widening here would now mean the
-  // reversal went further than the operator signed (DECISIONS D1/D2), not merely that the copy
-  // drifted.
-  it("activates exactly the resolved backend policy under a space-root grant", async () => {
-    const policy = backendDelegationResolvedPermissions(BACKEND_DID);
-    const activated = await activatedScope();
-
-    // A service in the policy that this test has no overbroad-action list for would silently
-    // weaken the clamp probe above.
-    for (const entry of policy) expect(Object.keys(OVERBROAD_ACTIONS)).toContain(entry.service);
-
-    expect(sortScope(activated)).toEqual(sortScope(policy));
+describe("consent copy deny-lists — every connector, every transcript-delivery state", () => {
+  it("scans every exported consent-copy variant and string", () => {
+    const scanned = new Set(renderedVariants().map(({ copy }) => copy.variant));
+    const { objects, strings } = exportedCopies();
+    expect(objects.length).toBeGreaterThanOrEqual(8);
+    for (const copy of objects) expect({ variant: copy.variant, scanned: scanned.has(copy.variant) }).toEqual({ variant: copy.variant, scanned: true });
+    // Every active variant is reachable from its connector, not merely exported.
+    expect([...scanned].sort()).toEqual(objects.map((copy) => copy.variant).sort());
+    expect(strings.map(([name]) => name)).toContain("GOOGLE_TESTING_MODE_REAUTH_COPY");
   });
 
-  // INGEST-CUTOVER(plan §11) — converted from an Option-C-only statement into a REGRESSION GUARD
-  // that outlives the cutover. There is still exactly ONE acceptable shape: v1's non-connector
-  // policy. It holds for a non-cohort address because Option C mints nothing, and it holds for a
-  // COHORT address because backend ingestion reads Fireflies with a credential the server holds
-  // out of band (plan §6) and writes meetings into its OWN store, never the user's space (plan
-  // §5, §9 row 3). Neither mode has a reason to widen this policy, so a widening is a defect in
-  // either — and the marker is here so a future reader does not mistake the guard for a leftover.
-  it("is exactly v1's non-connector policy — neither mode mints a connector delegation", async () => {
-    const activated = sortScope(await activatedScope());
-    const state = scopeState(activated);
-
-    if (state !== "v1-non-connector") {
-      throw new Error(
-        `The activated backend scope is not v1's non-connector policy: ` +
-          `${JSON.stringify(activated)}. Neither shipped mode holds a connector delegation: ` +
-          `Option C queues ids only (operator decision 2026-08-04), and backend ingestion ` +
-          `(plan §9 row 3) keeps custody out of band precisely so no new grant into a user's ` +
-          `space is needed. Widening the policy contradicts BOTH consent texts, each of which ` +
-          `tells the user no permission on their space is granted.`,
-      );
-    }
-    expect(state).toBe("v1-non-connector");
-  });
-
-  // INGEST-CUTOVER(plan §11) — same disposition: still factually true, kept as a regression
-  // guard, and load-bearing in a NEW way. Under backend ingestion the server already holds the
-  // Fireflies credential and the meeting; a connector SQL/KV/secrets entry appearing here would
-  // add standing write access to the user's own space on top of that — the Listen shape plan §9
-  // row 3 excludes, and a strictly larger reversal than the one the operator signed.
-  it("carries no connector SQL, KV or secrets entry at all", async () => {
-    const activated = await activatedScope();
-
-    for (const entry of activated) {
-      expect(entry.path.startsWith(`${APP_ID}/connectors`)).toBe(false);
-      expect(entry.service).not.toBe("tinycloud.sql");
-      expect(entry.service).not.toBe("tinycloud.secrets");
-    }
-    // The connectors ability set neither copy discloses is authorized nowhere.
-    expect(authorizedAuthActions(activated).size).toBe(0);
-    expect(exportIsReachable(activated)).toBe(false);
-  });
-});
-
-describe("consent copy agrees with the unchanged backend policy (§3.8)", () => {
-  // INGEST-CUTOVER(plan §11) — regression guard, with the rationale corrected. C is still the
-  // text a NON-COHORT user reads and plan §5.3 requires that path to stay byte-identical, so
-  // `COPY.variant === "C"` stays pinned. `connectorEntries === []` is now the shared invariant of
-  // BOTH texts: C says no permission is granted because nothing is asked for, and the cohort text
-  // says the credential our server holds sits OUTSIDE the user's space. Either sentence becomes a
-  // lie the moment a connector entry appears here.
-  it("ships C to non-cohort users, over a policy holding no connector grant", async () => {
-    const activated = await activatedScope();
-    const connectorEntries = activated.filter((entry) =>
-      entry.path.startsWith(`${APP_ID}/connectors`),
-    );
-
-    // The invariant is NOT "the policy is empty" — the backend keeps v1's unrelated chat-threads
-    // grant under C, and coupling the two is the defect this build removed. It is "no connector
-    // grant exists", which is exactly what both copies tell the user.
-    expect(connectorEntries).toEqual([]);
-    expect(COPY.variant).toBe("C");
-    expect(COHORT_COPY.variant).toBe("B-ingest");
-  });
-
-  it("carries no consent checkbox — Option B's is deleted, not left dormant", () => {
-    expect("checkbox" in COPY).toBe(false);
-    expect(COPY_TEXT).not.toContain("i understand that");
-    // INGEST-CUTOVER(plan §11) — the interface now HAS an optional `consentCheckbox`, for the
-    // cohort variant's attestation. Option C must still carry none: under C nothing is granted
-    // and nothing is held, so there is nothing to attest to, and a dormant string here would be
-    // an invitation to render a consent gate for a grant that does not exist.
-    expect(COPY.consentCheckbox).toBeUndefined();
-    expect(COPY.disconnectNote).toBeUndefined();
-  });
-
-  it("makes no grant claim, because no grant is minted", () => {
-    // Every sentence Option B needed to disclose its permission is gone WITH the permission.
-    expect(COPY_TEXT).not.toContain("standing permission");
-    expect(COPY_TEXT).not.toContain("what that permission can technically do");
-    expect(COPY_TEXT).not.toContain("including your chats");
-    expect(COPY_TEXT).not.toContain("expires after 7 days");
-    expect(COPY_TEXT).not.toContain("we ask for it on your connectors data");
-
-    // …and it says so positively, so the absence is a statement rather than an omission.
-    expect(COPY_TEXT).toContain("no new permission");
-  });
-
-  /**
-   * INGEST-CUTOVER(plan §11) — W10 landed, and this is the disposition it chose.
-   *
-   * The two custody sentences are NOT permanent invariants and are no longer written as if they
-   * were. They are scoped: they describe what a NON-COHORT user is told, on the path plan §5.3
-   * requires to stay byte-identical, and they stay pinned so nobody quietly weakens Option C
-   * while changing the cohort. For a cohort address both sentences are FALSE — the server holds
-   * the credential and receives the meeting — and the cohort text says so; that is asserted
-   * positively below in "the cohort consent copy tells the new truth", not by deleting anything
-   * here.
-   */
-  it("keeps Option C's custody sentences for the non-cohort user", () => {
-    expect(COPY.variant).toBe("C");
-    expect(COPY_TEXT).toContain("which meetings are ready");
-    expect(COPY_TEXT).toContain("never sees your fireflies key");
-    // Content: on the Option C path the server queues ids and times, and that is all it gets.
-    expect(COPY_TEXT).toContain("it never receives the meeting itself");
-  });
-
-  it("says plainly that this is not fully-offline ingestion", () => {
-    expect(COPY_TEXT).toContain("this is not fully-offline ingestion");
-    expect(COPY_TEXT).toContain("your next visit");
-    // No promise that meetings arrive while the app is closed — only the notification does.
-    expect(COPY_TEXT).not.toContain("even while tinychat is closed the meeting");
+  it("catches each listed claim, so a pattern cannot rot into a silent pass", () => {
+    expect(matched(CONFINEMENT_CLAIMS, normalize("We read your meetings **and nothing else**."))).toEqual(["and nothing else"]);
+    expect(matched(CONFINEMENT_CLAIMS, normalize("It can’t reach your chats."))).toEqual(["cannot reach"]);
+    expect(matched(DELETE_CAPABILITY_CLAIMS, normalize("Our server cannot delete anything."))).toEqual(["cannot delete"]);
+    expect(matched(SERVER_WRITE_DENIALS, normalize("Our server can't write to your space."))).toEqual(["server cannot write"]);
   });
 
   it("carries no confinement claim while V3 records the escape reproducing", () => {
     const { escapeReproduces } = readV3Verdict();
-    const found = matched(CONFINEMENT_CLAIMS, COPY_TEXT);
-
-    // Unconditional under C too: dropping the grant does not license a sentence about what a
+    const variants = renderedVariants();
+    expect(variants.length).toBe(CONNECTOR_COPIES.length * DELIVERY_STATES.length * 2);
+    // Unconditional: neither dropping a grant nor adding one licenses a sentence about what a
     // permission cannot reach. Only a node fix recorded in V3's artifact would.
-    expect(escapeReproduces ? found : []).toEqual([]);
+    expect(escapeReproduces ? claimsIn(variants, CONFINEMENT_CLAIMS) : []).toEqual([]);
+    const strings = exportedCopies().strings.map(([name, text]) => ({ name, found: matched(CONFINEMENT_CLAIMS, normalize(text)) }));
+    expect(escapeReproduces ? strings.filter(({ found }) => found.length > 0) : []).toEqual([]);
   });
 
-  it("makes no delete-capability claim either", () => {
-    // The rejected grant is what the deny-list is calibrated against: `sql/write` authorizes
-    // Delete and DropTable, so "cannot delete" was never sayable — and C, holding nothing at
-    // all, has no reason to reach for it.
-    const authorized = authorizedAuthActions(REJECTED_OPTION_B_GRANT);
-    expect(DESTRUCTIVE_ACTIONS.filter((action) => authorized.has(action)).length).toBeGreaterThan(
-      0,
+  it("makes no delete-capability claim either", async () => {
+    // Calibrated against the real transcript-writer grant: `sql/write` authorizes Delete and
+    // DropTable on whatever database the node resolves, so "cannot delete" is never sayable.
+    const authorized = authorizedAuthActions(await activatedScope());
+    expect(DESTRUCTIVE_ACTIONS.filter((action) => authorized.has(action)).length).toBeGreaterThan(0);
+    expect(claimsIn(renderedVariants(), DELETE_CAPABILITY_CLAIMS)).toEqual([]);
+    const strings = exportedCopies().strings.map(([name, text]) => ({ name, found: matched(DELETE_CAPABILITY_CLAIMS, normalize(text)) }));
+    expect(strings.filter(({ found }) => found.length > 0)).toEqual([]);
+  });
+
+  // The per-connector guards (origin/main's cohort and Google Meet tests), extended to every
+  // connector and to the transcript-writer disclosures each one can select.
+  for (const base of CONNECTOR_COPIES) {
+    it(`${base.variant}: makes no confinement or delete-capability claim in any delivery state`, () => {
+      const { escapeReproduces } = readV3Verdict();
+      const variants = renderedVariants([base]);
+      expect(new Set(variants.map(({ copy }) => copy.variant)).size).toBe(2);
+      expect(escapeReproduces ? claimsIn(variants, CONFINEMENT_CLAIMS) : []).toEqual([]);
+      expect(claimsIn(variants, DELETE_CAPABILITY_CLAIMS)).toEqual([]);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Copy ↔ policy: origin/main's "no new permission … and the policy agrees" tests, re-pointed at
+// the transcript-writer grant. The copy a user reads follows the delegation status the backend
+// reports, so each state's copy is checked against the router that produces that status.
+// ---------------------------------------------------------------------------------------------
+
+const INDEX_SOURCE = resolve(__dirname, "../index.ts");
+
+async function withServer<T>(app: express.Express, run: (base: string) => Promise<T>): Promise<T> {
+  const server: Server = app.listen(0);
+  await once(server, "listening");
+  try {
+    const { port } = server.address() as { port: number };
+    return await run(`http://127.0.0.1:${port}`);
+  } finally {
+    const closing = once(server, "close");
+    server.close();
+    await closing;
+  }
+}
+
+/** The production router, gated exactly as `index.ts` gates it on `transcriptDeliveryConfig`. */
+function delegationAppFor(grant: SignedTranscriptGrant, env: NodeJS.ProcessEnv) {
+  const config = transcriptDeliveryConfigFromEnv(env);
+  const calls = { cid: 0, activated: [] as ServerInfoPermission[], stored: 0 };
+  const records = new Map<string, { serialized: string; expiresAt: string; policyHash?: string; delegateDid?: string }>();
+  const node = {
+    computeDelegationCid: (authorization: string) => { calls.cid++; return grant.computeDelegationCid(authorization); },
+    useDelegation: async (delegation: { path: string; actions: string[]; resources: Array<{ service: string }> }) => {
+      const service = delegation.resources[0]!.service;
+      calls.activated.push({
+        service: service.startsWith("tinycloud.") ? service : `tinycloud.${service}`,
+        space: DEFAULT_MANIFEST_SPACE,
+        path: delegation.path,
+        actions: [...delegation.actions],
+      });
+      return { kv: {}, sql: {} };
+    },
+  } as unknown as TinyCloudNode;
+  const app = express();
+  app.use("/api/delegations", createDelegationRouter({
+    backendDid: grant.backendDid,
+    configuredHost: grant.configuredHost,
+    eligibility: (address) => config.enabled && (!config.allowlist || config.allowlist.has(address.toLowerCase())),
+    node,
+    store: {
+      store: async (address: string, serialized: string, metadata: { expiresAt: string; policyHash?: string; delegateDid?: string }) => {
+        calls.stored++;
+        records.set(address.toLowerCase(), { serialized, ...metadata });
+      },
+      load: async (address: string) => (records.get(address.toLowerCase()) ?? null) as never,
+      remove: async (address: string) => { records.delete(address.toLowerCase()); },
+    },
+    authMiddleware: (req: Request, _res: Response, next: NextFunction) => {
+      req.user = { address: grant.address };
+      next();
+    },
+  }));
+  return { app, calls, config };
+}
+
+async function acceptAndReport(grant: SignedTranscriptGrant, env: NodeJS.ProcessEnv) {
+  const fixture = delegationAppFor(grant, env);
+  return withServer(fixture.app, async (base) => {
+    const accept = await fetch(`${base}/api/delegations`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ serialized: grant.serialized, siwe: grant.siwe, signature: grant.signature }),
+    });
+    const status = await (await fetch(`${base}/api/delegations/status`)).json() as DelegationResponse;
+    return { fixture, accept: { status: accept.status, body: await accept.json() as Record<string, unknown> }, status };
+  });
+}
+
+/** The state the frontend derives from that status, which is what selects the copy. */
+function consentStateFor(address: string, status: DelegationResponse): TranscriptConsentState {
+  beginTranscriptConsentStatus(address);
+  resolveTranscriptConsentStatus(address, status);
+  return transcriptConsentState();
+}
+
+const DELIVERY_ON = {
+  TRANSCRIPT_SERVER_DELIVERY_ENABLED: "true",
+  TRANSCRIPTION_API_URL: "https://ptx.invalid",
+  TRANSCRIPTION_API_KEY: "consent-scope-test-key",
+};
+
+describe("copy ↔ transcript-writer policy", () => {
+  it("wires delegation acceptance to the default-off delivery flag", () => {
+    expect(transcriptDeliveryConfigFromEnv({}).enabled).toBe(false);
+    expect(transcriptDeliveryConfigFromEnv({ TRANSCRIPT_SERVER_DELIVERY_ENABLED: "false" }).enabled).toBe(false);
+    const index = readFileSync(INDEX_SOURCE, "utf-8");
+    // The router `delegationAppFor` builds is the one index.ts builds, behind the same gate.
+    expect(index).toContain(
+      "const transcriptEligibility = (address: string) =>\n" +
+        "    transcriptDeliveryConfig.enabled &&\n" +
+        "    (!transcriptDeliveryConfig.allowlist || transcriptDeliveryConfig.allowlist.has(address.toLowerCase()));",
     );
-    expect(matched(DELETE_CAPABILITY_CLAIMS, COPY_TEXT)).toEqual([]);
+    expect(index).toMatch(/createDelegationRouter\(\{[^}]*\beligibility: transcriptEligibility,/);
+    expect(index.match(/createDelegationRouter\(/g)).toHaveLength(1);
   });
 
-  it("discloses the publicly readable operational log (§6.3 / T13)", () => {
-    // Survives the option change untouched: the log is written by the webhook route and the
-    // queue, which no delegation gates, so dropping the grant does not drop this disclosure.
-    expect(COPY_TEXT).toContain("publicly readable");
-    expect(COPY_TEXT).toContain("scrambled stand-ins");
+  it("delivery inactive: the original copy holds, and the policy agrees — the flag-off backend accepts no grant", async () => {
+    const grant = await makeSignedTranscriptGrant();
+    for (const env of [{}, { ...DELIVERY_ON, TRANSCRIPT_SERVER_DELIVERY_ADDRESSES: `0x${"1".repeat(40)}` }]) {
+      const { fixture, accept, status } = await acceptAndReport(grant, env);
+      // A valid signed grant is refused before it is read, verified, activated or stored.
+      expect(accept).toEqual({ status: 403, body: { error: "delivery_disabled" } });
+      expect(fixture.calls).toEqual({ cid: 0, activated: [], stored: 0 });
+      expect(status).toEqual({ status: "none", expiresAt: null, verified: false, delivery: "disabled" });
+      expect(consentStateFor(grant.address, status)).toBe("inactive");
+    }
+
+    for (const base of CONNECTOR_COPIES) {
+      // Byte-identical: the inactive copy IS the original, not a re-render of it.
+      expect(transcriptAwareConsentCopy(base, "inactive")).toBe(base);
+      const text = normalize(consentCopyText(base));
+      expect(text).toContain("no new permission");
+      expect(disclosesTranscriptWriter(text)).toBe(false);
+    }
+    expect(GRANT_LIFETIME_DAYS).toBe(29);
+    expect(matched(GRANT_FALSIFIED_CLAIMS, normalize(consentCopyText(BACKGROUND_SYNC_CONSENT_COPY)))).toEqual(["never receives the meeting itself"]);
+    expect(matched(GRANT_FALSIFIED_CLAIMS, normalize(consentCopyText(GOOGLE_MEET_CONSENT_COPY))))
+      .toEqual(["never passes through tinychat's server", "stays unless you delete it"]);
+    expect(matched(GRANT_FALSIFIED_CLAIMS, normalize(consentCopyText(BACKEND_INGEST_CONSENT_COPY)))).toEqual(["disconnecting undoes all of it"]);
+    // The overclaim pattern is live, and leaves the Notetaker's own transcripts alone.
+    expect(matched(TRANSCRIPT_BODY_OVERCLAIMS, "our server can read, change or delete your google meet transcripts")).toHaveLength(1);
+    expect(matched(TRANSCRIPT_BODY_OVERCLAIMS, "it can also read and save notetaker transcripts there")).toEqual([]);
+    // The originals' write denials are exactly the sentences an active grant would falsify.
+    for (const base of [BACKGROUND_SYNC_CONSENT_COPY, BACKEND_INGEST_CONSENT_COPY, GOOGLE_MEET_CONSENT_COPY]) {
+      expect(matched(SERVER_WRITE_DENIALS, normalize(consentCopyText(base)))).toContain("nothing is granted");
+    }
   });
 
-  it("still warns that the delivery URL is a credential", () => {
-    expect(COPY_TEXT).toContain("like a password");
+  it("delivery active: the copy discloses the whole transcript-writer grant, and keeps no sentence it falsifies", async () => {
+    const grant = await makeSignedTranscriptGrant();
+    const { fixture, accept, status } = await acceptAndReport(grant, DELIVERY_ON);
+    // The policy the disclosure describes: the signed grant is accepted and activates exactly the
+    // transcript-writer scope — connectors SQL read/write and the transcriber KV prefix.
+    expect(accept.status).toBe(200);
+    expect(accept.body).toMatchObject({ status: "active", verified: true, delivery: "enabled" });
+    expect(fixture.calls.stored).toBe(1);
+    expect(sortScope(fixture.calls.activated)).toEqual(sortScope(backendDelegationResolvedPermissions(BACKEND_DID)));
+    expect(fixture.calls.activated.some((entry) => entry.service === "tinycloud.sql" && entry.actions.includes("tinycloud.sql/write"))).toBe(true);
+    expect(status).toMatchObject({ status: "active", verified: true, delivery: "enabled" });
+    expect(consentStateFor(grant.address, status)).toBe("active");
+    // An active grant whose schema is not yet ready is "unknown", which discloses too.
+    expect(consentStateFor(grant.address, { ...status, delivery: "schema_missing" })).toBe("unknown");
+
+    for (const state of ["active", "unknown"] as const) {
+      for (const base of CONNECTOR_COPIES) {
+        const copy = transcriptAwareConsentCopy(base, state);
+        expect(copy).not.toBe(base);
+        expect(copy.variant).toBe(`${base.variant}-transcript-writer` as typeof copy.variant);
+        for (const rendered of [copy, googleConsentCopyForSystemBrowser(copy)]) {
+          const text = normalize(consentCopyText(rendered));
+          expect({ variant: rendered.variant, state, discloses: disclosesTranscriptWriter(text) })
+            .toEqual({ variant: rendered.variant, state, discloses: true });
+          expect({ variant: rendered.variant, state, falsified: matched(GRANT_FALSIFIED_CLAIMS, text) })
+            .toEqual({ variant: rendered.variant, state, falsified: [] });
+          expect({ variant: rendered.variant, state, overclaims: matched(TRANSCRIPT_BODY_OVERCLAIMS, text) })
+            .toEqual({ variant: rendered.variant, state, overclaims: [] });
+          expect({ variant: rendered.variant, state, denials: matched(SERVER_WRITE_DENIALS, text) })
+            .toEqual({ variant: rendered.variant, state, denials: [] });
+        }
+      }
+    }
   });
 });
 
+// ---------------------------------------------------------------------------------------------
+// Restored from origin/main (deleted in 8f57f34): the per-connector truth checks. Each runs over
+// every text a renderer can select for that connector — the original (delivery inactive) and the
+// transcript-writer disclosure (delivery active or unknown) — so a disclosure cannot quietly drop
+// a sentence the original was pinned to carry. Destructuring shadows the old names, so the bodies
+// are origin/main's.
+// ---------------------------------------------------------------------------------------------
+
+/** Bulk export follows the SQL grant itself, not the ability on it (`sql/database.rs`). */
+const SQL_EXPORT_IS_ABILITY_GATED = false;
+
+function exportIsReachable(scope: readonly ServerInfoPermission[]): boolean {
+  return scope.some(
+    (entry) =>
+      entry.service === "tinycloud.sql" &&
+      (SQL_EXPORT_IS_ABILITY_GATED ? selectedSqlAbility(entry.actions) !== undefined : true),
+  );
+}
+
+interface SelectableCopy { state: "inactive" | "active"; copy: BackgroundSyncConsentCopy; text: string }
+
+/** The original and the active-or-unknown disclosure (one object serves both of those states). */
+function selectable(base: BackgroundSyncConsentCopy, surfaces: "in-app" | "both" = "in-app"): SelectableCopy[] {
+  const inactive = transcriptAwareConsentCopy(base, "inactive");
+  const active = transcriptAwareConsentCopy(base, "active");
+  expect(transcriptAwareConsentCopy(base, "unknown")).toBe(active);
+  const copies: Array<[SelectableCopy["state"], BackgroundSyncConsentCopy]> = [["inactive", inactive], ["active", active]];
+  if (surfaces === "both") {
+    copies.push(["inactive", googleConsentCopyForSystemBrowser(inactive)], ["active", googleConsentCopyForSystemBrowser(active)]);
+  }
+  return copies.map(([state, copy]) => ({ state, copy, text: normalize(consentCopyText(copy)) }));
+}
+
+const DELEGATION_GATE_DOC = resolve(__dirname, "../../../docs/connector-webhooks-delegation-gate.md");
+const DEPLOYMENT_DOC = resolve(__dirname, "../../../docs/deployment.md");
+const RESIDUALS_DOC = resolve(__dirname, "../../../docs/connector-webhooks-p1-residuals.md");
+/** The operator-facing mirror of the cohort copy; the fidelity test parses it field by field. */
+const COHORT_COPY_DOC = resolve(__dirname, "../../../docs/connector-webhooks-backend-ingest-consent-copy.md");
+/** The renderer of background-sync consent copy — read as SOURCE. */
+const CONSENT_RENDERER = resolve(__dirname, "../../../frontend/src/chat/BackgroundSyncSection.tsx");
+/** The approval doc's mirror of the one paragraph the transcript-writer variant replaces. */
+const TRANSCRIPT_WRITER_BULLET = "transcript-writer bullet 4";
+const TRANSCRIPT_WRITER_BULLET_INDEX = 3;
+const TRANSCRIPT_WRITER_DISCONNECT = "transcript-writer disconnectNote";
+
+function readDoc(path: string): string {
+  if (!existsSync(path)) throw new Error(`Missing record: ${path}`);
+  return readFileSync(path, "utf-8");
+}
+
 /**
- * INGEST-CUTOVER(plan §11) — the cohort consent copy, checked against plan §11's four
- * requirements. This is the block that makes the reversal honest: the assertions above pin what a
- * non-cohort user is still told, and these pin that a cohort user is told the opposite where the
- * opposite is true, in the copy's own words rather than by an omission.
+ * Parse the approval mirror: `## <field>` followed by a single blockquote paragraph. Whitespace is
+ * collapsed on both sides; every other character, `**bold**` markers included, must match.
  */
-describe("the cohort consent copy tells the new truth (plan §11 requirements 1-4)", () => {
-  // Requirement 4 — every "never sees your key / never receives the meeting" formulation is GONE
-  // for cohort users. Not softened, not qualified: absent, because for them it is false.
-  it("carries no 'never sees your key' / 'never receives the meeting' formulation", () => {
-    expect(COHORT_TEXT).not.toContain("never sees your fireflies key");
-    expect(COHORT_TEXT).not.toContain("never receives the meeting");
-    for (const stale of [
-      /\bnever (?:sees|saw|receives|received|holds|stores) your (?:fireflies )?(?:api )?key\b/,
-      /\bthe key stays where it is today\b/,
-      /\bonly your browser reads it\b/,
-      /\bnever writes? (?:a )?meeting content\b/,
-    ]) {
-      expect({ stale: stale.source, found: stale.test(COHORT_TEXT) }).toEqual({
-        stale: stale.source,
-        found: false,
-      });
+function parseApprovedCopy(markdown: string): Record<string, string> {
+  const fields: Record<string, string> = {};
+  let current: string | null = null;
+  for (const line of markdown.split("\n")) {
+    const headed = /^## (.+?)\s*$/.exec(line);
+    if (headed) {
+      current = headed[1]!;
+      continue;
+    }
+    if (current === null) continue;
+    if (line.startsWith("> ")) fields[current] = `${fields[current] ?? ""} ${line.slice(2).trim()}`.trim();
+  }
+  return Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, value.replace(/\s+/g, " ").trim()]));
+}
+
+function collapse(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+describe("bulk export (§3.2b)", () => {
+  it("treats bulk export as reachable under any SQL ability, read included", async () => {
+    expect(SQL_EXPORT_IS_ABILITY_GATED).toBe(false);
+    expect(exportIsReachable([
+      { service: "tinycloud.sql", path: `${APP_ID}/connectors`, actions: ["tinycloud.sql/read"] },
+    ])).toBe(true);
+    // Re-pointed: the transcript-writer grant is the SQL grant that now exists.
+    expect(exportIsReachable(await activatedScope())).toBe(true);
+    expect(exportIsReachable([
+      { service: "tinycloud.kv", path: `${APP_ID}/connectors/`, actions: ["tinycloud.kv/get"] },
+    ])).toBe(false);
+  });
+});
+
+describe("Option C consent copy (§3.8), in every delivery state", () => {
+  it("carries no consent checkbox — Option B's is deleted, not left dormant", () => {
+    for (const { copy: COPY, text: COPY_TEXT } of selectable(BACKGROUND_SYNC_CONSENT_COPY)) {
+      expect("checkbox" in COPY).toBe(false);
+      expect(COPY_TEXT).not.toContain("i understand that");
+      expect(COPY.consentCheckbox).toBeUndefined();
+      expect(COPY.disconnectNote).toBeUndefined();
     }
   });
 
-  // Requirement 1 — the credential is named, its kind is named (DECISIONS `V-a-branch: b1` =
-  // OAuth: revocable, expiring, per-user), and — because Fireflies publishes no data scope, so
-  // every branch is full-account — what it could do if breached is stated rather than implied.
-  // That last clause is the operator's signed blast-radius acceptance, said out loud to the user.
-  it("says the server holds a Fireflies credential, and what it could do if breached", () => {
-    expect(COHORT_TEXT).toContain("fireflies credential");
-    expect(COHORT_TEXT).toContain("oauth token");
-    expect(COHORT_TEXT).toMatch(/no read-only permission/);
-    // The full-account reach, itemized: read is not the whole of it.
-    expect(COHORT_TEXT).toMatch(/\bdelete them\b/);
-    expect(COHORT_TEXT).toMatch(/\breshare\b/);
-    expect(COHORT_TEXT).toMatch(/if our server is breached/);
-    // …and the bound that makes b1 the least-bad custody: revocation and expiry.
-    expect(COHORT_TEXT).toMatch(/revoked? or expires/);
-    expect(COHORT_TEXT).toContain("revoke");
+  it("makes no grant claim while delivery is inactive, because no grant is accepted", () => {
+    // Scoped: with delivery active the transcript-writer grant exists and the disclosure says so
+    // (the copy ↔ transcript-writer policy tests). Option B's grant sentences stay absent in both.
+    for (const { state, text: COPY_TEXT } of selectable(BACKGROUND_SYNC_CONSENT_COPY)) {
+      expect(COPY_TEXT).not.toContain("standing permission");
+      expect(COPY_TEXT).not.toContain("what that permission can technically do");
+      expect(COPY_TEXT).not.toContain("including your chats");
+      expect(COPY_TEXT).not.toContain("expires after 7 days");
+      expect(COPY_TEXT).not.toContain("we ask for it on your connectors data");
+      expect(COPY_TEXT).toContain("no new permission");
+      if (state === "inactive") expect(COPY_TEXT).toContain("nothing is granted");
+    }
   });
 
-  // Requirement 2 — server-side storage, encrypted, for the D2a window, deleted on
-  // disconnect/purge. The window is pinned to the code constant, so a retention change that
-  // forgets the copy fails here rather than shipping a stale promise.
+  it("keeps Option C's custody sentences for the non-cohort user", () => {
+    // Fireflies custody is unchanged by transcript delivery: the server still never sees the
+    // Fireflies key and never receives the Fireflies meeting.
+    for (const { state, copy: COPY, text: COPY_TEXT } of selectable(BACKGROUND_SYNC_CONSENT_COPY)) {
+      expect(COPY.variant).toBe(state === "inactive" ? "C" : "C-transcript-writer");
+      expect(COPY_TEXT).toContain("which meetings are ready");
+      expect(COPY_TEXT).toContain("never sees your fireflies key");
+      if (state === "inactive") expect(COPY_TEXT).toContain("it never receives the meeting itself");
+      else {
+        // Qualified: the notification still carries nothing, but the grant can read saved meetings.
+        expect(COPY_TEXT).toContain("the notification itself carries no title, no transcript, no summary and no attendees");
+        expect(COPY_TEXT).toContain("lets our server read its meeting record there");
+      }
+    }
+  });
+
+  it("says plainly that this is not fully-offline ingestion", () => {
+    for (const { text: COPY_TEXT } of selectable(BACKGROUND_SYNC_CONSENT_COPY)) {
+      expect(COPY_TEXT).toContain("this is not fully-offline ingestion");
+      expect(COPY_TEXT).toContain("your next visit");
+      expect(COPY_TEXT).not.toContain("even while tinychat is closed the meeting");
+    }
+  });
+
+  it("discloses the publicly readable operational log (§6.3 / T13)", () => {
+    for (const { text: COPY_TEXT } of selectable(BACKGROUND_SYNC_CONSENT_COPY)) {
+      expect(COPY_TEXT).toContain("publicly readable");
+      expect(COPY_TEXT).toContain("scrambled stand-ins");
+    }
+  });
+
+  it("still warns that the delivery URL is a credential", () => {
+    for (const { text: COPY_TEXT } of selectable(BACKGROUND_SYNC_CONSENT_COPY)) {
+      expect(COPY_TEXT).toContain("like a password");
+    }
+  });
+});
+
+describe("the cohort consent copy tells the new truth (plan §11 requirements 1-4), in every delivery state", () => {
+  it("carries no 'never sees your key' / 'never receives the meeting' formulation", () => {
+    for (const { text: COHORT_TEXT } of selectable(BACKEND_INGEST_CONSENT_COPY)) {
+      expect(COHORT_TEXT).not.toContain("never sees your fireflies key");
+      expect(COHORT_TEXT).not.toContain("never receives the meeting");
+      for (const stale of [
+        /\bnever (?:sees|saw|receives|received|holds|stores) your (?:fireflies )?(?:api )?key\b/,
+        /\bthe key stays where it is today\b/,
+        /\bonly your browser reads it\b/,
+        /\bnever writes? (?:a )?meeting content\b/,
+      ]) {
+        expect({ stale: stale.source, found: stale.test(COHORT_TEXT) }).toEqual({ stale: stale.source, found: false });
+      }
+    }
+  });
+
+  it("says the server holds a Fireflies credential, and what it could do if breached", () => {
+    for (const { text: COHORT_TEXT } of selectable(BACKEND_INGEST_CONSENT_COPY)) {
+      expect(COHORT_TEXT).toContain("fireflies credential");
+      expect(COHORT_TEXT).toContain("oauth token");
+      expect(COHORT_TEXT).toMatch(/no read-only permission/);
+      expect(COHORT_TEXT).toMatch(/\bdelete them\b/);
+      expect(COHORT_TEXT).toMatch(/\breshare\b/);
+      expect(COHORT_TEXT).toMatch(/if our server is breached/);
+      expect(COHORT_TEXT).toMatch(/revoked? or expires/);
+      expect(COHORT_TEXT).toContain("revoke");
+    }
+  });
+
   it("says the meeting is stored server-side, encrypted, for the D2a window, and deleted", () => {
     expect(RETENTION_WINDOW_DAYS).toBe(90);
-    expect(COHORT_TEXT).toContain("keeps its own copy");
-    expect(COHORT_TEXT).toContain("encrypted at rest");
-    expect(COHORT_TEXT).toContain(`${RETENTION_WINDOW_DAYS} days`);
-    expect(COHORT_TEXT).toMatch(/disconnecting[^.]*deletes the stored meetings/);
-    expect(COHORT_TEXT).toContain("purge");
+    for (const { text: COHORT_TEXT } of selectable(BACKEND_INGEST_CONSENT_COPY)) {
+      expect(COHORT_TEXT).toContain("keeps its own copy");
+      expect(COHORT_TEXT).toContain("encrypted at rest");
+      expect(COHORT_TEXT).toContain(`${RETENTION_WINDOW_DAYS} days`);
+      expect(COHORT_TEXT).toMatch(/disconnecting[^.]*deletes the stored meetings/);
+      expect(COHORT_TEXT).toContain("purge");
+    }
   });
 
-  // Requirement 3, first half — no confinement claim. The deny-list is NOT relaxed for the
-  // cohort: the INTERNAL escape (§3 item 3) is what forbids these sentences, and holding the
-  // credential server-side does not patch a node.
-  it("makes no confinement claim while V3 records the escape reproducing", () => {
-    const { escapeReproduces } = readV3Verdict();
-    expect(escapeReproduces ? matched(CONFINEMENT_CLAIMS, COHORT_TEXT) : []).toEqual([]);
-    expect(matched(DELETE_CAPABILITY_CLAIMS, COHORT_TEXT)).toEqual([]);
-  });
-
-  // Requirement 3, second half — owns-only (plan §10). Fireflies fires for meetings the user
-  // OWNS; capture across an account needs Enterprise. The copy must promise the smaller thing.
   it("promises only the meetings the user owns", () => {
-    expect(COHORT_TEXT).toMatch(/the meetings you own/);
-    expect(COHORT_TEXT).toMatch(/owned by someone else[^.]*is not sent to us/);
-    for (const overclaim of [
-      /every meeting (?:in|on|from) your (?:team|workspace|organi[sz]ation)/,
-      /all (?:your )?team meetings/,
-      /every meeting you (?:attend|are invited to)/,
-      /everyone'?s meetings/,
-    ]) {
-      expect({ overclaim: overclaim.source, found: overclaim.test(COHORT_TEXT) }).toEqual({
-        overclaim: overclaim.source,
-        found: false,
-      });
+    for (const { text: COHORT_TEXT } of selectable(BACKEND_INGEST_CONSENT_COPY)) {
+      expect(COHORT_TEXT).toMatch(/the meetings you own/);
+      expect(COHORT_TEXT).toMatch(/owned by someone else[^.]*is not sent to us/);
+      for (const overclaim of [
+        /every meeting (?:in|on|from) your (?:team|workspace|organi[sz]ation)/,
+        /all (?:your )?team meetings/,
+        /every meeting you (?:attend|are invited to)/,
+        /everyone'?s meetings/,
+      ]) {
+        expect({ overclaim: overclaim.source, found: overclaim.test(COHORT_TEXT) }).toEqual({ overclaim: overclaim.source, found: false });
+      }
     }
   });
 
-  // The one Option-C sentence that survives into the cohort text, and it survives because it is
-  // still checked against the real policy on every run: B mints no connector delegation (§9 row
-  // 3), so "no new permission on your space" is a fact, not a reassurance.
-  it("still says no new permission on the user's space, and the policy agrees", async () => {
-    const activated = await activatedScope();
-
-    expect(COHORT_TEXT).toContain("no new permission");
-    expect(COHORT_TEXT).toContain("outside your space");
-    expect(
-      activated.filter((entry) => entry.path.startsWith(`${APP_ID}/connectors`)),
-    ).toEqual([]);
+  it("keeps the credential outside the user's space in both texts", () => {
+    for (const { text: COHORT_TEXT } of selectable(BACKEND_INGEST_CONSENT_COPY)) {
+      expect(COHORT_TEXT).toContain("no new permission");
+      expect(COHORT_TEXT).toContain("outside your space");
+    }
   });
 
-  // The disclosures that are true in both modes stay in both texts — a rewrite is not a licence
-  // to drop the operational-log or delivery-URL warnings.
   it("keeps the disclosures that survive the mode change", () => {
-    expect(COHORT_TEXT).toContain("publicly readable");
-    expect(COHORT_TEXT).toContain("scrambled stand-ins");
-    expect(COHORT_TEXT).toContain("like a password");
-  });
-
-  /**
-   * INGEST-CUTOVER(plan §11) — requirement 2, the half the first cut of this copy smoothed.
-   *
-   * `services/connector-teardown.ts` deletes the credential row unconditionally but carries a
-   * FAILED upstream revoke out as a value (`upstreamRevoked: false` + `reason`) rather than
-   * swallowing it, because the provider-side grant may still be live. Revocation-and-expiry is
-   * the ONLY bound on the signed blast-radius acceptance, so a copy that states revocation as an
-   * unconditional fact is the one caveat the user most needs, missing. Pinned in the same shape
-   * as the retention pin: smoothing it later fails the build.
-   */
-  it("says what happens when the upstream revoke fails, rather than promising it always works", () => {
-    expect(COHORT_TEXT).toMatch(/if that upstream revoke fails we tell you so/);
-    expect(COHORT_TEXT).toMatch(/we cannot revoke upstream, we tell you so/);
-    expect(COHORT_TEXT).toMatch(/instead of pretending it worked/);
-    // …and no sentence anywhere that asserts revocation as a completed fact of disconnecting.
-    for (const overpromise of [
-      /disconnecting here revokes it too\b/,
-      /\brevokes the credential with fireflies\b/,
-      /\brevocation is (?:immediate|instant)/,
-    ]) {
-      expect({ overpromise: overpromise.source, found: overpromise.test(COHORT_TEXT) }).toEqual({
-        overpromise: overpromise.source,
-        found: false,
-      });
+    for (const { text: COHORT_TEXT } of selectable(BACKEND_INGEST_CONSENT_COPY)) {
+      expect(COHORT_TEXT).toContain("publicly readable");
+      expect(COHORT_TEXT).toContain("scrambled stand-ins");
+      expect(COHORT_TEXT).toContain("like a password");
     }
   });
 
-  // Requirement 1 + 2, as an attestation. Option C has no checkbox because nothing is granted;
-  // the cohort variant has two disclosures the user should have to acknowledge in one sentence —
-  // the full-account token and the 90-day content copy — and the sentence names both.
-  it("carries the attestation checkbox, naming both disclosures", () => {
-    expect(COHORT_COPY.consentCheckbox).toBeDefined();
-    expect(COHORT_COPY.disconnectNote).toBeDefined();
-    const attestation = normalize(COHORT_COPY.consentCheckbox ?? "");
-    expect(attestation).toContain("full-account fireflies token");
-    expect(attestation).toContain(`${RETENTION_WINDOW_DAYS} days`);
+  it("says what happens when the upstream revoke fails, rather than promising it always works", () => {
+    for (const { text: COHORT_TEXT } of selectable(BACKEND_INGEST_CONSENT_COPY)) {
+      expect(COHORT_TEXT).toMatch(/if that upstream revoke fails we tell you so/);
+      expect(COHORT_TEXT).toMatch(/we cannot revoke upstream, we tell you so/);
+      expect(COHORT_TEXT).toMatch(/instead of pretending it worked/);
+      for (const overpromise of [
+        /disconnecting here revokes it too\b/,
+        /\brevokes the credential with fireflies\b/,
+        /\brevocation is (?:immediate|instant)/,
+      ]) {
+        expect({ overpromise: overpromise.source, found: overpromise.test(COHORT_TEXT) }).toEqual({ overpromise: overpromise.source, found: false });
+      }
+    }
   });
 
-  // The "already there" headline is bounded to W12's actual acceptance criterion — no prior
-  // device setup, NOT anonymous access — so the benefit cannot be over-read as public reach.
+  it("carries the attestation checkbox, naming both disclosures", () => {
+    for (const { copy: COHORT_COPY } of selectable(BACKEND_INGEST_CONSENT_COPY)) {
+      expect(COHORT_COPY.consentCheckbox).toBeDefined();
+      expect(COHORT_COPY.disconnectNote).toBeDefined();
+      const attestation = normalize(COHORT_COPY.consentCheckbox ?? "");
+      expect(attestation).toContain("full-account fireflies token");
+      expect(attestation).toContain(`${RETENTION_WINDOW_DAYS} days`);
+    }
+  });
+
   it("bounds the 'already there' promise to a signed-in session", () => {
-    expect(COHORT_TEXT).toMatch(/signing in is still required/);
-    expect(COHORT_TEXT).toMatch(/not mean your meetings are reachable without signing in/);
+    for (const { text: COHORT_TEXT } of selectable(BACKEND_INGEST_CONSENT_COPY)) {
+      expect(COHORT_TEXT).toMatch(/signing in is still required/);
+      expect(COHORT_TEXT).toMatch(/not mean your meetings are reachable without signing in/);
+    }
   });
 
   /**
-   * INGEST-CUTOVER(plan §11) — the approval artifact and the shipped constant are ONE text.
-   *
-   * The cutover audit found them decoupled: the operator was being asked to approve a variant,
-   * a bullet count, a checkbox and a disconnect note that the code did not have. They are now
-   * pinned to each other, so an edit to either side without the other fails here rather than
-   * shipping words nobody approved.
+   * The approval artifact and the shipped constant are ONE text. The Gate 6 approval covers the
+   * original cohort copy, which is what renders while delivery is inactive, so that is matched
+   * sentence for sentence. The transcript-writer variant replaces one paragraph the operator has
+   * NOT approved: the doc mirrors it under an explicit "NOT APPROVED" status, never inside the
+   * approved text, and this test holds the mirror to the shipped words and the rest of the
+   * variant to the approved text.
    */
   it("matches the operator approval artifact sentence for sentence", () => {
-    const approved = parseApprovedCopy(readDoc(COHORT_COPY_DOC));
+    const doc = readDoc(COHORT_COPY_DOC);
+    const approved = parseApprovedCopy(doc);
+    const COHORT_COPY = BACKEND_INGEST_CONSENT_COPY;
 
     expect(approved.variant).toBe(COHORT_COPY.variant);
     expect(approved.heading).toBe(collapse(COHORT_COPY.heading));
@@ -852,66 +872,59 @@ describe("the cohort consent copy tells the new truth (plan §11 requirements 1-
     expect(approved.changesHeading).toBe(collapse(COHORT_COPY.changesHeading));
     expect(approved.consentCheckbox).toBe(collapse(COHORT_COPY.consentCheckbox ?? ""));
     expect(approved.disconnectNote).toBe(collapse(COHORT_COPY.disconnectNote ?? ""));
-
-    // Bullet count too: a bullet dropped from the code and left in the artifact is exactly the
-    // divergence this test exists for.
     const approvedBullets = Object.keys(approved).filter((key) => key.startsWith("bullet "));
     expect(approvedBullets.length).toBe(COHORT_COPY.bullets.length);
     COHORT_COPY.bullets.forEach((bullet, index) => {
       expect(approved[`bullet ${index + 1}`]).toBe(collapse(bullet));
     });
+
+    // The transcript-writer variant: the approved text except the two mirrored paragraphs.
+    const active = transcriptAwareConsentCopy(COHORT_COPY, "active");
+    expect({ ...active, variant: COHORT_COPY.variant, bullets: [], disconnectNote: "" })
+      .toEqual({ ...COHORT_COPY, bullets: [], disconnectNote: "" });
+    expect(collapse(active.disconnectNote ?? "")).not.toBe(approved.disconnectNote);
+    expect(approved[TRANSCRIPT_WRITER_DISCONNECT]).toBe(collapse(active.disconnectNote ?? ""));
+    expect(normalize(active.disconnectNote ?? "")).toContain("disconnecting fireflies does not remove the separate notetaker permission");
+    expect(active.bullets.length).toBe(COHORT_COPY.bullets.length);
+    active.bullets.forEach((bullet, index) => {
+      if (index === TRANSCRIPT_WRITER_BULLET_INDEX) expect(collapse(bullet)).not.toBe(approved[`bullet ${index + 1}`]);
+      else expect(collapse(bullet)).toBe(approved[`bullet ${index + 1}`]);
+    });
+    expect(approved[TRANSCRIPT_WRITER_BULLET]).toBe(collapse(active.bullets[TRANSCRIPT_WRITER_BULLET_INDEX]!));
+    // …and the mirror says, in its own section, that it is not approved.
+    const section = doc.slice(doc.indexOf("## Transcript-writer variant"));
+    expect(section.indexOf(`## ${TRANSCRIPT_WRITER_BULLET}`)).toBeGreaterThan(0);
+    expect(section.slice(0, section.indexOf(`## ${TRANSCRIPT_WRITER_BULLET}`))).toContain("**Status: NOT APPROVED.**");
+    const prose = (markdown: string) => normalize(markdown.replace(/^> /gm, ""));
+    expect(prose(doc.slice(0, doc.indexOf("## Transcript-writer variant")))).not.toContain(TRANSCRIPT_WRITER_NOTICE_TEXT);
+    expect(prose(section)).toContain(TRANSCRIPT_WRITER_NOTICE_TEXT);
   });
 
-  /**
-   * INGEST-CUTOVER(plan §11) — the cutover audit's blocker, held open honestly.
-   *
-   * Writing the cohort copy is not showing it. The only renderer,
-   * `frontend/src/chat/BackgroundSyncSection.tsx`, is on the frozen drain-UX increment and
-   * renders Option C unconditionally, so a cohort address would today read the two sentences
-   * §11 requirement 4 retires for them. Unfreezing that file is an operator-approved change, not
-   * a build one — so the gap is recorded instead of hidden, and this test keeps the record and
-   * the code honest IN BOTH DIRECTIONS: while nothing selects the cohort copy the docs must say
-   * so, and the moment something does, the "not wired" language has to go.
-   */
-  it("records the unwired consent surface as a residual and an operator gate, until it is wired", () => {
+  it("records the consent surface's wiring state honestly in both directions", () => {
     const renderer = readDoc(CONSENT_RENDERER);
     const deployment = readDoc(DEPLOYMENT_DOC);
     const residuals = readDoc(RESIDUALS_DOC);
     const wired = renderer.includes("BACKEND_INGEST_CONSENT_COPY");
 
     if (!wired) {
-      // The renderer still shows Option C to everyone.
       expect(renderer).toContain("BACKGROUND_SYNC_CONSENT_COPY");
-      // The deploy doc may not claim the cohort is shown the new text.
       expect(deployment).toMatch(/NOT yet wired/);
       expect(deployment).toMatch(/pre-rollout gate/i);
       expect(residuals).toMatch(/F011/);
       expect(residuals).toMatch(/BACKEND_INGEST_CONSENT_COPY/);
     } else {
-      // Wired: the "not yet" record must be retired in the same change, not left to rot.
       expect(deployment).not.toMatch(/NOT yet wired/);
     }
   });
 });
 
-/**
- * GMEET(connector plan §4.1, §4.3, §6 WP-C) — the Google Meet connect consent copy.
- *
- * Same job as the two blocks above, against a different set of facts: this connector's server-side
- * role is a STATELESS OAuth proxy (`services/google-oauth.ts` + `routes/google-oauth.ts`), and the
- * two claims most worth pinning are the ones a copywriter would be most tempted to smooth — that
- * Google token material does pass through our backend, and that a transcript may simply not exist.
- *
- * The scope sentences are matched against `GOOGLE_MEET_SCOPES` itself rather than against a list
- * repeated here, so widening the grant without amending the copy fails the build. That is the
- * whole point: a Drive scope is a CASA Tier-2 compliance decision (plan §4.1), not a code tweak,
- * and it should be impossible to make quietly.
- */
-describe("the Google Meet consent copy (connector plan §4.1/§4.3, WP-C)", () => {
+/** The transcript-writer notice as the frontend renders it (normalized). */
+const TRANSCRIPT_WRITER_NOTICE_TEXT = "our server can read, add, change or delete those records";
+
+describe("the Google Meet consent copy (connector plan §4.1/§4.3, WP-C), in every delivery state and surface", () => {
   const scopes = GOOGLE_MEET_SCOPES.split(" ");
 
   it("names Google and OAuth, and describes the Meet, Drive metadata, and Docs scopes requested", () => {
-    // The grant, from the code: Meet plus Drive metadata and Docs read; no Calendar/Gmail.
     expect(scopes).toEqual([
       "https://www.googleapis.com/auth/meetings.space.readonly",
       "https://www.googleapis.com/auth/meetings.space.settings",
@@ -920,202 +933,152 @@ describe("the Google Meet consent copy (connector plan §4.1/§4.3, WP-C)", () =
     ]);
     expect(GOOGLE_MEET_SCOPES).not.toMatch(/calendar|gmail/i);
 
-    expect(GOOGLE_COPY.variant).toBe("google-oauth");
-    expect(GOOGLE_TEXT).toContain("google");
-    expect(GOOGLE_TEXT).toContain("oauth");
-    // …and the requested capabilities in plain language, in the order they are requested.
-    const readable = GOOGLE_TEXT.indexOf("transcripts");
-    const settings = GOOGLE_TEXT.indexOf("change google meet transcription settings");
-    expect(readable).toBeGreaterThan(-1);
-    expect(settings).toBeGreaterThan(-1);
-    expect(readable).toBeLessThan(settings);
-    expect(GOOGLE_TEXT).toMatch(/who took part/);
-    // The settings scope is disclosed for what it is: the host-only toggle (S4).
-    expect(GOOGLE_TEXT).toMatch(/meetings you host/);
-    // And the copy says the grant stops there, in the one form the deny-list allows: what we ASK
-    // FOR, never what a permission cannot reach.
-    expect(GOOGLE_TEXT).toContain("no calendar or gmail permission is requested");
-  });
-
-  it("discloses the transient backend token visibility instead of smoothing it", () => {
-    // `routes/google-oauth.ts` proxies /exchange and /refresh because Google requires the client
-    // secret; it persists nothing (its own test pins the absence of a store import). A copy that
-    // said "your token never touches our server" would be false, and one that said nothing would
-    // be the same omission by silence.
-    expect(GOOGLE_TEXT).toMatch(/client secret/);
-    expect(GOOGLE_TEXT).toMatch(/token refresh/);
-    expect(GOOGLE_TEXT).toMatch(/(goes|go) through our backend/);
-    expect(GOOGLE_TEXT).toContain("cvm");
-    expect(GOOGLE_TEXT).toContain("persists nothing");
-    expect(GOOGLE_TEXT).toMatch(/no log line carrying a token/);
-    // Where the long-lived credential ends up: the user's own encrypted secrets, not with us.
-    expect(GOOGLE_TEXT).toMatch(/encrypted secrets/);
-  });
-
-  it("says the browser fetches the meeting itself, and where the data lands", () => {
-    expect(GOOGLE_TEXT).toMatch(/browser talks to google directly/);
-    expect(GOOGLE_TEXT).toMatch(/never passes through tinychat's server/);
-    expect(GOOGLE_TEXT).toMatch(/written straight into your space/);
-    // No server-side copy is claimed, because there is none — the opposite of the cohort text.
-    expect(GOOGLE_TEXT).toMatch(/we keep no copy of it/);
-  });
-
-  it("states the coverage cliff with its cause, and names what closes the gap", () => {
-    // D5's tone: cause named, no dead ends. "Nothing synced" is where a user concludes the
-    // connector is broken, so BOTH conditions are spelled out and a next step is offered.
-    expect(GOOGLE_TEXT).toMatch(/paid google workspace edition/);
-    expect(GOOGLE_TEXT).toMatch(/transcription was switched on for that meeting/);
-    expect(GOOGLE_TEXT).toMatch(/free\/consumer google account/);
-    expect(GOOGLE_TEXT).toMatch(/google's limit rather than ours/);
-    expect(GOOGLE_TEXT).toMatch(/closes most of the gap/);
-    // The 30-day record horizon, the other reason a meeting is simply not there.
-    expect(GOOGLE_TEXT).toMatch(/about 30 days/);
-    // …and no promise that connecting captures everything.
-    for (const overclaim of [
-      /every meeting (?:in|on|from) your (?:team|workspace|organi[sz]ation)/,
-      /all (?:your )?(?:past |team )?meetings/,
-      /every meeting you (?:attend|are invited to)/,
-    ]) {
-      expect({ overclaim: overclaim.source, found: overclaim.test(GOOGLE_TEXT) }).toEqual({
-        overclaim: overclaim.source,
-        found: false,
-      });
+    for (const { state, copy: GOOGLE_COPY, text: GOOGLE_TEXT } of selectable(GOOGLE_MEET_CONSENT_COPY, "both")) {
+      expect(GOOGLE_COPY.variant).toBe(state === "inactive" ? "google-oauth" : "google-oauth-transcript-writer");
+      expect(GOOGLE_TEXT).toContain("google");
+      expect(GOOGLE_TEXT).toContain("oauth");
+      const readable = GOOGLE_TEXT.indexOf("transcripts");
+      const settings = GOOGLE_TEXT.indexOf("change google meet transcription settings");
+      expect(readable).toBeGreaterThan(-1);
+      expect(settings).toBeGreaterThan(-1);
+      expect(readable).toBeLessThan(settings);
+      expect(GOOGLE_TEXT).toMatch(/who took part/);
+      expect(GOOGLE_TEXT).toMatch(/meetings you host/);
+      expect(GOOGLE_TEXT).toMatch(/see drive file metadata and read matching google docs/);
+      expect(GOOGLE_TEXT).toContain("no calendar or gmail permission is requested");
     }
   });
 
-  it("makes no confinement or delete-capability claim, on the same terms as the others", () => {
-    // Unconditional here too: this connector mints no delegation at all, and that STILL does not
-    // license a sentence about what a permission cannot reach while V3 records the escape.
-    const { escapeReproduces } = readV3Verdict();
-    expect(escapeReproduces ? matched(CONFINEMENT_CLAIMS, GOOGLE_TEXT) : []).toEqual([]);
-    expect(matched(DELETE_CAPABILITY_CLAIMS, GOOGLE_TEXT)).toEqual([]);
+  it("discloses the transient backend token visibility instead of smoothing it", () => {
+    for (const { text: GOOGLE_TEXT } of selectable(GOOGLE_MEET_CONSENT_COPY, "both")) {
+      expect(GOOGLE_TEXT).toMatch(/client secret/);
+      expect(GOOGLE_TEXT).toMatch(/token refresh/);
+      expect(GOOGLE_TEXT).toMatch(/(goes|go) through our backend/);
+      expect(GOOGLE_TEXT).toContain("cvm");
+      expect(GOOGLE_TEXT).toContain("persists nothing");
+      expect(GOOGLE_TEXT).toMatch(/no log line carrying a token/);
+      expect(GOOGLE_TEXT).toMatch(/encrypted secrets/);
+    }
   });
 
-  it("claims no new permission on the user's space, and the policy agrees", async () => {
-    // This plan adds NO backend delegation permission — the backend is a credential-shaped pipe.
-    // Same check the other two texts get, against the same activated scope.
-    const activated = await activatedScope();
+  it("says the browser fetches the meeting itself, and where the data lands", () => {
+    for (const { state, text: GOOGLE_TEXT } of selectable(GOOGLE_MEET_CONSENT_COPY, "both")) {
+      expect(GOOGLE_TEXT).toMatch(/browser talks to google directly/);
+      expect(GOOGLE_TEXT).toMatch(/written straight into your space/);
+      expect(GOOGLE_TEXT).toMatch(/we keep no copy of it/);
+      if (state === "inactive") expect(GOOGLE_TEXT).toMatch(/never passes through tinychat's server/);
+      else {
+        // Qualified: the Google fetch bypasses our server, but the grant reaches the saved meetings.
+        expect(GOOGLE_TEXT).toMatch(/the fetch from google does not go through tinychat's server/);
+        expect(GOOGLE_TEXT).toMatch(/lets our server read, change or delete its meeting record there/);
+      }
+    }
+  });
 
-    expect(GOOGLE_TEXT).toContain("no new permission");
-    expect(
-      activated.filter((entry) => entry.path.startsWith(`${APP_ID}/connectors`)),
-    ).toEqual([]);
-    expect(sortScope(activated)).toEqual(
-      sortScope(backendDelegationResolvedPermissions(BACKEND_DID)),
-    );
+  it("states the coverage cliff with its cause, and names what closes the gap", () => {
+    for (const { text: GOOGLE_TEXT } of selectable(GOOGLE_MEET_CONSENT_COPY, "both")) {
+      expect(GOOGLE_TEXT).toMatch(/paid google workspace edition/);
+      expect(GOOGLE_TEXT).toMatch(/transcription was switched on for that meeting/);
+      expect(GOOGLE_TEXT).toMatch(/free\/consumer google account/);
+      expect(GOOGLE_TEXT).toMatch(/google's limit rather than ours/);
+      expect(GOOGLE_TEXT).toMatch(/closes most of the gap/);
+      expect(GOOGLE_TEXT).toMatch(/about 30 days/);
+      for (const overclaim of [
+        /every meeting (?:in|on|from) your (?:team|workspace|organi[sz]ation)/,
+        /all (?:your )?(?:past |team )?meetings/,
+        /every meeting you (?:attend|are invited to)/,
+      ]) {
+        expect({ overclaim: overclaim.source, found: overclaim.test(GOOGLE_TEXT) }).toEqual({ overclaim: overclaim.source, found: false });
+      }
+    }
   });
 
   it("carries no attestation checkbox, and a disconnect note that promises no certain revoke", () => {
-    // Nothing is granted to our server, so there is nothing to attest to — the reasoning that
-    // deleted Option B's checkbox, applied to a third text.
-    expect(GOOGLE_COPY.consentCheckbox).toBeUndefined();
-    expect(GOOGLE_TEXT).not.toContain("i understand that");
-
-    // The disconnect note IS present, and it states the failure mode rather than a guarantee:
-    // the dialog's teardown reports a failed upstream revoke instead of swallowing it.
-    const note = normalize(GOOGLE_COPY.disconnectNote ?? "");
-    expect(note).toMatch(/asks google to revoke/);
-    expect(note).toMatch(/instead of pretending the revoke worked/);
-    expect(note).toMatch(/remove tinychat yourself/);
-    for (const overpromise of [
-      /\brevocation is (?:immediate|instant)/,
-      /\balways revokes\b/,
-      /\bguarantees? (?:the )?revoke/,
-    ]) {
-      expect({ overpromise: overpromise.source, found: overpromise.test(note) }).toEqual({
-        overpromise: overpromise.source,
-        found: false,
-      });
+    for (const { copy: GOOGLE_COPY, text: GOOGLE_TEXT } of selectable(GOOGLE_MEET_CONSENT_COPY, "both")) {
+      expect(GOOGLE_COPY.consentCheckbox).toBeUndefined();
+      expect(GOOGLE_TEXT).not.toContain("i understand that");
+      const note = normalize(GOOGLE_COPY.disconnectNote ?? "");
+      expect(note).toMatch(/asks google to revoke/);
+      expect(note).toMatch(/instead of pretending the revoke worked/);
+      expect(note).toMatch(/remove tinychat yourself/);
+      for (const overpromise of [/\brevocation is (?:immediate|instant)/, /\balways revokes\b/, /\bguarantees? (?:the )?revoke/]) {
+        expect({ overpromise: overpromise.source, found: overpromise.test(note) }).toEqual({ overpromise: overpromise.source, found: false });
+      }
     }
   });
 
   it("keeps the testing-mode re-auth caveat out of the always-on copy, and honest in itself", () => {
-    // G3 (plan §2b) requires this text live in the connect dialog before the Google app opens
-    // beyond the team, and the dialog gates it on a flag that ships hidden — internal mode does
-    // not expire weekly, and a warning that is currently false is its own dishonesty. So it is
-    // NOT a bullet: it must not render unconditionally.
     const caveat = normalize(GOOGLE_TESTING_MODE_REAUTH_COPY);
     expect(caveat).toMatch(/7 days/);
     expect(caveat).toMatch(/reconnect/);
-    expect(GOOGLE_TEXT).not.toContain("7 days");
-    // No dead end: it says what happens meanwhile and what is at stake.
     expect(caveat).toMatch(/syncing pauses/);
     expect(caveat).toMatch(/already in your space are unaffected/);
+    for (const { text: GOOGLE_TEXT } of selectable(GOOGLE_MEET_CONSENT_COPY, "both")) {
+      expect(GOOGLE_TEXT).not.toContain("7 days");
+    }
   });
 
   it("does not disturb the two background-sync texts", () => {
-    // A third product on the same file is exactly where a shared edit goes wrong.
-    expect(COPY.variant).toBe("C");
-    expect(COHORT_COPY.variant).toBe("B-ingest");
-    expect(GOOGLE_TEXT).not.toContain("fireflies");
-    expect(COPY_TEXT).not.toContain("google");
-    expect(COHORT_TEXT).not.toContain("google");
+    // The shared transcript-writer notice names both connectors on purpose; nothing else may.
+    const notice = "every connector's meetings, fireflies and google included";
+    for (const { text: GOOGLE_TEXT } of selectable(GOOGLE_MEET_CONSENT_COPY, "both")) {
+      expect(GOOGLE_TEXT.replace(notice, "")).not.toContain("fireflies");
+    }
+    for (const base of [BACKGROUND_SYNC_CONSENT_COPY, BACKEND_INGEST_CONSENT_COPY]) {
+      for (const { text } of selectable(base)) expect(text.replace(notice, "")).not.toContain("google");
+    }
   });
 });
 
 describe("the Option-C truth pass — the records describe the selected product", () => {
   it("records Option C as SELECTED, on V4's grounds, not as a blocked prototype", () => {
     const doc = readDoc(DELEGATION_GATE_DOC);
-    const status = doc.split("\n").find((line) => line.startsWith("**Status:")) ?? "";
-
-    expect(status).toContain("Option C");
-    expect(status).toContain("SELECTED");
+    // Re-pointed: TC-641 rewrote the lead status line (it was "**Status: … Option C is SELECTED"),
+    // so read the doc's first bold line, whatever it is called.
+    const status = doc.split("\n").find((line) => line.startsWith("**")) ?? "";
+    expect(status).toMatch(/Option C is selected/i);
     expect(status).not.toContain("BLOCKED on operator action");
-
-    // The grounds: V4's unsigned spaceId echo and the unverified `att`.
     expect(doc).toContain("V4");
     expect(doc).toContain("unsigned");
     expect(doc).toContain("`att`");
-    // No forward plan that widens the policy or lands the rejected consent flow.
     expect(doc).not.toContain("inverts its pre-widening assertions automatically");
     expect(doc).toContain("backendDelegationPermissions()");
   });
 
-  // INGEST-CUTOVER(plan §11) — kept as an operator gate, with the V-b half updated to the truth
-  // W9's amendment left behind: the mint is now the 32-character prefix (the 43-character form
-  // could not be registered at all against Fireflies' 16–32 char field), and the LIVE dashboard
-  // registration is still the operator's, still unperformed. The cutover adds a third gate —
-  // cohort enable itself — and the doc must not read as if any of them had been run.
+  it("records the TC-641 transcript writer as separate, and its scope-escape gate as still open", () => {
+    const doc = readDoc(DELEGATION_GATE_DOC);
+    expect(doc.indexOf("## 4. TC-641")).toBeGreaterThan(-1);
+    const tc641 = doc.slice(doc.indexOf("## 4. TC-641"));
+    // The same verdict this file reads, named as the open gate, with no risk acceptance.
+    expect(readV3Verdict().escapeReproduces).toBe(true);
+    expect(tc641).toMatch(/scope-escape gate is still open/i);
+    expect(tc641).toContain("TC-825");
+    expect(tc641).toMatch(/no production risk acceptance/i);
+    expect(tc641).toContain("`TRANSCRIPT_SERVER_DELIVERY_ENABLED=false` in production");
+    expect(tc641).not.toMatch(/\bconfined to\b|\bcannot reach\b/i);
+  });
+
   it("names the provider-dashboard registration check as an OPERATOR pre-rollout gate", () => {
     const doc = readDoc(DEPLOYMENT_DOC);
-
     expect(doc).toContain("32-character");
     expect(doc).toContain("43-character");
     expect(doc).toMatch(/operator pre-rollout gate/i);
-    // It has NOT been run. The deploy doc must not read as if it had.
     expect(doc).toMatch(/has not been (?:performed|run)/i);
     expect(doc).not.toMatch(/(?:verified|confirmed) (?:in|against) the (?:real )?fireflies dashboard/i);
-    // The flag flip is an operator action; a build that claims to have enabled the cohort is a
-    // build that shipped the reversal to real users without the §12 gates.
     expect(doc).toMatch(/flipping the flag is an operator action/i);
   });
 
-  /**
-   * INGEST-CUTOVER(plan §11) — rewritten. The deploy doc used to state the "never receives the
-   * Fireflies key" role flatly; that sentence is now SCOPED to non-cohort addresses, because for
-   * a cohort address it is false. Both halves are asserted: the Option-C sentence must survive
-   * with its scope attached (plan §5.3 keeps that path byte-identical), and the cohort paragraph
-   * must state the credential, the encrypted server-side copy, the D2a window and the deletion.
-   */
   it("describes BOTH server roles in the deploy doc, each scoped to who gets it", () => {
     const doc = readDoc(DEPLOYMENT_DOC);
-
     expect(doc).toContain("Option C");
     expect(doc).toContain("/api/connectors/webhooks/ack");
-
-    // Half 1 — the Option-C claim, and the scope that keeps it true.
-    expect(doc).toMatch(
-      /(?:outside the cohort|non-cohort)[\s\S]{0,400}never receives .{0,40}Fireflies (?:API )?key/i,
-    );
-
-    // Half 2 — the cohort truth, said in the doc rather than left to the code.
+    expect(doc).toMatch(/(?:outside the cohort|non-cohort)[\s\S]{0,400}never receives .{0,40}Fireflies (?:API )?key/i);
     expect(doc).toMatch(/holds a per-user Fireflies OAuth credential/i);
     expect(doc).toMatch(/full-account/i);
     expect(doc).toMatch(/keeps its own copy/i);
     expect(doc).toMatch(/encrypted under\s+`CONNECTOR_CONTENT_MASTER`/);
     expect(doc).toMatch(new RegExp(`\\*\\*${RETENTION_WINDOW_DAYS} days\\*\\*`));
     expect(doc).toMatch(/deletes the stored\s+meetings and the credential/i);
-    // And the invariant that did NOT reverse, so the doc cannot be read as "everything went".
     expect(doc).toMatch(/no connector delegation/i);
   });
 });
@@ -1129,13 +1092,4 @@ function sortScope(scope: readonly ServerInfoPermission[]): ServerInfoPermission
       actions: [...entry.actions].sort(),
     }))
     .sort((a, b) => `${a.service}|${a.path}`.localeCompare(`${b.service}|${b.path}`));
-}
-
-function scopeState(
-  activated: readonly ServerInfoPermission[],
-): "connectors" | "v1-non-connector" | "unrecognized" {
-  const key = JSON.stringify(activated);
-  if (key === JSON.stringify(sortScope(REJECTED_OPTION_B_GRANT))) return "connectors";
-  if (key === JSON.stringify(sortScope(V1_NON_CONNECTOR_SCOPE))) return "v1-non-connector";
-  return "unrecognized";
 }

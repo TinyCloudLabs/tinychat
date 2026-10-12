@@ -357,9 +357,10 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires EXO_WHISPER_TEST_MODEL"]
     fn test_whisper() {
         let mut whisper = Whisper::builder()
-            .model_path(concat!(env!("CARGO_MANIFEST_DIR"), "/model.bin"))
+            .model_path(std::env::var("EXO_WHISPER_TEST_MODEL").expect("set EXO_WHISPER_TEST_MODEL"))
             .build()
             .unwrap();
 
@@ -377,9 +378,10 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires EXO_WHISPER_TEST_MODEL"]
     fn test_whisper_reports_each_decoded_token() {
         let mut whisper = Whisper::builder()
-            .model_path(concat!(env!("CARGO_MANIFEST_DIR"), "/model.bin"))
+            .model_path(std::env::var("EXO_WHISPER_TEST_MODEL").expect("set EXO_WHISPER_TEST_MODEL"))
             .build()
             .unwrap();
 

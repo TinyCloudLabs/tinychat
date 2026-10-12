@@ -1,10 +1,19 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability for the main Exo window",
+  "description": "Main Exo window: only the core APIs used by the webview; no menu, tray, or image file paths.",
   "windows": ["main"],
   "permissions": [
-    "core:default",
-    "core:window:allow-set-title"
+    "core:path:default",
+    "core:event:default",
+    "core:window:default",
+    "core:webview:default",
+    "core:app:default",
+    "core:image:default",
+    "core:resources:default",
+    "core:window:allow-set-title",
+    "core:image:deny-from-path",
+    "core:event:deny-emit",
+    "core:event:deny-emit-to"
   ]
 }

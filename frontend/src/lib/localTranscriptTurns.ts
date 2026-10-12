@@ -23,6 +23,7 @@
 // order with a timing tolerance of about a second, and requires the recording
 // to show a consistent echo lag before anything is dropped.
 
+import type { BatchResponse } from "./anarlog/transcription.gen";
 import type { FirefliesSentence } from "./connectors/firefliesClient";
 
 /** Channel of the recorded stereo file that holds the microphone. */
@@ -137,6 +138,11 @@ function matchKey(token: string): string {
 
 function isContentToken(token: string): boolean {
   return token !== "" && !FUNCTION_WORDS.has(token);
+}
+
+/** Shared content-word definition for echo diagnostics and G12 bleed scoring. */
+export function isLocalContentWord(text: string): boolean {
+  return isContentToken(normalizedToken(text));
 }
 
 function contentWords(unit: readonly LocalWord[]): number {
@@ -348,8 +354,11 @@ interface Turn {
  * by start time, and consecutive same-speaker segments merged. No turn spans
  * more than MAX_TURN_SECONDS unless a single word does.
  */
-export function localTranscriptTurns(words: readonly LocalWord[]): FirefliesSentence[] {
-  const echo = findMicEcho(words);
+export function localTranscriptTurns(
+  words: readonly LocalWord[], options: { echo?: "off"; detail?: boolean } = {},
+): FirefliesSentence[] {
+  if (options.echo !== undefined && options.echo !== "off") throw new Error("B0 echo policy has not landed");
+  const echo = options.echo === "off" ? new Set<LocalWord>() : findMicEcho(words);
 
   // Segments are created in order of their first word, i.e. by start time.
   const segments: Turn[] = [];
@@ -399,5 +408,44 @@ export function localTranscriptTurns(words: readonly LocalWord[]): FirefliesSent
     text: turn.words.map((w) => w.text).join(" "),
     start_time: turn.start,
     end_time: turn.end,
+    ...(options.detail ? { words: turn.words.map((w) => ({ ...w, timing: "fallback" as const })) } : {}),
   }));
+}
+
+/** Extract the existing per-channel normalization and its no-timing fallback. */
+export function localTranscriptSentences(
+  response: BatchResponse, options: { detail?: boolean; echo?: "off" } = {},
+): FirefliesSentence[] {
+  const words: LocalWord[] = [];
+  for (const channel of response.results?.channels ?? []) {
+    const alt = channel.alternatives?.[0];
+    for (const w of alt?.words ?? []) {
+      const text = (w.punctuated_word ?? w.word ?? "").trim();
+      if (!text) continue;
+      const start = Number.isFinite(w.start) ? w.start : null;
+      const end = Number.isFinite(w.end) ? w.end : null;
+      if (start === null || end === null) continue;
+      words.push({ text, start, end, channel: w.channel });
+    }
+  }
+  const sentences = localTranscriptTurns(words.sort((a, b) => a.start - b.start), options);
+
+  // Preserve the existing whole-channel fallback when there are no timed turns.
+  if (sentences.length === 0) {
+    for (const [i, channel] of (response.results?.channels ?? []).entries()) {
+      const text = channel.alternatives?.[0]?.transcript?.trim();
+      if (!text) continue;
+      sentences.push({
+        index: sentences.length,
+        speaker_name: localChannelLabel(i),
+        text,
+        start_time: 0,
+        end_time: 0,
+        ...(options.detail ? { words: text.split(/\s+/).map((part) => ({
+          text: part, start: 0, end: 0, channel: i, timing: "none" as const,
+        })) } : {}),
+      });
+    }
+  }
+  return sentences;
 }

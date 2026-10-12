@@ -5,7 +5,7 @@
 // publishes to the shared drain record, the load-on-mount read on the drain
 // lane, the fail-closed consent probe and the dark-route report.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import {
@@ -14,6 +14,9 @@ import {
   type SecretsErr,
 } from "@/lib/connectors/connectorSecrets";
 import { ingestQueuedMeetings } from "@/lib/connectors/targetedSync";
+import {
+  subscribeTranscriptConsent, transcriptConsentState, type TranscriptConsentState,
+} from "@/lib/transcriptDeliveryState";
 import type { ConnectorWebhooksClient } from "@/lib/connectors/webhooksApi";
 import type { ConnectorMeetingsClient } from "@/lib/connectors/meetingsApi";
 import type { ConnectorDescriptor } from "@/lib/connectors/types";
@@ -76,6 +79,8 @@ export interface BackgroundSyncController {
   deps: BackgroundSyncDeps;
   emit: BackgroundSyncEmit;
   consentVariant: OffStateConsentVariant;
+  /** TC-641: whether the off-state consent must also disclose the transcript-writer grant. */
+  transcriptConsent: TranscriptConsentState;
   ingestConsentChecked: boolean;
   setIngestConsentChecked: (checked: boolean) => void;
   /** Processes the queue on the shared drain lane, then reports the ingest. */
@@ -161,6 +166,9 @@ export function useBackgroundSync({
   // until proven otherwise, and the attestation starts unchecked.
   const [consentVariant, setConsentVariant] = useState<OffStateConsentVariant>("C");
   const [ingestConsentChecked, setIngestConsentChecked] = useState(false);
+  const transcriptConsent = useSyncExternalStore(
+    subscribeTranscriptConsent, transcriptConsentState, transcriptConsentState,
+  );
 
   // The cohort probe — deliberately its OWN effect, NOT a rider on the drain
   // lane above: it is a read of a different API (the cohort-gated meetings
@@ -217,6 +225,7 @@ export function useBackgroundSync({
     deps,
     emit,
     consentVariant,
+    transcriptConsent,
     ingestConsentChecked,
     setIngestConsentChecked,
     runSync,

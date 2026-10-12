@@ -48,6 +48,7 @@ import {
   type PtxPutResponse,
 } from "../privateCloud";
 import { captureEngineKind } from "./captureEngine";
+import { currentAccountGeneration } from "./accountContext";
 import { nativeHttpFileUploadSupported, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import {
@@ -65,6 +66,7 @@ import {
   VOICE_NOTE_AUDIO_TOO_LARGE,
   type VoiceNoteAudio,
   type VoiceNoteTranscriptSave,
+  type VoiceNoteTranscriptAccount,
 } from "./voiceNoteStore";
 
 // ── Upload ─────────────────────────────────────────────────────────────
@@ -988,8 +990,10 @@ export async function transcribeVoiceNote(args: {
   explicit?: boolean;
   report: (status: VoiceNoteTranscriptionStatus) => void;
   now?: () => Date;
+  account?: VoiceNoteTranscriptAccount;
 }): Promise<"transcribed" | "no_speech"> {
   const { tcw, cloud, sourceId, report } = args;
+  const account = args.account ?? { generation: currentAccountGeneration() };
   const transcribedAt = () => (args.now?.() ?? new Date()).toISOString();
   const stillCurrent = () => args.allowed?.("account") ?? true;
   /** The job is done with: forget it, then delete it at PTX (best-effort: PTX deletes it within 24 h). */
@@ -1058,7 +1062,7 @@ export async function transcribeVoiceNote(args: {
   const save = async (prepared: VoiceNoteTranscriptSave) => {
     if (!stillCurrent()) throw accountChangedError();
     report({ kind: "saving" });
-    const saved = await saveVoiceNoteTranscript(tcw, sourceId, prepared);
+    const saved = await saveVoiceNoteTranscript(tcw, sourceId, prepared, account);
     if (!saved.ok) {
       if (saved.error.code === "VOICE_NOTE_NOT_FOUND") throw new PrivateCloudError("voice_note_not_found", saved.error.message);
       throw new PrivateCloudError("transcript_save_failed", saved.error.message);
@@ -1309,6 +1313,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     if (current?.kind === "active" || current?.kind === "done") return;
     // A failure waits for the user's Retry; no automatic hand-off or resume restarts it.
     if (!explicit && current?.kind === "failed") return;
+    const account = { generation: currentAccountGeneration(), did: deps.tcw().did };
     waiting.add(sourceId);
     jobs.set(sourceId, { kind: "active", status: { kind: "waiting", position: waiting.size } });
     emit();
@@ -1335,6 +1340,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           capabilities: state.capabilities,
           sourceId,
           audio,
+          account,
           allowed: (scope) => identityCurrent() && (scope === "account" || state.consented),
           overrideCommitted: isChosen(sourceId),
           explicit: authorised,

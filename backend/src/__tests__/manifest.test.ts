@@ -1,8 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import type { ServerInfoPermission } from "@tinyboilerplate/core";
+import { APP_ID, type ServerInfoPermission } from "@tinyboilerplate/core";
 import {
-  APP_ID,
-  THREADS_KV_PREFIX,
   backendDelegationPolicyHash,
   backendManifestConfig,
   backendDelegationResolvedPermissions,
@@ -140,14 +138,6 @@ describe("TinyChat manifest and backend policy", () => {
     expect(secrets.REFRESH_TOKEN?.scope).toBe("google-meet");
   });
 
-  // INGEST-CUTOVER(plan §11) — the `[threads/]` pin is the assertion findings §4 expected to
-  // fall, and under this plan's design it does NOT: backend ingestion takes custody out of band
-  // and writes meetings into the BACKEND's own encrypted store, so it mints no connector
-  // delegation into anyone's space (plan §9 row 3, §8.1 W9). The pin is therefore kept and
-  // promoted to an explicit regression guard: it is now the line between the reversal the
-  // operator signed (a server-held credential + a server-side copy) and the strictly larger one
-  // they did not (standing write access inside the user's space, the Listen shape). A second
-  // permission appearing here is that larger reversal, whichever mode requested it.
   it("derives and hashes backend policy from resolved runtime manifest permissions", () => {
     const backendDid = "did:key:z6MkBackend";
     const config = backendManifestConfig(backendDid);
@@ -155,11 +145,14 @@ describe("TinyChat manifest and backend policy", () => {
 
     expect(config.name).toBe("TinyChat Backend");
     expect(config.expiry).toBe("30d");
-    expect(config.permissions).toHaveLength(1);
-    expect(resolved.map((permission) => permission.path)).toEqual([
-      THREADS_KV_PREFIX,
+    expect(config.permissions.map(({ service, path, actions }) => ({ service, path, actions }))).toEqual([
+      { service: "tinycloud.sql", path: "connectors", actions: ["read", "write"] },
+      { service: "tinycloud.kv", path: "connectors/tinycloud-transcriber/", actions: ["get", "put"] },
     ]);
-    expect(THREADS_KV_PREFIX).toBe(`${APP_ID}/threads/`);
+    expect(resolved.map(({ service, path, actions }) => ({ service, path, actions }))).toEqual([
+      { service: "tinycloud.sql", path: `${APP_ID}/connectors`, actions: ["tinycloud.sql/read", "tinycloud.sql/write"] },
+      { service: "tinycloud.kv", path: `${APP_ID}/connectors/tinycloud-transcriber/`, actions: ["tinycloud.kv/get", "tinycloud.kv/put"] },
+    ]);
     expect(backendDelegationPolicyHash(backendDid)).toMatch(/^[a-f0-9]{64}$/);
   });
 
@@ -316,7 +309,7 @@ describe("resolvePermissions entry attribution", () => {
     ]);
 
     expect(resolved).toHaveLength(1);
-    expect(resolved[0]!.path).toBe(THREADS_KV_PREFIX);
+    expect(resolved[0]!.path).toBe(`${APP_ID}/threads/`);
     expect(resolved[0]!.description).toBe("threads kv");
     expect(resolved[0]!.skipPrefix).toBeUndefined();
   });

@@ -32,8 +32,9 @@ the same window — a same-address 50-delivery burst still acking < 10 s each �
 Shipped in `backend/src/services/webhook-verify.ts`; the regression suite stays green in this
 build: `backend/src/__tests__/webhook-verify.test.ts`. `JSON.parse` runs strictly **after** verify
 — the route reads `express.raw` bytes, verifies, and only then parses, so an unverified body is
-never handed to a parser. The mount stays inside the raw-body window (`inflate:false`, 64 kb),
-pinned by `backend/src/__tests__/index-wiring.test.ts`.
+never handed to a parser. The `index.ts` mount precedes the shared JSON parser with
+`inflate:false` and a 64 kb cap; signed raw ingress is exercised in
+`backend/src/__tests__/connector-gate5-hardening.test.ts`.
 
 ## 3. V-b — the 16–32 character webhook secret — **CLOSED by amendment**
 
@@ -109,10 +110,12 @@ plan §9 row 3):
   duplicate-resource cap, activation cap pinned at 4) stay enforced:
   `backend/src/__tests__/delegations.test.ts` and
   `backend/src/__tests__/portable-delegation.test.ts`.
-- **B mints no new connector delegation into user spaces**, so the backend delegation policy stays
-  `threads/`-only — `backendDelegationPermissions()` is unchanged and pinned by
-  `backend/src/__tests__/manifest.test.ts`. Custody is out-of-band (plan §6), which is why this
-  survives the reversal at all.
+- **Fireflies Option C mints no Fireflies connector delegation into user spaces.**
+  Its credential custody remains out of band (plan §6). TC-641 separately
+  advertises a transcript-writer grant on connector SQL read/write and
+  transcriber KV get/put. Acceptance is off by default. With delivery enabled and
+  an active grant, Fireflies and Google consent surfaces disclose this separate
+  transcript-writer permission; the inactive copy remains unchanged.
 - No fail-open consumption of `req.delegatedAccess`: the middleware stays unwired-or-strict.
   Full `att` verification remains the A-branch item (plan §13), never a B dependency.
 

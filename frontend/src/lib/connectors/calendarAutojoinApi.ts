@@ -49,6 +49,8 @@ export function calendarOutcomeLabel(reason: string): string {
     case "autojoin_retry": return "The notetaker is temporarily unavailable. TinyChat will retry while the meeting is eligible.";
     case "lookup_identity_mismatch": return "The recording could not be verified. No replacement bot was sent.";
     case "create_rejected": return "The notetaker service could not accept this meeting.";
+    // TC-907: ptx refused every create in the joining window because all its bots were in use.
+    case "capacity_exhausted": return "All TinyCloud notetakers were busy when this meeting started.";
     case "failed": case "create_failed": case "recording_failed": return "The notetaker could not complete this recording.";
     // TC-581: another account's calendar bot is already capturing this meeting.
     case "shared_capture_pending": return "Already being recorded by another TinyCloud account. If you accepted that account's calendar invite, the transcript will be added to your meetings after it ends.";

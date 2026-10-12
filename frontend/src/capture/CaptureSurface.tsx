@@ -26,12 +26,10 @@ import { PlatformContext } from "@/lib/platform";
 import { useSizeClass } from "@/lib/sizeClass";
 import { cn } from "@/lib/utils";
 import { activeMeetings, useMeetingBot } from "@/chat/TranscriberSection";
-import { useTranscriberSavedState } from "@/chat/useTranscriberLibrarySync";
 import { useNavKind } from "@/shell/navItems";
 import { goUp } from "@/shell/navigation";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 import { PATHS, type Screen } from "@/shell/routes";
-import { captureEvents } from "./captureEvents";
 import { FirstUse } from "./FirstUse";
 import { HOME_COPY } from "./home/homeCopy";
 import { SoftActions } from "./home/SoftActions";
@@ -68,8 +66,6 @@ export interface CaptureSurfaceProps {
   meetingsSlot?: React.ReactNode;
 }
 
-const emitLibraryChanged = () => captureEvents.emit("library-changed");
-
 const SCROLLER = "relative h-full overflow-y-auto";
 /** The list pane's gutters beside the detail pane. */
 const LIST_COLUMN = "w-full px-4";
@@ -103,23 +99,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
   // The home is on screen: always beside the Library (wide); on a phone, only on its own screen.
   const homeShown = active && (wide || (!libraryScreen && !noteScreen));
   const column = wide ? LIST_COLUMN : PAGE_COLUMN;
-
-  // Something lands: an upload's transcript is saved, or a notetaker's
-  // transcript is copied into the space (the saved count rises).
   const upload = useSyncExternalStore(uploadRunner.subscribe, uploadRunner.snapshot, uploadRunner.snapshot);
-  const uploadStage = upload?.stage ?? null;
-  const lastStage = useRef(uploadStage);
-  useEffect(() => {
-    if (uploadStage === "saved" && lastStage.current !== "saved") emitLibraryChanged();
-    lastStage.current = uploadStage;
-  }, [uploadStage]);
-  const savedState = useTranscriberSavedState();
-  const savedCount = Object.values(savedState).filter((state) => state === "saved").length;
-  const lastSavedCount = useRef(savedCount);
-  useEffect(() => {
-    if (savedCount > lastSavedCount.current) emitLibraryChanged();
-    lastSavedCount.current = savedCount;
-  }, [savedCount]);
 
   // The notetaker: one per app, for the Meeting sheet and the In progress rows.
   const bot = useMeetingBot({ backendUrl, sessionStore, active: homeShown });
@@ -157,7 +137,6 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
   const library = useLibrary(tcw, {
     visible: active,
     noteId: screen.noteId ?? recentNoteId,
-    transcriber: recorder.available ? { backendUrl, sessionStore } : null,
     onPhone: pendingVisible ? (recorder.pending.notes ?? null) : null,
   });
   const pipelineEntries = useMemo(() => listPipelineEntries(library.items, tcw), [library.items, tcw]);

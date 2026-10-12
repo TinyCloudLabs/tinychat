@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = [
+    "vendor/anarlog-whisper-local",
+    "vendor/anarlog-transcribe-whisper-local",
+    "vendor/anarlog-audio-chunking",
+    "local-transcription",
+    "eval/transcript-quality/runner",
+    "eval/transcript-quality/fixture-build",
+]
+exclude = [
+    "src-tauri",
+    "vendor/swift-rs",
+    "vendor/anarlog-storage",
+    "vendor/anarlog-whisper-local-model",
+    "vendor/anarlog-model-downloader",
+    "vendor/anarlog-local-model",
+    "vendor/anarlog-file",
+]
+
+[patch."https://github.com/fastrepl/anarlog"]
+storage = { path = "vendor/anarlog-storage" }
+transcribe-whisper-local = { path = "vendor/anarlog-transcribe-whisper-local" }
+whisper-local = { path = "vendor/anarlog-whisper-local" }
+whisper-local-model = { path = "vendor/anarlog-whisper-local-model" }
+model-downloader = { path = "vendor/anarlog-model-downloader" }
+local-model = { path = "vendor/anarlog-local-model" }
+file = { path = "vendor/anarlog-file" }
+audio-chunking = { path = "vendor/anarlog-audio-chunking" }
+
+[patch."https://github.com/yujonglee/swift-rs"]
+swift-rs = { path = "vendor/swift-rs" }
+
+[profile.release.build-override]
+strip = "none"

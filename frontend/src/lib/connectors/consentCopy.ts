@@ -1,33 +1,23 @@
 /**
- * Background-sync consent copy — the verbatim §3.8 text for the shipped option.
+ * Background-sync consent copy — the shipped variants, centralized for renderers.
+ * Do not restate or extend these sentences in JSX. Inactive transcript delivery
+ * preserves the original copy; an active grant selects the separate disclosure.
  *
- * This lives as a constant, not as JSX, for one reason: `backend/src/__tests__/consent-scope.test.ts`
- * (build task B2) asserts every factual claim below against the scope the backend delegation
- * actually activates, so widening the scope without updating this text fails CI, and softening
- * this text without narrowing the scope fails it too. The renderer must not restate, paraphrase,
- * or extend any sentence in it.
- *
- * The variant is chosen by the operator's answers to §10.1 / §10.2, never by a builder. This
- * build ships **Option C** (operator decision 2026-08-04, recorded in
- * `docs/connector-webhooks-delegation-gate.md`): the server receives signed notifications and
- * queues meeting ids only. It never receives the Fireflies API key, never writes meeting content,
- * and holds **no connector delegation** — `backendDelegationPermissions()` stays at v1's
- * non-connector scope. The A and B variants are drafted in §3.8 and are deliberately absent here:
- * whichever is chosen is shipped verbatim and the others are deleted rather than kept around to
- * drift. **Option B's consent checkbox went with Option B** — under C the user grants no
- * permission, so there is no permission to attest to, and a dormant checkbox string would be an
- * invitation to render a consent gate for a grant that does not exist.
+ * The operator chose **Option C** for Fireflies (recorded in
+ * `docs/connector-webhooks-delegation-gate.md`): its webhook queues meeting ids
+ * without minting a Fireflies connector delegation. TC-641 is a separate,
+ * default-off transcript-writer grant; this comment does not describe that policy.
+ * Option B's consent checkbox went with Option B and is absent here.
  *
  * Inline `**bold**` / `*emphasis*` markers are part of the drafted copy and are preserved so the
  * text stays comparable to §3.8 line by line. The renderer is responsible for them.
  *
  * DO NOT add a sentence claiming a permission cannot reach something ("and nothing else", "not
- * your chats", "only your connectors data"). Dropping the grant does not license that sentence:
- * the node cannot confine a SQL delegation to a path (§0a), the escape is unpatched, and B2's
- * deny-list fails the build on any such sentence until `test/connectors/fixtures/V3_VERDICT.json`
- * records the node fix as live. What C *may* say — and does — is that no permission is granted at
- * all, because that is a fact about our own policy, and B2 checks it against
- * `backendDelegationResolvedPermissions()` on every run.
+ * your chats", "only your connectors data"). The node cannot confine a SQL delegation to a
+ * path (§0a); `test/connectors/fixtures/V3_VERDICT.json` still records the escape.
+ * Option C's "no new permission" wording refers to Fireflies webhook ingestion,
+ * not to the backend's whole policy. TC-641's independent transcript-writer
+ * grant is disclosed when its status is active or cannot be determined.
  *
  * INGEST-CUTOVER(plan §11): this file now carries a SECOND text,
  * `BACKEND_INGEST_CONSENT_COPY`, for the backend-ingest dark cohort. Option C below is unchanged
@@ -35,30 +25,30 @@
  * byte-identical. The cohort text is not a softening of C; it is C's two custody sentences
  * replaced by what is actually true once the server holds the credential and the meeting.
  *
- * GMEET(connector plan §4.1/§4.3, WP-C): and a THIRD, `GOOGLE_MEET_CONSENT_COPY`, for the Google
- * Meet OAuth connect dialog. It is not a background-sync variant — google-meet has no webhook lane
- * at all — but it is the same KIND of text (a pinned disclosure checked claim-by-claim against
- * what the code does), it renders through the same interface, and it is bound by the same
- * deny-list, so it lives here rather than as loose JSX in the dialog. The deny-list is what makes
- * this file's home a decision rather than a filing choice: a sentence about what a permission
- * cannot reach fails B2 wherever it is written.
+ * GMEET(connector plan §4.1/§4.3, WP-C): `GOOGLE_MEET_CONSENT_COPY` is for the
+ * Google Meet OAuth connect dialog, not the Fireflies background-sync path.
+ * It renders through the same interface, so the text lives here instead of JSX.
  */
 
-export type ConsentCopyVariant = "A" | "B" | "C" | "B-ingest" | "google-oauth" | "google-calendar-autojoin";
+import type { TranscriptConsentState } from "../transcriptDeliveryState";
+
+export type ConsentCopyVariant =
+  | "A" | "B" | "C" | "B-ingest" | "google-oauth" | "google-calendar-autojoin"
+  | "C-transcript-writer" | "B-ingest-transcript-writer"
+  | "google-oauth-transcript-writer" | "google-calendar-autojoin-transcript-writer";
 
 export interface BackgroundSyncConsentCopy {
-  /** Which §3.8 branch this text is. Read by B2 to pick its assertion set. */
+  /** Identifies the copy variant for renderers. */
   readonly variant: ConsentCopyVariant;
   readonly heading: string;
   readonly intro: string;
   readonly changesHeading: string;
   readonly bullets: readonly string[];
   /**
-   * INGEST-CUTOVER(plan §11): the attestation sentence, present ONLY on the cohort variant.
-   * Option C still has none and must keep none — under C nothing is granted and nothing is held,
-   * so there is nothing to attest to (see the header note). Under backend ingestion there are two
-   * disclosures the user should have to acknowledge in one sentence: the full-account token and
-   * the 90-day content copy. Optional on the interface so Option C stays byte-identical.
+   * INGEST-CUTOVER(plan §11): the attestation sentence is present only for
+   * the Fireflies backend-ingest cohort. Option C has no Fireflies grant or
+   * server-held Fireflies credential; the cohort acknowledges both its
+   * credential custody and the 90-day content copy.
    */
   readonly consentCheckbox?: string;
   /**
@@ -124,19 +114,19 @@ export const BACKGROUND_SYNC_CONSENT_COPY: BackgroundSyncConsentCopy = {
  *  2. meeting content is stored server-side, encrypted, for the D2a retention window
  *     (`RETENTION_WINDOW_DAYS = 90`, `backend/src/services/content-store.ts`), and deleted on
  *     disconnect/purge (requirement 2);
- *  3. no confinement claim — the INTERNAL escape (plan §3 item 3 / `V3_VERDICT.json`) is
- *     unpatched, so B2's deny-list applies to this variant exactly as it does to C — and no
- *     promise of capture beyond the meetings the user OWNS (plan §10, requirement 3).
+ *  3. no confinement claim — the SQL escape recorded in `V3_VERDICT.json` remains
+ *     unpatched; this variant also must not promise capture beyond meetings the
+ *     user OWNS (plan §10, requirement 3).
  *
- * The one Option-C sentence that survives verbatim in substance is "no new permission on your
- * space": B mints no connector delegation (plan §9 row 3), custody is out-of-band, and the
- * backend policy stays `threads/`-only. That is a fact about our own policy, checked on every run
- * by `backend/src/__tests__/consent-scope.test.ts`.
+ * The Option-C "no new permission on your space" sentence concerns Fireflies ingestion:
+ * that path mints no Fireflies connector delegation and holds its credential out of band.
+ * TC-641 separately advertises a transcript-writer grant on `connectors` SQL
+ * read/write and transcriber KV get/put. The active-grant variant below
+ * discloses its distinct custody; the original text remains the inactive copy.
  *
- * **The words below ARE the Gate 6 approval artifact.** `docs/connector-webhooks-backend-ingest-
- * consent-copy.md` mirrors them for the operator to approve, and consent-scope.test.ts compares
- * the two sentence for sentence — so the text the operator signs off and the text the product
- * would render cannot decouple again (the divergence the cutover audit found).
+ * **The original words below ARE the Gate 6 approval artifact.**
+ * `docs/connector-webhooks-backend-ingest-consent-copy.md` mirrors the inactive
+ * Fireflies wording; the transcript-writer variant changes its permission sentence.
  *
  * **RENDERED (residual F011 — CLOSED 2026-08-11, operator-approved unfreeze).** The renderer,
  * `frontend/src/chat/BackgroundSyncSection.tsx`, probes the cohort-gated
@@ -222,21 +212,18 @@ export const BACKEND_INGEST_CONSENT_COPY: BackgroundSyncConsentCopy = {
  *
  * The other four things it must carry, per the plan:
  *
- *  1. Google and OAuth NAMED, and every requested scope is described in plain language.
- *     `backend/src/__tests__/consent-scope.test.ts` matches these sentences against
- *     `GOOGLE_MEET_SCOPES` itself, so scope and copy cannot drift.
+ *  1. Google and OAuth NAMED, and every requested scope described in plain language.
  *  2. The browser fetches meeting content DIRECTLY from Google; it does not pass through the
  *     TinyChat backend, and the data lands only in the user's space.
  *  3. The coverage cliff, D5's tone: cause named, no dead ends. A Google transcript exists only
  *     when the HOST was on a paid Workspace edition AND transcription was on for that meeting.
  *     The sentence names what closes the gap instead of leaving the user at a wall.
- *  4. No confinement claim (header note, deny-list): the node cannot confine a SQL delegation to a
- *     path and `V3_VERDICT.json` records the escape unpatched. This copy has less reason than
- *     most to reach for one — this connector mints no backend delegation whatsoever — and it
- *     states that as a fact about our policy, which B2 re-checks against the activated scope.
+ *  4. No confinement claim: `V3_VERDICT.json` records the SQL escape unpatched.
+ *     Google Meet OAuth mints no Google-specific backend delegation; this is
+ *     distinct from TC-641's separate transcript-writer policy.
  *
- * No `consentCheckbox`: nothing is granted to our server, so there is nothing to attest to — the
- * same reasoning that deleted Option B's. The `disconnectNote` IS present, because disconnect has
+ * No `consentCheckbox`: Google OAuth mints no Google-specific backend delegation,
+ * so there is nothing to attest to here. The `disconnectNote` IS present, because disconnect has
  * a real failure mode worth naming up front (an upstream revoke Google may refuse).
  */
 export const GOOGLE_MEET_CONSENT_COPY: BackgroundSyncConsentCopy = {
@@ -307,11 +294,8 @@ export const GOOGLE_TESTING_MODE_REAUTH_COPY =
   "reconnect within Google's 30-day record window.";
 
 /**
- * Every sentence of the shipped copy as one string — what B2's claim patterns are matched against.
- *
- * INGEST-CUTOVER(plan §11): the optional attestation and disconnect sentences are folded in when
- * present, so the confinement / delete-capability deny-lists scan them too. A sentence that only
- * appears in the checkbox is still a sentence we show the user.
+ * Concatenate the rendered copy fields, including optional checkbox and
+ * disconnect text.
  */
 export function consentCopyText(copy: BackgroundSyncConsentCopy): string {
   return [
@@ -340,3 +324,103 @@ export const GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY: BackgroundSyncConsentCopy = 
   consentCheckbox: "I authorize unattended Calendar reading and encrypted server storage of my Google refresh token to autojoin eligible meetings.",
   disconnectNote: "Disconnecting also asks Google to revoke access and removes the browser token. A failed revoke is reported; local token copies are still removed. Your recordings remain available.",
 };
+
+/**
+ * The transcript-writer grant, as it really is. Its SQL half is read+write on the whole connectors
+ * database: the `connector_meeting` rows of every connector, local recordings and voice notes
+ * included, and at the node `write` includes UPDATE and DELETE. Its KV half reads and saves the
+ * Notetaker's transcript bodies. It says what the grant covers and claims no limit on what it can
+ * reach (V3), and claims nothing about other connectors' transcript bodies, which it does not ask for.
+ */
+const TRANSCRIPT_WRITER_NOTICE =
+  "Separately, because the TinyCloud Private Notetaker is on, our server holds a permission on " +
+  "your space over the **meeting records in your connectors library**: the titles, participants, " +
+  "summaries and other details stored for every connector's meetings, Fireflies and Google " +
+  "included, and for your local recordings and voice notes. Our server can **read, add, change or " +
+  "delete those records**. It can also read and save Notetaker transcripts there. Each grant lasts " +
+  "up to 29 days, and your browser renews it without asking while you are signed in and enrolled " +
+  "in server delivery.";
+
+/** Replace the listed bullets; every other bullet keeps its original bytes. */
+function withBullets(copy: BackgroundSyncConsentCopy, replaced: Record<number, string>): readonly string[] {
+  return copy.bullets.map((bullet, index) => replaced[index] ?? bullet);
+}
+
+export const BACKGROUND_SYNC_TRANSCRIPT_CONSENT_COPY: BackgroundSyncConsentCopy = {
+  ...BACKGROUND_SYNC_CONSENT_COPY,
+  variant: "C-transcript-writer",
+  bullets: withBullets(BACKGROUND_SYNC_CONSENT_COPY, {
+    0: "Our server learns **which meetings are ready** and when: a meeting id and a timestamp, held " +
+      "in a short list until your browser collects them. The notification itself carries no title, " +
+      "no transcript, no summary and no attendees — but once your browser has saved a meeting, the " +
+      "Notetaker permission described below lets our server read its meeting record there.",
+    2: "Turning background sync on adds **no new permission** of its own, and asks you to grant " +
+      `nothing. ${TRANSCRIPT_WRITER_NOTICE} Your browser still saves Fireflies meetings into your ` +
+      "space.",
+  }),
+};
+
+export const BACKEND_INGEST_TRANSCRIPT_CONSENT_COPY: BackgroundSyncConsentCopy = {
+  ...BACKEND_INGEST_CONSENT_COPY,
+  variant: "B-ingest-transcript-writer",
+  bullets: withBullets(BACKEND_INGEST_CONSENT_COPY, {
+    3: "Turning this on adds **no new permission on your space** of its own. Background sync asks " +
+      "you to grant nothing — the credential above is held by our server, outside your space. " +
+      "Your browser still saves Fireflies meetings into your space when you are signed in with " +
+      "your vault unlocked, so your own copy lands where it always did, and it is not deleted " +
+      `when our 90-day window closes. ${TRANSCRIPT_WRITER_NOTICE} What changed with this Fireflies ` +
+      "toggle is what our server now *has*: your Fireflies token, and a copy of your meetings.",
+  }),
+  disconnectNote:
+    "**Disconnecting undoes all of the Fireflies custody above, in one click.** We revoke the " +
+    "Fireflies token upstream and delete it, delete every meeting we are holding for you, and stop " +
+    "accepting notifications. If Fireflies is down and we cannot revoke upstream, we tell you so " +
+    "instead of pretending it worked — so you can revoke it yourself from your Fireflies account. " +
+    "Disconnecting Fireflies does not remove the separate Notetaker permission described above.",
+};
+
+export const GOOGLE_MEET_TRANSCRIPT_CONSENT_COPY: BackgroundSyncConsentCopy = {
+  ...GOOGLE_MEET_CONSENT_COPY,
+  variant: "google-oauth-transcript-writer",
+  bullets: withBullets(GOOGLE_MEET_CONSENT_COPY, {
+    1: "**Your browser talks to Google directly.** Titles, transcripts and participants are fetched " +
+      "by this browser from Google's API and written straight into your space — the fetch from " +
+      "Google does not go through TinyChat's server, and we keep no copy of it. Once a meeting is in " +
+      "your space, the Notetaker permission described below lets our server read, change or delete " +
+      "its meeting record there.",
+    3: "Connecting adds **no new permission** on your space of its own. This Google connection asks " +
+      "you to grant nothing on your space — the synced Google meetings are written by your " +
+      `browser, as they are today. ${TRANSCRIPT_WRITER_NOTICE}`,
+  }),
+  disconnectNote:
+    "**Disconnecting asks Google to revoke this access and deletes the saved token from your " +
+    "secrets.** If Google cannot be reached we say so instead of pretending the revoke worked, " +
+    "and you can always remove TinyChat yourself from your Google account's third-party access " +
+    "page. Disconnecting does not delete your already-synced meetings from your space.",
+};
+
+export const GOOGLE_CALENDAR_AUTOJOIN_TRANSCRIPT_CONSENT_COPY: BackgroundSyncConsentCopy = {
+  ...GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY,
+  variant: "google-calendar-autojoin-transcript-writer",
+  bullets: withBullets(GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY, {
+    3: "Enabling autojoin adds no new permission to write to your space of its own. " +
+      `${TRANSCRIPT_WRITER_NOTICE} So an autojoined meeting's transcript may be saved by our ` +
+      "server before you return; your browser also saves completed recordings into your own " +
+      "space after you return and unlock it.",
+  }),
+};
+
+/** Unknown status uses the disclosure; inactive preserves every original byte. */
+export function transcriptAwareConsentCopy(
+  copy: BackgroundSyncConsentCopy,
+  state: TranscriptConsentState,
+): BackgroundSyncConsentCopy {
+  if (state === "inactive") return copy;
+  switch (copy.variant) {
+    case "C": return BACKGROUND_SYNC_TRANSCRIPT_CONSENT_COPY;
+    case "B-ingest": return BACKEND_INGEST_TRANSCRIPT_CONSENT_COPY;
+    case "google-oauth": return GOOGLE_MEET_TRANSCRIPT_CONSENT_COPY;
+    case "google-calendar-autojoin": return GOOGLE_CALENDAR_AUTOJOIN_TRANSCRIPT_CONSENT_COPY;
+    default: return copy;
+  }
+}
