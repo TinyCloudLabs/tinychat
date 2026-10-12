@@ -5,7 +5,32 @@ import { constants, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, isAbsolute, normalize } from 'node:path';
 
-export const PACK_VERSION = JSON.parse(readFileSync(new URL('../pack.json', import.meta.url), 'utf8')).version;
+const PACK = JSON.parse(readFileSync(new URL('../pack.json', import.meta.url), 'utf8'));
+export const PACK_VERSION = PACK.version;
+
+const parseSemver = version => {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(version);
+  if (!match) return null;
+  const prerelease = match[4]?.split('.') ?? null;
+  if (prerelease?.some(identifier => /^\d+$/.test(identifier) && identifier.length > 1 && identifier.startsWith('0'))) return null;
+  return { core: match.slice(1, 4).map(BigInt), prerelease };
+};
+
+export function compareSemver(left, right) {
+  const a = parseSemver(left), b = parseSemver(right);
+  if (!a || !b) return NaN;
+  for (let i = 0; i < 3; i++) if (a.core[i] !== b.core[i]) return a.core[i] < b.core[i] ? -1 : 1;
+  if (!a.prerelease || !b.prerelease) return a.prerelease === b.prerelease ? 0 : a.prerelease ? -1 : 1;
+  for (let i = 0; i < Math.min(a.prerelease.length, b.prerelease.length); i++) {
+    const x = a.prerelease[i], y = b.prerelease[i];
+    if (x === y) continue;
+    const xNumeric = /^\d+$/.test(x), yNumeric = /^\d+$/.test(y);
+    if (xNumeric && yNumeric) return BigInt(x) < BigInt(y) ? -1 : 1;
+    if (xNumeric !== yNumeric) return xNumeric ? -1 : 1;
+    return x < y ? -1 : 1;
+  }
+  return Math.sign(a.prerelease.length - b.prerelease.length);
+}
 export const DATABASE = 'xyz.tinycloud.tinychat/connectors';
 const SOURCES = ['fireflies', 'google-meet', 'tinycloud-transcriber'];
 const COLUMNS = ['id', 'source', 'source_id', 'title', 'started_at', 'organizer_email', 'participants', 'summary_overview', 'summary_action_items', 'metadata', 'updated_at', 'sort_time'];
@@ -418,10 +443,10 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
     return finish(result);
   }
   async function checkVersion() {
-    const version = String(await run(['--version'])).trim();
-    const match = /^(?:tc\s+)?(\d+)\.(\d+)\.(\d+)$/.exec(version);
-    if (!match || Number(match[1]) === 0 && Number(match[2]) < 9) fail('CLI_VERSION');
-    cliVersion = match.slice(1).join('.');
+    const version = String(await run(['--version'])).trim().replace(/^(?:tc\s+)/, '');
+    const comparison = compareSemver(version, PACK.cli.minimumVersion);
+    if (Number.isNaN(comparison) || comparison < 0) fail('CLI_VERSION');
+    cliVersion = version;
   }
   async function diagnostics() {
     const r = envelope('diagnostics', { cliVersion, coverage: coverage({ supportedSources: SOURCES }), access: { authenticated: true, sqlRead: false, bodyRead: null } });
