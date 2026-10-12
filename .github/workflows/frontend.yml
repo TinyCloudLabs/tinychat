@@ -190,15 +190,16 @@ jobs:
         env:
           NO_HORIZONTAL_ENGINE: webkit
         run: |
-          NO_HORIZONTAL_SCREENS=shell-capture,shell-chat,shell-chat-ribbon,shell-chat-keyboard,shell-model-sheet,shell-connectors bun test no-horizontal-drag.e2e.test.ts
-          NO_HORIZONTAL_SCREENS=shell-settings,shell-settings-scrolled,shell-about,shell-boot-signed-out,mic-recovery-sign-in bun test no-horizontal-drag.e2e.test.ts
-          NO_HORIZONTAL_SCREENS=recorder-final-phone-interactive-consented,recorder-final-phone-interactive-first-run,recorder-final-phone-interactive-route-control,recorder-final-phone-interactive-notes,library-all,note-voice-transcribed bun test no-horizontal-drag.e2e.test.ts
-          NO_HORIZONTAL_SCREENS=saved-note-sheet,saved-note-sheet-long-title,saved-note-sheet-editing,capture-soft-long-titles,pipeline-wire-sheet-done,local-signed-out,local-offline bun test no-horizontal-drag.e2e.test.ts
+          NO_HORIZONTAL_BATCH=1 bun test no-horizontal-drag.e2e.test.ts
+          NO_HORIZONTAL_BATCH=2 bun test no-horizontal-drag.e2e.test.ts
+          NO_HORIZONTAL_BATCH=3 bun test no-horizontal-drag.e2e.test.ts
+          NO_HORIZONTAL_BATCH=4 bun test no-horizontal-drag.e2e.test.ts
 
       # The halo test file: the centre-pixel check, then 30 fresh loads under an
       # injected main-thread stall, each sampling every ring per frame for a
       # blank (TC-876).
       - name: Recorder halo (WebKit)
+        if: ${{ !cancelled() }}
         working-directory: test
         env:
           HALO_LOADS: "30"

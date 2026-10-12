@@ -29,10 +29,37 @@ const SCREENS = [
   ["local-signed-out", "android"],
   ["local-offline", "android"],
 ] as const;
-const selectedScreens = process.env.NO_HORIZONTAL_SCREENS?.split(",").filter(Boolean);
+const knownScreens = new Set(SCREENS.map(([screen]) => screen));
+const WEBKIT_SCREEN_BATCHES = [
+  ["shell-capture", "shell-chat", "shell-chat-ribbon", "shell-chat-keyboard", "shell-model-sheet", "shell-connectors"],
+  ["shell-settings", "shell-settings-scrolled", "shell-about", "shell-boot-signed-out", "mic-recovery-sign-in"],
+  ["recorder-final-phone-interactive-consented", "recorder-final-phone-interactive-first-run", "recorder-final-phone-interactive-route-control", "recorder-final-phone-interactive-notes", "library-all", "note-voice-transcribed"],
+  ["saved-note-sheet", "saved-note-sheet-long-title", "saved-note-sheet-editing", "capture-soft-long-titles", "pipeline-wire-sheet-done", "local-signed-out", "local-offline"],
+] as const;
+const webkitBatchScreens = WEBKIT_SCREEN_BATCHES.flat();
+if (
+  webkitBatchScreens.length !== knownScreens.size ||
+  new Set(webkitBatchScreens).size !== webkitBatchScreens.length ||
+  webkitBatchScreens.some((screen) => !knownScreens.has(screen))
+) {
+  throw new Error("WebKit screen batches must include every listed screen exactly once");
+}
+const batchNumber = process.env.NO_HORIZONTAL_BATCH ? Number(process.env.NO_HORIZONTAL_BATCH) : undefined;
+if (batchNumber !== undefined && (!Number.isInteger(batchNumber) || batchNumber < 1 || batchNumber > WEBKIT_SCREEN_BATCHES.length)) {
+  throw new Error(`NO_HORIZONTAL_BATCH must be between 1 and ${WEBKIT_SCREEN_BATCHES.length}`);
+}
+const batchSelection = batchNumber === undefined ? undefined : WEBKIT_SCREEN_BATCHES[batchNumber - 1];
+const selectedScreens = batchSelection ?? process.env.NO_HORIZONTAL_SCREENS?.split(",").filter(Boolean);
+const unknownScreens = selectedScreens?.filter((screen) => !knownScreens.has(screen));
+if (unknownScreens?.length) {
+  throw new Error(`NO_HORIZONTAL_SCREENS contains unknown screen(s): ${unknownScreens.join(", ")}`);
+}
 const screens = selectedScreens
   ? SCREENS.filter(([screen]) => selectedScreens.includes(screen))
   : SCREENS;
+if (selectedScreens && screens.length === 0) {
+  throw new Error("NO_HORIZONTAL_SCREENS selected no known screens");
+}
 const selectedWidths = process.env.NO_HORIZONTAL_WIDTHS?.split(",").map(Number).filter(Number.isFinite);
 const widths = selectedWidths?.length ? selectedWidths : WIDTHS;
 const selectedTextScale = process.env.NO_HORIZONTAL_TEXT_SCALE
@@ -82,7 +109,26 @@ async function inspect(page: import("playwright").Page) {
         const classes = typeof el.className === "string" && el.className.trim()
           ? `.${el.className.trim().split(/\s+/).slice(0, 3).join(".")}`
           : "";
-        return `${el.tagName.toLowerCase()}${testId ? `[data-testid="${testId}"]` : ""}${id}${classes}: scrollWidth=${el.scrollWidth}, clientWidth=${el.clientWidth}`;
+        const edge = el.getBoundingClientRect().right;
+        const widest = [...el.querySelectorAll<HTMLElement>("*")]
+          .map((child) => {
+            const rect = child.getBoundingClientRect();
+            return { child, extent: Math.max(rect.right, rect.left + child.scrollWidth) };
+          })
+          .sort((a, b) => b.extent - a.extent)[0];
+        const culprit = widest && widest.extent > edge
+          ? (() => {
+              const child = widest.child;
+              const childTestId = child.dataset.testid;
+              const childId = child.id ? `#${child.id}` : "";
+              const childClasses = typeof child.className === "string" && child.className.trim()
+                ? `.${child.className.trim().split(/\s+/).slice(0, 3).join(".")}`
+                : "";
+              const text = (child.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 50);
+              return `; widest child ${child.tagName.toLowerCase()}${childTestId ? `[data-testid="${childTestId}"]` : ""}${childId}${childClasses}: right=${widest.extent.toFixed(1)}px, overflow=${(widest.extent - edge).toFixed(1)}px${text ? `, text="${text}"` : ""}`;
+            })()
+          : "";
+        return `${el.tagName.toLowerCase()}${testId ? `[data-testid="${testId}"]` : ""}${id}${classes}: scrollWidth=${el.scrollWidth}, clientWidth=${el.clientWidth}${culprit}`;
       });
     const outside = [...document.querySelectorAll<HTMLElement>("body *")]
       .filter((el) => {

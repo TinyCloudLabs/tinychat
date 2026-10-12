@@ -51,7 +51,7 @@ export function BuildInfoLine({ className }: { className?: string }) {
         });
       }}
       className={cn(
-        "tap-transparent flex min-h-[6em] w-full select-text items-center justify-center text-center text-meta leading-snug text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default",
+        "tap-transparent flex min-h-[6em] w-full select-text items-center justify-center text-center text-meta leading-snug text-muted-foreground [overflow-wrap:anywhere] transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default",
         className,
       )}
     >
