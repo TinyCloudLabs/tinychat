@@ -244,6 +244,8 @@ export function useLibrary(
 
   const itemsRef = useRef(list.items);
   itemsRef.current = list.items;
+  // The open note as the sheet resolved it: a stand-in route (`on-phone:<id>`) and its saved row are one note.
+  const openItemId = useRef<string | null>(null);
   // Only the saved row's reads are stale. A list-only change never interrupts
   // the open note's audio or transcript.
   useEffect(() => captureEvents.on("library-changed", (detail) => {
@@ -251,10 +253,10 @@ export function useLibrary(
     if (saved) {
       invalidated.current.add(saved.id);
       readVersions.current.set(saved.id, (readVersions.current.get(saved.id) ?? 0) + 1);
-      if (saved.id === options.noteId) setInvalidationRevision((n) => n + 1);
+      if (saved.id === openItemId.current) setInvalidationRevision((n) => n + 1);
     }
     refresh();
-  }), [options.noteId, refresh]);
+  }), [refresh]);
 
   // Each note that leaves the phone asks for one list read to catch up.
   useEffect(() => {
@@ -288,6 +290,7 @@ export function useLibrary(
     const recordingId = recordingIdOfOnPhoneId(options.noteId);
     return recordingId === null ? null : (items.find((entry) => entry.source === VOICE_NOTE_SOURCE && entry.sourceId === recordingId) ?? null);
   }, [items, options.noteId]);
+  openItemId.current = item?.id ?? null;
 
   // The open voice note, by recording: a stand-in and its row are one note.
   const openRecordingId = item?.source === VOICE_NOTE_SOURCE ? item.sourceId : null;

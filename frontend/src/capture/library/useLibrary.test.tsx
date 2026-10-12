@@ -415,6 +415,25 @@ describe("useLibrary, mounted", () => {
 
   });
 
+  test("an open stand-in route follows its saved row's transcript refresh even when the list refresh fails", async () => {
+    const space = fakeSpace({ voiceCommit: true });
+    const seen: Library[] = [];
+    const base = { tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "on-phone:rec-a" };
+    await render({ ...base, onPhone: [{ id: "rec-a", startedAt: Date.parse("2026-10-06T10:00:00.000Z"), durationMs: 14_000 }] });
+    await space.answer("list", listedVoice("a"));
+    await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+    await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Old" }]) } });
+    expect(seen.at(-1)!.note.item?.id).toBe("a");
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ status: "ok", sentences: [{ text: "Old" }] });
+
+    await act(async () => captureEvents.emit("library-changed", { source: "exo-voice-note", sourceId: "rec-a" }));
+    await space.answer("list", { ok: false, error: { code: "NETWORK", message: "offline" } });
+    await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+    await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "New" }]) } });
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ status: "ok", sentences: [{ text: "New" }] });
+    expect(seen.at(-1)!.note.item?.id).toBe("a");
+  });
+
   test("a closed note whose transcript was absent is re-read on reopening after its save", async () => {
     const space = fakeSpace();
     const seen: Library[] = [];

@@ -47,6 +47,12 @@ const { useVoiceNoteRecorder } = await import("./useVoiceNoteRecorder");
 const tcw = { did: "did:example:alice", spaceId: "tinycloud:space" } as TinyCloudWeb;
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+/** Waits for a save to settle without assuming how many macrotasks it takes (CI and local runs differ). */
+async function settled(done: () => boolean, what: string) {
+  for (let attempt = 0; attempt < 400 && !done(); attempt++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+  if (!done()) throw new Error(`Timed out waiting for ${what}`);
+}
+
 let fake: FakeVoiceNotes;
 /** Stopped recordings still on the phone, as the shells keep them until a save is confirmed. */
 let onPhone: VoiceNoteRecording[];
@@ -1353,13 +1359,14 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
       await act(async () => recorder!.record());
       await act(async () => { await tick(); });
       await act(async () => recorder!.stop());
-      await act(async () => { await tick(); });
+      await settled(() => recorder!.outcome === "failed", "the failed Stop to settle");
       expect(recorder!.outcome).toBe("failed");
       expect(changed).toEqual([]);
       const failedId = onPhone[0]!.id;
 
       fakeVoiceNoteStore.save = ok;
       await act(async () => { recorder!.retryPending(); await tick(); await tick(); });
+      await settled(() => onPhone[0]?.ledger?.audio.state === "saved", "Save now to save the note");
       expect(onPhone[0]?.ledger?.audio.state).toBe("saved");
       expect(changed).toEqual([{ source: "exo-voice-note", sourceId: failedId }]);
       await act(async () => { recorder!.retryPending(); await tick(); await tick(); });
@@ -1369,7 +1376,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
       await act(async () => recorder!.record());
       await act(async () => { await tick(); });
       await act(async () => recorder!.stop());
-      await act(async () => { await tick(); });
+      await settled(() => onPhone[1] !== undefined && recorder!.lastSaved?.id === onPhone[1].id, "the new Stop to save");
       expect(recorder!.lastSaved?.id).toBe(onPhone[1]?.id);
       expect(changed).toEqual([{ source: "exo-voice-note", sourceId: failedId },
         { source: "exo-voice-note", sourceId: onPhone[1]!.id }]);
