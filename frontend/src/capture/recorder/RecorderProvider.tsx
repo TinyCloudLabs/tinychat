@@ -12,6 +12,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { Button } from "@/components/ui/button";
 import { hapticRecordStarted, hapticSaved, hapticWarning } from "@/lib/haptics";
+import { PlatformContext } from "@/lib/platform";
 import { VOICE_NOTE_MAX_DURATION_MS, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
 import { writeAccountDefaults } from "@/lib/voiceNotes/transcriberPreference";
@@ -160,6 +161,7 @@ export interface RecorderProviderProps {
 }
 
 export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSaved, onAccountReady, pipeline, signedOut, onSignedOut, onSignIn, minimiseOnSignIn, children }: RecorderProviderProps) {
+  const device = useContext(PlatformContext) === "tauri" ? "Mac" : "phone";
   const [configured, setConfigured] = useState<{ tcw: TinyCloudWeb; did: string | null } | null>(null);
   const [defaultsError, setDefaultsError] = useState<string | null>(null);
   const [defaultsAttempt, setDefaultsAttempt] = useState(0);
@@ -223,7 +225,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       setAnnouncement(recorderStatusText(state.phase, state.mic, null));
     } else if (before.outcome !== state.outcome && state.outcome === "local") {
       hapticSaved();
-      setAnnouncement("Saved on this phone");
+      setAnnouncement(`Saved on this ${device}`);
     } else if (before.outcome !== state.outcome && state.outcome === "failed") {
       hapticWarning();
       setAnnouncement(RECEIPT_KEPT);

@@ -87,7 +87,7 @@ const ROWS: Row[] = [
   { name: "space: 2nd in line is one note ahead", patch: { space: { pending: { waitingBehind: 1 }, lane: { busy: true, depth: 2 } } }, current: "space", caption: "Waiting to upload · 2nd in line" },
   { name: "space: 12th in line is eleven notes ahead", patch: { space: { pending: { waitingBehind: 11 }, lane: { busy: true, depth: 12 } } }, current: "space", caption: "Waiting to upload · 12th in line" },
   { name: "space: a busy lane with no per-note position never invents one", patch: { space: { pending: {}, lane: { busy: true, depth: 5 } } }, current: "space", caption: "Waiting to upload" },
-  { name: "space: uploading 42%", patch: { space: { pending: { upload: { state: "uploading", bytes: 42, total: 100 } } } }, states: { space: "active" }, current: "space", caption: "Uploading · 42%" },
+  { name: "space: uploading 42%", patch: { space: { pending: { upload: { state: "uploading", bytes: 42, total: 100 } } } }, states: { space: "active" }, current: "space", caption: "Uploading audio to your TinyCloud space · 42%" },
   { name: "space: retrying", patch: { space: { pending: { upload: { state: "retrying", bytes: 42, total: 100 } } } }, states: { space: "active" }, current: "space", caption: "Retrying…" },
   { name: "space: signed out", patch: { space: { pending: { held: "signed-out" } } }, states: { space: "blocked" }, current: "space", cause: "You're signed out. This note is safe on this phone.", action: "sign-in" },
   { name: "space: signed out on a Mac", patch: { device: "mac", space: { pending: { held: "signed-out" } } }, current: "space", cause: "You're signed out. This note is safe on this Mac.", action: "sign-in" },
@@ -130,7 +130,7 @@ const ROWS: Row[] = [
   { name: "local: queued next", patch: local({ onDevice: od({ stt: stt("queued"), queue: { position: 1, inLine: 1, percent: null } }) }, { space: SAVED }), current: "transcript", caption: "Queued · next" },
   { name: "local: transcribing 63%", patch: local({ onDevice: od({ stt: stt("running"), queue: { position: 1, inLine: 1, percent: 63 } }) }, { space: SAVED }), states: { transcript: "active" }, current: "transcript", caption: "Transcribing · 63%" },
   { name: "local: transcribing with no percent yet", patch: local({ onDevice: od({ stt: stt("running"), queue: { position: 1, inLine: 1, percent: null } }) }, { space: SAVED }), current: "transcript", caption: "Transcribing…" },
-  { name: "local: transcript done on the phone before upload is Ready on this phone", patch: local({ onDevice: od({ stt: stt("done") }) }, { space: { saved: false, pending: { upload: { state: "uploading", bytes: 10, total: 100 } } } }), states: { phone: "done", space: "active", transcript: "done" }, current: "space", caption: "Uploading · 10%" },
+  { name: "local: transcript done on the phone before upload is Ready on this phone", patch: local({ onDevice: od({ stt: stt("done") }) }, { space: { saved: false, pending: { upload: { state: "uploading", bytes: 10, total: 100 } } } }), states: { phone: "done", space: "active", transcript: "done" }, current: "space", caption: "Uploading audio to your TinyCloud space · 10%" },
   { name: "local: transcript done on the phone, note saved, nothing adding it and no space evidence is a blocker, never an endless Adding", patch: local({ onDevice: od({ stt: stt("done") }) }, { space: SAVED }), states: { transcript: "blocked" }, current: "transcript", cause: "The transcript is ready on this phone but hasn't been added to this note", action: "retry" },
   { name: "local: the space row not read yet is Checking your space, not a blocker", patch: local({ onDevice: od({ stt: stt("done") }), spaceReading: true }, { space: SAVED }), states: { transcript: "waiting" }, current: "transcript", caption: "Checking your space…" },
   { name: "local: no on-device read yet and the space row not read yet is Checking your space", patch: local({ spaceReading: true }, { space: SAVED }), states: { transcript: "waiting" }, current: "transcript", caption: "Checking your space…" },
@@ -153,7 +153,8 @@ const ROWS: Row[] = [
   { name: "private: before the note is in the space it waits for upload", patch: { route: "private-cloud" }, states: { space: "waiting", transcript: "waiting" }, current: "space", caption: "Waiting to upload" },
   { name: "private: waiting, 2nd", patch: cloud({ kind: "active", status: { kind: "waiting", position: 2 } }), states: { transcript: "waiting" }, current: "transcript", caption: "Waiting · 2nd" },
   { name: "private: preparing", patch: cloud({ kind: "active", status: { kind: "preparing" } }), states: { transcript: "active" }, current: "transcript", caption: "Preparing…" },
-  { name: "private: sending to private cloud", patch: cloud({ kind: "active", status: { kind: "uploading" } }), states: { transcript: "active" }, current: "transcript", caption: "Sending to private cloud" },
+  { name: "private: sending to private cloud", patch: cloud({ kind: "active", status: { kind: "uploading" } }), states: { transcript: "active" }, current: "transcript", caption: "Sending audio to Private transcription" },
+  { name: "private: sending 42% names its destination", patch: cloud({ kind: "active", status: { kind: "uploading", progress: 0.42 } }), states: { transcript: "active" }, current: "transcript", caption: "Sending audio to Private transcription · 42%" },
   { name: "private: in the queue #3", patch: cloud({ kind: "active", status: { kind: "queued", position: 3 } }), states: { transcript: "waiting" }, current: "transcript", caption: "In the queue · #3" },
   { name: "private: in the queue, place unknown", patch: cloud({ kind: "active", status: { kind: "queued", position: null } }), current: "transcript", caption: "In the queue" },
   { name: "private: transcribing 4 of 9", patch: cloud({ kind: "active", status: { kind: "processing", completed: 4, total: 9 } }), states: { transcript: "active" }, current: "transcript", caption: "Transcribing · 4 of 9" },
@@ -171,7 +172,7 @@ const ROWS: Row[] = [
   { name: "private: a transcript in the space is not done before the note is saved", patch: { route: "private-cloud", transcript: { inSpace: "transcribed" } }, states: { space: "waiting", transcript: "waiting" }, current: "space" },
   { name: "private: no speech in the space is not done before the note is saved", patch: { route: "private-cloud", transcript: { inSpace: "no_speech" } }, states: { space: "waiting", transcript: "waiting" }, current: "space" },
   { name: "local: a transcript found in the space still counts", patch: local({ inSpace: "transcribed" }, { space: SAVED }), states: { transcript: "done" }, current: null },
-  { name: "local: transcript saved while audio is still uploading", patch: local({ inSpace: "transcribed" }, { space: { pending: { upload: { state: "uploading", bytes: 42, total: 100 } } } }), states: { phone: "done", space: "active", transcript: "done" }, current: "space", caption: "Uploading · 42%" },
+  { name: "local: transcript saved while audio is still uploading", patch: local({ inSpace: "transcribed" }, { space: { pending: { upload: { state: "uploading", bytes: 42, total: 100 } } } }), states: { phone: "done", space: "active", transcript: "done" }, current: "space", caption: "Uploading audio to your TinyCloud space · 42%" },
   { name: "private: transcript is in the space", patch: { route: "private-cloud", space: SAVED, transcript: { inSpace: "transcribed" } }, states: { space: "done", transcript: "done" }, current: null },
 
   // 4. Notes synced
@@ -255,7 +256,7 @@ describe("notePipeline: shape", () => {
   test("an upload with an unknown total has no progress and no percent", () => {
     const pipeline = notePipeline(input({ space: { pending: { upload: { state: "uploading", bytes: 0, total: 0 } } } }));
     const space = pipeline.steps.find((s) => s.key === "space")!;
-    expect(space.caption).toBe("Uploading…");
+    expect(space.caption).toBe("Uploading audio to your TinyCloud space…");
     expect(space.progress).toBeUndefined();
   });
 

@@ -71,7 +71,7 @@ export function micStatusText(
   maxDurationMs?: number,
 ): string {
   if (phase === "starting") return "Starting the microphone…";
-  if (phase === "stopping" || phase === "saving") return "Saving to your TinyCloud space…";
+  if (phase === "stopping" || phase === "saving") return "Saving on this phone…";
   if (phase !== "recording") return "Not recording. The microphone is off.";
   if (mic.state === "paused") return `Paused at ${formatDuration(elapsedMs)}. The microphone is off.`;
   if (mic.state === "interrupted") return interruptionText(mic.reason);
@@ -99,11 +99,10 @@ export function micWarning(mic: { state: MicState; reason: MicStateReason }): "s
 export function recorderStatusText(
   phase: RecorderPhase,
   mic: { state: MicState; reason: MicStateReason },
-  savePercent: number | null,
+  _savePercent: number | null,
 ): string {
   if (phase === "starting") return "Starting the microphone…";
-  if (phase === "stopping") return "Saving to your space";
-  if (phase === "saving") return typeof savePercent === "number" ? `Saving to your space · ${savePercent}%` : "Saving to your space";
+  if (phase === "stopping" || phase === "saving") return "Saving on this phone…";
   if (phase === "discarding") return "Discarding…";
   if (phase !== "recording") return "Not recording";
   if (mic.state === "paused") return "Paused · mic off";

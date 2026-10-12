@@ -116,6 +116,7 @@ export function useFinalRecorderControls({
     elapsedMs,
     inputName: input?.name ?? null,
     silencedSinceMs,
+    device: shell === "desktop" ? "mac" : "phone",
   });
 
   const [modesOpen, setModesOpen] = useState(defaultOpen === "modes");

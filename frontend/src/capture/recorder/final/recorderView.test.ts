@@ -211,12 +211,12 @@ describe("selectRecorderView: needs_user reason decisions", () => {
 
 describe("selectRecorderView: idle reason decisions", () => {
   test.each([
-    ["max_duration", "Saving at the limit…", "Saving…", true, false, false],
-    [null, null, "Saving…", true, false, false],
+    ["max_duration", "Saving at the limit…", "Finishing…", true, false, false],
+    [null, null, "Finishing…", true, false, false],
     [
       "disk_full",
       "Saving the audio captured before storage ran out…",
-      "Saving…",
+      "Finishing…",
       true,
       false,
       false,
@@ -358,7 +358,7 @@ describe("selectRecorderView: live, paused and transient phases", () => {
   test("idle/user after user Stop or Discard uses the saving view", () => {
     expect(recordingView("idle", "user")).toMatchObject({
       ring: "idle",
-      pill: { label: "Saving…", dot: "hollow" },
+      pill: { label: "Finishing…", dot: "hollow" },
       statusLine: null,
       controls: { busy: true, stop: false, discard: false },
     });
@@ -420,8 +420,8 @@ describe("selectRecorderView: live, paused and transient phases", () => {
 
   test.each([
     ["starting", "Starting…", true],
-    ["stopping", "Saving…", true],
-    ["saving", "Saving…", true],
+    ["stopping", "Finishing…", true],
+    ["saving", "Finishing…", true],
     ["discarding", "Discarding…", true],
   ] as const)("phase %s disables controls", (phase, label, busy) => {
     const view = selectRecorderView({ ...base, phase }, input);
@@ -438,6 +438,25 @@ describe("selectRecorderView: live, paused and transient phases", () => {
         openSettings: false,
       },
     });
+  });
+
+  test("finishing names the local save on each device", () => {
+    const copy = (["phone", "mac"] as const).map((device) => {
+      const view = selectRecorderView({ ...base, phase: "stopping" }, { ...input, device });
+      return { pill: view.pill.label, status: view.statusLine };
+    });
+    expect(copy).toMatchInlineSnapshot(`
+      [
+        {
+          "pill": "Finishing…",
+          "status": "Saving on this phone…",
+        },
+        {
+          "pill": "Finishing…",
+          "status": "Saving on this Mac…",
+        },
+      ]
+    `);
   });
 
   test("mic denial and phase-idle permission revocation open Settings", () => {

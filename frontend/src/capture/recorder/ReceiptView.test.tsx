@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
+import { PlatformContext } from "@/lib/platform";
 
 import { ReceiptView, receiptRouting } from "./ReceiptView";
 import { StaticRecorderProvider } from "./RecorderProvider";
@@ -23,10 +24,12 @@ const recorder = (patch: Partial<RecorderValue> = {}): RecorderValue => ({
   subscribeLevel: () => noop, ...patch,
 });
 
-const render = (patch: Partial<RecorderValue> = {}) => renderToStaticMarkup(
-  <StaticRecorderProvider value={recorder(patch)}>
-    <MemoryRouter><ReceiptView recorder={recorder(patch)} /></MemoryRouter>
-  </StaticRecorderProvider>,
+const render = (patch: Partial<RecorderValue> = {}, platform: "ios" | "tauri" = "ios") => renderToStaticMarkup(
+  <PlatformContext.Provider value={platform}>
+    <StaticRecorderProvider value={recorder(patch)}>
+      <MemoryRouter><ReceiptView recorder={recorder(patch)} /></MemoryRouter>
+    </StaticRecorderProvider>
+  </PlatformContext.Provider>,
 );
 
 describe("ReceiptView", () => {
@@ -40,6 +43,15 @@ describe("ReceiptView", () => {
     expect(html).toContain('data-testid="recorder-minimise"');
     expect(html).not.toContain('data-testid="voice-note-stop"');
     expect(html).not.toContain('data-testid="voice-note-pause"');
+  });
+
+  test("a committed Mac recording names the Mac before its space upload finishes", () => {
+    const html = render({ phase: "idle", outcome: "local", startedAt: null,
+      lastSaved: { id: "rec-1", durationMs: 42_000, at: Date.now() } }, "tauri");
+    expect(html).toContain('data-testid="voice-note-status-label"');
+    expect(html).toContain("Saved on this Mac");
+    expect(html).toContain('aria-label="Saved on this Mac"');
+    expect(html).not.toContain("Saved on this phone");
   });
 
   test("denied shortcut shows the full-page recovery action without a receipt", () => {
@@ -153,4 +165,3 @@ describe("receiptRouting: where a saved note stands", () => {
       .toMatchObject({ transcribing: false, savedRoute: "private-cloud" });
   });
 });
-

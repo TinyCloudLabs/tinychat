@@ -36,7 +36,7 @@ const note = (i: number, patch: Partial<LibraryItem> = {}): LibraryItem => ({
   durationSecs: 60 * i + 5,
   ...patch,
 });
-const pipeline = (caption = "Uploading · 42%", patch: Partial<NotePipeline> = {}): NotePipeline => ({
+const pipeline = (caption = "Uploading audio to your TinyCloud space · 42%", patch: Partial<NotePipeline> = {}): NotePipeline => ({
   steps: [
     { key: "phone", label: "On this phone", state: "done" },
     { key: "space", label: "In your space", state: "active", caption, progress: 0.42 },
@@ -115,7 +115,7 @@ describe("Recent", () => {
     expect(html.match(/data-testid="recent-item"/g)).toHaveLength(2);
     expect(html).toContain('href="/chat/capture/library/on-phone%3Arec-1"');
     expect(html.match(/data-pipeline-track-summary=/g)).toHaveLength(1);
-    expect(html).toContain('aria-label="Voice note. Audio on this phone: Saved. Audio in your space: Uploading · 42%. Transcript: Not started. Today 1:49 AM · 1:05"');
+    expect(html).toContain('aria-label="Voice note. Audio on this phone: Saved. Audio in your space: Uploading audio to your TinyCloud space · 42%. Transcript: Not started. Today 1:49 AM · 1:05"');
   });
 
   test("shows the last five", () => {

@@ -40,7 +40,7 @@ export const FINAL_COPY = {
   microphoneOff: "Microphone off",
   idle: "Ready",
   starting: "Starting…",
-  saving: "Saving…",
+  saving: "Finishing…",
   discarding: "Discarding…",
   noSoundFrom: (input: string) => `No sound from ${input}`,
   noSoundFromMicrophone: "No sound from the microphone",

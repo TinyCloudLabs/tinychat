@@ -11,7 +11,7 @@ import { InProgressVoiceCard, type InProgressNoteRow } from "./InProgressVoiceCa
 const pipeline = (patch: Partial<NotePipeline> = {}): NotePipeline => ({
   steps: [
     { key: "phone", label: "On this phone", state: "done" },
-    { key: "space", label: "In your space", state: "active", caption: "Uploading · 42%", progress: 0.42 },
+    { key: "space", label: "In your space", state: "active", caption: "Uploading audio to your TinyCloud space · 42%", progress: 0.42 },
     { key: "transcript", label: "Transcript", state: "upcoming" },
     { key: "notes", label: "Notes", state: "skipped" },
   ],
@@ -45,7 +45,7 @@ describe("InProgressVoiceCard", () => {
     expect(output).toContain('data-testid="voice-note-summary">2 in progress</b>');
     expect(output).toContain('data-testid="voice-note-on-phone">2 on this phone</span>');
     expect(output).toContain('data-testid="voice-note-uploading">1 uploading</span>');
-    expect(output).toContain("Uploading · 42%");
+    expect(output).toContain("Uploading audio to your TinyCloud space · 42%");
     expect(output).toContain("Waiting to upload");
     expect(output.match(/data-pipeline-track-summary=/g)).toHaveLength(2);
   });
@@ -105,18 +105,18 @@ describe("InProgressVoiceCard", () => {
 
   test("announces each track, followed by the spoken duration", () => {
     const output = html([row("a", { ...pipeline(), current: "space" })]);
-    expect(output).toContain('aria-label="Note a. Audio on this phone: Saved. Audio in your space: Uploading · 42%. Transcript: Not started. 1 min"');
+    expect(output).toContain('aria-label="Note a. Audio on this phone: Saved. Audio in your space: Uploading audio to your TinyCloud space · 42%. Transcript: Not started. 1 min"');
   });
 
   test("shows audio and transcript independently in each in-progress row", () => {
     const transcriptSaved = pipeline({ steps: [
       { key: "phone", label: "Audio on this phone", state: "done" },
-      { key: "space", label: "Audio in your space", state: "active", caption: "Uploading · 42%" },
+      { key: "space", label: "Audio in your space", state: "active", caption: "Uploading audio to your TinyCloud space · 42%" },
       { key: "transcript", label: "Transcript", state: "done", sublabel: "Ready on this phone" },
       { key: "notes", label: "Notes", state: "skipped" },
     ] });
     const output = html([row("ahead", transcriptSaved)]);
-    expect(output).toContain("Audio: Uploading · 42%");
+    expect(output).toContain("Audio: Uploading audio to your TinyCloud space · 42%");
     expect(output).toContain("Transcript: Ready on this phone");
   });
 
