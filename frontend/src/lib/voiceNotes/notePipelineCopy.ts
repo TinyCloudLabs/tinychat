@@ -123,7 +123,6 @@ export const PRIVATE_COPY = {
   checkFailed: "Couldn't check whether private transcription is available",
   checking: "Checking private transcription…",
   noConsent: "Waiting for your OK to use Private",
-  hidden: "Private transcription isn't available for this account",
   failed: (message: string | null | undefined, reference: string | null) => {
     const copy = hasText(message) ? message.trim() : "Private transcription couldn't finish.";
     return hasText(reference) ? `${copy} · Reference ${reference.trim()}` : copy;

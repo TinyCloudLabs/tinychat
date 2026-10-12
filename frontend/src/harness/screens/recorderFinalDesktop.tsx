@@ -191,6 +191,7 @@ function macWhisper(model: "ready" | "none", systemAudio = false): HarnessScreen
     __setInstalledEngineForTests("tauri", {
       nativeShortcuts: false, presentRecorder: false, openSettings: false, micDeniedPresentation: false,
       background: true, localTranscription: false, desktopWhisper: model === "ready", offlineRecorder: true,
+      nativeFileUpload: true,
     });
     const models = [{
       id: "LargeTurbo", label: "Whisper Large Turbo (Multilingual)", sizeBytes: 1_600_000_000,

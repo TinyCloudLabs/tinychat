@@ -21,7 +21,7 @@ import { localDesktopCaption, localDesktopExplanation, NO_DESKTOP_WHISPER, useDe
 const LABEL = "Whisper Large Turbo (Multilingual)";
 const caps: CaptureCapabilities = {
   nativeShortcuts: false, presentRecorder: false, openSettings: false, micDeniedPresentation: false,
-  background: true, localTranscription: false, desktopWhisper: false, offlineRecorder: true,
+  background: true, localTranscription: false, desktopWhisper: false, offlineRecorder: true, nativeFileUpload: true,
 };
 const info = (patch: Partial<WhisperModelInfo>): WhisperModelInfo => ({
   id: "LargeTurbo" as WhisperModelInfo["id"], label: LABEL, sizeBytes: 1, downloaded: false, selected: false,

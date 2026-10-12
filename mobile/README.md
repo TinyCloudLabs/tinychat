@@ -43,43 +43,31 @@ Record on the phone, save to the user's TinyCloud space, play back from it.
 
 ### Transcription (private cloud)
 
-Voice notes are transcribed with the same private cloud path as the desktop's
-Exo Local engine (`frontend/src/lib/voiceNotes/voiceNoteTranscription.ts`):
+Voice notes use the shared Private job flow
+(`frontend/src/lib/voiceNotes/voiceNoteTranscription.ts`):
 
 - **Offered only when** all of these hold:
   - this build has a PTX upload origin (`VITE_EXO_PTX_UPLOAD_ORIGIN`, a bare
-    https origin; unset in every build today);
+    https origin required for production builds);
   - the device can upload: iOS, or Android 8.0+ (API 26; the plugin's
     `status()` reports `androidSdkInt`). Below API 26, Capacitor's native HTTP
     sends an empty file body;
   - the backend answers `GET /api/transcriber/private-cloud/capabilities`
-    with 200 for the signed-in account (404 = dark or not in the cohort).
+    with 200 (a 404 is a retryable service failure).
 
-  Until then the card shows nothing about transcription. The user confirms
+  An unavailable service shows a retryable check failure. The user confirms
   "Use private cloud" once (kept per account DID). New notes are transcribed
   after they are saved, and older notes get a Transcribe button. "Turn off"
   drops waiting notes, stops the running one before its upload, and cancels
   jobs still waiting for an upload. A note already uploaded finishes.
-- **Audio:** PTX and the relay take `audio/mpeg`, `audio/wav` or `audio/ogg`,
-  not the phone's AAC. The webview decodes the note with WebAudio (resampled to
-  16 kHz mono, which is what PTX decodes every upload to) and writes a 16-bit
-  PCM WAV: 1.9 MB per minute, about 4× the AAC. Notes up to 10 minutes
-  (`VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS`) are offered in this version. The
-  note's recorded length (and the AAC's size) is checked before decoding.
-- **Upload:** create at the backend (bearer, `Idempotency-Key`), then one PUT
-  of the WAV to `<PTX origin>/uploads/trn_…` with the job capability through
-  Capacitor's native HTTP (`CapacitorHttp`, `dataType: "file"`): PTX sends no
-  CORS headers, and the backend never sees audio. The bytes cross the JS bridge
-  as base64. A native file upload (background `URLSession`, streamed
-  `HttpURLConnection`) is the follow-up for long notes. It would need a native
-  transcoder too, unless PTX and the relay accept `audio/mp4`; in that case the
-  recorded file can be sent as it is (the client already does this when the
-  capabilities list the note's type).
+- **Audio and upload:** create at the backend (bearer, `Idempotency-Key`), then
+  upload from the local recording file to `<PTX origin>/uploads/trn_…` with the
+  job capability. The native uploader streams the file; the backend never sees
+  its audio bytes. PTX capabilities determine the accepted content types.
 - **Which client owns a job:** a voice note's job is created with
   `channel_mode: "mixed"` and `channel_labels: ["Exo voice note"]`, and the
-  desktop's with `separate` / `["Speaker 1", "Speaker 2"]`. PTX echoes both on
-  every job, so Exo desktop's tenant-list recovery skips phone jobs. The phone
-  never lists the account's jobs: it re-joins only the ones it remembers.
+  older desktop jobs used `separate` / `["Speaker 1", "Speaker 2"]`. PTX echoes
+  both on every job. Voice notes re-join only the jobs they remember.
 - **Result:** polled through the backend, then saved onto the note.
   - Sentences go into the note's transcript key: one speaker, "You", merged
     into turns of at most 60 s.

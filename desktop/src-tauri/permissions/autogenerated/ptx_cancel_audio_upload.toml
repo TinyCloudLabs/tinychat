@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-ptx-cancel-audio-upload"
+description = "Enables the ptx_cancel_audio_upload command without any pre-configured scope."
+commands.allow = ["ptx_cancel_audio_upload"]
+
+[[permission]]
+identifier = "deny-ptx-cancel-audio-upload"
+description = "Denies the ptx_cancel_audio_upload command without any pre-configured scope."
+commands.deny = ["ptx_cancel_audio_upload"]

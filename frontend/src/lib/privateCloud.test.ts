@@ -54,8 +54,10 @@ describe("resolveEngine", () => {
 });
 
 describe("createPrivateCloudApi", () => {
-  test("capabilities: 404 (dark or not in the cohort) is null, 200 is the body", async () => {
-    expect(await api(() => new Response("Not Found", { status: 404 })).client.capabilities()).toBeNull();
+  test("capabilities: 404 is retryable, 200 is the body", async () => {
+    const unavailable = await api(() => new Response("Not Found", { status: 404 })).client.capabilities().catch((error) => error) as PrivateCloudError;
+    expect(unavailable.code).toBe("service_unavailable");
+    expect(isTransientCloudError(unavailable)).toBe(true);
     const { client, calls } = api(() => json(200, { max_bytes: 120960000, admission: "open" }));
     expect(await client.capabilities()).toEqual({ max_bytes: 120960000, admission: "open" });
     expect(calls[0]!.url).toBe("https://api.example/api/transcriber/private-cloud/capabilities");
@@ -91,11 +93,11 @@ describe("createPrivateCloudApi", () => {
     expect(isTransientCloudError(misconfigured)).toBe(false);
   });
 
-  test("list: this account's jobs; 404 (dark) is an empty list", async () => {
+  test("list: this account's jobs; 404 is a service failure", async () => {
     const { client, calls } = api(() => json(200, { transcriptions: [{ id: ID, status: "completed" }] }));
     expect(await client.list()).toEqual([{ id: ID, status: "completed" }]);
     expect(calls[0]!.url).toBe("https://api.example/api/transcriber/private-cloud/transcriptions?limit=20");
-    expect(await api(() => new Response("", { status: 404 })).client.list()).toEqual([]);
+    expect(((await api(() => new Response("", { status: 404 })).client.list().catch((error) => error)) as PrivateCloudError).code).toBe("service_unavailable");
     const bad = (await api(() => json(200, { nope: 1 })).client.list().catch((e) => e)) as PrivateCloudError;
     expect(bad.code).toBe("upstream_bad_response");
   });
@@ -176,9 +178,9 @@ describe("createPrivateCloudJob (webview create, Exo mobile)", () => {
     expect(await promise).toEqual({ id: ID, status: "queued", upload: null });
   });
 
-  test("404 (dark or not in the cohort) is feature_unavailable; errors keep code, id and a reference", async () => {
+  test("404 is a retryable service failure; errors keep code, id and a reference", async () => {
     expect(((await create(() => new Response("Not Found", { status: 404 })).promise.catch((e) => e)) as PrivateCloudError).code).toBe(
-      "feature_unavailable",
+      "service_unavailable",
     );
     const busy = (await create(() =>
       json(409, { error: { code: "active_transcription_exists", message: "A transcription is already in progress.", correlation_id: "cid-b", id: ID } }),

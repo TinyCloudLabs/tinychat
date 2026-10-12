@@ -73,7 +73,7 @@ export interface PipelineOnDevice {
 }
 
 /** `TranscriptionBlockedReason` (P2). */
-export type PipelineBlockedReason = "checking" | "unavailable" | "check-failed" | "no-consent" | "hidden";
+export type PipelineBlockedReason = "checking" | "unavailable" | "check-failed" | "no-consent";
 
 /** `VoiceNoteTranscriptionStatus` (`waiting.position` is P2). */
 export type PipelineCloudStatus =
@@ -306,8 +306,7 @@ function cloudBlockedStep(reason: PipelineBlockedReason): Result {
     case "checking": return { state: "waiting", caption: PRIVATE_COPY.checking };
     case "unavailable": return blocked(PRIVATE_COPY.unavailable, "check-again");
     case "check-failed": return blocked(PRIVATE_COPY.checkFailed, "check-again");
-    case "no-consent": return blocked(PRIVATE_COPY.noConsent, "review-consent");
-    case "hidden": return blocked(PRIVATE_COPY.hidden);
+  case "no-consent": return blocked(PRIVATE_COPY.noConsent, "review-consent");
   }
 }
 

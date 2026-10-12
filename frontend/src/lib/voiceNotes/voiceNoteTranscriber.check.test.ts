@@ -15,7 +15,7 @@ const BACKOFF = [15_000, 60_000, 5 * 60_000];
 const consent = (value: boolean): VoiceNoteConsentStore => ({ get: () => value, set() {} });
 
 function setup(opts: {
-  capabilities?: () => Promise<PrivateCloudCapabilities | null>;
+  capabilities?: () => Promise<PrivateCloudCapabilities>;
   pending?: string[];
   consented?: boolean;
   sleep?: (ms: number) => Promise<void>;
@@ -47,7 +47,7 @@ function setup(opts: {
   return { transcriber, clock, requests, started };
 }
 
-const offline = async (): Promise<PrivateCloudCapabilities | null> => {
+const offline = async (): Promise<PrivateCloudCapabilities> => {
   throw new PrivateCloudError("offline", "x");
 };
 
@@ -127,16 +127,16 @@ describe("freshness and backoff for automatic checks", () => {
     expect(s.requests).toHaveLength(2);
   });
 
-  test("an answer that says private cloud is off is reused too", async () => {
-    const s = setup({ capabilities: async () => null });
+  test("a failed capability check backs off before checking again", async () => {
+    const s = setup({ capabilities: offline });
     await s.transcriber.check({ automatic: true });
     await s.transcriber.check({ automatic: true });
     expect(s.requests).toHaveLength(1);
-    expect(s.transcriber.snapshot().availability).toBe("hidden");
+    expect(s.transcriber.snapshot().availability).toBe("failed");
   });
 
   test("a failed check backs off longer after each failure; a success starts over", async () => {
-    let answer: () => Promise<PrivateCloudCapabilities | null> = offline;
+    let answer: () => Promise<PrivateCloudCapabilities> = offline;
     const s = setup({ capabilities: () => answer() });
     await s.transcriber.check({ automatic: true });
     expect(s.transcriber.snapshot().availability).toBe("failed");

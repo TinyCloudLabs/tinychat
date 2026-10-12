@@ -35,8 +35,8 @@ describe("transcriptionProps", () => {
 
   test("an account the backend hides, or one not yet consented, is passed through as such", () => {
     const fake = { transcribe() {}, consent() {}, turnOff: async () => {}, check: async () => {} } as never;
-    expect(transcriptionProps(fake, { availability: "hidden", capabilities: null, consented: false, jobs: new Map() })).toMatchObject({
-      availability: "hidden",
+    expect(transcriptionProps(fake, { availability: "failed", capabilities: null, consented: false, jobs: new Map() })).toMatchObject({
+      availability: "failed",
       consented: false,
     });
   });

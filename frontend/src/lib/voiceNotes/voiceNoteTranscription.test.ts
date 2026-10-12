@@ -38,6 +38,7 @@ import {
 } from "../privateCloud";
 import { base64ToBytes, bytesToBase64, type AudioDecoder } from "./voiceNoteAudio";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
+import { __resetCaptureEngineForTests, __setInstalledEngineForTests, captureCapabilities } from "./captureEngine";
 import { __setVoiceNotesForTests, VoiceNotes, type LocalTranscript, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
 import { readTranscriptCommit } from "./voiceNoteCommits";
@@ -694,9 +695,9 @@ describe("turning transcription off", () => {
 });
 
 describe("per device capability and per account storage", () => {
-  test("a device that cannot upload (Android below 8.0) is hidden without asking the backend", async () => {
+  test("a device that cannot upload fails availability without asking the backend", async () => {
     const unable = harness({ uploadSupported: async () => false });
-    expect(await unable.cloud.capabilities()).toBeNull();
+    expect(((await unable.cloud.capabilities().catch((error) => error)) as PrivateCloudError).code).toBe("feature_unavailable");
     expect(unable.calls).toEqual([]);
     const able = harness({ uploadSupported: async () => true });
     expect(await able.cloud.capabilities()).toEqual(CAPS);
@@ -816,10 +817,10 @@ const RECORDING = {
 describe("transcribeVoiceNote (one note end to end)", () => {
   beforeEach(() => _resetConnectorSchemaMemoForTests());
 
-  for (const nativePlatform of ["ios", "android"] as const) {
-    test(`${nativePlatform} native file upload uses metadata and never reads audio over the JS bridge`, async () => {
+  for (const platform of ["ios", "android", "tauri"] as const) {
+    test(`${platform} native file upload uses metadata and never reads audio over the JS bridge`, async () => {
       const space = sqliteSpace();
-      expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, nativePlatform)).ok).toBe(true);
+      expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, platform)).ok).toBe(true);
       const fake = createFakeVoiceNotes();
       let readCalls = 0;
       let uploadRequest: unknown;
@@ -839,13 +840,13 @@ describe("transcribeVoiceNote (one note end to end)", () => {
         progressListener = listener as typeof progressListener;
         return { remove: async () => {} };
       }) as typeof fake.plugin.addListener;
-      if (nativePlatform === "android") fake.plugin.status = async () => ({ androidSdkInt: 35 } as never);
       __setVoiceNotesForTests(fake.plugin, { available: true });
+      __setInstalledEngineForTests(platform === "tauri" ? "tauri" : "native", { ...captureCapabilities(), nativeFileUpload: true });
       const h = harness({ nativeTransport: true });
       const progress: VoiceNoteTranscriptionStatus[] = [];
       const outcome = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: {
         ...CAPS, content_types: [...CAPS.content_types, "audio/mp4"],
-      }, sourceId: "rec-1", overrideCommitted: true, explicit: true, nativePlatform,
+      }, sourceId: "rec-1", overrideCommitted: true, explicit: true,
       report: (status) => progress.push(status) });
       expect(outcome).toBe("transcribed");
       expect(h.creates[0]?.body).toMatchObject({ content_type: "audio/mp4", byte_size: 4, sha256: "a".repeat(64) });
@@ -853,6 +854,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
       expect(readCalls).toBe(0);
       expect(progress).toContainEqual({ kind: "uploading", progress: 0.5 });
       __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+      __resetCaptureEngineForTests();
     });
   }
 

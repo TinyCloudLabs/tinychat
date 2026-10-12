@@ -4,6 +4,8 @@
 ))]
 mod ipc_selftest;
 #[cfg(feature = "transcription")]
+mod ptx_upload;
+#[cfg(feature = "transcription")]
 mod recorder;
 // Release-profile library tests validate probe names without putting the
 // self-test in the ordinary shipped binary.
@@ -71,6 +73,9 @@ pub fn run() {
         #[cfg(not(debug_assertions))]
         let builder = builder.invoke_handler(tauri::generate_handler![
             recorder::files::append_audio_chunk,
+            ptx_upload::ptx_audio_metadata,
+            ptx_upload::ptx_upload_audio,
+            ptx_upload::ptx_cancel_audio_upload,
             recorder::files::audio_file_size,
             recorder::files::read_audio_chunk,
             recorder::files::finalize_audio_file,
@@ -107,6 +112,9 @@ pub fn run() {
         #[cfg(debug_assertions)]
         let builder = builder.invoke_handler(tauri::generate_handler![
             recorder::files::append_audio_chunk,
+            ptx_upload::ptx_audio_metadata,
+            ptx_upload::ptx_upload_audio,
+            ptx_upload::ptx_cancel_audio_upload,
             recorder::files::audio_file_size,
             recorder::files::read_audio_chunk,
             recorder::files::finalize_audio_file,

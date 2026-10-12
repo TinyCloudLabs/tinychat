@@ -83,7 +83,7 @@ describe("the providers on offer", () => {
   });
 
   test("Private only while private cloud is available, and not while its job runs or has finished", () => {
-    for (const availability of ["hidden", "checking", "failed"] as const) {
+    for (const availability of ["failed", "checking"] as const) {
       expect(transcribeProviders(NOTE, transcription({ availability }), phone(), 60)).toEqual(["on-device"]);
     }
     expect(transcribeProviders(NOTE, undefined, phone(), 60)).toEqual(["on-device"]);
@@ -114,9 +114,10 @@ describe("the Transcribe action", () => {
     expect(host.querySelector('[data-testid="transcribe-provider-static"]')?.textContent).toContain("Private");
   });
 
-  test("nothing to transcribe with shows nothing", async () => {
-    const host = await mount({ read: nowhere, transcription: transcription({ availability: "hidden" }) });
-    expect(host.innerHTML).toBe("");
+  test("a failed Private check offers Check again", async () => {
+    const host = await mount({ read: nowhere, transcription: transcription({ availability: "failed" }) });
+    expect(host.textContent).toContain("Couldn't check right now");
+    expect(host.textContent).toContain("Check again");
   });
 
   test("while the phone is still asked about the note, nothing shows", async () => {

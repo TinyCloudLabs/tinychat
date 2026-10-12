@@ -7,12 +7,14 @@ import { notifyCaptureCapabilitiesChanged, registerCaptureEngine, type CaptureCa
 import { refreshEffectiveTranscriber } from "../transcriberPreference";
 import { registerDesktopCaptureExtras } from "../desktopCaptureExtras";
 import { createFileAudioBlobStore, type CommandBridge } from "./fileAudioBlobStore";
+import { PrivateCloudError } from "../../privateCloud";
+import { VoiceNoteAudioError } from "../voiceNoteAudio";
 import { createDesktopWhisperQueue, getDesktopWhisperQueue, loadDesktopWhisperBridge, registerDesktopWhisperQueue,
   type DesktopWhisperBridge, type DesktopWhisperQueue } from "./desktopWhisper";
 import { failure, memoryLocks, recordingFromSession, RECORDING_LOCK, sessionLock, type RecoveryResult, type SessionRecord,
   type WebStore, openWebStore, type WebStoreOptions } from "../web/webStore";
 
-type EventName = "micState" | "level" | "autoStopped" | "committed" | "recovered" | "recoveryFailed"
+type EventName = "micState" | "level" | "autoStopped" | "committed" | "recovered" | "recoveryFailed" | "audioUploadProgress"
   | "writeFailure" | "inputs" | "captureAlert" | "presentRecorder";
 type Listener = (event: never) => void;
 type NativeStatus = Omit<CaptureStatus, "spans" | "openSpan" | "transitionGen"> & {
@@ -39,6 +41,7 @@ export const DESKTOP_CAPABILITIES: CaptureCapabilities = {
   localTranscription: false,
   desktopWhisper: false,
   offlineRecorder: true,
+  nativeFileUpload: true,
 };
 
 let refreshSelectedWhisper: (() => Promise<void>) | null = null;
@@ -67,6 +70,20 @@ export interface DesktopVoiceNotesOptions {
 
 const copy = <T>(value: T): T => structuredClone(value);
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+function ptxCommandError(error: unknown, correlationId?: string): PrivateCloudError | VoiceNoteAudioError {
+  const code = errorText(error);
+  if (code === "audio_read_failed" || code === "audio_not_ready" || code === "audio_size_mismatch" || code === "not_found") {
+    return new VoiceNoteAudioError(code, code === "audio_size_mismatch"
+      ? "The recording changed on disk before upload." : "Could not read this note's local audio.");
+  }
+  const mapped = code === "origin_not_configured" || code === "invalid_upload_url" || code === "invalid_capability"
+    || code === "upload_client_failed" ? "service_misconfigured"
+    : code === "upload_response_too_large" ? "upstream_bad_response"
+      : code === "upload_idle_timeout" ? "request_timeout"
+        : code === "upload_cancelled" ? "cancelled"
+          : code === "upload_outcome_unknown" ? code : "transcription_error";
+  return new PrivateCloudError(mapped, code, { correlationId });
+}
 const mergeSpans = (existing: MissingAudioSpan[], native: MissingAudioSpan[] = []): MissingAudioSpan[] => {
   const merged = [...existing];
   for (const span of native) if (!merged.some((item) => item.kind === span.kind && item.reason === span.reason
@@ -268,6 +285,8 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
   };
 
   try {
+    unlisten.push(await bridge.listen<{ uploadId: string; loaded: number; total: number }>("audioUploadProgress",
+      (event) => emit("audioUploadProgress", event)));
     unlisten.push(await bridge.listen<NativeStatus>("exo://recorder-mic-state", emitMic));
     unlisten.push(await bridge.listen<{ inputs: AudioInput[]; selectedId: string | null; activeId: string | null; selectedMissing: string | null }>(
       "exo://recorder-inputs", (snapshot) => emit("inputs", snapshot)));
@@ -569,6 +588,17 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     async consumeShortcutRecord() { throw failure("unsupported"); },
     async openSettings() { throw failure("unsupported"); },
     readAudioChunk: (args) => store.readAudioChunk(args),
+    audioMetadata: async ({ id }) => {
+      try { return await bridge.invoke("ptx_audio_metadata", { id }); }
+      catch (error) { throw ptxCommandError(error); }
+    },
+    uploadAudio: async (request) => {
+      try { return await bridge.invoke("ptx_upload_audio", {
+      id: request.id, uploadId: request.uploadId, url: request.url, capability: request.capability,
+      contentType: request.contentType, contentLength: request.contentLength, correlationId: request.correlationId,
+      }); } catch (error) { throw ptxCommandError(error, request.correlationId); }
+    },
+    cancelAudioUpload: ({ uploadId }) => bridge.invoke("ptx_cancel_audio_upload", { uploadId }),
     listPending: () => store.listPending(),
     getCaptureDefaults: () => store.getCaptureDefaults(),
     setAccountState: (args) => store.setAccountState(args),

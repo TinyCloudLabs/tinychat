@@ -65,7 +65,7 @@ fn sealed_path(root: &Path, id: &str) -> Result<PathBuf, String> {
     Ok(root.join(format!("{id}.sealed")))
 }
 
-fn root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let root = app
         .path()
         .app_data_dir()
@@ -76,7 +76,7 @@ fn root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(root)
 }
 
-fn open_read(root: &Path, id: &str) -> Result<File, String> {
+pub(super) fn open_read(root: &Path, id: &str) -> Result<File, String> {
     let path = audio_path(root, id)?;
     let file = File::from(
         rustix::fs::open(
@@ -90,6 +90,13 @@ fn open_read(root: &Path, id: &str) -> Result<File, String> {
         return Err("audio_not_regular_file".into());
     }
     Ok(file)
+}
+
+pub(crate) fn open_sealed(root: &Path, id: &str) -> Result<File, String> {
+    if !sealed_path(root, id)?.exists() {
+        return Err("audio_not_ready".into());
+    }
+    open_read(root, id)
 }
 
 fn append(root: &Path, id: &str, bytes: &[u8]) -> Result<u64, String> {
