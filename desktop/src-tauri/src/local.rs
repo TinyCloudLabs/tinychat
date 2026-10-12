@@ -80,7 +80,7 @@ async fn start_whisper_transcription(
             "The Whisper server did not bind to loopback",
         )
     })?;
-    let params = local_transcription_start(model, session_id, file_path, base_url)?;
+    let params = whisper_transcription_params(model, session_id, file_path, base_url)?;
     app.listener2()
         .start_transcription(params)
         .await
@@ -88,7 +88,7 @@ async fn start_whisper_transcription(
 }
 
 /// Build the app request from the same pure production spec used by the runner.
-fn local_transcription_start(
+fn whisper_transcription_params(
     model: WhisperModel,
     session_id: String,
     file_path: String,
@@ -108,8 +108,12 @@ fn params_from_request(
     file_path: String,
     base_url: String,
 ) -> Result<TranscriptionParams, LocalError> {
-    let languages = request
-        .languages
+    let RequestSpec {
+        languages,
+        model,
+        keywords,
+    } = request;
+    let languages = languages
         .into_iter()
         .map(|language| {
             language
@@ -121,11 +125,11 @@ fn params_from_request(
         session_id,
         provider: TranscriptionProvider::WhisperLocal,
         file_path,
-        model: Some(request.model),
+        model: Some(model),
         base_url,
         api_key: String::new(),
         languages,
-        keywords: request.keywords,
+        keywords,
         num_speakers: None,
         min_speakers: None,
         max_speakers: None,
@@ -137,9 +141,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn local_transcription_start_maps_production_request_exactly() {
+    fn whisper_transcription_params_maps_production_request_exactly() {
         let model = WhisperModel::QuantizedSmall;
-        let params = local_transcription_start(
+        let params = whisper_transcription_params(
             model,
             "note".into(),
             "/staged/audio.mp3".into(),
@@ -163,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn local_transcription_start_maps_languages_and_keywords_from_shared_spec() {
+    fn whisper_transcription_params_maps_languages_and_keywords_from_shared_spec() {
         let params = params_from_request(
             RequestSpec {
                 languages: vec!["fr".into(), "en".into()],

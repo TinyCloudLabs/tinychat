@@ -1,12 +1,14 @@
 import { realpathSync } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 
 // bun desktop/eval/transcript-quality/check-workspace-sync.ts [--platform linux|macos] [output.json]
 const desktop = resolve(import.meta.dir, "../..");
 const manifests = [resolve(desktop, "Cargo.toml"), resolve(desktop, "src-tauri/Cargo.toml")];
 const locks = [resolve(desktop, "Cargo.lock"), resolve(desktop, "src-tauri/Cargo.lock")];
-const appCargoConfig = resolve(desktop, "src-tauri/.cargo/config.toml");
-const evalCargoConfig = resolve(desktop, ".cargo/config.toml");
+const appCargoDir = resolve(desktop, "src-tauri/.cargo");
+const evalCargoDir = resolve(desktop, ".cargo");
+const appCargoConfig = resolve(appCargoDir, "config.toml");
 const roots = ["transcribe-whisper-local", "mp3", "owhisper-client", "exo-local-transcription"];
 const featureParity = ["whisper-local", "transcribe-whisper-local", "audio-chunking", "exo-local-transcription", "whisper-rs", "whisper-rs-sys"];
 // The eval tests pull in anarlog's sample `data` crate; it is not shipped by the app.
@@ -41,19 +43,29 @@ async function toml(path: string): Promise<Table> {
   return table(Bun.TOML.parse(await Bun.file(path).text()), path);
 }
 
-/** Cargo config is outside manifests/lockfiles but can change Rust and whisper.cpp builds.
- * The app's only permitted override is its pre-existing empty PostHog build key;
- * the eval workspace must not have a config file at all.
+/** Cargo config can override Rust and whisper.cpp without touching either manifest.
+ * Allow only the app's existing PostHog environment key and exactly one config
+ * file. No config of any kind may live in the eval workspace.
  */
-export function assertCargoConfig(app: Table, evalConfigExists: boolean): void {
-  if (evalConfigExists) throw new Error(`${evalCargoConfig}: eval workspace must not have .cargo/config.toml`);
-  for (const section of ["env", "build"]) {
-    const settings = app[section];
-    if (settings === undefined) continue;
-    for (const key of Object.keys(table(settings, `${appCargoConfig} [${section}]`))) {
-      if (section !== "env" || key !== "POSTHOG_API_KEY")
-        throw new Error(`${appCargoConfig}: unsupported [${section}] key ${key}; only [env] POSTHOG_API_KEY is allowed`);
-    }
+export function assertCargoConfig(app: Table, appFiles: readonly string[], evalFiles: readonly string[]): void {
+  if (evalFiles.length) throw new Error(`${evalCargoDir}: eval workspace must not have Cargo config files: ${evalFiles.join(", ")}`);
+  if (appFiles.length !== 1 || appFiles[0] !== "config.toml")
+    throw new Error(`${appCargoDir}: expected only config.toml; found ${appFiles.join(", ") || "(none)"}`);
+  const sections = Object.keys(app);
+  if (sections.length !== 1 || sections[0] !== "env")
+    throw new Error(`${appCargoConfig}: expected only [env]; found ${sections.join(", ") || "(none)"}`);
+  const env = table(app.env, `${appCargoConfig} [env]`);
+  const keys = Object.keys(env);
+  if (keys.length !== 1 || keys[0] !== "POSTHOG_API_KEY")
+    throw new Error(`${appCargoConfig}: expected only [env] POSTHOG_API_KEY; found ${keys.join(", ") || "(none)"}`);
+}
+
+async function cargoConfigFiles(directory: string): Promise<string[]> {
+  try {
+    return await readdir(directory);
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
+    throw error;
   }
 }
 
@@ -203,7 +215,7 @@ async function main(): Promise<void> {
   const outputArg = args[0] === "--platform" ? args[2] : args[0];
   if (!["linux", "macos"].includes(platform) || args.length > (args[0] === "--platform" ? 3 : 1))
     throw new Error("usage: check-workspace-sync.ts [--platform linux|macos] [output.json]");
-  assertCargoConfig(await toml(appCargoConfig), await Bun.file(evalCargoConfig).exists());
+  assertCargoConfig(await toml(appCargoConfig), await cargoConfigFiles(appCargoDir), await cargoConfigFiles(evalCargoDir));
   const [evalManifest, appManifest] = await Promise.all(manifests.map(toml));
   same("patch targets", manifests, patches(evalManifest, manifests[0]), patches(appManifest, manifests[1]));
   same("profiles", manifests, evalManifest.profile ?? {}, appManifest.profile ?? {});

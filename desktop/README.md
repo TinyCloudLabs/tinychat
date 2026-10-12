@@ -147,9 +147,11 @@ explicit Metal/accelerator features listed in the checker. On macOS, run the
 runner with `--release --features metal` and check exact feature equality with
 `bun desktop/eval/transcript-quality/check-workspace-sync.ts --platform macos
 <closure.json>`. Unexpected features or package drift fail either check.
-The checker also rejects Cargo build/environment overrides in
-`src-tauri/.cargo/config.toml` except the existing `POSTHOG_API_KEY`, and
-requires no `desktop/.cargo/config.toml` for the eval workspace.
+The checker requires `src-tauri/.cargo/` to contain only `config.toml`,
+whose sole table and key are `[env] POSTHOG_API_KEY`. Extra app config
+files (including extensionless `config`) and any eval-workspace `.cargo/`
+files fail parity: Cargo build, target, profile and patch overrides can
+otherwise change shipped code without changing the runner.
 
 ## Content-Security-Policy
 

@@ -153,15 +153,18 @@ async fn main() -> Result<()> {
         channels
     };
 
-    let request = RequestSpec::production(model_id);
+    let RequestSpec {
+        languages,
+        model: request_model,
+        keywords,
+    } = RequestSpec::production(model_id);
     let params = ListenParams {
-        languages: request
-            .languages
+        languages: languages
             .iter()
             .map(|language| language.parse())
             .collect::<std::result::Result<Vec<_>, _>>()?,
-        model: Some(request.model.clone()),
-        keywords: request.keywords.clone(),
+        model: Some(request_model.clone()),
+        keywords: keywords.clone(),
         channels: if args.input == "channels" { 2 } else { 1 },
         ..Default::default()
     };
@@ -193,7 +196,7 @@ async fn main() -> Result<()> {
             "input": args.input,
             "systemAudio": system_audio,
             "vocabulary": "off",
-            "request": { "languages": request.languages, "model": request.model, "keywords": request.keywords },
+            "request": { "languages": languages, "model": request_model, "keywords": keywords },
             "noteDurationSeconds": seconds,
             "runtime": { "maxSseGapSeconds": max_sse_gap, "realTimeFactor": elapsed / seconds, "elapsedSeconds": elapsed, "peakMemoryBytes": peak_memory_bytes() }
         }))?,

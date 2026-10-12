@@ -82,19 +82,49 @@ test("eval-only symphonia-core opt-simd fails shared-package feature subset", ()
     .toThrow(/feature parity \(linux\): symphonia-core eval-only=\[opt-simd\]/);
 });
 
-test("GGML_NATIVE, WHISPER_NO_AVX and rustflags app-only overrides fail parity", () => {
-  const existing = { env: { POSTHOG_API_KEY: { value: "", force: true } } };
-  expect(() => assertCargoConfig(existing, false)).not.toThrow();
+const validCargoConfig = `[env]
+POSTHOG_API_KEY = { value = "", force = true }
+`;
+const cargoConfig = (extra = ""): Record<string, unknown> =>
+  Bun.TOML.parse(validCargoConfig + extra) as Record<string, unknown>;
+
+test("only the app's existing config.toml and POSTHOG_API_KEY are allowed", () => {
+  expect(() => assertCargoConfig(cargoConfig(), ["config.toml"], [])).not.toThrow();
+  expect(() => assertCargoConfig({}, ["config.toml"], [])).toThrow(/expected only \[env\]/);
+  expect(() => assertCargoConfig({ env: {} }, ["config.toml"], [])).toThrow(/expected only \[env\] POSTHOG_API_KEY/);
   for (const key of ["GGML_NATIVE", "WHISPER_NO_AVX"]) {
-    expect(() => assertCargoConfig({ env: { ...existing.env, [key]: key === "GGML_NATIVE" ? "OFF" : "ON" } }, false))
-      .toThrow(new RegExp(`unsupported \\[env\\] key ${key}`));
+    expect(() => assertCargoConfig(cargoConfig(`${key} = "OFF"\n`), ["config.toml"], []))
+      .toThrow(/expected only \[env\] POSTHOG_API_KEY/);
   }
-  expect(() => assertCargoConfig({
-    ...existing, build: { rustflags: ["-C", "target-cpu=x86-64"] },
-  }, false)).toThrow(/unsupported \[build\] key rustflags/);
+  expect(() => assertCargoConfig(cargoConfig(`\n[build]\nrustflags = ["-C", "target-cpu=x86-64"]\n`), ["config.toml"], []))
+    .toThrow(/expected only \[env\]/);
 });
 
-test("the eval workspace cannot carry a Cargo config", () => {
-  expect(() => assertCargoConfig({ env: { POSTHOG_API_KEY: { value: "", force: true } } }, true))
-    .toThrow(/eval workspace must not have \.cargo\/config\.toml/);
+for (const [name, probe] of [
+  ["target triple rustflags", `[target.x86_64-unknown-linux-gnu]\nrustflags = ["-C", "target-cpu=x86-64"]`],
+  ["target cfg rustflags", `[target.'cfg(all())']\nrustflags = ["-C", "target-cpu=x86-64"]`],
+  ["release opt-level", `[profile.release]\nopt-level = 1`],
+  ["release debug-assertions", `[profile.release]\ndebug-assertions = true`],
+  ["whisper-rs-sys package profile", `[profile.release.package.whisper-rs-sys]\nopt-level = 0`],
+  ["Cargo patch", `[patch.crates-io]\nserde = { version = "1" }`],
+]) {
+  test(`app-only ${name} fails Cargo config parity`, () => {
+    expect(() => assertCargoConfig(cargoConfig(`\n${probe}\n`), ["config.toml"], []))
+      .toThrow(/expected only \[env\]/);
+  });
+}
+
+test("extensionless or additional app Cargo config files fail", () => {
+  for (const files of [
+    ["config"], ["config.toml", "config"], ["config.toml", "config.backup.toml"],
+  ]) {
+    expect(() => assertCargoConfig(cargoConfig(), files, [])).toThrow(/expected only config\.toml/);
+  }
+});
+
+test("eval workspace rejects extensionless, TOML and additional Cargo config files", () => {
+  for (const files of [["config"], ["config.toml"], ["config.toml", "config"]]) {
+    expect(() => assertCargoConfig(cargoConfig(), ["config.toml"], files))
+      .toThrow(/eval workspace must not have Cargo config files/);
+  }
 });
