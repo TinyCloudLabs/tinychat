@@ -23,24 +23,26 @@ public enum ExoSttBootstrap {
             CaptureEngine.shared.captureSessionStarted = { TranscriptionQueue.shared.captureStarted() }
             CaptureEngine.shared.captureSessionEnded = { TranscriptionQueue.shared.captureEnded() }
         }
+        removeDownloadedModels()
         // Picks up notes committed in an earlier process run (app killed mid-transcription, or
-        // committed before the model finished downloading): re-queued here instead of resumed
+        // committed before the speech assets were installed): re-queued here instead of resumed
         // mid-file.
         TranscriptionQueue.shared.reconcile()
         #endif
-        #if EXO_STT_BENCH
-        if ProcessInfo.processInfo.environment["EXO_STT_BENCH"] == "1" {
-            DispatchQueue.global(qos: .utility).async {
-                let directory = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Documents/stt-bench")
-                do {
-                    let result = try SttBenchmark.run(directory: directory, threads: [4, 2])
-                    let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
-                    NSLog("EXO_STT_BENCH %@", String(decoding: data, as: UTF8.self))
-                } catch {
-                    NSLog("EXO_STT_BENCH failed: %@", String(describing: error))
-                }
-            }
-        }
-        #endif
     }
+
+    #if os(iOS)
+    /// Builds before TC-919 transcribed with a downloaded Parakeet model (~640 MB) kept under
+    /// Application Support/models; Apple's built-in speech replaced it, so any left on this phone is deleted.
+    private static func removeDownloadedModels() {
+        UserDefaults.standard.removeObject(forKey: "exo.stt.autoDownload")
+        let models = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("models", isDirectory: true)
+        DispatchQueue.global(qos: .utility).async {
+            guard FileManager.default.fileExists(atPath: models.path) else { return }
+            do { try FileManager.default.removeItem(at: models) }
+            catch { NSLog("ExoStt could not remove the old downloaded models: %@", String(describing: error)) }
+        }
+    }
+    #endif
 }

@@ -10,6 +10,8 @@ export interface FakeOnDeviceStt {
     progress(id: string, percent: number): void;
     finish(id: string, outcome: "transcribed" | "no_speech"): void;
     fail(id: string, code: string, message: string): void;
+    /** Makes this an iOS phone: iOS's own speech, no model list, nothing to download. */
+    useAppleSpeech(state: OnDeviceSttStatus["appleSpeech"]): void;
     setAppleSpeech(state: OnDeviceSttStatus["appleSpeech"]): void;
   };
 }
@@ -20,6 +22,7 @@ export function createFakeOnDeviceStt(pack: "full" | "small" = "full", isTombsto
     pack, autoDownload: true, download: { policy: "wifi", state: "idle" },
     engine: "none", appleSpeech: "unsupported", queue: [],
   };
+  let apple = false;
   const listeners = new Map<string, Set<Listener>>();
   const retained = new Map<string, unknown>();
   const emit = (event: string, value: unknown) => {
@@ -29,7 +32,11 @@ export function createFakeOnDeviceStt(pack: "full" | "small" = "full", isTombsto
   const snapshot = (): OnDeviceSttStatus => structuredClone(status);
   const emitStatus = () => emit("status", snapshot());
   const mainModel = () => status.models.find((m) => m.id === (pack === "full" ? modelIds[0] : modelIds[1]));
-  const refreshEngine = () => { status.engine = mainModel()?.state === "ready" ? "parakeet" : status.appleSpeech === "ready" ? "apple-speech" : "none"; };
+  const refreshEngine = () => {
+    if (apple) { status.engine = "apple-speech"; return; }
+    status.engine = mainModel()?.state === "ready" ? "parakeet" : "none";
+  };
+  const ready = () => (apple ? status.appleSpeech === "ready" : status.engine !== "none");
   const queueEntry = (id: string) => {
     const item = status.queue.find((entry) => entry.id === id);
     if (!item) throw Object.assign(new Error("not_found"), { code: "not_found" });
@@ -42,6 +49,12 @@ export function createFakeOnDeviceStt(pack: "full" | "small" = "full", isTombsto
   const plugin: OnDeviceSttPlugin = {
     async status() { return snapshot(); },
     async setAutoDownload({ enabled }) { status.autoDownload = enabled; emitStatus(); },
+    async installSpeechAssets() {
+      if (!apple) throw new Error("installSpeechAssets is iOS only");
+      if (status.appleSpeech === "asset_missing") status.appleSpeech = "ready";
+      for (const item of status.queue) if (item.state === "waiting_for_model" && ready()) item.state = "queued";
+      emitStatus();
+    },
     async downloadNow({ allowCellular }) {
       status.download = { policy: allowCellular ? "cellular_approved" : "wifi", state: "running" };
       for (const model of status.models) if (model.state === "absent" || model.state === "failed") model.state = "queued";
@@ -51,7 +64,7 @@ export function createFakeOnDeviceStt(pack: "full" | "small" = "full", isTombsto
     async deleteModels() { for (const model of status.models) { model.state = "absent"; model.bytes = 0; } refreshEngine(); emitStatus(); },
     async enqueue({ id }) {
       checkTombstone(id);
-      if (!status.queue.some((entry) => entry.id === id)) status.queue.push({ id, state: status.engine === "none" ? "waiting_for_model" : "queued", percent: null, error: null });
+      if (!status.queue.some((entry) => entry.id === id)) status.queue.push({ id, state: ready() ? "queued" : "waiting_for_model", percent: null, error: null });
       emitStatus();
     },
     async cancel({ id }) { const item = queueEntry(id); item.state = "cancelled"; emitStatus(); },
@@ -69,12 +82,26 @@ export function createFakeOnDeviceStt(pack: "full" | "small" = "full", isTombsto
       if (!model) throw new Error("Unknown model");
       Object.assign(model, { state, bytes, totalBytes, error: null });
       refreshEngine();
-      if (status.engine !== "none") for (const item of status.queue) if (item.state === "waiting_for_model") item.state = "queued";
+      if (ready()) for (const item of status.queue) if (item.state === "waiting_for_model") item.state = "queued";
       emitStatus();
     },
     progress(id, percent) { checkTombstone(id); const item = queueEntry(id); item.state = "running"; item.percent = percent; emit("progress", { id, percent }); emitStatus(); },
     finish(id, outcome) { checkTombstone(id); const item = queueEntry(id); item.state = "done"; item.percent = 100; emit("transcribed", { id, outcome }); emitStatus(); },
     fail(id, code, message) { checkTombstone(id); const item = queueEntry(id); item.state = "failed"; item.error = code; emit("failed", { id, code, message }); emitStatus(); },
-    setAppleSpeech(state) { status.appleSpeech = state; refreshEngine(); emitStatus(); },
+    useAppleSpeech(state) {
+      apple = true;
+      status.models = [];
+      status.autoDownload = false;
+      status.download = { policy: "system", state: "idle" };
+      status.appleSpeech = state;
+      refreshEngine();
+      emitStatus();
+    },
+    setAppleSpeech(state) {
+      status.appleSpeech = state;
+      refreshEngine();
+      if (ready()) for (const item of status.queue) if (item.state === "waiting_for_model") item.state = "queued";
+      emitStatus();
+    },
   } };
 }

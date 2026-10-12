@@ -65,6 +65,8 @@ export interface PipelineOnDevice {
   /** The model this phone needs, as `onDeviceSttStore` reports it; null when not known. */
   model: { state: PipelineModelState; bytes: number; totalBytes: number; error: string | null } | null;
   download: PipelineDownloadState;
+  /** iOS's built-in speech (`OnDeviceSttStatus["appleSpeech"]`): there is no model to fetch, only assets the OS installs. Absent where a model is. */
+  appleSpeech?: "unsupported" | "locale_unsupported" | "asset_missing" | "ready";
   sync: PipelineTranscriptSync | null;
 }
 
@@ -243,6 +245,13 @@ function spaceStep(input: NotePipelineInput): Result {
 /** The model a Local note waits on: null once nothing about the model stands in the way. */
 function modelStep(od: PipelineOnDevice, device: PipelineDevice): Result | null {
   const { model, download } = od;
+  switch (od.appleSpeech) {
+    case "unsupported": return blocked(LOCAL_COPY.speechUnsupported(device));
+    case "locale_unsupported": return blocked(LOCAL_COPY.speechLocaleUnsupported);
+    case "asset_missing": return download === "failed" ? failed(LOCAL_COPY.speechFailed, "retry") : { state: "active", caption: LOCAL_COPY.gettingSpeech };
+    case "ready": return null;
+    case undefined: break;
+  }
   if (download === "failed" || model?.state === "failed") return failed(LOCAL_COPY.modelFailed(model?.error), "retry");
   if (download === "waiting_for_network") return { state: "waiting", caption: LOCAL_COPY.waitingForWifi };
   if (download === "low_data_mode") return { state: "waiting", caption: LOCAL_COPY.lowDataMode };

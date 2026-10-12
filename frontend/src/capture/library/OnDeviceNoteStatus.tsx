@@ -11,7 +11,7 @@ import { Loader2Icon, RefreshCwIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import { VoiceNotes, type NoteSttState } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { OnDeviceStt, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
+import { isOnDeviceStatusLoaded, OnDeviceStt, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import {
   downloadOnDeviceModel,
   onDeviceSttStore,
@@ -181,7 +181,7 @@ const SHEET_BUTTON = "w-full border-transparent bg-[color:var(--glass,transparen
 function WaitingForModel(props: { onUsePrivate?: () => Promise<string | null> }) {
   const status = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const downloadError = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.downloadError, onDeviceSttStore.downloadError);
-  const model = status.models.length > 0 ? status : null;
+  const model = isOnDeviceStatusLoaded(status) ? status : null;
   const guide = localModelGuide(model, { start: () => void downloadOnDeviceModel(), error: downloadError });
   return (
     <div className="flex flex-col gap-3" data-testid="voice-note-on-device-waiting">
