@@ -12,6 +12,7 @@
 // recording before stopping it, so no save that meets it keeps it.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { App } from "@capacitor/app";
+import { setCapturePlaybackBlocked, stopAllPlayback } from "@/lib/audio/playback";
 import { Capacitor } from "@capacitor/core";
 
 import {
@@ -333,6 +334,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     const next = recorderReducer(state, event);
     if (next === state) return;
     state = next;
+    setCapturePlaybackBlocked(next.phase === "starting" || next.phase === "stopping" || next.phase === "discarding" ||
+      (next.phase === "recording" && (next.controlPending === "resume" ||
+        (next.mic.state !== "paused" && next.mic.state !== "interrupted" && next.mic.state !== "needs_user"))));
     refreshChoice();
     followNote(next.outcome === "saved" && before.outcome !== "saved" && note === null && noteStatus === "ready");
     notify();
@@ -815,6 +819,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       }).catch((caught: unknown) => console.warn("[VoiceNotes] Could not attach capture scan", caught));
       return () => {
         attached = false;
+        setCapturePlaybackBlocked(false);
         noteAttached = false;
         clearNoteRetry();
         if (noteSyncTimer) {
@@ -833,6 +838,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     async record() {
       // Never before the recorder is reconciled, over a recording, or over a receipt still being shown.
       if (!available || !state.ready || state.phase !== "idle" || state.outcome !== null) return;
+      stopAllPlayback();
       send({ type: "START_REQUESTED" });
       if (choice.id === "on-device") ensureLocalModel(true);
       const requested = voiceNoteMaxDurationMs();
@@ -922,6 +928,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     },
     async resume() {
       if (state.phase !== "recording" || state.controlPending || (state.mic.state !== "paused" && state.mic.state !== "interrupted" && state.mic.state !== "needs_user")) return;
+      setCapturePlaybackBlocked(true);
+      stopAllPlayback();
       send({ type: "RESUME_REQUESTED" });
       try {
         await VoiceNotes.resume();
