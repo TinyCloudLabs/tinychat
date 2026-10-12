@@ -212,6 +212,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   const [disclosureBusy, setDisclosureBusy] = useState(false);
   const [disclosureError, setDisclosureError] = useState<string | null>(null);
   const disclosureOpener = useRef<HTMLElement | null>(null);
+  const heldConsentPromptedFor = useRef<string | null>(null);
   const setReceiptReady = useCallback(() => setReceiptReadyState(true), []);
   // A new note's receipt starts unready again — each one waits for its own Play control (or
   // load error), not whatever the previous note left behind.
@@ -316,6 +317,16 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     setDisclosureError(null);
     setDisclosure({ kind: "private", startAfter: false });
   }, []);
+  useEffect(() => {
+    const accountDid = tcw?.did;
+    const transcription = recorder.transcription;
+    if (!accountDid || !state.ready || state.phase !== "idle" || !transcription || transcription.consented || disclosure || disclosureBusy) return;
+    if (heldConsentPromptedFor.current === accountDid) return;
+    if (![...transcription.jobs.values()].some((job) => job.kind === "blocked" && job.reason === "no-consent")) return;
+    heldConsentPromptedFor.current = accountDid;
+    disclosureOpener.current = null;
+    setDisclosure({ kind: "private", startAfter: false });
+  }, [tcw?.did, recorder.transcription, state.ready, state.phase, disclosure, disclosureBusy]);
   const chooseAudio = useCallback((choice: "record" | "mic-only") => {
     if (disclosure?.kind !== "system-audio" || disclosureBusy) return;
     setDisclosureBusy(true);
