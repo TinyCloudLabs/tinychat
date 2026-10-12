@@ -71,15 +71,15 @@ export function captureEngineKind(): CaptureEngineKind | null {
   return null;
 }
 
-/** True once the engine for this shell is ready: native from the start, web and Tauri after installCaptureEngine(). */
+/** Whether this shell has a recorder; the gate resolves its capabilities before rendering. */
 export function captureEngineAvailable(): boolean {
   return installed !== null || nativeVoiceNotesAvailable();
 }
 
-/** Web and Tauri need installCaptureEngine() before anything renders; native and "no engine" do not. */
+/** Every recording shell resolves its capabilities before rendering the recorder. */
 export function captureEngineInstallPending(): boolean {
   const kind = captureEngineKind();
-  return (kind === "web" || kind === "tauri") && installed === null;
+  return kind !== null && installed === null;
 }
 
 export function captureCapabilities(): CaptureCapabilities {
@@ -124,15 +124,23 @@ export function installCaptureEngine(): Promise<void> {
   const kind = captureEngineKind();
   if (kind === null) return Promise.resolve();
   if (kind === "native") {
-    installed = { kind, capabilities: NATIVE_CAPABILITIES };
-    if (Capacitor.getPlatform() !== "android") return Promise.resolve();
-    return VoiceNotes.status().then((status) => {
-      NATIVE_CAPABILITIES.nativeFileUpload = typeof status.androidSdkInt === "number"
-        && status.androidSdkInt >= MIN_ANDROID_SDK_FOR_FILE_UPLOAD;
-    }, (error: unknown) => {
-      NATIVE_CAPABILITIES.nativeFileUpload = false;
-      console.error("[captureEngine] Could not determine Android file upload availability", error);
-    });
+    const attempt = (async () => {
+      const platform = Capacitor.getPlatform();
+      const capabilities = { ...NATIVE_CAPABILITIES, nativeFileUpload: platform === "ios" };
+      if (platform === "android") {
+        try {
+          const status = await VoiceNotes.status();
+          capabilities.nativeFileUpload = typeof status.androidSdkInt === "number"
+            && status.androidSdkInt >= MIN_ANDROID_SDK_FOR_FILE_UPLOAD;
+        } catch (error) {
+          console.error("[captureEngine] Could not determine Android file upload availability", error);
+        }
+      }
+      installed = { kind, capabilities };
+    })();
+    installing = attempt;
+    void attempt.finally(() => { installing = null; });
+    return attempt;
   }
   const factory = factories.get(kind);
   if (!factory) return Promise.reject(new Error(`No ${kind} capture engine is registered`));

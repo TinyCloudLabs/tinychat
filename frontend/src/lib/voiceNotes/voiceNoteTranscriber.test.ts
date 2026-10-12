@@ -27,7 +27,7 @@ import {
 const CAPS: PrivateCloudCapabilities = { max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/wav"] };
 const AUDIO = { mimeType: "audio/mp4", base64: "AAAA" };
 
-function fakeCloud(opts: { capabilities?: () => Promise<PrivateCloudCapabilities | null>; pending?: string[] } = {}) {
+function fakeCloud(opts: { capabilities?: () => Promise<PrivateCloudCapabilities>; pending?: string[] } = {}) {
   const calls: string[] = [];
   const cloud: VoiceNoteCloud = {
     capabilities: async () => {
@@ -69,7 +69,7 @@ type Run = {
 };
 
 /** A transcriber whose per-note work is controlled by the test, one deferred run per note. */
-function setup(opts: { consented?: boolean; cloud?: VoiceNoteCloud | null; pending?: string[]; capabilities?: () => Promise<PrivateCloudCapabilities | null>; holds?: VoiceNoteHoldStore } = {}) {
+function setup(opts: { consented?: boolean; cloud?: VoiceNoteCloud | null; pending?: string[]; capabilities?: () => Promise<PrivateCloudCapabilities>; holds?: VoiceNoteHoldStore } = {}) {
   const { cloud, calls } = fakeCloud({ pending: opts.pending, capabilities: opts.capabilities });
   const consent = memoryConsent(opts.consented ?? false);
   const runs: Run[] = [];
@@ -154,7 +154,7 @@ describe("availability and consent", () => {
   });
 
   test("a failed check is retried twice; a missing capability route remains retryable", async () => {
-    const answers: (() => Promise<PrivateCloudCapabilities | null>)[] = [
+    const answers: (() => Promise<PrivateCloudCapabilities>)[] = [
       async () => {
         throw new PrivateCloudError("offline", "x");
       },
@@ -168,7 +168,7 @@ describe("availability and consent", () => {
     expect(s.sleeps).toEqual([2_000, 5_000]);
     expect(s.transcriber.snapshot()).toMatchObject({ availability: "available", capabilities: CAPS });
 
-    const dark = setup({ capabilities: async () => null });
+    const dark = setup({ capabilities: async () => { throw new PrivateCloudError("service_unavailable", "Missing capability route"); } });
     await dark.transcriber.check();
     expect(dark.transcriber.snapshot().availability).toBe("failed");
   });
@@ -307,7 +307,7 @@ describe("blocked notes and waiting positions", () => {
     failed.transcriber.noteSaved(note("n"), AUDIO);
     expect(failed.job("n")).toEqual({ kind: "blocked", reason: "check-failed" });
 
-    const dark = setup({ consented: true, capabilities: async () => null });
+    const dark = setup({ consented: true, capabilities: async () => { throw new PrivateCloudError("service_unavailable", "Missing capability route"); } });
     await dark.transcriber.check();
     dark.transcriber.noteSaved(note("n"), AUDIO);
     expect(dark.job("n")).toEqual({ kind: "blocked", reason: "check-failed" });

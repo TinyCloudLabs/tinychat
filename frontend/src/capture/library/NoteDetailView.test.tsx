@@ -2,7 +2,7 @@
 //   1. reads that did not land are told, with Try again, never shown as "no transcript";
 //   2. the transcript with Copy; a missing transcript and missing audio said plainly;
 //   3. transcription is offered only when available to this build AND account (consent is asked when
-//      Private is chosen); a hidden or still-checking engine offers nothing;
+//      Private is chosen); a failed or still-checking engine offers nothing;
 //   4. a voice note shows its progress, "No speech", or its failure (with Retry when it can help).
 import { afterEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -146,7 +146,7 @@ describe("a voice note's transcription", () => {
 
   test("a build or account without private cloud, or a pending check, offers nothing", () => {
     offersNothing(render());
-    offersNothing(render({ transcription: transcription({ availability: "hidden" }) }));
+    offersNothing(render({ transcription: transcription({ availability: "failed" }) }));
     offersNothing(render({ transcription: transcription({ availability: "checking" }) }));
     offersNothing(render({ transcription: transcription({ availability: "failed", consented: false }) }));
     expect(render()).toContain("No transcript.");
@@ -222,7 +222,7 @@ describe("a voice note's transcription", () => {
 
   test("a transcribed note shows its transcript whatever the engine's state", () => {
     const sentences = [{ index: 0, speaker_name: "You", text: "Book the venue.", start_time: 0, end_time: 1 }];
-    for (const t of [undefined, transcription({ availability: "hidden" }), transcription()]) {
+    for (const t of [undefined, transcription({ availability: "failed" }), transcription()]) {
       const html = render({ transcript: { status: "ok", sentences }, transcription: t });
       expect(html).toContain("Book the venue.");
       expect(html).not.toContain('data-testid="transcribe-button"');

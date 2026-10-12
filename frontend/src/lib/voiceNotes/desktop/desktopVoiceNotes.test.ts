@@ -669,6 +669,28 @@ describe("desktop recorder adapter", () => {
     engine.dispose();
   });
 
+  test("Mac uploader and metadata command failures keep typed causes", async () => {
+    class FailingBridge extends FakeBridge {
+      failure: string | null = null;
+      override async invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+        if (this.failure && (command === "ptx_audio_metadata" || command === "ptx_upload_audio")) throw this.failure;
+        return super.invoke<T>(command, args);
+      }
+    }
+    const bridge = new FailingBridge();
+    const engine = await rig(bridge);
+    bridge.failure = "audio_read_failed";
+    await expect(engine.plugin.audioMetadata?.({ id: "note-1" })).rejects.toMatchObject({ name: "VoiceNoteAudioError", code: "audio_read_failed" });
+    const request = { id: "note-1", uploadId: "put-1", url: "https://ptx.example/uploads/trn_01J8Z3K4M5N6P7Q8R9S0T1V2W3",
+      capability: "tcu_abcdefghijklmnop", contentType: "audio/mpeg", contentLength: 4, correlationId: "put-1" };
+    for (const [native, publicCode] of [["origin_not_configured", "service_misconfigured"],
+      ["invalid_upload_url", "service_misconfigured"], ["upload_outcome_unknown", "upload_outcome_unknown"]]) {
+      bridge.failure = native;
+      await expect(engine.plugin.uploadAudio?.(request)).rejects.toMatchObject({ name: "PrivateCloudError", code: publicCode, correlationId: "put-1" });
+    }
+    engine.dispose();
+  });
+
   test("start, pause and resume keep elapsed time and committed bytes", async () => {
     const bridge = new FakeBridge();
     const engine = await rig(bridge);

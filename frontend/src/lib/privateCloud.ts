@@ -207,7 +207,7 @@ export interface PrivateCloudApi {
   /** The session token native code sends with the create call, or null when signed out. */
   bearer(): string | null;
   /** The service capabilities; a missing route is a retryable error. */
-  capabilities(): Promise<PrivateCloudCapabilities | null>;
+  capabilities(): Promise<PrivateCloudCapabilities>;
   /** This account's jobs (tenant-scoped by the backend). */
   list(): Promise<PrivateCloudJob[]>;
   get(id: string): Promise<PrivateCloudJob>;

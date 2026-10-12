@@ -63,7 +63,7 @@ describe("captureEngineKind: native x tauri internals x MediaRecorder x register
           : mediaRecorder && registeredWeb ? "web"
           : null;
         expect(captureEngineKind()).toBe(expected);
-        expect(captureEngineInstallPending()).toBe(expected === "web" || expected === "tauri");
+        expect(captureEngineInstallPending()).toBe(expected !== null);
       });
     }
 

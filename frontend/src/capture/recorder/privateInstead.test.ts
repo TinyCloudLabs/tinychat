@@ -30,9 +30,9 @@ describe("privateInsteadOffered", () => {
     expect(privateInsteadOffered(props(), "n1", null)).toBe(true);
   });
 
-  test("not offered without transcription, while checking, hidden, failed or not consented", () => {
+  test("not offered without transcription, while checking or failed, or without consent", () => {
     expect(privateInsteadOffered(undefined, "n1", 60)).toBe(false);
-    for (const availability of ["checking", "hidden", "failed"] as const) {
+    for (const availability of ["checking", "failed"] as const) {
       expect(privateInsteadOffered(props({ availability }), "n1", 60)).toBe(false);
     }
     expect(privateInsteadOffered(props({ consented: false }), "n1", 60)).toBe(false);

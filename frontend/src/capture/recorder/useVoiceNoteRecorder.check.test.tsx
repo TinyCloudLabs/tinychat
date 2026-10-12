@@ -142,7 +142,7 @@ test("rapid foreground returns reuse a fresh settled availability result", async
   let requests = 0;
   const real = createVoiceNoteTranscriber({
     tcw: () => account,
-    cloud: { capabilities: async () => { requests += 1; return null; }, pendingSourceIds: () => [] } as unknown as VoiceNoteCloud,
+    cloud: { capabilities: async () => { requests += 1; throw new Error("offline"); }, pendingSourceIds: () => [] } as unknown as VoiceNoteCloud,
     consent: { get: () => false, set() {} },
   });
   voiceNoteTranscriberFor(account, backendUrl, sessionStore)!.check = real.check;

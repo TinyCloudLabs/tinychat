@@ -95,6 +95,7 @@ export const capacitorPtxPut: PtxPut = async (request) => {
         capability: request.capability, contentType: request.contentType, contentLength: request.contentLength!, correlationId: request.correlationId });
     } catch (cause) {
       console.error("[VoiceNotes] Native audio upload failed", { uploadId, nativeFileId: request.nativeFileId, cause });
+      if (cause instanceof PrivateCloudError || cause instanceof VoiceNoteAudioError) throw cause;
       if (localAudioUnavailable(cause)) throw new VoiceNoteAudioError("audio_read_failed", "Could not read this note's local audio");
       throw new PrivateCloudError("upload_outcome_unknown", "The upload connection failed", { correlationId: request.correlationId });
     } finally { if (activeNativeUpload === upload) activeNativeUpload = null; await progress.remove(); }
@@ -517,6 +518,7 @@ const RELEASE_CODES: ReadonlySet<string> = new Set([
   "recording_too_large",
   "unsupported_recording",
   "service_misconfigured",
+  "audio_size_mismatch",
   "recording_too_long_for_phone",
   "decode_failed",
   "decode_unavailable",
@@ -539,6 +541,7 @@ const NOT_RETRYABLE_CODES: ReadonlySet<string> = new Set([
   "decode_unavailable",
   "feature_unavailable",
   "service_misconfigured",
+  "audio_size_mismatch",
   "VOICE_NOTE_AUDIO_CORRUPT",
   "invalid_argument",
   "voice_note_not_found",
@@ -628,7 +631,7 @@ export interface VoiceNoteTranscribeInput {
 
 export interface VoiceNoteCloud {
   /** Service capabilities. An upload or service failure rejects with a typed code. */
-  capabilities(): Promise<PrivateCloudCapabilities | null>;
+  capabilities(): Promise<PrivateCloudCapabilities>;
   /** Notes with a job in flight (to resume after a relaunch). */
   pendingSourceIds(): string[];
   /** Upload (or re-join) the note's job and wait for its transcript. */
@@ -1024,6 +1027,12 @@ export function voiceNoteTranscriptionFailure(err: unknown): VoiceNoteTranscript
       break;
     case "audio_read_failed":
       message = "Could not read this note's audio from this device or your space. Retry tries again.";
+      break;
+    case "audio_not_ready":
+      message = "This recording is still being saved on this device. Try again when it finishes.";
+      break;
+    case "audio_size_mismatch":
+      message = "The recording changed on disk after it stopped, so it was not uploaded.";
       break;
     case "audio_upload_pending":
       message = "This note's audio is still being saved to your space. Try again when the upload finishes.";
@@ -1536,7 +1545,6 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         if (!identityCurrent()) return { availability: "stale" } as const;
         try {
           const caps = await cloud.capabilities();
-          if (caps === null) throw new PrivateCloudError("service_unavailable", "Private transcription could not be reached. Try again.");
           return { availability: "available", caps } as const;
         } catch (err) {
           console.warn("Checking private cloud transcription failed", err);

@@ -25,6 +25,18 @@ fn uploads() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
     UPLOADS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn sealed_audio(root: &std::path::Path, id: &str) -> Result<File, String> {
+    recorder::files::open_sealed(root, id).map_err(|error| {
+        if error == "audio_not_ready" {
+            error
+        } else if error.contains("os error 2") {
+            "not_found".into()
+        } else {
+            "audio_read_failed".into()
+        }
+    })
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Progress<'a> {
@@ -48,9 +60,19 @@ pub struct AudioMetadata {
 }
 
 #[tauri::command]
-pub fn ptx_audio_metadata(app: tauri::AppHandle, id: String) -> Result<AudioMetadata, String> {
-    recorder::ensure(&app);
-    let mut file = recorder::files::open_sealed(&recorder::files::root(&app)?, &id)?;
+pub async fn ptx_audio_metadata(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<AudioMetadata, String> {
+    tokio::task::spawn_blocking(move || audio_metadata(&app, &id))
+        .await
+        .map_err(|_| "audio_read_failed".to_string())?
+}
+
+fn audio_metadata(app: &tauri::AppHandle, id: &str) -> Result<AudioMetadata, String> {
+    recorder::ensure(app);
+    let root = recorder::files::root(app).map_err(|_| "audio_read_failed")?;
+    let mut file = sealed_audio(&root, id)?;
     let size = file.metadata().map_err(|_| "audio_read_failed")?.len();
     if size == 0 {
         return Err("audio_not_ready".into());
@@ -215,7 +237,8 @@ pub async fn ptx_upload_audio(
     recorder::ensure(&app);
     let origin = origin()?;
     let url = upload_url(&origin, &url)?;
-    let file = recorder::files::open_sealed(&recorder::files::root(&app)?, &id)?;
+    let root = recorder::files::root(&app).map_err(|_| "audio_read_failed")?;
+    let file = sealed_audio(&root, &id)?;
     let length = file.metadata().map_err(|_| "audio_read_failed")?.len();
     if length == 0 || length != content_length {
         return Err("audio_size_mismatch".into());
@@ -281,6 +304,14 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::net::TcpListener;
+
+    #[test]
+    fn missing_sealed_audio_has_a_stable_code() {
+        let root = tempfile::tempdir().unwrap();
+        let id = "01234567-89ab-cdef-0123-456789abcdef";
+        std::fs::write(root.path().join(format!("{id}.sealed")), []).unwrap();
+        assert_eq!(sealed_audio(root.path(), id).unwrap_err(), "not_found");
+    }
 
     #[tokio::test]
     async fn local_server_receives_exact_file_and_headers() {
