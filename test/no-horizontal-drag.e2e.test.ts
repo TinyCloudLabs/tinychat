@@ -11,6 +11,7 @@ const SCREENS = [
   ["shell-model-sheet", "ios"],
   ["shell-connectors", "ios"],
   ["shell-settings", "ios"],
+  ["shell-settings-android", "android"],
   ["shell-settings-scrolled", "ios"],
   ["shell-about", "ios"],
   ["shell-boot-signed-out", "ios"],
@@ -32,7 +33,7 @@ const SCREENS = [
 const knownScreens = new Set(SCREENS.map(([screen]) => screen));
 const WEBKIT_SCREEN_BATCHES = [
   ["shell-capture", "shell-chat", "shell-chat-ribbon", "shell-chat-keyboard", "shell-model-sheet", "shell-connectors"],
-  ["shell-settings", "shell-settings-scrolled", "shell-about", "shell-boot-signed-out", "mic-recovery-sign-in"],
+  ["shell-settings", "shell-settings-android", "shell-settings-scrolled", "shell-about", "shell-boot-signed-out", "mic-recovery-sign-in"],
   ["recorder-final-phone-interactive-consented", "recorder-final-phone-interactive-first-run", "recorder-final-phone-interactive-route-control", "recorder-final-phone-interactive-notes", "library-all", "note-voice-transcribed"],
   ["saved-note-sheet", "saved-note-sheet-long-title", "saved-note-sheet-editing", "capture-soft-long-titles", "pipeline-wire-sheet-done", "local-signed-out", "local-offline"],
 ] as const;
@@ -69,7 +70,7 @@ const cases = screens.flatMap(([screen, platform]) => [
   ...(selectedTextScale === undefined || selectedTextScale === 1
     ? widths.map((width) => ({ screen, platform, width, textScale: 1 }))
     : []),
-  ...(screen === "shell-settings" && (selectedTextScale === undefined || selectedTextScale === 2)
+  ...((screen === "shell-settings" || screen === "shell-settings-android") && (selectedTextScale === undefined || selectedTextScale === 2)
     ? widths.includes(402) ? [{ screen, platform, width: 402, textScale: 2 }] : []
     : []),
 ]);
@@ -180,8 +181,17 @@ describe.serial(`mobile screens fit without horizontal drag (${engineName}, moti
         await page.goto(`http://127.0.0.1:${server.port}/?screen=${screen}&theme=light&platform=${platform}&freeze=1`, { waitUntil: "domcontentloaded" });
         await page.waitForFunction(() => window.exoUi?.ready === true, null, { timeout: 20_000 });
         await page.waitForTimeout(500);
-        if (screen === "shell-settings" && textScale === 2) {
+        if ((screen === "shell-settings" || screen === "shell-settings-android") && textScale === 2) {
           expect(await page.locator('[data-surface="settings"] [data-stacked]').count(), "200% text must exercise a stacked segmented control").toBeGreaterThan(0);
+        }
+        if (screen === "shell-settings-android" && textScale === 2) {
+          expect(await page.getByRole("button", { name: "Get model" }).count(), "Android Settings must render the large-text model action").toBe(1);
+          const modelLabel = await page.locator('[data-testid="voice-notes-on-device-model"] span').first().boundingBox();
+          const modelAction = await page.getByRole("button", { name: "Get model" }).boundingBox();
+          expect(modelLabel && modelAction && modelAction.y >= modelLabel.y + modelLabel.height, "Android model action must wrap below its label at 200% text").toBe(true);
+        }
+        if (screen === "shell-settings" && textScale === 2) {
+          expect(await page.getByRole("button", { name: "Get model" }).count(), "iOS Settings must use Apple speech instead of the Android model download action").toBe(0);
         }
         const result = await inspect(page);
         expect(result.document.scrollWidth, `${screen}: document wider than viewport`).toBeLessThanOrEqual(result.document.clientWidth);
