@@ -110,6 +110,6 @@ export const FINAL_COPY = {
       "Runs on your phone or Mac in the Exo app. Not available in the browser.",
     privateCaption: "Fast, accurate, and sealed from Exo.",
     privateExplanation:
-      "Transcribed in a sealed hardware enclave. Not even Exo can read it. Fast and accurate.",
+      "Sent to a sealed hardware enclave, transcribed, then deleted. Exo never sees it.",
   },
 } as const;

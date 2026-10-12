@@ -135,17 +135,17 @@ describe("transcription modes availability", () => {
         phone: [
           "Fast, accurate, and sealed from Exo.",
           "sealed enclave",
-          "Transcribed in a sealed hardware enclave. Not even Exo can read it. Fast and accurate.",
+          "Sent to a sealed hardware enclave, transcribed, then deleted. Exo never sees it.",
         ],
         desktop: [
           "Fast, accurate, and sealed from Exo.",
           "sealed enclave",
-          "Transcribed in a sealed hardware enclave. Not even Exo can read it. Fast and accurate.",
+          "Sent to a sealed hardware enclave, transcribed, then deleted. Exo never sees it.",
         ],
         web: [
           "Fast, accurate, and sealed from Exo.",
           "sealed enclave",
-          "Transcribed in a sealed hardware enclave. Not even Exo can read it. Fast and accurate.",
+          "Sent to a sealed hardware enclave, transcribed, then deleted. Exo never sees it.",
         ],
       },
     } as const;
