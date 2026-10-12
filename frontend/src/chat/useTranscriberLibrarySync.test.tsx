@@ -11,6 +11,7 @@ import { notifySecretsUnlockedForTests } from "@/lib/connectors/connectorSecrets
 import { setSecretsAvailableForTests } from "@/lib/openkeyNative";
 import type { TranscriberClient } from "@/lib/transcriberApi";
 import { TRANSCRIBER_MEETING_SOURCE } from "@/lib/transcriberSave";
+import { harnessSessionStore } from "@/harness/stubs";
 import { useTranscriberLibrarySync, type TranscriberLibrarySaver } from "./useTranscriberLibrarySync";
 
 const globals = {
@@ -113,6 +114,20 @@ test("the mounted hook emits once for a new remote meeting, not mount history or
     expect(changes).toEqual([{ source: TRANSCRIBER_MEETING_SOURCE, sourceId: "remote" }]);
     await act(async () => { fire("online"); interval?.(); });
     expect(changes).toHaveLength(1);
+  } finally { unsubscribe(); }
+});
+
+test("the signed-in browser harness refreshes a meeting imported elsewhere", async () => {
+  const f = setup();
+  const changes: Array<{ source: string; sourceId: string } | undefined> = [];
+  const unsubscribe = captureEvents.on("library-changed", (detail) => changes.push(detail));
+  try {
+    await mount({ ...f, sessionStore: harnessSessionStore });
+    expect(changes).toEqual([]);
+    f.savedIds.push("remote-in-harness");
+    f.rows.push(row("remote-in-harness"));
+    await act(async () => { fire("focus"); });
+    expect(changes).toEqual([{ source: TRANSCRIBER_MEETING_SOURCE, sourceId: "remote-in-harness" }]);
   } finally { unsubscribe(); }
 });
 
