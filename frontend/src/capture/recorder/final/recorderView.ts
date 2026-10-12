@@ -173,6 +173,8 @@ function interruptedPresentation(
     case "disk_full":
     case "write_failed":
     case "permission_revoked":
+    case "unsafe_sessions_folder":
+    case "session_exists":
       return unexpectedCombination("interrupted", reason, isDevelopmentOrTest);
     default: {
       const exhaustive: never = reason;
@@ -242,6 +244,17 @@ function needsUserPresentation(
       };
     case "write_failed":
       return writeFailedPresentation();
+    case "unsafe_sessions_folder":
+    case "session_exists":
+      return {
+        ring: "still",
+        flat: false,
+        pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
+        statusLine:
+          reason === "unsafe_sessions_folder"
+            ? FINAL_COPY.unsafeSessionsFolder
+            : FINAL_COPY.sessionExists,
+      };
     case null:
     case "os_silenced":
     case "no_signal":
@@ -329,6 +342,8 @@ function idlePresentation(
     case "resume_not_allowed":
     case "mic_unavailable":
     case "pause_timeout":
+    case "unsafe_sessions_folder":
+    case "session_exists":
       return unexpectedCombination("idle", reason, isDevelopmentOrTest);
     default: {
       const exhaustive: never = reason;
@@ -373,6 +388,8 @@ function micPresentation(
         case "max_duration":
         case "disk_full":
         case "permission_revoked":
+        case "unsafe_sessions_folder":
+        case "session_exists":
           return unexpectedCombination(
             "recording",
             reason,
@@ -411,6 +428,8 @@ function micPresentation(
         case "disk_full":
         case "write_failed":
         case "permission_revoked":
+        case "unsafe_sessions_folder":
+        case "session_exists":
           return unexpectedCombination("silenced", reason, isDevelopmentOrTest);
         default: {
           const exhaustive: never = reason;

@@ -1,5 +1,39 @@
 # exo-desktop
 
+## 0.6.0-beta.34
+
+No changes in this release.
+
+## 0.6.0-beta.33
+
+No changes in this release.
+
+## 0.6.0-beta.32
+
+### Patch Changes
+
+- f07bac3: Make unavailable recorder modes actionable, quiet the mic-denied ring, and reserve rail space for the minimized Ribbon.
+
+## 0.6.0-beta.31
+
+### Patch Changes
+
+- 7b17239: Refresh the Library when the new recorder lands a voice note through Stop, Save now, or sign-in recovery, and when on-device or private-cloud transcription (including recovery), a notetaker browser import or newly observed server delivery, or an audio upload commits a transcript. Revalidate only the saved note while preserving its audio and prior reads on failure, and retry failed reads on Try again or reopening. Ignore late saves from a previous account.
+
+## 0.6.0-beta.30
+
+### Patch Changes
+
+- 3ad0aae: Confine desktop capture and on-device Whisper to vault sessions and identifiers supplied by the webview. Remove main's unrestricted transcription-start permission and core menu/tray defaults, deny image file-path reads, and enforce the release IPC permission gate. Guard Whisper stage cleanup against concurrent staging and recover orphaned note copies.
+
+## 0.6.0-beta.29
+
+No changes in this release.
+
+## 0.6.0-beta.28
+
+No changes in this release.
+
 ## 0.6.0-beta.27
 
 No changes in this release.

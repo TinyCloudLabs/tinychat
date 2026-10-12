@@ -202,7 +202,8 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
   publish(key, { state: "syncing" });
   try {
     checkpoint(tcw, ctx)();
-    const result = await saveVoiceNoteTranscript(tcw, id, localTranscriptToSave(transcript), checkpoint(tcw, ctx));
+    const result = await saveVoiceNoteTranscript(tcw, id, localTranscriptToSave(transcript),
+      { generation: ctx.generation, did: ctx.did }, checkpoint(tcw, ctx));
     if (!isCurrent(tcw, ctx)) return true;
     if (result.ok) {
       return await recordAndPublish(tcw, key, id, transcript, ctx);

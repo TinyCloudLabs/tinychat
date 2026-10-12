@@ -830,11 +830,18 @@ describe("index.ts wiring", () => {
     );
     expect(INDEX).toContain("createConnectorMeetingsRouter({");
     // The mount lives inside the same `backendIngestEnabled()` block the credential surface
-    // does: a deployment with the flag dark has no meetings surface at all.
-    const flagIndex = INDEX.indexOf("if (backendIngestEnabled())");
+    // does: a deployment with the flag dark has no meetings surface at all. The gate is the
+    // nearest one before the mount (an earlier boot-validation `if` is not the enclosing block),
+    // and that block must still be open where the mount is.
+    const gateText = "if (backendIngestEnabled()) {";
     const mountIndex = INDEX.indexOf('"/api/connectors/meetings"');
+    const flagIndex = INDEX.lastIndexOf(gateText, mountIndex);
     expect(flagIndex).toBeGreaterThan(-1);
     expect(mountIndex).toBeGreaterThan(flagIndex);
+    const indent = INDEX.slice(INDEX.lastIndexOf("\n", flagIndex) + 1, flagIndex);
+    expect(indent).toMatch(/^ +$/);
+    expect(INDEX.slice(flagIndex, mountIndex)).not.toContain(`\n${indent}}`);
+    expect(INDEX.match(/"\/api\/connectors\/meetings"/g)).toHaveLength(1);
   });
 
   test("the read API shares ONE ContentStore instance with the rest of the build", () => {
@@ -852,6 +859,19 @@ describe("openapi.yaml", () => {
     "utf8",
   );
 
+  // The meetings paths only: the slice ends at the first path outside the prefix, so a later
+  // route (TC-641's public, unauthenticated ptx webhook follows them) is not read as theirs.
+  function meetingsBlock(): string {
+    const start = SPEC.indexOf("  /api/connectors/meetings:");
+    expect(start).toBeGreaterThan(-1);
+    const next = [...SPEC.slice(start).matchAll(/^ {2}(\/[^:\n]+):$/gm)]
+      .find((match) => !match[1]!.startsWith("/api/connectors/meetings"));
+    const end = next?.index !== undefined ? start + next.index : SPEC.indexOf("components:", start);
+    const block = SPEC.slice(start, end);
+    expect(block).toContain("  /api/connectors/meetings/{source}/{sourceId}/reconciled:");
+    return block;
+  }
+
   test("publishes all three routes, and never an address parameter", () => {
     for (const path of [
       "  /api/connectors/meetings:",
@@ -862,14 +882,11 @@ describe("openapi.yaml", () => {
     }
     // The tenant is the session. A documented address parameter is how a
     // tenant-scoped surface stops being one.
-    const meetingsBlock = SPEC.slice(SPEC.indexOf("  /api/connectors/meetings:"));
-    expect(meetingsBlock.slice(0, 4000)).not.toContain("name: address");
+    expect(meetingsBlock()).not.toContain("name: address");
   });
 
   test("documents the read routes as authenticated — never `security: []`", () => {
-    const start = SPEC.indexOf("  /api/connectors/meetings:");
-    const end = SPEC.indexOf("components:", start);
-    const block = SPEC.slice(start, end);
+    const block = meetingsBlock();
     expect(block).not.toContain("security: []");
     // The 404 that hides the surface is part of the contract, not an accident.
     expect(block).toContain("not in the cohort");

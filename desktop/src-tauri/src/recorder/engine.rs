@@ -1,9 +1,10 @@
 //! Capture lifecycle over anarlog's recorder. Stop closes the current segment
 //! and releases the microphone; resume opens a fresh native capture.
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use parking_lot::Mutex;
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 use tauri_plugin_settings::SettingsPluginExt;
@@ -65,11 +66,11 @@ pub fn install(app: &tauri::AppHandle) {
             ticker.tick().await;
             let (level, auto_stop) = {
                 let engine = handle.state::<Engine>();
-                let mut state = engine.0.lock().unwrap();
+                let mut state = engine.0.lock();
                 if state.segment_id.is_none() {
                     (None, None)
                 } else {
-                    let meter = handle.state::<Arc<Mutex<Meter>>>();
+                    let meter = handle.state::<Arc<StdMutex<Meter>>>();
                     let (sample_level, sample_peak) = meter.lock().unwrap().take();
                     let level = Level {
                         level: sample_level,
@@ -110,7 +111,7 @@ pub fn install(app: &tauri::AppHandle) {
                         );
                     } else {
                         let engine = app.state::<Engine>();
-                        engine.0.lock().unwrap().auto_stop_requested = false;
+                        engine.0.lock().auto_stop_requested = false;
                     }
                 });
             }
@@ -202,17 +203,17 @@ impl EngineState {
 }
 
 fn emit_status(app: &tauri::AppHandle) {
-    let status = app.state::<Engine>().0.lock().unwrap().status();
+    let status = app.state::<Engine>().0.lock().status();
     let _ = app.emit(MIC_EVENT, status);
 }
 
 fn clear_busy(app: &tauri::AppHandle) {
     let engine = app.state::<Engine>();
-    engine.0.lock().unwrap().busy = false;
+    engine.0.lock().busy = false;
 }
 
 fn reset_meter(app: &tauri::AppHandle) {
-    let meter = app.state::<Arc<Mutex<Meter>>>();
+    let meter = app.state::<Arc<StdMutex<Meter>>>();
     meter.lock().unwrap().reset();
 }
 
@@ -220,18 +221,21 @@ fn capture_params(
     segment_id: &str,
     mic_device: Option<String>,
 ) -> Result<tauri_plugin_transcription::CaptureParams, String> {
-    serde_json::from_value(serde_json::json!({
-        "session_id": segment_id,
-        "languages": ["en"],
-        "onboarding": false,
-        "model": "",
-        "base_url": "",
-        "api_key": "",
-        "keywords": [],
-        "mic_device": mic_device,
-        "transcription_mode": "batch",
-    }))
-    .map_err(|e| e.to_string())
+    Ok(tauri_plugin_transcription::CaptureParams {
+        session_id: segment_id.to_owned(),
+        languages: vec!["en"
+            .parse::<anlg_language::Language>()
+            .map_err(|e| e.to_string())?],
+        onboarding: false,
+        model: String::new(),
+        base_url: String::new(),
+        api_key: String::new(),
+        keywords: vec![],
+        mic_device,
+        transcription_mode: Some(anlg_transcription_core::listener::TranscriptionMode::Batch),
+        participant_human_ids: vec![],
+        self_human_id: None,
+    })
 }
 
 fn begin(state: &mut EngineState) -> Result<(String, Option<String>), String> {
@@ -251,10 +255,15 @@ async fn start_segment(
     input: Option<String>,
 ) -> Result<(), String> {
     let params = capture_params(segment_id, input)?;
+    let sessions = files::sessions_root(app)?;
+    let mut prepared = crate::session_audio::prepare_recorder_dir(&sessions, segment_id)
+        .map_err(|e| format!("{}: {}", e.code, e.message))?;
     app.listener()
         .start_capture(params)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    prepared.started();
+    Ok(())
 }
 
 #[tauri::command]
@@ -273,7 +282,7 @@ pub async fn recorder_start(
     }
     let (segment_id, input) = {
         let state = app.state::<Engine>();
-        let mut state = state.0.lock().unwrap();
+        let mut state = state.0.lock();
         if state.id.is_some() {
             return Err("recording_in_progress".into());
         }
@@ -305,19 +314,26 @@ pub async fn recorder_start(
     } else {
         Ok(())
     };
-    if result.is_err() {
+    if let Err(error) = &result {
+        let reason = if error.starts_with("unsafe_sessions_folder:") {
+            "unsafe_sessions_folder"
+        } else if error.starts_with("session_exists:") {
+            "session_exists"
+        } else {
+            "mic_unavailable"
+        };
         let engine = app.state::<Engine>();
-        let mut state = engine.0.lock().unwrap();
+        let mut state = engine.0.lock();
         state.busy = false;
-        state.blocked_reason = Some("mic_unavailable");
+        state.blocked_reason = Some(reason);
         drop(state);
         emit_status(&app);
         cleanup?;
-        return Err("mic_unavailable".into());
+        return Err(reason.into());
     }
     let status = {
         let state = app.state::<Engine>();
-        let mut state = state.0.lock().unwrap();
+        let mut state = state.0.lock();
         state.busy = false;
         result?;
         cleanup?;
@@ -440,7 +456,7 @@ pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, Stri
     super::ensure(&app);
     let (id, segment_id) = {
         let state = app.state::<Engine>();
-        let mut state = state.0.lock().unwrap();
+        let mut state = state.0.lock();
         if state.busy {
             return Err("recorder_busy".into());
         }
@@ -451,7 +467,7 @@ pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, Stri
     };
     let (elapsed, recorded_before, closed_at) = {
         let state = app.state::<Engine>();
-        let state = state.0.lock().unwrap();
+        let state = state.0.lock();
         let elapsed = state
             .segment_started
             .map(|at| at.elapsed().as_millis() as u64)
@@ -486,7 +502,7 @@ pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, Stri
         .is_some_and(|error| error == "capture_stop_timeout")
     {
         let engine = app.state::<Engine>();
-        let mut state = engine.0.lock().unwrap();
+        let mut state = engine.0.lock();
         state.busy = false;
         state.blocked_reason = Some("writer_stalled");
         drop(state);
@@ -526,7 +542,7 @@ pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, Stri
     saved?;
     let status = {
         let state = app.state::<Engine>();
-        let mut state = state.0.lock().unwrap();
+        let mut state = state.0.lock();
         state.busy = false;
         state.recorded_ms = recorded_ms;
         state.spans = spans;
@@ -551,7 +567,7 @@ pub async fn recorder_resume(app: tauri::AppHandle) -> Result<CaptureStatus, Str
     super::ensure(&app);
     let incomplete_pause = {
         let engine = app.state::<Engine>();
-        let state = engine.0.lock().unwrap();
+        let state = engine.0.lock();
         state.segment_id.is_some() && state.segment_started.is_none()
     };
     if incomplete_pause {
@@ -559,7 +575,7 @@ pub async fn recorder_resume(app: tauri::AppHandle) -> Result<CaptureStatus, Str
     }
     let (segment_id, input) = {
         let state = app.state::<Engine>();
-        let mut state = state.0.lock().unwrap();
+        let mut state = state.0.lock();
         if state.id.is_none() {
             return Err("no_recording".into());
         }
@@ -600,19 +616,26 @@ pub async fn recorder_resume(app: tauri::AppHandle) -> Result<CaptureStatus, Str
     } else {
         Ok(())
     };
-    if result.is_err() {
+    if let Err(error) = &result {
+        let reason = if error.starts_with("unsafe_sessions_folder:") {
+            "unsafe_sessions_folder"
+        } else if error.starts_with("session_exists:") {
+            "session_exists"
+        } else {
+            "mic_unavailable"
+        };
         let engine = app.state::<Engine>();
-        let mut state = engine.0.lock().unwrap();
+        let mut state = engine.0.lock();
         state.busy = false;
-        state.blocked_reason = Some("mic_unavailable");
+        state.blocked_reason = Some(reason);
         drop(state);
         emit_status(&app);
         cleanup?;
-        return Err("mic_unavailable".into());
+        return Err(reason.into());
     }
     let status = {
         let state = app.state::<Engine>();
-        let mut state = state.0.lock().unwrap();
+        let mut state = state.0.lock();
         state.busy = false;
         result.map_err(|_| "mic_unavailable")?;
         cleanup?;
@@ -634,17 +657,17 @@ pub async fn recorder_resume(app: tauri::AppHandle) -> Result<CaptureStatus, Str
 #[tauri::command]
 pub async fn recorder_stop(app: tauri::AppHandle) -> Result<CaptureStatus, String> {
     super::ensure(&app);
-    if app.state::<Engine>().0.lock().unwrap().id.is_none() {
+    if app.state::<Engine>().0.lock().id.is_none() {
         return Err("no_recording".into());
     }
-    let active = app.state::<Engine>().0.lock().unwrap().segment_id.is_some();
+    let active = app.state::<Engine>().0.lock().segment_id.is_some();
     if active {
         recorder_pause(app.clone()).await?;
     }
     // JS acknowledges the journal only after its durable metadata commit.
     let status = {
         let state = app.state::<Engine>();
-        let mut state = state.0.lock().unwrap();
+        let mut state = state.0.lock();
         if state.id.is_none() {
             return Err("no_recording".into());
         }
@@ -687,7 +710,7 @@ pub struct RecoveryReport {
 #[tauri::command]
 pub fn recorder_recover(app: tauri::AppHandle) -> Result<RecoveryReport, String> {
     super::ensure(&app);
-    if app.state::<Engine>().0.lock().unwrap().id.is_some() {
+    if app.state::<Engine>().0.lock().id.is_some() {
         return Err("recording_in_progress".into());
     }
     let mut pending = journal::load(&app)?;
@@ -734,7 +757,7 @@ pub fn recorder_recover(app: tauri::AppHandle) -> Result<RecoveryReport, String>
 #[tauri::command]
 pub fn recorder_acknowledge(app: tauri::AppHandle, id: String) -> Result<(), String> {
     super::ensure(&app);
-    if app.state::<Engine>().0.lock().unwrap().id.is_some() {
+    if app.state::<Engine>().0.lock().id.is_some() {
         return Err("recording_in_progress".into());
     }
     let Some(pending) = journal::load(&app)? else {
@@ -787,7 +810,7 @@ pub fn recorder_failed_delete(app: tauri::AppHandle, id: String) -> Result<(), S
 #[tauri::command]
 pub fn recorder_status(app: tauri::AppHandle) -> CaptureStatus {
     super::ensure(&app);
-    app.state::<Engine>().0.lock().unwrap().status()
+    app.state::<Engine>().0.lock().status()
 }
 
 #[derive(Serialize)]
@@ -819,7 +842,7 @@ pub async fn recorder_list_inputs(app: tauri::AppHandle) -> Result<Inputs, Strin
         .ok()
         .flatten();
     let state = app.state::<Engine>();
-    let state = state.0.lock().unwrap();
+    let state = state.0.lock();
     Ok(Inputs {
         inputs: devices
             .into_iter()
@@ -869,13 +892,13 @@ pub async fn recorder_select_input(
             return Err("input_unavailable".into());
         }
     }
-    let was_recording = app.state::<Engine>().0.lock().unwrap().segment_id.is_some();
+    let was_recording = app.state::<Engine>().0.lock().segment_id.is_some();
     if was_recording {
         recorder_pause(app.clone()).await?;
     }
     {
         let state = app.state::<Engine>();
-        state.0.lock().unwrap().selected_input = id;
+        state.0.lock().selected_input = id;
     }
     if was_recording {
         recorder_resume(app).await?;

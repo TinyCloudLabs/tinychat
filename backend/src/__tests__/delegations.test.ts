@@ -1,1196 +1,512 @@
+import { createHash } from "node:crypto";
+import { once } from "node:events";
+import type { Server } from "node:http";
 import { describe, expect, it } from "bun:test";
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
-import { assertKvResult } from "@tinyboilerplate/server";
-import {
-  BACKEND_DELEGATION_EXPIRY_MS,
-  backendDelegationPolicyHash,
-  backendDelegationResolvedPermissions,
-} from "../manifest.js";
+import type { TinyCloudNode } from "@tinycloud/node-sdk";
+import { activateSessionWithHost } from "@tinycloud/sdk-core";
+import type { StoredDelegation } from "@tinyboilerplate/core";
+import type { DelegationMetadata } from "@tinyboilerplate/server";
+import { APP_ID } from "@tinyboilerplate/core";
+import { backendDelegationPolicyHash } from "../manifest.js";
 import { createDelegationRouter } from "../routes/delegations.js";
+import { makeSignedTranscriptGrant, type SignedTranscriptGrant, type TranscriptAtt } from "./helpers/transcript-grant.js";
 
-const TEST_ADDRESS = "0xtest";
-const TEST_DID = "did:key:z6MkBackend";
+type DelegationDto = Parameters<TinyCloudNode["useDelegation"]>[0];
+type GrantBody = Pick<SignedTranscriptGrant, "serialized" | "siwe" | "signature">;
+const HOUR = 3_600_000;
+const fingerprint = (value: string | undefined) => value === undefined ? null : createHash("sha256").update(value).digest("hex");
 
-function createStore() {
-  const records = new Map<string, any>();
-  return {
-    _records: records,
-    store: async (identifier: string, serialized: string, metadata: any) => {
-      records.set(identifier, { serialized, ...metadata });
-    },
-    load: async (identifier: string) => records.get(identifier) ?? null,
-    remove: async (identifier: string) => {
-      records.delete(identifier);
-    },
-  };
-}
-
-function createCache() {
-  const records = new Map<string, unknown>();
-  return {
-    _records: records,
-    get: (identifier: string) => records.get(identifier) ?? null,
-    set: (identifier: string, access: unknown) =>
-      records.set(identifier, access),
-    evict: (identifier: string) => records.delete(identifier),
-  };
-}
-
-async function rejectedKvAcknowledgement(error: string): Promise<never> {
-  const result = await Promise.resolve({ ok: false, error });
-  return assertKvResult(result) as never;
-}
-
-async function request(app: express.Express, path: string, init?: RequestInit) {
-  const server = await new Promise<import("http").Server>((resolve) => {
-    const instance = app.listen(0, () => resolve(instance));
-  });
-  const { port } = server.address() as { port: number };
+async function withServer<T>(app: express.Express, run: (base: string) => Promise<T>): Promise<T> {
+  const server: Server = app.listen(0);
+  await once(server, "listening");
   try {
-    return await fetch(`http://localhost:${port}${path}`, init);
+    const { port } = server.address() as { port: number };
+    return await run(`http://127.0.0.1:${port}`);
   } finally {
-    await new Promise<void>((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve())),
-    );
+    const closing = once(server, "close");
+    server.close();
+    await closing;
   }
 }
 
-/** Capture console output for the §6.3 log-hygiene assertions. */
-function captureLogs(): { lines: string[]; restore: () => void } {
-  const lines: string[] = [];
-  const originalLog = console.log;
-  const originalWarn = console.warn;
-  const originalError = console.error;
-  const record = (...args: unknown[]) => {
-    lines.push(
-      args.map((a) => (typeof a === "string" ? a : String(a))).join(" "),
-    );
+function post(base: string, body: Partial<GrantBody>) {
+  const { serialized, siwe, signature } = body;
+  return fetch(`${base}/api/delegations`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ serialized, siwe, signature }),
+  });
+}
+
+function appFor(grant: SignedTranscriptGrant, options: {
+  configuredHost?: string;
+  address?: string;
+  eligible?: boolean;
+  eligibility?: (address: string) => boolean;
+  schemaMissing?: boolean;
+  onActivation?: (dto: DelegationDto) => Promise<void>;
+  onCid?: (count: number) => void;
+  onStore?: () => Promise<void>;
+  onLoad?: () => Promise<void>;
+  onRemove?: () => Promise<void>;
+  onGrantChanged?: (address: string, previousEnvelope?: string) => void;
+} = {}) {
+  const calls = { cid: 0, activate: [] as DelegationDto[], store: 0 };
+  const access = { sql: { db: () => ({}) }, kv: { get: async () => ({ ok: true }) } };
+  const records = new Map<string, StoredDelegation>();
+  const node = {
+    computeDelegationCid: (authorization: string) => {
+      calls.cid++;
+      options.onCid?.(calls.cid);
+      return grant.computeDelegationCid(authorization);
+    },
+    useDelegation: async (dto: DelegationDto) => {
+      calls.activate.push(dto);
+      await options.onActivation?.(dto);
+      return { ...access, kv: { ...access.kv } };
+    },
+  } as unknown as TinyCloudNode;
+  const store = {
+    store: async (address: string, serialized: string, metadata: DelegationMetadata) => {
+      calls.store++;
+      await options.onStore?.();
+      records.set(address.toLowerCase(), { serialized, grantedAt: new Date().toISOString(), ...metadata });
+    },
+    load: async (address: string) => { await options.onLoad?.(); return records.get(address.toLowerCase()) ?? null; },
+    remove: async (address: string) => { await options.onRemove?.(); records.delete(address.toLowerCase()); },
   };
-  console.log = record;
-  console.warn = record;
-  console.error = record;
+  const app = express();
+  app.use("/api/delegations", createDelegationRouter({
+    backendDid: grant.backendDid, configuredHost: options.configuredHost ?? grant.configuredHost,
+    eligibility: (address) => options.eligibility?.(address) ?? options.eligible ?? true,
+    schemaMissing: () => options.schemaMissing ?? false,
+    node, store,
+    authMiddleware: (req: Request, _res: Response, next: NextFunction) => {
+      req.user = { address: options.address ?? grant.address };
+      next();
+    },
+    onGrantChanged: options.onGrantChanged,
+  }));
+  return { app, store, calls, records };
+}
+
+function att(spaceId: string): TranscriptAtt {
   return {
-    lines,
-    restore: () => {
-      console.log = originalLog;
+    [`${spaceId}/sql/${APP_ID}/connectors`]: { "tinycloud.sql/read": [{}], "tinycloud.sql/write": [{}] },
+    [`${spaceId}/kv/${APP_ID}/connectors/tinycloud-transcriber/`]: { "tinycloud.kv/get": [{}], "tinycloud.kv/put": [{}] },
+  };
+}
+
+// Edits to the known locally generated portable form deliberately leave SIWE unchanged.
+function editBundle(grant: SignedTranscriptGrant, change: (bundle: Record<string, unknown>) => void): GrantBody {
+  const bundle = JSON.parse(grant.serialized) as Record<string, unknown>;
+  change(bundle);
+  return { serialized: JSON.stringify(bundle), siwe: grant.siwe, signature: grant.signature };
+}
+
+function withAuthorization(grant: SignedTranscriptGrant, authorization: string): GrantBody {
+  return editBundle(grant, (bundle) => {
+    bundle.delegationHeader = { Authorization: authorization };
+    bundle.cid = grant.computeDelegationCid(authorization);
+  });
+}
+
+describe("signed transcript-writer delegation acceptance", () => {
+  it("accepts a real signed grant, stores the bound envelope and activates only derived space/resources on the configured host", async () => {
+    const grant = await makeSignedTranscriptGrant({ unsigned: {
+      ownerAddress: "0x0000000000000000000000000000000000000001",
+      spaceId: "tinycloud:pkh:eip155:1:0x0000000000000000000000000000000000000001:applications",
+      host: "http://127.0.0.1:9",
+      path: "secrets/", actions: ["tinycloud.kv/del"],
+    }, host: null });
+    const fixture = appFor(grant);
+    await withServer(fixture.app, async (base) => {
+      const response = await post(base, grant);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        status: "active", verified: true, delivery: "enabled", expiresAt: grant.expiresAt.toISOString(),
+      });
+    });
+    expect(fixture.calls.activate).toHaveLength(2);
+    expect(fixture.calls.store).toBe(1);
+    const stored = await fixture.store.load(grant.address);
+    expect(stored?.policyHash).toBe(backendDelegationPolicyHash(grant.backendDid));
+    expect(stored?.delegateDid).toBe(grant.backendDid);
+    expect(stored?.resources).toEqual([
+      { service: "sql", space: grant.spaceId, path: `${APP_ID}/connectors`, actions: ["tinycloud.sql/read", "tinycloud.sql/write"] },
+      { service: "kv", space: grant.spaceId, path: `${APP_ID}/connectors/tinycloud-transcriber/`, actions: ["tinycloud.kv/get", "tinycloud.kv/put"] },
+    ]);
+    expect(fingerprint(stored?.serialized)).toBe(fingerprint(grant.envelope));
+    for (const dto of fixture.calls.activate) {
+      expect(dto.spaceId).toBe(grant.spaceId);
+      expect(dto.ownerAddress).toBe(grant.address.toLowerCase());
+      expect(dto.host).toBe(grant.configuredHost);
+      expect(dto.resources?.[0]?.space).toBe(grant.spaceId);
+      expect(dto.path).toBe(dto.resources?.[0]?.path);
+    }
+  });
+
+  it("maps every verifier failure to 400 without activating, caching or storing", async () => {
+    const now = Date.now();
+    const base = await makeSignedTranscriptGrant({ now });
+    const alternative = await makeSignedTranscriptGrant({ wallet: "B", now });
+    const sql = `${base.spaceId}/sql/${APP_ID}/connectors`;
+    const kv = `${base.spaceId}/kv/${APP_ID}/connectors/tinycloud-transcriber/`;
+    const bundle: unknown = JSON.parse(base.serialized);
+    if (!bundle || typeof bundle !== "object" || !("delegationHeader" in bundle)) throw new Error("fixture lacks delegation header");
+    const header = bundle.delegationHeader;
+    if (!header || typeof header !== "object" || !("Authorization" in header) || typeof header.Authorization !== "string") throw new Error("fixture lacks authorization");
+    const token = header.Authorization;
+    const cases: Array<{ code: string; grant?: SignedTranscriptGrant; body?: GrantBody; address?: string }> = [
+      { code: "unsupported_bundle_shape", body: { ...base, serialized: JSON.stringify({ format: "tinycloud.delegation-bundle", version: 1, delegations: [base.serialized] }) } },
+      { code: "untrusted_host", grant: await makeSignedTranscriptGrant({ now, host: "http://169.254.169.254/" }) },
+      { code: "unsupported_delegation_format", body: editBundle(base, (bundle) => { bundle.delegationHeader = { Authorization: "Bearer cacao" }; }) },
+      { code: "cid_mismatch", body: editBundle(base, (bundle) => { bundle.cid = alternative.cid; }) },
+      { code: "bad_signature", body: withAuthorization(base, `${token.slice(0, token.lastIndexOf(".") + 1)}AA`) },
+      { code: "wrong_delegatee", grant: await makeSignedTranscriptGrant({ now, audience: "did:key:z6MkOther" }) },
+      { code: "bad_session_signature", body: { ...base, signature: alternative.signature } },
+      { code: "wrong_delegator", grant: alternative, address: base.address },
+      { code: "session_expired", grant: await makeSignedTranscriptGrant({ now, expirationTime: new Date(now - 30_000).toISOString() }) },
+      { code: "session_mismatch", grant: await makeSignedTranscriptGrant({ now, sessionUri: "did:key:z6MkDifferent#session" }) },
+      { code: "proof_mismatch", grant: await makeSignedTranscriptGrant({ now, proof: [] }) },
+      { code: "foreign_space_delegation", grant: await makeSignedTranscriptGrant({ now, att: att(alternative.spaceId) }) },
+      { code: "overbroad_delegation", grant: await makeSignedTranscriptGrant({ now, att: { ...att(base.spaceId), [kv]: { ...att(base.spaceId)[kv], "tinycloud.kv/list": [] } } }) },
+      { code: "overbroad_delegation", grant: await makeSignedTranscriptGrant({ now, att: { ...att(base.spaceId), [sql]: { ...att(base.spaceId)[sql], "tinycloud.sql/write": [{ database: "other" }] } } }) },
+      { code: "insufficient_delegation", grant: await makeSignedTranscriptGrant({ now, att: { ...att(base.spaceId), [sql]: { "tinycloud.sql/read": [] } } }) },
+      { code: "expired", grant: await makeSignedTranscriptGrant({ now, expiresAt: Math.floor((now + 30_000) / 1000) }) },
+      { code: "expiry_too_long", grant: await makeSignedTranscriptGrant({ now, expiresAt: Math.floor((now + 31 * 86_400_000) / 1000) }) },
+      { code: "not_yet_valid", grant: await makeSignedTranscriptGrant({ now, nbf: Math.floor((now + HOUR) / 1000) }) },
+    ];
+    for (const testCase of cases) {
+      const fixture = appFor(base, { address: testCase.address });
+      await withServer(fixture.app, async (url) => {
+        const response = await post(url, testCase.body ?? testCase.grant ?? base);
+        expect(response.status).toBe(400);
+        expect((await response.json()).error).toBe(testCase.code);
+      });
+      expect(fixture.calls.activate).toEqual([]);
+      expect(fixture.calls.store).toBe(0);
+      expect(fixture.records.size).toBe(0);
+    }
+  });
+
+  it("rejects missing inputs and all three byte caps before CID computation or storage", async () => {
+    const grant = await makeSignedTranscriptGrant();
+    for (const { body, error } of [
+      { body: {}, error: "invalid_body" },
+      { body: { ...grant, serialized: "x".repeat(64 * 1024 + 1) }, error: "bundle_too_large" },
+      { body: { ...grant, siwe: "x".repeat(16 * 1024 + 1) }, error: "bundle_too_large" },
+      { body: { ...grant, signature: "x".repeat(1025) }, error: "bundle_too_large" },
+    ]) {
+      const fixture = appFor(grant);
+      await withServer(fixture.app, async (base) => {
+        const response = await post(base, body);
+        expect(response.status).toBe(400);
+        expect((await response.json()).error).toBe(error);
+      });
+      expect(fixture.calls).toEqual({ cid: 0, activate: [], store: 0 });
+    }
+  });
+
+  for (const { scenario, eligibility } of [
+    { scenario: "flag off", eligibility: (_address: string) => false },
+    { scenario: "outside cohort", eligibility: (address: string) => address === "0x0000000000000000000000000000000000000001" },
+  ]) {
+    it(`${scenario} returns 403 before verification, activation or storage`, async () => {
+      const grant = await makeSignedTranscriptGrant();
+      const fixture = appFor(grant, { eligibility });
+      await withServer(fixture.app, async (base) => {
+        const response = await post(base, grant);
+        expect(response.status).toBe(403);
+        expect((await response.json()).error).toBe("delivery_disabled");
+      });
+      expect(fixture.calls).toEqual({ cid: 0, activate: [], store: 0 });
+    });
+  }
+
+  it("reports disabled, enabled and schema_missing delivery independently of grant status", async () => {
+    const grant = await makeSignedTranscriptGrant();
+    for (const [eligible, schemaMissing, delivery] of [
+      [false, false, "disabled"], [true, false, "enabled"], [true, true, "schema_missing"],
+    ] as const) {
+      const fixture = appFor(grant, { eligible, schemaMissing });
+      await withServer(fixture.app, async (base) => {
+        const initial = await fetch(`${base}/api/delegations/status`);
+        expect(await initial.json()).toEqual({ status: "none", expiresAt: null, verified: false, delivery });
+        if (!eligible) return;
+        expect((await post(base, grant)).status).toBe(200);
+        const active = await fetch(`${base}/api/delegations/status`);
+        expect(await active.json()).toEqual({ status: "active", expiresAt: grant.expiresAt.toISOString(), verified: true, delivery });
+      });
+    }
+  });
+
+  it("removes a stored grant once delivery is disabled for the address, reporting it until removal succeeds", async () => {
+    const grant = await makeSignedTranscriptGrant();
+    let eligible = true;
+    let failRemoval = 0;
+    const changed: string[] = [];
+    const fixture = appFor(grant, {
+      eligibility: () => eligible,
+      onRemove: async () => { if (failRemoval-- > 0) throw new Error("store unavailable"); },
+      onGrantChanged: (address) => changed.push(address),
+    });
+    const address = grant.address.toLowerCase();
+    const active = { status: "active", expiresAt: grant.expiresAt.toISOString(), verified: true };
+    await withServer(fixture.app, async (base) => {
+      const status = async () => (await fetch(`${base}/api/delegations/status`)).json();
+      expect((await post(base, grant)).status).toBe(200);
+      expect(await status()).toEqual({ ...active, delivery: "enabled" });
+
+      // Narrowed out of the cohort while the store is failing: the grant is still there, so say so.
+      eligible = false;
+      failRemoval = 1;
+      expect(await status()).toEqual({ ...active, delivery: "disabled" });
+      expect(fixture.records.has(address)).toBe(true);
+      // The next read removes it (compare-and-delete) and signals the change.
+      const before = changed.length;
+      expect(await status()).toEqual({ status: "none", expiresAt: null, verified: false, delivery: "disabled" });
+      expect(fixture.records.has(address)).toBe(false);
+      expect(changed.length).toBe(before + 1);
+      expect((await post(base, grant)).status).toBe(403);
+
+      // Re-widened: no grant comes back by itself, and a fresh one is accepted again.
+      eligible = true;
+      expect(await status()).toEqual({ status: "none", expiresAt: null, verified: false, delivery: "enabled" });
+      expect((await post(base, grant)).status).toBe(200);
+      expect(await status()).toEqual({ ...active, delivery: "enabled" });
+    });
+  });
+
+  it("answers a node-refused activation with a 403 rejection, and a node outage with 503", async () => {
+    for (const [nodeStatus, status, error] of [[401, 403, "delegation_rejected"], [403, 403, "delegation_rejected"], [503, 503, "unavailable"]] as const) {
+      const node = express();
+      node.post("/delegate", (_req, res) => { res.status(nodeStatus).send("refused"); });
+      await withServer(node, async (host) => {
+        const grant = await makeSignedTranscriptGrant({ host: null });
+        // SDK 3.1's activation step, verbatim: its real request, and an Error whose cause is the result.
+        const fixture = appFor(grant, { configuredHost: host, onActivation: async (dto) => {
+          const result = await activateSessionWithHost(dto.host!, { Authorization: "Bearer invoker-session" });
+          if (!result.success) {
+            const text = result.error?.trim();
+            throw Object.assign(
+              new Error(`Failed to activate delegated session: ${text ? `${result.status} - ${text}` : `${result.status}`}`),
+              { cause: result },
+            );
+          }
+        } });
+        await withServer(fixture.app, async (base) => {
+          const response = await post(base, grant);
+          expect({ nodeStatus, status: response.status, body: await response.json() }).toEqual({ nodeStatus, status, body: { error } });
+        });
+        expect(fixture.calls.store).toBe(0);
+        expect(fixture.records.size).toBe(0);
+      });
+    }
+  });
+
+  it("evicts a stored grant whose signed envelope no longer verifies", async () => {
+    const grant = await makeSignedTranscriptGrant();
+    const mismatchedSignature = (await makeSignedTranscriptGrant({ wallet: "B" })).signature;
+    const fixture = appFor(grant);
+    const parsed: unknown = JSON.parse(grant.envelope);
+    if (!parsed || typeof parsed !== "object" || !("signature" in parsed)) throw new Error("fixture lacks signature");
+    fixture.records.set(grant.address.toLowerCase(), {
+      serialized: JSON.stringify({ ...parsed, signature: mismatchedSignature }),
+      grantedAt: new Date().toISOString(), expiresAt: grant.expiresAt.toISOString(),
+      policyHash: backendDelegationPolicyHash(grant.backendDid), delegateDid: grant.backendDid,
+      path: "", actions: [],
+    });
+    await withServer(fixture.app, async (base) => {
+      const status = await fetch(`${base}/api/delegations/status`);
+      expect(await status.json()).toEqual({ status: "stale", expiresAt: null, verified: false, delivery: "enabled" });
+    });
+    expect(fixture.records.has(grant.address.toLowerCase())).toBe(false);
+    expect(fixture.calls.activate).toEqual([]);
+  });
+
+  it("does not delete a newer grant while reporting a stale status observation", async () => {
+    const grant = await makeSignedTranscriptGrant();
+    const newer = await makeSignedTranscriptGrant({ expiresAt: Math.floor((grant.expiresAt.getTime() + 2 * HOUR) / 1000) });
+    const invalid = JSON.stringify({ ...JSON.parse(grant.envelope), signature: (await makeSignedTranscriptGrant({ wallet: "B" })).signature });
+    const fixture = appFor(grant, { onCid: (count) => {
+      if (count === 1) {
+        fixture.records.set(grant.address.toLowerCase(), {
+          serialized: newer.envelope, grantedAt: new Date().toISOString(),
+          expiresAt: newer.expiresAt.toISOString(), policyHash: backendDelegationPolicyHash(grant.backendDid),
+          delegateDid: grant.backendDid, path: "", actions: [],
+        });
+      }
+    } });
+    fixture.records.set(grant.address.toLowerCase(), {
+      serialized: invalid, grantedAt: new Date().toISOString(), expiresAt: grant.expiresAt.toISOString(),
+      policyHash: backendDelegationPolicyHash(grant.backendDid), delegateDid: grant.backendDid,
+      path: "", actions: [],
+    });
+    await withServer(fixture.app, async (base) => {
+      const first = await fetch(`${base}/api/delegations/status`);
+      expect(await first.json()).toEqual({ status: "stale", expiresAt: null, verified: false, delivery: "enabled" });
+      expect(fixture.records.get(grant.address.toLowerCase())?.serialized).toBe(newer.envelope);
+      const next = await fetch(`${base}/api/delegations/status`);
+      expect(await next.json()).toEqual({ status: "active", expiresAt: newer.expiresAt.toISOString(), verified: true, delivery: "enabled" });
+    });
+  });
+
+  it("does not activate, store or replace a valid grant unless the new expiry gains at least one hour", async () => {
+    const grant = await makeSignedTranscriptGrant();
+    const almost = await makeSignedTranscriptGrant({ expiresAt: Math.floor((grant.expiresAt.getTime() + HOUR - 60_000) / 1000) });
+    const fixture = appFor(grant);
+    await withServer(fixture.app, async (base) => {
+      expect((await post(base, grant)).status).toBe(200);
+      const response = await post(base, almost);
+      expect(response.status).toBe(200);
+      expect((await response.json()).expiresAt).toBe(grant.expiresAt.toISOString());
+    });
+    expect(fixture.calls.activate).toHaveLength(2);
+    expect(fixture.calls.store).toBe(1);
+    expect(fingerprint((await fixture.store.load(grant.address))?.serialized)).toBe(fingerprint(grant.envelope));
+  });
+
+  for (const mode of ["identical", "extension", "older last"] as const) {
+    it(`serializes concurrent same-address POSTs: ${mode}`, async () => {
+      const grant = await makeSignedTranscriptGrant({ expiresAt: Math.floor((Date.now() + 27 * 86_400_000) / 1000) });
+      const extended = await makeSignedTranscriptGrant({ expiresAt: Math.floor((grant.expiresAt.getTime() + 2 * HOUR) / 1000) });
+      const first = mode === "older last" ? extended : grant;
+      const second = mode === "identical" ? first : mode === "older last" ? grant : extended;
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const secondVerified = Promise.withResolvers<void>();
+      let active = 0;
+      let maxActive = 0;
+      const fixture = appFor(grant, { onCid: (count) => { if (count === 4) secondVerified.resolve(); }, onActivation: async () => {
+        active++;
+        maxActive = Math.max(maxActive, active);
+        if (active === 1 && fixture.calls.activate.length === 1) {
+          started.resolve();
+          await release.promise;
+        }
+        active--;
+      } });
+      await withServer(fixture.app, async (base) => {
+        const firstResponse = post(base, first);
+        await started.promise;
+        const secondResponse = post(base, second);
+        await secondVerified.promise;
+        // Let the second handler reach the coordinator while the first activation remains held.
+        await Promise.resolve();
+        release.resolve();
+        const [a, b] = await Promise.all([firstResponse, secondResponse]);
+        expect(a.status).toBe(200);
+        expect(b.status).toBe(200);
+      });
+      expect(maxActive).toBe(1);
+      const expected = mode === "identical" ? first : extended;
+      expect(fixture.calls.store).toBe(mode === "extension" ? 2 : 1);
+      expect(fixture.calls.activate).toHaveLength(mode === "extension" ? 4 : 2);
+      expect(fingerprint((await fixture.store.load(grant.address))?.serialized)).toBe(fingerprint(expected.envelope));
+      expect((await fixture.store.load(grant.address))?.expiresAt).toBe(expected.expiresAt.toISOString());
+    });
+  }
+
+  it("does not report a grant change if durable acceptance fails", async () => {
+    const grant = await makeSignedTranscriptGrant();
+    const changed: string[] = [];
+    const fixture = appFor(grant, {
+      onStore: async () => { throw new Error("storage unavailable"); },
+      onGrantChanged: (address) => { changed.push(address); },
+    });
+    await withServer(fixture.app, async (base) => {
+      const response = await post(base, grant);
+      expect(response.status).toBe(503);
+      expect((await response.json()).error).toBe("unavailable");
+    });
+    expect(fixture.calls.activate).toHaveLength(2);
+    expect(fixture.calls.store).toBe(1);
+    expect(fixture.records.size).toBe(0);
+    expect(changed).toEqual([]);
+  });
+
+  it("returns a redacted 503 on status load failure without changing the grant", async () => {
+    const grant = await makeSignedTranscriptGrant();
+    const fixture = appFor(grant, { onLoad: async () => { throw new Error(grant.envelope); } });
+    await withServer(fixture.app, async (base) => {
+      const response = await fetch(`${base}/api/delegations/status`);
+      expect(response.status).toBe(503);
+      const body = await response.text();
+      expect(JSON.parse(body)).toEqual({ error: "unavailable" });
+      expect(body).not.toContain(grant.envelope);
+    });
+    expect(fixture.records.size).toBe(0);
+  });
+
+  it("returns a redacted 503 when expired-grant cleanup fails and does not signal revocation", async () => {
+    const grant = await makeSignedTranscriptGrant();
+    const changed: string[] = [];
+    const fixture = appFor(grant, {
+      onRemove: async () => { throw new Error(grant.envelope); },
+      onGrantChanged: (address) => { changed.push(address); },
+    });
+    fixture.records.set(grant.address.toLowerCase(), {
+      serialized: grant.envelope, grantedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() - 1000).toISOString(), actions: [], path: "",
+    });
+    await withServer(fixture.app, async (base) => {
+      const response = await fetch(`${base}/api/delegations/status`);
+      expect(response.status).toBe(503);
+      const body = await response.text();
+      expect(JSON.parse(body)).toEqual({ error: "unavailable" });
+      expect(body).not.toContain(grant.envelope);
+    });
+    expect(fixture.records.get(grant.address.toLowerCase())?.serialized).toBe(grant.envelope);
+    expect(changed).toEqual([]);
+  });
+
+  it("returns a redacted 503 on DELETE failure and retains the grant for the worker", async () => {
+    const grant = await makeSignedTranscriptGrant();
+    const changed: string[] = [];
+    const fixture = appFor(grant, {
+      onRemove: async () => { throw new Error(grant.envelope); },
+      onGrantChanged: (address) => { changed.push(address); },
+    });
+    fixture.records.set(grant.address.toLowerCase(), {
+      serialized: grant.envelope, grantedAt: new Date().toISOString(),
+      expiresAt: grant.expiresAt.toISOString(), actions: [], path: "",
+    });
+    const logs: string[] = [];
+    const originalWarn = console.warn;
+    const originalError = console.error;
+    console.warn = (...values: unknown[]) => { logs.push(values.map(String).join(" ")); };
+    console.error = (...values: unknown[]) => { logs.push(values.map(String).join(" ")); };
+    try {
+      await withServer(fixture.app, async (base) => {
+        const response = await fetch(`${base}/api/delegations`, { method: "DELETE" });
+        expect(response.status).toBe(503);
+        const body = await response.text();
+        expect(JSON.parse(body)).toEqual({ error: "unavailable" });
+        expect(body).not.toContain(grant.envelope);
+      });
+    } finally {
       console.warn = originalWarn;
       console.error = originalError;
-    },
-  };
-}
-
-function createApp(
-  overrides: Partial<Parameters<typeof createDelegationRouter>[0]> = {},
-) {
-  const app = express();
-  app.use(express.json());
-  const store = createStore();
-  const cache = createCache();
-  app.use(
-    "/api/delegations",
-    createDelegationRouter({
-      backendDid: TEST_DID,
-      store: store as any,
-      cache: cache as any,
-      authMiddleware: (req: Request, _res: Response, next: NextFunction) => {
-        req.user = { address: TEST_ADDRESS };
-        next();
-      },
-      deserializeDelegationSet: (serialized: string) => JSON.parse(serialized),
-      activateDelegation: async () => ({ kv: {}, sql: {} }) as any,
-      extractResources: (delegation: any) => delegation.resources,
-      extractExpiry: (delegation: any) => new Date(delegation.expiresAt),
-      ...overrides,
-    }),
-  );
-  return { app, store, cache };
-}
-
-describe("delegation routes", () => {
-  it("stores accepted delegations with the current policy hash", async () => {
-    const { app, store } = createApp();
-    const serialized = JSON.stringify({
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      ownerAddress: TEST_ADDRESS,
-      chainId: 1,
-      delegateDID: TEST_DID,
-      resources: backendDelegationResolvedPermissions(TEST_DID),
-    });
-
-    const response = await request(app, "/api/delegations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serialized }),
-    });
-
-    expect(response.status).toBe(200);
-    const stored = await store.load(TEST_ADDRESS);
-    expect(stored.policyHash).toBe(backendDelegationPolicyHash(TEST_DID));
-    expect(stored.delegateDid).toBe(TEST_DID);
-    expect(stored.resources).toEqual(
-      backendDelegationResolvedPermissions(TEST_DID),
-    );
-  });
-
-  it("rejects requests without a serialized delegation body", async () => {
-    const { app, store, cache } = createApp();
-
-    const response = await request(app, "/api/delegations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
-
-    expect(response.status).toBe(400);
-    expect((await response.json()).error).toBe("invalid_body");
-    expect(await store.load(TEST_ADDRESS)).toBeNull();
-    expect(cache.get(TEST_ADDRESS)).toBeNull();
-  });
-
-  it("rejects delegations without extractable owner and delegatee metadata", async () => {
-    const { app, store, cache } = createApp();
-    const serialized = JSON.stringify({
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      resources: backendDelegationResolvedPermissions(TEST_DID),
-    });
-
-    const response = await request(app, "/api/delegations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serialized }),
-    });
-
-    expect(response.status).toBe(400);
-    expect((await response.json()).error).toBe("invalid_delegation_identity");
-    expect(await store.load(TEST_ADDRESS)).toBeNull();
-    expect(cache.get(TEST_ADDRESS)).toBeNull();
-  });
-
-  it("rejects delegations owned by a different authenticated wallet", async () => {
-    const { app, store, cache } = createApp();
-    const serialized = JSON.stringify({
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      ownerAddress: "0xother",
-      chainId: 1,
-      delegateDID: TEST_DID,
-      resources: backendDelegationResolvedPermissions(TEST_DID),
-    });
-
-    const response = await request(app, "/api/delegations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serialized }),
-    });
-
-    expect(response.status).toBe(400);
-    expect((await response.json()).error).toBe("wrong_delegator");
-    expect(await store.load(TEST_ADDRESS)).toBeNull();
-    expect(cache.get(TEST_ADDRESS)).toBeNull();
-  });
-
-  it("rejects delegations targeting a different backend delegatee", async () => {
-    const { app, store, cache } = createApp();
-    const serialized = JSON.stringify({
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      ownerAddress: TEST_ADDRESS,
-      chainId: 1,
-      delegateDID: "did:key:z6MkOtherBackend",
-      resources: backendDelegationResolvedPermissions(TEST_DID),
-    });
-
-    const response = await request(app, "/api/delegations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serialized }),
-    });
-
-    expect(response.status).toBe(400);
-    expect((await response.json()).error).toBe("wrong_delegatee");
-    expect(await store.load(TEST_ADDRESS)).toBeNull();
-    expect(cache.get(TEST_ADDRESS)).toBeNull();
-  });
-
-  it("rejects delegations that do not cover the backend policy", async () => {
-    const { app } = createApp();
-    const serialized = JSON.stringify({
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      ownerAddress: TEST_ADDRESS,
-      chainId: 1,
-      delegateDID: TEST_DID,
-      resources: [
-        {
-          ...backendDelegationResolvedPermissions(TEST_DID)[0],
-          path: "xyz.tinycloud.tinychat/other/",
-        },
-      ],
-    });
-
-    const response = await request(app, "/api/delegations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serialized }),
-    });
-
-    expect(response.status).toBe(400);
-    expect((await response.json()).error).toBe("insufficient_delegation");
-  });
-
-  // §3.2a edit 1 — the coverage check above runs in one direction only, so a bundle that grants
-  // strictly more than the policy passes it. All three resources below are covered by the app
-  // recap, so a real session can actually mint this bundle prompt-free.
-  //
-  // INGEST-CUTOVER(plan §11) — kept, with the stake raised. This least-privilege ceiling is not
-  // an Option-C artifact: backend ingestion holds a Fireflies credential and a server-side copy
-  // of the meeting, and the operator signed for exactly that (DECISIONS D1/D2). The bundle below
-  // — connector KV + SQL — is the thing they did NOT sign for, and a client can offer it in
-  // either mode. Refusing it here is what keeps "the backend never gains standing access to your
-  // space" true after the cutover (plan §9 row 3), so this is a regression guard now, not a
-  // statement about which ingest shape shipped.
-  it("rejects delegations broader than the backend policy without storing or activating", async () => {
-    const activations: unknown[] = [];
-    const { app, store, cache } = createApp({
-      activateDelegation: async (delegation) => {
-        activations.push(delegation);
-        return { kv: {}, sql: {} } as any;
-      },
-    });
-    const granted = [
-      {
-        service: "tinycloud.kv",
-        space: "applications",
-        path: "xyz.tinycloud.tinychat/connectors/",
-        actions: [
-          "tinycloud.kv/get",
-          "tinycloud.kv/put",
-          "tinycloud.kv/del",
-          "tinycloud.kv/list",
-        ],
-      },
-      {
-        service: "tinycloud.sql",
-        space: "applications",
-        path: "xyz.tinycloud.tinychat/connectors",
-        actions: [
-          "tinycloud.sql/read",
-          "tinycloud.sql/write",
-          "tinycloud.sql/schema",
-        ],
-      },
-      {
-        service: "tinycloud.kv",
-        space: "applications",
-        path: "xyz.tinycloud.tinychat/threads/",
-        actions: [
-          "tinycloud.kv/get",
-          "tinycloud.kv/put",
-          "tinycloud.kv/del",
-          "tinycloud.kv/list",
-        ],
-      },
-    ];
-    const serialized = JSON.stringify({
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      ownerAddress: TEST_ADDRESS,
-      chainId: 1,
-      delegateDID: TEST_DID,
-      resources: granted,
-    });
-
-    const response = await request(app, "/api/delegations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serialized }),
-    });
-
-    expect(response.status).toBe(400);
-    const body = await response.json();
-    expect(body.error).toBe("overbroad_delegation");
-
-    // The response names the offending resources: exactly those the resolved policy does not cover.
-    const allowed = new Set(
-      backendDelegationResolvedPermissions(TEST_DID).map(
-        (permission) => `${permission.service}:${permission.path}`,
-      ),
-    );
-    const expectedOffending = granted.filter(
-      (resource) => !allowed.has(`${resource.service}:${resource.path}`),
-    );
-    expect(expectedOffending.length).toBeGreaterThan(0);
-    expect(
-      body.offending.map(
-        (resource: any) => `${resource.service}:${resource.path}`,
-      ),
-    ).toEqual(
-      expectedOffending.map(
-        (resource) => `${resource.service}:${resource.path}`,
-      ),
-    );
-
-    expect(activations).toEqual([]);
-    expect(await store.load(TEST_ADDRESS)).toBeNull();
-    expect(cache.get(TEST_ADDRESS)).toBeNull();
-  });
-
-  // The accept-side ceiling and the activation clamp have to agree about a path the prefix
-  // predicate cannot compare: `<policy>/../../` startsWith `<policy>`, so `isCapabilitySubset`
-  // reported an EMPTY offending list for a bundle that escapes the policy, and the clamp then
-  // emitted the traversal path verbatim into `useDelegation`.
-  it("rejects a traversal path carried alongside a legitimate resource", async () => {
-    const activations: unknown[] = [];
-    const { app, store, cache } = createApp({
-      activateDelegation: async (delegation: any) => {
-        activations.push(delegation);
-        return { kv: {}, sql: {} } as any;
-      },
-    });
-    const policy = backendDelegationResolvedPermissions(TEST_DID);
-    const escaping = policy.map((permission) => ({
-      ...permission,
-      path: `${permission.path}../../../`,
-    }));
-    const serialized = JSON.stringify({
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      ownerAddress: TEST_ADDRESS,
-      chainId: 1,
-      delegateDID: TEST_DID,
-      resources: [...policy, ...escaping],
-    });
-
-    const response = await request(app, "/api/delegations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serialized }),
-    });
-
-    expect(response.status).toBe(400);
-    const body = await response.json();
-    expect(body.error).toBe("overbroad_delegation");
-    expect(body.offending.map((resource: any) => resource.path)).toEqual(
-      escaping.map((permission) => permission.path),
-    );
-    expect(activations).toEqual([]);
-    expect(await store.load(TEST_ADDRESS)).toBeNull();
-    expect(cache.get(TEST_ADDRESS)).toBeNull();
-  });
-
-  // §3.3/§9.2 S2c (interim): the 7-day TTL T2/T4 name as the mitigation has to be a bound this
-  // backend applies. The source of `expiry` is an unsigned, rewritable top-level field, and the
-  // old fallback was `DEFAULT_DELEGATION_EXPIRY_MS` — one YEAR.
-  it("clamps the stored expiry to the backend's 7 days", async () => {
-    const { app, store } = createApp();
-    const serialized = JSON.stringify({
-      expiresAt: new Date(Date.now() + 300 * 86_400_000).toISOString(),
-      ownerAddress: TEST_ADDRESS,
-      chainId: 1,
-      delegateDID: TEST_DID,
-      resources: backendDelegationResolvedPermissions(TEST_DID),
-    });
-
-    const response = await request(app, "/api/delegations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serialized }),
-    });
-
-    expect(response.status).toBe(200);
-    const ceiling = Date.now() + BACKEND_DELEGATION_EXPIRY_MS;
-    const stored = await store.load(TEST_ADDRESS);
-    expect(Date.parse(stored.expiresAt)).toBeLessThanOrEqual(ceiling + 1_000);
-    expect(Date.parse(stored.expiresAt)).toBeGreaterThan(
-      Date.now() + 6 * 86_400_000,
-    );
-    expect(Date.parse((await response.json()).expiresAt)).toBe(
-      Date.parse(stored.expiresAt),
-    );
-  });
-
-  it("never falls back to a year when the bundle carries no expiry", async () => {
-    const { app, store } = createApp({ extractExpiry: () => null });
-    const serialized = JSON.stringify({
-      ownerAddress: TEST_ADDRESS,
-      chainId: 1,
-      delegateDID: TEST_DID,
-      resources: backendDelegationResolvedPermissions(TEST_DID),
-    });
-
-    const response = await request(app, "/api/delegations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serialized }),
-    });
-
-    expect(response.status).toBe(200);
-    const stored = await store.load(TEST_ADDRESS);
-    expect(Date.parse(stored.expiresAt)).toBeLessThanOrEqual(
-      Date.now() + BACKEND_DELEGATION_EXPIRY_MS + 1_000,
-    );
-  });
-
-  it("keeps an expiry that is already shorter than the ceiling", async () => {
-    const { app, store } = createApp();
-    const shorter = new Date(Date.now() + 3_600_000).toISOString();
-    const serialized = JSON.stringify({
-      expiresAt: shorter,
-      ownerAddress: TEST_ADDRESS,
-      chainId: 1,
-      delegateDID: TEST_DID,
-      resources: backendDelegationResolvedPermissions(TEST_DID),
-    });
-
-    const response = await request(app, "/api/delegations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serialized }),
-    });
-
-    expect(response.status).toBe(200);
-    expect((await store.load(TEST_ADDRESS)).expiresAt).toBe(shorter);
-  });
-
-  it("evicts stale delegations during status checks", async () => {
-    const { app, store, cache } = createApp();
-    await store.store(TEST_ADDRESS, "serialized", {
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      actions: [],
-      path: "",
-      policyHash: "old-policy",
-      resources: backendDelegationResolvedPermissions(TEST_DID),
-    });
-    cache.set(TEST_ADDRESS, { kv: {}, sql: {} });
-
-    const response = await request(app, "/api/delegations/status");
-
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ status: "stale", expiresAt: null });
-    expect(await store.load(TEST_ADDRESS)).toBeNull();
-    expect(cache.get(TEST_ADDRESS)).toBeNull();
-  });
-
-  it("evicts stored delegations bound to a different backend delegatee", async () => {
-    const { app, store, cache } = createApp();
-    await store.store(TEST_ADDRESS, "serialized", {
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      actions: [],
-      path: "",
-      policyHash: backendDelegationPolicyHash(TEST_DID),
-      delegateDid: "did:key:z6MkPreviousBackend",
-      resources: backendDelegationResolvedPermissions(TEST_DID),
-    });
-    cache.set(TEST_ADDRESS, { kv: {}, sql: {} });
-
-    const response = await request(app, "/api/delegations/status");
-
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ status: "stale", expiresAt: null });
-    expect(await store.load(TEST_ADDRESS)).toBeNull();
-    expect(cache.get(TEST_ADDRESS)).toBeNull();
-  });
-
-  it("returns 503 without mutating the cache when durable status loading fails", async () => {
-    const sensitiveFailure =
-      "address=0xdeadbeef space=tinycloud:secret delegation=AUTHZ_BYTES " +
-      "token=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA payload=PRIVATE meeting=MEETING_SECRET";
-    const { app, store, cache } = createApp();
-    const cached = { kv: {}, sql: {} };
-    cache.set(TEST_ADDRESS, cached);
-    let cacheEvictions = 0;
-    cache.evict = (identifier: string) => {
-      cacheEvictions += 1;
-      return cache._records.delete(identifier);
-    };
-    store.load = () => rejectedKvAcknowledgement(sensitiveFailure);
-
-    const capture = captureLogs();
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 500);
-    let response: Response | null;
-    try {
-      response = await request(app, "/api/delegations/status", {
-        signal: controller.signal,
-      }).catch(() => null);
-    } finally {
-      clearTimeout(timeout);
-      capture.restore();
     }
-
-    expect(response?.status).toBe(503);
-    expect(await response?.json()).toEqual({ error: "unavailable" });
-    expect(cacheEvictions).toBe(0);
-    expect(cache.get(TEST_ADDRESS)).toBe(cached);
-    expect(capture.lines).toEqual([
-      "[delegations] op=status-load result=error",
-    ]);
-    expect(capture.lines.join("\n")).not.toContain(sensitiveFailure);
+    expect(logs.join(" ")).not.toContain(grant.envelope);
+    expect(fixture.records.get(grant.address.toLowerCase())?.serialized).toBe(grant.envelope);
+    expect(changed).toEqual([]);
   });
 
-  it("returns 503 and preserves expired state when status cleanup rejects", async () => {
-    const sensitiveFailure =
-      "address=0xdeadbeef space=tinycloud:secret delegation=AUTHZ_BYTES " +
-      "token=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA payload=PRIVATE meeting=MEETING_SECRET";
-    const { app, store, cache } = createApp();
-    await store.store(TEST_ADDRESS, "serialized", {
-      expiresAt: new Date(Date.now() - 1_000).toISOString(),
-      actions: [],
-      path: "",
-      policyHash: backendDelegationPolicyHash(TEST_DID),
-      delegateDid: TEST_DID,
-      resources: backendDelegationResolvedPermissions(TEST_DID),
+  it("limits each wallet address to six attempts per hour before verifying the seventh", async () => {
+    const grant = await makeSignedTranscriptGrant();
+    const fixture = appFor(grant);
+    await withServer(fixture.app, async (base) => {
+      for (let attempt = 0; attempt < 6; attempt++) {
+        expect((await post(base, grant)).status).toBe(200);
+      }
+      const seventh = await post(base, grant);
+      expect(seventh.status).toBe(429);
+      expect((await seventh.json()).error).toBe("delegation_rate_limited");
     });
-    const cached = { kv: {}, sql: {} };
-    cache.set(TEST_ADDRESS, cached);
-    store.remove = () => rejectedKvAcknowledgement(sensitiveFailure);
-
-    const capture = captureLogs();
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 500);
-    let response: Response | null;
-    try {
-      response = await request(app, "/api/delegations/status", {
-        signal: controller.signal,
-      }).catch(() => null);
-    } finally {
-      clearTimeout(timeout);
-      capture.restore();
-    }
-
-    expect(response?.status).toBe(503);
-    expect(((await response?.json()) as { error: string }).error).toBe(
-      "unavailable",
-    );
-    expect(await store.load(TEST_ADDRESS)).not.toBeNull();
-    expect(cache.get(TEST_ADDRESS)).toBe(cached);
-    expect(capture.lines).toEqual([
-      "[delegations] op=status-cleanup result=error",
-    ]);
-    expect(capture.lines.join("\n")).not.toContain(sensitiveFailure);
-  });
-
-  it("returns 503 and preserves stale state when status cleanup rejects", async () => {
-    const sensitiveFailure =
-      "address=0xdeadbeef space=tinycloud:secret delegation=AUTHZ_BYTES " +
-      "token=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA payload=PRIVATE meeting=MEETING_SECRET";
-    const { app, store, cache } = createApp();
-    await store.store(TEST_ADDRESS, "serialized", {
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      actions: [],
-      path: "",
-      policyHash: "old-policy",
-      resources: backendDelegationResolvedPermissions(TEST_DID),
-    });
-    const cached = { kv: {}, sql: {} };
-    cache.set(TEST_ADDRESS, cached);
-    store.remove = () => rejectedKvAcknowledgement(sensitiveFailure);
-
-    const capture = captureLogs();
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 500);
-    let response: Response | null;
-    try {
-      response = await request(app, "/api/delegations/status", {
-        signal: controller.signal,
-      }).catch(() => null);
-    } finally {
-      clearTimeout(timeout);
-      capture.restore();
-    }
-
-    expect(response?.status).toBe(503);
-    expect(((await response?.json()) as { error: string }).error).toBe(
-      "unavailable",
-    );
-    expect(await store.load(TEST_ADDRESS)).not.toBeNull();
-    expect(cache.get(TEST_ADDRESS)).toBe(cached);
-    expect(capture.lines).toEqual([
-      "[delegations] op=status-cleanup result=error",
-    ]);
-    expect(capture.lines.join("\n")).not.toContain(sensitiveFailure);
-  });
-
-  it("returns 503 and preserves cached state when deletion rejects", async () => {
-    const sensitiveFailure =
-      "address=0xdeadbeef space=tinycloud:secret delegation=AUTHZ_BYTES " +
-      "token=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA payload=PRIVATE meeting=MEETING_SECRET";
-    const { app, store, cache } = createApp();
-    await store.store(TEST_ADDRESS, "serialized", {
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      actions: [],
-      path: "",
-      policyHash: backendDelegationPolicyHash(TEST_DID),
-      delegateDid: TEST_DID,
-      resources: backendDelegationResolvedPermissions(TEST_DID),
-    });
-    const cached = { kv: {}, sql: {} };
-    cache.set(TEST_ADDRESS, cached);
-    store.remove = () => rejectedKvAcknowledgement(sensitiveFailure);
-
-    const capture = captureLogs();
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 500);
-    let response: Response | null;
-    try {
-      response = await request(app, "/api/delegations", {
-        method: "DELETE",
-        signal: controller.signal,
-      }).catch(() => null);
-    } finally {
-      clearTimeout(timeout);
-      capture.restore();
-    }
-
-    expect(response?.status).toBe(503);
-    const body = (await response?.json()) as {
-      error: string;
-      status?: string;
-    };
-    expect(body.error).toBe("unavailable");
-    expect(body.status).not.toBe("none");
-    expect(await store.load(TEST_ADDRESS)).not.toBeNull();
-    expect(cache.get(TEST_ADDRESS)).toBe(cached);
-    expect(capture.lines).toEqual(["[delegations] op=delete result=error"]);
-    expect(capture.lines.join("\n")).not.toContain(sensitiveFailure);
-  });
-
-  // This route knows NOTHING about the Fireflies connector — in EITHER ingest mode.
-  //
-  // The drafted Option-B shape gave it two connector hooks: `isBackgroundSyncDisabled` (409
-  // `background_sync_disabled` / fail-closed 503 while the webhook disabled marker stood) and
-  // `onDelegationAccepted` (a fresh-grant drain kick). Both existed to protect a *connector*
-  // delegation the server does not hold. What survived was a coupling in the wrong direction: an
-  // optional notification toggle able to refuse the delegation that ordinary chat depends on.
-  // See connector-delegation-independence.test.ts for the two routers driven end to end against
-  // one store.
-  //
-  // INGEST-CUTOVER(plan §11): for a cohort address the server now DOES hold a Fireflies
-  // credential and a server-side copy of the meeting (plan §5, §6) — but still no connector
-  // delegation, and still no hook from the connector into this route. The three tests below are
-  // therefore regression guards in both modes; each carries its own marker.
-  //
-  // These tests pass the removed hooks anyway, through a cast — the point is that the route
-  // ignores them, not that its config type still accepts them.
-  function legacyConnectorHooks(hooks: {
-    isBackgroundSyncDisabled?: (address: string) => Promise<boolean>;
-    onDelegationAccepted?: (address: string) => void | Promise<void>;
-  }): Partial<Parameters<typeof createDelegationRouter>[0]> {
-    return hooks as unknown as Partial<
-      Parameters<typeof createDelegationRouter>[0]
-    >;
-  }
-
-  function mintableBundle() {
-    return JSON.stringify({
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      ownerAddress: TEST_ADDRESS,
-      chainId: 1,
-      delegateDID: TEST_DID,
-      resources: backendDelegationResolvedPermissions(TEST_DID),
-    });
-  }
-
-  // INGEST-CUTOVER(plan §11) — still true, and still worth guarding. Backend ingestion adds a
-  // per-address cohort check and a fetch worker, but neither is an input to the chat delegation:
-  // the delegation router is built with no connector collaborator in either mode
-  // (`backend/src/index.ts`), so an unreadable cohort list or a disabled connector cannot refuse
-  // the grant every authenticated TinyChat write depends on.
-  it("mints without ever consulting a connector background-sync state", async () => {
-    let probed = 0;
-    const { app, store, cache } = createApp(
-      legacyConnectorHooks({
-        isBackgroundSyncDisabled: async () => {
-          probed += 1;
-          return true;
-        },
-      }),
-    );
-
-    const response = await request(app, "/api/delegations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serialized: mintableBundle() }),
-    });
-
-    // Never 409 `background_sync_disabled`: a Fireflies toggle is not an authorization input
-    // for the delegation every authenticated TinyChat write needs.
-    expect(response.status).toBe(200);
-    expect(probed).toBe(0);
-    expect(await store.load(TEST_ADDRESS)).not.toBeNull();
-    expect(cache.get(TEST_ADDRESS)).not.toBeNull();
-  });
-
-  // INGEST-CUTOVER(plan §11) — the reasoning is re-stated for the new architecture and the
-  // assertion survives. Backend ingestion DOES fail closed on an unreadable cohort list, but it
-  // does so inside the connector surfaces (a 503 from the credential/meetings routes), where the
-  // blast radius is the connector. Chat is not the connector: there is still no connector read on
-  // this path, so there is still nothing here to fail closed on.
-  it("does not fail closed on a connector state read — there is no such read", async () => {
-    // The Option-B gate answered a retryable 503 when the marker was unreadable. With no
-    // connector delegation to protect, that trade is pure loss: an unrelated KV hiccup in the
-    // webhook namespace would lock the user out of chat.
-    const sensitiveFailure =
-      "address=0xdeadbeef space=tinycloud:secret delegation=AUTHZ_BYTES " +
-      "token=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA payload=PRIVATE meeting=MEETING_SECRET";
-    const { app, store } = createApp(
-      legacyConnectorHooks({
-        isBackgroundSyncDisabled: () =>
-          rejectedKvAcknowledgement(sensitiveFailure),
-      }),
-    );
-
-    const capture = captureLogs();
-    let response: Response;
-    try {
-      response = await request(app, "/api/delegations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ serialized: mintableBundle() }),
-      });
-    } finally {
-      capture.restore();
-    }
-
-    expect(response.status).toBe(200);
-    expect(await store.load(TEST_ADDRESS)).not.toBeNull();
-    expect(capture.lines).toEqual([]);
-    expect(capture.lines.join("\n")).not.toContain(sensitiveFailure);
-  });
-
-  // INGEST-CUTOVER(plan §11) — REWRITTEN RATIONALE. The old one ("there is no server-side
-  // writer") is no longer true: for a cohort address W3's fetch worker fetches the meeting and
-  // W4 writes it into the backend's own encrypted store. What is still true — and is what this
-  // test now guards — is that nothing wakes that worker from HERE. Its triggers are the signed
-  // delivery (`onDelivery`, wired in `backend/src/index.ts`) and its own timer sweep; a
-  // delegation accept is neither. Keeping the accept path connector-free is what stops the chat
-  // grant from becoming an input to ingestion, in either direction.
-  it("does not kick a connector drain when a delegation is accepted", async () => {
-    // §5.4 trigger 4 (fresh-grant kick) existed to drain a queue into a server-side writer.
-    // Under Option C the browser drains on the user's next usable visit; under backend ingest
-    // the fetch worker drains, but only off a delivery or its sweep. An accept must not reach
-    // into the connector at all.
-    let kicked = 0;
-    const { app } = createApp(
-      legacyConnectorHooks({
-        onDelegationAccepted: () => {
-          kicked += 1;
-        },
-      }),
-    );
-
-    const response = await request(app, "/api/delegations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serialized: mintableBundle() }),
-    });
-
-    expect(response.status).toBe(200);
-    // Give a fire-and-forget hook the tick it would have had.
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(kicked).toBe(0);
-  });
-
-  // ── S2e (§3.5): the accept route capped NOTHING about the bundle ────
-
-  it("S2e: rejects an oversize `serialized` BEFORE deserializing it", async () => {
-    // The string is stored verbatim on the shared single-writer node, so the cap has to bite
-    // ahead of JSON.parse. Only the 1 MB global parser and a 240-req/15-min bucket bounded it,
-    // and that bucket is exempt from the global limiter. A legitimate bundle is a few kB.
-    let deserialized = 0;
-    const { app, store } = createApp({
-      deserializeDelegationSet: (serialized: string) => {
-        deserialized += 1;
-        return JSON.parse(serialized);
-      },
-    });
-
-    const response = await request(app, "/api/delegations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serialized: "x".repeat(65_537) }),
-    });
-
-    expect(response.status).toBe(400);
-    expect(((await response.json()) as { error: string }).error).toBe(
-      "bundle_too_large",
-    );
-    expect(deserialized).toBe(0);
-    expect(await store.load(TEST_ADDRESS)).toBeNull();
-  });
-
-  it("S2e: rejects a bundle carrying more than 4 delegations", async () => {
-    const one = JSON.parse(mintableBundle()) as unknown;
-    const { app, store } = createApp({
-      deserializeDelegationSet: () => Array(5).fill(one) as any,
-    });
-
-    const response = await request(app, "/api/delegations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serialized: mintableBundle() }),
-    });
-
-    expect(response.status).toBe(400);
-    expect(((await response.json()) as { error: string }).error).toBe(
-      "bundle_too_many_delegations",
-    );
-    expect(await store.load(TEST_ADDRESS)).toBeNull();
-  });
-
-  it("S2e: rejects N duplicate in-policy resources rather than persisting all N", async () => {
-    // The clamp DEDUPES for activation, so 400 identical policy-shaped entries collapse to one
-    // activation and never reach `assertSupportedMultiResourceShape` — while all 400 were still
-    // persisted verbatim by `store()`. Nothing about them is overbroad, so S2d does not close it.
-    const policy = backendDelegationResolvedPermissions(TEST_DID);
-    const { app, store } = createApp({
-      extractResources: () => Array(400).fill(policy[0]) as any,
-    });
-
-    const response = await request(app, "/api/delegations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serialized: mintableBundle() }),
-    });
-
-    expect(response.status).toBe(400);
-    expect(((await response.json()) as { error: string }).error).toBe(
-      "bundle_too_many_resources",
-    );
-    expect(await store.load(TEST_ADDRESS)).toBeNull();
-  });
-
-  it("§3.2a: the accept-side ceiling refuses a resource naming ANOTHER user's space", async () => {
-    // `isCapabilitySubset` normalizes a space to the segment after its LAST colon, so
-    // `tinycloud:0xVICTIM:applications` compares EQUAL to the policy's own space and
-    // `delegationExceedsBackendPolicy` returned an EMPTY offending list. Only the activation
-    // clamp refused it — after the bundle had already been declared within policy, i.e. after
-    // the check that bounds what may be STORED had passed it. The stored bundle is the artifact
-    // T4 inherits, so both checks have to agree.
-    const policy = backendDelegationResolvedPermissions(TEST_DID);
-    let activated = 0;
-    const { app, store } = createApp({
-      activateDelegation: async () => {
-        activated += 1;
-        return { kv: {}, sql: {} } as any;
-      },
-    });
-
-    const serialized = JSON.stringify({
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      ownerAddress: TEST_ADDRESS,
-      chainId: 1,
-      delegateDID: TEST_DID,
-      spaceId: "tinycloud:pkh:eip155:1:0xowner:applications",
-      resources: [
-        ...policy,
-        {
-          ...policy[0],
-          space:
-            "tinycloud:0xdeadbeef00000000000000000000000000001234:applications",
-        },
-      ],
-    });
-
-    const response = await request(app, "/api/delegations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serialized }),
-    });
-
-    expect(response.status).toBe(400);
-    const body = (await response.json()) as {
-      error: string;
-      offending: unknown[];
-    };
-    expect(body.error).toBe("overbroad_delegation");
-    expect(body.offending.length).toBeGreaterThan(0);
-    expect(activated).toBe(0);
-    expect(await store.load(TEST_ADDRESS)).toBeNull();
-  });
-
-  // §3.2a, the top-level `spaceId` half. `foreignSpaceResources` compares the RESOURCE space
-  // against this same unsigned field, so setting the two equal to a victim's space is invisible
-  // to it; and `resourceSpaceWithinPolicy` returns true on its first line when the resource
-  // declares no space at all, so that variant never reaches the identity rule either. All three
-  // shapes below were accepted 200 and activated with the VICTIM's spaceId, because
-  // `activateResource` falls back to `delegation.spaceId` whenever the clamped resource carries
-  // no `tinycloud:` space — which, since the clamp re-emits the policy's bare `applications`,
-  // is always.
-  it("§3.2a: refuses a bundle whose top-level spaceId is not the authenticated user's", async () => {
-    const policy = backendDelegationResolvedPermissions(TEST_DID);
-    const VICTIM_SPACE =
-      "tinycloud:pkh:eip155:1:0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:applications";
-
-    const variants: Array<{ name: string; resources: unknown[] }> = [
-      // (a) resource declares NO space
-      {
-        name: "no resource space",
-        resources: policy.map(({ space: _space, ...rest }) => rest),
-      },
-      // (b) resource space === top-level spaceId — the equality the attacker arranges
-      {
-        name: "equal spaces",
-        resources: policy.map((entry) => ({ ...entry, space: VICTIM_SPACE })),
-      },
-      // (c) bare policy space alongside a foreign top-level spaceId
-      { name: "bare resource space", resources: policy },
-    ];
-
-    for (const variant of variants) {
-      let activated = 0;
-      const { app, store, cache } = createApp({
-        activateDelegation: async () => {
-          activated += 1;
-          return { kv: {}, sql: {} } as any;
-        },
-      });
-      const serialized = JSON.stringify({
-        expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-        ownerAddress: TEST_ADDRESS,
-        chainId: 1,
-        delegateDID: TEST_DID,
-        spaceId: VICTIM_SPACE,
-        resources: variant.resources,
-      });
-
-      const response = await request(app, "/api/delegations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ serialized }),
-      });
-
-      expect({ variant: variant.name, status: response.status }).toEqual({
-        variant: variant.name,
-        status: 400,
-      });
-      expect(((await response.json()) as { error: string }).error).toBe(
-        "foreign_space_delegation",
-      );
-      expect(activated).toBe(0);
-      expect(await store.load(TEST_ADDRESS)).toBeNull();
-      expect(cache.get(TEST_ADDRESS)).toBeNull();
-    }
-  });
-
-  // The bare-name seam. `applications` names no OWNER, which an earlier reading took to mean it
-  // could not steer the invocation — but the field is forwarded verbatim as the invocation's
-  // `spaceId`, and what the node resolves a bare name against is precisely the thing this rule
-  // must not guess. The SDK types the field as the full space URI, so a real bundle always
-  // carries the comparable form.
-  it("§3.2a: refuses a top-level spaceId that is not a comparable space URI", async () => {
-    for (const spaceId of [
-      "applications",
-      "tinycloud:applications",
-      "tinycloud:pkh:eip155:1",
-    ]) {
-      let activated = 0;
-      const { app, store } = createApp({
-        activateDelegation: async () => {
-          activated += 1;
-          return { kv: {}, sql: {} } as any;
-        },
-      });
-      const serialized = JSON.stringify({
-        expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-        ownerAddress: TEST_ADDRESS,
-        chainId: 1,
-        delegateDID: TEST_DID,
-        spaceId,
-        resources: backendDelegationResolvedPermissions(TEST_DID),
-      });
-
-      const response = await request(app, "/api/delegations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ serialized }),
-      });
-
-      expect({ spaceId, status: response.status }).toEqual({
-        spaceId,
-        status: 400,
-      });
-      expect(((await response.json()) as { error: string }).error).toBe(
-        "foreign_space_delegation",
-      );
-      expect(activated).toBe(0);
-      expect(await store.load(TEST_ADDRESS)).toBeNull();
-    }
-  });
-
-  it("§3.2a: still accepts a bundle whose spaceId IS the authenticated user's own", async () => {
-    // The non-breaking half: the check is an identity rule on the owner segment, not a ban on
-    // carrying a `spaceId`. An ABSENT `spaceId` leaves `activateResource` no attacker-chosen
-    // target to fall back to, so it stays allowed.
-    for (const spaceId of [
-      `tinycloud:pkh:eip155:1:${TEST_ADDRESS}:applications`,
-      undefined,
-    ]) {
-      const { app, store } = createApp();
-      const serialized = JSON.stringify({
-        expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-        ownerAddress: TEST_ADDRESS,
-        chainId: 1,
-        delegateDID: TEST_DID,
-        ...(spaceId === undefined ? {} : { spaceId }),
-        resources: backendDelegationResolvedPermissions(TEST_DID),
-      });
-
-      const response = await request(app, "/api/delegations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ serialized }),
-      });
-
-      expect({ spaceId, status: response.status }).toEqual({
-        spaceId,
-        status: 200,
-      });
-      expect(await store.load(TEST_ADDRESS)).not.toBeNull();
-    }
-  });
-
-  // §6.3 / T13. The deploy runs `phala deploy --public-logs`, so this stream is world-readable
-  // and §6.3 rests on it being forensically trustworthy.
-  it("§6.3: an attacker-supplied resource path cannot forge a line on the public log stream", async () => {
-    const policy = backendDelegationResolvedPermissions(TEST_DID);
-    const { app } = createApp();
-    const serialized = JSON.stringify({
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      ownerAddress: TEST_ADDRESS,
-      chainId: 1,
-      delegateDID: TEST_DID,
-      resources: [
-        ...policy,
-        {
-          ...policy[0],
-          path:
-            "xyz.tinycloud.tinychat/evil/\n[connector-webhook] op=disable " +
-            "aid=0000000000000000 FORGED-LINE",
-        },
-      ],
-    });
-
-    const capture = captureLogs();
-    let response: Response;
-    try {
-      response = await request(app, "/api/delegations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ serialized }),
-      });
-    } finally {
-      capture.restore();
-    }
-
-    expect(response.status).toBe(400);
-    expect(((await response.json()) as { error: string }).error).toBe(
-      "overbroad_delegation",
-    );
-    const logged = capture.lines.join("\n");
-    // The line break is gone, so there is no second line to impersonate anything…
-    expect(logged).not.toContain("\n");
-    expect(
-      capture.lines.some((line) => line.startsWith("[connector-webhook]")),
-    ).toBe(false);
-    // …and `=` is outside the allowlist, so no `key=value` field can be reconstructed either.
-    expect(logged).not.toContain("op=disable");
-    expect(logged).not.toContain("aid=0000000000000000");
-    // The operator still gets the COUNT and a sanitized, bounded description.
-    expect(logged).toContain("count=1");
-    expect(logged).toContain("xyz.tinycloud.tinychat/evil/");
-  });
-
-  // KV Result failure contract (hardening 1/4). DelegationStore.store now surfaces a durable
-  // storage failure as a thrown redacted error rather than silently returning; the accept route
-  // must NOT emit its success response ("status":"active") after the store rejects, and it must
-  // not warm the delegation cache either — otherwise the browser would report success and the
-  // fresh-grant drain would run on a delegation that was never persisted.
-  it("returns 503 and leaves the cache cold when durable storage rejects", async () => {
-    let cacheSets = 0;
-    const sensitiveFailure =
-      "address=0xdeadbeef space=tinycloud:secret delegation=AUTHZ_BYTES " +
-      "token=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA payload=PRIVATE meeting=MEETING_SECRET";
-    const failingStore = {
-      store: () => rejectedKvAcknowledgement(sensitiveFailure),
-      load: async () => null,
-      remove: async () => {},
-    };
-    const cache = createCache();
-    cache.set = ((identifier: string, access: unknown) => {
-      cacheSets += 1;
-      cache._records.set(identifier, access);
-    }) as any;
-
-    const app = express();
-    app.use(express.json());
-    app.use(
-      "/api/delegations",
-      createDelegationRouter({
-        backendDid: TEST_DID,
-        store: failingStore as any,
-        cache: cache as any,
-        authMiddleware: (req: Request, _res: Response, next: NextFunction) => {
-          req.user = { address: TEST_ADDRESS };
-          next();
-        },
-        deserializeDelegationSet: (serialized: string) =>
-          JSON.parse(serialized),
-        activateDelegation: async () => ({ kv: {}, sql: {} }) as any,
-        extractResources: (delegation: any) => delegation.resources,
-        extractExpiry: (delegation: any) => new Date(delegation.expiresAt),
-      }),
-    );
-
-    const serialized = JSON.stringify({
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      ownerAddress: TEST_ADDRESS,
-      chainId: 1,
-      delegateDID: TEST_DID,
-      resources: backendDelegationResolvedPermissions(TEST_DID),
-    });
-
-    const capture = captureLogs();
-    let response: Response;
-    try {
-      response = await request(app, "/api/delegations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ serialized }),
-      });
-    } finally {
-      capture.restore();
-    }
-
-    expect(response.status).toBe(503);
-    const body = (await response.json()) as { status?: string; error?: string };
-    expect(body.error).toBe("unavailable");
-    expect(body.status).not.toBe("active");
-    expect(cacheSets).toBe(0);
-    expect(cache.get(TEST_ADDRESS)).toBeNull();
-    expect(capture.lines).toEqual(["[delegations] op=store result=error"]);
-    expect(capture.lines.join("\n")).not.toContain(sensitiveFailure);
-    expect(capture.lines.join("\n")).not.toContain(serialized);
-  });
-
-  it("§6.3: a malformed bundle does not echo its own bytes into the log stream", async () => {
-    // The serialized bundle is capability material (it carries `delegationHeader`), and the raw
-    // error object put ~50 verbatim characters of it on a `public_logs=true` stream:
-    // `SyntaxError: JSON Parse error: Unexpected identifier "AUTHZ_BEARER_MATERIAL_zzz…"`.
-    const { app } = createApp({
-      deserializeDelegationSet: (s: string) => JSON.parse(s),
-    });
-    const secretish = `AUTHZ_BEARER_MATERIAL_${"z".repeat(40)}-not-json`;
-
-    const capture = captureLogs();
-    let response: Response;
-    try {
-      response = await request(app, "/api/delegations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ serialized: secretish }),
-      });
-    } finally {
-      capture.restore();
-    }
-
-    expect(response.status).toBe(400);
-    expect(capture.lines.join("\n")).not.toContain("AUTHZ_BEARER_MATERIAL");
+    expect(fixture.calls.store).toBe(1);
+    expect(fixture.calls.activate).toHaveLength(2);
   });
 });

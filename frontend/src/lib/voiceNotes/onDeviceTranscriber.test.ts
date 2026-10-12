@@ -11,7 +11,7 @@ type SaveResult = { ok: true; data: unknown } | { ok: false; error: { code: stri
 let save: (saved: { rev: number }, checkpoint?: () => void) => Promise<SaveResult> = async () => ({ ok: true, data: {} });
 const realStore = { ...(await import("./voiceNoteStore")) };
 mock.module("./voiceNoteStore", () => ({ ...realStore,
-  saveVoiceNoteTranscript: (_tcw: unknown, _id: string, saved: { rev: number }, checkpoint?: () => void) => save(saved, checkpoint) }));
+  saveVoiceNoteTranscript: (_tcw: unknown, _id: string, saved: { rev: number }, _account?: unknown, checkpoint?: () => void) => save(saved, checkpoint) }));
 afterAll(() => mock.module("./voiceNoteStore", () => realStore));
 const { onDeviceTranscriptSyncState, recordOnDeviceTranscript, subscribeOnDeviceTranscriptSync, syncOnDeviceTranscript } = await import("./onDeviceTranscriber");
 

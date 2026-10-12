@@ -1,5 +1,25 @@
+#[cfg(all(
+    feature = "transcription",
+    any(debug_assertions, feature = "ipc-selftest")
+))]
+mod ipc_selftest;
 #[cfg(feature = "transcription")]
 mod recorder;
+// Release-profile library tests validate probe names without putting the
+// self-test in the ordinary shipped binary.
+#[cfg(all(
+    feature = "transcription",
+    test,
+    not(any(debug_assertions, feature = "ipc-selftest"))
+))]
+#[path = "ipc_selftest.rs"]
+mod ipc_selftest_probes;
+#[cfg(feature = "transcription")]
+mod local;
+#[cfg(feature = "transcription")]
+mod local_url;
+#[cfg(feature = "transcription")]
+mod session_audio;
 #[cfg(all(feature = "transcription", debug_assertions))]
 mod smoke;
 
@@ -56,6 +76,7 @@ pub fn run() {
             recorder::files::finalize_audio_file,
             recorder::files::recorder_whisper_stage_audio,
             recorder::files::recorder_whisper_cleanup_stages,
+            local::recorder_whisper_start,
             recorder::files::delete_audio_file,
             recorder::engine::recorder_start,
             recorder::engine::recorder_pause,
@@ -89,6 +110,7 @@ pub fn run() {
             recorder::files::finalize_audio_file,
             recorder::files::recorder_whisper_stage_audio,
             recorder::files::recorder_whisper_cleanup_stages,
+            local::recorder_whisper_start,
             recorder::files::delete_audio_file,
             recorder::engine::recorder_start,
             recorder::engine::recorder_pause,
@@ -119,6 +141,8 @@ pub fn run() {
             app.add_capability(include_str!(
                 "../capabilities-transcription/transcription.json"
             ))?;
+            #[cfg(any(debug_assertions, feature = "ipc-selftest"))]
+            ipc_selftest::maybe_run(app);
             // EXO_SMOKE=1 runs real plugin invokes in the webview (debug only).
             #[cfg(debug_assertions)]
             {

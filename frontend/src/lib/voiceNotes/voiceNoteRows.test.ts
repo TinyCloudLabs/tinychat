@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { createElement, act } from "react";
+import { createRoot } from "react-dom/client";
+import { captureEvents } from "@/capture/captureEvents";
+import { PendingVoiceNotesSaver, schedulePendingVoiceNotesRecovery } from "@/chat/PendingVoiceNotesSaver";
+import { OnDeviceStt, __setOnDeviceSttForTests, type OnDeviceSttPlugin } from "./onDeviceStt";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connectors/connectorStore";
 import { SQL_MEETING_METADATA_QUERY } from "../meetingChat/corpus";
@@ -8,6 +13,7 @@ import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity,
   reconcileDuplicates, sweepArchived, transcriptHash, transcriptRevKvKey } from "./voiceNoteRows";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __setVoiceNotesForTests, VoiceNotes } from "./nativeVoiceNotes";
+import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
 import { createVoiceNotePipeline, VoiceNoteSaveDeferred } from "./voiceNotePipeline";
 import { handoffBeforeCredentialClear } from "./accountHandoff";
 import { advanceAccountGeneration, currentAccountGeneration } from "./accountContext";
@@ -60,7 +66,7 @@ test("space lane snapshot reports busy state and queued depth", async () => {
 import { pendingStore, saveNoteForAccount } from "./recorderSaves";
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
 import { loadNote, saveNote } from "./recordingNotes";
-import { readRecordingNoteFromSpace, syncRecordingNote, voiceNoteAudioKvKey, voiceNoteMarkdownKvKey } from "./voiceNoteStore";
+import { readRecordingNoteFromSpace, syncRecordingNote, VOICE_NOTE_SOURCE, voiceNoteAudioKvKey, voiceNoteMarkdownKvKey } from "./voiceNoteStore";
 
 let count = 0;
 function space() {
@@ -445,6 +451,200 @@ test("Stop during the OpenKey wait after handoff cannot upload to the old accoun
     expect((await fake.plugin.listPending()).recordings.find((note) => note.id === stopped.id)?.ledger?.audio.state).toBe("saved");
     expect(values.size).toBeGreaterThan(0);
   } finally { __setVoiceNotesForTests(previous, { available: null }); }
+});
+
+test("sign-in and manual reconciliation emit only for notes first landed by recovery", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  const events: unknown[] = [];
+  const off = captureEvents.on("library-changed", (event) => events.push(event));
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: "did:test:other", transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false });
+    await fake.plugin.start();
+    const other = await fake.plugin.stop();
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 2,
+      transcriber: "on-device", identifySpeakers: false });
+    await fake.plugin.start();
+    const recovered = await fake.plugin.stop();
+    await fake.plugin.start();
+    const stopped = await fake.plugin.stop();
+    const pipeline = createVoiceNotePipeline(tcw);
+    const ctx = { did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() };
+    await pipeline.process(ctx, stopped.id);
+    expect(events).toEqual([]); // The recorder callback owns the initial Stop event.
+    await pipeline.reconcileAll(ctx);
+    expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: recovered.id }]);
+    expect((await fake.plugin.listPending()).recordings.find((note) => note.id === other.id)?.ledger?.audio.state)
+      .toBe("pending");
+    await pipeline.reconcileAll(ctx, "manual");
+    expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: recovered.id }]);
+    await fake.plugin.start();
+    const manual = await fake.plugin.stop();
+    await pipeline.reconcileAll(ctx, "manual");
+    expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: recovered.id },
+      { source: VOICE_NOTE_SOURCE, sourceId: manual.id }]);
+    await pipeline.reconcileAll(ctx);
+    expect(events).toHaveLength(2);
+  } finally { off(); __setVoiceNotesForTests(original, { available: null }); }
+});
+
+test("failed recovery emits nothing, and a later successful retry emits once", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  const events: unknown[] = [];
+  const off = captureEvents.on("library-changed", (event) => events.push(event));
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false });
+    await fake.plugin.start();
+    const note = await fake.plugin.stop();
+    const put = tcw.kv.put.bind(tcw.kv);
+    let offline = true;
+    tcw.kv.put = (async (key: string, value: unknown, opts: unknown) =>
+      offline && key.includes("/audio/")
+        ? { ok: false, error: { code: "OFFLINE", message: "no connection" } }
+        : put(key, value as never, opts as never)) as typeof tcw.kv.put;
+    const pipeline = createVoiceNotePipeline(tcw);
+    const ctx = { did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() };
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh();
+    // A note that cannot upload is reported against that note, not thrown out of the pass.
+    await pipeline.reconcileAll(ctx);
+    expect(pendingStore.snapshot().notes?.find((pending) => pending.id === note.id)?.failed).toBeDefined();
+    expect(events).toEqual([]);
+    offline = false;
+    await pipeline.reconcileAll(ctx, "manual");
+    expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: note.id }]);
+    await pipeline.reconcileAll(ctx, "manual");
+    expect(events).toHaveLength(1);
+  } finally { off(); __setVoiceNotesForTests(original, { available: null }); }
+});
+
+for (const transition of ["late account change", "cancellation"] as const) {
+test(`recovery interrupted by ${transition} cannot emit into the next pass`, async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  const events: unknown[] = [];
+  const off = captureEvents.on("library-changed", (event) => events.push(event));
+  let release = () => {};
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false });
+    await fake.plugin.start();
+    const note = await fake.plugin.stop();
+    const reachedPart = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<void>();
+    release = gate.resolve;
+    const put = tcw.kv.put.bind(tcw.kv);
+    tcw.kv.put = (async (key: string, value: unknown, opts: unknown) => {
+      if (key.includes("/audio/") && key.includes("/p/")) { reachedPart.resolve(); await gate.promise; }
+      return put(key, value as never, opts as never);
+    }) as typeof tcw.kv.put;
+    const pipeline = createVoiceNotePipeline(tcw);
+    const ctx = { did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() };
+    const saving = pipeline.reconcileAll(ctx);
+    await reachedPart.promise;
+    const nextGeneration = transition === "late account change" ? advanceAccountGeneration() : ctx.generation;
+    if (transition === "cancellation") { pipeline.cancelAll(); pipeline.resume(); }
+    release();
+    await expect(saving).rejects.toThrow();
+    expect(events).toEqual([]);
+    await pipeline.reconcileAll({ ...ctx, generation: nextGeneration });
+    expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: note.id }]);
+  } finally { release(); off(); __setVoiceNotesForTests(original, { available: null }); }
+});
+}
+
+test("the mounted pending saver runs the real pipeline on sign-in and forced-swap recovery", async () => {
+  const original = VoiceNotes;
+  const previousStt = OnDeviceStt;
+  const previousWindow = globalThis.window;
+  const previousAct = Reflect.get(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+  const fake = createFakeVoiceNotes();
+  const { tcw } = space();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  __setOnDeviceSttForTests({ addListener: async () => ({ remove: async () => {} }) } as OnDeviceSttPlugin);
+  const documentStub = { nodeType: 9, activeElement: null, addEventListener() {}, removeEventListener() {},
+    createElement: () => hostNode(), createTextNode: () => hostNode() };
+  function hostNode(): unknown {
+    return new Proxy(function () {}, { get: (_target, key) => key === "nodeType" ? 1 : key === "ownerDocument" ? documentStub
+      : key === "style" ? {} : key === "firstChild" || key === "parentNode" ? null : () => hostNode(), set: () => true });
+  }
+  Reflect.set(globalThis, "window", { HTMLIFrameElement: class {}, document: documentStub,
+    addEventListener() {}, removeEventListener() {}, setTimeout, clearTimeout });
+  Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+  const root = createRoot({ nodeType: 1, nodeName: "DIV", tagName: "DIV", ownerDocument: documentStub, textContent: "",
+    addEventListener() {}, removeEventListener() {}, appendChild() {}, removeChild() {}, insertBefore() {} } as unknown as HTMLElement);
+  let mounted = true;
+  const events: unknown[] = [];
+  let expectedId: string | null = null;
+  let landed = Promise.withResolvers<void>();
+  const off = captureEvents.on("library-changed", (event) => {
+    events.push(event);
+    if (event?.sourceId === expectedId) landed.resolve();
+  });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false });
+    await fake.plugin.start();
+    const initial = await fake.plugin.stop();
+    expectedId = initial.id;
+    const pipeline = createVoiceNotePipeline(tcw);
+    await act(async () => root.render(createElement(PendingVoiceNotesSaver,
+      { tcw, pipeline, backendUrl: "", sessionStore: {} as never })));
+    await act(async () => landed.promise);
+    expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: initial.id }]);
+
+    fake.plugin.getTranscript = async () => ({ transcript: {
+      version: 1, noteId: initial.id, transcriber: "on-device", rev: 1,
+      engine: "apple-speech", model: null, language: "en", outcome: "transcribed",
+      diarized: false, segments: [{ start: 0, end: 1000, text: "Saved locally", speaker: null }],
+      createdAt: "2026-10-03T10:00:00.000Z",
+    } });
+    await syncOnDeviceTranscript(tcw, { id: initial.id, ledger: { audio: { state: "saved" } } });
+    expect(await readTranscriptCommit(tcw, initial.id)).toMatchObject({ rev: 1 });
+    expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: initial.id },
+      { source: VOICE_NOTE_SOURCE, sourceId: initial.id }]);
+    fake.plugin.getTranscript = async () => ({ transcript: null });
+
+    await fake.plugin.start();
+    const swapped = await fake.plugin.stop();
+    expectedId = swapped.id;
+    landed = Promise.withResolvers<void>();
+    schedulePendingVoiceNotesRecovery();
+    await act(async () => landed.promise);
+    expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: initial.id },
+      { source: VOICE_NOTE_SOURCE, sourceId: initial.id },
+      { source: VOICE_NOTE_SOURCE, sourceId: swapped.id }]);
+    expect((await fake.plugin.listPending()).recordings.filter((note) => note.ledger?.audio.state === "saved"))
+      .toHaveLength(2);
+    await act(async () => root.unmount());
+    mounted = false;
+    fake.plugin.getTranscript = async () => ({ transcript: {
+      version: 1, noteId: initial.id, transcriber: "on-device", rev: 2,
+      engine: "apple-speech", model: null, language: "en", outcome: "transcribed",
+      diarized: false, segments: [{ start: 0, end: 1000, text: "Arrived after sign-out", speaker: null }],
+      createdAt: "2026-10-03T10:01:00.000Z",
+    } });
+    // The saver's unmount paused the account's work: the late sync is abandoned (the next launch's catch-up saves it) and silent.
+    await syncOnDeviceTranscript(tcw, { id: initial.id, ledger: { audio: { state: "saved" } } });
+    expect(await readTranscriptCommit(tcw, initial.id)).toMatchObject({ rev: 1 });
+    expect(events).toHaveLength(3);
+  } finally {
+    if (mounted) await act(async () => root.unmount());
+    off();
+    __setOnDeviceSttForTests(previousStt);
+    __setVoiceNotesForTests(original, { available: null });
+    Reflect.set(globalThis, "window", previousWindow);
+    Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
+  }
 });
 
 test("another account's retained notes do not delay a fresh Stop with a space preflight", async () => {

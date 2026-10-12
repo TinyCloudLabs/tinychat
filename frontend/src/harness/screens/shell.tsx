@@ -268,6 +268,13 @@ export const shellScreens: HarnessScreen[] = [
     platform: "ios",
     render: () => <Shell />,
   },
+  {
+    ...SHELL,
+    id: "shell-settings-android",
+    path: "/chat/settings",
+    platform: "android",
+    render: () => <Shell />,
+  },
   // Scrolled: the large title has collapsed into the header row, with its hairline.
   {
     ...SHELL,

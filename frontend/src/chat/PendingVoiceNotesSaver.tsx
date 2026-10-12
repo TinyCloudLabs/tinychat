@@ -20,7 +20,7 @@ import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
 import { isTinyCloudNetworkFailure, logVoiceNoteError, messageOf, pendingStore, whenVoiceNoteSavesIdle } from "@/lib/voiceNotes/recorderSaves";
-import { advanceAccountGeneration, captureAccountContext, currentAccountGeneration, isAccountContextCurrent } from "@/lib/voiceNotes/accountContext";
+import { advanceAccountGeneration, captureAccountContext, currentAccountGeneration, isAccountContextCurrent, mountVoiceNoteAccount } from "@/lib/voiceNotes/accountContext";
 import { saveDeferredForAccountTransition, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { transcribeSavedNote, voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
 
@@ -118,6 +118,7 @@ export function PendingVoiceNotesSaver({
     if (!did || !spaceId) return;
     pendingStore.setAccount(did);
     pendingStore.setOnline(typeof navigator === "undefined" ? true : navigator.onLine !== false);
+    const unmountAccount = mountVoiceNoteAccount(did);
     pipeline.resume();
     const transcriber = voiceNoteTranscriberFor(tcw, backendUrl, sessionStore);
     let runInFlight: Promise<void> | null = null;
@@ -172,7 +173,7 @@ export function PendingVoiceNotesSaver({
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
       if (appStateHandle) void appStateHandle.remove();
-      unregister(); pipeline.cancelAll(); pendingStore.setAccount(null);
+      unregister(); unmountAccount(); pipeline.cancelAll(); pendingStore.setAccount(null);
     };
   }, [backendUrl, pipeline, sessionStore, tcw]);
   return null;

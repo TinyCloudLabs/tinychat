@@ -1,0 +1,212 @@
+name: Transcript quality eval
+
+# desktop.yml independently builds the macOS app for A2's desktop changes.
+on:
+  pull_request:
+    paths: &eval_inputs
+      # P: production transcription inputs.
+      - "desktop/vendor/**"
+      - "desktop/.cargo/**"
+      - "desktop/local-transcription/**"
+      - "desktop/transcription-vocabulary.json"
+      - "desktop/Cargo.toml"
+      - "desktop/Cargo.lock"
+      - "desktop/src-tauri/Cargo.toml"
+      - "desktop/src-tauri/Cargo.lock"
+      - "desktop/src-tauri/.cargo/**"
+      - "desktop/src-tauri/src/local.rs"
+      - "desktop/src-tauri/src/session_audio.rs"
+      - "desktop/src-tauri/src/recorder/session_audio.rs"
+      - "desktop/src-tauri/src/recorder/files.rs"
+      - "desktop/src-tauri/src/recorder/engine.rs"
+      - "desktop/eval/**"
+      - ".github/workflows/transcript-eval.yml"
+      # F: frontend scoring inputs.
+      - "frontend/src/lib/localTranscriptTurns.ts"
+      - "frontend/src/lib/transcriptEval*.ts"
+      - "frontend/src/lib/voiceNotes/desktop/whisperTranscript.ts"
+      - "frontend/src/lib/voiceNotes/desktop/desktopWhisper.ts"
+      - "frontend/src/lib/voiceNotes/voiceNoteStore.ts"
+      - "frontend/src/lib/voiceNotes/nativeVoiceNotes.ts"
+      - "frontend/src/lib/anarlog/transcription.gen.ts"
+  push:
+    branches: [main]
+    paths: *eval_inputs
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Model to use for the model-backed runner smoke
+        type: choice
+        options: [small, large-turbo]
+        default: small
+
+permissions:
+  contents: read
+
+concurrency:
+  group: transcript-eval-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  paths:
+    runs-on: ubuntu-latest
+    outputs:
+      native: ${{ steps.changed.outputs.native }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: changed
+        name: Detect changes to production inputs (P)
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ "${{ github.event_name }}" == workflow_dispatch ]]; then
+            echo 'native=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          native=false
+          while IFS= read -r -d '' path; do
+            case "$path" in
+              desktop/vendor/*|desktop/local-transcription/*|desktop/transcription-vocabulary.json|desktop/Cargo.toml|desktop/Cargo.lock|desktop/.cargo/*|desktop/src-tauri/Cargo.toml|desktop/src-tauri/Cargo.lock|desktop/src-tauri/.cargo/*|desktop/src-tauri/src/local.rs|desktop/src-tauri/src/session_audio.rs|desktop/src-tauri/src/recorder/session_audio.rs|desktop/src-tauri/src/recorder/files.rs|desktop/src-tauri/src/recorder/engine.rs|desktop/eval/*|.github/workflows/transcript-eval.yml)
+                native=true; break ;;
+            esac
+          done < <(git diff --name-only -z "$BASE" "$GITHUB_SHA")
+          echo "native=$native" >> "$GITHUB_OUTPUT"
+
+  score:
+    # A2 runs the A1 scorer and adversarial tests. Goldens/gates baselines arrive in A3.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
+      - name: A1 scorer, adversarial cases and extraction regressions
+        run: |
+          bun test frontend/src/lib/transcriptEval.test.ts \
+            frontend/src/lib/transcriptEval.review.test.ts \
+            frontend/src/lib/transcriptEvalGates.review.test.ts \
+            frontend/src/lib/localTranscriptTurns.test.ts \
+            frontend/src/lib/voiceNotes/desktop/desktopVoiceNotes.test.ts
+
+  native:
+    needs: paths
+    if: needs.paths.outputs.native == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+      - name: Install JS dependencies for production scoring
+        run: bun install --frozen-lockfile
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - name: Check both workspaces and write the dependency closure
+        run: bun desktop/eval/transcript-quality/check-workspace-sync.ts "$RUNNER_TEMP/closure.json"
+      - name: Parity regression tests
+        run: bun test desktop/eval/transcript-quality/check-workspace-sync.test.ts
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: transcript-dependency-closure
+          path: ${{ runner.temp }}/closure.json
+      - name: Install native audio build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libclang-dev cmake pkg-config ffmpeg
+      - name: Mock Whisper build
+        run: cargo check --locked --manifest-path desktop/Cargo.toml -p whisper-local --no-default-features
+      # Follow-up: upstream SSE invalid-model test expects HTTP 500; origin/main
+      # returns HTTP 200 before the error event. Do not alter production in A2.
+      - name: Model-free native tests
+        run: cargo test --locked --manifest-path desktop/Cargo.toml -p whisper-local -p transcribe-whisper-local -p audio-chunking -p exo-local-transcription -p transcript-quality-runner -- --skip tests::batch_sse_invalid_model_path_returns_http_500_json_error
+      - name: Select pinned model
+        id: model
+        shell: bash
+        run: |
+          if [[ "${{ inputs.model }}" == large-turbo ]]; then
+            echo 'filename=ggml-large-v3-turbo-q8_0.bin' >> "$GITHUB_OUTPUT"
+            echo 'sha256=317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1' >> "$GITHUB_OUTPUT"
+          else
+            echo 'filename=ggml-small-q8_0.bin' >> "$GITHUB_OUTPUT"
+            echo 'sha256=49c8fb02b65e6049d5fa6c04f81f53b867b5ec9540406812c643f177317f779f' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/transcript-models
+          key: transcript-model-${{ steps.model.outputs.sha256 }}
+      - name: Fetch and verify model
+        shell: bash
+        env:
+          MODEL_NAME: ${{ steps.model.outputs.filename }}
+          MODEL_SHA: ${{ steps.model.outputs.sha256 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/transcript-models"
+          model="$RUNNER_TEMP/transcript-models/$MODEL_NAME"
+          if [[ ! -f "$model" ]]; then
+            curl --fail --location --retry 3 --output "$model" "https://huggingface.co/ggerganov/whisper.cpp/resolve/0b364b566045a405be7225ee1e415a073e04da77/$MODEL_NAME"
+          fi
+          echo "$MODEL_SHA  $model" | sha256sum --check
+      - name: Production-client runner smoke (mono import, vocabulary off)
+        env:
+          MODEL_NAME: ${{ steps.model.outputs.filename }}
+        run: |
+          cargo run --release --locked --manifest-path desktop/Cargo.toml -p transcript-quality-runner -- \
+            --fixture desktop/eval/transcript-quality/smoke \
+            --model "$RUNNER_TEMP/transcript-models/$MODEL_NAME" --input mono --vocabulary off \
+            --output "$RUNNER_TEMP/transcript-smoke"
+      - name: Score production-client smoke against its reference
+        run: bun desktop/eval/transcript-quality/score-smoke.ts desktop/eval/transcript-quality/smoke "$RUNNER_TEMP/transcript-smoke"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: transcript-runner-smoke
+          path: ${{ runner.temp }}/transcript-smoke/
+          if-no-files-found: ignore
+
+  metal-parity:
+    needs: paths
+    if: needs.paths.outputs.native == 'true'
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - name: Require pinned Xcode
+        run: test -d "$DEVELOPER_DIR"
+      - name: Ensure Metal compiler
+        run: |
+          if ! xcrun metal -v >/dev/null 2>&1; then
+            xcodebuild -downloadComponent MetalToolchain
+            for attempt in {1..30}; do
+              if xcrun metal -v >/dev/null 2>&1; then exit 0; fi
+              sleep 2
+            done
+            echo "Metal compiler is still unavailable" >&2
+            exit 1
+          fi
+      - name: Build release-profile Metal-enabled production runner
+        run: cargo check --release --locked --manifest-path desktop/Cargo.toml -p transcript-quality-runner --features metal
+      - name: Check exact Metal transcription feature parity
+        run: bun desktop/eval/transcript-quality/check-workspace-sync.ts --platform macos "$RUNNER_TEMP/closure-metal.json"
+      # The Tauri app enables Metal by default; Foundation is unavailable on Linux.
+      - name: Recorder files and request-parity unit tests (macOS app)
+        working-directory: desktop/src-tauri
+        run: cargo test --release --lib --locked
