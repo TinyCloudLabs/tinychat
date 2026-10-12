@@ -508,9 +508,10 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
   });
 
   for (const viewport of viewports) {
-    test(`every screen at ${viewport.id} (${viewport.width}x${viewport.height})`, async () => {
-      const failures: string[] = [];
-      for (const theme of themes) {
+    // One test per theme: the whole desktop pass in one test sat at the 600 s budget, and each theme is an independent browser session.
+    for (const theme of themes) {
+      test(`every screen at ${viewport.id} (${viewport.width}x${viewport.height}), ${theme}`, async () => {
+        const failures: string[] = [];
         // WebKit stops loading after about 65 pages per browser. Recycle every
         // 40 screens within each theme to stay below that limit.
         for (let start = 0; start < screens.length; start += 40) {
@@ -745,10 +746,10 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
             await context.close();
           }
         }
-      }
-      expect(failures).toEqual([]);
-      // WebKit takes several seconds per page for the shell screens (they run the whole chat).
-    }, 600_000);
+        expect(failures).toEqual([]);
+        // WebKit takes several seconds per page for the shell screens (they run the whole chat).
+      }, 600_000);
+    }
   }
 
   const runsPhoneHaloReview =
