@@ -74,7 +74,6 @@ import { SettingsPage } from "./chat/SettingsPage";
 import { AboutPage } from "./chat/AboutPage";
 import { ConnectorsPage } from "./chat/ConnectorsPage";
 import { CaptureSurface } from "./capture/CaptureSurface";
-import { captureEvents } from "./capture/captureEvents";
 import { HeaderLiveChip } from "./capture/recorder/HeaderLiveChip";
 import { RecordButton } from "./capture/recorder/RecordButton";
 import { RecorderProvider } from "./capture/recorder/RecorderProvider";
@@ -1090,7 +1089,6 @@ export function App() {
       backendUrl={BACKEND_URL}
       sessionStore={sessionStoreRef.current}
       enabled={voiceNotesInApp && !LOCAL_VALIDATION}
-      onSaved={() => captureEvents.emit("library-changed")}
       onAccountReady={setCaptureReadyTcw}
       pipeline={voiceNotePipeline}
       signedOut={state === "unauthenticated" && !sessionStoreRef.current.hasSession()}

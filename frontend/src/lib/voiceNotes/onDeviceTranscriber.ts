@@ -7,6 +7,7 @@
 // does for its own source.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
+import { currentAccountGeneration } from "./accountContext";
 import { localTranscriptToSave, saveVoiceNoteTranscript } from "./voiceNoteStore";
 import { VoiceNotes, type LocalTranscript } from "./nativeVoiceNotes";
 
@@ -21,6 +22,7 @@ export async function syncOnDeviceTranscript(
   recording: { id: string; ledger?: { audio: { state: string } } },
 ): Promise<void> {
   if (recording.ledger?.audio.state !== "saved") return;
+  const account = { generation: currentAccountGeneration(), did: tcw.did };
   let transcript: LocalTranscript | null;
   try {
     ({ transcript } = await VoiceNotes.getTranscript({ id: recording.id }));
@@ -30,7 +32,7 @@ export async function syncOnDeviceTranscript(
   }
   if (!transcript) return;
   try {
-    const result = await saveVoiceNoteTranscript(tcw, recording.id, localTranscriptToSave(transcript));
+    const result = await saveVoiceNoteTranscript(tcw, recording.id, localTranscriptToSave(transcript), account);
     if (!result.ok) console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", result.error);
   } catch (err) {
     console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", err);

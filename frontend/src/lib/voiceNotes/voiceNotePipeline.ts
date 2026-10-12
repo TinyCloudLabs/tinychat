@@ -1,10 +1,11 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { captureEvents } from "@/capture/captureEvents";
 import { assertCurrent, StaleAccountContext, type AccountContext } from "./accountContext";
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
 import { VoiceNotes } from "./nativeVoiceNotes";
 import { isDiscarded, saveNoteForAccount } from "./recorderSaves";
 import { ensureVoiceNoteIdentity, sweepArchived } from "./voiceNoteRows";
-import { syncRecordingNote } from "./voiceNoteStore";
+import { syncRecordingNote, VOICE_NOTE_SOURCE } from "./voiceNoteStore";
 
 export interface VoiceNotePipeline {
   process(ctx: AccountContext, id: string, trigger?: "stop" | "background"): Promise<void>;
@@ -54,7 +55,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
     // Identity does the initial archive repair, and reconcileAll sweeps once for the
     // session. A fresh Stop must not repeat that space-wide work before its upload.
     const note = (await VoiceNotes.listPending()).recordings.find((r) => r.id === id);
-    if (!note) return;
+    if (!note) return false;
     check();
     const result = await saveNoteForAccount(tcw, ctx, note, check);
     if (result.kind === "failed") { check(); throw new Error(result.failure); }
@@ -66,13 +67,14 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
         console.warn("[VoiceNotes] Audio saved, but its Markdown did not sync", error);
       }
     }
+    return result.kind === "saved";
   };
   return {
     process(ctx, id, trigger = "stop") {
       if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());
       const epoch = cancellation;
       logSaveStart(id, trigger);
-      return run(() => processOne(ctx, id, epoch));
+      return run(async () => { await processOne(ctx, id, epoch); });
     },
     reconcileAll(ctx, trigger = "reconcile") {
       if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());
@@ -105,7 +107,9 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
           if (note.owner === ctx.did && !note.ownerUnknown) {
             try {
               logSaveStart(note.id, trigger);
-              await processOne(ctx, note.id, epoch);
+              const saved = await processOne(ctx, note.id, epoch);
+              check();
+              if (saved) captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId: note.id });
             }
             catch (error) {
               check();

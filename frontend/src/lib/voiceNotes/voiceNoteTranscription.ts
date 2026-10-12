@@ -47,6 +47,7 @@ import {
   type PtxPutResponse,
 } from "../privateCloud";
 import { captureEngineKind } from "./captureEngine";
+import { currentAccountGeneration } from "./accountContext";
 import { nativeHttpFileUploadSupported, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import {
@@ -64,6 +65,7 @@ import {
   VOICE_NOTE_AUDIO_TOO_LARGE,
   type VoiceNoteAudio,
   type VoiceNoteTranscriptSave,
+  type VoiceNoteTranscriptAccount,
 } from "./voiceNoteStore";
 
 // ── Upload ─────────────────────────────────────────────────────────────
@@ -848,8 +850,10 @@ export async function transcribeVoiceNote(args: {
   allowed?: () => boolean;
   report: (status: VoiceNoteTranscriptionStatus) => void;
   now?: () => Date;
+  account?: VoiceNoteTranscriptAccount;
 }): Promise<"transcribed" | "no_speech"> {
   const { tcw, cloud, sourceId, report } = args;
+  const account = args.account ?? { generation: currentAccountGeneration() };
   const transcribedAt = () => (args.now?.() ?? new Date()).toISOString();
   /** The job is done with: forget it, then delete it at PTX (best-effort: PTX deletes it within 24 h). */
   const finish = async (transcriptionId?: string | null) => {
@@ -908,7 +912,7 @@ export async function transcribeVoiceNote(args: {
   };
   const save = async (prepared: VoiceNoteTranscriptSave) => {
     report({ kind: "saving" });
-    const saved = await saveVoiceNoteTranscript(tcw, sourceId, prepared);
+    const saved = await saveVoiceNoteTranscript(tcw, sourceId, prepared, account);
     if (!saved.ok) {
       if (saved.error.code === "VOICE_NOTE_NOT_FOUND") throw new PrivateCloudError("voice_note_not_found", saved.error.message);
       throw new PrivateCloudError("transcript_save_failed", saved.error.message);
@@ -1023,6 +1027,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     // Queued, running, or just saved (the list may not show it yet): never a second job.
     const current = jobs.get(sourceId);
     if (current?.kind === "active" || current?.kind === "done") return;
+    const account = { generation: currentAccountGeneration(), did: deps.tcw().did };
     jobs.set(sourceId, { kind: "active", status: { kind: "waiting" } });
     waiting.add(sourceId);
     emit();
@@ -1041,6 +1046,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           capabilities: state.capabilities,
           sourceId,
           audio,
+          account,
           allowed: () => state.consented,
           report: (status) => {
             if (jobs.get(sourceId)?.kind !== "active") return;

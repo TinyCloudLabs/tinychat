@@ -24,6 +24,7 @@
 // follow the commit record, so a late old-client PUT cannot change their view.
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { captureEvents } from "@/capture/captureEvents";
 
 import {
   AUDIO_CORRUPT,
@@ -53,6 +54,7 @@ import { readLegacyTranscriptWinner, readTranscriptCommit, legacyTranscriptMetad
 import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio,
   patchVoiceNoteMarkdown, resolveVoiceNoteRow } from "./voiceNoteRows";
 import { runOnSpaceLane } from "../spaceWriteLane";
+import { currentAccountGeneration, isVoiceNoteAccountMounted } from "./accountContext";
 import { base64ToBytes, bytesToBase64 } from "./voiceNoteAudio";
 import { adoptNote, loadNote, noteMarkdown, parseNoteMarkdown, type RecordingNote } from "./recordingNotes";
 
@@ -443,6 +445,13 @@ export interface VoiceNoteTranscriptSave {
   speakers: string[];
 }
 
+/** Captured before a transcription job starts, not when its eventual save begins. */
+export interface VoiceNoteTranscriptAccount {
+  generation: number;
+  /** Supplied by mounted callers; guards a stale account even if its generation was reused. */
+  did?: string;
+}
+
 /**
  * Commit a transcript to an existing note. The immutable body lands first,
  * then a CAS upsert publishes it in `voice_note_transcript`. The old row and
@@ -452,7 +461,9 @@ export async function saveVoiceNoteTranscript(
   tcw: TinyCloudWeb,
   sourceId: string,
   transcript: VoiceNoteTranscriptSave,
+  account?: VoiceNoteTranscriptAccount,
 ): Promise<StoreResult<UpsertMeetingOutcome>> {
+  const accountGeneration = account?.generation ?? currentAccountGeneration();
   if (!Number.isSafeInteger(transcript.rev) || transcript.rev < 1)
     return { ok: false, error: { code: "VOICE_NOTE_REV_REQUIRED", message: "The note's transcript revision is missing" } };
   const schema = await ensureSchema(tcw);
@@ -482,6 +493,9 @@ export async function saveVoiceNoteTranscript(
       participants: transcript.speakers,
       transcribedAt: typeof m.transcribed_at === "string" ? m.transcribed_at : null, metadata: m,
     });
+    if (accountGeneration === currentAccountGeneration() && (!account?.did || isVoiceNoteAccountMounted(account.did))) {
+      captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId });
+    }
     return { ok: true, data: { id: String(existing.data.rows[0]?.[0]), inserted: false,
       createdAt: new Date().toISOString() } };
   } catch (caught) {
