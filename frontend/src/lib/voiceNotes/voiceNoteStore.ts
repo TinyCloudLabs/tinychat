@@ -496,6 +496,7 @@ export function localTranscriptToSave(local: LocalTranscript): VoiceNoteTranscri
   // accepts integers); start_time/end_time follow every other transcript source's seconds.
   const sentences: FirefliesSentence[] = local.segments.map((segment, index) => ({
     index, text: segment.text, start_time: segment.start / 1000, end_time: segment.end / 1000, speaker_name: segment.speaker ?? "You",
+    ...(segment.words ? { words: segment.words } : {}),
   }));
   return { rev: local.rev, sentences, speakers: [...new Set(local.segments.map((s) => s.speaker ?? "You"))],
     metadata: { transcription_outcome: local.outcome, transcript_text: local.outcome === "transcribed"

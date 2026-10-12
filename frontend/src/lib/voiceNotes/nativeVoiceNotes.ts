@@ -78,7 +78,10 @@ export interface LocalTranscript {
   engine: "parakeet-tdt-0.6b-v3" | "parakeet-tdt-110m-en" | "apple-speech" | "whispercpp" | "assemblyai" | "tinycloud-private-transcription";
   model: string | null; language: string | null; outcome: "transcribed" | "no_speech"; diarized: boolean;
   /** start/end are milliseconds: the native sidecar's canonical-JSON writer only accepts integers. */
-  segments: { start: number; end: number; text: string; speaker: string | null }[]; createdAt: string;
+  segments: { start: number; end: number; text: string; speaker: string | null;
+    /** Eval-only lineage. Not included in production transcripts. Times are seconds. */
+    words?: { text: string; start: number; end: number; channel: number | undefined;
+      timing: "token" | "fallback" | "none" }[] }[]; createdAt: string;
   provider?: Record<string, unknown>;
 }
 
