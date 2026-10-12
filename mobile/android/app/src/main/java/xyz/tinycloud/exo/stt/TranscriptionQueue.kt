@@ -17,18 +17,19 @@ import xyz.tinycloud.exo.capture.CaptureEngine
 import xyz.tinycloud.exo.stt.core.AttemptGuard
 import xyz.tinycloud.exo.stt.core.CapturePauseGate
 import xyz.tinycloud.exo.stt.core.CaptureYieldingLoop
+import xyz.tinycloud.exo.stt.core.Admission
 import xyz.tinycloud.exo.stt.core.ResumableWork
 import xyz.tinycloud.exo.stt.core.SherpaVadSource
 import xyz.tinycloud.exo.stt.core.TimedWord
 import xyz.tinycloud.exo.stt.core.TokenWordAlignment
 import xyz.tinycloud.exo.stt.core.VadFrames
+import xyz.tinycloud.exo.stt.core.WorkQueue
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.Executors
-import java.util.concurrent.LinkedBlockingDeque
 
 private class CaptureStartedException : Exception()
 
@@ -59,12 +60,13 @@ private class CaptureStartedException : Exception()
  */
 class TranscriptionQueue(private val context: Context, private val store: ModelStore) {
     private val capture get() = CaptureEngine.get(context)
+    // Decodes (`pump` holds this thread for a whole decode) and reconciles; admission never runs here.
     private val executor = Executors.newSingleThreadExecutor { r -> Thread(r, "exo-stt-queue").apply { isDaemon = true } }
-    private val pending = LinkedBlockingDeque<String>()
+    private val admissionLane = Executors.newSingleThreadExecutor { r -> Thread(r, "exo-stt-admission").apply { isDaemon = true } }
+    private val work = WorkQueue()
+    private val admission = Admission(work, admissionLane)
     private val captureGate = CapturePauseGate()
     @Volatile private var running = false
-    // The note being decoded: popped off `pending` the moment it starts, so the snapshot has to name it separately.
-    @Volatile private var current: String? = null
     var onQueueChanged: (() -> Unit)? = null
     var onProgress: ((String, Int) -> Unit)? = null
     var onTranscribed: ((String, String) -> Unit)? = null
@@ -89,7 +91,7 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
                 val id = note.optString("id", "")
                 if (!ResumableWork.owed(note)) continue
                 if (capture.library.getTranscript(id) != null) continue
-                if (!pending.contains(id)) pending.addLast(id)
+                work.addScanned(id)
             }
             pump()
         }
@@ -97,36 +99,26 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
 
     /** Explicit enqueue: the UI's Retry for a `failed` note, a Local choice for a note committed to
      * another mode, or a fresh on-device recording. Resets the attempt count, since this is a deliberate
-     * retry, not an automatic one, and records the choice so a restart resumes it. A note already
-     * queued or decoding keeps its attempt. Exactly one of the callbacks runs: `accepted` says whether
-     * the note is now in line (false for a note that already has its transcript), `failed` that it
-     * could not be queued. */
+     * retry, not an automatic one, and records the choice so a restart resumes it. It is admitted and
+     * persisted off the decode thread, so a note tapped during another's decode is acknowledged at once
+     * and the decode loop picks it up. A note already queued or decoding keeps its attempt. Exactly one
+     * of the callbacks runs: `accepted` says whether the note is now in line (false for a note that
+     * already has its transcript), `failed` that it could not be queued. */
     fun enqueue(id: String, accepted: (Boolean) -> Unit, failed: (Exception) -> Unit) {
-        executor.execute {
-            val inLine = try {
-                when {
-                    id == current || pending.contains(id) -> true
-                    capture.library.getTranscript(id) != null -> false
-                    else -> {
-                        capture.library.mutate(id, "stt.write") { note -> ResumableWork.requested(note.getJSONObject("stt")) }
-                        pending.addLast(id)
-                        true
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w("ExoStt", "enqueue failed for $id", e)
-                failed(e)
-                return@execute
-            }
-            if (inLine) onQueueChanged?.invoke()
-            accepted(inLine)
-            if (inLine) pump()
-        }
+        admission.enqueue(
+            id,
+            finished = { capture.library.getTranscript(id) != null },
+            persist = { capture.library.mutate(id, "stt.write") { note -> ResumableWork.requested(note.getJSONObject("stt")) } },
+            accepted = accepted,
+            failed = { e -> Log.w("ExoStt", "enqueue failed for $id", e); failed(e) },
+            changed = { onQueueChanged?.invoke() },
+            wake = { executor.execute { pump() } },
+        )
     }
 
     fun cancel(id: String) {
         executor.execute {
-            pending.remove(id)
+            work.remove(id)
             try { capture.library.markSttCancelled(id) } catch (_: Exception) {}
             onQueueChanged?.invoke()
         }
@@ -134,7 +126,7 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
 
     fun queueSnapshot(): JSONArray {
         val result = JSONArray()
-        for (id in listOfNotNull(current) + pending.toList()) {
+        for (id in work.snapshotIds()) {
             val stt = try { capture.library.read(id)?.optJSONObject("stt") } catch (_: Exception) { null }
             result.put(JSONObject().put("id", id).put("state", stt?.optString("state") ?: "queued")
                 .put("percent", JSONObject.NULL).put("error", stt?.opt("error") ?: JSONObject.NULL))
@@ -143,28 +135,27 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
     }
 
     private fun pump() {
-        if (running || pending.isEmpty()) return
+        if (running || !work.hasNext()) return
         if (captureGate.isActive()) return // Resumed by `captureEnded()`.
         val memory = (context.getSystemService(android.app.ActivityManager::class.java))
             .let { manager -> android.app.ActivityManager.MemoryInfo().also { manager.getMemoryInfo(it) } }.totalMem
         val modelId = ModelManifest.primaryModel(memory)
         if (!store.isReady(modelId) || !store.isReady(ModelManifest.SILERO_VAD)) {
-            for (id in pending.toList()) try { capture.library.mutate(id, "stt.write") { it.getJSONObject("stt").put("state", "waiting_for_model") } } catch (_: Exception) {}
+            for (id in work.pendingIds()) try { capture.library.mutate(id, "stt.write") { it.getJSONObject("stt").put("state", "waiting_for_model") } } catch (_: Exception) {}
             onQueueChanged?.invoke()
             return
         }
         running = true
         val engine = try { Engine(store, modelId) } catch (e: Exception) {
-            for (id in pending.toList()) fail(id, "model_load_failed", e.message ?: "load failed")
-            pending.clear()
+            for (id in work.drain()) fail(id, "model_load_failed", e.message ?: "load failed")
             running = false
             onQueueChanged?.invoke()
             return
         }
         try {
             CaptureYieldingLoop.run(
-                hasNext = { pending.isNotEmpty() },
-                next = { pending.removeFirst().also { current = it } },
+                hasNext = work::hasNext,
+                next = work::pop,
                 isPaused = { captureGate.isActive() },
             ) { id ->
                 val previousAttempts = try { capture.library.read(id)?.optJSONObject("stt")?.optInt("attempts", 0) ?: 0 } catch (_: Exception) { 0 }
@@ -184,21 +175,20 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
                         // Not a failed attempt: an orderly yield to a resumed recording. Restore the
                         // attempt count so being interrupted repeatedly never burns the crash-loop budget.
                         try { capture.library.mutate(id, "stt.write") { it.getJSONObject("stt").put("state", "queued").put("attempts", previousAttempts) } } catch (_: Exception) {}
-                        current = null
-                        pending.addFirst(id)
+                        work.requeueCurrent(id)
                     } catch (e: Exception) {
                         Log.e("ExoStt", "process() threw for id=$id", e)
                         fail(id, "decode_failed", e.message ?: e.toString())
                     }
                 }
-                current = null
+                work.finish()
             }
         } finally {
-            current = null
+            work.finish()
             engine.release()
             running = false
         }
-        if (pending.isNotEmpty()) executor.execute { Thread.sleep(2000); pump() }
+        if (work.hasNext()) executor.execute { Thread.sleep(2000); pump() }
     }
 
     /** Pushed by `CaptureEngine` the instant a session begins (capture-priority handoff, plan
