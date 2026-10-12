@@ -663,7 +663,10 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                     texts: texts.length,
                     wrong: texts.filter((el) => {
                       const size = Number.parseFloat(getComputedStyle(el).fontSize);
-                      return size > root * 0.78125 + 0.01;
+                      if (el.matches(".pipeline-stepper-label, .pipeline-stepper-status")) {
+                        return Math.abs(size - root * 0.78125) > 0.01;
+                      }
+                      return el.matches(".pipeline-track-summary > span") ? size > 12.01 : size > root * 0.78125 + 0.01;
                     })
                       .map((el) => `${el.className} ${getComputedStyle(el).fontSize}`),
                     overflowing,

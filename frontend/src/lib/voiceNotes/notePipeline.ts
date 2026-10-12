@@ -1,5 +1,5 @@
 // One pure selector from everything the app knows about a note to its independent audio and transcript tracks.
-// The surfaces (stepper, row halo, In progress card)
+// The surfaces (stepper, track summary, In progress card)
 // render this and nothing else. `NotePipelineInput` mirrors, structurally, the signals the stores publish; the
 // wiring that fills it from the stores is separate.
 import {

@@ -6,6 +6,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 import { SoftHomeProvider } from "@/capture/home/softHome";
+import { listPipelineEntries } from "@/capture/listPipelineEntries";
 import { StaticRecorderProvider, type RecorderValue } from "@/capture/recorder/RecorderProvider";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -680,7 +681,11 @@ describe("a saved Local note whose transcript is done on the phone but not in th
 
 describe("row existence and committed audio are independent pipeline inputs", () => {
   test("a web or desktop row with committed audio needs no phone ledger entry or caller audioSaved flag", async () => {
-    const source = { tcw: SPACE, rowExists: true, metadata: { audio: { stored: true }, audio_kv_key: "voice/audio" } } as unknown as NotePipelineSource;
+    const item = {
+      id: "voice-row", source: "exo-voice-note", sourceId: ID, title: "Voice note", startedAt: null, durationSecs: null,
+      metadata: { transcription_outcome: "transcribed", note_kv_key: null, note_edited_at: null, audio_kv_key: "voice/audio", audio_stored: 1 },
+    };
+    const [{ source }] = listPipelineEntries([item], SPACE);
     const { seen } = await mountOne(source);
     expect(phone.recordings).toEqual([]);
     expect(stepOf(seen.view!.pipeline, "space").state).toBe("done");

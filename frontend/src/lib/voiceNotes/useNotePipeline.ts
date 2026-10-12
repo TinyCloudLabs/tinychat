@@ -812,7 +812,8 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
 export function rowHasCommittedAudio(metadata: Record<string, unknown> | null | undefined): boolean {
   if (metadata === null || metadata === undefined) return false;
   const audio = metadata.audio;
-  return (typeof audio === "object" && audio !== null && "stored" in audio && audio.stored === true)
+  return metadata.audio_stored === true || metadata.audio_stored === 1
+    || (typeof audio === "object" && audio !== null && "stored" in audio && audio.stored === true)
     || (typeof metadata.audio_kv_key === "string" && metadata.audio_kv_key.length > 0);
 }
 

@@ -254,7 +254,7 @@ export type SaveOutcome =
   | { kind: "failed"; failure: string; failureKind: "offline" | "timeout" | "quota" | "auth" | "server" | "source" | "other"; failureCause: unknown };
 
 function failedOutcome(error: unknown): Extract<SaveOutcome, { kind: "failed" }> {
-  if (errorCode(error) === "STORE_ERROR" && rawErrorMessage(error).includes("Could not record this phone's TinyCloud row")) {
+  if (errorCode(error) === "ROW_LEDGER_FAILED") {
     return { kind: "failed", failure: "Couldn't save this note to your space. It's still on this phone — try again.", failureKind: "other", failureCause: error };
   }
   return { kind: "failed", failure: messageOf(error), failureKind: classifyNoteFailure(error), failureCause: error };
@@ -294,7 +294,7 @@ async function recordRowId(
       fresh = current;
     }
   }
-  throw Object.assign(new Error("Could not record this phone's TinyCloud row"), { code: "STORE_ERROR" });
+  throw Object.assign(new Error("Could not record this phone's TinyCloud row"), { code: "ROW_LEDGER_FAILED" });
 }
 
 function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {

@@ -368,6 +368,32 @@ describe("saveRecording", () => {
     expect(phone.deletes).toBe(0);
   });
 
+  test("starts the on-device transcript sync as soon as a row is created while audio remains queued", async () => {
+    const note = { ...recording("owned-v2-transcript-first", 31), stt: {
+      state: "done" as const, pack: null, engine: "apple-speech" as const,
+      segmentsDone: 1, windowsDone: 1, error: null,
+    } };
+    phone.pending = [note];
+    let rowCreated!: () => void;
+    const created = new Promise<void>((resolve) => { rowCreated = resolve; });
+    let finishUpload!: () => void;
+    const uploadGate = new Promise<void>((resolve) => { finishUpload = resolve; });
+    fakeVoiceNoteStore.save = async (...args) => {
+      await args[4]?.onRowCreated?.("transcript-first-row");
+      rowCreated();
+      await uploadGate;
+      return { ok: true, data: { id: "transcript-first-row", inserted: true, createdAt: "2026-10-07T00:00:00Z" } } as never;
+    };
+
+    const saving = saves.saveRecording(tcw, note);
+    await created;
+    for (let attempt = 0; attempt < 20 && phone.lists === 0; attempt++) await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(phone.lists).toBeGreaterThan(0);
+    expect(phone.ledgerUpdates[0]).toMatchObject({ patch: { audio: { state: "pending", rowId: "transcript-first-row" } } });
+    finishUpload();
+    expect((await saving).kind).toBe("saved");
+  });
+
   test("a changed ledger rev is re-read and patched once without another upload", async () => {
     const note = recording("owned-rev-conflict", 4);
     phone.pending = [note];

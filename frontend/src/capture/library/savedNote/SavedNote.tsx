@@ -54,9 +54,10 @@ export default function SavedNote({
   const space = useMemo(() => store ?? savedNoteStoreFor(tcw, () => hasSpaceRow.current), [store, tcw]);
   const screen = useSavedNoteScreen(item.sourceId, space);
   const rowMetadata = metadata?.status === "ok" ? metadata.metadata : null;
+  const pipelineMetadata = metadata?.status === "ok" ? metadata.metadata : undefined;
   const pipelineSource = useMemo<NotePipelineSource>(
-    () => ({ tcw, rowExists: item.onPhone !== true, audioSaved: item.onPhone !== true && rowHasCommittedAudio(rowMetadata), metadata: rowMetadata }),
-    [tcw, item.onPhone, rowMetadata],
+    () => ({ tcw, rowExists: item.onPhone !== true, audioSaved: item.onPhone !== true && rowHasCommittedAudio(pipelineMetadata), metadata: pipelineMetadata }),
+    [tcw, item.onPhone, pipelineMetadata],
   );
   const pipeline = useNotePipeline(item.sourceId, pipelineSource);
   const stepperShown = pipeline !== null && !pipeline.pipeline.done;
