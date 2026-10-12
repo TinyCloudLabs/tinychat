@@ -127,8 +127,8 @@ describe("PipelineStepper", () => {
     const css = await Bun.file(new URL("./PipelineStepper.css", import.meta.url)).text();
     expect(css).toContain("display: flex;");
     expect(css).toContain("flex-wrap: wrap;");
-    expect(css).toContain("flex: 0 0 max-content;");
-    expect(css).toContain("flex: 1 0 max-content;");
+    expect(css).toContain("flex: 0 1 auto;");
+    expect(css).toContain("flex: 1 1 10em;");
     expect(css).not.toMatch(/font-size:\s*[\d.]+px/);
     expect(css.match(/font-size:\s*0\.78125rem/g)?.length).toBeGreaterThanOrEqual(3);
     expect(css).toMatch(/\.pipeline-stepper \.soft-pill \{[^}]*font-size: 0\.78125rem/);

@@ -23,7 +23,7 @@
 }
 
 .pipeline-stepper-label {
-  flex: 0 0 max-content;
+  flex: 0 1 auto;
   max-width: 100%;
   font-size: 0.78125rem;
   line-height: 1.3;
@@ -36,7 +36,8 @@
   font-weight: 600;
 }
 .pipeline-stepper-status {
-  flex: 1 0 max-content;
+  flex: 1 1 10em;
+  min-width: 0;
   max-width: 100%;
   font-size: 0.78125rem;
   line-height: 1.3;
