@@ -214,7 +214,10 @@ export function TranscriptionRouteControl(props: {
   }
   else if (offered && consented) line = `${ROUTE_NAME["private-cloud"]} transcribes your notes.`;
   else if (transcription?.availability === "checking" && consented) line = `Checking ${ROUTE_NAME["private-cloud"]}…`;
-  else if (transcription?.availability === "failed" && consented) line = `${ROUTE_NAME["private-cloud"]} isn't available right now.`;
+  else if (transcription?.availability === "failed" && (consented || transcription.checkErrorCode === "native_status_failed"))
+    line = transcription.checkErrorCode === "native_status_failed"
+      ? "Couldn't check this phone's file upload."
+      : `${ROUTE_NAME["private-cloud"]} isn't available right now.`;
   else line = "Audio only.";
 
   return (
@@ -253,7 +256,10 @@ export function TranscriptionRouteControl(props: {
           <p className="min-w-0 text-callout text-muted-foreground" data-testid="transcription-route-line">
             {line}
           </p>
-          {transcription?.availability === "failed" && consented && (
+          {transcription?.availability === "failed" && transcription.checkErrorCode === "native_status_failed" && route === "on-device" && (
+            <p className="min-w-0 text-callout text-muted-foreground">Couldn&apos;t check this phone&apos;s file upload.</p>
+          )}
+          {transcription?.availability === "failed" && (consented || transcription.checkErrorCode === "native_status_failed") && (
             <Button type="button" variant="outline" size="sm" onClick={transcription.onRecheck} data-testid="voice-note-transcription-recheck">
               Check again
             </Button>

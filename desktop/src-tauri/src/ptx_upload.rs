@@ -29,7 +29,7 @@ fn sealed_audio(root: &std::path::Path, id: &str) -> Result<File, String> {
     recorder::files::open_sealed(root, id).map_err(|error| {
         if error == "audio_not_ready" {
             error
-        } else if error.contains("os error 2") {
+        } else if error == "not_found" {
             "not_found".into()
         } else {
             "audio_read_failed".into()

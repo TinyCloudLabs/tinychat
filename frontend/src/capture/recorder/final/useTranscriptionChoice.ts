@@ -199,7 +199,7 @@ export function useTranscriptionChoice({
       if (!signedIn)
         return { stop, available: true, ...(stop.id === "local" ? localModelStatus : {}) };
       if (stop.id === "private" && !offered) {
-        const { reason, canRecheck } = privateNotOffered(transcription?.availability);
+        const { reason, canRecheck } = privateNotOffered(transcription?.availability, transcription?.checkErrorCode);
         return {
           stop,
           available: false,

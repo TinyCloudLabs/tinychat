@@ -84,7 +84,14 @@ pub(super) fn open_read(root: &Path, id: &str) -> Result<File, String> {
             OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK,
             Mode::empty(),
         )
-        .map_err(|e| e.to_string())?,
+        .map_err(|error| {
+            let io_error = std::io::Error::from(error);
+            if io_error.kind() == std::io::ErrorKind::NotFound {
+                "not_found".into()
+            } else {
+                io_error.to_string()
+            }
+        })?,
     );
     if !file.metadata().map_err(|e| e.to_string())?.is_file() {
         return Err("audio_not_regular_file".into());

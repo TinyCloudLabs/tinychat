@@ -31,7 +31,7 @@ import {
   type PrivateCloudTranscript,
   type PtxPutResponse,
 } from "../privateCloud";
-import { captureCapabilities, captureEngineKind } from "./captureEngine";
+import { captureCapabilities, captureEngineKind, NativeFileUploadStatusError, resolveNativeFileUploadCapability } from "./captureEngine";
 import { currentAccountGeneration, subscribeAccountGeneration } from "./accountContext";
 import { nativeRecordingSource, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { readTranscriptCommit } from "./voiceNoteCommits";
@@ -968,6 +968,16 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
   };
 }
 
+/** A native status error is a retryable Private availability cause. */
+export async function devicePtxUploadSupported(): Promise<boolean> {
+  try { return await resolveNativeFileUploadCapability(); }
+  catch (cause) {
+    if (cause instanceof NativeFileUploadStatusError)
+      throw new PrivateCloudError(cause.code, cause.message);
+    throw cause;
+  }
+}
+
 /** The real engine, or null when this build has no PTX origin. */
 export function createVoiceNoteCloudForBuild(
   backendUrl: string,
@@ -983,7 +993,7 @@ export function createVoiceNoteCloudForBuild(
     put: web ? createFetchPtxPut() : capacitorPtxPut,
     origin,
     pending: localStorageVoiceNotePendingStore(accountDid),
-    uploadSupported: () => Promise.resolve(web || captureCapabilities().nativeFileUpload),
+    uploadSupported: () => web ? Promise.resolve(true) : devicePtxUploadSupported(),
   });
 }
 
@@ -1264,6 +1274,8 @@ export interface VoiceNoteTranscriberSnapshot {
   jobs: ReadonlyMap<string, NoteTranscriptionState>;
   /** The error of the last availability check when it failed (`availability` "failed"). */
   checkError?: string;
+  /** Stable public cause for a failed availability check. */
+  checkErrorCode?: string;
 }
 
 /** `saved`: a note's outcome was written to the space (refresh the list). */
@@ -1568,7 +1580,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           return { availability: "available", caps } as const;
         } catch (err) {
           console.warn("Checking private cloud transcription failed", err);
-          return { availability: "failed", error: err instanceof Error ? err.message : String(err) } as const;
+          return { availability: "failed", error: err instanceof Error ? err.message : String(err),
+            code: err instanceof PrivateCloudError ? err.code : "transcription_error" } as const;
         }
       };
       const stale = () => {
@@ -1590,6 +1603,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           availability: result.availability,
           capabilities: result.availability === "available" ? result.caps : null,
           checkError: result.availability === "failed" ? result.error : undefined,
+          checkErrorCode: result.availability === "failed" ? result.code : undefined,
         };
         emit();
         resume();
