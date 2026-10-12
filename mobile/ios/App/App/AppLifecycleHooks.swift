@@ -29,11 +29,6 @@ enum AppLifecycleHooks {
         #endif
     }
 
-    static func handleEventsForBackgroundURLSession(_ identifier: String,
-                                                    completionHandler: @escaping () -> Void) -> Bool {
-        ModelDownloads.handleBackgroundEvents(identifier: identifier, completion: completionHandler)
-    }
-
     static func didReceive(_ response: UNNotificationResponse, completion: @escaping () -> Void) {
         CaptureNotifications.handle(response: response, completion: completion)
     }

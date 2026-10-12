@@ -29,6 +29,7 @@
 		99A194B921AB5ED9AF18BA9B /* ExoWidgets.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 3D3CB2F6C0C19352C2C98217 /* ExoWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		E0A1C0DE0000000000000002 /* VoiceNotesPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000001 /* VoiceNotesPlugin.swift */; };
 		E0A1C0DE0000000000000004 /* ExoBridgeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000003 /* ExoBridgeViewController.swift */; };
+		E0A1C0DE0000000000000F02 /* WebViewRecovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000F01 /* WebViewRecovery.swift */; };
 		E0A1C0DE0000000000000006 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000005 /* PrivacyInfo.xcprivacy */; };
 		E0A1C0DE0000000000000008 /* HealthPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000007 /* HealthPlugin.swift */; };
 		E0A1C0DE0000000000000011 /* LocationRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000010 /* LocationRecorder.swift */; };
@@ -83,6 +84,7 @@
 		E0A1C0DE0000000000000024 /* CaptureLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureLiveActivity.swift; sourceTree = "<group>"; };
 		E0A1C0DE0000000000000202 /* OnDeviceSttPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnDeviceSttPlugin.swift; sourceTree = "<group>"; };
 		E0A1C0DE0000000000000003 /* ExoBridgeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExoBridgeViewController.swift; sourceTree = "<group>"; };
+		E0A1C0DE0000000000000F01 /* WebViewRecovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebViewRecovery.swift; sourceTree = "<group>"; };
 		E0A1C0DE0000000000000005 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		E0A1C0DE0000000000000007 /* HealthPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthPlugin.swift; sourceTree = "<group>"; };
 		E0A1C0DE0000000000000009 /* App.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = App.entitlements; sourceTree = "<group>"; };
@@ -138,6 +140,7 @@
 				50379B222058CBB4000EE86E /* capacitor.config.json */,
 				504EC3071FED79650016851F /* AppDelegate.swift */,
 				E0A1C0DE0000000000000003 /* ExoBridgeViewController.swift */,
+				E0A1C0DE0000000000000F01 /* WebViewRecovery.swift */,
 				E0A1C0DE0000000000000001 /* VoiceNotesPlugin.swift */,
 				E0A1C0DE0000000000000022 /* AppLifecycleHooks.swift */,
 				E0A1C0DE0000000000000024 /* CaptureLiveActivity.swift */,
@@ -335,6 +338,7 @@
 				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
 				9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */,
 				E0A1C0DE0000000000000004 /* ExoBridgeViewController.swift in Sources */,
+				E0A1C0DE0000000000000F02 /* WebViewRecovery.swift in Sources */,
 				E0A1C0DE0000000000000002 /* VoiceNotesPlugin.swift in Sources */,
 				E0A1C0DE0000000000000023 /* AppLifecycleHooks.swift in Sources */,
 				E0A1C0DE0000000000000025 /* CaptureLiveActivity.swift in Sources */,
@@ -387,7 +391,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ExoWidgets/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -454,7 +458,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
@@ -506,7 +510,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -524,7 +528,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				INFOPLIST_FILE = App/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -546,7 +550,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				INFOPLIST_FILE = App/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -569,7 +573,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ExoWidgets/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

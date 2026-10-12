@@ -23,7 +23,7 @@ import { reportRecordingNoteSyncError } from "@/lib/voiceNotes/voiceNoteStore";
 import { runOnSpaceLane, setSpaceLaneAbortGraceForTests, setSpaceLaneQueueWaitForTests } from "@/lib/spaceWriteLane";
 import { setVoiceNoteSaveDeadlineForTests } from "@/lib/voiceNotes/saveDeadline";
 import { createFakeOnDeviceStt } from "@/lib/voiceNotes/fakeOnDeviceStt";
-import { __setOnDeviceSttForTests, type OnDeviceSttPlugin } from "@/lib/voiceNotes/onDeviceStt";
+import { __setOnDeviceSttForTests, isOnDeviceReady, type OnDeviceSttPlugin } from "@/lib/voiceNotes/onDeviceStt";
 import { __resetOnDeviceSttStoreForTests, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 
 const realStore = { ...(await import("@/lib/voiceNotes/voiceNoteStore")) };
@@ -1772,6 +1772,25 @@ describe("voice-note recorder controller", () => {
       expect(await recorder.setTranscriber("on-device", { scope: "default" })).toBe("ok");
       expect(calls.downloadNow).toBe(1);
       detach();
+    });
+
+    test("on iOS, a Local default fetches the OS-managed speech assets at launch; Android's model download still waits", async () => {
+      const sttFake = createFakeOnDeviceStt();
+      sttFake.controls.useAppleSpeech("asset_missing");
+      const installs = { count: 0 };
+      const stt = { ...sttFake.plugin, installSpeechAssets: async () => { installs.count++; await sttFake.plugin.installSpeechAssets(); } } as OnDeviceSttPlugin;
+      __setOnDeviceSttForTests(stt);
+      __resetOnDeviceSttStoreForTests();
+      await seedNative();
+      const recorder = controller({ tcw: null, onDeviceReady: false });
+      const detach = recorder.attach();
+      try {
+        await tick();
+        await tick();
+        expect(recorder.getTranscriber().id).toBe("on-device");
+        expect(installs.count).toBe(1);
+        expect(isOnDeviceReady(onDeviceSttStore.snapshot())).toBe(true);
+      } finally { detach(); }
     });
 
     test("review r4: a speaker preference write on untouched Local does not request a model download", async () => {

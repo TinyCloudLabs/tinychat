@@ -123,6 +123,7 @@ export const ON_DEVICE_STT: OnDeviceSttPlugin = {
   downloadNow: async () => {},
   cancelDownload: async () => {},
   deleteModels: async () => {},
+  installSpeechAssets: async () => {},
   enqueue: async () => {},
   cancel: async () => {},
   addListener: async () => ({ remove: async () => {} }),

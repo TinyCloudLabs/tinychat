@@ -58,7 +58,7 @@ import { useAudioInputs, type AudioInputsSource } from "./useAudioInputs";
 import { useSilencedSince } from "./useSilencedSince";
 import { MicDeniedAction } from "./shell/MicDeniedAction";
 import { openSettingsFailedLine } from "./shell/micDeniedCopy";
-import type { OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
+import { isAppleSpeech, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import {
   useOnDeviceModel,
   useTranscriptionChoice,
@@ -268,7 +268,11 @@ export function PhoneRecorder({
   }, [sizeToastForDock, toast?.key, toast?.message]);
   const showModelProgressToast = () => {
     modelDownloadStartingFrom.current = onDevice.model;
-    const key = showToast("Starting the download…");
+    const key = showToast(
+      onDevice.model && isAppleSpeech(onDevice.model)
+        ? FINAL_COPY.speechGetting
+        : "Starting the download…",
+    );
     modelProgressToastKey.current = key;
     setModelDownloadRequested(true);
   };
@@ -439,7 +443,13 @@ export function PhoneRecorder({
       setModelDownloadRequested(false);
       setToast((current) =>
         current?.key === progressKey
-          ? { ...current, message: "The on-device model is ready." }
+          ? {
+              ...current,
+              message:
+                onDevice.model && isAppleSpeech(onDevice.model)
+                  ? "Speech from iOS is ready."
+                  : "The on-device model is ready.",
+            }
           : current,
       );
       return;
@@ -448,9 +458,15 @@ export function PhoneRecorder({
       modelDownloadStartingFrom.current === onDevice.model &&
       onDevice.download.error === null;
     if (!waitingForFirstStatus) modelDownloadStartingFrom.current = null;
+    const apple = onDevice.model !== null && isAppleSpeech(onDevice.model);
     const next = waitingForFirstStatus
-      ? "Starting the download…"
-      : (local?.reason ?? "Checking Wi-Fi before downloading the model…");
+      ? apple
+        ? FINAL_COPY.speechGetting
+        : "Starting the download…"
+      : (local?.reason ??
+        (apple
+          ? FINAL_COPY.speechGetting
+          : "Checking Wi-Fi before downloading the model…"));
     setToast((current) =>
       current?.key === progressKey && current.message !== next
         ? { ...current, message: next }
