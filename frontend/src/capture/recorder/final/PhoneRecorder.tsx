@@ -50,7 +50,7 @@ import {
 import {
   modeShortLabel,
   identifySpeakersControl,
-  MODE_STOPS,
+  modeStop,
   type ModeId,
 } from "./transcriptionModes";
 import { FINAL_COPY, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, privateConsentBody, privateConsentDevice } from "./finalCopy";
@@ -606,7 +606,7 @@ export function PhoneRecorder({
           },
         };
 
-  const stop = MODE_STOPS.find((s) => s.id === choice.mode)!;
+  const stop = modeStop(choice.mode);
   const sheetOpen = discardOpen || choice.asking || notesOpen;
   const mustSave = view.emphasis === "stop";
   const inputName = input?.name ?? "Microphone";
@@ -619,6 +619,7 @@ export function PhoneRecorder({
   const speakers = identifySpeakersControl(
     choice.mode,
     choice.identifySpeakers,
+    choice.privateDiarization,
   );
 
   const openSettings = () => {
@@ -865,6 +866,7 @@ export function PhoneRecorder({
                 mode={choice.mode}
                 shell={shell}
                 identifySpeakers={choice.identifySpeakers}
+                privateDiarization={choice.privateDiarization}
                 opener={opener}
                 onClose={closeModes}
                 onChoose={(id) => {

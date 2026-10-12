@@ -16,7 +16,7 @@ import {
   type CaptureEngineKind,
 } from "./captureEngine";
 import { VoiceNotes, __setVoiceNotesForTests } from "./nativeVoiceNotes";
-import { effectiveTranscriber } from "./transcriberPreference";
+import { effectiveCaptureOptions, effectiveTranscriber, readTranscriberPreference } from "./transcriberPreference";
 
 const none: CaptureCapabilities = {
   nativeShortcuts: false, presentRecorder: false, openSettings: false, micDeniedPresentation: false,
@@ -139,15 +139,40 @@ describe("installCaptureEngine", () => {
   });
 });
 
-test("desktop Local follows its selected Whisper model while web routing is unchanged", () => {
+test("a signed-in Local default stays Local while the model is unavailable", () => {
   __setInstalledEngineForTests("tauri", { ...none, offlineRecorder: true });
   expect(effectiveTranscriber("on-device", false)).toBe("off");
-  expect(effectiveTranscriber("on-device", true)).toBe("private-cloud");
+  expect(effectiveTranscriber("on-device", true)).toBe("on-device");
   __setInstalledEngineForTests("tauri", { ...none, offlineRecorder: true, nativeFileUpload: true, desktopWhisper: true });
   expect(effectiveTranscriber("on-device", false)).toBe("on-device");
   expect(effectiveTranscriber("on-device", true)).toBe("on-device");
   __setInstalledEngineForTests("web", none);
-  expect(effectiveTranscriber("on-device", false)).toBe("private-cloud");
+  expect(effectiveTranscriber("on-device", false)).toBe("on-device");
+  expect(effectiveTranscriber("on-device", true)).toBe("private-cloud");
+});
+
+test("Identify speakers defaults on, survives unsupported modes, and is committed only for Private", () => {
+  const key = "exo.voiceNotes.identifySpeakers";
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const values = new Map<string, string>();
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+    getItem: (name: string) => values.get(name) ?? null,
+    setItem: (name: string, value: string) => { values.set(name, value); },
+  } });
+  try {
+    expect(readTranscriberPreference().identifySpeakers).toBe(true);
+    expect(effectiveCaptureOptions({ transcriber: "on-device", identifySpeakers: true }, true).identifySpeakers).toBe(false);
+    expect(effectiveCaptureOptions({ transcriber: "off", identifySpeakers: true }, true).identifySpeakers).toBe(false);
+    expect(effectiveCaptureOptions({ transcriber: "private-cloud", identifySpeakers: true }, true).identifySpeakers).toBe(true);
+    values.set(key, "0");
+    expect(readTranscriberPreference().identifySpeakers).toBe(false);
+    values.set("exo.voiceNotes.transcriber", "assemblyai");
+    values.set(key, "1");
+    expect(readTranscriberPreference()).toEqual({ transcriber: "private-cloud", identifySpeakers: true });
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  }
 });
 
 describe("App.tsx gates its native-only surfaces on capabilities", () => {

@@ -82,15 +82,13 @@ export const FINAL_COPY = {
     "This recording session already exists. Discard this attempt and start a new recording.",
   stopAndSaveRecorded: "Stop and save what's recorded.",
   stopAt: (text: string) => `Stops at ${text}`,
-  comingNextUpdate: "Coming with the next update",
-  disabled: "Disabled",
   needsApp: "needs the app",
   onThisPhone: "on this phone",
   onThisMac: "on this Mac",
   sealedEnclave: "sealed enclave",
-  assemblyAi: "AssemblyAI",
   identifySpeakers: "Identify speakers",
-  powerfulOnly: "Powerful only",
+  notSupported: "Not supported",
+  speakerTurns: "Labels each speaker's turns",
   whisperUnavailable: "Get Whisper for this Mac",
   modelUnavailable: "Get the on-device model",
   modelTryAgain: "Try again",
@@ -104,8 +102,6 @@ export const FINAL_COPY = {
     skipName: MODE_NAMES.skip,
     localName: MODE_NAMES.local,
     privateName: MODE_NAMES.private,
-    powerfulName: MODE_NAMES.powerful,
-    speakersName: "AssemblyAI · speakers",
     noTranscript: "no transcript",
     skipCaption: {
       phone: "Just the recording, kept on this phone.",
@@ -125,8 +121,5 @@ export const FINAL_COPY = {
     privateCaption: "Fast, accurate, and sealed from Exo.",
     privateExplanation:
       "Sent to a sealed hardware enclave, transcribed, then deleted. Exo never sees it.",
-    powerfulCaption: "Most accurate. Audio deleted after processing.",
-    powerfulExplanation:
-      "Uploaded to AssemblyAI, a third-party service: the most accurate, with speaker labels. Audio is deleted after processing.",
   },
 } as const;

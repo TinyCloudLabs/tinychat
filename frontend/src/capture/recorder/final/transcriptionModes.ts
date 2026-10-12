@@ -2,22 +2,10 @@ import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { isAppleSpeech, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import { FINAL_COPY } from "./finalCopy";
 
-export const SKIP_ENABLED = true;
-export const POWERFUL_ENABLED = false;
-
-export interface ModeFeatures {
-  skipEnabled: boolean;
-  powerfulEnabled: boolean;
-}
-
-const DEFAULT_FEATURES: ModeFeatures = {
-  skipEnabled: SKIP_ENABLED,
-  powerfulEnabled: POWERFUL_ENABLED,
-};
 const COPY = FINAL_COPY.modes;
 
 export type ModeShell = "phone" | "desktop" | "web";
-export type ModeId = "skip" | "local" | "private" | "powerful";
+export type ModeId = "skip" | "local" | "private";
 export type DotCount = 0 | 1 | 2 | 3 | 4;
 export interface ModeExplanationContext {
   modelName: string;
@@ -105,48 +93,29 @@ export const MODE_STOPS: readonly ModeStop[] = [
     privacyDots: 3,
     accuracyDots: 3,
   },
-  {
-    id: "powerful",
-    transcriber: "assemblyai",
-    shortName: COPY.powerfulName,
-    subLabel: {
-      phone: FINAL_COPY.assemblyAi,
-      desktop: FINAL_COPY.assemblyAi,
-      web: FINAL_COPY.assemblyAi,
-    },
-    captions: {
-      phone: COPY.powerfulCaption,
-      desktop: COPY.powerfulCaption,
-      web: COPY.powerfulCaption,
-    },
-    explanations: {
-      phone: explain(COPY.powerfulExplanation),
-      desktop: explain(COPY.powerfulExplanation),
-      web: explain(COPY.powerfulExplanation),
-    },
-    privacyDots: 1,
-    accuracyDots: 4,
-  },
 ];
+
+/** Every picker mode has one stop. Reject unknown journal values with a typed error. */
+export function modeStop(id: ModeId): ModeStop {
+  switch (id) {
+    case "skip": return MODE_STOPS[0]!;
+    case "local": return MODE_STOPS[1]!;
+    case "private": return MODE_STOPS[2]!;
+    default: {
+      const exhaustive: never = id;
+      throw Object.assign(new Error(`Unknown transcription mode: ${String(exhaustive)}`), { code: "unknown_transcription_mode" as const });
+    }
+  }
+}
 
 export function modeAvailability(
   id: ModeId,
   shell: ModeShell,
   model?: OnDeviceSttStatus | null,
   whisperDownloaded = false,
-  features: ModeFeatures = DEFAULT_FEATURES,
 ): Availability {
-  if (id === "skip") {
-    return features.skipEnabled
-      ? { available: true }
-      : { available: false, reason: FINAL_COPY.disabled };
-  }
+  if (id === "skip") return { available: true };
   if (id === "private") return { available: true };
-  if (id === "powerful") {
-    return features.powerfulEnabled
-      ? { available: true }
-      : { available: false, reason: FINAL_COPY.comingNextUpdate };
-  }
   if (shell === "web") {
     return { available: false, reason: FINAL_COPY.needsApp };
   }
@@ -170,18 +139,14 @@ export function scaleStops(
   shell: ModeShell,
   model?: OnDeviceSttStatus | null,
   whisperDownloaded = false,
-  features: ModeFeatures = DEFAULT_FEATURES,
 ): Array<ModeStop & { availability: Availability }> {
-  return MODE_STOPS.filter(
-    (stop) => stop.id !== "skip" || features.skipEnabled,
-  ).map((stop) => ({
+  return MODE_STOPS.map((stop) => ({
     ...stop,
     availability: modeAvailability(
       stop.id,
       shell,
       model,
       whisperDownloaded,
-      features,
     ),
   }));
 }
@@ -190,9 +155,8 @@ export function availableStops(
   shell: ModeShell,
   model?: OnDeviceSttStatus | null,
   whisperDownloaded = false,
-  features: ModeFeatures = DEFAULT_FEATURES,
 ): ModeStop[] {
-  return scaleStops(shell, model, whisperDownloaded, features).filter(
+  return scaleStops(shell, model, whisperDownloaded).filter(
     (stop) => stop.availability.available,
   );
 }
@@ -203,9 +167,8 @@ export function moveMode(
   shell: ModeShell,
   model?: OnDeviceSttStatus | null,
   whisperDownloaded = false,
-  features: ModeFeatures = DEFAULT_FEATURES,
 ): ModeId {
-  const available = availableStops(shell, model, whisperDownloaded, features);
+  const available = availableStops(shell, model, whisperDownloaded);
   if (available.length === 0) {
     throw new Error("No transcription modes are available");
   }
@@ -216,21 +179,14 @@ export function moveMode(
   ]!.id;
 }
 
-export function speakersEnabled(
-  mode: ModeId,
-  powerfulEnabled = POWERFUL_ENABLED,
-): boolean {
-  return mode === "powerful" && powerfulEnabled;
+export function speakersEnabled(mode: ModeId, privateDiarization = false): boolean {
+  return mode === "private" && privateDiarization;
 }
 
 export function modeShortLabel(
   mode: ModeId,
-  identifySpeakers: boolean,
-  powerfulEnabled = POWERFUL_ENABLED,
+  _identifySpeakers: boolean,
 ): string {
-  if (mode === "powerful" && identifySpeakers && powerfulEnabled) {
-    return COPY.speakersName;
-  }
   switch (mode) {
     case "skip":
       return COPY.skipName;
@@ -238,8 +194,6 @@ export function modeShortLabel(
       return COPY.localName;
     case "private":
       return COPY.privateName;
-    case "powerful":
-      return COPY.powerfulName;
     default: {
       const exhaustive: never = mode;
       throw new Error(`Unknown transcription mode: ${String(exhaustive)}`);
@@ -250,12 +204,13 @@ export function modeShortLabel(
 export function identifySpeakersControl(
   mode: ModeId,
   enabled: boolean,
-  powerfulEnabled = POWERFUL_ENABLED,
+  privateDiarization = false,
 ) {
+  const supported = speakersEnabled(mode, privateDiarization);
   return {
     label: FINAL_COPY.identifySpeakers,
-    subLabel: FINAL_COPY.powerfulOnly,
-    checked: enabled,
-    disabled: !speakersEnabled(mode, powerfulEnabled),
+    subLabel: supported ? FINAL_COPY.speakerTurns : FINAL_COPY.notSupported,
+    checked: enabled && supported,
+    disabled: !supported,
   };
 }

@@ -333,6 +333,7 @@ export function DesktopRecorder({
                     mode={choice.mode}
                     shell={shell}
                     identifySpeakers={choice.identifySpeakers}
+                    privateDiarization={choice.privateDiarization}
                     opener={opener}
                     onClose={closeModes}
                     onChoose={(id) => {

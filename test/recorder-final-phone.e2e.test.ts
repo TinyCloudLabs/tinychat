@@ -465,7 +465,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await page.context().close();
   });
 
-  test("dragging the slider chooses the nearest stop; an unavailable one says why and stays put", async () => {
+  test("dragging the slider chooses the nearest stop at either end", async () => {
     const { page, calls } = await open("consented");
     const box = (await slider(page).boundingBox())!;
     const y = box.y + box.height / 2;
@@ -480,8 +480,8 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await page.mouse.down();
     await page.mouse.move(box.x + box.width - 12, y, { steps: 6 });
     await page.mouse.up();
-    await modeIs(page, "Audio only");
-    await shown(page.getByText("Coming with the next update").first());
+    await modeIs(page, "Private");
+    expect(await calls()).toEqual(["transcriber:off:recording", "transcriber:private-cloud:recording"]);
     await page.context().close();
   });
 
@@ -653,8 +653,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await page.context().close();
   });
 
-  // A provider refusal has no actions; choosing the unavailable Powerful stop while on Audio only
-  // raises a toast whose Use Private action sits in an action row below the message.
+  // A provider refusal keeps the recorder controls visible around its toast.
   const toastScenarios = [
     {
       suffix: "",
@@ -662,13 +661,6 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
       refuse: true,
       message: "Local isn't available right now",
       actions: [] as string[],
-    },
-    {
-      suffix: " with an action row",
-      stop: "powerful",
-      refuse: false,
-      message: "Coming with the next update",
-      actions: ["Use Private"],
     },
   ];
   const prepareToastScenario = (
@@ -1097,7 +1089,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
       recorder.patch({ signedIn: false });
     });
     await modeIs(page, "Local");
-    expect(await stops()).toEqual(["false", "true", "false", "false"]);
+    expect(await stops()).toEqual(["false", "true", "false"]);
     await page
       .getByRole("button", { name: "Transcription modes: compare and choose" })
       .click();
@@ -1109,7 +1101,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await until(
       "the stops to open after sign-in",
       async () =>
-        (await stops()).join() === ["true", "true", "true", "false"].join(),
+        (await stops()).join() === ["true", "true", "true"].join(),
     );
     await page.context().close();
   });
@@ -1128,7 +1120,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
       .evaluateAll((stops) =>
         stops.map((stop) => stop.getAttribute("data-available")),
       );
-    expect(available).toEqual(["true", "true", "true", "false"]);
+    expect(available).toEqual(["true", "true", "true"]);
     await page.context().close();
   });
 

@@ -17,6 +17,7 @@ import { clearNotesUi, readNotesUi, updateNotesUi } from "./notes";
 const noop = () => {};
 const PRIVATE_ON: VoiceNoteTranscriptionProps = {
   availability: "available",
+  diarization: true,
   consented: true,
   maxSeconds: 600,
   jobs: new Map(),
@@ -88,9 +89,9 @@ describe("PhoneRecorder", () => {
     expect(html).toContain('aria-live="polite"');
   });
 
-  test("the scale has four stops: Audio only, Local, Private and Powerful", () => {
+  test("the scale has three stops: Audio only, Local and Private", () => {
     const html = render();
-    expect((html.match(/data-available=/g) ?? []).length).toBe(4);
+    expect((html.match(/data-available=/g) ?? []).length).toBe(3);
   });
 
   test("signed out, the first render has Local open and the other stops closed; signed in opens Audio only and Private (Local waits for its model)", () => {
@@ -113,13 +114,11 @@ describe("PhoneRecorder", () => {
       "false",
       "true",
       "false",
-      "false",
     ]);
     expect(stops({ signedIn: true, transcriber: local })).toEqual([
       "true",
       "false",
       "true",
-      "false",
     ]);
     __setOnDeviceSttForTests(createFakeOnDeviceStt().plugin);
     __resetOnDeviceSttStoreForTests();
@@ -189,26 +188,26 @@ describe("PhoneRecorder", () => {
     expect(html).toMatch(/aria-label="Discard recording"[^>]*disabled/);
   });
 
-  test("the harness can open the modes card, with Identify speakers disabled while Powerful is off", () => {
-    const html = render({}, { defaultOpen: "modes" });
+  test("the harness can open the modes card, with Identify speakers unsupported on Local", () => {
+    const html = render({ transcriber: { id: "on-device", identifySpeakers: false, source: "recording" } }, { defaultOpen: "modes" });
     expect(html).toMatch(/role="dialog"[^>]*aria-label="Transcription modes"/);
     expect(html).toContain('data-overlay-open="true"');
     expect(html).toContain('role="radiogroup"');
     expect(html).toContain('role="switch"');
     expect(html).toMatch(/role="switch"[^>]*aria-disabled="true"/);
-    expect(html).toContain("Coming with the next update");
+    expect(html).toContain("Not supported");
   });
 
   test("the Identify speakers switch shows the provider's value, and on-device takes it back to the default", () => {
     const switchChecked = (
-      id: "assemblyai" | "on-device",
+      id: "private-cloud" | "on-device",
       identifySpeakers: boolean,
     ) =>
       render(
         { transcriber: { id, identifySpeakers, source: "recording" } },
         { defaultOpen: "modes" },
       ).match(/role="switch"[^>]*aria-checked="(true|false)"/)?.[1];
-    expect(switchChecked("assemblyai", true)).toBe("true");
+    expect(switchChecked("private-cloud", true)).toBe("true");
     expect(switchChecked("on-device", false)).toBe("false");
   });
 

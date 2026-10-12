@@ -5,11 +5,9 @@ import {
   identifySpeakersControl,
   MODE_STOPS,
   modeAvailability,
-  modeShortLabel,
+  modeStop,
   moveMode,
   scaleStops,
-  SKIP_ENABLED,
-  type ModeFeatures,
   type ModeShell,
 } from "./transcriptionModes";
 
@@ -64,7 +62,6 @@ describe("transcription modes availability", () => {
       ["skip", 4, 0],
       ["local", 4, 2],
       ["private", 3, 3],
-      ["powerful", 1, 4],
     ]);
     for (const stop of MODE_STOPS) {
       expect(stop.privacyDots).toBeGreaterThanOrEqual(0);
@@ -74,42 +71,28 @@ describe("transcription modes availability", () => {
     }
   });
 
-  test("scaleStops includes disabled rows and removes the Audio only stop only when the flag is off", () => {
+  test("scaleStops omits Powerful until it is supported", () => {
     const stops = scaleStops("web");
     expect(stops.map(({ id }) => id)).toEqual([
       "skip",
       "local",
       "private",
-      "powerful",
     ]);
-    expect(stops.find(({ id }) => id === "powerful")?.availability).toEqual({
-      available: false,
-      reason: "Coming with the next update",
-    });
     expect(stops.find(({ id }) => id === "local")?.availability).toEqual({
       available: false,
       reason: "needs the app",
     });
-    expect(
-      scaleStops("web", null, false, {
-        skipEnabled: false,
-        powerfulEnabled: false,
-      }).map(({ id }) => id),
-    ).toEqual(["local", "private", "powerful"]);
   });
 
-  test("Audio only availability follows the feature flag", () => {
-    expect(modeAvailability("skip", "phone")).toEqual(
-      SKIP_ENABLED
-        ? { available: true }
-        : { available: false, reason: "Disabled" },
-    );
-    expect(
-      modeAvailability("skip", "phone", null, false, {
-        skipEnabled: true,
-        powerfulEnabled: false,
-      }),
-    ).toEqual({ available: true });
+  test("Audio only is available", () => {
+    expect(modeAvailability("skip", "phone")).toEqual({ available: true });
+  });
+
+  test("unknown mode ids fail with a typed error", () => {
+    expect(() => modeStop("powerful" as never)).toThrow("Unknown transcription mode: powerful");
+    try { modeStop("powerful" as never); } catch (error) {
+      expect(error).toMatchObject({ code: "unknown_transcription_mode" });
+    }
   });
 
   test("captions and explanations match the shell-specific mode copy", () => {
@@ -163,23 +146,6 @@ describe("transcription modes availability", () => {
           "Fast, accurate, and sealed from Exo.",
           "sealed enclave",
           "Sent to a sealed hardware enclave, transcribed, then deleted. Exo never sees it.",
-        ],
-      },
-      powerful: {
-        phone: [
-          "Most accurate. Audio deleted after processing.",
-          "AssemblyAI",
-          "Uploaded to AssemblyAI, a third-party service: the most accurate, with speaker labels. Audio is deleted after processing.",
-        ],
-        desktop: [
-          "Most accurate. Audio deleted after processing.",
-          "AssemblyAI",
-          "Uploaded to AssemblyAI, a third-party service: the most accurate, with speaker labels. Audio is deleted after processing.",
-        ],
-        web: [
-          "Most accurate. Audio deleted after processing.",
-          "AssemblyAI",
-          "Uploaded to AssemblyAI, a third-party service: the most accurate, with speaker labels. Audio is deleted after processing.",
         ],
       },
     } as const;
@@ -246,12 +212,9 @@ describe("transcription modes availability", () => {
     });
   });
 
-  test("Powerful remains disabled with its launch copy on every shell", () => {
+  test("Powerful is omitted from the picker on every shell", () => {
     for (const shell of shells) {
-      expect(modeAvailability("powerful", shell)).toEqual({
-        available: false,
-        reason: "Coming with the next update",
-      });
+      expect(scaleStops(shell).some((stop) => stop.id === "powerful")).toBe(false);
     }
   });
 
@@ -355,47 +318,33 @@ describe("transcription modes availability", () => {
     });
   });
 
-  test("arrow navigation skips unavailable Local and Powerful stops", () => {
-    const disabledFeatures: ModeFeatures = {
-      skipEnabled: false,
-      powerfulEnabled: false,
-    };
-    const enabledEdges: ModeFeatures = {
-      skipEnabled: true,
-      powerfulEnabled: true,
-    };
+  test("arrow navigation skips unavailable Local", () => {
     expect(
-      moveMode("local", 1, "phone", model("ready"), false, disabledFeatures),
+      moveMode("local", 1, "phone", model("ready"), false),
     ).toBe("private");
-    expect(moveMode("private", -1, "web", null, false, enabledEdges)).toBe(
+    expect(moveMode("private", -1, "web", null, false)).toBe(
       "skip",
     );
-    expect(moveMode("skip", 1, "web", null, false, enabledEdges)).toBe(
+    expect(moveMode("skip", 1, "web", null, false)).toBe(
       "private",
     );
-    expect(moveMode("private", 1, "web", null, false, enabledEdges)).toBe(
-      "powerful",
-    );
+    expect(moveMode("private", 1, "web", null, false)).toBe("private");
   });
 });
 
 describe("Identify speakers", () => {
-  test("is enabled only for selected Powerful, and changes its short label", () => {
+  test("is enabled for Private, and says Not supported for Local and Audio only", () => {
     expect(identifySpeakersControl("private", true, true)).toMatchObject({
       checked: true,
-      disabled: true,
-    });
-    expect(identifySpeakersControl("powerful", false, true)).toMatchObject({
-      checked: false,
       disabled: false,
     });
-    expect(identifySpeakersControl("powerful", true, true)).toMatchObject({
-      checked: true,
-      disabled: false,
+    expect(identifySpeakersControl("private", true, false)).toMatchObject({
+      checked: false, disabled: true, subLabel: "Not supported",
     });
-    expect(modeShortLabel("powerful", true, true)).toBe(
-      "AssemblyAI · speakers",
-    );
-    expect(modeShortLabel("powerful", false, true)).toBe("Powerful");
+    for (const mode of ["local", "skip"] as const) {
+      expect(identifySpeakersControl(mode, true)).toMatchObject({
+        checked: false, disabled: true, subLabel: "Not supported",
+      });
+    }
   });
 });

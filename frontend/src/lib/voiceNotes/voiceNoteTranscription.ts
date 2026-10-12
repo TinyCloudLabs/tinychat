@@ -385,24 +385,29 @@ export const VOICE_NOTE_SPEAKER = "You";
  * MAX_TURN_SECONDS (the readable-transcripts rule Exo Local uses, which keeps
  * each sentence under meeting chat's excerpt span).
  */
-export function voiceNoteSentences(transcript: Pick<PrivateCloudTranscript, "segments">): FirefliesSentence[] {
+export function voiceNoteSentences(transcript: Pick<PrivateCloudTranscript, "segments" | "diarized" | "speakers">): FirefliesSentence[] {
+  const speakerNames = new Map(transcript.speakers?.map((speaker) => [speaker.id, speaker.name]));
   const segments = transcript.segments
-    .map((seg) => ({ start: seg.start, end: seg.end, text: typeof seg.text === "string" ? seg.text.trim() : "" }))
+    .map((seg) => ({ start: seg.start, end: seg.end, text: typeof seg.text === "string" ? seg.text.trim() : "",
+      speaker: transcript.diarized && seg.speaker_id
+        ? speakerNames.get(seg.speaker_id) ?? (seg.speaker_id.match(/^speaker_(\d+)$/)
+          ? `Speaker ${Number(seg.speaker_id.slice(8)) + 1}` : seg.speaker_id)
+        : VOICE_NOTE_SPEAKER }))
     .filter((seg) => seg.text.length > 0 && Number.isFinite(seg.start) && Number.isFinite(seg.end))
     .sort((a, b) => a.start - b.start);
-  const turns: { start: number; end: number; texts: string[] }[] = [];
+  const turns: { start: number; end: number; texts: string[]; speaker: string }[] = [];
   for (const seg of segments) {
     const last = turns[turns.length - 1];
-    if (last !== undefined && Math.max(last.end, seg.end) - last.start <= MAX_TURN_SECONDS) {
+    if (last !== undefined && last.speaker === seg.speaker && Math.max(last.end, seg.end) - last.start <= MAX_TURN_SECONDS) {
       last.texts.push(seg.text);
       last.end = Math.max(last.end, seg.end);
       continue;
     }
-    turns.push({ start: seg.start, end: seg.end, texts: [seg.text] });
+    turns.push({ start: seg.start, end: seg.end, texts: [seg.text], speaker: seg.speaker });
   }
   return turns.map((turn, index) => ({
     index,
-    speaker_name: VOICE_NOTE_SPEAKER,
+    speaker_name: turn.speaker,
     text: turn.texts.join(" "),
     start_time: turn.start,
     end_time: turn.end,
@@ -425,7 +430,7 @@ export function prepareVoiceNoteTranscript(transcript: PrivateCloudTranscript, t
   return {
     rev,
     sentences,
-    speakers: [VOICE_NOTE_SPEAKER],
+    speakers: [...new Set(sentences.map((sentence) => sentence.speaker_name).filter((name): name is string => name !== null))],
     metadata: {
       ...engineMetadata(transcribedAt),
       inference_provider: transcript.provider ?? "tinfoil",
@@ -433,8 +438,7 @@ export function prepareVoiceNoteTranscript(transcript: PrivateCloudTranscript, t
       language: transcript.language ?? null,
       transcript_text: sentences.map((s) => s.text).join("\n"),
       transcription_outcome: "transcribed",
-      // One speaker, one sentence per merged run of speech regions.
-      speaker_labels: "single-speaker",
+      speaker_labels: transcript.diarized ? "diarized" : "single-speaker",
     },
   };
 }
@@ -619,6 +623,9 @@ export interface VoiceNoteCloudDeps {
 export interface VoiceNoteTranscribeInput {
   sourceId: string;
   capabilities: PrivateCloudCapabilities;
+  identifySpeakers?: boolean;
+  /** Stereo Mac notes use channel labels instead of PTX diarization. */
+  channelCount?: 1 | 2;
   loadAudio: () => Promise<VoiceNoteAudio & { nativeFileId?: string; loadSpaceCopy?: () => Promise<VoiceNoteAudio> }>;
   /** The note's length from its row, checked before any audio is read or decoded. */
   durationSeconds?: number | null;
@@ -792,7 +799,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
   };
 
   const run = async (
-    { sourceId, capabilities, loadAudio, durationSeconds, allowed = () => true }: VoiceNoteTranscribeInput,
+    { sourceId, capabilities, loadAudio, durationSeconds, identifySpeakers = false, channelCount = 1, allowed = () => true }: VoiceNoteTranscribeInput,
     report: (status: VoiceNoteTranscriptionStatus) => void,
   ) => {
     const guard: Guard = () => {
@@ -870,6 +877,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       // Mono, and labelled so no other client on this account adopts the job (privateCloudJobClient).
       channel_mode: "mixed",
       channel_labels: [...VOICE_NOTE_CHANNEL_LABELS],
+      ...(identifySpeakers && channelCount === 1 && capabilities.diarization === true ? { diarize: true } : {}),
     };
     const createdJob = await createJob(sourceId, job, body, guard);
     job = { ...createdJob.job, transcriptionId: createdJob.created.id };
@@ -1203,7 +1211,10 @@ export async function transcribeVoiceNote(args: {
   let transcript: PrivateCloudTranscript;
   try {
     ({ transcriptionId, transcript } = await cloud.transcribe(
-      { sourceId, capabilities: args.capabilities, loadAudio, durationSeconds: note.data.durationSeconds, allowed: args.allowed },
+      { sourceId, capabilities: args.capabilities, loadAudio, durationSeconds: note.data.durationSeconds,
+        identifySpeakers: nativeNote?.options?.identifySpeakers === true,
+        channelCount: (nativeNote as VoiceNoteRecording & { layout?: "mono" | "stereo" } | undefined)?.layout === "stereo" ? 2 : 1,
+        allowed: args.allowed },
       report,
     ));
   } catch (err) {

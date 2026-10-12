@@ -91,6 +91,7 @@ let shortcutPending: boolean;
 let microphoneGranted: boolean;
 
 function controller(options: { tcw?: TinyCloudWeb | null; pipeline?: VoiceNotePipeline; consented?: boolean | (() => boolean); onDeviceReady?: boolean;
+  diarization?: boolean;
   appleInterim?: boolean; transcriber?: VoiceNoteTranscriber; noteLoader?: typeof loadNote;
   noteRetryScheduler?: (delayMs: number, retry: () => void) => () => void;
   subscribeAppActive?: (listener: () => void) => Promise<{ remove(): Promise<void> }> } = {}) {
@@ -100,7 +101,7 @@ function controller(options: { tcw?: TinyCloudWeb | null; pipeline?: VoiceNotePi
     available: true,
     transcriber: options.transcriber ?? { check: async () => {}, noteSaved: (recording) => noted.push(recording.id),
       snapshot: () => ({ availability: "available", consented: typeof options.consented === "function" ? options.consented() : options.consented ?? false,
-        capabilities: null, jobs: new Map() }) },
+        capabilities: { max_bytes: 120_960_000, diarization: options.diarization ?? true }, jobs: new Map() }) },
     onDeviceReady: () => options.onDeviceReady ?? true,
     appleInterim: () => options.appleInterim ?? false,
     noteLoader: options.noteLoader,
@@ -440,7 +441,7 @@ describe("voice-note recorder controller", () => {
 
     expect(await consentToRecordingPrivateCloud(recorder, () => { consented = true; })).toBe("ok");
     expect((await fake.plugin.status()).options?.transcriber).toBe("private-cloud");
-    expect(recorder.getTranscriber()).toEqual({ id: "private-cloud", identifySpeakers: false, source: "recording" });
+    expect(recorder.getTranscriber()).toEqual({ id: "private-cloud", identifySpeakers: true, source: "recording" });
     expect((await fake.plugin.getCaptureDefaults()).transcriber).toBe("on-device");
     const saved = await stopNatively();
     expect(saved.options?.transcriber).toBe("private-cloud");
@@ -486,19 +487,31 @@ describe("voice-note recorder controller", () => {
     await tick();
     await first.record();
     expect(first.getTranscriber()).toEqual({ id: "on-device", identifySpeakers: false, source: "recording" });
-    expect(await first.setIdentifySpeakers(true, "recording")).toBe("ok");
-    expect(first.getTranscriber().identifySpeakers).toBe(true);
-    expect(await first.setTranscriber("private-cloud", { scope: "recording" })).toBe("ok");
-    expect(first.getTranscriber()).toEqual({ id: "private-cloud", identifySpeakers: false, source: "recording" });
     expect(await first.setIdentifySpeakers(true, "recording")).toBe("unavailable");
+    expect(first.getTranscriber().identifySpeakers).toBe(false);
+    expect(await first.setTranscriber("private-cloud", { scope: "recording" })).toBe("ok");
+    expect(first.getTranscriber()).toEqual({ id: "private-cloud", identifySpeakers: true, source: "recording" });
+    expect(await first.setIdentifySpeakers(true, "recording")).toBe("ok");
     expect((await fake.plugin.getCaptureDefaults()).transcriber).toBe("on-device");
     detach();
 
     const second = controller({ consented: true });
     const remove = second.attach();
     await tick();
-    expect(second.getTranscriber()).toEqual({ id: "private-cloud", identifySpeakers: false, source: "recording" });
+    expect(second.getTranscriber()).toEqual({ id: "private-cloud", identifySpeakers: true, source: "recording" });
     remove();
+  });
+
+  test("Private keeps speaker detection off when PTX reports no diarization", async () => {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "private-cloud", identifySpeakers: true });
+    const recorder = controller({ consented: true, diarization: false });
+    const detach = recorder.attach();
+    await tick();
+    await recorder.record();
+    expect((await fake.plugin.status()).options).toMatchObject({ transcriber: "private-cloud", identifySpeakers: false });
+    expect(await recorder.setIdentifySpeakers(true, "recording")).toBe("unavailable");
+    detach();
   });
 
   test("signed-out capture locks other modes and Off does not revoke private-cloud consent", async () => {
@@ -562,16 +575,15 @@ describe("voice-note recorder controller", () => {
       const recorder = controller({ consented: true });
       const detach = recorder.attach();
       await tick();
-      expect(await recorder.setIdentifySpeakers(true, "default")).toBe("ok");
       expect(await recorder.setTranscriber("private-cloud", { scope: "default" })).toBe("ok");
-      expect(recorder.getTranscriber()).toEqual({ id: "private-cloud", identifySpeakers: false, source: "default" });
+      expect(recorder.getTranscriber()).toEqual({ id: "private-cloud", identifySpeakers: true, source: "default" });
       expect(await fake.plugin.getCaptureDefaults()).toMatchObject({ transitionGen: 7,
-        transcriber: "private-cloud", identifySpeakers: false });
+        transcriber: "private-cloud", identifySpeakers: true });
       expect(values.get("exo.voiceNotes.identifySpeakers")).toBe("1");
       expect(await recorder.setTranscriber("on-device", { scope: "default" })).toBe("ok");
-      expect(recorder.getTranscriber()).toEqual({ id: "on-device", identifySpeakers: true, source: "default" });
+      expect(recorder.getTranscriber()).toEqual({ id: "on-device", identifySpeakers: false, source: "default" });
       expect(await fake.plugin.getCaptureDefaults()).toMatchObject({ transitionGen: 7,
-        transcriber: "on-device", identifySpeakers: true });
+        transcriber: "on-device", identifySpeakers: false });
       await setDefaultTranscriber("off"); // Settings uses the same preference store.
       expect(recorder.getTranscriber()).toEqual({ id: "off", identifySpeakers: false, source: "default" });
       detach();
@@ -1934,7 +1946,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
         const detach = recorder.attach();
         await tick();
         await recorder.record();
-        expect(recorder.getTranscriber().id).toBe(from);
+        expect(recorder.getTranscriber().id).toBe(from === "assemblyai" ? "private-cloud" : from);
 
         expect(await recorder.setTranscriber(to, { scope: "recording" })).toBe("ok");
         expect(recorder.getTranscriber()).toMatchObject({ id: to, source: "recording" });

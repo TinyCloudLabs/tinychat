@@ -50,14 +50,13 @@ export const TRANSCRIBER_FOR: Record<ModeId, TranscriberId> = {
   skip: "off",
   local: "on-device",
   private: "private-cloud",
-  powerful: "assemblyai",
 };
 const MODE_NAME = Object.fromEntries(
   MODE_STOPS.map((stop) => [stop.id, stop.shortName]),
 ) as Record<ModeId, string>;
-const MODE_FOR = Object.fromEntries(
-  Object.entries(TRANSCRIBER_FOR).map(([mode, id]) => [id, mode]),
-) as Record<TranscriberId, ModeId>;
+const MODE_FOR: Record<TranscriberId, ModeId> = {
+  off: "skip", "on-device": "local", "private-cloud": "private", assemblyai: "private",
+};
 
 export interface ScaleStop {
   stop: ModeStop;
@@ -334,6 +333,7 @@ export function useTranscriptionChoice({
       : undefined,
     stops,
     modelNote,
+    privateDiarization: transcription?.diarization === true,
     select,
     step,
     identifySpeakers: api.transcriber.identifySpeakers,

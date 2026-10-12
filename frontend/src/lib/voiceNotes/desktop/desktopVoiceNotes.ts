@@ -409,10 +409,12 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
           await whisperQueue?.beforeCapture();
           const defaults = await store.getCaptureDefaults();
           const signedIn = defaults.status === "signed_in" && !!defaults.accountDid;
+          const transcriber = signedIn ? startOptions?.transcriber ?? defaults.transcriber
+            : capabilities.desktopWhisper ? "on-device" : "off";
           const captureOptions: CaptureOptions = {
-            transcriber: signedIn ? startOptions?.transcriber ?? defaults.transcriber : capabilities.desktopWhisper ? "on-device" : "off",
-            identifySpeakers: signedIn && (startOptions?.transcriber ?? defaults.transcriber) !== "on-device"
-              ? startOptions?.identifySpeakers ?? defaults.identifySpeakers : false,
+            transcriber,
+            identifySpeakers: signedIn && (transcriber === "private-cloud" || transcriber === "assemblyai")
+              && (startOptions?.identifySpeakers ?? defaults.identifySpeakers),
           };
           id = newId();
           const releaseSession = await store.locks.hold(sessionLock(id));

@@ -25,6 +25,7 @@ import {
 const noop = () => {};
 const PRIVATE_ON: VoiceNoteTranscriptionProps = {
   availability: "available",
+  diarization: true,
   consented: true,
   maxSeconds: 600,
   jobs: new Map(),
@@ -272,16 +273,6 @@ const STATES: [string, Partial<RecorderValue>][] = [
     },
   ],
   [
-    "Powerful with Identify speakers",
-    {
-      transcriber: {
-        id: "assemblyai",
-        identifySpeakers: true,
-        source: "recording",
-      },
-    },
-  ],
-  [
     "Private with Identify speakers",
     {
       transcriber: {
@@ -326,7 +317,7 @@ describe("useFinalRecorderControls gives PhoneRecorder's outputs", () => {
       transcriberApi: api,
     });
     expect(hook).toEqual(phone);
-    expect(controls.choice.mode).toBe("powerful");
+    expect(controls.choice.mode).toBe("private");
     expect(controls.choice.identifySpeakers).toBe(true);
   });
 });
