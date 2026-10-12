@@ -4,15 +4,17 @@ import java.util.ArrayDeque
 import java.util.concurrent.Executor
 
 /**
- * The notes waiting for on-device transcription, and the one being decoded. Admission (an explicit
- * enqueue) and the decode loop run on different threads, so every change to this state, and the
- * check-then-add behind admission, happens under one lock: a note is never both popped for decoding
- * and admitted again, and a request is never dropped between the loop's last `hasNext` and its exit.
+ * The notes waiting for on-device transcription, and the one being decoded. Admission, cancel and the
+ * decode loop run on different threads, so every change to queue membership happens under one lock,
+ * together with the ledger state that matches it (the caller's lambdas run inside the lock): a note is
+ * never both popped for decoding and admitted again, a request is never dropped between the loop's last
+ * `hasNext` and its exit, and a stale ledger write never overwrites a concurrent admission.
  */
 internal class WorkQueue {
     private val lock = Any()
     private val pending = ArrayDeque<String>()
     private var current: String? = null
+    private var cancelRequested = false
 
     enum class Admission { QUEUED, ALREADY_IN_LINE, FINISHED }
 
@@ -39,32 +41,64 @@ internal class WorkQueue {
     fun hasNext(): Boolean = synchronized(lock) { !pending.isEmpty() }
 
     /** The next note, now the one being decoded. */
-    fun pop(): String = synchronized(lock) { pending.removeFirst().also { current = it } }
-
-    /** The decode of the current note is over (done, failed or given up). */
-    fun finish() = synchronized(lock) { current = null }
-
-    /** The current note yields to a recording: back at the head of the line, with its place kept. */
-    fun requeueCurrent(id: String) = synchronized(lock) {
-        current = null
-        pending.addFirst(id)
+    fun pop(): String = synchronized(lock) {
+        cancelRequested = false
+        pending.removeFirst().also { current = it }
     }
 
-    fun remove(id: String) = synchronized(lock) { pending.remove(id) }
+    /** The decode of the current note is over (done, failed or given up); [settle] writes its ledger state. */
+    fun finish(settle: () -> Unit = {}) = synchronized(lock) {
+        settle()
+        current = null
+        cancelRequested = false
+    }
+
+    /**
+     * The current note yields to a recording: back at the head of the line with its place kept
+     * ([markQueued]), unless a cancel arrived first, which wins ([markCancelled]).
+     */
+    fun yieldCurrent(id: String, markQueued: () -> Unit, markCancelled: () -> Unit) = synchronized(lock) {
+        if (cancelRequested) markCancelled() else { markQueued(); pending.addFirst(id) }
+        current = null
+        cancelRequested = false
+    }
+
+    /**
+     * A waiting note leaves the line and is marked cancelled ([markCancelled]) in one step. The note
+     * being decoded stays current and is flagged: the decode loop stops it at its next checkpoint.
+     */
+    fun cancel(id: String, markCancelled: () -> Unit) = synchronized(lock) {
+        if (id == current) {
+            cancelRequested = true
+        } else {
+            pending.remove(id)
+            markCancelled()
+        }
+    }
+
+    /** Whether the note being decoded was cancelled. */
+    fun isCancelRequested(): Boolean = synchronized(lock) { cancelRequested }
 
     fun pendingIds(): List<String> = synchronized(lock) { pending.toList() }
 
-    /** Every waiting note, taken out of the line. */
-    fun drain(): List<String> = synchronized(lock) { pending.toList().also { pending.clear() } }
+    /** Every waiting note, taken out of the line and marked failed ([markFailed]) in one step: only those it took. */
+    fun drainFailing(markFailed: (String) -> Unit): List<String> = synchronized(lock) {
+        pending.toList().also { ids ->
+            pending.clear()
+            ids.forEach(markFailed)
+        }
+    }
 
     /** The decoding note first, then the waiting ones. */
     fun snapshotIds(): List<String> = synchronized(lock) { listOfNotNull(current) + pending.toList() }
 }
 
 /**
- * Admits explicit enqueues on [lane], never the thread that decodes: a note tapped while another
- * decodes is persisted and acknowledged at once, not after the decode (which can take minutes, and
- * which a dying process would lose the request in). Exactly one of `accepted` and `failed` runs.
+ * Runs explicit enqueues and cancels on [lane], never the thread that decodes: a note tapped while
+ * another decodes is persisted and acknowledged at once, and a cancel takes effect before the next
+ * decode starts, not after a decode that can take minutes (and which a dying process would lose the
+ * request in). One lane keeps them in the order they were asked. Exactly one of `accepted` and
+ * `failed` runs for an enqueue.
  */
 internal class Admission(private val work: WorkQueue, private val lane: Executor) {
     fun enqueue(
@@ -87,6 +121,13 @@ internal class Admission(private val work: WorkQueue, private val lane: Executor
             if (inLine) changed()
             accepted(inLine)
             if (inLine) wake()
+        }
+    }
+
+    fun cancel(id: String, markCancelled: () -> Unit, changed: () -> Unit) {
+        lane.execute {
+            work.cancel(id, markCancelled)
+            changed()
         }
     }
 }

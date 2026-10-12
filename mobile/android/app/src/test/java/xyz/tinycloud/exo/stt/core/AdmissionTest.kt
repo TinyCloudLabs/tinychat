@@ -110,7 +110,7 @@ class AdmissionTest {
         work.admit("a", { false }, {})
         work.admit("b", { false }, {})
         assertEquals("a", work.pop())
-        work.requeueCurrent("a")
+        work.yieldCurrent("a", markQueued = {}, markCancelled = {})
         assertEquals(listOf("a", "b"), work.snapshotIds())
         assertEquals("a", work.pop())
     }

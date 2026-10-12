@@ -32,6 +32,7 @@ import java.util.TimeZone
 import java.util.concurrent.Executors
 
 private class CaptureStartedException : Exception()
+private class CancelRequestedException : Exception()
 
 /**
  * Decodes a committed note's audio and produces a transcript with sherpa-onnx (plan §2.5), for
@@ -60,7 +61,7 @@ private class CaptureStartedException : Exception()
  */
 class TranscriptionQueue(private val context: Context, private val store: ModelStore) {
     private val capture get() = CaptureEngine.get(context)
-    // Decodes (`pump` holds this thread for a whole decode) and reconciles; admission never runs here.
+    // Decodes (`pump` holds this thread for a whole decode) and reconciles; admission and cancel never run here.
     private val executor = Executors.newSingleThreadExecutor { r -> Thread(r, "exo-stt-queue").apply { isDaemon = true } }
     private val admissionLane = Executors.newSingleThreadExecutor { r -> Thread(r, "exo-stt-admission").apply { isDaemon = true } }
     private val work = WorkQueue()
@@ -116,12 +117,14 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
         )
     }
 
+    /** A waiting note is taken out of line and marked cancelled at once; the note being decoded is
+     * stopped at the decode's next window. */
     fun cancel(id: String) {
-        executor.execute {
-            work.remove(id)
-            try { capture.library.markSttCancelled(id) } catch (_: Exception) {}
-            onQueueChanged?.invoke()
-        }
+        admission.cancel(
+            id,
+            markCancelled = { try { capture.library.markSttCancelled(id) } catch (_: Exception) {} },
+            changed = { onQueueChanged?.invoke() },
+        )
     }
 
     fun queueSnapshot(): JSONArray {
@@ -147,7 +150,7 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
         }
         running = true
         val engine = try { Engine(store, modelId) } catch (e: Exception) {
-            for (id in work.drain()) fail(id, "model_load_failed", e.message ?: "load failed")
+            for (id in work.drainFailing { markFailed(it, "model_load_failed") }) reportFailed(id, "model_load_failed", e.message ?: "load failed")
             running = false
             onQueueChanged?.invoke()
             return
@@ -161,7 +164,7 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
                 val previousAttempts = try { capture.library.read(id)?.optJSONObject("stt")?.optInt("attempts", 0) ?: 0 } catch (_: Exception) { 0 }
                 val decision = AttemptGuard.next(previousAttempts)
                 if (decision is AttemptGuard.Decision.GiveUp) {
-                    fail(id, "too_many_attempts", "gave up after ${AttemptGuard.MAX_ATTEMPTS} attempts")
+                    failCurrent(id, "too_many_attempts", "gave up after ${AttemptGuard.MAX_ATTEMPTS} attempts")
                 } else {
                     val attempt = (decision as AttemptGuard.Decision.Proceed).attempt
                     // Persisted before the risky decode starts: a crash mid-attempt still counts
@@ -174,11 +177,17 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
                     } catch (e: CaptureStartedException) {
                         // Not a failed attempt: an orderly yield to a resumed recording. Restore the
                         // attempt count so being interrupted repeatedly never burns the crash-loop budget.
-                        try { capture.library.mutate(id, "stt.write") { it.getJSONObject("stt").put("state", "queued").put("attempts", previousAttempts) } } catch (_: Exception) {}
-                        work.requeueCurrent(id)
+                        work.yieldCurrent(
+                            id,
+                            markQueued = { try { capture.library.mutate(id, "stt.write") { it.getJSONObject("stt").put("state", "queued").put("attempts", previousAttempts) } } catch (_: Exception) {} },
+                            markCancelled = { markCancelled(id) },
+                        )
+                    } catch (e: CancelRequestedException) {
+                        work.finish { markCancelled(id) }
+                        onQueueChanged?.invoke()
                     } catch (e: Exception) {
                         Log.e("ExoStt", "process() threw for id=$id", e)
-                        fail(id, "decode_failed", e.message ?: e.toString())
+                        failCurrent(id, "decode_failed", e.message ?: e.toString())
                     }
                 }
                 work.finish()
@@ -202,8 +211,21 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
         executor.execute { pump() }
     }
 
-    private fun fail(id: String, code: String, message: String) {
+    private fun markFailed(id: String, code: String) {
         try { capture.library.mutate(id, "stt.write") { it.getJSONObject("stt").put("state", "failed").put("error", code) } } catch (_: Exception) {}
+    }
+
+    private fun markCancelled(id: String) {
+        try { capture.library.markSttCancelled(id) } catch (_: Exception) {}
+    }
+
+    /** The note being decoded failed: its ledger state is written as it leaves the line, so a concurrent re-admission is never overwritten. */
+    private fun failCurrent(id: String, code: String, message: String) {
+        work.finish { markFailed(id, code) }
+        reportFailed(id, code, message)
+    }
+
+    private fun reportFailed(id: String, code: String, message: String) {
         Log.w("ExoStt", "transcription failed id=$id code=$code message=$message")
         onFailed?.invoke(id, code, message)
         onQueueChanged?.invoke()
@@ -218,7 +240,10 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
         var windowsDone = 0
         engine.transcribe(
             file = file,
-            checkCapturing = { if (captureGate.isActive()) throw CaptureStartedException() },
+            checkCapturing = {
+                if (work.isCancelRequested()) throw CancelRequestedException()
+                if (captureGate.isActive()) throw CaptureStartedException()
+            },
             onWindow = {
                 windowsDone += 1
                 try { capture.library.mutate(id, "stt.write") { it.getJSONObject("stt").put("windowsDone", windowsDone) } } catch (_: Exception) {}
