@@ -16,7 +16,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { chromium, webkit, type Browser, type BrowserContext, type BrowserType, type ConsoleMessage } from "playwright";
 import { buildHarness, serveHarness, type HarnessAssets } from "./exo-ui/harness-server";
-import { inspectHaloPixels, readHaloCenterPixel } from "./exo-ui/halo-pixels";
+import { inspectHaloPixels, readHaloCenterPixel, readHaloThemeColor } from "./exo-ui/halo-pixels";
 
 interface Viewport {
   id: string;
@@ -52,13 +52,72 @@ const VIEWPORTS: Viewport[] = [
     isMobile: true,
     hasTouch: true,
     screenPrefixes: [
+      "shell-chat",
       "recorder-final-phone-",
       "recorder-final-minimized-",
       "capture-soft-",
+      "capture-notetaker-route",
     ],
   },
+  {
+    id: "phone-360",
+    width: 360,
+    height: 740,
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    screenPrefixes: ["capture-soft-", "capture-notetaker-route"],
+  },
   { id: "text200-phone", group: "text200", width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true, textScale: 2, zoom: true },
+  {
+    id: "text200-phone-small",
+    group: "text200",
+    width: 320,
+    height: 640,
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    textScale: 2,
+    zoom: true,
+    screenPrefixes: ["recorder-landed", "capture-soft-", "capture-notetaker-route"],
+  },
+  {
+    id: "text200-phone-360",
+    group: "text200",
+    width: 360,
+    height: 740,
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    textScale: 2,
+    zoom: true,
+    screenPrefixes: ["capture-soft-", "capture-notetaker-route"],
+  },
+  {
+    id: "text200-rail",
+    group: "text200",
+    width: 844,
+    height: 600,
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    textScale: 2,
+    zoom: true,
+    screenPrefixes: ["shell-"],
+  },
   { id: "text200-desktop", group: "text200", width: 1280, height: 800, deviceScaleFactor: 2, textScale: 2, zoom: true },
+  ...[0.8, 2.5, 3.3].map((scale) => ({
+    id: `text${Math.round(scale * 100)}-phone`,
+    group: `text${Math.round(scale * 100)}`,
+    width: 390,
+    height: 844,
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    textScale: scale,
+    zoom: true,
+    screenPrefixes: ["shell-", "recorder-final-phone-", "recorder-final-minimized-", "capture-soft-", "capture-notetaker-route"],
+  })),
 ];
 const THEMES = ["light", "dark"] as const;
 
@@ -133,7 +192,7 @@ function ignoredConsoleError(message: ConsoleMessage): boolean {
 }
 
 // Runs in the page: the automated checks of plan §8.2 (TC-761).
-function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: boolean; displayTitle: boolean; allow: Array<{ selector: string; check: string }> }) {
+function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: boolean; displayTitle: boolean; largeText: boolean; normalCaptureRow: boolean; routeMode: "stacked" | "horizontal" | null; allow: Array<{ selector: string; check: string }> }) {
   const findings: Array<{ check: string; element?: string; detail: string }> = [];
   const allowed = (el: Element, check: string) => args.allow.some((entry) => entry.check === check && el.matches(entry.selector));
   const describe = (el: Element) => {
@@ -195,6 +254,21 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
   const dialogs = document.querySelectorAll("[role=dialog]").length;
   if (dialogs > 1) findings.push({ check: "dialogs", detail: `${dialogs} dialogs` });
 
+  const receiptStatus = document.querySelector<HTMLElement>('[data-testid="voice-note-status"]');
+  const receiptStatusLabel = receiptStatus?.querySelector<HTMLElement>('[data-testid="voice-note-status-label"]');
+  if (receiptStatus && receiptStatusLabel && shown(receiptStatus)) {
+    const pillBounds = receiptStatus.getBoundingClientRect();
+    const range = document.createRange();
+    range.selectNodeContents(receiptStatusLabel);
+    const textEscapesPill = [...range.getClientRects()].some((rect) =>
+      rect.left < pillBounds.left - 1 || rect.right > pillBounds.right + 1 ||
+      rect.top < pillBounds.top - 1 || rect.bottom > pillBounds.bottom + 1
+    );
+    if (receiptStatus.scrollWidth > receiptStatus.clientWidth + 1 || textEscapesPill) {
+      findings.push({ check: "receipt-status-content", element: describe(receiptStatus), detail: "status text overflows the pill bounds" });
+    }
+  }
+
   // 7. Zoomed and scaled text: nothing cut off.
   if (args.zoom) {
     for (const el of document.querySelectorAll("body *")) {
@@ -203,6 +277,168 @@ function inspectPage(args: { layout: "pane" | "document"; touch: boolean; zoom: 
       const style = getComputedStyle(el);
       if (!/hidden|clip/.test(style.overflowX) || el.scrollWidth <= el.clientWidth + 1) continue;
       if (!allowed(el, "clipped-text")) findings.push({ check: "clipped-text", element: describe(el), detail: `${el.scrollWidth}px of text in ${el.clientWidth}px` });
+    }
+  }
+
+  // Large-text phone captures exercise the six audited layouts plus the
+  // Android action row, tab bar, and Ribbon. Keep each target inside the
+  // viewport, check sibling line boxes for collisions, and reject line-by-letter
+  // wrapping that technically stays inside the component.
+  if (args.largeText) {
+    const targets = [
+      "[data-route-line]",
+      '[data-testid="voice-note-receipt"]',
+      '[data-testid="voice-note-status"]',
+      '[data-testid="recorder-island"]',
+      '[data-testid="chat-header"]',
+      '[data-testid="connector-row"]',
+      'button[role="switch"][aria-label="Enable Conversation Canvas"]',
+      '[data-testid="capture-actions"]',
+      '[data-testid="capture-upload"]',
+      '[data-testid="voice-note-record"]',
+      '[data-testid="capture-meeting"]',
+      '[data-testid="tab-bar"]',
+      '[data-testid="ribbon"]',
+      '[data-testid="voice-note-recorder"] main',
+      '[data-recorder-timer]',
+      '[data-testid="canvas-setting-row"]',
+      '[data-testid="autojoin-control-row"]',
+    ];
+    for (const selector of targets) {
+      for (const el of document.querySelectorAll(selector)) {
+        const bounds = el.getBoundingClientRect();
+        const routeContainer = selector === "[data-route-line]" ? el.parentElement : null;
+        const routeInfo = routeContainer ? `; wrapper ${Math.round(routeContainer.getBoundingClientRect().width)}px/${getComputedStyle(routeContainer).fontSize}/${getComputedStyle(routeContainer).containerType}/${getComputedStyle(routeContainer).containerName}; tracks ${getComputedStyle(el).gridTemplateColumns}` : "";
+        const name = `${selector} (${Math.round(bounds.width)}x${Math.round(bounds.height)} at ${Math.round(bounds.left)},${Math.round(bounds.top)}${routeInfo})`;
+        if (bounds.left < -1 || bounds.right > window.innerWidth + 1) {
+          findings.push({ check: "text200-bounds", element: name, detail: "component extends beyond the phone width" });
+        }
+        const textRects: Array<{ parent: Element; rect: DOMRect; text: string }> = [];
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          if (!node.textContent?.trim()) continue;
+          if (node.parentElement?.closest(".sr-only,[aria-hidden=true]")) continue;
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          const rects = [...range.getClientRects()].filter((rect) => rect.width > 0 && rect.height > 0);
+          const text = node.textContent!.trim();
+          for (const rect of rects) {
+            if (rect.left < bounds.left - 1 || rect.right > bounds.right + 1) {
+              findings.push({ check: "text200-text-bounds", element: name, detail: `${text.slice(0, 48)} at ${Math.round(rect.left)},${Math.round(rect.top)} exceeds component width` });
+              break;
+            }
+            textRects.push({ parent: node.parentElement!, rect, text });
+          }
+          const wordCount = text.split(/\s+/).filter(Boolean).length;
+          const maxReasonableLines = wordCount * 2;
+          const letterByLetterWord = [...text.matchAll(/\S{6,}/g)].some((match) => {
+            const range = document.createRange();
+            range.setStart(node, match.index!);
+            range.setEnd(node, match.index! + match[0].length);
+            const wordRects = [...range.getClientRects()];
+            const lines = new Map<number, { width: number; height: number }>();
+            for (const rect of wordRects) {
+              const top = Math.round(rect.top);
+              const line = lines.get(top) ?? { width: 0, height: 0 };
+              line.width += rect.width;
+              line.height = Math.max(line.height, rect.height);
+              lines.set(top, line);
+            }
+            return [...lines.values()].some((line) => line.width < line.height * 0.75);
+          });
+          if (rects.length > maxReasonableLines || letterByLetterWord || getComputedStyle(node.parentElement!).wordBreak === "break-all") {
+            findings.push({ check: "text200-letter-wrap", element: name, detail: `"${text.slice(0, 48)}" occupies ${rects.length} lines for ${wordCount} word(s)` });
+          }
+        }
+        for (let i = 0; i < textRects.length; i++) {
+          const a = textRects[i]!;
+          for (const b of textRects.slice(i + 1)) {
+            if (a.parent === b.parent || a.parent.contains(b.parent) || b.parent.contains(a.parent)) continue;
+            const intersects = a.rect.left < b.rect.right - 1 && a.rect.right > b.rect.left + 1 && a.rect.top < b.rect.bottom - 1 && a.rect.bottom > b.rect.top + 1;
+            if (intersects) findings.push({ check: "text200-sibling-overlap", element: name, detail: `"${a.text.slice(0, 30)}" overlaps "${b.text.slice(0, 30)}"` });
+          }
+        }
+      }
+    }
+    const timer = document.querySelector('[data-recorder-timer]')?.getBoundingClientRect();
+    const receipt = document.querySelector('[data-testid="voice-note-receipt"]')?.getBoundingClientRect();
+    if (timer && receipt && receipt.top < timer.bottom - 1) {
+      findings.push({ check: "text200-receipt-timer", detail: `receipt top ${Math.round(receipt.top)} is above timer bottom ${Math.round(timer.bottom)}` });
+    }
+    const chatTitle = document.querySelector<HTMLElement>('[data-testid="chat-header"] h1');
+    if (chatTitle) {
+      const previous = chatTitle.textContent;
+      chatTitle.textContent = "https://example.com/a/very/long/unbroken/chat-title-that-must-wrap-at-large-text-size";
+      const titleBounds = chatTitle.getBoundingClientRect();
+      if (chatTitle.scrollWidth > chatTitle.clientWidth + 1 || titleBounds.right > window.innerWidth + 1) {
+        findings.push({ check: "text200-chat-url", element: describe(chatTitle), detail: "long URL title overflows its available width" });
+      }
+      chatTitle.textContent = previous;
+    }
+    const ribbonElement = document.querySelector<HTMLElement>('[data-testid="ribbon"][data-layout="rail"]');
+    if (ribbonElement) {
+      const ribbon = ribbonElement.getBoundingClientRect();
+      for (const scroller of document.querySelectorAll<HTMLElement>("[data-scroll-root], .dch-scroll")) {
+        const initialTop = scroller.scrollTop;
+        scroller.scrollTo({ top: scroller.scrollHeight, behavior: "instant" });
+        const walker = document.createTreeWalker(scroller, NodeFilter.SHOW_TEXT);
+        const textRects: DOMRect[] = [];
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          if (!node.textContent?.trim() || node.parentElement?.closest(".sr-only,[aria-hidden=true]")) continue;
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          for (const rect of range.getClientRects()) {
+            if (rect.width > 0 && rect.height > 0) textRects.push(rect);
+          }
+        }
+        const clip = scroller.getBoundingClientRect();
+        const overlapTop = Math.max(clip.top, ribbon.top);
+        const overlapBottom = Math.min(clip.bottom, ribbon.bottom);
+        if (overlapBottom > overlapTop && textRects.some((rect) =>
+          rect.bottom > overlapTop + 1 && rect.top < overlapBottom - 1 &&
+          rect.right > Math.max(clip.left, ribbon.left) + 1 && rect.left < Math.min(clip.right, ribbon.right) - 1
+        )) {
+          findings.push({ check: "ribbon-occlusion", element: describe(scroller), detail: `visible text intersects Ribbon between y=${Math.round(overlapTop)} and y=${Math.round(overlapBottom)} at scroll end` });
+        }
+        scroller.scrollTo({ top: initialTop, behavior: "instant" });
+      }
+    }
+  }
+
+  if (args.routeMode) {
+    const container = document.querySelector<HTMLElement>("[data-route-line-container]");
+    const route = container?.querySelector<HTMLElement>("[data-route-line]");
+    if (container && route) {
+      const tracks = getComputedStyle(route).gridTemplateColumns.trim().split(/\s+/);
+      const stacked = tracks.length === 2;
+      if (stacked !== (args.routeMode === "stacked")) {
+        findings.push({ check: "route-line-layout", detail: `expected ${args.routeMode}, got ${tracks.length} grid tracks (container ${Math.round(container.getBoundingClientRect().width)}px, font ${getComputedStyle(container).fontSize}, type ${getComputedStyle(container).containerType})` });
+      }
+      if (args.routeMode === "stacked") {
+        const indicators = [...container.querySelectorAll<HTMLElement>("[data-route-node-indicator]")];
+        const maxIndicator = Math.max(0, ...indicators.map((indicator) => indicator.getBoundingClientRect().width));
+        const twoRem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) * 2;
+        const connectorHeights = [...container.querySelectorAll<HTMLElement>("[data-route-node-indicator] > [data-route-connector]")]
+          .map((connector) => connector.getBoundingClientRect().height);
+        if (maxIndicator > twoRem + 1 || connectorHeights.some((height) => height <= 0)) {
+          findings.push({ check: "route-line-stack-geometry", detail: "indicator column max " + Math.round(maxIndicator) + "px (limit " + Math.round(twoRem) + "px), connector heights " + connectorHeights.map(Math.round).join(",") });
+        }
+      }
+    }
+  }
+
+  if (args.normalCaptureRow) {
+    const actions = document.querySelector('[data-testid="capture-actions"]');
+    const upload = actions?.querySelector('[data-testid="capture-upload"]')?.getBoundingClientRect();
+    const recorder = actions?.querySelector('[data-testid="voice-note-record"]')?.getBoundingClientRect();
+    const meeting = actions?.querySelector('[data-testid="capture-meeting"]')?.getBoundingClientRect();
+    if (upload && recorder && meeting) {
+      const uploadRatio = recorder.width / upload.width;
+      const meetingRatio = recorder.width / meeting.width;
+      const sameRow = Math.abs(upload.top - recorder.top) < 1 && Math.abs(meeting.top - recorder.top) < 1;
+      if (!sameRow || Math.abs(uploadRatio - 1.3) > 0.04 || Math.abs(meetingRatio - 1.3) > 0.04) {
+        findings.push({ check: "capture-normal-emphasis", detail: `same row: ${sameRow}; Recorder width ratios are ${uploadRatio.toFixed(2)}× Upload and ${meetingRatio.toFixed(2)}× Meeting; expected one row and 1.30×` });
+      }
     }
   }
   return findings;
@@ -290,7 +526,15 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
           if (viewport.textScale) {
             // Before the app's scripts run; <html> may not exist yet when init scripts start.
             await context.addInitScript((scale) => {
-              const apply = () => document.documentElement.style.setProperty("font-size", `${scale * 100}%`);
+              const apply = () => {
+                const root = document.documentElement;
+                if (new URLSearchParams(location.search).get("platform") === "ios") {
+                  root.style.removeProperty("font-size");
+                  root.style.setProperty("--ios-body-scale", String(scale));
+                } else {
+                  root.style.setProperty("font-size", `${scale * 100}%`);
+                }
+              };
               if (document.documentElement) apply();
               else document.addEventListener("readystatechange", apply, { once: true });
             }, viewport.textScale);
@@ -301,15 +545,30 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 viewport.screenPrefixes &&
                 !viewport.screenPrefixes.some((prefix) => screen.id.startsWith(prefix))
               ) continue;
+              if (viewport.textScale !== undefined && viewport.textScale !== 2 && screen.platform !== "ios") continue;
               if (screen.viewports && !screen.viewports.includes(viewport.id)) continue;
               if (screen.minViewportWidth !== undefined && viewport.width < screen.minViewportWidth) continue;
               const page = await context.newPage();
               const errors: string[] = [];
+              const expectedRecorderStopError = [
+                "capture-recording-minimised-error",
+                "capture-stopped-minimised-error",
+              ].includes(screen.id);
+              let expectedRecorderStopErrors = 0;
               page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
               page.on("console", (message) => {
-                if (message.type() === "error" && !ignoredConsoleError(message)) {
-                  const url = message.location().url;
-                  errors.push(`console.error: ${message.text()}${url ? ` (${url})` : ""}`);
+                if (message.type() === "error") {
+                  const text = message.text();
+                  if (
+                    expectedRecorderStopError &&
+                    text.startsWith("[Recorder]") &&
+                    text.includes("The recorder could not stop")
+                  ) {
+                    expectedRecorderStopErrors += 1;
+                  } else if (!ignoredConsoleError(message)) {
+                    const url = message.location().url;
+                    errors.push(`console.error: ${text}${url ? ` (${url})` : ""}`);
+                  }
                 }
               });
               await page.goto(`http://127.0.0.1:${server.port}/?screen=${screen.id}&theme=${theme}&platform=${screen.platform ?? "web"}&freeze=1`);
@@ -325,6 +584,9 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 touch: viewport.hasTouch ?? false,
                 zoom: viewport.zoom ?? false,
                 displayTitle: screen.displayTitle ?? false,
+                largeText: (viewport.textScale ?? 1) >= 2,
+                normalCaptureRow: ["phone", "phone-small", "phone-360"].includes(viewport.id),
+                routeMode: screen.id === "capture-notetaker-route" ? (viewport.textScale && viewport.width <= 400 ? "stacked" : "horizontal") : null,
                 allow,
               });
               // The native Capture home must finish recorder setup; generic layout checks missed a missing Record button.
@@ -333,6 +595,139 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 if (await record.count() === 0 || await record.first().isDisabled()) {
                   findings.push({ check: "native-record-ready", detail: "Capture has no enabled Record button" });
                 }
+              }
+              if (["shell-chat-ribbon", "shell-chat-ribbon-from-capture", "shell-chat-ribbon-minimized-from-chat", "shell-chat-new-ribbon"].includes(screen.id)) {
+                const emptyState = await page.evaluate(() => {
+                  const viewport = document.querySelector<HTMLElement>("[data-scroll-root]");
+                  const title = viewport?.querySelector("h2");
+                  const viewportTop = viewport?.getBoundingClientRect().top ?? 0;
+                  const titleTop = title?.getBoundingClientRect().top ?? -1;
+                  const copy = document.querySelector<HTMLElement>("[data-agent-enable-copy]");
+                  const action = document.querySelector<HTMLElement>("[data-agent-enable-action]");
+                  return {
+                    scrollTop: viewport?.scrollTop ?? -1,
+                    viewportTop,
+                    titleTop,
+                    compactBannerApplies: window.matchMedia("(max-width: 639px)").matches &&
+                      document.documentElement.matches('html[data-nav="tabbar"][data-island]'),
+                    copyVisible: Boolean(copy?.getClientRects().length),
+                    actionHeight: action?.getBoundingClientRect().height ?? 0,
+                  };
+                });
+                if (emptyState.scrollTop !== 0 || emptyState.titleTop < emptyState.viewportTop) {
+                  findings.push({ check: "chat-empty-start", detail: `scrollTop ${emptyState.scrollTop}; title top ${emptyState.titleTop}; viewport top ${emptyState.viewportTop}` });
+                }
+                if (emptyState.compactBannerApplies && (emptyState.copyVisible || emptyState.actionHeight < 43.5)) {
+                  findings.push({ check: "chat-ribbon-action", detail: `copy visible ${emptyState.copyVisible}; action height ${emptyState.actionHeight}px` });
+                }
+                if (await page.locator('button[aria-label="Scroll to bottom"]').count() > 0) {
+                  findings.push({ check: "chat-empty-start", detail: "empty Chat showed the scroll-to-bottom overlay" });
+                }
+              }
+              if (screen.platform === "ios" && viewport.textScale) {
+                const rootSize = await page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).fontSize));
+                const expected = Math.max(16, Math.min(32, 16 * viewport.textScale));
+                if (Math.abs(rootSize - expected) > 0.1) findings.push({ check: "ios-text-scale", detail: `root font-size ${rootSize}px; expected ${expected}px at scale ${viewport.textScale}` });
+              }
+              if (screen.group === "pipeline") {
+                // Stepper text is rem (0.78125rem at any root), stays inside its box, and stacks exactly when the
+                // case is no wider than the stylesheet's 14rem container query.
+                const sizing = await page.evaluate(() => {
+                  const root = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
+                  const texts = [...document.querySelectorAll<HTMLElement>(
+                    ".pipeline-stepper-label, .pipeline-stepper-sublabel, .pipeline-stepper-caption, .pipeline-stepper-notice, .pipeline-stepper-cause, .pipeline-stepper .soft-pill",
+                  )];
+                  const textRects = (el: HTMLElement) => {
+                    const range = document.createRange();
+                    range.selectNodeContents(el);
+                    return [...range.getClientRects()].filter((rect) => rect.width > 0 && rect.height > 0);
+                  };
+                  const outside = (rect: DOMRect, bounds: DOMRect) =>
+                    rect.left < bounds.left - 1 || rect.right > bounds.right + 1 || rect.top < bounds.top - 1 || rect.bottom > bounds.bottom + 1;
+                  // The pill's ::after hit area inflates its scrollWidth, so its text is measured with a Range against the
+                  // button itself and the case that holds it, not with scrollWidth.
+                  const overflowing = texts.map((el) => {
+                    if (el.matches(".soft-pill")) {
+                      const button = el.getBoundingClientRect();
+                      const box = el.closest<HTMLElement>("[data-pipeline-case]")!.getBoundingClientRect();
+                      return textRects(el).some((rect) => outside(rect, button) || outside(rect, box)) ? el.className : null;
+                    }
+                    return el.scrollWidth > el.clientWidth + 1 ? el.className : null;
+                  }).filter((name) => name !== null);
+                  const layouts = [...document.querySelectorAll<HTMLElement>(".pipeline-stepper")].map((stepper) => {
+                    const items = [...stepper.querySelectorAll<HTMLElement>(".pipeline-stepper-list > li")].map((li) => ({
+                      indicator: li.querySelector(".pipeline-stepper-indicator")!.getBoundingClientRect(),
+                      label: li.querySelector(".pipeline-stepper-label")!.getBoundingClientRect(),
+                    }));
+                    const width = stepper.getBoundingClientRect().width;
+                    const sameLeft = items.every((item) => Math.abs(item.label.left - items[0]!.label.left) < 1);
+                    const below = items.every((item, i) => i === 0 || item.label.top >= items[i - 1]!.label.bottom - 1);
+                    const beside = items.every((item) => item.indicator.right <= item.label.left + 1 && Math.abs(item.indicator.top - item.label.top) < item.label.height);
+                    const sameTop = items.every((item) => Math.abs(item.label.top - items[0]!.label.top) < 1);
+                    const across = items.every((item, i) => i === 0 || item.label.left >= items[i - 1]!.label.right - 1);
+                    return { width, rem: root, stacked: sameLeft && below && beside, inline: sameTop && across };
+                  });
+                  return {
+                    root,
+                    texts: texts.length,
+                    wrong: texts.filter((el) => Math.abs(Number.parseFloat(getComputedStyle(el).fontSize) - root * 0.78125) > 0.01)
+                      .map((el) => `${el.className} ${getComputedStyle(el).fontSize}`),
+                    overflowing,
+                    layouts,
+                  };
+                });
+                const expectedRoot = 16 * (viewport.textScale ?? 1);
+                if (Math.abs(sizing.root - expectedRoot) > 0.1) findings.push({ check: "pipeline-text-scale", detail: `root font-size ${sizing.root}px; expected ${expectedRoot}px` });
+                if (sizing.texts === 0) findings.push({ check: "pipeline-text-scale", detail: "no stepper text found" });
+                if (sizing.wrong.length > 0) findings.push({ check: "pipeline-text-scale", detail: `not 0.78125rem: ${sizing.wrong.join("; ")}` });
+                if (sizing.overflowing.length > 0) findings.push({ check: "pipeline-text-wrap", detail: `text outside its box: ${sizing.overflowing.join("; ")}` });
+                for (const layout of sizing.layouts) {
+                  const shouldStack = layout.width <= 14 * layout.rem;
+                  if (shouldStack ? !layout.stacked : !layout.inline) {
+                    findings.push({ check: "pipeline-stack", detail: `a ${Math.round(layout.width)}px stepper at a ${layout.rem}px root should be ${shouldStack ? "stacked (14rem query)" : "inline"}; stacked ${layout.stacked}, inline ${layout.inline}` });
+                  }
+                }
+              }
+              if (screen.id === "shell-chat" && ["phone", "phone-small"].includes(viewport.id)) {
+                const bannerLayout = await page.evaluate(() => {
+                  const banner = document.querySelector('[aria-label="Agent tools"]');
+                  const markdown = document.querySelector('[data-testid="chat-markdown-demo"]');
+                  const helper = document.querySelector<HTMLElement>("[data-agent-enable-helper]");
+                  if (!banner || !markdown || !helper) return { missing: !banner ? "agent banner" : !markdown ? "Markdown demo" : "agent helper" };
+                  const bannerRect = banner.getBoundingClientRect();
+                  const markdownRect = markdown.getBoundingClientRect();
+                  return {
+                    bottomGap: window.innerHeight - bannerRect.bottom,
+                    bannerTop: bannerRect.top,
+                    bannerBottom: bannerRect.bottom,
+                    markdownBottom: markdownRect.bottom,
+                    clearance: Math.max(markdownRect.top - bannerRect.bottom, bannerRect.top - markdownRect.bottom),
+                    helperVisible: Boolean(helper.getClientRects().length),
+                    overlapsMarkdown: bannerRect.left < markdownRect.right &&
+                      bannerRect.right > markdownRect.left &&
+                      bannerRect.top < markdownRect.bottom &&
+                      bannerRect.bottom > markdownRect.top,
+                  };
+                });
+                if ("missing" in bannerLayout) {
+                  findings.push({ check: "chat-banner-layout", detail: `missing ${bannerLayout.missing}` });
+                } else {
+                  if (bannerLayout.bottomGap < 150 || bannerLayout.bottomGap > 220) {
+                    findings.push({ check: "chat-banner-offset", detail: `${Math.round(bannerLayout.bottomGap)}px from viewport bottom` });
+                  }
+                  if (bannerLayout.overlapsMarkdown) {
+                    findings.push({ check: "chat-banner-overlap", detail: `banner ${Math.round(bannerLayout.bannerTop)}–${Math.round(bannerLayout.bannerBottom)}px; Markdown ends at ${Math.round(bannerLayout.markdownBottom)}px` });
+                  }
+                  if (bannerLayout.clearance < 8) {
+                    findings.push({ check: "chat-banner-clearance", detail: `${Math.round(bannerLayout.clearance)}px between banner and Markdown card; expected at least 8px` });
+                  }
+                  if (bannerLayout.helperVisible) {
+                    findings.push({ check: "chat-banner-helper", detail: `${viewport.width}px phone should hide the helper line` });
+                  }
+                }
+              }
+              if (expectedRecorderStopError && expectedRecorderStopErrors === 0) {
+                findings.push({ check: "expected-recorder-stop-error", detail: "error fixture did not log its intentional stop failure" });
               }
               for (const error of errors) findings.push({ check: "errors", detail: error });
 
@@ -360,7 +755,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
     viewportFilter.some((id) => ["phone", "phone-halo-review"].includes(id));
   const runsHaloReview = viewportFilter?.includes("halo-review") ?? false;
   if (runsPhoneHaloReview || runsHaloReview)
-    test("recorder halo in tall phone and eight-ring review captures", async () => {
+    test("recorder halo in tall phone and theme-token review captures", async () => {
       const halo = screens.find((screen) => screen.id === "recorder-final-halo");
       if (!halo) return;
 
@@ -429,7 +824,13 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 .nth(3)
                 .evaluate(readHaloCenterPixel);
               expect(center.size % 2).toBe(1);
-              expect(center.color).toEqual(theme === "dark" ? [68, 59, 76] : [251, 248, 246]);
+              const tokenColor = await page
+                .locator(".halo-ring__canvas")
+                .nth(3)
+                .evaluate(readHaloThemeColor, theme);
+              if (!center.color.every((channel, index) => Math.abs(channel - tokenColor[index]!) <= 18)) {
+                throw new Error(`Halo ${theme} center ${center.color.join(",")} does not match --disc ${tokenColor.join(",")}`);
+              }
             }
             if (forceCanvas) expect(rendererPaths.some((path) => path.includes("canvas-2d"))).toBe(true);
             const file = `${halo.id}__${viewport.id}__${theme}${forceCanvas ? "-canvas2d" : ""}.png`;

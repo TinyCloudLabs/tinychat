@@ -22,15 +22,52 @@ import {
 } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { bytesToBase64, VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS } from "@/lib/voiceNotes/voiceNoteAudio";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
-import { saveVoiceNote, type NoteSyncErrorCode, type VoiceNoteAudio, type VoiceNoteAudioSource } from "@/lib/voiceNotes/voiceNoteStore";
+import { saveVoiceNote, type NoteSyncErrorCode, type VoiceNoteAudio, type VoiceNoteAudioSource, type StoreAudioOptions } from "@/lib/voiceNotes/voiceNoteStore";
 import { assertCurrent, type AccountContext } from "@/lib/voiceNotes/accountContext";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { deleteNote } from "@/lib/voiceNotes/recordingNotes";
+import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
 
-export function messageOf(error: unknown): string {
+export const TINYCLOUD_NETWORK_FAILURE_MESSAGE =
+  "Couldn't reach your TinyCloud space. This note is still on your phone — try again.";
+
+function rawErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (error && typeof error === "object" && "message" in error) return String((error as { message: unknown }).message);
   return String(error);
+}
+
+function redactedRawError(message: string): string {
+  return message
+    .replace(/https?:\/\/[^\s"'<>]+/gi, "<url>")
+    .replace(/\b(authorization)(["']?\s*[:=]\s*["']?)(?:bearer\s+)?[^\s"'&,;}]+/gi, "$1$2<redacted>")
+    .replace(/\b(bearer\s+)[^\s,;]+/gi, "$1<redacted>")
+    .replace(/\b(token|api[_-]?key|secret)(["']?\s*[:=]\s*["']?)[^\s"'&,;}]+/gi, "$1$2<redacted>")
+    .slice(0, 240);
+}
+
+const NETWORK_FAILURE_SUFFIX = /(?:^|:\s)(?:Load failed|The network connection was lost\.|Fetch API cannot load .+? due to access control checks\.|Failed to fetch|NetworkError when attempting to fetch resource\.)\s*$/i;
+
+export function isTinyCloudNetworkFailure(error: unknown): boolean {
+  return NETWORK_FAILURE_SUFFIX.test(rawErrorMessage(error));
+}
+
+/** Log a diagnostic message without passing arbitrary error objects or credential-bearing strings to the console. */
+export function logVoiceNoteError(operation: string, error: unknown): void {
+  const code = errorCode(error);
+  console.warn(`[VoiceNotes] ${operation}${code ? ` (code=${code})` : ""}: ${redactedRawError(rawErrorMessage(error))}`);
+}
+
+/** Map WebKit's unhelpful network messages to specific recovery copy. */
+export function messageOf(error: unknown): string {
+  const message = rawErrorMessage(error);
+  if (isTinyCloudNetworkFailure(error)) {
+    // The access-control variant can include a credential-bearing URL. Keep the raw diagnostic useful,
+    // but never pass an Error object or an unredacted URL to the log.
+    logVoiceNoteError("TinyCloud network failure", error);
+    return TINYCLOUD_NETWORK_FAILURE_MESSAGE;
+  }
+  return message;
 }
 
 export function errorCode(error: unknown): string | null {
@@ -140,11 +177,25 @@ export function isDiscarded(id: string): boolean {
   return discardedThisSession.has(id) || storedDiscarded().includes(id);
 }
 
-/** Its device copy is gone: nothing is left to guard. */
-export function clearDiscarded(id: string): void {
+/** Recordings whose discard went through and whose device copy is gone, this session. */
+const deletedThisSession = new Set<string>();
+
+/** The user discarded this recording, and it is still marked or its copy has been deleted: it never became a saved note. */
+export function wasDiscarded(id: string): boolean {
+  return isDiscarded(id) || deletedThisSession.has(id);
+}
+
+/** It was not discarded after all (the discard failed): the guard goes, the recording stays. */
+export function unmarkDiscarded(id: string): void {
   discardedThisSession.delete(id);
   const ids = storedDiscarded();
   if (ids.includes(id)) storeDiscarded(ids.filter((stored) => stored !== id));
+}
+
+/** Its device copy is gone: nothing is left to guard, and `wasDiscarded` still remembers it. */
+export function clearDiscarded(id: string): void {
+  deletedThisSession.add(id);
+  unmarkDiscarded(id);
 }
 
 const discardDeletes = new Map<string, Promise<string | null>>();
@@ -165,7 +216,7 @@ export async function deleteDiscarded(id: string): Promise<string | null> {
 
 async function deleteDiscardedOnce(id: string): Promise<string | null> {
   try {
-    await VoiceNotes.deleteAudio({ id });
+    await withVoiceNoteSaveDeadline(`native deleteAudio id=${id}`, () => VoiceNotes.deleteAudio({ id }));
   } catch (caught) {
     return `Discarded, but this phone kept its copy: ${messageOf(caught)}`;
   }
@@ -198,9 +249,13 @@ export type SaveOutcome =
   | { kind: "saved"; audio: VoiceNoteAudio | null; cleanupError: string | null; noteSyncError?: NoteSyncErrorCode }
   | { kind: "already-saved"; cleanupError: string | null }
   | { kind: "discarded"; cleanupError: string | null }
-  | { kind: "held"; reason: "legacy" | "unowned" | "other-account" }
+  | { kind: "held"; reason: "signed-out" | "legacy" | "unowned" | "other-account" }
   | { kind: "in-flight" }
-  | { kind: "failed"; failure: string };
+  | { kind: "failed"; failure: string; failureKind: "offline" | "timeout" | "quota" | "auth" | "server" | "source" | "other"; failureCause: unknown };
+
+function failedOutcome(error: unknown): Extract<SaveOutcome, { kind: "failed" }> {
+  return { kind: "failed", failure: messageOf(error), failureKind: classifyNoteFailure(error), failureCause: error };
+}
 
 function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {
   const out = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
@@ -257,7 +312,7 @@ export async function saveRecording(
       checkpoint: () => { if (isDiscarded(recording.id)) throw new Error("Recording was discarded"); } });
     if (!saved.ok) return isDiscarded(recording.id)
       ? { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) }
-      : { kind: "failed", failure: saved.error.message };
+      : failedOutcome(saved.error);
     if (isDiscarded(recording.id)) return { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) };
     // The device copy remains playable. This old marker is informational;
     // the indexed row and the native ledger decide idempotence.
@@ -265,16 +320,18 @@ export async function saveRecording(
     persistCloudSaved();
     let cleanupError: string | null = null;
     if (recording.owner) {
+      const owner = recording.owner;
       try {
         const patch = { audio: { state: "saved" as const, rowId: saved.data.id, at: Date.now() } };
         try {
-          await VoiceNotes.updateLedger({ id: recording.id, did: recording.owner, rev: recording.rev ?? 0, patch });
+          await withVoiceNoteSaveDeadline(`native updateLedger id=${recording.id}`, () => VoiceNotes.updateLedger({ id: recording.id, did: owner, rev: recording.rev ?? 0, patch }));
         } catch (caught) {
           if (errorCode(caught) !== "rev_conflict") throw caught;
-          const fresh = (await VoiceNotes.listPending()).recordings.find((note) => note.id === recording.id);
-          if (!fresh || isLegacyNote(fresh) || fresh.owner !== recording.owner || fresh.rev === undefined) throw caught;
+          const fresh = (await withVoiceNoteSaveDeadline(`native listPending id=${recording.id}`, () => VoiceNotes.listPending())).recordings.find((note) => note.id === recording.id);
+          if (!fresh || isLegacyNote(fresh) || fresh.owner !== owner || fresh.rev === undefined) throw caught;
           if (fresh.ledger?.audio?.state !== "saved") {
-            await VoiceNotes.updateLedger({ id: recording.id, did: recording.owner, rev: fresh.rev, patch });
+            const rev = fresh.rev;
+            await withVoiceNoteSaveDeadline(`native updateLedger id=${recording.id}`, () => VoiceNotes.updateLedger({ id: recording.id, did: owner, rev, patch }));
           }
         }
         savedThisSession.add(recording.id);
@@ -293,7 +350,7 @@ export async function saveRecording(
   } catch (caught) {
     return isDiscarded(recording.id)
       ? { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) }
-      : { kind: "failed", failure: messageOf(caught) };
+      : failedOutcome(caught);
   } finally {
     savesInFlight.delete(recording.id);
     publishSaveIdle();
@@ -302,7 +359,9 @@ export async function saveRecording(
 
 /** The one owner-aware upload entry point used by the T18 pipeline. */
 export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
-  recording: VoiceNoteRecording, checkpoint: () => void = () => undefined): Promise<SaveOutcome> {
+  recording: VoiceNoteRecording, checkpoint: () => void = () => undefined,
+  audioOptions: Pick<StoreAudioOptions, "retryDelaysMs" | "onProgress" | "onRetry" | "onUploadStart"> &
+    { uploadTicket?: PendingUploadTicket } = {}): Promise<SaveOutcome> {
   const check = () => { assertCurrent(ctx); checkpoint(); };
   const checkActive = () => { check(); if (isDiscarded(recording.id)) throw new Error("Recording was discarded"); };
   check();
@@ -312,42 +371,67 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
   if (!recording.owner) return { kind: "held", reason: "unowned" };
   if (recording.owner !== ctx.did) return { kind: "held", reason: "other-account" };
   if (recording.ledger?.audio.state === "saved") return { kind: "already-saved", cleanupError: null };
+  if (audioOptions.uploadTicket && !audioOptions.uploadTicket.owns) return { kind: "in-flight" };
   if (savesInFlight.has(recording.id)) return { kind: "in-flight" };
   savesInFlight.add(recording.id);
+  const ticket = audioOptions.uploadTicket ?? pendingStore.enqueueUpload(recording);
+  if (!ticket.owns) {
+    savesInFlight.delete(recording.id);
+    return { kind: "in-flight" };
+  }
+  const uploadOwner = ticket.owner;
+  pendingStore.beginUpload(recording, ticket);
   try {
     const source = nativeRecordingSource(recording);
     const checkedSource: VoiceNoteAudioSource = { ...source, readPart: async (offset, length) => {
       checkActive();
       return source.readPart(offset, length);
     } };
-    const saved = await saveVoiceNote(tcw, recording, checkedSource, nativePlatform(), { checkpoint: checkActive });
+    const saved = await saveVoiceNote(tcw, recording, checkedSource, nativePlatform(), {
+      ...audioOptions,
+      onUploadStart: (total) => {
+        pendingStore.publishUpload(recording.id, uploadOwner, { state: "uploading", bytes: 0, total });
+        audioOptions.onUploadStart?.(total);
+      },
+      onProgress: (bytes, total) => {
+        pendingStore.publishUpload(recording.id, uploadOwner, { state: "uploading", bytes, total });
+        audioOptions.onProgress?.(bytes, total);
+      },
+      onRetry: (attempt, code) => {
+        const current = uploadStates.get(recording.id)?.upload;
+        pendingStore.publishUpload(recording.id, uploadOwner, { state: "retrying", bytes: current?.bytes ?? 0, total: current?.total ?? recording.sizeBytes });
+        audioOptions.onRetry?.(attempt, code);
+      },
+      checkpoint: checkActive,
+    });
     if (!saved.ok) return isDiscarded(recording.id)
       ? { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) }
-      : { kind: "failed", failure: saved.error.message };
+      : failedOutcome(saved.error);
     checkActive();
     const patch = { audio: { state: "saved" as const, rowId: saved.data.id, at: Date.now() } };
     let fresh = recording;
     for (let attempt = 0; attempt < 2; attempt++) {
       check();
       try {
-        await VoiceNotes.updateLedger({ id: recording.id, did: ctx.did, rev: fresh.rev ?? 0, patch });
+        await withVoiceNoteSaveDeadline(`native updateLedger id=${recording.id}`, () => VoiceNotes.updateLedger({ id: recording.id, did: ctx.did, rev: fresh.rev ?? 0, patch }));
         return { kind: "saved", audio: null, cleanupError: null, noteSyncError: saved.data.noteSyncError };
       } catch (caught) {
         if (errorCode(caught) !== "rev_conflict") throw caught;
         check();
-        const current = (await VoiceNotes.listPending()).recordings.find((note) => note.id === recording.id);
+        const current = (await withVoiceNoteSaveDeadline(`native listPending id=${recording.id}`, () => VoiceNotes.listPending())).recordings.find((note) => note.id === recording.id);
         if (!current || current.owner !== ctx.did || isLegacyNote(current)) throw caught;
         if (current.ledger?.audio.state === "saved") return { kind: "saved", audio: null, cleanupError: null,
           noteSyncError: saved.data.noteSyncError };
         fresh = current;
       }
     }
-    return { kind: "failed", failure: "Could not update this phone's saved-note status" };
+    return failedOutcome(Object.assign(new Error("Could not update this phone's saved-note status"), { code: "STORE_ERROR" }));
   } catch (caught) {
     return isDiscarded(recording.id)
       ? { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) }
-      : { kind: "failed", failure: messageOf(caught) };
+      : failedOutcome(caught);
   } finally {
+    if (!audioOptions.uploadTicket) pendingStore.settleUploadQueue(ticket);
     savesInFlight.delete(recording.id);
     publishSaveIdle();
   }
@@ -367,11 +451,71 @@ let trackedSavesInFlight = 0;
 let activeAccountDid: string | null = null;
 /** Bumped whenever the active account changes, so a run can tell "not registered yet" from "signed out since". */
 let accountChanges = 0;
-const noteFailures = new Map<string, string>();
+type NoteFailure = NonNullable<PendingNote["failed"]>;
+const noteFailures = new Map<string, NoteFailure>();
+const heldReasons = new Map<string, NonNullable<PendingNote["held"]>>();
+type UploadProgress = NonNullable<PendingNote["upload"]>;
+export interface PendingUploadTicket { id: string; owner: symbol; owns: boolean }
+const uploadStates = new Map<string, {
+  owner: symbol;
+  upload: UploadProgress;
+  waitingBehind: number;
+  lastPublishedAt: number;
+  lastPercent: number;
+}>();
 let generalFailure: string | null = null;
 
 function currentFailure(): string | null {
-  return generalFailure ?? [...noteFailures.values()].at(-1) ?? null;
+  return generalFailure ?? [...noteFailures.values()].at(-1)?.message ?? null;
+}
+
+function failureStatus(error: unknown): number | undefined {
+  if (error && typeof error === "object") {
+    const meta = (error as { meta?: unknown }).meta;
+    if (meta && typeof meta === "object" && typeof (meta as { status?: unknown }).status === "number") return (meta as { status: number }).status;
+    const status = (error as { status?: unknown }).status;
+    if (typeof status === "number") return status;
+  }
+  const match = rawErrorMessage(error).match(/Failed to execute query:\s*([45]\d\d)\b/i);
+  return match ? Number(match[1]) : undefined;
+}
+
+export function classifyNoteFailure(error: unknown): NoteFailure["kind"] {
+  const chain: unknown[] = [];
+  let current = error;
+  for (let depth = 0; current !== undefined && current !== null && depth < 4 && !chain.includes(current); depth++) {
+    chain.push(current);
+    current = current && typeof current === "object" && "cause" in current
+      ? (current as { cause?: unknown }).cause : undefined;
+  }
+  const explicitKind = chain.map((item) => item && typeof item === "object"
+    ? (item as { failureKind?: unknown }).failureKind : undefined)
+    .find((kind) => kind === "offline" || kind === "timeout" || kind === "quota" || kind === "auth"
+      || kind === "server" || kind === "source" || kind === "other");
+  if (explicitKind) return explicitKind as NoteFailure["kind"];
+  const codes = chain.map((item) => errorCode(item)?.toUpperCase() ?? "");
+  const messages = chain.map(rawErrorMessage);
+  const statuses = chain.map(failureStatus);
+  if (codes.some((code) => code === "VOICE_NOTE_SOURCE_READ_FAILED" || code === "VOICE_NOTE_AUDIO_TOO_LARGE"
+    || code === "STORE_CORRUPT_AUDIO" || code === "VOICE_NOTE_AUDIO_CORRUPT")) return "source";
+  if (codes.some((code) => code === "STORAGE_QUOTA_EXCEEDED" || code === "STORAGE_LIMIT_REACHED" || /quota/i.test(code))) return "quota";
+  if (statuses.some((status) => status === 401 || status === 403)
+    || codes.some((code) => /AUTH|UNAUTHENTICATED|UNAUTHORIZED|FORBIDDEN|CAPABILITY/.test(code))) return "auth";
+  if (statuses.some((status) => status !== undefined && status >= 500)
+    || codes.some((code) => /SERVER_ERROR|INTERNAL_SERVER/.test(code))) return "server";
+  if (chain.some((item) => item instanceof VoiceNoteSaveTimeout
+    || (item && typeof item === "object" && (item as { name?: unknown }).name === "VoiceNoteSaveTimeout"))
+    || codes.some((code) => code === "SPACE_LANE_QUEUE_TIMEOUT" || code === "VOICE_NOTE_OPERATION_TIMEOUT" || /timeout|timed out/i.test(code))) return "timeout";
+  if (chain.some(isTinyCloudNetworkFailure) || codes.includes("NETWORK_ERROR")
+    || messages.some((message) => /offline|network|failed to fetch|load failed/i.test(message))) return "offline";
+  return "other";
+}
+
+function clearPendingErrors(): void {
+  generalFailure = null;
+  noteFailures.clear();
+  const notes = pendingSnapshot.notes?.map(({ failed: _failed, ...note }) => note);
+  publishPending({ lastError: null, notes });
 }
 
 /**
@@ -381,11 +525,12 @@ function currentFailure(): string | null {
  */
 export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
   if (pendingRunInFlight) return pendingRunInFlight;
+  clearPendingErrors();
   publishPending({ running: true });
   pendingRunInFlight = (async () => {
     let recordings: VoiceNoteRecording[];
     try {
-      ({ recordings } = await VoiceNotes.listPending());
+      ({ recordings } = await withVoiceNoteSaveDeadline("native listPending for pending saves", () => VoiceNotes.listPending()));
     } catch (caught) {
       // Nothing is known about the phone: told as such, never as "nothing pending".
       const message = listingFailure(caught);
@@ -398,18 +543,23 @@ export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
     for (const recording of [...recordings].sort((a, b) => a.startedAt - b.startedAt)) {
       const outcome = await saveRecording(tcw, recording);
       if (outcome.kind === "saved") {
+        noteFailures.delete(recording.id);
         saved.push(recording);
         if (outcome.cleanupError) lastError = outcome.cleanupError;
       } else if (outcome.kind === "already-saved" || outcome.kind === "discarded") {
+        noteFailures.delete(recording.id);
         if (outcome.cleanupError) lastError = outcome.cleanupError;
       } else if (outcome.kind === "held") {
         left.push(recording);
       } else if (outcome.kind === "failed") {
         left.push(recording);
         lastError = outcome.failure;
+        noteFailures.set(recording.id, { kind: outcome.failureKind, message: outcome.failure });
       }
+      // Publish each note's new ledger state as soon as its save settles. A long
+      // reconcile pass must not leave the Capture count stale until its last note.
+      await relistPending(lastError);
     }
-    await relistPending(lastError);
     return { total: recordings.length, left, saved, lastError };
   })().finally(() => {
     pendingRunInFlight = null;
@@ -422,14 +572,30 @@ export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
 /** What the phone last listed as pending: not yet asked, a count, or a listing that failed. */
 export type PendingListing = { state: "unknown" } | { state: "ok"; count: number } | { state: "error"; message: string };
 
+/** One recording still on the device, as the Library lists it until its space row lands. */
+export interface PendingNote {
+  id: string;
+  startedAt: number;
+  durationMs: number;
+  /** This note failed its latest save attempt, so its Recent row must not imply it's still saving. */
+  failed?: { kind: "offline" | "timeout" | "quota" | "auth" | "server" | "source" | "other"; message: string };
+  held?: "signed-out" | "other-account" | "legacy" | "unowned";
+  upload?: { state: "waiting" | "uploading" | "retrying"; bytes: number; total: number };
+  waitingBehind?: number;
+}
+
 /** Recordings awaiting a space save, as the recorder views show them. */
 export interface PendingSnapshot {
   listing: PendingListing;
+  /** The recordings behind a `listing` of state "ok" (this account's); absent until listed, after a failed listing, and in screen fixtures. */
+  notes?: PendingNote[];
   /** Which signed-in account this listing was filtered for. */
   accountDid?: string | null;
   /** A save of them is running (savePendingRecordings). */
   running: boolean;
   lastError: string | null;
+  uploadingId: string | null;
+  online: boolean;
 }
 
 /** How many notes await a space save (0 when unknown or the listing failed). */
@@ -437,12 +603,46 @@ export function pendingCount(snapshot: Pick<PendingSnapshot, "listing">): number
   return snapshot.listing.state === "ok" ? snapshot.listing.count : 0;
 }
 
-let pendingSnapshot: PendingSnapshot = { listing: { state: "unknown" }, accountDid: null, running: false, lastError: null };
+let pendingSnapshot: PendingSnapshot = { listing: { state: "unknown" }, accountDid: null, running: false, lastError: null,
+  uploadingId: null, online: typeof navigator === "undefined" ? true : navigator.onLine !== false };
 const pendingListeners = new Set<() => void>();
 
 function publishPending(patch: Partial<PendingSnapshot>): void {
   pendingSnapshot = { ...pendingSnapshot, ...patch };
   for (const listener of pendingListeners) listener();
+}
+
+function activeUploadId(): string | null {
+  for (const [id, state] of uploadStates) {
+    if (state.upload.state === "uploading" || state.upload.state === "retrying") return id;
+  }
+  return null;
+}
+
+function mergeUploadState(note: PendingNote): PendingNote {
+  const state = uploadStates.get(note.id);
+  return state ? { ...note, upload: state.upload, waitingBehind: state.waitingBehind } : note;
+}
+
+function publishUploadQueue(notes = pendingSnapshot.notes): void {
+  let ahead = 0;
+  for (const state of uploadStates.values()) {
+    state.waitingBehind = state.upload.state === "waiting" ? ahead : 0;
+    ahead++;
+  }
+  publishPending({ uploadingId: activeUploadId(), notes: notes?.map(mergeUploadState) });
+}
+
+function publishOwnedUpload(id: string, owner: symbol, upload: UploadProgress): void {
+  const state = uploadStates.get(id);
+  if (!state || state.owner !== owner) return;
+  const now = Date.now();
+  const percent = upload.total > 0 ? Math.floor(upload.bytes / upload.total * 100) : 0;
+  if (upload.state === "uploading" && state.upload.state === "uploading" && percent - state.lastPercent < 1 && now - state.lastPublishedAt < 250) return;
+  state.upload = upload;
+  state.lastPublishedAt = now;
+  state.lastPercent = percent;
+  publishUploadQueue();
 }
 
 function beginTrackedSave(): () => void {
@@ -470,6 +670,10 @@ export const pendingStore = {
   refresh(lastError?: string | null): Promise<void> {
     return relistPending(lastError);
   },
+  /** The failure no single note owns (the account is not ready, the defaults could not be claimed); null when there is none. */
+  generalError(): string | null {
+    return generalFailure;
+  },
   /** A retry that cannot start still needs a visible result beside Save now. */
   reportError(message: string): void {
     generalFailure = message;
@@ -496,17 +700,71 @@ export const pendingStore = {
       },
     };
   },
-  reportNoteFailure(id: string, message: string): void {
+  reportNoteFailure(id: string, error: unknown): void {
+    const visibleMessage = messageOf(error);
+    const failure = { kind: classifyNoteFailure(error), message: visibleMessage };
     noteFailures.delete(id);
-    noteFailures.set(id, message);
-    publishPending({ lastError: currentFailure() });
+    noteFailures.set(id, failure);
+    publishPending({
+      lastError: currentFailure(),
+      notes: pendingSnapshot.notes?.map((note) => note.id === id ? { ...note, failed: failure } : note),
+    });
+  },
+  setOnline(online: boolean): void { publishPending({ online }); },
+  setHeld(id: string, held: PendingNote["held"]): void {
+    if (held) heldReasons.set(id, held);
+    else heldReasons.delete(id);
+    publishPending({ notes: pendingSnapshot.notes?.map((note) => note.id === id ? { ...note, held } : note) });
+  },
+  enqueueUpload(recording: VoiceNoteRecording | string): PendingUploadTicket {
+    const id = typeof recording === "string" ? recording : recording.id;
+    const existing = uploadStates.get(id);
+    if (existing) return { id, owner: existing.owner, owns: false };
+    const owner = Symbol(id);
+    heldReasons.delete(id);
+    uploadStates.set(id, { owner, upload: { state: "waiting", bytes: 0,
+      total: typeof recording === "string" ? 0 : recording.sizeBytes }, waitingBehind: 0, lastPublishedAt: 0, lastPercent: -1 });
+    publishUploadQueue();
+    return { id, owner, owns: true };
+  },
+  beginUpload(recording: VoiceNoteRecording, ticket: PendingUploadTicket): void {
+    const state = uploadStates.get(recording.id);
+    if (!ticket.owns || !state || state.owner !== ticket.owner) return;
+    heldReasons.delete(recording.id);
+    state.upload = { state: "waiting", bytes: 0, total: recording.sizeBytes };
+    publishUploadQueue();
+  },
+  publishUpload(id: string, owner: symbol, upload: UploadProgress): void {
+    publishOwnedUpload(id, owner, upload);
+  },
+  settleUploadQueue(ticket: PendingUploadTicket): void {
+    if (!ticket.owns || uploadStates.get(ticket.id)?.owner !== ticket.owner) return;
+    uploadStates.delete(ticket.id);
+    const notes = pendingSnapshot.notes?.map((note) => {
+      if (note.id === ticket.id) {
+        const { upload: _upload, waitingBehind: _waitingBehind, ...rest } = note;
+        return rest;
+      }
+      return note;
+    });
+    publishUploadQueue(notes);
+  },
+  clearNoteFailure(id: string): void {
+    if (!noteFailures.delete(id)) return;
+    const notes = pendingSnapshot.notes?.map((note) => {
+      if (note.id !== id || !note.failed) return note;
+      const { failed: _failed, ...rest } = note;
+      return rest;
+    });
+    publishPending({ lastError: currentFailure(), notes });
   },
   setAccount(did: string | null): void {
     if (activeAccountDid !== did) {
       accountChanges++;
       noteFailures.clear();
+      heldReasons.clear();
       generalFailure = null;
-      publishPending({ accountDid: did, listing: { state: "unknown" }, lastError: null });
+      publishPending({ accountDid: did, listing: { state: "unknown" }, notes: undefined, lastError: null });
     }
     activeAccountDid = did;
     void relistPending(null);
@@ -514,7 +772,7 @@ export const pendingStore = {
   /** Track the whole automatic pipeline, including its cloud preflight. */
   beginAutomaticSave: beginTrackedSave,
   /** The owner-aware manual retry uses the same saving state as the legacy path. */
-  beginManualSave: beginTrackedSave,
+  beginManualSave: () => { clearPendingErrors(); return beginTrackedSave(); },
 };
 
 function listingFailure(caught: unknown): string {
@@ -525,7 +783,7 @@ function listingFailure(caught: unknown): string {
 async function relistPending(lastError?: string | null): Promise<void> {
   if (lastError !== undefined) generalFailure = lastError;
   try {
-    const { recordings } = await VoiceNotes.listPending();
+    const { recordings } = await withVoiceNoteSaveDeadline("native listPending for pending count", () => VoiceNotes.listPending());
     const visible = activeAccountDid
       ? recordings.filter((recording) => !recording.owner || recording.owner === activeAccountDid)
       : recordings;
@@ -534,8 +792,16 @@ async function relistPending(lastError?: string | null): Promise<void> {
     );
     const pendingIds = new Set(pending.map((note) => note.id));
     for (const id of noteFailures.keys()) if (!pendingIds.has(id)) noteFailures.delete(id);
-    publishPending({ accountDid: activeAccountDid, listing: { state: "ok", count: pending.length }, lastError: currentFailure() });
+    const notes = pending
+      .filter((recording) => !isDiscarded(recording.id))
+      .map((recording) => ({ id: recording.id, startedAt: recording.startedAt, durationMs: recording.durationMs,
+        ...(noteFailures.has(recording.id) ? { failed: noteFailures.get(recording.id)! } : {}),
+        ...(uploadStates.has(recording.id) ? { upload: uploadStates.get(recording.id)!.upload,
+          waitingBehind: uploadStates.get(recording.id)!.waitingBehind } : {}),
+        ...((activeAccountDid ? heldReasons.get(recording.id) : "signed-out") ?
+          { held: activeAccountDid ? heldReasons.get(recording.id)! : "signed-out" as const } : {}) }));
+    publishPending({ accountDid: activeAccountDid, listing: { state: "ok", count: pending.length }, notes, lastError: currentFailure() });
   } catch (caught) {
-    publishPending({ listing: { state: "error", message: listingFailure(caught) }, lastError: currentFailure() });
+    publishPending({ listing: { state: "error", message: listingFailure(caught) }, notes: undefined, lastError: currentFailure() });
   }
 }

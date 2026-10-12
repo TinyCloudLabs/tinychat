@@ -163,7 +163,7 @@ export function ChatWorkspace(props: {
           <ChatsPaneHeader title={<h2 className="font-display text-title-2">Chats</h2>} placement="column" />
           <ThreadList />
         </aside>
-        <section className="flex min-h-0 min-w-0 flex-col">
+        <section className="relative flex min-h-0 min-w-0 flex-col">
           <ChatHeader
             onOpenChats={size === "expanded" ? undefined : openChats}
             recorder={props.headerRecorder}
@@ -180,12 +180,10 @@ export function ChatWorkspace(props: {
               composerToolbar={props.composerToolbar}
             />
           </div>
+          <ChatViewAgentEnablementBanner />
         </section>
       </div>
       <ChatsSheet open={chatsOpen} onOpenChange={setChatsOpen} settings={props.settings} />
-      {/* C3: first-time enablement + expired-delegation reconnect affordance —
-          chat views only (isChatViewPath). */}
-      <ChatViewAgentEnablementBanner />
     </AssistantRuntimeProvider>
   );
 }

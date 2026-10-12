@@ -16,15 +16,19 @@ import {
   type DesktopWhisperJob,
   type DesktopWhisperQueue,
 } from "@/lib/voiceNotes/desktop/desktopWhisper";
-import type { NoteTranscriptionState } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { HELD_NOTE_MESSAGE, type NoteTranscriptionState } from "@/lib/voiceNotes/voiceNoteTranscription";
 import type { LibraryItem } from "./LibraryRow";
-import { NoteDetailView, transcriptBlocks, type NoteDetailViewProps } from "./NoteDetailView";
+import { NotePipelineContext } from "@/capture/pipeline/NotePipelineContext";
+import { allDone, pipelineOf, signedOut, uploading, waitingForModel } from "@/capture/pipeline/pipelineFixtures";
+import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
+import { SAVED_NOTE_COPY } from "./savedNote/savedNoteCopy";
+import { NoteDetailView, transcriptBlocks, transcriptStepLine, type NoteDetailViewProps } from "./NoteDetailView";
 
 const noop = () => {};
 const VOICE: LibraryItem = { id: "row-1", source: "exo-voice-note", sourceId: "rec-1", title: "Voice note · Oct 6, 9:28 AM", startedAt: "2026-10-06T09:28:00.000Z", durationSecs: 42 };
 const MEETING: LibraryItem = { id: "row-2", source: "tinycloud-transcriber", sourceId: "mtg-2", title: "Weekly sync", startedAt: "2026-10-05T14:00:00.000Z", durationSecs: 1880 };
 const UPLOAD: LibraryItem = { id: "row-3", source: "exo-upload", sourceId: "up-3", title: "Interview", startedAt: "2026-10-01T11:00:00.000Z", durationSecs: 600 };
-const loadAudio = async () => null;
+const audio = { load: async () => null };
 
 function transcription(patch: Partial<VoiceNoteTranscriptionProps> = {}): VoiceNoteTranscriptionProps {
   return { availability: "available", consented: true, maxSeconds: 600, jobs: new Map(), onTranscribe: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop, ...patch };
@@ -38,7 +42,7 @@ function render(patch: Partial<NoteDetailViewProps> = {}) {
         listStatus="ready"
         metadata={{ status: "ok", metadata: { capture: { platform: "ios" }, audio: { stored: true, base: "b" } } }}
         transcript={{ status: "ok", sentences: [] }}
-        loadAudio={loadAudio}
+        audio={audio}
         copyState="idle"
         onCopy={noop}
         onRetry={noop}
@@ -51,8 +55,18 @@ function render(patch: Partial<NoteDetailViewProps> = {}) {
 }
 
 describe("NoteDetailView", () => {
+  test("a note only on this phone opens from its own audio, titled by its time, with nothing to transcribe or explain", () => {
+    const onPhone: LibraryItem = { ...VOICE, id: "on-phone:rec-1", title: null, onPhone: true };
+    const html = render({ item: onPhone, metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" }, transcription: undefined });
+    expect(html).toContain("Voice note ·");
+    expect(html).toContain('data-testid="note-transcript-on-phone"');
+    expect(html).toContain("No transcript yet. It shows here once this note is saved to your space.");
+    expect(html).not.toContain("Saving from your phone…");
+    expect(html).not.toContain("Transcribe");
+    expect(html).not.toContain("How this got here");
+  });
   test("an inserted voice-note row awaiting its audio explains its state", () => {
-    expect(render({ item: VOICE, loadAudio: null, metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" } }))
+    expect(render({ item: VOICE, audio: null, metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" } }))
       .toContain("Saving from your phone…");
   });
   test("a committed transcript with a missing body does not show its preview as full text", () => {
@@ -71,7 +85,7 @@ describe("NoteDetailView", () => {
   });
 
   test("title, meta, Play audio and How this got here", () => {
-    const html = render({ item: MEETING, loadAudio: null, metadata: { status: "ok", metadata: { platform: "google_meet" } }, transcript: { status: "absent" } });
+    const html = render({ item: MEETING, audio: null, metadata: { status: "ok", metadata: { platform: "google_meet" } }, transcript: { status: "absent" } });
     expect(html).toContain(">Back</button>");
     expect(html).toContain("Weekly sync");
     expect(html).toContain("31 min · Notetaker");
@@ -105,7 +119,7 @@ describe("NoteDetailView", () => {
   });
 
   test("an upload whose audio was not stored says so", () => {
-    const html = render({ item: UPLOAD, loadAudio: null, metadata: { status: "ok", metadata: { audio: { stored: false } } } });
+    const html = render({ item: UPLOAD, audio: null, metadata: { status: "ok", metadata: { audio: { stored: false } } } });
     expect(html).toContain('data-testid="note-audio-missing"');
   });
 
@@ -166,6 +180,18 @@ describe("a voice note's transcription", () => {
     const unavailable = render({ transcription: transcription({ jobs: new Map([["rec-1", { kind: "failed", code: "upload_interrupted", message: "The upload did not complete.", retryable: true, reference: "cid-7" }]]), availability: "failed" }) });
     expect(unavailable).toContain("The upload did not complete.");
     expect(unavailable).not.toContain('data-testid="voice-note-transcribe-retry"');
+  });
+
+  test("a note held back says why and offers Transcribe with Private only while it can be sent", () => {
+    const held = (extra: Partial<Parameters<typeof transcription>[0]> = {}) =>
+      transcription({ jobs: new Map([["rec-1", { kind: "held", message: HELD_NOTE_MESSAGE }]]), ...extra });
+    const html = render({ transcription: held() });
+    expect(html).toContain("started from a shortcut, so it was not sent for transcription");
+    expect(html).toContain('data-testid="voice-note-transcribe-held"');
+    expect(html).toContain("Transcribe with Private");
+    const unconsented = render({ transcription: held({ consented: false }) });
+    expect(unconsented).toContain("so it was not sent for transcription");
+    expect(unconsented).not.toContain('data-testid="voice-note-transcribe-held"');
   });
 
   test("what the reads can't tell is never offered Transcribe", () => {
@@ -238,5 +264,76 @@ describe("a voice note with an after-stop Whisper job on the Mac", () => {
   test("without a job the page is unchanged", () => {
     expect(withJob(null)).toBe(render());
     expect(withJob(null)).toContain("No transcript.");
+  });
+});
+
+describe("the transcript placeholder while the note's pipeline is not done", () => {
+  const onPhone: LibraryItem = { ...VOICE, id: "on-phone:rec-1", title: null, onPhone: true };
+  const withContext = (pipeline: NotePipeline) =>
+    renderToStaticMarkup(
+      <NotePipelineContext.Provider value={{ pipeline, onAction: noop, actionError: null }}>
+        <MemoryRouter>
+          <NoteDetailView item={onPhone} listStatus="ready" metadata={{ status: "ok", metadata: {} }} transcript={{ status: "absent" }} audio={audio} copyState="idle" onCopy={noop} onRetry={noop} pushed onBack={noop} />
+        </MemoryRouter>
+      </NotePipelineContext.Provider>,
+    );
+
+  test("a note still uploading says where the transcript will show, not 'No transcript yet'", () => {
+    const html = withContext(uploading(30));
+    expect(html).toContain('data-testid="note-transcript-pipeline"');
+    expect(html).toContain(SAVED_NOTE_COPY.transcriptAfterSpace);
+    expect(html).not.toContain("No transcript yet");
+    expect(html).not.toContain('data-testid="note-transcript-on-phone"');
+  });
+
+  test("a signed-out note names the sign-in blocker as the transcript's reason", () => {
+    const pipeline = signedOut();
+    const html = withContext(pipeline);
+    expect(html).toContain(pipeline.steps.find((s) => s.key === "transcript")!.blocker?.cause ?? SAVED_NOTE_COPY.transcriptAfterSpace);
+    expect(html).not.toContain("No transcript yet");
+  });
+
+  test("a note waiting for the model: the transcript step is the current one, so the line says where it will appear", () => {
+    const pipeline = waitingForModel();
+    expect(pipeline.current).toBe("transcript");
+    expect(withContext(pipeline)).toContain(SAVED_NOTE_COPY.transcriptHere);
+  });
+
+  describe("a saved note whose transcript the phone is adding to the note", () => {
+    const saved: LibraryItem = { ...VOICE };
+    const adding = (route: "on-device" | "private-cloud") => pipelineOf({
+      route,
+      space: { saved: true, pending: null, lane: { busy: false, depth: 0 } },
+      transcript: route === "on-device"
+        ? { inSpace: null, cloud: null, onDevice: { stt: { state: "done", error: null }, queue: null, model: { state: "ready", bytes: 640, totalBytes: 640, error: null }, download: "idle", sync: { state: "syncing" } } }
+        : { inSpace: null, onDevice: null, cloud: null },
+    });
+    const offer = (route: "on-device" | "private-cloud") =>
+      renderToStaticMarkup(
+        <NotePipelineContext.Provider value={{ pipeline: adding(route), route, onAction: noop, actionError: null }}>
+          <MemoryRouter>
+            <NoteDetailView item={saved} listStatus="ready" metadata={{ status: "ok", metadata: { capture: { platform: "ios" } } }} transcript={{ status: "absent" }} audio={audio} copyState="idle" onCopy={noop} onRetry={noop} pushed onBack={noop} transcription={transcription()} />
+          </MemoryRouter>
+        </NotePipelineContext.Provider>,
+      );
+
+    test("the stepper's 'Adding to this note…' is not contradicted by 'Not transcribed' and Transcribe", () => {
+      const html = offer("on-device");
+      expect(html).not.toContain("Not transcribed");
+      expect(html).not.toContain("voice-note-transcribe");
+      expect(html).toContain(SAVED_NOTE_COPY.transcriptHere);
+    });
+
+    test("where the pipeline would not run the transcript itself, the Transcribe offer stands", () => {
+      const html = offer("private-cloud");
+      expect(html).toContain("Not transcribed");
+      expect(html).toContain('data-testid="voice-note-transcribe"');
+    });
+  });
+
+  test("done, or no pipeline at all: the plain empty state stands", () => {
+    expect(transcriptStepLine(allDone())).toBeNull();
+    expect(withContext(allDone())).not.toContain('data-testid="note-transcript-pipeline"');
+    expect(render({ item: onPhone, metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" }, transcription: undefined })).toContain("No transcript yet.");
   });
 });

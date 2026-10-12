@@ -7,7 +7,7 @@ import { useNavigate } from "react-router-dom";
 import { App as CapacitorApp } from "@capacitor/app";
 
 import type { AppPlatform } from "../lib/platform";
-import { useSizeClass } from "../lib/sizeClass";
+import { isTextEntry, useSizeClass } from "../lib/sizeClass";
 import { decideBack } from "./backDecision";
 import { historyIndex } from "./navigation";
 import { homeDestination, homePath, type Screen } from "./routes";
@@ -26,7 +26,19 @@ export function topOverlay(doc: Document = document): HTMLElement | null {
  * while it is busy (ConnectorDialog) refuses Back too.
  */
 export function dismissOverlay(overlay: HTMLElement): void {
-  overlay.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true }));
+  const focused = document.activeElement;
+  if (
+    focused instanceof HTMLElement &&
+    overlay.contains(focused) &&
+    isTextEntry(focused)
+  ) {
+    // Android Back first dismisses the keyboard. Blurring lets one-line editors
+    // commit on their normal blur path; Escape would cancel (and delete) a moment.
+    focused.blur();
+    return;
+  }
+  const target = focused instanceof HTMLElement && overlay.contains(focused) ? focused : overlay;
+  target.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true }));
 }
 
 /** Back for the current screen, as one stable callback. `onMinimize` runs at home. */

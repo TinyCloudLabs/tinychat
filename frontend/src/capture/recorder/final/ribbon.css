@@ -45,7 +45,6 @@
 .dock-timer {
   font-family: var(--soft-title-font);
   font-optical-sizing: auto;
-  font-variation-settings: "SOFT" 100;
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }
@@ -137,15 +136,18 @@
 /* Beside the tab bar the Ribbon fills the width; floating on the rail it sits centred. */
 .ribbon-float {
   position: relative;
-  height: 0;
+  box-sizing: border-box;
+  min-height: 0;
+  height: auto;
+  padding: 14px;
   pointer-events: none;
+}
+.ribbon-float[data-ribbon="true"] {
+  min-height: 84px;
 }
 
 .ribbon-float > .ribbon-float-inner {
-  position: absolute;
-  right: 14px;
-  bottom: 14px;
-  left: 14px;
+  position: relative;
   z-index: 40;
   max-width: 440px;
   margin-inline: auto;
@@ -275,11 +277,11 @@ html:not(.dark) .capture-dot[data-dot="live"] {
 }
 
 .capture-dot[data-dot="paused"] {
-  background: #8f8993;
+  background: var(--dim);
 }
 
 .capture-dot[data-dot="hollow"] {
-  border: 1.5px solid #8f8993;
+  border: 1.5px solid var(--dim);
 }
 
 /* ---------- motion: only the recorder's own move, transform and opacity, never under reduced motion ---------- */

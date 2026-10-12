@@ -3,6 +3,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
 import { PlatformContext } from "@/lib/platform";
+import { createFakeOnDeviceStt } from "@/lib/voiceNotes/fakeOnDeviceStt";
+import { __setOnDeviceSttForTests, type OnDeviceSttPlugin } from "@/lib/voiceNotes/onDeviceStt";
+import { __resetOnDeviceSttStoreForTests } from "@/lib/voiceNotes/onDeviceSttStore";
 import {
   StaticRecorderProvider,
   type RecorderValue,
@@ -54,9 +57,25 @@ const render = (
   );
 
 describe("PhoneRecorder", () => {
+  test("Starting hides the previous recording's View notes pill", () => {
+    const html = render({
+      phase: "starting",
+      recordingId: null,
+      startedAt: null,
+      lastSaved: { id: "previous-recording", durationMs: 42_000, at: 10 },
+      note: { md: "# Previous note\n- **0:12** old moment", moments: [{ atMs: 12_000, label: "old moment" }] },
+      noteStatus: "ready",
+    });
+    expect(html).toContain("Starting…");
+    expect(html).not.toContain("View notes");
+  });
+
   test("recording shows the timer, the pause ring, the scale and the controls", () => {
     const html = render();
-    expect(html).toContain("12:48");
+    expect(html).toContain('role="timer" aria-label="12:48"');
+    expect(html).toContain(
+      '<span class="pr-digit">1</span><span class="pr-digit">2</span><span class="pr-colon">:</span><span class="pr-digit">4</span><span class="pr-digit">8</span>',
+    );
     expect(html).toContain('aria-label="Pause recording"');
     expect(html).toContain('role="slider"');
     expect(html).toContain('aria-valuetext="Private"');
@@ -75,6 +94,12 @@ describe("PhoneRecorder", () => {
   });
 
   test("signed out, the first render has Local open and the other stops closed; signed in opens Audio only and Private (Local waits for its model)", () => {
+    // Local waits for a model status the phone has not reported yet.
+    __setOnDeviceSttForTests({
+      status: () => new Promise(() => {}),
+      addListener: async () => ({ remove: async () => {} }),
+    } as unknown as OnDeviceSttPlugin);
+    __resetOnDeviceSttStoreForTests();
     const stops = (patch: Partial<RecorderValue>) =>
       [...render(patch).matchAll(/data-available="(true|false)"/g)].map(
         (m) => m[1],
@@ -96,6 +121,8 @@ describe("PhoneRecorder", () => {
       "true",
       "false",
     ]);
+    __setOnDeviceSttForTests(createFakeOnDeviceStt().plugin);
+    __resetOnDeviceSttStoreForTests();
   });
 
   test("paused offers Resume on the ring", () => {
@@ -130,6 +157,8 @@ describe("PhoneRecorder", () => {
     });
     expect(html).toContain("Microphone off");
     expect(html).toContain("Open Settings");
+    expect(html).toContain('data-mic-denied="true"');
+    expect(html).toContain('aria-hidden="true"');
     expect(html).not.toContain('aria-label="Discard recording"');
     expect(html).not.toContain('aria-label="Record from');
   });
@@ -162,7 +191,8 @@ describe("PhoneRecorder", () => {
 
   test("the harness can open the modes card, with Identify speakers disabled while Powerful is off", () => {
     const html = render({}, { defaultOpen: "modes" });
-    expect(html).toMatch(/role="dialog" aria-label="Transcription modes"/);
+    expect(html).toMatch(/role="dialog"[^>]*aria-label="Transcription modes"/);
+    expect(html).toContain('data-overlay-open="true"');
     expect(html).toContain('role="radiogroup"');
     expect(html).toContain('role="switch"');
     expect(html).toMatch(/role="switch"[^>]*aria-disabled="true"/);

@@ -4,6 +4,8 @@ import postcss from "postcss";
 
 const css = readFileSync(new URL("./soft.css", import.meta.url), "utf8");
 const stylesheet = postcss.parse(css);
+const appThemeCss = readFileSync(new URL("../../../index.css", import.meta.url), "utf8");
+const appThemeStylesheet = postcss.parse(appThemeCss);
 
 interface FixtureElement {
   classes: Set<string>;
@@ -154,71 +156,149 @@ function computedTokens(theme: "night" | "day", layout: string) {
   ) as Record<string, string>;
 }
 
+type RGB = readonly [number, number, number];
+interface ResolvedColor { rgb: RGB; alpha: number }
+
+function appTokens(theme: "night" | "day"): Record<string, string> {
+  const selector = theme === "night" ? ".dark" : ":root";
+  const tokens: Record<string, string> = {};
+  appThemeStylesheet.walkRules((rule) => {
+    if (!rule.selectors?.includes(selector)) return;
+    rule.walkDecls((declaration) => {
+      if (declaration.prop.startsWith("--")) tokens[declaration.prop] = declaration.value;
+    });
+  });
+  return tokens;
+}
+
+function resolveColor(
+  value: string,
+  theme: "night" | "day",
+  softTokens: Record<string, string>,
+  themeTokens = appTokens(theme),
+  seen = new Set<string>(),
+): ResolvedColor {
+  const variable = value.match(/^var\((--[\w-]+)\)$/);
+  if (variable) {
+    const name = variable[1]!;
+    if (seen.has(name)) throw new Error(`Theme token cycle at ${name}`);
+    const referenced = softTokens[name] ?? themeTokens[name];
+    if (!referenced) throw new Error(`Missing theme token ${name}`);
+    return resolveColor(referenced, theme, softTokens, themeTokens, new Set([...seen, name]));
+  }
+
+  const hex = value.match(/^#([\da-f]{6})$/i);
+  if (hex) {
+    const raw = hex[1]!;
+    return {
+      rgb: [0, 2, 4].map((offset) => Number.parseInt(raw.slice(offset, offset + 2), 16)) as unknown as RGB,
+      alpha: 1,
+    };
+  }
+
+  const hsl = value.match(/^hsl\(\s*var\((--[\w-]+)\)(?:\s*\/\s*([\d.]+))?\s*\)$/);
+  const components = hsl
+    ? themeTokens[hsl[1]!]
+    : value.match(/^hsl\(([^)]+)\)$/)?.[1] ?? value;
+  if (!components) throw new Error(`Missing theme color ${hsl?.[1]}`);
+  if (components !== value) {
+    const color = resolveColor(components, theme, softTokens, themeTokens, new Set([...seen, hsl?.[1] ?? ""]));
+    return { ...color, alpha: color.alpha * Number(hsl?.[2] ?? 1) };
+  }
+  const [hueRaw, saturationRaw, lightnessRaw] = components.trim().split(/\s+/);
+  const hue = Number.parseFloat(hueRaw!);
+  const saturation = Number.parseFloat(saturationRaw!) / 100;
+  const lightness = Number.parseFloat(lightnessRaw!) / 100;
+  const chroma = (1 - Math.abs(2 * lightness - 1)) * saturation;
+  const x = chroma * (1 - Math.abs((hue / 60) % 2 - 1));
+  const m = lightness - chroma / 2;
+  const sector = Math.floor(((hue % 360) + 360) % 360 / 60);
+  const base: RGB = sector === 0 ? [chroma, x, 0]
+    : sector === 1 ? [x, chroma, 0]
+      : sector === 2 ? [0, chroma, x]
+        : sector === 3 ? [0, x, chroma]
+          : sector === 4 ? [x, 0, chroma]
+            : [chroma, 0, x];
+  return { rgb: base.map((channel) => (channel + m) * 255) as unknown as RGB, alpha: 1 };
+}
+
+function composite(foreground: ResolvedColor, background: RGB): RGB {
+  return foreground.rgb.map((channel, index) =>
+    channel * foreground.alpha + background[index]! * (1 - foreground.alpha),
+  ) as unknown as RGB;
+}
+
+function contrast(foreground: RGB, background: RGB): number {
+  const channel = (value: number) => {
+    const normalized = value / 255;
+    return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+  };
+  const luminance = ([red, green, blue]: RGB) =>
+    0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue);
+  const first = luminance(foreground);
+  const second = luminance(background);
+  return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
+}
+
 describe("Soft skin theme and layout tokens", () => {
-  test.each([
-    [
-      "night",
-      "phone",
-      "rgba(255, 255, 255, 0.07)",
-      "rgba(255, 255, 255, 0.12)",
-      "#a397ae",
-      "#ff6b62",
-      "#e8475a",
-    ],
-    [
-      "night",
-      "rail",
-      "rgba(255, 255, 255, 0.06)",
-      "rgba(255, 255, 255, 0.11)",
-      "#a397ae",
-      "#ff6b62",
-      "#e8475a",
-    ],
-    [
-      "night",
-      "desktop",
-      "rgba(255, 255, 255, 0.06)",
-      "rgba(255, 255, 255, 0.11)",
-      "#a397ae",
-      "#ff6b62",
-      "#e8475a",
-    ],
-    [
-      "day",
-      "phone",
-      "rgba(255, 255, 255, 0.6)",
-      "rgba(255, 255, 255, 0.95)",
-      "#9a8c92",
-      "#e5483f",
-      "#f07a72",
-    ],
-    [
-      "day",
-      "rail",
-      "rgba(255, 255, 255, 0.66)",
-      "rgba(58, 47, 54, 0.1)",
-      "#8f8288",
-      "#e5483f",
-      "#f07a72",
-    ],
-    [
-      "day",
-      "desktop",
-      "rgba(255, 255, 255, 0.66)",
-      "rgba(58, 47, 54, 0.1)",
-      "#8f8288",
-      "#e5483f",
-      "#f07a72",
-    ],
-  ] as const)(
-    "%s × %s",
-    (theme, layout, glass, gedge, dim, accent, secondary) => {
-      const tokens = computedTokens(theme, layout);
-      expect(tokens["--glass"]).toBe(glass);
-      expect(tokens["--gedge"]).toBe(gedge);
-      expect(tokens["--dim"]).toBe(dim);
-      expect(tokens["--ring-accent"]).toBe(accent);
-      expect(tokens["--ring-accent-secondary"]).toBe(secondary);
-    },
-  );
+  test.each(["phone", "rail", "desktop"])("zinc palette on %s", (layout) => {
+    const night = computedTokens("night", layout);
+    const day = computedTokens("day", layout);
+    for (const tokens of [night, day]) {
+      expect(tokens["--ink"]).toBe("hsl(var(--foreground))");
+      expect(tokens["--dim"]).toBe("hsl(var(--muted-foreground))");
+      expect(tokens["--bgc"]).toBe("hsl(var(--background))");
+      expect(tokens["--side"]).toBe("hsl(var(--chrome))");
+      expect(tokens["--red"]).toMatch(/^#(?:ff6b62|e5483f)$/);
+    }
+    expect(night["--gedge"]).toBe("hsl(var(--foreground) / 0.4)");
+    expect(day["--gedge"]).toBe("hsl(var(--border))");
+    expect(night["--line"]).toBe("hsl(var(--foreground) / 0.4)");
+    expect(day["--line"]).toBe("hsl(var(--border))");
+    expect(night["--glass"]).toBe("hsl(var(--foreground) / 0.05)");
+    expect(night["--solid"]).toBe("hsl(var(--popover))");
+    expect(night["--disc"]).toBe("hsl(var(--secondary))");
+    expect(night["--red-text"]).toBe("var(--red)");
+    expect(day["--glass"]).toBe("hsl(var(--card) / 0.7)");
+    expect(day["--solid"]).toBe("hsl(var(--popover))");
+    expect(day["--red-text"]).toBe("hsl(var(--destructive))");
+    expect(day["--disc"]).toBe("hsl(var(--card))");
+  });
+
+  test("retains the recording ring accents in each theme", () => {
+    expect(computedTokens("night", "phone")["--ring-accent"]).toBe("#ff6b62");
+    expect(computedTokens("day", "phone")["--ring-accent"]).toBe("#e5483f");
+  });
+
+  test("Soft outlines, red text and halo disc meet token-derived contrast", () => {
+    for (const mode of ["night", "day"] as const) {
+      const soft = computedTokens(mode, "phone");
+      const app = appTokens(mode);
+      const surface = resolveColor(soft["--solid"]!, mode, soft, app).rgb;
+      const glass = composite(resolveColor(soft["--glass"]!, mode, soft, app), surface);
+      const side = resolveColor(soft["--side"]!, mode, soft, app).rgb;
+      const edge = resolveColor(soft["--gedge"]!, mode, soft, app);
+      const edgeTargets = [surface, glass, side];
+      const edgeRatios = edgeTargets.map((background) => contrast(composite(edge, background), background));
+      expect(soft["--solid"]).toBe("hsl(var(--popover))");
+      expect(soft["--line"]).toBe(soft["--gedge"]);
+      if (mode === "night") {
+        expect(edgeRatios.every((ratio) => ratio >= 3)).toBe(true);
+      } else {
+        expect(soft["--gedge"]).toBe("hsl(var(--border))");
+        expect(soft["--line"]).toBe("hsl(var(--border))");
+      }
+
+      const red = resolveColor(soft["--red-text"]!, mode, soft, app);
+      expect(red.rgb[0]).toBeGreaterThan(red.rgb[1]);
+      expect(red.rgb[0]).toBeGreaterThan(red.rgb[2]);
+      expect([surface, side].every((background) => contrast(composite(red, background), background) >= 4.5)).toBe(true);
+      const dim = resolveColor(soft["--dim"]!, mode, soft, app);
+      expect(contrast(composite(dim, surface), surface)).toBeGreaterThanOrEqual(4.5);
+      const page = resolveColor(soft["--bgc"]!, mode, soft, app).rgb;
+      const disc = resolveColor(soft["--disc"]!, mode, soft, app);
+      expect(disc.alpha).toBe(1);
+      if (mode === "night") expect(contrast(disc.rgb, page)).toBeGreaterThanOrEqual(1.3);
+    }
+  });
 });

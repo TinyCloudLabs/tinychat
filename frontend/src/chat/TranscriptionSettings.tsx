@@ -24,7 +24,8 @@ import {
   type AssemblyAiKeyMode,
   type AssemblyAiKeyStatus,
 } from "@/lib/assemblyai";
-import { readDefaultUploadEngine, UPLOAD_ENGINE_LABELS, writeDefaultUploadEngine, type UploadEngine } from "@/lib/audioUpload";
+import { readDefaultUploadEngine, writeDefaultUploadEngine, type UploadEngine } from "@/lib/audioUpload";
+import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { isSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
 import { secretsAvailable, SECRETS_UNAVAILABLE_IN_APP_MESSAGE } from "@/lib/openkeyNative";
 
@@ -90,7 +91,7 @@ export const TranscriptionSettingsView: FC<TranscriptionSettingsViewProps> = ({
               onClick={() => onEngineChange(e)}
               className={`${SEGMENT} ${engine === e ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}
             >
-              {UPLOAD_ENGINE_LABELS[e]}
+              {TRANSCRIBER_NAME[e]}
             </button>
           ))}
         </div>

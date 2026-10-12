@@ -112,7 +112,7 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
     fun cancel(id: String) {
         executor.execute {
             pending.remove(id)
-            try { capture.library.mutate(id, "stt.write") { note -> note.getJSONObject("stt").put("state", "cancelled") } } catch (_: Exception) {}
+            try { capture.library.markSttCancelled(id) } catch (_: Exception) {}
             onQueueChanged?.invoke()
         }
     }

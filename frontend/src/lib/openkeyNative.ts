@@ -1,10 +1,10 @@
-// Native OpenKey sign-in for the Exo app (TC-775 E1, OpenKey spec
-// docs/native-tinycloud-delegation.md). Inside the Capacitor app, and only when
-// the build sets VITE_EXO_NATIVE_OPENKEY=true, sign-in runs PAR + PKCE in the
-// system browser (ASWebAuthenticationSession / Custom Tabs) and returns a
-// TinyCloud delegation to an Ed25519 session key the OpenKey SDK keeps in the
-// device secure store — nothing wallet-shaped ever signs in the WebView, and
-// the session JWK never touches localStorage.
+// Native OpenKey sign-in for the Exo app (TC-775, OpenKey spec
+// docs/native-tinycloud-delegation.md). Inside the Capacitor app — iOS and
+// Android only — sign-in runs PAR + PKCE in the system browser
+// (ASWebAuthenticationSession / Custom Tabs) and returns a TinyCloud
+// delegation to an Ed25519 session key the OpenKey SDK keeps in the device
+// secure store — nothing wallet-shaped ever signs in the WebView, and the
+// session JWK never touches localStorage.
 //
 // The delegation is limited to the manifest's applications-space KV/SQL
 // entries plus capabilities/read. It has no secrets or vault access, so every
@@ -22,27 +22,18 @@ import type {
   OpenKeyNative,
 } from "@openkey/sdk-capacitor";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { authErrorMessage, UserFacingError } from "./authErrors";
 import { nativeRenewAt, renewalLeadMs, terminalRenewalError, nativeCode } from "./openkeyNativeRenewal";
 
 // ── Gate ──────────────────────────────────────────────────────────────
 
-/** Whether this build offers the native OpenKey sign-in path at all. */
-export function nativeOpenKeyEnabled(
-  env: { VITE_EXO_NATIVE_OPENKEY?: string } = import.meta.env,
-): boolean {
-  return env.VITE_EXO_NATIVE_OPENKEY === "true";
-}
-
 /**
- * Whether sign-in runs through the native OpenKey flow: the Capacitor app AND
- * the build flag. Web and the Tauri desktop app always keep the embedded
- * iframe widget.
+ * Whether sign-in runs through the native OpenKey flow: the Capacitor app on
+ * iOS or Android. Web and the Tauri desktop app keep the embedded iframe
+ * widget until a Tauri native adapter ships.
  */
-export function isNativeOpenKeySignIn(
-  platform: AppPlatform = appPlatform(),
-  env: { VITE_EXO_NATIVE_OPENKEY?: string } = import.meta.env,
-): boolean {
-  return (platform === "ios" || platform === "android") && nativeOpenKeyEnabled(env);
+export function isNativeOpenKeySignIn(platform: AppPlatform = appPlatform()): boolean {
+  return platform === "ios" || platform === "android";
 }
 
 /**
@@ -182,11 +173,21 @@ function nativeErrorCode(error: unknown): string | null {
     "code" in error && typeof error.code === "string" ? error.code : null;
 }
 
-/** SDK errors may carry a refresh token, so only their code is safe to log. */
+/** Error messages may carry a token or key, so only an SDK code, or else an error's name, is logged. */
 export function logNativeOpenKeyError(operation: string, error: unknown): void {
   const code = nativeErrorCode(error);
   if (code) console.warn(`[OpenKey native] ${operation}: ${code}`);
-  else console.warn(`[OpenKey native] ${operation}: ${error instanceof Error ? error.message : "unknown error"}`);
+  else console.warn(`[OpenKey native] ${operation}: ${error instanceof Error ? error.name : "unknown error"}`);
+}
+
+/**
+ * The message for a failed sign-in or restore. The failure is logged through the
+ * redacting logger above (a code or message string, never the error object or its
+ * cause chain); a UserFacingError was already logged where it was thrown.
+ */
+export function describeAuthFailure(error: unknown): string {
+  if (!(error instanceof UserFacingError)) logNativeOpenKeyError("sign-in", error);
+  return authErrorMessage(error);
 }
 
 /** Map an OpenKey native failure to a user-facing message. */
@@ -226,9 +227,9 @@ export interface NativeSignInConfig {
   tinycloudHost: string;
   tinycloudHosts?: string[];
   env?: {
-    VITE_OPENKEY_ISSUER?: string;
     VITE_OPENKEY_NATIVE_CLIENT_ID?: string;
-    VITE_OPENKEY_NATIVE_REDIRECT_URI?: string;
+    /** The same widget host App.tsx reads (OPENKEY_HOST); defaults to https://openkey.so. */
+    VITE_OPENKEY_HOST?: string;
   };
 }
 
@@ -268,11 +269,40 @@ export interface NativeSignInDeps {
   ) => Promise<{ token: string; expiresIn: number; address: string }>;
 }
 
-const DEFAULT_REDIRECT_URI = "xyz.tinycloud.exo://openkey/callback";
-const DEFAULT_ISSUER = "https://api.openkey.so/api/auth";
+/** The client's registered redirect; the Exo app's own reverse-DNS scheme. */
+const NATIVE_REDIRECT_URI = "xyz.tinycloud.exo://openkey/callback";
+const DEFAULT_OPENKEY_HOST = "https://openkey.so";
+
+/**
+ * Derive the OpenKey OAuth API host from the widget host, exactly like
+ * `@openkey/sdk`'s own (private) `OpenKey.deriveOAuthHost`: prefix `api.` to
+ * the hostname, except for a loopback host (local dev, where the API and
+ * widget share one origin). One OpenKey host config, read the same way App.tsx
+ * reads it for the widget (`VITE_OPENKEY_HOST`) — no second override. A
+ * malformed host is a broken build and throws; it never falls back to prod.
+ */
+function deriveOAuthHost(host: string): string {
+  let url: URL;
+  try {
+    url = new URL(host);
+  } catch {
+    throw new Error(`Native sign-in is not configured in this build (VITE_OPENKEY_HOST is not a valid URL: ${JSON.stringify(host)}).`);
+  }
+  if (url.hostname === "localhost" || url.hostname === "127.0.0.1") {
+    return host.replace(/\/$/, "");
+  }
+  url.hostname = `api.${url.hostname}`;
+  return url.toString().replace(/\/$/, "");
+}
+
+function nativeIssuer(openKeyHost: string): string {
+  return `${deriveOAuthHost(openKeyHost)}/api/auth`;
+}
+
 let defaultOpenKeyNative: OpenKeyNative | null = null;
 
-function nativeClientOptions(
+/** Exported for tests only: the exact options a native sign-in hands to OpenKeyNative. */
+export function nativeClientOptions(
   env: NativeSignInConfig["env"] | undefined,
   tinycloudHost: string,
 ): Parameters<NativeSignInDeps["createOpenKeyNative"]>[0] {
@@ -282,8 +312,8 @@ function nativeClientOptions(
   }
   return {
     clientId,
-    redirectUri: env?.VITE_OPENKEY_NATIVE_REDIRECT_URI ?? DEFAULT_REDIRECT_URI,
-    issuer: env?.VITE_OPENKEY_ISSUER ?? DEFAULT_ISSUER,
+    redirectUri: NATIVE_REDIRECT_URI,
+    issuer: nativeIssuer(env?.VITE_OPENKEY_HOST || DEFAULT_OPENKEY_HOST),
     tinycloudHost,
   };
 }
@@ -387,10 +417,10 @@ export async function signInNative(
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("Native sign-in is not configured")) {
       logNativeOpenKeyError("sign-in", error);
-      throw error;
+      throw new UserFacingError(error.message, { cause: error });
     }
     logNativeOpenKeyError("sign-in", error);
-    throw new Error(nativeSignInErrorMessage(error), { cause: error });
+    throw new UserFacingError(nativeSignInErrorMessage(error), { cause: error });
   }
 }
 

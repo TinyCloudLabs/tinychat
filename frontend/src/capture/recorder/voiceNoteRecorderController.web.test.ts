@@ -35,7 +35,7 @@ afterEach(() => { __setVoiceNotesForTests(rig.engine.plugin, { available: null }
 async function startRecording() {
   const recorder = createVoiceNoteRecorderController({
     tcw: null, available: true,
-    transcriber: { noteSaved: () => {}, snapshot: () => ({ availability: "available", consented: false, capabilities: null, jobs: new Map() }) },
+    transcriber: { check: async () => {}, noteSaved: () => {}, snapshot: () => ({ availability: "available", consented: false, capabilities: null, jobs: new Map() }) },
     onDeviceReady: () => true, appleInterim: () => false,
   });
   const detach = recorder.attach();

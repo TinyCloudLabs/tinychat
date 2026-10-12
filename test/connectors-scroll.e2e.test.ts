@@ -27,6 +27,11 @@ beforeAll(async () => {
   });
   if (!built.success) throw new Error(built.logs.join("\n"));
   bundle = await built.outputs.find((output) => output.kind === "entry-point")!.text();
+  const componentCss = await Promise.all(
+    built.outputs
+      .filter((output) => output.path.endsWith(".css"))
+      .map((output) => output.text()),
+  );
 
   // The app's own stylesheet, compiled with its Tailwind config.
   const requireFromFrontend = createRequire(`${frontend}package.json`);
@@ -36,7 +41,9 @@ beforeAll(async () => {
   // The config's content globs are relative; anchor them at frontend/.
   const config = (await import(`${frontend}tailwind.config.js`)).default;
   config.content = [`${frontend}index.html`, `${frontend}src/**/*.{js,ts,jsx,tsx}`];
-  css = (await postcss([tailwindcss(config)]).process(source, { from: `${frontend}src/index.css` })).css;
+  css =
+    (await postcss([tailwindcss(config)]).process(source, { from: `${frontend}src/index.css` })).css +
+    componentCss.join("\n");
 
 }, 60_000);
 
@@ -67,7 +74,10 @@ const geometry = (page: Page) =>
       documentHeight: document.documentElement.scrollHeight,
       viewportHeight: window.innerHeight,
       scrollY: window.scrollY,
-      headerTop: header.getBoundingClientRect().top,
+      // The sticky header can sit inside the desktop surface's top padding.
+      headerTop:
+        header.getBoundingClientRect().top -
+        Number.parseFloat(getComputedStyle(header.parentElement!).paddingTop),
       sidebarBottom: document.querySelector("[data-testid=sidebar]")!.getBoundingClientRect().bottom,
     };
   });

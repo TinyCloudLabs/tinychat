@@ -16,7 +16,6 @@ const SCRIPT_SOURCES = [
   sourceFromLevel(LEVEL_SCRIPT[2], 0.42, 0.91),
 ];
 const ACTIVE = SCRIPT_SOURCES[SCRIPT_SOURCES.length - 1];
-
 function subscribeScript(listener: (source: typeof ACTIVE) => void) {
   for (const source of SCRIPT_SOURCES) listener(source);
   return () => {};
@@ -80,32 +79,10 @@ function HaloStall() {
 }
 
 function IdleRing({ theme }: { theme: "night" | "day" }) {
-  const [surface, setSurface] = useState(theme);
   return (
     <div style={{ textAlign: "center", padding: "44px 40px 58px" }}>
-      <button
-        type="button"
-        data-halo-theme-toggle=""
-        onClick={() =>
-          setSurface((current) => (current === "night" ? "day" : "night"))
-        }
-        style={{
-          display: "block",
-          minHeight: 44,
-          margin: "0 auto 54px",
-          padding: "10px 14px",
-          border: "1px solid currentColor",
-          borderRadius: 999,
-          color: "inherit",
-          background: "transparent",
-          font: "inherit",
-          cursor: "pointer",
-        }}
-      >
-        Switch idle disc theme
-      </button>
-      <HaloRing size={118} ticks={40} theme={surface} />
-      <p>Idle · theme refresh</p>
+      <HaloRing size={118} ticks={40} theme={theme} />
+      <p>Idle</p>
     </div>
   );
 }
@@ -114,9 +91,11 @@ function ThemePreview({ theme }: { theme: "night" | "day" }) {
   const night = theme === "night";
   return (
     <section
+      className={`soft-skin soft-${theme}${night ? " dark" : ""}`}
+      data-layout="phone"
       style={{
-        background: night ? "#17111f" : "#fbf5ee",
-        color: night ? "#f6effa" : "#3a2f36",
+        background: "var(--bgc)",
+        color: "var(--ink)",
         borderRadius: 16,
         padding: 20,
       }}
@@ -209,10 +188,13 @@ export const recorderFinalHaloScreen: HarnessScreen = {
   group: "recorder",
   layout: "document",
   displayTitle: false,
-  render: () => {
-    const previews = document.documentElement.classList.contains("dark")
-      ? (["night", "day"] as const)
-      : (["day", "night"] as const);
+  render: () => <RecorderFinalHaloView />,
+};
+
+function RecorderFinalHaloView() {
+  const [theme, setTheme] = useState<"night" | "day">(() =>
+    document.documentElement.classList.contains("dark") ? "night" : "day",
+  );
     return (
       <main
         style={{
@@ -221,27 +203,35 @@ export const recorderFinalHaloScreen: HarnessScreen = {
           gap: 20,
           padding: 20,
           overflowX: "clip",
-          background: "#100d14",
+          background: "hsl(var(--background))",
+          color: "hsl(var(--foreground))",
           fontFamily: "system-ui, sans-serif",
         }}
       >
+        <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "flex-end" }}>
+          <button
+            type="button"
+            data-halo-theme-toggle
+            onClick={() => setTheme((current) => current === "day" ? "night" : "day")}
+            style={{ minHeight: 44, padding: "8px 12px" }}
+          >
+            Toggle halo theme
+          </button>
+        </div>
         <p
           style={{
             gridColumn: "1 / -1",
             margin: 0,
-            color: "#b9b2be",
+            color: "hsl(var(--muted-foreground))",
             fontSize: 13,
           }}
         >
           Rings draw while in view. Scroll to start rings outside the viewport;
-          the halo-review capture keeps all eight in view.
+          the halo-review capture keeps every ring in view.
         </p>
         <HaloStall />
         <HaloProbe />
-        {previews.map((theme) => (
-          <ThemePreview key={theme} theme={theme} />
-        ))}
+        <ThemePreview theme={theme} />
       </main>
     );
-  },
-};
+}

@@ -11,6 +11,7 @@ import {
   setDefaultTimeout,
   test,
 } from "bun:test";
+import { mkdirSync } from "node:fs";
 import {
   chromium,
   webkit,
@@ -38,6 +39,9 @@ type Harness = {
     patch: (patch: object) => void;
     fail: Record<string, boolean>;
     transcriberResult: string | null;
+    downloadCalls?: number[];
+    deferModelStatus?: boolean;
+    releaseModelStatus?: () => void;
     patchTranscriber: (patch: object) => void;
   };
 };
@@ -63,7 +67,15 @@ interface Opened {
 }
 
 async function open(
-  name: "consented" | "first-run" | "failing" | "native",
+  name:
+    | "consented"
+    | "first-run"
+    | "failing"
+    | "native"
+    | "model-unavailable"
+    | "model-unavailable-first-run"
+    | "permission-denied",
+  options: { clock?: boolean; theme?: "light" | "dark" } = {},
 ): Promise<Opened> {
   const page = await (
     await browser.newContext({
@@ -71,6 +83,7 @@ async function open(
       reducedMotion: "reduce",
     })
   ).newPage();
+  if (options.clock) await page.clock.install();
   const errors: string[] = [];
   page.on("console", (message) => {
     if (
@@ -82,7 +95,7 @@ async function open(
   page.on("pageerror", (error) => errors.push(error.message));
   const screenName = `recorder-final-phone-interactive-${name}`;
   await page.goto(
-    `http://127.0.0.1:${server.port}/?screen=${screenName}&theme=light&platform=ios`,
+    `http://127.0.0.1:${server.port}/?screen=${screenName}&theme=${options.theme ?? "light"}&platform=ios`,
   );
   // Fail inside bun's 30 s test timeout: past it bun kills the browser and every later test reports a closed context.
   page.setDefaultTimeout(10_000);
@@ -142,6 +155,266 @@ const slider = (page: Page) =>
 const mode = (page: Page) => slider(page).getAttribute("aria-valuetext");
 const modeIs = (page: Page, value: string) =>
   until(`mode ${value}`, async () => (await mode(page)) === value);
+const setFontScale = (page: Page, scale: number) =>
+  page.evaluate((nextScale) => {
+    for (const element of document.querySelectorAll<HTMLElement>(
+      "[data-font-base]",
+    )) {
+      element.style.removeProperty("font-size");
+      element.removeAttribute("data-font-base");
+    }
+    if (nextScale === 1) return;
+    const elements = [...document.querySelectorAll<HTMLElement>("*")];
+    const sizes = elements.map((element) =>
+      Number.parseFloat(getComputedStyle(element).fontSize),
+    );
+    elements.forEach((element, index) => {
+      const base = sizes[index]!;
+      element.dataset.fontBase = String(base);
+      element.style.fontSize = `${base * nextScale}px`;
+    });
+  }, scale);
+const setToastFontScale = (page: Page, scale: number) =>
+  page.evaluate((nextScale) => {
+    const elements = [
+      ...document.querySelectorAll<HTMLElement>(".pr-toast, .pr-toast *"),
+    ];
+    const sizes = elements.map((element) =>
+      Number.parseFloat(getComputedStyle(element).fontSize),
+    );
+    elements.forEach((element, index) => {
+      element.style.fontSize = `${sizes[index]! * nextScale}px`;
+    });
+  }, scale);
+const settleToastPlacement = (page: Page) =>
+  page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+const assertToastMessageVisible = async (
+  page: Page,
+  expected: string,
+  requiredActions: string[] = [],
+) => {
+  const message = page.locator(".pr-toast-message");
+  await shown(message);
+  const layout = await message.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return {
+      text: element.textContent,
+      width: rect.width,
+      height: rect.height,
+      fontSize: Number.parseFloat(style.fontSize),
+      clientWidth: element.clientWidth,
+      clientHeight: element.clientHeight,
+      scrollWidth: element.scrollWidth,
+      scrollHeight: element.scrollHeight,
+      whiteSpace: style.whiteSpace,
+      textOverflow: style.textOverflow,
+      overflow: style.overflow,
+      clipPath: style.clipPath,
+      lineCount: (() => {
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        return new Set(
+          [...range.getClientRects()].map(({ top }) => Math.round(top)),
+        ).size;
+      })(),
+    };
+  });
+  expect(layout.text).toBe(expected);
+  expect(layout.width).toBeGreaterThan(1);
+  expect(layout.height).toBeGreaterThan(layout.fontSize * 0.9);
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth + 1);
+  expect(layout.whiteSpace).not.toBe("nowrap");
+  expect(layout.textOverflow).not.toBe("ellipsis");
+  expect(layout.overflow).toBe("visible");
+  expect(layout.clipPath).toBe("none");
+  expect(layout.lineCount).toBeGreaterThanOrEqual(1);
+  const toast = await page.locator(".pr-toast").boundingBox();
+  const copy = await page.locator(".pr-toast-copy").evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      overflowY: style.overflowY,
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      minHeight: Number.parseFloat(style.minHeight),
+    };
+  });
+  expect(copy.overflowY).toBe("auto");
+  expect(copy.clientHeight).toBeGreaterThan(0);
+  expect(copy.clientHeight).toBeGreaterThanOrEqual(copy.minHeight - 1);
+  expect(copy.scrollHeight).toBeGreaterThanOrEqual(copy.clientHeight);
+  expect(
+    await page.getByRole("region", { name: "Notification message" }).count(),
+  ).toBe(1);
+  const toastButtons = await page
+    .locator(".pr-toast")
+    .getByRole("button")
+    .all();
+  for (const button of toastButtons) {
+    const buttonBox = await button.boundingBox();
+    expect(buttonBox).not.toBeNull();
+    expect(buttonBox!.x).toBeGreaterThanOrEqual(toast!.x);
+    expect(buttonBox!.y).toBeGreaterThanOrEqual(toast!.y);
+    expect(buttonBox!.x + buttonBox!.width).toBeLessThanOrEqual(
+      toast!.x + toast!.width,
+    );
+    expect(buttonBox!.y + buttonBox!.height).toBeLessThanOrEqual(
+      toast!.y + toast!.height,
+    );
+  }
+  const viewport = page.viewportSize()!;
+  expect(toast).not.toBeNull();
+  expect(toast!.x).toBeGreaterThanOrEqual(0);
+  expect(toast!.y).toBeGreaterThanOrEqual(0);
+  expect(toast!.x + toast!.width).toBeLessThanOrEqual(viewport.width);
+  expect(toast!.y + toast!.height).toBeLessThanOrEqual(viewport.height);
+  for (const name of requiredActions) {
+    const action = page.locator(".pr-toast").getByRole("button", { name });
+    expect(await action.count()).toBe(1);
+    await shown(action);
+  }
+  for (const name of ["Get model", "Use Private"]) {
+    const action = page.locator(".pr-toast").getByRole("button", { name });
+    if (await action.count()) {
+      const actionBox = await action.boundingBox();
+      const messageBox = await page.locator(".pr-toast-copy").boundingBox();
+      expect(actionBox).not.toBeNull();
+      expect(messageBox).not.toBeNull();
+      expect(actionBox!.y).toBeGreaterThanOrEqual(
+        messageBox!.y + messageBox!.height,
+      );
+    }
+  }
+};
+const holdToast = async (page: Page) => {
+  await page
+    .locator(".pr-toast")
+    .getByRole("button", { name: "Dismiss notification" })
+    .focus();
+};
+const assertToastClearOfRecorderControls = async (
+  page: Page,
+  fontScale: number,
+  allowMissingRingButton = false,
+) => {
+  const toast = await page.locator(".pr-toast").boundingBox();
+  expect(toast).not.toBeNull();
+  const targets: [string, Locator][] = [
+    ["timer", page.locator(".pr-time")],
+    ["moment button", page.locator(".pr-time-slot")],
+    ["Listening pill", page.getByTestId("phone-recorder-pill")],
+    ["Minimise", page.getByRole("button", { name: "Minimise recorder" })],
+    ["ring", page.locator(".pr-stage button")],
+    ["ring body", page.locator(".pr-ring")],
+    ["status line", page.locator(".pr-extra")],
+    ["notes row", page.locator(".pr-notes")],
+    ["mode row", page.locator(".pr-mrow")],
+    ["modes button", page.locator(".pr-minfo")],
+    ["mode name", page.locator(".pr-mname")],
+    ["mode detail", page.locator(".pr-mshort")],
+    ["privacy scale", page.locator(".pr-scale")],
+    ["privacy labels (allowed)", page.locator(".pr-ends")],
+    // The toast is anchored above the sticky dock. The caption and Via row
+    // may sit behind it while the dismissible notification is present.
+    ["caption (allowed)", page.locator(".pr-capline")],
+    ["Via row (allowed)", page.locator(".pr-src-wrap")],
+    ["Via control (allowed)", page.locator(".pr-srcbtn")],
+    ["control buttons", page.locator(".pr-controls button")],
+  ];
+  expect(await page.locator(".pr-ends").getAttribute("aria-hidden")).toBe(
+    "true",
+  );
+  const viewport = page.viewportSize()!;
+  const overlaps: { name: string; target: NonNullable<typeof toast> }[] = [];
+  for (const [name, locator] of targets) {
+    const count = await locator.count();
+    if (name === "notes row" && count === 0) continue;
+    if (name === "ring" && count === 0 && allowMissingRingButton) continue;
+    expect(count).toBeGreaterThan(0);
+    if (name === "status line" && !(await locator.innerText()).trim()) continue;
+    for (let index = 0; index < count; index++) {
+      const target = await locator.nth(index).boundingBox();
+      expect(target).not.toBeNull();
+      if (
+        toast!.x < target!.x + target!.width &&
+        toast!.x + toast!.width > target!.x &&
+        toast!.y < target!.y + target!.height &&
+        toast!.y + toast!.height > target!.y
+      )
+        overlaps.push({
+          name: count > 1 ? `${name}[${index}]` : name,
+          target: target!,
+        });
+    }
+  }
+  console.log(
+    `toast-overlap-check ${viewport.width}x${viewport.height} font=${fontScale}x toast=${JSON.stringify(toast)} overlaps=${JSON.stringify(overlaps)}`,
+  );
+  if (viewport.width > viewport.height) {
+    const scale = await page.locator(".pr-scale").boundingBox();
+    expect(scale).not.toBeNull();
+    if (
+      toast!.x < scale!.x + scale!.width &&
+      toast!.x + toast!.width > scale!.x
+    )
+      expect(toast!.y).toBeGreaterThanOrEqual(scale!.y + scale!.height + 4);
+  }
+  expect(
+    overlaps.filter(({ name }) => {
+      if (name.includes("(allowed)")) return false;
+      return true;
+    }),
+  ).toEqual([]);
+};
+const measureToastLayout = (page: Page) =>
+  page.evaluate(() => {
+    const box = (selector: string) => {
+      const element = document.querySelector<HTMLElement>(selector);
+      if (!element) return null;
+      const { x, y, width, height } = element.getBoundingClientRect();
+      return { x, y, width, height };
+    };
+    const controls = [
+      ...document.querySelectorAll<HTMLElement>(".pr-controls button"),
+    ];
+    const namedControl = (pattern: RegExp) => {
+      const element = controls.find((control) =>
+        pattern.test(
+          `${control.getAttribute("aria-label") ?? ""} ${control.textContent ?? ""}`,
+        ),
+      );
+      if (!element) return null;
+      const { x, y, width, height } = element.getBoundingClientRect();
+      return { x, y, width, height };
+    };
+    return {
+      scale: box(".pr-scale"),
+      ring: box(".pr-ring"),
+      toast: box(".pr-toast"),
+      toastItems: [
+        ...document.querySelectorAll<HTMLElement>(".pr-toast > *"),
+      ].map((element) => {
+        const { x, y, width, height } = element.getBoundingClientRect();
+        return {
+          className: element.className,
+          text: element.textContent?.trim(),
+          x,
+          y,
+          width,
+          height,
+        };
+      }),
+      done: namedControl(/Done/),
+      pause: namedControl(/Pause recording/),
+      discard: namedControl(/Discard recording/),
+      viewport: { width: innerWidth, height: innerHeight },
+    };
+  });
 const storedMode = (page: Page) =>
   page.evaluate(() => localStorage.getItem("exo.recorder.transcription-mode"));
 const ring = (page: Page) => page.locator(".pr-stage button");
@@ -295,7 +568,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
   });
 
   test("the provider can refuse: a toast says why, the scale stays where the provider is, and the failure is logged", async () => {
-    const { page, errors } = await open("consented");
+    const { page, errors } = await open("consented", { clock: true });
     await page.evaluate(() => {
       (window as unknown as Harness).exoRecorder.transcriberResult =
         "unavailable";
@@ -307,7 +580,507 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     expect(errors.some((text) => text.includes("cannot use on-device"))).toBe(
       true,
     );
+    const toast = page.locator(".pr-toast");
+    expect(
+      await toast.getByRole("button", { name: "Use Private" }).count(),
+    ).toBe(0);
+    expect(await toast.getByRole("button", { name: "Get model" }).count()).toBe(
+      0,
+    );
+    const dismiss = toast.getByRole("button", { name: "Dismiss notification" });
+    await dismiss.focus();
+    await page.clock.fastForward(10_000);
+    await shown(dismiss);
+    const toastBox = (await toast.boundingBox())!;
+    await page.mouse.move(
+      toastBox.x + toastBox.width / 2,
+      toastBox.y + toastBox.height / 2,
+    );
+    await slider(page).focus();
+    await page.clock.fastForward(10_000);
+    await shown(dismiss);
+    await page.mouse.move(5, 5);
+    await page.clock.fastForward(4_200);
+    await gone(toast);
     await page.context().close();
+  });
+
+  test("a provider refusal stays fully visible at every phone size and text scale", async () => {
+    const { page } = await open("consented", { clock: true });
+    await page.evaluate(() => {
+      (window as unknown as Harness).exoRecorder.transcriberResult =
+        "unavailable";
+    });
+    const toast = page.locator(".pr-toast");
+    const viewports = [
+      { width: 390, height: 844 },
+      { width: 320, height: 545 },
+      { width: 844, height: 390 },
+      { width: 740, height: 360 },
+    ];
+    for (const viewport of viewports) {
+      await page.setViewportSize(viewport);
+      for (const fontScale of [1, 2]) {
+        await setFontScale(page, 1);
+        if (fontScale === 2) await setFontScale(page, fontScale);
+        await slider(page).scrollIntoViewIfNeeded();
+        await slider(page).focus();
+        await page.keyboard.press("ArrowLeft");
+        await shown(toast);
+        if (fontScale === 2) await setToastFontScale(page, fontScale);
+        await settleToastPlacement(page);
+        await assertToastMessageVisible(
+          page,
+          "Local isn't available right now",
+        );
+        await assertToastClearOfRecorderControls(page, fontScale);
+        const icon = page.locator(".pr-toast-icon");
+        expect(await icon.getAttribute("aria-hidden")).toBe("true");
+        const evidenceDir = process.env.EXO_POLISH_EVIDENCE;
+        if (evidenceDir) {
+          mkdirSync(evidenceDir, { recursive: true });
+          await page.screenshot({
+            path: `${evidenceDir}/recorder-refusal-${viewport.width}x${viewport.height}-font-${fontScale}.png`,
+            fullPage: true,
+          });
+        }
+        await toast
+          .getByRole("button", { name: "Dismiss notification" })
+          .click();
+        await gone(toast);
+      }
+    }
+    await page.context().close();
+  });
+
+  // A provider refusal has no actions; choosing the unavailable Powerful stop while on Audio only
+  // raises a toast whose Use Private action sits in an action row below the message.
+  const toastScenarios = [
+    {
+      suffix: "",
+      stop: "local",
+      refuse: true,
+      message: "Local isn't available right now",
+      actions: [] as string[],
+    },
+    {
+      suffix: " with an action row",
+      stop: "powerful",
+      refuse: false,
+      message: "Coming with the next update",
+      actions: ["Use Private"],
+    },
+  ];
+  const prepareToastScenario = (
+    page: Page,
+    scenario: (typeof toastScenarios)[number],
+  ) =>
+    page.evaluate((refuse) => {
+      (window as unknown as Harness).exoRecorder.transcriberResult = refuse
+        ? "unavailable"
+        : null;
+    }, scenario.refuse);
+
+  for (const scenario of toastScenarios) test(`an unavailable mode toast stays readable and keeps fixed controls clear${scenario.suffix}`, async () => {
+    const { page } = await open("model-unavailable", { clock: true });
+    await prepareToastScenario(page, scenario);
+    const toast = page.locator(".pr-toast");
+    const evidenceDir = process.env.EXO_POLISH_EVIDENCE;
+    if (evidenceDir) mkdirSync(evidenceDir, { recursive: true });
+    const viewports = [
+      { width: 390, height: 844 },
+      { width: 320, height: 545 },
+      { width: 844, height: 390 },
+      { width: 740, height: 360 },
+    ];
+    for (const viewport of viewports) {
+      await page.setViewportSize(viewport);
+      for (const fontScale of [1, 2]) {
+        await setFontScale(page, 1);
+        if (fontScale === 2) await setFontScale(page, fontScale);
+        const stop = page.locator(`.pr-stop[data-stop="${scenario.stop}"]`);
+        await stop.scrollIntoViewIfNeeded();
+        const before = await measureToastLayout(page);
+        await stop.click();
+        await shown(toast);
+        await holdToast(page);
+        for (const action of scenario.actions)
+          await shown(toast.getByRole("button", { name: action }));
+        if (fontScale === 2) await setToastFontScale(page, fontScale);
+        const message = page.locator(".pr-toast-message");
+        const exerciseFontMetricFallback =
+          viewport.width === 390 && viewport.height === 844 && fontScale === 1;
+        if (exerciseFontMetricFallback)
+          await message.evaluate((element) => {
+            // Simulate wider CI fallback-font glyphs and exercise the toast's
+            // measured placement when that extra width adds a line.
+            element.style.letterSpacing = "2px";
+          });
+        await settleToastPlacement(page);
+        await assertToastMessageVisible(
+          page,
+          scenario.message,
+          scenario.actions,
+        );
+        const after = await measureToastLayout(page);
+        expect(after.toast).not.toBeNull();
+        expect(after.scale).not.toBeNull();
+        expect(after.ring).not.toBeNull();
+        for (const part of ["scale", "ring"] as const) {
+          for (const dimension of ["x", "y", "width", "height"] as const) {
+            expect(
+              Math.abs(after[part]![dimension] - before[part]![dimension]),
+            ).toBeLessThanOrEqual(2);
+          }
+        }
+        const viewportBottom = after.viewport.height;
+        for (const action of ["done", "pause", "discard"] as const) {
+          expect(after[action]).not.toBeNull();
+          expect(after[action]!.y).toBeGreaterThanOrEqual(0);
+          expect(after[action]!.y + after[action]!.height).toBeLessThanOrEqual(
+            viewportBottom,
+          );
+        }
+        expect(after.toast!.x).toBeGreaterThanOrEqual(0);
+        expect(after.toast!.y).toBeGreaterThanOrEqual(0);
+        expect(after.toast!.x + after.toast!.width).toBeLessThanOrEqual(
+          after.viewport.width,
+        );
+        expect(after.toast!.y + after.toast!.height).toBeLessThanOrEqual(
+          after.viewport.height,
+        );
+        await assertToastClearOfRecorderControls(page, fontScale);
+        if (exerciseFontMetricFallback) {
+          await message.evaluate((element) => {
+            element.style.removeProperty("letter-spacing");
+          });
+          await settleToastPlacement(page);
+        }
+        if (evidenceDir)
+          await page.screenshot({
+            path: `${evidenceDir}/recorder-toast-${viewport.width}x${viewport.height}-font-${fontScale}.png`,
+            fullPage: true,
+          });
+        await toast
+          .getByRole("button", { name: "Dismiss notification" })
+          .click();
+        await gone(toast);
+      }
+    }
+    await setFontScale(page, 1);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.evaluate(() => {
+      (window as unknown as Harness).exoRecorder.transcriberResult = null;
+    });
+    await page.locator('.pr-stop[data-stop="private"]').click();
+    await modeIs(page, "Private");
+    await page.context().close();
+
+    const dark = await open("model-unavailable", {
+      clock: true,
+      theme: "dark",
+    });
+    await prepareToastScenario(dark.page, scenario);
+    await dark.page.locator(`.pr-stop[data-stop="${scenario.stop}"]`).click();
+    await shown(dark.page.locator(".pr-toast"));
+    await holdToast(dark.page);
+    if (evidenceDir)
+      await dark.page.screenshot({
+        path: `${evidenceDir}/recorder-toast-phone-dark.png`,
+        fullPage: true,
+      });
+    await dark.page.setViewportSize({ width: 844, height: 390 });
+    if (evidenceDir)
+      await dark.page.screenshot({
+        path: `${evidenceDir}/recorder-toast-phone-land-dark.png`,
+        fullPage: true,
+      });
+    await dark.page.context().close();
+  }, 120_000);
+
+  for (const scenario of toastScenarios) test(`a five-line toast scrolls without covering the ring or scale on a short phone${scenario.suffix}`, async () => {
+    const { page } = await open("model-unavailable", { clock: true });
+    await prepareToastScenario(page, scenario);
+    const sentence =
+      "This recording cannot switch to the on-device model until the model download finishes. Check your connection and try again when the download is complete. The recording stays available while you wait.";
+    const messageText = `${sentence} ${sentence} ${sentence}`;
+    const message = page.locator(".pr-toast-message");
+    const copy = page.locator(".pr-toast-copy");
+    await page.setViewportSize({ width: 320, height: 545 });
+
+    for (const fontScale of [1, 2]) {
+      await setFontScale(page, 1);
+      if (fontScale === 2) await setFontScale(page, fontScale);
+      const stop = page.locator(`.pr-stop[data-stop="${scenario.stop}"]`);
+      await stop.scrollIntoViewIfNeeded();
+      await stop.click();
+      await shown(page.locator(".pr-toast"));
+      await holdToast(page);
+      for (const action of scenario.actions)
+        await shown(
+          page.locator(".pr-toast").getByRole("button", { name: action }),
+        );
+      await message.evaluate((element, value) => {
+        element.textContent = value;
+      }, messageText);
+      if (fontScale === 2) await setToastFontScale(page, fontScale);
+      await settleToastPlacement(page);
+
+      await assertToastMessageVisible(page, messageText, scenario.actions);
+      const lineCount = await message.evaluate((element) => {
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        return new Set(
+          [...range.getClientRects()].map(({ top }) => Math.round(top)),
+        ).size;
+      });
+      expect(lineCount).toBeGreaterThanOrEqual(5);
+      const copySizing = await copy.evaluate((element) => {
+        const message =
+          element.querySelector<HTMLElement>(".pr-toast-message")!;
+        const style = getComputedStyle(element);
+        return {
+          lineHeight: Number.parseFloat(getComputedStyle(message).lineHeight),
+          padding:
+            Number.parseFloat(style.paddingTop) +
+            Number.parseFloat(style.paddingBottom),
+          minHeight: Number.parseFloat(style.minHeight),
+          maxHeight: Number.parseFloat(style.maxHeight),
+          height: element.getBoundingClientRect().height,
+        };
+      });
+      const reservedLines =
+        copySizing.maxHeight <
+        copySizing.lineHeight * 2 + copySizing.padding + 1
+          ? 1
+          : 2;
+      if (fontScale === 1)
+        expect(reservedLines).toBe(scenario.actions.length > 0 ? 1 : 2);
+      const reservedHeight =
+        copySizing.lineHeight * reservedLines + copySizing.padding;
+      expect(copySizing.minHeight).toBeGreaterThanOrEqual(reservedHeight);
+      expect(copySizing.maxHeight).toBeGreaterThanOrEqual(reservedHeight);
+      expect(copySizing.height).toBeGreaterThanOrEqual(reservedHeight);
+      const visibleLineCount = await message.evaluate((element) => {
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        const copyBounds = element.parentElement!.getBoundingClientRect();
+        return new Set(
+          [...range.getClientRects()]
+            .filter(
+              ({ top, bottom }) =>
+                top >= copyBounds.top && bottom <= copyBounds.bottom,
+            )
+            .map(({ top }) => Math.round(top)),
+        ).size;
+      });
+      expect(visibleLineCount).toBeGreaterThanOrEqual(reservedLines);
+      await assertToastClearOfRecorderControls(page, fontScale);
+
+      await copy.focus();
+      await focused(copy);
+      await copy.evaluate(async (element) => {
+        element.scrollTop = element.scrollHeight;
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => resolve()),
+        );
+      });
+      expect(
+        await copy.evaluate((element) => element.scrollTop),
+      ).toBeGreaterThan(0);
+      const finalLineVisible = await message.evaluate((element) => {
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        const rects = [...range.getClientRects()];
+        const last = rects.at(-1);
+        const copy = element.parentElement!.getBoundingClientRect();
+        return Boolean(
+          last && last.bottom <= copy.bottom && last.top >= copy.top,
+        );
+      });
+      expect(finalLineVisible).toBe(true);
+      const evidenceDir = process.env.EXO_POLISH_EVIDENCE;
+      if (evidenceDir) {
+        mkdirSync(evidenceDir, { recursive: true });
+        await page.screenshot({
+          path: `${evidenceDir}/recorder-long-toast-320x545-font-${fontScale}.png`,
+          fullPage: true,
+        });
+      }
+      await page
+        .locator(".pr-toast")
+        .getByRole("button", { name: "Dismiss notification" })
+        .click();
+      await gone(page.locator(".pr-toast"));
+    }
+    await page.context().close();
+  });
+
+  test("an interrupted recording keeps its status and notes row clear of the toast", async () => {
+    const { page } = await open("consented");
+    await page.evaluate(() => {
+      const harness = (window as unknown as Harness).exoRecorder;
+      harness.patch({
+        mic: { state: "interrupted", reason: "call" },
+        note: {
+          md: "- **0:12** Keep this note visible",
+          moments: [{ atMs: 12_000, label: "Keep this note visible" }],
+        },
+        noteStatus: "ready",
+      });
+      harness.transcriberResult = "unavailable";
+    });
+    await shown(page.getByText("Resumes when the call ends"));
+    await shown(page.locator(".pr-notes .pr-vnotes"));
+    await slider(page).focus();
+    await page.keyboard.press("ArrowLeft");
+    const toast = page.locator(".pr-toast");
+    await shown(toast);
+    await page.locator(".pr-toast-message").evaluate((element) => {
+      element.textContent =
+        "This unavailable mode can be selected after the recording resumes.";
+    });
+    await settleToastPlacement(page);
+    await assertToastClearOfRecorderControls(page, 1, true);
+    expect(await page.locator(".pr-extra").innerText()).toContain(
+      "Resumes when the call ends",
+    );
+    expect(await page.locator(".pr-notes .pr-vnotes").innerText()).toContain(
+      "View notes",
+    );
+    await page.context().close();
+  });
+
+  test("Get model starts the shared Wi-Fi download and shows its waiting state inline", async () => {
+    const { page } = await open("model-unavailable", { clock: true });
+    await page
+      .getByRole("button", { name: "Transcription modes: compare and choose" })
+      .click();
+    const localRow = page.locator('.pr-mprow[data-mode="local"]');
+    const localRowBox = (await localRow.boundingBox())!;
+    await page.mouse.click(
+      localRowBox.x + localRowBox.width / 2,
+      localRowBox.y + localRowBox.height / 2,
+    );
+    const toast = page.locator(".pr-toast");
+    const note = page.getByTestId("local-model-note");
+    const getModel = page.getByTestId("local-model-action");
+    await shown(getModel);
+    expect(await note.textContent()).toContain(
+      "The on-device model isn't downloaded",
+    );
+    expect(await toast.count()).toBe(0);
+    await page.clock.fastForward(10_000);
+    await shown(getModel);
+    const evidenceDir = process.env.EXO_POLISH_EVIDENCE;
+    if (evidenceDir) {
+      mkdirSync(evidenceDir, { recursive: true });
+      await page.screenshot({
+        path: `${evidenceDir}/recorder-get-model-phone.png`,
+        fullPage: true,
+      });
+    }
+
+    await getModel.click();
+    await shown(
+      note.filter({
+        hasText: /Waiting for Wi-Fi to download the on-device model/,
+      }),
+    );
+    expect(
+      await page.evaluate(() => window.exoRecorder?.downloadCalls?.length),
+    ).toBe(1);
+
+    await page.evaluate(() => {
+      (window as unknown as Harness).exoRecorder.transcriberResult =
+        "unavailable";
+    });
+    await slider(page).press("ArrowRight");
+    await shown(page.getByText("Private isn't available right now"));
+    expect(await toast.textContent()).toContain(
+      "Private isn't available right now",
+    );
+    await focused(slider(page));
+    await holdToast(page);
+    await page.setViewportSize({ width: 844, height: 390 });
+    await settleToastPlacement(page);
+    await assertToastClearOfRecorderControls(page, 1);
+    if (evidenceDir)
+      await page.screenshot({
+        path: `${evidenceDir}/recorder-get-model-phone-land.png`,
+        fullPage: true,
+      });
+    await page.context().close();
+  });
+
+  test("a Private choice from the first-run scale returns focus after consent is dismissed", async () => {
+    const { page } = await open("model-unavailable-first-run");
+    await page.locator('.pr-stop[data-stop="private"]').click();
+    const consent = page.getByRole("dialog", { name: "Use private cloud?" });
+    await shown(consent);
+    await consent.getByRole("button", { name: "Not now" }).click();
+    await gone(consent);
+    await focused(slider(page));
+    await page.context().close();
+  });
+
+  test("mic denied keeps the ring and scale in the recording layout positions", async () => {
+    const { page: recording } = await open("consented");
+    const recordingRing = await recording.locator(".pr-ring").boundingBox();
+    const recordingScale = await recording.locator(".pr-scale").boundingBox();
+    const { page: denied } = await open("permission-denied");
+    const deniedRing = await denied.locator(".pr-ring").boundingBox();
+    const deniedScale = await denied.locator(".pr-scale").boundingBox();
+    expect(recordingRing).not.toBeNull();
+    expect(recordingScale).not.toBeNull();
+    expect(deniedRing).not.toBeNull();
+    expect(deniedScale).not.toBeNull();
+    expect(Math.abs(recordingRing!.x - deniedRing!.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(recordingRing!.y - deniedRing!.y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(recordingScale!.x - deniedScale!.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(recordingScale!.y - deniedScale!.y)).toBeLessThanOrEqual(1);
+    const recordingVia = await recording.locator(".pr-src-wrap").boundingBox();
+    const deniedVia = await denied.locator(".pr-via-placeholder").boundingBox();
+    expect(recordingVia).not.toBeNull();
+    expect(deniedVia).not.toBeNull();
+    expect(
+      Math.abs(recordingVia!.height - deniedVia!.height),
+    ).toBeLessThanOrEqual(1);
+    const deniedControls = denied.locator(".pr-controls[data-mic-denied=true]");
+    expect(await deniedControls.getByRole("button").count()).toBe(1);
+    expect(
+      await deniedControls
+        .getByRole("button", { name: "Open Settings" })
+        .count(),
+    ).toBe(1);
+    expect(
+      await denied
+        .locator(".pr-mark")
+        .evaluate((el) => getComputedStyle(el).visibility),
+    ).toBe("hidden");
+    expect(
+      await denied
+        .locator(".pr-ring")
+        .evaluate((el) => getComputedStyle(el).opacity),
+    ).toBe("0.35");
+    const evidenceDir = process.env.EXO_POLISH_EVIDENCE;
+    if (evidenceDir) {
+      mkdirSync(evidenceDir, { recursive: true });
+      await denied.screenshot({
+        path: `${evidenceDir}/recorder-mic-denied-phone.png`,
+        fullPage: true,
+      });
+    }
+    await recording.context().close();
+    await denied.context().close();
+
+    const darkDenied = await open("permission-denied", { theme: "dark" });
+    if (evidenceDir)
+      await darkDenied.page.screenshot({
+        path: `${evidenceDir}/recorder-mic-denied-phone-dark.png`,
+        fullPage: true,
+      });
+    await darkDenied.page.context().close();
   });
 
   test("signed out: Local is selected and the other stops say why they are off, from the account's state alone", async () => {
@@ -575,7 +1348,9 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
       hasText: "Couldn't open Settings. Open Settings › Exo › Microphone.",
     });
     await shown(settingsAlert);
-    expect(await settingsAlert.textContent()).not.toContain("Settings would not open");
+    expect(await settingsAlert.textContent()).not.toContain(
+      "Settings would not open",
+    );
     expect(
       errors.some((text) => text.includes("Could not open Settings")),
     ).toBe(true);
@@ -756,22 +1531,22 @@ describe.serial(`default recorder route control (${engineName})`, () => {
     await page.evaluate(() => {
       (window as unknown as RouteHarness).exoRoute.rejectSetter = true;
     });
-    await page.getByRole("radio", { name: "Off" }).click();
+    await page.getByRole("radio", { name: "Audio only" }).click();
     const alert = page.getByRole("alert");
     await shown(alert);
     expect(await alert.textContent()).toBe(
-      "Could not change the transcription to Off: Plugin is down",
+      "Could not change the transcription to Audio only: Plugin is down",
     );
-    expect(await selected()).toBe("On this phone");
+    expect(await selected()).toBe("Local");
     expect(errors.some((text) => text.includes("Could not change"))).toBe(true);
     await page.context().close();
   });
 
   test("through the consent question the selection stays the provider's, and a rejected consent shows the alert", async () => {
     const { page, selected } = await openRoute();
-    await page.getByRole("radio", { name: "Private cloud" }).click();
+    await page.getByRole("radio", { name: "Private" }).click();
     await shown(page.getByTestId("voice-note-transcription-consent"));
-    expect(await selected()).toBe("On this phone");
+    expect(await selected()).toBe("Local");
     await page.evaluate(() => {
       (window as unknown as RouteHarness).exoRoute.rejectConsent = true;
     });
@@ -779,9 +1554,9 @@ describe.serial(`default recorder route control (${engineName})`, () => {
     const alert = page.getByRole("alert");
     await shown(alert);
     expect(await alert.textContent()).toBe(
-      "Could not change the transcription to Private cloud: Consent was not saved",
+      "Could not change the transcription to Private: Consent was not saved",
     );
-    expect(await selected()).toBe("On this phone");
+    expect(await selected()).toBe("Local");
     expect(
       await page.evaluate(
         () => (window as unknown as RouteHarness).exoRoute.calls,

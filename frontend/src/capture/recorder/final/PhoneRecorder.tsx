@@ -3,6 +3,7 @@ import {
   useContext,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -31,7 +32,9 @@ import { finishRecording, type DoneGate } from "./doneGate";
 import { useMomentFlow } from "./useMomentFlow";
 import { useNoteSaver } from "./useNoteSaver";
 import { PrivacyScale } from "./PrivacyScale";
+import { modelActionLabel } from "./localModelGuide";
 import { RecorderRing } from "./RecorderRing";
+import { TimerDigits } from "./TimerDigits";
 import { selectRecorderView } from "./recorderView";
 import { shellForPlatform } from "./shellCapabilities";
 import { honestRecorderError } from "./honestRecorderError";
@@ -48,11 +51,14 @@ import {
   modeShortLabel,
   identifySpeakersControl,
   MODE_STOPS,
+  type ModeId,
 } from "./transcriptionModes";
+import { FINAL_COPY } from "./finalCopy";
 import { useAudioInputs, type AudioInputsSource } from "./useAudioInputs";
 import { useSilencedSince } from "./useSilencedSince";
 import { MicDeniedAction } from "./shell/MicDeniedAction";
 import { openSettingsFailedLine } from "./shell/micDeniedCopy";
+import { isAppleSpeech, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import {
   useOnDeviceModel,
   useTranscriptionChoice,
@@ -62,7 +68,7 @@ import { ViaMenu } from "./ViaMenu";
 import "./soft.css";
 import "./phone.css";
 
-const TOAST_MS = 2400;
+const TOAST_MS = 4200;
 /** The notes renderer's WASM is fetched this long into a recording, never when the recorder opens. */
 const WARM_RENDERER_MS = 4000;
 
@@ -126,10 +132,203 @@ export function PhoneRecorder({
       (mic.state === "recording" && mic.reason === "no_signal"));
   const silencedSinceMs = useSilencedSince(silent, silencedSeed);
 
-  const [toast, setToast] = useState<{ message: string; key: number } | null>(
-    null,
-  );
-  const showToast = (message: string) => setToast({ message, key: Date.now() });
+  const [toast, setToast] = useState<{
+    message: string;
+    key: number;
+    actions: Array<{ label: string; run: () => void }>;
+  } | null>(null);
+  const toastElement = useRef<HTMLDivElement | null>(null);
+  const toastReturnFocus = useRef<HTMLElement | null>(null);
+  const toastKey = useRef(0);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toastStartedAt = useRef(0);
+  const toastRemaining = useRef(TOAST_MS);
+  const toastPauseReasons = useRef(new Set<"pointer" | "focus">());
+  const toastActionUsed = useRef(false);
+  const modelProgressToastKey = useRef<number | null>(null);
+  const modelDownloadStartingFrom = useRef<OnDeviceSttStatus | null>(null);
+  const [modelDownloadRequested, setModelDownloadRequested] = useState(false);
+  const clearModelProgressToast = (key?: number) => {
+    if (
+      modelProgressToastKey.current === null ||
+      (key !== undefined && modelProgressToastKey.current !== key)
+    )
+      return;
+    modelProgressToastKey.current = null;
+    modelDownloadStartingFrom.current = null;
+    setModelDownloadRequested(false);
+  };
+  const showToast = (
+    message: string,
+    actions: Array<{ label: string; run: () => void }> = [],
+  ) => {
+    clearModelProgressToast();
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active !== document.body)
+      toastReturnFocus.current = active;
+    toastActionUsed.current = false;
+    toastPauseReasons.current.clear();
+    const key = ++toastKey.current;
+    setToast({ message, key, actions });
+    return key;
+  };
+  const sizeToastForDock = useCallback(() => {
+    const element = toastElement.current;
+    if (!element) return;
+    const dock = element.parentElement?.getBoundingClientRect();
+    if (!dock) return;
+
+    const toast = element.getBoundingClientRect();
+    const protectedElements = document.querySelectorAll<HTMLElement>(
+      ".pr-top, .pr-time-row, .pr-extra, .pr-notes, .pr-ring, .pr-stage button, .pr-mrow, .pr-scale",
+    );
+    const lastProtectedBottom = [...protectedElements].reduce((bottom, item) => {
+      if (
+        (item.matches(".pr-extra, .pr-notes") && !item.textContent?.trim()) ||
+        item.hidden
+      )
+        return bottom;
+      const bounds = item.getBoundingClientRect();
+      const overlapsHorizontally =
+        toast.left < bounds.right && toast.right > bounds.left;
+      return overlapsHorizontally && bounds.top < dock.top
+        ? Math.max(bottom, bounds.bottom)
+        : bottom;
+    }, 0);
+    // The toast is translated up 4 px from the dock. Keep 4 px below controls;
+    // landscape reserves another 4 px for flex content exceeding its max-height.
+    const shortPortrait = window.matchMedia(
+      "(orientation: portrait) and (max-width: 360px) and (max-height: 600px)",
+    ).matches;
+    const landscape = window.matchMedia(
+      "(orientation: landscape) and (max-height: 520px)",
+    ).matches;
+    const available = Math.max(
+      0,
+      dock.top - (shortPortrait ? 6 : landscape ? 12 : 8) - lastProtectedBottom,
+    );
+    const actions = element.querySelector<HTMLElement>(".pr-toast-actions");
+    const actionsHeight = actions?.getBoundingClientRect().height ?? 0;
+    const actionGap = actions ? 4 : 0;
+    const copyAvailable = Math.max(
+      0,
+      available - actionsHeight - actionGap,
+    );
+    const message = element.querySelector<HTMLElement>(".pr-toast-message");
+    const lineHeight = message
+      ? Number.parseFloat(getComputedStyle(message).lineHeight)
+      : Number.parseFloat(getComputedStyle(element).fontSize) * 1.2;
+    const copy = element.querySelector<HTMLElement>(".pr-toast-copy");
+    const copyStyle = copy ? getComputedStyle(copy) : null;
+    const copyPadding = copyStyle
+      ? Number.parseFloat(copyStyle.paddingTop) +
+        Number.parseFloat(copyStyle.paddingBottom)
+      : 0;
+    // Fallback glyph boxes can extend a fraction past their nominal line box.
+    // Require one extra CSS pixel of headroom before reserving two visible
+    // lines; otherwise preserve one complete line and let the message scroll.
+    const twoLineReserve = lineHeight * 2 + copyPadding;
+    const reservedLines = copyAvailable < twoLineReserve + 1 ? 1 : 2;
+    const reservedCopyHeight = lineHeight * reservedLines + copyPadding;
+
+    element.style.setProperty("--pr-toast-max-height", `${available}px`);
+    element.style.setProperty(
+      "--pr-toast-copy-max-height",
+      `${copyAvailable}px`,
+    );
+    element.style.setProperty(
+      "--pr-toast-copy-min-height",
+      `${reservedCopyHeight}px`,
+    );
+  }, []);
+  useLayoutEffect(() => {
+    const element = toastElement.current;
+    if (!element) return;
+    const main = element.closest<HTMLElement>(".pr-main");
+    let frame = 0;
+    const schedule = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(sizeToastForDock);
+    };
+    const observer = new ResizeObserver(schedule);
+    observer.observe(element);
+    for (const target of document.querySelectorAll<HTMLElement>(
+      ".pr-top, .pr-time-row, .pr-extra, .pr-notes, .pr-ring, .pr-stage button, .pr-mrow, .pr-scale, .pr-dock",
+    ))
+      observer.observe(target);
+    window.addEventListener("resize", schedule);
+    main?.addEventListener("scroll", schedule);
+    schedule();
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      window.removeEventListener("resize", schedule);
+      main?.removeEventListener("scroll", schedule);
+    };
+  }, [sizeToastForDock, toast?.key, toast?.message]);
+  const showModelProgressToast = () => {
+    modelDownloadStartingFrom.current = onDevice.model;
+    const key = showToast(
+      onDevice.model && isAppleSpeech(onDevice.model)
+        ? FINAL_COPY.speechGetting
+        : "Starting the download…",
+    );
+    modelProgressToastKey.current = key;
+    setModelDownloadRequested(true);
+  };
+  const choiceForToast = useRef<{
+    stops: ReturnType<typeof useTranscriptionChoice>["stops"];
+    mode: ReturnType<typeof useTranscriptionChoice>["mode"];
+  } | null>(null);
+  const unavailable = (reason: string, modeId?: ModeId) => {
+    const actions: Array<{ label: string; run: () => void }> = [];
+    const rejected = choiceForToast.current?.stops.find(
+      ({ stop }) => stop.id === modeId,
+    );
+    if (
+      modeId === "local" &&
+      rejected &&
+      !rejected.available &&
+      rejected.action
+    ) {
+      actions.push({
+        label:
+          rejected.action.label === FINAL_COPY.modelUnavailable
+            ? "Get model"
+            : rejected.action.label,
+        run: () => {
+          showModelProgressToast();
+          rejected.action!.run();
+        },
+      });
+    } else if (
+      modeId !== undefined &&
+      rejected &&
+      !rejected.available &&
+      rejected.action
+    ) {
+      actions.push({ label: rejected.action.label, run: rejected.action.run });
+    }
+    const privateAvailable = choiceForToast.current?.stops.some(
+      ({ stop, available }) => stop.id === "private" && available,
+    );
+    if (
+      modeId !== "private" &&
+      privateAvailable &&
+      choiceForToast.current?.mode !== "private"
+    ) {
+      actions.push({
+        label: "Use Private",
+        run: () => {
+          consentOpener.current = toastReturnFocus.current?.isConnected
+            ? toastReturnFocus.current
+            : scale.current;
+          choose("private");
+        },
+      });
+    }
+    showToast(reason, actions);
+  };
 
   const audio = useAudioInputs(inputsSource);
   const input = mic.input ?? audio.current;
@@ -138,10 +337,12 @@ export function PhoneRecorder({
     shell,
     transcription: recorder.transcription,
     model: onDevice.model,
+    download: onDevice.download,
     transcriber: transcriberApi ?? recorder,
     signedIn: recorder.signedIn,
-    notify: showToast,
+    notify: (reason) => showToast(reason),
   });
+  choiceForToast.current = choice;
 
   const view = selectRecorderView(recorderState(recorder), {
     nowMs: Date.now(),
@@ -169,6 +370,7 @@ export function PhoneRecorder({
       },
     },
     (error) => {
+      recorder.setMomentFieldFocused(false);
       console.error("[Recorder] Could not mark this moment", error);
       showToast(
         NOTES_COPY.momentFailed(
@@ -204,10 +406,135 @@ export function PhoneRecorder({
   const ids = useId();
 
   useEffect(() => {
-    if (!toast) return;
-    const timer = setTimeout(() => setToast(null), TOAST_MS);
-    return () => clearTimeout(timer);
-  }, [toast]);
+    if (
+      !toast ||
+      toast.actions.length > 0 ||
+      toastPauseReasons.current.size > 0
+    )
+      return;
+    toastRemaining.current = TOAST_MS;
+    toastStartedAt.current = performance.now();
+    const key = toast.key;
+    toastTimer.current = setTimeout(() => {
+      clearModelProgressToast(key);
+      setToast((current) => (current?.key === key ? null : current));
+    }, toastRemaining.current);
+    return () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+      toastTimer.current = null;
+    };
+  }, [toast?.key, toast?.actions.length]);
+
+  useEffect(() => {
+    if (!modelDownloadRequested) return;
+    const progressKey = modelProgressToastKey.current;
+    if (progressKey === null) {
+      setModelDownloadRequested(false);
+      return;
+    }
+    if (!toast || toast.key !== progressKey) {
+      clearModelProgressToast(progressKey);
+      return;
+    }
+    const local = choice.stops.find(({ stop }) => stop.id === "local");
+    if (local?.available) {
+      modelProgressToastKey.current = null;
+      modelDownloadStartingFrom.current = null;
+      setModelDownloadRequested(false);
+      setToast((current) =>
+        current?.key === progressKey
+          ? {
+              ...current,
+              message:
+                onDevice.model && isAppleSpeech(onDevice.model)
+                  ? "Speech from iOS is ready."
+                  : "The on-device model is ready.",
+            }
+          : current,
+      );
+      return;
+    }
+    const waitingForFirstStatus =
+      modelDownloadStartingFrom.current === onDevice.model &&
+      onDevice.download.error === null;
+    if (!waitingForFirstStatus) modelDownloadStartingFrom.current = null;
+    const apple = onDevice.model !== null && isAppleSpeech(onDevice.model);
+    const next = waitingForFirstStatus
+      ? apple
+        ? FINAL_COPY.speechGetting
+        : "Starting the download…"
+      : (local?.reason ??
+        (apple
+          ? FINAL_COPY.speechGetting
+          : "Checking Wi-Fi before downloading the model…"));
+    setToast((current) =>
+      current?.key === progressKey && current.message !== next
+        ? { ...current, message: next }
+        : current,
+    );
+  }, [
+    choice.stops,
+    modelDownloadRequested,
+    toast?.key,
+    onDevice.model,
+    onDevice.download,
+  ]);
+
+  const pauseToast = (reason: "pointer" | "focus") => {
+    if (
+      !toast ||
+      toast.actions.length > 0 ||
+      toastPauseReasons.current.has(reason)
+    )
+      return;
+    const wasPaused = toastPauseReasons.current.size > 0;
+    toastPauseReasons.current.add(reason);
+    if (wasPaused) return;
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = null;
+    toastRemaining.current = Math.max(
+      0,
+      toastRemaining.current - (performance.now() - toastStartedAt.current),
+    );
+  };
+  const resumeToast = (reason: "pointer" | "focus") => {
+    if (
+      !toastPauseReasons.current.delete(reason) ||
+      toastPauseReasons.current.size > 0
+    )
+      return;
+    if (!toast || toast.actions.length > 0) return;
+    toastStartedAt.current = performance.now();
+    const key = toast.key;
+    toastTimer.current = setTimeout(() => {
+      clearModelProgressToast(key);
+      setToast((current) => (current?.key === key ? null : current));
+    }, toastRemaining.current);
+  };
+  const runToastAction = (run: () => void) => {
+    if (toastActionUsed.current) return;
+    toastActionUsed.current = true;
+    clearModelProgressToast(toast?.key);
+    setToast(null);
+    run();
+    requestAnimationFrame(() => {
+      if (!document.querySelector(".pr-sheet"))
+        (toastReturnFocus.current?.isConnected
+          ? toastReturnFocus.current
+          : scale.current
+        )?.focus({ preventScroll: true });
+    });
+  };
+  const dismissToast = () => {
+    clearModelProgressToast(toast?.key);
+    setToast(null);
+    requestAnimationFrame(() =>
+      (toastReturnFocus.current?.isConnected
+        ? toastReturnFocus.current
+        : scale.current
+      )?.focus({ preventScroll: true }),
+    );
+  };
 
   // The recorder provider announces every recording transition; this region only says what is new in this screen.
   const [said, setSaid] = useState("");
@@ -231,10 +558,7 @@ export function PhoneRecorder({
   const choose = (id: Parameters<typeof choice.select>[0]) => {
     const changed = id !== choice.mode;
     const reason = choice.select(id);
-    if (reason !== null) {
-      showToast(reason);
-      return reason;
-    }
+    if (reason !== null) return reason;
     if (changed) hapticLight();
     return null;
   };
@@ -319,10 +643,9 @@ export function PhoneRecorder({
       data-layout="phone"
       data-testid="phone-recorder"
       data-ring={view.ring}
+      data-mic-denied={idleDenied || undefined}
       style={{ "--kbh": `${keyboardInset}px` } as CSSProperties}
     >
-      <div className="pr-blob a" aria-hidden="true" />
-      <div className="pr-blob b" aria-hidden="true" />
       <p
         role="status"
         aria-live="polite"
@@ -336,15 +659,8 @@ export function PhoneRecorder({
         className="pr-main"
         data-noting={momentField !== null}
         inert={sheetOpen}
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          flex: 1,
-          minHeight: 0,
-          width: "100%",
-        }}
       >
+        <div className="pr-col pr-col-a">
         <div className="pr-top">
           <button
             type="button"
@@ -368,9 +684,10 @@ export function PhoneRecorder({
           <div
             className="pr-time soft-timer"
             role="timer"
+            aria-label={view.timer.text}
             data-dim={view.ring === "paused"}
           >
-            <span>{view.timer.text}</span>
+            <TimerDigits text={view.timer.text} />
             <button
               ref={markButton}
               type="button"
@@ -382,8 +699,9 @@ export function PhoneRecorder({
                     ? NOTES_COPY.noteLoading
                     : NOTES_COPY.noteLoadFailed
               }
+              aria-hidden={idleDenied || undefined}
               aria-disabled={recorder.noteStatus !== "ready" || undefined}
-              disabled={phase !== "recording"}
+              disabled={phase !== "recording" || idleDenied}
               onClick={() => {
                 if (recorder.noteStatus !== "ready") return;
                 hapticLight();
@@ -407,13 +725,15 @@ export function PhoneRecorder({
         >
           {view.statusLine}
         </div>
-        {(momentField !== null || hasNote(noteMd)) && (
+        {phase !== "starting" && (momentField !== null || hasNote(noteMd)) && (
           <div className="pr-notes">
             {momentField ? (
               <MomentField
                 field={momentField}
                 flow={moment}
+                onFocus={() => recorder.setMomentFieldFocused(true)}
                 onClosed={(result, refocus) => {
+                  recorder.setMomentFieldFocused(false);
                   if (result === "saved") say(NOTES_COPY.momentNoted);
                   if (refocus)
                     markButton.current?.focus({ preventScroll: true });
@@ -446,6 +766,7 @@ export function PhoneRecorder({
             ring={view.ring}
             flat={view.flat}
             theme={theme}
+            quiet={idleDenied}
             subscribeLevel={recorder.subscribeLevel}
             action={ringAction}
             glyph={
@@ -458,6 +779,8 @@ export function PhoneRecorder({
           />
         </div>
 
+        </div>
+        <div className="pr-col pr-col-b">
         <div className="pr-controls-wrap">
           <div className="pr-mrow">
             <button
@@ -489,27 +812,51 @@ export function PhoneRecorder({
               return choose(id);
             }}
             step={choice.step}
-            onUnavailable={() => {}}
+            onUnavailable={(reason, id) => unavailable(reason, id)}
           />
           <div className="pr-ends" aria-hidden="true">
             <span>more private</span>
             <span>more capable</span>
           </div>
-          <div className="pr-capline">{stop.captions[shell]}</div>
-          {!idleDenied && !audio.unsupported && (
-            <ViaMenu
-              inputs={audio.inputs}
-              currentId={input?.id ?? null}
-              currentName={inputName}
-              recording={view.ring === "live"}
-              theme={theme}
-              subscribeLevel={recorder.subscribeLevel}
-              emphasis={view.emphasis === "input"}
-              disabled={view.controls.busy}
-              defaultOpen={defaultOpen === "via"}
-              onSelect={(id) => void audio.select(id)}
-            />
-          )}
+          <div className={choice.modelNote ? "pr-capline pr-capline-wrap" : "pr-capline"}>
+            {choice.modelNote ? (
+              <>
+                <span data-testid="local-model-note">{choice.modelNote.reason}</span>
+                {choice.modelNote.action && (
+                  <>
+                    {" "}
+                    <button
+                      type="button"
+                      className="pr-caplink"
+                      data-testid="local-model-action"
+                      onClick={choice.modelNote.action.run}
+                    >
+                      {modelActionLabel(choice.modelNote.action)}
+                    </button>
+                  </>
+                )}
+              </>
+            ) : (
+              stop.captions[shell]
+            )}
+          </div>
+          {!audio.unsupported &&
+            (idleDenied ? (
+              <div className="pr-via-placeholder" aria-hidden="true" />
+            ) : (
+              <ViaMenu
+                inputs={audio.inputs}
+                currentId={input?.id ?? null}
+                currentName={inputName}
+                recording={view.ring === "live"}
+                theme={theme}
+                subscribeLevel={recorder.subscribeLevel}
+                emphasis={view.emphasis === "input"}
+                disabled={view.controls.busy}
+                defaultOpen={defaultOpen === "via"}
+                onSelect={(id) => void audio.select(id)}
+              />
+            ))}
           {modesOpen && (
             <div id={`${ids}-modes`} style={{ display: "contents" }}>
               <ModesCard
@@ -521,7 +868,9 @@ export function PhoneRecorder({
                 onClose={closeModes}
                 onChoose={(id) => {
                   consentOpener.current = opener.current;
-                  if (choose(id) === null) closeModes();
+                  const reason = choose(id);
+                  if (reason === null) closeModes();
+                  else unavailable(reason, id);
                 }}
                 onToggleSpeakers={choice.setIdentifySpeakers}
               />
@@ -529,6 +878,62 @@ export function PhoneRecorder({
           )}
         </div>
 
+        <div className="pr-dock">
+        {toast && (
+          <div
+            key={toast.key}
+            ref={toastElement}
+            className="pr-toast"
+            role="status"
+            onPointerEnter={() => pauseToast("pointer")}
+            onPointerLeave={(event) => {
+              if (
+                !event.currentTarget.contains(event.relatedTarget as Node | null)
+              )
+                resumeToast("pointer");
+            }}
+            onFocusCapture={() => pauseToast("focus")}
+            onBlurCapture={(event) => {
+              if (
+                !event.currentTarget.contains(event.relatedTarget as Node | null)
+              )
+                resumeToast("focus");
+            }}
+          >
+            <div
+              className="pr-toast-copy"
+              tabIndex={0}
+              role="region"
+              aria-label="Notification message"
+            >
+              <span className="pr-toast-icon" aria-hidden="true">
+                !
+              </span>
+              <span className="pr-toast-message">{toast.message}</span>
+            </div>
+            {toast.actions.length > 0 && (
+              <div className="pr-toast-actions">
+                {toast.actions.map((action) => (
+                  <button
+                    key={action.label}
+                    type="button"
+                    onClick={() => runToastAction(action.run)}
+                  >
+                    {action.label}
+                  </button>
+                ))}
+              </div>
+            )}
+            <button
+              type="button"
+              className="pr-toast-dismiss"
+              aria-label="Dismiss notification"
+              onClick={dismissToast}
+            >
+              ×
+            </button>
+          </div>
+        )}
         {alerts.map(({ message, retry }) => (
           <p key={message} className="pr-alert" role="alert">
             {message}
@@ -540,7 +945,7 @@ export function PhoneRecorder({
           </p>
         ))}
         {idleDenied ? (
-          <div className="pr-controls">
+          <div className="pr-controls" data-mic-denied="true">
             <MicDeniedAction
               idle={phase === "idle"}
               onOpenSettings={openSettings}
@@ -549,8 +954,12 @@ export function PhoneRecorder({
           </div>
         ) : phase === "idle" ? (
           <div className="pr-controls">
-            <button type="button" className="pr-b primary" disabled={!recorder.ready || recorder.outcome !== null}
-              onClick={() => void recorder.record()}>
+            <button
+              type="button"
+              className="pr-b primary"
+              disabled={!recorder.ready || recorder.outcome !== null}
+              onClick={() => void recorder.record()}
+            >
               Record
             </button>
           </div>
@@ -604,6 +1013,8 @@ export function PhoneRecorder({
             </div>
           </>
         )}
+        </div>
+        </div>
       </div>
 
       {notesOpen && (
@@ -703,11 +1114,6 @@ export function PhoneRecorder({
         </SheetDialog>
       )}
 
-      {toast && (
-        <div key={toast.key} className="pr-toast" role="status">
-          {toast.message}
-        </div>
-      )}
     </div>
   );
 }

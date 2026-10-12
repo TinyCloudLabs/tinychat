@@ -5,7 +5,9 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   type FC,
@@ -86,12 +88,39 @@ interface ThreadProps {
 export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onReload, canvasEnabled = false, composerToolbar }) => {
   const threadId = useAuiState((s) => s.threadListItem.remoteId ?? s.threadListItem.id) as string | undefined;
   const isRunning = useAuiState((s) => s.thread.isRunning);
+  const isEmpty = useAuiState((s) => s.thread.isEmpty);
+  const viewportRef = useRef<HTMLDivElement>(null);
   const threadRuntime = useThreadRuntime();
   const applyCanvasToRuntime = useCallback((canvas: CanvasModel) => {
     threadRuntime.import(repositoryFromCanvas(canvas));
   }, [threadRuntime]);
   const [surface, setSurface] = useState<"chat" | "canvas">("chat");
   useEffect(() => setSurface("chat"), [threadId]);
+  useLayoutEffect(() => {
+    if (!isEmpty) return;
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+
+    let frame: number | null = null;
+    const pinToTop = () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        viewport.scrollTo({ top: 0, behavior: "instant" });
+      });
+    };
+    const resizeObserver = new ResizeObserver(pinToTop);
+    resizeObserver.observe(viewport);
+    // Also pin on mount and thread switch; ResizeObserver covers later layout
+    // changes such as minimising the recorder while assistant-ui has a pending
+    // scroll-to-bottom intent for the empty thread.
+    pinToTop();
+
+    return () => {
+      resizeObserver.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, [threadId, isEmpty]);
   return (
     <TooltipProvider delayDuration={300}>
       <ShareThreadProvider tcw={tcw}>
@@ -103,7 +132,7 @@ export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onRe
               <Button type="button" variant={surface === "canvas" ? "default" : "outline"} size="sm" aria-pressed={surface === "canvas"} onClick={() => setSurface("canvas")}>Canvas</Button>
             </div>
           )}
-          <ThreadPrimitive.Viewport data-scroll-root className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
+          <ThreadPrimitive.Viewport ref={viewportRef} autoScroll={!isEmpty} data-scroll-root className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
             {surface === "canvas" ? (
               <div className="h-full w-full">
                 <Suspense fallback={<div className="flex h-full items-center justify-center text-sm text-muted-foreground">Loading canvas…</div>}>
@@ -122,7 +151,7 @@ export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onRe
                 <ThreadBody />
               </div>}
 
-            <Composer selection={selection} toolbar={composerToolbar} />
+            <Composer selection={selection} toolbar={composerToolbar} isEmpty={isEmpty} />
           </ThreadPrimitive.Viewport>
         </ThreadPrimitive.Root>
       </ShareThreadProvider>
@@ -442,7 +471,7 @@ const HistorySkeleton: FC = () => (
 const ThreadWelcome: FC = () => {
   return (
     <ThreadPrimitive.Empty>
-      <div className="flex w-full flex-1 flex-col items-center justify-center gap-6 py-16 text-center">
+      <div className="relative -top-8 flex w-full flex-1 flex-col items-center justify-center gap-6 px-4 py-16 pb-24 text-center sm:top-0">
         <div className="flex flex-col items-center gap-2">
           {/* The chat header's title is the screen's h1. */}
           <h2 className="font-display text-title-2">TinyCloud Chat</h2>
@@ -459,6 +488,7 @@ const ThreadWelcome: FC = () => {
               method="replace"
               autoSend={false}
               className="rounded-xl border border-border bg-card px-4 py-3 text-left text-sm text-foreground transition-colors hover:bg-accent"
+              data-testid={s.title === "Markdown demo" ? "chat-markdown-demo" : undefined}
             >
               <span className="block font-medium">{s.title}</span>
               <span className="block text-xs text-muted-foreground">
@@ -495,11 +525,11 @@ const WELCOME_SUGGESTIONS = [
 // the model and usage chips and Send. Its bottom padding follows the shell:
 // above the tab bar it needs no safe area (the bar has it), over the keyboard
 // it tightens to 8 px, and at the screen's edge it clears the home indicator.
-const Composer: FC<{ selection: SelectionView; toolbar?: ReactNode }> = ({ selection, toolbar }) => {
+const Composer: FC<{ selection: SelectionView; toolbar?: ReactNode; isEmpty: boolean }> = ({ selection, toolbar, isEmpty }) => {
   return (
     <div className="sticky bottom-0 z-10 w-full max-w-[46rem] bg-gradient-to-t from-background via-background to-transparent pb-[max(1rem,env(safe-area-inset-bottom))] pt-2 [html[data-keyboard=open]_&]:pb-2 [html[data-nav=tabbar]:not([data-keyboard=open])_&]:pb-3">
       <div className="relative">
-        <ScrollToBottom />
+        <ScrollToBottom hidden={isEmpty} />
       </div>
       <ComposerPrimitive.Root className="flex flex-col rounded-2xl border border-input bg-card shadow-sm transition-shadow focus-within:border-ring focus-within:shadow-md">
         <ComposerPrimitive.Input
@@ -718,13 +748,16 @@ const ReceiptFooter: FC = () => {
   );
 };
 
-export const ScrollToBottom: FC = () => (
-  <ThreadPrimitive.ScrollToBottom asChild>
-    <TooltipIconButton
-      tooltip="Scroll to bottom"
-      className="absolute -top-10 left-1/2 z-10 size-11 -translate-x-1/2 rounded-full border border-border bg-background shadow-sm disabled:invisible md:size-8"
-    >
-      <ArrowDownIcon />
-    </TooltipIconButton>
-  </ThreadPrimitive.ScrollToBottom>
-);
+export const ScrollToBottom: FC<{ hidden?: boolean }> = ({ hidden = false }) => {
+  if (hidden) return null;
+  return (
+    <ThreadPrimitive.ScrollToBottom asChild>
+      <TooltipIconButton
+        tooltip="Scroll to bottom"
+        className="absolute -top-10 left-1/2 z-10 size-[44px] -translate-x-1/2 rounded-full border border-border bg-background shadow-sm disabled:invisible md:size-8"
+      >
+        <ArrowDownIcon className="size-[20px]" />
+      </TooltipIconButton>
+    </ThreadPrimitive.ScrollToBottom>
+  );
+};

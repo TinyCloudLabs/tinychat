@@ -39,13 +39,12 @@ function fakeTcw(unlocked = false) {
 }
 
 describe("secretsAvailable gate", () => {
-  test("the sign-in flag is limited to iOS and Android", () => {
-    expect(isNativeOpenKeySignIn("ios", { VITE_EXO_NATIVE_OPENKEY: "true" })).toBe(true);
-    expect(isNativeOpenKeySignIn("android", { VITE_EXO_NATIVE_OPENKEY: "true" })).toBe(true);
+  test("native sign-in is limited to iOS and Android", () => {
+    expect(isNativeOpenKeySignIn("ios")).toBe(true);
+    expect(isNativeOpenKeySignIn("android")).toBe(true);
     // Web and the Tauri desktop always have secrets.
-    expect(isNativeOpenKeySignIn("web", { VITE_EXO_NATIVE_OPENKEY: "true" })).toBe(false);
-    expect(isNativeOpenKeySignIn("tauri", { VITE_EXO_NATIVE_OPENKEY: "true" })).toBe(false);
-    expect(isNativeOpenKeySignIn("ios", {})).toBe(false);
+    expect(isNativeOpenKeySignIn("web")).toBe(false);
+    expect(isNativeOpenKeySignIn("tauri")).toBe(false);
   });
 
   test("unlockSecrets refuses on native before touching the vault", async () => {

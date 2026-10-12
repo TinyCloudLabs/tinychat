@@ -89,8 +89,8 @@ describe("Upload sheet", () => {
     expect(html).toContain("Choose an audio file");
     expect(html).toContain(">Transcription</h3>");
     expect(html).toContain('role="radiogroup"');
-    expect(html).toContain("This device");
-    expect(html).toContain("Private cloud");
+    expect(html).toContain("This browser");
+    expect(html).toContain("Private");
     expect(html).toContain("Your space");
     expect(html).toContain('href="/chat/about#uploads"');
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Transcribe<\/button>/);
@@ -107,7 +107,7 @@ describe("Upload sheet", () => {
 
   test("uploading: progress on the route, not landed yet", () => {
     const html = renderUpload({ job: upload() });
-    expect(html).toContain("Uploading to Private cloud… 42%");
+    expect(html).toContain("Uploading for Private transcription… 42%");
     expect(html).toContain('aria-label="Where your audio goes"');
     expect(html).not.toContain("data-landed");
     expect(html).not.toContain(">Discard</button>");
@@ -119,7 +119,7 @@ describe("Upload sheet", () => {
       onOpenLibrary: noop,
     });
     expect(html).toContain("Saved to your TinyCloud space");
-    expect(html).toContain("Interview · Private cloud");
+    expect(html).toContain("Interview · Private");
     expect(html).toContain("data-landed");
     expect(html).toContain("(saved)");
     expect(html).toContain(">Open Library</button>");
@@ -166,11 +166,11 @@ describe("Upload sheet", () => {
     expect(job?.assemblyAiMode).toBe("own");
     // Settings now says TinyCloud's account; the job's route still names the user's key.
     const html = renderUpload({ job, assemblyAiMode: "hosted" });
-    expect(html).toContain("AssemblyAI · your key");
+    expect(html).toContain("Powerful · your key");
     expect(html).not.toContain("TinyCloud&#x27;s account");
     // And the other way round.
     const hosted = renderUpload({ job: upload({ engine: "assemblyai", assemblyAiMode: "hosted" }), assemblyAiMode: "own" });
-    expect(hosted).toContain("AssemblyAI · TinyCloud&#x27;s account");
+    expect(hosted).toContain("Powerful · TinyCloud&#x27;s account");
     expect(hosted).not.toContain("your key");
   });
 
@@ -182,10 +182,17 @@ describe("Upload sheet", () => {
     expect(html.match(/>Transcribe<\/button>/g)).toHaveLength(1);
   });
 
-  test("the route names whose AssemblyAI account", () => {
-    expect(uploadRoute("assemblyai", "hosted").map((n) => n.label)).toEqual(["This device", "AssemblyAI · TinyCloud's account", "Your space"]);
-    expect(uploadRoute("assemblyai", "own")[1].label).toBe("AssemblyAI · your key");
-    expect(uploadRoute("private-cloud", "own")[1].label).toBe("Private cloud");
+  test("the route's first step is this device by name: phone, Mac or browser", () => {
+    expect(uploadRoute("private-cloud", "own", "ios")[0].label).toBe("This phone");
+    expect(uploadRoute("private-cloud", "own", "android")[0].label).toBe("This phone");
+    expect(uploadRoute("private-cloud", "own", "tauri")[0].label).toBe("This Mac");
+    expect(uploadRoute("private-cloud", "own", "web")[0].label).toBe("This browser");
+  });
+
+  test("the route names whose account Powerful uses", () => {
+    expect(uploadRoute("assemblyai", "hosted").map((n) => n.label)).toEqual(["This browser", "Powerful · TinyCloud's account", "Your space"]);
+    expect(uploadRoute("assemblyai", "own")[1].label).toBe("Powerful · your key");
+    expect(uploadRoute("private-cloud", "own")[1].label).toBe("Private");
   });
 });
 
@@ -252,7 +259,7 @@ describe("In progress", () => {
     const busy = renderRows({ upload: upload() });
     expect(busy).toContain(">In progress</h2>");
     expect(busy).toContain("Interview.m4a");
-    expect(busy).toContain("Uploading to Private cloud… 42%");
+    expect(busy).toContain("Uploading for Private transcription… 42%");
     const paused = renderRows({ paused: { fileName: "Interview.m4a" } });
     expect(paused).toContain("Upload paused");
     expect(paused).toContain(">Continue</button>");

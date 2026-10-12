@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
-# Sign in to Exo through the NATIVE OpenKey delegation flow (TC-775 E1, gate L1):
+# Sign in to Exo through the NATIVE OpenKey delegation flow (TC-775, gate L1):
 # the app opens the authorize URL in a Chrome Custom Tab, OpenKey signs in there
 # (email + code from a throwaway mailinator inbox), the consent page approves the
 # TinyCloud delegation, and the tab returns to the app on
-# xyz.tinycloud.exo://openkey/callback. Ends on the app's signed-in check, the
-# same probe signin-email.sh uses. Then smoke-voice-note.sh runs unchanged.
+# xyz.tinycloud.exo://openkey/callback. Ends on the app's signed-in check.
+# Then smoke-voice-note.sh runs unchanged.
 #
 #   EXO_TEST_EMAIL=<name>@mailinator.com signin-openkey-native.sh
 #
-# Needs: the emulator up (start-emulator.sh), the app built with
-# VITE_EXO_NATIVE_OPENKEY=true and the native client id, the app installed and
-# launched (launch-app.sh), and the controller running (cdp.sh start).
-# Taps are coordinates for the Pixel 7 AVD (1080x2400), like signin-email.sh —
-# the Custom Tab is Chrome UI, not the WebView, so it is driven like a user.
+# Needs: the emulator up (start-emulator.sh), the app built with the native
+# client id (frontend/.env.production VITE_OPENKEY_NATIVE_CLIENT_ID — the only
+# sign-in path on Android), the app installed and launched (launch-app.sh),
+# and the controller running (cdp.sh start).
+# Taps are coordinates for the Pixel 7 AVD (1080x2400) — the Custom Tab is
+# Chrome UI, not the WebView, so it is driven like a user.
 # Never use a real account here: mailinator inboxes are public.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)

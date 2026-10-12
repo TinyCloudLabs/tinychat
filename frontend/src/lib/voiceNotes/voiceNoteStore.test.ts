@@ -37,10 +37,15 @@ import {
   syncRecordingNote,
   readRecordingNoteFromSpace,
   recordingNoteSyncError,
+  recordingNoteSyncSkip,
+  recordingNoteSyncing,
+  recordingNoteSyncedAt,
+  subscribeRecordingNoteSync,
   type VoiceNoteAudioSource,
 } from "./voiceNoteStore";
 import { loadNote, noteMarkdown, saveNote } from "./recordingNotes";
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
+import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
 
 type KvValue = string | Uint8Array;
 type KvFailure = { code: string; message: string; meta?: { status: number } };
@@ -168,6 +173,85 @@ const AUDIO_BASE = `${APP_ID}/connectors/exo-voice-note/audio/rec-1`;
 
 beforeEach(() => _resetConnectorSchemaMemoForTests());
 
+describe("note sync state", () => {
+  test("syncing is true only while a sync runs, and subscribers hear both edges", async () => {
+    const space = fakeSpace();
+    const withNote = { ...recording, id: `rec-note-syncing-${++fakeSpaceNumber}` };
+    await saveNote(withNote.id, "# Draft");
+    await saveVoiceNote(space.tcw, withNote,
+      voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
+    const seen: boolean[] = [];
+    const unsubscribe = subscribeRecordingNoteSync(() => seen.push(recordingNoteSyncing(space.tcw, withNote.id)));
+    expect(recordingNoteSyncing(space.tcw, withNote.id)).toBe(false);
+    const running = syncRecordingNote(space.tcw, withNote.id);
+    expect(recordingNoteSyncing(space.tcw, withNote.id)).toBe(true);
+    expect(recordingNoteSyncing({ ...space.tcw, did: "did:other" } as TinyCloudWeb, withNote.id)).toBe(false);
+    expect(await running).toBe(true);
+    unsubscribe();
+    expect(recordingNoteSyncing(space.tcw, withNote.id)).toBe(false);
+    expect(seen[0]).toBe(true);
+    expect(seen[seen.length - 1]).toBe(false);
+    expect(recordingNoteSyncSkip(space.tcw, withNote.id)).toBeNull();
+  });
+
+  test("a sync that worked records the note revision it wrote; a later edit is not covered by it (the pipeline's evidence for \"synced\")", async () => {
+    const space = fakeSpace();
+    const withNote = { ...recording, id: `rec-note-synced-${++fakeSpaceNumber}` };
+    await saveNote(withNote.id, "# Draft");
+    expect(recordingNoteSyncedAt(space.tcw, withNote.id)).toBeNull();
+    await saveVoiceNote(space.tcw, withNote,
+      voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
+    const first = (await loadNote(withNote.id))!;
+    expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
+    expect(recordingNoteSyncedAt(space.tcw, withNote.id)).toBe(first.editedAt);
+    expect(recordingNoteSyncedAt({ ...space.tcw, did: "did:other" } as TinyCloudWeb, withNote.id)).toBeNull();
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await saveNote(withNote.id, "# Draft, edited");
+    const second = (await loadNote(withNote.id))!;
+    expect(second.editedAt).not.toBe(first.editedAt);
+    expect(recordingNoteSyncedAt(space.tcw, withNote.id)).toBe(first.editedAt);
+    expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
+    expect(recordingNoteSyncedAt(space.tcw, withNote.id)).toBe(second.editedAt);
+  });
+
+  test("syncing clears when a sync fails", async () => {
+    const space = fakeSpace();
+    const withNote = { ...recording, id: `rec-note-syncing-fail-${++fakeSpaceNumber}` };
+    await saveNote(withNote.id, "# Draft");
+    space.failPut((key) => key === voiceNoteMarkdownKvKey(withNote.id) ? { code: "KV_ERROR", message: "notes offline" } : null);
+    await saveVoiceNote(space.tcw, withNote,
+      voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
+    await expect(syncRecordingNote(space.tcw, withNote.id)).rejects.toThrow("notes offline");
+    expect(recordingNoteSyncing(space.tcw, withNote.id)).toBe(false);
+    expect(recordingNoteSyncError(space.tcw, withNote.id)).toBe("sync_failed");
+  });
+
+  test("a sync with no note on this device says no-note; with no row in the space, no-row; a later good sync clears it", async () => {
+    const space = fakeSpace();
+    const id = `rec-note-skip-${++fakeSpaceNumber}`;
+    await saveVoiceNote(space.tcw, { ...recording, id: `${id}-other` },
+      voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android"); // creates the schema
+    const heard: string[] = [];
+    const unsubscribe = subscribeRecordingNoteSync(() => heard.push(recordingNoteSyncSkip(space.tcw, id) ?? "none"));
+    expect(await syncRecordingNote(space.tcw, id)).toBe(false);
+    expect(recordingNoteSyncSkip(space.tcw, id)).toBe("no-note");
+    expect(recordingNoteSyncing(space.tcw, id)).toBe(false);
+
+    await saveNote(id, "# Draft");
+    expect(await syncRecordingNote(space.tcw, id)).toBe(false);
+    expect(recordingNoteSyncSkip(space.tcw, id)).toBe("no-row");
+
+    await saveVoiceNote(space.tcw, { ...recording, id },
+      voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
+    expect(await syncRecordingNote(space.tcw, id)).toBe(true);
+    unsubscribe();
+    expect(recordingNoteSyncSkip(space.tcw, id)).toBeNull();
+    expect(heard).toContain("no-note");
+    expect(heard).toContain("no-row");
+  });
+});
+
 describe("saveVoiceNote", () => {
   test("a Markdown sync failure leaves the audio save successful and retries separately", async () => {
     const space = fakeSpace();
@@ -189,6 +273,48 @@ describe("saveVoiceNote", () => {
     expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
     expect(recordingNoteSyncError(space.tcw, withNote.id)).toBeNull();
     expect(space.kv.get(noteKey)).toContain("# Local draft");
+  });
+
+  test("a timed-out E1 Markdown put settles before E2 can write", async () => {
+    const space = fakeSpace();
+    const withNote = { ...recording, id: `rec-note-late-edit-${++fakeSpaceNumber}` };
+    const noteKey = voiceNoteMarkdownKvKey(withNote.id);
+    await saveNote(withNote.id, "# Original");
+    await saveVoiceNote(space.tcw, withNote,
+      voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
+    const originalPut = space.tcw.kv.put.bind(space.tcw.kv);
+    let resolveE1!: () => void;
+    let e1Started!: () => void;
+    const started = new Promise<void>((resolve) => { e1Started = resolve; });
+    let e2Puts = 0;
+    space.tcw.kv.put = ((key: string, value: KvValue, options?: { contentType?: string; ifNoneMatch?: string; signal?: AbortSignal }) => {
+      const body = String(value);
+      if (key === noteKey && body.includes("# Edit E1")) {
+        e1Started();
+        return new Promise((resolve) => { resolveE1 = () => {
+          space.kv.set(key, value);
+          resolve({ ok: true, data: { data: undefined, headers: { etag: "e1" } } });
+        }; }) as ReturnType<typeof originalPut>;
+      }
+      if (key === noteKey && body.includes("# Edit E2")) e2Puts++;
+      return originalPut(key, value, options);
+    }) as typeof space.tcw.kv.put;
+    setVoiceNoteSaveDeadlineForTests(20);
+    try {
+      await saveNote(withNote.id, "# Edit E1");
+      const e1 = syncRecordingNote(space.tcw, withNote.id);
+      await started;
+      await expect(e1).rejects.toThrow("saving it is taking too long");
+      await saveNote(withNote.id, "# Edit E2");
+      const e2 = syncRecordingNote(space.tcw, withNote.id);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(e2Puts).toBe(0);
+      resolveE1();
+      await expect(e2).resolves.toBe(true);
+      expect(e2Puts).toBe(1);
+      expect(space.kv.get(noteKey)).toContain("# Edit E2");
+      expect((await readRecordingNoteFromSpace(space.tcw, withNote.id))?.md).toBe("# Edit E2");
+    } finally { setVoiceNoteSaveDeadlineForTests(null); }
   });
 
   test("sync carries the saved-edit time to the space and a recorder write after it does not clear it", async () => {
@@ -505,6 +631,27 @@ describe("saveVoiceNoteTranscript", () => {
     expect(res).toEqual({ ok: false, error: expect.objectContaining({ code: "VOICE_NOTE_NOT_FOUND" }) });
     expect(puts(calls)).toEqual([]);
     expect(calls.some((c) => c.kind === "sql.execute" && /INSERT INTO connector_meeting/.test(String(c.params[0])))).toBe(false);
+  });
+
+  test("r4: a hung note-exists query times out with an error result instead of waiting forever", async () => {
+    const { tcw, calls } = fakeSpace();
+    const realDb = tcw.sql.db.bind(tcw.sql);
+    let release!: () => void;
+    const hung = new Promise<void>((resolve) => { release = resolve; });
+    (tcw.sql as { db: unknown }).db = (name: string) => {
+      const db = realDb(name);
+      return { ...db, query: (sql: string, params?: unknown[]) =>
+        sql.includes("LIMIT 1") ? hung.then(() => ({ ok: true, data: { rows: [] } })) : db.query(sql, params) };
+    };
+    setVoiceNoteSaveDeadlineForTests(50);
+    try {
+      const result = await saveVoiceNoteTranscript(tcw, "rec", prepared);
+      expect(result).toMatchObject({ ok: false, error: { code: "VOICE_NOTE_OPERATION_TIMEOUT" } });
+      expect(puts(calls)).toEqual([]);
+    } finally {
+      setVoiceNoteSaveDeadlineForTests(null);
+      release();
+    }
   });
 
   test("a committed on-device or private-cloud transcript refreshes only its saved note once", async () => {

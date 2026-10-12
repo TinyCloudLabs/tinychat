@@ -4,20 +4,27 @@
 // screens run as the phone app (its landing, its voice note button and the
 // fake recorder); `shell-capture-web` shows Capture as the web and desktop app
 // have it. Sheets are opened after mount, the way a tap would.
-import { useContext, useEffect, useMemo } from "react";
+import { useContext, useEffect, useMemo, useState } from "react";
 
 import type { AppState } from "@/lib/appState";
 import { PlatformContext } from "@/lib/platform";
 import { createRuntimeShim } from "../runtimeShim";
 import type { HarnessScreen } from "../screen";
 import { ShellApp } from "../ShellApp";
+import type { RecorderValue } from "@/capture/recorder/RecorderProvider";
 
-function Shell(props: { state?: AppState; act?: () => boolean }) {
+function Shell(props: { state?: AppState; scenario?: string; act?: () => boolean; recorder?: Partial<RecorderValue> }) {
   const platform = useContext(PlatformContext);
-  const shim = useMemo(() => createRuntimeShim(), []);
+  const shim = useMemo(() => createRuntimeShim({ scenario: props.scenario }), [props.scenario]);
+  const [sheetOpen, setSheetOpen] = useState(props.recorder?.sheetOpen ?? false);
+  const recorder = props.recorder && {
+    ...props.recorder,
+    sheetOpen,
+    minimiseSheet: () => setSheetOpen(false),
+  };
   return (
     <>
-      <ShellApp platform={platform} shim={shim} state={props.state ?? "ready"} />
+      <ShellApp platform={platform} shim={shim} state={props.state ?? "ready"} recorder={recorder} />
       {props.act && <Act run={props.act} />}
     </>
   );
@@ -65,7 +72,64 @@ const typeWithKeyboard = () => {
   return true;
 };
 
+const openChatTab = () => {
+  const tab = document.querySelector<HTMLAnchorElement>('a[href="/chat"]');
+  if (!tab) return false;
+  tab.click();
+  return true;
+};
+
+const minimiseRecorder = () => {
+  const button = document.querySelector<HTMLButtonElement>('button[aria-label="Minimise recorder"]');
+  if (!button) return false;
+  button.click();
+  return true;
+};
+
+function newChatAfterOpeningSavedThread() {
+  let selectedSavedThread = false;
+  return () => {
+    const oldQuestion = [...document.querySelectorAll<HTMLParagraphElement>("p")].find(
+      (paragraph) => paragraph.textContent?.trim() === "old question" && paragraph.getClientRects().length > 0,
+    );
+    if (oldQuestion && document.documentElement.hasAttribute("data-island")) {
+      const newChat = document.querySelector<HTMLButtonElement>('button[aria-label="New chat"]');
+      if (!newChat) return false;
+      newChat.click();
+      document.documentElement.dataset.harnessNewChatFromSaved = "true";
+      return true;
+    }
+
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"][data-state="open"]');
+    if (dialog) {
+      const savedThread = [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) => button.textContent?.trim() === "Saved",
+      );
+      if (savedThread) {
+        savedThread.click();
+        selectedSavedThread = true;
+      }
+      return false;
+    }
+
+    if (!selectedSavedThread) {
+      document.querySelector<HTMLButtonElement>('button[aria-label="Chats"]')?.click();
+    }
+    return false;
+  };
+}
+
 const SHELL = { group: "shell", layout: "pane", displayTitle: true } as const;
+const RIBBON_RECORDING: Partial<RecorderValue> = {
+  available: true,
+  ready: true,
+  phase: "recording",
+  mic: { state: "recording", reason: null },
+  startedAt: Date.now() - 12 * 60_000,
+  audioMs: 12 * 60_000,
+  elapsedMs: 12 * 60_000,
+  sheetOpen: false,
+};
 
 export const shellScreens: HarnessScreen[] = [
   {
@@ -101,6 +165,66 @@ export const shellScreens: HarnessScreen[] = [
   },
   {
     ...SHELL,
+    id: "shell-chat-ribbon",
+    path: "/chat",
+    platform: "ios",
+    readyWhen: 'button[aria-label="Model"]:not([disabled])',
+    render: () => <Shell recorder={{
+      phase: "recording",
+      mic: { state: "recording", reason: null },
+      startedAt: Date.now() - 83_000,
+      elapsedMs: 83_000,
+      recordingId: "harness-minimized-recording",
+      sheetOpen: false,
+    }} />,
+  },
+  {
+    ...SHELL,
+    id: "shell-chat-ribbon-from-capture",
+    path: "/chat/capture",
+    platform: "ios",
+    readyWhen: 'a[href="/chat"]',
+    render: () => <Shell act={openChatTab} recorder={{
+      phase: "recording",
+      mic: { state: "recording", reason: null },
+      startedAt: Date.now() - 83_000,
+      elapsedMs: 83_000,
+      recordingId: "harness-minimized-recording",
+      sheetOpen: false,
+    }} />,
+  },
+  {
+    ...SHELL,
+    id: "shell-chat-ribbon-minimized-from-chat",
+    path: "/chat",
+    platform: "ios",
+    readyWhen: 'button[aria-label="Model"]:not([disabled])',
+    render: () => <Shell act={minimiseRecorder} recorder={{
+      phase: "recording",
+      mic: { state: "recording", reason: null },
+      startedAt: Date.now() - 83_000,
+      elapsedMs: 83_000,
+      recordingId: "harness-minimized-recording",
+      sheetOpen: true,
+    }} />,
+  },
+  {
+    ...SHELL,
+    id: "shell-chat-new-ribbon",
+    path: "/chat",
+    platform: "ios",
+    readyWhen: 'html[data-harness-new-chat-from-saved="true"]',
+    render: () => <Shell scenario="reopen" act={newChatAfterOpeningSavedThread()} recorder={{
+      phase: "recording",
+      mic: { state: "recording", reason: null },
+      startedAt: Date.now() - 83_000,
+      elapsedMs: 83_000,
+      recordingId: "harness-minimized-recording",
+      sheetOpen: false,
+    }} />,
+  },
+  {
+    ...SHELL,
     id: "shell-chat-keyboard",
     path: "/chat",
     platform: "ios",
@@ -129,6 +253,13 @@ export const shellScreens: HarnessScreen[] = [
     path: "/chat/connectors",
     platform: "ios",
     render: () => <Shell />,
+  },
+  {
+    ...SHELL,
+    id: "shell-connectors-ribbon",
+    path: "/chat/connectors",
+    platform: "android",
+    render: () => <Shell recorder={RIBBON_RECORDING} />,
   },
   {
     ...SHELL,

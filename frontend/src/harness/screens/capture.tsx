@@ -5,6 +5,8 @@
 import { useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import type { RecorderValue } from "@/capture/recorder/RecorderProvider";
+import { RouteLine } from "@/capture/recorder/RouteLine";
+import { NOTETAKER_ROUTE } from "@/capture/sheetRoute";
 import { pausedUpload } from "@/capture/upload/pausedUpload";
 import { PlatformContext } from "@/lib/platform";
 import {
@@ -53,11 +55,24 @@ const MINIMISED: Partial<RecorderValue> = {
   sheetOpen: false,
 };
 
-// The Soft home sets its title in Fraunces, so the Literata font check does not apply.
-const CAPTURE = { group: "capture", layout: "pane", displayTitle: false, path: "/chat/capture", platform: "ios" } as const;
+// The Soft home sets its title in the app's Literata.
+const CAPTURE = { group: "capture", layout: "pane", displayTitle: true, path: "/chat/capture", platform: "ios" } as const;
 const LISTED = '[data-testid="library-list"][data-state="ready"]';
 
 export const captureScreens: HarnessScreen[] = [
+  {
+    group: "capture",
+    id: "capture-notetaker-route",
+    layout: "pane",
+    path: "/chat/capture/route-preview",
+    platform: "ios",
+    render: () => (
+      <main className="min-h-full bg-background p-4 text-foreground">
+        <h1 className="mb-4 text-base font-semibold">Meeting transcript route</h1>
+        <RouteLine nodes={NOTETAKER_ROUTE} />
+      </main>
+    ),
+  },
   { ...CAPTURE, id: "capture-first-use", readyWhen: LISTED, render: () => <CaptureShell /> },
   { ...CAPTURE, id: "capture-items", readyWhen: LISTED, render: () => <CaptureShell library /> },
   { ...CAPTURE, id: "capture-in-progress", readyWhen: LISTED, render: () => <InProgress /> },
@@ -66,6 +81,32 @@ export const captureScreens: HarnessScreen[] = [
     id: "capture-recording-minimised",
     readyWhen: LISTED,
     render: () => <CaptureShell library recorder={MINIMISED} />,
+  },
+  {
+    ...CAPTURE,
+    id: "capture-recording-minimised-error",
+    readyWhen: LISTED,
+    render: () => (
+      <CaptureShell
+        library
+        recorder={{ ...MINIMISED, error: "The recorder could not stop. Try again." }}
+      />
+    ),
+  },
+  {
+    ...CAPTURE,
+    id: "capture-stopped-minimised-error",
+    readyWhen: LISTED,
+    render: () => (
+      <CaptureShell
+        library
+        recorder={{
+          ...MINIMISED,
+          phase: "stopping",
+          error: "The recorder could not stop. Try again.",
+        }}
+      />
+    ),
   },
   { ...CAPTURE, id: "capture-web", platform: "web", readyWhen: LISTED, render: () => <CaptureShell /> },
 ];
@@ -101,7 +142,19 @@ declare global {
 }
 const ON_PHONE: Partial<RecorderValue> = {
   ...SOFT_IDLE,
-  pending: { listing: { state: "ok", count: 2 }, running: false, lastError: null },
+  pending: {
+    listing: { state: "ok", count: 2 },
+    notes: ["rec-waiting-1", "rec-waiting-2"].map((id, index) => ({
+      id,
+      startedAt: FROZEN_NOW - (index + 1) * 60_000,
+      durationMs: 42_000,
+      upload: { state: "waiting" as const, bytes: 0, total: 0 },
+    })),
+    running: false,
+    lastError: null,
+    uploadingId: null,
+    online: true,
+  },
   retryPending: () => {
     window.exoUiRetryPending = (window.exoUiRetryPending ?? 0) + 1;
   },
@@ -267,6 +320,7 @@ const PHONE_VIEWPORTS = ["phone", "phone-small"];
 
 export const captureSoftScreens: HarnessScreen[] = [
   { ...SOFT, id: "capture-soft-notes", render: () => <SoftHome /> },
+  { ...SOFT, platform: "android", id: "capture-soft-android-text200", render: () => <SoftHome /> },
   {
     ...SOFT,
     id: "capture-soft-long-titles",

@@ -1,7 +1,8 @@
 // isOnDeviceReady mirrors TranscriptionQueue.pump()'s exact readiness gate on both platforms:
 // the RAM-tier's primary parakeet model ready, and Silero VAD ready.
 import { describe, expect, test } from "bun:test";
-import { isOnDeviceReady, type OnDeviceSttStatus } from "./onDeviceStt";
+import { isOnDeviceReady, isOnDeviceStatusLoaded, type OnDeviceSttStatus } from "./onDeviceStt";
+import { onDeviceModelLine } from "./onDeviceSttStore";
 
 function status(patch: Partial<OnDeviceSttStatus> = {}): OnDeviceSttStatus {
   return {
@@ -59,8 +60,25 @@ describe("isOnDeviceReady", () => {
     expect(isOnDeviceReady(status({ engine: "none", models: [] }))).toBe(false);
   });
 
-  test("apple-speech path (if ever wired) is ready purely from appleSpeech, independent of the parakeet models", () => {
+  test("apple-speech path is ready purely from appleSpeech, independent of the parakeet models", () => {
     expect(isOnDeviceReady(status({ engine: "apple-speech", appleSpeech: "ready", models: [] }))).toBe(true);
     expect(isOnDeviceReady(status({ engine: "apple-speech", appleSpeech: "asset_missing", models: [] }))).toBe(false);
+  });
+
+  test("an iOS status is loaded with no models; Android is loaded only once it lists them", () => {
+    expect(isOnDeviceStatusLoaded(status({ engine: "apple-speech", appleSpeech: "asset_missing", models: [] }))).toBe(true);
+    expect(isOnDeviceStatusLoaded(status({ engine: "none", models: [] }))).toBe(false);
+  });
+});
+
+describe("a model the phone is still verifying after launch", () => {
+  const checking = status({
+    pack: "small",
+    models: [model("parakeet-tdt-110m-en-int8", "checking"), model("silero-vad", "checking")],
+  });
+
+  test("is not ready, and is described as being checked rather than as missing or downloading", () => {
+    expect(isOnDeviceReady(checking)).toBe(false);
+    expect(onDeviceModelLine(checking)).toEqual({ text: "Checking the downloaded model…", percent: null });
   });
 });

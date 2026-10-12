@@ -47,6 +47,9 @@
 .soft-skin .sn-player audio {
   width: 100%;
 }
+.soft-skin .sn-player button {
+  border-color: var(--gedge);
+}
 .soft-skin .sn-sec {
   display: flex;
   flex-direction: column;
@@ -69,7 +72,7 @@
 }
 .soft-skin .sn-editing {
   margin-left: 6px;
-  color: var(--red);
+  color: var(--red-text);
 }
 .soft-skin .sn-pill {
   position: relative;
@@ -112,7 +115,7 @@
 }
 .soft-skin .sn-alert {
   margin: 0;
-  color: var(--red);
+  color: var(--red-text);
   font-size: 13px;
   line-height: 1.4;
 }
@@ -134,7 +137,16 @@
   box-shadow: inset 0 0 0 1px var(--gedge);
 }
 .soft-skin .sn-edit .nt-writer {
+  min-height: 260px;
+}
+.soft-skin .sn-edit .nt-writer.nt-writer-autogrow {
+  min-height: 260px;
+}
+.soft-skin .sn-edit .nt-writer-autogrow .nt-wta {
+  flex: none;
   min-height: 220px;
+  max-height: 60vh;
+  overflow-y: auto;
 }
 .soft-skin .sn-read .fmd {
   font-size: 15px;

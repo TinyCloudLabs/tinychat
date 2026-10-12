@@ -17,9 +17,12 @@ import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import { initSizeClass } from "@/lib/sizeClass";
 import { applyTheme } from "@/lib/theme";
 import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { createFakeOnDeviceStt } from "@/lib/voiceNotes/fakeOnDeviceStt";
+import { __setOnDeviceSttForTests, type OnDeviceSttPlugin } from "@/lib/voiceNotes/onDeviceStt";
 import { createFakeVoiceNotes as createCaptureFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
 import type { HarnessScreen } from "./screen";
 import { captureScreens, captureSoftScreens } from "./screens/capture";
+import { capturePipelineScreens } from "./screens/capturePipeline";
 import { captureHomeDesktopScreens } from "./screens/captureHomeDesktop";
 import { captureSettingsScreens } from "./screens/captureSettings";
 import { legacyScreens } from "./screens/legacy";
@@ -27,6 +30,8 @@ import { libraryScreens } from "./screens/library";
 import { localScreens } from "./screens/local";
 import { meetingSourcesScreens } from "./screens/meetingSources";
 import { micRecoveryScreens } from "./screens/micRecovery";
+import { pipelineScreens } from "./screens/pipeline";
+import { pipelineWireScreens } from "./screens/pipelineWire";
 import { primitivesScreens } from "./screens/primitives";
 import { recorderScreens } from "./screens/recorder";
 import { recorderFinalDesktopScreens } from "./screens/recorderFinalDesktop";
@@ -63,6 +68,7 @@ const SCREENS: HarnessScreen[] = [
   ...recorderFinalPhoneInteractiveScreens,
   ...captureScreens,
   ...captureSoftScreens,
+  ...capturePipelineScreens,
   ...captureHomeDesktopScreens,
   ...captureSettingsScreens,
   ...libraryScreens,
@@ -70,6 +76,8 @@ const SCREENS: HarnessScreen[] = [
   ...localScreens,
   ...meetingSourcesScreens,
   ...micRecoveryScreens,
+  ...pipelineScreens,
+  ...pipelineWireScreens,
 ];
 const PLATFORMS: readonly AppPlatform[] = ["ios", "android", "tauri", "web"];
 
@@ -91,19 +99,41 @@ if (params.get("freeze") === "1") freezeClock();
 applyTheme(params.get("theme") === "dark" ? "dark" : "light", false);
 document.documentElement.dataset.platform = platform;
 initSizeClass();
+// A saved Local note follows its on-device transcription through this plugin; the browser has none, so a fake stands in on every platform.
+// Native `downloadNow` settles only when the download ends (the fake's returns at once with the models still queued), so
+// a screen that starts one keeps showing it downloading; no screen waits on the models becoming ready.
+const harnessOnDeviceStt = createFakeOnDeviceStt();
+__setOnDeviceSttForTests({
+  ...harnessOnDeviceStt.plugin,
+  downloadNow: async (options) => {
+    await harnessOnDeviceStt.plugin.downloadNow(options);
+    await new Promise<void>(() => {});
+  },
+} as OnDeviceSttPlugin);
 // The phone app records through its native plugin; here a fake stands in. A
 // fake App.getInfo() makes the build line resolve with the real native
 // segments (build number and bundle id), not just the web baseline (TC-840).
 if (platform === "ios" || platform === "android") {
   __setBuildInfoForTests({ version: "", build: "160", id: "xyz.tinycloud.exo.dev" });
   const fake = createCaptureFakeVoiceNotes();
-  if (params.get("screen")?.startsWith("recorder-")) {
+  if (params.get("screen")?.startsWith("recorder-") || params.get("screen")?.startsWith("pipeline-wire-")) {
     fake.controls.commitLegacy({
       id: "rec-1", startedAt: FROZEN_NOW - 42_000, durationMs: 42_000,
       mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
     });
   }
   __setVoiceNotesForTests(fake.plugin, { available: true });
+  if (params.get("screen")?.startsWith("shell-chat-ribbon-minimized-from-chat")) {
+    // The interaction opens the real recorder surface before minimising it;
+    // keep its local-model probe hermetic in the browser harness.
+    __setOnDeviceSttForTests({
+      status: async () => ({
+        models: [], pack: "small", autoDownload: false,
+        download: { policy: "wifi", state: "idle" }, engine: "none", appleSpeech: "unsupported", queue: [],
+      }),
+      addListener: async () => ({ remove: async () => {} }),
+    } as unknown as OnDeviceSttPlugin);
+  }
 }
 
 window.exoUi = {

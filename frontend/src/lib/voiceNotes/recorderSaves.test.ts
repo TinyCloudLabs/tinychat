@@ -19,6 +19,112 @@ mock.module("./voiceNoteStore", () => ({
 afterAll(() => mock.module("./voiceNoteStore", () => realStore));
 const saves = await import("./recorderSaves");
 
+describe("voice-note network error copy", () => {
+  test.each([
+    "Load failed",
+    "The network connection was lost.",
+    "Failed to fetch",
+    "saveVoiceNote(audio): audioStore put part 0 failed: NETWORK_ERROR: Failed to fetch",
+    "Fetch API cannot load https://space.example/path?token=do-not-log due to access control checks.",
+  ])("maps WebKit network failures to actionable copy (%s)", (raw) => {
+    const original = console.warn;
+    const logged: unknown[][] = [];
+    console.warn = (...args: unknown[]) => { logged.push(args); };
+    try {
+      expect(saves.messageOf(new TypeError(raw))).toBe(
+        "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
+      );
+      const output = logged.map((args) => args.join(" ")).join(" ");
+      expect(output).toContain(raw.startsWith("Fetch") ? "<url>" : raw);
+      expect(output).not.toContain("do-not-log");
+      expect(output).not.toContain("https://space.example");
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test("log redaction removes bearer tokens instead of leaving them after the scheme", () => {
+    const original = console.warn;
+    const logged: unknown[][] = [];
+    console.warn = (...args: unknown[]) => { logged.push(args); };
+    try {
+      saves.logVoiceNoteError("reconcile failed", new Error("authorization: Bearer private-token"));
+      expect(logged).toHaveLength(1);
+      expect(logged[0]).toHaveLength(1);
+      expect(String(logged[0]?.[0])).toContain("authorization: <redacted>");
+      expect(String(logged[0]?.[0])).not.toContain("private-token");
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test("does not map SDK NETWORK_ERROR codes for HTTP or SQL server failures", () => {
+    expect(saves.messageOf(Object.assign(new Error("Failed to list keys: 403 - capability denied"),
+      { code: "NETWORK_ERROR" }))).toBe("Failed to list keys: 403 - capability denied");
+    expect(saves.messageOf(Object.assign(new Error("Failed to execute query: 500 - internal error"),
+      { code: "NETWORK_ERROR" }))).toBe("Failed to execute query: 500 - internal error");
+  });
+
+  test("redacts quoted JSON credential keys and logs non-network error codes", () => {
+    const original = console.warn;
+    const logged: unknown[][] = [];
+    console.warn = (...args: unknown[]) => { logged.push(args); };
+    try {
+      saves.logVoiceNoteError("reconcile failed", Object.assign(
+        new Error('{"token":"secret-token","authorization":"Bearer private-bearer"}'),
+        { code: "discard_migration_failed" },
+      ));
+      const output = logged.map((args) => args.join(" ")).join(" ");
+      expect(output).toContain("code=discard_migration_failed");
+      expect(output).toContain('"token":"<redacted>"');
+      expect(output).toContain('"authorization":"<redacted>"');
+      expect(output).not.toContain("secret-token");
+      expect(output).not.toContain("private-bearer");
+    } finally {
+      console.warn = original;
+    }
+  });
+});
+
+describe("pipeline save signals", () => {
+  test.each([
+    [{ code: "NETWORK_ERROR", message: "connection refused" }, "offline"],
+    [{ code: "SPACE_LANE_QUEUE_TIMEOUT", message: "waited" }, "timeout"],
+    [{ name: "VoiceNoteSaveTimeout", message: "waited" }, "timeout"],
+    [{ code: "STORAGE_QUOTA_EXCEEDED", message: "full" }, "quota"],
+    [{ code: "VOICE_NOTE_SOURCE_READ_FAILED", message: "source unavailable" }, "source"],
+    [{ code: "VOICE_NOTE_AUDIO_TOO_LARGE", message: "too large" }, "source"],
+    [{ code: "STORE_CORRUPT_AUDIO", message: "corrupt" }, "source"],
+    [{ code: "AUTH_UNAUTHORIZED", message: "denied", meta: { status: 403 } }, "auth"],
+    [{ code: "NETWORK_ERROR", message: "Failed to execute query: 403 - capability denied" }, "auth"],
+    [{ code: "SQL_ERROR", message: "error", meta: { status: 503 } }, "server"],
+    [{ code: "NETWORK_ERROR", message: "Failed to execute query: 500 - internal error" }, "server"],
+    [{ code: "UNKNOWN", message: "unusual issue" }, "other"],
+  ] as const)("classifies %j once with a useful kind", (error, kind) => {
+    expect(saves.classifyNoteFailure(error)).toBe(kind);
+  });
+
+  test("online state and held reasons publish on the pending snapshot", () => {
+    phone.pending = [recording("held-note", 1)];
+    saves.pendingStore.setAccount(tcw.did);
+    return saves.pendingStore.refresh(null).then(() => {
+      saves.pendingStore.setHeld("held-note", "other-account");
+      expect(saves.pendingStore.snapshot().notes?.[0]?.held).toBe("other-account");
+      saves.pendingStore.setAccount(null);
+      return saves.pendingStore.refresh(null).then(() => {
+        expect(saves.pendingStore.snapshot().notes?.[0]?.held).toBe("signed-out");
+      });
+    });
+  });
+
+  test("online state is a snapshot signal", () => {
+    saves.pendingStore.setOnline(false);
+    expect(saves.pendingStore.snapshot().online).toBe(false);
+    saves.pendingStore.setOnline(true);
+    expect(saves.pendingStore.snapshot().online).toBe(true);
+  });
+});
+
 /** A fresh copy of the module, as after a WebView reload: its in-memory guards and store are new. */
 let instances = 0;
 const reloaded = () => import(`./recorderSaves.ts?reload=${++instances}`) as Promise<typeof saves>;
@@ -102,6 +208,21 @@ afterEach(() => {
 });
 
 describe("savePendingRecordings", () => {
+  test("starting Save now clears the old failure and failed-row marker", async () => {
+    phone.pending = [recording("retrying", 1)];
+    await saves.pendingStore.refresh(null);
+    saves.pendingStore.reportNoteFailure("retrying", "Load failed");
+    expect(saves.pendingStore.snapshot()).toMatchObject({
+      lastError: "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
+      notes: [{ id: "retrying", failed: { kind: "offline", message: "Couldn't reach your TinyCloud space. This note is still on your phone — try again." } }],
+    });
+    const finish = saves.pendingStore.beginManualSave();
+    try {
+      expect(saves.pendingStore.snapshot()).toMatchObject({ running: true, lastError: null, notes: [{ id: "retrying" }] });
+      expect(saves.pendingStore.snapshot().notes?.[0]?.failed).toBeUndefined();
+    } finally { finish(); }
+  });
+
   test("a manual owner-aware save keeps the shared saving and idle state until it settles", async () => {
     const finish = saves.pendingStore.beginManualSave();
     expect(saves.pendingStore.snapshot().running).toBe(true);
@@ -141,11 +262,11 @@ describe("savePendingRecordings", () => {
     const run = await saves.savePendingRecordings(tcw);
     expect(run.saved).toEqual([]);
     expect(run.left.map((r) => r.id)).toEqual(["a", "b"]);
-    expect(run.lastError).toBe("The network connection was lost.");
+    expect(run.lastError).toBe("Couldn't reach your TinyCloud space. This note is still on your phone — try again.");
     expect(saves.pendingStore.snapshot()).toMatchObject({
       listing: { state: "ok", count: 2 },
       running: false,
-      lastError: "The network connection was lost.",
+      lastError: "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
     });
   });
 
@@ -184,7 +305,8 @@ describe("saveRecording", () => {
     await Promise.resolve();
     expect(idle).toBe(false);
     finish();
-    expect(await saving).toEqual({ kind: "failed", failure: "The network connection was lost." });
+    expect(await saving).toMatchObject({ kind: "failed", failure: "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
+      failureKind: "offline", failureCause: { code: "NETWORK", message: "The network connection was lost." } });
     await waiting;
     expect(idle).toBe(true);
     expect(saves.voiceNoteSaveBusy()).toBe(false);
@@ -284,6 +406,9 @@ describe("after a reload", () => {
       accountDid: null,
       running: false,
       lastError: null,
+      notes: undefined,
+      uploadingId: null,
+      online: true,
     });
     expect(cold.pendingCount(cold.pendingStore.snapshot())).toBe(0);
   });
@@ -300,6 +425,32 @@ describe("pendingStore", () => {
     saves.pendingStore.setAccount(null);
     await saves.pendingStore.refresh(null);
     expect(saves.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 3 });
+  });
+  test("a discard that went through is remembered as discarded after its marker is retired; one that failed is not", async () => {
+    saves.markDiscarded("gone");
+    expect(saves.wasDiscarded("gone")).toBe(true);
+    expect(await saves.deleteDiscarded("gone")).toBeNull();
+    expect(saves.isDiscarded("gone")).toBe(false);
+    expect(saves.wasDiscarded("gone")).toBe(true);
+    saves.markDiscarded("stays");
+    saves.unmarkDiscarded("stays");
+    expect(saves.isDiscarded("stays")).toBe(false);
+    expect(saves.wasDiscarded("stays")).toBe(false);
+  });
+  test("the notes the Library lists are this account's and unowned ones, not a discarded one, and absent when the listing failed", async () => {
+    phone.pending = [{ ...recording("alice-note", 1), owner: tcw.did }, { ...recording("bob-note", 2), owner: "did:example:bob" },
+      { ...recording("unowned", 3), owner: null, ownerUnknown: true }, { ...recording("tossed", 4), owner: "did:example:bob" }];
+    saves.markDiscarded("tossed");
+    saves.pendingStore.setAccount("did:example:bob");
+    expect(saves.pendingStore.snapshot().notes).toBeUndefined();
+    await saves.pendingStore.refresh(null);
+    expect(saves.pendingStore.snapshot().notes).toEqual([
+      { id: "bob-note", startedAt: 2, durationMs: 1000 }, { id: "unowned", startedAt: 3, durationMs: 1000 }]);
+    __setVoiceNotesForTests({ ...plugin, listPending: async () => Promise.reject(new Error("no bridge")) } as VoiceNotesPlugin, { available: true });
+    await saves.pendingStore.refresh(null);
+    expect(saves.pendingStore.snapshot()).toMatchObject({ listing: { state: "error" }, notes: undefined });
+    saves.pendingStore.setAccount(null);
+    saves.clearDiscarded("tossed");
   });
   test("A's late save result, failed or finished, never replaces or clears B's pending state", async () => {
     phone.pending = [{ ...recording("bob-note", 1), owner: "did:example:bob" }];

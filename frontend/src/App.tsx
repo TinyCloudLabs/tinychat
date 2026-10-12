@@ -116,7 +116,7 @@ import { RecordingOverlay } from "./capture/recorder/RecordingOverlay";
 import { handoffBeforeCredentialClear, withCaptureDeadline } from "./lib/voiceNotes/accountHandoff";
 import { createVoiceNotePipeline } from "./lib/voiceNotes/voiceNotePipeline";
 import { nextTransitionGen } from "./lib/voiceNotes/accountHandoff";
-import { effectiveCaptureOptions, readTranscriberPreference } from "./lib/voiceNotes/transcriberPreference";
+import { writeAccountDefaults } from "./lib/voiceNotes/transcriberPreference";
 import { advanceAccountGeneration } from "./lib/voiceNotes/accountContext";
 import { GmeetSessionSync } from "./chat/useGmeetSessionSync";
 import type {
@@ -124,11 +124,12 @@ import type {
   SelectionView,
 } from "./chat/modelSelection";
 import { clearAgentSessionCache } from "./lib/agentDelegation";
+import { isSignInCancelled } from "./lib/authErrors";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import { clearSessionAfterHandoff, registerSessionSignedOutHook } from "./lib/sessionSignedOut";
 import {
-  isNativeOpenKeySession, isNativeOpenKeySignIn, isNativeStorageError, logNativeOpenKeyError,
-  nativeSessionWasActive, restoreNativeAtBoot, nativeRenewalServices, secretsAvailable,
+  describeAuthFailure, isNativeOpenKeySession, isNativeOpenKeySignIn, isNativeStorageError, logNativeOpenKeyError,
+  restoreNativeAtBoot, nativeRenewalServices, secretsAvailable,
   setNativeSessionActive, signInNative, signOutNative,
   type NativeSignInConfig,
   NATIVE_SIGN_OUT_WARNING, NATIVE_SIGN_OUT_STORAGE_WARNING,
@@ -146,9 +147,10 @@ import { BootSurface } from "./shell/BootSurface";
 // AppState and stateLabel live in lib/appState; re-exported for imports from App.
 export { stateLabel, type AppState } from "./lib/appState";
 
+const OPENKEY_SIGN_OUT_UNPROVEN_NOTE = "Signed out of Exo. To use a different account, also sign out at openkey.so.";
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const LOCAL_VALIDATION = resolveLocalValidation(import.meta.env, globalThis.location?.hostname);
-const APP_NAME = "TinyCloud Chat";
+const APP_NAME = "Exo";
 const BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL ||
   `${globalThis.location?.protocol ?? "http:"}//localhost:3014`;
@@ -264,10 +266,7 @@ export function App() {
   const restoreCaptureAfterAuthAbort = useCallback(async () => {
     if (!did || !tcw || !captureEngineAvailable()) return;
     try {
-      const current = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
-      const transitionGen = nextTransitionGen(current.transitionGen);
-      await withCaptureDeadline(VoiceNotes.setCaptureDefaults({ ...current, ...effectiveCaptureOptions(readTranscriberPreference(), true),
-        accountDid: did, transitionGen }));
+      await withCaptureDeadline(writeAccountDefaults((current) => ({ accountDid: did, transitionGen: nextTransitionGen(current.transitionGen) })));
       if (voiceNotePipeline && tcw.spaceId) {
         voiceNotePipeline.resume();
         const generation = advanceAccountGeneration();
@@ -425,8 +424,10 @@ export function App() {
     setError(null);
     setState("booting");
     try {
-      if (isNativeOpenKeySignIn() || nativeSessionWasActive()) {
-        const wasNative = nativeSessionWasActive();
+      if (isNativeOpenKeySignIn()) {
+        // iOS/Android take only the native restore path. There is no widget
+        // fallback here: a persisted widget session from a pre-native-only
+        // build is a one-time cleanup below, not something to restore.
         const boot = await restoreNativeAtBoot(nativeConfig,
           sessionStoreRef.current.hasSession() && !sessionStoreRef.current.isExpired());
         if (boot.kind === "restored") {
@@ -446,41 +447,38 @@ export function App() {
           setState("recoverableError");
           return;
         }
-        if (boot.kind === "configuration") {
-          if (wasNative) {
-            setError("Native sign-in is not configured in this build.");
-            setState("recoverableError");
-            return;
-          }
-          // A legacy widget session can still be restored by the browser path.
-        }
         if (boot.kind === "unavailable") {
           setError("Can't reach Exo right now. You're still signed in.");
           setState("offline");
           return;
         }
-        if (boot.kind === "terminal" || wasNative) {
-          if (!await captureHandoff()) { setState("recoverableError"); return; }
-          const storedAddress = sessionStoreRef.current.getAddress();
-          if (storedAddress) clearPersistedSession(storedAddress);
-          if (boot.kind === "terminal") {
-            try {
-              await boot.revoke();
-            } catch (caught) {
-              logNativeOpenKeyError("boot sign-out revoke", caught);
-              if (isNativeStorageError(caught)) {
-                setError(NATIVE_STORAGE_MESSAGE);
-                setState("recoverableError");
-                return;
-              }
-            }
-          }
-          sessionStoreRef.current.clear();
-          setNativeSessionActive(false);
-          if (boot.kind === "terminal") setError(NATIVE_SESSION_ENDED_MESSAGE);
-          setState("unauthenticated");
+        if (boot.kind === "configuration") {
+          setError("Native sign-in is not configured in this build.");
+          setState("recoverableError");
           return;
         }
+        // "none" or "terminal": no native session to restore. Clear any
+        // persisted widget session once; the user signs in again natively.
+        if (!await captureHandoff()) { setState("recoverableError"); return; }
+        const storedAddress = sessionStoreRef.current.getAddress();
+        if (storedAddress) clearPersistedSession(storedAddress);
+        if (boot.kind === "terminal") {
+          try {
+            await boot.revoke();
+          } catch (caught) {
+            logNativeOpenKeyError("boot sign-out revoke", caught);
+            if (isNativeStorageError(caught)) {
+              setError(NATIVE_STORAGE_MESSAGE);
+              setState("recoverableError");
+              return;
+            }
+          }
+        }
+        sessionStoreRef.current.clear();
+        setNativeSessionActive(false);
+        if (boot.kind === "terminal") setError(NATIVE_SESSION_ENDED_MESSAGE);
+        setState("unauthenticated");
+        return;
       }
       const restored = await restorePersistedSession(sessionStoreRef.current, {
         beforeClear: async () => {
@@ -534,7 +532,7 @@ export function App() {
           return;
       }
     } catch (caught) {
-      setError(errorMessage(caught));
+      setError(describeAuthFailure(caught));
       setState("recoverableError");
     } finally {
       restoreInFlightRef.current = false;
@@ -855,7 +853,12 @@ export function App() {
       setState("ready");
       void ensureTranscriptWriterDelegation({ tcw: signedTcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
     } catch (caught) {
-      setError(errorMessage(caught));
+      if (isSignInCancelled(caught)) {
+        setError(null);
+        setState("unauthenticated");
+        return;
+      }
+      setError(describeAuthFailure(caught));
       setState("recoverableError");
     }
   }, []);
@@ -903,35 +906,22 @@ export function App() {
           openKeyWarning = NATIVE_SIGN_OUT_WARNING;
         }
       } else if (!nativeSession && !options.terminal) {
-        let openKeyOutcome: Awaited<ReturnType<typeof signOutOpenKeySession>>;
         const openKeyClient = openkeyRef.current ?? new OpenKey({ appName: APP_NAME, host: OPENKEY_HOST,
           passkeysSupported: openkeyPasskeysSupported() });
-        try {
-          const pendingSignOut = signOutOpenKeySession(openKeyClient, () => openKeyClient);
-          openKeyOutcome = captureEngineAvailable()
-            ? await withCaptureDeadline(pendingSignOut)
-            : await pendingSignOut;
-        } catch {
-          openKeyClient.disconnect();
-          openKeyOutcome = { status: "unverified", reason: "timed out" };
-        }
+        // The user answers OpenKey's own confirmation here, so no deadline runs.
+        // signOutOpenKeySession reports every failure as an outcome rather than throwing.
+        const openKeyOutcome = await signOutOpenKeySession(openKeyClient, () => openKeyClient);
         // OpenKey clears this client's local auth before showing its widget, even
         // when the user cancels. Never retain that spent client for another flow.
         openkeyRef.current = null;
 
         if (openKeyOutcome.status === "cancelled") {
           openKeyWarning =
-            "OpenKey stayed signed in on this device. TinyChat is signed out locally. " +
+            "OpenKey stayed signed in on this device. Exo is signed out locally. " +
             "Sign out at openkey.so before choosing another account.";
-        } else if (openKeyOutcome.status === "remote-unavailable") {
-          openKeyWarning =
-            "Remote OpenKey sign-out is unavailable in this app right now. TinyChat is signed out locally. " +
-            "Sign out at openkey.so before choosing another account.";
-        } else if (openKeyOutcome.status === "unverified") {
-          const detail = openKeyOutcome.reason ? ` (${openKeyOutcome.reason})` : "";
-          openKeyWarning =
-            `OpenKey sign-out could not be verified${detail}. TinyChat is signed out locally. ` +
-            "Sign out at openkey.so before choosing another account.";
+        } else if (openKeyOutcome.status === "unverified" || openKeyOutcome.status === "remote-unavailable") {
+          // Revocation could not be proved (no verified answer, no sheet, or an error): a calm note, not an alarm.
+          openKeyWarning = OPENKEY_SIGN_OUT_UNPROVEN_NOTE;
         }
       }
 
@@ -1093,6 +1083,7 @@ export function App() {
       pipeline={voiceNotePipeline}
       signedOut={state === "unauthenticated" && !sessionStoreRef.current.hasSession()}
       onSignedOut={captureHandoff}
+      onSignIn={authAction}
     >
     <div
       className="flex flex-col bg-background text-foreground"

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { Children, isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Button } from "@/components/ui/button";
+import { WEBVIEW_UPDATE_LINK, WEBVIEW_UPDATE_MESSAGE } from "../lib/authErrors";
 import { NATIVE_SESSION_ENDED_MESSAGE } from "../lib/openkeyNativeRenewal";
 import { BootSurface } from "./BootSurface";
 
@@ -44,16 +45,20 @@ test("live terminal renewal shows the session-ended message with working Sign in
 });
 
 test("terminal boot restore shows the session-ended message with working Sign in", () => {
-  const terminal = app.slice(app.indexOf('if (boot.kind === "terminal" || wasNative)'),
+  // iOS/Android take only the native restore path (no "wasNative" OR — the
+  // flag is gone, and there is no widget session to weigh against). "none"
+  // and "terminal" share the same unconditional cleanup, reached only once
+  // restored/storage/unavailable/configuration have all returned.
+  const cleanup = app.slice(app.indexOf('if (boot.kind === "configuration")'),
     app.indexOf("const restored = await restorePersistedSession"));
-  const beforeClear = app.slice(app.indexOf('if (boot.kind === "terminal" || wasNative)'),
-    app.indexOf("sessionStoreRef.current.clear()", app.indexOf('if (boot.kind === "terminal" || wasNative)')));
+  const beforeClear = app.slice(app.indexOf('if (boot.kind === "configuration")'),
+    app.indexOf("sessionStoreRef.current.clear()", app.indexOf('if (boot.kind === "configuration")')));
   expect(beforeClear).toContain("await captureHandoff()");
   expect(beforeClear.indexOf("await captureHandoff()")).toBeLessThan(beforeClear.indexOf("await boot.revoke()"));
   expect(beforeClear).toContain('if (!await captureHandoff()) { setState("recoverableError"); return; }');
   expect(beforeClear.indexOf("await captureHandoff()")).toBeLessThan(beforeClear.indexOf("clearPersistedSession(storedAddress)"));
-  expect(terminal).toContain('if (boot.kind === "terminal") setError(NATIVE_SESSION_ENDED_MESSAGE)');
-  expect(terminal).toContain('setState("unauthenticated")');
+  expect(cleanup).toContain('if (boot.kind === "terminal") setError(NATIVE_SESSION_ENDED_MESSAGE)');
+  expect(cleanup).toContain('setState("unauthenticated")');
   expect(app).toMatch(/const signIn = useCallback\(async \(\) => \{\s+setError\(null\);/);
   expect(app).toContain('const authAction = state === "offline" ? restoreSession : signIn;');
   signedOutSurface(NATIVE_SESSION_ENDED_MESSAGE);
@@ -61,7 +66,7 @@ test("terminal boot restore shows the session-ended message with working Sign in
 
 test("native restore never hands capture off for a live, offline, or recoverable session", () => {
   const boot = app.slice(app.indexOf("const boot = await restoreNativeAtBoot"),
-    app.indexOf('if (boot.kind === "terminal" || wasNative)'));
+    app.indexOf('if (boot.kind === "configuration")'));
   expect(boot).toContain('boot.kind === "restored"');
   expect(boot).toContain('boot.kind === "unavailable"');
   expect(boot).toContain('setState("offline")');
@@ -71,5 +76,33 @@ test("native restore never hands capture off for a live, offline, or recoverable
 
 test("ordinary signed-out screen keeps its default message", () => {
   const markup = renderToStaticMarkup(<BootSurface state="unauthenticated" error={null} onAction={() => {}} />);
-  expect(markup).toContain("Sign in to start chatting.");
+  expect(markup).toContain("Sign in to continue.");
+  expect(markup).toContain("<h1");
+  expect(markup).toContain(">Exo</h1>");
+  expect(markup).not.toContain("TinyCloud Chat");
+});
+
+test("a failed sign-in or a local sign-out offers Sign in, never Try again", () => {
+  for (const error of ["Couldn't sign in. Please try again.", "OpenKey stayed signed in on this device. Exo is signed out locally.", "Signed out of Exo. To use a different account, also sign out at openkey.so."]) {
+    const markup = renderToStaticMarkup(<BootSurface state="recoverableError" error={error} onAction={() => {}} />);
+    expect(markup).toContain(">Sign in</button>");
+    expect(markup).not.toContain("Try again</button>");
+  }
+});
+
+test("an offline restore still says Try again", () => {
+  const markup = renderToStaticMarkup(<BootSurface state="offline" error={null} onAction={() => {}} />);
+  expect(markup).toContain(">Try again</button>");
+});
+
+test("the old WebView message carries a link to update it", () => {
+  const markup = renderToStaticMarkup(<BootSurface state="recoverableError" error={WEBVIEW_UPDATE_MESSAGE} onAction={() => {}} />);
+  expect(markup).toContain(WEBVIEW_UPDATE_MESSAGE);
+  expect(markup).toContain(`href="${WEBVIEW_UPDATE_LINK.href}"`);
+  expect(markup).toContain(WEBVIEW_UPDATE_LINK.label);
+});
+
+test("an ordinary error shows no link", () => {
+  const markup = renderToStaticMarkup(<BootSurface state="recoverableError" error="Couldn't sign in. Please try again." onAction={() => {}} />);
+  expect(markup).not.toContain("<a ");
 });

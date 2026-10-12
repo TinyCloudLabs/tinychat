@@ -11,8 +11,11 @@ import {
   type CaptureCapabilities, type CaptureEngine, type CaptureEngineKind,
 } from "@/lib/voiceNotes/captureEngine";
 import { VoiceNotes, __setVoiceNotesForTests, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { OnDeviceStt, __setOnDeviceSttForTests, type OnDeviceSttPlugin } from "@/lib/voiceNotes/onDeviceStt";
-import { PendingVoiceNotesSaver } from "@/chat/PendingVoiceNotesSaver";
+import { OnDeviceStt, __setOnDeviceSttForTests, type OnDeviceSttPlugin, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
+import { __resetOnDeviceSttStoreForTests, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
+import { advanceAccountGeneration } from "@/lib/voiceNotes/accountContext";
+import { PendingVoiceNotesSaver, schedulePendingVoiceNotesRecovery } from "@/chat/PendingVoiceNotesSaver";
+import { VoiceNoteSaveDeferred } from "@/lib/voiceNotes/voiceNotePipeline";
 import { CaptureEngineGate } from "./CaptureEngineGate";
 import { useOnDeviceReceipt } from "./SavedReceipt";
 import { RecorderProvider, useRecorder, type RecorderValue } from "./RecorderProvider";
@@ -56,14 +59,31 @@ function strictEngine(capabilities: CaptureCapabilities) {
   return { engine, calls, violations, fake };
 }
 
-function strictOnDeviceStt(supported: boolean) {
+/** What the native plugin reports: a model entry per model even when absent, so "not downloaded" differs from "not read yet". */
+function sttStatus(model: "ready" | "absent"): OnDeviceSttStatus {
+  return {
+    models: ["parakeet-tdt-0.6b-v3-int8", "silero-vad"].map((id) => ({ id, state: model, bytes: 0, totalBytes: 1, error: null })) as OnDeviceSttStatus["models"],
+    pack: "full", autoDownload: false, download: { policy: "wifi", state: "idle" }, engine: "parakeet", appleSpeech: "unsupported", queue: [],
+  };
+}
+const EMPTY_STT: OnDeviceSttStatus = { models: [], pack: "full", autoDownload: false, download: { policy: "wifi", state: "idle" }, engine: "none", appleSpeech: "unsupported", queue: [] };
+
+function strictOnDeviceStt(supported: boolean, model: "ready" | "absent" = "ready") {
   const calls: string[] = [];
-  const plugin = new Proxy({}, { get: (_t, property: string) => () => {
+  const listeners = new Map<string, Set<(event: unknown) => void>>();
+  const plugin = new Proxy({}, { get: (_t, property: string) => (...args: unknown[]) => {
     calls.push(property);
     if (!supported) throw new Error(`${property} is unsupported`);
-    return Promise.resolve({ remove: async () => {} });
+    if (property === "addListener") {
+      const [event, callback] = args as [string, (event: unknown) => void];
+      if (!listeners.has(event)) listeners.set(event, new Set());
+      listeners.get(event)!.add(callback);
+      return Promise.resolve({ remove: async () => { listeners.get(event)?.delete(callback); } });
+    }
+    return Promise.resolve(property === "status" ? sttStatus(model) : {});
   } });
-  return { plugin: plugin as unknown as OnDeviceSttPlugin, calls };
+  return { plugin: plugin as unknown as OnDeviceSttPlugin, calls,
+    emit: (event: string, payload: unknown) => { for (const listener of [...(listeners.get(event) ?? [])]) listener(payload); } };
 }
 
 // A DOM that accepts everything React asks of it and keeps nothing.
@@ -79,6 +99,7 @@ const saved = {
   window: global.window, act: global.IS_REACT_ACT_ENVIRONMENT,
   MediaRecorder: global.MediaRecorder, voiceNotes: VoiceNotes, onDevice: OnDeviceStt,
   mediaDevices: Object.getOwnPropertyDescriptor(navigator, "mediaDevices"),
+  online: Object.getOwnPropertyDescriptor(navigator, "onLine"),
   storage: global.localStorage,
 };
 beforeAll(() => {
@@ -101,26 +122,36 @@ beforeEach(() => { value = null; __resetCaptureEngineForTests(); });
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = null;
+  // The model store is shared by every file in the run: leave it on its empty snapshot.
+  __setOnDeviceSttForTests({ status: async () => EMPTY_STT } as unknown as OnDeviceSttPlugin);
+  await onDeviceSttStore.refresh();
+  __resetOnDeviceSttStoreForTests();
   __resetCaptureEngineForTests();
   global.window = saved.window;
   if (saved.MediaRecorder === undefined) delete global.MediaRecorder; else global.MediaRecorder = saved.MediaRecorder;
   if (saved.mediaDevices) Object.defineProperty(navigator, "mediaDevices", saved.mediaDevices); else delete (navigator as unknown as Record<string, unknown>).mediaDevices;
+  if (saved.online) Object.defineProperty(navigator, "onLine", saved.online); else delete (navigator as unknown as Record<string, unknown>).onLine;
   __setVoiceNotesForTests(saved.voiceNotes, { available: null });
   __setOnDeviceSttForTests(saved.onDevice);
 });
 
-async function mount(kind: CaptureEngineKind, capabilities: CaptureCapabilities) {
-  return mountWith(kind, capabilities);
+async function mount(kind: CaptureEngineKind, capabilities: CaptureCapabilities, model: "ready" | "absent" = "ready") {
+  return mountWith(kind, capabilities, undefined, model);
 }
 
-async function mountWith(kind: CaptureEngineKind, capabilities: CaptureCapabilities, prepare?: (plugin: VoiceNotesPlugin) => void) {
-  const stt = strictOnDeviceStt(kind === "native");
+async function mountWith(kind: CaptureEngineKind, capabilities: CaptureCapabilities, prepare?: (plugin: VoiceNotesPlugin) => void,
+  model: "ready" | "absent" = "ready", recovery?: { listeners: Map<string, () => void>; pipeline: { resume(): void; cancelAll(): void; isAccepting?(): boolean; reconcileAll(): Promise<void> } }) {
+  const stt = strictOnDeviceStt(kind === "native", model);
   __setOnDeviceSttForTests(stt.plugin);
   const strict = strictEngine(capabilities);
   prepare?.(strict.fake.plugin);
   if (kind === "native") {
-    global.window = windowStub();
+    global.window = windowStub(recovery ? {
+      addEventListener: (name: string, listener: () => void) => recovery.listeners.set(name, listener),
+      removeEventListener: (name: string) => recovery.listeners.delete(name),
+    } : {});
     __setVoiceNotesForTests(strict.engine, { available: true });
+    await onDeviceSttStore.refresh();
   } else {
     __setVoiceNotesForTests(saved.voiceNotes, { available: false });
     global.window = windowStub(kind === "tauri" ? { __TAURI_INTERNALS__: {} } : {});
@@ -129,18 +160,195 @@ async function mountWith(kind: CaptureEngineKind, capabilities: CaptureCapabilit
     registerCaptureEngine(kind, async () => strict.engine);
     await installCaptureEngine();
   }
-  const tcw = { did: "did:example:alice" } as TinyCloudWeb;
+  const tcw = { did: "did:example:alice", spaceId: "space:alice" } as TinyCloudWeb;
   root = createRoot({ nodeType: 1, nodeName: "DIV", tagName: "DIV", ownerDocument: documentStub, textContent: "", addEventListener() {}, removeEventListener() {},
     appendChild() {}, removeChild() {}, insertBefore() {} } as unknown as HTMLElement);
   await act(async () => root!.render(
     <RecorderProvider tcw={tcw} enabled>
       <Probe />
-      <PendingVoiceNotesSaver tcw={tcw} pipeline={{ resume() {}, cancelAll() {}, reconcileAll: async () => {} } as never} backendUrl="" sessionStore={{} as never} />
+      <PendingVoiceNotesSaver tcw={tcw} pipeline={(recovery?.pipeline ?? { resume() {}, cancelAll() {}, reconcileAll: async () => {} }) as never} backendUrl="" sessionStore={{} as never} />
     </RecorderProvider>,
   ));
   await act(async () => { await tick(); await tick(); });
   return { ...strict, stt };
 }
+
+test("pending saver retries reconciliation when the device comes online", async () => {
+  const listeners = new Map<string, () => void>();
+  let reconciles = 0;
+  const pipeline = { resume() {}, cancelAll() {}, reconcileAll: async () => { reconciles++; } };
+  await mountWith("native", ALL, undefined, "ready", { listeners, pipeline });
+  expect(reconciles).toBe(1);
+  await act(async () => { listeners.get("offline")?.(); });
+  expect((await import("@/lib/voiceNotes/recorderSaves")).pendingStore.snapshot().online).toBe(false);
+  await act(async () => { listeners.get("online")?.(); await tick(); });
+  expect(reconciles).toBe(2);
+  expect((await import("@/lib/voiceNotes/recorderSaves")).pendingStore.snapshot().online).toBe(true);
+});
+
+test("pending saver reads the current navigator online state on mount", async () => {
+  Object.defineProperty(navigator, "onLine", { configurable: true, value: false });
+  const listeners = new Map<string, () => void>();
+  const pipeline = { resume() {}, cancelAll() {}, reconcileAll: async () => {} };
+  await mountWith("native", ALL, undefined, "ready", { listeners, pipeline });
+  expect((await import("@/lib/voiceNotes/recorderSaves")).pendingStore.snapshot().online).toBe(false);
+});
+
+test("a transcribed event captures the current generation after a same-account generation bump", async () => {
+  const did = "did:example:alice";
+  let reads = 0;
+  const { stt } = await mountWith("native", ALL, (plugin) => {
+    Object.assign(plugin, {
+      listPending: async () => ({ recordings: [{ id: "local-note", owner: did,
+        ledger: { audio: { state: "saved" } }, stt: { state: "done" } }] }),
+      getTranscript: async () => { reads++; return { transcript: null }; },
+    });
+  });
+
+  // App can advance this during a cancelled/failed sign-out without remounting the saver.
+  advanceAccountGeneration();
+  await act(async () => { stt.emit("transcribed", { id: "local-note" }); await tick(); await tick(); });
+  expect(reads).toBe(1);
+});
+
+test("a transcribed event whose pending read crosses a generation bump does not start sync", async () => {
+  const did = "did:example:alice";
+  let finishList!: (result: { recordings: { id: string; owner: string; ledger: { audio: { state: string } }; stt: { state: string } }[] }) => void;
+  let listStarted!: () => void;
+  const started = new Promise<void>((resolve) => { listStarted = resolve; });
+  let transcriptReads = 0;
+  const { stt } = await mountWith("native", ALL, (plugin) => {
+    Object.assign(plugin, {
+      listPending: () => { listStarted(); return new Promise((resolve) => { finishList = resolve; }); },
+      getTranscript: async () => { transcriptReads++; return { transcript: null }; },
+    });
+  });
+
+  await act(async () => { stt.emit("transcribed", { id: "local-note" }); });
+  await started;
+  advanceAccountGeneration();
+  finishList({ recordings: [{ id: "local-note", owner: did, ledger: { audio: { state: "saved" } }, stt: { state: "done" } }] });
+  await act(async () => { await tick(); await tick(); });
+  expect(transcriptReads).toBe(0);
+});
+
+test("a transcribed event after sign-out pauses the pipeline does no phone read or write", async () => {
+  const did = "did:example:alice";
+  let phoneReads = 0;
+  let transcriptReads = 0;
+  let writes = 0;
+  let accepting = true;
+  const pipeline = {
+    resume() { accepting = true; },
+    cancelAll() { accepting = false; },
+    isAccepting() { return accepting; },
+    reconcileAll: async () => {},
+  };
+  const { stt } = await mountWith("native", ALL, (plugin) => {
+    Object.assign(plugin, {
+      listPending: async () => { phoneReads++; return { recordings: [{ id: "local-note", owner: did,
+        ledger: { audio: { state: "saved" } }, stt: { state: "done" } }] }; },
+      getTranscript: async () => { transcriptReads++; return { transcript: null }; },
+      updateLedger: async () => { writes++; return {}; },
+    });
+  }, "ready", { listeners: new Map(), pipeline });
+
+  // Recorder setup may inspect the phone before the event under test.
+  phoneReads = 0;
+  transcriptReads = 0;
+  writes = 0;
+  pipeline.cancelAll();
+  await act(async () => { stt.emit("transcribed", { id: "local-note" }); await tick(); });
+  expect(phoneReads).toBe(0);
+  expect(transcriptReads).toBe(0);
+  expect(writes).toBe(0);
+});
+
+test("forced session-swap recovery queues one trailing reconcile while a run is active", async () => {
+  const listeners = new Map<string, () => void>();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const { pendingStore } = await import("@/lib/voiceNotes/recorderSaves");
+  let finishSave: (() => void) | undefined;
+  let reconciles = 0;
+  let active = 0;
+  let maximumActive = 0;
+  const pipeline = { resume() {}, cancelAll() {}, reconcileAll: async () => {
+    reconciles++;
+    active++;
+    maximumActive = Math.max(maximumActive, active);
+    try {
+      if (reconciles === 1) {
+        finishSave = pendingStore.beginAutomaticSave();
+        await gate;
+        finishSave();
+        finishSave = undefined;
+      }
+    } finally { active--; }
+  } };
+  await mountWith("native", ALL, undefined, "ready", { listeners, pipeline });
+  expect(reconciles).toBe(1);
+  await act(async () => { schedulePendingVoiceNotesRecovery(); await tick(); });
+  expect(reconciles).toBe(1);
+  release();
+  await act(async () => { await tick(); await tick(); });
+  expect(reconciles).toBe(2);
+  expect(maximumActive).toBe(1);
+  release();
+});
+
+test("online during an offline backoff queues one trailing reconcile", async () => {
+  const listeners = new Map<string, () => void>();
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  let reconciles = 0;
+  let active = 0;
+  let maximumActive = 0;
+  const pipeline = { resume() {}, cancelAll() {}, reconcileAll: async () => {
+    reconciles++;
+    active++;
+    maximumActive = Math.max(maximumActive, active);
+    try {
+      if (reconciles === 1) { entered(); await gate; throw Object.assign(new Error("offline backoff ended"), { code: "NETWORK_ERROR" }); }
+    } finally { active--; }
+  } };
+  await mountWith("native", ALL, undefined, "ready", { listeners, pipeline });
+  await started;
+  expect(reconciles).toBe(1);
+  await act(async () => { listeners.get("online")?.(); await tick(); });
+  expect(reconciles).toBe(1);
+  release();
+  await act(async () => { await tick(); await tick(); });
+  expect(reconciles).toBe(2);
+  expect(maximumActive).toBe(1);
+  release();
+});
+
+test("unmount during a dirty reconcile prevents the trailing pass and deferred error", async () => {
+  const listeners = new Map<string, () => void>();
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const { pendingStore } = await import("@/lib/voiceNotes/recorderSaves");
+  let reconciles = 0;
+  const pipeline = { resume() {}, cancelAll() {}, reconcileAll: async () => {
+    reconciles++;
+    if (reconciles === 1) { entered(); await gate; throw new VoiceNoteSaveDeferred(); }
+  } };
+  await mountWith("native", ALL, undefined, "ready", { listeners, pipeline });
+  await started;
+  await act(async () => { listeners.get("online")?.(); await tick(); });
+  expect(reconciles).toBe(1);
+  await act(async () => { root!.unmount(); root = null; });
+  release();
+  await act(async () => { await tick(); await tick(); });
+  expect(reconciles).toBe(1);
+  expect(pendingStore.snapshot().accountDid).toBeNull();
+  expect(pendingStore.snapshot().lastError).toBeNull();
+});
 
 for (const kind of ["web", "tauri"] as const) {
   describe(`${kind} engine without native capabilities`, () => {
@@ -309,6 +517,20 @@ describe("engine-aware transcription default", () => {
     withStorage({ "exo.voiceNotes.transcriber": "on-device" });
     const existing = await mount("native", ALL);
     expect((await existing.fake.plugin.getCaptureDefaults()).transcriber).toBe("on-device");
+  });
+
+  test("a fresh signed-in profile with the model absent stays on the engine's default: nothing is swapped for Audio only", async () => {
+    withStorage({});
+    const { fake } = await mount("native", ALL, "absent");
+    expect((await fake.plugin.getCaptureDefaults()).transcriber).toBe("on-device");
+    expect(value?.transcriber).toMatchObject({ id: "on-device" });
+  });
+
+  test("a stored Local choice stays Local, never swapped for Private or Audio only", async () => {
+    withStorage({ "exo.voiceNotes.transcriber": "on-device" });
+    const { fake } = await mount("native", ALL, "absent");
+    expect((await fake.plugin.getCaptureDefaults()).transcriber).toBe("on-device");
+    expect(value?.transcriber).toMatchObject({ id: "on-device", source: "default" });
   });
 });
 

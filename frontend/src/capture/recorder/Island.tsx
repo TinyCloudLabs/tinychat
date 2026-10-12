@@ -36,7 +36,7 @@ export function IslandView(props: { recorder: RecorderValue; onOpenNote?: (id: s
         />
         <RecorderTimer audioMs={recorder.audioMs} running={!paused && recorder.phase === "recording"} className="text-callout font-semibold" />
         <LevelTrace subscribe={recorder.subscribeLevel} tone={paused ? "muted" : warning ? "warning" : "live"} paused={paused} bars={12} className="h-6 w-14 shrink-0" />
-        <span className={cn("min-w-0 text-callout [overflow-wrap:anywhere]", warning ? "text-warning" : "text-muted-foreground")}>
+        <span className={cn("min-w-0 flex-[1_1_8rem] break-normal text-callout [overflow-wrap:break-word]", warning ? "text-warning" : "text-muted-foreground")}>
           {recorder.phase === "starting" ? "Starting…" : paused ? recorder.mic.state === "paused" ? "Paused" : "Interrupted" : warning ? "Mic problem" : "Recording"}
         </span>
       </>
@@ -45,7 +45,7 @@ export function IslandView(props: { recorder: RecorderValue; onOpenNote?: (id: s
     summary = (
       <>
         <Loader2Icon className="size-4 shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />
-        <span className="tnum min-w-0 text-callout [overflow-wrap:anywhere]">
+        <span className="tnum min-w-0 break-normal text-callout [overflow-wrap:normal]">
           Saving{typeof recorder.savePercent === "number" ? ` · ${recorder.savePercent}%` : "…"}
         </span>
       </>
@@ -56,14 +56,14 @@ export function IslandView(props: { recorder: RecorderValue; onOpenNote?: (id: s
         <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground motion-safe:animate-in motion-safe:zoom-in-50 motion-safe:duration-500">
           <CheckIcon className="size-3" strokeWidth={3} aria-hidden="true" />
         </span>
-        <span className="min-w-0 text-callout font-semibold [overflow-wrap:anywhere]">{ISLAND_SAVED}</span>
+        <span className="min-w-0 break-normal text-callout font-semibold [overflow-wrap:normal]">{ISLAND_SAVED}</span>
       </>
     );
   } else {
     summary = (
       <>
         <AlertCircleIcon className="size-4 shrink-0 text-warning" aria-hidden="true" />
-        <span className="min-w-0 text-callout font-semibold [overflow-wrap:anywhere]">{ISLAND_KEPT}</span>
+        <span className="min-w-0 break-normal text-callout font-semibold [overflow-wrap:normal]">{ISLAND_KEPT}</span>
       </>
     );
   }
@@ -72,13 +72,13 @@ export function IslandView(props: { recorder: RecorderValue; onOpenNote?: (id: s
     <div
       data-testid="recorder-island"
       data-state={state}
-      className={cn("flex min-h-14 w-full min-w-0 items-center gap-1 rounded-[1.75rem] bg-surface-2 p-1.5 shadow-float", props.className)}
+      className={cn("flex min-h-14 w-full min-w-0 flex-wrap items-center gap-1 rounded-[1.75rem] bg-surface-2 p-1.5 shadow-float", props.className)}
     >
       <button
         type="button"
         onClick={recorder.openSheet}
         aria-label="Open recorder"
-        className="tap-transparent flex min-h-11 min-w-0 flex-1 items-center gap-2.5 rounded-full pl-3 pr-2 text-left transition-opacity active:opacity-70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        className="tap-transparent flex min-h-11 min-w-0 flex-1 flex-wrap items-center gap-2.5 rounded-full pl-3 pr-2 text-left transition-opacity active:opacity-70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
         {summary}
       </button>
@@ -100,7 +100,7 @@ export function IslandView(props: { recorder: RecorderValue; onOpenNote?: (id: s
         <Button
           type="button"
           variant="ghost"
-          className="h-11 shrink-0 rounded-full px-4"
+          className="h-11 min-w-11 shrink-0 rounded-full px-4"
           onClick={() => {
             recorder.dismissOutcome();
             props.onOpenNote?.(lastSaved.id);
@@ -114,7 +114,7 @@ export function IslandView(props: { recorder: RecorderValue; onOpenNote?: (id: s
         <Button
           type="button"
           variant="ghost"
-          className="h-11 shrink-0 rounded-full px-4"
+          className="h-11 min-w-11 shrink-0 rounded-full px-4"
           onClick={recorder.retryPending}
           disabled={recorder.pending.running}
           data-testid="island-save-now"

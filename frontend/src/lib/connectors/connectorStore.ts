@@ -64,6 +64,8 @@ export function meetingKvKey(source: string, sourceId: string): string {
 export interface StoreError {
   code: string;
   message: string;
+  /** Raw underlying error object; it may contain credential-bearing URLs. Never log this directly. */
+  cause?: unknown;
 }
 
 export type StoreResult<T> =

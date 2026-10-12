@@ -3,19 +3,33 @@
 // the server (as the web app on a phone-sized screen, where there is no
 // recorder); test/shell-invariants.e2e.test.ts resizes a live one across the
 // size classes and counts the recorder's listeners with the fake plugin.
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { act, useState } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router-dom";
+import { BrowserRouter, MemoryRouter } from "react-router-dom";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
+import { PlatformContext } from "@/lib/platform";
+import { initSizeClass } from "@/lib/sizeClass";
+import { installDom } from "@/test/dom";
 import { screenFor } from "../shell/routes";
 import { CaptureSurface } from "./CaptureSurface";
 import { StaticRecorderProvider } from "./recorder/RecorderProvider";
 
 const tcw = { did: "did:pkh:eip155:1:0x00000000000000000000000000000000000000a1" } as unknown as TinyCloudWeb;
+let cleanupDom: (() => void) | undefined;
+let mountedRoot: Root | null = null;
+afterEach(async () => {
+  if (mountedRoot) await act(async () => mountedRoot!.unmount());
+  mountedRoot = null;
+  cleanupDom?.();
+  cleanupDom = undefined;
+});
+
 function render(path: string, active: boolean) {
   return renderToStaticMarkup(
     <MemoryRouter initialEntries={[path]}>
@@ -103,7 +117,6 @@ describe("CaptureSurface", () => {
 
   test("the fixed tree: one list pane (home above the Library) and one detail pane, whatever the size", () => {
     const source = readFileSync(join(import.meta.dir, "CaptureSurface.tsx"), "utf8");
-    // Each pane is written once; the size class changes only classes and attributes.
     for (const id of ["capture-list-pane", "capture-home", "capture-library", "capture-detail"]) {
       expect(source.match(new RegExp(`data-testid="${id}"`, "g"))).toHaveLength(1);
     }
@@ -115,6 +128,106 @@ describe("CaptureSurface", () => {
   test("the sheets close when the home is left", () => {
     const source = readFileSync(join(import.meta.dir, "CaptureSurface.tsx"), "utf8");
     expect(source).toContain("if (!homeShown) setSheet(null);");
+  });
+
+  test("Recent tap opens the actual CaptureSurface note sheet; browser Back closes it on Capture", async () => {
+    cleanupDom = installDom();
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    const stopSizeClass = initSizeClass(window);
+    const previousCleanup = cleanupDom;
+    cleanupDom = () => { stopSizeClass(); previousCleanup?.(); };
+    window.history.replaceState(null, "", "/chat/capture");
+    const recentTcw = {
+      did: "did:test:capture-surface",
+      spaceId: "capture-surface-test",
+      sql: { db: () => ({ query: async () => ({ ok: true, data: { rows: [] } }) }) },
+      kv: { get: async () => ({ ok: false, error: { message: "not present" } }) },
+    } as unknown as TinyCloudWeb;
+    const note = { id: "rec-surface", startedAt: Date.now() - 30_000, durationMs: 12_000 };
+    const host = document.createElement("div");
+    document.body.append(host);
+    mountedRoot = createRoot(host);
+    await act(async () => mountedRoot!.render(
+      <BrowserRouter>
+        <PlatformContext.Provider value="android">
+          <StaticRecorderProvider value={{
+            available: true,
+            sheetOpen: false,
+            pending: { listing: { state: "ok", count: 1 }, notes: [note], running: false, lastError: null },
+          }}>
+            <CaptureSurface
+              tcw={recentTcw}
+              backendUrl="http://127.0.0.1"
+              sessionStore={{ getToken: () => null } as unknown as SessionStore}
+              active
+              screen={screenFor("/chat/capture")}
+            />
+          </StaticRecorderProvider>
+        </PlatformContext.Provider>
+      </BrowserRouter>,
+    ));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    const recentRow = host.querySelector<HTMLButtonElement>('[data-testid="recent-item"] button');
+    expect(recentRow).not.toBeNull();
+    await act(async () => recentRow!.click());
+    expect(host.querySelector('[data-testid="capture-surface"]')).not.toBeNull();
+    expect((window.history.state as { usr?: { recentNoteSheet?: string } } | null)?.usr?.recentNoteSheet).toBe("on-phone:rec-surface");
+    await act(async () => {
+      window.history.back();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect((window.history.state as { usr?: { recentNoteSheet?: string } } | null)?.usr?.recentNoteSheet).toBeUndefined();
+    expect(host.querySelector('[data-testid="capture-recent"]')).not.toBeNull();
+  });
+
+  test("the focused loading sheet yields when a notification opens the recorder", async () => {
+    cleanupDom = installDom();
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    const stopSizeClass = initSizeClass(window);
+    const previousCleanup = cleanupDom;
+    cleanupDom = () => { stopSizeClass(); previousCleanup?.(); };
+    window.history.replaceState(
+      { idx: 0, key: "recent-missing", usr: { recentNoteSheet: "missing-note" } },
+      "",
+      "/chat/capture",
+    );
+    const recentTcw = {
+      did: "did:test:capture-pending-sheet",
+      spaceId: "capture-pending-sheet-test",
+      sql: { db: () => ({ query: async () => ({ ok: true, data: { rows: [] } }) }) },
+      kv: { get: async () => ({ ok: false, error: { message: "not present" } }) },
+    } as unknown as TinyCloudWeb;
+    const host = document.createElement("div");
+    document.body.append(host);
+    mountedRoot = createRoot(host);
+    function NotificationHarness() {
+      const [recorderOpen, setRecorderOpen] = useState(false);
+      return (
+        <BrowserRouter>
+          <PlatformContext.Provider value="android">
+            <StaticRecorderProvider value={{ available: true, sheetOpen: recorderOpen }}>
+              <CaptureSurface
+                tcw={recentTcw}
+                backendUrl="http://127.0.0.1"
+                sessionStore={{ getToken: () => null } as unknown as SessionStore}
+                active
+                screen={screenFor("/chat/capture")}
+              />
+            </StaticRecorderProvider>
+            <button type="button" data-testid="open-notification-recorder" onClick={() => setRecorderOpen(true)}>Open recorder</button>
+            {recorderOpen && <div data-testid="notification-recorder" className="fixed z-50">Recorder from notification</div>}
+          </PlatformContext.Provider>
+        </BrowserRouter>
+      );
+    }
+    await act(async () => mountedRoot!.render(<NotificationHarness />));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    const pendingSheet = host.querySelector<HTMLElement>('[data-testid="recent-note-sheet"]');
+    expect(pendingSheet).not.toBeNull();
+    expect(document.activeElement).toBe(pendingSheet?.querySelector("[data-recent-close]"));
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="open-notification-recorder"]')!.click());
+    expect(host.querySelector('[data-testid="recent-note-sheet"]')).toBeNull();
+    expect(host.querySelector('[data-testid="notification-recorder"]')).not.toBeNull();
   });
 
 });

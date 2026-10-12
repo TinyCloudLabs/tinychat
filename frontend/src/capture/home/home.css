@@ -1,58 +1,5 @@
-/* Capture home and its rows in the Soft skin (TC-871). The palette (--ink,
-   --dim, --glass, --gedge, --solid, --bgc, --red) is soft.css's. .soft-home is
-   the whole list pane, so the Library, which shares the rows, wears it too:
-   the app's own tokens are remapped here (as HSL triples) to the Soft palette. */
-
-.soft-home.soft-night {
-  --background: 266 29% 9%;
-  --foreground: 278 52% 96%;
-  --card: 270 24% 16%;
-  --card-foreground: 278 52% 96%;
-  --popover: 270 24% 16%;
-  --popover-foreground: 278 52% 96%;
-  --chrome: 266 29% 9%;
-  --surface-2: 270 24% 16%;
-  --secondary: 270 24% 16%;
-  --secondary-foreground: 278 52% 96%;
-  --muted: 270 24% 16%;
-  --muted-foreground: 271 12% 64%;
-  --accent: 270 24% 16%;
-  --accent-foreground: 278 52% 96%;
-  --border: 270 13% 20%;
-  --input: 270 13% 20%;
-  --primary: 278 52% 96%;
-  --primary-foreground: 266 29% 9%;
-  --ring: 278 52% 96%;
-}
-
-.soft-home.soft-day {
-  --background: 32 62% 96%;
-  --foreground: 322 10% 21%;
-  --card: 30 100% 98%;
-  --card-foreground: 322 10% 21%;
-  --popover: 30 100% 98%;
-  --popover-foreground: 322 10% 21%;
-  --chrome: 32 62% 96%;
-  --surface-2: 30 100% 98%;
-  --secondary: 30 100% 98%;
-  --secondary-foreground: 322 10% 21%;
-  --muted: 30 100% 98%;
-  --muted-foreground: 334 7% 50%;
-  --accent: 30 100% 98%;
-  --accent-foreground: 322 10% 21%;
-  --border: 28 25% 90%;
-  --input: 28 25% 90%;
-  --primary: 322 10% 21%;
-  --primary-foreground: 32 62% 96%;
-  --ring: 322 10% 21%;
-}
-
-.soft-home .font-display {
-  font-family: var(--soft-title-font);
-  font-optical-sizing: auto;
-  font-variation-settings: "SOFT" 100;
-  font-weight: 400;
-}
+/* Capture home keeps the app's zinc tokens; .soft-home only supplies surface
+   styling shared with the recorder. */
 
 .soft-home .soft-ico {
   width: 18px;
@@ -150,6 +97,9 @@
   font-weight: 600;
   overflow-wrap: anywhere;
 }
+.soft-card-text b[data-testid="voice-note-summary"] {
+  white-space: nowrap;
+}
 .soft-card-text span {
   color: var(--dim);
   font-size: 12px;
@@ -177,6 +127,11 @@
 .soft-pill:disabled {
   opacity: 0.6;
 }
+.soft-pill[data-quiet] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--gedge);
+  color: var(--ink);
+}
 .soft-pill-hit {
   display: flex;
   flex: none;
@@ -186,6 +141,112 @@
   min-height: 44px;
 }
 
+.soft-in-progress-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.soft-progress-card {
+  align-items: flex-start;
+}
+.soft-progress-rows {
+  display: flex;
+  flex: 1 0 100%;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.soft-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 3px 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.soft-progress-row .soft-tile {
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+}
+.soft-progress-row .soft-ico {
+  width: 15px;
+  height: 15px;
+}
+.soft-progress-row:focus-visible,
+.soft-progress-more:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: 10px;
+}
+.soft-progress-more {
+  min-height: 36px;
+  padding: 0 0 0 40px;
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.soft-model-progress {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0 0 40px;
+  color: var(--dim);
+  font-size: 12.5px;
+}
+/* An In progress row that opens a sheet: the whole text side is the button; the pill sits beside it, wrapping below at large text. */
+.soft-card {
+  flex-wrap: wrap;
+}
+.soft-card-main {
+  display: flex;
+  flex: 1 1 12rem;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+button.soft-card-main {
+  cursor: pointer;
+}
+button.soft-card-main:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: 12px;
+}
+.soft-card-text span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.soft-card-text span[data-warn] {
+  color: var(--ink);
+}
+.soft-card-spin {
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
 .soft-legacy {
   margin-top: 8px;
 }
@@ -261,7 +322,7 @@ button.soft-row:focus-visible {
   color: var(--dim);
 }
 .soft-tile[data-failed] {
-  color: var(--red);
+  color: var(--red-text);
 }
 .soft-tile-bang {
   font-size: 18px;
@@ -380,11 +441,16 @@ button.soft-row:focus-visible {
 }
 
 .soft-actions {
-  display: grid;
-  grid-template-columns: 1fr 1.3fr 1fr;
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
+.soft-actions-container {
+  container: capture-actions / inline-size;
+  font-size: 1rem;
+}
 .soft-act {
+  flex: 1 1 calc((100% - 16px) / 3.3);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -397,7 +463,7 @@ button.soft-row:focus-visible {
   box-shadow: inset 0 0 0 1px var(--gedge);
   color: var(--ink);
   font: inherit;
-  font-size: 13.5px;
+  font-size: 0.84375rem;
   font-weight: 700;
   transition: transform 0.2s cubic-bezier(0.3, 1.7, 0.4, 1);
   -webkit-tap-highlight-color: transparent;
@@ -409,17 +475,21 @@ button.soft-row:focus-visible {
   opacity: 0.6;
 }
 .soft-act-main {
+  flex-basis: calc((100% - 16px) * 1.3 / 3.3);
+  flex-grow: 1.3;
   background: var(--ink);
   box-shadow: none;
   color: var(--bgc);
 }
-/* On a 320 px phone the three actions cannot keep 1fr 1.3fr 1fr and their 8 px gaps: size them to their labels and share the rest. */
-@media (max-width: 359px) {
+/* A compact row fits when its available width is at least 18 em of its text size. */
+@container capture-actions (min-width: 18em) {
   .soft-actions {
-    grid-template-columns: repeat(3, auto);
+    display: grid;
+    grid-template-columns: 1fr 1.3fr 1fr;
     gap: 6px;
   }
   .soft-act {
+    min-width: 0;
     gap: 6px;
     padding: 0 4px;
   }
@@ -508,7 +578,7 @@ button.soft-row:focus-visible {
   cursor: pointer;
 }
 .soft-sheet-delete {
-  color: var(--red);
+  color: var(--red-text);
 }
 .soft-sheet-quiet {
   color: var(--dim);
@@ -522,7 +592,7 @@ button.soft-row:focus-visible {
 }
 .soft-sheet-error {
   margin: 12px 0 0;
-  color: var(--red);
+  color: var(--red-text);
   font-size: 13px;
   line-height: 1.4;
 }

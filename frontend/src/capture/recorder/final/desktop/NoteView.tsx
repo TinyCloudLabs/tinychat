@@ -81,8 +81,6 @@ export function NoteView({
       data-layout={layout}
       data-testid="desktop-note-view"
     >
-      <div className="pr-blob a" aria-hidden="true" />
-      <div className="pr-blob b" aria-hidden="true" />
       <div className="nv-col">
         <div className="nv-top">
           <button

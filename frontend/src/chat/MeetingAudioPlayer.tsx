@@ -14,6 +14,12 @@ interface MeetingAudioPlayerProps {
   ) => Promise<Blob | null>;
   /** A local native file URL. It is handed straight to the audio element. */
   url?: string;
+  /**
+   * Resolves a local native file URL when Play is tapped (or a moment is sought); the URL is
+   * handed straight to the audio element, with no fetch and no read into memory. A rejection
+   * is shown as the reason.
+   */
+  resolveUrl?: () => Promise<string>;
   onPlayingChange?: (playing: boolean) => void;
   /** Plays from `seconds` in: loads the audio first if it is not loaded yet. A new `nonce` is a new request. */
   seek?: { seconds: number; nonce: number } | null;
@@ -24,7 +30,16 @@ export type PlayerState =
   | { phase: "loading"; percent: number | null }
   | { phase: "ready"; url: string }
   | { phase: "missing" }
-  | { phase: "failed" };
+  | { phase: "failed"; reason?: string };
+
+/** Ready with the resolved URL, or failed with the real reason it could not be resolved. */
+export async function stateForResolvedUrl(resolveUrl: () => Promise<string>): Promise<PlayerState> {
+  try {
+    return { phase: "ready", url: await resolveUrl() };
+  } catch (error) {
+    return { phase: "failed", reason: error instanceof Error ? error.message : String(error) };
+  }
+}
 
 /**
  * The original audio of one note, fetched only when the user asks for it:
@@ -32,7 +47,7 @@ export type PlayerState =
  * Unmounting (closing the meeting) aborts an in-flight read and releases the
  * object URL.
  */
-export function MeetingAudioPlayer({ load, url, onPlayingChange, seek }: MeetingAudioPlayerProps) {
+export function MeetingAudioPlayer({ load, url, resolveUrl, onPlayingChange, seek }: MeetingAudioPlayerProps) {
   const [state, setState] = useState<PlayerState>({ phase: "idle" });
   const controllerRef = useRef<AbortController | null>(null);
   const urlRef = useRef<string | null>(null);
@@ -55,8 +70,15 @@ export function MeetingAudioPlayer({ load, url, onPlayingChange, seek }: Meeting
       setState({ phase: "ready", url });
       return;
     }
-    if (!load) return;
     const controller = new AbortController();
+    if (resolveUrl) {
+      controllerRef.current = controller;
+      setState({ phase: "loading", percent: null });
+      const next = await stateForResolvedUrl(resolveUrl);
+      if (!controller.signal.aborted) setState(next);
+      return;
+    }
+    if (!load) return;
     controllerRef.current = controller;
     setState({ phase: "loading", percent: null });
     try {
@@ -76,7 +98,7 @@ export function MeetingAudioPlayer({ load, url, onPlayingChange, seek }: Meeting
     } catch {
       if (!controller.signal.aborted) setState({ phase: "failed" });
     }
-  }, [load, url]);
+  }, [load, resolveUrl, url]);
 
   const playFrom = (audio: HTMLAudioElement, seconds: number) => {
     audio.currentTime = seconds;
@@ -125,13 +147,13 @@ export function MeetingAudioPlayerView({ state, onPlay, onPlayingChange, onError
   }
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-      <Button type="button" variant="outline" onClick={onPlay} data-testid="note-audio-play">
+      <Button type="button" variant="outline" className="h-auto min-h-11 whitespace-normal text-left" onClick={onPlay} data-testid="note-audio-play">
         <PlayIcon aria-hidden />
         <span>{state.phase === "failed" ? "Try again" : "Play audio"}</span>
       </Button>
       {state.phase === "failed" && (
         <p role="alert" className="text-callout text-muted-foreground">
-          Couldn&apos;t load the audio just now.
+          {state.reason ?? "Couldn\u2019t load the audio just now."}
         </p>
       )}
     </div>

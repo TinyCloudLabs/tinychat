@@ -1,3 +1,36 @@
+import type { AppPlatform } from "@/lib/platform";
+import type { TranscriptionAvailability } from "@/lib/voiceNotes/voiceNoteTranscription";
+
+const MODE_NAMES = {
+  skip: "Audio only",
+  local: "Local",
+  private: "Private",
+  powerful: "Powerful",
+} as const;
+
+/** One name per transcription mode, keyed by the provider's transcriber id; every surface that names a mode reads this. */
+export const TRANSCRIBER_NAME = {
+  off: MODE_NAMES.skip,
+  "on-device": MODE_NAMES.local,
+  "private-cloud": MODE_NAMES.private,
+  assemblyai: MODE_NAMES.powerful,
+} as const;
+
+/** The first stop of a route diagram: the device the audio starts on. */
+export function routeSourceName(platform: AppPlatform): string {
+  if (platform === "ios" || platform === "android") return "This phone";
+  return platform === "tauri" ? "This Mac" : "This browser";
+}
+
+/** Why Private cannot be chosen right now, and whether checking again can change it. */
+export function privateNotOffered(availability: TranscriptionAvailability | undefined): { reason: string; canRecheck: boolean } {
+  if (availability === "checking") return { reason: "Checking…", canRecheck: false };
+  if (availability === "failed") return { reason: "Couldn't check right now", canRecheck: true };
+  return { reason: "Not available right now", canRecheck: false };
+}
+
+export const CHECK_AGAIN = "Check again";
+
 export const FINAL_COPY = {
   listening: "Listening",
   resting: "Resting · tap to continue",
@@ -50,11 +83,18 @@ export const FINAL_COPY = {
   powerfulOnly: "Powerful only",
   whisperUnavailable: "Get Whisper for this Mac",
   modelUnavailable: "Get the on-device model",
+  modelTryAgain: "Try again",
+  speechGet: "Get speech from iOS",
+  speechGetting: "Getting speech from iOS…",
+  speechFailed: "Couldn't get speech from iOS",
+  speechNotInstalled: "Speech from iOS isn't on this phone yet",
+  speechUnsupported: "On-device transcription isn't available on this iPhone",
+  speechLocaleUnsupported: "On-device transcription doesn't support this language yet",
   modes: {
-    skipName: "Audio only",
-    localName: "Local",
-    privateName: "Private",
-    powerfulName: "Powerful",
+    skipName: MODE_NAMES.skip,
+    localName: MODE_NAMES.local,
+    privateName: MODE_NAMES.private,
+    powerfulName: MODE_NAMES.powerful,
     speakersName: "AssemblyAI · speakers",
     noTranscript: "no transcript",
     skipCaption: {
@@ -67,7 +107,7 @@ export const FINAL_COPY = {
     localPhoneCaption: "Nothing leaves it; a little slower.",
     localDesktopCaption: "Whisper on this Mac, after you stop.",
     localPhoneExplanation:
-      "An on-device model transcribes it. Nothing leaves your phone; slower and less accurate.",
+      "Your phone transcribes it after you stop. Nothing leaves your phone.",
     localDesktopExplanation: (model: string) =>
       `Whisper ${model} transcribes on this Mac after you stop, and nothing leaves the machine. Change the model in ⚙︎ Settings.`,
     localWebExplanation:

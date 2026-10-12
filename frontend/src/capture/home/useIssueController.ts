@@ -25,6 +25,10 @@ export interface IssueController {
   issues: CaptureIssues;
   /** Reading the sessions native parked failed (not for lack of support). */
   quarantineFailed: boolean;
+  /** The original error of that failed read (null when it did not fail). */
+  quarantineError: unknown;
+  /** Reads the parked sessions again through this controller's own reader. */
+  refreshQuarantine: () => void;
   /** A tap on a row whose issue has a sheet: the recording's id, and the control to return focus to (or, if it is gone, the row, else its list's heading). */
   openIssue: (id: string, opener: HTMLElement) => void;
   /** What `IssueSheet` needs, less its layout. */
@@ -89,6 +93,8 @@ export function useIssueController(
   return {
     issues,
     quarantineFailed: quarantine.error !== null,
+    quarantineError: quarantine.error,
+    refreshQuarantine: quarantine.refresh,
     openIssue,
     sheet: {
       id: sheetId,

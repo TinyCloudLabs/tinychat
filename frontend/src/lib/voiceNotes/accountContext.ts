@@ -4,7 +4,14 @@ export interface AccountContext {
   generation: number;
 }
 
+export interface AccountIdentity {
+  did: string;
+  spaceId?: string;
+}
+
 let generation = 0;
+const pausedClients = new WeakSet<object>();
+const accountWorkListeners = new Set<() => void>();
 
 /** Call on every sign-in and sign-out, before starting another account's work. */
 export function advanceAccountGeneration(): number {
@@ -13,6 +20,33 @@ export function advanceAccountGeneration(): number {
 
 export function currentAccountGeneration(): number {
   return generation;
+}
+
+/** The save pipeline pauses account-scoped work during sign-out and resumes it on abort. */
+export function isAccountWorkAllowed(client: object): boolean {
+  return !pausedClients.has(client);
+}
+
+export function setAccountWorkPaused(client: object, paused: boolean): void {
+  const wasPaused = pausedClients.has(client);
+  if (wasPaused === paused) return;
+  if (paused) pausedClients.add(client);
+  else pausedClients.delete(client);
+  for (const listener of [...accountWorkListeners]) listener();
+}
+
+export function subscribeAccountWork(listener: () => void): () => void {
+  accountWorkListeners.add(listener);
+  return () => { accountWorkListeners.delete(listener); };
+}
+
+/** Capture the identity and generation before beginning asynchronous work. */
+export function captureAccountContext(identity: AccountIdentity): AccountContext {
+  return { did: identity.did, spaceId: identity.spaceId ?? "", generation };
+}
+
+export function isAccountContextCurrent(ctx: AccountContext, identity: AccountIdentity): boolean {
+  return ctx.generation === generation && ctx.did === identity.did && ctx.spaceId === (identity.spaceId ?? "");
 }
 
 let mountedAccount: { did: string } | null = null;
@@ -34,4 +68,8 @@ export class StaleAccountContext extends Error {
 
 export function assertCurrent(ctx: AccountContext): void {
   if (ctx.generation !== generation) throw new StaleAccountContext();
+}
+
+export function assertAccountContext(ctx: AccountContext, identity: AccountIdentity): void {
+  if (!isAccountContextCurrent(ctx, identity)) throw new StaleAccountContext();
 }

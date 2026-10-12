@@ -18,7 +18,7 @@ import { ConfirmDialog } from "../../recorder/final/desktop/ConfirmDialog";
 import { NoteRenderer, NoteWriter } from "../../recorder/final/notes";
 import { useKeyboardInset } from "../../recorder/final/keyboardInset";
 import { SheetDialog } from "../../recorder/final/SheetDialog";
-import type { AudioLoad } from "../NoteDetailView";
+import { noteAudioPlayerProps, type NoteAudio } from "../NoteDetailView";
 import { SAVED_NOTE_COPY as COPY } from "./savedNoteCopy";
 import { editedLabel } from "./savedNoteMeta";
 import type { SavedNoteScreen } from "./useSavedNoteScreen";
@@ -30,10 +30,14 @@ export interface SavedNoteViewProps {
   layout: SavedNoteLayout;
   theme: "night" | "day";
   id: string;
+  /** The recording: stays the same when a note that was only on the phone becomes the space's row. */
+  recordingId: string;
   title: string;
   meta: string;
+  /** Where the note is on its way to the space, under the meta line; null once it is all done. */
+  stepper: ReactNode;
   /** Reads the recording's audio; null when it has none stored. */
-  loadAudio: AudioLoad | null;
+  audio: NoteAudio | null;
   /** The transcript section (the Library's own). */
   transcript: ReactNode;
   /** Below the transcript. */
@@ -47,11 +51,11 @@ export interface SavedNoteViewProps {
 function Notes({
   screen,
   layout,
-  loadAudio,
+  audio,
   toolbarHost,
   editButton,
   cancelButton,
-}: Pick<SavedNoteViewProps, "screen" | "layout" | "loadAudio"> & {
+}: Pick<SavedNoteViewProps, "screen" | "layout" | "audio"> & {
   toolbarHost: HTMLElement | null | undefined;
   editButton: React.RefObject<HTMLButtonElement | null>;
   cancelButton: React.RefObject<HTMLButtonElement | null>;
@@ -187,6 +191,7 @@ function Notes({
               initialValue={draft.draft ?? ""}
               onChange={draft.type}
               autoFocus
+              autoGrow
               disabled={note.saving}
               label={COPY.noteField}
               toolbarHost={toolbarHost}
@@ -208,7 +213,7 @@ function Notes({
             <NoteRenderer
               md={savedMd}
               label={COPY.notes}
-              onMoment={loadAudio ? screen.playFrom : undefined}
+              onMoment={audio ? screen.playFrom : undefined}
             />
           </div>
         ))}
@@ -231,17 +236,17 @@ const useRefs = (): Refs => ({
   cancelButton: useRef<HTMLButtonElement>(null),
 });
 
-function Body(
+export function SavedNoteBody(
   props: SavedNoteViewProps &
     Refs & { toolbarHost: HTMLElement | null | undefined },
 ) {
   const { editButton, cancelButton, toolbarHost } = props;
-  const { screen, layout, loadAudio, id } = props;
+  const { screen, layout, audio, recordingId } = props;
   const notes = (
     <Notes
       screen={screen}
       layout={layout}
-      loadAudio={loadAudio}
+      audio={audio}
       toolbarHost={toolbarHost}
       editButton={editButton}
       cancelButton={cancelButton}
@@ -259,9 +264,9 @@ function Body(
           {DESKTOP_HOME_COPY.partialAudio}
         </p>
       )}
-      {loadAudio && (
+      {audio && (
         <div className="sn-player">
-          <MeetingAudioPlayer key={id} load={loadAudio} seek={screen.seek} />
+          <MeetingAudioPlayer key={recordingId} {...noteAudioPlayerProps(audio)} seek={screen.seek} />
         </div>
       )}
       {layout === "page" ? (
@@ -353,7 +358,8 @@ export function SavedNotePage(props: SavedNoteViewProps) {
           {props.title}
         </h1>
         <p className="sn-meta">{props.meta}</p>
-        <Body {...props} {...refs} toolbarHost={undefined} />
+        {props.stepper}
+        <SavedNoteBody {...props} {...refs} toolbarHost={undefined} />
       </div>
       <Confirm {...props} {...refs} />
     </div>
@@ -412,7 +418,8 @@ export function SavedNoteSheet(props: SavedNoteViewProps) {
               <Dialog.Description className="sn-meta">
                 {props.meta}
               </Dialog.Description>
-              <Body {...props} {...refs} toolbarHost={toolbarHost} />
+              {props.stepper}
+              <SavedNoteBody {...props} {...refs} toolbarHost={toolbarHost} />
             </div>
           </div>
           <div

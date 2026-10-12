@@ -53,6 +53,7 @@
     --live-foreground: 0 0% 98%;
     --warning: 26 90% 37%;
     --destructive: 0 72% 51%;
+    --red-text: hsl(var(--destructive));
     --destructive-foreground: 0 0% 98%;
     --border: 240 5.9% 90%;
     --input: 240 5.9% 90%;
@@ -86,6 +87,7 @@
     --live-foreground: 240 10% 3.9%;
     --warning: 43 96% 56%;
     --destructive: 0 62.8% 50%;
+    --red-text: hsl(0 100% 70%);
     --destructive-foreground: 0 0% 98%;
     --border: 240 3.7% 15.9%;
     --input: 240 3.7% 15.9%;
@@ -155,6 +157,14 @@
   body {
     overscroll-behavior: none;
   }
+  /* main.tsx measures UIKit's body size and normalizes it into this root scale.
+     Keep the 16px design below the default so rem-based hit areas stay 44pt. */
+  html[data-platform="ios"] {
+    line-height: 1.5;
+    /* UIKit body / 17 keeps the default design at 16px. Cap the rem scale at
+       2×: even at the cap, a 56px tab bar is 112px and a 64px ribbon is 128px. */
+    font-size: clamp(16px, calc(16px * var(--ios-body-scale, 1)), 32px);
+  }
   body {
     @apply bg-background text-foreground antialiased;
     caret-color: hsl(var(--primary));
@@ -178,6 +188,33 @@
   /* No long-press callout on controls. Never on transcripts or other text. */
   :where(button, [role="button"], [role="radio"], [role="tab"], nav a) {
     -webkit-touch-callout: none;
+  }
+}
+
+/* The tab-bar island is already visible during a minimized recording. Keep
+   the agent action reachable without letting its full explanation cover the
+   chat suggestions underneath. */
+@media (max-width: 639px) {
+  html[data-nav="tabbar"][data-island] [data-agent-enable-banner] > div {
+    align-items: center;
+    flex-direction: row;
+    padding: 0.5rem;
+  }
+  html[data-nav="tabbar"][data-island] [data-agent-enable-copy] {
+    display: none;
+  }
+  html[data-nav="tabbar"][data-island] [data-agent-enable-action] {
+    flex: 1;
+    min-height: 44px;
+    /* Compact minimized-ribbon action: keep its label at 16px to preserve the
+       one-row layout; the surrounding screen still follows Dynamic Type. */
+    font-size: 16px;
+  }
+  html[data-nav="tabbar"][data-island] [data-agent-enable-error] {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 
@@ -226,6 +263,40 @@ html [data-vaul-overlay][data-state="closed"] {
   }
   html [data-vaul-overlay][data-state] {
     animation-duration: var(--dur-quick);
+  }
+}
+
+.receipt-status-header {
+  min-width: 0;
+}
+
+.receipt-status-header-container {
+  container: receipt-status-header / inline-size;
+  font-size: 1rem;
+}
+
+@container receipt-status-header (max-width: 17em) {
+  .receipt-status-header-container > .receipt-status-header {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    row-gap: 0.5rem;
+    padding-bottom: 0.5rem;
+  }
+
+  .receipt-status-header > [data-testid="recorder-minimise"] {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .receipt-status-header > [aria-hidden="true"] {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+
+  .receipt-status-header > [data-testid="voice-note-status"] {
+    grid-column: 1 / -1;
+    grid-row: 2;
   }
 }
 

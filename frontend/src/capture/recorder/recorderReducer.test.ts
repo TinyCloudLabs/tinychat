@@ -10,9 +10,9 @@ const recording = () => run([{ type: "START_REQUESTED" }, STARTED]);
 
 describe("recorderReducer", () => {
   test("record: idle → starting → recording, clearing the last error, notice and receipt", () => {
-    const stale: RecorderState = { ...initialRecorderState, error: "old", limitNotice: "Stopped at the 60-minute limit.", outcome: "saved" };
+    const stale: RecorderState = { ...initialRecorderState, error: "old", limitNotice: "Stopped at the 60-minute limit.", outcome: "saved", elapsedMs: 124_000, audioMs: 121_000, elapsedAt: 8_000, startedAt: 2_000 };
     const starting = recorderReducer(stale, { type: "START_REQUESTED" });
-    expect(starting).toMatchObject({ phase: "starting", error: null, limitNotice: null, outcome: null });
+    expect(starting).toMatchObject({ phase: "starting", error: null, limitNotice: null, outcome: null, elapsedMs: 0, audioMs: 0, elapsedAt: null, startedAt: null });
     expect(recorderReducer(starting, STARTED)).toMatchObject({
       phase: "recording",
       recordingId: "rec-1",
@@ -131,6 +131,14 @@ describe("recorderReducer", () => {
     expect(committed).toMatchObject({ phase: "idle", permissionDenied: true, outcome: "local" });
     const saved = recorderReducer(committed, { type: "SAVED", id: "rec-1", durationMs: 42_000, at: 10 });
     expect(saved).toMatchObject({ permissionDenied: true, outcome: "saved" });
+  });
+
+  test("a held receipt retains why upload is waiting", () => {
+    const committed = recorderReducer(run([{ type: "STOP_REQUESTED", at: 0 }], recording()),
+      { type: "LOCAL_COMMITTED", id: "rec-1", durationMs: 42_000, at: 9 });
+    const held = recorderReducer(committed, { type: "LOCAL_UPLOAD_HELD", id: "rec-1", reason: "signed-out" });
+    expect(held).toMatchObject({ localUpload: "held", localUploadHeldReason: "signed-out" });
+    expect(recorderReducer(held, { type: "SAVED", id: "rec-1", durationMs: 42_000, at: 10 }).localUploadHeldReason).toBeUndefined();
   });
 
   test("Stop is ignored until the recorder has started", () => {

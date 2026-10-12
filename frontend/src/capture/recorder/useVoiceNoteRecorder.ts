@@ -40,7 +40,7 @@ export interface VoiceNoteRecorder {
   noteSyncError: string | null;
   setNoteText(md: string): Promise<void>;
   markMoment(): number;
-  setTranscriber(id: TranscriberId, options: { scope: TranscriberChoiceScope; waitForModel?: boolean }): Promise<TranscriberChoiceResult>;
+  setTranscriber(id: TranscriberId, options: { scope: TranscriberChoiceScope }): Promise<TranscriberChoiceResult>;
   setIdentifySpeakers(on: boolean, scope: "recording" | "default"): Promise<"ok" | "needs_consent" | "locked_signed_out" | "unavailable">;
   pending: PendingSnapshot;
   transcription: VoiceNoteTranscriptionProps | undefined;
@@ -50,7 +50,7 @@ export interface VoiceNoteRecorder {
   resume(): void;
   /** Stop the live recording and delete it; nothing is saved. */
   discard(): void;
-  retryPending(): void;
+  retryPending(): void | Promise<void>;
   openSettings(): Promise<void>;
   dismissShortcutRecovery(): Promise<void>;
   /** The receipt was read. */
@@ -78,6 +78,24 @@ export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionS
     [available, backendUrl, sessionStore, tcw],
   );
   const controller = useMemo(() => createVoiceNoteRecorderController({ tcw, available, transcriber, pipeline }), [available, tcw, transcriber, pipeline]);
+  // The private-cloud availability check: once the account is ready, and again each time the app comes back to the foreground.
+  useEffect(() => {
+    if (transcriber === null) return;
+    // False once this account is no longer the signed-in one (switch, sign-out, unmount): its check stops and resumes nothing.
+    let current = true;
+    const check = () => {
+      transcriber.check({ automatic: true, current: () => current }).catch((caught: unknown) => console.error("[Recorder] The private transcription check threw", caught));
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") check();
+    };
+    check();
+    window.addEventListener("visibilitychange", onVisible);
+    return () => {
+      current = false;
+      window.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [transcriber]);
   useEffect(() => {
     controller.setOnSaved(onSaved);
     return () => controller.setOnSaved(undefined);
@@ -114,7 +132,7 @@ export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionS
       pause: () => void controller.pause(),
       resume: () => void controller.resume(),
       discard: () => void controller.discard(),
-      retryPending: () => void controller.retryPending(),
+      retryPending: () => controller.retryPending(),
       openSettings: () => controller.openSettings(),
       dismissShortcutRecovery: () => controller.dismissShortcutRecovery(),
       dismissOutcome: controller.dismissOutcome,

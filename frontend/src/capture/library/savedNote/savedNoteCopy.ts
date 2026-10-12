@@ -27,4 +27,6 @@ export const SAVED_NOTE_COPY = {
   discardTitle: "Discard your changes?",
   discardBody: "The note stays as it was last saved.",
   savedToSpace: "saved to your space",
+  transcriptHere: "The transcript will appear here.",
+  transcriptAfterSpace: "The transcript starts once this note is in your space.",
 } as const;

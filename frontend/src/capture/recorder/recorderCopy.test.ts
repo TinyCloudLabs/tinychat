@@ -2,7 +2,7 @@
 // the microphone (moved with the helpers from the old Voice notes card, TC-761).
 import { describe, expect, test } from "bun:test";
 
-import { formatDuration, formatLimit, limitNoticeText, micStatusText, micWarningSentence, recorderMetaText, recorderStatusText } from "./recorderCopy";
+import { autoStopNoticeText, formatDuration, formatLimit, limitNoticeText, micStatusText, micWarningSentence, recorderMetaText, recorderStatusText } from "./recorderCopy";
 
 const HOUR = 60 * 60 * 1000;
 const recording = { state: "recording", reason: null } as const;
@@ -29,6 +29,13 @@ describe("recorderCopy", () => {
     expect(limitNoticeText(3 * HOUR)).toBe("Stopped at the 3-hour limit.");
     expect(formatLimit(15_000)).toBe("15-second");
     expect(formatLimit(90_000)).toBe("90-second");
+  });
+
+  test("automatic stops explain the actual reason", () => {
+    expect(autoStopNoticeText("max_duration", 10_800_000)).toBe("Stopped at the 3-hour limit.");
+    expect(autoStopNoticeText("write_failed", 10_800_000)).toBe("Recording stopped because audio could not be written.");
+    expect(autoStopNoticeText("disk_full", 10_800_000)).toBe("Recording stopped because device storage is full.");
+    expect(autoStopNoticeText("permission_revoked", 10_800_000)).toBe("Recording stopped because microphone access was revoked.");
   });
 
   test("the OS's mic problems: the card's sentences, and the recorder's short status", () => {

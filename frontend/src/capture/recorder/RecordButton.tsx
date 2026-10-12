@@ -26,7 +26,7 @@ export function RecordButton(props: { variant: "icon" | "action"; className?: st
         onClick={onClick}
         disabled={waiting}
         data-testid="header-voice-note"
-        className={cn("size-11 shrink-0 rounded-full text-muted-foreground hover:text-foreground fine:size-9 [&_svg]:size-5", props.className)}
+        className={cn("size-[44px] shrink-0 rounded-full text-muted-foreground hover:text-foreground fine:size-9 [&_svg]:size-[20px]", props.className)}
       >
         <MicIcon />
       </Button>

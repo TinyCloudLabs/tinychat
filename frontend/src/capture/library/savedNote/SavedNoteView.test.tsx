@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { SavedNotePage } from "./SavedNoteView";
+import type { ReactElement, ReactNode } from "react";
+import { Children, isValidElement } from "react";
+import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
+import { SavedNoteBody, SavedNotePage } from "./SavedNoteView";
 import { editedLabel } from "./savedNoteMeta";
+import { PipelineStepper } from "@/capture/pipeline/PipelineStepper";
+import { allDone, signedOut, uploading, waitingForModel } from "@/capture/pipeline/pipelineFixtures";
+import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 import type { SavedNoteViewProps } from "./SavedNoteView";
 import type { SavedNoteScreen } from "./useSavedNoteScreen";
 
@@ -58,9 +64,11 @@ const props = (screen: SavedNoteScreen, over: Partial<SavedNoteViewProps> = {}):
   layout: "page",
   theme: "night",
   id: "rec-1",
+  recordingId: "rec-1",
   title: "Standup",
   meta: "1 min · saved to your space",
-  loadAudio: null,
+  stepper: null,
+  audio: null,
   transcript: <p>the transcript</p>,
   partialAudio: false,
   onBack: noop,
@@ -157,7 +165,7 @@ describe("SavedNotePage", () => {
 
   test("the player is there only when the recording has audio", () => {
     expect(html(screenOf({ md: "hi" }))).not.toContain("Play");
-    expect(html(screenOf({ md: "hi" }), { loadAudio: async () => ({ blob: new Blob() }) as never })).toContain('class="sn-player"');
+    expect(html(screenOf({ md: "hi" }), { audio: { load: async () => ({ blob: new Blob() }) as never } })).toContain('class="sn-player"');
   });
 
   test("a discard confirmation makes the page behind it inert", () => {
@@ -165,5 +173,72 @@ describe("SavedNotePage", () => {
     expect(out).toContain("Discard your changes?");
     expect(out).toContain("Keep editing");
     expect(out).toContain("Discard changes");
+  });
+});
+
+describe("SavedNoteBody's player", () => {
+  const playerIn = (node: ReactNode): ReactElement | null => {
+    if (!isValidElement(node)) return null;
+    if (node.type === MeetingAudioPlayer) return node;
+    for (const child of Children.toArray((node.props as { children?: ReactNode }).children)) {
+      const found = playerIn(child);
+      if (found) return found;
+    }
+    return null;
+  };
+  const load = async () => new Blob();
+  const player = (over: Partial<SavedNoteViewProps>) => {
+    const view = props(screenOf({ md: "hi" }), { audio: { load }, ...over });
+    const refs = { editButton: { current: null }, cancelButton: { current: null } };
+    return playerIn(SavedNoteBody({ ...view, ...refs, toolbarHost: undefined }));
+  };
+
+  test("is the same player when a note that was only on the phone becomes the space's row, so a load or playback in flight carries on", () => {
+    const standIn = player({ id: "on-phone:rec-9", recordingId: "rec-9" });
+    const row = player({ id: "9", recordingId: "rec-9" });
+    expect(standIn?.key).not.toBeNull();
+    expect(row?.key).toBe(standIn?.key ?? "");
+  });
+
+  test("a note still on the phone gives the player a local URL to resolve, not a load, and its moments seek", () => {
+    const localUrl = async () => "capacitor://localhost/_capacitor_file_/rec-1.m4a";
+    const seek = { seconds: 12, nonce: 1 };
+    const view = props({ ...screenOf({ md: "hi" }), seek }, { audio: { localUrl } });
+    const refs = { editButton: { current: null }, cancelButton: { current: null } };
+    const found = playerIn(SavedNoteBody({ ...view, ...refs, toolbarHost: undefined }));
+    expect(found?.props).toMatchObject({ resolveUrl: localUrl, seek });
+    expect((found?.props as { load?: unknown }).load).toBeUndefined();
+  });
+
+  test("is a new player for another recording", () => {
+    expect(player({ id: "1", recordingId: "rec-1" })?.key).not.toBe(player({ id: "2", recordingId: "rec-2" })?.key);
+  });
+});
+
+describe("the pipeline under the meta line", () => {
+  const stepper = (pipeline: NotePipeline) => (pipeline.done ? null : <PipelineStepper pipeline={pipeline} onAction={noop} />);
+  const cases: [string, NotePipeline, string][] = [
+    ["uploading", uploading(40), "Uploading"],
+    ["signed out", signedOut(), "Sign in"],
+    ["waiting for the model", waitingForModel(), "Get the model"],
+  ];
+
+  for (const [name, pipeline, text] of cases) {
+    test(`${name}: the stepper shows on the page and the sheet, after the meta`, () => {
+      for (const layout of ["page", "sheet"] as const) {
+        const out = html(screenOf({ md: "hi" }), { layout, meta: "1 min", stepper: stepper(pipeline) });
+        expect(out).toContain('aria-label="Where this note is"');
+        expect(out).toContain(text);
+        expect(out.indexOf("1 min")).toBeLessThan(out.indexOf('aria-label="Where this note is"'));
+      }
+    });
+  }
+
+  test("done: no stepper, and the meta says it is saved", () => {
+    for (const layout of ["page", "sheet"] as const) {
+      const out = html(screenOf({ md: "hi" }), { layout, stepper: stepper(allDone()) });
+      expect(out).not.toContain("Where this note is");
+      expect(out).toContain("1 min · saved to your space");
+    }
   });
 });

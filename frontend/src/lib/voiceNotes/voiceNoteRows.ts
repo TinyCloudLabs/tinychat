@@ -1,9 +1,11 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
 import { CONNECTORS_KV_PREFIX, CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connectors/connectorStore";
-import { runOnSpaceLane } from "../spaceWriteLane";
+import { runOnSpaceLane, SpaceLaneQueueWaitTimeout, spaceLaneSnapshot, subscribeSpaceLane } from "../spaceWriteLane";
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
-import { LEGACY_TRANSCRIPT_KEYS, legacyTranscriptWinner, readTranscriptCommit, type TranscriptCommit } from "./voiceNoteCommits";
+import { hasTranscriptCommitTable, LEGACY_TRANSCRIPT_KEYS, legacyTranscriptWinner, readTranscriptCommit, SQL_CHUNK, type LegacyTranscriptRow, type TranscriptCommit } from "./voiceNoteCommits";
+
+export { SpaceLaneQueueWaitTimeout, spaceLaneSnapshot, subscribeSpaceLane };
 
 export const TRANSCRIPT_TABLE_DDL = `CREATE TABLE IF NOT EXISTS voice_note_transcript (
   source_id TEXT PRIMARY KEY, rev INTEGER NOT NULL, hash TEXT NOT NULL, body_key TEXT NOT NULL,
@@ -21,14 +23,26 @@ function errorOf(result: { ok: boolean; error?: { code?: string; message?: strin
   });
 }
 async function query(tcw: TinyCloudWeb, sql: string, params: unknown[] = [], checkpoint: () => void = () => undefined): Promise<unknown[][]> {
-  const result = await runOnSpaceLane(() => { checkpoint(); return db(tcw).query(sql, params as never[]); });
+  const result = await runOnSpaceLane((signal) => { checkpoint(); return db(tcw).query(sql, params as never[], { signal }); },
+    { operation: `SQL query: ${sql.slice(0, 80)}` });
   if (!result.ok) throw errorOf(result);
   return result.data.rows as unknown[][];
 }
 async function execute(tcw: TinyCloudWeb, sql: string, params: unknown[] = [], checkpoint: () => void = () => undefined): Promise<number> {
-  const result = await runOnSpaceLane(() => { checkpoint(); return db(tcw).execute(sql, params as never[]); });
+  const result = await runOnSpaceLane((signal) => { checkpoint(); return db(tcw).execute(sql, params as never[], { signal }); },
+    { operation: `SQL execute: ${sql.slice(0, 80)}` });
   if (!result.ok) throw errorOf(result);
   return Number((result.data as { changes?: number }).changes ?? 0);
+}
+async function readTranscriptCommitOnLane(tcw: TinyCloudWeb, sourceId: string,
+  checkpoint: () => void = () => undefined): Promise<TranscriptCommit | null> {
+  // The helper may issue a schema check and then a row query. Bound and serialize
+  // each actual SQL request on its own lane turn rather than timing the pair as one job.
+  const hasTable = await runOnSpaceLane((signal) => hasTranscriptCommitTable(tcw, checkpoint, signal),
+    { operation: "SQL check transcript commit table" });
+  if (!hasTable) return null;
+  return runOnSpaceLane((signal) => readTranscriptCommit(tcw, sourceId, checkpoint, signal),
+    { operation: "SQL read transcript commit" });
 }
 function normalizedStoredDDL(ddl: string): string {
   return ddl.replace(/\bIF NOT EXISTS\s+/i, "").replace(/\s+/g, " ").trim();
@@ -175,7 +189,7 @@ export async function sweepArchived(tcw: TinyCloudWeb, checkpoint: () => void = 
         participants = CASE WHEN COALESCE(participants,'[]') = '[]' THEN (SELECT participants FROM connector_meeting WHERE id = ?) ELSE participants END
         WHERE id = ? AND source = 'exo-voice-note'`, [row.id, row.id, row.id, row.id, row.id, keeper.id], checkpoint);
     }
-    const commit = await runOnSpaceLane(() => { checkpoint(); return readTranscriptCommit(tcw, String(sourceId), checkpoint); });
+    const commit = await readTranscriptCommitOnLane(tcw, String(sourceId), checkpoint);
     const currentRows = await group(tcw, String(sourceId), checkpoint);
     const winner = legacyTranscriptWinner(currentRows);
     const current = currentRows.find((r) => r.source === "exo-voice-note");
@@ -203,6 +217,28 @@ export async function resolveVoiceNoteRow(tcw: TinyCloudWeb, sourceId: string, c
   const rows = await query(tcw, "SELECT id, source_id, metadata, created_at FROM connector_meeting WHERE source = 'exo-voice-note' AND source_id = ? LIMIT 1", [sourceId], checkpoint);
   const r = rows[0];
   return r ? { id: String(r[0]), sourceId: String(r[1]), metadata: parseMetadata(r[2]), createdAt: String(r[3]) } : null;
+}
+/**
+ * `resolveVoiceNoteRow` for a set of notes: one query per chunk of ids. Each note has its row (null when the space has none)
+ * and the legacy transcript winner among its rows (what `readLegacyTranscriptWinner` finds, chosen the same way).
+ */
+export async function resolveVoiceNoteRows(tcw: TinyCloudWeb, sourceIds: readonly string[],
+  checkpoint: () => void = () => undefined): Promise<Map<string, { row: VoiceNoteRow | null; legacy: LegacyTranscriptRow | null }>> {
+  const found = new Map<string, { row: VoiceNoteRow | null; group: { id: string; metadata: Record<string, unknown> }[] }>();
+  for (const id of sourceIds) found.set(id, { row: null, group: [] });
+  for (let from = 0; from < sourceIds.length; from += SQL_CHUNK) {
+    const chunk = sourceIds.slice(from, from + SQL_CHUNK);
+    const rows = await query(tcw, `SELECT id, source_id, source, metadata, created_at FROM connector_meeting
+      WHERE source_id IN (${chunk.map(() => "?").join(",")}) AND source IN ('exo-voice-note', 'exo-voice-note-dup')`, chunk, checkpoint);
+    for (const r of rows) {
+      const entry = found.get(String(r[1]));
+      if (entry === undefined) continue;
+      const metadata = parseMetadata(r[3]);
+      entry.group.push({ id: String(r[0]), metadata });
+      if (r[2] === "exo-voice-note") entry.row = { id: String(r[0]), sourceId: String(r[1]), metadata, createdAt: String(r[4]) };
+    }
+  }
+  return new Map([...found].map(([id, { row, group }]) => [id, { row, legacy: legacyTranscriptWinner(group) }]));
 }
 export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNoteRecording, title: string,
   checkpoint: () => void = () => undefined): Promise<VoiceNoteRow & { inserted: boolean }> {
@@ -241,6 +277,9 @@ export async function patchVoiceNoteMarkdown(tcw: TinyCloudWeb, sourceId: string
   const row = await resolveVoiceNoteRow(tcw, sourceId, checkpoint);
   if (!row) throw new Error("Voice note row is missing");
   checkpoint();
+  // Aborting narrows but cannot eliminate the server-side late-write window: the
+  // metadata patch and fixed transcript mirror below are last-write-wins if a server
+  // committed just as its client request was aborted; transcript rev/hash rows remain authoritative.
   await execute(tcw, `UPDATE connector_meeting SET metadata = json_patch(COALESCE(metadata,'{}'), ?), updated_at = ?
     WHERE id = ? AND source = 'exo-voice-note'`,
   [JSON.stringify({ note_kv_key: key, note_edited_at: editedAt }), new Date().toISOString(), row.id], checkpoint);
@@ -262,16 +301,27 @@ export async function transcriptHash(sentences: FirefliesSentence[]): Promise<st
 export interface TranscriptToCommit { rev: number; sentences: FirefliesSentence[]; outcome: "transcribed" | "no_speech";
   text: string | null; engine?: string | null; provider?: string | null; model?: string | null; language?: string | null;
   speakerLabels?: boolean | null; participants?: string[]; transcribedAt?: string | null; metadata?: Record<string, unknown> }
-export async function commitVoiceNoteTranscript(tcw: TinyCloudWeb, sourceId: string, input: TranscriptToCommit): Promise<TranscriptCommit> {
-  const identity = await ensureVoiceNoteIdentity(tcw);
+export async function commitVoiceNoteTranscript(
+  tcw: TinyCloudWeb,
+  sourceId: string,
+  input: TranscriptToCommit,
+  checkpoint: () => void = () => undefined,
+): Promise<TranscriptCommit> {
+  checkpoint();
+  const identity = await ensureVoiceNoteIdentity(tcw, checkpoint);
   if (identity.status !== "established") throw Object.assign(new Error(identity.reason ?? identity.status), { code: identity.status });
-  const row = await resolveVoiceNoteRow(tcw, sourceId);
+  checkpoint();
+  const row = await resolveVoiceNoteRow(tcw, sourceId, checkpoint);
   if (!row) throw new Error("Voice note row is missing");
   const hash = await transcriptHash(input.sentences);
+  checkpoint();
   const bodyKey = transcriptRevKvKey("exo-voice-note", sourceId, hash);
   const body = canonical(input.sentences);
-  const put = await runOnSpaceLane(() => tcw.kv.put(bodyKey, body, { ifNoneMatch: "*", contentType: "application/json" }));
+  const put = await runOnSpaceLane((signal) => { checkpoint(); return tcw.kv.put(bodyKey, body,
+    { ifNoneMatch: "*", contentType: "application/json", signal }); },
+  { operation: `KV put ${bodyKey}`, payloadBytes: new TextEncoder().encode(body).byteLength });
   if (!put.ok && !/PRECONDITION|412/i.test(`${put.error.code} ${put.error.message}`)) throw errorOf(put);
+  checkpoint();
   const preview = input.outcome === "transcribed" ? (input.text ?? "").slice(0, 280) : null;
   await execute(tcw, `INSERT INTO voice_note_transcript
     (source_id, rev, hash, body_key, outcome, preview, engine, provider, model, language, speaker_labels,
@@ -285,28 +335,35 @@ export async function commitVoiceNoteTranscript(tcw: TinyCloudWeb, sourceId: str
   [sourceId, input.rev, hash, bodyKey, input.outcome, preview, input.engine ?? null, input.provider ?? null,
     input.model ?? null, input.language ?? null, input.speakerLabels == null ? null : Number(input.speakerLabels),
     JSON.stringify((input.participants ?? []).map((name) => ({ name, email: null }))),
-    input.transcribedAt ?? new Date().toISOString(), new Date().toISOString()]);
-  const committed = await verifyVoiceNoteTranscript(tcw, sourceId, input.rev, hash);
+    input.transcribedAt ?? new Date().toISOString(), new Date().toISOString()], checkpoint);
+  checkpoint();
+  const committed = await verifyVoiceNoteTranscript(tcw, sourceId, input.rev, hash, checkpoint);
   const mirror = { ...legacyGroup(input.metadata ?? {}), transcript_text: input.outcome === "transcribed" ? input.text : null,
     transcription_outcome: input.outcome, speaker_labels: input.metadata?.speaker_labels ?? input.speakerLabels ?? null,
     transcribed_at: input.transcribedAt ?? new Date().toISOString(), transcription_engine: input.engine ?? null,
     transcript_provider: input.provider ?? null, model: input.model ?? null, language: input.language ?? null };
   if (committed.rev === input.rev && committed.hash === hash) {
-    const live = await resolveVoiceNoteRow(tcw, sourceId);
+    checkpoint();
+    const live = await resolveVoiceNoteRow(tcw, sourceId, checkpoint);
     if (live) await execute(tcw, "UPDATE connector_meeting SET metadata = json_patch(COALESCE(metadata,'{}'), ?), participants = ?, updated_at = ? WHERE id = ? AND source = 'exo-voice-note'",
       [JSON.stringify(mirror), JSON.stringify((input.participants ?? []).map((name) => ({ name, email: null }))),
-        new Date().toISOString(), live.id]);
-    const fixed = await runOnSpaceLane(() => tcw.kv.put(transcriptKvKey("exo-voice-note", sourceId), body,
-      { contentType: "application/json" }));
+        new Date().toISOString(), live.id], checkpoint);
+    const key = transcriptKvKey("exo-voice-note", sourceId);
+    const fixed = await runOnSpaceLane((signal) => { checkpoint(); return tcw.kv.put(key, body,
+      { contentType: "application/json", signal }); }, { operation: `KV put ${key}`, payloadBytes: new TextEncoder().encode(body).byteLength });
     if (!fixed.ok) throw errorOf(fixed);
   }
   return committed;
 }
-export async function verifyVoiceNoteTranscript(tcw: TinyCloudWeb, sourceId: string, rev: number, hash: string): Promise<TranscriptCommit> {
-  const committed = await runOnSpaceLane(() => readTranscriptCommit(tcw, sourceId));
+export async function verifyVoiceNoteTranscript(tcw: TinyCloudWeb, sourceId: string, rev: number, hash: string,
+  checkpoint: () => void = () => undefined): Promise<TranscriptCommit> {
+  checkpoint();
+  const committed = await readTranscriptCommitOnLane(tcw, sourceId, checkpoint);
+  checkpoint();
   if (!committed || committed.rev < rev || (committed.rev === rev && committed.hash < hash))
     throw new Error("Transcript commit was not durable");
-  const body = await runOnSpaceLane(() => tcw.kv.get(committed.bodyKey));
+  const body = await runOnSpaceLane((signal) => { checkpoint(); return tcw.kv.get(committed.bodyKey, { signal }); }, { operation: `KV get ${committed.bodyKey}` });
   if (!body.ok) throw errorOf(body);
+  checkpoint();
   return committed;
 }

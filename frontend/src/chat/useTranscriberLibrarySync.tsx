@@ -16,10 +16,18 @@ const SavedContext = createContext<Readonly<Record<string, TranscriberSaveState>
 export const useTranscriberSavedState = () => useContext(SavedContext);
 
 export interface TranscriberLibrarySaver {
-  listSaved(tcw: TinyCloudWeb): Promise<{ ok: boolean; data?: string[] }>;
+  listSaved(
+    tcw: TinyCloudWeb,
+    scheduleRead?: <T>(read: () => Promise<T>) => Promise<T | null>,
+    isCurrent?: () => boolean,
+  ): Promise<{ ok: boolean; data?: string[] }>;
   save(tcw: TinyCloudWeb, meeting: TranscriberMeeting, transcript: TranscriberTranscript): Promise<{ ok: boolean }>;
 }
 const defaultSaver: TranscriberLibrarySaver = { listSaved: listSavedTranscriberMeetingIds, save: saveTranscriberMeeting };
+
+/** Each completeness read takes its own turn on the drain lane, and is dropped once the pass is stale. */
+const readOnDrainLane = (isCurrent: () => boolean) => <T,>(read: () => Promise<T>): Promise<T | null> =>
+  enqueueDrainWork(() => isCurrent() ? read() : Promise.resolve(null));
 
 /** One sequential pass. SQL source IDs alone never mark an import complete. */
 export async function syncTranscriberLibrary(input: {
@@ -36,10 +44,14 @@ export async function syncTranscriberLibrary(input: {
   const { tcw, client, saver = defaultSaver, isCurrent = () => true, onState = () => {}, observedSaved,
     deliveryActive = serverDeliveryActive, now = Date.now } = input;
   if (!isCurrent()) return;
+  // This API call can be slow or retry for tens of seconds; it does not touch
+  // the user's space and must never occupy the serial space-write lane.
   const listed = await client.list();
   if (listed.status !== "ok" || !isCurrent()) return;
-  const complete = await saver.listSaved(tcw);
-  if (!complete.ok || !isCurrent()) return;
+  // Each SQL/KV completeness read takes its own turn. A library with many
+  // saved recordings therefore yields the lane between keys for voice notes.
+  const complete = await saver.listSaved(tcw, readOnDrainLane(isCurrent), isCurrent);
+  if (!complete?.ok || !isCurrent()) return;
   const saved = new Set(complete.data ?? []);
   if (observedSaved && !observedSaved.initialized) {
     for (const id of saved) observedSaved.ids.add(id);
@@ -67,8 +79,15 @@ export async function syncTranscriberLibrary(input: {
     try {
       const result = await client.transcript(row.id);
       if (!isCurrent()) return;
-      const ok = result.status === "ok" && result.value.status === "ready"
-        && (await saver.save(tcw, row, result.value.transcript)).ok;
+      let ok = false;
+      if (result.status === "ok" && result.value.status === "ready") {
+        const fetchedTranscript = result.value.transcript;
+        const saved = await enqueueDrainWork(async () => {
+          if (!isCurrent()) return null;
+          return saver.save(tcw, row, fetchedTranscript);
+        });
+        ok = saved?.ok === true;
+      }
       if (!isCurrent()) return;
       if (ok) {
         captureEvents.emit("library-changed", { source: TRANSCRIBER_MEETING_SOURCE, sourceId: row.id });
@@ -110,18 +129,19 @@ export function useTranscriberLibrarySync(input: {
         // Meeting storage is readable with the vault locked. Snapshot now so
         // another device's saves during the lock are not part of the baseline.
         if (!observedSaved.initialized && !unlocked()) {
-          const baseline = await saver.listSaved(tcw);
-          if (baseline.ok && accountCurrent()) {
+          const baseline = await saver.listSaved(tcw, readOnDrainLane(accountCurrent), accountCurrent);
+          if (baseline?.ok && accountCurrent()) {
             for (const id of baseline.data ?? []) observedSaved.ids.add(id);
             observedSaved.initialized = true;
           }
         }
         if (sessionCurrent() && unlocked()) {
-          await enqueueDrainWork(() => syncTranscriberLibrary({
+          // Each save takes the drain lane itself; the pass as a whole does not hold it.
+          await syncTranscriberLibrary({
             tcw, client: api, saver, isCurrent, observedSaved, onState: (id, state) => {
               if (accountCurrent()) setSaved((old) => ({ ...old, [id]: state }));
             },
-          }));
+          });
         }
       })().catch(() => { /* The next wake retries failures outside an individual recording. */ })
         .finally(() => { running = false; });

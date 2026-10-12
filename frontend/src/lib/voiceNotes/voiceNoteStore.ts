@@ -54,7 +54,8 @@ import { readLegacyTranscriptWinner, readTranscriptCommit, legacyTranscriptMetad
 import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio,
   patchVoiceNoteMarkdown, resolveVoiceNoteRow } from "./voiceNoteRows";
 import { runOnSpaceLane } from "../spaceWriteLane";
-import { currentAccountGeneration, isVoiceNoteAccountMounted } from "./accountContext";
+import { withVoiceNoteReadDeadline, withVoiceNoteSaveDeadline } from "./saveDeadline";
+import { currentAccountGeneration, isVoiceNoteAccountMounted, StaleAccountContext } from "./accountContext";
 import { base64ToBytes, bytesToBase64 } from "./voiceNoteAudio";
 import { adoptNote, loadNote, noteMarkdown, parseNoteMarkdown, type RecordingNote } from "./recordingNotes";
 
@@ -79,12 +80,30 @@ export function voiceNoteMarkdownKvKey(id: string): string {
 const noteSyncs = new Map<string, Promise<boolean>>();
 export type NoteSyncErrorCode = "sync_failed";
 const noteSyncErrors = new Map<string, NoteSyncErrorCode>();
+/** Why a sync ended without syncing anything: this device has no such note (`no-note`) or the space has no row for it yet (`no-row`). */
+export type NoteSyncSkipReason = "no-row" | "no-note";
+const noteSyncing = new Set<string>();
+const noteSyncSkips = new Map<string, NoteSyncSkipReason>();
+/** The local note revision (`editedAt`) the space last confirmed holding, per account and note. */
+const noteSynced = new Map<string, string>();
 const noteSyncListeners = new Set<() => void>();
 const noteSyncKey = (tcw: TinyCloudWeb, id: string) => JSON.stringify([tcw.spaceId, tcw.did, id]);
 
 /** Account-scoped status; UI never receives a raw storage or network error. */
 export function recordingNoteSyncError(tcw: TinyCloudWeb, id: string): NoteSyncErrorCode | null {
   return noteSyncErrors.get(noteSyncKey(tcw, id)) ?? null;
+}
+/** True while `syncRecordingNote` runs for this account's note. */
+export function recordingNoteSyncing(tcw: TinyCloudWeb, id: string): boolean {
+  return noteSyncing.has(noteSyncKey(tcw, id));
+}
+/** Why the last sync of this note did nothing; null after a sync that worked or before any. */
+export function recordingNoteSyncSkip(tcw: TinyCloudWeb, id: string): NoteSyncSkipReason | null {
+  return noteSyncSkips.get(noteSyncKey(tcw, id)) ?? null;
+}
+/** The `editedAt` of the local note revision the last sync wrote or found already in the space; null before one did. */
+export function recordingNoteSyncedAt(tcw: TinyCloudWeb, id: string): string | null {
+  return noteSynced.get(noteSyncKey(tcw, id)) ?? null;
 }
 export function subscribeRecordingNoteSync(listener: () => void): () => void {
   noteSyncListeners.add(listener);
@@ -98,21 +117,41 @@ export function reportRecordingNoteSyncError(tcw: TinyCloudWeb, id: string, code
   for (const listener of [...noteSyncListeners]) listener();
 }
 
+function setNoteSyncing(key: string, syncing: boolean): void {
+  if (syncing === noteSyncing.has(key)) return;
+  if (syncing) noteSyncing.add(key);
+  else noteSyncing.delete(key);
+  for (const listener of [...noteSyncListeners]) listener();
+}
+function setNoteSynced(key: string, editedAt: string): void {
+  if (noteSynced.get(key) === editedAt) return;
+  noteSynced.set(key, editedAt);
+  for (const listener of [...noteSyncListeners]) listener();
+}
+function setNoteSyncSkip(key: string, reason: NoteSyncSkipReason | null): void {
+  if ((noteSyncSkips.get(key) ?? null) === reason) return;
+  if (reason) noteSyncSkips.set(key, reason);
+  else noteSyncSkips.delete(key);
+  for (const listener of [...noteSyncListeners]) listener();
+}
+
 /** The T18 row and its audio prefix own note sync; there is no separate upload queue. */
 export function syncRecordingNote(tcw: TinyCloudWeb, id: string,
   checkpoint: () => void = () => undefined): Promise<boolean> {
   const syncKey = noteSyncKey(tcw, id);
   const inFlight = noteSyncs.get(syncKey);
   if (inFlight) return inFlight;
+  let skip: NoteSyncSkipReason | null = null;
   const sync = (async () => {
     checkpoint();
+    setNoteSyncing(syncKey, true);
     for (;;) {
       const note = await loadNote(id);
-      if (!note) return false;
+      if (!note) { skip = "no-note"; return false; }
       const row = await resolveVoiceNoteRow(tcw, id, checkpoint);
-      if (!row) return false;
+      if (!row) { skip = "no-row"; return false; }
       const key = voiceNoteMarkdownKvKey(id);
-      if (row.metadata.note_kv_key === key && row.metadata.note_edited_at === note.editedAt) return true;
+      if (row.metadata.note_kv_key === key && row.metadata.note_edited_at === note.editedAt) { setNoteSynced(syncKey, note.editedAt); return true; }
       // The space may hold a saved-edit time this device has not seen; a put must never erase it.
       const remote = await readRecordingNoteFromSpace(tcw, id);
       checkpoint();
@@ -121,27 +160,34 @@ export function syncRecordingNote(tcw: TinyCloudWeb, id: string,
       const adopted = theirs !== null && (mine === null || Date.parse(theirs) > Date.parse(mine))
         ? (await adoptNote({ ...note, savedEditAt: theirs })).savedEditAt : mine;
       const body = noteMarkdown({ ...note, savedEditAt: adopted });
-      const put = await runOnSpaceLane(() => { checkpoint(); return tcw.kv.put(key, body, { contentType: "text/markdown" }); });
+      const put = await runOnSpaceLane((signal) => { checkpoint(); return tcw.kv.put(key, body, { contentType: "text/markdown", signal }); },
+        { operation: `KV put ${key}`, payloadBytes: new TextEncoder().encode(body).byteLength });
       if (!put.ok) throw new Error(`Could not sync recording note: ${put.error.message}`);
       checkpoint();
       await patchVoiceNoteMarkdown(tcw, id, key, note.editedAt, checkpoint);
       const latest = await loadNote(id);
-      if (!latest || latest.revision === note.revision) return true;
+      if (!latest || latest.revision === note.revision) { setNoteSynced(syncKey, note.editedAt); return true; }
     }
   })().then((result) => {
     if (result) { checkpoint(); reportRecordingNoteSyncError(tcw, id, null); }
+    setNoteSyncSkip(syncKey, result ? null : skip);
     return result;
   }, (error: unknown) => {
     checkpoint(); // A cancelled account never publishes a note status for its old client.
     reportRecordingNoteSyncError(tcw, id, "sync_failed");
+    setNoteSyncSkip(syncKey, null);
     throw error;
-  }).finally(() => { if (noteSyncs.get(syncKey) === sync) noteSyncs.delete(syncKey); });
+  }).finally(() => {
+    if (noteSyncs.get(syncKey) === sync) noteSyncs.delete(syncKey);
+    setNoteSyncing(syncKey, false);
+  });
   noteSyncs.set(syncKey, sync);
   return sync;
 }
 
 export async function readRecordingNoteFromSpace(tcw: TinyCloudWeb, id: string): Promise<RecordingNote | null> {
-  const result = await tcw.kv.get(voiceNoteMarkdownKvKey(id));
+  const key = voiceNoteMarkdownKvKey(id);
+  const result = await withVoiceNoteReadDeadline(`KV get recording note ${key}`, (signal) => tcw.kv.get(key, { signal }));
   if (!result.ok) {
     if (/NOT_FOUND|404/i.test(`${result.error.code ?? ""} ${result.error.message}`)) return null;
     throw new Error(`Could not load recording note: ${result.error.message}`);
@@ -178,10 +224,13 @@ export function voiceNoteAudioSourceFromBase64(audio: VoiceNoteAudio): VoiceNote
 
 export interface StoreAudioOptions {
   partSize?: number;
+  onUploadStart?: (totalBytes: number) => void;
   onProgress?: (storedBytes: number, totalBytes: number) => void;
   /** Injected in tests. */
   retryDelaysMs?: readonly number[];
-  schedule?: <T>(call: () => Promise<T>) => Promise<T>;
+  onRetry?: (attempt: number, code: string) => void;
+  schedule?: <T>(call: (signal?: AbortSignal) => Promise<T>, operation?: string, timeoutMs?: number,
+    payloadBytes?: number) => Promise<T>;
   checkpoint?: () => void;
 }
 
@@ -190,22 +239,22 @@ export const VOICE_NOTE_STORAGE_FULL = AUDIO_STORAGE_FULL;
 export const VOICE_NOTE_AUDIO_TOO_LARGE = "VOICE_NOTE_AUDIO_TOO_LARGE";
 export const VOICE_NOTE_AUDIO_CORRUPT = AUDIO_CORRUPT;
 
-type StoreFailure = { ok: false; error: { code: string; message: string } };
+type StoreFailure = { ok: false; error: { code: string; message: string; cause?: unknown } };
 
 /** A shared audio store rejection as this module's Result, in the codes the UI shows. */
 function audioFailure(op: string, err: unknown): StoreFailure {
   if (!(err instanceof AudioStoreError)) {
-    return { ok: false, error: { code: "STORE_ERROR", message: `${op}: ${err instanceof Error ? err.message : String(err)}` } };
+    return { ok: false, error: { code: "STORE_ERROR", message: `${op}: ${err instanceof Error ? err.message : String(err)}`, cause: err } };
   }
   switch (err.code) {
     case AUDIO_STORAGE_FULL:
-      return { ok: false, error: { code: VOICE_NOTE_STORAGE_FULL, message: `${op}: your TinyCloud storage is full` } };
+      return { ok: false, error: { code: VOICE_NOTE_STORAGE_FULL, message: `${op}: your TinyCloud storage is full`, cause: err } };
     case AUDIO_SOURCE_READ_FAILED:
-      return { ok: false, error: { code: "VOICE_NOTE_SOURCE_READ_FAILED", message: `${op}: ${err.message}` } };
+      return { ok: false, error: { code: "VOICE_NOTE_SOURCE_READ_FAILED", message: `${op}: ${err.message}`, cause: err } };
     case AUDIO_TOO_LARGE:
-      return { ok: false, error: { code: VOICE_NOTE_AUDIO_TOO_LARGE, message: `${op}: ${err.message}` } };
+      return { ok: false, error: { code: VOICE_NOTE_AUDIO_TOO_LARGE, message: `${op}: ${err.message}`, cause: err } };
     default:
-      return { ok: false, error: { code: err.code, message: `${op}: ${err.message}` } };
+      return { ok: false, error: { code: err.code, message: `${op}: ${err.message}`, cause: err } };
   }
 }
 
@@ -331,13 +380,20 @@ export async function saveVoiceNote(
     opts.checkpoint?.();
     const row = await createVoiceNoteRow(tcw, recording, voiceNoteTitle(recording.startedAt), opts.checkpoint);
     opts.checkpoint?.();
-    const empty = await runOnSpaceLane(() => { opts.checkpoint?.(); return tcw.kv.put(transcriptKvKey(VOICE_NOTE_SOURCE, recording.id), "[]",
-      { ifNoneMatch: "*", contentType: "application/json" }); });
+    // A timed-out KV request may still finish remotely. The indexed row uses a
+    // deterministic id with ON CONFLICT DO NOTHING; parts use deterministic
+    // per-note keys and the manifest is written last. A retry therefore adopts
+    // complete existing parts and cannot publish a partial file as complete.
+    const emptyKey = transcriptKvKey(VOICE_NOTE_SOURCE, recording.id);
+    const empty = await runOnSpaceLane((signal) => { opts.checkpoint?.(); return tcw.kv.put(emptyKey, "[]",
+      { ifNoneMatch: "*", contentType: "application/json", signal }); }, { operation: `KV put ${emptyKey}` });
     if (!empty.ok && !/PRECONDITION|412/i.test(`${empty.error.code} ${empty.error.message}`))
-      return { ok: false, error: { code: empty.error.code ?? "STORE_ERROR", message: empty.error.message } };
+      return { ok: false, error: { code: empty.error.code ?? "STORE_ERROR", message: empty.error.message, cause: empty.error } };
     opts.checkpoint?.();
-    const audio = await putVoiceNoteAudio(tcw, recording.id, source, { ...opts, schedule: (job) =>
-      (opts.schedule ?? runOnSpaceLane)(() => { opts.checkpoint?.(); return job(); }) });
+    const audio = await putVoiceNoteAudio(tcw, recording.id, source, { ...opts, schedule: (job, operation, timeoutMs, payloadBytes) =>
+      (opts.schedule ?? ((call, label, limit, size) => runOnSpaceLane(call, {
+        operation: label ?? "voice-note audio KV call", timeoutMs: limit, payloadBytes: size,
+      })))((signal) => { opts.checkpoint?.(); return job(signal); }, operation, timeoutMs, payloadBytes) });
     if (!audio.ok) return audio;
     const base = voiceNoteAudioKvKey(recording.id);
     opts.checkpoint?.();
@@ -355,7 +411,7 @@ export async function saveVoiceNote(
     return { ok: true, data: { id: row.id, inserted: row.inserted, createdAt: row.createdAt, noteSyncError } };
   } catch (caught) {
     return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
-      message: caught instanceof Error ? caught.message : String(caught) } };
+      message: caught instanceof Error ? caught.message : String(caught), cause: caught } };
   }
 }
 
@@ -398,6 +454,8 @@ export interface VoiceNoteForTranscription {
   /** A v2 choice is durable in the space row even after native deletes its sidecar. */
   captureVersion: number | null;
   captureTranscriber: string | null;
+  /** Where the note's recording began (v2 notes only); null when the row does not say. */
+  captureSource: string | null;
 }
 
 export async function readVoiceNoteForTranscription(
@@ -418,20 +476,22 @@ export async function readVoiceNoteForTranscription(
   let durationSeconds: number | null = typeof row[0] === "number" ? row[0] : null;
   let captureVersion: number | null = null;
   let captureTranscriber: string | null = null;
+  let captureSource: string | null = null;
   try {
     const metadata = typeof row[1] === "string" ? JSON.parse(row[1]) as unknown : row[1];
     const capture = metadata && typeof metadata === "object" ? (metadata as { capture?: unknown }).capture : null;
     if (capture && typeof capture === "object") {
-      const saved = capture as { duration_ms?: unknown; version?: unknown; options?: { transcriber?: unknown } };
+      const saved = capture as { duration_ms?: unknown; version?: unknown; source?: unknown; options?: { transcriber?: unknown } };
       if (durationSeconds === null && typeof saved.duration_ms === "number") durationSeconds = saved.duration_ms / 1000;
       if (typeof saved.version === "number") captureVersion = saved.version;
       if (typeof saved.options?.transcriber === "string") captureTranscriber = saved.options.transcriber;
+      if (typeof saved.source === "string") captureSource = saved.source;
     }
   } catch {
     // Legacy metadata may be malformed; the audio's size is checked before decoding.
   }
   return { ok: true, data: { transcript: await readVoiceNoteTranscriptState(tcw, sourceId),
-    durationSeconds, captureVersion, captureTranscriber } };
+    durationSeconds, captureVersion, captureTranscriber, captureSource } };
 }
 
 /** What a transcription adds to a note: the sentences for its transcript key and row metadata. */
@@ -462,16 +522,32 @@ export async function saveVoiceNoteTranscript(
   sourceId: string,
   transcript: VoiceNoteTranscriptSave,
   account?: VoiceNoteTranscriptAccount,
+  checkpoint: () => void = () => undefined,
 ): Promise<StoreResult<UpsertMeetingOutcome>> {
   const accountGeneration = account?.generation ?? currentAccountGeneration();
+  checkpoint();
   if (!Number.isSafeInteger(transcript.rev) || transcript.rev < 1)
     return { ok: false, error: { code: "VOICE_NOTE_REV_REQUIRED", message: "The note's transcript revision is missing" } };
-  const schema = await ensureSchema(tcw);
-  if (!schema.ok) return schema;
-  const existing = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
-    `SELECT id FROM connector_meeting WHERE source = ? AND source_id = ? LIMIT 1`,
-    [VOICE_NOTE_SOURCE, sourceId],
-  );
+  // Each await before the commit is bounded and throws on timeout, so a timed-out save never
+  // resumes into a write behind a later save of the same note.
+  let existing: Awaited<ReturnType<ReturnType<typeof tcw.sql.db>["query"]>>;
+  try {
+    checkpoint();
+    const schema = await withVoiceNoteSaveDeadline("ensure the space schema", () => {
+      checkpoint();
+      return ensureSchema(tcw, checkpoint);
+    });
+    checkpoint();
+    if (!schema.ok) return schema;
+    existing = await runOnSpaceLane((signal) => { checkpoint(); return tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
+      `SELECT id FROM connector_meeting WHERE source = ? AND source_id = ? LIMIT 1`,
+      [VOICE_NOTE_SOURCE, sourceId], { signal }); }, { operation: "SQL query: voice note exists" });
+    checkpoint();
+  } catch (caught) {
+    if (caught instanceof StaleAccountContext) throw caught;
+    return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
+      message: caught instanceof Error ? caught.message : String(caught) } };
+  }
   if (!existing.ok) {
     return { ok: false, error: { code: existing.error.code ?? "STORE_ERROR", message: `saveVoiceNoteTranscript: ${existing.error.message}` } };
   }
@@ -479,6 +555,7 @@ export async function saveVoiceNoteTranscript(
     return { ok: false, error: { code: "VOICE_NOTE_NOT_FOUND", message: "saveVoiceNoteTranscript: the voice note no longer exists" } };
   }
   try {
+    checkpoint();
     const m = transcript.metadata;
     await commitVoiceNoteTranscript(tcw, sourceId, {
       rev: transcript.rev, sentences: transcript.sentences,
@@ -492,13 +569,15 @@ export async function saveVoiceNoteTranscript(
         : ["diarized", "channels", "channel-you-others"].includes(String(m.speaker_labels)),
       participants: transcript.speakers,
       transcribedAt: typeof m.transcribed_at === "string" ? m.transcribed_at : null, metadata: m,
-    });
+    }, checkpoint);
+    checkpoint();
     if (accountGeneration === currentAccountGeneration() && (!account?.did || isVoiceNoteAccountMounted(account.did))) {
       captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId });
     }
     return { ok: true, data: { id: String(existing.data.rows[0]?.[0]), inserted: false,
       createdAt: new Date().toISOString() } };
   } catch (caught) {
+    if (caught instanceof StaleAccountContext) throw caught;
     return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
       message: caught instanceof Error ? caught.message : String(caught) } };
   }
@@ -540,7 +619,8 @@ async function readStoredAudio(tcw: TinyCloudWeb, sourceId: string, opts: LoadAu
 
 /** A note saved before TC-517: its whole audio as one JSON value at the base key. */
 async function readLegacyAudio(tcw: TinyCloudWeb, sourceId: string): Promise<StoreResult<VoiceNoteAudio>> {
-  const res = await tcw.kv.get(voiceNoteAudioKvKey(sourceId));
+  const key = voiceNoteAudioKvKey(sourceId);
+  const res = await tcw.kv.get(key);
   if (!res.ok) {
     return { ok: false, error: { code: res.error.code ?? "STORE_ERROR", message: `loadVoiceNoteAudio: ${res.error.message}` } };
   }

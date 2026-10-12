@@ -18,11 +18,12 @@ describe("level mapping", () => {
     const samples = new Float32Array(1024);
     samples[10] = 0.5;
     const { level, peak } = measureLevels(samples);
-    expect(peak).toBeCloseTo(levelFromAmplitude(0.5), 5);
+    expect(peak).toBeCloseTo(0.5, 5);
     expect(level).toBeLessThan(peak);
+    expect(level).toBeCloseTo(Math.sqrt(0.25 / 1024), 5);
     expect(measureLevels(new Float32Array(0))).toEqual({ level: 0, peak: 0 });
     const negative = new Float32Array(8).fill(-0.5);
-    expect(measureLevels(negative).peak).toBeCloseTo(levelFromAmplitude(0.5), 5);
+    expect(measureLevels(negative).peak).toBeCloseTo(0.5, 5);
   });
 });
 
@@ -61,7 +62,9 @@ describe("startLevelMeter", () => {
     expect(1000 / interval).toBeGreaterThan(29);
     nowMs += 33; handler!();
     expect(received[0]).toMatchObject({ active: true });
-    expect(received[0]!.level).toBeCloseTo(levelFromAmplitude(0.25), 5);
+    expect(received[0]!.level).toBeCloseTo(0.25, 5);
+    expect(received[0]!.peak).toBeCloseTo(0.25, 5);
+    expect(levelFromAmplitude(received[0]!.level)).toBeCloseTo(levelFromAmplitude(0.25), 5);
     samples = new Float32Array(1024);
     nowMs += 33; handler!();
     expect(received[1]).toMatchObject({ level: 0, peak: 0, active: true });

@@ -12,6 +12,7 @@ import { hapticLight } from "@/lib/haptics";
 import { ModesCard } from "../ModesCard";
 import { PrivacyScale } from "../PrivacyScale";
 import { recorderSizing, type RecorderLayout } from "../shellCapabilities";
+import { TimerDigits } from "../TimerDigits";
 import {
   CheckIcon,
   ChevronDownIcon,
@@ -202,8 +203,6 @@ export function DesktopRecorder({
         } as CSSProperties
       }
     >
-      <div className="pr-blob a" aria-hidden="true" />
-      <div className="pr-blob b" aria-hidden="true" />
       <p
         role="status"
         aria-live="polite"
@@ -238,9 +237,10 @@ export function DesktopRecorder({
           <div
             className="pr-time soft-timer"
             role="timer"
+            aria-label={view.timer.text}
             data-dim={view.ring === "paused"}
           >
-            <span>{view.timer.text}</span>
+            <TimerDigits text={view.timer.text} />
           </div>
           {view.timer.countdown && (
             <div className="pr-countdown">{view.timer.countdown.text}</div>
@@ -376,51 +376,65 @@ export function DesktopRecorder({
             )}
           </p>
         ))}
-        {denied ? (
+        {idleDenied ? (
           <div className="pr-controls">
             <MicDeniedAction
-              idle={idleDenied}
+              idle
               onOpenSettings={openSettings}
               onTryAgain={recorder.record}
             />
           </div>
         ) : (
-          <div className="pr-controls">
-            <button
-              ref={discardButton}
-              type="button"
-              className="pr-b"
-              aria-label="Discard recording"
-              disabled={!(view.controls.discard || discardUnknown)}
-              onClick={() => setDiscardOpen(true)}
-            >
-              <CloseIcon />
-            </button>
-            <button
-              type="button"
-              className="pr-b"
-              aria-label={resume ? "Resume recording" : "Pause recording"}
-              disabled={!(resume || view.controls.pause)}
-              onClick={() => {
-                hapticLight();
-                control(resume ? "resume" : "pause");
-              }}
-            >
-              {resume ? <PlayIcon /> : <PauseIcon />}
-            </button>
-            <button
-              type="button"
-              className="pr-b main"
-              data-emphasis={mustSave}
-              disabled={!(view.controls.stop || stopUnknown)}
-              onClick={() =>
-                onDone ? onDone(() => control("stop")) : control("stop")
-              }
-            >
-              <CheckIcon />
-              Done
-            </button>
-          </div>
+          <>
+            {view.controls.openSettings && (
+              <div className="pr-controls" style={{ paddingBottom: 0 }}>
+                <MicDeniedAction
+                  idle={false}
+                  onOpenSettings={openSettings}
+                  onTryAgain={recorder.record}
+                />
+              </div>
+            )}
+            <div className="pr-controls">
+              <button
+                ref={discardButton}
+                type="button"
+                className="pr-b"
+                aria-label="Discard recording"
+                disabled={!(view.controls.discard || discardUnknown)}
+                onClick={() => setDiscardOpen(true)}
+              >
+                <CloseIcon />
+              </button>
+              {!denied && (
+                <button
+                  type="button"
+                  className="pr-b"
+                  aria-label={resume ? "Resume recording" : "Pause recording"}
+                  disabled={!(resume || view.controls.pause)}
+                  onClick={() => {
+                    hapticLight();
+                    control(resume ? "resume" : "pause");
+                  }}
+                >
+                  {resume ? <PlayIcon /> : <PauseIcon />}
+                </button>
+              )}
+              <button
+                type="button"
+                className="pr-b main"
+                data-emphasis={mustSave}
+                data-secondary={view.controls.openSettings}
+                disabled={!(view.controls.stop || stopUnknown)}
+                onClick={() =>
+                  onDone ? onDone(() => control("stop")) : control("stop")
+                }
+              >
+                <CheckIcon />
+                Done
+              </button>
+            </div>
+          </>
         )}
       </div>
 

@@ -4,12 +4,15 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { RouteLine, voiceNoteRoute } from "./RouteLine";
 
-const items = (html: string) => [...html.matchAll(/<li[^>]*data-node="([^"]+)"[^>]*>.*?<span class="pr-2[^"]*">([^<]+)/g)].map((m) => [m[1], m[2]]);
+const items = (html: string) => [...html.matchAll(/<li[^>]*data-node="([^"]+)"[^>]*>.*?<span data-route-label="" class="[^"]*text-meta[^"]*">([^<]+)/g)].map((m) => [m[1], m[2]]);
 
 describe("RouteLine", () => {
   test("an ordered list named for what it shows", () => {
     const html = renderToStaticMarkup(<RouteLine nodes={voiceNoteRoute("off")} />);
-    expect(html).toStartWith('<ol aria-label="Where your audio goes"');
+    expect(html).toStartWith('<div class="route-line-container w-full text-[1rem]" data-route-line-container=""><ol aria-label="Where your audio goes"');
+    expect(html).toContain('style="--route-node-count:2"');
+    expect(html).toContain("grid-cols-[repeat(var(--route-node-count),minmax(0,1fr))]");
+    expect(html).toContain("route-line");
   });
 
   test("off: this phone straight to your space", () => {
@@ -22,7 +25,7 @@ describe("RouteLine", () => {
   test("private cloud: through private cloud, which is a processing stop", () => {
     expect(items(renderToStaticMarkup(<RouteLine nodes={voiceNoteRoute("private-cloud")} />))).toEqual([
       ["source", "This phone"],
-      ["processing", "Private cloud"],
+      ["processing", "Private"],
       ["destination", "Your space"],
     ]);
   });

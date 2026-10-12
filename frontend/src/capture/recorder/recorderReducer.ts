@@ -57,6 +57,8 @@ export interface RecorderState {
   outcome: "local" | "saved" | "failed" | null;
   /** The phone receipt distinguishes an active upload from a held note or another saver. */
   localUpload: "uploading" | "held" | "in-flight" | null;
+  /** Why the phone-only receipt is held, for a later actionable receipt. */
+  localUploadHeldReason?: "signed-out" | "other-account" | "legacy" | "unowned";
   lastSaved: { id: string; durationMs: number; at: number } | null;
   /** The recording behind a "Kept on this phone" receipt, so a later Save now can land it. */
   failedRecording: { id: string; durationMs: number } | null;
@@ -99,7 +101,7 @@ export type RecorderEvent =
   /** The save started (percent null) or moved on. */
   | { type: "SAVE_PROGRESS"; percent: number | null }
   | { type: "LOCAL_COMMITTED"; id: string; durationMs: number; at: number }
-  | { type: "LOCAL_UPLOAD_HELD"; id: string }
+  | { type: "LOCAL_UPLOAD_HELD"; id: string; reason: "signed-out" | "other-account" | "legacy" | "unowned" }
   | { type: "LOCAL_UPLOAD_IN_FLIGHT"; id: string }
   | { type: "SAVED"; id: string; durationMs: number; at: number }
   | { type: "SAVE_FAILED"; error: string; recording: { id: string; durationMs: number } | null }
@@ -152,7 +154,8 @@ export const initialRecorderState: RecorderState = {
 
 /** Idle again, keeping what the user still has to read (the error, the limit notice, the outcome). */
 function toIdle(state: RecorderState): RecorderState {
-  return { ...state, phase: "idle", recordingId: null, startedAt: null, mic: IDLE_MIC,
+  const { localUploadHeldReason: _heldReason, ...rest } = state;
+  return { ...rest, phase: "idle", recordingId: null, startedAt: null, mic: IDLE_MIC,
     controlPending: null, savePercent: null, autoSaving: false };
 }
 
@@ -217,7 +220,7 @@ function reduce(state: RecorderState, event: RecorderEvent): RecorderState {
   switch (event.type) {
     case "START_REQUESTED":
       if (state.phase !== "idle") return state;
-      return { ...state, phase: "starting", permissionDenied: false, error: null, limitNotice: null, outcome: null, localUpload: null, failedRecording: null, savePercent: null };
+      return { ...state, phase: "starting", permissionDenied: false, error: null, limitNotice: null, outcome: null, localUpload: null, failedRecording: null, savePercent: null, elapsedMs: 0, audioMs: 0, elapsedAt: null, startedAt: null };
     case "STARTED":
       if (state.phase !== "starting") return state;
       return {
@@ -324,7 +327,7 @@ function reduce(state: RecorderState, event: RecorderEvent): RecorderState {
       };
     case "LOCAL_UPLOAD_HELD":
       if (state.phase !== "idle" || state.outcome !== "local" || state.lastSaved?.id !== event.id) return state;
-      return { ...state, localUpload: "held" };
+      return { ...state, localUpload: "held", localUploadHeldReason: event.reason };
     case "LOCAL_UPLOAD_IN_FLIGHT":
       if (state.phase !== "idle" || state.outcome !== "local" || state.lastSaved?.id !== event.id) return state;
       return { ...state, localUpload: "in-flight" };

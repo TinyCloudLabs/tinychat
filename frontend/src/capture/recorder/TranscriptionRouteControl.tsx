@@ -1,12 +1,12 @@
 // The centre of the recorder: where this note's audio goes (plan §2.7). A
-// "Transcription" heading, Off · On this phone · Private cloud when private cloud is offered
+// "Transcription" heading, Audio only · Local · Private when private cloud is offered
 // to this build and account, the route as a RouteLine, one short line, and a
-// link to How it works for the rest. Choosing Private cloud the first time
+// link to How it works for the rest. Choosing Private the first time
 // asks once ("Use private cloud"); the full disclosure is on How it works.
-// On this phone never needs a sign-in or a network check: native capture defaults to it
+// Local never needs a sign-in or a network check: native capture defaults to it
 // already, and the only extra state to show is the model's download progress. Signed out, native
 // (CaptureEngine) forces on-device regardless of what's requested, so this control must too: only
-// "On this phone" is ever offered or shown selected — never "Off".
+// "Local" is ever offered or shown selected — never "Audio only".
 import { useEffect, useId, useState, useSyncExternalStore } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -17,9 +17,10 @@ import { hapticSelection } from "@/lib/haptics";
 import { cn } from "@/lib/utils";
 import { localTranscriptionUnavailable } from "@/lib/voiceNotes/captureEngine";
 import { VoiceNotes, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { onDeviceSttStore, onDeviceModelLine } from "@/lib/voiceNotes/onDeviceSttStore";
-import { isOnDeviceReady, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
+import { downloadOnDeviceModel, onDeviceSttStore, onDeviceModelLine } from "@/lib/voiceNotes/onDeviceSttStore";
+import { isAppleSpeech, isOnDeviceReady, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { readDefaultTranscriber, setRecordingTranscriber } from "@/lib/voiceNotes/transcriberPreference";
+import { FINAL_COPY, TRANSCRIBER_NAME } from "./final/finalCopy";
 import type { RecorderValue } from "./RecorderProvider";
 import type { SetTranscriberResult } from "./voiceNoteRecorderController";
 import { RouteLine, voiceNoteRoute } from "./RouteLine";
@@ -30,7 +31,7 @@ type RecordingRoute = Pick<RecorderValue, "transcriber" | "setTranscriber">;
 
 /** The default recorder changes this note's journaled native options, not its JS default. */
 export function setRecordingRoute(recorder: RecordingRoute, id: Route) {
-  return recorder.setTranscriber(id, { scope: "recording", ...(id === "on-device" ? { waitForModel: true } : {}) });
+  return recorder.setTranscriber(id, { scope: "recording" });
 }
 
 export function consentToRecordingPrivateCloud(recorder: RecordingRoute, onConsent: () => void) {
@@ -38,7 +39,7 @@ export function consentToRecordingPrivateCloud(recorder: RecordingRoute, onConse
   return setRecordingRoute(recorder, "private-cloud");
 }
 
-const ROUTE_NAME: Record<Route, string> = { off: "Off", "on-device": "On this phone", "private-cloud": "Private cloud" };
+const ROUTE_NAME: Record<Route, string> = TRANSCRIBER_NAME;
 export const SIGNED_OUT_ROUTE = "Sign in to choose another mode";
 
 export function routeUnavailable(next: Route): string {
@@ -84,17 +85,17 @@ function asRoute(transcriber: TranscriberId): Route {
 
 function routeOptions(signedIn: boolean, offered: boolean): { value: Route; label: string }[] {
   if (localTranscriptionUnavailable())
-    return offered ? [{ value: "off", label: "Off" }, { value: "private-cloud", label: "Private cloud" }] : [{ value: "off", label: "Off" }];
-  if (!signedIn) return [{ value: "on-device", label: "On this phone" }];
+    return offered ? [{ value: "off", label: ROUTE_NAME.off }, { value: "private-cloud", label: ROUTE_NAME["private-cloud"] }] : [{ value: "off", label: ROUTE_NAME.off }];
+  if (!signedIn) return [{ value: "on-device", label: ROUTE_NAME["on-device"] }];
   return offered
     ? [
-        { value: "off", label: "Off" },
-        { value: "on-device", label: "On this phone" },
-        { value: "private-cloud", label: "Private cloud" },
+        { value: "off", label: ROUTE_NAME.off },
+        { value: "on-device", label: ROUTE_NAME["on-device"] },
+        { value: "private-cloud", label: ROUTE_NAME["private-cloud"] },
       ]
     : [
-        { value: "off", label: "Off" },
-        { value: "on-device", label: "On this phone" },
+        { value: "off", label: ROUTE_NAME.off },
+        { value: "on-device", label: ROUTE_NAME["on-device"] },
       ];
 }
 
@@ -203,14 +204,19 @@ export function TranscriptionRouteControl(props: {
   };
 
   const modelLine = onDeviceModelLine(sttStatus);
+  const appleSpeechMissing = isAppleSpeech(sttStatus) && sttStatus.appleSpeech === "asset_missing" && sttStatus.download.state !== "running";
   const primaryModel = sttStatus.models.find((m) => m.id === "parakeet-tdt-0.6b-v3-int8" || m.id === "parakeet-tdt-110m-en-int8");
 
   let line: string;
   if (askingNow) line = "";
-  else if (route === "on-device") line = isOnDeviceReady(sttStatus) ? "Transcribed on this phone." : `Transcribed on this phone, once the model finishes downloading. ${modelLine.text}`;
-  else if (offered && consented) line = `Private cloud transcribes notes up to ${minutes(transcription!.maxSeconds)} minutes.`;
-  else if (transcription?.availability === "checking" && consented) line = "Checking private cloud…";
-  else if (transcription?.availability === "failed" && consented) line = "Private cloud is unavailable right now.";
+  else if (route === "on-device") {
+    if (isOnDeviceReady(sttStatus)) line = "Transcribed on this phone.";
+    else if (isAppleSpeech(sttStatus)) line = modelLine.text;
+    else line = `Transcribed on this phone, once the model finishes downloading. ${modelLine.text}`;
+  }
+  else if (offered && consented) line = `${ROUTE_NAME["private-cloud"]} transcribes notes up to ${minutes(transcription!.maxSeconds)} minutes.`;
+  else if (transcription?.availability === "checking" && consented) line = `Checking ${ROUTE_NAME["private-cloud"]}…`;
+  else if (transcription?.availability === "failed" && consented) line = `${ROUTE_NAME["private-cloud"]} isn't available right now.`;
   else line = "Audio only.";
 
   return (
@@ -254,15 +260,27 @@ export function TranscriptionRouteControl(props: {
               Check again
             </Button>
           )}
-          {route === "on-device" && primaryModel && primaryModel.state !== "ready" && primaryModel.state !== "downloading" && primaryModel.state !== "queued" && (
+          {route === "on-device" && appleSpeechMissing && (
             <Button type="button" variant="outline" size="sm" data-testid="voice-note-on-device-download"
-              onClick={() => void OnDeviceStt.downloadNow({ allowCellular: false })}>
+              onClick={() => { setNotice(null); void downloadOnDeviceModel().then(setNotice); }}>
+              {FINAL_COPY.speechGet}
+            </Button>
+          )}
+          {route === "on-device" && primaryModel && primaryModel.state !== "ready" && primaryModel.state !== "checking" && primaryModel.state !== "downloading" && primaryModel.state !== "queued" && (
+            <Button type="button" variant="outline" size="sm" data-testid="voice-note-on-device-download"
+              onClick={() => { setNotice(null); void downloadOnDeviceModel().then(setNotice); }}>
               Download
             </Button>
           )}
           {route === "on-device" && (primaryModel?.state === "downloading" || primaryModel?.state === "queued") && (
             <Button type="button" variant="outline" size="sm" data-testid="voice-note-on-device-cancel-download"
-              onClick={() => void OnDeviceStt.cancelDownload()}>
+              onClick={() => {
+                setNotice(null);
+                OnDeviceStt.cancelDownload().catch((caught: unknown) => {
+                  console.error("[OnDeviceStt] cancelDownload failed", caught);
+                  setNotice(`Could not cancel the download: ${caught instanceof Error ? caught.message : String(caught)}`);
+                });
+              }}>
               Cancel
             </Button>
           )}

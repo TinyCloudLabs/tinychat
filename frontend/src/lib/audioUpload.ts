@@ -60,11 +60,6 @@ export const UPLOAD_MEETING_SOURCE_LABEL = "Uploaded audio";
 
 export type UploadEngine = "private-cloud" | "assemblyai";
 
-export const UPLOAD_ENGINE_LABELS: Readonly<Record<UploadEngine, string>> = {
-  "private-cloud": "Private",
-  assemblyai: "AssemblyAI",
-};
-
 export const UPLOAD_ENGINE_STORAGE_KEY = "exo.transcriber.uploadEngine";
 export const UPLOAD_PENDING_STORAGE_KEY = "exo.transcriber.uploadPending";
 

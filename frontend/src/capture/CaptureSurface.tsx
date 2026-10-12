@@ -16,8 +16,8 @@
 // shows, each its own scroller, so each keeps its scroll. From medium up the
 // list pane (home above the Library) sits beside the detail pane. A resize
 // never re-parents anything: the cohort archive keeps its place.
-import { useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
@@ -41,8 +41,13 @@ import { useSoftTheme } from "./home/softTheme";
 import { inProgressShown, type InProgressRowsViewProps } from "./InProgressRows";
 import { LibraryScreen } from "./library/LibraryScreen";
 import { NoteDetail } from "./library/NoteDetail";
+import { RecentNotePendingSheet } from "./library/RecentNotePendingSheet";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { useLibrary } from "./library/useLibrary";
+import { combinedModel, useNotePipelines, type NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
+import { listPipelineEntries } from "./listPipelineEntries";
+import { pipelineActionPriority, type PipelineActionKind } from "@/lib/voiceNotes/notePipeline";
+import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { MeetingSheet } from "./meeting/MeetingSheet";
 import { useRecorder } from "./recorder/RecorderProvider";
 import { continuePausedUpload, pausedUpload } from "./upload/pausedUpload";
@@ -82,6 +87,7 @@ export function CaptureSurface(props: CaptureSurfaceProps) {
 
 function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, meetingsSlot, soft, desktopHome }: CaptureSurfaceProps & { soft: boolean; desktopHome: boolean }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const nav = useNavKind();
   const softTheme = useSoftTheme();
   const platform = useContext(PlatformContext);
@@ -100,12 +106,28 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
   const paused = useSyncExternalStore(pausedUpload.subscribe, pausedUpload.snapshot, pausedUpload.snapshot);
   const { deps: uploadDeps } = useUploadDeps(tcw, backendUrl, sessionStore);
   const [sheet, setSheet] = useState<Sheet | null>(null);
+  const [recentNoteId, setRecentNoteId] = useState<string | null>(null);
+  useEffect(() => {
+    const fromHistory = (location.state as { recentNoteSheet?: unknown } | null)?.recentNoteSheet;
+    setRecentNoteId(typeof fromHistory === "string" ? fromHistory : null);
+  }, [location.key, location.state]);
+  useEffect(() => {
+    if (!active || screen.id !== "capture") setRecentNoteId(null);
+  }, [active, screen.id]);
   // A sheet belongs to the home: leaving it (another destination, the
   // Library, a How it works link) closes it.
   useEffect(() => {
     if (!homeShown) setSheet(null);
   }, [homeShown]);
   const sheetChange = (which: Sheet) => (open: boolean) => setSheet(open ? which : null);
+  const openRecentNote = (id: string) => {
+    setRecentNoteId(id);
+    navigate(location.pathname, { state: { recentNoteSheet: id } });
+  };
+  const closeRecentNote = () => {
+    if ((location.state as { recentNoteSheet?: unknown } | null)?.recentNoteSheet === recentNoteId) navigate(-1);
+    else setRecentNoteId(null);
+  };
   // The phone app's recorder: notes still on this phone and a stop at the limit are In progress rows.
   const recorder = useRecorder();
   // Static screen fixtures predate account-scoped pending snapshots; the live store always sets this field.
@@ -114,11 +136,29 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
   // Recent, the Library and the open note: one reader, through the per-space queue.
   const library = useLibrary(tcw, {
     visible: active,
-    noteId: screen.noteId,
+    noteId: screen.noteId ?? recentNoteId,
+    onPhone: pendingVisible ? (recorder.pending.notes ?? null) : null,
   });
+  const pipelineEntries = useMemo(() => listPipelineEntries(library.items, tcw), [library.items, tcw]);
+  const pipelineViews = useNotePipelines(pipelineEntries);
+  const pipelines = useMemo(() => new Map([...pipelineViews].map(([id, view]) => [id, view.pipeline])), [pipelineViews]);
+  const actionTarget = useMemo(() => {
+    let selected: { id: string; view: NotePipelineView; priority: number } | null = null;
+    for (const entry of pipelineEntries) {
+      const view = pipelineViews.get(entry.id);
+      const pipeline = view?.pipeline;
+      const kind = pipeline?.blocker?.action?.kind;
+      const priority = pipelineActionPriority(kind);
+      if (view && kind && (!selected || priority > selected.priority)) selected = { id: entry.id, view, priority };
+    }
+    return selected;
+  }, [pipelineEntries, pipelineViews]);
+  const modelStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
+  const model = combinedModel(modelStatus);
+  const modelProgress = model === null ? null : { bytes: model.bytes, totalBytes: model.totalBytes };
   // A saved voice note is the note itself: a full page (desktop) or a sheet over the Library (phone).
-  const openNote = noteScreen && library.note.item?.source === VOICE_NOTE_SOURCE ? library.note.item : null;
-  const notePage = desktopHome && openNote !== null;
+  const openNote = (noteScreen || recentNoteId !== null) && library.note.item?.source === VOICE_NOTE_SOURCE ? library.note.item : null;
+  const notePage = desktopHome && noteScreen && openNote !== null;
   const noteSheet = soft && openNote !== null;
   const now = new Date();
 
@@ -137,6 +177,8 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
       ? {
           listing: pendingVisible ? recorder.pending.listing : { state: "unknown" },
           saving: pendingVisible && recorder.pending.running,
+          online: pendingVisible && recorder.pending.online,
+          pendingNotes: pendingVisible ? recorder.pending.notes ?? [] : [],
           lastError: pendingVisible ? recorder.pending.lastError : null,
           limitNotice: recorder.phase === "recording" ? null : recorder.limitNotice,
           onSaveNow: recorder.retryPending,
@@ -199,6 +241,13 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
               recent={{ status: library.status, items: library.items }}
               scanFailure={recorder.recoveryScanFailure}
               onRetryRecent={library.retry}
+              onOpenRecentNote={openRecentNote}
+              pipelines={pipelines}
+              pipelineNotes={library.items}
+              modelProgress={modelProgress}
+              pipelineActionError={actionTarget?.view.actionError}
+              onPipelineAction={(kind: PipelineActionKind, id: string) => pipelineViews.get(id)?.onAction(kind)}
+              onOpenLibrary={() => navigate(PATHS.library)}
               now={now}
             />
           </div>
@@ -215,7 +264,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
         </div>
         <div
           ref={libraryRef}
-          className={homeOnly ? "hidden" : desktopHome ? SCROLLER : wide ? "border-t border-border pt-2" : libraryScreen || noteSheet ? SCROLLER : "hidden"}
+          className={homeOnly ? "hidden" : desktopHome ? SCROLLER : wide ? "border-t border-border pt-2" : libraryScreen || (noteSheet && recentNoteId === null) ? SCROLLER : "hidden"}
           data-scroll-root={wide ? undefined : ""}
           data-testid="capture-library"
         >
@@ -227,20 +276,24 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
             selectedId={wide ? screen.noteId : null}
             now={now}
             column={column}
+            pipelines={pipelines}
           />
         </div>
       </div>
       <div
-        className={homeOnly || noteSheet ? "hidden" : notePage ? "h-full overflow-hidden" : wide || noteScreen ? SCROLLER : "hidden"}
+        className={homeOnly || noteSheet || (soft && recentNoteId !== null) ? "hidden" : notePage ? "h-full overflow-hidden" : wide || noteScreen ? SCROLLER : "hidden"}
         data-scroll-root=""
         data-testid="capture-detail"
       >
-        {noteScreen ? (
+        {noteScreen || (recentNoteId !== null && openNote !== null) ? (
           <NoteDetail
-            key={screen.noteId}
+            key={screen.noteId ?? recentNoteId}
             library={library}
             pushed={!wide}
-            onBack={() => goUp(navigate, notePage ? PATHS.capture : PATHS.library)}
+            onBack={() => {
+              if (recentNoteId !== null) closeRecentNote();
+              else goUp(navigate, notePage ? PATHS.capture : PATHS.library);
+            }}
             transcription={recorder.transcription}
             savedNote={notePage || noteSheet ? { tcw, layout: notePage ? "page" : "sheet" } : undefined}
           />
@@ -254,6 +307,9 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
       </div>
       <UploadSheet open={sheet === "upload"} onOpenChange={sheetChange("upload")} tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />
       <MeetingSheet open={sheet === "meeting"} onOpenChange={sheetChange("meeting")} bot={bot} />
+      {soft && recentNoteId !== null && !openNote && (
+        <RecentNotePendingSheet listing={library.listing} failed={library.status === "failed"} onRetry={library.retry} onClose={closeRecentNote} suspended={recorder.sheetOpen} />
+      )}
     </div>
   );
 }

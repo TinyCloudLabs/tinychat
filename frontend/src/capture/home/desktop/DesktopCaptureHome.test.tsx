@@ -95,7 +95,8 @@ function home(
 describe("header", () => {
   test("Capture, Library, and the settings button", () => {
     const html = home();
-    expect(html).toMatch(/<h1[^>]*>Capture<\/h1>/);
+    expect(html).toMatch(/<h1[^>]*>[\s\S]*>Capture<\/span>[\s\S]*<\/h1>/);
+    expect(html).toContain('class="sticky top-0 z-10 border-b bg-background');
     expect(html).toContain('href="/chat/capture/library"');
     expect(html).toContain('data-testid="capture-settings-button"');
   });
@@ -276,6 +277,18 @@ describe("Recent", () => {
     expect(html).toContain('data-testid="recent-item"');
   });
 
+  test("voice notes read as their own words or Voice note, then time and length, and one not in the space says where it is", () => {
+    const onDevice: LibraryItem = { ...note(1), id: "on-phone:rec-1", title: null, onPhone: true };
+    const html = home({ props: { recent: { status: "ready", items: [{ ...note(2), snippet: "Call the landlord" }, onDevice] } } });
+    expect(html).toContain(">Call the landlord</b>");
+    expect(html).toContain(">Voice note</b>");
+    expect(html).toContain(">1:48 AM · 2:05<");
+    expect(html).not.toContain("Oct 9, 1:4");
+    expect(html.match(/data-testid="row-badge"/g)).toHaveLength(1);
+    expect(html).toContain(">On this Mac<");
+    expect(home({ platform: "web", props: { recent: { status: "ready", items: [onDevice] } } })).toContain(">In this browser<");
+  });
+
   test("a voice note with part of its audio missing says so, and offers Dismiss", () => {
     const html = home({
       recorder: {
@@ -288,7 +301,7 @@ describe("Recent", () => {
     );
     expect(html.match(/data-testid="capture-issue-dismiss"/g)).toHaveLength(1);
     expect(html).toContain(
-      "Dismiss the notice for Voice note · Oct 9, 1:49 AM",
+      "Dismiss the notice for Voice note",
     );
     expect(html).not.toContain("Needs attention");
   });
@@ -590,7 +603,7 @@ describe("a row with an after-stop Whisper job", () => {
     const failed = rowFor(job({ state: "failed", error: "raw detail" }));
     expect(failed).toContain('data-testid="recent-whisper-retry"');
     expect(failed).toContain(
-      'aria-label="Retry transcribing Voice note · Oct 9, 1:47 AM on this Mac"',
+      'aria-label="Retry transcribing Voice note on this Mac"',
     );
     expect(failed).not.toContain('role="alert"');
     const link = failed.match(/<a [^>]*>[\s\S]*?<\/a>/)![0];

@@ -7,7 +7,7 @@ import type { VoiceNoteTranscriptionProps } from "../transcriptionProps";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { SetTranscriberResult } from "../voiceNoteRecorderController";
 import type { ModeShell } from "./transcriptionModes";
-import { FINAL_COPY } from "./finalCopy";
+import { CHECK_AGAIN, FINAL_COPY, privateNotOffered } from "./finalCopy";
 import { localDesktopCaption, LOCAL_DESKTOP_NO_MODEL_EXPLANATION, type DesktopWhisperState } from "./desktop/useDesktopWhisper";
 import {
   DESKTOP_SIGNED_OUT_CAPTION,
@@ -85,6 +85,7 @@ function choice(
   signedIn = true,
   shell: ModeShell = "phone",
   whisper?: DesktopWhisperState,
+  download?: { start: () => void; error: string | null },
 ) {
   const notices: string[] = [];
   let result!: ReturnType<typeof useTranscriptionChoice>;
@@ -93,6 +94,7 @@ function choice(
       shell,
       transcription: props,
       model,
+      download,
       transcriber: api,
       signedIn,
       whisper,
@@ -334,6 +336,19 @@ describe("useTranscriptionChoice", () => {
       expect(result.caption).toBeNull();
     });
 
+    test("signed out on an iPhone or language iOS speech cannot do: Local is unavailable with the calm reason", () => {
+      for (const [appleSpeech, reason] of [
+        ["unsupported", "On-device transcription isn't available on this iPhone"],
+        ["locale_unsupported", "On-device transcription doesn't support this language yet"],
+      ] as const) {
+        const apple: OnDeviceSttStatus = { ...MODEL, models: [], engine: "apple-speech", appleSpeech };
+        const { result } = choice(transcription(), fakeApi("on-device").api, apple, false, "phone");
+        const local = result.stops.find((s) => s.stop.id === "local")!;
+        expect(local.available).toBe(false);
+        expect(local.reason).toBe(reason);
+      }
+    });
+
     test("signed out, Audio only cannot be requested at all", async () => {
       const { api, calls } = fakeApi("on-device");
       const { result } = choice(transcription(), api, MODEL, false);
@@ -529,5 +544,143 @@ describe("useTranscriptionChoice on the Mac with Whisper", () => {
 
   test("the caption helper falls back to the generic line without a label", () => {
     expect(localDesktopCaption(null)).toBe(FINAL_COPY.modes.localDesktopCaption);
+  });
+});
+
+describe("Private while its availability is checked", () => {
+  const privateStop = (availability: VoiceNoteTranscriptionProps["availability"], onRecheck = noop) =>
+    choice(transcription({ availability, onRecheck }), fakeApi("on-device").api).result.stops.find((s) => s.stop.id === "private")!;
+
+  test("a pending check reads as checking, not as unavailable", () => {
+    const stop = privateStop("checking");
+    expect(stop.available).toBe(false);
+    expect(stop.reason).toBe(privateNotOffered("checking").reason);
+    expect(stop.action).toBeUndefined();
+  });
+
+  test("a failed check says so and offers Check again, which asks the transcriber to check", () => {
+    let rechecks = 0;
+    const stop = privateStop("failed", () => void rechecks++);
+    expect(stop.available).toBe(false);
+    expect(stop.reason).toBe(privateNotOffered("failed").reason);
+    expect(stop.action?.label).toBe(CHECK_AGAIN);
+    stop.action!.run();
+    expect(rechecks).toBe(1);
+  });
+
+  test("only a settled 'not offered' answer (or no transcriber) reads as not available right now", () => {
+    expect(privateStop("hidden").reason).toBe(PRIVATE_UNAVAILABLE);
+    const none = choice(undefined, fakeApi("on-device").api).result.stops.find((s) => s.stop.id === "private")!;
+    expect(none.reason).toBe(PRIVATE_UNAVAILABLE);
+  });
+
+  test("choosing Private while the check is out or failed returns why and asks for nothing", async () => {
+    for (const [availability, reason] of [["checking", privateNotOffered("checking").reason], ["failed", privateNotOffered("failed").reason]] as const) {
+      const { api, calls } = fakeApi("on-device");
+      const { result } = choice(transcription({ availability }), api);
+      expect(result.select("private")).toBe(reason);
+      await settle();
+      expect(calls).toEqual([]);
+    }
+  });
+});
+
+describe("Local without its on-device model", () => {
+  const ABSENT: OnDeviceSttStatus = {
+    ...MODEL,
+    models: MODEL.models.map((m) => ({ ...m, state: "absent" as const, bytes: 0, totalBytes: 1024 * 1024 })),
+    engine: "none",
+  };
+  const localStop = (model: OnDeviceSttStatus | null, download?: { start: () => void; error: string | null }, shell: ModeShell = "phone") =>
+    choice(transcription(), fakeApi("on-device").api, model, true, shell, undefined, download).result.stops.find((s) => s.stop.id === "local")!;
+
+  test("Local is choosable without the model, and the row carries a control that starts the download", () => {
+    let started = 0;
+    const stop = localStop(ABSENT, { start: () => void started++, error: null });
+    expect(stop.available).toBe(true);
+    expect(stop.action?.label).toBe(FINAL_COPY.modelUnavailable);
+    stop.action!.run();
+    expect(started).toBe(1);
+  });
+
+  test("a download that failed is the row's reason, with Try again", () => {
+    const stop = localStop(ABSENT, { start: noop, error: "Couldn't download the on-device model: offline" });
+    expect(stop.available).toBe(true);
+    expect(stop.reason).toBe("Couldn't download the on-device model: offline");
+    expect(stop.action?.label).toBe("Try again");
+  });
+
+  test("a download underway shows its progress and offers nothing to press", () => {
+    const running: OnDeviceSttStatus = {
+      ...ABSENT,
+      download: { policy: "wifi", state: "running" },
+      models: ABSENT.models.map((m) => ({ ...m, state: "downloading" as const, bytes: m.totalBytes / 2 })),
+    };
+    const stop = localStop(running, { start: noop, error: null });
+    expect(stop.available).toBe(true);
+    expect(stop.reason).toBe("Downloading on-device model · 50%");
+    expect(stop.action).toBeUndefined();
+  });
+
+  test("a download held for Wi-Fi says so instead of blocking", () => {
+    const waiting: OnDeviceSttStatus = { ...ABSENT, download: { policy: "wifi", state: "waiting_for_network" } };
+    const stop = localStop(waiting, { start: noop, error: null });
+    expect(stop.available).toBe(true);
+    expect(stop.reason).toContain("Waiting for Wi-Fi to download the on-device model");
+  });
+
+  test("a ready model needs no control", () => {
+    const stop = localStop(MODEL, { start: noop, error: null });
+    expect(stop.available).toBe(true);
+    expect(stop.action).toBeUndefined();
+  });
+
+  test("the Mac and the web never get a model download control", () => {
+    expect(localStop(ABSENT, { start: noop, error: null }, "web").action).toBeUndefined();
+  });
+});
+
+describe("useTranscriptionChoice: resting on Local without the model says where the download stands", () => {
+  const NO_MODEL: OnDeviceSttStatus = { ...MODEL, engine: "none", models: [] };
+  const ABSENT: OnDeviceSttStatus = {
+    ...MODEL,
+    models: MODEL.models.map((m) => ({ ...m, state: "absent" as const, bytes: 0, totalBytes: 1024 * 1024 })),
+    engine: "none",
+  };
+
+  const DOWNLOAD = { start: noop, error: null };
+
+  test("resting on Local with the model absent keeps Local choosable and shows the download note", () => {
+    const { result } = choice(transcription(), fakeApi("on-device").api, ABSENT, true, "phone", undefined, DOWNLOAD);
+    expect(result.mode).toBe("local");
+    expect(result.stops.find((s) => s.stop.id === "local")!.available).toBe(true);
+    expect(result.modelNote?.reason).toContain("The on-device model isn't downloaded");
+    expect(result.modelNote?.action?.label).toBe(FINAL_COPY.modelUnavailable);
+  });
+
+  test("the note follows a download underway", () => {
+    const running: OnDeviceSttStatus = {
+      ...ABSENT,
+      download: { policy: "wifi", state: "running" },
+      models: ABSENT.models.map((m) => ({ ...m, state: "downloading" as const, bytes: m.totalBytes / 4 })),
+    };
+    const { result } = choice(transcription(), fakeApi("on-device").api, running, true, "phone", undefined, DOWNLOAD);
+    expect(result.modelNote).toEqual({ reason: "Downloading on-device model · 25%" });
+  });
+
+  test("a stored Local choice is never shown as another stop", () => {
+    const api = fakeApi("on-device").api;
+    api.transcriber = { id: "on-device", identifySpeakers: false, source: "default" };
+    expect(choice(transcription(), api, NO_MODEL).result.mode).toBe("local");
+  });
+
+  test("no note when Local can run, or when another mode rests on its own choice", () => {
+    expect(choice(transcription(), fakeApi("on-device").api, MODEL).result.modelNote).toBeNull();
+    expect(choice(transcription(), fakeApi("private-cloud").api, ABSENT).result.modelNote).toBeNull();
+    expect(choice(transcription(), fakeApi("off").api, ABSENT).result.modelNote).toBeNull();
+  });
+
+  test("no note while the model's state is still unknown", () => {
+    expect(choice(transcription(), fakeApi("on-device").api, null).result.modelNote).toBeNull();
   });
 });

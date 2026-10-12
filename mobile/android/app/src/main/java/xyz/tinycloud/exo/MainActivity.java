@@ -26,6 +26,7 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
     private LaunchCommandStore commands;
     private String consumedCommandId;
     private boolean askingPermission;
+    private WebViewRecovery webViewRecovery;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ActivityResultLauncher<String> requestNotifications = registerForActivityResult(
         new ActivityResultContracts.RequestPermission(), granted -> main.post(this::handlePending));
@@ -42,6 +43,7 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
 
     @Override public void onCreate(Bundle savedInstanceState) {
         registerPlugin(VoiceNotesPlugin.class);
+        registerPlugin(ThemeBarsPlugin.class);
         registerPlugin(OnDeviceSttPlugin.class);
         registerPlugin(HealthPlugin.class);
         // TC-524 location spike. Registered in every build, but only the debug manifest declares
@@ -51,6 +53,14 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
         if (savedInstanceState != null) consumedCommandId = savedInstanceState.getString("consumedCommandId");
         consumeIntent(getIntent());
         super.onCreate(savedInstanceState);
+        webViewRecovery = new WebViewRecovery(this, getBridge().getAppUrl());
+        getBridge().addWebViewListener(webViewRecovery);
+        if (WebViewRecovery.takeHoldNextPage()) {
+            webViewRecovery.holdForReload(getBridge().getWebView());
+        } else {
+            String recoveredUrl = WebViewRecovery.takePendingUrl();
+            if (recoveredUrl != null) getBridge().getWebView().post(() -> getBridge().getWebView().loadUrl(recoveredUrl));
+        }
         CaptureEngine.get(this).addListener(this);
     }
     @Override protected void onNewIntent(Intent intent) {
@@ -125,6 +135,7 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
         super.onSaveInstanceState(out);
     }
     @Override public void onDestroy() {
+        if (webViewRecovery != null) webViewRecovery.dismissPrompt();
         CaptureEngine.get(this).removeListener(this);
         super.onDestroy();
     }

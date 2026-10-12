@@ -3,7 +3,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { MeetingAudioPlayerView, type PlayerState } from "./MeetingAudioPlayer";
+import { MeetingAudioPlayerView, stateForResolvedUrl, type PlayerState } from "./MeetingAudioPlayer";
 
 const render = (state: PlayerState) => renderToStaticMarkup(<MeetingAudioPlayerView state={state} onPlay={() => {}} />);
 
@@ -32,5 +32,20 @@ describe("MeetingAudioPlayerView", () => {
   test("a read that failed offers Try again; audio no longer stored says so", () => {
     expect(render({ phase: "failed" })).toContain("Try again");
     expect(render({ phase: "missing" })).toContain("The audio is no longer stored.");
+  });
+
+  test("a local URL that could not be resolved shows the real reason, with Try again", () => {
+    const html = render({ phase: "failed", reason: "Could not open this phone's audio: the file is gone" });
+    expect(html).toContain("Could not open this phone&#x27;s audio: the file is gone");
+    expect(html).not.toContain("Couldn");
+    expect(html).toContain("Try again");
+  });
+
+  test("a local URL is resolved into the player as it is, and a rejection becomes its reason", async () => {
+    expect(await stateForResolvedUrl(async () => "capacitor://localhost/_capacitor_file_/a.m4a")).toEqual({
+      phase: "ready",
+      url: "capacitor://localhost/_capacitor_file_/a.m4a",
+    });
+    expect(await stateForResolvedUrl(async () => { throw new Error("tombstoned"); })).toEqual({ phase: "failed", reason: "tombstoned" });
   });
 });

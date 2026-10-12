@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
+import { isOnDeviceReady, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import {
   availableStops,
   identifySpeakersControl,
@@ -135,7 +135,7 @@ describe("transcription modes availability", () => {
         phone: [
           "Nothing leaves it; a little slower.",
           "on this phone",
-          "An on-device model transcribes it. Nothing leaves your phone; slower and less accurate.",
+          "Your phone transcribes it after you stop. Nothing leaves your phone.",
         ],
         desktop: [
           "Whisper on this Mac, after you stop.",
@@ -207,7 +207,11 @@ describe("transcription modes availability", () => {
       model(state),
       false,
     ).available;
-    expect(available).toBe(shell === "phone" && state === "ready");
+    expect(available).toBe(shell === "phone");
+  });
+
+  test("phone Local is not offered only while the phone's model status is unknown", () => {
+    expect(modeAvailability("local", "phone", null).available).toBe(false);
   });
 
   test.each(modelStates)(
@@ -262,9 +266,25 @@ describe("transcription modes availability", () => {
     });
   });
 
-  describe("Local readiness is native's own predicate", () => {
+  test("iOS speech that cannot run here makes Local unavailable with a calm reason", () => {
+    const apple = (appleSpeech: "unsupported" | "locale_unsupported") => ({
+      ...model("absent"),
+      engine: "apple-speech" as const,
+      appleSpeech,
+    });
+    expect(modeAvailability("local", "phone", apple("unsupported"))).toEqual({
+      available: false,
+      reason: "On-device transcription isn't available on this iPhone",
+    });
+    expect(modeAvailability("local", "phone", apple("locale_unsupported"))).toEqual({
+      available: false,
+      reason: "On-device transcription doesn't support this language yet",
+    });
+  });
+
+  describe("on-device readiness is native's own predicate", () => {
     const local = (status: OnDeviceSttStatus) =>
-      modeAvailability("local", "phone", status).available;
+      isOnDeviceReady(status);
     const withModels = (
       patch: Partial<OnDeviceSttStatus>,
       ...models: OnDeviceSttStatus["models"]

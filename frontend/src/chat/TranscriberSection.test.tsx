@@ -228,16 +228,17 @@ describe("TranscriberView", () => {
     expect(html).toContain("Uncertain voice.");
   });
 
-  test("save state is shown on the row", () => {
+  test("save state keeps separators readable and renders failures in destructive text", () => {
     expect(render({ meetings: [meeting({ status: "completed" })], saved: { mtg_1: "saved" } })).toContain(
       "Saved to your space",
     );
     expect(render({ meetings: [meeting({ status: "completed" })], saved: { mtg_1: "saving" } })).toContain(
       "Saving to your space",
     );
-    expect(render({ meetings: [meeting({ status: "completed" })], saved: { mtg_1: "error" } })).toContain(
-      "Could not save to your space",
-    );
+    const failed = render({ meetings: [meeting({ status: "completed" })], saved: { mtg_1: "error" } });
+    expect(failed).toMatch(/Completed · .+ · TinyCloud Private Notetaker/);
+    expect(failed).toMatch(/data-testid="meeting-save-error" class="[^"]*text-\[var\(--red-text\)\][^"]*">Could not save to your space</);
+    expect(failed).not.toMatch(/>\s*·/);
     const unsaved = render({ meetings: [meeting({ status: "completed" })] });
     expect(unsaved.slice(unsaved.indexOf('id="transcriber-sessions"'))).not.toContain("your space");
   });

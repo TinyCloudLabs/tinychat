@@ -10,30 +10,48 @@ const labels = (source: string, metadata: Record<string, unknown> | null) => cap
 
 describe("captureRoute", () => {
   test("a voice note: the phone, private cloud only when it made the text, then the space", () => {
-    expect(labels("exo-voice-note", { capture: { platform: "ios" }, audio: { stored: true } })).toEqual(["iPhone", "Your space"]);
-    expect(labels("exo-voice-note", { capture: { platform: "android" } })).toEqual(["Android phone", "Your space"]);
+    expect(labels("exo-voice-note", { capture: { platform: "ios" }, audio: { stored: true } })).toEqual(["This phone", "Your space"]);
+    expect(labels("exo-voice-note", { capture: { platform: "android" } })).toEqual(["This phone", "Your space"]);
+    expect(labels("exo-voice-note", { capture: { platform: "tauri" } })).toEqual(["This Mac", "Your space"]);
+    expect(labels("exo-voice-note", { capture: { platform: "web" } })).toEqual(["This browser", "Your space"]);
     const transcribed = captureRoute("exo-voice-note", {
       capture: { platform: "ios" },
       audio: { stored: true },
+      transcription_outcome: "transcribed",
       transcription_engine: "private-cloud",
       transcript_provider: "tinycloud-private-transcription",
       inference_provider: "tinfoil",
     });
-    expect(transcribed.nodes.map((n) => n.label)).toEqual(["iPhone", "Private cloud", "Your space"]);
+    expect(transcribed.nodes.map((n) => n.label)).toEqual(["This phone", "Private", "Your space"]);
     expect(transcribed.sentence).toBe(
       "Audio saved to your TinyCloud space. A copy was transcribed by TinyCloud Private Transcription; speech-to-text by Tinfoil.",
     );
     expect(transcribed.privateCloud).toBe(true);
   });
 
+  test("a voice note claims no transcript maker unless its transcription outcome says it was transcribed", () => {
+    const engine = {
+      capture: { platform: "ios" },
+      audio: { stored: true },
+      transcription_engine: "private-cloud",
+      transcript_provider: "tinycloud-private-transcription",
+    };
+    for (const outcome of [undefined, "none", "no_speech"]) {
+      const route = captureRoute("exo-voice-note", { ...engine, ...(outcome ? { transcription_outcome: outcome } : {}) });
+      expect(route.nodes.map((n) => n.label)).toEqual(["This phone", "Your space"]);
+      expect(route.sentence).toBe("Audio saved to your TinyCloud space.");
+      expect(route.privateCloud).toBe(false);
+    }
+  });
+
   test("an upload: private cloud or AssemblyAI (whose account), from the row", () => {
     expect(labels("exo-upload", { capture: "upload", transcript_provider: "tinycloud-private-transcription" })).toEqual([
       "Upload",
-      "Private cloud",
+      "Private",
       "Your space",
     ]);
     const own = captureRoute("exo-upload", { capture: "upload", audio: { stored: true }, transcript_provider: "assemblyai", assemblyai_account: "own" });
-    expect(own.nodes.map((n) => n.label)).toEqual(["Upload", "AssemblyAI", "Your space"]);
+    expect(own.nodes.map((n) => n.label)).toEqual(["Upload", "Powerful", "Your space"]);
     expect(own.sentence).toContain("transcribed by AssemblyAI with your key.");
     expect(captureRoute("exo-upload", { transcript_provider: "assemblyai", assemblyai_account: "tinycloud" }).sentence).toContain("TinyCloud's account");
   });
@@ -42,7 +60,7 @@ describe("captureRoute", () => {
     expect(labels("exo-local", { capture: "local", transcript_provider: "whispercpp" })).toEqual(["This Mac", "Whisper on this Mac", "Your space"]);
     expect(labels("exo-local", { capture: "local", transcript_provider: "tinycloud-private-transcription" })).toEqual([
       "This Mac",
-      "Private cloud",
+      "Private",
       "Your space",
     ]);
   });
@@ -56,7 +74,7 @@ describe("captureRoute", () => {
   test("never more nodes than the metadata supports", () => {
     // Not read yet, or unreadable: the source column alone.
     expect(labels("exo-upload", null)).toEqual(["Upload", "Your space"]);
-    expect(labels("exo-voice-note", null)).toEqual(["Phone", "Your space"]);
+    expect(labels("exo-voice-note", null)).toEqual(["This phone", "Your space"]);
     // A provider the Library does not know draws no middle node.
     expect(labels("exo-upload", { transcript_provider: "someone-else" })).toEqual(["Upload", "Your space"]);
     expect(labels("granola", { transcript_provider: "assemblyai" })).toEqual(["granola", "Your space"]);
