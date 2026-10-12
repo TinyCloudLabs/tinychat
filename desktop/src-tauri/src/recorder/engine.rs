@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use cpal::traits::{DeviceTrait, HostTrait};
 use parking_lot::Mutex;
 use serde::Serialize;
 use tauri::{Emitter, Manager};
@@ -13,6 +14,7 @@ use tauri_plugin_transcription::ListenerPluginExt;
 use super::{audio_provider::Meter, files, journal};
 
 const MIC_EVENT: &str = "exo://recorder-mic-state";
+const INPUTS_EVENT: &str = "exo://recorder-inputs";
 const LEVEL_EVENT: &str = "exo://recorder-level";
 const AUTO_STOP_EVENT: &str = "exo://recorder-auto-stopped";
 const MAX_DURATION_MS: u64 = 3 * 60 * 60 * 1000;
@@ -31,7 +33,6 @@ pub struct EngineState {
     spans: Vec<journal::MissingAudioSpan>,
     paused_ms: u64,
     pause_started: Option<Instant>,
-    selected_input: Option<String>,
     busy: bool,
     limit_ms: u64,
     auto_stop_requested: bool,
@@ -238,15 +239,12 @@ fn capture_params(
     })
 }
 
-fn begin(state: &mut EngineState) -> Result<(String, Option<String>), String> {
+fn begin(state: &mut EngineState, input: String) -> Result<(String, Option<String>), String> {
     if state.busy {
         return Err("recorder_busy".into());
     }
     state.busy = true;
-    Ok((
-        format!("rec-{}", uuid::Uuid::new_v4()),
-        state.selected_input.clone(),
-    ))
+    Ok((format!("rec-{}", uuid::Uuid::new_v4()), Some(input)))
 }
 
 async fn start_segment(
@@ -280,13 +278,14 @@ pub async fn recorder_start(
     if journal::load(&app)?.is_some() {
         return Err("recovery_pending".into());
     }
+    let input = recording_input(&app).await?;
     let (segment_id, input) = {
         let state = app.state::<Engine>();
         let mut state = state.0.lock();
         if state.id.is_some() {
             return Err("recording_in_progress".into());
         }
-        begin(&mut state)?
+        begin(&mut state, input)?
     };
     let started_at = now_ms();
     let saved = journal::save(
@@ -573,6 +572,7 @@ pub async fn recorder_resume(app: tauri::AppHandle) -> Result<CaptureStatus, Str
     if incomplete_pause {
         recorder_pause(app.clone()).await?;
     }
+    let input = recording_input(&app).await?;
     let (segment_id, input) = {
         let state = app.state::<Engine>();
         let mut state = state.0.lock();
@@ -590,7 +590,7 @@ pub async fn recorder_resume(app: tauri::AppHandle) -> Result<CaptureStatus, Str
         if state.segment_id.is_some() {
             return Err("already_recording".into());
         }
-        begin(&mut state)?
+        begin(&mut state, input)?
     };
     let previous_result =
         journal::load(&app).and_then(|journal| journal.ok_or("capture_journal_missing".into()));
@@ -813,14 +813,15 @@ pub fn recorder_status(app: tauri::AppHandle) -> CaptureStatus {
     app.state::<Engine>().0.lock().status()
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Inputs {
     inputs: Vec<Input>,
     selected_id: Option<String>,
     active_id: Option<String>,
+    selected_missing: Option<String>,
 }
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Input {
     id: String,
     name: String,
@@ -841,8 +842,13 @@ pub async fn recorder_list_inputs(app: tauri::AppHandle) -> Result<Inputs, Strin
         .await
         .ok()
         .flatten();
-    let state = app.state::<Engine>();
-    let state = state.0.lock();
+    let selected = super::extras::microphone(&app).await?;
+    let recording = app.state::<Engine>().0.lock().segment_id.is_some();
+    let resolved = resolve_input(
+        &devices,
+        selected.as_deref(),
+        default_input_name().as_deref(),
+    );
     Ok(Inputs {
         inputs: devices
             .into_iter()
@@ -852,13 +858,56 @@ pub async fn recorder_list_inputs(app: tauri::AppHandle) -> Result<Inputs, Strin
                 name,
             })
             .collect(),
-        selected_id: state.selected_input.clone(),
-        active_id: if state.segment_id.is_some() {
-            active
-        } else {
-            None
-        },
+        selected_id: selected,
+        active_id: if recording { active } else { None }
+            .or_else(|| resolved.as_ref().ok().map(|(name, _)| name.clone())),
+        selected_missing: resolved.ok().and_then(|(_, missing)| missing),
     })
+}
+
+fn default_input_name() -> Option<String> {
+    cpal::default_host()
+        .default_input_device()
+        .and_then(|device| {
+            device
+                .description()
+                .ok()
+                .map(|description| description.name().to_string())
+        })
+}
+
+fn resolve_input(
+    devices: &[String],
+    selected: Option<&str>,
+    default: Option<&str>,
+) -> Result<(String, Option<String>), String> {
+    if devices.is_empty() {
+        return Err("mic_unavailable".into());
+    }
+    if let Some(name) = selected {
+        if devices.iter().any(|device| device == name) {
+            return Ok((name.into(), None));
+        }
+    }
+    let fallback = default
+        .filter(|name| devices.iter().any(|device| device == name))
+        .unwrap_or(&devices[0]);
+    Ok((fallback.into(), selected.map(str::to_owned)))
+}
+
+async fn recording_input(app: &tauri::AppHandle) -> Result<String, String> {
+    let devices = app
+        .listener()
+        .list_microphone_devices()
+        .await
+        .map_err(|e| e.to_string())?;
+    let selected = super::extras::microphone(app).await?;
+    resolve_input(
+        &devices,
+        selected.as_deref(),
+        default_input_name().as_deref(),
+    )
+    .map(|(name, _)| name)
 }
 
 fn input_kind(name: &str) -> &'static str {
@@ -896,19 +945,37 @@ pub async fn recorder_select_input(
     if was_recording {
         recorder_pause(app.clone()).await?;
     }
-    {
-        let state = app.state::<Engine>();
-        state.0.lock().selected_input = id;
-    }
+    super::extras::set_microphone(&app, id).await?;
     if was_recording {
-        recorder_resume(app).await?;
+        recorder_resume(app.clone()).await?;
     }
+    let _ = app.emit(INPUTS_EVENT, recorder_list_inputs(app.clone()).await?);
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn selected_input_and_missing_fallback_use_fake_devices() {
+        let devices = vec!["MacBook Pro Microphone".into(), "BlackHole 2ch".into()];
+        assert_eq!(
+            resolve_input(
+                &devices,
+                Some("BlackHole 2ch"),
+                Some("MacBook Pro Microphone")
+            ),
+            Ok(("BlackHole 2ch".into(), None))
+        );
+        assert_eq!(
+            resolve_input(&devices, Some("Bose"), Some("MacBook Pro Microphone")),
+            Ok(("MacBook Pro Microphone".into(), Some("Bose".into())))
+        );
+        assert_eq!(
+            resolve_input(&[], Some("Bose"), None),
+            Err("mic_unavailable".into())
+        );
+    }
     #[test]
     fn elapsed_excludes_pause() {
         let state = EngineState {

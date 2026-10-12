@@ -31,7 +31,10 @@ const APP: SettingsPanelProps = {
     },
   },
   downloads: {},
-  microphone: { name: "MacBook Pro Microphone", unavailable: false, error: null, retry: null },
+  microphone: { name: "MacBook Pro Microphone", inputs: [
+    { id: "MacBook Pro Microphone", name: "MacBook Pro Microphone" },
+    { id: "BlackHole 2ch", name: "BlackHole 2ch" },
+  ], currentId: "MacBook Pro Microphone", selectedMissing: null, select: () => {}, unavailable: false, error: null, retry: null },
   modelError: null,
   switches: { systemAudio: IDLE, autoSave: IDLE },
   systemAudioNotice: false,
@@ -57,8 +60,8 @@ describe("SettingsPanel, app", () => {
   });
 
   test("only the selected model is a tab stop", () => {
-    const out = html({});
-    expect((out.match(/role="radio"[^>]*tabindex="0"/g) ?? []).length).toBe(1);
+    const modelSection = html({}).split('<section aria-labelledby="cs-mic-h"')[0]!;
+    expect((modelSection.match(/role="radio"[^>]*tabindex="0"/g) ?? []).length).toBe(1);
   });
 
   test("only models on disk are radios; the rest sit outside the radiogroup in a labelled group, each with Get", () => {
@@ -77,7 +80,7 @@ describe("SettingsPanel, app", () => {
     expect((group.match(/role="radio"/g) ?? []).length).toBe(2);
     expect(group).not.toContain("cs-get");
     expect(group).not.toContain("Whisper Small");
-    const rest = out.slice(out.indexOf('role="group"'));
+    const rest = out.slice(out.indexOf('role="group"'), out.indexOf('<section aria-labelledby="cs-mic-h"'));
     expect(rest).toContain('aria-label="Available to download"');
     expect(rest).not.toContain('role="radio"');
     expect((rest.match(/class="cs-get"/g) ?? []).length).toBe(5);
@@ -98,7 +101,7 @@ describe("SettingsPanel, app", () => {
         },
       },
     });
-    expect((out.match(/role="radio"[^>]*tabindex="0"/g) ?? []).length).toBe(1);
+    expect((out.split('<section aria-labelledby="cs-mic-h"')[0]!.match(/role="radio"[^>]*tabindex="0"/g) ?? []).length).toBe(1);
     expect(out).toMatch(/role="radio" aria-checked="false" tabindex="0"[^>]*>.*?Whisper Base \(English\)/);
   });
 
@@ -110,8 +113,9 @@ describe("SettingsPanel, app", () => {
       },
     });
     expect(out).toContain("No model on this Mac yet. Get one below.");
-    expect(out).not.toContain('role="radio"');
-    expect(out).not.toContain('role="radiogroup"');
+    const modelSection = out.slice(0, out.indexOf('<section aria-labelledby="cs-mic-h"'));
+    expect(modelSection).not.toContain('role="radio"');
+    expect(modelSection).not.toContain('role="radiogroup"');
     expect((out.match(/class="cs-get"/g) ?? []).length).toBe(7);
   });
 
@@ -125,12 +129,19 @@ describe("SettingsPanel, app", () => {
   test("the microphone, the two switches with their copy, and no shortcuts", () => {
     const out = html({});
     expect(out).toContain("MacBook Pro Microphone");
-    expect(out).toContain("change with “via”");
+    expect(out).toContain("BlackHole 2ch");
+    expect(out).toContain('aria-checked="true"');
     expect(out).toContain("Also record this Mac’s audio");
     expect(out).toContain("Save to your space automatically");
     expect(out).toMatch(/role="switch" aria-checked="true"[^>]*data-testid="switch-system-audio"/);
     expect(out).toMatch(/role="switch" aria-checked="false"[^>]*data-testid="switch-auto-save"/);
     expect(out.toLowerCase()).not.toContain("shortcut");
+  });
+
+  test("a saved missing input names the fallback microphone", () => {
+    const out = html({ microphone: { ...APP.microphone, selectedMissing: "Bose" } });
+    expect(out).toContain("Bose isn&#x27;t connected · using MacBook Pro Microphone");
+    expect(out).toContain("BlackHole 2ch");
   });
 
   test("a download shows its percentage as a progressbar in place of Get", () => {
@@ -167,8 +178,8 @@ describe("SettingsPanel, app", () => {
   });
 
   test("no microphone and no microphone list are different messages", () => {
-    expect(html({ microphone: { name: null, unavailable: false, error: null, retry: null } })).toContain("No microphone found.");
-    expect(html({ microphone: { name: null, unavailable: true, error: null, retry: null } })).toContain("Microphone choice isn’t available here.");
+    expect(html({ microphone: { ...APP.microphone, name: null, inputs: [], unavailable: false } })).toContain("No microphone found.");
+    expect(html({ microphone: { ...APP.microphone, name: null, inputs: [], unavailable: true } })).toContain("Microphone choice isn’t available here.");
   });
 });
 

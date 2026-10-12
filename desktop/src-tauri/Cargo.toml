@@ -50,6 +50,10 @@ git = "https://github.com/fastrepl/anarlog"
 rev = "864ddc1f692116d128eea2692fd72b0a51007768"
 optional = true
 
+[dependencies.cpal]
+version = "0.17.3"
+optional = true
+
 # Recovery encodes the upstream recorder's crash-retained WAV when its normal
 # MP3 finalization did not run. The crate is already in listener-core's graph.
 [dependencies.anlg-mp3]
@@ -164,6 +168,7 @@ transcription = [
     "dep:tauri-plugin-transcription",
     "dep:tauri-plugin-local-stt",
     "dep:audio-actual",
+    "dep:cpal",
     "dep:anlg-mp3",
     "dep:exo-local-transcription",
     "dep:hound",

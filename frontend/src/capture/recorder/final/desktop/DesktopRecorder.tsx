@@ -350,6 +350,7 @@ export function DesktopRecorder({
               inputs={audio.inputs}
               currentId={input?.id ?? null}
               currentName={inputName}
+              selectedMissing={audio.selectedMissing}
               recording={view.ring === "live"}
               theme={theme}
               subscribeLevel={recorder.subscribeLevel}
@@ -357,6 +358,7 @@ export function DesktopRecorder({
               disabled={view.controls.busy}
               defaultOpen={defaultOpen === "via"}
               onSelect={(id) => void audio.select(id)}
+              onOpen={audio.refresh}
             />
           )}
         </div>

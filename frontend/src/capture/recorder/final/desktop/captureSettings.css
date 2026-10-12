@@ -160,6 +160,9 @@
   border-radius: 12px;
   font-size: 13px;
 }
+[data-testid="settings-mic"] .cs-radio:hover {
+  background: var(--glass);
+}
 .cs-plain {
   cursor: default;
 }

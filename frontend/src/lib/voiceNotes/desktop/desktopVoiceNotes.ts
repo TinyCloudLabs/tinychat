@@ -269,6 +269,8 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
 
   try {
     unlisten.push(await bridge.listen<NativeStatus>("exo://recorder-mic-state", emitMic));
+    unlisten.push(await bridge.listen<{ inputs: AudioInput[]; selectedId: string | null; activeId: string | null; selectedMissing: string | null }>(
+      "exo://recorder-inputs", (snapshot) => emit("inputs", snapshot)));
     unlisten.push(await bridge.listen<{ level: number; peak: number }>("exo://recorder-level", (event) => emit("level", event)));
     unlisten.push(await bridge.listen<NativeAutoStop>("exo://recorder-auto-stopped", handleAutoStop));
     unlisten.push(await bridge.listen<string>("exo://recorder-model-selection", () => {
@@ -399,8 +401,8 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
           releases.push(releaseSession);
           const maxDurationMs = Math.min(VOICE_NOTE_MAX_DURATION_MS,
             Math.max(VOICE_NOTE_MIN_DURATION_LIMIT_MS, startOptions?.maxDurationMs ?? VOICE_NOTE_MAX_DURATION_MS));
-          const inputState = await bridge.invoke<{ inputs: AudioInput[]; selectedId: string | null }>("recorder_list_inputs");
-          const input = inputState.inputs.find((candidate) => candidate.id === inputState.selectedId) ?? null;
+          const inputState = await bridge.invoke<{ inputs: AudioInput[]; activeId: string | null }>("recorder_list_inputs");
+          const input = inputState.inputs.find((candidate) => candidate.id === inputState.activeId) ?? null;
           const session = await store.beginSession({ id, startedAt: now(), source: "in_app",
             owner: signedIn ? defaults.accountDid : null, transitionGen: defaults.transitionGen,
             options: captureOptions, mimeType: "audio/mpeg", input, maxDurationMs });
