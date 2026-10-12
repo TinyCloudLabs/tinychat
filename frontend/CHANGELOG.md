@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.37
+
+### Patch Changes
+
+- ecdc66f: A note with no transcript now has a Transcribe button with a small provider chip (Local by default, Private when offered), and a failed transcript's "Try again" lets you pick the provider.
+
 ## 0.6.0-beta.36
 
 ### Patch Changes
