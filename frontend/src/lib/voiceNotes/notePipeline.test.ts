@@ -94,8 +94,8 @@ const ROWS: Row[] = [
   { name: "space: recorded on another account (info, no action)", patch: { space: { pending: { held: "other-account" } } }, states: { space: "blocked" }, current: "space", cause: "Recorded on another account" },
   { name: "space: legacy note, account unknown (no action)", patch: { space: { pending: { held: "legacy" } } }, states: { space: "blocked" }, current: "space", cause: /which account/ },
   { name: "space: unowned note, account unknown (no action)", patch: { space: { pending: { held: "unowned" } } }, states: { space: "blocked" }, current: "space", cause: /which account/ },
-  { name: "space: offline waits for a connection (no button)", patch: { online: false, space: { pending: {} } }, states: { space: "waiting" }, current: "space", caption: "Waiting for a connection · Exo continues automatically" },
-  { name: "space: an offline failure while offline keeps waiting", patch: { online: false, space: { pending: { failed: { kind: "offline", message: "fetch failed" } } } }, states: { space: "waiting" }, current: "space", caption: "Waiting for a connection · Exo continues automatically" },
+  { name: "space: offline waits for a connection (no button)", patch: { online: false, space: { pending: {} } }, states: { space: "waiting" }, current: "space", caption: "Offline · Resumes automatically" },
+  { name: "space: an offline failure while offline keeps waiting", patch: { online: false, space: { pending: { failed: { kind: "offline", message: "fetch failed" } } } }, states: { space: "waiting" }, current: "space", caption: "Offline · Resumes automatically" },
   { name: "space: an offline failure while online is Try again", patch: { space: { pending: { failed: { kind: "offline", message: "fetch failed" } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't reach your space. This note is safe on this phone.", action: "retry" },
   { name: "space: timeout is Try again", patch: { space: { pending: { failed: { kind: "timeout", message: "deadline" } } } }, states: { space: "failed" }, current: "space", cause: "Saving timed out. This note is safe on this phone.", action: "retry" },
   { name: "space: server error is calm Try again copy", patch: { space: { pending: { failed: { kind: "server", message: "503 from kv" } } } }, states: { space: "failed" }, current: "space", cause: "Your space couldn't take this note. It is safe on this phone. Try again.", action: "retry" },
@@ -326,7 +326,7 @@ describe("stuck-state contract", () => {
       notes: { state: "failed" },
     }));
     const byKey = Object.fromEntries(pipeline.steps.map((s) => [s.key, s]));
-    expect(byKey.transcript!.blocker).toEqual({ cause: "Couldn't transcribe on this phone", action: { kind: "retry", label: "Try again" } });
+    expect(byKey.transcript!.blocker).toEqual({ cause: "Couldn't transcribe on this phone", action: { kind: "retry", label: "Try again" }, chooseProvider: true });
     expect(byKey.notes!.blocker).toEqual({ cause: "Couldn't sync your notes", action: { kind: "retry", label: "Try again" } });
     expect(pipeline.current).toBe("transcript");
     expect(pipeline.blocker).toEqual(byKey.transcript!.blocker);
@@ -336,7 +336,7 @@ describe("stuck-state contract", () => {
     const pipeline = notePipeline(input(local({ onDevice: od({ stt: stt("failed", "boom") }) }, { space: { pending: { held: "signed-out" } } })));
     const byKey = Object.fromEntries(pipeline.steps.map((s) => [s.key, s]));
     expect(byKey.space!.blocker?.action?.kind).toBe("sign-in");
-    expect(byKey.transcript!.blocker).toEqual({ cause: "Couldn't transcribe on this phone", action: { kind: "retry", label: "Try again" } });
+    expect(byKey.transcript!.blocker).toEqual({ cause: "Couldn't transcribe on this phone", action: { kind: "retry", label: "Try again" }, chooseProvider: true });
     expect(pipeline.blocker).toEqual(byKey.space!.blocker);
   });
 
@@ -436,5 +436,22 @@ describe("a transcript in the space that the phone could not record (P6 r1)", ()
     expect(pipeline.current).toBe("notes");
     expect(pipeline.notice).toBe("The transcript is in your space, but this phone couldn't record it.");
     expect(pipeline.done).toBe(false);
+  });
+});
+
+describe("which retries let the user choose the provider", () => {
+  const transcriptBlocker = (patch: Parameters<typeof input>[0]) => notePipeline(input(patch)).steps.find((s) => s.key === "transcript")?.blocker;
+
+  test("a failed or cancelled Local transcription, and a retryable private failure, do", () => {
+    expect(transcriptBlocker(local({ onDevice: od({ stt: stt("failed", "boom") }) }, { space: SAVED }))?.chooseProvider).toBe(true);
+    expect(transcriptBlocker(local({ onDevice: od({ stt: stt("cancelled") }) }, { space: SAVED }))?.chooseProvider).toBe(true);
+    const retryable = cloud({ kind: "failed", code: "server_error", message: "Transcription hit a snag.", retryable: true, reference: "ref-1" });
+    expect(transcriptBlocker(retryable)?.chooseProvider).toBe(true);
+  });
+
+  test("a private failure that cannot be retried has no action, so nothing to choose", () => {
+    const final = cloud({ kind: "failed", code: "recording_too_long", message: "Too long.", retryable: false, reference: "ref-9" });
+    expect(transcriptBlocker(final)?.action).toBeUndefined();
+    expect(transcriptBlocker(final)?.chooseProvider).toBeUndefined();
   });
 });

@@ -55,7 +55,7 @@ export const SPACE_COPY = {
   uploading: (fraction: number | null) => (fraction === null ? "Uploading…" : `Uploading · ${percentText(fraction)}`),
   retrying: "Retrying…",
   offline: "Waiting for a connection",
-  offlineCaption: "Waiting for a connection · Exo continues automatically",
+  offlineCaption: "Offline · Resumes automatically",
   signedOut: (device: PipelineDevice) => `You're signed out. This note is safe on ${deviceName(device)}.`,
   sessionExpired: (device: PipelineDevice) => `Your session ended. This note is safe on ${deviceName(device)}.`,
   otherAccount: "Recorded on another account",

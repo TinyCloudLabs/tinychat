@@ -2226,11 +2226,8 @@ paths:
       operationId: getPrivateCloudTranscriptionCapabilities
       summary: Exo private cloud transcription limits and admission mode
       description: >-
-        Exo desktop's "Private cloud" engine. Mounted only when
-        PRIVATE_CLOUD_TRANSCRIPTION_ENABLED=true, and then only for addresses in
-        PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS: otherwise every path under
-        /api/transcriber/private-cloud answers the server's ordinary 404, so a dark
-        deployment and a non-cohort address look the same. Relays the TinyCloud
+        Exo desktop's "Private cloud" engine is mounted for every signed-in account.
+        With no PTX configuration it answers 503 `service_misconfigured`. Relays the TinyCloud
         Private Transcription batch service's capabilities. Every success body under
         this prefix is rebuilt field by field from the upstream answer (fields outside
         the contract are dropped; an off-contract value is `upstream_bad_response`),

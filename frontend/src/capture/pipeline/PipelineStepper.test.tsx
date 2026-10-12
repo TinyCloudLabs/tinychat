@@ -125,8 +125,10 @@ describe("PipelineStepper", () => {
 
   test("track rows adapt to large text and 320px widths", async () => {
     const css = await Bun.file(new URL("./PipelineStepper.css", import.meta.url)).text();
-    expect(css).toContain("container-type: inline-size");
-    expect(css).toContain("grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr)");
+    expect(css).toContain("display: flex;");
+    expect(css).toContain("flex-wrap: wrap;");
+    expect(css).toContain("flex: 0 0 max-content;");
+    expect(css).toContain("flex: 1 0 max-content;");
     expect(css).not.toMatch(/font-size:\s*[\d.]+px/);
     expect(css.match(/font-size:\s*0\.78125rem/g)?.length).toBeGreaterThanOrEqual(3);
     expect(css).toMatch(/\.pipeline-stepper \.soft-pill \{[^}]*font-size: 0\.78125rem/);
@@ -177,3 +179,33 @@ function allDoneInput() {
     transcript: { inSpace: null, onDevice: null, cloud: null }, notes: { state: "idle" as const },
   };
 }
+
+describe("PipelineStepper: a failed transcription's retry", () => {
+  const space = { saved: true, pending: null, lane: { busy: false, depth: 0 } } as const;
+  const failedLocal = () =>
+    pipelineOf({
+      route: "on-device",
+      space,
+      transcript: { inSpace: null, cloud: null, onDevice: { stt: { state: "failed", error: "boom" }, queue: null, model: { state: "ready", bytes: 640, totalBytes: 640, error: null }, download: "idle", sync: null } },
+    });
+  const action = <p data-testid="picker">Try again · Local</p>;
+
+  test("is the screen's Transcribe action when it gives one", () => {
+    const html = renderToStaticMarkup(<PipelineStepper pipeline={failedLocal()} onAction={noop} transcribeAction={action} />);
+    expect(html).toContain('data-testid="picker"');
+    expect(html).not.toContain("soft-pill");
+  });
+
+  test("stays the plain Try again pill without one", () => {
+    const html = renderToStaticMarkup(<PipelineStepper pipeline={failedLocal()} onAction={noop} />);
+    expect(html).toContain("Try again");
+    expect(html).not.toContain('data-testid="picker"');
+  });
+
+  test("is not given to a retry that is not a transcription", () => {
+    const pipeline = pipelineOf({ space: { saved: false, pending: { failed: { kind: "timeout", message: "x" } }, lane: { busy: false, depth: 0 } } });
+    const html = renderToStaticMarkup(<PipelineStepper pipeline={pipeline} onAction={noop} transcribeAction={action} />);
+    expect(html).not.toContain('data-testid="picker"');
+    expect(html).toContain("Try again");
+  });
+});

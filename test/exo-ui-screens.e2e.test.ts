@@ -59,6 +59,7 @@ const VIEWPORTS: Viewport[] = [
       "recorder-final-minimized-",
       "capture-soft-",
       "capture-notetaker-route",
+      "saved-note-untranscribed",
     ],
   },
   {
@@ -81,7 +82,7 @@ const VIEWPORTS: Viewport[] = [
     hasTouch: true,
     textScale: 2,
     zoom: true,
-    screenPrefixes: ["recorder-landed", "capture-soft-", "capture-notetaker-route", "native-sign-in"],
+    screenPrefixes: ["recorder-landed", "capture-soft-", "capture-notetaker-route", "saved-note-untranscribed", "native-sign-in"],
   },
   {
     id: "text200-phone-360",
@@ -510,9 +511,10 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
   });
 
   for (const viewport of viewports) {
-    test(`every screen at ${viewport.id} (${viewport.width}x${viewport.height})`, async () => {
-      const failures: string[] = [];
-      for (const theme of themes) {
+    // One test per theme: the whole desktop pass in one test sat at the 600 s budget, and each theme is an independent browser session.
+    for (const theme of themes) {
+      test(`every screen at ${viewport.id} (${viewport.width}x${viewport.height}), ${theme}`, async () => {
+        const failures: string[] = [];
         // WebKit stops loading after about 65 pages per browser. Recycle every
         // 40 screens within each theme to stay below that limit.
         for (let start = 0; start < screens.length; start += 40) {
@@ -682,12 +684,14 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 if (sizing.wrong.length > 0) findings.push({ check: "pipeline-text-scale", detail: `not 0.78125rem: ${sizing.wrong.join("; ")}` });
                 if (sizing.overflowing.length > 0) findings.push({ check: "pipeline-text-wrap", detail: `text outside its box: ${sizing.overflowing.join("; ")}` });
                 for (const layout of sizing.layouts) {
-                  const stacked = (viewport.textScale ?? 1) > 1;
-                  if (!layout.label || !layout.status || (stacked
-                    ? layout.status.top < layout.label.bottom - 1
-                    : layout.status.left < layout.label.left - 1 || layout.status.top > layout.label.bottom + 1)) {
-                    findings.push({ check: "pipeline-wrap", detail: stacked
-                      ? "a pipeline status did not sit below its label at large text size"
+                  const inline = layout.label && layout.status
+                    && layout.status.left >= layout.label.right - 1
+                    && layout.status.top <= layout.label.bottom + 1;
+                  const stacked = layout.label && layout.status
+                    && layout.status.top >= layout.label.bottom - 1;
+                  if (!layout.label || !layout.status || ((viewport.textScale ?? 1) <= 1 && !inline) || (!inline && !stacked)) {
+                    findings.push({ check: "pipeline-wrap", detail: (viewport.textScale ?? 1) > 1
+                      ? "a pipeline status overlapped its label instead of wrapping below it"
                       : "a pipeline row did not keep its label and status on the same line" });
                   }
                 }
@@ -748,10 +752,10 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
             await context.close();
           }
         }
-      }
-      expect(failures).toEqual([]);
-      // WebKit takes several seconds per page for the shell screens (they run the whole chat).
-    }, 600_000);
+        expect(failures).toEqual([]);
+        // WebKit takes several seconds per page for the shell screens (they run the whole chat).
+      }, 600_000);
+    }
   }
 
   const runsPhoneHaloReview =

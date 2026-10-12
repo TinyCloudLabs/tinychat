@@ -33,7 +33,7 @@ import {
   type PipelineRoute,
 } from "./notePipeline";
 import { isAppleSpeech, OnDeviceStt, type OnDeviceSttStatus } from "./onDeviceStt";
-import { onDeviceQueuePlace } from "./onDeviceQueue";
+import { onDeviceQueuePlace, type OnDeviceQueuePlace } from "./onDeviceQueue";
 import { downloadOnDeviceModel, onDeviceSttStore, retryOnDeviceNote } from "./onDeviceSttStore";
 import {
   onDeviceTranscriptSyncState,
@@ -120,6 +120,8 @@ export interface NotePipelineFacts {
   spaceAfterUploads?: boolean;
   /** This note's private-cloud job (`transcriber.snapshot().jobs`). */
   cloudJob: NoteTranscriptionState | null;
+  /** The account's private-cloud check has not answered: a saved note gets its job (or its blocked or held one) once it does. */
+  cloudChecking?: boolean;
   /**
    * `attempting`: this revision of the note has not had its automatic sync attempt settle yet (the hook runs one when a saved
    * note with text has nothing syncing it, see `useAutoNoteSync`). Until it settles the notes step is "syncing", not a blocker.
@@ -130,21 +132,27 @@ export interface NotePipelineFacts {
 // --- Route -----------------------------------------------------------------------------------------------------
 
 /**
- * Where this note's transcript comes from. The note's committed mode (`options.transcriber` in the phone's ledger)
- * decides; a Local note is in private cloud only once the user moved it ("Use Private instead"), which shows as a
- * cloud job for it. A note this phone has no ledger entry for (a Mac, a browser, another phone's note) has no
- * committed mode: a cloud job says private cloud, a native on-device job says on-device, and anything else is "off"
- * (nobody is transcribing it from here, so the transcript step is skipped, never invented).
+ * Where this note's transcript comes from. What is transcribing it wins, because the note's Transcribe action can run a
+ * provider other than the committed one: a live on-device job, then a private-cloud job, then an on-device attempt that
+ * finished (its failure or cancel is what the note shows until a cloud job takes over). With none, the note's committed mode
+ * (`options.transcriber` in the phone's ledger) decides. A note this phone has no ledger entry for (a Mac, a browser,
+ * another phone's note) has no committed mode: a native on-device job says on-device, and anything else is "off" (nobody
+ * is transcribing it from here, so the transcript step is skipped, never invented).
  */
-export function pipelineRoute(native: NativeNote | null, hasCloudJob: boolean): PipelineRoute {
+// `waiting_for_model` is written for every committed mode at creation; only a real attempt writes these.
+const ATTEMPT_STATES: ReadonlySet<NoteSttState["state"]> = new Set(["queued", "running", "done", "failed", "cancelled"]);
+
+export function pipelineRoute(native: NativeNote | null, hasCloudJob: boolean, queue: OnDeviceQueuePlace | null = null): PipelineRoute {
+  if (queue !== null && queue.position !== null) return "on-device";
+  if (hasCloudJob) return "private-cloud";
+  // The queue entry is gone once an attempt ends; the ledger keeps the attempt.
+  if (queue !== null || (native?.stt != null && ATTEMPT_STATES.has(native.stt.state))) return "on-device";
   switch (native?.transcriber ?? null) {
     case "off": return "off";
-    case "on-device": return hasCloudJob ? "private-cloud" : "on-device";
+    case "on-device": return "on-device";
     case "private-cloud":
     case "assemblyai": return "private-cloud";
-    case null:
-      if (hasCloudJob) return "private-cloud";
-      return native?.stt != null ? "on-device" : "off";
+    case null: return native?.stt != null ? "on-device" : "off";
   }
 }
 
@@ -236,7 +244,7 @@ function onDeviceInput(facts: NotePipelineFacts): PipelineOnDevice | null {
 }
 
 export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineInput {
-  const route = pipelineRoute(facts.native, facts.cloudJob !== null);
+  const route = pipelineRoute(facts.native, facts.cloudJob !== null, facts.onDeviceStatus === null ? null : onDeviceQueuePlace(facts.onDeviceStatus, facts.id));
   const rowOutcome = facts.rowMetadata === null ? "none" : voiceNoteTranscriptState(facts.rowMetadata).status;
   // The ledger's own record that the transcript reached the space is durable evidence too (a receipt has no library row read).
   const ledgerOutcome = facts.native?.transcriptSync?.state === "saved" ? facts.native.transcriptOutcome ?? "none" : "none";
@@ -267,6 +275,8 @@ export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineIn
       inSpace: outcome === "none" ? null : outcome,
       onDevice: route === "on-device" ? onDeviceInput(facts) : null,
       cloud: route === "private-cloud" ? facts.cloudJob : null,
+      // Jobs are written the moment a saved note is handed over, after the check: no job and no check pending is no hand-over.
+      ...(route === "private-cloud" && facts.cloudJob === null && facts.saved && facts.cloudChecking !== true && facts.spaceReading !== true ? { cloudIdle: true as const } : {}),
       readError: facts.readError ?? null,
       ...(facts.spaceReading === true ? { spaceReading: true, ...(facts.spaceAfterUploads === true ? { afterUploads: true } : {}) } : {}),
     },
@@ -788,6 +798,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
         spaceReading,
         spaceAfterUploads: spaceReading && pending.notes?.some((note) => note.upload !== undefined) === true,
         cloudJob: recorder.transcription?.jobs.get(id) ?? null,
+        cloudChecking: recorder.transcription?.availability === "checking",
       };
       // A saved note with text and no sync of this revision gets its automatic attempt (`useAutoNoteSync`); until it settles it is "syncing".
       let attempting = false;

@@ -8,6 +8,8 @@ final class TranscriptionCoreTests: XCTestCase {
     private final class FakeLibrary: TranscriptionLibrary {
         private let lock = NSLock()
         private var stt: [String: [String: Any]] = [:]
+        private var committed: [String: String] = [:]
+        var updateError: Error?
         private var transcripts: [String: [String: Any]] = [:]
         /// Runs (outside the lock) before a matching `updateStt` is applied, to hold it.
         var beforeUpdate: ((String, [String: Any]) -> Void)?
@@ -15,9 +17,10 @@ final class TranscriptionCoreTests: XCTestCase {
         private var afterTranscriptRead: ((String) -> Void)?
         private var history: [(id: String, patch: [String: Any])] = []
 
-        func seed(_ id: String, state: String, attempts: Int = 0) {
+        func seed(_ id: String, state: String, attempts: Int = 0, committed mode: String = "on-device") {
             lock.lock(); defer { lock.unlock() }
             stt[id] = ["state": state, "attempts": attempts]
+            committed[id] = mode
         }
 
         func armAfterTranscriptRead(_ hook: @escaping (String) -> Void) {
@@ -42,7 +45,7 @@ final class TranscriptionCoreTests: XCTestCase {
 
         func listCommitted() throws -> [[String: Any]] {
             lock.lock(); defer { lock.unlock() }
-            return stt.map { ["id": $0.key, "options": ["transcriber": "on-device"], "stt": $0.value] }
+            return stt.map { ["id": $0.key, "options": ["transcriber": committed[$0.key] ?? "on-device"], "stt": $0.value] }
         }
 
         func transcript(_ id: String) throws -> [String: Any]? {
@@ -62,6 +65,7 @@ final class TranscriptionCoreTests: XCTestCase {
 
         func updateStt(_ id: String, patch: [String: Any]) throws {
             beforeUpdate?(id, patch)
+            if let updateError { throw updateError }
             lock.lock(); defer { lock.unlock() }
             var merged = stt[id] ?? [:]
             for (key, value) in patch { merged[key] = value }
@@ -163,6 +167,65 @@ final class TranscriptionCoreTests: XCTestCase {
                 if let error { throw error }
             }
         }
+    }
+
+    // MARK: a Local choice on a note committed to another mode survives a restart
+
+    private func relaunch() {
+        core = TranscriptionCore(library: library, backend: backend, label: "xyz.tinycloud.exo.stt.test.\(UUID().uuidString)")
+        core.onTranscribed = { [events] id, outcome in events!.add("transcribed:\(id):\(outcome)") }
+    }
+
+    func testALocalChoiceOnAnOffNoteIsResumedAfterARestartWhileTheModelIsMissing() {
+        for mode in ["off", "private-cloud"] {
+            let id = "note-\(mode)"
+            library.seed(id, state: "waiting_for_model", committed: mode)
+            backend.session = nil // the model is not usable: the attempt parks at waiting_for_model
+            core.enqueue(id: id)
+            settle()
+            XCTAssertEqual(library.sidecar(id)["requested"] as? Bool, true)
+
+            relaunch()
+            backend.session = session // the model has arrived by the next launch
+            core.reconcile()
+            settle()
+            XCTAssertTrue(library.hasTranscript(id), "\(mode)")
+            XCTAssertEqual(library.sidecar(id)["state"] as? String, "done")
+        }
+    }
+
+    func testALocalChoiceThatWasRunningWhenTheAppDiedIsResumed() {
+        library.seed("a", state: "running", committed: "off")
+        try? library.updateStt("a", patch: ["requested": true])
+        core.reconcile()
+        settle()
+        XCTAssertTrue(library.hasTranscript("a"))
+    }
+
+    func testAnOffNoteNobodyChoseLocalForIsNotResumed() {
+        library.seed("a", state: "running", committed: "off")
+        library.seed("b", state: "waiting_for_model", committed: "private-cloud")
+        core.reconcile()
+        settle()
+        XCTAssertEqual(session.startedIds, [])
+        XCTAssertFalse(library.hasTranscript("a"))
+    }
+
+    func testAnEnqueueThatCannotWriteTheNoteReportsFailureAndLeavesNothingQueued() {
+        struct Gone: Error {}
+        library.seed("a", state: "failed", committed: "off")
+        library.updateError = Gone()
+        var outcome: String?
+        let finished = DispatchSemaphore(value: 0)
+        core.enqueue(id: "a", accepted: { _ in outcome = "accepted"; finished.signal() }, failed: { _ in outcome = "failed"; finished.signal() })
+        XCTAssertEqual(finished.wait(timeout: .now() + 5), .success)
+        settle()
+        XCTAssertEqual(outcome, "failed")
+        XCTAssertTrue(core.queueSnapshot().isEmpty)
+        library.updateError = nil
+        core.enqueue(id: "a") // the reservation was released: a retry is accepted
+        settle()
+        XCTAssertTrue(library.hasTranscript("a"))
     }
 
     // MARK: finding 1 — a cancel during the final decode
