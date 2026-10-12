@@ -147,6 +147,24 @@ describe("selectRecorderView: needs_user reason decisions", () => {
       true,
       true,
     ],
+    [
+      "unsafe_sessions_folder",
+      "Recording is blocked by an unsafe entry in the vault sessions folder. Remove unexpected links or files there, then try again.",
+      "still",
+      "Interrupted",
+      false,
+      true,
+      false,
+    ],
+    [
+      "session_exists",
+      "This recording session already exists. Discard this attempt and start a new recording.",
+      "still",
+      "Interrupted",
+      false,
+      true,
+      false,
+    ],
   ] as const)(
     "needs_user/%s",
     (reason, statusLine, ring, label, resume, stop, openSettings) => {

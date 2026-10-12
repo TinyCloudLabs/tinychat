@@ -1,4 +1,4 @@
-import type { BatchResponse, TranscriptionEvent, TranscriptionParams } from "@/lib/anarlog/transcription.gen";
+import type { BatchResponse, TranscriptionEvent } from "@/lib/anarlog/transcription.gen";
 import type { WhisperModel } from "@/lib/localTranscriber";
 import { leaseWhisperServer, SHARED_WHISPER_SERVER_SCOPE, type WhisperServerLease } from "@/lib/whisperServerLease";
 import type { NoteSttState, VoiceNoteRecording } from "../nativeVoiceNotes";
@@ -10,19 +10,20 @@ const MODEL_IDS = new Set<WhisperModel>(["QuantizedTinyEn", "QuantizedTiny", "Qu
   "QuantizedSmallEn", "QuantizedSmall", "QuantizedLargeTurbo"]);
 type WhisperEvent = TranscriptionEvent;
 
-/** The existing anarlog local-stt and batch-transcription commands, injectable for file-only tests. */
+/** Local STT commands and Exo's session-id-only recorder transcription command. */
 export interface DesktopWhisperBridge {
   serverScope?: object;
   startServer(model: WhisperModel): Promise<string>;
   stopServer(): Promise<void>;
-  startTranscription(params: TranscriptionParams): Promise<void>;
+  startTranscription(params: { id: string; stageId: string; model: WhisperModel }): Promise<void>;
   stopTranscription(id: string): Promise<void>;
   onTranscription(cb: (event: WhisperEvent) => void): Promise<() => void>;
 }
 
 export async function loadDesktopWhisperBridge(): Promise<DesktopWhisperBridge> {
-  const [localStt, transcription] = await Promise.all([
+  const [localStt, transcription, { invoke }] = await Promise.all([
     import("@/lib/anarlog/localStt.gen"), import("@/lib/anarlog/transcription.gen"),
+    import("@tauri-apps/api/core"),
   ]);
   const unwrap = <T>(result: { status: "ok"; data: T } | { status: "error"; error: string }): T => {
     if (result.status === "error") throw new Error(String(result.error));
@@ -32,7 +33,7 @@ export async function loadDesktopWhisperBridge(): Promise<DesktopWhisperBridge> 
     serverScope: SHARED_WHISPER_SERVER_SCOPE,
     startServer: async (model) => unwrap(await localStt.commands.startServer(model)),
     stopServer: async () => { unwrap(await localStt.commands.stopServer("internal")); },
-    startTranscription: async (params) => { unwrap(await transcription.commands.startTranscription(params)); },
+    startTranscription: async (params) => { await invoke("recorder_whisper_start", params); },
     stopTranscription: async (id) => { unwrap(await transcription.commands.stopTranscription(id)); },
     onTranscription: async (cb) => {
       const stop = await transcription.events.transcriptionEvent.listen(({ payload }) => cb(payload));
@@ -68,6 +69,29 @@ export function registerDesktopWhisperQueue(queue: DesktopWhisperQueue | null): 
 const stt = (state: NoteSttState["state"], error: string | null = null): NoteSttState => ({
   state, pack: null, engine: "whisper", segmentsDone: 0, windowsDone: 0, error,
 });
+
+const WHISPER_REJECTION_HELP: Record<string, string> = {
+  unsafe_sessions_folder: "The sessions folder is unsafe. Check the vault sessions folder for unexpected entries before retrying.",
+  session_exists: "A recording session already exists. Resolve the conflicting session before retrying.",
+  recording_unavailable: "The recording audio is unavailable. Check that the note audio still exists, then retry.",
+  recording_busy: "The recording is still being saved. Wait for it to finish, then retry.",
+  server_unavailable: "The Whisper server is unavailable. Restart local transcription and retry.",
+};
+
+function whisperFailure(error: unknown): string {
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    const { code, message } = error as { code?: unknown; message?: unknown };
+    const detail = typeof message === "string" ? message.trim() : "";
+    if (typeof code === "string" && code) {
+      const help = Object.hasOwn(WHISPER_REJECTION_HELP, code) ? WHISPER_REJECTION_HELP[code] : undefined;
+      return help ? `${code}: ${help}${detail ? ` Details: ${detail}` : ""}`
+        : `${code}: ${detail || "Whisper transcription failed"}`;
+    }
+    if (detail) return detail;
+  }
+  return "Whisper transcription failed";
+}
 
 async function stageId(id: string): Promise<string> {
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(id)));
@@ -115,8 +139,8 @@ export function createDesktopWhisperQueue(args: {
       throw new Error("unavailable: the selected Whisper model is not downloaded");
     return id as WhisperModel;
   };
-  const audioPath = async (id: string, stagedId: string): Promise<string> => {
-    return files.invoke<string>("recorder_whisper_stage_audio", { id, stageId: stagedId });
+  const stageAudio = async (id: string, stagedId: string): Promise<void> => {
+    await files.invoke<void>("recorder_whisper_stage_audio", { id, stageId: stagedId });
   };
   const one = async (note: VoiceNoteRecording): Promise<void> => {
     const id = note.id;
@@ -130,12 +154,12 @@ export function createDesktopWhisperQueue(args: {
       const model = await selectedModel();
       await mark(id, "running");
       stagedId = await stageId(id);
-      const path = await audioPath(id, stagedId);
+      await stageAudio(id, stagedId);
       if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
       const lease = leaseWhisperServer(model, () => whisper.startServer(model), () => whisper.stopServer(),
         whisper.serverScope ?? whisper);
       serverLease = lease;
-      const server = await lease.ready;
+      await lease.ready;
       if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
       const response = await new Promise<BatchResponse>((resolve, reject) => {
         let settled = false;
@@ -165,8 +189,7 @@ export function createDesktopWhisperQueue(args: {
           try {
             stop = await whisper.onTranscription(finish);
             transcribing = true;
-            await whisper.startTranscription({ session_id: id, provider: "whispercpp", file_path: path,
-              model, base_url: server, api_key: "", languages: ["en"], keywords: [] });
+            await whisper.startTranscription({ id, stageId: stagedId!, model });
           } catch (error) { if (!settled) { settled = true; clearTimeout(timer); stop(); reject(error); } }
         })();
       });
@@ -176,8 +199,9 @@ export function createDesktopWhisperQueue(args: {
       emitDone(id);
     } catch (error) {
       if (disposed) return;
-      if (stopping || captureLive() || String(error).includes("capture_has_priority")) await mark(id, "queued");
-      else await mark(id, "failed", error instanceof Error ? error.message : String(error));
+      const message = whisperFailure(error);
+      if (stopping || captureLive() || message.includes("capture_has_priority")) await mark(id, "queued");
+      else await mark(id, "failed", message);
     } finally {
       transcribing = false;
       serverLease?.release();
