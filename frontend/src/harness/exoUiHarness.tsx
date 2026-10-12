@@ -103,6 +103,7 @@ initSizeClass();
 // Native `downloadNow` settles only when the download ends (the fake's returns at once with the models still queued), so
 // a screen that starts one keeps showing it downloading; no screen waits on the models becoming ready.
 const harnessOnDeviceStt = createFakeOnDeviceStt();
+if (platform === "ios") harnessOnDeviceStt.controls.useAppleSpeech("asset_missing");
 __setOnDeviceSttForTests({
   ...harnessOnDeviceStt.plugin,
   downloadNow: async (options) => {
