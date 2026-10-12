@@ -120,6 +120,11 @@ export interface NotePipelineInput {
      * read's own error. The route and the transcript are unknown then, never "absent" or "ready".
      */
     readError?: string | null;
+    /**
+     * A private-cloud note, saved, with no job, and nothing about to start one (the account's check has answered): it is
+     * not being transcribed and will not be unless asked, so the step is skipped, like a note committed to no transcript.
+     */
+    cloudIdle?: true;
     /** The space row has not been read yet (it queues behind uploads on the write lane): what only it can say is not known. */
     spaceReading?: boolean;
     /** With `spaceReading`: uploads are ahead of that read in the write lane. */
@@ -147,6 +152,8 @@ export interface PipelineStep {
 export interface PipelineBlocker {
   cause: string;
   action?: { kind: PipelineActionKind; label: string };
+  /** The action transcribes the note again, so a surface that can offer the user's choice of provider shows that in its place. */
+  chooseProvider?: true;
 }
 
 export interface NotePipeline {
@@ -177,10 +184,10 @@ export function pipelineActionPriority(kind: PipelineActionKind | undefined): nu
 type Result = Omit<PipelineStep, "key" | "label">;
 
 const checking = (transcript: NotePipelineInput["transcript"]): string => (transcript.afterUploads === true ? LOCAL_COPY.checkingSpaceAfterUploads : LOCAL_COPY.checkingSpace);
-const block = (cause: string, kind?: PipelineActionKind): PipelineBlocker =>
-  kind === undefined ? { cause } : { cause, action: { kind, label: ACTION_LABEL[kind] } };
-const blocked = (cause: string, kind?: PipelineActionKind): Result => ({ state: "blocked", blocker: block(cause, kind) });
-const failed = (cause: string, kind?: PipelineActionKind): Result => ({ state: "failed", blocker: block(cause, kind) });
+const block = (cause: string, kind?: PipelineActionKind, chooseProvider = false): PipelineBlocker =>
+  kind === undefined ? { cause } : { cause, action: { kind, label: ACTION_LABEL[kind] }, ...(chooseProvider ? { chooseProvider: true as const } : {}) };
+const blocked = (cause: string, kind?: PipelineActionKind, chooseProvider = false): Result => ({ state: "blocked", blocker: block(cause, kind, chooseProvider) });
+const failed = (cause: string, kind?: PipelineActionKind, chooseProvider = false): Result => ({ state: "failed", blocker: block(cause, kind, chooseProvider) });
 const fraction = (done: number, total: number): number | null => (total > 0 && Number.isFinite(done) ? Math.min(1, Math.max(0, done / total)) : null);
 const withProgress = (state: "active" | "waiting", caption: string, progress: number | null): Result =>
   progress === null ? { state, caption } : { state, caption, progress };
@@ -281,8 +288,8 @@ function onDeviceStep(input: NotePipelineInput, od: PipelineOnDevice): Result {
       if (!saved) return { state: "done", sublabel: LOCAL_COPY.readyOnDevice(input.device) };
       // Nothing is adding it (`sync` is null) and the space has no transcript: an attempt that never ran is a blocker, never "adding".
       return input.transcript.spaceReading === true ? { state: "waiting", caption: checking(input.transcript) } : blocked(LOCAL_COPY.notAdded, "retry");
-    case "failed": return failed(LOCAL_COPY.failed(undefined, input.device), "retry");
-    case "cancelled": return blocked(LOCAL_COPY.cancelled(input.device), "retry");
+    case "failed": return failed(LOCAL_COPY.failed(undefined, input.device), "retry", true);
+    case "cancelled": return blocked(LOCAL_COPY.cancelled(input.device), "retry", true);
     case "running": {
       const progress = queue?.percent == null ? null : Math.min(1, Math.max(0, queue.percent / 100));
       return withProgress("active", LOCAL_COPY.transcribing(progress), progress);
@@ -309,7 +316,7 @@ function cloudStep(cloud: PipelineCloud | null, spaceSaved: boolean, checkingCap
     case "done": return cloud.outcome === "no_speech" ? { state: "done", caption: PRIVATE_COPY.noSpeech } : { state: "done" };
     case "held": return blocked(cloud.message.trim() || PRIVATE_COPY.notStarted);
     case "failed":
-      return failed(PRIVATE_COPY.failed(cloud.message, cloud.retryable ? null : cloud.reference), cloud.retryable ? "retry" : undefined);
+      return failed(PRIVATE_COPY.failed(cloud.message, cloud.retryable ? null : cloud.reference), cloud.retryable ? "retry" : undefined, cloud.retryable);
     case "blocked": return cloudBlockedStep(cloud.reason);
     case "active": {
       const status = cloud.status;
@@ -334,6 +341,7 @@ function transcriptStep(input: NotePipelineInput): Result {
   const { inSpace, onDevice, cloud } = input.transcript;
   if (input.route === "private-cloud" && !input.space.saved) return { state: "upcoming" };
   if (inSpace !== null) return inSpace === "no_speech" ? { state: "done", caption: LOCAL_COPY.noSpeech } : { state: "done" };
+  if (input.route === "private-cloud" && cloud === null && input.transcript.cloudIdle === true) return { state: "skipped" };
   if (input.route === "private-cloud") return cloudStep(cloud, input.space.saved, input.transcript.spaceReading === true ? checking(input.transcript) : null);
   if (onDevice === null) return input.space.saved ? { state: "waiting", caption: input.transcript.spaceReading === true ? checking(input.transcript) : LOCAL_COPY.notStarted } : { state: "upcoming" };
   return onDeviceStep(input, onDevice);

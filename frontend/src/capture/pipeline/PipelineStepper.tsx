@@ -1,6 +1,6 @@
 // Where a note is on its way to your space and back: the pipeline selector's four steps as Meeting-sources dots,
 // the current step's caption, and, when something needs the user, the cause with one action.
-import { useId } from "react";
+import { useId, type ReactNode } from "react";
 
 import type { NotePipeline, PipelineActionKind, PipelineStep, StepState } from "@/lib/voiceNotes/notePipeline";
 import "../home/home.css";
@@ -76,6 +76,8 @@ export function PipelineStepper(props: {
   onAction: (kind: PipelineActionKind) => void;
   /** Why the last action did not work, shown with the blocker it belongs to. */
   actionError?: string | null;
+  /** Shown in place of the pill when the blocker's action transcribes the note again (`blocker.chooseProvider`). */
+  transcribeAction?: ReactNode;
   className?: string;
 }) {
   const { pipeline, onAction } = props;
@@ -130,13 +132,15 @@ export function PipelineStepper(props: {
           <p className="pipeline-stepper-cause" id={causeId}>
             {blocker.cause}
           </p>
-          {blocker.action !== undefined && (
+          {blocker.action !== undefined && (blocker.chooseProvider === true && props.transcribeAction !== undefined ? (
+            props.transcribeAction
+          ) : (
             <span className="soft-pill-hit" data-hit-area="">
               <button type="button" className="soft-pill" aria-describedby={causeId} onClick={() => onAction(blocker.action!.kind)}>
                 {blocker.action.label}
               </button>
             </span>
-          )}
+          ))}
           {props.actionError != null && props.actionError !== "" && (
             <p className="pipeline-stepper-action-error" role="alert" data-pipeline-action-error="">
               {props.actionError}
