@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 import {
   useCallback,
   useContext,
@@ -375,7 +376,7 @@ export function PhoneRecorder({
       console.error("[Recorder] Could not mark this moment", error);
       showToast(
         NOTES_COPY.momentFailed(
-          error instanceof Error ? error.message : String(error),
+          readableError(error),
         ),
       );
     },

@@ -188,7 +188,7 @@ export async function restorePersistedSession<M, T>(
   if (isMissingSpaceError(restored.error)) {
     // The stored session cannot work, so it is cleared like any refused one, but the user is
     // told why instead of landing on an unexplained sign-in screen.
-    console.error("[session] restored session has no space:", restored.error);
+    console.error("[session] restored session has no space");
     await deps.beforeClear?.();
     sessionStore.clear();
     return { kind: "failed", message: MISSING_SPACE_MESSAGE };

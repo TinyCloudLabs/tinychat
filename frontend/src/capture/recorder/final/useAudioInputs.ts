@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { captureEngineKind } from "@/lib/voiceNotes/captureEngine";
 import {
@@ -63,7 +64,7 @@ export interface AudioInputsHandlers {
 }
 
 const messageOf = (caught: unknown) =>
-  caught instanceof Error ? caught.message : String(caught);
+  readableError(caught);
 
 function fail(
   caught: unknown,

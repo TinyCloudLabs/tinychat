@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 import {
   createContext,
   useContext,
@@ -199,7 +200,7 @@ export function DesktopRecorder({
         await recorder.minimiseSheet();
       } catch (caught) {
         console.error("[Recorder] Could not minimise the recorder to show Capture settings", caught);
-        showToast(`Could not show Capture settings: ${caught instanceof Error ? caught.message : String(caught)}`);
+        showToast(`Could not show Capture settings: ${readableError(caught)}`);
       }
     })();
     return reason;

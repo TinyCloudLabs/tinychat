@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 import type { PluginListenerHandle } from "@capacitor/core";
 import type {
   AudioInput, CaptureOptions, CaptureStatus, MicStateEvent, MissingAudioSpan, VoiceNoteRecording, VoiceNotesPlugin,
@@ -69,7 +70,7 @@ export interface DesktopVoiceNotesOptions {
 }
 
 const copy = <T>(value: T): T => structuredClone(value);
-const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+const errorText = (error: unknown) => readableError(error);
 function ptxCommandError(error: unknown, correlationId?: string): PrivateCloudError | VoiceNoteAudioError {
   const code = errorText(error);
   if (code === "audio_read_failed" || code === "audio_not_ready" || code === "audio_size_mismatch" || code === "not_found") {

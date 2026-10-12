@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 import {
   Component,
   lazy,
@@ -126,7 +127,7 @@ function Opening({ layout }: { layout: Exclude<RecorderLayout, "phone"> }) {
 /** A module that could not be fetched: the browser may keep the failed URL, so asking again for it won't help; only a reload does. */
 export function isChunkLoadError(error: unknown): boolean {
   const name = error instanceof Error ? error.name : "";
-  const message = error instanceof Error ? error.message : String(error);
+  const message = readableError(error);
   return (
     name === "ChunkLoadError" ||
     /Failed to fetch dynamically imported module|error loading dynamically imported module|Importing a module script failed/i.test(

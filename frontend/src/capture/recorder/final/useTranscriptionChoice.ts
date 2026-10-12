@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import {
   isOnDeviceReady,
@@ -96,7 +97,7 @@ export function useOnDeviceModel(): {
       console.error(`[Recorder] Could not ${what}`, caught);
       if (live)
         setError(
-          `Could not ${what}: ${caught instanceof Error ? caught.message : String(caught)}`,
+          `Could not ${what}: ${readableError(caught)}`,
         );
     };
     const succeeded = (next: OnDeviceSttStatus) => {
@@ -227,7 +228,7 @@ export function useTranscriptionChoice({
   const failed = (what: string, caught: unknown) => {
     console.error(`[Recorder] Could not ${what}`, caught);
     notify(
-      `Could not ${what}: ${caught instanceof Error ? caught.message : String(caught)}`,
+      `Could not ${what}: ${readableError(caught)}`,
     );
   };
 

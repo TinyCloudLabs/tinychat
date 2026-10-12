@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 import "./notes.css";
 import { useEffect, useState } from "react";
 import { NOTES_COPY } from "../notesCopy";
@@ -33,7 +34,7 @@ export function NoteRenderer({
         if (current)
           setRendered({
             state: "failed",
-            message: error instanceof Error ? error.message : String(error),
+            message: readableError(error),
           });
       },
     );

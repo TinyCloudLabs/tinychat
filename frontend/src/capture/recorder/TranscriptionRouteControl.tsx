@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 // The centre of the recorder: where this note's audio goes (plan §2.7). A
 // "Transcription" heading, Audio only · Local · Private when private cloud is offered
 // to this build and account, the route as a RouteLine, one short line, and a
@@ -59,7 +60,7 @@ export async function requestRecordingRoute(
     result = await request();
   } catch (caught) {
     console.error("[Recorder] Could not change the transcription route", caught);
-    outcome.notify(`Could not change the transcription to ${ROUTE_NAME[next]}: ${caught instanceof Error ? caught.message : String(caught)}`);
+    outcome.notify(`Could not change the transcription to ${ROUTE_NAME[next]}: ${readableError(caught)}`);
     return;
   }
   switch (result) {
@@ -282,7 +283,7 @@ export function TranscriptionRouteControl(props: {
                 setNotice(null);
                 OnDeviceStt.cancelDownload().catch((caught: unknown) => {
                   console.error("[OnDeviceStt] cancelDownload failed", caught);
-                  setNotice(`Could not cancel the download: ${caught instanceof Error ? caught.message : String(caught)}`);
+                  setNotice(`Could not cancel the download: ${readableError(caught)}`);
                 });
               }}>
               Cancel

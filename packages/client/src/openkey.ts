@@ -87,9 +87,7 @@ export async function connectWallet(config?: ConnectWalletConfig): Promise<Conne
   });
 
   // Passkey authentication via iframe — user authenticates, we get signing capability
-  console.log("[openkey] Calling openkey.connect()...");
   const authResult = await openkey.connect();
-  console.log("[openkey] connect() done. Address:", authResult.address);
 
   // Create EIP-1193 provider for SIWE signing
   const eip1193 = new OpenKeyEIP1193Provider(

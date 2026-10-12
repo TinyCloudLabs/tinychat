@@ -28,10 +28,6 @@ export function saveDeferredForAccountTransition(error: unknown): boolean {
   return error instanceof VoiceNoteSaveDeferred || error instanceof StaleAccountContext;
 }
 
-function logSaveStart(id: string, trigger: "stop" | "background" | "reconcile" | "manual"): void {
-  console.debug(`[VoiceNotes] automatic save starting id=${id} trigger=${trigger}`);
-}
-
 /** T22 extends these lanes with transcription and cleanup, retaining this API. */
 export function createVoiceNotePipeline(tcw: TinyCloudWeb,
   testOptions: Pick<StoreAudioOptions, "retryDelaysMs"> = {}): VoiceNotePipeline {
@@ -92,7 +88,6 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
       if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());
       const epoch = cancellation;
       const uploadTicket = pendingStore.enqueueUpload(id);
-      logSaveStart(id, trigger);
       if (!uploadTicket.owns) return Promise.resolve("owned-by-another-run");
       return run(async () => { await processOne(ctx, id, epoch, false, uploadTicket); });
     },
@@ -131,7 +126,6 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
           if (note.owner === ctx.did && !note.ownerUnknown) {
             let saved: VoiceNoteRecording | null = null;
             try {
-              logSaveStart(note.id, trigger);
               saved = await processOne(ctx, note.id, epoch, true, uploadTickets.get(note.id));
               check();
               if (saved) captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId: note.id });

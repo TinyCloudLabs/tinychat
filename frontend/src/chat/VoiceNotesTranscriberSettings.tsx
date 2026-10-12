@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 // Settings → Voice notes (plan §2.7): the default transcriber for new recordings. Native-only
 // (mobile voice notes don't exist on web/desktop), and signed-out capture already locks to
 // on-device regardless of this choice (CaptureDefaults.options, CaptureModels.swift/.kt).
@@ -54,7 +55,7 @@ export function useDefaultTranscriber() {
     const read = () => {
       readDefaultTranscriber().then(setValue).catch((err: unknown) => {
         console.error("[VoiceNotes] Could not read the default transcriber", err);
-        setError(`Could not read the default transcriber: ${err instanceof Error ? err.message : String(err)}`);
+        setError(`Could not read the default transcriber: ${readableError(err)}`);
       });
     };
     read();
@@ -68,7 +69,7 @@ export function useDefaultTranscriber() {
       () => { if (next === "on-device" && captureCapabilities().localTranscription) ensureOnDeviceModel({ retry: true }); },
       (err: unknown) => {
         console.error("[VoiceNotes] Could not save the default transcriber", err);
-        setError(`Could not save the default transcriber: ${err instanceof Error ? err.message : String(err)}`);
+        setError(`Could not save the default transcriber: ${readableError(err)}`);
       },
     );
   };

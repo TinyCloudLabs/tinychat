@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 import { useCallback, useEffect, useState } from "react";
 import { VoiceNotes, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { clearDeletedPartialAudioIssue } from "../recorder/partialAudioIssues";
@@ -12,7 +13,7 @@ export function useLocalNotes(did: string | null, offline = false) {
       setNotes(listed.recordings.filter((note) => note.owner == null || (effectiveDid !== null && note.owner === effectiveDid))
         .sort((a, b) => b.startedAt - a.startedAt));
       setError(null);
-    } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
+    } catch (caught) { setError(readableError(caught)); }
   }, [did, offline]);
   useEffect(() => {
     void refresh();

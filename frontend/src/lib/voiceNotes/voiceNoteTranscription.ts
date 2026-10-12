@@ -1,3 +1,5 @@
+import { logPipelineError } from "@/lib/debugLog";
+import { readableError } from "@/lib/readableError";
 // Private transcription for Exo voice notes. The backend creates and tracks
 // jobs; this device uploads a local file directly to PTX when it has one.
 //
@@ -95,7 +97,7 @@ export const capacitorPtxPut: PtxPut = async (request) => {
       return await VoiceNotes.uploadAudio({ id: request.nativeFileId, uploadId, url: request.url,
         capability: request.capability, contentType: request.contentType, contentLength: request.contentLength!, correlationId: request.correlationId });
     } catch (cause) {
-      console.error("[VoiceNotes] Native audio upload failed", { uploadId, nativeFileId: request.nativeFileId, cause });
+      logPipelineError("[VoiceNotes] Native audio upload failed", cause);
       if (cause instanceof PrivateCloudError || cause instanceof VoiceNoteAudioError) throw cause;
       if (localAudioUnavailable(cause)) throw new VoiceNoteAudioError("audio_read_failed", "Could not read this note's local audio");
       throw new PrivateCloudError("upload_outcome_unknown", "The upload connection failed", { correlationId: request.correlationId });
@@ -139,7 +141,7 @@ export const capacitorPtxPut: PtxPut = async (request) => {
 let activeNativeUpload: { uploadId: string; generation: number; cancelled: boolean; nativeStarted: boolean } | null = null;
 subscribeAccountGeneration((generation) => {
   if (activeNativeUpload && activeNativeUpload.generation !== generation) {
-    void cancelActiveNativeUpload().catch((cause) => console.warn("Cancelling the superseded account's native upload failed", cause));
+    void cancelActiveNativeUpload().catch((cause) => logPipelineError("Cancelling the superseded account's native upload failed", cause));
   }
 });
 async function cancelActiveNativeUpload(): Promise<void> {
@@ -678,7 +680,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
     try {
       await deps.api.cancel(transcriptionId);
     } catch (err) {
-      console.warn("Cancelling an unused private cloud job failed; it expires on its own", err);
+      logPipelineError("Cancelling an unused private cloud job failed; it expires on its own", err);
     }
   };
 
@@ -845,7 +847,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
           audio = { contentType: meta.mimeType, base64: "", byteSize: meta.size, sha256: meta.sha256, durationSeconds: null, nativeFileId: source.nativeFileId };
         } catch (cause) {
           if (!localAudioUnavailable(cause)) throw cause;
-          console.error("[VoiceNotes] Native audio disappeared while reading its metadata; using the committed space copy", { sourceId, cause });
+          logPipelineError("[VoiceNotes] Native audio disappeared while reading its metadata; using the committed space copy", cause);
           const fallback = await source.loadSpaceCopy!();
           audio = await prepareTranscriptionAudio(fallback, {
             acceptedContentTypes: acceptedContentTypes(capabilities), maxBytes: capabilities.max_bytes,
@@ -1108,7 +1110,7 @@ export async function transcribeVoiceNote(args: {
     try {
       await cloud.finish(sourceId, transcriptionId);
     } catch (err) {
-      console.warn("Deleting a finished private cloud job failed; PTX deletes it on its own schedule", err);
+      logPipelineError("Deleting a finished private cloud job failed; PTX deletes it on its own schedule", err);
     }
   };
 
@@ -1160,7 +1162,7 @@ export async function transcribeVoiceNote(args: {
       try {
         localAudioRecording = (await VoiceNotes.listPending()).recordings.find((recording) => recording.id === sourceId);
       } catch (cause) {
-        console.error("[VoiceNotes] Could not confirm the audio save before transcription", { sourceId, cause });
+        logPipelineError("[VoiceNotes] Could not confirm the audio save before transcription", cause);
         throw new VoiceNoteAudioError("audio_read_failed", "Could not confirm this note's audio save");
       }
       if (localAudioRecording?.ledger?.audio && localAudioRecording.ledger.audio.state !== "saved") {
@@ -1172,7 +1174,7 @@ export async function transcribeVoiceNote(args: {
       if (res.error.code === VOICE_NOTE_AUDIO_TOO_LARGE) {
         throw new VoiceNoteAudioError("recording_too_large", "This recording exceeds the private cloud upload limit.");
       }
-      console.error("[VoiceNotes] Could not read note audio from the space", { sourceId, error: res.error });
+      logPipelineError("[VoiceNotes] Could not read note audio from the space", res.error);
       throw new VoiceNoteAudioError(res.error.code === "VOICE_NOTE_AUDIO_CORRUPT" ? res.error.code : "audio_read_failed",
         "Could not read this note's audio from your space");
     }
@@ -1183,7 +1185,7 @@ export async function transcribeVoiceNote(args: {
     try {
       localAudioRecording = (await VoiceNotes.listPending()).recordings.find((recording) => recording.id === sourceId);
     } catch (cause) {
-      console.error("[VoiceNotes] Could not check for local audio before transcription", { sourceId, cause });
+      logPipelineError("[VoiceNotes] Could not check for local audio before transcription", cause);
       throw new VoiceNoteAudioError("audio_read_failed", "Could not check this device for local audio");
     }
     if (localAudioRecording) {
@@ -1201,7 +1203,7 @@ export async function transcribeVoiceNote(args: {
         if (localAudioUnavailable(cause)) {
           console.warn("[VoiceNotes] The local recording is no longer available; reading its space copy", { sourceId });
         } else {
-          console.error("[VoiceNotes] Could not read local audio before transcription", { sourceId, cause });
+          logPipelineError("[VoiceNotes] Could not read local audio before transcription", cause);
           throw new VoiceNoteAudioError("audio_read_failed", "Could not read this note's local audio");
         }
       }
@@ -1360,14 +1362,14 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     }
   } catch (err) {
     // Unreadable: no note counts as released, so the saved source decides each one (see transcribeVoiceNote).
-    console.error("[VoiceNotes] Could not read which notes are held back from transcription; only notes recorded in the app will be resumed", err);
+    logPipelineError("[VoiceNotes] Could not read which notes are held back from transcription; only notes recorded in the app will be resumed", err);
   }
   const isHeld = (sourceId: string) => holdStates.get(sourceId) === "held";
   const saveHolds = () => {
     try {
       deps.holds.write(Object.fromEntries(holdStates));
     } catch (err) {
-      console.error("[VoiceNotes] Could not keep which notes are held back from transcription; they stay held until the app closes", err);
+      logPipelineError("[VoiceNotes] Could not keep which notes are held back from transcription; they stay held until the app closes", err);
     }
   };
   /** Notes queued but not started; turning off empties it, and a dropped note never starts. */
@@ -1533,7 +1535,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           settleChoice(sourceId);
         } else {
           if (voiceNoteErrorCode(err) === "transcription_error")
-            console.error("[VoiceNotes] Private transcription failed with an unexpected error", { sourceId, error: err });
+            logPipelineError("[VoiceNotes] Private transcription failed with an unexpected error", err);
           const failure = voiceNoteTranscriptionFailure(err);
           jobs.set(sourceId, { kind: "failed", ...failure });
           // A failure Retry can fix keeps the choice, so a relaunch does not turn it back into Local.
@@ -1583,8 +1585,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           const caps = await cloud.capabilities();
           return { availability: "available", caps } as const;
         } catch (err) {
-          console.warn("Checking private cloud transcription failed", err);
-          return { availability: "failed", error: err instanceof Error ? err.message : String(err),
+          logPipelineError("Checking private cloud transcription failed", err);
+          return { availability: "failed", error: readableError(err),
             code: err instanceof PrivateCloudError ? err.code : "transcription_error" } as const;
         }
       };
@@ -1636,11 +1638,11 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       chosenPrivate.clear();
       for (const sourceId of choices.ids()) choices.remove(sourceId);
       emit();
-      try { await cancelActiveNativeUpload(); } catch (err) { console.warn("Cancelling the native upload failed", err); }
+      try { await cancelActiveNativeUpload(); } catch (err) { logPipelineError("Cancelling the native upload failed", err); }
       try {
         await cloud?.releaseUnsent();
       } catch (err) {
-        console.warn("Releasing unsent private cloud jobs failed; they expire on their own", err);
+        logPipelineError("Releasing unsent private cloud jobs failed; they expire on their own", err);
       }
     },
 
@@ -1692,7 +1694,7 @@ export function transcribeSavedNote(
   if (!isCurrent()) return;
   transcriber.check({ automatic: true, current: isCurrent }).then(
     () => { if (isCurrent()) transcriber.noteSaved(recording, audio); },
-    (caught: unknown) => console.error("[VoiceNotes] The private transcription check threw; this note was not handed to transcription", { id: recording.id, caught }),
+    (caught: unknown) => logPipelineError("[VoiceNotes] The private transcription check threw; this note was not handed to transcription", caught),
   );
 }
 

@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 // Where a saved voice note's on-device transcription stands, read from the
 // phone's own state: the note's committed mode (`options.transcriber`), the
 // native sidecar's `stt`, the live queue, and the plugin's progress events.
@@ -101,7 +102,7 @@ export function useOnDeviceNote(noteId: string): OnDeviceNoteView {
         },
         (caught: unknown) => {
           console.error("[Library] Could not read this note's on-device transcription", noteId, caught);
-          if (current()) setError(`Couldn't check this note's on-device transcription: ${caught instanceof Error ? caught.message : String(caught)}`);
+          if (current()) setError(`Couldn't check this note's on-device transcription: ${readableError(caught)}`);
         },
       );
     };
@@ -124,7 +125,7 @@ export function useOnDeviceNote(noteId: string): OnDeviceNoteView {
     for (const sub of subs) {
       sub.catch((caught: unknown) => {
         console.error("[Library] Could not follow on-device transcription", noteId, caught);
-        if (alive) setWatchError(`Couldn't follow this note's on-device transcription: ${caught instanceof Error ? caught.message : String(caught)}`);
+        if (alive) setWatchError(`Couldn't follow this note's on-device transcription: ${readableError(caught)}`);
       });
     }
     return () => {

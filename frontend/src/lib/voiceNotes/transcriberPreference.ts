@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 // JS owns the user's default. Native owns a live session's journaled options.
 import { captureEngineAvailable, captureEngineKind, onDeviceTranscriptionAvailable } from "./captureEngine";
 import { withCaptureDeadline } from "./accountHandoff";
@@ -116,7 +117,7 @@ async function restoreAfterFailure(
   }
   for (const listener of listeners) listener();
   if (!problems.length) return caught;
-  return new Error(`${caught instanceof Error ? caught.message : String(caught)} (${problems.join("; ")})`, { cause: caught });
+  return new Error(`${readableError(caught)} (${problems.join("; ")})`, { cause: caught });
 }
 
 /** Resolves once the engine's default is the stored one again, or throws why it is not. Waits behind every default write in flight. */
@@ -127,7 +128,7 @@ export function settleDefaults(): Promise<void> {
       await writeEffectiveDefaults(readTranscriberPreference());
     } catch (caught) {
       console.error("[VoiceNotes] The default transcription mode is still not put right; recording is held", caught);
-      throw new Error(`${caught instanceof Error ? caught.message : String(caught)} (the default transcription mode could not be put right, so recording is held)`, { cause: caught });
+      throw new Error(`${readableError(caught)} (the default transcription mode could not be put right, so recording is held)`, { cause: caught });
     }
     unreconciled = null;
   });

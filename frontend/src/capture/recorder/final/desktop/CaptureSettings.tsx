@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 import {
   useCallback,
   useEffect,
@@ -50,7 +51,7 @@ type Load =
   | { status: "error"; message: string };
 
 const messageOf = (caught: unknown) =>
-  caught instanceof Error ? caught.message : String(caught);
+  readableError(caught);
 
 function GearIcon() {
   return (

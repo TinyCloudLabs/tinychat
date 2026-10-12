@@ -25,7 +25,6 @@ describe("voice-note network error copy", () => {
     "The network connection was lost.",
     "Failed to fetch",
     "saveVoiceNote(audio): audioStore put part 0 failed: NETWORK_ERROR: Failed to fetch",
-    "Fetch API cannot load https://space.example/path?token=do-not-log due to access control checks.",
   ])("maps WebKit network failures to actionable copy (%s)", (raw) => {
     const original = console.warn;
     const logged: unknown[][] = [];
@@ -35,7 +34,7 @@ describe("voice-note network error copy", () => {
         "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
       );
       const output = logged.map((args) => args.join(" ")).join(" ");
-      expect(output).toContain(raw.startsWith("Fetch") ? "<url>" : raw);
+      expect(output).toContain("TinyCloud network failure");
       expect(output).not.toContain("do-not-log");
       expect(output).not.toContain("https://space.example");
     } finally {
@@ -43,7 +42,23 @@ describe("voice-note network error copy", () => {
     }
   });
 
-  test("log redaction removes bearer tokens instead of leaving them after the scheme", () => {
+  test("classifies WebKit's CORS-hidden upload refusal as a rejected node upload", () => {
+    const original = console.warn;
+    console.warn = () => {};
+    try {
+      const error = new TypeError("Fetch API cannot load https://tee.node.tinycloud.xyz/kv?token=secret due to access control checks.");
+      expect(saves.messageOf(error)).toBe(saves.TINYCLOUD_UPLOAD_REJECTED_MESSAGE);
+      expect(saves.classifyNoteFailure(error)).toBe("rejected");
+    } finally { console.warn = original; }
+  });
+
+  test("renders SDK result objects without object coercion", () => {
+    expect(saves.messageOf({ code: "KV_REJECTED", message: "Payload too large", status: 413 }))
+      .toBe("KV_REJECTED: Payload too large: 413");
+    expect(saves.messageOf({ detail: "unknown" })).toBe('{"detail":"unknown"}');
+  });
+
+  test("native console logs only a stable operation, never bearer tokens", () => {
     const original = console.warn;
     const logged: unknown[][] = [];
     console.warn = (...args: unknown[]) => { logged.push(args); };
@@ -51,7 +66,7 @@ describe("voice-note network error copy", () => {
       saves.logVoiceNoteError("reconcile failed", new Error("authorization: Bearer private-token"));
       expect(logged).toHaveLength(1);
       expect(logged[0]).toHaveLength(1);
-      expect(String(logged[0]?.[0])).toContain("authorization: <redacted>");
+      expect(String(logged[0]?.[0])).toContain("reconcile failed");
       expect(String(logged[0]?.[0])).not.toContain("private-token");
     } finally {
       console.warn = original;
@@ -65,7 +80,7 @@ describe("voice-note network error copy", () => {
       { code: "NETWORK_ERROR" }))).toBe("Failed to execute query: 500 - internal error");
   });
 
-  test("redacts quoted JSON credential keys and logs non-network error codes", () => {
+  test("logs a non-network error code without its credential-bearing message", () => {
     const original = console.warn;
     const logged: unknown[][] = [];
     console.warn = (...args: unknown[]) => { logged.push(args); };
@@ -76,8 +91,6 @@ describe("voice-note network error copy", () => {
       ));
       const output = logged.map((args) => args.join(" ")).join(" ");
       expect(output).toContain("code=discard_migration_failed");
-      expect(output).toContain('"token":"<redacted>"');
-      expect(output).toContain('"authorization":"<redacted>"');
       expect(output).not.toContain("secret-token");
       expect(output).not.toContain("private-bearer");
     } finally {

@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 import { useEffect, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
@@ -14,7 +15,7 @@ export function LocalNoteDetail({ note, onBack, onDelete }: {
     let active = true;
     void Promise.all([VoiceNotes.localAudioUrl({ id: note.id }), VoiceNotes.getTranscript({ id: note.id })]).then(
       ([audio, text]) => { if (active) { setUrl(Capacitor.convertFileSrc(audio.url)); setTranscript(text.transcript); } },
-      (caught: unknown) => { if (active) setError(caught instanceof Error ? caught.message : String(caught)); },
+      (caught: unknown) => { if (active) setError(readableError(caught)); },
     );
     return () => { active = false; };
   }, [note.id]);
@@ -24,6 +25,6 @@ export function LocalNoteDetail({ note, onBack, onDelete }: {
     {url && <MeetingAudioPlayer url={url} durationSecs={note.durationMs / 1000} />}
     {transcript?.segments.map((segment, index) => <p key={index}>{segment.speaker && `${segment.speaker}: `}{segment.text}</p>)}
     {error && <p role="alert">{error}</p>}
-    <Button variant="destructive" onClick={() => { void onDelete(note.id).then(onBack, (caught: unknown) => setError(String(caught))); }}>Delete from this phone</Button>
+    <Button variant="destructive" onClick={() => { void onDelete(note.id).then(onBack, (caught: unknown) => setError(readableError(caught))); }}>Delete from this phone</Button>
   </section>;
 }

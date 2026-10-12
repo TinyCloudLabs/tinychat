@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 // The one voice-note recorder, shared by every view of it: the full-page view,
 // the island, the rail and sidebar live controls and the header chip.
 // RecorderProvider calls useVoiceNoteRecorder once (a second controller would
@@ -199,7 +200,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
         globalThis.localStorage?.setItem(key, String(written.transitionGen));
         if (active) { setDefaultsError(null); setConfigured({ tcw, did: tcw.did ?? null }); if (tcw.did) onAccountReady?.(tcw); }
       } catch (caught) {
-        if (active) setDefaultsError(`Could not set this phone's recording account: ${caught instanceof Error ? caught.message : String(caught)}`);
+        if (active) setDefaultsError(`Could not set this phone's recording account: ${readableError(caught)}`);
       }
     })();
     return () => { active = false; };
@@ -323,7 +324,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
         if (await needsSystemAudioDisclosure(extras)) setDisclosure({ kind: "system-audio", extras });
         else afterSystemAudio();
       } catch (error) {
-        setDisclosureError(`Could not start recording: ${error instanceof Error ? error.message : String(error)}`);
+        setDisclosureError(`Could not start recording: ${readableError(error)}`);
       } finally { setDisclosureBusy(false); }
     })();
   }, [afterSystemAudio, disclosure, disclosureBusy, platform]);
@@ -346,7 +347,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     void chooseSystemAudio(disclosure.extras, choice).then(() => {
       setDisclosure(null);
       afterSystemAudio();
-    }, (error: unknown) => setDisclosureError(`Could not save your choice: ${error instanceof Error ? error.message : String(error)}`))
+    }, (error: unknown) => setDisclosureError(`Could not save your choice: ${readableError(error)}`))
       .finally(() => setDisclosureBusy(false));
   }, [afterSystemAudio, disclosure, disclosureBusy]);
   const closePrivate = useCallback((confirmed: boolean) => {

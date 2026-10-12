@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 // A subscribable snapshot of `OnDeviceStt.status()` (useSyncExternalStore-friendly), the same
 // pattern as `pendingStore` in recorderSaves.ts. Used by the recorder's transcription route
 // control and by the Settings "Voice notes" card, so both show the same model state live.
@@ -194,7 +195,7 @@ async function finishDownload(): Promise<string | null> {
   } catch (caught) {
     console.error("[OnDeviceStt] downloadNow failed", caught);
     await onDeviceSttStore.refresh().catch((refreshCaught: unknown) => console.warn("[OnDeviceStt] status() failed after a failed download", refreshCaught));
-    return `Couldn't download the on-device model: ${caught instanceof Error ? caught.message : String(caught)}`;
+    return `Couldn't download the on-device model: ${readableError(caught)}`;
   }
   if (isOnDeviceReady(snapshot)) return null;
   console.error("[OnDeviceStt] The download finished but the model is not ready", snapshot);
@@ -246,7 +247,7 @@ export async function retryOnDeviceNote(id: string): Promise<string | null> {
     return null;
   } catch (caught) {
     console.error("[OnDeviceStt] enqueue failed", id, caught);
-    return `Could not retry: ${caught instanceof Error ? caught.message : String(caught)}`;
+    return `Could not retry: ${readableError(caught)}`;
   }
 }
 
@@ -257,6 +258,6 @@ export async function cancelOnDeviceNote(id: string): Promise<string | null> {
     return null;
   } catch (caught) {
     console.error("[OnDeviceStt] cancel failed", id, caught);
-    return `Could not stop the on-device transcription: ${caught instanceof Error ? caught.message : String(caught)}`;
+    return `Could not stop the on-device transcription: ${readableError(caught)}`;
   }
 }

@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 // The voice-note recorder's controller, without React: the old Voice notes
 // card's controller moved onto recorderReducer, without the notes list and
 // playback (the Library and a note's detail, capture/library) or the
@@ -283,7 +284,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       notify();
     })().catch((error: unknown) => {
       if (version !== noteLoadVersion || noteId !== id) return;
-      noteLoadError = error instanceof Error ? error : new Error(String(error));
+      noteLoadError = error instanceof Error ? error : new Error(readableError(error));
       noteStatus = "error";
       notify();
       console.warn("[VoiceNotes] Could not load recording note", error);

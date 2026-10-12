@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 // IndexedDB persistence for the whole VoiceNotes protocol on the web: capture sessions
 // and their audio, committed recordings and their ledger, account state, remote-op
 // receipts, the outbox, transcripts and the recovery quarantine. The semantics mirror
@@ -218,7 +219,7 @@ const clone = <T>(value: T): T => structuredClone(value);
 
 /** A journal write failed after the blob store had already made `durableBytes` durable. */
 export function journalFailure(error: unknown, durableBytes: number): Error & { durableBytes: number } {
-  const base = error instanceof Error ? error : new Error(String(error));
+  const base = error instanceof Error ? error : new Error(readableError(error));
   return Object.assign(base, { durableBytes });
 }
 export const durableBytesOf = (error: unknown): number | null =>
@@ -810,9 +811,9 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
     } catch (error) {
       console.error("[webStore] Recovering an interrupted recording failed", id, error);
       if (attempt.recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) {
-        return { failed: await quarantine(id, "recovery_failed", error instanceof Error ? error.message : String(error)) };
+        return { failed: await quarantine(id, "recovery_failed", readableError(error)) };
       }
-      return { failed: { id, reason: "recovery_failed", error: error instanceof Error ? error.message : String(error) } };
+      return { failed: { id, reason: "recovery_failed", error: readableError(error) } };
     }
   }
 

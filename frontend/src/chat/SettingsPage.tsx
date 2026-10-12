@@ -32,6 +32,7 @@ import { BackendAttestationDetails } from "./BackendAttestationDetails";
 import { useConversationCanvasFeature } from "./useExperimentalFeatures";
 import { TranscriptionSettings } from "./TranscriptionSettings";
 import { VoiceNotesTranscriberSettings } from "./VoiceNotesTranscriberSettings";
+import { DebugLogRow } from "./DebugLogRow";
 import { nativeVoiceNotesAvailable } from "../lib/voiceNotes/nativeVoiceNotes";
 import { useSizeClass } from "../lib/sizeClass";
 import { PageHeader } from "../shell/PageHeader";
@@ -172,6 +173,7 @@ export function SettingsPage({
               sessionStore={sessionStore}
             />
           </SectionCard>
+          <DebugLogRow />
           <SectionCard icon={DatabaseIcon} title="Data">
             <p className="text-xs text-muted-foreground">
               Bring your Claude conversation history into this space.
