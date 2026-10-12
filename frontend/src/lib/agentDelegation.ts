@@ -12,16 +12,11 @@
 // (decision 4), raised to the 30d session window (SESSION_EXPIRATION_MS), and the
 // grants are minted for 29d so clock skew cannot push them past the 30d ceiling.
 
-// `serializeDelegation` is loaded LAZILY (dynamic import) from @tinycloud/web-sdk
-// inside mintAgentDelegation — the only place it runs, in-browser. We deliberately
-// do NOT import it at module top level:
-//   - a top-level @tinycloud/node-sdk import double-defines web-sdk's
-//     `tinycloud-space-modal` custom element in the browser → blank-page crash;
-//   - a top-level @tinycloud/web-sdk value import pulls its browser bundle
-//     (references HTMLElement at load) → breaks non-DOM contexts like bun test.
-// The dynamic web-sdk import reuses the app's ALREADY-loaded copy (a single
-// custom-element registration, no collision) and never runs under bun test (the
-// real mint is stubbed via `_mint`). The DOM-bound types below are type-only.
+// `serializeDelegation` stays lazy for both the agent and transcript couriers.
+// A static @tinycloud/web-sdk value import references HTMLElement at load and
+// breaks non-DOM consumers (including bun tests); a second node-sdk import
+// also double-defines web-sdk's custom element in the browser. The dynamic import
+// reuses the already-loaded browser copy only when the real courier needs it.
 import type { Delegation, Manifest, PermissionEntry, PortableDelegation, TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { ConnectWalletResult } from "@tinyboilerplate/client";
 import { openkeyPasskeysSupported } from "./openkeyPasskeys.js";
@@ -136,23 +131,34 @@ export function actionsFromAuthJwt(authHeader: string): string[] | null {
   }
 }
 
-function toPortableDelegation(
-  delegation: Delegation,
+export function toPortableDelegation(
+  delegation: Delegation | PortableDelegation,
   ownerAddress: string,
   chainId: number,
   host: string,
 ): PortableDelegation {
-  // PortableDelegation omits isRevoked; destructure it out before spreading.
+  // delegateTo already returns a PortableDelegation; the older agent path
+  // passes a Delegation with authHeader instead. Never replace the signed UCAN
+  // with a CID-only bearer header.
   const { isRevoked: _omitted, ...rest } = delegation as Delegation & { isRevoked?: boolean };
+  const authorization = "delegationHeader" in delegation
+    ? delegation.delegationHeader.Authorization
+    : delegation.authHeader;
   return {
     ...rest,
     delegationHeader: {
-      Authorization: delegation.authHeader || `Bearer ${delegation.cid}`,
+      Authorization: authorization || `Bearer ${delegation.cid}`,
     },
     ownerAddress,
     chainId,
     host,
   } as PortableDelegation;
+}
+
+/** Keep the browser-only serializer lazy; importing it at module load breaks non-DOM consumers. */
+export async function serializePortableDelegation(delegation: PortableDelegation): Promise<string> {
+  const { serializeDelegation } = await import("@tinycloud/web-sdk");
+  return serializeDelegation(delegation);
 }
 
 /**

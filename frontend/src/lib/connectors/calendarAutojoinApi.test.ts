@@ -100,3 +100,9 @@ describe("TC-581 shared capture outcome labels", () => {
     }
   });
 });
+
+describe("TC-907 capacity outcome label", () => {
+  test("an occurrence ptx refused for capacity says every notetaker was busy", () => {
+    expect(calendarOutcomeLabel("capacity_exhausted")).toBe("All TinyCloud notetakers were busy when this meeting started.");
+  });
+});

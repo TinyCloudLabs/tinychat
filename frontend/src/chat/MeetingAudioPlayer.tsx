@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useRef, useState, type Ref } from "react";
-import { Loader2Icon, PlayIcon } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Loader2Icon, PauseIcon, PlayIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { formatClockDuration } from "@/capture/library/formatters";
+import { PHONE_AUDIO_UNAVAILABLE, isSeekable, playbackDuration, scrubTarget } from "./audioPlayback";
 
 interface MeetingAudioPlayerProps {
   /**
@@ -20,6 +22,8 @@ interface MeetingAudioPlayerProps {
    * is shown as the reason.
    */
   resolveUrl?: () => Promise<string>;
+  /** How long the recording is, in seconds, when it is known before the audio loads. */
+  durationSecs?: number | null;
   onPlayingChange?: (playing: boolean) => void;
   /** Plays from `seconds` in: loads the audio first if it is not loaded yet. A new `nonce` is a new request. */
   seek?: { seconds: number; nonce: number } | null;
@@ -32,29 +36,51 @@ export type PlayerState =
   | { phase: "missing" }
   | { phase: "failed"; reason?: string };
 
-/** Ready with the resolved URL, or failed with the real reason it could not be resolved. */
+/** Ready with the resolved URL, or failed with calm copy; the real reason it could not be resolved goes to the console. */
 export async function stateForResolvedUrl(resolveUrl: () => Promise<string>): Promise<PlayerState> {
   try {
     return { phase: "ready", url: await resolveUrl() };
   } catch (error) {
-    return { phase: "failed", reason: error instanceof Error ? error.message : String(error) };
+    console.error("[Audio] Could not resolve this phone's audio", error);
+    return { phase: "failed", reason: PHONE_AUDIO_UNAVAILABLE };
   }
 }
+
+/** What the audio element has reported so far. */
+export interface PlayerMedia {
+  playing: boolean;
+  /** The header has not been read yet, or playback is stalled waiting for data. */
+  loading: boolean;
+  /** The media's position, or the position the user asked for while that seek is still pending. */
+  elapsed: number;
+  /** The media's own length: NaN, Infinity or 0 until it has been read. */
+  mediaSecs: number;
+}
+
+const NO_MEDIA: PlayerMedia = { playing: false, loading: true, elapsed: 0, mediaSecs: NaN };
 
 /**
  * The original audio of one note, fetched only when the user asks for it:
  * a stored file can be tens of megabytes, so opening a note never reads it.
  * Unmounting (closing the meeting) aborts an in-flight read and releases the
  * object URL.
+ *
+ * One `<audio>` stays mounted for the player's whole life. Browsers allow audible playback only
+ * from a user gesture, and the first tap often has to resolve or read the audio before it has a
+ * source; so the tap calls `play()` on the mounted element at once (which unlocks it), and plays
+ * again once the source is set.
  */
-export function MeetingAudioPlayer({ load, url, resolveUrl, onPlayingChange, seek }: MeetingAudioPlayerProps) {
+export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, onPlayingChange, seek }: MeetingAudioPlayerProps) {
   const [state, setState] = useState<PlayerState>({ phase: "idle" });
+  const [media, setMedia] = useState<PlayerMedia>(NO_MEDIA);
+  const [pendingSeek, setPendingSeek] = useState<number | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
   const urlRef = useRef<string | null>(null);
   const onPlayingChangeRef = useRef(onPlayingChange);
   onPlayingChangeRef.current = onPlayingChange;
   const audioRef = useRef<HTMLAudioElement>(null);
-  const wanted = useRef<number | null>(null);
+  const queuedSeek = useRef<number | null>(null);
+  const playWhenSourceSet = useRef(false);
 
   useEffect(
     () => () => {
@@ -65,22 +91,71 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, onPlayingChange, see
     [],
   );
 
-  const onPlay = useCallback(async () => {
-    if (url) {
-      setState({ phase: "ready", url });
+  const patchMedia = (patch: Partial<PlayerMedia>) => setMedia((current) => ({ ...current, ...patch }));
+  const setPlaying = (playing: boolean) => {
+    patchMedia({ playing });
+    onPlayingChange?.(playing);
+  };
+  const fail = (reason?: string) => {
+    setPlaying(false);
+    setState({ phase: "failed", reason });
+  };
+  const readClock = (audio: HTMLAudioElement) => patchMedia({ elapsed: audio.currentTime, mediaSecs: audio.duration });
+
+  /** A play() that was superseded by a pause() or a new source (AbortError) is not a failure; anything else is shown. */
+  const playNow = (audio: HTMLAudioElement) => {
+    audio.play().catch((error: unknown) => {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      console.error("[Audio] Could not play", error);
+      fail();
+    });
+  };
+
+  const seekTo = (audio: HTMLAudioElement, requested: number) => {
+    if (audio.readyState < 1) {
+      queuedSeek.current = requested;
+      setPendingSeek(requested);
       return;
     }
+    // The saved length can be longer than the file; a seek past its real end lands on the end.
+    const seconds = Number.isFinite(audio.duration) && audio.duration > 0 ? Math.min(requested, audio.duration) : requested;
+    if (!isSeekable(audio.seekable, seconds)) {
+      console.warn("[Audio] The audio cannot seek to", seconds);
+      setPendingSeek(null);
+      return;
+    }
+    setPendingSeek(seconds);
+    audio.currentTime = seconds;
+  };
+
+  // The first tap: play() runs inside the gesture whatever the source is doing.
+  const begin = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    patchMedia({ loading: true });
+    if (url) {
+      if (audio.error) audio.load();
+      setState({ phase: "ready", url });
+      playNow(audio);
+      return;
+    }
+    // No source yet: this call only unlocks the element for the play() that follows the source.
+    audio.play().catch(() => {});
+    void resolveSource();
+  };
+
+  const resolveSource = async () => {
     const controller = new AbortController();
+    controllerRef.current = controller;
+    setState({ phase: "loading", percent: null });
     if (resolveUrl) {
-      controllerRef.current = controller;
-      setState({ phase: "loading", percent: null });
       const next = await stateForResolvedUrl(resolveUrl);
-      if (!controller.signal.aborted) setState(next);
+      if (controller.signal.aborted) return;
+      playWhenSourceSet.current = next.phase === "ready";
+      setState(next);
       return;
     }
     if (!load) return;
-    controllerRef.current = controller;
-    setState({ phase: "loading", percent: null });
     try {
       const blob = await load(controller.signal, (loaded, total) => {
         if (!controller.signal.aborted && total > 0) {
@@ -92,47 +167,97 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, onPlayingChange, see
         setState({ phase: "missing" });
         return;
       }
-      const url = URL.createObjectURL(blob);
-      urlRef.current = url;
-      setState({ phase: "ready", url });
+      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+      const objectUrl = URL.createObjectURL(blob);
+      urlRef.current = objectUrl;
+      playWhenSourceSet.current = true;
+      setState({ phase: "ready", url: objectUrl });
     } catch {
       if (!controller.signal.aborted) setState({ phase: "failed" });
     }
-  }, [load, resolveUrl, url]);
-
-  const playFrom = (audio: HTMLAudioElement, seconds: number) => {
-    audio.currentTime = seconds;
-    audio.play().catch((error: unknown) => console.error("[Audio] Could not play from a moment", error));
   };
+
+  const stateKey = state.phase === "ready" ? state.url : state.phase;
+  useEffect(() => {
+    if (state.phase !== "ready" || !playWhenSourceSet.current) return;
+    playWhenSourceSet.current = false;
+    if (audioRef.current) playNow(audioRef.current);
+  }, [stateKey]);
+
   const seekNonce = seek?.nonce;
   useEffect(() => {
-    if (!seek) return;
     const audio = audioRef.current;
-    if (state.phase === "ready" && audio && audio.readyState >= 1) {
-      playFrom(audio, seek.seconds);
-      return;
-    }
-    wanted.current = seek.seconds;
-    if (state.phase === "idle" || state.phase === "failed") void onPlay();
+    if (!seek || !audio) return;
+    seekTo(audio, seek.seconds);
+    if (state.phase === "ready") playNow(audio);
+    else if (state.phase === "idle" || state.phase === "failed") begin();
     // A request is one nonce; the state it waits on is read when it arrives.
   }, [seekNonce]);
-  const onLoadedMetadata = () => {
-    const audio = audioRef.current;
-    if (wanted.current === null || !audio) return;
-    const seconds = wanted.current;
-    wanted.current = null;
-    playFrom(audio, seconds);
+
+  const onLoadedMetadata = (audio: HTMLAudioElement) => {
+    patchMedia({ loading: false, elapsed: audio.currentTime, mediaSecs: audio.duration });
+    const queued = queuedSeek.current;
+    if (queued === null) return;
+    queuedSeek.current = null;
+    seekTo(audio, queued);
   };
 
-  return <MeetingAudioPlayerView state={state} onPlay={() => void onPlay()} onPlayingChange={onPlayingChange}
-    audioRef={audioRef} onLoadedMetadata={onLoadedMetadata}
-    onError={() => { onPlayingChange?.(false); setState({ phase: "failed" }); }} />;
+  const src = state.phase === "ready" ? state.url : url;
+  return (
+    <>
+      <audio
+        ref={audioRef}
+        preload={state.phase === "idle" ? "none" : "auto"}
+        src={src}
+        className="sr-only"
+        data-testid="note-audio-player"
+        onLoadedMetadata={(event) => onLoadedMetadata(event.currentTarget)}
+        onDurationChange={(event) => patchMedia({ mediaSecs: event.currentTarget.duration })}
+        onTimeUpdate={(event) => patchMedia({ elapsed: event.currentTarget.currentTime })}
+        onSeeked={(event) => {
+          setPendingSeek(null);
+          readClock(event.currentTarget);
+        }}
+        onWaiting={() => patchMedia({ loading: true })}
+        onCanPlay={() => patchMedia({ loading: false })}
+        onPlaying={() => patchMedia({ loading: false })}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => setPlaying(false)}
+        onError={() => fail()}
+      />
+      <MeetingAudioPlayerView
+        state={state}
+        onPlay={begin}
+        durationSecs={durationSecs}
+        media={{ ...media, elapsed: pendingSeek ?? media.elapsed }}
+        onToggle={() => {
+          const audio = audioRef.current;
+          if (!audio) return;
+          if (audio.paused) playNow(audio);
+          else audio.pause();
+        }}
+        onScrub={(seconds) => {
+          if (audioRef.current) seekTo(audioRef.current, seconds);
+        }}
+      />
+    </>
+  );
 }
 
-/** What the player shows in each state (rendered on the server in the tests). */
-export function MeetingAudioPlayerView({ state, onPlay, onPlayingChange, onError, audioRef, onLoadedMetadata }: { state: PlayerState; onPlay: () => void; onPlayingChange?: (playing: boolean) => void; onError?: () => void; audioRef?: Ref<HTMLAudioElement>; onLoadedMetadata?: () => void }) {
+interface ViewProps {
+  state: PlayerState;
+  onPlay: () => void;
+  durationSecs?: number | null;
+  media?: PlayerMedia;
+  onToggle?: () => void;
+  onScrub?: (seconds: number) => void;
+}
+
+/** What the player shows in each state (rendered on the server in the tests). The audio element is the caller's. */
+export function MeetingAudioPlayerView({ state, onPlay, durationSecs, media = NO_MEDIA, onToggle, onScrub }: ViewProps) {
   if (state.phase === "ready") {
-    return <audio ref={audioRef} onLoadedMetadata={onLoadedMetadata} controls autoPlay src={state.url} onPlay={() => onPlayingChange?.(true)} onPause={() => onPlayingChange?.(false)} onEnded={() => onPlayingChange?.(false)} onError={onError} className="h-11 w-full" data-testid="note-audio-player" />;
+    return <ReadyControls durationSecs={durationSecs} media={media} onToggle={onToggle} onScrub={onScrub} />;
   }
   if (state.phase === "loading") {
     return (
@@ -156,6 +281,45 @@ export function MeetingAudioPlayerView({ state, onPlay, onPlayingChange, onError
           {state.reason ?? "Couldn\u2019t load the audio just now."}
         </p>
       )}
+    </div>
+  );
+}
+
+/**
+ * One player for every note: play or pause, elapsed over total, and a scrubber. The audio element
+ * is the engine and stays out of sight, because the native controls show 00:00 for the length
+ * until the file's header has been read. The scrubber spans the saved length from the start; a
+ * seek made before the media can take it waits for it.
+ */
+function ReadyControls({ durationSecs, media, onToggle, onScrub }: Pick<ViewProps, "durationSecs" | "onToggle" | "onScrub"> & { media: PlayerMedia }) {
+  const { playing, loading } = media;
+  const total = playbackDuration(durationSecs, media.mediaSecs);
+  const shownElapsed = total === null ? media.elapsed : Math.min(media.elapsed, total);
+  const elapsedText = formatClockDuration(Math.floor(shownElapsed));
+  const readout = total !== null ? `${elapsedText} / ${formatClockDuration(total)}` : loading ? "Loading…" : elapsedText;
+
+  return (
+    <div className="flex min-h-11 flex-wrap items-center gap-x-2 rounded-lg bg-muted/50 py-0.5 pr-3" data-testid="note-audio-controls" data-loading={loading || undefined}>
+      <Button type="button" variant="ghost" size="icon" onClick={onToggle} aria-label={playing ? "Pause" : "Play"} data-testid="note-audio-toggle">
+        {playing ? <PauseIcon aria-hidden /> : <PlayIcon aria-hidden />}
+      </Button>
+      <input
+        type="range"
+        aria-label="Seek"
+        aria-valuetext={total === null ? elapsedText : `${elapsedText} of ${formatClockDuration(total)}`}
+        className="h-11 min-w-[96px] flex-1 basis-[96px] cursor-pointer accent-primary disabled:cursor-default disabled:opacity-50"
+        min={0}
+        max={total ?? 1}
+        step={0.1}
+        value={total === null ? 0 : shownElapsed}
+        disabled={total === null}
+        onChange={(event) => onScrub?.(scrubTarget(Number(event.currentTarget.value), total))}
+      />
+      <span className="tnum ml-auto flex shrink-0 items-center gap-1.5 pl-3 text-meta text-muted-foreground" data-testid="note-audio-time">
+        {loading && <Loader2Icon className="size-3.5 motion-safe:animate-spin" aria-hidden />}
+        {readout}
+      </span>
+      {loading && <span className="sr-only" role="status">Loading audio…</span>}
     </div>
   );
 }

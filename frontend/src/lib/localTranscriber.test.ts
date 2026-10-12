@@ -13,7 +13,6 @@ import {
 import { transcriptKvKey } from "./connectors/connectorStore";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
-
 function batchResponse(words: { word: string; start: number; end: number; channel?: number; punctuated_word?: string }[]) {
   return {
     metadata: {},
@@ -155,6 +154,7 @@ describe("normalizeLocalTranscript", () => {
   });
 });
 
+
 /** Connector store backed by real SQLite plus an in-memory KV whose next puts can be failed. */
 function sqliteStore() {
   const sqlite = new Database(":memory:");
@@ -194,6 +194,7 @@ function sqliteStore() {
   } as never;
   return { tcw, sqlite, kv, failNextKvPut: () => { failingKvPuts++; } };
 }
+
 
 describe("prepareLocalTranscript", () => {
   test("refuses a transcript with no speech so silence is never saved as a meeting", () => {

@@ -61,6 +61,7 @@ export function SegmentedControl<T extends string>({
     >
       {index >= 0 && (
         <span
+          key={stacked ? "stacked" : "row"}
           aria-hidden
           data-segmented-thumb=""
           className={cn(

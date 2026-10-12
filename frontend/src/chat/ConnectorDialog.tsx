@@ -44,7 +44,7 @@
 // Both dialogs are CONTROLLED (open + onOpenChange props) so the card owns the
 // "which dialog is open" state and can refresh row data on close.
 
-import { useCallback, useEffect, useRef, useState, type FC } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FC } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
@@ -111,8 +111,10 @@ import {
   GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY,
   GOOGLE_TESTING_MODE_REAUTH_COPY,
   googleConsentCopyForSystemBrowser,
+  transcriptAwareConsentCopy,
   type BackgroundSyncConsentCopy,
 } from "@/lib/connectors/consentCopy";
+import { subscribeTranscriptConsent, transcriptConsentState } from "@/lib/transcriptDeliveryState";
 import {
   disconnectRetry,
   disconnectStatusMessage,
@@ -734,6 +736,9 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
 }) => {
   const [phase, setPhase] = useState<OAuthConnectPhase>("authorize");
   const [custodyConsent, setCustodyConsent] = useState(false);
+  const transcriptConsent = useSyncExternalStore(
+    subscribeTranscriptConsent, transcriptConsentState, transcriptConsentState,
+  );
   const autojoin = purpose === "autojoin";
   const [error, setError] = useState<OAuthErrorState | null>(null);
   const [progress, setProgress] = useState<GmeetSyncProgress | null>(null);
@@ -813,7 +818,10 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   const authorizeSurface = secretsAvailable()
     ? googleAuthorizeSurface()
     : "unavailable-in-app";
-  const consentCopy = autojoin ? GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY : GOOGLE_MEET_CONSENT_COPY;
+  const consentCopy = transcriptAwareConsentCopy(
+    autojoin ? GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY : GOOGLE_MEET_CONSENT_COPY,
+    transcriptConsent,
+  );
 
   const handleOpenChange = useCallback(
     (next: boolean) => {
@@ -1250,7 +1258,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
             />
             {autojoin && <label className="flex items-start gap-2 text-xs">
               <input type="checkbox" checked={custodyConsent} onChange={(event) => setCustodyConsent(event.target.checked)} />
-              <span>{GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY.consentCheckbox}</span>
+              <span>{consentCopy.consentCheckbox}</span>
             </label>}
           </>
         )}

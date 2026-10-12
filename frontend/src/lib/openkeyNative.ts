@@ -173,11 +173,22 @@ function nativeErrorCode(error: unknown): string | null {
     "code" in error && typeof error.code === "string" ? error.code : null;
 }
 
-/** Error messages may carry a token or key, so only an SDK code, or else an error's name, is logged. */
+/**
+ * Error messages may carry a token or key, so only an SDK code (with the HTTP
+ * status and OAuth error code the SDK recorded), or else an error's name, is logged.
+ */
 export function logNativeOpenKeyError(operation: string, error: unknown): void {
   const code = nativeErrorCode(error);
-  if (code) console.warn(`[OpenKey native] ${operation}: ${code}`);
-  else console.warn(`[OpenKey native] ${operation}: ${error instanceof Error ? error.name : "unknown error"}`);
+  if (!code) {
+    console.warn(`[OpenKey native] ${operation}: ${error instanceof Error ? error.name : "unknown error"}`);
+    return;
+  }
+  const { status, serverError } = error as { status?: unknown; serverError?: unknown };
+  const detail = [
+    typeof status === "number" ? `HTTP ${status}` : null,
+    typeof serverError === "string" && /^[a-z_]{1,64}$/.test(serverError) ? serverError : null,
+  ].filter(Boolean).join(" ");
+  console.warn(`[OpenKey native] ${operation}: ${code}${detail ? ` (${detail})` : ""}`);
 }
 
 /**

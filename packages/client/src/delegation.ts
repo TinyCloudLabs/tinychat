@@ -5,7 +5,7 @@ import {
   type PortableDelegation,
   type ResourceCapability,
 } from "@tinycloud/web-sdk";
-import { type DelegationResponse } from "@tinyboilerplate/core";
+import type { DelegationResponse } from "@tinyboilerplate/core";
 import { DEFAULT_REQUEST_HEADER_NAME, DEFAULT_REQUEST_HEADER_VALUE } from "./request-headers.js";
 
 // ── Create Delegation ────────────────────────────────────────────────
@@ -104,8 +104,9 @@ function serializeDelegationBundle(delegations: readonly PortableDelegation[]): 
 
 export async function sendDelegation(
   backendUrl: string,
-  serialized: string,
+  envelope: { serialized: string; siwe: string; signature: string },
   sessionToken: string,
+  signal?: AbortSignal,
 ): Promise<DelegationResponse> {
   const res = await fetch(`${backendUrl}/api/delegations`, {
     method: "POST",
@@ -114,12 +115,17 @@ export async function sendDelegation(
       Authorization: `Bearer ${sessionToken}`,
       [DEFAULT_REQUEST_HEADER_NAME]: DEFAULT_REQUEST_HEADER_VALUE,
     },
-    body: JSON.stringify({ serialized }),
+    body: JSON.stringify(envelope),
+    signal,
   });
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: "unknown", message: res.statusText }));
-    throw new Error(`Failed to send delegation: ${err.message ?? err.error}`);
+    // The status and code let callers tell a rejection (4xx) from an outage (5xx).
+    throw Object.assign(new Error(`Failed to send delegation: ${err.message ?? err.error}`), {
+      status: res.status,
+      code: typeof err.error === "string" ? err.error : "unknown",
+    });
   }
 
   return res.json() as Promise<DelegationResponse>;
@@ -130,12 +136,14 @@ export async function sendDelegation(
 export async function checkDelegationStatus(
   backendUrl: string,
   sessionToken: string,
+  signal?: AbortSignal,
 ): Promise<DelegationResponse> {
   const res = await fetch(`${backendUrl}/api/delegations/status`, {
     headers: {
       Authorization: `Bearer ${sessionToken}`,
       [DEFAULT_REQUEST_HEADER_NAME]: DEFAULT_REQUEST_HEADER_VALUE,
     },
+    signal,
   });
 
   if (!res.ok) {

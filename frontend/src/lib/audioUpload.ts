@@ -15,6 +15,7 @@
 // recorded as not stored.
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { captureEvents } from "@/capture/captureEvents";
 
 import {
   AudioStoreQuotaError,
@@ -911,6 +912,7 @@ export function createUploadRunner(): UploadRunner {
         // Signed out meanwhile: nothing more is written for this account from this tab.
         if (!live(r)) return;
         job = persist(deps, { ...job, saved: true, audio });
+        captureEvents.emit("library-changed", { source: prepared.meeting.source, sourceId: prepared.meeting.sourceId });
         set({ savedTitle: prepared.meeting.title });
       }
       try {

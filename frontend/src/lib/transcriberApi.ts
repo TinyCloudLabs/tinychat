@@ -54,6 +54,7 @@ export interface TranscriberMeeting {
   created_at: string;
   started_at?: string | null;
   ended_at?: string | null;
+  completed_at?: string | null;
   error?: { type: string; code: string; message: string } | null;
   capture?: TranscriberCapture;
   transcript_provider?: string;
@@ -107,7 +108,7 @@ export type TranscriberResult<T> =
   | { status: "offline" }
   | { status: "feature-dark" }
   | { status: "not-found" }
-  | { status: "retryable"; httpStatus: number; code: string | null }
+  | { status: "retryable"; httpStatus: number; code: string | null; message?: string }
   | { status: "rejected"; httpStatus: number; code: string | null; message: string | null };
 
 export type TranscriptResult =
@@ -186,7 +187,7 @@ export function createTranscriberClient(
     if (!response.ok) {
       const { code, message } = await readError(response);
       if (response.status === 429 || response.status >= 500) {
-        return { status: "retryable", httpStatus: response.status, code };
+        return { status: "retryable", httpStatus: response.status, code, ...(message ? { message } : {}) };
       }
       return { status: "rejected", httpStatus: response.status, code, message };
     }

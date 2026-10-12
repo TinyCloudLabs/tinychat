@@ -44,9 +44,6 @@
   font-size: 13px;
   line-height: 1.45;
 }
-.soft-skin .sn-player audio {
-  width: 100%;
-}
 .soft-skin .sn-player button {
   border-color: var(--gedge);
 }

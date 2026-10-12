@@ -16,6 +16,8 @@
 
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { captureEvents } from "@/capture/captureEvents";
+import { advanceAccountGeneration, mountVoiceNoteAccount } from "./accountContext";
 
 import { _resetConnectorSchemaMemoForTests, transcriptKvKey } from "../connectors/connectorStore";
 import { memoryHoldStore } from "@/harness/memoryHoldStore";
@@ -36,7 +38,8 @@ import {
 } from "../privateCloud";
 import { base64ToBytes, bytesToBase64, type AudioDecoder } from "./voiceNoteAudio";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
-import { __setVoiceNotesForTests, VoiceNotes } from "./nativeVoiceNotes";
+import { __setVoiceNotesForTests, VoiceNotes, type LocalTranscript } from "./nativeVoiceNotes";
+import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import {
   VOICE_NOTE_SOURCE,
@@ -887,6 +890,95 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     expect(h.removed).toEqual([ID]);
     expect(h.pending.read("rec-1")).toBeNull();
   });
+
+  test("a private-cloud job started under A cannot notify B after the account switches before its save", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android")).ok).toBe(true);
+    const h = harness({});
+    const events: unknown[] = [];
+    const off = captureEvents.on("library-changed", (detail) => events.push(detail));
+    try {
+      let switched = false;
+      expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+        sourceId: "rec-1", report: (status) => {
+          if (status.kind === "saving" && !switched) {
+            switched = true;
+            advanceAccountGeneration();
+          }
+        } })).toBe("transcribed");
+      expect(switched).toBe(true);
+      expect(events).toEqual([]);
+      expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1 });
+    } finally {
+      off();
+    }
+  });
+
+  test("a queued private-cloud job retains its original account before its first task runs", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android")).ok).toBe(true);
+    const h = harness({});
+    const transcriber = createVoiceNoteTranscriber({
+      cloud: h.cloud, consent: { get: () => true, set: () => {} }, tcw: () => space.tcw,
+    });
+    await transcriber.check();
+    const landed = Promise.withResolvers<void>();
+    const unsubscribe = transcriber.subscribe((event) => {
+      if (event.kind === "saved") landed.resolve();
+    });
+    const events: unknown[] = [];
+    const off = captureEvents.on("library-changed", (detail) => events.push(detail));
+    const unmount = mountVoiceNoteAccount(space.tcw.did);
+    try {
+      transcriber.transcribe("rec-1");
+      advanceAccountGeneration();
+      await landed.promise;
+      expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1 });
+      expect(events).toEqual([]);
+    } finally {
+      unmount();
+      unsubscribe();
+      off();
+    }
+  });
+
+  for (const transition of ["sign-out", "mounted account swap"] as const) {
+    test(`a late on-device sync cannot notify after ${transition}`, async () => {
+      const space = sqliteSpace();
+      expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+      const started = Promise.withResolvers<void>();
+      const pending = Promise.withResolvers<{ transcript: LocalTranscript | null }>();
+      VoiceNotes.getTranscript = () => { started.resolve(); return pending.promise; };
+      const unmountA = mountVoiceNoteAccount(space.tcw.did);
+      const events: unknown[] = [];
+      const off = captureEvents.on("library-changed", (detail) => events.push(detail));
+      let unmountB: (() => void) | undefined;
+      try {
+        const syncing = syncOnDeviceTranscript(space.tcw, { id: "rec-1", ledger: { audio: { state: "saved" } } });
+        await started.promise;
+        if (transition === "sign-out") advanceAccountGeneration();
+        else {
+          unmountA();
+          unmountB = mountVoiceNoteAccount("did:test:other");
+        }
+        pending.resolve({ transcript: {
+          version: 1, noteId: "rec-1", transcriber: "on-device", rev: 1,
+          engine: "apple-speech", model: null, language: "en", outcome: "transcribed",
+          diarized: false, segments: [{ start: 0, end: 1000, text: "Local words", speaker: null }],
+          createdAt: "2026-10-03T10:00:00.000Z",
+        } });
+        await syncing;
+        // A sign-out abandons the sync (the next launch's catch-up saves it); a swap of the mounted account still saves, silently.
+        if (transition === "sign-out") expect(await readTranscriptCommit(space.tcw, "rec-1")).toBeNull();
+        else expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1 });
+        expect(events).toEqual([]);
+      } finally {
+        unmountA();
+        unmountB?.();
+        off();
+      }
+    });
+  }
 
   test("no speech is saved as an outcome (the note is not offered again) and the job is deleted", async () => {
     const space = sqliteSpace();

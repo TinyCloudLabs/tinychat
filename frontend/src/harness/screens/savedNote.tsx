@@ -16,7 +16,7 @@ import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcripti
 import { PlatformContext } from "@/lib/platform";
 import { __setVoiceNotesForTests, VoiceNotes, type TranscriberId, type VoiceNoteRecording, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { audioBaseKey, audioManifestKey, audioPartKey } from "@/lib/audio/audioStore";
-import { libraryTcw } from "../fixtures/library";
+import { LIBRARY_ROWS, libraryTcw } from "../fixtures/library";
 import { createRuntimeShim } from "../runtimeShim";
 import type { HarnessScreen } from "../screen";
 import { ShellApp } from "../ShellApp";
@@ -77,8 +77,14 @@ function silentWav(): Uint8Array {
 }
 
 /** The library space, with the first voice note's audio stored (one part of silence) so its player has something to seek in. */
-function tcwWithAudio(): ReturnType<typeof libraryTcw> {
-  const tcw = libraryTcw();
+function tcwWithTitle(title?: string) {
+  return title
+    ? libraryTcw({ rows: LIBRARY_ROWS.map((row) => row.id === "note-transcribed" ? { ...row, title } : row) })
+    : libraryTcw();
+}
+
+function tcwWithAudio(title?: string): ReturnType<typeof libraryTcw> {
+  const tcw = tcwWithTitle(title);
   const base = audioBaseKey("exo-voice-note", NOTE_ID);
   const wav = silentWav();
   const manifest = {
@@ -169,13 +175,14 @@ function Note(props: {
   failSave?: boolean;
   empty?: boolean;
   audio?: boolean;
+  title?: string;
   press?: { selector: string; text?: string };
   /** A note with no transcript, offered Transcribe: Local too when the phone holds its recording. */
   untranscribed?: { onPhone: boolean; committed?: TranscriberId; privateRunning?: boolean };
 }) {
   const platform = useContext(PlatformContext);
   const shim = useMemo(() => createRuntimeShim(), []);
-  const tcw = useMemo(() => (props.audio ? tcwWithAudio() : libraryTcw()), [props.audio]);
+  const tcw = useMemo(() => (props.audio ? tcwWithAudio(props.title) : tcwWithTitle(props.title)), [props.audio, props.title]);
   useMemo(() => {
     __setSavedNoteStoreForTests(memoryStore({ failSave: props.failSave, empty: props.empty }));
     clearSavedNoteDrafts();
@@ -257,6 +264,9 @@ export const savedNoteScreens: HarnessScreen[] = [
   // Private is transcribing it: the stepper alone says so, with no Transcribe beside it.
   screen("untranscribed-automatic", "ios", TRANSCRIBE_PHONE, '[data-testid="note-transcript-pipeline"]', () => <Note untranscribed={{ onPhone: true, committed: "private-cloud", privateRunning: true }} />, UNTRANSCRIBED_PATH),
   screen("untranscribed-private-only", "ios", TRANSCRIBE_PHONE, TRANSCRIBE, () => <Note untranscribed={{ onPhone: false }} />, UNTRANSCRIBED_PATH),
+  screen("sheet-long-title", "ios", PHONE_VIEWPORTS, RENDERED, () => (
+    <Note title="Quarterly planning offsite: venue, budget and the Friday agenda for everyone on the thread" />
+  )),
   screen("sheet-editing", "ios", PHONE_VIEWPORTS, EDITOR, () => <Note press={EDIT} />),
   screen("sheet-confirm", "ios", PHONE_VIEWPORTS, '[role="alertdialog"]', () => (
     <Note draft={{ draft: EDITED_MD, confirming: "close" }} />

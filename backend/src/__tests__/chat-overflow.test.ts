@@ -1,6 +1,4 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "fs";
-import { resolve } from "path";
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import { _resetCatalogCache } from "../billing/catalog.js";
@@ -8,6 +6,7 @@ import { _resetCreditsWarnings } from "../billing/credits.js";
 import { _resetCache, _setStripeClient } from "../billing/stripe.js";
 import { _resetUsage } from "../billing/usage.js";
 import { createChatRouter } from "../routes/chat.js";
+import { createApiBodyParser } from "../body-parsing.js";
 
 const ORIGINAL_ENV = { ...process.env };
 const OFFERED_MODEL = "z-ai/glm-5.2";
@@ -17,10 +16,10 @@ function authStub(req: Request, _res: Response, next: NextFunction) {
   next();
 }
 
-/** Build the chat app with a configurable JSON body limit (mirrors index.ts). */
-function createApp(jsonLimit = "1mb") {
+/** Exercise the production API parser, retaining a smaller-limit control. */
+function createApp(jsonLimit?: string) {
   const app = express();
-  app.use(express.json({ limit: jsonLimit }));
+  app.use(jsonLimit ? express.json({ limit: jsonLimit }) : createApiBodyParser());
   app.use("/api/chat", authStub, createChatRouter());
   return app;
 }
@@ -206,7 +205,7 @@ describe("global body limit raised 64kb → 1mb (Wall A, §C.4a)", () => {
     const restore = stubChatSse(sse);
     try {
       // Raised (1 MB) limit → the oversize body reaches the handler and streams 200.
-      const res = await post(createApp("1mb"), body);
+      const res = await post(createApp(), body);
       expect(res.status).toBe(200);
       await res.text();
 
@@ -219,10 +218,13 @@ describe("global body limit raised 64kb → 1mb (Wall A, §C.4a)", () => {
     }
   });
 
-  test("index.ts configures the global JSON parser at the 1mb limit", () => {
-    // Direct regression on the real source: the global parser must be raised.
-    const source = readFileSync(resolve(import.meta.dir, "../index.ts"), "utf8");
-    expect(source).toContain('express.json({ limit: "1mb" })');
-    expect(source).not.toContain('express.json({ limit: "64kb" })');
+  test("the production API parser rejects a body larger than 1mb", async () => {
+    const oversized = JSON.stringify({
+      model: OFFERED_MODEL,
+      messages: [{ role: "user", content: "x".repeat(1024 * 1024) }],
+    });
+    expect(oversized.length).toBeGreaterThan(1024 * 1024);
+    expect((await post(createApp(), oversized)).status).toBe(413);
   });
+
 });

@@ -95,12 +95,12 @@ export function VoiceNotesTranscriberSettings() {
       {!privateOffered && <PrivateUnavailable signedIn={signedIn} transcription={transcription} />}
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
       {value === "on-device" && (
-        <div className="flex items-center justify-between gap-3 text-xs" data-testid="voice-notes-on-device-model">
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 text-xs" data-testid="voice-notes-on-device-model">
           <span className={modelFailed ? "text-destructive" : "text-muted-foreground"} role={modelFailed ? "alert" : undefined}>
             {!isOnDeviceStatusLoaded(sttStatus) ? `${modelLabel}: Checking…` : isOnDeviceReady(sttStatus) ? `${modelLabel}: Ready` : modelGuide.reason}
           </span>
           {modelGuide.action && !isOnDeviceReady(sttStatus) && (
-            <Button type="button" variant="outline" size="sm" onClick={modelGuide.action.run}>
+            <Button type="button" variant="outline" size="sm" onClick={modelGuide.action.run} className="ml-auto">
               {modelActionLabel(modelGuide.action)}
             </Button>
           )}
