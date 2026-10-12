@@ -62,6 +62,8 @@ export interface CalendarOccurrence {
   stopRequested: boolean;
   errorCode?: string;
   disposition?: string;
+  /** TC-907: the latest create was refused with 429 `capacity_exhausted`, so it created nothing. */
+  capacityExhausted?: boolean;
   /** Never put the owner's meeting id in `meetingId`: getStatus returns that to the browser. */
   sharedCapture?: SharedCapture;
   updatedAt: number;

@@ -653,7 +653,7 @@ describe("error message mapping", () => {
     expect(nativeSignInErrorMessage("boom")).toMatch(/failed/i);
   });
 
-  test("logs only an SDK code, and a plain error's name", () => {
+  test("logs an SDK code with its HTTP status and OAuth error, and a plain error's name", () => {
     const prior = console.warn;
     const lines: string[] = [];
     console.warn = (line: string) => { lines.push(line); };
@@ -662,6 +662,9 @@ describe("error message mapping", () => {
       sdkError.rotatedRefreshToken = "secret refresh token";
       logNativeOpenKeyError("sign-in", sdkError);
       logNativeOpenKeyError("sign-out", new OpenKeyNativeError("STORAGE", "secret storage detail"));
+      logNativeOpenKeyError("boot restore", new OpenKeyNativeError("INVALID_GRANT", "invalid_grant: secret", 400, "invalid_grant"));
+      logNativeOpenKeyError("boot restore", new OpenKeyNativeError("SERVER", "Renew failed: HTTP 502", 502));
+      logNativeOpenKeyError("renew", new OpenKeyNativeError("SERVER", "x", 400, "Bearer rt_SECRET"));
       logNativeOpenKeyError("verify", new Error("verification failed"));
     } finally {
       console.warn = prior;
@@ -669,6 +672,9 @@ describe("error message mapping", () => {
     expect(lines).toEqual([
       "[OpenKey native] sign-in: SERVER",
       "[OpenKey native] sign-out: STORAGE",
+      "[OpenKey native] boot restore: INVALID_GRANT (HTTP 400 invalid_grant)",
+      "[OpenKey native] boot restore: SERVER (HTTP 502)",
+      "[OpenKey native] renew: SERVER (HTTP 400)",
       "[OpenKey native] verify: Error",
     ]);
   });

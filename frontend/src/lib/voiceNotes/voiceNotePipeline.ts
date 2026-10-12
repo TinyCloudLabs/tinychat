@@ -1,11 +1,12 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { captureEvents } from "@/capture/captureEvents";
 import { assertCurrent, setAccountWorkPaused, StaleAccountContext, type AccountContext } from "./accountContext";
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
 import { VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { errorCode, isDiscarded, pendingStore, saveNoteForAccount, type PendingUploadTicket } from "./recorderSaves";
 import { ensureVoiceNoteIdentity, sweepArchived } from "./voiceNoteRows";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
-import { syncRecordingNote } from "./voiceNoteStore";
+import { syncRecordingNote, VOICE_NOTE_SOURCE } from "./voiceNoteStore";
 import type { StoreAudioOptions } from "./voiceNoteStore";
 
 export interface VoiceNotePipeline {
@@ -132,6 +133,8 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
             try {
               logSaveStart(note.id, trigger);
               saved = await processOne(ctx, note.id, epoch, true, uploadTickets.get(note.id));
+              check();
+              if (saved) captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId: note.id });
             }
             catch (error) {
               check();

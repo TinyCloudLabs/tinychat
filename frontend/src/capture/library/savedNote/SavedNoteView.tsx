@@ -38,6 +38,8 @@ export interface SavedNoteViewProps {
   stepper: ReactNode;
   /** Reads the recording's audio; null when it has none stored. */
   audio: NoteAudio | null;
+  /** How long the recording is, known before its audio loads; null when it was not recorded. */
+  durationSecs: number | null;
   /** The transcript section (the Library's own). */
   transcript: ReactNode;
   /** Below the transcript. */
@@ -266,7 +268,7 @@ export function SavedNoteBody(
       )}
       {audio && (
         <div className="sn-player">
-          <MeetingAudioPlayer key={recordingId} {...noteAudioPlayerProps(audio)} seek={screen.seek} />
+          <MeetingAudioPlayer key={recordingId} {...noteAudioPlayerProps(audio)} durationSecs={props.durationSecs} seek={screen.seek} />
         </div>
       )}
       {layout === "page" ? (

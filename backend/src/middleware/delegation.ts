@@ -1,12 +1,9 @@
 import type { NextFunction, Request, Response } from "express";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import type { DelegationCache, DelegationStore } from "@tinyboilerplate/server";
-import { backendDelegationPolicyHash, backendDelegationResolvedPermissions } from "../manifest.js";
-import {
-  activatePortableDelegation,
-  deserializePortableDelegationSet,
-  normalizeDid,
-} from "../portable-delegation.js";
+import { backendDelegationPolicyHash } from "../manifest.js";
+import { parseStoredGrant } from "../delegation-verify.js";
+import { activateVerifiedDelegation, normalizeDid } from "../portable-delegation.js";
 import { redactedErrorMessage } from "../services/webhook-tokens.js";
 
 interface DelegationMiddlewareConfig {
@@ -14,6 +11,7 @@ interface DelegationMiddlewareConfig {
   store: DelegationStore;
   cache: DelegationCache;
   backendDid: string;
+  configuredHost: string;
 }
 
 export function createDelegationMiddleware(config: DelegationMiddlewareConfig) {
@@ -26,17 +24,6 @@ export function createDelegationMiddleware(config: DelegationMiddlewareConfig) {
     }
 
     const { address } = req.user;
-    const cached = cache.get(address);
-    if (cached) {
-      const valid = await validateStoredDelegation(address, store, cache, backendDid);
-      if (!valid.ok) {
-        res.status(valid.status).json({ error: valid.error, message: valid.message });
-        return;
-      }
-      req.delegatedAccess = cached;
-      next();
-      return;
-    }
 
     try {
       const stored = await store.load(address);
@@ -57,14 +44,14 @@ export function createDelegationMiddleware(config: DelegationMiddlewareConfig) {
         return;
       }
 
-      const delegation = deserializePortableDelegationSet(stored.serialized);
-      // Re-activation is clamped to the policy too (§3.2a edit 2) — the stored bundle is not
-      // re-trusted just because it was accepted once.
-      const access = await activatePortableDelegation(node, delegation, {
-        policy: backendDelegationResolvedPermissions(backendDid),
-        // §3.2a — re-run against the STORED bundle, not inherited from the accept route.
-        ownerAddress: address,
-      });
+      const verified = await parseStoredGrant(address, stored.serialized, config, { computeDelegationCid: node.computeDelegationCid.bind(node) });
+      if (!verified.ok) {
+        await store.remove(address);
+        cache.evict(address);
+        res.status(403).json({ error: "delegation_stale", message: "Delegation is invalid" });
+        return;
+      }
+      const access = await activateVerifiedDelegation(node, verified.verified, { host: config.configuredHost });
       cache.set(address, access);
       req.delegatedAccess = access;
       next();
@@ -92,6 +79,8 @@ export function createStoredDelegationGate(config: {
   store: DelegationStore;
   cache: DelegationCache;
   backendDid: string;
+  configuredHost: string;
+  node: TinyCloudNode;
 }): { validate(address: string): Promise<{ ok: true } | { ok: false; reason: string }> } {
   return {
     validate: async (address: string) => {
@@ -100,6 +89,8 @@ export function createStoredDelegationGate(config: {
         config.store,
         config.cache,
         config.backendDid,
+        config.configuredHost,
+        config.node,
       );
       return result.ok ? { ok: true } : { ok: false, reason: result.error };
     },
@@ -111,6 +102,8 @@ async function validateStoredDelegation(
   store: DelegationStore,
   cache: DelegationCache,
   backendDid: string,
+  configuredHost: string,
+  node: TinyCloudNode,
 ): Promise<{ ok: true } | { ok: false; status: number; error: string; message: string }> {
   const stored = await store.load(address);
   if (!stored) {
@@ -131,6 +124,12 @@ async function validateStoredDelegation(
       error: "delegation_stale",
       message: "Delegation policy is stale",
     };
+  }
+  const verified = await parseStoredGrant(address, stored.serialized, { backendDid, configuredHost }, { computeDelegationCid: node.computeDelegationCid.bind(node) });
+  if (!verified.ok) {
+    await store.remove(address);
+    cache.evict(address);
+    return { ok: false, status: 403, error: "delegation_stale", message: "Delegation is invalid" };
   }
   return { ok: true };
 }

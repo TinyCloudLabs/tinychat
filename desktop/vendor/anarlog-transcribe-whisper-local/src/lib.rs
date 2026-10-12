@@ -5,7 +5,7 @@ pub use error::*;
 pub use service::*;
 
 #[cfg(test)]
-// cargo test -p transcribe-whisper-local test_service -- --nocapture
+// EXO_WHISPER_TEST_MODEL=<path> cargo test -p transcribe-whisper-local test_service -- --ignored
 mod tests {
     use super::*;
     use anlg_audio_utils::AudioFormatExt;
@@ -14,11 +14,11 @@ mod tests {
     use tokio_tungstenite::{connect_async, tungstenite::Error as TungsteniteError};
 
     #[tokio::test]
+    #[ignore = "requires EXO_WHISPER_TEST_MODEL"]
     async fn test_service() -> Result<(), Box<dyn std::error::Error>> {
-        let model_path = dirs::data_dir()
-            .unwrap()
-            .join("anarlog")
-            .join("models/stt/ggml-small-q8_0.bin");
+        let model_path = std::env::var("EXO_WHISPER_TEST_MODEL")
+            .expect("set EXO_WHISPER_TEST_MODEL")
+            .into();
 
         let app = TranscribeService::builder()
             .model_path(model_path)

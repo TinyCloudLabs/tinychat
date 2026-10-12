@@ -69,6 +69,7 @@ const props = (screen: SavedNoteScreen, over: Partial<SavedNoteViewProps> = {}):
   meta: "1 min · saved to your space",
   stepper: null,
   audio: null,
+  durationSecs: 42,
   transcript: <p>the transcript</p>,
   partialAudio: false,
   onBack: noop,

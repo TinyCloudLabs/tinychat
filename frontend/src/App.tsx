@@ -74,7 +74,6 @@ import { SettingsPage } from "./chat/SettingsPage";
 import { AboutPage } from "./chat/AboutPage";
 import { ConnectorsPage } from "./chat/ConnectorsPage";
 import { CaptureSurface } from "./capture/CaptureSurface";
-import { captureEvents } from "./capture/captureEvents";
 import { HeaderLiveChip } from "./capture/recorder/HeaderLiveChip";
 import { RecordButton } from "./capture/recorder/RecordButton";
 import { RecorderProvider } from "./capture/recorder/RecorderProvider";
@@ -138,6 +137,7 @@ import {
 import { NativeRenewal, guardNativeTinyCloudCalls, NATIVE_SESSION_ENDED_MESSAGE, NATIVE_STORAGE_MESSAGE } from "./lib/openkeyNativeRenewal";
 import { isAuthSettledSignedOut } from "./lib/authRouting";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
+import { clearTranscriptDelegationSchedule, ensureTranscriptWriterDelegation } from "./lib/transcriptDelegation";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
 import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
 import { useLocalCanvasStorage } from "./lib/conversationCanvasStore";
@@ -238,6 +238,7 @@ export function App() {
     resetNavigationMemory();
     const storedAddress = sessionStoreRef.current.getAddress() ?? address;
     if (storedAddress) clearPersistedSession(storedAddress);
+    clearTranscriptDelegationSchedule(storedAddress);
     sessionStoreRef.current.clear();
     voiceNotePipeline?.cancelAll();
     openkeyRef.current = null;
@@ -432,11 +433,13 @@ export function App() {
         if (boot.kind === "restored") {
           if (boot.verified) sessionStoreRef.current.setSession(boot.verified.token, boot.verified.expiresIn, boot.verified.address);
           setNativeSessionActive(true);
-          setTcw(await startNativeRenewal(boot.tcw, boot.session, boot.openkey, boot.renewAt));
+          const nativeTcw = await startNativeRenewal(boot.tcw, boot.session, boot.openkey, boot.renewAt);
+          setTcw(nativeTcw);
           setAddress(boot.address);
           setDid(boot.tcw.did ?? `did:pkh:eip155:1:${boot.address}`);
           setSpaceId(boot.tcw.spaceId ?? null);
           setState("ready");
+          void ensureTranscriptWriterDelegation({ tcw: nativeTcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
           return;
         }
         if (boot.kind === "storage") {
@@ -513,6 +516,7 @@ export function App() {
           setDid(restored.tcw.did ?? `did:pkh:eip155:1:${restored.address}`);
           setSpaceId(restored.tcw.spaceId ?? null);
           setState("ready");
+          void ensureTranscriptWriterDelegation({ tcw: restored.tcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
           return;
         case "unavailable":
           setError(restored.message);
@@ -569,6 +573,20 @@ export function App() {
       if (listener) void listener.remove();
     };
   }, [state]);
+
+  useEffect(() => {
+    if (state !== "ready" || !tcw || LOCAL_VALIDATION) return;
+    const recheck = () => void ensureTranscriptWriterDelegation({
+      tcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current,
+    });
+    const visible = () => { if (document.visibilityState === "visible") recheck(); };
+    window.addEventListener("focus", recheck);
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      window.removeEventListener("focus", recheck);
+      document.removeEventListener("visibilitychange", visible);
+    };
+  }, [state, tcw]);
 
   // A1 — keep the policy-input refs in sync with render state.
   useEffect(() => {
@@ -777,10 +795,12 @@ export function App() {
         );
         setNativeSessionActive(true);
         const nativeTcw = native.tcw as TinyCloudWeb;
-        setTcw(await startNativeRenewal(nativeTcw, native.session, native.openkey));
+        const readyTcw = await startNativeRenewal(nativeTcw, native.session, native.openkey);
+        setTcw(readyTcw);
         setDid(nativeTcw.did ?? `did:pkh:eip155:1:${native.verified.address}`);
         setSpaceId(nativeTcw.spaceId ?? null);
         setState("ready");
+        void ensureTranscriptWriterDelegation({ tcw: readyTcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
         return;
       }
       const { address: connectedAddress, openkey, web3Provider } = await connectWallet({
@@ -831,6 +851,7 @@ export function App() {
       setDid(signedTcw.did ?? null);
       setSpaceId(signedTcw.spaceId ?? null);
       setState("ready");
+      void ensureTranscriptWriterDelegation({ tcw: signedTcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
     } catch (caught) {
       if (isSignInCancelled(caught)) {
         setError(null);
@@ -1058,7 +1079,6 @@ export function App() {
       backendUrl={BACKEND_URL}
       sessionStore={sessionStoreRef.current}
       enabled={voiceNotesInApp && !LOCAL_VALIDATION}
-      onSaved={() => captureEvents.emit("library-changed")}
       onAccountReady={setCaptureReadyTcw}
       pipeline={voiceNotePipeline}
       signedOut={state === "unauthenticated" && !sessionStoreRef.current.hasSession()}

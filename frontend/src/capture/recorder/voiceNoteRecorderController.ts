@@ -1033,9 +1033,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
               return;
             }
             pipeline.resume();
+            // The pipeline announces each save to the Library itself, so onSaved is not called here.
             await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation }, "manual", (recording) => {
               if (transcriber) transcribeSavedNote(transcriber, recording, () => generation === currentAccountGeneration());
-              onSaved?.(recording);
             });
             await account.refresh(null);
           } catch (caught) {

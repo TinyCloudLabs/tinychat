@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Capacitor } from "@capacitor/core";
+import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
 import { Button } from "@/components/ui/button";
 import { VoiceNotes, type LocalTranscript, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
 
@@ -20,7 +21,7 @@ export function LocalNoteDetail({ note, onBack, onDelete }: {
   return <section aria-label="Note on this phone" className="space-y-4">
     <Button variant="ghost" onClick={onBack}>Back</Button>
     <h2 className="text-xl font-semibold">Voice note</h2>
-    {url && <audio controls src={url} className="w-full" />}
+    {url && <MeetingAudioPlayer url={url} durationSecs={note.durationMs / 1000} />}
     {transcript?.segments.map((segment, index) => <p key={index}>{segment.speaker && `${segment.speaker}: `}{segment.text}</p>)}
     {error && <p role="alert">{error}</p>}
     <Button variant="destructive" onClick={() => { void onDelete(note.id).then(onBack, (caught: unknown) => setError(String(caught))); }}>Delete from this phone</Button>

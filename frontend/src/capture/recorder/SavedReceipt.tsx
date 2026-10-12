@@ -11,6 +11,7 @@ import { Loader2Icon, RefreshCwIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
+import { PHONE_AUDIO_UNAVAILABLE } from "@/chat/audioPlayback";
 import { cn } from "@/lib/utils";
 import { useResolvedTheme } from "@/lib/theme";
 import { PipelineStepper } from "@/capture/pipeline/PipelineStepper";
@@ -228,7 +229,7 @@ export function SavedReceipt(props: SavedReceiptProps) {
     setLocalError(null);
     void VoiceNotes.localAudioUrl({ id: props.saved.id }).then(
       ({ url }) => { if (active) { setLocalUrl(Capacitor.convertFileSrc(url)); onReadyRef.current?.(); } },
-      (caught: unknown) => { if (active) { setLocalError(`Could not open this phone's audio: ${caught instanceof Error ? caught.message : String(caught)}`); onReadyRef.current?.(); } },
+      (caught: unknown) => { if (active) { console.error("[Receipt] Could not open this phone's audio", caught); setLocalError(PHONE_AUDIO_UNAVAILABLE); onReadyRef.current?.(); } },
     );
     return () => { active = false; };
   }, [props.saved?.id]);
@@ -273,7 +274,7 @@ export function SavedReceipt(props: SavedReceiptProps) {
           </p>
         )}
       </div>
-      {localUrl && <MeetingAudioPlayer url={localUrl} onPlayingChange={props.onPlayingChange} />}
+      {localUrl && <MeetingAudioPlayer url={localUrl} durationSecs={props.saved ? props.saved.durationMs / 1000 : null} onPlayingChange={props.onPlayingChange} />}
       {localError && <p role="alert" className="text-callout text-destructive">{localError}</p>}
       {!localUrl && !localError && props.saved && <p role="status" className="text-meta text-muted-foreground">Getting this phone&apos;s audio…</p>}
       {stepperShown ? <ReceiptStepper view={pipelineView} /> : pipelineWaiting ? null : (

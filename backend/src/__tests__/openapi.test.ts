@@ -113,6 +113,21 @@ describe("TinyChat OpenAPI spec", () => {
     expect(paths()["/api/attestation/self"].get.security).toEqual([{ bearerAuth: [] }]);
   });
 
+  test("documents connector meeting reads as authenticated, excluding the public ptx webhook", () => {
+    const bearer = [{ bearerAuth: [] }];
+    expect(spec.security).toEqual(bearer);
+    for (const [path, method] of [
+      ["/api/connectors/meetings", "get"],
+      ["/api/connectors/meetings/{source}/{sourceId}", "get"],
+      ["/api/connectors/meetings/{source}/{sourceId}/reconciled", "post"],
+    ] as const) {
+      const operation = paths()[path]?.[method];
+      expect(operation).toBeDefined();
+      expect(operation?.security ?? spec.security).toEqual(bearer);
+    }
+    expect(paths()["/api/transcriber/webhooks/ptx"].post.security).toEqual([]);
+  });
+
   test("documents delegation status including stale", () => {
     const schemas = components().schemas as Record<string, Record<string, any>>;
     expect(schemas.DelegationStatus.enum).toEqual(["active", "expired", "none", "stale"]);

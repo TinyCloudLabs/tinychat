@@ -36,9 +36,12 @@ pinned workspace root (`dasp 0.11.0`, `hound 3.5.1`, `rodio 0.22`,
 `futures-util 0.3.31`, `tracing 0.1`, `serde 1`, `serde_json 1`,
 `specta 2.0.0-rc.22`, `thiserror 2`, `lazy_static 1.5.0`, `regex 1.12`,
 `uuid 1`; dev: `dirs 6.0.0`, `tokio 1`). `whisper-rs` keeps its upstream
-codeberg git pin (`129b982`). No other source changes. (As a path dependency
-its pre-existing "method `debug` is never used" release-build warning is now
-visible; that is upstream code.)
+codeberg git pin (`129b982`). The model-backed tests are ignored by default
+and read `EXO_WHISPER_TEST_MODEL` when explicitly run with `-- --ignored`, so
+the A2 Linux workspace runs its model-free suite without a downloaded model.
+This changes tests only, not the decoder. (As a path dependency its
+pre-existing "method `debug` is never used" release-build warning is visible;
+that is upstream code.)
 
 Removal trigger: upstream exposes a progress/cancel hook on `transcribe`.
 

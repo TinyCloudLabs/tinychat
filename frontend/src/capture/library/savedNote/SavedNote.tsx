@@ -67,6 +67,7 @@ export default function SavedNote({
     theme,
     id: item.id,
     recordingId: item.sourceId,
+    durationSecs: item.durationSecs,
     title: item.title ?? voiceNoteTitle(Date.parse(item.startedAt ?? "") || Date.now()),
     meta: savedNoteMeta(item, rowMetadata, platform, pipeline?.pipeline.done === true),
     stepper: stepperShown ? (
