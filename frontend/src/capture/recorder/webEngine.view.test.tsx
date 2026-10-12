@@ -18,7 +18,7 @@ import { TranscriptionRouteControl } from "./TranscriptionRouteControl";
 const global = globalThis as Record<string, unknown>;
 const WEB: CaptureCapabilities = {
   nativeShortcuts: false, presentRecorder: false, openSettings: false, micDeniedPresentation: false,
-  background: false, localTranscription: false, desktopWhisper: false, offlineRecorder: false,
+  background: false, localTranscription: false, desktopWhisper: false, offlineRecorder: false, nativeFileUpload: false,
 };
 const noop = () => {};
 

@@ -1,21 +1,5 @@
-// Private cloud transcription for Exo mobile voice notes.
-//
-// The same path the desktop's "Private cloud" engine uses (plan §4.4,
-// lib/privateCloud.ts, desktop/src-tauri/src/cloud), with the webview doing
-// what the desktop's native code does:
-//
-//   1. capabilities: the backend answers 200 only while the relay is armed and
-//      this account is in its cohort (404 otherwise = hidden). Like the
-//      desktop, the engine is also hidden unless this BUILD has a PTX upload
-//      origin (VITE_EXO_PTX_UPLOAD_ORIGIN, privateCloud.ts); the backend never names one.
-//   2. the note's audio is converted to 16 kHz mono WAV (voiceNoteAudio.ts),
-//      hashed, and a job is created at the backend (bearer, Idempotency-Key);
-//   3. ONE PUT of the bytes straight to `<PTX origin>/uploads/trn_…` with the
-//      job capability, through Capacitor's native HTTP (PTX sends no CORS
-//      headers, and TinyChat never sees audio);
-//   4. the job is polled through the backend, the transcript is fetched,
-//      saved onto the note (voiceNoteStore.saveVoiceNoteTranscript), and the
-//      job is deleted at PTX.
+// Private transcription for Exo voice notes. The backend creates and tracks
+// jobs; this device uploads a local file directly to PTX when it has one.
 //
 // A job in flight is remembered per note (localStorage), so a relaunch or a
 // Retry re-joins it: an idempotent create replay hands out a fresh upload
@@ -47,9 +31,9 @@ import {
   type PrivateCloudTranscript,
   type PtxPutResponse,
 } from "../privateCloud";
-import { captureEngineKind } from "./captureEngine";
+import { captureCapabilities, captureEngineKind } from "./captureEngine";
 import { currentAccountGeneration, subscribeAccountGeneration } from "./accountContext";
-import { nativeHttpFileUploadSupported, nativeRecordingSource, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
+import { nativeRecordingSource, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { whenVoiceNoteSavesIdle } from "./recorderSaves";
 import {
@@ -87,9 +71,7 @@ export interface PtxPutRequest {
 export type PtxPut = (request: PtxPutRequest) => Promise<PtxPutResponse>;
 
 /**
- * Mobile voice notes use the plugin's native file transport. Space copies use
- * fetch; desktop retains CapacitorHttp because it does not have a native file
- * source owned by VoiceNotes.
+ * Local mobile and Mac notes use their engine's native file transport.
  */
 export const capacitorPtxPut: PtxPut = async (request) => {
   if (request.nativeFileId) {
@@ -117,9 +99,8 @@ export const capacitorPtxPut: PtxPut = async (request) => {
       throw new PrivateCloudError("upload_outcome_unknown", "The upload connection failed", { correlationId: request.correlationId });
     } finally { if (activeNativeUpload === upload) activeNativeUpload = null; await progress.remove(); }
   }
-  // A note from another device has no native file. Keep that space-copy case
-  // on fetch so no audio is base64-encoded across the native bridge.
-  if (Capacitor.isNativePlatform()) return createFetchPtxPut()(request);
+  // Notes from another device have no native file.
+  if (Capacitor.isNativePlatform() || captureEngineKind() === "tauri") return createFetchPtxPut()(request);
   let response: { status: number; data: unknown };
   try {
     response = await CapacitorHttp.request({
@@ -646,7 +627,7 @@ export interface VoiceNoteTranscribeInput {
 }
 
 export interface VoiceNoteCloud {
-  /** Null when this device cannot upload, or the relay is dark / the account is not in the cohort (404). */
+  /** Service capabilities. An upload or service failure rejects with a typed code. */
   capabilities(): Promise<PrivateCloudCapabilities | null>;
   /** Notes with a job in flight (to resume after a relaunch). */
   pendingSourceIds(): string[];
@@ -923,7 +904,8 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
 
   return {
     async capabilities() {
-      if (deps.uploadSupported && !(await deps.uploadSupported())) return null;
+      if (deps.uploadSupported && !(await deps.uploadSupported()))
+        throw new PrivateCloudError("feature_unavailable", "This device cannot upload a recording for private transcription");
       return deps.api.capabilities();
     },
 
@@ -974,7 +956,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
   };
 }
 
-/** The real engine, or null when this build has no PTX origin (hidden). */
+/** The real engine, or null when this build has no PTX origin. */
 export function createVoiceNoteCloudForBuild(
   backendUrl: string,
   sessionStore: SessionStore,
@@ -989,7 +971,7 @@ export function createVoiceNoteCloudForBuild(
     put: web ? createFetchPtxPut() : capacitorPtxPut,
     origin,
     pending: localStorageVoiceNotePendingStore(accountDid),
-    uploadSupported: web ? () => Promise.resolve(true) : () => nativeHttpFileUploadSupported(),
+    uploadSupported: () => Promise.resolve(web || captureCapabilities().nativeFileUpload),
   });
 }
 
@@ -1029,7 +1011,7 @@ export function voiceNoteTranscriptionFailure(err: unknown): VoiceNoteTranscript
       message = "Lost contact with private cloud transcription. The job may still be running; Retry checks on it.";
       break;
     case "feature_unavailable":
-      message = "Private cloud transcription is not available for this account.";
+      message = "Private transcription is unavailable on this device. Try again.";
       break;
     case "voice_note_not_found":
       message = "This voice note no longer exists.";
@@ -1081,7 +1063,6 @@ export async function transcribeVoiceNote(args: {
   /** The user asked for this note to be transcribed. Without it, only a note recorded in the app goes. */
   explicit?: boolean;
   /** Native platform override for JS-boundary tests; production detects Capacitor's platform. */
-  nativePlatform?: "ios" | "android";
   report: (status: VoiceNoteTranscriptionStatus) => void;
   now?: () => Date;
   account?: VoiceNoteTranscriptAccount;
@@ -1178,7 +1159,7 @@ export async function transcribeVoiceNote(args: {
     }
     if (localAudioRecording) {
       try {
-        if (await nativeHttpFileUploadSupported(args.nativePlatform))
+        if (captureCapabilities().nativeFileUpload)
           return { mimeType: localAudioRecording.mimeType, base64: "", nativeFileId: sourceId, loadSpaceCopy: loadSpaceAudio };
         const source = nativeRecordingSource(localAudioRecording);
         const bytes = new Uint8Array(source.size);
@@ -1251,9 +1232,9 @@ export type NoteTranscriptionState =
   | { kind: "blocked"; reason: TranscriptionBlockedReason };
 
 /** Why private cloud was not on when a note was offered to it. */
-export type TranscriptionBlockedReason = "checking" | "unavailable" | "check-failed" | "no-consent" | "hidden";
+export type TranscriptionBlockedReason = "checking" | "unavailable" | "check-failed" | "no-consent";
 
-export type TranscriptionAvailability = "checking" | "available" | "hidden" | "failed";
+export type TranscriptionAvailability = "checking" | "available" | "failed";
 
 export interface VoiceNoteTranscriberSnapshot {
   availability: TranscriptionAvailability;
@@ -1303,7 +1284,7 @@ export interface VoiceNoteTranscriber {
 }
 
 export interface VoiceNoteTranscriberDeps {
-  /** Null when this build cannot transcribe (no PTX origin): always hidden. */
+  /** Null when this build lacks its required PTX origin. */
   cloud: VoiceNoteCloud | null;
   consent: VoiceNoteConsentStore;
   /** The user's "Transcribe privately instead" choices; in memory when omitted. */
@@ -1355,7 +1336,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   /** Notes queued but not started; turning off empties it, and a dropped note never starts. */
   const waiting = new Set<string>();
   let state: Omit<VoiceNoteTranscriberSnapshot, "jobs"> = {
-    availability: cloud === null ? "hidden" : "checking",
+    availability: cloud === null ? "failed" : "checking",
+    checkError: cloud === null ? "Private transcription is not configured in this build" : undefined,
     capabilities: null,
     consented: deps.consent.get(),
   };
@@ -1384,14 +1366,12 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   const identityCurrent = () => accountCurrent === null || accountCurrent();
   const on = () => identityCurrent() && state.availability === "available" && state.consented && state.capabilities !== null;
   const blockedReason = (): TranscriptionBlockedReason => {
-    if (cloud === null) return "hidden";
+    if (cloud === null) return "check-failed";
     switch (state.availability) {
       case "checking":
         return "checking";
       case "failed":
         return "check-failed";
-      case "hidden":
-        return "hidden";
       case "available":
         return state.consented ? "unavailable" : "no-consent";
     }
@@ -1556,7 +1536,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         if (!identityCurrent()) return { availability: "stale" } as const;
         try {
           const caps = await cloud.capabilities();
-          return caps === null ? ({ availability: "hidden" } as const) : ({ availability: "available", caps } as const);
+          if (caps === null) throw new PrivateCloudError("service_unavailable", "Private transcription could not be reached. Try again.");
+          return { availability: "available", caps } as const;
         } catch (err) {
           console.warn("Checking private cloud transcription failed", err);
           return { availability: "failed", error: err instanceof Error ? err.message : String(err) } as const;

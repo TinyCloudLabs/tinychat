@@ -143,18 +143,18 @@ describe("availability and consent", () => {
     expect(s.job("moved")).toEqual({ kind: "blocked", reason: "no-consent" });
   });
 
-  test("no PTX origin in this build: hidden, never checked, nothing queued", async () => {
+  test("no PTX origin in this build: failed, never checked, nothing queued", async () => {
     const s = setup({ cloud: null, consented: true });
     await s.transcriber.check();
-    expect(s.transcriber.snapshot().availability).toBe("hidden");
+    expect(s.transcriber.snapshot().availability).toBe("failed");
     s.transcriber.noteSaved({ id: "rec-1", durationMs: 5_000, source: "in_app" }, AUDIO);
     s.transcriber.transcribe("rec-1");
     await tick();
     expect(s.runs).toHaveLength(0);
   });
 
-  test("a failed check is retried twice; a 404 (dark / not in the cohort) is hidden", async () => {
-    let answers: (() => Promise<PrivateCloudCapabilities | null>)[] = [
+  test("a failed check is retried twice; a missing capability route remains retryable", async () => {
+    const answers: (() => Promise<PrivateCloudCapabilities | null>)[] = [
       async () => {
         throw new PrivateCloudError("offline", "x");
       },
@@ -168,10 +168,9 @@ describe("availability and consent", () => {
     expect(s.sleeps).toEqual([2_000, 5_000]);
     expect(s.transcriber.snapshot()).toMatchObject({ availability: "available", capabilities: CAPS });
 
-    answers = [async () => null];
-    const dark = setup({ capabilities: () => answers.shift()!() });
+    const dark = setup({ capabilities: async () => null });
     await dark.transcriber.check();
-    expect(dark.transcriber.snapshot().availability).toBe("hidden");
+    expect(dark.transcriber.snapshot().availability).toBe("failed");
   });
 
   test("before consent a saved note is not sent; after it, new notes are transcribed with the audio in hand", async () => {
@@ -298,7 +297,7 @@ describe("blocked notes and waiting positions", () => {
     expect(snapshots).toContainEqual(["a:done", "b:preparing", 1]);
   });
 
-  test("a note offered while the check is running, failed, hidden or unconsented is recorded as blocked, with the reason", async () => {
+  test("a note offered while the check is running, failed or unconsented is recorded as blocked, with the reason", async () => {
     const checking = setup({ consented: true });
     checking.transcriber.noteSaved(note("n"), AUDIO);
     expect(checking.job("n")).toEqual({ kind: "blocked", reason: "checking" });
@@ -311,11 +310,11 @@ describe("blocked notes and waiting positions", () => {
     const dark = setup({ consented: true, capabilities: async () => null });
     await dark.transcriber.check();
     dark.transcriber.noteSaved(note("n"), AUDIO);
-    expect(dark.job("n")).toEqual({ kind: "blocked", reason: "hidden" });
+    expect(dark.job("n")).toEqual({ kind: "blocked", reason: "check-failed" });
 
     const noCloud = setup({ cloud: null, consented: true });
     noCloud.transcriber.noteSaved(note("n"), AUDIO);
-    expect(noCloud.job("n")).toEqual({ kind: "blocked", reason: "hidden" });
+    expect(noCloud.job("n")).toEqual({ kind: "blocked", reason: "check-failed" });
 
     const unconsented = setup({ consented: false });
     await unconsented.transcriber.check();
@@ -446,25 +445,11 @@ describe("voiceNoteTranscriberFor", () => {
     expect(a1).toBe(a2);
     expect(b).not.toBe(a1);
     expect(voiceNoteTranscriberFor({} as TinyCloudWeb, "https://api.example", store)).toBeNull();
-    // No PTX origin in this build: hidden for every account.
-    expect(a1!.snapshot().availability).toBe("hidden");
+    // No PTX origin in this build is an explicit failure.
+    expect(a1!.snapshot().availability).toBe("failed");
   });
 });
 
-describe("nativeHttpFileUploadSupported (Android 8.0+ only)", () => {
-  test("iOS yes; Android from API 26; an Android shell that does not say, or the web, no", async () => {
-    const { nativeHttpFileUploadSupported } = await import("./nativeVoiceNotes");
-    const status = (androidSdkInt?: number) => async () => (androidSdkInt === undefined ? {} : { androidSdkInt });
-    expect(await nativeHttpFileUploadSupported("ios", status())).toBe(true);
-    expect(await nativeHttpFileUploadSupported("android", status(26))).toBe(true);
-    expect(await nativeHttpFileUploadSupported("android", status(34))).toBe(true);
-    expect(await nativeHttpFileUploadSupported("android", status(25))).toBe(false);
-    expect(await nativeHttpFileUploadSupported("android", status(24))).toBe(false);
-    expect(await nativeHttpFileUploadSupported("android", status())).toBe(false);
-    expect(await nativeHttpFileUploadSupported("android", async () => { throw new Error("no plugin"); })).toBe(false);
-    expect(await nativeHttpFileUploadSupported("web", status(34))).toBe(false);
-  });
-});
 
 describe("notes that did not begin in the app are held, per note", () => {
   const SHORTCUTS = ["quick_action", "app_shortcut", "intent", "control", "tile", "widget", "notification"] as const;

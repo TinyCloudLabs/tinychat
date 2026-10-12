@@ -1,4 +1,5 @@
-import { installVoiceNotesEngine, nativeVoiceNotesAvailable, type VoiceNotesPlugin } from "./nativeVoiceNotes";
+import { Capacitor } from "@capacitor/core";
+import { installVoiceNotesEngine, nativeVoiceNotesAvailable, VoiceNotes, MIN_ANDROID_SDK_FOR_FILE_UPLOAD, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 
 export type CaptureEngineKind = "native" | "web" | "tauri";
 
@@ -20,6 +21,8 @@ export interface CaptureCapabilities {
   desktopWhisper: boolean;
   /** The local-only home that records while offline or signed out. */
   offlineRecorder: boolean;
+  /** The engine can stream its local recording to PTX without a webview copy. */
+  nativeFileUpload: boolean;
 }
 
 export type CaptureEngine = VoiceNotesPlugin & { capabilities: CaptureCapabilities };
@@ -34,6 +37,7 @@ const NATIVE_CAPABILITIES: CaptureCapabilities = {
   localTranscription: true,
   desktopWhisper: false,
   offlineRecorder: true,
+  nativeFileUpload: Capacitor.getPlatform() === "ios",
 };
 
 const NO_CAPABILITIES: CaptureCapabilities = {
@@ -45,6 +49,7 @@ const NO_CAPABILITIES: CaptureCapabilities = {
   localTranscription: false,
   desktopWhisper: false,
   offlineRecorder: false,
+  nativeFileUpload: false,
 };
 
 const factories = new Map<RegisterableKind, () => Promise<CaptureEngine>>();
@@ -120,7 +125,14 @@ export function installCaptureEngine(): Promise<void> {
   if (kind === null) return Promise.resolve();
   if (kind === "native") {
     installed = { kind, capabilities: NATIVE_CAPABILITIES };
-    return Promise.resolve();
+    if (Capacitor.getPlatform() !== "android") return Promise.resolve();
+    return VoiceNotes.status().then((status) => {
+      NATIVE_CAPABILITIES.nativeFileUpload = typeof status.androidSdkInt === "number"
+        && status.androidSdkInt >= MIN_ANDROID_SDK_FOR_FILE_UPLOAD;
+    }, (error: unknown) => {
+      NATIVE_CAPABILITIES.nativeFileUpload = false;
+      console.error("[captureEngine] Could not determine Android file upload availability", error);
+    });
   }
   const factory = factories.get(kind);
   if (!factory) return Promise.reject(new Error(`No ${kind} capture engine is registered`));

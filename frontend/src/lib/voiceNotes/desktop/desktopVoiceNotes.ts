@@ -12,7 +12,7 @@ import { createDesktopWhisperQueue, getDesktopWhisperQueue, loadDesktopWhisperBr
 import { failure, memoryLocks, recordingFromSession, RECORDING_LOCK, sessionLock, type RecoveryResult, type SessionRecord,
   type WebStore, openWebStore, type WebStoreOptions } from "../web/webStore";
 
-type EventName = "micState" | "level" | "autoStopped" | "committed" | "recovered" | "recoveryFailed"
+type EventName = "micState" | "level" | "autoStopped" | "committed" | "recovered" | "recoveryFailed" | "audioUploadProgress"
   | "writeFailure" | "inputs" | "captureAlert" | "presentRecorder";
 type Listener = (event: never) => void;
 type NativeStatus = Omit<CaptureStatus, "spans" | "openSpan" | "transitionGen"> & {
@@ -39,6 +39,7 @@ export const DESKTOP_CAPABILITIES: CaptureCapabilities = {
   localTranscription: false,
   desktopWhisper: false,
   offlineRecorder: true,
+  nativeFileUpload: true,
 };
 
 let refreshSelectedWhisper: (() => Promise<void>) | null = null;
@@ -268,6 +269,8 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
   };
 
   try {
+    unlisten.push(await bridge.listen<{ uploadId: string; loaded: number; total: number }>("audioUploadProgress",
+      (event) => emit("audioUploadProgress", event)));
     unlisten.push(await bridge.listen<NativeStatus>("exo://recorder-mic-state", emitMic));
     unlisten.push(await bridge.listen<{ level: number; peak: number }>("exo://recorder-level", (event) => emit("level", event)));
     unlisten.push(await bridge.listen<NativeAutoStop>("exo://recorder-auto-stopped", handleAutoStop));
@@ -567,6 +570,12 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     async consumeShortcutRecord() { throw failure("unsupported"); },
     async openSettings() { throw failure("unsupported"); },
     readAudioChunk: (args) => store.readAudioChunk(args),
+    audioMetadata: ({ id }) => bridge.invoke("ptx_audio_metadata", { id }),
+    uploadAudio: (request) => bridge.invoke("ptx_upload_audio", {
+      id: request.id, uploadId: request.uploadId, url: request.url, capability: request.capability,
+      contentType: request.contentType, contentLength: request.contentLength, correlationId: request.correlationId,
+    }),
+    cancelAudioUpload: ({ uploadId }) => bridge.invoke("ptx_cancel_audio_upload", { uploadId }),
     listPending: () => store.listPending(),
     getCaptureDefaults: () => store.getCaptureDefaults(),
     setAccountState: (args) => store.setAccountState(args),

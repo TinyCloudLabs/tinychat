@@ -3,8 +3,7 @@
 // Both callers create jobs in the webview with `createPrivateCloudJob` below
 // and PUT audio to this build's PTX origin (`buildPtxUploadOrigin`).
 //
-// Every caller asks the backend whether this account may upload
-// (capabilities 200, not 404), polls the job through the backend (bearer),
+// Every caller checks service capabilities, polls the job through the backend (bearer),
 // fetches the transcript, and deletes it after it is saved. Each client's
 // jobs carry its own channel labels (`privateCloudJobClient`).
 //
@@ -207,9 +206,9 @@ export interface PrivateCloudApi {
   readonly backendUrl: string;
   /** The session token native code sends with the create call, or null when signed out. */
   bearer(): string | null;
-  /** Null when the feature is dark or this account is not in the cohort (404). */
+  /** The service capabilities; a missing route is a retryable error. */
   capabilities(): Promise<PrivateCloudCapabilities | null>;
-  /** This account's jobs (tenant-scoped by the backend); empty when the feature is dark. */
+  /** This account's jobs (tenant-scoped by the backend). */
   list(): Promise<PrivateCloudJob[]>;
   get(id: string): Promise<PrivateCloudJob>;
   result(id: string): Promise<PrivateCloudResult>;
@@ -297,14 +296,14 @@ export function createPrivateCloudApi(
 
     async capabilities() {
       const response = await request("/capabilities", "GET");
-      if (response.status === 404) return null;
+      if (response.status === 404) throw new PrivateCloudError("service_unavailable", "Private transcription could not be reached. Try again.");
       if (!response.ok) throw await readError(response);
       return json<PrivateCloudCapabilities>(response);
     },
 
     async list() {
       const response = await request("/transcriptions?limit=20", "GET");
-      if (response.status === 404) return [];
+      if (response.status === 404) throw new PrivateCloudError("service_unavailable", "Private transcription could not be reached. Try again.");
       if (!response.ok) throw await readError(response);
       const body = await json<{ transcriptions?: unknown }>(response);
       if (!Array.isArray(body.transcriptions)) throw new PrivateCloudError("upstream_bad_response", "Unexpected job list");
@@ -362,9 +361,8 @@ export function createPrivateCloudApi(
 // client field, but it records and echoes each job's `channel_mode` and
 // `channel_labels`, which every client sets at create, so they tell the
 // clients apart without new state anywhere:
-//   - Exo desktop (native, desktop/src-tauri/src/cloud/client.rs): separate,
-//     ["Speaker 1", "Speaker 2"];
-//   - Exo mobile voice notes (lib/voiceNotes): mixed, ["Exo voice note"];
+//   - Earlier desktop jobs: separate, ["Speaker 1", "Speaker 2"];
+//   - Voice notes on every platform (lib/voiceNotes): mixed, ["Exo voice note"];
 //   - Upload audio (lib/audioUpload.ts, every platform): mixed, ["Exo upload"],
 //     with or without diarization (PTX records the labels either way).
 // A job that matches neither (or a relay that does not relay them) is
@@ -479,9 +477,9 @@ export async function createPrivateCloudJob(
     });
   }
   if (response.status === 401) throw new PrivateCloudError("unauthenticated", "Session expired");
-  // Dark, or this account is not in the cohort: the same 404 every caller gets.
+  // A missing route is a service failure, never an account decision.
   if (response.status === 404) {
-    throw new PrivateCloudError("feature_unavailable", "Private cloud transcription is not available for this account");
+    throw new PrivateCloudError("service_unavailable", "Private transcription could not be reached. Try again.");
   }
   if (response.status === 200 || response.status === 201) {
     let body: unknown;
@@ -508,7 +506,7 @@ export async function createPrivateCloudJob(
 // ── PTX upload (webview callers) ───────────────────────────────────────
 
 /**
- * The PTX origin audio may be uploaded to, or null (the engine is hidden).
+ * The PTX origin audio may be uploaded to, or null when this build is unconfigured.
  * A bare origin only: https, or http to a loopback port in dev builds.
  */
 export function parsePtxUploadOrigin(raw: string | null | undefined, allowLoopbackHttp: boolean): string | null {
@@ -527,7 +525,7 @@ export function parsePtxUploadOrigin(raw: string | null | undefined, allowLoopba
   return url.origin;
 }
 
-/** This build's PTX upload origin (VITE_EXO_PTX_UPLOAD_ORIGIN), or null: then no webview caller offers private cloud. */
+/** This build's PTX upload origin (VITE_EXO_PTX_UPLOAD_ORIGIN), or null in an unconfigured dev build. */
 export function buildPtxUploadOrigin(): string | null {
   return parsePtxUploadOrigin(import.meta.env.VITE_EXO_PTX_UPLOAD_ORIGIN, import.meta.env.DEV === true);
 }
@@ -819,11 +817,9 @@ export function createCloudJobPoller(
 // ── Engine choice ──────────────────────────────────────────────────────
 
 /**
- * Whether private cloud can be offered: `available`; `hidden` (this build has
- * no PTX origin, or the backend answers 404: dark or not in the cohort);
- * `failed` (the check itself failed — offline, 5xx, timeout — so try again).
+ * Whether private cloud can be offered. A failed check can be retried.
  */
-export type PrivateCloudAvailability = "available" | "hidden" | "failed";
+export type PrivateCloudAvailability = "available" | "failed";
 
 /**
  * The engine a Local recording uses. An explicit choice wins; with none,

@@ -75,6 +75,15 @@ class FakeBridge implements DesktopBridge {
         selectedId: this.selectedId, activeId: this.state === "recording" ? this.selectedId : null }; break;
       case "recorder_select_input": this.selectedId = args.id as string | null; result = null; break;
       case "audio_file_size": result = this.files.get(id)?.length ?? 0; break;
+      case "ptx_audio_metadata": result = { size: this.files.get(id)?.length ?? 0, mimeType: "audio/mpeg", sha256: "a".repeat(64) }; break;
+      case "ptx_upload_audio": {
+        const bytes = this.files.get(id);
+        if (!bytes || bytes.length !== args.contentLength) throw new Error("audio_size_mismatch");
+        this.emit("audioUploadProgress", { uploadId: args.uploadId, loaded: bytes.length, total: bytes.length });
+        result = { status: 201, body: { status: "queued" } };
+        break;
+      }
+      case "ptx_cancel_audio_upload": result = null; break;
       case "append_audio_chunk": {
         const old = this.files.get(id) ?? new Uint8Array();
         const next = Uint8Array.from(args.bytes as number[]);
@@ -639,6 +648,25 @@ describe("desktop recorder adapter", () => {
     expect(await audio.finalize("note-1")).toBe(3);
     await audio.delete("note-1");
     expect(await audio.size("note-1")).toBe(0);
+  });
+
+  test("Mac Private uses the Tauri uploader with the local file and progress", async () => {
+    const bridge = new FakeBridge();
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3, 4));
+    const engine = await rig(bridge);
+    const progress: number[] = [];
+    await engine.plugin.addListener("audioUploadProgress", (event) => progress.push(event.loaded));
+    expect(engine.plugin.capabilities.nativeFileUpload).toBe(true);
+    expect(await engine.plugin.audioMetadata?.({ id: "note-1" })).toMatchObject({ size: 4, mimeType: "audio/mpeg" });
+    const result = await engine.plugin.uploadAudio?.({ id: "note-1", uploadId: "put-1",
+      url: "https://ptx.example/uploads/trn_01J8Z3K4M5N6P7Q8R9S0T1V2W3", capability: "tcu_abcdefghijklmnop",
+      contentType: "audio/mpeg", contentLength: 4, correlationId: "put-1" });
+    expect(result).toEqual({ status: 201, body: { status: "queued" } });
+    expect(progress).toEqual([4]);
+    expect(bridge.calls).toContain("ptx_upload_audio");
+    await engine.plugin.cancelAudioUpload?.({ uploadId: "put-1" });
+    expect(bridge.calls).toContain("ptx_cancel_audio_upload");
+    engine.dispose();
   });
 
   test("start, pause and resume keep elapsed time and committed bytes", async () => {
