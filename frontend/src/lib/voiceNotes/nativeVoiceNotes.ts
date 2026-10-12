@@ -350,6 +350,7 @@ export type AudioInputsSnapshot = {
   inputs: AudioInput[];
   selectedId: string | null;
   activeId: string | null;
+  selectedMissing?: string | null;
 };
 
 const inputSubscribers = new Map<

@@ -20,6 +20,7 @@ export interface ViaMenuProps {
   currentId: string | null;
   /** The name shown on the button. */
   currentName: string;
+  selectedMissing?: string | null;
   recording: boolean;
   theme: "night" | "day";
   subscribeLevel: (listener: (level: number) => void) => () => void;
@@ -27,6 +28,7 @@ export interface ViaMenuProps {
   emphasis: boolean;
   disabled: boolean;
   onSelect: (id: string) => void;
+  onOpen?: () => void;
   defaultOpen?: boolean;
 }
 
@@ -34,15 +36,18 @@ export function ViaMenu({
   inputs,
   currentId,
   currentName,
+  selectedMissing,
   recording,
   theme,
   subscribeLevel,
   emphasis,
   disabled,
   onSelect,
+  onOpen,
   defaultOpen = false,
 }: ViaMenuProps) {
   const [open, setOpen] = useState(defaultOpen);
+  const displayName = selectedMissing ? `${selectedMissing} isn't connected · using ${currentName}` : currentName;
   const root = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const items = useRef<(HTMLButtonElement | null)[]>([]);
@@ -99,6 +104,7 @@ export function ViaMenu({
           {inputs.length === 0 && (
             <div className="pr-menu-note">No other inputs found</div>
           )}
+          {selectedMissing && <div className="pr-menu-note" role="status">{displayName}</div>}
           {inputs.map((input, i) => (
             <button
               key={input.id}
@@ -133,10 +139,10 @@ export function ViaMenu({
         className="pr-srcbtn"
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={`Record from ${currentName}`}
+        aria-label={`Record from ${displayName}`}
         data-emphasis={emphasis}
         disabled={disabled}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => { if (!open) onOpen?.(); setOpen((o) => !o); }}
       >
         <span className="pr-srcpill">
           <span>via</span>
@@ -148,7 +154,7 @@ export function ViaMenu({
               subscribe={subscribeLevel}
             />
           </span>
-          <span className="name">{currentName}</span>
+          <span className="name">{displayName}</span>
           <ChevronDownIcon size={12} />
         </span>
       </button>

@@ -72,7 +72,7 @@ class FakeBridge implements DesktopBridge {
         this.emit("exo://recorder-mic-state", this.status()); break;
       case "recorder_status": result = this.status(); break;
       case "recorder_list_inputs": result = { inputs: [{ id: "mic-1", name: "Fixture microphone", kind: "built_in" }],
-        selectedId: this.selectedId, activeId: this.state === "recording" ? this.selectedId : null }; break;
+        selectedId: this.selectedId, activeId: "mic-1", selectedMissing: null }; break;
       case "recorder_select_input": this.selectedId = args.id as string | null; result = null; break;
       case "audio_file_size": result = this.files.get(id)?.length ?? 0; break;
       case "ptx_audio_metadata": result = { size: this.files.get(id)?.length ?? 0, mimeType: "audio/mpeg", sha256: "a".repeat(64) }; break;

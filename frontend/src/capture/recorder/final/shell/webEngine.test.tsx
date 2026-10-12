@@ -42,6 +42,7 @@ const saved = {
   voiceNotes: VoiceNotes,
   onDevice: OnDeviceStt,
   mediaDevices: Object.getOwnPropertyDescriptor(navigator, "mediaDevices"),
+  window: global.window,
 };
 let onDeviceCalls: string[] = [];
 
@@ -59,6 +60,8 @@ beforeEach(() => {
 
 afterEach(() => {
   __resetCaptureEngineForTests();
+  if (saved.window === undefined) delete global.window;
+  else global.window = saved.window;
   if (saved.MediaRecorder === undefined) delete global.MediaRecorder;
   else global.MediaRecorder = saved.MediaRecorder;
   if (saved.mediaDevices) Object.defineProperty(navigator, "mediaDevices", saved.mediaDevices);
@@ -187,12 +190,16 @@ describe("the web engine's choice", () => {
 });
 
 describe("shellAudioInputs", () => {
-  test("the phone plugin's list natively, the browser's with the web engine, none without an engine", async () => {
+  test("the phone and Mac engines use native inputs; the browser uses enumerateDevices", async () => {
     expect(shellAudioInputs()).toBeNull();
     __setVoiceNotesForTests(saved.voiceNotes, { available: true });
     expect(shellAudioInputs()).toBe(nativeAudioInputs);
     __setVoiceNotesForTests(saved.voiceNotes, { available: null });
     await installWeb();
     expect(shellAudioInputs()).toBe(browserAudioInputs);
+    __resetCaptureEngineForTests();
+    global.window = { __TAURI_INTERNALS__: {} };
+    registerCaptureEngine("tauri", async () => createFakeVoiceNotes().plugin as CaptureEngine);
+    expect(shellAudioInputs()).toBe(nativeAudioInputs);
   });
 });

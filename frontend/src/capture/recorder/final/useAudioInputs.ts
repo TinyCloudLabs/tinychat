@@ -35,7 +35,7 @@ const isUnsupported = (caught: unknown) =>
 
 /** The shell's own source: the native plugin's, a browser's enumerateDevices(), or none. */
 export function shellAudioInputs(): AudioInputsSource | null {
-  if (nativeVoiceNotesAvailable()) return nativeAudioInputs;
+  if (nativeVoiceNotesAvailable() || captureEngineKind() === "tauri") return nativeAudioInputs;
   return captureEngineKind() === "web" ? browserAudioInputs : null;
 }
 
@@ -146,6 +146,15 @@ export function useAudioInputs(
     () => (source ? watchAudioInputs(source, handlers) : undefined),
     [source, handlers, attempt],
   );
+  const refresh = useCallback(() => {
+    if (source) void source.list().then(handlers.onSnapshot, (caught) =>
+      fail(caught, "list the audio inputs", true, handlers));
+  }, [source, handlers]);
+  useEffect(() => {
+    if (!source) return;
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [source, refresh]);
   const select = useCallback(
     async (id: string | null) => {
       if (source && (await chooseAudioInput(source, id, handlers)))
@@ -160,7 +169,9 @@ export function useAudioInputs(
   return {
     ...snapshot,
     current: currentInput(snapshot),
+    selectedMissing: snapshot.selectedMissing ?? null,
     select,
+    refresh,
     error: error?.message ?? null,
     retry: error?.retry ? retry : null,
     unsupported,

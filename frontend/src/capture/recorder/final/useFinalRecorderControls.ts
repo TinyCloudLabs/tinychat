@@ -97,7 +97,7 @@ export function useFinalRecorderControls({
   const silencedSinceMs = useSilencedSince(silent, silencedSeed);
 
   const audio = useAudioInputs(inputsSource);
-  const input = mic.input ?? audio.current;
+  const input = audio.selectedMissing ? audio.current : mic.input ?? audio.current;
   const onDevice = useOnDeviceModel();
   const whisper = useDesktopWhisper(shell === "desktop");
   const choice = useTranscriptionChoice({
