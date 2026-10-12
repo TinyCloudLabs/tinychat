@@ -1,5 +1,11 @@
 # exo-desktop
 
+## 0.6.0-beta.32
+
+### Patch Changes
+
+- f07bac3: Make unavailable recorder modes actionable, quiet the mic-denied ring, and reserve rail space for the minimized Ribbon.
+
 ## 0.6.0-beta.31
 
 ### Patch Changes
