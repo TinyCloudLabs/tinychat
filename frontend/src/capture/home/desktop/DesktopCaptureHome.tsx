@@ -61,6 +61,7 @@ import { useSoftTheme } from "../softTheme";
 import { useIssueController } from "../useIssueController";
 import { desktopHomeCapabilities } from "./captureHomeKind";
 import { ConnectMeetingsLink } from "./ConnectMeetingsLink";
+import { SystemAudioStart } from "./SystemAudioStart";
 import {
   DESKTOP_HOME_COPY as COPY,
   forPlace,
@@ -102,31 +103,12 @@ export interface DesktopCaptureHomeProps {
 }
 
 function IdleHero(props: { theme: "night" | "day" }) {
-  const recorder = useRecorder();
-  const disabled = !recorder.ready;
   return (
     <div className="dch-hero" data-state="idle">
-      <button
-        type="button"
-        className="dch-ring"
-        tabIndex={-1}
-        aria-hidden="true"
-        disabled={disabled}
-        onClick={recorder.record}
-      >
+      <div className="dch-ring" aria-hidden="true">
         <HaloRing size={118} ticks={40} theme={props.theme} still />
-      </button>
-      <button
-        type="button"
-        className="dch-start"
-        onClick={recorder.record}
-        disabled={disabled}
-        aria-label={COPY.startLabel}
-        data-testid="voice-note-record"
-      >
-        <i className="dch-dot" aria-hidden="true" />
-        {COPY.start}
-      </button>
+      </div>
+      <SystemAudioStart />
     </div>
   );
 }

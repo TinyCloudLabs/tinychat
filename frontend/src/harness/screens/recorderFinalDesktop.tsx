@@ -205,6 +205,7 @@ function macWhisper(model: "ready" | "none"): HarnessScreen["render"] {
         onProgress: () => noop,
       },
       systemAudio: { get: async () => false, set: async () => {} },
+      systemAudioConsent: { get: async () => true, set: async () => {} },
       autoSaveToSpace: { get: async () => true, set: async () => {} },
     } as unknown as DesktopCaptureExtras);
     return null;

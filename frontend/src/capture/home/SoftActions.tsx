@@ -5,20 +5,32 @@
 import { MicIcon, UploadIcon, VideoIcon } from "lucide-react";
 
 import { recorderActive, useRecorder } from "../recorder/RecorderProvider";
+import { SystemAudioStart } from "./desktop/SystemAudioStart";
 import { HOME_COPY } from "./homeCopy";
 
 function RecorderAction() {
   const recorder = useRecorder();
   if (!recorder.available) return null;
   const idle = !recorderActive(recorder);
+  if (idle) return <SystemAudioStart renderTrigger={(onClick, disabled, ref) => <button
+    ref={ref}
+    type="button"
+    className="soft-act soft-act-main"
+    onClick={onClick}
+    disabled={disabled}
+    aria-label={HOME_COPY.recordLabel}
+    data-testid="voice-note-record"
+  >
+    <MicIcon className="soft-ico" aria-hidden="true" />
+    {HOME_COPY.recorder}
+  </button>} />;
   return (
     <button
       type="button"
       className="soft-act soft-act-main"
-      onClick={() => (idle ? recorder.record() : recorder.openSheet())}
-      disabled={idle && !recorder.ready}
-      aria-label={idle ? HOME_COPY.recordLabel : HOME_COPY.openRecorderLabel}
-      data-testid={idle ? "voice-note-record" : "capture-open-recorder"}
+      onClick={recorder.openSheet}
+      aria-label={HOME_COPY.openRecorderLabel}
+      data-testid="capture-open-recorder"
     >
       <MicIcon className="soft-ico" aria-hidden="true" />
       {HOME_COPY.recorder}

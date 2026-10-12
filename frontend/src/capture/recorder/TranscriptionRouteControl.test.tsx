@@ -76,9 +76,9 @@ describe("TranscriptionRouteControl", () => {
     expect(off).not.toContain("voice-note-transcription-enable");
     const asking = render(transcription({ consented: false }), true);
     expect(asking).toContain('data-testid="voice-note-transcription-consent"');
-    expect(asking).toContain("After you stop, TinyCloud Private Transcription turns your note into text.");
+    expect(asking).toContain("Private transcription sends this note&#x27;s audio from this phone to TinyCloud Private Transcription, a sealed hardware enclave. It&#x27;s deleted there once the transcript is ready. Exo never sees it.");
     expect(asking).not.toContain("minutes");
-    expect(asking).toContain(">Use private cloud</button>");
+    expect(asking).toContain(">Use Private transcription</button>");
     // The disclosure itself is on How it works, not here.
     expect(asking).not.toContain("Tinfoil");
   });

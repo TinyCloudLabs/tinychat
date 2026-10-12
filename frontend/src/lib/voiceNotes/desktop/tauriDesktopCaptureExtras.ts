@@ -43,6 +43,10 @@ export function createTauriDesktopCaptureExtras(bridge: DesktopBridge): DesktopC
       get: () => bridge.invoke<boolean>("recorder_system_audio_get"),
       set: (enabled) => bridge.invoke<void>("recorder_system_audio_set", { enabled }),
     },
+    systemAudioConsent: {
+      get: () => bridge.invoke<boolean>("recorder_system_audio_consent_get"),
+      set: (consented) => bridge.invoke<void>("recorder_system_audio_consent_set", { consented }),
+    },
     autoSaveToSpace: {
       get: () => bridge.invoke<boolean>("recorder_auto_save_to_space_get"),
       set: (enabled) => bridge.invoke<void>("recorder_auto_save_to_space_set", { enabled }),

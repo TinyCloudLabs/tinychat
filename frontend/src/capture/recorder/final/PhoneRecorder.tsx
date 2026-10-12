@@ -53,7 +53,7 @@ import {
   MODE_STOPS,
   type ModeId,
 } from "./transcriptionModes";
-import { FINAL_COPY } from "./finalCopy";
+import { FINAL_COPY, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, privateConsentBody } from "./finalCopy";
 import { useAudioInputs, type AudioInputsSource } from "./useAudioInputs";
 import { useSilencedSince } from "./useSilencedSince";
 import { MicDeniedAction } from "./shell/MicDeniedAction";
@@ -1088,8 +1088,8 @@ export function PhoneRecorder({
           role="dialog"
           titleId={`${ids}-ct`}
           descriptionId={`${ids}-cd`}
-          title="Use private cloud?"
-          description="After you stop, TinyCloud Private Transcription turns your note into text."
+          title={PRIVATE_CONSENT_TITLE}
+          description={privateConsentBody("phone")}
           onCancel={choice.dismissConsent}
           returnFocus={consentOpener}
           fallbackFocus={scale}
@@ -1100,7 +1100,7 @@ export function PhoneRecorder({
             data-initial=""
             onClick={choice.confirmConsent}
           >
-            Use private cloud
+            {PRIVATE_CONSENT_ACTION}
           </button>
           <button
             type="button"

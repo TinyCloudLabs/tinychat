@@ -1,11 +1,12 @@
 // "Transcribe" for a note with no transcript: one button and a small provider chip beside it, Local unless the user picks
 // another. Private asks once for consent first. Shown by the screens that know the note can be transcribed (no transcript,
 // nothing running); the label is "Try again" after a failure.
-import { useEffect, useId, useRef, useState } from "react";
+import { useContext, useEffect, useId, useRef, useState } from "react";
 import { ChevronDownIcon, Loader2Icon } from "lucide-react";
 
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
-import { CHECK_AGAIN, privateNotOffered, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
+import { PlatformContext } from "@/lib/platform";
+import { CHECK_AGAIN, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, privateConsentBody, privateNotOffered, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -71,6 +72,7 @@ export function TranscribeAction(props: TranscribeActionProps) {
 
 /** The action given what the phone said about the note. */
 export function TranscribeActionFor(props: TranscribeActionProps & { read: PhoneRead }) {
+  const platform = useContext(PlatformContext);
   const { noteId, transcription, durationSecs, read } = props;
   const phone = read.state === "read" ? read.phone : null;
   const providers = transcribeProviders(noteId, transcription, phone, durationSecs);
@@ -120,7 +122,7 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
     return (
       <div className={cn("flex min-w-0 flex-col gap-3", props.className)} data-testid="transcribe-consent">
         <p className="text-callout text-muted-foreground">
-          TinyCloud Private Transcription turns this note into text.
+          <strong>{PRIVATE_CONSENT_TITLE}</strong> {privateConsentBody(platform === "tauri" ? "Mac" : "phone")}
         </p>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <button
@@ -133,7 +135,7 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
               run(provider);
             }}
           >
-            Use private cloud
+            {PRIVATE_CONSENT_ACTION}
           </button>
           <button
             type="button"

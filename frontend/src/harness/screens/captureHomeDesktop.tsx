@@ -7,6 +7,8 @@ import { useContext, useEffect, useMemo, useState, type ReactNode } from "react"
 import { showToast } from "@/capture/recorder/final/desktop/Toasts";
 import type { RecorderValue } from "@/capture/recorder/RecorderProvider";
 import { PlatformContext } from "@/lib/platform";
+import { registerDesktopCaptureExtras } from "@/lib/voiceNotes/desktopCaptureExtras";
+import { createFakeDesktopCaptureExtras } from "@/lib/voiceNotes/fakeDesktopCaptureExtras";
 import { __setOnDeviceSttForTests } from "@/lib/voiceNotes/onDeviceStt";
 import { LIBRARY_ROWS, libraryTcw } from "../fixtures/library";
 import { createRuntimeShim } from "../runtimeShim";
@@ -50,6 +52,16 @@ const IDLE: Partial<RecorderValue> = {
   ready: true,
   phase: "idle",
 };
+
+function SystemAudioDisclosureHome() {
+  useEffect(() => {
+    const fake = createFakeDesktopCaptureExtras({ systemAudio: true, systemAudioConsent: false });
+    registerDesktopCaptureExtras(fake.extras);
+    const timer = setTimeout(() => document.querySelector<HTMLElement>('[data-testid="voice-note-record"]')?.click(), 0);
+    return () => { clearTimeout(timer); registerDesktopCaptureExtras(null); };
+  }, []);
+  return <Home recorder={IDLE} />;
+}
 
 const DOCKED: Partial<RecorderValue> = {
   ...IDLE,
@@ -215,6 +227,7 @@ export const captureHomeDesktopScreens: HarnessScreen[] = [
     readyWhen: CONFIRM,
   },
   screen("idle", () => <Home recorder={IDLE} />),
+  { ...screen("system-audio-disclosure", () => <SystemAudioDisclosureHome />), readyWhen: '[data-testid="system-audio-disclosure"]' },
   screen("idle-web", () => <Home recorder={IDLE} />, "web"),
   screen("docked", () => <Home recorder={DOCKED} />),
   screen("docked-web", () => <Home recorder={DOCKED} />, "web"),

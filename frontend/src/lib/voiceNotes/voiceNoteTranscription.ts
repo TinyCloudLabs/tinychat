@@ -216,6 +216,7 @@ export function createFetchPtxPut(fetchImpl: typeof fetch = (input, init) => fet
 export const VOICE_NOTE_PENDING_JOBS_KEY = "exo.voiceNotes.privateCloudJobs";
 /** The one-time "Use private cloud" for voice notes (its own key: the disclosure differs from the desktop's). */
 export const VOICE_NOTE_CONSENT_KEY = "exo.voiceNotes.privateCloudConsent";
+export const VOICE_NOTE_CONSENT_VERSION = "2";
 export const VOICE_NOTE_HELD_KEY = "exo.voiceNotes.heldFromTranscription";
 
 export function accountStorageKey(base: string, accountDid: string): string {
@@ -340,14 +341,14 @@ export function localStorageVoiceNoteConsentStore(
   return {
     get: () => {
       try {
-        return storage?.getItem(key) === "1";
+        return storage?.getItem(key) === VOICE_NOTE_CONSENT_VERSION;
       } catch {
         return false;
       }
     },
     set: (consented) => {
       try {
-        if (consented) storage?.setItem(key, "1");
+        if (consented) storage?.setItem(key, VOICE_NOTE_CONSENT_VERSION);
         else storage?.removeItem(key);
       } catch {
         // Best-effort: the choice then lasts for this session only.

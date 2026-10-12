@@ -706,6 +706,8 @@ describe("per device capability and per account storage", () => {
     const storage = memoryStorage();
     const a = localStorageVoiceNoteConsentStore("did:a", storage);
     const b = localStorageVoiceNoteConsentStore("did:b", storage);
+    storage.setItem(accountStorageKey(VOICE_NOTE_CONSENT_KEY, "did:a"), "1");
+    expect(a.get()).toBe(false);
     a.set(true);
     expect([a.get(), b.get()]).toEqual([true, false]);
     expect(storage.map.has(accountStorageKey(VOICE_NOTE_CONSENT_KEY, "did:a"))).toBe(true);
@@ -1455,6 +1457,19 @@ describe("every path that creates or resumes an off-phone job consults the hold 
     await settle();
     expect(h.creates).toHaveLength(1);
     expect(transcriber.snapshot().jobs.get("rec-1")?.kind).toBe("done");
+  });
+
+  test("a legacy consent holds an in-app Private note until the new disclosure is confirmed", async () => {
+    const { h, launch, storage } = await setup("in_app", { consented: false });
+    storage.setItem(accountStorageKey(VOICE_NOTE_CONSENT_KEY, DID), "1");
+    const transcriber = launch();
+    expect(transcriber.snapshot().consented).toBe(false);
+    await transcriber.check();
+    await settle();
+    untouched(h);
+    transcriber.consent();
+    await settle();
+    expect(h.creates).toHaveLength(1);
   });
 
   test("the hold list cannot be read: an in-app note is still resumed, a shortcut note is not", async () => {

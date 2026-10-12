@@ -8,6 +8,12 @@ const MODE_NAMES = {
   powerful: "Powerful",
 } as const;
 
+export const PRIVATE_CONSENT_TITLE = "Use Private transcription?";
+export const PRIVATE_CONSENT_ACTION = "Use Private transcription";
+export function privateConsentBody(device: "phone" | "Mac"): string {
+  return `Private transcription sends this note's audio from this ${device} to TinyCloud Private Transcription, a sealed hardware enclave. It's deleted there once the transcript is ready. Exo never sees it.`;
+}
+
 /** One name per transcription mode, keyed by the provider's transcriber id; every surface that names a mode reads this. */
 export const TRANSCRIBER_NAME = {
   off: MODE_NAMES.skip,
@@ -114,7 +120,7 @@ export const FINAL_COPY = {
       "Runs on your phone or Mac in the Exo app. Not available in the browser.",
     privateCaption: "Fast, accurate, and sealed from Exo.",
     privateExplanation:
-      "Transcribed in a sealed hardware enclave. Not even Exo can read it. Fast and accurate.",
+      "Sent to a sealed hardware enclave, transcribed, then deleted. Exo never sees it.",
     powerfulCaption: "Most accurate. Audio deleted after processing.",
     powerfulExplanation:
       "Uploaded to AssemblyAI, a third-party service: the most accurate, with speaker labels. Audio is deleted after processing.",

@@ -111,9 +111,7 @@ describe("header", () => {
 describe("hero", () => {
   test("idle: a decorative ring (40 ticks, aria-hidden, out of the tab order) and Start recording", () => {
     const html = home();
-    expect(html).toMatch(
-      /<button[^>]*tabindex="-1"[^>]*aria-hidden="true"[^>]*>/,
-    );
+    expect(html).toMatch(/<div class="dch-ring" aria-hidden="true">/);
     expect(html).toContain('aria-label="Start recording a voice note"');
     expect(html).toContain(">Start recording<");
     expect(html).toContain('data-testid="voice-note-record"');

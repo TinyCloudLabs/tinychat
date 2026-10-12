@@ -20,7 +20,7 @@ import { VoiceNotes, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNote
 import { downloadOnDeviceModel, onDeviceSttStore, onDeviceModelLine } from "@/lib/voiceNotes/onDeviceSttStore";
 import { isAppleSpeech, isOnDeviceReady, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { readDefaultTranscriber, setRecordingTranscriber } from "@/lib/voiceNotes/transcriberPreference";
-import { FINAL_COPY, TRANSCRIBER_NAME } from "./final/finalCopy";
+import { FINAL_COPY, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, privateConsentBody, TRANSCRIBER_NAME } from "./final/finalCopy";
 import type { RecorderValue } from "./RecorderProvider";
 import type { SetTranscriberResult } from "./voiceNoteRecorderController";
 import { RouteLine, voiceNoteRoute } from "./RouteLine";
@@ -228,7 +228,7 @@ export function TranscriptionRouteControl(props: {
       {askingNow ? (
         <div className="flex flex-col gap-3" data-testid="voice-note-transcription-consent">
           <p className="text-callout text-muted-foreground">
-            After you stop, TinyCloud Private Transcription turns your note into text.
+            <strong>{PRIVATE_CONSENT_TITLE}</strong> {privateConsentBody("phone")}
           </p>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
             <Button type="button" onClick={() => {
@@ -240,7 +240,7 @@ export function TranscriptionRouteControl(props: {
                 notify: setNotice,
               });
             }} data-testid="voice-note-transcription-enable">
-              Use private cloud
+              {PRIVATE_CONSENT_ACTION}
             </Button>
             <HowItWorksLink section="transcription" />
           </div>

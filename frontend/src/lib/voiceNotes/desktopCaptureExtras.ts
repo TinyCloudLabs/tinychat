@@ -52,6 +52,7 @@ export interface DesktopCaptureExtras {
     onProgress(cb: (progress: DownloadProgress) => void): () => void;
   };
   systemAudio: { get(): Promise<boolean>; set(on: boolean): Promise<void> };
+  systemAudioConsent: { get(): Promise<boolean>; set(consented: boolean): Promise<void> };
   autoSaveToSpace: { get(): Promise<boolean>; set(on: boolean): Promise<void> };
 }
 

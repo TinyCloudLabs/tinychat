@@ -58,6 +58,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
         audio; you can still pick the other engine for each upload.
       </p>
       <Sub>Private cloud</Sub>
+      <p>Private transcription sends this note&apos;s audio from this phone or Mac to TinyCloud Private Transcription, a sealed hardware enclave. It&apos;s deleted there once the transcript is ready. Exo never sees it.</p>
       <p>
         Your audio is uploaded over an encrypted connection to TinyCloud Private Transcription, a dedicated confidential
         virtual machine on Phala Cloud. It sends short speech segments to Tinfoil for speech-to-text. Tinfoil processes

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useRecorder } from "@/capture/recorder/RecorderProvider";
+import { SystemAudioStart } from "@/capture/home/desktop/SystemAudioStart";
 import { LocalNoteDetail } from "./LocalNoteDetail";
 import { LocalNoteRow } from "./LocalNoteRow";
 import { LocalSettings } from "./LocalSettings";
@@ -27,7 +28,7 @@ export function LocalCaptureHome({ did = null, offline = false, onSignIn, onRetr
     </header>
     {offline ? <div><p>You're offline.</p><Button variant="outline" onClick={onRetry}>Try again</Button></div>
       : <Button variant="outline" onClick={onSignIn}>Sign in to sync</Button>}
-    <Button className="w-full" onClick={recorder.record} disabled={!recorder.ready || !recorder.available}>Record</Button>
+    <SystemAudioStart renderTrigger={(start, disabled, ref) => <Button ref={ref} className="w-full" onClick={start} disabled={disabled || !recorder.available}>Record</Button>} />
     {recorder.error && <p role="alert">{recorder.error}</p>}
     {error && <p role="alert">{error}</p>}
     <div className="space-y-2">{current.map((note) => <LocalNoteRow key={note.id} note={note} onOpen={() => setDetail(note.id)} />)}</div>
