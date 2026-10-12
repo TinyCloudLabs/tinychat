@@ -34,6 +34,8 @@ pub struct ExtrasState {
 struct Preferences {
     #[serde(default)]
     selected_model: Option<String>,
+    #[serde(default)]
+    microphone: Option<String>,
     // The original beta key (`systemAudio`) defaulted off. Start the new
     // recorder at on for existing users, then honor choices saved under V2.
     #[serde(rename = "systemAudioV2", default = "default_system_audio")]
@@ -50,6 +52,7 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             selected_model: None,
+            microphone: None,
             system_audio: true,
             auto_save_to_space: false,
         }
@@ -219,6 +222,15 @@ async fn save_preferences(
         .await
         .map_err(|e| e.to_string())?;
     Ok(prefs)
+}
+
+pub async fn microphone(app: &tauri::AppHandle) -> Result<Option<String>, String> {
+    Ok(preferences(app).await?.microphone)
+}
+
+pub async fn set_microphone(app: &tauri::AppHandle, id: Option<String>) -> Result<(), String> {
+    save_preferences(app, |prefs| prefs.microphone = id).await?;
+    Ok(())
 }
 
 pub async fn load_system_audio<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
@@ -618,6 +630,16 @@ mod tests {
                 .unwrap()
                 .system_audio
         );
+    }
+    #[test]
+    fn microphone_survives_preferences_roundtrip() {
+        let mut preferences =
+            parse_preferences(&serde_json::json!({ "exo_recorder": {} })).unwrap();
+        assert_eq!(preferences.microphone, None);
+        preferences.microphone = Some("BlackHole 2ch".into());
+        let stored = serde_json::to_value(&preferences).unwrap();
+        let relaunched = parse_preferences(&serde_json::json!({ "exo_recorder": stored })).unwrap();
+        assert_eq!(relaunched.microphone.as_deref(), Some("BlackHole 2ch"));
     }
     #[test]
     fn only_whisper_models_are_accepted() {

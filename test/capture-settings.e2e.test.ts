@@ -142,6 +142,9 @@ const model = (dialog: Locator, label: string) =>
     name: new RegExp(`^${label.replace(/[()]/g, "\\$&")}`),
   });
 
+const modelGroup = (dialog: Locator) =>
+  dialog.getByRole("radiogroup", { name: "Local model (Whisper on this Mac)" });
+
 describe.serial(`capture settings (${engine.name()})`, () => {
   test("opens from the gear with a labelled dialog, focus on the selected model; Escape closes and returns focus", async () => {
     const { page, errors, gear, dialog } = await open();
@@ -149,7 +152,7 @@ describe.serial(`capture settings (${engine.name()})`, () => {
     await gear.click();
     await dialog.waitFor({ state: "visible" });
     await attr(gear, "aria-expanded", "true");
-    await dialog.getByRole("radiogroup").waitFor();
+    await modelGroup(dialog).waitFor();
     await focused(model(dialog, "Whisper Tiny (English)"));
     expect(await dialog.getByText("Shortcuts").count()).toBe(0);
 
@@ -164,7 +167,7 @@ describe.serial(`capture settings (${engine.name()})`, () => {
   test("a click outside closes it and returns focus to the gear; Tab stays inside it", async () => {
     const { page, errors, gear, dialog } = await open();
     await gear.click();
-    await dialog.getByRole("radiogroup").waitFor();
+    await modelGroup(dialog).waitFor();
     for (let i = 0; i < 30; i++) {
       await page.keyboard.press("Tab");
       expect(
@@ -182,7 +185,7 @@ describe.serial(`capture settings (${engine.name()})`, () => {
   test("a click outside on another control leaves focus on that control", async () => {
     const { page, errors, gear, dialog } = await open();
     await gear.click();
-    await dialog.getByRole("radiogroup").waitFor();
+    await modelGroup(dialog).waitFor();
     const field = page.getByRole("textbox", { name: "Find a note" });
     await field.click();
     await dialog.waitFor({ state: "hidden" });
@@ -194,7 +197,7 @@ describe.serial(`capture settings (${engine.name()})`, () => {
   test("the model radiogroup holds only downloaded models: arrows move focus and select, wrapping; Space selects; Tab leaves it", async () => {
     const { page, errors, gear, dialog, calls } = await open();
     await gear.click();
-    const group = dialog.getByRole("radiogroup");
+    const group = modelGroup(dialog);
     await group.waitFor();
     const tiny = model(dialog, "Whisper Tiny (English)");
     const base = model(dialog, "Whisper Base (English)");
@@ -256,7 +259,7 @@ describe.serial(`capture settings (${engine.name()})`, () => {
   test("keyboard Get: focus goes to the row's progress, then to its new radio, which is not selected; the arrows carry on from it", async () => {
     const { page, errors, gear, dialog, calls } = await open();
     await gear.click();
-    const group = dialog.getByRole("radiogroup");
+    const group = modelGroup(dialog);
     await group.waitFor();
     const small = dialog.getByRole("button", {
       name: "Get Whisper Small (English)",
@@ -302,7 +305,7 @@ describe.serial(`capture settings (${engine.name()})`, () => {
   test("a download finishing while focus is elsewhere does not take focus", async () => {
     const { page, errors, gear, dialog } = await open();
     await gear.click();
-    await dialog.getByRole("radiogroup").waitFor();
+    await modelGroup(dialog).waitFor();
     await dialog
       .getByRole("button", { name: "Get Whisper Small (English)" })
       .click();
@@ -405,22 +408,22 @@ describe.serial(`capture settings (${engine.name()})`, () => {
     await page.context().close();
   });
 
-  test("nothing downloaded: one line instead of a radiogroup, Tab reaches the first Get, and keyboard Get ends on the new radio", async () => {
+  test("nothing downloaded: one line instead of a model radiogroup, and keyboard Get ends on the new radio", async () => {
     const { page, errors, gear, dialog, calls } = await open(
       [],
       "capture-settings-interactive-none",
     );
     await gear.click();
     await dialog.getByText("No model on this Mac yet. Get one below.").waitFor();
-    expect(await dialog.getByRole("radiogroup").count()).toBe(0);
-    expect(await dialog.getByRole("radio").count()).toBe(0);
+    expect(await modelGroup(dialog).count()).toBe(0);
+    expect(await dialog.getByRole("radio", { name: /^Whisper / }).count()).toBe(0);
     const rest = dialog.getByRole("group", { name: "Available to download" });
     expect(await rest.getByRole("button", { name: /^Get / }).count()).toBe(7);
 
-    // The popover itself holds focus; the first Tab goes straight to the first Get.
-    await focused(dialog);
-    await page.keyboard.press("Tab");
+    // With no model radio, the microphone choice holds the initial focus.
+    await focused(dialog.getByTestId("settings-mic").getByRole("radio", { name: "MacBook Pro Microphone" }));
     const first = dialog.getByRole("button", { name: "Get Whisper Tiny (English)" });
+    await first.focus();
     await focused(first);
     await page.keyboard.press("Enter");
     const bar = dialog.getByRole("progressbar", {
@@ -431,7 +434,7 @@ describe.serial(`capture settings (${engine.name()})`, () => {
 
     const radio = model(dialog, "Whisper Tiny (English)");
     await focused(radio);
-    expect(await dialog.getByRole("radiogroup").getByRole("radio").count()).toBe(1);
+    expect(await modelGroup(dialog).getByRole("radio").count()).toBe(1);
     expect(await dialog.getByText("No model on this Mac yet.").count()).toBe(0);
     // Not selected for you, yet it holds the tab stop as the first radio of an unchecked group.
     await attr(radio, "aria-checked", "false");
