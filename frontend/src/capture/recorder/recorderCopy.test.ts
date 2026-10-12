@@ -48,7 +48,7 @@ describe("recorderCopy", () => {
     expect(micWarningSentence(recording)).toBeNull();
     expect(recorderStatusText("recording", { state: "silenced", reason: "os_silenced" }, null)).toBe("Mic silenced");
     expect(recorderStatusText("recording", { state: "recording", reason: "no_signal" }, null)).toBe("No sound from the microphone");
-    expect(recorderStatusText("saving", recording, 42)).toBe("Saving to your space · 42%");
+    expect(recorderStatusText("saving", recording, 42)).toBe("Saving on this phone…");
     expect(recorderStatusText("starting", recording, null)).toBe("Starting the microphone…");
   });
 

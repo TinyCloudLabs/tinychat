@@ -172,6 +172,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   const platform = useContext(PlatformContext);
   const disclosureTitleId = useId();
   const disclosureDescriptionId = useId();
+  const device = platform === "tauri" ? "Mac" : "phone";
   const [configured, setConfigured] = useState<{ tcw: TinyCloudWeb; did: string | null } | null>(null);
   const [defaultsError, setDefaultsError] = useState<string | null>(null);
   const [defaultsAttempt, setDefaultsAttempt] = useState(0);
@@ -240,7 +241,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       setAnnouncement(recorderStatusText(state.phase, state.mic, null));
     } else if (before.outcome !== state.outcome && state.outcome === "local") {
       hapticSaved();
-      setAnnouncement("Saved on this phone");
+      setAnnouncement(`Saved on this ${device}`);
     } else if (before.outcome !== state.outcome && state.outcome === "failed") {
       hapticWarning();
       setAnnouncement(RECEIPT_KEPT);

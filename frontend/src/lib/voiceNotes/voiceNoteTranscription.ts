@@ -1714,7 +1714,7 @@ export function transcriptionStatusText(status: VoiceNoteTranscriptionStatus): s
     case "preparing":
       return "Preparing the audio…";
     case "uploading":
-      return status.progress === undefined ? "Uploading to private cloud…" : `Uploading to private cloud… ${Math.round(Math.min(1, Math.max(0, status.progress)) * 100)}%`;
+      return status.progress === undefined ? "Sending audio to Private transcription…" : `Sending audio to Private transcription · ${Math.round(Math.min(1, Math.max(0, status.progress)) * 100)}%`;
     case "queued":
       return status.position !== null && status.position > 0 ? `Queued (position ${status.position})…` : "Queued…";
     case "processing":

@@ -23,7 +23,7 @@ describe("PipelineStepper", () => {
     expect(html).toContain('class="pipeline-stepper-label">Audio on this phone</span>');
     expect(html).toContain('class="pipeline-stepper-label">Audio in your space</span>');
     expect(html).toContain('class="pipeline-stepper-label">Transcript</span>');
-    expect(html).toContain("Uploading · 42%");
+    expect(html).toContain("Uploading audio to your TinyCloud space · 42%");
   });
 
   test("skipped steps are not drawn", () => {
@@ -34,7 +34,7 @@ describe("PipelineStepper", () => {
 
   test("statuses use calm text without sequencing connectors", () => {
     const html = render(uploading(50));
-    expect(html).toContain('<span class="pipeline-stepper-status">Uploading · 50%</span>');
+    expect(html).toContain('<span class="pipeline-stepper-status">Uploading audio to your TinyCloud space · 50%</span>');
     expect(html).not.toContain("pipeline-stepper-connector");
     expect(html).not.toContain("pipeline-stepper-node");
   });
@@ -48,7 +48,7 @@ describe("PipelineStepper", () => {
 
   test("each track carries its own caption", () => {
     const html = render(uploading(42));
-    expect(html).toContain("Uploading · 42%");
+    expect(html).toContain("Uploading audio to your TinyCloud space · 42%");
     expect(html).not.toContain("data-pipeline-blocker");
     expect(render(privateRunning(4, 9))).toContain("Transcribing · 4 of 9");
   });
@@ -97,7 +97,7 @@ describe("PipelineStepper", () => {
     }));
     expect(html).toContain('data-step="transcript" data-state="done"');
     expect(html).toContain('<span class="pipeline-stepper-status">Ready on this phone</span>');
-    expect(html).toContain('<span class="pipeline-stepper-status">Uploading · 20%</span>');
+    expect(html).toContain('<span class="pipeline-stepper-status">Uploading audio to your TinyCloud space · 20%</span>');
   });
 
   test("keeps notes progress and read failures visible before upload", () => {

@@ -1,3 +1,5 @@
+import { useContext } from "react";
+import { PlatformContext } from "@/lib/platform";
 import { useResolvedTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import type { RecorderValue } from "../RecorderProvider";
@@ -34,7 +36,8 @@ export function SidebarDockView({
   entering = false,
   announcement = "",
 }: SidebarDockViewProps) {
-  const view = minimizedView(recorder, elapsedMs, silencedSinceMs);
+  const device = useContext(PlatformContext) === "tauri" ? "mac" : "phone";
+  const view = minimizedView(recorder, elapsedMs, silencedSinceMs, device);
   const live = view.ring === "live";
   const canToggle = view.controls.resume || view.controls.pause;
   return (

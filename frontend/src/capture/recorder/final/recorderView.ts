@@ -13,6 +13,7 @@ export interface RecorderViewInput {
   elapsedMs: number;
   inputName: string | null;
   silencedSinceMs: number | null;
+  device?: "phone" | "mac";
   /** Overrides the build environment for deterministic tests. */
   isDevelopmentOrTest?: boolean;
 }
@@ -505,6 +506,7 @@ export function selectRecorderView(
       presentation = {
         ...presentation,
         pill: { label: FINAL_COPY.saving, dot: "hollow" },
+        statusLine: `Saving on this ${input.device === "mac" ? "Mac" : "phone"}…`,
       };
       break;
     case "discarding":

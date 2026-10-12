@@ -1,4 +1,5 @@
-import { useId } from "react";
+import { useContext, useId } from "react";
+import { PlatformContext } from "@/lib/platform";
 import { useResolvedTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import type { RecorderValue } from "../RecorderProvider";
@@ -39,7 +40,8 @@ export function RibbonView({
   entering = false,
   announcement = "",
 }: RibbonViewProps) {
-  const view = minimizedView(recorder, elapsedMs, silencedSinceMs);
+  const device = useContext(PlatformContext) === "tauri" ? "mac" : "phone";
+  const view = minimizedView(recorder, elapsedMs, silencedSinceMs, device);
   const live = view.ring === "live";
   const timerId = useId();
   const canToggle = view.controls.resume || view.controls.pause;

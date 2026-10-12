@@ -24,6 +24,7 @@ const onDevice = (patch: Partial<NonNullable<NotePipelineInput["transcript"]["on
 const CASES: [string, Partial<NotePipelineInput>][] = [
   ["Waiting, 2nd in line", { space: unsaved({ waitingBehind: 1 }, { busy: true, depth: 2 }) }],
   ["Uploading", { space: unsaved({ upload: { state: "uploading", bytes: 42, total: 100 } }) }],
+  ["Sending audio to Private transcription", { space: SAVED, transcript: { inSpace: null, onDevice: null, cloud: { kind: "active", status: { kind: "uploading", progress: 0.42 } } } }],
   ["Signed out", { space: unsaved({ held: "signed-out" }) }],
   ["Offline", { online: false }],
   ["Upload failed", { space: unsaved({ failed: { kind: "timeout", message: "deadline" } }) }],
