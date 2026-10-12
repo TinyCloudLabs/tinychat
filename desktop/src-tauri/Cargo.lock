@@ -2893,6 +2893,7 @@ name = "exo-desktop"
 version = "0.6.0-beta.31"
 dependencies = [
  "audio-actual",
+ "exo-local-transcription",
  "futures-util",
  "hex",
  "hound",
@@ -2914,6 +2915,17 @@ dependencies = [
  "tokio",
  "transcription-core",
  "uuid",
+]
+
+[[package]]
+name = "exo-local-transcription"
+version = "0.1.0"
+dependencies = [
+ "hound",
+ "mp3",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

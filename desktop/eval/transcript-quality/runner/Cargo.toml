@@ -1,0 +1,21 @@
+[package]
+name = "transcript-quality-runner"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+metal = ["transcribe-whisper-local/metal"]
+
+[dependencies]
+anlg-audio-utils = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "audio-utils" }
+axum = "0.8"
+exo-local-transcription = { path = "../../../local-transcription" }
+futures-util = "0.3"
+libc = "0.2"
+owhisper-client = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "owhisper-client", features = ["local"] }
+owhisper-interface = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "owhisper-interface" }
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "fs"] }
+transcribe-whisper-local = { path = "../../../vendor/anarlog-transcribe-whisper-local" }

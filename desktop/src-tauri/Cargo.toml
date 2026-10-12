@@ -5,7 +5,7 @@ description = "Exo — TinyCloud chat desktop app (exo.tinycloud.xyz)"
 edition = "2021"
 publish = false
 
-# Standalone package: the tinychat repo has no root Cargo workspace.
+# Tauri keeps its own lockfile, independent of the native evaluation workspace.
 [workspace]
 
 [lib]
@@ -19,6 +19,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+exo-local-transcription = { path = "../local-transcription", optional = true }
 
 # --- Transcription (anarlog, MIT layer) -------------------------------------
 # Desktop recording + on-device Whisper, reused from fastrepl/anarlog's
@@ -164,6 +165,7 @@ transcription = [
     "dep:tauri-plugin-local-stt",
     "dep:audio-actual",
     "dep:anlg-mp3",
+    "dep:exo-local-transcription",
     "dep:hound",
     "dep:tauri-plugin-settings",
     "dep:tokio",
