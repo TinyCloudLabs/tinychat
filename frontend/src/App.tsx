@@ -377,7 +377,7 @@ export function App() {
 
   const nativeConfig: NativeSignInConfig = {
     backendUrl: BACKEND_URL,
-    tinycloudHost: TINYCLOUD_HOSTS?.[0] ?? "https://tee.node.tinycloud.xyz",
+    tinycloudHost: TINYCLOUD_HOSTS?.[0] ?? "https://node.tinycloud.xyz",
     tinycloudHosts: TINYCLOUD_HOSTS,
   };
 

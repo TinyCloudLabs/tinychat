@@ -636,7 +636,7 @@ export async function signOutNative(deps?: {
   const env = deps?.env ?? import.meta.env;
   const create = deps?.createOpenKeyNative ?? (await defaultDeps()).createOpenKeyNative;
   const openkey = nativeClient(
-    nativeClientOptions(env, env.VITE_TINYCLOUD_HOST ?? "https://tee.node.tinycloud.xyz"),
+    nativeClientOptions(env, env.VITE_TINYCLOUD_HOST ?? "https://node.tinycloud.xyz"),
     create,
   );
   await withNativeDeadline(openkey.signOut());

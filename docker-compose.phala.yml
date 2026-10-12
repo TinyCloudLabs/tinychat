@@ -11,7 +11,7 @@ services:
       NODE_ENV: production
       PORT: "3001"
       BACKEND_PRIVATE_KEY: ${BACKEND_PRIVATE_KEY}
-      TINYCLOUD_HOST: ${TINYCLOUD_HOST:-https://tee.node.tinycloud.xyz}
+      TINYCLOUD_HOST: ${TINYCLOUD_HOST:-https://node.tinycloud.xyz}
       FRONTEND_URL: ${FRONTEND_URL:-https://tinycloud.chat}
       REDPILL_API_KEY: ${REDPILL_API_KEY:-}
       REDPILL_BASE_URL: ${REDPILL_BASE_URL:-https://api.redpill.ai/v1}
