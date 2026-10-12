@@ -311,8 +311,9 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionData
             request.setValue(String(contentLength), forHTTPHeaderField: "Content-Length")
             request.setValue(call.getString("correlationId") ?? uploadId, forHTTPHeaderField: "X-Correlation-Id")
             let task = audioUploadSession.uploadTask(with: request, fromFile: fileURL)
-            let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Voice note upload") { [weak self] in
-                self?.cancelNativeAudioUpload(uploadId)
+            var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+            backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Voice note upload") { [weak self] in
+                self?.expireNativeAudioUpload(uploadId, backgroundTask: backgroundTask)
             }
             uploadLock.lock()
             if cancelledAudioUploads.remove(uploadId) != nil {
@@ -341,6 +342,17 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionData
         let task = uploadTasks.removeValue(forKey: uploadId)
         uploadLock.unlock()
         task?.cancel()
+    }
+
+    private func expireNativeAudioUpload(_ uploadId: String, backgroundTask: UIBackgroundTaskIdentifier) {
+        uploadLock.lock()
+        cancelledAudioUploads.insert(uploadId)
+        let task = uploadTasks.removeValue(forKey: uploadId)
+        let registeredTask = uploadBackgroundTasks.removeValue(forKey: uploadId)
+        uploadLock.unlock()
+        task?.cancel()
+        let taskToEnd = registeredTask ?? backgroundTask
+        if taskToEnd != .invalid { UIApplication.shared.endBackgroundTask(taskToEnd) }
     }
 
     public func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
