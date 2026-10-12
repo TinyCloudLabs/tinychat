@@ -90,7 +90,8 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
     setBusy(false);
   }, [jobKind]);
   const provider = chosen !== null && providers.includes(chosen) ? chosen : providers[0];
-  const recheck = transcription?.availability === "failed" && transcription.consented ? privateNotOffered("failed") : null;
+  const recheck = transcription?.availability === "failed" && (transcription.consented || transcription.checkErrorCode === "native_status_failed")
+    ? privateNotOffered("failed", transcription.checkErrorCode) : null;
 
   const run = (which: TranscribeProvider) => {
     if (starting.current) return;

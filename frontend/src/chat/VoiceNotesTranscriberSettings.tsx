@@ -31,7 +31,7 @@ export function transcriberOptions(signedIn: boolean, transcription: Transcripti
 /** Why Private is not offered, with the recorder's retry when its check failed. */
 export function PrivateUnavailable(props: { signedIn: boolean; transcription: Transcription }) {
   const { signedIn, transcription } = props;
-  const notOffered = privateNotOffered(transcription?.availability);
+  const notOffered = privateNotOffered(transcription?.availability, transcription?.checkErrorCode);
   return (
     <div className="flex items-center justify-between gap-3 text-xs" data-testid="voice-notes-private-unavailable">
       <span className="text-muted-foreground">

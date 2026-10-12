@@ -60,6 +60,12 @@ describe("TranscriptionRouteControl", () => {
     expect(render(transcription({ availability: "failed", consented: false }))).not.toContain("unavailable");
   });
 
+  test("a native status failure is visible before Private consent", () => {
+    const html = render(transcription({ availability: "failed", consented: false, checkErrorCode: "native_status_failed" }));
+    expect(html).toContain("Couldn&#x27;t check this phone&#x27;s file upload.");
+    expect(html).toContain('data-testid="voice-note-transcription-recheck"');
+  });
+
   test("available and on: Off · On this phone · Private cloud with Private cloud chosen, and its route", () => {
     const html = render(transcription());
     expect(segments(html)).toBe(3);

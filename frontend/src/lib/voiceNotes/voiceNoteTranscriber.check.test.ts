@@ -3,10 +3,14 @@
 // gate for automatic checks (mount, foreground): a settled answer is reused for a while and a
 // failure backs off; the user's "Check again" (no `automatic`) always asks.
 import { describe, expect, test } from "bun:test";
+import { Capacitor } from "@capacitor/core";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
+import { transcriptionProps } from "@/capture/recorder/transcriptionProps";
 import { PrivateCloudError, type PrivateCloudCapabilities } from "../privateCloud";
-import { createVoiceNoteTranscriber, type VoiceNoteCloud, type VoiceNoteConsentStore } from "./voiceNoteTranscription";
+import { __resetCaptureEngineForTests } from "./captureEngine";
+import { VoiceNotes, __setVoiceNotesForTests } from "./nativeVoiceNotes";
+import { createVoiceNoteTranscriber, devicePtxUploadSupported, type VoiceNoteCloud, type VoiceNoteConsentStore } from "./voiceNoteTranscription";
 
 const CAPS: PrivateCloudCapabilities = { max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/wav"] };
 const FRESH = 5 * 60_000;
@@ -115,6 +119,34 @@ describe("account guard", () => {
 });
 
 describe("freshness and backoff for automatic checks", () => {
+  test("Android's Check again re-queries a failed native status probe", async () => {
+    const platform = Capacitor.getPlatform;
+    const plugin = VoiceNotes;
+    try {
+      __resetCaptureEngineForTests();
+      Capacitor.getPlatform = () => "android";
+      let reads = 0;
+      __setVoiceNotesForTests({ ...plugin, status: async () => {
+        reads++;
+        if (reads === 1) throw new Error("native bridge unavailable");
+        return { androidSdkInt: 35 } as Awaited<ReturnType<typeof plugin.status>>;
+      } }, { available: true });
+      const s = setup({ capabilities: async () => {
+        if (!(await devicePtxUploadSupported())) throw new PrivateCloudError("feature_unavailable", "Old Android SDK");
+        return CAPS;
+      } });
+      await s.transcriber.check();
+      expect(s.transcriber.snapshot()).toMatchObject({ availability: "failed", checkErrorCode: "native_status_failed",
+        checkError: "Could not check this phone's file upload. Try again." });
+      await transcriptionProps(s.transcriber, s.transcriber.snapshot())!.onRecheck();
+      expect(s.transcriber.snapshot().availability).toBe("available");
+      expect(reads).toBe(2);
+    } finally {
+      __setVoiceNotesForTests(plugin, { available: null });
+      Capacitor.getPlatform = platform;
+      __resetCaptureEngineForTests();
+    }
+  });
   test("a fresh answer is reused, then asked again once it is stale", async () => {
     const s = setup();
     await s.transcriber.check({ automatic: true });

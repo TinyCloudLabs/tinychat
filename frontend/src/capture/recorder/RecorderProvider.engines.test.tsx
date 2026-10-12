@@ -473,22 +473,21 @@ describe("CaptureEngineGate", () => {
     expect(VoiceNotes).toBe(saved.voiceNotes);
   });
 
-  test("Android resolves file upload through the native install before rendering", async () => {
+  test("Android paints the app before a native status call answers", async () => {
     rendered = 0;
     Capacitor.getPlatform = () => "android";
-    let resolveStatus!: (status: Awaited<ReturnType<VoiceNotesPlugin["status"]>>) => void;
-    const plugin = { ...saved.voiceNotes, status: () => new Promise<Awaited<ReturnType<VoiceNotesPlugin["status"]>>>((resolve) => { resolveStatus = resolve; }) };
+    let statusCalls = 0;
+    const plugin = { ...saved.voiceNotes, status: () => { statusCalls++; return new Promise<Awaited<ReturnType<VoiceNotesPlugin["status"]>>>(() => {}); } };
     __setVoiceNotesForTests(plugin, { available: true });
     global.window = windowStub();
     root = createRoot(container());
     await act(async () => root!.render(<CaptureEngineGate><Child /></CaptureEngineGate>));
-    expect(rendered).toBe(0);
-    await act(async () => { resolveStatus({ androidSdkInt: 35 } as Awaited<ReturnType<VoiceNotesPlugin["status"]>>); await tick(); });
     expect(rendered).toBeGreaterThan(0);
-    expect(captureCapabilities().nativeFileUpload).toBe(true);
+    expect(statusCalls).toBe(0);
+    expect(captureCapabilities().nativeFileUpload).toBe(false);
   });
 
-  test("iOS resolves native file upload through the same install", async () => {
+  test("iOS paints immediately with native file upload available", async () => {
     rendered = 0;
     Capacitor.getPlatform = () => "ios";
     __setVoiceNotesForTests(saved.voiceNotes, { available: true });

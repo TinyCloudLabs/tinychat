@@ -119,6 +119,13 @@ describe("the Transcribe action", () => {
     expect(host.textContent).toContain("Check again");
   });
 
+  test("a native status failure offers Check again before Private consent", async () => {
+    const host = await mount({ read: nowhere, transcription: transcription({ availability: "failed", consented: false,
+      checkErrorCode: "native_status_failed" }) });
+    expect(host.textContent).toContain("Couldn't check this phone's file upload");
+    expect(host.textContent).toContain("Check again");
+  });
+
   test("while the phone is still asked about the note, nothing shows", async () => {
     const host = await mount({ read: { state: "reading" }, transcription: transcription() });
     expect(host.innerHTML).toBe("");

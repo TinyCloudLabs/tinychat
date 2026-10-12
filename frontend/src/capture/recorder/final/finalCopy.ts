@@ -23,8 +23,10 @@ export function routeSourceName(platform: AppPlatform): string {
 }
 
 /** Why Private cannot be chosen right now, and whether checking again can change it. */
-export function privateNotOffered(availability: TranscriptionAvailability | undefined): { reason: string; canRecheck: boolean } {
+export function privateNotOffered(availability: TranscriptionAvailability | undefined, errorCode?: string): { reason: string; canRecheck: boolean } {
   if (availability === "checking") return { reason: "Checking…", canRecheck: false };
+  if (availability === "failed" && errorCode === "native_status_failed")
+    return { reason: "Couldn't check this phone's file upload", canRecheck: true };
   if (availability === "failed") return { reason: "Couldn't check right now", canRecheck: true };
   return { reason: "Not available right now", canRecheck: false };
 }

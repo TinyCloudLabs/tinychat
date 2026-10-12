@@ -37,8 +37,21 @@ const NATIVE_CAPABILITIES: CaptureCapabilities = {
   localTranscription: true,
   desktopWhisper: false,
   offlineRecorder: true,
-  nativeFileUpload: Capacitor.getPlatform() === "ios",
+  nativeFileUpload: false,
 };
+const NATIVE_UPLOAD_CAPABILITIES: CaptureCapabilities = { ...NATIVE_CAPABILITIES, nativeFileUpload: true };
+let androidFileUploadAvailable = false;
+
+/** A native status probe failed or timed out; Private can ask again on Check again. */
+export class NativeFileUploadStatusError extends Error {
+  readonly code = "native_status_failed";
+  constructor(cause: unknown) {
+    super("Could not check this phone's file upload. Try again.", { cause });
+    this.name = "NativeFileUploadStatusError";
+  }
+}
+
+const ANDROID_STATUS_TIMEOUT_MS = 3_000;
 
 const NO_CAPABILITIES: CaptureCapabilities = {
   nativeShortcuts: false,
@@ -71,20 +84,44 @@ export function captureEngineKind(): CaptureEngineKind | null {
   return null;
 }
 
-/** Whether this shell has a recorder; the gate resolves its capabilities before rendering. */
+/** Whether this shell has a recorder; Private checks the Android uploader separately. */
 export function captureEngineAvailable(): boolean {
   return installed !== null || nativeVoiceNotesAvailable();
 }
 
-/** Every recording shell resolves its capabilities before rendering the recorder. */
+/** Web and Tauri must install before rendering; native can paint while Private checks its uploader. */
 export function captureEngineInstallPending(): boolean {
   const kind = captureEngineKind();
-  return kind !== null && installed === null;
+  return (kind === "web" || kind === "tauri") && installed === null;
 }
 
 export function captureCapabilities(): CaptureCapabilities {
   if (installed) return installed.capabilities;
-  return nativeVoiceNotesAvailable() ? NATIVE_CAPABILITIES : NO_CAPABILITIES;
+  if (!nativeVoiceNotesAvailable()) return NO_CAPABILITIES;
+  if (Capacitor.getPlatform() === "ios") return NATIVE_UPLOAD_CAPABILITIES;
+  return androidFileUploadAvailable ? NATIVE_UPLOAD_CAPABILITIES : NATIVE_CAPABILITIES;
+}
+
+/** Android checks the native SDK on every Private availability check, including Check again. */
+export async function resolveNativeFileUploadCapability(): Promise<boolean> {
+  if (!nativeVoiceNotesAvailable() || Capacitor.getPlatform() !== "android") return captureCapabilities().nativeFileUpload;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const status = await Promise.race([
+      VoiceNotes.status(),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("status_timeout")), ANDROID_STATUS_TIMEOUT_MS); }),
+    ]);
+    if (typeof status.androidSdkInt !== "number") throw new Error("android_sdk_missing");
+    androidFileUploadAvailable = status.androidSdkInt >= MIN_ANDROID_SDK_FOR_FILE_UPLOAD;
+    if (installed?.kind === "native") installed.capabilities = androidFileUploadAvailable
+      ? NATIVE_UPLOAD_CAPABILITIES : NATIVE_CAPABILITIES;
+    notifyCaptureCapabilitiesChanged();
+    return androidFileUploadAvailable;
+  } catch (cause) {
+    throw new NativeFileUploadStatusError(cause);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 const capabilityListeners = new Set<() => void>();
@@ -124,23 +161,8 @@ export function installCaptureEngine(): Promise<void> {
   const kind = captureEngineKind();
   if (kind === null) return Promise.resolve();
   if (kind === "native") {
-    const attempt = (async () => {
-      const platform = Capacitor.getPlatform();
-      const capabilities = { ...NATIVE_CAPABILITIES, nativeFileUpload: platform === "ios" };
-      if (platform === "android") {
-        try {
-          const status = await VoiceNotes.status();
-          capabilities.nativeFileUpload = typeof status.androidSdkInt === "number"
-            && status.androidSdkInt >= MIN_ANDROID_SDK_FOR_FILE_UPLOAD;
-        } catch (error) {
-          console.error("[captureEngine] Could not determine Android file upload availability", error);
-        }
-      }
-      installed = { kind, capabilities };
-    })();
-    installing = attempt;
-    void attempt.finally(() => { installing = null; });
-    return attempt;
+    installed = { kind, capabilities: captureCapabilities() };
+    return Promise.resolve();
   }
   const factory = factories.get(kind);
   if (!factory) return Promise.reject(new Error(`No ${kind} capture engine is registered`));
@@ -166,4 +188,5 @@ export function __resetCaptureEngineForTests(): void {
   factories.clear();
   installed = null;
   installing = null;
+  androidFileUploadAvailable = false;
 }

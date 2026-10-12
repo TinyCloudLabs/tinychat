@@ -3,8 +3,8 @@ import { useEffect, useState, type ReactNode } from "react";
 import { captureEngineInstallPending, installCaptureEngine } from "@/lib/voiceNotes/captureEngine";
 
 /**
- * Resolves the capture engine and native capabilities before the app (and its RecorderProvider) mounts.
- * A shell with "no engine" renders at once. A failed install is logged and the app renders without a
+ * Installs web and Tauri before the app mounts. Native and "no engine" render at once.
+ * A failed install is logged and the app renders without a
  * recorder: it never falls back to the native binding.
  */
 export function CaptureEngineGate({ children }: { children: ReactNode }) {

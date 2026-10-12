@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { Capacitor } from "@capacitor/core";
 
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import {
@@ -11,6 +12,7 @@ import {
   captureEngineKind,
   installCaptureEngine,
   registerCaptureEngine,
+  resolveNativeFileUploadCapability,
   type CaptureCapabilities,
   type CaptureEngine,
   type CaptureEngineKind,
@@ -30,6 +32,7 @@ const saved = {
   MediaRecorder: global.MediaRecorder,
   mediaDevices: Object.getOwnPropertyDescriptor(navigator, "mediaDevices"),
   voiceNotes: VoiceNotes,
+  getPlatform: Capacitor.getPlatform,
 };
 
 interface Shell { native: boolean; tauri: boolean; mediaRecorder: boolean; mediaDevices: boolean }
@@ -47,6 +50,7 @@ afterEach(() => {
   if (saved.MediaRecorder === undefined) delete global.MediaRecorder; else global.MediaRecorder = saved.MediaRecorder;
   if (saved.mediaDevices) Object.defineProperty(navigator, "mediaDevices", saved.mediaDevices); else delete (navigator as unknown as Record<string, unknown>).mediaDevices;
   __setVoiceNotesForTests(saved.voiceNotes, { available: null });
+  Capacitor.getPlatform = saved.getPlatform;
 });
 
 describe("captureEngineKind: native x tauri internals x MediaRecorder x registered", () => {
@@ -63,7 +67,7 @@ describe("captureEngineKind: native x tauri internals x MediaRecorder x register
           : mediaRecorder && registeredWeb ? "web"
           : null;
         expect(captureEngineKind()).toBe(expected);
-        expect(captureEngineInstallPending()).toBe(expected !== null);
+        expect(captureEngineInstallPending()).toBe(expected === "web" || expected === "tauri");
       });
     }
 
@@ -91,6 +95,31 @@ describe("native", () => {
     expect(captureEngineKind()).toBe("native");
     expect(VoiceNotes).toBe(saved.voiceNotes);
   });
+
+  test("Android reports a typed status failure and re-queries on retry", async () => {
+    Capacitor.getPlatform = () => "android";
+    let reads = 0;
+    setShell({ native: true, tauri: false, mediaRecorder: false, mediaDevices: false });
+    __setVoiceNotesForTests({ ...saved.voiceNotes, status: async () => {
+      reads++;
+      if (reads === 1) throw new Error("native bridge unavailable");
+      return { androidSdkInt: 35 } as Awaited<ReturnType<typeof VoiceNotes.status>>;
+    } }, { available: true });
+    expect(captureEngineInstallPending()).toBe(false);
+    await expect(resolveNativeFileUploadCapability()).rejects.toMatchObject({ code: "native_status_failed" });
+    expect(captureCapabilities().nativeFileUpload).toBe(false);
+    expect(await resolveNativeFileUploadCapability()).toBe(true);
+    expect(captureCapabilities().nativeFileUpload).toBe(true);
+    expect(reads).toBe(2);
+  });
+
+  test("Android's status probe times out instead of waiting forever", async () => {
+    Capacitor.getPlatform = () => "android";
+    setShell({ native: true, tauri: false, mediaRecorder: false, mediaDevices: false });
+    __setVoiceNotesForTests({ ...saved.voiceNotes, status: () => new Promise(() => {}) }, { available: true });
+    await expect(resolveNativeFileUploadCapability()).rejects.toMatchObject({ code: "native_status_failed",
+      cause: { message: "status_timeout" } });
+  }, 8_000);
 });
 
 describe("installCaptureEngine", () => {
