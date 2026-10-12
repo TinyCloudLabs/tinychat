@@ -2,7 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { localModelGuide, modelActionLabel } from "@/capture/recorder/final/localModelGuide";
-import { isOnDeviceReady, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
+import { isAppleSpeech, isOnDeviceReady, isOnDeviceStatusLoaded, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { downloadOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { FINAL_COPY } from "@/capture/recorder/final/finalCopy";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -26,13 +26,13 @@ export function LocalSettings({ onBack }: { onBack: () => void }) {
     <p>On this phone</p>
     <p>Sign in to use TinyCloud private or AssemblyAI.</p>
     <div className="rounded-xl border border-border p-4">
-      <h3 className="font-medium">On-device transcription model</h3>
+      <h3 className="font-medium">{isAppleSpeech(model) ? "On-device transcription" : "On-device transcription model"}</h3>
       <p role={guide.action?.label === FINAL_COPY.modelTryAgain ? "alert" : undefined}>
-        {model.models.length === 0 ? "Checking this phone…" : isOnDeviceReady(model) ? "Ready" : guide.reason}
+        {!isOnDeviceStatusLoaded(model) ? "Checking this phone…" : isOnDeviceReady(model) ? "Ready" : guide.reason}
       </p>
-      {model.models.length > 0 && <label className="flex gap-2"><input type="checkbox" checked={model.autoDownload}
+      {isOnDeviceStatusLoaded(model) && !isAppleSpeech(model) && <label className="flex gap-2"><input type="checkbox" checked={model.autoDownload}
         onChange={(event) => { void OnDeviceStt.setAutoDownload({ enabled: event.target.checked }).catch((caught: unknown) => setError(String(caught))); }} />Download on Wi-Fi automatically</label>}
-      {guide.action && model.models.length > 0 && !isOnDeviceReady(model) && <Button variant="outline" onClick={guide.action.run}>
+      {guide.action && isOnDeviceStatusLoaded(model) && !isOnDeviceReady(model) && <Button variant="outline" onClick={guide.action.run}>
         {guide.action.label === FINAL_COPY.modelUnavailable ? "Download now" : modelActionLabel(guide.action)}</Button>}
     </div>
     <label className="flex gap-2"><input type="checkbox" checked={identifySpeakers}

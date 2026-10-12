@@ -99,3 +99,33 @@ describe("the waiting-for-model copy", () => {
     expect(waitingForModelSentence(checking, localModelGuide(checking, download().download))).toBe("Checking the on-device model…");
   });
 });
+
+describe("localModelGuide on iOS's built-in speech", () => {
+  const apple = (appleSpeech: OnDeviceSttStatus["appleSpeech"], state: OnDeviceSttStatus["download"]["state"] = "idle"): OnDeviceSttStatus =>
+    status({ engine: "apple-speech", appleSpeech, models: [], download: { policy: "system", state } });
+
+  test("missing speech assets offer Get speech from iOS with no size, and it starts the install", () => {
+    const { calls, download: d } = download();
+    const guide = localModelGuide(apple("asset_missing"), d);
+    expect(guide.reason).toBe("Speech from iOS isn't on this phone yet");
+    expect(guide.reason).not.toContain("MB");
+    expect(guide.action?.label).toBe("Get speech from iOS");
+    guide.action!.run();
+    expect(calls.start).toBe(1);
+  });
+
+  test("an install underway says so and offers nothing to press", () => {
+    expect(localModelGuide(apple("asset_missing", "running"), download().download)).toEqual({ reason: "Getting speech from iOS…" });
+  });
+
+  test("a failed install says so and offers Try again", () => {
+    const guide = localModelGuide(apple("asset_missing", "failed"), download().download);
+    expect(guide.reason).toBe("Couldn't get speech from iOS");
+    expect(guide.action?.label).toBe("Try again");
+  });
+
+  test("an iPhone or language iOS cannot do is a calm reason with nothing to press", () => {
+    expect(localModelGuide(apple("unsupported"), download().download)).toEqual({ reason: "On-device transcription isn't available on this iPhone" });
+    expect(localModelGuide(apple("locale_unsupported"), download().download)).toEqual({ reason: "On-device transcription doesn't support this language yet" });
+  });
+});

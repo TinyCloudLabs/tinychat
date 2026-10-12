@@ -8,6 +8,7 @@ import { App } from "./App";
 import { installEd25519Polyfill } from "./lib/ed25519Polyfill";
 import { CaptureEngineGate } from "./capture/recorder/CaptureEngineGate";
 import { PwaPrompts } from "./components/pwa-prompts";
+import { RootErrorBoundary } from "./shell/RootErrorBoundary";
 import { RootRoute } from "./landing/RootRoute";
 import { registerWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 import { appPlatform } from "./lib/platform";
@@ -71,14 +72,16 @@ void installEd25519Polyfill().catch((error: unknown) => {
 }).then(() => {
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<RootRoute nativeShell={nativeShell} />} />
-          <Route path="/chat/*" element={<CaptureEngineGate><App /></CaptureEngineGate>} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </BrowserRouter>
-      <PwaPrompts />
+      <RootErrorBoundary>
+        <BrowserRouter>
+          <Routes>
+            <Route path="/" element={<RootRoute nativeShell={nativeShell} />} />
+            <Route path="/chat/*" element={<CaptureEngineGate><App /></CaptureEngineGate>} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </BrowserRouter>
+        <PwaPrompts />
+      </RootErrorBoundary>
     </StrictMode>,
   );
 });

@@ -18,9 +18,9 @@ import { cn } from "@/lib/utils";
 import { localTranscriptionUnavailable } from "@/lib/voiceNotes/captureEngine";
 import { VoiceNotes, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { downloadOnDeviceModel, onDeviceSttStore, onDeviceModelLine } from "@/lib/voiceNotes/onDeviceSttStore";
-import { isOnDeviceReady, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
+import { isAppleSpeech, isOnDeviceReady, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { readDefaultTranscriber, setRecordingTranscriber } from "@/lib/voiceNotes/transcriberPreference";
-import { TRANSCRIBER_NAME } from "./final/finalCopy";
+import { FINAL_COPY, TRANSCRIBER_NAME } from "./final/finalCopy";
 import type { RecorderValue } from "./RecorderProvider";
 import type { SetTranscriberResult } from "./voiceNoteRecorderController";
 import { RouteLine, voiceNoteRoute } from "./RouteLine";
@@ -200,11 +200,16 @@ export function TranscriptionRouteControl(props: {
   };
 
   const modelLine = onDeviceModelLine(sttStatus);
+  const appleSpeechMissing = isAppleSpeech(sttStatus) && sttStatus.appleSpeech === "asset_missing" && sttStatus.download.state !== "running";
   const primaryModel = sttStatus.models.find((m) => m.id === "parakeet-tdt-0.6b-v3-int8" || m.id === "parakeet-tdt-110m-en-int8");
 
   let line: string;
   if (askingNow) line = "";
-  else if (route === "on-device") line = isOnDeviceReady(sttStatus) ? "Transcribed on this phone." : `Transcribed on this phone, once the model finishes downloading. ${modelLine.text}`;
+  else if (route === "on-device") {
+    if (isOnDeviceReady(sttStatus)) line = "Transcribed on this phone.";
+    else if (isAppleSpeech(sttStatus)) line = modelLine.text;
+    else line = `Transcribed on this phone, once the model finishes downloading. ${modelLine.text}`;
+  }
   else if (offered && consented) line = `${ROUTE_NAME["private-cloud"]} transcribes your notes.`;
   else if (transcription?.availability === "checking" && consented) line = `Checking ${ROUTE_NAME["private-cloud"]}…`;
   else if (transcription?.availability === "failed" && consented) line = `${ROUTE_NAME["private-cloud"]} isn't available right now.`;
@@ -248,6 +253,12 @@ export function TranscriptionRouteControl(props: {
           {transcription?.availability === "failed" && consented && (
             <Button type="button" variant="outline" size="sm" onClick={transcription.onRecheck} data-testid="voice-note-transcription-recheck">
               Check again
+            </Button>
+          )}
+          {route === "on-device" && appleSpeechMissing && (
+            <Button type="button" variant="outline" size="sm" data-testid="voice-note-on-device-download"
+              onClick={() => { setNotice(null); void downloadOnDeviceModel().then(setNotice); }}>
+              {FINAL_COPY.speechGet}
             </Button>
           )}
           {route === "on-device" && primaryModel && primaryModel.state !== "ready" && primaryModel.state !== "checking" && primaryModel.state !== "downloading" && primaryModel.state !== "queued" && (

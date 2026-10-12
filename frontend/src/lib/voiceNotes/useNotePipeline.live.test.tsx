@@ -284,7 +284,7 @@ describe("a Local note's job ending after the phone dropped it from its queue", 
     await settle();
     expect(phone.reads).toBe(reads + 1);
     expect(stepOf(seen.view!.pipeline, "transcript").state).toBe("failed");
-    expect(seen.view!.pipeline.blocker?.cause).toContain("decoder crashed");
+    expect(seen.view!.pipeline.blocker?.cause).toBe("Couldn't transcribe on this phone");
   });
 
   test("an event for another note does not read the phone again", async () => {
@@ -566,7 +566,7 @@ describe("a list of 100 notes without row metadata", () => {
     await settleUntil(() => space.log.rowQueries.length > 1);
     expect(space.log.rowQueries).toHaveLength(2);
     expect(space.log.rowQueries[1]).toEqual([IDS[7]]);
-    expect(views.get(IDS[7]!)!.pipeline.blocker?.cause).toContain("decoder crashed");
+    expect(views.get(IDS[7]!)!.pipeline.blocker?.cause).toBe("Couldn't transcribe on this phone");
   });
 
   test("another account's cache is not reused: the same notes under a new identity are read once more, in one query", async () => {
@@ -607,7 +607,7 @@ describe("a saved Local note whose transcript is done on the phone but not in th
     expect(phone.transcriptReads).toEqual([ID]);
     const last = history.at(-1)!;
     expect(stepOf(last, "transcript").state).toBe("failed");
-    expect(last.blocker?.cause).toBe("Couldn't add the transcript to this note · this phone says it finished transcribing but has no transcript for the note");
+    expect(last.blocker?.cause).toBe("Couldn't add the transcript to this note");
     expect(last.blocker?.action?.kind).toBe("retry");
     // While the attempt ran it was Adding; at no point did it stand "Adding" with nothing running.
     expect(history.some((pipeline) => stepOf(pipeline, "transcript").caption === "Adding to this note…")).toBe(true);
@@ -787,8 +787,7 @@ describe("a read queued behind uploads is not a failed read (P6 r2)", () => {
     const { seen } = await mountOne({ tcw: space.tcw, saved: true });
     await waitFor(() => stepOf(seen.view!.pipeline, "transcript").state === "failed");
     const step = stepOf(seen.view!.pipeline, "transcript");
-    expect(step.blocker?.cause).toBe("Couldn't check this note's transcript · Your space's copy of this note wouldn't open: Couldn't complete this step. Try again.");
-    expect(step.blocker?.cause).not.toContain("Check your connection");
+    expect(step.blocker?.cause).toBe("Couldn't check this note's transcript · Your space's copy of this note wouldn't open: Saving is waiting for another sync to finish. Try again shortly.");
     expect(step.blocker?.action?.kind).toBe("retry");
     // The lane is still held: the one automatic read waits for it to be idle.
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 150)); });
@@ -822,7 +821,7 @@ describe("a transcript in the space that the phone's ledger never recorded (P6 r
     await settleUntil(() => seen.view !== null && seen.view.pipeline.blocker !== undefined);
     const pipeline = seen.view!.pipeline;
     expect(stepOf(pipeline, "transcript").state).toBe("done");
-    expect(pipeline.blocker?.cause).toBe("The transcript is in your space, but this phone couldn't record that: Couldn't add the transcript to this note.");
+    expect(pipeline.blocker?.cause).toBe("The transcript is in your space, but this phone couldn't record it.");
     expect(pipeline.blocker?.action?.kind).toBe("retry");
     expect(pipeline.done).toBe(false);
     expect(phone.ledgerWrites).toEqual([]);

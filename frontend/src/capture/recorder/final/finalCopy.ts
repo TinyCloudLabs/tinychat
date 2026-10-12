@@ -80,6 +80,12 @@ export const FINAL_COPY = {
   whisperUnavailable: "Get Whisper for this Mac",
   modelUnavailable: "Get the on-device model",
   modelTryAgain: "Try again",
+  speechGet: "Get speech from iOS",
+  speechGetting: "Getting speech from iOS…",
+  speechFailed: "Couldn't get speech from iOS",
+  speechNotInstalled: "Speech from iOS isn't on this phone yet",
+  speechUnsupported: "On-device transcription isn't available on this iPhone",
+  speechLocaleUnsupported: "On-device transcription doesn't support this language yet",
   modes: {
     skipName: MODE_NAMES.skip,
     localName: MODE_NAMES.local,
@@ -97,7 +103,7 @@ export const FINAL_COPY = {
     localPhoneCaption: "Nothing leaves it; a little slower.",
     localDesktopCaption: "Whisper on this Mac, after you stop.",
     localPhoneExplanation:
-      "An on-device model transcribes it. Nothing leaves your phone; slower and less accurate.",
+      "Your phone transcribes it after you stop. Nothing leaves your phone.",
     localDesktopExplanation: (model: string) =>
       `Whisper ${model} transcribes on this Mac after you stop, and nothing leaves the machine. Change the model in ⚙︎ Settings.`,
     localWebExplanation:

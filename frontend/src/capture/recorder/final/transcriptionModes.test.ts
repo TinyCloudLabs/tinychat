@@ -135,7 +135,7 @@ describe("transcription modes availability", () => {
         phone: [
           "Nothing leaves it; a little slower.",
           "on this phone",
-          "An on-device model transcribes it. Nothing leaves your phone; slower and less accurate.",
+          "Your phone transcribes it after you stop. Nothing leaves your phone.",
         ],
         desktop: [
           "Whisper on this Mac, after you stop.",
@@ -263,6 +263,22 @@ describe("transcription modes availability", () => {
     };
     expect(modeAvailability("local", "phone", status)).toEqual({
       available: true,
+    });
+  });
+
+  test("iOS speech that cannot run here makes Local unavailable with a calm reason", () => {
+    const apple = (appleSpeech: "unsupported" | "locale_unsupported") => ({
+      ...model("absent"),
+      engine: "apple-speech" as const,
+      appleSpeech,
+    });
+    expect(modeAvailability("local", "phone", apple("unsupported"))).toEqual({
+      available: false,
+      reason: "On-device transcription isn't available on this iPhone",
+    });
+    expect(modeAvailability("local", "phone", apple("locale_unsupported"))).toEqual({
+      available: false,
+      reason: "On-device transcription doesn't support this language yet",
     });
   });
 

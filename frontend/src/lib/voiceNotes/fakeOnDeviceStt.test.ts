@@ -33,3 +33,16 @@ test("on-device STT refuses work after the note is tombstoned", async () => {
   await expect(stt.plugin.enqueue({ id })).rejects.toMatchObject({ code: "tombstoned" });
   expect(() => stt.controls.finish(id, "transcribed")).toThrow("tombstoned");
 });
+
+test("on-device STT fake on iOS: no models, speech assets installed by the OS, notes wait until they are", async () => {
+  const { plugin, controls } = createFakeOnDeviceStt();
+  controls.useAppleSpeech("asset_missing");
+  await plugin.enqueue({ id: "n1" });
+  const before = await plugin.status();
+  expect(before).toMatchObject({ engine: "apple-speech", appleSpeech: "asset_missing", models: [] });
+  expect(before.queue[0].state).toBe("waiting_for_model");
+  await plugin.installSpeechAssets();
+  const after = await plugin.status();
+  expect(after.appleSpeech).toBe("ready");
+  expect(after.queue[0].state).toBe("queued");
+});
