@@ -1,5 +1,6 @@
 import { StaticRecorderProvider } from "@/capture/recorder/RecorderProvider";
-import { LocalCaptureHome } from "@/capture/local/LocalCaptureHome";
+import { DeviceCaptureSurface } from "@/capture/DeviceCaptureSurface";
+import { screenFor } from "@/shell/routes";
 import type { HarnessScreen } from "../screen";
 
 export const localScreens: HarnessScreen[] = [
@@ -8,9 +9,9 @@ export const localScreens: HarnessScreen[] = [
     group: "local",
     layout: "pane",
     platform: "android",
-    readyWhen: "[data-testid='local-capture-home']",
+    readyWhen: "[data-testid='capture-surface']",
     render: () => <div className="h-dvh overflow-y-auto bg-background">
-      <StaticRecorderProvider value={{ signedIn: false }}><LocalCaptureHome onSignIn={() => {}} /></StaticRecorderProvider>
+      <StaticRecorderProvider value={{ signedIn: false }}><DeviceCaptureSurface did={null} offline={false} error={null} onSignIn={() => {}} onRetry={() => {}} screen={screenFor("/chat/capture")} /></StaticRecorderProvider>
     </div>,
   },
   {
@@ -18,9 +19,9 @@ export const localScreens: HarnessScreen[] = [
     group: "local",
     layout: "pane",
     platform: "android",
-    readyWhen: "[data-testid='local-capture-home']",
+    readyWhen: "[data-testid='capture-surface']",
     render: () => <div className="h-dvh overflow-y-auto bg-background">
-      <StaticRecorderProvider value={{ signedIn: false }}><LocalCaptureHome offline onRetry={() => {}} /></StaticRecorderProvider>
+      <StaticRecorderProvider value={{ signedIn: false }}><DeviceCaptureSurface did={null} offline error={null} onSignIn={() => {}} onRetry={() => {}} screen={screenFor("/chat/capture")} /></StaticRecorderProvider>
     </div>,
   },
 ];

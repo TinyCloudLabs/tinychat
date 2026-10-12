@@ -180,7 +180,7 @@ test("a signed-in Local default stays Local while the model is unavailable", () 
   expect(effectiveTranscriber("on-device", true)).toBe("private-cloud");
 });
 
-test("Identify speakers defaults on, survives unsupported modes, and is committed only for Private", () => {
+test("Identify speakers defaults on, survives unsupported modes, and is committed for cloud transcription", () => {
   const key = "exo.voiceNotes.identifySpeakers";
   const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
   const values = new Map<string, string>();
@@ -193,11 +193,12 @@ test("Identify speakers defaults on, survives unsupported modes, and is committe
     expect(effectiveCaptureOptions({ transcriber: "on-device", identifySpeakers: true }, true).identifySpeakers).toBe(false);
     expect(effectiveCaptureOptions({ transcriber: "off", identifySpeakers: true }, true).identifySpeakers).toBe(false);
     expect(effectiveCaptureOptions({ transcriber: "private-cloud", identifySpeakers: true }, true).identifySpeakers).toBe(true);
+    expect(effectiveCaptureOptions({ transcriber: "assemblyai", identifySpeakers: true }, true).identifySpeakers).toBe(true);
     values.set(key, "0");
     expect(readTranscriberPreference().identifySpeakers).toBe(false);
     values.set("exo.voiceNotes.transcriber", "assemblyai");
     values.set(key, "1");
-    expect(readTranscriberPreference()).toEqual({ transcriber: "private-cloud", identifySpeakers: true });
+    expect(readTranscriberPreference()).toEqual({ transcriber: "assemblyai", identifySpeakers: true });
   } finally {
     if (previous) Object.defineProperty(globalThis, "localStorage", previous);
     else Reflect.deleteProperty(globalThis, "localStorage");
@@ -206,9 +207,9 @@ test("Identify speakers defaults on, survives unsupported modes, and is committe
 
 describe("App.tsx gates its native-only surfaces on capabilities", () => {
   const app = readFileSync(new URL("../../App.tsx", import.meta.url), "utf8");
-  test("the offline recorder, the signed-out local home and MicDeniedRecovery", () => {
-    expect(app).toContain("voiceNotesInApp && capabilities.offlineRecorder && !LOCAL_VALIDATION && offlineCapture");
-    expect(app).toContain("voiceNotesInApp && capabilities.offlineRecorder && !LOCAL_VALIDATION && state === \"unauthenticated\"");
+  test("the shared device capture shell and MicDeniedRecovery", () => {
+    expect(app).toContain("voiceNotesInApp && capabilities.offlineRecorder && !LOCAL_VALIDATION &&");
+    expect(app).toContain('state === "offline" || state === "unauthenticated" || state === "recoverableError"');
     expect(app).toContain("platform === \"android\" && voiceNotesInApp && capabilities.micDeniedPresentation");
   });
 });

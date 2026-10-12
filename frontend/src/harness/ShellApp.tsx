@@ -21,7 +21,7 @@ import { ConnectorsPage } from "@/chat/ConnectorsPage";
 import { MeetingsSection } from "@/chat/MeetingsSection";
 import { ModelPicker, type ModelOption } from "@/chat/ModelPicker";
 import type { ModelSelectionController, SelectionView } from "@/chat/modelSelection";
-import { LocalCaptureHome } from "@/capture/local/LocalCaptureHome";
+import { DeviceCaptureSurface } from "@/capture/DeviceCaptureSurface";
 import { SettingsPage } from "@/chat/SettingsPage";
 import { AboutPage } from "@/chat/AboutPage";
 import { AgentAccessProvider } from "@/chat/useAgentEnablement";
@@ -206,7 +206,7 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
         ) : (
           <main className="h-full overflow-y-auto pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
             {state === "offline" && voiceNotesInApp
-              ? <StaticRecorderProvider value={recorder}><LocalCaptureHome offline /></StaticRecorderProvider>
+              ? <StaticRecorderProvider value={recorder}><DeviceCaptureSurface did={null} offline error={null} onSignIn={() => {}} onRetry={() => {}} screen={screen} /></StaticRecorderProvider>
               : <BootSurface state={state} error={null} onAction={() => {}} />}
           </main>
         )}

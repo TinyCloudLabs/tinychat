@@ -11,6 +11,7 @@ const config: CapacitorConfig = {
   appId: "xyz.tinycloud.exo",
   appName: "Exo",
   webDir: "../frontend/dist",
+  loggingBehavior: "none",
   experimental: {
     ios: {
       spm: {
