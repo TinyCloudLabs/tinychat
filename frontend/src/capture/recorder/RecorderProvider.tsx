@@ -322,7 +322,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     const transcription = recorder.transcription;
     if (!accountDid || !state.ready || state.phase !== "idle" || !transcription || transcription.consented || disclosure || disclosureBusy) return;
     if (heldConsentPromptedFor.current === accountDid) return;
-    if (![...transcription.jobs.values()].some((job) => job.kind === "blocked" && job.reason === "no-consent")) return;
+    if (![...transcription.jobs.values()].some((job) => job.kind === "blocked")) return;
     heldConsentPromptedFor.current = accountDid;
     disclosureOpener.current = null;
     setDisclosure({ kind: "private", startAfter: false });

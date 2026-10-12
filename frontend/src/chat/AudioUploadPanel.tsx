@@ -8,8 +8,7 @@
 // here; this view shows it, or offers Continue when it waits for the user.
 //
 // The route control says where the file goes in one line, and How it works
-// has the rest. The first private cloud upload on a device says, in one
-// sentence, what Private cloud does before it sends anything.
+// has the rest. Private uploads use the account's versioned voice-note disclosure.
 
 import { useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type FC, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
@@ -62,8 +61,6 @@ export type EngineStatus =
 /** Private cloud's and TinyCloud's AssemblyAI account's size limit (C1); capabilities may lower it. */
 const PRIVATE_CLOUD_MAX_BYTES = 120_960_000;
 
-/** This device agreed to send uploads to private cloud (the one-sentence consent, asked once). */
-
 export const ROUTE_LABELS: Readonly<Record<UploadEngine, string>> = {
   "private-cloud": TRANSCRIBER_NAME["private-cloud"],
   assemblyai: TRANSCRIBER_NAME.assemblyai,
@@ -111,7 +108,7 @@ export function routeText(engine: UploadEngine, assemblyAiMode: AssemblyAiKeyMod
     : "Sent from this device to AssemblyAI with your key, then deleted there.";
 }
 
-/** The one-sentence consent before a device's first private cloud upload. */
+/** The shared Build 1 Private disclosure before an account's first upload. */
 export const PRIVATE_CONSENT_TEXT = privateConsentBody("phone");
 
 function stageText(job: UploadState): string {
@@ -181,7 +178,7 @@ export interface AudioUploadViewProps {
   engines: Readonly<Record<UploadEngine, EngineStatus>>;
   /** Whose AssemblyAI account uploads to AssemblyAI use (Settings → Transcription). */
   assemblyAiMode?: AssemblyAiKeyMode;
-  /** This device has agreed to private cloud uploads; until then the consent sentence shows. */
+  /** This account has confirmed the current Private disclosure. */
   privateConsent?: boolean;
   privateConsentText?: string;
   /** The checkbox as the user left it. */

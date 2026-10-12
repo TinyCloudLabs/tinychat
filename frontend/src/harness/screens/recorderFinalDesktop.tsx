@@ -19,6 +19,7 @@ import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcripti
 import { PlatformContext } from "@/lib/platform";
 import { __setInstalledEngineForTests } from "@/lib/voiceNotes/captureEngine";
 import { registerDesktopCaptureExtras, type DesktopCaptureExtras } from "@/lib/voiceNotes/desktopCaptureExtras";
+import { createFakeDesktopCaptureExtras } from "@/lib/voiceNotes/fakeDesktopCaptureExtras";
 import { createFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
 import {
   __setVoiceNotesForTests,
@@ -227,6 +228,7 @@ function whisperScreen(
 
 // The real recorder over the fake native plugin, with each control call recorded for the test.
 export function installNativePlugin(): VoiceNotesPlugin {
+  registerDesktopCaptureExtras(createFakeDesktopCaptureExtras({ systemAudio: false, systemAudioConsent: true }).extras);
   const log = (window.exoDesktop ??= { calls: [] });
   const fake = createFakeVoiceNotes();
   const plugin: VoiceNotesPlugin = { ...fake.plugin };
