@@ -1089,7 +1089,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
       recorder.patch({ signedIn: false });
     });
     await modeIs(page, "Local");
-    expect(await stops()).toEqual(["false", "true", "false", "false"]);
+    expect(await stops()).toEqual(["false", "true", "false"]);
     await page
       .getByRole("button", { name: "Transcription modes: compare and choose" })
       .click();
@@ -1101,7 +1101,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await until(
       "the stops to open after sign-in",
       async () =>
-        (await stops()).join() === ["true", "true", "true", "false"].join(),
+        (await stops()).join() === ["true", "true", "true"].join(),
     );
     await page.context().close();
   });
@@ -1120,7 +1120,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
       .evaluateAll((stops) =>
         stops.map((stop) => stop.getAttribute("data-available")),
       );
-    expect(available).toEqual(["true", "true", "true", "false"]);
+    expect(available).toEqual(["true", "true", "true"]);
     await page.context().close();
   });
 
