@@ -19,7 +19,6 @@ import { Link } from "react-router-dom";
 
 import { Skeleton } from "@/components/ui/skeleton";
 import { PlatformContext } from "@/lib/platform";
-import { nativeVoiceNotesAvailable } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { PATHS, notePath } from "@/shell/routes";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 import {
@@ -46,7 +45,7 @@ import { CaptureSettings } from "../../recorder/final/desktop/CaptureSettings";
 import { Toasts } from "../../recorder/final/desktop/Toasts";
 import { HaloRing } from "../../recorder/final/halo";
 import type { RecorderLayout } from "../../recorder/final/shellCapabilities";
-import { nativeAudioInputs } from "../../recorder/final/useAudioInputs";
+import { shellAudioInputs } from "../../recorder/final/useAudioInputs";
 import { recorderActive, useRecorder } from "../../recorder/RecorderProvider";
 import { useRecordedElapsed } from "../../recorder/useRecordedElapsed";
 import {
@@ -689,7 +688,7 @@ export function DesktopCaptureHome(props: DesktopCaptureHomeProps) {
               {caps.settings !== null && (
                 <CaptureSettings
                   variant={caps.settings}
-                  inputs={nativeVoiceNotesAvailable() ? nativeAudioInputs : null}
+                  inputs={shellAudioInputs()}
                 />
               )}
             </div>

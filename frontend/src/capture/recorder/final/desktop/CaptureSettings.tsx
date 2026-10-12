@@ -80,6 +80,10 @@ function GearIcon() {
 
 export interface MicrophoneRow {
   name: string | null;
+  inputs: { id: string; name: string }[];
+  currentId: string | null;
+  selectedMissing: string | null;
+  select: (id: string) => void;
   /** The shell has no list of inputs to show. */
   unavailable: boolean;
   error: string | null;
@@ -110,11 +114,31 @@ function MicrophoneSection({ microphone }: { microphone: MicrophoneRow }) {
       <h3 id="cs-mic-h" className="cs-h">
         Microphone
       </h3>
-      {microphone.name !== null ? (
-        <div className="cs-row" data-testid="settings-mic">
-          <span className="cs-rb" data-on="true" aria-hidden="true" />
-          <span className="cs-name">{microphone.name}</span>
-          <small>change with “via”</small>
+      {microphone.inputs.length > 0 ? (
+        <div role="radiogroup" aria-labelledby="cs-mic-h" data-testid="settings-mic"
+          onKeyDown={(event) => {
+            const direction = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1
+              : event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 0;
+            if (!direction) return;
+            event.preventDefault();
+            const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+            const at = buttons.indexOf(document.activeElement as HTMLButtonElement);
+            const next = at < 0 ? (direction > 0 ? 0 : buttons.length - 1)
+              : (at + direction + buttons.length) % buttons.length;
+            buttons[next]?.focus();
+            microphone.select(microphone.inputs[next]!.id);
+          }}>
+          {microphone.inputs.map((input) => (
+            <div className="cs-row" key={input.id}>
+              <button type="button" role="radio" aria-checked={input.id === microphone.currentId}
+                tabIndex={input.id === microphone.currentId ? 0 : -1}
+                className="cs-radio" onClick={() => microphone.select(input.id)}>
+                <span className="cs-rb" data-on={input.id === microphone.currentId} aria-hidden="true" />
+                <span className="cs-name">{input.name}</span>
+              </button>
+            </div>
+          ))}
+          {microphone.selectedMissing && <p className="cs-note" role="status">{microphone.selectedMissing} isn't connected · using {microphone.name}</p>}
         </div>
       ) : (
         <p className="cs-note" data-testid="settings-mic">
@@ -488,6 +512,7 @@ export function CaptureSettings({
   const titleId = useId();
   const panelId = useId();
   const audio = useAudioInputs(inputs);
+  useEffect(() => { if (open) audio.refresh(); }, [open, audio.refresh]);
 
   // The model whose progress element has focus, if one does: read before a row changes shape under it.
   const focusedProgress = useCallback((): WhisperModelId | null => {
@@ -762,6 +787,10 @@ export function CaptureSettings({
             downloads={downloads}
             microphone={{
               name: audio.current?.name ?? null,
+              inputs: audio.inputs,
+              currentId: audio.current?.id ?? null,
+              selectedMissing: audio.selectedMissing,
+              select: (id) => void audio.select(id),
               unavailable: inputs === null,
               error: audio.error,
               retry: audio.retry,
