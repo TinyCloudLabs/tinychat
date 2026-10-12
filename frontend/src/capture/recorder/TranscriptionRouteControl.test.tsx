@@ -70,7 +70,7 @@ describe("TranscriptionRouteControl", () => {
     expect(html).not.toContain("voice-note-transcription-consent");
   });
 
-  test("available without consent: On this phone is chosen (native's own default, not Off); choosing Private cloud asks once, in one sentence", () => {
+  test("available without consent: choosing Private shows the disclosure and both choices", () => {
     const off = render(transcription({ consented: false }));
     expect(off).toContain('data-route="on-device"');
     expect(off).not.toContain("voice-note-transcription-enable");
@@ -79,7 +79,7 @@ describe("TranscriptionRouteControl", () => {
     expect(asking).toContain("Private transcription sends this note&#x27;s audio from this phone to TinyCloud Private Transcription, a sealed hardware enclave. It&#x27;s deleted there once the transcript is ready. Exo never sees it.");
     expect(asking).not.toContain("minutes");
     expect(asking).toContain(">Use Private transcription</button>");
-    // The disclosure itself is on How it works, not here.
+    expect(asking).toContain(">Not now</button>");
     expect(asking).not.toContain("Tinfoil");
   });
 

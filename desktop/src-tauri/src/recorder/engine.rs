@@ -564,6 +564,7 @@ pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, Stri
 #[tauri::command]
 pub async fn recorder_resume(app: tauri::AppHandle) -> Result<CaptureStatus, String> {
     super::ensure(&app);
+    super::extras::load_system_audio(&app).await?;
     let incomplete_pause = {
         let engine = app.state::<Engine>();
         let state = engine.0.lock();

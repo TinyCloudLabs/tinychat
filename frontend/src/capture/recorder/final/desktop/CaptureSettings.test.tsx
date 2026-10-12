@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { LOCAL_WHISPER_MODELS } from "@/lib/localTranscriber";
 import type { WhisperModelInfo } from "@/lib/voiceNotes/desktopCaptureExtras";
-import { SYSTEM_AUDIO_NOTICE_TEXT } from "./systemAudioNotice";
 import { CaptureSettings, SettingsPanel, type SettingsPanelProps } from "./CaptureSettings";
 
 const models = (downloaded: string[], selected: string | null): WhisperModelInfo[] =>
@@ -37,8 +36,6 @@ const APP: SettingsPanelProps = {
   ], currentId: "MacBook Pro Microphone", selectedMissing: null, select: () => {}, unavailable: false, error: null, retry: null },
   modelError: null,
   switches: { systemAudio: IDLE, autoSave: IDLE },
-  systemAudioNotice: false,
-  onDismissSystemAudioNotice: () => {},
   onRetryLoad: () => {},
   onSelectModel: () => {},
   onGetModel: () => {},
@@ -131,7 +128,7 @@ describe("SettingsPanel, app", () => {
     expect(out).toContain("MacBook Pro Microphone");
     expect(out).toContain("BlackHole 2ch");
     expect(out).toContain('aria-checked="true"');
-    expect(out).toContain("Also record this Mac’s audio");
+    expect(out).toContain("Also record this Mac&#x27;s audio");
     expect(out).toContain("Save to your space automatically");
     expect(out).toMatch(/role="switch" aria-checked="true"[^>]*data-testid="switch-system-audio"/);
     expect(out).toMatch(/role="switch" aria-checked="false"[^>]*data-testid="switch-auto-save"/);
@@ -183,52 +180,10 @@ describe("SettingsPanel, app", () => {
   });
 });
 
-describe("system audio notice", () => {
-  const data = (systemAudio: boolean) => ({
-    ...(APP.load.status === "ready" ? APP.load.data : (undefined as never)),
-    systemAudio,
-  });
-  const shown = (out: string) => out.includes(SYSTEM_AUDIO_NOTICE_TEXT);
-
-  test("shows under the switch while system audio is on, with a named Dismiss button", () => {
-    const out = html({ systemAudioNotice: true });
-    expect(shown(out)).toBe(true);
-    expect(out.indexOf("switch-system-audio")).toBeLessThan(out.indexOf(SYSTEM_AUDIO_NOTICE_TEXT));
-    expect(out.indexOf(SYSTEM_AUDIO_NOTICE_TEXT)).toBeLessThan(out.indexOf("Save to your space automatically"));
-    expect(out).toMatch(/<button type="button" class="cs-notice-dismiss" aria-label="Dismiss the system audio notice"/);
-  });
-
-  test("is hidden once seen", () => {
-    expect(shown(html({ systemAudioNotice: false }))).toBe(false);
-  });
-
-  test("is hidden while system audio is off", () => {
-    expect(
-      shown(html({ systemAudioNotice: true, load: { status: "ready", data: data(false) } })),
-    ).toBe(false);
-  });
-
-  test("is hidden on web and on the phone, where the panel has no system audio switch", () => {
-    expect(
-      shown(html({ variant: "microphone-only", extrasAvailable: false, systemAudioNotice: true })),
-    ).toBe(false);
-    expect(
-      shown(renderToStaticMarkup(<CaptureSettings variant="microphone-only" inputs={null} defaultOpen />)),
-    ).toBe(false);
-  });
-
-  test("a build with no desktop extras never reads or shows it", () => {
-    const storage = {
-      getItem: () => {
-        throw new Error("read");
-      },
-      setItem: () => {},
-    };
-    const out = renderToStaticMarkup(
-      <CaptureSettings variant="app" inputs={null} extras={null} defaultOpen noticeStorage={storage} />,
-    );
-    expect(shown(out)).toBe(false);
-  });
+test("system audio setting explains the capture scope and timing", () => {
+  const out = html({});
+  expect(out).toContain("Also record this Mac&#x27;s audio");
+  expect(out).toContain("Records everything this Mac plays, mixed with your mic. Applies when you start or resume a recording. macOS asks for permission once.");
 });
 
 describe("SettingsPanel, web", () => {

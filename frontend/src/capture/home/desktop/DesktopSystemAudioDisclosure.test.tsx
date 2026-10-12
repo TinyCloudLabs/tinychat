@@ -62,3 +62,17 @@ test("an existing Mac with consent keeps system audio on without another sheet",
   expect(await fake.extras.systemAudio.get()).toBe(true);
   expect(document.querySelector('[data-testid="system-audio-disclosure"]')).toBeNull();
 });
+
+test("an existing Mac with system audio permission still sees the sheet once", async () => {
+  const { fake, click, started } = await mount(false);
+  await click('[data-testid="voice-note-record"]');
+  expect(started()).toBe(0);
+  expect(document.querySelector('[data-testid="system-audio-disclosure"]')).not.toBeNull();
+  await click('[data-testid="system-audio-disclosure"] button:last-of-type');
+  expect(started()).toBe(1);
+  expect(await fake.extras.systemAudio.get()).toBe(true);
+  expect(await fake.extras.systemAudioConsent.get()).toBe(true);
+  await click('[data-testid="voice-note-record"]');
+  expect(started()).toBe(2);
+  expect(document.querySelector('[data-testid="system-audio-disclosure"]')).toBeNull();
+});

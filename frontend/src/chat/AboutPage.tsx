@@ -8,6 +8,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
 
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
+import { FINAL_COPY } from "@/capture/recorder/final/finalCopy";
 import { ABOUT_SECTIONS, type AboutSectionId } from "@/lib/about";
 import { VOICE_NOTE_MAX_DURATION_MS } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
@@ -57,8 +58,8 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
         You choose how each recording or upload becomes text. In Settings you pick the default engine for uploaded
         audio; you can still pick the other engine for each upload.
       </p>
-      <Sub>Private cloud</Sub>
-      <p>Private transcription sends this note&apos;s audio from this phone or Mac to TinyCloud Private Transcription, a sealed hardware enclave. It&apos;s deleted there once the transcript is ready. Exo never sees it.</p>
+      <Sub>Private transcription</Sub>
+      <p>{FINAL_COPY.modes.privateExplanation}</p>
       <p>
         Your audio is uploaded over an encrypted connection to TinyCloud Private Transcription, a dedicated confidential
         virtual machine on Phala Cloud. It sends short speech segments to Tinfoil for speech-to-text. Tinfoil processes

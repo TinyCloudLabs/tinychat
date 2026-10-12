@@ -214,7 +214,7 @@ export function createFetchPtxPut(fetchImpl: typeof fetch = (input, init) => fet
 // inherits the first one's consent nor resumes its jobs.
 
 export const VOICE_NOTE_PENDING_JOBS_KEY = "exo.voiceNotes.privateCloudJobs";
-/** The one-time "Use private cloud" for voice notes (its own key: the disclosure differs from the desktop's). */
+/** Versioned consent for Private transcription. Older consent must be confirmed once more. */
 export const VOICE_NOTE_CONSENT_KEY = "exo.voiceNotes.privateCloudConsent";
 export const VOICE_NOTE_CONSENT_VERSION = "2";
 export const VOICE_NOTE_HELD_KEY = "exo.voiceNotes.heldFromTranscription";
@@ -1284,7 +1284,7 @@ export interface VoiceNoteTranscriber {
    * a user's "Check again" leaves it out and always asks.
    */
   check(options?: VoiceNoteCheckOptions): Promise<void>;
-  /** The one-time "Use private cloud". Resumes notes a previous run left in flight. */
+  /** The one-time Private disclosure. Resumes notes a previous run left in flight. */
   consent(): void;
   /** Stops sending: waiting notes are dropped, the running one stops before its upload, unsent jobs are cancelled. */
   turnOff(): Promise<void>;

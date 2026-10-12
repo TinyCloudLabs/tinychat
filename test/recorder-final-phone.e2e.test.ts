@@ -494,16 +494,16 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await page.keyboard.press("ArrowRight");
     await modeIs(page, "Local");
     await page.keyboard.press("ArrowRight");
-    const dialog = page.getByRole("dialog", { name: "Use private cloud?" });
+    const dialog = page.getByRole("dialog", { name: "Use Private transcription?" });
     await shown(dialog);
-    expect(await activeName()).toBe("Use private cloud");
+    expect(await activeName()).toBe("Use Private transcription");
     await modeIs(page, "Local");
     expect(await calls()).toEqual([
       "transcriber:on-device:recording",
       "transcriber:private-cloud:recording",
     ]);
 
-    await page.getByRole("button", { name: "Use private cloud" }).click();
+    await page.getByRole("button", { name: "Use Private transcription" }).click();
     await modeIs(page, "Private");
     await gone(dialog);
     await focused(slider(page));
@@ -519,7 +519,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
 
   test("the consent sheet gives focus back on Not now, Escape, the veil and consent", async () => {
     const { page, calls } = await open("first-run");
-    const dialog = page.getByRole("dialog", { name: "Use private cloud?" });
+    const dialog = page.getByRole("dialog", { name: "Use Private transcription?" });
     await slider(page).focus();
     await page.keyboard.press("ArrowRight");
     await modeIs(page, "Local");
@@ -539,7 +539,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
 
     await page.keyboard.press("ArrowRight");
     await shown(dialog);
-    await page.getByRole("button", { name: "Use private cloud" }).click();
+    await page.getByRole("button", { name: "Use Private transcription" }).click();
     await gone(dialog);
     await focused(slider(page));
     expect((await calls()).filter((c) => c === "consent")).toEqual(["consent"]);
@@ -1016,7 +1016,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
   test("a Private choice from the first-run scale returns focus after consent is dismissed", async () => {
     const { page } = await open("model-unavailable-first-run");
     await page.locator('.pr-stop[data-stop="private"]').click();
-    const consent = page.getByRole("dialog", { name: "Use private cloud?" });
+    const consent = page.getByRole("dialog", { name: "Use Private transcription?" });
     await shown(consent);
     await consent.getByRole("button", { name: "Not now" }).click();
     await gone(consent);

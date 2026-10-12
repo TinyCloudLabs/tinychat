@@ -184,7 +184,7 @@ function screen(
 }
 
 // The Mac's Whisper as the engine and the ⚙︎ extras report it: a selected, downloaded model (or none).
-function macWhisper(model: "ready" | "none"): HarnessScreen["render"] {
+function macWhisper(model: "ready" | "none", systemAudio = false): HarnessScreen["render"] {
   return () => {
     // The engine being installed makes the home read the parked recordings; the app's own engine answers that, here the fake plugin does.
     __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: false });
@@ -204,7 +204,7 @@ function macWhisper(model: "ready" | "none"): HarnessScreen["render"] {
         download: async () => {},
         onProgress: () => noop,
       },
-      systemAudio: { get: async () => false, set: async () => {} },
+      systemAudio: { get: async () => systemAudio, set: async () => {} },
       systemAudioConsent: { get: async () => true, set: async () => {} },
       autoSaveToSpace: { get: async () => true, set: async () => {} },
     } as unknown as DesktopCaptureExtras);
@@ -217,9 +217,10 @@ function whisperScreen(
   model: "ready" | "none",
   value: Partial<RecorderValue>,
   seed: DesktopRecorderSeed = {},
+  systemAudio = false,
 ): HarnessScreen {
   const base = screen(id, value, seed);
-  const setUp = macWhisper(model);
+  const setUp = macWhisper(model, systemAudio);
   return { ...base, render: () => { setUp(); return base.render(); } };
 }
 
@@ -290,6 +291,7 @@ const NOTE_VIEWPORTS = ["tablet", "tablet-land", "desktop-min", "desktop", "text
 export const recorderFinalDesktopScreens: HarnessScreen[] = [
   interactiveScreen,
   screen("recording", {}),
+  { ...whisperScreen("recording-system-audio", "ready", {}, {}, true), readyWhen: '[data-testid="desktop-system-audio-label"]' },
   screen("recording-web", {}, {}, "web"),
   screen("recording-notes", {
     note: { md: "Ask Dana about the launch date.", moments: [] },

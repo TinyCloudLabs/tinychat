@@ -2,7 +2,7 @@
 // "Transcription" heading, Audio only · Local · Private when private cloud is offered
 // to this build and account, the route as a RouteLine, one short line, and a
 // link to How it works for the rest. Choosing Private the first time
-// asks once ("Use private cloud"); the full disclosure is on How it works.
+// asks once using the Private transcription disclosure.
 // Local never needs a sign-in or a network check: native capture defaults to it
 // already, and the only extra state to show is the model's download progress. Signed out, native
 // (CaptureEngine) forces on-device regardless of what's requested, so this control must too: only
@@ -242,6 +242,7 @@ export function TranscriptionRouteControl(props: {
             }} data-testid="voice-note-transcription-enable">
               {PRIVATE_CONSENT_ACTION}
             </Button>
+            <Button type="button" variant="outline" onClick={() => setAsking(false)}>Not now</Button>
             <HowItWorksLink section="transcription" />
           </div>
         </div>
