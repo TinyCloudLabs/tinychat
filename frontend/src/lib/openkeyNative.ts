@@ -10,7 +10,7 @@
 // entries plus capabilities/read. It has no secrets or vault access, so every
 // secrets-dependent flow is gated behind `secretsAvailable()` below.
 //
-// `@openkey/sdk-capacitor` is pinned to the published 0.1.0-beta.0 in
+// `@openkey/sdk-capacitor` is pinned to an exact published beta in
 // frontend/package.json and mobile/package.json.
 
 import { appPlatform, type AppPlatform } from "./platform";
@@ -221,6 +221,22 @@ export function isNativeStorageError(error: unknown): boolean {
 
 // ── Sign-in ───────────────────────────────────────────────────────────
 
+/** What Exo's own sign-in screen tells OpenKey, so its sheet opens on that step. The server treats both as hints. */
+export interface NativeSignInHints {
+  /** Only with `loginMethod: "email"`. A normalised address (see `normalizeLoginHint`). */
+  loginHint?: string;
+  loginMethod: "email" | "passkey" | "google";
+}
+
+/** The login_hint rule: no whitespace, exactly one "@" with text either side, at most 254 characters. Lowercased. Null when it is not an address. */
+export function normalizeLoginHint(value: string): string | null {
+  const email = value.trim();
+  if (email.length === 0 || email.length > 254 || /\s/.test(email)) return null;
+  const parts = email.split("@");
+  if (parts.length !== 2 || parts[0] === "" || parts[1] === "") return null;
+  return email.toLowerCase();
+}
+
 export interface NativeSignInConfig {
   backendUrl: string;
   /** The configured TinyCloud node the delegation must name (VITE_TINYCLOUD_HOST). */
@@ -349,6 +365,9 @@ export function resetNativeOpenKeyClientForTests(): void {
   defaultOpenKeyNative = null;
 }
 
+/** Android Custom Tabs chrome, matching OpenKey's dark native page. iOS has nothing to style and ignores it. */
+export const NATIVE_BROWSER_THEME = { toolbarColor: "#09090B", colorScheme: "dark" } as const;
+
 async function defaultDeps(): Promise<NativeSignInDeps> {
   const [{ OpenKeyNative }, { activateSessionWithHost }, client] = await Promise.all([
     import("@openkey/sdk-capacitor"),
@@ -357,6 +376,7 @@ async function defaultDeps(): Promise<NativeSignInDeps> {
   ]);
   return {
     createOpenKeyNative: (options) => new OpenKeyNative({ ...options, ephemeralSession: true,
+      browserTheme: NATIVE_BROWSER_THEME,
       fetchFn: (url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) =>
         withNativeFetchTimeout((signal) => fetch(url, { ...init, signal })),
     }),
@@ -382,6 +402,7 @@ function delegationExpiryIso(expiresAt: string | number): string {
  */
 export async function signInNative(
   config: NativeSignInConfig,
+  hints?: NativeSignInHints,
   deps?: NativeSignInDeps,
 ): Promise<NativeSignInResult> {
   const env = config.env ?? import.meta.env;
@@ -403,6 +424,7 @@ export async function signInNative(
     const session = await openkey.signIn({
       capabilities: nativePermissions(manifest),
       siweNonce,
+      ...hints,
     });
     try {
       return await handoffNativeSession(openkey, session, config, d);

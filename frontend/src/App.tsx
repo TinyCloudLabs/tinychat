@@ -131,18 +131,19 @@ import { clearSessionAfterHandoff, registerSessionSignedOutHook } from "./lib/se
 import {
   describeAuthFailure, isNativeOpenKeySession, isNativeOpenKeySignIn, isNativeStorageError, logNativeOpenKeyError,
   restoreNativeAtBoot, nativeRenewalServices, secretsAvailable,
-  setNativeSessionActive, signInNative, signOutNative,
+  setNativeSessionActive, signInNative, signOutNative, type NativeSignInHints,
   type NativeSignInConfig,
   NATIVE_SIGN_OUT_WARNING, NATIVE_SIGN_OUT_STORAGE_WARNING,
 } from "./lib/openkeyNative";
 import { NativeRenewal, guardNativeTinyCloudCalls, NATIVE_SESSION_ENDED_MESSAGE, NATIVE_STORAGE_MESSAGE } from "./lib/openkeyNativeRenewal";
-import { isAuthSettledSignedOut } from "./lib/authRouting";
+import { isAuthSettledSignedOut, showsNativeSignIn } from "./lib/authRouting";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
 import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
 import { useLocalCanvasStorage } from "./lib/conversationCanvasStore";
 import type { AppState } from "./lib/appState";
 import { BootSurface } from "./shell/BootSurface";
+import { NativeSignIn } from "./shell/NativeSignIn";
 
 // AppState and stateLabel live in lib/appState; re-exported for imports from App.
 export { stateLabel, type AppState } from "./lib/appState";
@@ -758,7 +759,7 @@ export function App() {
     };
   }, [state]);
 
-  const signIn = useCallback(async () => {
+  const signIn = useCallback(async (hints?: NativeSignInHints) => {
     setError(null);
     // Each tab's remembered place belongs to the account that left it.
     resetNavigationMemory();
@@ -768,7 +769,7 @@ export function App() {
         // TC-775 E1: OpenKey delegation sign-in in the system browser. The SDK
         // keeps the session key in the device secure store; nothing wallet-shaped
         // signs in the WebView. Throws a user-facing message on cancel/deny.
-        const native = await signInNative(nativeConfig);
+        const native = await signInNative(nativeConfig, hints);
         setAddress(native.verified.address);
         sessionStoreRef.current.setSession(
           native.verified.token,
@@ -928,7 +929,16 @@ export function App() {
   // The offline state still HOLDS a session, so its "Try again" re-runs the
   // restore. Only a settled signed-out state (no restorable session) starts the
   // full OpenKey sign-in.
-  const authAction = state === "offline" ? restoreSession : signIn;
+  // On iOS and Android signing in opens Exo's own sign-in screen, which then
+  // runs `signIn` with the hints it collected. The screen is also asked for
+  // by the signed-out local home and the recorder.
+  const nativeSignIn = isNativeOpenKeySignIn();
+  const [nativeSignInRequested, setNativeSignInRequested] = useState(false);
+  const openNativeSignIn = useCallback(() => setNativeSignInRequested(true), []);
+  useEffect(() => {
+    if (state === "ready") setNativeSignInRequested(false);
+  }, [state]);
+  const authAction = state === "offline" ? restoreSession : nativeSignIn ? openNativeSignIn : signIn;
   // Authentication has answered, and the answer is "not signed in" — the
   // only condition under which a private surface may be redirected away.
   const authSettledSignedOut = isAuthSettledSignedOut(state);
@@ -1178,6 +1188,9 @@ export function App() {
         ) : (
           <main className="h-full overflow-y-auto pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
             {offlineRecorder ? <LocalCaptureHome did={did} offline onRetry={authAction} />
+              : showsNativeSignIn({ native: nativeSignIn, state, localHome: signedOutLocalHome, requested: nativeSignInRequested })
+                ? <NativeSignIn state={state} error={error} onSignIn={(hints) => void signIn(hints)}
+                  onClose={signedOutLocalHome ? () => setNativeSignInRequested(false) : undefined} />
               : signedOutLocalHome ? <LocalCaptureHome onSignIn={authAction} />
                 : <BootSurface state={state} error={error} onAction={authAction} />}
           </main>
