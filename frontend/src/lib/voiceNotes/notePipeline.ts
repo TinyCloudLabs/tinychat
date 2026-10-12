@@ -11,6 +11,7 @@ import {
   SPACE_COPY,
   TRANSCRIPT_COPY,
   STEP_LABEL,
+  percentText,
 } from "./notePipelineCopy";
 
 export type PipelineDevice = "phone" | "mac";
@@ -78,7 +79,7 @@ export type PipelineBlockedReason = "checking" | "unavailable" | "check-failed" 
 export type PipelineCloudStatus =
   | { kind: "waiting"; position: number }
   | { kind: "preparing" }
-  | { kind: "uploading" }
+  | { kind: "uploading"; progress?: number }
   | { kind: "queued"; position: number | null }
   | { kind: "processing"; completed: number | null; total: number | null }
   | { kind: "saving" };
@@ -268,7 +269,7 @@ function modelStep(od: PipelineOnDevice, device: PipelineDevice): Result | null 
 function onDeviceStep(input: NotePipelineInput, od: PipelineOnDevice): Result {
   const saved = input.space.saved;
   const { sync, stt, queue } = od;
-  if (sync?.state === "failed") return failed(LOCAL_COPY.syncFailed(sync.message), "retry");
+  if (sync?.state === "failed") return failed(LOCAL_COPY.syncFailed(), "retry");
   if (sync?.state === "syncing") return { state: "active", caption: LOCAL_COPY.adding };
   if (sync?.state === "synced" || sync?.state === "unrecorded") return { state: "done" };
   if (stt === null) {
@@ -281,7 +282,7 @@ function onDeviceStep(input: NotePipelineInput, od: PipelineOnDevice): Result {
       if (!saved) return { state: "done", sublabel: LOCAL_COPY.readyOnDevice(input.device) };
       // Nothing is adding it (`sync` is null) and the space has no transcript: an attempt that never ran is a blocker, never "adding".
       return input.transcript.spaceReading === true ? { state: "waiting", caption: checking(input.transcript) } : blocked(LOCAL_COPY.notAdded, "retry");
-    case "failed": return failed(LOCAL_COPY.failed(stt.error, input.device), "retry");
+    case "failed": return failed(LOCAL_COPY.failed(undefined, input.device), "retry");
     case "cancelled": return blocked(LOCAL_COPY.cancelled(input.device), "retry");
     case "running": {
       const progress = queue?.percent == null ? null : Math.min(1, Math.max(0, queue.percent / 100));
@@ -316,7 +317,9 @@ function cloudStep(cloud: PipelineCloud | null, spaceSaved: boolean, checkingCap
       switch (status.kind) {
         case "waiting": return { state: "waiting", caption: PRIVATE_COPY.waiting(status.position) };
         case "preparing": return { state: "active", caption: PRIVATE_COPY.preparing };
-        case "uploading": return { state: "active", caption: PRIVATE_COPY.sending };
+        case "uploading": return status.progress === undefined
+          ? { state: "active", caption: PRIVATE_COPY.sending }
+          : withProgress("active", `${PRIVATE_COPY.sending} · ${percentText(status.progress)}`, status.progress);
         case "queued": return { state: "waiting", caption: PRIVATE_COPY.inQueue(status.position) };
         case "processing": {
           const progress = status.completed === null || status.total === null ? null : fraction(status.completed, status.total);
@@ -416,7 +419,7 @@ export function notePipeline(input: NotePipelineInput): NotePipeline {
   const notices = input.capture.issue === "partial_audio" ? [PHONE_COPY.partialAudio] : [];
   // The transcript is in the space but the phone could not record that: the step is done, the failure is not dropped, and it has its own repair.
   const od = input.transcript.onDevice;
-  const unrecorded = od?.sync?.state === "unrecorded" ? LOCAL_COPY.unrecorded(od.sync.message) : null;
+  const unrecorded = od?.sync?.state === "unrecorded" ? LOCAL_COPY.unrecorded() : null;
   if (unrecorded !== null) {
     if (blocker === undefined) {
       blocker = block(unrecorded, "retry");

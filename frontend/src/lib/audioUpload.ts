@@ -729,7 +729,7 @@ export function createUploadRunner(): UploadRunner {
     const poller = createCloudJobPoller(pc.api, {
       clock: deps.clock,
       connectionLost: () =>
-        new PrivateCloudError("offline", "Lost contact with private cloud transcription for 10 minutes. The job may still be running; Retry keeps waiting."),
+        new PrivateCloudError("offline", "Lost contact with private cloud transcription. The job may still be running; Retry keeps waiting."),
     });
     let transcript: PrivateCloudTranscript;
     try {

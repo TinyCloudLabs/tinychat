@@ -140,7 +140,8 @@ async function mount(kind: CaptureEngineKind, capabilities: CaptureCapabilities,
 }
 
 async function mountWith(kind: CaptureEngineKind, capabilities: CaptureCapabilities, prepare?: (plugin: VoiceNotesPlugin) => void,
-  model: "ready" | "absent" = "ready", recovery?: { listeners: Map<string, () => void>; pipeline: { resume(): void; cancelAll(): void; isAccepting?(): boolean; reconcileAll(): Promise<void> } }) {
+  model: "ready" | "absent" = "ready", recovery?: { listeners: Map<string, () => void>; pipeline: { resume(): void; cancelAll(): void; isAccepting?(): boolean; reconcileAll(): Promise<void> } },
+  providerProps: { onSignIn?: () => void | Promise<void>; minimiseOnSignIn?: boolean } = {}) {
   const stt = strictOnDeviceStt(kind === "native", model);
   __setOnDeviceSttForTests(stt.plugin);
   const strict = strictEngine(capabilities);
@@ -164,7 +165,7 @@ async function mountWith(kind: CaptureEngineKind, capabilities: CaptureCapabilit
   root = createRoot({ nodeType: 1, nodeName: "DIV", tagName: "DIV", ownerDocument: documentStub, textContent: "", addEventListener() {}, removeEventListener() {},
     appendChild() {}, removeChild() {}, insertBefore() {} } as unknown as HTMLElement);
   await act(async () => root!.render(
-    <RecorderProvider tcw={tcw} enabled>
+    <RecorderProvider tcw={tcw} enabled {...providerProps}>
       <Probe />
       <PendingVoiceNotesSaver tcw={tcw} pipeline={(recovery?.pipeline ?? { resume() {}, cancelAll() {}, reconcileAll: async () => {} }) as never} backendUrl="" sessionStore={{} as never} />
     </RecorderProvider>,
@@ -172,6 +173,28 @@ async function mountWith(kind: CaptureEngineKind, capabilities: CaptureCapabilit
   await act(async () => { await tick(); await tick(); });
   return { ...strict, stt };
 }
+
+test("the recorder's sign-in minimises its sheet first when the app opens a sign-in screen of its own", async () => {
+  const order: string[] = [];
+  await mountWith("native", ALL, undefined, "ready", undefined, {
+    minimiseOnSignIn: true,
+    onSignIn: () => { order.push("sign-in"); },
+  });
+  await act(async () => value!.openSheet());
+  expect(value!.sheetOpen).toBe(true);
+  await act(async () => { await value!.signIn!(); });
+  expect(order).toEqual(["sign-in"]);
+  expect(value!.sheetOpen).toBe(false);
+});
+
+test("the recorder's sign-in leaves its sheet alone when the app starts the sign-in directly", async () => {
+  let calls = 0;
+  await mountWith("native", ALL, undefined, "ready", undefined, { onSignIn: () => { calls++; } });
+  await act(async () => value!.openSheet());
+  await act(async () => { await value!.signIn!(); });
+  expect(calls).toBe(1);
+  expect(value!.sheetOpen).toBe(true);
+});
 
 test("pending saver retries reconciliation when the device comes online", async () => {
   const listeners = new Map<string, () => void>();

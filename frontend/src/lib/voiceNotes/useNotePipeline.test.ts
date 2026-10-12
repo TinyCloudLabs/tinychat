@@ -310,11 +310,11 @@ describe("actions", () => {
     saved: false, native: { transcriber: "off", stt: null }, pending: { id: ID, startedAt: 0, durationMs: 1, held: "signed-out" },
   }, env);
 
-  test("sign-in calls the app's entry; a rejection comes back as its message", async () => {
+  test("sign-in calls the app's entry; a rejection gets calm copy", async () => {
     let calls = 0;
     expect(await runPipelineAction("sign-in", signedOutEnv({ signIn: () => { calls += 1; } }))).toBeNull();
     expect(calls).toBe(1);
-    expect(await runPipelineAction("sign-in", signedOutEnv({ signIn: async () => { throw new Error("the browser would not open"); } }))).toBe("the browser would not open");
+    expect(await runPipelineAction("sign-in", signedOutEnv({ signIn: async () => { throw new Error("the browser would not open"); } }))).toBe("Couldn't complete this step. Try again.");
     expect(await runPipelineAction("sign-in", signedOutEnv({ signIn: null }))).toBe("Signing in isn't available here.");
   });
 
@@ -337,31 +337,31 @@ describe("actions", () => {
     expect(sent).toEqual([ID]);
   });
 
-  test("check-again asks the transcriber; its rejection is shown, not swallowed", async () => {
+  test("check-again asks the transcriber; its rejection gets calm copy", async () => {
     let checks = 0;
     expect(await runPipelineAction("check-again", envFor({}, { transcription: transcription({ onRecheck: () => { checks += 1; } }) }))).toBeNull();
     expect(checks).toBe(1);
-    expect(await runPipelineAction("check-again", envFor({}, { transcription: transcription({ onRecheck: async () => { throw new Error("offline"); } }) }))).toBe("offline");
+    expect(await runPipelineAction("check-again", envFor({}, { transcription: transcription({ onRecheck: async () => { throw new Error("offline"); } }) }))).toBe("Couldn't complete this step. Try again.");
     expect(await runPipelineAction("check-again", envFor({}))).toBe("Private transcription isn't available here.");
   });
 
   test("check-again shows the cause the transcriber kept when its check settles on a failure", async () => {
     const failed = transcription({ availability: "failed", checkError: "the capability request timed out" });
     expect(await runPipelineAction("check-again", envFor({}, { transcription: failed, latestTranscription: () => failed })))
-      .toBe("Couldn't check private transcription: the capability request timed out");
+      .toBe("Couldn't check private transcription right now. Try again.");
     const noCause = transcription({ availability: "failed" });
     expect(await runPipelineAction("check-again", envFor({}, { transcription: noCause, latestTranscription: () => noCause })))
-      .toBe("Couldn't check private transcription: no details were kept");
+      .toBe("Couldn't check private transcription right now. Try again.");
     const ok = transcription();
     expect(await runPipelineAction("check-again", envFor({}, { transcription: ok, latestTranscription: () => ok }))).toBeNull();
   });
 
   test("space retry awaits Save now: its rejection, and a failure the store reports instead of throwing, both come back", async () => {
     const env = (saveNow: PipelineActionEnv["saveNow"]) => envFor({ saved: false, native: { transcriber: "off", stt: null }, pending: { id: ID, startedAt: 0, durationMs: 1, failed: { kind: "timeout", message: "deadline" } } }, { saveNow });
-    expect(await runPipelineAction("retry", env(async () => { throw new Error("the account is not ready"); }))).toBe("the account is not ready");
+    expect(await runPipelineAction("retry", env(async () => { throw new Error("the account is not ready"); }))).toBe("Couldn't complete this step. Try again.");
     pendingStore.reportError("Couldn't set up your space defaults");
     try {
-      expect(await runPipelineAction("retry", env(async () => { await Promise.resolve(); }))).toBe("Couldn't set up your space defaults");
+      expect(await runPipelineAction("retry", env(async () => { await Promise.resolve(); }))).toBe("Couldn't save this note. It is safe on this phone. Try again.");
     } finally {
       await pendingStore.refresh(null);
     }

@@ -37,7 +37,7 @@ import {
   withoutPrivateCloudOpenApi,
   type PrivateCloudTranscriptionConfig,
 } from "../services/private-cloud-transcription.js";
-import { JOB_ERRORS, MAX_RECORDING_BYTES } from "../services/private-cloud-transcription-dto.js";
+import { JOB_ERRORS } from "../services/private-cloud-transcription-dto.js";
 import { runPrivateCloudE2E } from "../../scripts/e2e-private-cloud-transcription.js";
 
 const SESSION_KEY = "synthetic-session-signing-key";
@@ -49,6 +49,8 @@ const ADDRESS_C = "0xCcccCCCCccccCCCCccccCCCCccccCCCCccccCCCC";
 const TRANSCRIPT_TEXT = "alice: the quick brown fox";
 const BASE = "/api/transcriber/private-cloud";
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const MOCK_PTX_MAX_BYTES = 120_960_000;
+const NEXT_PTX_MAX_BYTES = 181_440_000;
 
 const closers: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -235,7 +237,7 @@ async function startMockPtx() {
 
   app.get("/v1/transcriptions/capabilities", (_req, res) => {
     res.json({
-      max_bytes: MAX_RECORDING_BYTES,
+      max_bytes: MOCK_PTX_MAX_BYTES,
       max_duration_seconds: 7200,
       max_channels: 2,
       content_types: state.diarization === null ? MAIN_CONTENT_TYPES : AUDIO_CONTENT_TYPES,
@@ -620,7 +622,6 @@ describe("create", () => {
       [null, { ...valid, content_type: "video/mp4" }, 400, "invalid_request"],
       [null, { ...valid, byte_size: 0 }, 400, "invalid_request"],
       [null, { ...valid, byte_size: 1.5 }, 400, "invalid_request"],
-      [null, { ...valid, byte_size: MAX_RECORDING_BYTES + 1 }, 413, "recording_too_large"],
       [null, { ...valid, sha256: "ABC" }, 400, "invalid_request"],
       [null, { ...valid, language: "english" }, 400, "invalid_request"],
       [null, { ...valid, channel_mode: "stereo" }, 400, "invalid_request"],
@@ -637,7 +638,7 @@ describe("create", () => {
       expect([r.status, r.json.error.code]).toEqual([status, code]);
       expect(r.json.error.correlation_id).toMatch(/^[0-9a-f-]{36}$/);
     }
-    const max = await create(backend.url, ADDRESS_A, randomUUID(), { ...valid, byte_size: MAX_RECORDING_BYTES });
+    const max = await create(backend.url, ADDRESS_A, randomUUID(), { ...valid, byte_size: MOCK_PTX_MAX_BYTES });
     expect(max.status).toBe(201);
     expect(ptx.requests.filter((q) => q.method === "POST")).toHaveLength(1);
   });
@@ -767,7 +768,7 @@ describe("status, result, list, cancel, delete", () => {
     const { ptx, backend } = await setup();
     const caps = await call(backend.url, "GET", "/capabilities");
     // PTX main reports no diarization stage: the relay says it cannot diarize.
-    expect(caps.json).toMatchObject({ max_bytes: MAX_RECORDING_BYTES, admission: "open", diarization: false });
+    expect(caps.json).toMatchObject({ max_bytes: MOCK_PTX_MAX_BYTES, admission: "open", diarization: false });
     expect(ptx.requests[0]!.headers["x-tenant-ref"]).toBeUndefined();
 
     const id = (await create(backend.url)).json.id;
@@ -1290,6 +1291,19 @@ describe("response DTOs", () => {
     expect((await call(backend.url, "GET", `/transcriptions/${ID}/result`)).json.language).toBeNull();
   });
 
+  test("a larger PTX-advertised max_bytes is accepted and relayed", async () => {
+    const { ptx, backend } = await setup();
+    ptx.state.override = (path) => path === "/v1/transcriptions/capabilities"
+      ? { status: 200, body: { max_bytes: NEXT_PTX_MAX_BYTES, max_duration_seconds: 10800, max_channels: 2,
+          content_types: ["audio/mpeg"], transcript_ttl_seconds: 86400, admission: "open" } }
+      : null;
+    const caps = await call(backend.url, "GET", "/capabilities");
+    expect(caps.json.max_bytes).toBe(NEXT_PTX_MAX_BYTES);
+    const large = await create(backend.url, ADDRESS_A, randomUUID(), { ...createBody(), byte_size: NEXT_PTX_MAX_BYTES });
+    expect(large.status).toBe(201);
+    expect(JSON.parse(ptx.requests.find((request) => request.method === "POST")!.body).byte_size).toBe(NEXT_PTX_MAX_BYTES);
+  });
+
   test("an off-contract value anywhere in a success body is upstream_bad_response", async () => {
     const { ptx, backend } = await setup();
     const done = completedResult(ID);
@@ -1305,7 +1319,7 @@ describe("response DTOs", () => {
       [`/transcriptions/${ID}`, 200, job({ status: "failed", error: { code: "cancelled" } })],
       [`/transcriptions/${ID}`, 200, job({ status: "cancelled", error: { code: "no_speech" } })],
       [`/transcriptions/${ID}`, 200, job({ byte_size: "1000" })],
-      [`/transcriptions/${ID}`, 200, job({ byte_size: MAX_RECORDING_BYTES + 1 })],
+      [`/transcriptions/${ID}`, 200, job({ byte_size: Number.MAX_SAFE_INTEGER + 1 })],
       [`/transcriptions/${ID}`, 200, job({ channels: 3 })],
       [`/transcriptions/${ID}`, 200, job({ progress: { stage: "transcribing", queue_position: 0, regions_completed: 8, regions_total: 7 } })],
       [`/transcriptions/${ID}`, 200, job({ progress: { stage: "../x", queue_position: 0, regions_completed: 0, regions_total: 0 } })],

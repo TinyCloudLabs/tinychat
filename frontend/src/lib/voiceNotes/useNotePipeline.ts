@@ -304,7 +304,17 @@ export interface PipelineActionEnv {
   reread: () => void;
 }
 
-const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+function messageOf(error: unknown): string {
+  const code = error && typeof error === "object" && "code" in error ? String(error.code).toLowerCase() : "";
+  if (["network_error", "network", "offline", "timeout", "timed_out"].includes(code))
+    return "Couldn't reach your space. Check your connection and try again.";
+  if (["unauthorized", "auth", "authentication_required"].includes(code))
+    return "Your session ended. Sign in and try again.";
+  if (["not_found", "tombstoned", "voice_note_not_found"].includes(code))
+    return "This note is no longer available on this phone.";
+  if (["quota", "quota_exceeded", "storage_quota"].includes(code)) return "Your space is full.";
+  return "Couldn't complete this step. Try again.";
+}
 
 /** Runs the blocker's action with the existing function behind it. The reason it did not work, or null. Nothing is swallowed. */
 export async function runPipelineAction(kind: PipelineActionKind, env: PipelineActionEnv): Promise<string | null> {
@@ -321,7 +331,7 @@ export async function runPipelineAction(kind: PipelineActionKind, env: PipelineA
         await env.transcription.onRecheck();
         // `check()` settles on its own failure and keeps the cause in the snapshot.
         const after = env.latestTranscription();
-        return after?.availability === "failed" ? `Couldn't check private transcription: ${after.checkError ?? "no details were kept"}` : null;
+        return after?.availability === "failed" ? "Couldn't check private transcription right now. Try again." : null;
       }
       case "reread":
         env.reread();
@@ -331,7 +341,7 @@ export async function runPipelineAction(kind: PipelineActionKind, env: PipelineA
           case "space": {
             await env.saveNow();
             // Failures no single note owns (the account is not ready, the defaults could not be claimed) are reported to the store, not thrown.
-            return pendingStore.generalError();
+            return pendingStore.generalError() === null ? null : "Couldn't save this note. It is safe on this phone. Try again.";
           }
           case "notes":
             if (env.input.notes.state === "unreadable") {
@@ -560,7 +570,9 @@ function useSpaceRows(wanted: readonly { id: string; tcw: TinyCloudWeb; signal: 
       readSpaceRows(tcw, due.map((entry) => entry.id)).then(settle, (caught: unknown) => {
         console.error("[NotePipeline] Could not read the notes' rows in the space", due.map((entry) => entry.id), caught);
         // A call that ran out of time says so as a read; a wait in the lane that ran out keeps its own cause.
-        const reason = caught instanceof VoiceNoteSaveTimeout ? VOICE_NOTE_READ_TIMEOUT_MESSAGE : messageOf(caught);
+        const reason = caught instanceof SpaceLaneQueueWaitTimeout
+          ? caught.message
+          : caught instanceof VoiceNoteSaveTimeout ? VOICE_NOTE_READ_TIMEOUT_MESSAGE : messageOf(caught);
         const timeout = caught instanceof VoiceNoteSaveTimeout || caught instanceof SpaceLaneQueueWaitTimeout;
         settle(new Map(due.map(({ id }): [string, RowRead] => [id, { error: `Your space's copy of this note wouldn't open: ${reason}`, ...(timeout ? { timeout: true as const } : {}) }])));
       });

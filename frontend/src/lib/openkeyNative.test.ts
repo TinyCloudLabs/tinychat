@@ -22,6 +22,8 @@ import type { Manifest } from "@tinycloud/sdk-core";
 import {
   describeAuthFailure,
   nativeClientOptions,
+  normalizeLoginHint,
+  NATIVE_BROWSER_THEME,
   nativePermissions,
   nativeSignInErrorMessage,
   isNativeOpenKeySession,
@@ -96,7 +98,7 @@ interface Flow {
   deps: NativeSignInDeps;
   order: string[];
   storage: ReturnType<typeof fakeStorage>;
-  signInArgs: { capabilities: unknown; siweNonce?: string }[];
+  signInArgs: { capabilities: unknown; siweNonce?: string; loginHint?: string; loginMethod?: string }[];
   nonceCalls: (string | undefined)[];
   activation: { host: string; header: { Authorization: string } }[];
   restore: { address: string; config: Record<string, unknown> }[];
@@ -119,7 +121,7 @@ function makeFlow(): Flow {
   flow.openkey = {
     current: async () => null,
     signOut: async () => { flow.order.push("signOut"); },
-    signIn: async (args: { capabilities: unknown; siweNonce?: string }) => {
+    signIn: async (args: { capabilities: unknown; siweNonce?: string; loginHint?: string; loginMethod?: string }) => {
       flow.order.push("signIn");
       flow.signInArgs.push(args);
       return { tokens: { accessToken: "a", refreshToken: "r" }, delegation, sessionKey };
@@ -257,7 +259,7 @@ describe("nativeClientOptions", () => {
   const malformedHost = { ...config, env: { ...config.env, VITE_OPENKEY_HOST: "openkey.example.com" } };
 
   test("signInNative surfaces a malformed host as the configuration error, not a generic failure", async () => {
-    await expect(signInNative(malformedHost, makeFlow().deps)).rejects.toThrow(
+    await expect(signInNative(malformedHost, undefined, makeFlow().deps)).rejects.toThrow(
       'Native sign-in is not configured in this build (VITE_OPENKEY_HOST is not a valid URL: "openkey.example.com").',
     );
   });
@@ -300,7 +302,7 @@ describe("nativePermissions", () => {
 describe("signInNative", () => {
   test("a fresh activation runs nonce → sign-in → handoff → activate → restore → verify", async () => {
     const flow = makeFlow();
-    const result = await signInNative(config, flow.deps);
+    const result = await signInNative(config, undefined, flow.deps);
 
     expect(flow.order).toEqual(["nonce", "signIn", "save", "activate", "restore", "verify"]);
     // Address-less: the signer is unknown until OpenKey signs the delegation.
@@ -342,6 +344,31 @@ describe("signInNative", () => {
     expect(result.verified.token).toBe("jwt");
   });
 
+  test("hints reach OpenKeyNative.signIn: the email path sends the address with its method", async () => {
+    const flow = makeFlow();
+    await signInNative(config, { loginHint: "sam@mailinator.com", loginMethod: "email" }, flow.deps);
+    expect(flow.signInArgs[0].loginHint).toBe("sam@mailinator.com");
+    expect(flow.signInArgs[0].loginMethod).toBe("email");
+    expect(flow.signInArgs[0].siweNonce).toBe("backend-nonce-1");
+  });
+
+  test("a method-only hint sends no address", async () => {
+    for (const loginMethod of ["google", "passkey"] as const) {
+      resetNativeOpenKeyClientForTests();
+      const flow = makeFlow();
+      await signInNative(config, { loginMethod }, flow.deps);
+      expect(flow.signInArgs[0].loginMethod).toBe(loginMethod);
+      expect("loginHint" in flow.signInArgs[0]).toBe(false);
+    }
+  });
+
+  test("with no hints the sign-in carries none", async () => {
+    const flow = makeFlow();
+    await signInNative(config, undefined, flow.deps);
+    expect("loginHint" in flow.signInArgs[0]).toBe(false);
+    expect("loginMethod" in flow.signInArgs[0]).toBe(false);
+  });
+
   test("an already active space with no new activation restores and verifies", async () => {
     const flow = makeFlow();
     const activate = flow.deps.activateSession;
@@ -349,7 +376,7 @@ describe("signInNative", () => {
       ...await activate(host, header), activated: [], skipped: [],
     });
 
-    const result = await signInNative(config, flow.deps);
+    const result = await signInNative(config, undefined, flow.deps);
     expect(result.verified.token).toBe("jwt");
     expect(flow.order).toEqual(["nonce", "signIn", "save", "activate", "restore", "verify"]);
   });
@@ -362,7 +389,7 @@ describe("signInNative", () => {
     });
 
     let caught: unknown;
-    try { await signInNative(config, flow.deps); } catch (error) { caught = error; }
+    try { await signInNative(config, undefined, flow.deps); } catch (error) { caught = error; }
     expect(caught).toBeInstanceOf(Error);
     expect((caught as Error).message).toBe(NATIVE_SIGN_IN_SPACE_MESSAGE);
     expect((caught as Error & { cause?: { code?: string } }).cause?.code).toBe("SPACE_UNAVAILABLE");
@@ -385,7 +412,7 @@ describe("signInNative", () => {
     const prev = (globalThis as { localStorage?: unknown }).localStorage;
     (globalThis as { localStorage?: unknown }).localStorage = spy;
     try {
-      await signInNative(config, makeFlow().deps);
+      await signInNative(config, undefined, makeFlow().deps);
     } finally {
       if (had) (globalThis as { localStorage?: unknown }).localStorage = prev;
       else delete (globalThis as { localStorage?: unknown }).localStorage;
@@ -398,7 +425,7 @@ describe("signInNative", () => {
     flow.openkey.signIn = async () => {
       throw new OpenKeyNativeError("USER_CANCELLED", "sheet closed");
     };
-    await expect(signInNative(config, flow.deps)).rejects.toThrow(NATIVE_SIGN_IN_CANCELLED_MESSAGE);
+    await expect(signInNative(config, undefined, flow.deps)).rejects.toThrow(NATIVE_SIGN_IN_CANCELLED_MESSAGE);
     expect(flow.verify).toEqual([]);
     expect(flow.storage.saved).toEqual([]);
   });
@@ -408,14 +435,14 @@ describe("signInNative", () => {
     flow.openkey.signIn = async () => {
       throw new OpenKeyNativeError("ACCESS_DENIED", "user denied");
     };
-    await expect(signInNative(config, flow.deps)).rejects.toThrow(NATIVE_SIGN_IN_DENIED_MESSAGE);
+    await expect(signInNative(config, undefined, flow.deps)).rejects.toThrow(NATIVE_SIGN_IN_DENIED_MESSAGE);
     expect(flow.verify).toEqual([]);
   });
 
   test("an unspecified failure gets the generic message", async () => {
     const flow = makeFlow();
     flow.deps.activateSession = async () => ({ success: false, status: 503, error: "node unreachable" });
-    await expect(signInNative(config, flow.deps)).rejects.toThrow(/failed/i);
+    await expect(signInNative(config, undefined, flow.deps)).rejects.toThrow(/failed/i);
     expect(flow.verify).toEqual([]);
   });
 
@@ -426,7 +453,7 @@ describe("signInNative", () => {
       delegation: { ...delegation, tinycloudHost: "https://other.example" },
       sessionKey,
     });
-    await expect(signInNative(config, flow.deps)).rejects.toThrow();
+    await expect(signInNative(config, undefined, flow.deps)).rejects.toThrow();
     expect(flow.activation).toEqual([]);
   });
 
@@ -438,7 +465,7 @@ describe("signInNative", () => {
       if (failed === "activate") flow.deps.activateSession = async () => { throw new Error("activation failed"); };
       if (failed === "restore") flow.deps.restoreSession = async () => { throw new Error("restore failed"); };
       if (failed === "verify") flow.deps.verifySession = async () => { throw new Error("SIWE verification failed: Nonce is invalid, expired, or already used"); };
-      await expect(signInNative(config, flow.deps)).rejects.toThrow(
+      await expect(signInNative(config, undefined, flow.deps)).rejects.toThrow(
         failed === "verify" ? NATIVE_SIGN_IN_NONCE_MESSAGE : /sign-in failed/i,
       );
       expect(flow.order.at(-1)).toBe("signOut");
@@ -450,7 +477,7 @@ describe("signInNative", () => {
     const flow = makeFlow();
     flow.openkey.current = async () => ({ tokens: { accessToken: "a", refreshToken: "r" }, delegation, sessionKey });
     flow.openkey.signIn = async () => { throw new OpenKeyNativeError("ACCESS_DENIED", "denied"); };
-    await expect(signInNative(config, flow.deps)).rejects.toThrow(NATIVE_SIGN_IN_DENIED_MESSAGE);
+    await expect(signInNative(config, undefined, flow.deps)).rejects.toThrow(NATIVE_SIGN_IN_DENIED_MESSAGE);
     expect(flow.order).toEqual(["nonce"]);
     expect(await flow.openkey.current()).not.toBeNull();
   });
@@ -458,7 +485,7 @@ describe("signInNative", () => {
   test("a failed immediate renewal is handled by the SDK without another revoke", async () => {
     const flow = makeFlow();
     flow.openkey.signIn = async () => { throw new OpenKeyNativeError("NETWORK", "renew failed"); };
-    await expect(signInNative(config, flow.deps)).rejects.toThrow(NATIVE_SIGN_IN_NETWORK_MESSAGE);
+    await expect(signInNative(config, undefined, flow.deps)).rejects.toThrow(NATIVE_SIGN_IN_NETWORK_MESSAGE);
     expect(flow.order).toEqual(["nonce"]);
   });
 
@@ -466,7 +493,7 @@ describe("signInNative", () => {
     const flow = makeFlow();
     flow.deps.verifySession = async () => { throw new Error("SIWE verification failed: invalid_nonce"); };
     flow.openkey.signOut = async () => { throw new OpenKeyNativeError("NETWORK", "offline"); };
-    await expect(signInNative(config, flow.deps)).rejects.toThrow(NATIVE_SIGN_IN_NONCE_MESSAGE);
+    await expect(signInNative(config, undefined, flow.deps)).rejects.toThrow(NATIVE_SIGN_IN_NONCE_MESSAGE);
   });
 });
 
@@ -499,7 +526,7 @@ describe("native boot", () => {
     let constructed = 0;
     const createOpenKeyNative = () => { constructed++; return flow.openkey; };
     expect((await restoreNativeAtBoot(config, true, { ...flow.deps, createOpenKeyNative })).kind).toBe("none");
-    await signInNative(config, { ...flow.deps, createOpenKeyNative });
+    await signInNative(config, undefined, { ...flow.deps, createOpenKeyNative });
     await signOutNative({ env: config.env, createOpenKeyNative });
     expect(constructed).toBe(1);
     expect(flow.order.at(-1)).toBe("signOut");
@@ -746,6 +773,31 @@ describe("native sign-out", () => {
       createOpenKeyNative: () => openkey,
     });
     expect(calls).toBe(1);
+  });
+});
+
+describe("normalizeLoginHint", () => {
+  test("trims and lowercases a plausible address", () => {
+    expect(normalizeLoginHint("  Sam@Mailinator.com ")).toBe("sam@mailinator.com");
+  });
+
+  test("refuses anything the PAR would refuse", () => {
+    for (const bad of ["", "   ", "sam", "@mailinator.com", "sam@", "a@b@c.com", "sam smith@mailinator.com", `${"a".repeat(250)}@b.co`]) {
+      expect(normalizeLoginHint(bad)).toBeNull();
+    }
+    expect(normalizeLoginHint(`${"a".repeat(248)}@b.co`)).toBe(`${"a".repeat(248)}@b.co`);
+  });
+});
+
+describe("Android browser theme", () => {
+  test("Custom Tabs are dark with the OpenKey page's background", () => {
+    expect(NATIVE_BROWSER_THEME).toEqual({ toolbarColor: "#09090B", colorScheme: "dark" });
+  });
+
+  test("the default client is built with it", () => {
+    const source = readFileSync(join(__dirname, "openkeyNative.ts"), "utf-8");
+    const deps = source.slice(source.indexOf("async function defaultDeps"), source.indexOf("function delegationExpiryIso"));
+    expect(deps).toContain("browserTheme: NATIVE_BROWSER_THEME");
   });
 });
 
