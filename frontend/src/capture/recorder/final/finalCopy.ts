@@ -10,6 +10,9 @@ const MODE_NAMES = {
 
 export const PRIVATE_CONSENT_TITLE = "Use Private transcription?";
 export const PRIVATE_CONSENT_ACTION = "Use Private transcription";
+export const POWERFUL_CONSENT_TITLE = "Use Powerful transcription?";
+export const POWERFUL_CONSENT_ACTION = "Use Powerful transcription";
+export const POWERFUL_CONSENT_BODY = "Powerful sends this note's audio through Exo's server to AssemblyAI, a third-party service, for the most accurate transcript with speaker labels. Exo deletes it from AssemblyAI as soon as the transcript is saved.";
 export function privateConsentDevice(platform: AppPlatform): "phone" | "Mac" | "browser" {
   return platform === "tauri" ? "Mac" : platform === "web" ? "browser" : "phone";
 }
@@ -104,6 +107,7 @@ export const FINAL_COPY = {
     skipName: MODE_NAMES.skip,
     localName: MODE_NAMES.local,
     privateName: MODE_NAMES.private,
+    powerfulName: MODE_NAMES.powerful,
     noTranscript: "no transcript",
     skipCaption: {
       phone: "Just the recording, kept on this phone.",
@@ -123,5 +127,7 @@ export const FINAL_COPY = {
     privateCaption: "Fast, accurate, and sealed from Exo.",
     privateExplanation:
       "Sent to a sealed hardware enclave, transcribed, then deleted. Exo never sees it.",
+    powerfulCaption: "Most accurate, with speaker labels.",
+    powerfulExplanation: "Sent through Exo's server to AssemblyAI, then deleted after the transcript is saved.",
   },
 } as const;

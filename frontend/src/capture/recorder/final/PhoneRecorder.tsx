@@ -53,7 +53,7 @@ import {
   modeStop,
   type ModeId,
 } from "./transcriptionModes";
-import { FINAL_COPY, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, privateConsentBody, privateConsentDevice } from "./finalCopy";
+import { FINAL_COPY, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, POWERFUL_CONSENT_ACTION, POWERFUL_CONSENT_BODY, POWERFUL_CONSENT_TITLE, privateConsentBody, privateConsentDevice } from "./finalCopy";
 import { useAudioInputs, type AudioInputsSource } from "./useAudioInputs";
 import { useSilencedSince } from "./useSilencedSince";
 import { MicDeniedAction } from "./shell/MicDeniedAction";
@@ -1091,8 +1091,8 @@ export function PhoneRecorder({
           role="dialog"
           titleId={`${ids}-ct`}
           descriptionId={`${ids}-cd`}
-          title={PRIVATE_CONSENT_TITLE}
-          description={privateConsentBody(privateConsentDevice(platform))}
+          title={choice.askingMode === "powerful" ? POWERFUL_CONSENT_TITLE : PRIVATE_CONSENT_TITLE}
+          description={choice.askingMode === "powerful" ? POWERFUL_CONSENT_BODY : privateConsentBody(privateConsentDevice(platform))}
           onCancel={choice.dismissConsent}
           returnFocus={consentOpener}
           fallbackFocus={scale}
@@ -1103,7 +1103,7 @@ export function PhoneRecorder({
             data-initial=""
             onClick={choice.confirmConsent}
           >
-            {PRIVATE_CONSENT_ACTION}
+            {choice.askingMode === "powerful" ? POWERFUL_CONSENT_ACTION : PRIVATE_CONSENT_ACTION}
           </button>
           <button
             type="button"

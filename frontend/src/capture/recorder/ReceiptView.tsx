@@ -34,7 +34,8 @@ export function receiptRouting(args: {
   // Only a job that is really running says "Transcribing": availability alone never does, and a
   // note committed to Audio only or to Local (not moved) has no private job to speak of.
   const transcribing = outcome === "saved" && savedTranscriber !== "off" && privateJob?.kind === "active";
-  const savedRoute = savedTranscriber === "on-device" && !movedToPrivate ? "on-device"
+  const savedRoute = savedTranscriber === "assemblyai" ? "assemblyai"
+    : savedTranscriber === "on-device" && !movedToPrivate ? "on-device"
     : savedTranscriber === "off" ? "off"
     : privateJob !== undefined ? "private-cloud" : "off";
   const privateOutcome = savedTranscriber !== "off" && privateJob?.kind === "done" ? privateJob.outcome : null;

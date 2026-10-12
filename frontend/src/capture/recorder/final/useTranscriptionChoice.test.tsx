@@ -110,12 +110,13 @@ function choice(
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("useTranscriptionChoice", () => {
-  test("the scale has Audio only, Local and Private", () => {
+  test("the scale has Audio only, Local, Private and Powerful", () => {
     const { result } = choice(transcription(), fakeApi("private-cloud").api);
     expect(result.stops.map((s) => s.stop.id)).toEqual([
       "skip",
       "local",
       "private",
+      "powerful",
     ]);
   });
 
@@ -151,7 +152,7 @@ describe("useTranscriptionChoice", () => {
   test("choosing an unavailable stop returns why and asks the provider for nothing", async () => {
     const { api, calls } = fakeApi("private-cloud");
     const { result } = choice(transcription(), api);
-    expect(() => result.select("powerful" as never)).toThrow("Unknown transcription mode: powerful");
+    expect(result.select("powerful")).toBe("Not available right now");
     await settle();
     expect(calls).toEqual([]);
   });
@@ -294,10 +295,11 @@ describe("useTranscriptionChoice", () => {
         ["skip", false],
         ["local", true],
         ["private", false],
+        ["powerful", false],
       ]);
       expect(
         result.stops.filter((s) => !s.available).map((s) => s.reason),
-      ).toEqual([SIGNED_OUT, SIGNED_OUT]);
+      ).toEqual([SIGNED_OUT, SIGNED_OUT, SIGNED_OUT]);
       expect(result.mode).toBe("local");
     });
 
@@ -310,9 +312,11 @@ describe("useTranscriptionChoice", () => {
         ["skip", true],
         ["local", false],
         ["private", false],
+        ["powerful", false],
       ]);
       expect(result.stops.filter((s) => !s.available).map((s) => s.reason)).toEqual([
         FINAL_COPY.whisperUnavailable,
+        SIGNED_OUT,
         SIGNED_OUT,
       ]);
       expect(result.caption).toBe(DESKTOP_SIGNED_OUT_CAPTION);
@@ -361,6 +365,7 @@ describe("useTranscriptionChoice", () => {
         true,
         true,
         true,
+        false,
       ]);
     });
 
@@ -372,7 +377,7 @@ describe("useTranscriptionChoice", () => {
       expect(notices).toEqual([SIGNED_OUT]);
       expect(
         choice(transcription(), api).result.stops.map((s) => s.available),
-      ).toEqual([true, true, true]);
+      ).toEqual([true, true, true, false]);
     });
 
     describe("mounted: signing out and back in", () => {
@@ -426,11 +431,11 @@ describe("useTranscriptionChoice", () => {
         } as unknown as HTMLElement;
         const root = createRoot(container);
         await act(async () => root.render(<Probe signedIn={false} />));
-        expect(seen.at(-1)).toEqual([false, true, false]);
+        expect(seen.at(-1)).toEqual([false, true, false, false]);
         await act(async () => root.render(<Probe signedIn />));
-        expect(seen.at(-1)).toEqual([true, true, true]);
+        expect(seen.at(-1)).toEqual([true, true, true, false]);
         await act(async () => root.render(<Probe signedIn={false} />));
-        expect(seen.at(-1)).toEqual([false, true, false]);
+        expect(seen.at(-1)).toEqual([false, true, false, false]);
         await act(async () => root.unmount());
       });
     });
@@ -489,12 +494,12 @@ describe("useTranscriptionChoice on the Mac with Whisper", () => {
   test("the matrix: signed in/out x Whisper ready or not", () => {
     const outNone = desktop(false, none, "on-device").result;
     expect(outNone.mode).toBe("skip");
-    expect(available(outNone)).toEqual({ skip: true, local: false, private: false });
+    expect(available(outNone)).toEqual({ skip: true, local: false, private: false, powerful: false });
     expect(outNone.caption).toBe(DESKTOP_SIGNED_OUT_CAPTION);
 
     const outReady = desktop(false, ready, "on-device").result;
     expect(outReady.mode).toBe("local");
-    expect(available(outReady)).toEqual({ skip: false, local: true, private: false });
+    expect(available(outReady)).toEqual({ skip: false, local: true, private: false, powerful: false });
     expect(outReady.caption).toBe("Whisper Large Turbo (Multilingual) on this Mac, after you stop.");
 
     const inNone = desktop(true, none, "private-cloud").result;

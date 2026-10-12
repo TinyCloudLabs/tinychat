@@ -316,7 +316,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     // mode the note was recorded under stays on screen until the receipt.
     const live = state.recordingId !== null && nativeOptions !== null;
     const next: RecorderTranscriberChoice = live
-      ? { id: nativeOptions!.transcriber === "assemblyai" ? "private-cloud" : nativeOptions!.transcriber,
+      ? { id: nativeOptions!.transcriber,
         identifySpeakers: nativeOptions!.identifySpeakers, source: "recording" }
       : defaultChoice();
     if (choice.id === next.id && choice.identifySpeakers === next.identifySpeakers && choice.source === next.source) return false;
@@ -413,6 +413,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     const generation = currentAccountGeneration();
     send({ type: "LOCAL_COMMITTED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
     void pendingStore.refresh();
+    if (recording.options?.transcriber === "assemblyai" && transcriber && generation === currentAccountGeneration()) {
+      transcriber.noteSaved(recording);
+    }
     if (!tcw || (pipeline && !pipeline.isAccepting())) {
       pendingStore.setHeld(recording.id, "signed-out");
       send({ type: "LOCAL_UPLOAD_HELD", id: recording.id, reason: "signed-out" });
@@ -593,7 +596,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       return Math.floor(recordedElapsedAt(state));
     },
     async setTranscriber(id, { scope }) {
-      if (!available || id === "assemblyai") return "unavailable";
+      if (!available) return "unavailable";
       if (id === "on-device" && captureEngineKind() === "tauri") {
         try { await (await import("@/lib/voiceNotes/desktop/desktopVoiceNotes")).refreshDesktopWhisperCapability(); }
         catch { return "unavailable"; }
@@ -605,9 +608,14 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         if (!snapshot?.consented) return "needs_consent";
         if (snapshot.availability !== "available") return "unavailable";
       }
+      if (id === "assemblyai") {
+        const snapshot = transcriber?.snapshot?.();
+        if (!snapshot?.powerfulConsented) return "needs_consent";
+        if (!snapshot.powerfulAvailable) return "unavailable";
+      }
       if (scope === "recording") {
         if (state.phase !== "recording" || !state.recordingId) return "unavailable";
-        const identifySpeakers = id === "private-cloud" && privateDiarization() && preference.identifySpeakers;
+        const identifySpeakers = (id === "assemblyai" || (id === "private-cloud" && privateDiarization())) && preference.identifySpeakers;
         await VoiceNotes.setRecordingOptions({ transcriber: id, identifySpeakers });
         acceptNativeOptions(await VoiceNotes.status());
       } else {
@@ -624,8 +632,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       const id = scope === "recording" ? choice.id : effectiveCaptureOptions(preference, signedIn).transcriber;
       if (scope === "recording" && (state.phase !== "recording" || choice.source !== "recording")) return "unavailable";
       if (id !== "private-cloud" && id !== "assemblyai") return "unavailable";
-      if (id === "assemblyai") return "unavailable";
-      if (!privateDiarization()) return "unavailable";
+      if (id === "private-cloud" && !privateDiarization()) return "unavailable";
       if (scope === "recording") {
         await VoiceNotes.setRecordingOptions({ identifySpeakers: on });
         acceptNativeOptions(await VoiceNotes.status());

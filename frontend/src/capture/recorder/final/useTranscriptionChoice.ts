@@ -50,12 +50,13 @@ export const TRANSCRIBER_FOR: Record<ModeId, TranscriberId> = {
   skip: "off",
   local: "on-device",
   private: "private-cloud",
+  powerful: "assemblyai",
 };
 const MODE_NAME = Object.fromEntries(
   MODE_STOPS.map((stop) => [stop.id, stop.shortName]),
 ) as Record<ModeId, string>;
 const MODE_FOR: Record<TranscriberId, ModeId> = {
-  off: "skip", "on-device": "local", "private-cloud": "private", assemblyai: "private",
+  off: "skip", "on-device": "local", "private-cloud": "private", assemblyai: "powerful",
 };
 
 export interface ScaleStop {
@@ -164,7 +165,6 @@ export function useTranscriptionChoice({
   notify,
 }: TranscriptionChoiceOptions) {
   const offered = transcription?.availability === "available";
-  const consented = transcription?.consented ?? false;
   const desktop = shell === "desktop";
   const whisperReady = desktop && whisper.ready;
   // Signed out with no Whisper on this Mac there is nothing to transcribe with: the recording is kept as audio only.
@@ -174,6 +174,7 @@ export function useTranscriptionChoice({
   const [asking, setAsking] = useState(false);
   const [pending, setPending] = useState<ModeId | null>(null);
   const [retry, setRetry] = useState<ModeId | null>(null);
+  const consented = retry === "powerful" ? transcription?.powerfulConsented ?? false : transcription?.consented ?? false;
 
   const localModelStatus: { reason?: string; action?: StopAction } =
     shell === "phone" && model && !isOnDeviceReady(model)
@@ -206,6 +207,10 @@ export function useTranscriptionChoice({
           reason,
           ...(canRecheck && transcription ? { action: { label: CHECK_AGAIN, run: transcription.onRecheck } } : {}),
         };
+      }
+      if (stop.id === "powerful" && !transcription?.powerfulAvailable) {
+        return { stop, available: false, reason: "Not available right now",
+          ...(transcription ? { action: { label: CHECK_AGAIN, run: transcription.onRecheck } } : {}) };
       }
       if (stop.id === "local" && shell === "phone" && availability.available)
         return { stop, available: true, ...localModelStatus };
@@ -286,7 +291,8 @@ export function useTranscriptionChoice({
   };
 
   const confirmConsent = () => {
-    transcription?.onConsent();
+    if (pending === "powerful") transcription?.onPowerfulConsent?.();
+    else transcription?.onConsent();
     setAsking(false);
     setRetry(pending);
     setPending(null);
@@ -339,6 +345,7 @@ export function useTranscriptionChoice({
     identifySpeakers: api.transcriber.identifySpeakers,
     setIdentifySpeakers,
     asking,
+    askingMode: pending,
     dismissConsent,
     confirmConsent,
   };

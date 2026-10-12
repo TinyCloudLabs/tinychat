@@ -62,6 +62,7 @@ describe("transcription modes availability", () => {
       ["skip", 4, 0],
       ["local", 4, 2],
       ["private", 3, 3],
+      ["powerful", 1, 4],
     ]);
     for (const stop of MODE_STOPS) {
       expect(stop.privacyDots).toBeGreaterThanOrEqual(0);
@@ -71,12 +72,13 @@ describe("transcription modes availability", () => {
     }
   });
 
-  test("scaleStops omits Powerful until it is supported", () => {
+  test("scaleStops includes Powerful on the web", () => {
     const stops = scaleStops("web");
     expect(stops.map(({ id }) => id)).toEqual([
       "skip",
       "local",
       "private",
+      "powerful",
     ]);
     expect(stops.find(({ id }) => id === "local")?.availability).toEqual({
       available: false,
@@ -89,8 +91,8 @@ describe("transcription modes availability", () => {
   });
 
   test("unknown mode ids fail with a typed error", () => {
-    expect(() => modeStop("powerful" as never)).toThrow("Unknown transcription mode: powerful");
-    try { modeStop("powerful" as never); } catch (error) {
+    expect(() => modeStop("unlisted" as never)).toThrow("Unknown transcription mode: unlisted");
+    try { modeStop("unlisted" as never); } catch (error) {
       expect(error).toMatchObject({ code: "unknown_transcription_mode" });
     }
   });
@@ -148,6 +150,11 @@ describe("transcription modes availability", () => {
           "Sent to a sealed hardware enclave, transcribed, then deleted. Exo never sees it.",
         ],
       },
+      powerful: {
+        phone: ["Most accurate, with speaker labels.", "via Exo's server", "Sent through Exo's server to AssemblyAI, then deleted after the transcript is saved."],
+        desktop: ["Most accurate, with speaker labels.", "via Exo's server", "Sent through Exo's server to AssemblyAI, then deleted after the transcript is saved."],
+        web: ["Most accurate, with speaker labels.", "via Exo's server", "Sent through Exo's server to AssemblyAI, then deleted after the transcript is saved."],
+      },
     } as const;
 
     for (const stop of MODE_STOPS) {
@@ -199,10 +206,10 @@ describe("transcription modes availability", () => {
     );
     expect(
       availableStops("desktop", null, false).map((stop) => stop.id),
-    ).toEqual(["skip", "private"]);
+    ).toEqual(["skip", "private", "powerful"]);
     expect(
       availableStops("desktop", null, true).map((stop) => stop.id),
-    ).toEqual(["skip", "local", "private"]);
+    ).toEqual(["skip", "local", "private", "powerful"]);
     expect(scaleStops("desktop", null, false)[1]?.availability).toEqual({
       available: false,
       reason: "Get Whisper for this Mac",
@@ -212,9 +219,9 @@ describe("transcription modes availability", () => {
     });
   });
 
-  test("Powerful is omitted from the picker on every shell", () => {
+  test("Powerful is in the picker on every shell", () => {
     for (const shell of shells) {
-      expect(scaleStops(shell).some((stop) => stop.id === "powerful")).toBe(false);
+      expect(scaleStops(shell).some((stop) => stop.id === "powerful")).toBe(true);
     }
   });
 
@@ -328,12 +335,13 @@ describe("transcription modes availability", () => {
     expect(moveMode("skip", 1, "web", null, false)).toBe(
       "private",
     );
-    expect(moveMode("private", 1, "web", null, false)).toBe("private");
+    expect(moveMode("private", 1, "web", null, false)).toBe("powerful");
   });
 });
 
 describe("Identify speakers", () => {
   test("is enabled for Private, and says Not supported for Local and Audio only", () => {
+    expect(identifySpeakersControl("powerful", true)).toMatchObject({ checked: true, disabled: false });
     expect(identifySpeakersControl("private", true, true)).toMatchObject({
       checked: true,
       disabled: false,

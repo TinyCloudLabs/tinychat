@@ -290,15 +290,15 @@ export function SavedReceipt(props: SavedReceiptProps) {
           {saved && <p className="text-meta text-muted-foreground">Saved to your TinyCloud space</p>}
         </>
       )}
-      {saved && !stepperShown && props.transcribing && <p className="text-meta text-muted-foreground">Transcribing in private cloud…</p>}
+      {saved && !stepperShown && props.transcribing && <p className="text-meta text-muted-foreground">{props.transcriber === "assemblyai" ? "Transcribing with Powerful…" : "Transcribing in private cloud…"}</p>}
       {saved && props.held && <p role="status" className="text-meta text-muted-foreground" data-testid="voice-note-held">{props.held}</p>}
       {saved && props.privateOutcome && (
         <p className="text-meta text-muted-foreground" data-testid="voice-note-private-done">
-          {props.privateOutcome === "no_speech" ? "No speech was found in this note." : "Transcribed in private cloud"}
+          {props.privateOutcome === "no_speech" ? "No speech was found in this note." : props.transcriber === "assemblyai" ? "Transcribed with Powerful" : "Transcribed in private cloud"}
         </p>
       )}
       {props.privateFailure && !stepperShown && (
-        <p role="alert" className="text-callout text-destructive" data-testid="voice-note-private-failed">Couldn&apos;t transcribe in private cloud: {props.privateFailure}</p>
+        <p role="alert" className="text-callout text-destructive" data-testid="voice-note-private-failed">{props.transcriber === "assemblyai" ? "Powerful couldn't finish: " : "Couldn't transcribe in private cloud: "}{props.privateFailure}</p>
       )}
       {needsModel && (
         <NeedsOnDeviceModel

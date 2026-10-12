@@ -274,6 +274,16 @@ describe("capabilities", () => {
 // ── The happy path, end to end ──────────────────────────────────────
 
 describe("hosted flow", () => {
+  test("a stereo note asks AssemblyAI to keep channels separate", async () => {
+    const h = await setup();
+    const id = await h.upload(audio(50));
+    const started = await h.req("POST", "/hosted/transcripts", { body: { upload_id: id, speaker_labels: true, multichannel: true } });
+    expect(started.status).toBe(202);
+    await h.store!.idle();
+    const create = h.calls.find((call) => call.url.endsWith("/v2/transcript"));
+    expect(JSON.parse(new TextDecoder().decode(create!.body!))).toMatchObject({ multichannel: true, speaker_labels: false });
+  });
+
   test("parts → one streamed upload with the server key → transcript → handle reads and delete", async () => {
     const h = await setup();
     const bytes = audio(2 * HOSTED_PART_SIZE + 12_345);
@@ -315,6 +325,7 @@ describe("hosted flow", () => {
     expect(Buffer.from(sent!.body!).equals(Buffer.from(bytes))).toBe(true);
     expect([create!.method, create!.url]).toEqual(["POST", "https://api.assemblyai.com/v2/transcript"]);
     expect(JSON.parse(new TextDecoder().decode(create!.body!))).toEqual({
+      multichannel: false,
       audio_url: UPLOAD_URL,
       speaker_labels: true,
       language_detection: true,

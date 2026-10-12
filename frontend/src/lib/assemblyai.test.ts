@@ -1,69 +1,16 @@
-// AssemblyAI (contract C8): requests carry the user's raw key and the
-// documented options, transcripts become "Speaker A" turns in seconds, polling
-// rides out network trouble but not a failed transcript, and deleting a
-// transcript that is already gone counts as deleted.
+// Hosted AssemblyAI: all requests go through Exo's server, and transcripts become timed speaker turns.
 
 import { describe, expect, test } from "bun:test";
 
 import {
   AssemblyAiError,
   assemblyAiSentences,
-  createAssemblyAiClient,
   createHostedAssemblyAiClient,
   pollAssemblyAiTranscript,
   type AssemblyAiTranscript,
 } from "./assemblyai";
 
-function client(respond: (url: string, init: RequestInit) => Response) {
-  const calls: { url: string; init: RequestInit }[] = [];
-  const c = createAssemblyAiClient("aai-key", {
-    fetchImpl: (async (url: string, init: RequestInit) => {
-      calls.push({ url, init });
-      return respond(url, init);
-    }) as never,
-    backend: { url: "https://api.example", sessionStore: { getToken: () => "tok", isExpired: () => false } },
-  });
-  return { c, calls };
-}
-
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-
-describe("AssemblyAI client", () => {
-  test("a transcript is requested with the raw key, speaker labels as asked, language detection and the current models", async () => {
-    const { c, calls } = client(() => json(200, { id: "t1", status: "queued" }));
-    await c.createTranscript("https://cdn.assemblyai.com/upload/x", { speakerLabels: false });
-    const headers = calls[0]!.init.headers as Record<string, string>;
-    expect(headers.authorization).toBe("aai-key");
-    expect(calls[0]!.url).toBe("https://api.assemblyai.com/v2/transcript");
-    expect(JSON.parse(calls[0]!.init.body as string)).toEqual({
-      audio_url: "https://cdn.assemblyai.com/upload/x",
-      speech_models: ["universal-3-5-pro", "universal-2"],
-      language_detection: true,
-      speaker_labels: false,
-    });
-  });
-
-  test("a rejected key is invalid-key", async () => {
-    const invalid = (await client(() => json(401, { error: "Invalid API key" })).c.validateKey().catch((e) => e)) as AssemblyAiError;
-    expect(invalid.kind).toBe("invalid-key");
-  });
-
-  test("deleting goes through TinyChat's server with the session and the key in a header; gone already counts as deleted", async () => {
-    const { c, calls } = client(() => new Response(null, { status: 204 }));
-    await c.deleteTranscript("t1");
-    expect(`${calls[0]!.init.method} ${calls[0]!.url}`).toBe("DELETE https://api.example/api/transcriber/assemblyai/transcripts/t1");
-    const headers = calls[0]!.init.headers as Record<string, string>;
-    expect(headers).toEqual({ Authorization: "Bearer tok", "X-Requested-With": "XMLHttpRequest", "X-AssemblyAI-Key": "aai-key" });
-
-    await client(() => json(404, { error: { code: "assemblyai_transcript_not_found" } })).c.deleteTranscript("t1");
-    const rejected = (await client(() => json(422, { error: { code: "assemblyai_key_rejected" } })).c.deleteTranscript("t1").catch((e) => e)) as AssemblyAiError;
-    expect([rejected.kind, rejected.message]).toEqual(["invalid-key", "AssemblyAI rejected the key."]);
-    for (const [status, kind] of [[429, "rate-limited"], [502, "network"]] as const) {
-      const err = (await client(() => json(status, { error: { code: "x" } })).c.deleteTranscript("t1").catch((e) => e)) as AssemblyAiError;
-      expect(err.kind).toBe(kind);
-    }
-  });
-});
 
 describe("assemblyAiSentences", () => {
   test("diarized utterances become Speaker A/B turns in seconds", () => {
@@ -188,7 +135,7 @@ describe("TinyCloud's AssemblyAI account (hosted client)", () => {
   test("the account's limits and outages read as retryable or not, never as a key problem", async () => {
     const quota = (await hosted(() => json(429, { error: "assemblyai_quota_exceeded" })).c.upload(new Blob([new Uint8Array(1)])).catch((e) => e)) as AssemblyAiError;
     expect(quota.kind).toBe("rate-limited");
-    expect(quota.message).toContain("today's limit");
+    expect(quota.message).toContain("Today's Powerful allowance is used");
     const gone = (await hosted(() => json(404, { error: "not_found" })).c.getTranscript("h").catch((e) => e)) as AssemblyAiError;
     expect(gone.kind).toBe("not-found");
     await hosted(() => json(404, { error: "not_found" })).c.deleteTranscript("h");

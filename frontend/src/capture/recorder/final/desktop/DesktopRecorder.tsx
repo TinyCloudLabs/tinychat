@@ -29,7 +29,7 @@ import { useFinalRecorderControls } from "../useFinalRecorderControls";
 import { MicDeniedAction } from "../shell/MicDeniedAction";
 import type { TranscriberApi } from "../useTranscriptionChoice";
 import { ViaMenu } from "../ViaMenu";
-import { FINAL_COPY, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, privateConsentBody } from "../finalCopy";
+import { FINAL_COPY, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, POWERFUL_CONSENT_ACTION, POWERFUL_CONSENT_BODY, POWERFUL_CONSENT_TITLE, privateConsentBody } from "../finalCopy";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { openCaptureSettings } from "./openCaptureSettings";
 import { DesktopRing } from "./DesktopRing";
@@ -491,10 +491,10 @@ export function DesktopRecorder({
           role="dialog"
           titleId={`${ids}-ct`}
           descriptionId={`${ids}-cd`}
-          title={PRIVATE_CONSENT_TITLE}
-          description={privateConsentBody("Mac")}
+          title={choice.askingMode === "powerful" ? POWERFUL_CONSENT_TITLE : PRIVATE_CONSENT_TITLE}
+          description={choice.askingMode === "powerful" ? POWERFUL_CONSENT_BODY : privateConsentBody("Mac")}
           keep={{
-            label: PRIVATE_CONSENT_ACTION,
+            label: choice.askingMode === "powerful" ? POWERFUL_CONSENT_ACTION : PRIVATE_CONSENT_ACTION,
             onPress: choice.confirmConsent,
           }}
           other={{

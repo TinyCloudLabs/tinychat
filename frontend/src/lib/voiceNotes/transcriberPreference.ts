@@ -22,9 +22,7 @@ export function readTranscriberPreference(): CaptureOptions {
   if (!store) return memoryPreference;
   try {
     const saved = store.getItem(TRANSCRIBER_KEY);
-    // Powerful voice notes were never wired up; migrate the old saved choice to Private.
-    const transcriber: TranscriberId = saved === "assemblyai" ? "private-cloud"
-      : saved === "off" || saved === "on-device" || saved === "private-cloud" ? saved : "on-device";
+    const transcriber: TranscriberId = saved === "off" || saved === "on-device" || saved === "private-cloud" || saved === "assemblyai" ? saved : "on-device";
     return { transcriber, identifySpeakers: store.getItem(SPEAKERS_KEY) !== "0" };
   } catch { return memoryPreference; }
 }

@@ -535,7 +535,7 @@ describe("voice-note recorder controller", () => {
     remove();
   });
 
-  test("private cloud needs consent; AssemblyAI reports unavailable; Local is allowed without its model", async () => {
+  test("private cloud and Powerful need separate consent; Local is allowed without its model", async () => {
     await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
       transcriber: "on-device", identifySpeakers: false });
     const recorder = controller({ onDeviceReady: false });
@@ -544,7 +544,7 @@ describe("voice-note recorder controller", () => {
     await recorder.record();
     expect(await recorder.setTranscriber("private-cloud", { scope: "recording" })).toBe("needs_consent");
     expect(await recorder.setTranscriber("on-device", { scope: "recording" })).toBe("ok");
-    expect(await recorder.setTranscriber("assemblyai", { scope: "recording" })).toBe("unavailable");
+    expect(await recorder.setTranscriber("assemblyai", { scope: "recording" })).toBe("needs_consent");
     detach();
   });
 
@@ -1946,7 +1946,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
         const detach = recorder.attach();
         await tick();
         await recorder.record();
-        expect(recorder.getTranscriber().id).toBe(from === "assemblyai" ? "private-cloud" : from);
+        expect(recorder.getTranscriber().id).toBe(from);
 
         expect(await recorder.setTranscriber(to, { scope: "recording" })).toBe("ok");
         expect(recorder.getTranscriber()).toMatchObject({ id: to, source: "recording" });

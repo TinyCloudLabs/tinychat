@@ -25,11 +25,7 @@ import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { ResponsiveSheetBody, ResponsiveSheetFooter } from "@/components/ui/responsive-sheet";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import {
-  readAssemblyAiKey,
-  readAssemblyAiKeyHint,
-  readAssemblyAiKeyMode,
   type AssemblyAiKeyMode,
-  type AssemblyAiKeyStatus,
   type HostedAssemblyAiCapabilities,
 } from "@/lib/assemblyai";
 import {
@@ -41,8 +37,6 @@ import {
   type UploadEngine,
   type UploadState,
 } from "@/lib/audioUpload";
-import { isSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
-import { secretsAvailable, SECRETS_UNAVAILABLE_IN_APP_MESSAGE } from "@/lib/openkeyNative";
 import type { PrivateCloudCapabilities } from "@/lib/privateCloud";
 import { PATHS } from "@/shell/routes";
 import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
@@ -94,7 +88,7 @@ export function fileProblem(
   if (privateCloudContentType(file) === null) {
     return engine === "private-cloud"
       ? "Private transcription takes MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio. Choose Powerful, or convert the file."
-      : "TinyCloud's AssemblyAI account takes MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio. Use your own AssemblyAI key, or convert the file.";
+      : "Powerful takes MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio. Convert the file and try again.";
   }
   if (file.size > maxBytes) return `${who} takes files up to ${formatBytes(maxBytes)} (and 2 hours).`;
   return null;
@@ -105,7 +99,7 @@ export function routeText(engine: UploadEngine, assemblyAiMode: AssemblyAiKeyMod
   if (engine === "private-cloud") return "Transcribed by TinyCloud Private Transcription. A copy of the file stays in your space.";
   return assemblyAiMode === "hosted"
     ? "Sent through Exo's server to AssemblyAI under TinyCloud's account, then deleted there."
-    : "Sent from this device to AssemblyAI with your key, then deleted there.";
+    : "This older upload needs to be chosen again for Powerful.";
 }
 
 /** The shared Build 1 Private disclosure before an account's first upload. */
@@ -439,25 +433,16 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
 export function assemblyAiStatus(
   mode: AssemblyAiKeyMode,
   hostedCaps: { state: "checking" } | { state: "ok"; caps: Pick<HostedAssemblyAiCapabilities, "hosted"> } | { state: "failed" },
-  keyStatus: AssemblyAiKeyStatus,
 ): EngineStatus {
-  if (mode === "own") {
-    // Native OpenKey sessions have no vault for the key.
-    if (!secretsAvailable()) {
-      return { state: "unavailable", reason: SECRETS_UNAVAILABLE_IN_APP_MESSAGE };
-    }
-    return keyStatus === "saved"
-      ? { state: "available" }
-      : { state: "unavailable", reason: "AssemblyAI with your own account needs your API key, saved in Settings → Transcription.", action: "settings" };
-  }
+  if (mode === "own") return { state: "unavailable", reason: "Choose this file again to use Powerful through Exo's server." };
   if (hostedCaps.state === "checking") return { state: "checking" };
   if (hostedCaps.state === "failed") return { state: "unavailable", reason: "Couldn't reach TinyCloud's AssemblyAI account.", action: "recheck" };
   return hostedCaps.caps.hosted
     ? { state: "available" }
     : {
         state: "unavailable",
-        reason: "TinyCloud's AssemblyAI account isn't available on this server. You can use your own AssemblyAI key instead.",
-        action: "settings",
+        reason: "Powerful isn't available on this server right now.",
+        action: "recheck",
       };
 }
 
@@ -507,10 +492,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
     };
   }, [api, origin, capsRound]);
 
-  // AssemblyAI: TinyCloud's account when the backend has it (capabilities), or the user's own saved key.
-  const [assemblyAiMode] = useState<AssemblyAiKeyMode>(() =>
-    secretsAvailable() ? readAssemblyAiKeyMode() : "hosted",
-  );
+  const assemblyAiMode: AssemblyAiKeyMode = "hosted";
   const [hostedCaps, setHostedCaps] = useState<{ state: "checking" } | { state: "ok"; caps: HostedAssemblyAiCapabilities } | { state: "failed" }>({
     state: "checking",
   });
@@ -527,19 +509,6 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
     };
   }, [hosted, assemblyAiMode, capsRound]);
 
-  // The own key: read without prompting only when the vault is already open.
-  const [keyStatus, setKeyStatus] = useState<AssemblyAiKeyStatus>(readAssemblyAiKeyHint);
-  useEffect(() => {
-    if (!isSecretsUnlocked(tcw)) return;
-    let cancelled = false;
-    void readAssemblyAiKey(tcw).then((r) => {
-      if (!cancelled && r.ok) setKeyStatus(r.data !== null ? "saved" : "none");
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [tcw]);
-
   const privateStatus: EngineStatus =
     origin === null
       ? { state: "unavailable", reason: "Private transcription isn't set up in this version of Exo yet. Use Powerful instead." }
@@ -548,7 +517,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
         : caps.state === "failed"
             ? { state: "unavailable", reason: "Couldn't reach private transcription.", action: "recheck" }
             : { state: "available" };
-  const assemblyStatus = assemblyAiStatus(assemblyAiMode, hostedCaps, keyStatus);
+  const assemblyStatus = assemblyAiStatus(assemblyAiMode, hostedCaps);
 
   const privateDiarization = caps.state === "ok" && caps.caps.diarization === true;
   const diarizeUnavailable =

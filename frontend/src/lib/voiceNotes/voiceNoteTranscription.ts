@@ -11,6 +11,7 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
+import { createHostedVoiceNoteTrack } from "./hostedVoiceNotes";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
 import { MAX_TURN_SECONDS } from "../localTranscriptTurns";
 import {
@@ -1272,6 +1273,8 @@ export interface VoiceNoteTranscriberSnapshot {
   capabilities: PrivateCloudCapabilities | null;
   consented: boolean;
   jobs: ReadonlyMap<string, NoteTranscriptionState>;
+  powerfulAvailable?: boolean;
+  powerfulConsented?: boolean;
   /** The error of the last availability check when it failed (`availability` "failed"). */
   checkError?: string;
   /** Stable public cause for a failed availability check. */
@@ -1299,6 +1302,7 @@ export interface VoiceNoteTranscriber {
   check(options?: VoiceNoteCheckOptions): Promise<void>;
   /** The one-time Private disclosure. Resumes notes a previous run left in flight. */
   consent(): void;
+  consentPowerful?(): void;
   /** Stops sending: waiting notes are dropped, the running one stops before its upload, unsent jobs are cancelled. */
   turnOff(): Promise<void>;
   /** Transcribe / Retry for one note. Only while available and consented. */
@@ -1709,13 +1713,53 @@ export function voiceNoteTranscriberFor(
     return existing.transcriber;
   }
   const ref = { current: tcw };
-  const transcriber = createVoiceNoteTranscriber({
+  const privateTranscriber = createVoiceNoteTranscriber({
     cloud: createVoiceNoteCloudForBuild(backendUrl, sessionStore, did),
     consent: localStorageVoiceNoteConsentStore(did),
     choices: localStorageVoiceNotePrivateChoiceStore(did),
     holds: localStorageVoiceNoteHoldStore(did),
     tcw: () => ref.current,
   });
+  const hosted = createHostedVoiceNoteTrack(() => ref.current, backendUrl, sessionStore, did);
+  let powerfulAvailable = false;
+  const listeners = new Set<(event: VoiceNoteTranscriberEvent) => void>();
+  const emit = (event: VoiceNoteTranscriberEvent = { kind: "changed" }) => { for (const listener of listeners) listener(event); };
+  privateTranscriber.subscribe(emit);
+  hosted.subscribe(() => emit());
+  const transcriber: VoiceNoteTranscriber = {
+    ...privateTranscriber,
+    snapshot: () => ({ ...privateTranscriber.snapshot(), powerfulAvailable, powerfulConsented: hosted.consented(),
+      jobs: new Map([...privateTranscriber.snapshot().jobs, ...hosted.jobs]) }),
+    subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    async check(options) {
+      await Promise.all([privateTranscriber.check(options), hosted.check().then((available) => {
+        powerfulAvailable = available; emit();
+        if (available && hosted.consented()) void hosted.resume();
+      }, () => { powerfulAvailable = false; emit(); })]);
+    },
+    consentPowerful() {
+      hosted.consent();
+      void hosted.resume();
+    },
+    transcribe(sourceId, audio) {
+      void VoiceNotes.listPending().then(({ recordings }) => {
+        const recording = recordings.find((item) => item.id === sourceId);
+        if (recording?.options?.transcriber === "assemblyai") void hosted.run(recording);
+        else if (recording) privateTranscriber.transcribe(sourceId, audio);
+        else void hosted.runSpaceOnly(sourceId).then((used) => {
+          if (!used) privateTranscriber.transcribe(sourceId, audio);
+        });
+      });
+    },
+    noteSaved(recording, audio) {
+      if (recording.options?.transcriber === "assemblyai") {
+        if (hosted.consented()) void VoiceNotes.listPending().then(({ recordings }) => {
+          const full = recordings.find((item) => item.id === recording.id);
+          if (full) void hosted.run(full);
+        });
+      } else privateTranscriber.noteSaved(recording, audio);
+    },
+  };
   transcribers.set(did, { transcriber, tcw: ref });
   return transcriber;
 }

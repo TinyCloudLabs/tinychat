@@ -5,7 +5,7 @@ import { FINAL_COPY } from "./finalCopy";
 const COPY = FINAL_COPY.modes;
 
 export type ModeShell = "phone" | "desktop" | "web";
-export type ModeId = "skip" | "local" | "private";
+export type ModeId = "skip" | "local" | "private" | "powerful";
 export type DotCount = 0 | 1 | 2 | 3 | 4;
 export interface ModeExplanationContext {
   modelName: string;
@@ -93,6 +93,16 @@ export const MODE_STOPS: readonly ModeStop[] = [
     privacyDots: 3,
     accuracyDots: 3,
   },
+  {
+    id: "powerful",
+    transcriber: "assemblyai",
+    shortName: COPY.powerfulName,
+    subLabel: { phone: "via Exo's server", desktop: "via Exo's server", web: "via Exo's server" },
+    captions: { phone: COPY.powerfulCaption, desktop: COPY.powerfulCaption, web: COPY.powerfulCaption },
+    explanations: { phone: explain(COPY.powerfulExplanation), desktop: explain(COPY.powerfulExplanation), web: explain(COPY.powerfulExplanation) },
+    privacyDots: 1,
+    accuracyDots: 4,
+  },
 ];
 
 /** Every picker mode has one stop. Reject unknown journal values with a typed error. */
@@ -101,6 +111,7 @@ export function modeStop(id: ModeId): ModeStop {
     case "skip": return MODE_STOPS[0]!;
     case "local": return MODE_STOPS[1]!;
     case "private": return MODE_STOPS[2]!;
+    case "powerful": return MODE_STOPS[3]!;
     default: {
       const exhaustive: never = id;
       throw Object.assign(new Error(`Unknown transcription mode: ${String(exhaustive)}`), { code: "unknown_transcription_mode" as const });
@@ -116,6 +127,7 @@ export function modeAvailability(
 ): Availability {
   if (id === "skip") return { available: true };
   if (id === "private") return { available: true };
+  if (id === "powerful") return { available: true };
   if (shell === "web") {
     return { available: false, reason: FINAL_COPY.needsApp };
   }
@@ -180,7 +192,7 @@ export function moveMode(
 }
 
 export function speakersEnabled(mode: ModeId, privateDiarization = false): boolean {
-  return mode === "private" && privateDiarization;
+  return mode === "powerful" || (mode === "private" && privateDiarization);
 }
 
 export function modeShortLabel(
@@ -194,6 +206,8 @@ export function modeShortLabel(
       return COPY.localName;
     case "private":
       return COPY.privateName;
+    case "powerful":
+      return COPY.powerfulName;
     default: {
       const exhaustive: never = mode;
       throw new Error(`Unknown transcription mode: ${String(exhaustive)}`);

@@ -15,7 +15,7 @@ import { PlatformContext } from "@/lib/platform";
 import { getDesktopCaptureExtras, type DesktopCaptureExtras } from "@/lib/voiceNotes/desktopCaptureExtras";
 import { chooseSystemAudio, needsSystemAudioDisclosure, SYSTEM_AUDIO_BODY, SYSTEM_AUDIO_MIC_ONLY, SYSTEM_AUDIO_RECORD, SYSTEM_AUDIO_TITLE } from "@/capture/home/desktop/systemAudioDisclosure";
 import { SheetDialog } from "./final/SheetDialog";
-import { PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, privateConsentBody } from "./final/finalCopy";
+import { PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, POWERFUL_CONSENT_ACTION, POWERFUL_CONSENT_BODY, POWERFUL_CONSENT_TITLE, privateConsentBody } from "./final/finalCopy";
 import { privateConsentDevice } from "./final/finalCopy";
 import { markPrivateConsentPrompted, privateConsentWasPrompted } from "./privateConsentPrompt";
 import "@/capture/home/desktop/systemAudioStart.css";
@@ -211,7 +211,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   const [receiptActionable, setReceiptActionable] = useState(false);
   const [receiptReady, setReceiptReadyState] = useState(false);
   const [momentFieldFocused, setMomentFieldFocused] = useState(false);
-  const [disclosure, setDisclosure] = useState<{ kind: "system-audio"; extras: DesktopCaptureExtras } | { kind: "private"; startAfter: boolean } | null>(null);
+  const [disclosure, setDisclosure] = useState<{ kind: "system-audio"; extras: DesktopCaptureExtras } | { kind: "private" | "powerful"; startAfter: boolean } | null>(null);
   const [disclosureBusy, setDisclosureBusy] = useState(false);
   const [disclosureError, setDisclosureError] = useState<string | null>(null);
   const disclosureOpener = useRef<HTMLElement | null>(null);
@@ -300,10 +300,16 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     setDisclosure({ kind: "private", startAfter });
     return true;
   }, [tcw?.did, recorder.transcription]);
+  const maybePromptPowerful = useCallback((startAfter: boolean) => {
+    if (!tcw?.did || recorder.transcription?.powerfulConsented) return false;
+    setDisclosure({ kind: "powerful", startAfter });
+    return true;
+  }, [tcw?.did, recorder.transcription?.powerfulConsented]);
   const afterSystemAudio = useCallback(() => {
     if (recorder.transcriber.id === "private-cloud" && maybePromptPrivate(true)) return;
+    if (recorder.transcriber.id === "assemblyai" && maybePromptPowerful(true)) return;
     beginRecording();
-  }, [beginRecording, maybePromptPrivate, recorder.transcriber.id]);
+  }, [beginRecording, maybePromptPrivate, maybePromptPowerful, recorder.transcriber.id]);
   const record = useCallback(() => {
     if (disclosureBusy || disclosure) return;
     disclosureOpener.current = typeof document !== "undefined" && document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -344,11 +350,14 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       .finally(() => setDisclosureBusy(false));
   }, [afterSystemAudio, disclosure, disclosureBusy]);
   const closePrivate = useCallback((confirmed: boolean) => {
-    if (disclosure?.kind !== "private") return;
-    if (confirmed) recorder.transcription?.onConsent();
+    if (disclosure?.kind !== "private" && disclosure?.kind !== "powerful") return;
+    if (confirmed) {
+      if (disclosure.kind === "powerful") recorder.transcription?.onPowerfulConsent?.();
+      else recorder.transcription?.onConsent();
+    }
     const startAfter = disclosure.startAfter;
     setDisclosure(null);
-    if (startAfter) beginRecording();
+    if (startAfter && confirmed) beginRecording();
   }, [beginRecording, disclosure, recorder.transcription]);
   const dismiss = useCallback(() => {
     setMomentFieldFocused(false);
@@ -465,11 +474,11 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     <RecorderContext.Provider value={value}>
       {children}
       {disclosureError && !disclosure && <p role="alert">{disclosureError}</p>}
-      {disclosure && <div className="dch-system-audio" data-testid={disclosure.kind === "system-audio" ? "system-audio-disclosure" : "private-consent-disclosure"}>
+      {disclosure && <div className="dch-system-audio" data-testid={disclosure.kind === "system-audio" ? "system-audio-disclosure" : disclosure.kind === "powerful" ? "powerful-consent-disclosure" : "private-consent-disclosure"}>
         <SheetDialog role="dialog" titleId={disclosureTitleId} descriptionId={disclosureDescriptionId}
-          title={disclosure.kind === "system-audio" ? SYSTEM_AUDIO_TITLE : PRIVATE_CONSENT_TITLE}
-          description={disclosure.kind === "system-audio" ? SYSTEM_AUDIO_BODY : privateConsentBody(privateConsentDevice(platform))}
-          onCancel={() => disclosure.kind === "private" ? closePrivate(false) : setDisclosure(null)} returnFocus={disclosureOpener}>
+          title={disclosure.kind === "system-audio" ? SYSTEM_AUDIO_TITLE : disclosure.kind === "powerful" ? POWERFUL_CONSENT_TITLE : PRIVATE_CONSENT_TITLE}
+          description={disclosure.kind === "system-audio" ? SYSTEM_AUDIO_BODY : disclosure.kind === "powerful" ? POWERFUL_CONSENT_BODY : privateConsentBody(privateConsentDevice(platform))}
+          onCancel={() => disclosure.kind === "system-audio" ? setDisclosure(null) : closePrivate(false)} returnFocus={disclosureOpener}>
           {disclosureError && <p role="alert">{disclosureError}</p>}
           <div className="dch-system-audio-actions">
             {disclosure.kind === "system-audio" ? <>
@@ -477,7 +486,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
               <Button type="button" disabled={disclosureBusy} onClick={() => chooseAudio("record")}>{SYSTEM_AUDIO_RECORD}</Button>
             </> : <>
               <Button type="button" variant="outline" data-initial="" onClick={() => closePrivate(false)}>Not now</Button>
-              <Button type="button" onClick={() => closePrivate(true)}>{PRIVATE_CONSENT_ACTION}</Button>
+              <Button type="button" onClick={() => closePrivate(true)}>{disclosure.kind === "powerful" ? POWERFUL_CONSENT_ACTION : PRIVATE_CONSENT_ACTION}</Button>
             </>}
           </div>
         </SheetDialog>

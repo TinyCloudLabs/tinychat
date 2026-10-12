@@ -16,8 +16,14 @@ export interface RouteNode {
 
 /** A voice note from the phone app: straight to the space, through private cloud for its
  * transcript, or transcribed on this phone before either ever leaves it. */
-export function voiceNoteRoute(route: "off" | "on-device" | "private-cloud"): RouteNode[] {
+export function voiceNoteRoute(route: "off" | "on-device" | "private-cloud" | "assemblyai"): RouteNode[] {
   const phone = routeSourceName("ios");
+  if (route === "assemblyai") return [
+    { label: phone, kind: "source" },
+    { label: "Exo's server", kind: "processing" },
+    { label: TRANSCRIBER_NAME.assemblyai, kind: "processing" },
+    { label: "Your space", kind: "destination" },
+  ];
   if (route === "private-cloud") {
     return [
       { label: phone, kind: "source" },
