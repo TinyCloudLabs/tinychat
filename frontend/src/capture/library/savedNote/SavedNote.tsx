@@ -6,7 +6,7 @@ import { useResolvedTheme } from "@/lib/theme";
 import { useRecorder } from "../../recorder/RecorderProvider";
 import { NotePipelineContext } from "../../pipeline/NotePipelineContext";
 import { PipelineStepper } from "../../pipeline/PipelineStepper";
-import { useNotePipeline, type NotePipelineSource } from "@/lib/voiceNotes/useNotePipeline";
+import { rowHasCommittedAudio, useNotePipeline, type NotePipelineSource } from "@/lib/voiceNotes/useNotePipeline";
 import type { MeetingMetadataRead } from "@/lib/connectors/meetingExplorer";
 import type { NoteAudio } from "../NoteDetailView";
 import type { LibraryItem } from "../LibraryRow";
@@ -55,7 +55,7 @@ export default function SavedNote({
   const screen = useSavedNoteScreen(item.sourceId, space);
   const rowMetadata = metadata?.status === "ok" ? metadata.metadata : null;
   const pipelineSource = useMemo<NotePipelineSource>(
-    () => ({ tcw, rowExists: item.onPhone !== true, metadata: rowMetadata }),
+    () => ({ tcw, rowExists: item.onPhone !== true, audioSaved: item.onPhone !== true && rowHasCommittedAudio(rowMetadata), metadata: rowMetadata }),
     [tcw, item.onPhone, rowMetadata],
   );
   const pipeline = useNotePipeline(item.sourceId, pipelineSource);

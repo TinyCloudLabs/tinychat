@@ -639,7 +639,7 @@ export interface NotePipelineSource {
   /** The identity row exists in the space. It may exist before the audio manifest is committed. */
   rowExists: boolean;
   /** Authoritative when known; otherwise taken from the phone ledger's committed audio state. */
-  audioSaved?: boolean;
+  audioSaved: boolean;
   /**
    * The space row's metadata as the caller read it; null when it has no row or the read is not available.
    * Left out (undefined) when the caller has not read the row (the receipt): the hook reads it itself, and again
@@ -745,9 +745,10 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
       const native = natives.get(id) ?? null;
       const nativeRecording = native?.recording;
       const rowExists = source.rowExists || native?.audio?.rowId != null || native?.audio?.state === "saved";
-      const audioSaved = source.audioSaved ?? native?.audio?.state === "saved";
       const rowEntry = source.metadata === undefined && tcw !== null && rowExists ? rows.get(id) : undefined;
       const row = rowEntry !== undefined && tcw !== null && rowEntry.identity === spaceIdentity(tcw) ? rowEntry.read : undefined;
+      const rowAudio = source.metadata !== undefined ? source.metadata : row !== undefined && "metadata" in row ? row.metadata : null;
+      const audioSaved = source.audioSaved || native?.audio?.state === "saved" || rowHasCommittedAudio(rowAudio);
       // The row's answer queues behind uploads on the write lane; the pipeline is shown from what the phone knows meanwhile (`spaceReading`).
       const spaceReading = source.metadata === undefined && tcw !== null && rowExists && row === undefined;
       if (local === undefined || !nativeRead.ready) continue;
@@ -806,6 +807,13 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
   useAutoNoteSync(autoSyncs);
   useAutoTranscriptSync(autoTranscriptSyncs);
   return { states, natives, nativeReady: nativeRead.ready, reread };
+}
+
+export function rowHasCommittedAudio(metadata: Record<string, unknown> | null | undefined): boolean {
+  if (metadata === null || metadata === undefined) return false;
+  const audio = metadata.audio;
+  return (typeof audio === "object" && audio !== null && "stored" in audio && audio.stored === true)
+    || (typeof metadata.audio_kv_key === "string" && metadata.audio_kv_key.length > 0);
 }
 
 /**

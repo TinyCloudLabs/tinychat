@@ -126,7 +126,7 @@ describe("PipelineStepper", () => {
   test("track rows adapt to large text and 320px widths", async () => {
     const css = await Bun.file(new URL("./PipelineStepper.css", import.meta.url)).text();
     expect(css).toContain("container-type: inline-size");
-    expect(css).toContain("grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)");
+    expect(css).toContain("grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr)");
     expect(css).not.toMatch(/font-size:\s*[\d.]+px/);
     expect(css.match(/font-size:\s*0\.78125rem/g)?.length).toBeGreaterThanOrEqual(3);
     expect(css).toMatch(/\.pipeline-stepper \.soft-pill \{[^}]*font-size: 0\.78125rem/);

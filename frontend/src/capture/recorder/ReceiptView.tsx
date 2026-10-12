@@ -50,7 +50,7 @@ export function ReceiptView({ recorder, onOpenNote }: ReceiptViewProps) {
   // transcriber and durable on-device STT state. It is read for every outcome with a note (not just "saved"): a
   // signed-out or offline on-device recording lands as "local" and must still show its real route and transcript.
   // A failed read shows in the pipeline's transcript step with its cause, not as an absent transcriber.
-  const source = useMemo(() => ({ tcw: recorder.tcw, rowExists: outcome === "saved" }), [recorder.tcw, outcome]);
+  const source = useMemo(() => ({ tcw: recorder.tcw, rowExists: outcome === "saved", audioSaved: outcome === "saved" }), [recorder.tcw, outcome]);
   const { view: pipeline, ledger } = useNotePipelineWithLedger(lastSaved?.id ?? null, source);
   const savedTranscriber: TranscriberId | null = ledger?.transcriber ?? null;
   const savedStt = ledger?.stt ?? null;
