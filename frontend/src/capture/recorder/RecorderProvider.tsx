@@ -6,11 +6,17 @@
 // and gives feedback: haptics, and a polite announcement of each change.
 //
 // StaticRecorderProvider serves a fixed value, for the screenshot harness.
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { Button } from "@/components/ui/button";
+import { PlatformContext } from "@/lib/platform";
+import { getDesktopCaptureExtras, type DesktopCaptureExtras } from "@/lib/voiceNotes/desktopCaptureExtras";
+import { chooseSystemAudio, needsSystemAudioDisclosure, SYSTEM_AUDIO_BODY, SYSTEM_AUDIO_MIC_ONLY, SYSTEM_AUDIO_RECORD, SYSTEM_AUDIO_TITLE } from "@/capture/home/desktop/systemAudioDisclosure";
+import { SheetDialog } from "./final/SheetDialog";
+import { PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, privateConsentBody } from "./final/finalCopy";
+import "@/capture/home/desktop/systemAudioStart.css";
 import { hapticRecordStarted, hapticSaved, hapticWarning } from "@/lib/haptics";
 import { VOICE_NOTE_MAX_DURATION_MS, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
@@ -99,6 +105,7 @@ export interface RecorderValue {
   tcw: TinyCloudWeb | null;
   sheetOpen: boolean;
   record(): void;
+  reviewPrivateConsent(): void;
   stop(): void;
   pause(): void;
   resume(): void;
@@ -160,6 +167,9 @@ export interface RecorderProviderProps {
 }
 
 export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSaved, onAccountReady, pipeline, signedOut, onSignedOut, onSignIn, minimiseOnSignIn, children }: RecorderProviderProps) {
+  const platform = useContext(PlatformContext);
+  const disclosureTitleId = useId();
+  const disclosureDescriptionId = useId();
   const [configured, setConfigured] = useState<{ tcw: TinyCloudWeb; did: string | null } | null>(null);
   const [defaultsError, setDefaultsError] = useState<string | null>(null);
   const [defaultsAttempt, setDefaultsAttempt] = useState(0);
@@ -198,6 +208,10 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   const [receiptActionable, setReceiptActionable] = useState(false);
   const [receiptReady, setReceiptReadyState] = useState(false);
   const [momentFieldFocused, setMomentFieldFocused] = useState(false);
+  const [disclosure, setDisclosure] = useState<{ kind: "system-audio"; extras: DesktopCaptureExtras } | { kind: "private"; startAfter: boolean } | null>(null);
+  const [disclosureBusy, setDisclosureBusy] = useState(false);
+  const [disclosureError, setDisclosureError] = useState<string | null>(null);
+  const disclosureOpener = useRef<HTMLElement | null>(null);
   const setReceiptReady = useCallback(() => setReceiptReadyState(true), []);
   // A new note's receipt starts unready again — each one waits for its own Play control (or
   // load error), not whatever the previous note left behind.
@@ -268,11 +282,56 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
 
   useEffect(() => recorder.setOnPresent(() => setSheetOpen(true)), [recorder.setOnPresent]);
 
-  const record = useCallback(() => {
+  const beginRecording = useCallback(() => {
     setMomentFieldFocused(false);
     setSheetOpen(true);
     startRecording();
   }, [startRecording]);
+  const afterSystemAudio = useCallback(() => {
+    if (recorder.transcriber.id === "private-cloud" && recorder.transcription && !recorder.transcription.consented) {
+      setDisclosure({ kind: "private", startAfter: true });
+      return;
+    }
+    beginRecording();
+  }, [beginRecording, recorder.transcriber.id, recorder.transcription]);
+  const record = useCallback(() => {
+    if (disclosureBusy || disclosure) return;
+    disclosureOpener.current = typeof document !== "undefined" && document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setDisclosureError(null);
+    if (platform !== "tauri") { afterSystemAudio(); return; }
+    setDisclosureBusy(true);
+    void (async () => {
+      try {
+        const extras = getDesktopCaptureExtras();
+        if (!extras) throw Object.assign(new Error("System audio consent is unavailable."), { code: "system_audio_consent_unavailable" as const });
+        if (await needsSystemAudioDisclosure(extras)) setDisclosure({ kind: "system-audio", extras });
+        else afterSystemAudio();
+      } catch (error) {
+        setDisclosureError(`Could not start recording: ${error instanceof Error ? error.message : String(error)}`);
+      } finally { setDisclosureBusy(false); }
+    })();
+  }, [afterSystemAudio, disclosure, disclosureBusy, platform]);
+  const reviewPrivateConsent = useCallback(() => {
+    disclosureOpener.current = typeof document !== "undefined" && document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setDisclosureError(null);
+    setDisclosure({ kind: "private", startAfter: false });
+  }, []);
+  const chooseAudio = useCallback((choice: "record" | "mic-only") => {
+    if (disclosure?.kind !== "system-audio" || disclosureBusy) return;
+    setDisclosureBusy(true);
+    void chooseSystemAudio(disclosure.extras, choice).then(() => {
+      setDisclosure(null);
+      afterSystemAudio();
+    }, (error: unknown) => setDisclosureError(`Could not save your choice: ${error instanceof Error ? error.message : String(error)}`))
+      .finally(() => setDisclosureBusy(false));
+  }, [afterSystemAudio, disclosure, disclosureBusy]);
+  const closePrivate = useCallback((confirmed: boolean) => {
+    if (disclosure?.kind !== "private") return;
+    if (confirmed) recorder.transcription?.onConsent();
+    const startAfter = disclosure.startAfter;
+    setDisclosure(null);
+    if (startAfter) beginRecording();
+  }, [beginRecording, disclosure, recorder.transcription]);
   const dismiss = useCallback(() => {
     setMomentFieldFocused(false);
     setSheetOpen(false);
@@ -333,6 +392,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       tcw,
       sheetOpen,
       record,
+      reviewPrivateConsent,
       stop: recorder.stop,
       pause: recorder.pause,
       resume: recorder.resume,
@@ -352,6 +412,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       minimiseSheet,
       openSheet,
       record,
+      reviewPrivateConsent,
       recorder.available,
       recorder.discard,
       recorder.dismissCaptureIssue,
@@ -385,6 +446,24 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   return (
     <RecorderContext.Provider value={value}>
       {children}
+      {disclosureError && !disclosure && <p role="alert">{disclosureError}</p>}
+      {disclosure && <div className="dch-system-audio" data-testid={disclosure.kind === "system-audio" ? "system-audio-disclosure" : "private-consent-disclosure"}>
+        <SheetDialog role="dialog" titleId={disclosureTitleId} descriptionId={disclosureDescriptionId}
+          title={disclosure.kind === "system-audio" ? SYSTEM_AUDIO_TITLE : PRIVATE_CONSENT_TITLE}
+          description={disclosure.kind === "system-audio" ? SYSTEM_AUDIO_BODY : privateConsentBody(platform === "tauri" ? "Mac" : "phone")}
+          onCancel={() => disclosure.kind === "private" ? closePrivate(false) : setDisclosure(null)} returnFocus={disclosureOpener}>
+          {disclosureError && <p role="alert">{disclosureError}</p>}
+          <div className="dch-system-audio-actions">
+            {disclosure.kind === "system-audio" ? <>
+              <Button type="button" variant="outline" data-initial="" disabled={disclosureBusy} onClick={() => chooseAudio("mic-only")}>{SYSTEM_AUDIO_MIC_ONLY}</Button>
+              <Button type="button" disabled={disclosureBusy} onClick={() => chooseAudio("record")}>{SYSTEM_AUDIO_RECORD}</Button>
+            </> : <>
+              <Button type="button" variant="outline" data-initial="" onClick={() => closePrivate(false)}>Not now</Button>
+              <Button type="button" onClick={() => closePrivate(true)}>{PRIVATE_CONSENT_ACTION}</Button>
+            </>}
+          </div>
+        </SheetDialog>
+      </div>}
       {defaultsError && <div role="alert" className="fixed inset-x-4 bottom-[max(1rem,env(safe-area-inset-bottom))] z-50 mx-auto flex max-w-xl items-center gap-3 rounded-xl bg-card p-4 text-callout text-card-foreground shadow-float">
         <span className="min-w-0 flex-1">{defaultsError}</span>
         <Button type="button" variant="outline" onClick={() => setDefaultsAttempt((n) => n + 1)}>Retry</Button>
@@ -457,6 +536,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       tcw: null,
       sheetOpen: false,
       record: noop,
+      reviewPrivateConsent: noop,
       stop: noop,
       pause: noop,
       resume: noop,

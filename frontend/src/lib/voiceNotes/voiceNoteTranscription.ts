@@ -1415,6 +1415,14 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
 
   /** Notes the user moved to private cloud from another committed mode. */
   const choices = deps.choices ?? memoryVoiceNotePrivateChoiceStore();
+  // A saved in-app Private note may have been waiting for the new disclosure when
+  // the app closed. Restore its blocker before the first pipeline snapshot.
+  if (!state.consented) {
+    for (const sourceId of choices.ids()) {
+      if (!jobs.has(sourceId)) jobs.set(sourceId, { kind: "blocked", reason: "no-consent" });
+    }
+    snapshot = { ...state, jobs: new Map(jobs) };
+  }
   /** This session's choices, so a Retry after a released failure keeps the choice. */
   const chosenPrivate = new Set<string>();
   const isChosen = (sourceId: string) => chosenPrivate.has(sourceId) || choices.has(sourceId);
@@ -1641,6 +1649,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         return;
       }
       if (!on()) {
+        if (!state.consented) choices.add(recording.id);
         block(recording.id);
         return;
       }

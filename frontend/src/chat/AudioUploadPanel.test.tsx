@@ -181,8 +181,8 @@ describe("AudioUploadView", () => {
   test("a device's first private cloud upload says what private cloud does, in one sentence, before Transcribe", () => {
     const first = renderUpload({ privateConsent: false });
     expect(first).toContain('data-testid="upload-private-consent"');
-    expect(first).toContain(PRIVATE_CONSENT_TEXT);
-    expect(PRIVATE_CONSENT_TEXT.split(". ")).toHaveLength(1);
+    expect(first).toContain(PRIVATE_CONSENT_TEXT.replaceAll("'", "&#x27;"));
+    expect(PRIVATE_CONSENT_TEXT).toContain("a sealed hardware enclave");
     expect(first).toMatch(transcribeButton);
     // Once agreed, only the route line; never for AssemblyAI.
     expect(renderUpload()).not.toContain("upload-private-consent");

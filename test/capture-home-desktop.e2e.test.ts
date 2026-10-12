@@ -177,6 +177,8 @@ describe.serial(`desktop capture home (${engine.name()})`, () => {
   test("Start recording opens the recorder; minimising shows Back to recording, which restores the same recording", async () => {
     const { page, errors } = await open();
     await page.getByTestId("voice-note-record").click();
+    await shown(page.getByTestId("system-audio-disclosure"));
+    await page.getByRole("button", { name: "Record this Mac's audio" }).click();
     await shown(recorder(page));
 
     await page.getByRole("button", { name: "Minimise recorder" }).click();

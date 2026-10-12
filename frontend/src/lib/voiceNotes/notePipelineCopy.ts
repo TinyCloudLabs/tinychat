@@ -16,6 +16,7 @@ export const ACTION_LABEL: Record<PipelineActionKind, string> = {
   retry: "Try again",
   "get-model": "Get the model",
   "check-again": "Check again",
+  "review-consent": "Review",
   reread: "Try again",
 };
 
@@ -121,7 +122,7 @@ export const PRIVATE_COPY = {
   unavailable: "Private transcription isn't available right now",
   checkFailed: "Couldn't check whether private transcription is available",
   checking: "Checking private transcription…",
-  noConsent: "Private transcription is turned off",
+  noConsent: "Waiting for your OK to use Private",
   hidden: "Private transcription isn't available for this account",
   failed: (message: string | null | undefined, reference: string | null) => {
     const copy = hasText(message) ? message.trim() : "Private transcription couldn't finish.";

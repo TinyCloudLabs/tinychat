@@ -167,17 +167,21 @@ export function DesktopRecorder({
   useEffect(() => root.current?.focus({ preventScroll: true }), []);
   const hasNotes = (recorder.note?.md ?? "").length > 0;
   const [systemAudioCaptured, setSystemAudioCaptured] = useState(false);
+  const [systemAudioError, setSystemAudioError] = useState<Error | null>(null);
   useEffect(() => {
     if (view.ring !== "live") {
       setSystemAudioCaptured(false);
       return;
     }
     const extras = getDesktopCaptureExtras();
-    if (!extras) return;
+    if (!extras) {
+      setSystemAudioError(Object.assign(new Error("Could not read system audio status."), { code: "system_audio_status_unavailable" as const }));
+      return;
+    }
     let active = true;
     void Promise.all([extras.systemAudio.get(), extras.systemAudioConsent.get()]).then(
-      ([enabled, consented]) => { if (active) setSystemAudioCaptured(enabled && consented); },
-      (error: unknown) => { console.error("[Recorder] Could not read system audio status", error); },
+      ([enabled, consented]) => { if (active) { setSystemAudioCaptured(enabled && consented); setSystemAudioError(null); } },
+      (error: unknown) => { if (active) setSystemAudioError(Object.assign(new Error("Could not read system audio status.", { cause: error }), { code: "system_audio_status_read_failed" as const })); },
     );
     return () => { active = false; };
   }, [view.ring]);
@@ -228,6 +232,7 @@ export function DesktopRecorder({
         {said}
       </p>
       <Toasts />
+      {systemAudioError && <p role="alert" data-error-code={(systemAudioError as Error & { code: string }).code}>{systemAudioError.message}</p>}
 
       <div className="pr-main dr-main" inert={dialogOpen}>
         <div className="pr-top">

@@ -310,6 +310,7 @@ export interface PipelineActionEnv {
   saveNow: () => void | Promise<void>;
   /** The app's sign-in entry; absent where there is none. */
   signIn: (() => void | Promise<void>) | null;
+  reviewConsent?: () => void;
   /** Reads the facts that failed to read again. */
   reread: () => void;
 }
@@ -333,6 +334,10 @@ export async function runPipelineAction(kind: PipelineActionKind, env: PipelineA
       case "sign-in":
         if (env.signIn === null) return "Signing in isn't available here.";
         await env.signIn();
+        return null;
+      case "review-consent":
+        if (!env.reviewConsent) return "Private transcription isn't available here.";
+        env.reviewConsent();
         return null;
       case "get-model":
         return await downloadOnDeviceModel();
@@ -898,6 +903,7 @@ function useNotePipelinesWithLedger(entries: readonly { id: string; source: Note
       latestTranscription: () => latest.current.recorder.transcription,
       saveNow: rec.retryPending,
       signIn: rec.signIn,
+      reviewConsent: rec.reviewPrivateConsent,
       reread: () => latest.current.reread(),
     }).then((reason) => {
       if (!live.current) return;

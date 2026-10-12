@@ -1364,7 +1364,7 @@ describe("every path that creates or resumes an off-phone job consults the hold 
   const ATTEMPT = "00000000-0000-4000-8000-00000000abcd";
 
   /** A saved private-cloud note whose row says where it began (`source: null`: a v1 row that says nothing), plus an interrupted attempt. */
-  async function setup(source: string | null, opts: { consented?: boolean; holds?: Record<string, "held" | "released">; pending?: boolean } = {}) {
+  async function setup(source: string | null, opts: { consented?: boolean; holds?: Record<string, "held" | "released">; pending?: boolean; secondJob?: boolean } = {}) {
     const space = sqliteSpace();
     expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
     if (source !== null) {
@@ -1373,15 +1373,24 @@ describe("every path that creates or resumes an off-phone job consults the hold 
     }
     VoiceNotes.listPending = async () => ({ recordings: [] });
     const storage = memoryStorage();
-    const h = harness({});
+    const h = harness(opts.secondJob ? {
+      creates: [
+        { id: ID, status: "awaiting_upload", upload: { path: `/uploads/${ID}`, capability: CAP } },
+        { id: ID2, status: "awaiting_upload", upload: { path: `/uploads/${ID2}`, capability: CAP } },
+      ],
+      puts: [{ status: 201, body: { status: "queued" } }, { status: 201, body: { status: "queued" } }],
+      jobs: [job("completed"), job("completed")],
+    } : {});
     if (opts.pending !== false) h.pending.write("rec-1", { attemptId: ATTEMPT, transcriptionId: null });
     const consent = localStorageVoiceNoteConsentStore(DID, storage);
     consent.set(opts.consented ?? true);
+    const choices = localStorageVoiceNotePrivateChoiceStore(DID, storage);
     const holds = localStorageVoiceNoteHoldStore(DID, storage);
     if (opts.holds) holds.write(opts.holds);
     const launch = (store: VoiceNoteHoldStore = holds) => createVoiceNoteTranscriber({
-      cloud: h.cloud, consent: localStorageVoiceNoteConsentStore(DID, storage), tcw: () => space.tcw, holds: store });
-    return { space, h, launch, holds, storage };
+      cloud: h.cloud, consent: localStorageVoiceNoteConsentStore(DID, storage), tcw: () => space.tcw, holds: store,
+      choices: localStorageVoiceNotePrivateChoiceStore(DID, storage) });
+    return { space, h, launch, holds, choices, storage };
   }
   const untouched = (h: { creates: unknown[]; puts: unknown[] }) => {
     expect(h.creates).toHaveLength(0);
@@ -1470,6 +1479,28 @@ describe("every path that creates or resumes an off-phone job consults the hold 
     transcriber.consent();
     await settle();
     expect(h.creates).toHaveLength(1);
+  });
+
+  test("default Private notes remain blocked across a relaunch and all resume after the new consent", async () => {
+    const { space, h, launch, choices } = await setup("in_app", { consented: false, pending: false, secondJob: true });
+    expect((await saveVoiceNote(space.tcw, { ...RECORDING, id: "rec-2" }, AUDIO, "ios")).ok).toBe(true);
+    space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata, '$.capture.version', 2,
+      '$.capture.options.transcriber', 'private-cloud', '$.capture.source', 'in_app') WHERE source_id = 'rec-2'`).run();
+    const first = launch();
+    await first.check();
+    for (const id of ["rec-1", "rec-2"]) first.noteSaved({ id, durationMs: 9_000, options: { transcriber: "private-cloud" }, source: "in_app" });
+    expect(choices.ids()).toEqual(["rec-1", "rec-2"]);
+    untouched(h);
+
+    const relaunched = launch();
+    for (const id of ["rec-1", "rec-2"]) expect(relaunched.snapshot().jobs.get(id)).toEqual({ kind: "blocked", reason: "no-consent" });
+    await relaunched.check();
+    await settle();
+    untouched(h); // Not now leaves the durable blocker and Review action in place.
+    relaunched.consent();
+    await settle();
+    expect(h.creates).toHaveLength(2);
+    expect(choices.ids()).toEqual([]);
   });
 
   test("the hold list cannot be read: an in-app note is still resumed, a shortcut note is not", async () => {
