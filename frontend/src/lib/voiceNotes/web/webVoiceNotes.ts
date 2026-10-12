@@ -518,6 +518,9 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
       objectUrls.set(id, url);
       return { url };
     },
+    async audioMetadata() { throw failure("not_available_on_web"); },
+    async uploadAudio() { throw failure("not_available_on_web"); },
+    async cancelAudioUpload() {},
 
     async listInputs() {
       return clone(await inputsState());

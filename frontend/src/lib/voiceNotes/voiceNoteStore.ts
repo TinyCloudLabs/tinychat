@@ -304,6 +304,8 @@ export function voiceNoteTitle(startedAt: number): string {
 export interface VoiceNoteAudio {
   mimeType: string;
   base64: string;
+  /** Native file source; its bytes never enter the WebView. */
+  nativeFileId?: string;
 }
 
 /** Where a note's transcript stands, from its row's metadata. */

@@ -22,7 +22,7 @@
 // capability while the upload is missing, and a job past its upload is just
 // polled. Jobs run one at a time (PTX allows one active job per account).
 
-import { CapacitorHttp } from "@capacitor/core";
+import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
@@ -48,7 +48,7 @@ import {
   type PtxPutResponse,
 } from "../privateCloud";
 import { captureEngineKind } from "./captureEngine";
-import { currentAccountGeneration } from "./accountContext";
+import { currentAccountGeneration, subscribeAccountGeneration } from "./accountContext";
 import { nativeHttpFileUploadSupported, nativeRecordingSource, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { whenVoiceNoteSavesIdle } from "./recorderSaves";
@@ -76,6 +76,10 @@ export interface PtxPutRequest {
   capability: string;
   contentType: string;
   base64: string;
+  nativeFileId?: string;
+  contentLength?: number;
+  onProgress?: (loaded: number, total: number) => void;
+  canStart?: () => boolean;
   correlationId: string;
 }
 
@@ -83,11 +87,39 @@ export interface PtxPutRequest {
 export type PtxPut = (request: PtxPutRequest) => Promise<PtxPutResponse>;
 
 /**
- * Capacitor's native HTTP stack (OkHttp-backed HttpURLConnection / URLSession):
- * no CORS, an exact Content-Length from the decoded bytes, redirects refused.
- * The bytes cross the bridge as base64 (`dataType: "file"`).
+ * Mobile voice notes use the plugin's native file transport. Space copies use
+ * fetch; desktop retains CapacitorHttp because it does not have a native file
+ * source owned by VoiceNotes.
  */
 export const capacitorPtxPut: PtxPut = async (request) => {
+  if (request.nativeFileId) {
+    if (!VoiceNotes.uploadAudio) throw new PrivateCloudError("feature_unavailable", "Native audio upload is unavailable");
+    if (!Number.isSafeInteger(request.contentLength) || (request.contentLength ?? 0) < 1)
+      throw new PrivateCloudError("invalid_argument", "The recording size is invalid");
+    const uploadId = request.correlationId;
+    const upload = { uploadId, generation: currentAccountGeneration(), cancelled: false, nativeStarted: false };
+    activeNativeUpload = upload;
+    const progress = await (VoiceNotes.addListener as unknown as (event: string, listener: (event: { uploadId: string; loaded: number; total: number }) => void) => Promise<{ remove(): Promise<void> }>) ("audioUploadProgress", (event) => {
+      if (event.uploadId === uploadId) request.onProgress?.(event.loaded, event.total);
+    });
+    if (upload.cancelled || !(request.canStart?.() ?? true)) {
+      activeNativeUpload = null;
+      await progress.remove();
+      throw new PrivateCloudError("transcription_off", "The private upload was cancelled before it started", { correlationId: request.correlationId });
+    }
+    try {
+      upload.nativeStarted = true;
+      return await VoiceNotes.uploadAudio({ id: request.nativeFileId, uploadId, url: request.url,
+        capability: request.capability, contentType: request.contentType, contentLength: request.contentLength!, correlationId: request.correlationId });
+    } catch (cause) {
+      console.error("[VoiceNotes] Native audio upload failed", { uploadId, nativeFileId: request.nativeFileId, cause });
+      if (localAudioUnavailable(cause)) throw new VoiceNoteAudioError("audio_read_failed", "Could not read this note's local audio");
+      throw new PrivateCloudError("upload_outcome_unknown", "The upload connection failed", { correlationId: request.correlationId });
+    } finally { if (activeNativeUpload === upload) activeNativeUpload = null; await progress.remove(); }
+  }
+  // A note from another device has no native file. Keep that space-copy case
+  // on fetch so no audio is base64-encoded across the native bridge.
+  if (Capacitor.isNativePlatform()) return createFetchPtxPut()(request);
   let response: { status: number; data: unknown };
   try {
     response = await CapacitorHttp.request({
@@ -120,6 +152,20 @@ export const capacitorPtxPut: PtxPut = async (request) => {
   }
   return { status: response.status, body };
 };
+
+let activeNativeUpload: { uploadId: string; generation: number; cancelled: boolean; nativeStarted: boolean } | null = null;
+subscribeAccountGeneration((generation) => {
+  if (activeNativeUpload && activeNativeUpload.generation !== generation) {
+    void cancelActiveNativeUpload().catch((cause) => console.warn("Cancelling the superseded account's native upload failed", cause));
+  }
+});
+async function cancelActiveNativeUpload(): Promise<void> {
+  const upload = activeNativeUpload;
+  if (!upload) return;
+  upload.cancelled = true;
+  activeNativeUpload = null;
+  if (upload.nativeStarted && VoiceNotes.cancelAudioUpload) await VoiceNotes.cancelAudioUpload({ uploadId: upload.uploadId });
+}
 
 /** The browser has no native HTTP stack; PTX's CORS allows only Authorization and Content-Type, so no X-Correlation-Id here. */
 const FETCH_PUT_TIMEOUT_MS = 240_000;
@@ -428,7 +474,7 @@ export type VoiceNoteTranscriptionStatus =
   /** `position`: 1-based place among the notes waiting to start (1 = next); the running note is not counted. */
   | { kind: "waiting"; position: number }
   | { kind: "preparing" }
-  | { kind: "uploading" }
+  | { kind: "uploading"; progress?: number }
   | { kind: "queued"; position: number | null }
   | { kind: "processing"; completed: number | null; total: number | null }
   | { kind: "saving" };
@@ -563,7 +609,7 @@ export function privateCloudAccepts(
   durationSecs: number | null,
   capabilities: Pick<PrivateCloudCapabilities, "max_duration_seconds"> | null,
 ): boolean {
-  if (capabilities === null) return false;
+  if (capabilities === null || typeof capabilities.max_duration_seconds !== "number") return false;
   if (durationSecs === null) return true;
   return typeof capabilities.max_duration_seconds === "number"
     && Number.isFinite(durationSecs) && durationSecs >= 0 && durationSecs <= capabilities.max_duration_seconds;
@@ -588,7 +634,7 @@ export interface VoiceNoteCloudDeps {
 export interface VoiceNoteTranscribeInput {
   sourceId: string;
   capabilities: PrivateCloudCapabilities;
-  loadAudio: () => Promise<VoiceNoteAudio>;
+  loadAudio: () => Promise<VoiceNoteAudio & { nativeFileId?: string; loadSpaceCopy?: () => Promise<VoiceNoteAudio> }>;
   /** The note's length from its row, checked before any audio is read or decoded. */
   durationSeconds?: number | null;
   /**
@@ -788,7 +834,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
 
     // Everything up to the upload happens with no job waiting on it, or releases the one that is.
     const maxSeconds = maxTranscriptionSeconds(capabilities);
-    let audio: Awaited<ReturnType<typeof prepareTranscriptionAudio>>;
+    let audio: Awaited<ReturnType<typeof prepareTranscriptionAudio>> & { nativeFileId?: string; loadSpaceCopy?: () => Promise<VoiceNoteAudio> };
     try {
       if (typeof durationSeconds === "number" && durationSeconds > maxSeconds) {
         throw new VoiceNoteAudioError("recording_too_long", "This recording exceeds the private cloud duration limit.");
@@ -796,7 +842,24 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       guard();
       if (!allowed()) throw transcriptionOffError();
       report({ kind: "preparing" });
-      audio = await prepareTranscriptionAudio(await loadAudio(), {
+      const source = await loadAudio();
+      if (source.nativeFileId) {
+        if (!VoiceNotes.audioMetadata) throw new VoiceNoteAudioError("audio_read_failed", "Native audio metadata is unavailable");
+        try {
+          const meta = await VoiceNotes.audioMetadata({ id: source.nativeFileId });
+          if (meta.size > capabilities.max_bytes) throw new VoiceNoteAudioError("recording_too_large", "The recording is larger than the private cloud limit.");
+          if (!acceptedContentTypes(capabilities).includes(meta.mimeType)) throw new VoiceNoteAudioError("unsupported_recording", "Private cloud transcription does not accept this recording's format.");
+          audio = { contentType: meta.mimeType, base64: "", byteSize: meta.size, sha256: meta.sha256, durationSeconds: null, nativeFileId: source.nativeFileId };
+        } catch (cause) {
+          if (!localAudioUnavailable(cause)) throw cause;
+          console.error("[VoiceNotes] Native audio disappeared while reading its metadata; using the committed space copy", { sourceId, cause });
+          const fallback = await source.loadSpaceCopy!();
+          audio = await prepareTranscriptionAudio(fallback, {
+            acceptedContentTypes: acceptedContentTypes(capabilities), maxBytes: capabilities.max_bytes,
+            maxSeconds, decode: deps.decode,
+          });
+        }
+      } else audio = await prepareTranscriptionAudio(source, {
         acceptedContentTypes: acceptedContentTypes(capabilities),
         maxBytes: capabilities.max_bytes,
         maxSeconds,
@@ -837,7 +900,10 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       try {
         const url = ptxUploadUrl(deps.origin, created.upload.path);
         interpretUploadResponse(
-          await deps.put({ url, capability: created.upload.capability, contentType: audio.contentType, base64: audio.base64, correlationId }),
+          await deps.put({ url, capability: created.upload.capability, contentType: audio.contentType, base64: audio.base64,
+            ...(audio.nativeFileId ? { nativeFileId: audio.nativeFileId, contentLength: audio.byteSize,
+              canStart: () => allowed(),
+              onProgress: (loaded, total) => report({ kind: "uploading", progress: total > 0 ? loaded / total : 0 }) } : {}), correlationId }),
           correlationId,
         );
       } catch (err) {
@@ -1014,6 +1080,8 @@ export async function transcribeVoiceNote(args: {
   overrideCommitted?: boolean;
   /** The user asked for this note to be transcribed. Without it, only a note recorded in the app goes. */
   explicit?: boolean;
+  /** Native platform override for JS-boundary tests; production detects Capacitor's platform. */
+  nativePlatform?: "ios" | "android";
   report: (status: VoiceNoteTranscriptionStatus) => void;
   now?: () => Date;
   account?: VoiceNoteTranscriptAccount;
@@ -1073,18 +1141,46 @@ export async function transcribeVoiceNote(args: {
   if (!args.explicit && note.data.captureSource !== "in_app")
     throw new PrivateCloudError("note_held", "This note did not begin in the app, so it waits for the user to transcribe it");
 
-  const loadAudio = async (): Promise<VoiceNoteAudio> => {
+  let localAudioRecording: VoiceNoteRecording | undefined;
+  const loadSpaceAudio = async (): Promise<VoiceNoteAudio> => {
+    // A row can exist before its audio. Wait for queued save work and require a committed ledger
+    // when one exists before reading the space copy.
+    if (!localAudioRecording || (localAudioRecording.ledger?.audio && localAudioRecording.ledger.audio.state !== "saved")) {
+      await whenVoiceNoteSavesIdle();
+      try {
+        localAudioRecording = (await VoiceNotes.listPending()).recordings.find((recording) => recording.id === sourceId);
+      } catch (cause) {
+        console.error("[VoiceNotes] Could not confirm the audio save before transcription", { sourceId, cause });
+        throw new VoiceNoteAudioError("audio_read_failed", "Could not confirm this note's audio save");
+      }
+      if (localAudioRecording?.ledger?.audio && localAudioRecording.ledger.audio.state !== "saved") {
+        throw new VoiceNoteAudioError("audio_upload_pending", "This note's audio is still being saved to your space");
+      }
+    }
+    const res = await loadVoiceNoteAudio(tcw, sourceId, { maxBytes: args.capabilities.max_bytes });
+    if (!res.ok) {
+      if (res.error.code === VOICE_NOTE_AUDIO_TOO_LARGE) {
+        throw new VoiceNoteAudioError("recording_too_large", "This recording exceeds the private cloud upload limit.");
+      }
+      console.error("[VoiceNotes] Could not read note audio from the space", { sourceId, error: res.error });
+      throw new VoiceNoteAudioError(res.error.code === "VOICE_NOTE_AUDIO_CORRUPT" ? res.error.code : "audio_read_failed",
+        "Could not read this note's audio from your space");
+    }
+    return res.data;
+  };
+  const loadAudio = async (): Promise<VoiceNoteAudio & { nativeFileId?: string; loadSpaceCopy?: () => Promise<VoiceNoteAudio> }> => {
     if (args.audio) return args.audio;
-    let local: VoiceNoteRecording | undefined;
     try {
-      local = (await VoiceNotes.listPending()).recordings.find((recording) => recording.id === sourceId);
+      localAudioRecording = (await VoiceNotes.listPending()).recordings.find((recording) => recording.id === sourceId);
     } catch (cause) {
       console.error("[VoiceNotes] Could not check for local audio before transcription", { sourceId, cause });
       throw new VoiceNoteAudioError("audio_read_failed", "Could not check this device for local audio");
     }
-    if (local) {
+    if (localAudioRecording) {
       try {
-        const source = nativeRecordingSource(local);
+        if (await nativeHttpFileUploadSupported(args.nativePlatform))
+          return { mimeType: localAudioRecording.mimeType, base64: "", nativeFileId: sourceId, loadSpaceCopy: loadSpaceAudio };
+        const source = nativeRecordingSource(localAudioRecording);
         const bytes = new Uint8Array(source.size);
         for (let offset = 0; offset < source.size; offset += 1024 * 1024) {
           const part = await source.readPart(offset, Math.min(1024 * 1024, source.size - offset));
@@ -1100,32 +1196,7 @@ export async function transcribeVoiceNote(args: {
         }
       }
     }
-    // A row can exist before its audio, and a recording can disappear from the native
-    // listing during a save. Wait for queued save-now/reconcile work before consulting
-    // the space copy; when a native ledger exists, it must confirm the audio commit.
-    if (!local || (local.ledger?.audio && local.ledger.audio.state !== "saved")) {
-      await whenVoiceNoteSavesIdle();
-      try {
-        local = (await VoiceNotes.listPending()).recordings.find((recording) => recording.id === sourceId);
-      } catch (cause) {
-        console.error("[VoiceNotes] Could not confirm the audio save before transcription", { sourceId, cause });
-        throw new VoiceNoteAudioError("audio_read_failed", "Could not confirm this note's audio save");
-      }
-      if (local?.ledger?.audio && local.ledger.audio.state !== "saved") {
-        throw new VoiceNoteAudioError("audio_upload_pending", "This note's audio is still being saved to your space");
-      }
-    }
-    // Refuse a file larger than PTX accepts from its manifest, before reading its parts.
-    const res = await loadVoiceNoteAudio(tcw, sourceId, { maxBytes: args.capabilities.max_bytes });
-    if (!res.ok) {
-      if (res.error.code === VOICE_NOTE_AUDIO_TOO_LARGE) {
-        throw new VoiceNoteAudioError("recording_too_large", "This recording exceeds the private cloud upload limit.");
-      }
-      console.error("[VoiceNotes] Could not read note audio from the space", { sourceId, error: res.error });
-      throw new VoiceNoteAudioError(res.error.code === "VOICE_NOTE_AUDIO_CORRUPT" ? res.error.code : "audio_read_failed",
-        "Could not read this note's audio from your space");
-    }
-    return res.data;
+    return loadSpaceAudio();
   };
   const save = async (prepared: VoiceNoteTranscriptSave) => {
     if (!stillCurrent()) throw accountChangedError();
@@ -1538,6 +1609,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       chosenPrivate.clear();
       for (const sourceId of choices.ids()) choices.remove(sourceId);
       emit();
+      try { await cancelActiveNativeUpload(); } catch (err) { console.warn("Cancelling the native upload failed", err); }
       try {
         await cloud?.releaseUnsent();
       } catch (err) {
@@ -1632,7 +1704,7 @@ export function transcriptionStatusText(status: VoiceNoteTranscriptionStatus): s
     case "preparing":
       return "Preparing the audio…";
     case "uploading":
-      return "Uploading to private cloud…";
+      return status.progress === undefined ? "Uploading to private cloud…" : `Uploading to private cloud… ${Math.round(Math.min(1, Math.max(0, status.progress)) * 100)}%`;
     case "queued":
       return status.position !== null && status.position > 0 ? `Queued (position ${status.position})…` : "Queued…";
     case "processing":

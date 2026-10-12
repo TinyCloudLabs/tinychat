@@ -42,6 +42,7 @@ import { __setVoiceNotesForTests, VoiceNotes, type LocalTranscript, type VoiceNo
 import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { pendingStore } from "./recorderSaves";
+import { advanceAccountGeneration } from "./accountContext";
 import {
   VOICE_NOTE_SOURCE,
   listVoiceNotes,
@@ -54,6 +55,7 @@ import {
 } from "./voiceNoteStore";
 import {
   accountStorageKey,
+  capacitorPtxPut,
   createVoiceNoteTranscriber,
   createVoiceNoteCloud,
   createVoiceNoteCloudForBuild,
@@ -88,6 +90,65 @@ const CAPS: PrivateCloudCapabilities = {
 };
 const AUDIO = { mimeType: "audio/mp4", base64: bytesToBase64(new Uint8Array([1, 2, 3, 4])) };
 const originalVoiceNotes = VoiceNotes;
+test("native PTX upload passes the file descriptor and progress across the JS boundary", async () => {
+  const fake = createFakeVoiceNotes();
+  let upload: unknown;
+  let progressListener: ((event: { uploadId: string; loaded: number; total: number }) => void) | undefined;
+  fake.plugin.uploadAudio = async (request) => { upload = request; return { status: 201, body: null }; };
+  fake.plugin.addListener = (async (_event: string, listener: never) => {
+    progressListener = listener as typeof progressListener;
+    return { remove: async () => {} };
+  }) as typeof fake.plugin.addListener;
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  const progress: number[] = [];
+  try {
+    const result = await capacitorPtxPut({ url: `${ORIGIN}/uploads/${ID}`, capability: CAP, contentType: "audio/mp4",
+      base64: "", nativeFileId: "rec-1", contentLength: 181_440_000, correlationId: "upload-1",
+      onProgress: (loaded, total) => progress.push(loaded / total) });
+    progressListener?.({ uploadId: "upload-1", loaded: 90_720_000, total: 181_440_000 });
+    expect(result.status).toBe(201);
+    expect(upload).toMatchObject({ id: "rec-1", contentLength: 181_440_000, contentType: "audio/mp4", uploadId: "upload-1" });
+    expect(progress).toEqual([0.5]);
+  } finally { __setVoiceNotesForTests(originalVoiceNotes, { available: null }); }
+});
+
+test("an account change during native upload setup prevents the native task from starting", async () => {
+  const fake = createFakeVoiceNotes();
+  let registerListener!: (handle: { remove(): Promise<void> }) => void;
+  let starts = 0;
+  fake.plugin.addListener = (() => new Promise((resolve) => { registerListener = resolve; })) as typeof fake.plugin.addListener;
+  fake.plugin.uploadAudio = async () => { starts++; return { status: 201, body: null }; };
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    const attempt = capacitorPtxPut({ url: `${ORIGIN}/uploads/${ID}`, capability: CAP, contentType: "audio/mp4",
+      base64: "", nativeFileId: "rec-1", contentLength: 4, correlationId: "setup-cancel",
+      canStart: () => true });
+    await Promise.resolve();
+    advanceAccountGeneration();
+    registerListener({ remove: async () => {} });
+    await expect(attempt).rejects.toMatchObject({ code: "transcription_off" });
+    expect(starts).toBe(0);
+  } finally { __setVoiceNotesForTests(originalVoiceNotes, { available: null }); }
+});
+
+test("an account-generation change cancels an in-flight native upload", async () => {
+  const fake = createFakeVoiceNotes();
+  let rejectUpload!: (reason: unknown) => void;
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const cancelled: string[] = [];
+  fake.plugin.uploadAudio = async () => new Promise((_, reject) => { rejectUpload = reject; markStarted(); });
+  fake.plugin.cancelAudioUpload = async ({ uploadId }) => { cancelled.push(uploadId); rejectUpload(Object.assign(new Error("cancelled"), { code: "cancelled" })); };
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    const attempt = capacitorPtxPut({ url: `${ORIGIN}/uploads/${ID}`, capability: CAP, contentType: "audio/mp4",
+      base64: "", nativeFileId: "rec-1", contentLength: 4, correlationId: "generation-cancel" });
+    await started;
+    advanceAccountGeneration();
+    await expect(attempt).rejects.toMatchObject({ code: "upload_outcome_unknown" });
+    expect(cancelled).toEqual(["generation-cancel"]);
+  } finally { __setVoiceNotesForTests(originalVoiceNotes, { available: null }); }
+});
 beforeEach(() => {
   const fake = createFakeVoiceNotes();
   fake.plugin.listPending = async () => ({ recordings: [{ ...RECORDING, ledger: {
@@ -146,6 +207,7 @@ function harness(script: {
   removeFails?: boolean;
   uploadSupported?: () => Promise<boolean>;
   decode?: AudioDecoder;
+  nativeTransport?: boolean;
 }) {
   const calls: string[] = [];
   const creates: { attemptId: string; body: PrivateCloudCreateBody }[] = [];
@@ -216,6 +278,7 @@ function harness(script: {
     async put(request) {
       calls.push(`put:${request.url}`);
       puts.push(request);
+      if (script.nativeTransport) return capacitorPtxPut(request);
       const next = putAnswers.shift();
       if (next === undefined) throw new Error("unexpected put");
       if (next instanceof PrivateCloudError) throw next;
@@ -750,6 +813,66 @@ const RECORDING = {
 
 describe("transcribeVoiceNote (one note end to end)", () => {
   beforeEach(() => _resetConnectorSchemaMemoForTests());
+
+  for (const nativePlatform of ["ios", "android"] as const) {
+    test(`${nativePlatform} native file upload uses metadata and never reads audio over the JS bridge`, async () => {
+      const space = sqliteSpace();
+      expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, nativePlatform)).ok).toBe(true);
+      const fake = createFakeVoiceNotes();
+      let readCalls = 0;
+      let uploadRequest: unknown;
+      let progressListener: ((event: { uploadId: string; loaded: number; total: number }) => void) | undefined;
+      fake.plugin.listPending = async () => ({ recordings: [{ ...RECORDING, sizeBytes: 4, ledger: {
+        audio: { state: "saved" }, transcriptSync: { state: "pending", rev: 0, at: null },
+      } } as never] });
+      fake.plugin.getTranscript = async () => ({ transcript: null });
+      fake.plugin.audioMetadata = async () => ({ size: 4, mimeType: "audio/mp4", sha256: "a".repeat(64) });
+      fake.plugin.readAudioChunk = async () => { readCalls++; throw new Error("must not read native audio over JS"); };
+      fake.plugin.uploadAudio = async (request) => {
+        uploadRequest = request;
+        progressListener?.({ uploadId: request.uploadId, loaded: 2, total: 4 });
+        return { status: 201, body: { status: "queued" } };
+      };
+      fake.plugin.addListener = (async (_event: string, listener: never) => {
+        progressListener = listener as typeof progressListener;
+        return { remove: async () => {} };
+      }) as typeof fake.plugin.addListener;
+      if (nativePlatform === "android") fake.plugin.status = async () => ({ androidSdkInt: 35 } as never);
+      __setVoiceNotesForTests(fake.plugin, { available: true });
+      const h = harness({ nativeTransport: true });
+      const progress: VoiceNoteTranscriptionStatus[] = [];
+      const outcome = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: {
+        ...CAPS, content_types: [...CAPS.content_types, "audio/mp4"],
+      }, sourceId: "rec-1", overrideCommitted: true, explicit: true, nativePlatform,
+      report: (status) => progress.push(status) });
+      expect(outcome).toBe("transcribed");
+      expect(h.creates[0]?.body).toMatchObject({ content_type: "audio/mp4", byte_size: 4, sha256: "a".repeat(64) });
+      expect(uploadRequest).toMatchObject({ id: "rec-1", contentLength: 4, contentType: "audio/mp4" });
+      expect(readCalls).toBe(0);
+      expect(progress).toContainEqual({ kind: "uploading", progress: 0.5 });
+      __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+    });
+  }
+
+  test("missing native file at metadata time falls back to the committed space copy", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+    const fake = createFakeVoiceNotes();
+    fake.plugin.listPending = async () => ({ recordings: [{ ...RECORDING, ledger: {
+      audio: { state: "saved" }, transcriptSync: { state: "pending", rev: 0, at: null },
+    } } as never] });
+    fake.plugin.getTranscript = async () => ({ transcript: null });
+    fake.plugin.audioMetadata = async () => { throw Object.assign(new Error("gone"), { code: "not_found" }); };
+    __setVoiceNotesForTests(fake.plugin, { available: true });
+    const h = harness({});
+    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud,
+      capabilities: { ...CAPS, content_types: [...CAPS.content_types, "audio/mp4"] },
+      sourceId: "rec-1", overrideCommitted: true, explicit: true, nativePlatform: "ios", report: () => {} })).toBe("transcribed");
+    expect(h.creates[0]?.body.byte_size).toBe(4);
+    expect(h.puts[0]?.nativeFileId).toBeUndefined();
+    expect(h.puts[0]?.base64).toBe(AUDIO.base64);
+    __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+  });
 
   test("launch resume deletes an old cloud job for an on-device note and the next launch does not retry it", async () => {
     const space = sqliteSpace();

@@ -4,7 +4,7 @@ import type {
   MicStateReason, MissingAudioSpan, NoteLedger, OutboxEntry, RemoteOpReceipt, VoiceNoteRecording, VoiceNotesPlugin,
 } from "./nativeVoiceNotes";
 
-type EventName = "micState" | "captureAlert" | "level" | "autoStopped" | "presentRecorder" | "recovered" | "recoveryFailed" | "writeFailure" | "committed" | "inputs";
+type EventName = "micState" | "captureAlert" | "level" | "autoStopped" | "presentRecorder" | "recovered" | "recoveryFailed" | "writeFailure" | "committed" | "inputs" | "audioUploadProgress";
 type Listener = (value: unknown) => void;
 type Intent = NonNullable<CaptureStatus["intent"]>;
 type Availability = NonNullable<CaptureStatus["availability"]>;
@@ -314,6 +314,9 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       const bytesRead = Math.max(0, Math.min(length, note.sizeBytes - offset));
       return { id, offset, base64: btoa("\0".repeat(bytesRead)), bytesRead, size: note.sizeBytes, eof: offset + bytesRead >= note.sizeBytes };
     },
+    async audioMetadata({ id }) { const note = checked(id); return { size: note.sizeBytes, mimeType: note.mimeType, sha256: "0".repeat(64) }; },
+    async uploadAudio() { throw failure("not_implemented"); },
+    async cancelAudioUpload() {},
     async deleteAudio({ id }) {
       if (session?.id === id) throw failure("recording_in_progress");
       const note = notes.get(id);

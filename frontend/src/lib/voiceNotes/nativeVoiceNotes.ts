@@ -237,6 +237,9 @@ export interface VoiceNotesPlugin {
    * call at 4 MiB). The audio crosses the bridge a part at a time, never whole.
    */
   readAudioChunk(options: { id: string; offset: number; length: number }): Promise<VoiceNoteAudioChunk>;
+  audioMetadata?(options: { id: string }): Promise<{ size: number; mimeType: string; sha256: string }>;
+  uploadAudio?(options: { id: string; uploadId: string; url: string; capability: string; contentType: string; contentLength: number; correlationId: string }): Promise<{ status: number; body: unknown }>;
+  cancelAudioUpload?(options: { uploadId: string }): Promise<void>;
   /** Delete after a confirmed save: until then the recording stays on the device. */
   deleteAudio(options: { id: string }): Promise<void>;
   /** Stopped recordings still on the device, i.e. not yet confirmed saved. */
