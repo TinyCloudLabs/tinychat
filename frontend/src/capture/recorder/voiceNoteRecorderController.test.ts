@@ -13,6 +13,8 @@ import { createElement, act } from "react";
 import { createRoot } from "react-dom/client";
 
 import { captureEvents } from "@/capture/captureEvents";
+import { registerPlayback } from "@/lib/audio/playback";
+import { installDom } from "@/test/dom";
 import { RecorderProvider, useRecorder, type RecorderValue } from "./RecorderProvider";
 import type { VoiceNoteRecorder } from "./useVoiceNoteRecorder";
 import { createFakeVoiceNotes, type FakeVoiceNotes } from "@/harness/fakeVoiceNotes";
@@ -186,6 +188,24 @@ async function attached() {
 }
 
 describe("voice-note recorder controller", () => {
+  test("starting and resuming silence a playing note before native capture", async () => {
+    const cleanupDom = installDom();
+    const { recorder, detach } = await attached();
+    const audio = document.createElement("audio");
+    document.body.append(audio);
+    let stops = 0;
+    const unregister = registerPlayback(audio, () => { stops++; });
+    const beforeStart = stops;
+    await recorder.record();
+    expect(stops).toBeGreaterThan(beforeStart);
+    await recorder.pause();
+    const beforeResume = stops;
+    await recorder.resume();
+    expect(stops).toBeGreaterThan(beforeResume);
+    unregister();
+    detach();
+    cleanupDom();
+  });
   test("Starting detaches the previous note until the new recording starts", async () => {
     const { recorder, detach } = await attached();
     await recorder.record();

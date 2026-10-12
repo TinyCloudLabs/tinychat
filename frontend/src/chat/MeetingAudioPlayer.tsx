@@ -3,6 +3,7 @@ import { Loader2Icon, PauseIcon, PlayIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { formatClockDuration } from "@/capture/library/formatters";
+import { playbackBlocked, playbackVisible, registerPlayback } from "@/lib/audio/playback";
 import { PHONE_AUDIO_UNAVAILABLE, isSeekable, playbackDuration, scrubTarget } from "./audioPlayback";
 
 interface MeetingAudioPlayerProps {
@@ -82,6 +83,24 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, onPlay
   const queuedSeek = useRef<number | null>(null);
   const playWhenSourceSet = useRef(false);
 
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    let mounted = true;
+    const unregister = registerPlayback(audio, () => {
+      controllerRef.current?.abort();
+      controllerRef.current = null;
+      playWhenSourceSet.current = false;
+      queuedSeek.current = null;
+      audio.pause();
+      if (mounted) {
+        setPendingSeek(null);
+        setState((current) => current.phase === "loading" ? { phase: "idle" } : current);
+      }
+    });
+    return () => { mounted = false; unregister(); };
+  }, []);
+
   useEffect(
     () => () => {
       controllerRef.current?.abort();
@@ -104,6 +123,7 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, onPlay
 
   /** A play() that was superseded by a pause() or a new source (AbortError) is not a failure; anything else is shown. */
   const playNow = (audio: HTMLAudioElement) => {
+    if (playbackBlocked() || !playbackVisible(audio)) return;
     audio.play().catch((error: unknown) => {
       if (error instanceof DOMException && error.name === "AbortError") return;
       console.error("[Audio] Could not play", error);
@@ -131,7 +151,7 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, onPlay
   // The first tap: play() runs inside the gesture whatever the source is doing.
   const begin = () => {
     const audio = audioRef.current;
-    if (!audio) return;
+    if (!audio || playbackBlocked() || !playbackVisible(audio)) return;
     patchMedia({ loading: true });
     if (url) {
       if (audio.error) audio.load();
