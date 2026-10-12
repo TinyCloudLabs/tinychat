@@ -1039,6 +1039,61 @@ describe("transcribeVoiceNote reads the note's stored audio (TC-517)", () => {
     expect(decoded).toEqual(localBytes);
   });
 
+  for (const [platformShape, fail] of [
+    ["iOS not_found", async () => { throw Object.assign(new Error("gone"), { code: "not_found" }); }],
+    ["Android FileNotFoundException", async () => { throw Object.assign(new Error("gone"), { code: "java.io.FileNotFoundException: /recording.m4a" }); }],
+    ["web tombstoned", async () => { throw Object.assign(new Error("gone"), { code: "tombstoned" }); }],
+    ["truncated native read", async ({ id, offset }: { id: string; offset: number }) => ({
+      id, offset, base64: bytesToBase64(new Uint8Array([9, 8])), bytesRead: 2, size: 5, eof: false,
+    })],
+  ] as const) {
+    test(`falls back to the committed space copy for ${platformShape}`, async () => {
+      const space = sqliteSpace();
+      await saveVoiceNote(space.tcw as never, RECORDING, AUDIO, "android");
+      const fake = createFakeVoiceNotes();
+      fake.plugin.listPending = async () => ({ recordings: [{ ...RECORDING, sizeBytes: 5, ledger: {
+        audio: { state: "saved" }, transcriptSync: { state: "pending", rev: 0, at: null },
+      } } as never] });
+      fake.plugin.getTranscript = async () => ({ transcript: null });
+      fake.plugin.readAudioChunk = fail as typeof fake.plugin.readAudioChunk;
+      __setVoiceNotesForTests(fake.plugin, { available: true });
+      let decoded: Uint8Array | null = null;
+      const quiet = silentDecoder();
+      const h = harness({ decode: async (buffer, rate) => {
+        decoded = new Uint8Array(buffer.slice(0));
+        return quiet(buffer, rate);
+      } });
+      expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+      expect(decoded).toEqual(base64ToBytes(AUDIO.base64));
+    });
+  }
+
+  test("does not read the space copy after an unrecognized local read error", async () => {
+    const space = sqliteSpace();
+    await saveVoiceNote(space.tcw as never, RECORDING, AUDIO, "android");
+    const fake = createFakeVoiceNotes();
+    fake.plugin.listPending = async () => ({ recordings: [{ ...RECORDING, sizeBytes: 5, ledger: {
+      audio: { state: "saved" }, transcriptSync: { state: "pending", rev: 0, at: null },
+    } } as never] });
+    fake.plugin.getTranscript = async () => ({ transcript: null });
+    fake.plugin.readAudioChunk = async () => { throw Object.assign(new Error("denied"), { code: "permission_denied" }); };
+    __setVoiceNotesForTests(fake.plugin, { available: true });
+    let audioReads = 0;
+    const client = space.tcw as unknown as { kv: { get: (key: string) => Promise<unknown> } };
+    const originalGet = client.kv.get;
+    client.kv.get = async (key) => {
+      if (key.startsWith(voiceNoteAudioKvKey("rec-1"))) audioReads++;
+      return originalGet(key);
+    };
+    try {
+      const h = harness({});
+      await expect(transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} }))
+        .rejects.toThrow("Could not read this note's local audio");
+      expect(audioReads).toBe(0);
+      expect(h.creates).toHaveLength(0);
+    } finally { client.kv.get = originalGet; }
+  });
+
   test("a note stored in parts is reassembled, in order, for the upload", async () => {
     const space = sqliteSpace();
     const bytes = new Uint8Array(2_500).map((_, i) => i % 251);
