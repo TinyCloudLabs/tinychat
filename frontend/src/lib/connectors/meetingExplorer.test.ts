@@ -267,6 +267,8 @@ describe("listMeetingsRead", () => {
       transcription_outcome: "transcribed",
       note_kv_key: "recording-note.md",
       note_edited_at: "2026-10-11T10:00:00.000Z",
+      audio_kv_key: "voice/audio",
+      audio_stored: 1,
     });
     const { tcw, sqlCalls } = fakeTcw({
       sql: { ok: true, data: { rows: [
@@ -284,6 +286,8 @@ describe("listMeetingsRead", () => {
       transcription_outcome: "transcribed",
       note_kv_key: "recording-note.md",
       note_edited_at: "2026-10-11T10:00:00.000Z",
+      audio_kv_key: "voice/audio",
+      audio_stored: 1,
     });
     expect(read.meetings[0]?.metadata).not.toHaveProperty("transcript_text");
     expect(read.meetings[1]).toMatchObject({
@@ -299,6 +303,8 @@ describe("listMeetingsRead", () => {
     expect(read.meetings[3]?.metadata).toBeUndefined();
     expect(sqlCalls[0]?.sql).toContain("json_valid(metadata)");
     expect(sqlCalls[0]?.sql).toContain("json_extract(metadata, '$.note_kv_key')");
+    expect(sqlCalls[0]?.sql).toContain("json_extract(metadata, '$.audio_kv_key')");
+    expect(sqlCalls[0]?.sql).toContain("json_extract(metadata, '$.audio.stored')");
     expect(sqlCalls[0]?.sql).not.toMatch(/SELECT[^\n]*,\s*metadata\s+FROM/s);
   });
 

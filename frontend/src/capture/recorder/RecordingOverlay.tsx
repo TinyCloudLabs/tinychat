@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useLocation } from "react-router-dom";
+import { stopAllPlayback } from "@/lib/audio/playback";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 
 import { DesktopRecorderHost } from "./final/desktop/DesktopRecorderHost";
@@ -72,6 +73,9 @@ export function RecordingOverlay({
 }: RecordingOverlayProps) {
   const recorder = useRecorder();
   const layout = useRecorderLayout();
+  useEffect(() => {
+    if (recorder.sheetOpen) stopAllPlayback();
+  }, [recorder.sheetOpen]);
   const mount = overlayMount({
     layout,
     available: recorder.available,

@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 
 import { NotePipelineContext } from "@/capture/pipeline/NotePipelineContext";
 import { PipelineStepper } from "@/capture/pipeline/PipelineStepper";
-import { allDone, signedOut, uploading, waitingForModel } from "@/capture/pipeline/pipelineFixtures";
+import { allDone, localReadyBeforeUpload, localTranscribingBeforeUpload, signedOut, uploading, waitingForModel } from "@/capture/pipeline/pipelineFixtures";
 import { Transcript } from "@/capture/library/NoteDetailView";
 import type { LibraryItem } from "@/capture/library/LibraryRow";
 import { SavedNoteSheet } from "@/capture/library/savedNote/SavedNoteView";
@@ -119,10 +119,14 @@ export const pipelineWireScreens: HarnessScreen[] = [
   screen("sheet-signed-out", SHEET_READY, () => <Sheet pipeline={signedOut()} />),
   screen("sheet-signed-out-action-failed", SHEET_READY, () => <Sheet pipeline={signedOut()} actionError="Sign-in could not start: no connection." />),
   screen("sheet-waiting-for-model", SHEET_READY, () => <Sheet pipeline={waitingForModel()} />),
+  screen("sheet-transcript-ready-audio-queued", SHEET_READY, () => <Sheet pipeline={localReadyBeforeUpload()} />),
+  screen("sheet-transcribing-audio-queued", SHEET_READY, () => <Sheet pipeline={localTranscribingBeforeUpload()} />),
   screen("sheet-done", '[data-testid="saved-note-sheet"]', () => <Sheet pipeline={allDone()} />),
   screen("receipt-uploading", RECEIPT_READY, () => <Receipt outcome="local" pipeline={uploading(42)} />, "document"),
   screen("receipt-signed-out", RECEIPT_READY, () => <Receipt outcome="local" pipeline={signedOut()} />, "document"),
   screen("receipt-signed-out-action-failed", RECEIPT_READY, () => <Receipt outcome="local" pipeline={signedOut()} actionError="Sign-in could not start: no connection." />, "document"),
   screen("receipt-waiting-for-model", RECEIPT_READY, () => <Receipt outcome="saved" pipeline={waitingForModel()} />, "document"),
+  screen("receipt-transcript-ready-audio-queued", RECEIPT_READY, () => <Receipt outcome="local" pipeline={localReadyBeforeUpload()} />, "document"),
+  screen("receipt-transcribing-audio-queued", RECEIPT_READY, () => <Receipt outcome="local" pipeline={localTranscribingBeforeUpload()} />, "document"),
   screen("receipt-done", RECEIPT_READY, () => <Receipt outcome="saved" pipeline={allDone()} />, "document"),
 ];

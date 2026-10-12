@@ -36,3 +36,15 @@ export const waitingForModel = () =>
       onDevice: { stt: { state: "waiting_for_model", error: null }, queue: null, model: { state: "absent", bytes: 0, totalBytes: 640, error: null }, download: "idle", sync: null },
     },
   });
+
+export const localReadyBeforeUpload = () => pipelineOf({
+  route: "on-device",
+  space: UNSAVED({ waitingBehind: 1 }),
+  transcript: { inSpace: null, cloud: null, onDevice: { stt: { state: "done", error: null }, queue: null, model: { state: "ready", bytes: 640, totalBytes: 640, error: null }, download: "idle", sync: null } },
+});
+
+export const localTranscribingBeforeUpload = () => pipelineOf({
+  route: "on-device",
+  space: UNSAVED({ waitingBehind: 1 }),
+  transcript: { inSpace: null, cloud: null, onDevice: { stt: { state: "running", error: null }, queue: null, model: { state: "ready", bytes: 640, totalBytes: 640, error: null }, download: "idle", sync: null } },
+});

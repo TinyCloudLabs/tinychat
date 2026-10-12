@@ -1,5 +1,23 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.41
+
+### Patch Changes
+
+- 8249402: Stop note playback whenever capture starts or its controls become unavailable, and avoid opening a Mac output stream for mic-only capture.
+
+## 0.6.0-beta.40
+
+### Patch Changes
+
+- d47d9f9: Hide Conversation Canvas while its experimental rollout is paused, without deleting saved Canvas data.
+
+## 0.6.0-beta.39
+
+### Patch Changes
+
+- 54d9510: Show audio upload and transcript progress as independent tracks, including transcripts saved before their audio upload finishes.
+
 ## 0.6.0-beta.38
 
 ### Patch Changes

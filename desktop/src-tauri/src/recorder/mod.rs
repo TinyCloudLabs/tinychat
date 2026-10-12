@@ -3,6 +3,7 @@ pub mod engine;
 pub mod extras;
 pub mod files;
 pub mod journal;
+mod silence_sender;
 
 pub struct RecorderRuntime(std::sync::Once);
 

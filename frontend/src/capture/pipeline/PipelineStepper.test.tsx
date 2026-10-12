@@ -16,58 +16,27 @@ let cleanupDom: (() => void) | undefined;
 afterEach(() => { cleanupDom?.(); cleanupDom = undefined; });
 
 describe("PipelineStepper", () => {
-  test("an ordered list of the visible steps, with a per-step state for screen readers", () => {
+  test("parallel status rows show each track's state to screen readers", () => {
     const html = render(uploading(42));
-    expect(html).toContain('<ol aria-label="Where this note is" class="pipeline-stepper-list"');
-    expect(html).toContain("--pipeline-step-count:4");
-    expect(nodeStates(html)).toEqual([["phone", "done"], ["space", "active"], ["transcript", "upcoming"], ["notes", "upcoming"]]);
-    expect(html).toContain('On this phone<span class="sr-only">, done</span>');
-    expect(html).toContain('In your space<span class="sr-only">, in progress</span>');
-    expect(html).toContain('Transcript<span class="sr-only">, not started</span>');
+    expect(html).toContain('<ul aria-label="Where this note is" class="pipeline-stepper-list"');
+    expect(nodeStates(html)).toEqual([["phone", "done"], ["space", "active"], ["transcript", "waiting"]]);
+    expect(html).toContain('class="pipeline-stepper-label">Audio on this phone</span>');
+    expect(html).toContain('class="pipeline-stepper-label">Audio in your space</span>');
+    expect(html).toContain('class="pipeline-stepper-label">Transcript</span>');
+    expect(html).toContain("Uploading · 42%");
   });
 
   test("skipped steps are not drawn", () => {
     const html = render(pipelineOf({ route: "off", hasNotesOrMoments: false }));
     expect(nodeStates(html)).toEqual([["phone", "done"], ["space", "waiting"]]);
-    expect(html).toContain("--pipeline-step-count:2");
+    expect(html).not.toContain('data-step="transcript"');
   });
 
-  test("done: a filled ink dot; upcoming and waiting: a hollow --line ring", () => {
-    const html = render(pipelineOf());
-    const nodes = html.match(/<svg class="pipeline-stepper-node"[^>]*>.*?<\/svg>/g)!;
-    expect(nodes[0]).toContain('data-node-state="done"');
-    expect(nodes[0]).toContain('fill="var(--ink)"');
-    expect(nodes[1]).toContain('data-node-state="waiting"');
-    expect(nodes[1]).toContain('fill="none" stroke="var(--line)"');
-    expect(nodes[3]).toContain('data-node-state="upcoming"');
-    expect(nodes[3]).toContain('stroke="var(--line)"');
-    expect(nodes[3]).not.toContain("var(--ink)");
-  });
-
-  test("active: a ring with a thin arc that is exactly as long as the progress, and still", () => {
+  test("statuses use calm text without sequencing connectors", () => {
     const html = render(uploading(50));
-    const node = html.match(/<svg class="pipeline-stepper-node"[^>]*data-node-state="active"[^>]*>.*?<\/svg>/)![0];
-    expect(node).toContain('data-arc="progress"');
-    expect(node).not.toContain("pipeline-stepper-spin");
-    const circumference = 2 * Math.PI * 6;
-    expect(node).toContain(`stroke-dasharray="${circumference * 0.5} ${circumference}"`);
-    expect(node).toContain('stroke-width="1.5"');
-  });
-
-  test("active with no known progress: a short arc that is the only thing that spins", () => {
-    const html = render(pipelineOf({ space: { saved: false, pending: { upload: { state: "retrying", bytes: 0, total: 0 } } } }));
-    expect(html).toContain('data-arc="unknown"');
-    expect(html).toContain("pipeline-stepper-spin");
-  });
-
-  test("blocked: a hollow ring with a bang; failed: a filled ink dot with a bang", () => {
-    const blocked = render(signedOut()).match(/<svg class="pipeline-stepper-node"[^>]*data-node-state="blocked"[^>]*>.*?<\/svg>/)![0];
-    expect(blocked).toContain('fill="none" stroke="var(--ink)"');
-    expect(blocked).toContain('<path d="M8 4.6 V8.4"');
-    const failed = render(pipelineOf({ space: { saved: false, pending: { failed: { kind: "timeout", message: "x" } } } }))
-      .match(/<svg class="pipeline-stepper-node"[^>]*data-node-state="failed"[^>]*>.*?<\/svg>/)![0];
-    expect(failed).toContain('<circle cx="8" cy="8" r="7" fill="var(--ink)"></circle>');
-    expect(failed).toContain('stroke="var(--bgc)"');
+    expect(html).toContain('<span class="pipeline-stepper-status">Uploading · 50%</span>');
+    expect(html).not.toContain("pipeline-stepper-connector");
+    expect(html).not.toContain("pipeline-stepper-node");
   });
 
   test("no red, amber or check marks anywhere", () => {
@@ -77,16 +46,8 @@ describe("PipelineStepper", () => {
     }
   });
 
-  test("the connector is ink up to the current step", () => {
-    const html = render(uploading(10));
-    const connectors = [...html.matchAll(/<span class="pipeline-stepper-connector"( data-ink="")?><\/span>/g)].map((m) => m[1] !== undefined);
-    expect(connectors).toEqual([true, false, false]);
-    expect([...render(privateRunning(1, 3)).matchAll(/pipeline-stepper-connector"( data-ink="")?/g)].map((m) => m[1] !== undefined)).toEqual([true, true, false]);
-  });
-
-  test("one caption, for the current step only", () => {
+  test("each track carries its own caption", () => {
     const html = render(uploading(42));
-    expect([...html.matchAll(/data-pipeline-caption=""/g)]).toHaveLength(1);
     expect(html).toContain("Uploading · 42%");
     expect(html).not.toContain("data-pipeline-blocker");
     expect(render(privateRunning(4, 9))).toContain("Transcribing · 4 of 9");
@@ -128,14 +89,23 @@ describe("PipelineStepper", () => {
     expect(html).not.toContain("<button");
   });
 
-  test("Ready on this phone shows under the transcript label while the upload is the current step", () => {
+  test("a saved transcript stays visible while audio is uploading", () => {
     const html = render(pipelineOf({
       route: "on-device",
-      transcript: { inSpace: null, cloud: null, onDevice: { stt: { state: "done", error: null }, queue: null, model: null, download: "idle", sync: null } },
+      transcript: { inSpace: null, cloud: null, onDevice: { stt: { state: "done", error: null }, queue: null, model: { state: "ready", bytes: 640, totalBytes: 640, error: null }, download: "idle", sync: null } },
       space: { saved: false, pending: { upload: { state: "uploading", bytes: 20, total: 100 } } },
     }));
-    expect(html).toContain('<span class="pipeline-stepper-sublabel">Ready on this phone</span>');
-    expect(html).toContain("Uploading · 20%");
+    expect(html).toContain('data-step="transcript" data-state="done"');
+    expect(html).toContain('<span class="pipeline-stepper-status">Ready on this phone</span>');
+    expect(html).toContain('<span class="pipeline-stepper-status">Uploading · 20%</span>');
+  });
+
+  test("keeps notes progress and read failures visible before upload", () => {
+    const syncing = render(pipelineOf({ route: "off", hasNotesOrMoments: true, notes: { state: "syncing" } }));
+    expect(syncing).toContain("Syncing notes…");
+    const unreadable = render(pipelineOf({ route: "off", hasNotesOrMoments: true, notes: { state: "unreadable", cause: "disk unavailable" } }));
+    expect(unreadable).toContain("Couldn&#x27;t read this note&#x27;s text on this phone");
+    expect(unreadable).toContain("Try again");
   });
 
   test("a notice about a saved note's partial audio shows as information", () => {
@@ -153,13 +123,14 @@ describe("PipelineStepper", () => {
     expect(render({ ...notePipeline(allDoneInput()), blocker: { cause: "x" } })).toBe("");
   });
 
-  test("the large-text stacking container query is declared", async () => {
+  test("track rows adapt to large text and 320px widths", async () => {
     const css = await Bun.file(new URL("./PipelineStepper.css", import.meta.url)).text();
-    expect(css).toContain("container-type: inline-size");
-    expect(css).toMatch(/@container pipeline-stepper \(max-width: 14rem\)/);
-    expect(css).toContain("prefers-reduced-motion: no-preference");
+    expect(css).toContain("display: flex;");
+    expect(css).toContain("flex-wrap: wrap;");
+    expect(css).toContain("flex: 0 1 auto;");
+    expect(css).toContain("flex: 1 1 10em;");
     expect(css).not.toMatch(/font-size:\s*[\d.]+px/);
-    expect(css.match(/font-size:\s*0\.78125rem/g)?.length).toBeGreaterThanOrEqual(4);
+    expect(css.match(/font-size:\s*0\.78125rem/g)?.length).toBeGreaterThanOrEqual(3);
     expect(css).toMatch(/\.pipeline-stepper \.soft-pill \{[^}]*font-size: 0\.78125rem/);
     expect(css).not.toMatch(/(?:#[0-9a-f]{3,6}\b|rgb|hsl\(var\(--(?:warning|destructive)\))/i);
   });
