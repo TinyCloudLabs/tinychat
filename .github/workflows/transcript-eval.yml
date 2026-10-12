@@ -122,18 +122,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libclang-dev cmake pkg-config ffmpeg
-          # The rebased app's guarded recorder tests need Tauri's Linux headers.
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - name: Mock Whisper build
         run: cargo check --locked --manifest-path desktop/Cargo.toml -p whisper-local --no-default-features
       # Follow-up: upstream SSE invalid-model test expects HTTP 500; origin/main
       # returns HTTP 200 before the error event. Do not alter production in A2.
       - name: Model-free native tests
         run: cargo test --locked --manifest-path desktop/Cargo.toml -p whisper-local -p transcribe-whisper-local -p audio-chunking -p exo-local-transcription -p transcript-quality-runner -- --skip tests::batch_sse_invalid_model_path_returns_http_500_json_error
-      # TC-777's stage and lock implementation remains in src-tauri.
-      - name: src-tauri recorder stage and file tests
-        working-directory: desktop/src-tauri
-        run: cargo test --locked --lib recorder::files::tests
       - name: Select pinned model
         id: model
         shell: bash
@@ -210,6 +204,7 @@ jobs:
         run: cargo check --locked --manifest-path desktop/Cargo.toml -p transcript-quality-runner --features metal
       - name: Check exact Metal transcription feature parity
         run: bun desktop/eval/transcript-quality/check-workspace-sync.ts --platform macos "$RUNNER_TEMP/closure-metal.json"
+      # The Tauri app enables Metal by default; Foundation is unavailable on Linux.
       - name: Recorder files unit tests (macOS app)
         working-directory: desktop/src-tauri
         run: cargo test --release --lib --locked recorder::files::tests
