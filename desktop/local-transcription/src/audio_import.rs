@@ -285,6 +285,9 @@ mod tests {
             } else {
                 assert!(mean > 0.10, "mic channel was lost: {mean}");
             }
+            let spec = hound::WavReader::open(&decoded).unwrap().spec();
+            assert_eq!(spec.channels, 1);
+            assert_eq!(spec.sample_rate, 16_000);
             // MPEG-2 Layer III at 16 kHz uses bitrate index 8 for 64 kb/s.
             // Inspect the produced frame instead of requiring ffprobe on CI.
             let mp3 = fs::read(&note).unwrap();
