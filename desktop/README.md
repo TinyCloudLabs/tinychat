@@ -101,6 +101,37 @@ host bundle identifier, so it does not share an upstream app's vault. A
 macOS prompts for microphone and system-audio capture when those sources are
 used. `Entitlements.plist` grants audio input to signed bundles.
 
+## Native transcription eval (A2)
+
+`desktop/Cargo.toml` is a separate Linux evaluation workspace; the Tauri app
+keeps its own manifest and lockfile under `src-tauri/`. The runner uses the
+shared `local-transcription` mono importer and the production
+`owhisper-client`/`TranscribeService` path. Run the single synthetic smoke
+fixture and score the production-import response with A1:
+
+```sh
+cargo run --locked --manifest-path desktop/Cargo.toml -p transcript-quality-runner -- \
+  --fixture desktop/eval/transcript-quality/fixtures/smoke-speech \
+  --model <model.bin> --input mono --vocabulary off --output <run-dir>
+bun desktop/eval/transcript-quality/score-smoke.ts \
+  desktop/eval/transcript-quality/fixtures/smoke-speech <run-dir>
+```
+
+The glossary file is data only; production keywords remain empty until E.
+`bun desktop/eval/transcript-quality/check-workspace-sync.ts <closure.json>`
+checks both manifests' patch targets and build profiles and both lockfiles.
+Each package in the eval dependency closure must have the same name, version,
+source and checksum in the app closure. The only allowed eval-only package is
+anarlog's test-data crate `data`; app-only feature-unified packages are allowed.
+
+On Linux, the CPU runner must match the app's enabled features on
+`whisper-local`, `transcribe-whisper-local`, `audio-chunking`,
+`exo-local-transcription`, `whisper-rs`, and `whisper-rs-sys`, except for the
+explicit Metal/accelerator features listed in the checker. On macOS, run the
+runner with `--features metal` and check exact feature equality with
+`bun desktop/eval/transcript-quality/check-workspace-sync.ts --platform macos
+<closure.json>`. Unexpected features or package drift fail either check.
+
 ## Content-Security-Policy
 
 Built apps (`tauri build`, including `--debug`) serve the frontend with the
