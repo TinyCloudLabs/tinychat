@@ -1,0 +1,7 @@
+{
+  "audioSha256": "dbba3e003671fd1e5054a285fe171af303d824a119d7119bfad4a911e444d98d",
+  "origin": "Synthetic English speech made locally with FFmpeg's Flite slt voice; no human recording or private audio",
+  "purpose": "A2 end-to-end infrastructure smoke only; excluded from A3 quality baselines and goldens",
+  "recipe": "FFmpeg Flite stereo float32 WAV, then pinned anarlog mp3::encode_wav. Regenerate: cargo run --locked --manifest-path desktop/Cargo.toml -p transcript-quality-fixture-build -- --output <directory> (requires FFmpeg with libflite)",
+  "reference": "Transcribed prompt text; approximate word positions only, not forced-aligned and not intended for timing gates"
+}

@@ -18,6 +18,8 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 /** The header Fireflies signs with. */
 export const SIGNATURE_HEADER = "x-hub-signature";
+/** The header signed by private transcription webhook deliveries. */
+export const PTX_SIGNATURE_HEADER = "x-webhook-signature";
 
 /**
  * sha256 only — no algorithm negotiation, no `sha1=` fallback, ever (§4.2/§9.6).
@@ -32,12 +34,11 @@ export function isWellFormedSignatureHeader(header: unknown): header is string {
 }
 
 /**
- * Verify an `x-hub-signature` header against the raw request body.
- *
- * Never throws: every rejection path returns `false` so the caller can answer the generic
- * 401 (§4.6) rather than surfacing a 500 that doubles as an oracle.
+ * Verify a lowercase sha256 HMAC against the exact raw request body. Used by both
+ * Fireflies and private transcription webhook handlers. Invalid headers return false,
+ * never an exception or an unauthenticated 500.
  */
-export function verifyFirefliesSignature(
+export function verifyHmacSha256Signature(
   rawBody: Buffer,
   signatureHeader: string | string[] | undefined,
   secret: string,

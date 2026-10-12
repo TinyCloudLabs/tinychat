@@ -15,8 +15,9 @@
 // two minutes away. One read at a time: asks that arrive while one is out
 // become a single read after it; a read already out is never thrown away.
 //
-// A note's settled reads are cached; a failed one is read again when the note
-// is next opened (or on Try again), never pinned.
+// A note's settled reads are cached. Failed revalidation keeps a prior
+// successful read visible but marks only that field stale for Try again or
+// reopening; initial failures are retried on the same actions.
 //
 // Voice notes still on this phone are listed with the space's rows (`onPhone`):
 // one with no row yet is a stand-in that opens from the phone's own copy (its
@@ -27,7 +28,6 @@
 // later; it is dropped at once when the phone's notes become unknown or the
 // space changes, and for a note that was discarded rather than uploaded.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { getAudio } from "@/lib/audio/audioStore";
@@ -46,7 +46,6 @@ import { wasDiscarded, type PendingNote } from "@/lib/voiceNotes/recorderSaves";
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { loadVoiceNoteAudioBlob, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { readTranscriptPreviews, voiceNoteTranscriptLocator } from "@/lib/voiceNotes/voiceNoteCommits";
-import { voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { captureEvents } from "../captureEvents";
 import type { LibraryFilter } from "./libraryKinds";
 import type { LibraryStatus } from "./LibraryListView";
@@ -127,8 +126,6 @@ export function useLibrary(
     /** Capture is on screen. */
     visible: boolean;
     noteId: string | null;
-    /** The phone app's voice-note transcriber, to hear when a transcript is saved; absent elsewhere. */
-    transcriber?: { backendUrl: string; sessionStore: SessionStore } | null;
     /** Voice notes this account still holds on the device; null when not known (not listed, listing failed, other account). */
     onPhone?: readonly PendingNote[] | null;
     /** The clock (tests). */
@@ -145,6 +142,12 @@ export function useLibrary(
   const [filter, setFilter] = useState<LibraryFilter>("all");
   const reads = useRef(new Map<string, NoteReads>());
   const reading = useRef(new Set<string>());
+  const readVersions = useRef(new Map<string, number>());
+  const invalidated = useRef(new Set<string>());
+  // A failed revalidation keeps the last successful value on screen, but the
+  // failed field must still be fetched on Try again or when reopening.
+  const staleReads = useRef(new Map<string, Set<keyof NoteReads>>());
+  const [invalidationRevision, setInvalidationRevision] = useState(0);
   const [, setRevision] = useState(0);
   const bump = useCallback(() => setRevision((n) => n + 1), []);
   const chain = useRef<Promise<unknown>>(Promise.resolve());
@@ -239,8 +242,19 @@ export function useLibrary(
     if (away > RELIST_AFTER_MS) refresh();
   }, [options.visible, refresh]);
 
-  // Something landed (a voice note saved, an upload's or a notetaker's transcript).
-  useEffect(() => captureEvents.on("library-changed", () => refresh()), [refresh]);
+  const itemsRef = useRef(list.items);
+  itemsRef.current = list.items;
+  // Only the saved row's reads are stale. A list-only change never interrupts
+  // the open note's audio or transcript.
+  useEffect(() => captureEvents.on("library-changed", (detail) => {
+    const saved = detail && itemsRef.current.find((entry) => entry.source === detail.source && entry.sourceId === detail.sourceId);
+    if (saved) {
+      invalidated.current.add(saved.id);
+      readVersions.current.set(saved.id, (readVersions.current.get(saved.id) ?? 0) + 1);
+      if (saved.id === options.noteId) setInvalidationRevision((n) => n + 1);
+    }
+    refresh();
+  }), [options.noteId, refresh]);
 
   // Each note that leaves the phone asks for one list read to catch up.
   useEffect(() => {
@@ -313,71 +327,83 @@ export function useLibrary(
       // A note only on this phone has nothing in the space to read.
       if (note.onPhone) return;
       const cached = reads.current.get(note.id) ?? {};
-      if ((settled(cached.metadata) && settled(cached.transcript)) || reading.current.has(note.id)) return;
-      // Drop a previous failure, so the note reads "loading" rather than restating it.
-      reads.current.set(note.id, {
-        metadata: settled(cached.metadata) ? cached.metadata : undefined,
-        transcript: settled(cached.transcript) ? cached.transcript : undefined,
-      });
+      const version = readVersions.current.get(note.id) ?? 0;
+      if (reading.current.has(note.id)) return;
+      const stale = invalidated.current.delete(note.id);
+      const staleFields = staleReads.current.get(note.id);
+      staleReads.current.delete(note.id);
+      if (!stale && !staleFields?.size && settled(cached.metadata) && settled(cached.transcript)) return;
+      // A saved note retains its reads during revalidation; only prior failures show loading.
+      if (!stale) {
+        reads.current.set(note.id, {
+          metadata: settled(cached.metadata) ? cached.metadata : undefined,
+          transcript: settled(cached.transcript) ? cached.transcript : undefined,
+        });
+      }
       reading.current.add(note.id);
       bump();
       void enqueue(async () => {
         try {
           const locator = note.source === VOICE_NOTE_SOURCE
             ? await voiceNoteTranscriptLocator(space, note.sourceId) : null;
-          if (!settled(reads.current.get(note.id)?.metadata)) {
+          if (version === (readVersions.current.get(note.id) ?? 0) && (stale || staleFields?.has("metadata") || !settled(reads.current.get(note.id)?.metadata))) {
             let metadata = await readMeetingMetadata(space, note.id);
             if (locator && metadata.status === "ok") metadata = { status: "ok", metadata: {
               ...metadata.metadata, transcription_outcome: locator.outcome,
               // The preview is bounded; only the body read may supply full transcript text.
               transcript_text: locator.committed ? null : locator.expectedText,
             } };
-            reads.current.set(note.id, { ...reads.current.get(note.id), metadata });
-            if (mounted.current) bump();
+            if (version === (readVersions.current.get(note.id) ?? 0) && metadata.status === "failed" && cached.metadata?.status === "ok") {
+              const fields = staleReads.current.get(note.id) ?? new Set<keyof NoteReads>();
+              fields.add("metadata");
+              staleReads.current.set(note.id, fields);
+            }
+            if (version === (readVersions.current.get(note.id) ?? 0)) {
+              reads.current.set(note.id, {
+                ...reads.current.get(note.id),
+                metadata: metadata.status === "failed" && cached.metadata?.status === "ok"
+                  ? cached.metadata : metadata,
+              });
+              if (mounted.current) bump();
+            }
           }
-          if (!settled(reads.current.get(note.id)?.transcript)) {
+          if (version === (readVersions.current.get(note.id) ?? 0) && (stale || staleFields?.has("transcript") || !settled(reads.current.get(note.id)?.transcript))) {
             const transcript = locator
               ? locator.bodyKey ? await readTranscript(space, note.source, note.sourceId, locator.bodyKey, locator.expectedText)
                 : { status: "absent" as const }
               : await readTranscript(space, note.source, note.sourceId);
-            reads.current.set(note.id, { ...reads.current.get(note.id), transcript });
-            if (mounted.current) bump();
+            if (version === (readVersions.current.get(note.id) ?? 0) && transcript.status === "failed" && cached.transcript?.status === "ok") {
+              const fields = staleReads.current.get(note.id) ?? new Set<keyof NoteReads>();
+              fields.add("transcript");
+              staleReads.current.set(note.id, fields);
+            }
+            if (version === (readVersions.current.get(note.id) ?? 0)) {
+              reads.current.set(note.id, {
+                ...reads.current.get(note.id),
+                transcript: transcript.status === "failed" && cached.transcript?.status === "ok"
+                  ? cached.transcript : transcript,
+              });
+              if (mounted.current) bump();
+            }
           }
         } finally {
           reading.current.delete(note.id);
+          if (mounted.current && version !== (readVersions.current.get(note.id) ?? 0)) setInvalidationRevision((n) => n + 1);
         }
       });
     },
     [bump, enqueue, space],
   );
 
+  // An invalidation that arrives during an in-flight read is retried once that
+  // read settles; otherwise opening a cached note reads only when needed.
   useEffect(() => {
     if (item) readNote(item);
-  }, [item, readNote]);
+  }, [item, readNote, invalidationRevision]);
 
-  // A voice note's transcript was saved: its reads are stale, and so is the list.
-  const transcriberBackend = options.transcriber?.backendUrl;
-  const transcriberSession = options.transcriber?.sessionStore;
-  const itemsRef = useRef(list.items);
-  itemsRef.current = list.items;
-  useEffect(() => {
-    if (!transcriberBackend || !transcriberSession) return;
-    return voiceNoteTranscriberFor(tcw, transcriberBackend, transcriberSession)?.subscribe((event) => {
-      if (event.kind !== "saved") return;
-      const saved = itemsRef.current.find((entry) => entry.source === VOICE_NOTE_SOURCE && entry.sourceId === event.sourceId);
-      if (saved) reads.current.delete(saved.id);
-      captureEvents.emit("library-changed");
-    });
-  }, [tcw, transcriberBackend, transcriberSession]);
-
-  // Re-read the open note once its reads were dropped (a transcript saved).
   const noteReads: NoteReads = item?.onPhone
     ? { metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" } }
     : item ? (reads.current.get(item.id) ?? {}) : {};
-  useEffect(() => {
-    if (item && noteReads.metadata === undefined && noteReads.transcript === undefined) readNote(item);
-  });
-
   const meta = noteReads.metadata?.status === "ok" ? noteReads.metadata.metadata : null;
   const audio = item ? meetingAudioFrom(meta) : null;
   const audioBase = audio?.status === "stored" ? audio.base : null;

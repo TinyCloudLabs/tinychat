@@ -12,9 +12,11 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { captureEvents } from "@/capture/captureEvents";
+import { advanceAccountGeneration } from "./accountContext";
 
 import { _resetConnectorSchemaMemoForTests } from "../connectors/connectorStore";
-import { APP_ID } from "../threadStore";
+import { APP_ID } from "@tinyboilerplate/core";
 import { bytesToBase64 } from "./voiceNoteAudio";
 import { MAX_AUDIO_PART_SIZE, parseAudioManifest } from "../audio/audioStore";
 import {
@@ -649,6 +651,42 @@ describe("saveVoiceNoteTranscript", () => {
     } finally {
       setVoiceNoteSaveDeadlineForTests(null);
       release();
+    }
+  });
+
+  test("a committed on-device or private-cloud transcript refreshes only its saved note once", async () => {
+    const { tcw } = fakeSpace({ rows: [["row-1", "rec-1", "Voice note", "2026-09-29T05:40:00.000Z", 12]] });
+    const changes: unknown[] = [];
+    const off = captureEvents.on("library-changed", (detail) => changes.push(detail));
+    try {
+      expect((await saveVoiceNoteTranscript(tcw, "rec-1", prepared)).ok).toBe(true);
+      expect(changes).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: "rec-1" }]);
+      changes.length = 0;
+      expect((await saveVoiceNoteTranscript(tcw, "rec-1", { ...prepared, rev: 2 })).ok).toBe(true);
+      expect(changes).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: "rec-1" }]);
+    } finally {
+      off();
+    }
+  });
+
+  test("a failed commit and a save completed after the account changes do not refresh", async () => {
+    const space = fakeSpace({ rows: [["row-1", "rec-1", "Voice note", "2026-09-29T05:40:00.000Z", 12]] });
+    const changes: unknown[] = [];
+    const off = captureEvents.on("library-changed", (detail) => changes.push(detail));
+    try {
+      space.failPut(() => ({ code: "STORAGE_ERROR", message: "offline" }));
+      expect((await saveVoiceNoteTranscript(space.tcw, "rec-1", prepared)).ok).toBe(false);
+      expect(changes).toEqual([]);
+      let switched = false;
+      space.failPut(() => {
+        if (!switched) { advanceAccountGeneration(); switched = true; }
+        return null;
+      });
+      expect((await saveVoiceNoteTranscript(space.tcw, "rec-1", prepared)).ok).toBe(true);
+      expect(switched).toBe(true);
+      expect(changes).toEqual([]);
+    } finally {
+      off();
     }
   });
 });

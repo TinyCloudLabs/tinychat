@@ -6,7 +6,7 @@ import type { IdbEnv } from "../web/idb";
 import { createFileAudioBlobStore } from "./fileAudioBlobStore";
 import { openDesktopVoiceNotes, refreshDesktopWhisperCapability, type DesktopBridge } from "./desktopVoiceNotes";
 import type { DesktopWhisperBridge } from "./desktopWhisper";
-import type { TranscriptionEvent, TranscriptionParams } from "@/lib/anarlog/transcription.gen";
+import type { TranscriptionEvent } from "@/lib/anarlog/transcription.gen";
 import { subscribeCaptureCapabilities } from "../captureEngine";
 import type { MissingAudioSpan } from "../nativeVoiceNotes";
 import { leaseWhisperServer } from "@/lib/whisperServerLease";
@@ -16,6 +16,7 @@ type Callback = (payload: never) => void;
 class FakeBridge implements DesktopBridge {
   files = new Map<string, Uint8Array>();
   calls: string[] = [];
+  stageCalls: Record<string, unknown>[] = [];
   listeners = new Map<string, Set<Callback>>();
   recover: { id: string; startedAt: number; recordedMs: number; pausedMs: number; maxDurationMs: number;
     spans?: MissingAudioSpan[] } | null = null;
@@ -29,6 +30,7 @@ class FakeBridge implements DesktopBridge {
   downloadedModels = new Set<string>();
   spans: MissingAudioSpan[] = [];
   stopError: Error | null = null;
+  stageError: unknown = null;
   now = 1_000_000;
 
   emit(event: string, payload: unknown) {
@@ -83,9 +85,11 @@ class FakeBridge implements DesktopBridge {
       case "read_audio_chunk": result = (this.files.get(id) ?? new Uint8Array()).slice(Number(args.offset), Number(args.offset) + Number(args.len)); break;
       case "finalize_audio_file": result = this.files.get(id)?.length ?? 0; break;
       case "recorder_whisper_stage_audio": {
+        if (this.stageError !== null) throw this.stageError;
+        this.stageCalls.push(args);
         const stageId = String(args.stageId);
         this.files.set(stageId, (this.files.get(id) ?? new Uint8Array()).slice());
-        result = `/fixture/${stageId}.mp3`;
+        result = undefined;
         break;
       }
       case "recorder_whisper_cleanup_stages": {
@@ -107,12 +111,13 @@ class FakeBridge implements DesktopBridge {
 
 class FakeWhisper implements DesktopWhisperBridge {
   serverScope?: object;
-  calls: TranscriptionParams[] = [];
+  calls: Parameters<DesktopWhisperBridge["startTranscription"]>[0][] = [];
   stops: string[] = [];
   serverStops = 0;
   serverStarts = 0;
   onStopServer: (() => void) | null = null;
   fail = false;
+  startError: unknown = null;
   pending = false;
   listeners = new Set<(event: TranscriptionEvent) => void>();
   async startServer() { this.serverStarts++; return "http://fixture"; }
@@ -121,12 +126,13 @@ class FakeWhisper implements DesktopWhisperBridge {
     this.listeners.add(cb);
     return () => { this.listeners.delete(cb); };
   }
-  async startTranscription(params: TranscriptionParams) {
+  async startTranscription(params: Parameters<DesktopWhisperBridge["startTranscription"]>[0]) {
     this.calls.push(params);
+    if (this.startError !== null) throw this.startError;
     if (this.pending) return;
     queueMicrotask(() => this.emit(this.fail
-      ? { type: "failed", session_id: params.session_id, code: "unknown", error: "fixture failed" }
-      : { type: "completed", session_id: params.session_id, mode: "direct",
+      ? { type: "failed", session_id: params.id, code: "unknown", error: "fixture failed" }
+      : { type: "completed", session_id: params.id, mode: "direct",
         response: { metadata: null, results: { channels: [{ alternatives: [{ transcript: "hello", confidence: 1 }] }] } } }));
   }
   async stopTranscription(id: string) { this.stops.push(id); this.emit({ type: "stopped", session_id: id }); }
@@ -162,6 +168,10 @@ describe("desktop recorder adapter", () => {
     await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
     await waitFor(() => whisper.serverStops === 1);
     expect(whisper.calls).toHaveLength(1);
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(id)));
+    const stageId = `whisper-${Array.from(digest.subarray(0, 16), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+    expect(whisper.calls[0]).toEqual({ id, stageId, model: "QuantizedTinyEn" });
+    expect(bridge.stageCalls).toEqual([{ id, stageId }]);
     expect((await engine.plugin.getTranscript({ id })).transcript).toMatchObject({ engine: "whispercpp", outcome: "transcribed",
       segments: [{ text: "hello" }] });
     const completed: string[] = [];
@@ -359,6 +369,48 @@ describe("desktop recorder adapter", () => {
     expect(engine.whisper?.snapshot().get(id)?.error).toContain("model disappeared");
     engine.dispose();
   });
+
+  for (const { code, source, advice } of [
+    { code: "unsafe_sessions_folder", source: "stage", advice: "Check the vault sessions folder" },
+    { code: "session_exists", source: "stage", advice: "Resolve the conflicting session" },
+    { code: "recording_unavailable", source: "start", advice: "Check that the note audio still exists" },
+    { code: "recording_busy", source: "start", advice: "Wait for it to finish" },
+    { code: "server_unavailable", source: "start", advice: "Restart local transcription" },
+  ] as const) {
+    slow(`native ${source} rejection ${code} remains actionable on the note`, async () => {
+      const bridge = new FakeBridge();
+      bridge.selectedModel = "QuantizedTinyEn";
+      bridge.downloadedModels.add("QuantizedTinyEn");
+      const whisper = new FakeWhisper();
+      const diagnostic = `native diagnostic for ${code}`;
+      const rejection = { code, message: diagnostic };
+      if (source === "stage") bridge.stageError = rejection;
+      else whisper.startError = rejection;
+      const engine = await openDesktopVoiceNotes({ bridge, whisper,
+        storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+      const id = (await engine.plugin.start()).id;
+      bridge.files.set(id, Uint8Array.of(1, 2, 3));
+      bridge.elapsed = 1000;
+      await engine.plugin.stop();
+      await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "failed");
+      const note = (await engine.plugin.listPending()).recordings.find((item) => item.id === id);
+      expect(note?.stt?.state).toBe("failed");
+      expect(note?.stt?.error).toContain(`${code}:`);
+      expect(note?.stt?.error).toContain(advice);
+      expect(note?.stt?.error).toContain(diagnostic);
+      expect(note?.stt?.error).not.toContain("[object Object]");
+      expect(engine.whisper?.snapshot().get(id)?.error).toBe(note?.stt?.error);
+      await engine.whisper!.modelAvailable();
+      expect((await engine.plugin.listPending()).recordings.find((item) => item.id === id)?.stt?.state).toBe("failed");
+      if (code === "recording_busy") {
+        whisper.startError = null;
+        await engine.whisper!.retry(id);
+        await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+        expect((await engine.plugin.listPending()).recordings.find((item) => item.id === id)?.stt?.error).toBeNull();
+      }
+      engine.dispose();
+    });
+  }
 
   slow("Whisper failure stays on the note until Retry; a missing model reports unavailable", async () => {
     const bridge = new FakeBridge();

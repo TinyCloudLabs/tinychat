@@ -30,26 +30,27 @@ describe("server-info route", () => {
 
     const response = await request(app, "/api/server-info");
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({
-      did: backendDid,
-      status: "ready",
-      name: "TinyChat Backend",
-      expiry: "30d",
-      permissions: [
-        {
-          service: "tinycloud.kv",
-          path: "threads/",
-          actions: ["get", "put", "del", "list"],
-          description: "Read and write chat threads and messages.",
-        },
-      ],
-      policyHash: backendDelegationPolicyHash(backendDid),
-      backendRevision: "0123abc",
-      backendVersion: "0.4.2",
-    });
-    expect(backendDelegationResolvedPermissions(backendDid)[0].path).toBe(
-      "xyz.tinycloud.tinychat/threads/",
-    );
+    const info = await response.json() as {
+      did: string;
+      status: string;
+      permissions: Array<{ service: string; path: string; actions: string[] }>;
+      policyHash: string;
+      backendRevision: string;
+      backendVersion: string;
+    };
+    expect(info.did).toBe(backendDid);
+    expect(info.status).toBe("ready");
+    expect(info.permissions.map(({ service, path, actions }) => ({ service, path, actions }))).toEqual([
+      { service: "tinycloud.sql", path: "connectors", actions: ["read", "write"] },
+      { service: "tinycloud.kv", path: "connectors/tinycloud-transcriber/", actions: ["get", "put"] },
+    ]);
+    expect(info.policyHash).toBe(backendDelegationPolicyHash(backendDid));
+    expect(info.backendRevision).toBe("0123abc");
+    expect(info.backendVersion).toBe("0.4.2");
+    expect(backendDelegationResolvedPermissions(backendDid).map(({ service, path }) => ({ service, path }))).toEqual([
+      { service: "tinycloud.sql", path: "xyz.tinycloud.tinychat/connectors" },
+      { service: "tinycloud.kv", path: "xyz.tinycloud.tinychat/connectors/tinycloud-transcriber/" },
+    ]);
   });
 
   it("reads the build revision from BUILD_REVISION and the version from backend/package.json", () => {

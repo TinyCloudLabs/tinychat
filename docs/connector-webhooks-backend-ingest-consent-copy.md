@@ -124,3 +124,43 @@ reconcile = `retain`; cohort = operator-only dark cohort (`D5-cohort`).
 > delete it, delete every meeting we are holding for you, and stop accepting notifications. If
 > Fireflies is down and we cannot revoke upstream, we tell you so instead of pretending it worked —
 > so you can revoke it yourself from your Fireflies account.
+
+---
+
+## Transcript-writer variant (TC-641) — not covered by the approval above
+
+**Status: NOT APPROVED.** `BACKEND_INGEST_TRANSCRIPT_CONSENT_COPY` renders in place of the text
+above only while TC-641 transcript delivery is active, or its status is unknown, for the signed-in
+address. It is the approved text with **bullet 4 and the disconnect note replaced** by the two
+paragraphs below. Bullet 4 discloses the Private Notetaker transcript-writer grant as it really
+is: SQL read and write on the whole connectors database (at the node: read, add, change and delete
+over every connector's meeting records, local recordings and voice notes included) plus reading and
+saving Notetaker transcripts, for up to 29 days at a time, renewed silently. It drops "nothing is
+granted" and "our server writes no meeting into your space", which are false once that grant is
+active. The disconnect note says disconnecting Fireflies does not remove that separate grant. The
+Gate 6 approval above covers neither paragraph. They are mirrored here so `consent-scope.test.ts`
+holds them to the shipped words, and so that they are visibly awaiting operator approval rather
+than approved.
+
+## transcript-writer bullet 4
+
+> Turning this on adds **no new permission on your space** of its own. Background sync asks you to
+> grant nothing — the credential above is held by our server, outside your space. Your browser still
+> saves Fireflies meetings into your space when you are signed in with your vault unlocked, so your
+> own copy lands where it always did, and it is not deleted when our 90-day window closes.
+> Separately, because the TinyCloud Private Notetaker is on, our server holds a permission on your
+> space over the **meeting records in your connectors library**: the titles, participants, summaries
+> and other details stored for every connector's meetings, Fireflies and Google included, and for
+> your local recordings and voice notes. Our server can **read, add, change or delete those
+> records**. It can also read and save Notetaker transcripts there. Each grant lasts up to 29 days,
+> and your browser renews it without asking while you are signed in and enrolled in server delivery.
+> What changed with this Fireflies toggle is what our server now *has*: your Fireflies token, and a
+> copy of your meetings.
+
+## transcript-writer disconnectNote
+
+> **Disconnecting undoes all of the Fireflies custody above, in one click.** We revoke the Fireflies
+> token upstream and delete it, delete every meeting we are holding for you, and stop accepting
+> notifications. If Fireflies is down and we cannot revoke upstream, we tell you so instead of
+> pretending it worked — so you can revoke it yourself from your Fireflies account. Disconnecting
+> Fireflies does not remove the separate Notetaker permission described above.

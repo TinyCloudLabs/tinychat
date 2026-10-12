@@ -40,6 +40,7 @@ export const harnessTcw = new Proxy(
 ) as unknown as TinyCloudWeb;
 
 export const harnessSessionStore = {
+  getAddress: () => HARNESS_ADDRESS,
   getToken: () => "harness-token",
   isExpired: () => false,
   hasSession: () => true,

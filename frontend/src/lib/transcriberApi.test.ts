@@ -88,3 +88,16 @@ describe("transcriber read deadlines", () => {
     expect(requests.every((request) => request.signal === undefined)).toBe(true);
   });
 });
+
+describe("TC-907 capacity refusal", () => {
+  test("a 429 capacity_exhausted send keeps the backend's busy message", async () => {
+    const message = "All 2 meeting notetakers are busy right now. Try again when one of the current meetings ends.";
+    const client = createTranscriberClient("https://backend.example", {
+      sessionStore,
+      fetchImpl: (async () => Response.json({ error: "capacity_exhausted", message, retry_after_seconds: 60 },
+        { status: 429, headers: { "Retry-After": "60" } })) as unknown as typeof fetch,
+    });
+    expect(await client.create({ meeting_url: "https://meet.google.com/aaa-bbbb-ccc" }))
+      .toEqual({ status: "retryable", httpStatus: 429, code: "capacity_exhausted", message });
+  });
+});
