@@ -380,6 +380,35 @@ import XCTest
         }
     }
 
+    func testRouteChangePublishesCurrentInputsWhileIdle() throws {
+        try withEngine { engine in
+            #if targetEnvironment(simulator)
+            engine.debugInputEnvironment = ["EXO_SIM_AUDIO_INPUT": "silence"]
+            #endif
+            var snapshots: [[String: Any]] = []
+            let observer = engine.observe { name, data, _ in
+                if name == "inputs" { snapshots.append(data) }
+            }
+            defer { engine.removeObserver(observer) }
+
+            engine.routeChanged()
+            XCTAssertEqual(snapshots.count, 1)
+            XCTAssertNotNil(snapshots[0]["inputs"] as? [[String: Any]])
+            XCTAssertNotNil(snapshots[0]["selectedId"])
+            XCTAssertNotNil(snapshots[0]["activeId"])
+
+            #if targetEnvironment(simulator)
+            XCTAssertEqual(snapshots[0]["activeId"] as? String, SimulatorSilentInput.inputID)
+            engine.debugInputEnvironment = ["EXO_SIM_AUDIO_INPUT": "file:speech"]
+            engine.routeChanged()
+            XCTAssertEqual(snapshots.count, 2)
+            XCTAssertEqual(snapshots[1]["activeId"] as? String, "exo-sim-file-speech")
+            let inputs = try XCTUnwrap(snapshots[1]["inputs"] as? [[String: Any]])
+            XCTAssertEqual(inputs.first?["id"] as? String, "exo-sim-file-speech")
+            #endif
+        }
+    }
+
     func testWatchdogRebuildsStoppedGraphAndMediaResetAlerts() throws {
         try withEngine { engine in
             let id = try XCTUnwrap(engine.start()["id"] as? String)
