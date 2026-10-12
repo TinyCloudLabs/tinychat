@@ -65,8 +65,9 @@ public final class TranscriptionQueue {
 
     /// Explicit enqueue: the UI's Retry for a `failed` note, or a fresh on-device recording. Resets
     /// the attempt count, since this is a deliberate retry, not an automatic one; a note that is
-    /// already queued or decoding is left alone.
-    public func enqueue(id: String) { core.enqueue(id: id) }
+    /// already queued or decoding is left alone. `accepted` says whether the note is now in line:
+    /// false for a note that already has its transcript.
+    public func enqueue(id: String, accepted: ((Bool) -> Void)? = nil) { core.enqueue(id: id, accepted: accepted) }
 
     /// Drops a queued note, or stops the note decoding right now at its next checkpoint; the worker
     /// then records the `cancelled` state itself, so a finishing decode and a cancel never race on the sidecar.

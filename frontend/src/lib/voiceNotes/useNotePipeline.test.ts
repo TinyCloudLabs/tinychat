@@ -167,6 +167,25 @@ describe("route follows the provider the user picked", () => {
     expect(pipelineRoute({ transcriber: "on-device", stt: null }, true, place("cancelled", null))).toBe("private-cloud");
   });
 
+  const stt = (state: "waiting_for_model" | "queued" | "running" | "done" | "failed" | "cancelled") =>
+    ({ state, pack: null, engine: null, segmentsDone: 0, windowsDone: 0, error: null }) as const;
+
+  test("the queue entry gone (a phone drops the running note, and every finished one): the ledger's attempt keeps the Local route", () => {
+    for (const state of ["queued", "running", "done", "failed", "cancelled"] as const) {
+      expect(pipelineRoute({ transcriber: "private-cloud", stt: stt(state) }, false, null)).toBe("on-device");
+      expect(pipelineRoute({ transcriber: "off", stt: stt(state) }, false, null)).toBe("on-device");
+    }
+  });
+
+  test("waiting_for_model is written for every committed mode at creation: it says nothing about Local", () => {
+    expect(pipelineRoute({ transcriber: "private-cloud", stt: stt("waiting_for_model") }, false, null)).toBe("private-cloud");
+    expect(pipelineRoute({ transcriber: "off", stt: stt("waiting_for_model") }, false, null)).toBe("off");
+  });
+
+  test("a cloud job takes the route over from a Local attempt that has ended", () => {
+    expect(pipelineRoute({ transcriber: "private-cloud", stt: stt("failed") }, true, null)).toBe("private-cloud");
+  });
+
   test("Private on a note committed to Audio only or Local: the cloud job is the route", () => {
     expect(pipelineRoute({ transcriber: "off", stt: null }, true)).toBe("private-cloud");
     expect(pipelineRoute({ transcriber: "on-device", stt: null }, true)).toBe("private-cloud");
@@ -429,5 +448,22 @@ describe("actions", () => {
     const env = envFor({ saved: true, native: { transcriber: "off", stt: null }, rowMetadata: {}, localNote: { editedAt: EDITED, hasContent: true }, noteSync: { syncing: false, failed: true, skip: null, syncedAt: null } }, { tcw: null as TinyCloudWeb | null });
     expect(env.pipeline.current).toBe("notes");
     expect(await runPipelineAction("retry", env)).toBe("Sign in to sync this note.");
+  });
+});
+
+describe("a private-cloud note nothing is about to transcribe", () => {
+  const privateNote = { transcriber: "private-cloud" as const, stt: null };
+
+  test("saved, no job, the account's check answered: the transcript step is skipped, not waiting", () => {
+    expect(stateOf(run({ native: privateNote }), "transcript")).toBe("skipped");
+  });
+
+  test("the check still answering, or the note not yet saved: the hand-over is on its way, so it waits", () => {
+    expect(stateOf(run({ native: privateNote, cloudChecking: true }), "transcript")).toBe("waiting");
+    expect(stateOf(run({ native: privateNote, saved: false }), "transcript")).not.toBe("skipped");
+  });
+
+  test("a job (even a blocked one) is the answer: the step speaks for it", () => {
+    expect(stateOf(run({ native: privateNote, cloudJob: { kind: "blocked", reason: "unavailable" } }), "transcript")).not.toBe("skipped");
   });
 });

@@ -87,18 +87,20 @@ final class TranscriptionCore {
         }
     }
 
-    func enqueue(id: String) {
+    func enqueue(id: String, accepted: ((Bool) -> Void)? = nil) {
         controlQueue.async { [self] in
             // Reserve first: a note that is already pending or decoding keeps its own sidecar. The
             // transcript is read after the reservation, so a note finishing meanwhile is seen.
-            guard state.reserve(id) else { return }
+            guard state.reserve(id) else { accepted?(true); return }
             guard (try? library.transcript(id)) == nil else { // already has one
                 state.releaseReserved(id)
+                accepted?(false)
                 return
             }
             try? library.updateStt(id, patch: ["state": "queued", "error": NSNull(), "attempts": 0])
             state.publishReserved(id)
             onQueueChanged?()
+            accepted?(true)
             kickWorker()
         }
     }

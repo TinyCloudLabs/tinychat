@@ -62,6 +62,8 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
     private val pending = LinkedBlockingDeque<String>()
     private val captureGate = CapturePauseGate()
     @Volatile private var running = false
+    // The note being decoded: popped off `pending` the moment it starts, so the snapshot has to name it separately.
+    @Volatile private var current: String? = null
     var onQueueChanged: (() -> Unit)? = null
     var onProgress: ((String, Int) -> Unit)? = null
     var onTranscribed: ((String, String) -> Unit)? = null
@@ -96,15 +98,17 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
     }
 
     /** Explicit enqueue: the UI's Retry for a `failed` note, or a fresh on-device recording. Resets
-     * the attempt count, since this is a deliberate retry, not an automatic one. */
-    fun enqueue(id: String) {
+     * the attempt count, since this is a deliberate retry, not an automatic one. `accepted` says
+     * whether the note is now in line: false for a note that already has its transcript. */
+    fun enqueue(id: String, accepted: (Boolean) -> Unit) {
         executor.execute {
-            if (capture.library.getTranscript(id) != null) return@execute
+            if (capture.library.getTranscript(id) != null) { accepted(false); return@execute }
             try { capture.library.mutate(id, "stt.write") { note -> note.getJSONObject("stt")
                 .put("state", "queued").put("error", JSONObject.NULL).put("attempts", 0) } }
             catch (e: Exception) { Log.w("ExoStt", "enqueue failed for $id", e) }
             if (!pending.contains(id)) pending.addLast(id)
             onQueueChanged?.invoke()
+            accepted(true)
             pump()
         }
     }
@@ -119,7 +123,7 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
 
     fun queueSnapshot(): JSONArray {
         val result = JSONArray()
-        for (id in pending.toList()) {
+        for (id in listOfNotNull(current) + pending.toList()) {
             val stt = try { capture.library.read(id)?.optJSONObject("stt") } catch (_: Exception) { null }
             result.put(JSONObject().put("id", id).put("state", stt?.optString("state") ?: "queued")
                 .put("percent", JSONObject.NULL).put("error", stt?.opt("error") ?: JSONObject.NULL))
@@ -149,7 +153,7 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
         try {
             CaptureYieldingLoop.run(
                 hasNext = { pending.isNotEmpty() },
-                next = { pending.removeFirst() },
+                next = { pending.removeFirst().also { current = it } },
                 isPaused = { captureGate.isActive() },
             ) { id ->
                 val previousAttempts = try { capture.library.read(id)?.optJSONObject("stt")?.optInt("attempts", 0) ?: 0 } catch (_: Exception) { 0 }
@@ -169,14 +173,17 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
                         // Not a failed attempt: an orderly yield to a resumed recording. Restore the
                         // attempt count so being interrupted repeatedly never burns the crash-loop budget.
                         try { capture.library.mutate(id, "stt.write") { it.getJSONObject("stt").put("state", "queued").put("attempts", previousAttempts) } } catch (_: Exception) {}
+                        current = null
                         pending.addFirst(id)
                     } catch (e: Exception) {
                         Log.e("ExoStt", "process() threw for id=$id", e)
                         fail(id, "decode_failed", e.message ?: e.toString())
                     }
                 }
+                current = null
             }
         } finally {
+            current = null
             engine.release()
             running = false
         }

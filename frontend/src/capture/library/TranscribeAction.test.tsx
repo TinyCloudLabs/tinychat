@@ -48,12 +48,12 @@ afterEach(async () => {
   __setOnDeviceSttForTests(originals.onDeviceStt);
 });
 
-async function mount(props: { read: PhoneRead; transcription?: VoiceNoteTranscriptionProps; label?: string }) {
+async function mount(props: { read: PhoneRead; transcription?: VoiceNoteTranscriptionProps; label?: string; durationSecs?: number | null }) {
   cleanupDom = installDom();
   const host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
-  await act(async () => root!.render(createElement(MemoryRouter, null, createElement(TranscribeActionFor, { noteId: NOTE, transcription: props.transcription, read: props.read, label: props.label }))));
+  await act(async () => root!.render(createElement(MemoryRouter, null, createElement(TranscribeActionFor, { noteId: NOTE, transcription: props.transcription, durationSecs: props.durationSecs === undefined ? 60 : props.durationSecs, read: props.read, label: props.label }))));
   return host;
 }
 const click = (element: Element) => act(async () => { element.dispatchEvent(new window.MouseEvent("click", { bubbles: true })); });
@@ -67,20 +67,27 @@ const button = (host: HTMLElement) => host.querySelector<HTMLButtonElement>('[da
 
 describe("the providers on offer", () => {
   test("Local when the recording is on this phone, Private when private cloud is available; Local first", () => {
-    expect(transcribeProviders(NOTE, transcription(), phone())).toEqual(["on-device", "private-cloud"]);
+    expect(transcribeProviders(NOTE, transcription(), phone(), 60)).toEqual(["on-device", "private-cloud"]);
+  });
+
+  test("Private only for a note within the length private cloud advertises, on the first try and the retry alike", () => {
+    expect(transcribeProviders(NOTE, transcription({ maxSeconds: 7200 }), phone(), 7200)).toEqual(["on-device", "private-cloud"]);
+    expect(transcribeProviders(NOTE, transcription({ maxSeconds: 7200 }), phone(), 7201)).toEqual(["on-device"]);
+    expect(transcribeProviders(NOTE, transcription({ maxSeconds: 7200 }), null, 7201)).toEqual([]);
+    expect(transcribeProviders(NOTE, transcription({ maxSeconds: 7200 }), phone(), null)).toEqual(["on-device", "private-cloud"]);
   });
 
   test("Local needs the recording on this phone", () => {
-    expect(transcribeProviders(NOTE, transcription(), null)).toEqual(["private-cloud"]);
+    expect(transcribeProviders(NOTE, transcription(), null, 60)).toEqual(["private-cloud"]);
   });
 
   test("Private only while private cloud is available, and not while its job runs or has finished", () => {
     for (const availability of ["hidden", "checking", "failed"] as const) {
-      expect(transcribeProviders(NOTE, transcription({ availability }), phone())).toEqual(["on-device"]);
+      expect(transcribeProviders(NOTE, transcription({ availability }), phone(), 60)).toEqual(["on-device"]);
     }
-    expect(transcribeProviders(NOTE, undefined, phone())).toEqual(["on-device"]);
+    expect(transcribeProviders(NOTE, undefined, phone(), 60)).toEqual(["on-device"]);
     for (const job of [{ kind: "active", status: { kind: "processing", completed: 1, total: 3 } }, { kind: "done", outcome: "transcribed" }] as const) {
-      expect(transcribeProviders(NOTE, transcription({ jobs: new Map([[NOTE, job]]) }), phone())).toEqual(["on-device"]);
+      expect(transcribeProviders(NOTE, transcription({ jobs: new Map([[NOTE, job]]) }), phone(), 60)).toEqual(["on-device"]);
     }
   });
 
@@ -157,6 +164,33 @@ describe("the Transcribe action", () => {
     } finally {
       console.error = originalError;
     }
+  });
+
+  test("a start the phone accepts without putting the note in line is a failure: calm copy, and the action unlocks", async () => {
+    OnDeviceStt.enqueue = async () => { throw Object.assign(new Error("This note already has a transcript"), { code: "already_transcribed" }); };
+    const originalError = console.error;
+    console.error = noop;
+    try {
+      const host = await mount({ read: onPhone(), transcription: transcription() });
+      await click(button(host));
+      expect(host.querySelector('[data-testid="transcribe-problem"]')!.textContent).toBe(LOCAL_START_FAILED);
+      expect(button(host).disabled).toBe(false);
+    } finally {
+      console.error = originalError;
+    }
+  });
+
+  test("a private job that settles as blocked is the start's answer: the action unlocks", async () => {
+    const sent: string[] = [];
+    const host = await mount({ read: nowhere, transcription: transcription({ onTranscribe: (id) => sent.push(id) }) });
+    await click(button(host));
+    expect(sent).toEqual([NOTE]);
+    expect(button(host).disabled).toBe(true);
+    await act(async () => root!.render(createElement(MemoryRouter, null, createElement(TranscribeActionFor, {
+      noteId: NOTE, durationSecs: 60, read: nowhere,
+      transcription: transcription({ jobs: new Map([[NOTE, { kind: "blocked", reason: "unavailable" }]]) }),
+    }))));
+    expect(button(host).disabled).toBe(false);
   });
 
   test("choosing Private sends the note to private cloud and leaves the phone alone", async () => {

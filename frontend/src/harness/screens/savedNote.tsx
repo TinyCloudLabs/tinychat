@@ -149,6 +149,11 @@ const PRIVATE_CLOUD: VoiceNoteTranscriptionProps = {
   onTranscribe: noop, onTranscribePrivately: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop,
 };
 
+const PRIVATE_RUNNING: VoiceNoteTranscriptionProps = {
+  ...PRIVATE_CLOUD,
+  jobs: new Map([[UNTRANSCRIBED_ID, { kind: "active", status: { kind: "processing", completed: 4, total: 9 } }]]),
+};
+
 /** The phone holds this note's recording (so Local is on offer), as the fake plugin reports it. */
 function holdUntranscribedRecording(committed: TranscriberId) {
   const base = VoiceNotes;
@@ -166,7 +171,7 @@ function Note(props: {
   audio?: boolean;
   press?: { selector: string; text?: string };
   /** A note with no transcript, offered Transcribe: Local too when the phone holds its recording. */
-  untranscribed?: { onPhone: boolean; committed?: TranscriberId };
+  untranscribed?: { onPhone: boolean; committed?: TranscriberId; privateRunning?: boolean };
 }) {
   const platform = useContext(PlatformContext);
   const shim = useMemo(() => createRuntimeShim(), []);
@@ -184,7 +189,7 @@ function Note(props: {
         shim={shim}
         state="ready"
         captureTcw={tcw}
-        recorder={props.untranscribed ? { ...IDLE, transcription: PRIVATE_CLOUD } : IDLE}
+        recorder={props.untranscribed ? { ...IDLE, transcription: props.untranscribed.privateRunning ? PRIVATE_RUNNING : PRIVATE_CLOUD } : IDLE}
       />
       {props.press && <Press {...props.press} />}
     </>
@@ -249,8 +254,8 @@ export const savedNoteScreens: HarnessScreen[] = [
   // A note with no transcript: Transcribe with the provider chip, Local by default (and Private only, where the phone lacks the recording).
   screen("untranscribed-page", "tauri", TRANSCRIBE_DESKTOP, TRANSCRIBE, () => <Note untranscribed={{ onPhone: false }} />, UNTRANSCRIBED_PATH),
   screen("untranscribed-sheet", "ios", TRANSCRIBE_PHONE, TRANSCRIBE, () => <Note untranscribed={{ onPhone: true }} />, UNTRANSCRIBED_PATH),
-  // Committed to Private with no job yet: the stepper alone says it is about to start, with no Transcribe beside it.
-  screen("untranscribed-automatic", "ios", TRANSCRIBE_PHONE, '[data-testid="note-transcript-pipeline"]', () => <Note untranscribed={{ onPhone: true, committed: "private-cloud" }} />, UNTRANSCRIBED_PATH),
+  // Private is transcribing it: the stepper alone says so, with no Transcribe beside it.
+  screen("untranscribed-automatic", "ios", TRANSCRIBE_PHONE, '[data-testid="note-transcript-pipeline"]', () => <Note untranscribed={{ onPhone: true, committed: "private-cloud", privateRunning: true }} />, UNTRANSCRIBED_PATH),
   screen("untranscribed-private-only", "ios", TRANSCRIBE_PHONE, TRANSCRIBE, () => <Note untranscribed={{ onPhone: false }} />, UNTRANSCRIBED_PATH),
   screen("sheet-editing", "ios", PHONE_VIEWPORTS, EDITOR, () => <Note press={EDIT} />),
   screen("sheet-confirm", "ios", PHONE_VIEWPORTS, '[role="alertdialog"]', () => (

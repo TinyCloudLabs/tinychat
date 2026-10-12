@@ -74,7 +74,7 @@ export default function SavedNote({
         pipeline={pipeline.pipeline}
         onAction={pipeline.onAction}
         actionError={pipeline.actionError}
-        transcribeAction={<TranscribeAction noteId={item.sourceId} transcription={recorder.transcription} label="Try again" />}
+        transcribeAction={<TranscribeAction noteId={item.sourceId} transcription={recorder.transcription} durationSecs={item.durationSecs} label="Try again" />}
       />
     ) : null,
     audio,

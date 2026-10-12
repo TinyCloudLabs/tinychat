@@ -111,8 +111,9 @@ class OnDeviceSttPlugin : Plugin() {
     @PluginMethod
     fun enqueue(call: PluginCall) {
         val id = call.getString("id") ?: run { call.reject("id is required", "invalid_argument"); return }
-        queue.enqueue(id)
-        call.resolve()
+        queue.enqueue(id) { accepted ->
+            if (accepted) call.resolve() else call.reject("This note already has a transcript", "already_transcribed")
+        }
     }
 
     @PluginMethod

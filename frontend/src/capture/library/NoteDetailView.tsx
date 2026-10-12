@@ -136,7 +136,7 @@ export function VoiceNoteTranscriptionStatus(props: {
     return (
       <div className="flex flex-col gap-2" data-testid="voice-note-transcription-held">
         <p role="status" className="min-w-0 text-callout text-muted-foreground">{job.message}</p>
-        <TranscribeAction noteId={item.sourceId} transcription={transcription} />
+        <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} />
       </div>
     );
   }
@@ -147,7 +147,7 @@ export function VoiceNoteTranscriptionStatus(props: {
           {job.message}
           {job.reference && <span className="text-muted-foreground"> Reference: {job.reference}</span>}
         </p>
-        {job.retryable && <TranscribeAction noteId={item.sourceId} transcription={transcription} label="Try again" />}
+        {job.retryable && <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} label="Try again" />}
       </div>
     );
   }
@@ -165,7 +165,7 @@ export function VoiceNoteTranscriptionStatus(props: {
   return (
     <div className="flex flex-col gap-2">
       <p className="text-callout text-muted-foreground">Not transcribed</p>
-      <TranscribeAction noteId={item.sourceId} transcription={transcription} />
+      <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} />
     </div>
   );
 }
@@ -194,8 +194,9 @@ function NoTranscript(props: { item: LibraryItem; metadata: MeetingMetadataRead;
   if (line !== null || onPhoneRoute) {
     // The stepper above says what is happening and offers its action; what is left here adds something it does not.
     const job = props.transcription?.jobs.get(props.item.sourceId);
-    // A note committed to private cloud with no job yet is about to start one by itself: only the stepper speaks for it.
-    const privateComing = stepperShown && view.route === "private-cloud" && job === undefined && outcome !== "no_speech";
+    // A private-cloud note the stepper still waits on (its hand-over is on its way) is spoken for by the stepper; once the
+    // stepper skips the transcript step nothing will start one, and the Transcribe action below stands.
+    const privateComing = stepperShown && line !== null && view.route === "private-cloud" && job === undefined;
     const stepperCovers = onPhoneRoute || privateComing || job?.kind === "active" || job?.kind === "failed";
     const status = stepperCovers ? null : VoiceNoteTranscriptionStatus({ item: props.item, outcome, transcription: props.transcription });
     // "Will appear here" would sit beside a Transcribe action that says it won't unless asked.

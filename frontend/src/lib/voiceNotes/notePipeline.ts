@@ -117,6 +117,11 @@ export interface NotePipelineInput {
      * read's own error. The route and the transcript are unknown then, never "absent" or "ready".
      */
     readError?: string | null;
+    /**
+     * A private-cloud note, saved, with no job, and nothing about to start one (the account's check has answered): it is
+     * not being transcribed and will not be unless asked, so the step is skipped, like a note committed to no transcript.
+     */
+    cloudIdle?: true;
     /** The space row has not been read yet (it queues behind uploads on the write lane): what only it can say is not known. */
     spaceReading?: boolean;
     /** With `spaceReading`: uploads are ahead of that read in the write lane. */
@@ -324,6 +329,7 @@ function transcriptStep(input: NotePipelineInput): Result {
   const { inSpace, onDevice, cloud } = input.transcript;
   if (input.route === "private-cloud" && !input.space.saved) return { state: "upcoming" };
   if (inSpace !== null) return inSpace === "no_speech" ? { state: "done", caption: LOCAL_COPY.noSpeech } : { state: "done" };
+  if (input.route === "private-cloud" && cloud === null && input.transcript.cloudIdle === true) return { state: "skipped" };
   if (input.route === "private-cloud") return cloudStep(cloud, input.space.saved, input.transcript.spaceReading === true ? checking(input.transcript) : null);
   if (onDevice === null) return input.space.saved ? { state: "waiting", caption: input.transcript.spaceReading === true ? checking(input.transcript) : LOCAL_COPY.notStarted } : { state: "upcoming" };
   return onDeviceStep(input, onDevice);

@@ -233,6 +233,8 @@ export function OnDeviceNoteStatusView(props: {
   onUsePrivate?: () => Promise<string | null>;
   /** Where a failed note is retried, with a choice of provider. */
   transcription?: VoiceNoteTranscriptionProps;
+  /** The note's length, which decides whether Private is offered for the retry. */
+  durationSecs?: number | null;
   /** The note's pipeline stepper is on screen: it already says queued, running, done, waiting and failed, with their retry (and its provider choice) and model actions, so only the way off the phone's model while it waits is left here. */
   stepperShown?: boolean;
 }) {
@@ -278,7 +280,7 @@ export function OnDeviceNoteStatusView(props: {
       return (
         <div className="flex flex-col gap-2" data-testid="voice-note-on-device-failed">
           <p role="alert" className="min-w-0 text-callout text-destructive">Couldn&apos;t transcribe on this phone: {note.reason}</p>
-          <TranscribeAction noteId={props.noteId} transcription={props.transcription} label="Try again" />
+          <TranscribeAction noteId={props.noteId} transcription={props.transcription} durationSecs={props.durationSecs ?? null} label="Try again" />
         </div>
       );
     case "no_speech":
@@ -302,7 +304,7 @@ function OnDeviceNoteStatusReading(props: { noteId: string; fallback: ReactNode;
   const onUsePrivate = transcription && privateInsteadOffered(transcription, props.noteId, props.durationSecs ?? null)
     ? () => switchToPrivate(transcription, props.noteId)
     : undefined;
-  return <OnDeviceNoteStatusView noteId={props.noteId} view={view} fallback={props.fallback} onUsePrivate={onUsePrivate} transcription={transcription} stepperShown={props.stepperShown} />;
+  return <OnDeviceNoteStatusView noteId={props.noteId} view={view} fallback={props.fallback} onUsePrivate={onUsePrivate} transcription={transcription} durationSecs={props.durationSecs} stepperShown={props.stepperShown} />;
 }
 
 /** Only a phone with on-device speech has a state to read; elsewhere the fallback stands. A note private cloud has taken is the fallback's to show. */

@@ -58,6 +58,8 @@ export interface TranscribeActionProps {
   noteId: string;
   /** Absent where this build or account has no private cloud. */
   transcription: VoiceNoteTranscriptionProps | undefined;
+  /** The note's length: Private is offered only up to the length private cloud advertises. */
+  durationSecs: number | null;
   /** "Transcribe" by default; "Try again" after a failure. */
   label?: string;
   className?: string;
@@ -69,9 +71,9 @@ export function TranscribeAction(props: TranscribeActionProps) {
 
 /** The action given what the phone said about the note. */
 export function TranscribeActionFor(props: TranscribeActionProps & { read: PhoneRead }) {
-  const { noteId, transcription, read } = props;
+  const { noteId, transcription, durationSecs, read } = props;
   const phone = read.state === "read" ? read.phone : null;
-  const providers = transcribeProviders(noteId, transcription, phone);
+  const providers = transcribeProviders(noteId, transcription, phone, durationSecs);
   const [chosen, setChosen] = useState<TranscribeProvider | null>(null);
   const [busy, setBusy] = useState(false);
   // Set at the tap, ahead of any render: the start is still on its way until this note's job or queue entry replaces the action.
@@ -79,6 +81,14 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
   const [asking, setAsking] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const selectId = useId();
+  // The lock holds while the start is on its way. A job that settles into something other than active (blocked, held,
+  // failed, done) is the start's answer: the action stays on screen and the user may try again.
+  const jobKind = transcription?.jobs.get(noteId)?.kind;
+  useEffect(() => {
+    if (jobKind === undefined || jobKind === "active") return;
+    starting.current = false;
+    setBusy(false);
+  }, [jobKind]);
   const provider = chosen !== null && providers.includes(chosen) ? chosen : providers[0];
   const recheck = transcription?.availability === "failed" && transcription.consented ? privateNotOffered("failed") : null;
 

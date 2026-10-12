@@ -116,6 +116,8 @@ export interface NotePipelineFacts {
   spaceAfterUploads?: boolean;
   /** This note's private-cloud job (`transcriber.snapshot().jobs`). */
   cloudJob: NoteTranscriptionState | null;
+  /** The account's private-cloud check has not answered: a saved note gets its job (or its blocked or held one) once it does. */
+  cloudChecking?: boolean;
   /**
    * `attempting`: this revision of the note has not had its automatic sync attempt settle yet (the hook runs one when a saved
    * note with text has nothing syncing it, see `useAutoNoteSync`). Until it settles the notes step is "syncing", not a blocker.
@@ -133,9 +135,14 @@ export interface NotePipelineFacts {
  * another phone's note) has no committed mode: a native on-device job says on-device, and anything else is "off" (nobody
  * is transcribing it from here, so the transcript step is skipped, never invented).
  */
+// `waiting_for_model` is written for every committed mode at creation; only a real attempt writes these.
+const ATTEMPT_STATES: ReadonlySet<NoteSttState["state"]> = new Set(["queued", "running", "done", "failed", "cancelled"]);
+
 export function pipelineRoute(native: NativeNote | null, hasCloudJob: boolean, queue: OnDeviceQueuePlace | null = null): PipelineRoute {
-  if (queue !== null && (queue.position !== null || !hasCloudJob)) return "on-device";
+  if (queue !== null && queue.position !== null) return "on-device";
   if (hasCloudJob) return "private-cloud";
+  // The queue entry is gone once an attempt ends; the ledger keeps the attempt.
+  if (queue !== null || (native?.stt != null && ATTEMPT_STATES.has(native.stt.state))) return "on-device";
   switch (native?.transcriber ?? null) {
     case "off": return "off";
     case "on-device": return "on-device";
@@ -263,6 +270,8 @@ export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineIn
       inSpace: outcome === "none" ? null : outcome,
       onDevice: route === "on-device" ? onDeviceInput(facts) : null,
       cloud: route === "private-cloud" ? facts.cloudJob : null,
+      // Jobs are written the moment a saved note is handed over, after the check: no job and no check pending is no hand-over.
+      ...(route === "private-cloud" && facts.cloudJob === null && facts.saved && facts.cloudChecking !== true && facts.spaceReading !== true ? { cloudIdle: true as const } : {}),
       readError: facts.readError ?? null,
       ...(facts.spaceReading === true ? { spaceReading: true, ...(facts.spaceAfterUploads === true ? { afterUploads: true } : {}) } : {}),
     },
@@ -762,6 +771,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
         spaceReading,
         spaceAfterUploads: spaceReading && pending.notes?.some((note) => note.upload !== undefined) === true,
         cloudJob: recorder.transcription?.jobs.get(id) ?? null,
+        cloudChecking: recorder.transcription?.availability === "checking",
       };
       // A saved note with text and no sync of this revision gets its automatic attempt (`useAutoNoteSync`); until it settles it is "syncing".
       let attempting = false;

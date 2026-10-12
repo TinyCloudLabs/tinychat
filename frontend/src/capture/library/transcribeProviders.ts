@@ -17,16 +17,18 @@ export interface PhoneRecording {
 
 export const LOCAL_START_FAILED = "Couldn’t start transcribing on this phone. Try again in a moment.";
 
-/** Local first: it is the default. */
+/** Local first: it is the default. Private only for a note within the length private cloud advertises. */
 export function transcribeProviders(
   noteId: string,
   transcription: VoiceNoteTranscriptionProps | undefined,
   phone: PhoneRecording | null,
+  durationSecs: number | null,
 ): TranscribeProvider[] {
   const job = transcription?.jobs.get(noteId);
   const providers: TranscribeProvider[] = [];
   if (phone !== null && captureCapabilities().localTranscription) providers.push("on-device");
-  if (transcription?.availability === "available" && job?.kind !== "active" && job?.kind !== "done") providers.push("private-cloud");
+  const withinLimit = durationSecs === null || transcription === undefined || durationSecs <= transcription.maxSeconds;
+  if (transcription?.availability === "available" && withinLimit && job?.kind !== "active" && job?.kind !== "done") providers.push("private-cloud");
   return providers;
 }
 
