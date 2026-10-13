@@ -390,6 +390,14 @@ async fn end_segment(
     Ok(())
 }
 
+async fn run_segment_import<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(move || super::with_import_lock(operation))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 fn import_finished_segment(
     app: &tauri::AppHandle,
     segment_id: &str,
@@ -478,71 +486,81 @@ pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, Stri
         (elapsed, state.recorded_ms, now_ms())
     };
     let stopped = end_segment(&app, &segment_id, elapsed).await;
-    let current = match journal::load(&app) {
-        Ok(Some(current)) => current,
-        Ok(None) => {
-            clear_busy(&app);
-            return Err("capture_journal_missing".into());
+    let handle = app.clone();
+    let import_id = id.clone();
+    let import_segment_id = segment_id.clone();
+    let completion = run_segment_import(move || {
+        let current = journal::load(&handle)?.ok_or("capture_journal_missing")?;
+        let mut skipped_empty = false;
+        let result = stopped.and_then(|_| {
+            match import_finished_segment(
+                &handle,
+                &import_segment_id,
+                &import_id,
+                current.system_audio,
+            ) {
+                Err(error) if empty_capture(&error) => {
+                    skipped_empty = true;
+                    files::remove_source_session(
+                        &files::sessions_root(&handle)?,
+                        &import_segment_id,
+                    )
+                }
+                result => result,
+            }
+        });
+        if result
+            .as_ref()
+            .err()
+            .is_some_and(|error| error == "capture_stop_timeout")
+        {
+            return Err("capture_stop_timeout".into());
+        }
+        if let Err(error) = result {
+            journal::save_failed(
+                &handle,
+                &journal::FailedSegment {
+                    id: import_id,
+                    segment_id: import_segment_id,
+                    reason: "write_failed".into(),
+                    error,
+                    journal: current.clone(),
+                },
+            )?;
+        }
+        let recorded_ms = recorded_after_segment(recorded_before, elapsed, skipped_empty);
+        let mut spans = current.spans.clone();
+        if skipped_empty && elapsed > 0 {
+            spans.push(empty_segment_span(closed_at, elapsed, recorded_before));
+        }
+        journal::save(
+            &handle,
+            &journal::Journal {
+                segment_id: None,
+                recorded_ms,
+                spans: spans.clone(),
+                ..current
+            },
+        )?;
+        Ok((recorded_ms, spans))
+    })
+    .await;
+    let (recorded_ms, spans) = match completion {
+        Ok(saved) => saved,
+        Err(error) if error == "capture_stop_timeout" => {
+            let engine = app.state::<Engine>();
+            let mut state = engine.0.lock();
+            state.busy = false;
+            state.blocked_reason = Some("writer_stalled");
+            drop(state);
+            emit_status(&app);
+            return Err(error);
         }
         Err(error) => {
             clear_busy(&app);
             return Err(error);
         }
     };
-    let mut skipped_empty = false;
-    let result = stopped.and_then(|_| {
-        match import_finished_segment(&app, &segment_id, &id, current.system_audio) {
-            Err(error) if empty_capture(&error) => {
-                skipped_empty = true;
-                files::remove_source_session(&files::sessions_root(&app)?, &segment_id)
-            }
-            result => result,
-        }
-    });
-    if result
-        .as_ref()
-        .err()
-        .is_some_and(|error| error == "capture_stop_timeout")
-    {
-        let engine = app.state::<Engine>();
-        let mut state = engine.0.lock();
-        state.busy = false;
-        state.blocked_reason = Some("writer_stalled");
-        drop(state);
-        emit_status(&app);
-        return Err("capture_stop_timeout".into());
-    }
-    if let Err(error) = result {
-        let failed = journal::FailedSegment {
-            id: id.clone(),
-            segment_id: segment_id.clone(),
-            reason: "write_failed".into(),
-            error,
-            journal: current.clone(),
-        };
-        if let Err(error) = journal::save_failed(&app, &failed) {
-            clear_busy(&app);
-            return Err(error);
-        }
-    }
-    let recorded_ms = recorded_after_segment(recorded_before, elapsed, skipped_empty);
-    let mut spans = current.spans.clone();
-    if skipped_empty && elapsed > 0 {
-        spans.push(empty_segment_span(closed_at, elapsed, recorded_before));
-    }
-    let saved = journal::save(
-        &app,
-        &journal::Journal {
-            segment_id: None,
-            recorded_ms,
-            spans: spans.clone(),
-            ..current
-        },
-    );
-    if saved.is_err() {
-        clear_busy(&app);
-    }
-    saved?;
     let status = {
         let state = app.state::<Engine>();
         let mut state = state.0.lock();
@@ -716,107 +734,152 @@ pub struct RecoveryReport {
 }
 
 #[tauri::command]
-pub fn recorder_recover(app: tauri::AppHandle) -> Result<RecoveryReport, String> {
-    super::ensure(&app);
-    if app.state::<Engine>().0.lock().id.is_some() {
-        return Err("recording_in_progress".into());
-    }
-    let mut pending = journal::load(&app)?;
-    if let Some(ref mut current) = pending {
-        if !files::valid_recording_id(&current.id) {
-            return Err("invalid_recording_id".into());
-        }
-        if let Some(segment_id) = current.segment_id.clone() {
-            if !files::valid_recording_id(&segment_id) {
-                return Err("invalid_segment_id".into());
+pub async fn recorder_recover(app: tauri::AppHandle) -> Result<RecoveryReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        super::ensure(&app);
+        super::with_import_lock(|| {
+            if app.state::<Engine>().0.lock().id.is_some() {
+                return Err("recording_in_progress".into());
             }
-            if !journal::list_failed(&app)?
-                .iter()
-                .any(|failed| failed.segment_id == segment_id)
-            {
-                match import_finished_segment(&app, &segment_id, &current.id, current.system_audio)
-                {
-                    Err(error) if empty_capture(&error) => {
-                        files::remove_source_session(&files::sessions_root(&app)?, &segment_id)?;
+            let mut pending = journal::load(&app)?;
+            if let Some(ref mut current) = pending {
+                if !files::valid_recording_id(&current.id) {
+                    return Err("invalid_recording_id".into());
+                }
+                if let Some(segment_id) = current.segment_id.clone() {
+                    if !files::valid_recording_id(&segment_id) {
+                        return Err("invalid_segment_id".into());
                     }
-                    Err(error) => journal::save_failed(
-                        &app,
-                        &journal::FailedSegment {
-                            id: current.id.clone(),
-                            segment_id: segment_id.clone(),
-                            reason: "write_failed".into(),
-                            error,
-                            journal: current.clone(),
-                        },
-                    )?,
-                    Ok(()) => (),
+                    if !journal::list_failed(&app)?
+                        .iter()
+                        .any(|failed| failed.segment_id == segment_id)
+                    {
+                        match import_finished_segment(
+                            &app,
+                            &segment_id,
+                            &current.id,
+                            current.system_audio,
+                        ) {
+                            Err(error) if empty_capture(&error) => {
+                                files::remove_source_session(
+                                    &files::sessions_root(&app)?,
+                                    &segment_id,
+                                )?;
+                            }
+                            Err(error) => journal::save_failed(
+                                &app,
+                                &journal::FailedSegment {
+                                    id: current.id.clone(),
+                                    segment_id: segment_id.clone(),
+                                    reason: "write_failed".into(),
+                                    error,
+                                    journal: current.clone(),
+                                },
+                            )?,
+                            Ok(()) => (),
+                        }
+                    }
+                    current.segment_id = None;
+                    journal::save(&app, current)?;
                 }
             }
-            current.segment_id = None;
-            journal::save(&app, current)?;
-        }
-    }
-    Ok(RecoveryReport {
-        journal: pending,
-        quarantined: journal::list_failed(&app)?,
+            Ok(RecoveryReport {
+                journal: pending,
+                quarantined: journal::list_failed(&app)?,
+            })
+        })
     })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn recorder_acknowledge(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    super::ensure(&app);
-    if app.state::<Engine>().0.lock().id.is_some() {
-        return Err("recording_in_progress".into());
-    }
-    let Some(pending) = journal::load(&app)? else {
-        return Ok(());
-    };
-    if pending.id != id || pending.segment_id.is_some() {
-        return Err("journal_not_ready".into());
-    }
-    journal::clear(&app)
+pub async fn recorder_acknowledge(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        super::ensure(&app);
+        super::with_import_lock(|| {
+            if app.state::<Engine>().0.lock().id.is_some() {
+                return Err("recording_in_progress".into());
+            }
+            let Some(pending) = journal::load(&app)? else {
+                return Ok(());
+            };
+            if pending.id != id || pending.segment_id.is_some() {
+                return Err("journal_not_ready".into());
+            }
+            journal::clear(&app)
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn recorder_failed_list(app: tauri::AppHandle) -> Result<Vec<journal::FailedSegment>, String> {
-    super::ensure(&app);
-    journal::list_failed(&app)
+pub async fn recorder_failed_list(
+    app: tauri::AppHandle,
+) -> Result<Vec<journal::FailedSegment>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        super::ensure(&app);
+        super::with_import_lock(|| journal::list_failed(&app))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn recorder_failed_retry(
+pub async fn recorder_failed_retry(
     app: tauri::AppHandle,
     id: String,
 ) -> Result<Vec<journal::FailedSegment>, String> {
-    super::ensure(&app);
-    for failed in journal::list_failed(&app)?
-        .into_iter()
-        .filter(|item| item.id == id)
-    {
-        match import_finished_segment(&app, &failed.segment_id, &id, failed.journal.system_audio) {
-            Ok(()) => journal::remove_failed(&app, &failed.segment_id)?,
-            Err(error) if empty_capture(&error) => {
-                files::remove_source_session(&files::sessions_root(&app)?, &failed.segment_id)?;
-                journal::remove_failed_source(&app, &failed.segment_id)?;
-                journal::remove_failed(&app, &failed.segment_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        super::ensure(&app);
+        super::with_import_lock(|| {
+            for failed in journal::list_failed(&app)?
+                .into_iter()
+                .filter(|item| item.id == id)
+            {
+                match import_finished_segment(
+                    &app,
+                    &failed.segment_id,
+                    &id,
+                    failed.journal.system_audio,
+                ) {
+                    Ok(()) => journal::remove_failed(&app, &failed.segment_id)?,
+                    Err(error) if empty_capture(&error) => {
+                        files::remove_source_session(
+                            &files::sessions_root(&app)?,
+                            &failed.segment_id,
+                        )?;
+                        journal::remove_failed_source(&app, &failed.segment_id)?;
+                        journal::remove_failed(&app, &failed.segment_id)?;
+                    }
+                    Err(error) => {
+                        journal::save_failed(&app, &journal::FailedSegment { error, ..failed })?
+                    }
+                }
             }
-            Err(error) => journal::save_failed(&app, &journal::FailedSegment { error, ..failed })?,
-        }
-    }
-    Ok(journal::list_failed(&app)?
-        .into_iter()
-        .filter(|item| item.id == id)
-        .collect())
+            Ok(journal::list_failed(&app)?
+                .into_iter()
+                .filter(|item| item.id == id)
+                .collect())
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn recorder_failed_delete(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    super::ensure(&app);
-    journal::delete_failed_for_note(&app, &id)
+pub async fn recorder_failed_delete(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        super::ensure(&app);
+        super::with_import_lock(|| journal::delete_failed_for_note(&app, &id))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn recorder_status(app: tauri::AppHandle) -> CaptureStatus {
+pub async fn recorder_status(app: tauri::AppHandle) -> CaptureStatus {
     super::ensure(&app);
     app.state::<Engine>().0.lock().status()
 }
@@ -1006,8 +1069,8 @@ mod tests {
         assert_eq!(status.reason, Some("user"));
     }
 
-    #[test]
-    fn retained_wav_is_encoded_without_deleting_the_source() {
+    #[tokio::test]
+    async fn retained_wav_is_encoded_off_the_calling_thread_without_deleting_the_source() {
         let dir = std::env::temp_dir().join(format!("exo-wav-recovery-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let wav = dir.join("audio.wav");
@@ -1028,7 +1091,14 @@ mod tests {
         bytes.extend_from_slice(&samples);
         std::fs::write(&wav, bytes).unwrap();
 
-        let mp3 = source_mp3(&dir).unwrap();
+        let caller = std::thread::current().id();
+        let session = dir.clone();
+        let (worker, encoded) =
+            run_segment_import(move || Ok((std::thread::current().id(), source_mp3(&session))))
+                .await
+                .unwrap();
+        assert_ne!(worker, caller);
+        let mp3 = encoded.unwrap();
         assert!(std::fs::metadata(mp3).unwrap().len() > 0);
         assert!(wav.exists());
         std::fs::remove_dir_all(dir).unwrap();
