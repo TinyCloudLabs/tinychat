@@ -425,13 +425,20 @@ pub fn retry_quarantined(
     failed: &FailedSegment,
     recover: impl FnOnce(&Journal) -> Result<(), String>,
 ) -> Result<(), String> {
-    retry_quarantined_at(&stopped_root(app)?, &failed_root(app)?, failed, recover)
+    retry_quarantined_at(
+        &stopped_root(app)?,
+        &failed_root(app)?,
+        failed,
+        || super::refresh_finishing_quit(app),
+        recover,
+    )
 }
 
 fn retry_quarantined_at(
     stopped: &std::path::Path,
     failed_root: &std::path::Path,
     failed: &FailedSegment,
+    refresh_quit: impl FnOnce() -> Result<(), String>,
     recover: impl FnOnce(&Journal) -> Result<(), String>,
 ) -> Result<(), String> {
     if !super::files::valid_recording_id(&failed.id) {
@@ -453,6 +460,7 @@ fn retry_quarantined_at(
         Err(error) => return Err(error),
     };
     save_stopped_at(&destination, &current)?;
+    refresh_quit()?;
     match fs::remove_file(&source) {
         Ok(()) => File::open(source.parent().unwrap())
             .and_then(|dir| dir.sync_all())
@@ -722,15 +730,21 @@ mod tests {
         let source = dir.path().join("session.mp3");
         fs::create_dir_all(&audio).unwrap();
         fs::write(&source, b"full note audio").unwrap();
-        retry_quarantined_at(&stopped, &failed, &failure, |restored| {
-            assert_eq!(restored, &original);
-            exo_local_transcription::audio_import::import_at(
-                &audio,
-                &restored.id,
-                restored.segment_id.as_deref().unwrap(),
-                &source,
-            )
-        })
+        retry_quarantined_at(
+            &stopped,
+            &failed,
+            &failure,
+            || Ok(()),
+            |restored| {
+                assert_eq!(restored, &original);
+                exo_local_transcription::audio_import::import_at(
+                    &audio,
+                    &restored.id,
+                    restored.segment_id.as_deref().unwrap(),
+                    &source,
+                )
+            },
+        )
         .unwrap();
         assert_eq!(
             fs::read(audio.join("note.mp3")).unwrap(),
@@ -743,6 +757,69 @@ mod tests {
             original
         );
         assert!(list_failed_at(&failed).unwrap().is_empty());
+    }
+
+    #[test]
+    fn retry_guards_quit_until_restored_journal_is_acknowledged() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = tempfile::tempdir().unwrap();
+        let stopped = dir.path().join("recorder-stopped");
+        let failed = dir.path().join("recorder-failed");
+        fs::create_dir_all(&stopped).unwrap();
+        fs::create_dir_all(&failed).unwrap();
+        let original = Journal {
+            id: "note".into(),
+            started_at: 7,
+            segment_id: Some("rec-original".into()),
+            recorded_ms: 900,
+            paused_ms: 0,
+            max_duration_ms: 1000,
+            system_audio: false,
+            spans: vec![],
+        };
+        save_stopped_at(&stopped.join("note.json"), &original).unwrap();
+        list_stopped_at_with_read(&stopped, &failed, |_| {
+            Err(std::io::Error::other("transient read error"))
+        })
+        .unwrap();
+        let failure = list_failed_at(&failed).unwrap().pop().unwrap();
+        let finishing_quit = AtomicBool::new(false);
+        assert!(list_stopped_at(&stopped, &failed).unwrap().is_empty());
+
+        retry_quarantined_at(
+            &stopped,
+            &failed,
+            &failure,
+            || {
+                finishing_quit.store(
+                    !list_stopped_at(&stopped, &failed)?.is_empty(),
+                    Ordering::SeqCst,
+                );
+                Ok(())
+            },
+            |restored| {
+                assert_eq!(restored, &original);
+                assert!(crate::guard_user_exit(
+                    finishing_quit.load(Ordering::SeqCst),
+                    None
+                ));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        // Acknowledgement removes the durable stopped journal and refreshes
+        // the quit guard through the same stopped-journal check.
+        fs::remove_file(stopped.join("note.json")).unwrap();
+        finishing_quit.store(
+            !list_stopped_at(&stopped, &failed).unwrap().is_empty(),
+            Ordering::SeqCst,
+        );
+        assert!(!crate::guard_user_exit(
+            finishing_quit.load(Ordering::SeqCst),
+            None
+        ));
     }
 
     #[test]
@@ -778,15 +855,21 @@ mod tests {
         let source = dir.path().join("session.mp3");
         fs::create_dir_all(&audio).unwrap();
         fs::write(&source, b"crash recovered audio").unwrap();
-        retry_quarantined_at(&stopped, &failed, &first[0], |restored| {
-            assert_eq!(restored, &original);
-            exo_local_transcription::audio_import::import_at(
-                &audio,
-                &restored.id,
-                restored.segment_id.as_deref().unwrap(),
-                &source,
-            )
-        })
+        retry_quarantined_at(
+            &stopped,
+            &failed,
+            &first[0],
+            || Ok(()),
+            |restored| {
+                assert_eq!(restored, &original);
+                exo_local_transcription::audio_import::import_at(
+                    &audio,
+                    &restored.id,
+                    restored.segment_id.as_deref().unwrap(),
+                    &source,
+                )
+            },
+        )
         .unwrap();
         assert_eq!(
             fs::read(audio.join("note.mp3")).unwrap(),
@@ -836,10 +919,16 @@ mod tests {
             found[0].quarantined_journal.as_deref(),
             Some(legacy_key.as_str())
         );
-        retry_quarantined_at(&stopped, &failed, &found[0], |restored| {
-            assert_eq!(restored, &original);
-            Ok(())
-        })
+        retry_quarantined_at(
+            &stopped,
+            &failed,
+            &found[0],
+            || Ok(()),
+            |restored| {
+                assert_eq!(restored, &original);
+                Ok(())
+            },
+        )
         .unwrap();
         assert!(list_failed_at(&failed).unwrap().is_empty());
         assert_eq!(
