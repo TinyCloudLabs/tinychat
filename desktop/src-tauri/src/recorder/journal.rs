@@ -13,6 +13,7 @@ pub struct MissingAudioSpan {
     pub kind: String,
     pub reason: String,
     pub started_at: u64,
+    #[serde(default)]
     pub ended_at: Option<u64>,
     pub at_audio_ms: u64,
     pub audio_ms: u64,
@@ -23,6 +24,7 @@ pub struct MissingAudioSpan {
 pub struct Journal {
     pub id: String,
     pub started_at: u64,
+    #[serde(default)]
     pub segment_id: Option<String>,
     pub recorded_ms: u64,
     pub paused_ms: u64,
@@ -151,17 +153,101 @@ pub fn load_stopped(app: &tauri::AppHandle, id: &str) -> Result<Option<Journal>,
 }
 
 pub fn list_stopped(app: &tauri::AppHandle) -> Result<Vec<Journal>, String> {
+    let root = stopped_root(app)?;
+    let failed = failed_root(app)?;
+    list_stopped_at(&root, &failed)
+}
+
+fn list_stopped_at(
+    root: &std::path::Path,
+    failed: &std::path::Path,
+) -> Result<Vec<Journal>, String> {
     let mut journals = Vec::new();
-    for entry in fs::read_dir(stopped_root(app)?).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) => {
+            quarantine_stopped_at(root, failed, "recorder-stopped", &error.to_string())?;
+            fs::create_dir_all(root).map_err(|e| e.to_string())?;
+            return Ok(journals);
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                quarantine_stopped_at(root, failed, "recorder-stopped", &error.to_string())?;
+                fs::create_dir_all(root).map_err(|e| e.to_string())?;
+                return Ok(Vec::new());
+            }
+        };
         if entry.path().extension().and_then(|ext| ext.to_str()) != Some("json") {
             continue;
         }
-        let bytes = fs::read(entry.path()).map_err(|e| e.to_string())?;
-        journals.push(serde_json::from_slice(&bytes).map_err(|e| e.to_string())?);
+        let parsed = fs::read(entry.path())
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| serde_json::from_slice::<Journal>(&bytes).map_err(|e| e.to_string()));
+        match parsed {
+            Ok(journal) => journals.push(journal),
+            Err(error) => {
+                let entry_path = entry.path();
+                let id = entry_path
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("unknown");
+                quarantine_stopped_at(&entry_path, failed, id, &error)?;
+            }
+        }
     }
     journals.sort_by(|a: &Journal, b: &Journal| a.id.cmp(&b.id));
     Ok(journals)
+}
+
+fn quarantine_stopped_at(
+    source: &std::path::Path,
+    failed_root: &std::path::Path,
+    id: &str,
+    error: &str,
+) -> Result<(), String> {
+    let id = if super::files::valid_recording_id(id) {
+        id
+    } else {
+        "unknown-stopped-journal"
+    };
+    let segment_id = format!("rec-journal-{}", uuid::Uuid::new_v4());
+    let quarantine = failed_root.join("journals");
+    fs::create_dir_all(&quarantine).map_err(|e| e.to_string())?;
+    let target = quarantine.join(&segment_id);
+    fs::rename(source, &target).map_err(|e| e.to_string())?;
+    File::open(source.parent().unwrap())
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| e.to_string())?;
+    File::open(&quarantine)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| e.to_string())?;
+    let failed = FailedSegment {
+        id: id.into(),
+        segment_id: segment_id.clone(),
+        reason: "stopped_journal_invalid".into(),
+        error: error.into(),
+        journal: Journal {
+            id: id.into(),
+            started_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            segment_id: None,
+            recorded_ms: 0,
+            paused_ms: 0,
+            max_duration_ms: 3 * 60 * 60_000,
+            system_audio: false,
+            spans: Vec::new(),
+        },
+    };
+    save_failed_at(failed_root, &failed)?;
+    tracing::error!(target: "exo_dev::recorder", kind = "pipeline", source_id = %id,
+        operation = "stopped_journal", phase = "quarantined", error = %error,
+        path = %target.display());
+    Ok(())
 }
 
 pub fn clear_stopped(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
@@ -310,6 +396,47 @@ fn delete_failed_for_note_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn startup_quarantines_bad_stopped_journals_and_keeps_older_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let stopped = dir.path().join("recorder-stopped");
+        let failed = dir.path().join("recorder-failed");
+        fs::create_dir_all(&stopped).unwrap();
+        fs::create_dir_all(&failed).unwrap();
+        fs::write(stopped.join("bad-note.json"), b"{broken").unwrap();
+        fs::write(
+            stopped.join("good-note.json"),
+            br#"{"id":"good-note","startedAt":1,"recordedMs":100,
+            "pausedMs":0,"maxDurationMs":1000}"#,
+        )
+        .unwrap();
+        let journals = list_stopped_at(&stopped, &failed).unwrap();
+        assert_eq!(journals.len(), 1);
+        assert_eq!(journals[0].id, "good-note");
+        assert_eq!(journals[0].segment_id, None);
+        assert!(!stopped.join("bad-note.json").exists());
+        let failures = list_failed_at(&failed).unwrap();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].id, "bad-note");
+        assert_eq!(failures[0].reason, "stopped_journal_invalid");
+        assert!(failures[0].journal.started_at > 0);
+        assert!(failures[0].journal.max_duration_ms > 0);
+        assert!(
+            failed
+                .join("journals")
+                .join(&failures[0].segment_id)
+                .exists()
+        );
+
+        // A directory that cannot be enumerated is moved aside as one unit.
+        fs::remove_dir_all(&stopped).unwrap();
+        fs::write(&stopped, b"unreadable stopped directory fixture").unwrap();
+        assert!(list_stopped_at(&stopped, &failed).unwrap().is_empty());
+        assert!(stopped.is_dir());
+        let failures = list_failed_at(&failed).unwrap();
+        assert_eq!(failures.len(), 2);
+        assert!(failures.iter().any(|item| item.id == "recorder-stopped"));
+    }
     #[test]
     fn stopped_journal_works_while_import_lock_is_held_and_recovers_crash_window() {
         let dir = tempfile::tempdir().unwrap();

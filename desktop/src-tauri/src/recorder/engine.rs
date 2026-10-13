@@ -937,7 +937,7 @@ pub async fn recorder_stop_durable(app: tauri::AppHandle) -> Result<CaptureStatu
             files::remove_source_session(&files::sessions_root(&handle)?, &stop_segment)?;
         }
         journal::save_stopped(&handle, &pointer)?;
-        crate::FINISHING_QUIT.store(true, Ordering::SeqCst);
+        super::refresh_finishing_quit(&handle)?;
         journal::clear(&handle)?;
         Ok(pointer)
     })

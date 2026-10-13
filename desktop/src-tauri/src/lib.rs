@@ -179,12 +179,12 @@ pub fn run() {
 
         builder.setup(|app| {
             install_recorder_runtime(app);
-            FINISHING_QUIT.store(
-                !recorder::journal::list_stopped(app.handle())
-                    .map_err(std::io::Error::other)?
-                    .is_empty(),
-                std::sync::atomic::Ordering::SeqCst,
-            );
+            if let Err(error) = recorder::refresh_finishing_quit(app.handle()) {
+                FINISHING_QUIT.store(false, std::sync::atomic::Ordering::SeqCst);
+                tracing::error!(target: "exo_dev::recorder", kind = "pipeline",
+                    source_id = "recorder-stopped", operation = "startup_journal_scan",
+                    phase = "failed", error = %error);
+            }
             app.add_capability(include_str!(
                 "../capabilities-transcription/transcription.json"
             ))?;
