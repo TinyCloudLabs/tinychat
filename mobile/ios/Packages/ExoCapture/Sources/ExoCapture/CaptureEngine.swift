@@ -110,6 +110,8 @@ public final class CaptureEngine {
     /// Receives the id, the backoff delay and the retry itself; the test decides when it runs.
     var debugScheduleTimedOutRetry: ((String, TimeInterval, @escaping () -> Void) -> Void)?
     var debugMuxWaitSeam: RecordingFinalizer.WaitSeam?
+    var debugBeforeWriterFinish: (() -> Void)?
+    var debugStopInputFailure = false
     #endif
     /// Recovery of one note runs at most once at a time: launch sweep, automatic retry and
     /// "Try again" all claim the id first. The mux itself runs outside the library's queue.
@@ -185,6 +187,7 @@ public final class CaptureEngine {
     var debugEpoch: Int { attempts.epoch }
     func debugRetryTick() { retryTimer?.invalidate(); retryTimer = nil; try? attemptResume(automatic: true) }
     func debugStopEngineWithoutTransition() { stopInputWithoutBookkeeping() }
+    func debugWriterFailure(_ error: Error) { writerFailed(error) }
     func debugAgeLastTap(by seconds: TimeInterval) {
         tapTimeLock.lock(); lastTapAt = retryNow - seconds; tapTimeLock.unlock()
     }
@@ -636,7 +639,7 @@ public final class CaptureEngine {
         audioEngine?.stop()
     }
 
-    private func deactivateGraph(tapRemoved: Bool = false) {
+    private func deactivateGraph(tapRemoved: Bool = false, deactivateSession: Bool = true) {
         #if DEBUG && targetEnvironment(simulator)
         silentInput?.stop()
         silentInput = nil
@@ -646,7 +649,7 @@ public final class CaptureEngine {
             engine.stop()
         }
         audioEngine = nil
-        guard usesHardwareSession else { return }
+        guard deactivateSession && usesHardwareSession else { return }
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             graphActive = false
@@ -655,6 +658,9 @@ public final class CaptureEngine {
     }
 
     @discardableResult private func stopInput() -> Bool {
+        #if DEBUG
+        if debugStopInputFailure { return false }
+        #endif
         #if DEBUG && targetEnvironment(simulator)
         if let source = silentInput {
             source.stop()
@@ -687,7 +693,9 @@ public final class CaptureEngine {
             do { try library.appendJournal(id, ["e": "capture_stopped", "t": stoppedAt, "a": audioMs]) }
             catch {
                 log.error("Capture-stop journal failed: \(String(describing: error), privacy: .public)")
-                emit("writeFailure", ["id": id, "error": String(describing: error)], retained: true)
+                DispatchQueue.main.async { [self] in
+                    emit("writeFailure", ["id": id, "error": String(describing: error)], retained: true)
+                }
             }
         }
         if let renderEnd, let deliveredEnd {
@@ -696,6 +704,7 @@ public final class CaptureEngine {
     }
 
     private func receiveLevel(_ level: Double, peak: Double) {
+        guard !stopInProgress else { return }
         guard intent == "recording", availability == "available" else { return }
         let now = Date()
         if peak == 0 {
@@ -720,10 +729,12 @@ public final class CaptureEngine {
     }
 
     private func receiveFrames(_ value: Int64) {
+        guard !stopInProgress else { return }
         audioMs = value
     }
 
     private func checkDurationLimit() {
+        guard !stopInProgress else { return }
         if let session = info, intent == "recording", !lowBatteryReported,
            UIDevice.current.batteryState == .unplugged {
             let level = UIDevice.current.batteryLevel
@@ -786,7 +797,7 @@ public final class CaptureEngine {
     }
 
     private func writerFailed(_ error: Error) {
-        guard let id = info?.id, intent == "recording" else { return }
+        guard !stopInProgress, let id = info?.id, intent == "recording" else { return }
         log.error("Writer failed: \(String(describing: error), privacy: .public)")
         emit("writeFailure", ["id": id, "error": String(describing: error)], retained: true)
         stop(reason: "write_failed") { [weak self] result in
@@ -795,7 +806,7 @@ public final class CaptureEngine {
     }
 
     private func writerStallChanged(_ active: Bool, droppedFrames: Int) {
-        guard info != nil, intent == "recording" else { return }
+        guard !stopInProgress, info != nil, intent == "recording" else { return }
         log.error("Writer stall \(active ? "opened" : "closed", privacy: .public); dropped PCM frames=\(droppedFrames)")
         if active { openOmittedSpan("writer_stalled") }
         else if openSpan?.reason == "writer_stalled" { closeSpan() }
@@ -847,6 +858,7 @@ public final class CaptureEngine {
 
     private func attemptResume(automatic: Bool, allowedBackgroundIntent: Bool = false,
                                retryOnFailure: Bool = true) throws {
+        guard !stopInProgress else { throw CaptureError.notRecording }
         guard let session = info else { throw CaptureError.notRecording }
         guard intent == "paused" || availability != "available" else { return }
         let wasPaused = intent == "paused"
@@ -903,10 +915,14 @@ public final class CaptureEngine {
     }
 
     public func interruptionBegan() {
+        guard !stopInProgress else { return }
         suspendForInterruption("interruption", notify: true)
     }
 
-    public func appWasSuspended() { suspendForInterruption("app_suspended", notify: false) }
+    public func appWasSuspended() {
+        guard !stopInProgress else { return }
+        suspendForInterruption("app_suspended", notify: false)
+    }
 
     private static func failureReason(_ error: Error) -> String {
         let code = (error as NSError).code
@@ -920,6 +936,7 @@ public final class CaptureEngine {
     }
 
     private func suspendForInterruption(_ cause: String, notify: Bool) {
+        guard !stopInProgress else { return }
         guard let session = info, intent == "recording", availability == "available" else { return }
         let notice = attempts.interrupted()
         if cause == "interruption" || cause == "app_suspended" {
@@ -957,6 +974,7 @@ public final class CaptureEngine {
     }
 
     public func interruptionEnded() {
+        guard !stopInProgress else { return }
         guard info != nil, intent == "recording", availability == "interrupted" else { return }
         do { try attemptResume(automatic: true) }
         catch { log.error("Interruption restart failed: \(String(describing: error), privacy: .public)") }
@@ -1028,6 +1046,7 @@ public final class CaptureEngine {
     }
 
     public func resumeFromNotification(id: String, epoch: Int) {
+        guard !stopInProgress else { return }
         guard attempts.accepts(.init(id: id, epoch: epoch)) else { return }
         presentRecorder()
         // Notification taps open the app; input acquisition waits for foreground delivery.
@@ -1066,6 +1085,7 @@ public final class CaptureEngine {
     }
 
     public func inputMuteChanged(_ muted: Bool) {
+        guard !stopInProgress else { return }
         guard let session = info, intent == "recording" else { return }
         if muted {
             guard openSpan == nil else { return }
@@ -1092,24 +1112,43 @@ public final class CaptureEngine {
         guard !stopInProgress else { completion(.failure(CaptureError.notRecording)); return }
         guard let session = info else { completion(.failure(CaptureError.notRecording)); return }
         stopInProgress = true
+        guard stopInput() else {
+            // The input may still be running. Keep the tap and live session intact for Retry Stop.
+            stopInProgress = false
+            completion(.failure(CaptureError.io("stop capture input")))
+            return
+        }
+        let stoppedAt = wallClock.nowMilliseconds()
+        let releaseSession = usesHardwareSession
+        deactivateGraph(tapRemoved: true, deactivateSession: false)
         clearResumeNotification(); attempts.stop(); cancelRetry()
         limitTimer?.invalidate(); limitTimer = nil
         let backgroundTask = FinishBackgroundTask()
         backgroundTask.begin()
         let finishingWriter = writer
+        #if DEBUG
+        let beforeWriterFinish = debugBeforeWriterFinish
+        #endif
         DispatchQueue.global(qos: .userInitiated).async { [self] in
-            let result: Result<(stoppedAt: Int64, audioMs: Int64, heartbeatAt: Int64?), Error>
-            do {
-                guard stopInput() else { throw CaptureError.io("stop capture input") }
-                let stoppedAt = wallClock.nowMilliseconds()
-                let final = try finishingWriter?.finish(at: stoppedAt) ?? (audioMs: 0, heartbeatAt: nil)
-                result = .success((stoppedAt, final.audioMs, final.heartbeatAt))
-            } catch { result = .failure(error) }
-            deactivateGraph(tapRemoved: true)
+            #if DEBUG
+            beforeWriterFinish?()
+            #endif
+            let result = Result { try finishingWriter?.finish(at: stoppedAt) ?? (audioMs: 0, heartbeatAt: nil) }
+            let deactivated: Bool
+            if releaseSession {
+                do {
+                    try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+                    deactivated = true
+                } catch {
+                    log.error("Audio session deactivation failed: \(String(describing: error), privacy: .public)")
+                    deactivated = false
+                }
+            } else { deactivated = false }
             DispatchQueue.main.async {
+                if deactivated { self.graphActive = false }
                 switch result {
                 case .success(let final):
-                    self.finishStop(session: session, stopReason: stopReason, stoppedAt: final.stoppedAt,
+                    self.finishStop(session: session, stopReason: stopReason, stoppedAt: stoppedAt,
                                     audioMs: final.audioMs, heartbeatAt: final.heartbeatAt,
                                     backgroundTask: backgroundTask, completion: completion)
                 case .failure(let error):
@@ -1300,6 +1339,7 @@ public final class CaptureEngine {
     }
 
     public func setRecordingOptions(_ changed: CaptureOptions) throws {
+        guard !stopInProgress else { throw CaptureError.notRecording }
         guard let session = info else { throw CaptureError.notRecording }
         var actual = changed
         if session.owner == nil { actual.transcriber = "on-device" }
@@ -1343,6 +1383,7 @@ public final class CaptureEngine {
     }
 
     public func selectInput(_ id: String?) throws {
+        guard !stopInProgress else { throw CaptureError.notRecording }
         #if DEBUG && targetEnvironment(simulator)
         let mode = try simulatorInputMode()
         if mode != .host {
@@ -1359,6 +1400,7 @@ public final class CaptureEngine {
     }
 
     public func routeChanged() {
+        guard !stopInProgress else { return }
         defer {
             do { emit("inputs", try listInputs()) }
             catch { log.error("Could not publish inputs after route change (inputs_unavailable): \(String(describing: error), privacy: .public)") }
@@ -1382,15 +1424,20 @@ public final class CaptureEngine {
     }
 
     public func engineConfigurationChanged(_ engine: AVAudioEngine?) {
+        guard !stopInProgress else { return }
         guard engine != nil, engine === audioEngine else { return }
         if intent == "recording", availability == "available" { rebuildForRoute("route_change") }
     }
 
     #if DEBUG
-    func debugConfigurationRebuild() { if intent == "recording", availability == "available" { rebuildForRoute("route_change") } }
+    func debugConfigurationRebuild() {
+        guard !stopInProgress else { return }
+        if intent == "recording", availability == "available" { rebuildForRoute("route_change") }
+    }
     #endif
 
     public func mediaServicesReset() {
+        guard !stopInProgress else { return }
         guard info != nil else { return }
         if intent == "paused" { return }
         if availability == "available", rebuildForRoute("media_services_reset"), let id = info?.id {

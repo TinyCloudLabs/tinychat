@@ -152,6 +152,74 @@ import XCTest
         }
     }
 
+    func testStopDrainIgnoresInterruptionSuspendRouteAndLateWriterFailure() throws {
+        try withEngine { engine in
+            let id = try XCTUnwrap(engine.start()["id"] as? String)
+            try enqueueTone(engine)
+            let draining = expectation(description: "writer drain started")
+            let completed = expectation(description: "stop completed")
+            let release = DispatchSemaphore(value: 0)
+            engine.debugBeforeWriterFinish = {
+                XCTAssertFalse(Thread.isMainThread)
+                draining.fulfill()
+                _ = release.wait(timeout: .now() + 5)
+            }
+            var autoStops = 0
+            var failures = 0
+            let token = engine.observe { name, _, _ in
+                if name == "autoStopped" { autoStops += 1 }
+                if name == "writeFailure" { failures += 1 }
+            }
+            defer { release.signal(); engine.removeObserver(token) }
+            engine.stop { result in
+                if case .failure(let error) = result { XCTFail("Stop failed: \(error)") }
+                completed.fulfill()
+            }
+            XCTAssertFalse(engine.debugGraphActive)
+            wait(for: [draining], timeout: 5)
+            let journalCount = try events(engine, id).count
+            engine.interruptionBegan()
+            engine.appWasSuspended()
+            engine.routeChanged()
+            engine.engineConfigurationChanged(AVAudioEngine())
+            engine.mediaServicesReset()
+            engine.inputMuteChanged(true)
+            engine.debugWriterFailure(CaptureError.io("late writer callback"))
+            XCTAssertThrowsError(try engine.selectInput(nil))
+            XCTAssertEqual(try events(engine, id).count, journalCount)
+            XCTAssertEqual(autoStops, 0)
+            XCTAssertEqual(failures, 0)
+            release.signal()
+            wait(for: [completed], timeout: 10)
+            XCTAssertEqual(try engine.library.listCommitted().filter { $0["id"] as? String == id }.count, 1)
+        }
+    }
+
+    func testFailedInputStopKeepsLiveSessionForRetry() throws {
+        try withEngine { engine in
+            let id = try XCTUnwrap(engine.start()["id"] as? String)
+            try enqueueTone(engine)
+            engine.debugStopInputFailure = true
+            let failed = expectation(description: "input stop failed")
+            engine.stop { result in
+                if case .success = result { XCTFail("Stop unexpectedly succeeded") }
+                failed.fulfill()
+            }
+            wait(for: [failed], timeout: 1)
+            XCTAssertEqual(engine.status()["id"] as? String, id)
+            XCTAssertTrue(engine.debugGraphActive)
+            XCTAssertTrue(engine.library.isLiveCapture(id))
+            engine.debugStopInputFailure = false
+            let completed = expectation(description: "retry committed")
+            engine.stop { result in
+                if case .failure(let error) = result { XCTFail("Retry Stop failed: \(error)") }
+                completed.fulfill()
+            }
+            wait(for: [completed], timeout: 10)
+            XCTAssertEqual(try engine.library.listCommitted().filter { $0["id"] as? String == id }.count, 1)
+        }
+    }
+
     func testParkedPauseIsAdoptedThenTimesOutOnNextLaunch() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("exo-parked-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
