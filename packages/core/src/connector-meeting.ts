@@ -104,8 +104,8 @@ export interface TranscriberTranscriptJson {
   provider?: string | null;
   fallback_from?: string | null;
   fallback_reason?: string | null;
-  speakers?: { id: string; name: string }[];
-  segments?: { speaker_name: string; text: string; start: number; end: number }[];
+  speakers?: { id: string; name: string | null }[];
+  segments?: { speaker_name: string | null; text: string; start: number; end: number }[];
   text?: string;
 }
 
@@ -135,6 +135,12 @@ export function transcriberMeetingTitle(meeting: Pick<TranscriberMeetingJson, "m
   }
 }
 
+/** PTX's legacy placeholder and nullable speaker names both mean unattributed speech. */
+function transcriberSpeakerName(name: string | null): string | null {
+  const trimmed = name?.trim();
+  return trimmed && trimmed !== "Unknown" ? trimmed : null;
+}
+
 export async function normalizeTranscriberTranscript(
   meeting: TranscriberMeetingJson,
   transcript: TranscriberTranscriptJson,
@@ -142,7 +148,7 @@ export async function normalizeTranscriberTranscript(
   const segments = Array.isArray(transcript.segments) ? transcript.segments : [];
   const sentences: TranscriptSentence[] = segments.map((s, index) => ({
     index,
-    speaker_name: s.speaker_name?.trim() ? s.speaker_name.trim() : null,
+    speaker_name: transcriberSpeakerName(s.speaker_name),
     text: s.text,
     start_time: Number.isFinite(s.start) ? s.start : 0,
     end_time: Number.isFinite(s.end) ? s.end : 0,
@@ -151,7 +157,7 @@ export async function normalizeTranscriberTranscript(
   const seen = new Set<string>();
   const participants: { name: string; email: string | null }[] = [];
   for (const sp of transcript.speakers ?? []) {
-    const name = sp.name?.trim();
+    const name = transcriberSpeakerName(sp.name);
     if (!name || seen.has(name)) continue;
     seen.add(name);
     participants.push({ name, email: null });

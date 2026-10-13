@@ -11,7 +11,7 @@ import {
   normalizeTranscriberTranscript,
   transcriberMeetingTitle,
 } from "./transcriberSave";
-import { EXPLORER_MEETING_SOURCES, meetingSourceLabel } from "./connectors/meetingExplorer";
+import { EXPLORER_MEETING_SOURCES, meetingSourceLabel, transcriptCopyText } from "./connectors/meetingExplorer";
 import { captureEvents } from "../capture/captureEvents";
 import type { TranscriberMeeting, TranscriberTranscript } from "./transcriberApi";
 
@@ -44,6 +44,23 @@ const transcript: TranscriberTranscript = {
 };
 
 describe("normalizeTranscriberTranscript", () => {
+  test("unattributed speakers become null and never become participants", async () => {
+    const names = ["Unknown", "  Unknown  ", null, "", "  ", "Alice", "unknown", "Unknown Person"];
+    const { meeting: row, sentences, body } = await normalizeTranscriberTranscript(meeting, {
+      ...transcript,
+      speakers: names.map((name, i) => ({ id: `speaker_${i}`, name })),
+      segments: names.map((speaker_name, i) => ({
+        id: `seg_${i}`, speaker_id: `speaker_${i}`, speaker_name, start: i, end: i + 1, text: `Line ${i}.`,
+      })),
+    });
+    expect(sentences.map((s) => s.speaker_name)).toEqual([null, null, null, null, null, "Alice", "unknown", "Unknown Person"]);
+    expect(row.participants).toEqual([
+      { name: "Alice", email: null }, { name: "unknown", email: null }, { name: "Unknown Person", email: null },
+    ]);
+    expect(JSON.parse(body)).toEqual(sentences);
+    expect(transcriptCopyText(sentences)).toBe("Line 0.\nLine 1.\nLine 2.\nLine 3.\nLine 4.\nAlice: Line 5.\nunknown: Line 6.\nUnknown Person: Line 7.");
+  });
+
   test("maps onto the connector store shape, keyed by (source, meeting id)", async () => {
     const { meeting: row, sentences } = await normalizeTranscriberTranscript(meeting, transcript);
     expect(row.source).toBe(TRANSCRIBER_MEETING_SOURCE);
@@ -108,6 +125,9 @@ import { syncTranscriberLibrary } from "../chat/useTranscriberLibrarySync";
 import type { TranscriberClient } from "./transcriberApi";
 import { resetSpaceLaneForTests, runOnSpaceLane } from "./spaceWriteLane";
 import { setVoiceNoteSaveDeadlineForTests } from "./voiceNotes/saveDeadline";
+import { createTranscriberClient } from "./transcriberApi";
+import { createTranscriptionApiClient, type TranscriptionTranscript } from "../../../backend/src/services/transcription-api";
+import type { SessionStore } from "@tinyboilerplate/client";
 
 function libraryFixture() {
   const sql = new Database(":memory:");
@@ -143,6 +163,53 @@ function libraryFixture() {
   } as unknown as TinyCloudWeb;
   return { tcw, sql, bodies, inserts, writes: () => writes, allowWrites: () => { failWrite = false; } };
 }
+
+test("ptx null speakers pass through both API clients and both storage writers without labels", async () => {
+  const upstream: TranscriptionTranscript = {
+    meeting_id: meeting.id, status: "completed",
+    speakers: [{ id: "speaker_0", name: "Alice" }],
+    segments: [
+      { id: "seg_0", speaker_id: "unknown", speaker_name: null, start: 0, end: 1, text: "Unattributed words." },
+      { id: "seg_1", speaker_id: "speaker_0", speaker_name: "Alice", start: 1, end: 2, text: "Hello." },
+    ],
+  };
+  const api = createTranscriptionApiClient({
+    baseUrl: "https://ptx.example", apiKey: "test-key",
+    fetchImpl: (async () => Response.json(upstream)) as typeof fetch,
+  });
+  const backendResult = await api.getTranscript(meeting.id);
+  if (backendResult.pending) throw new Error("Expected a completed transcript");
+  expect(backendResult.transcript).toEqual(upstream);
+  const client = createTranscriberClient("https://backend.example", {
+    sessionStore: { getToken: () => "test-session", isExpired: () => false } as SessionStore,
+    fetchImpl: (async () => Response.json(backendResult.transcript)) as typeof fetch,
+  });
+  const browserResult = await client.transcript(meeting.id);
+  if (browserResult.status !== "ok" || browserResult.value.status !== "ready") throw new Error("Expected a ready transcript");
+  expect(browserResult.value.transcript).toEqual(upstream);
+  const expected = [
+    { index: 0, speaker_name: null, text: "Unattributed words.", start_time: 0, end_time: 1 },
+    { index: 1, speaker_name: "Alice", text: "Hello.", start_time: 1, end_time: 2 },
+  ];
+  for (const writer of ["browser", "backend"]) {
+    const f = libraryFixture(); f.allowWrites();
+    try {
+      if (writer === "browser") {
+        expect((await saveTranscriberMeeting(f.tcw, meeting, browserResult.value.transcript)).ok).toBe(true);
+      } else {
+        expect((await ensureConnectorSchema(webConnectorPort(f.tcw))).ok).toBe(true);
+        const access = { sql: f.tcw.sql, kv: f.tcw.kv } as unknown as DelegatedAccess;
+        const normalized = await normalizeTranscriberTranscript(meeting, backendResult.transcript);
+        expect((await writeTranscriberMeeting(delegatedConnectorPort(access, async (operation) => operation()), normalized, { ensureSchema: false })).ok).toBe(true);
+      }
+      expect(f.sql.query("SELECT participants FROM connector_meeting").get())
+        .toEqual({ participants: JSON.stringify([{ name: "Alice", email: null }]) });
+      const stored = JSON.parse(f.bodies.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, meeting.id))!);
+      expect(stored).toEqual(expected);
+      expect(transcriptCopyText(stored)).toBe("Unattributed words.\nAlice: Hello.");
+    } finally { f.sql.close(); }
+  }
+});
 
 for (const empty of [false, true]) {
   test(`SQL success then KV failure is repaired after reload (${empty ? "empty" : "nonempty"} transcript)`, async () => {
