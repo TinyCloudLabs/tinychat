@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.44
+
+### Patch Changes
+
+- c3ad09b: Skip unchanged connector meeting row updates and log why saved transcriber meetings are incomplete.
+
 ## 0.6.0-beta.43
 
 ### Patch Changes
