@@ -1,6 +1,6 @@
 /**
- * Meeting sources the agent may filter on. Keep in step with the frontend's
- * SUPPORTED_MEETING_SOURCES and eliza-service's source parsers.
+ * Sources supported by the Eliza executor. This is intentionally narrower than the frontend
+ * explorer and standalone pack. Excluded until TC-995: exo-voice-note, exo-upload.
  */
 export const MEETING_SOURCES = ["fireflies", "google-meet", "tinycloud-transcriber", "exo-local"] as const;
 
