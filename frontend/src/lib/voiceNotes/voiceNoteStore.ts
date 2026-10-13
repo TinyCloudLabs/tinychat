@@ -41,8 +41,11 @@ import {
   audioPartKey,
   getAudio,
   putAudio,
+  reconcileAudioReceipt,
+  verifiedManifestReceipt,
   type AudioPartSource,
   type StoredAudioManifest,
+  type VerifiedAudioReceipt,
 } from "../audio/audioStore";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
 import {
@@ -281,8 +284,8 @@ export function audioFileExtension(mimeType: string): string {
 /**
  * Store a note's audio with the shared audio store: raw parts of at most 1 MiB,
  * then its manifest (last, so a manifest always means a complete file). Saving
- * again after any failure resumes after the parts already stored, so a retry
- * never reads, sends or duplicates anything twice. Until the manifest is
+ * again after any failure checks each listed part against the local bytes and
+ * resends only missing or mismatched parts. Until the manifest is
  * written the note reads as having no audio.
  */
 export async function putVoiceNoteAudio(
@@ -301,6 +304,15 @@ export async function putVoiceNoteAudio(
   } catch (err) {
     return audioFailure("saveVoiceNote(audio)", err);
   }
+}
+
+/** Recheck a pre-receipt saved recording without changing any remote part. */
+export function reconcileSavedVoiceNoteAudio(tcw: TinyCloudWeb, id: string, source: VoiceNoteAudioSource): Promise<VerifiedAudioReceipt | null> {
+  return reconcileAudioReceipt(tcw.kv, voiceNoteAudioKvKey(id), source, {
+    retryDelaysMs: [500],
+    schedule: (job, operation, timeoutMs, payloadBytes) => runOnSpaceLane(job,
+      { operation: operation ?? "reconcile saved audio", timeoutMs, payloadBytes }),
+  });
 }
 
 export function voiceNoteTitle(startedAt: number): string {
@@ -390,7 +402,7 @@ export async function saveVoiceNote(
   source: VoiceNoteAudioSource,
   platform: string,
   opts: StoreAudioOptions = {},
-): Promise<StoreResult<UpsertMeetingOutcome & { noteSyncError?: NoteSyncErrorCode }>> {
+): Promise<StoreResult<UpsertMeetingOutcome & { noteSyncError?: NoteSyncErrorCode; verifiedInSpace: VerifiedAudioReceipt }>> {
   logPipeline("save", recording.id, "start");
   try {
     opts.checkpoint?.();
@@ -419,10 +431,11 @@ export async function saveVoiceNote(
     logPipeline("space_write", recording.id, "done", { destination: "legacy_transcript_key", bodyBytes: 2 });
     opts.checkpoint?.();
     logPipeline("audio_upload", recording.id, "start");
-    const audio = await putVoiceNoteAudio(tcw, recording.id, source, { ...opts, schedule: (job, operation, timeoutMs, payloadBytes) =>
+    const schedule: NonNullable<StoreAudioOptions["schedule"]> = (job, operation, timeoutMs, payloadBytes) =>
       (opts.schedule ?? ((call, label, limit, size) => runOnSpaceLane(call, {
         operation: label ?? "voice-note audio KV call", timeoutMs: limit, payloadBytes: size,
-      })))((signal) => { opts.checkpoint?.(); return job(signal); }, operation, timeoutMs, payloadBytes),
+      })))((signal) => { opts.checkpoint?.(); return job(signal); }, operation, timeoutMs, payloadBytes);
+    const audio = await putVoiceNoteAudio(tcw, recording.id, source, { ...opts, schedule,
       onProgress: (stored, total) => {
         logPipeline("audio_upload", recording.id, "progress", { bodyBytes: stored, totalBytes: total });
         opts.onProgress?.(stored, total);
@@ -431,6 +444,10 @@ export async function saveVoiceNote(
       logPipelineError("audio_upload", audio.error, recording.id);
       return audio;
     }
+    // A successful put alone is insufficient evidence for removing local bytes.
+    // Read the committed manifest through the space and bind it to local part hashes.
+    const verifiedInSpace = await verifiedManifestReceipt(tcw.kv, voiceNoteAudioKvKey(recording.id), audio.data,
+      { schedule, retryDelaysMs: opts.retryDelaysMs });
     logPipeline("audio_upload", recording.id, "done", { bodyBytes: audio.data.size });
     const base = voiceNoteAudioKvKey(recording.id);
     opts.checkpoint?.();
@@ -450,7 +467,7 @@ export async function saveVoiceNote(
       logPipelineError("markdown_space_write", caught, recording.id);
     }
     logPipeline("save", recording.id, "done");
-    return { ok: true, data: { id: row.id, inserted: row.inserted, createdAt: row.createdAt, noteSyncError } };
+    return { ok: true, data: { id: row.id, inserted: row.inserted, createdAt: row.createdAt, noteSyncError, verifiedInSpace } };
   } catch (caught) {
     logPipelineError("save", caught, recording.id);
     return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",

@@ -13,16 +13,16 @@
 // never see a half-stored file. Every storage call is sequential: TinyCloud
 // drops concurrent responses on one space.
 //
-// Resume uses KV list, not head. The app manifest does not grant
-// `tinycloud.kv/metadata`, and a node metadata response carries no stored size
-// anyway (Content-Length is not replayed). A KV put is all-or-nothing, so a
-// listed part key is a fully committed part.
+// Resume lists candidate keys, then reads and hashes each listed part before
+// trusting it. A listed key alone is not evidence that the bytes are current.
 //
 // Parts are at most MAX_AUDIO_PART_SIZE because the SDK sends a part as the
 // raw request body, and a browser sees an oversized body only as "Failed to fetch".
 
 import type { Result, ServiceError } from "@tinycloud/sdk-core";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
 
 import { CONNECTORS_KV_PREFIX } from "../connectors/connectorStore";
 
@@ -31,6 +31,8 @@ export type TinyCloudKv = TinyCloudWeb["kv"];
 
 export interface StoredAudioPart {
   size: number;
+  /** SHA-256 of the bytes at this part's key. Older manifests have no digest. */
+  sha256?: string;
   /** The node's ETag from the put; null for a part kept from an interrupted attempt. */
   etag: string | null;
 }
@@ -44,6 +46,95 @@ export interface StoredAudioManifest {
   parts: StoredAudioPart[];
   sha256: string | null;
   createdAt: string;
+}
+
+export interface VerifiedAudioReceipt { sha256: string; size: number }
+
+async function digest(bytes: Blob | Uint8Array): Promise<string> {
+  return bytesToHex(sha256(bytes instanceof Blob ? new Uint8Array(await bytes.arrayBuffer()) : bytes));
+}
+
+/** A content identity for a manifest whose parts all carry hashes. */
+export async function manifestReceipt(manifest: StoredAudioManifest): Promise<VerifiedAudioReceipt | null> {
+  if (manifest.parts.some((part) => !part.sha256 || !/^[0-9a-f]{64}$/.test(part.sha256))
+    || !manifest.sha256 || !/^[0-9a-f]{64}$/.test(manifest.sha256)) return null;
+  return { sha256: manifest.sha256, size: manifest.size };
+}
+
+/** Check the manifest returned by a separate space read against the local upload. */
+export async function verifiedManifestReceipt(
+  kv: TinyCloudKv, base: string, local: StoredAudioManifest, opts: RetryOptions = {},
+): Promise<VerifiedAudioReceipt> {
+  const remote = await getAudioManifest(kv, base, opts);
+  const expected = await manifestReceipt(local);
+  const actual = remote && await manifestReceipt(remote);
+  if (!expected || !actual || actual.size !== expected.size || actual.sha256 !== expected.sha256
+    || remote!.parts.length !== local.parts.length
+    || remote!.parts.some((part, index) => part.size !== local.parts[index]!.size || part.sha256 !== local.parts[index]!.sha256)) {
+    throw new AudioStoreError(AUDIO_CORRUPT, `audioStore manifest at ${base} does not match local audio`);
+  }
+  // A manifest alone cannot prove the part keys still contain those bytes.
+  // Read each committed part before authorizing a local cache eviction.
+  const fileHash = sha256.create();
+  for (let index = 0; index < remote!.parts.length; index++) {
+    const part = remote!.parts[index]!;
+    const key = audioPartKey(base, index);
+    const result = await withRetry((signal) => kv.get<Uint8Array<ArrayBuffer>>(key,
+      { binary: true, maxResponseBytes: part.size, signal: signal ?? opts.signal }), opts, `KV get ${key}`);
+    if (!result.ok) {
+      if (result.error.code === "KV_NOT_FOUND" || result.error.code === "KV_RESPONSE_TOO_LARGE")
+        throw new AudioStoreError(AUDIO_CORRUPT, `audioStore part ${index} does not match local audio`);
+      throw kvError(`verify part ${index}`, result.error);
+    }
+    const bytes = result.data.data;
+    if (!(bytes instanceof Uint8Array) || bytes.byteLength !== part.size || bytesToHex(sha256(bytes)) !== part.sha256)
+      throw new AudioStoreError(AUDIO_CORRUPT, `audioStore part ${index} does not match local audio`);
+    fileHash.update(bytes);
+  }
+  if (bytesToHex(fileHash.digest()) !== expected.sha256)
+    throw new AudioStoreError(AUDIO_CORRUPT, `audioStore file at ${base} does not match local audio`);
+  return expected;
+}
+
+/** Upgrade an older space manifest only when every stored byte matches the local recording. */
+export async function reconcileAudioReceipt(
+  kv: TinyCloudKv, base: string, source: AudioPartSource, opts: RetryOptions = {},
+): Promise<VerifiedAudioReceipt | null> {
+  const manifest = await getAudioManifest(kv, base, opts);
+  if (!manifest || manifest.size !== source.size) return null;
+  const fileHash = sha256.create();
+  const parts: StoredAudioPart[] = [];
+  let offset = 0;
+  for (let index = 0; index < manifest.parts.length; index++) {
+    const entry = manifest.parts[index]!;
+    const key = audioPartKey(base, index);
+    const local = await source.readPart(offset, entry.size);
+    const localBytes = local instanceof Blob ? new Uint8Array(await local.arrayBuffer()) : local;
+    if (localBytes.byteLength !== entry.size) return null;
+    const result = await withRetry((signal) => kv.get<Uint8Array<ArrayBuffer>>(key,
+      { binary: true, maxResponseBytes: entry.size, signal: signal ?? opts.signal }), opts, `KV get ${key}`);
+    if (!result.ok) {
+      if (result.error.code === "KV_NOT_FOUND" || result.error.code === "KV_RESPONSE_TOO_LARGE") return null;
+      throw kvError(`reconcile part ${index}`, result.error);
+    }
+    const remote = result.data.data;
+    const partHash = bytesToHex(sha256(localBytes));
+    if (!(remote instanceof Uint8Array) || remote.byteLength !== entry.size
+      || bytesToHex(sha256(remote)) !== partHash || (entry.sha256 && entry.sha256 !== partHash)) return null;
+    fileHash.update(localBytes);
+    parts.push({ ...entry, sha256: partHash });
+    offset += entry.size;
+  }
+  if (offset !== source.size) return null;
+  const hash = bytesToHex(fileHash.digest());
+  if (manifest.sha256 && manifest.sha256 !== hash) return null;
+  const upgraded = { ...manifest, parts, sha256: hash };
+  if (!manifest.sha256 || manifest.parts.some((part) => !part.sha256)) {
+    const written = await withRetry((signal) => kv.put(audioManifestKey(base), JSON.stringify(upgraded),
+      { contentType: "application/json", signal: signal ?? opts.signal }), opts, `KV put ${audioManifestKey(base)}`);
+    if (!written.ok) throw kvError("upgrade manifest", written.error);
+  }
+  return verifiedManifestReceipt(kv, base, upgraded, opts);
 }
 
 /**
@@ -241,11 +332,8 @@ async function listKeys(kv: TinyCloudKv, prefix: string, opts: RetryOptions): Pr
  *
  * Resume: call again with the SAME audio, base and partSize after an interrupted
  * attempt (abort, network loss, closed tab, failed save). Parts whose keys
- * already exist are neither read nor sent — one `list` of `${base}/p/` decides,
- * and a KV put is all-or-nothing, so an existing key is a complete part. Other
- * audio or another partSize under a base that already holds parts is not
- * detected here (getAudio then refuses the mismatched file), so give every file
- * its own base.
+ * already exist are read back and checked against the local bytes. A stale or
+ * truncated key is overwritten before the manifest can be published.
  *
  * Rejects with AudioStoreQuotaError when the space is out of storage, an
  * AudioStoreError (AUDIO_SOURCE_READ_FAILED when `source` fails or reads short;
@@ -272,12 +360,13 @@ export async function putAudio(
   opts.onUploadStart?.(total);
 
   const parts: StoredAudioPart[] = [];
+  const fileHash = sha256.create();
   let stored = 0;
   for (let index = 0, offset = 0; offset < total; index++, offset += partSize) {
     const key = audioPartKey(base, index);
     const length = Math.min(partSize, total - offset);
     let etag: string | null = null;
-    if (!existing.has(key)) {
+    {
       let part: Blob | Uint8Array;
       try {
         part = await source.readPart(offset, length);
@@ -292,14 +381,29 @@ export async function putAudio(
       if (got !== length) {
         throw new AudioStoreError(AUDIO_SOURCE_READ_FAILED, `audioStore read part ${index}: got ${got} of ${length} bytes`);
       }
-      const res = await withRetry(
+      const sha256 = await digest(part);
+      fileHash.update(part instanceof Blob ? new Uint8Array(await part.arrayBuffer()) : part);
+      let valid = false;
+      if (existing.has(key)) {
+        const prior = await withRetry((deadlineSignal) => kv.get<Uint8Array<ArrayBuffer>>(key, {
+          binary: true, maxResponseBytes: length, signal: deadlineSignal ?? opts.signal,
+        }), opts, `KV get ${key}`);
+        if (!prior.ok && prior.error.code !== "KV_NOT_FOUND" && prior.error.code !== "KV_RESPONSE_TOO_LARGE") {
+          throw kvError(`validate part ${index}`, prior.error);
+        }
+        valid = prior.ok && prior.data.data instanceof Uint8Array
+          && prior.data.data.byteLength === length && await digest(prior.data.data) === sha256;
+      }
+      if (!valid) {
+        const res = await withRetry(
         (deadlineSignal) => kv.put(key, part, { contentType: "application/octet-stream", signal: deadlineSignal ?? opts.signal }),
         opts, `KV put ${key}`, length,
-      );
-      if (!res.ok) throw kvError(`put part ${index}`, res.error);
-      etag = res.data?.headers?.etag ?? null;
+        );
+        if (!res.ok) throw kvError(`put part ${index}`, res.error);
+        etag = res.data?.headers?.etag ?? null;
+      }
+      parts.push({ size: length, sha256, etag });
     }
-    parts.push({ size: length, etag });
     stored += length;
     opts.onProgress?.(stored, total);
   }
@@ -311,9 +415,12 @@ export async function putAudio(
     size: total,
     partSize,
     parts,
-    sha256: opts.sha256 ?? null,
+    sha256: bytesToHex(fileHash.digest()),
     createdAt: new Date().toISOString(),
   };
+  if (opts.sha256 && opts.sha256 !== manifest.sha256) {
+    throw new AudioStoreError(AUDIO_SOURCE_READ_FAILED, "audioStore local audio hash changed during upload");
+  }
   const written = await withRetry(
     (deadlineSignal) => kv.put(audioManifestKey(base), JSON.stringify(manifest), { contentType: "application/json", signal: deadlineSignal ?? opts.signal }),
     opts, `KV put ${audioManifestKey(base)}`,
@@ -354,9 +461,10 @@ export function parseAudioManifest(raw: unknown): StoredAudioManifest | null {
   let sum = 0;
   for (const part of m.parts as unknown[]) {
     if (!part || typeof part !== "object") return null;
-    const { size, etag } = part as Record<string, unknown>;
+    const { size, etag, sha256 } = part as Record<string, unknown>;
     if (!isNonNegativeInteger(size) || (etag !== null && typeof etag !== "string")) return null;
-    parts.push({ size, etag });
+    if (sha256 !== undefined && (typeof sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sha256))) return null;
+    parts.push({ size, etag, ...(sha256 === undefined ? {} : { sha256 }) });
     sum += size;
   }
   if (sum !== m.size) return null;
@@ -412,6 +520,7 @@ export async function getAudio(
     throw new AudioStoreError(AUDIO_TOO_LARGE, `audioStore: the audio is ${manifest.size} bytes, over ${maxBytes}`);
   }
   const chunks: Blob[] = [];
+  const fileHash = manifest.sha256 ? sha256.create() : null;
   let loaded = 0;
   for (let index = 0; index < manifest.parts.length; index++) {
     const expected = manifest.parts[index]!.size;
@@ -431,10 +540,17 @@ export async function getAudio(
     if (!(bytes instanceof Uint8Array) || bytes.byteLength !== expected) {
       throw new AudioStoreError(AUDIO_CORRUPT, `audioStore part ${index} does not match its manifest`);
     }
+    if (manifest.parts[index]!.sha256 && await digest(bytes) !== manifest.parts[index]!.sha256) {
+      throw new AudioStoreError(AUDIO_CORRUPT, `audioStore part ${index} hash does not match its manifest`);
+    }
+    fileHash?.update(bytes);
     // One Blob per part lets the browser hold the bytes outside the JS heap.
     chunks.push(new Blob([bytes]));
     loaded += expected;
     onProgress?.(loaded, manifest.size);
+  }
+  if (fileHash && bytesToHex(fileHash.digest()) !== manifest.sha256) {
+    throw new AudioStoreError(AUDIO_CORRUPT, "audioStore file hash does not match its manifest");
   }
   return new Blob(chunks, { type: manifest.mimeType });
 }

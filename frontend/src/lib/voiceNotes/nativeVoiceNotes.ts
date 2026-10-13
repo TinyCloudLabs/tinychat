@@ -59,7 +59,8 @@ export type ClaimOptions =
   | { id: string; did: string; evidence: "space_row"; rowId: string };
 export interface NoteLedger {
   spaceId?: string | null;
-  audio: { state: "pending" | "saved"; rowId: string | null; at: number | null };
+  audio: { state: "pending" | "saved"; rowId: string | null; at: number | null;
+    verifiedInSpace?: { sha256: string; size: number } };
   transcript: { state: "pending" | "running" | "retrying" | "blocked" | "needs_attention" | "cancelled" | "failed" | "done";
     outcome: "transcribed" | "no_speech" | null; reason: string | null; attempts: number; nextAttemptAt: number | null };
   transcriptSync: { state: "pending" | "saved"; rev: number; at: number | null };

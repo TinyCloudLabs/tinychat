@@ -1,4 +1,5 @@
 import { describe, expect, test as bunTest } from "bun:test";
+import { createHash } from "node:crypto";
 import type { RemoteOpReceipt } from "../nativeVoiceNotes";
 import { base64ToBytes } from "../voiceNoteAudio";
 import { createIdbAudioBlobStore } from "./audioBlobStore";
@@ -126,6 +127,17 @@ describe("readAudioChunk", () => {
     const cached = await noteWith(store, "cached", [bytesOf(12)], "did:a");
     await store.updateLedger({ id: cached.id, did: "did:a", rev: cached.rev!,
       patch: { audio: { state: "saved", rowId: "row", at: 10 } } });
+    await expect(store.evictCachedAudio({ id: cached.id })).rejects.toEqual(code("audio_not_space_backed"));
+    const current = (await store.listPending()).recordings.find((note) => note.id === cached.id)!;
+    await store.updateLedger({ id: cached.id, did: "did:a", rev: current.rev!,
+      patch: { audio: { state: "saved", rowId: "row", at: 10,
+        verifiedInSpace: { sha256: "0".repeat(64), size: 12 } } } });
+    await expect(store.evictCachedAudio({ id: cached.id })).rejects.toEqual(code("audio_not_space_backed"));
+    expect((await store.readNoteAudio(cached.id)).bytes.length).toBe(12);
+    const withBadHash = (await store.listPending()).recordings.find((note) => note.id === cached.id)!;
+    await store.updateLedger({ id: cached.id, did: "did:a", rev: withBadHash.rev!,
+      patch: { audio: { state: "saved", rowId: "row", at: 10,
+        verifiedInSpace: { sha256: createHash("sha256").update(bytesOf(12)).digest("hex"), size: 12 } } } });
     await store.evictCachedAudio({ id: cached.id });
     await expect(store.readNoteAudio(cached.id)).rejects.toEqual(code("not_found"));
     expect((await store.listPending()).recordings.some((note) => note.id === cached.id)).toBe(true);

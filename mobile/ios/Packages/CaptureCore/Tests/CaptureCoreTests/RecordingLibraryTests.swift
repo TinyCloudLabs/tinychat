@@ -1,4 +1,5 @@
 import XCTest
+import CryptoKit
 @testable import CaptureCore
 
 final class RecordingLibraryTests: XCTestCase {
@@ -19,8 +20,20 @@ final class RecordingLibraryTests: XCTestCase {
         XCTAssertNotNil(try library.openAudio(localOnly))
 
         let cached = UUID().uuidString.lowercased()
-        _ = try library.commit(cached, sidecar: ["id": cached, "version": 2,
+        _ = try library.commit(cached, sidecar: ["id": cached, "version": 2, "owner": "did:test", "rev": 0,
+            "options": ["uploadAudio": false],
             "ledger": ["audio": ["state": "saved"]]]) { try Data("cached".utf8).write(to: $0) }
+        XCTAssertThrowsError(try library.evictCachedAudio(cached))
+        XCTAssertNotNil(try library.openAudio(cached))
+        let badHash = String(repeating: "0", count: 64)
+        let goodHash = SHA256.hash(data: Data("cached".utf8)).map { String(format: "%02x", $0) }.joined()
+        let rev = try library.readSidecar(cached)["rev"] as? Int ?? 0
+        let next = try library.updateLedger(cached, did: "did:test", rev: rev,
+            patch: ["audio": ["state": "saved", "verifiedInSpace": ["sha256": badHash, "size": 6]]])
+        XCTAssertThrowsError(try library.evictCachedAudio(cached))
+        XCTAssertNotNil(try library.openAudio(cached))
+        _ = try library.updateLedger(cached, did: "did:test", rev: next,
+            patch: ["audio": ["state": "saved", "verifiedInSpace": ["sha256": goodHash, "size": 6]]])
         try library.evictCachedAudio(cached)
         XCTAssertThrowsError(try library.openAudio(cached))
         XCTAssertEqual((try library.readSidecar(cached))["id"] as? String, cached)

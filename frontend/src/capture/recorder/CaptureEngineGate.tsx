@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 
 import { captureEngineInstallPending, installCaptureEngine } from "@/lib/voiceNotes/captureEngine";
+import { trimCachedAudio } from "@/lib/voiceNotes/audioPlaybackCache";
 
 /**
  * Installs web and Tauri before the app mounts. Native and "no engine" render at once.
@@ -10,16 +11,16 @@ import { captureEngineInstallPending, installCaptureEngine } from "@/lib/voiceNo
 export function CaptureEngineGate({ children }: { children: ReactNode }) {
   const [pending, setPending] = useState(captureEngineInstallPending);
   useEffect(() => {
-    if (!pending) return;
     let active = true;
     installCaptureEngine().then(
-      () => { if (active) setPending(false); },
+      () => { void trimCachedAudio().catch((error: unknown) => console.error("[VoiceNotes] Audio cache reconciliation failed", error));
+        if (active) setPending(false); },
       (caught: unknown) => {
         console.error("[VoiceNotes] Could not start the recorder engine", caught);
         if (active) setPending(false);
       },
     );
     return () => { active = false; };
-  }, [pending]);
+  }, []);
   return pending ? null : <>{children}</>;
 }

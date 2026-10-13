@@ -760,13 +760,14 @@ describe("useLibrary, which audio a note on the phone plays", () => {
     globalThis.indexedDB = new IDBFactory() as unknown as IDBFactory;
     const space = fakeSpace();
     let audioReads = 0;
+    let revision = 1;
     space.tcw.kv.get = (async (key: string) => {
       if (key.endsWith("/manifest")) {
         audioReads++;
         return { ok: true, data: { data: JSON.stringify({ v: 1, mimeType: "audio/mp4", fileName: "note.m4a",
-          size: 4, partSize: 4, parts: [{ size: 4, etag: null }], sha256: null, createdAt: "2026-10-13" }) } };
+          size: 4, partSize: 4, parts: [{ size: 4, etag: null }], sha256: null, createdAt: `rev-${revision}` }) } };
       }
-      if (key.includes("/p/")) { audioReads++; return { ok: true, data: { data: new Uint8Array([1, 2, 3, 4]) } }; }
+      if (key.includes("/p/")) { audioReads++; return { ok: true, data: { data: new Uint8Array([revision, 2, 3, 4]) } }; }
       return { ok: false, error: { code: "KV_NOT_FOUND", message: "missing" } };
     }) as typeof space.tcw.kv.get;
     const original = VoiceNotes;
@@ -779,7 +780,11 @@ describe("useLibrary, which audio a note on the phone plays", () => {
       await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
       expect((await playFromSpace(seen.at(-1)!))?.size).toBe(4);
       expect((await playFromSpace(seen.at(-1)!))?.size).toBe(4);
-      expect(audioReads).toBe(2); // one manifest and one part
+      expect(audioReads).toBe(5); // manifest checked before and after download; bytes downloaded once
+      revision = 2;
+      const replaced = await playFromSpace(seen.at(-1)!);
+      expect(replaced instanceof Blob ? [...new Uint8Array(await replaced.arrayBuffer())] : null).toEqual([2, 2, 3, 4]);
+      expect(audioReads).toBe(9);
     } finally {
       __setVoiceNotesForTests(original, { available: null });
       globalThis.indexedDB = previousIdb;

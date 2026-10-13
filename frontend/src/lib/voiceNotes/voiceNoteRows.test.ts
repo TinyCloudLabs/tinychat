@@ -1441,7 +1441,7 @@ test("a late part put settles before retry writes and retry commits one complete
       if (key === partKey) {
         partWrites++;
         return new Promise((resolve) => { resolveLate = (result) => {
-          values.set(key, "late part committed");
+          values.set(key, value as string);
           resolve(result);
         }; }) as ReturnType<typeof put>;
       }

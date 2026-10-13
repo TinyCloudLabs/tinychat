@@ -38,14 +38,21 @@ const rows = () => transaction<CacheRow[]>("readonly", (store) => store.getAll()
 const read = (key: string) => transaction<CacheRow | undefined>("readonly", (store) => store.get(key));
 const write = (row: CacheRow) => transaction<IDBValidKey>("readwrite", (store) => store.put(row));
 const remove = (key: string) => transaction<undefined>("readwrite", (store) => store.delete(key));
-const remoteKey = (spaceId: string, did: string, source: string, id: string) => JSON.stringify(["space", spaceId, did, source, id]);
+const remoteKey = (spaceId: string, did: string, source: string, id: string, identity: string) =>
+  JSON.stringify(["space", spaceId, did, source, id, identity]);
+const remoteStem = (spaceId: string, did: string, source: string, id: string) =>
+  `${JSON.stringify(["space", spaceId, did, source, id]).slice(0, -1)},`;
 const localKey = (id: string) => JSON.stringify(["local", id]);
 
 async function savedRecordings(): Promise<VoiceNoteRecording[]> {
-  const notes = (await VoiceNotes.listPending()).recordings.filter((note) =>
-    note.ledger?.audio.state === "saved" && (note.options as { uploadAudio?: boolean } | undefined)?.uploadAudio !== false);
+  const notes = (await VoiceNotes.listPending()).recordings.filter((note) => {
+    const receipt = note.ledger?.audio.verifiedInSpace;
+    return note.ledger?.audio.state === "saved" && !!receipt
+      && /^[0-9a-f]{64}$/.test(receipt.sha256) && Number.isSafeInteger(receipt.size) && receipt.size > 0;
+  });
   const sizes = await Promise.all(notes.map((note) => VoiceNotes.localAudioSize({ id: note.id })));
-  return notes.flatMap((note, index) => sizes[index]!.size > 0 ? [{ ...note, sizeBytes: sizes[index]!.size }] : []);
+  return notes.flatMap((note, index) => sizes[index]!.size === note.ledger!.audio.verifiedInSpace!.size
+    ? [{ ...note, sizeBytes: sizes[index]!.size }] : []);
 }
 
 /** A missing local copy is a normal cache miss. Other read errors remain visible. */
@@ -78,9 +85,10 @@ function exclusive<T>(work: () => Promise<T>): Promise<T> {
 /** The caller supplies a complete blob; failed or aborted reads never enter the cache. */
 export async function cachedSpaceAudio(
   spaceId: string, did: string, source: string, id: string,
-  load: () => Promise<Blob | null>, signal?: AbortSignal,
+  identity: string, load: () => Promise<Blob | null>, signal?: AbortSignal,
+  isCurrent?: () => Promise<boolean>,
 ): Promise<Blob | null> {
-  const key = remoteKey(spaceId, did, source, id);
+  const key = remoteKey(spaceId, did, source, id, identity);
   const existing = await read(key).catch((error: unknown) => {
     logPipelineError("audio cache read", error, id);
     return undefined;
@@ -89,15 +97,24 @@ export async function cachedSpaceAudio(
     await write({ ...existing, playedAt: Date.now() })
       .catch((error: unknown) => logPipelineError("audio cache access", error, id));
     logPipeline("audio playback", id, "cache_hit", { destination: "device", bodyBytes: existing.size });
+    void trimCachedAudio().catch((error: unknown) => logPipelineError("audio cache trim", error, id));
     return existing.blob;
   }
   logPipeline("audio playback", id, "cache_miss", { destination: "space" });
   const blob = await load();
   if (signal?.aborted || !blob) return blob;
+  if (isCurrent) {
+    try { if (!(await isCurrent())) return blob; }
+    catch (error) { logPipelineError("audio cache identity check", error, id); return blob; }
+  }
   logPipeline("audio playback", id, "space", { destination: "space", bodyBytes: blob.size });
   await exclusive(async () => {
+    for (const row of await rows()) {
+      if (row.key !== key && (row.key === JSON.stringify(["space", spaceId, did, source, id])
+        || row.key.startsWith(remoteStem(spaceId, did, source, id)))) await remove(row.key);
+    }
     await write({ key, blob, size: blob.size, playedAt: Date.now() });
-    await trimCachedAudio();
+    await trimCachedAudioUnlocked();
   }).catch((error: unknown) => {
     // A full or unavailable device cache must not prevent playback of a complete space read.
     logPipelineError("audio cache write", error, id);
@@ -130,7 +147,7 @@ async function evict(entry: { key: string; size: number; id?: string }): Promise
   logPipeline("audio playback", entry.id ?? "", "evicted", { destination: "device", bodyBytes: entry.size });
 }
 
-export async function trimCachedAudio(limit = AUDIO_CACHE_LIMIT): Promise<void> {
+async function trimCachedAudioUnlocked(limit = AUDIO_CACHE_LIMIT): Promise<void> {
   const all = await candidates();
   let bytes = all.reduce((sum, row) => sum + row.size, 0);
   for (const row of all) {
@@ -138,6 +155,10 @@ export async function trimCachedAudio(limit = AUDIO_CACHE_LIMIT): Promise<void> 
     await evict(row);
     bytes -= row.size;
   }
+}
+
+export function trimCachedAudio(limit = AUDIO_CACHE_LIMIT): Promise<void> {
+  return exclusive(() => trimCachedAudioUnlocked(limit));
 }
 
 export async function clearCachedAudio(): Promise<void> {

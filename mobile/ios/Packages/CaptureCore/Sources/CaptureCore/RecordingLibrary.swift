@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import OSLog
+import CryptoKit
 
 /// All metadata publications go through one synchronous queue. Muxing and probing run outside it,
 /// holding an operation generation that delete/discard can invalidate at any time.
@@ -673,11 +674,27 @@ public final class RecordingLibrary {
             let note = try readSidecarUnlocked(id)
             let ledger = note["ledger"] as? [String: Any]
             let audio = ledger?["audio"] as? [String: Any]
-            let options = note["options"] as? [String: Any]
-            guard audio?["state"] as? String == "saved", options?["uploadAudio"] as? Bool != false else {
+            let receipt = audio?["verifiedInSpace"] as? [String: Any]
+            guard audio?["state"] as? String == "saved",
+                  let expectedHash = receipt?["sha256"] as? String,
+                  expectedHash.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil,
+                  let expectedSize = receipt?["size"] as? Int, expectedSize >= 0 else {
                 throw CaptureError.io("audio_not_space_backed")
             }
             if FileManager.default.fileExists(atPath: audioURL(id).path) {
+                let path = audioURL(id)
+                let handle = try FileHandle(forReadingFrom: path)
+                defer { try? handle.close() }
+                var hash = SHA256()
+                var size = 0
+                while let bytes = try handle.read(upToCount: 1024 * 1024), !bytes.isEmpty {
+                    size += bytes.count
+                    hash.update(data: bytes)
+                }
+                let actualHash = hash.finalize().map { String(format: "%02x", $0) }.joined()
+                guard size == expectedSize && actualHash == expectedHash else {
+                    throw CaptureError.io("audio_not_space_backed")
+                }
                 try FileManager.default.removeItem(at: audioURL(id))
                 try sync(root)
             }

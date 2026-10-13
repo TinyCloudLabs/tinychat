@@ -31,7 +31,7 @@ import { readableError } from "@/lib/readableError";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import { getAudio } from "@/lib/audio/audioStore";
+import { getAudio, getAudioManifest, type StoredAudioManifest } from "@/lib/audio/audioStore";
 import {
   listMeetingsRead,
   meetingAudioFrom,
@@ -43,7 +43,7 @@ import {
 import { scheduledSpace } from "@/lib/spaceQueue";
 import { loadNote } from "@/lib/voiceNotes/recordingNotes";
 import { wasDiscarded, type PendingNote } from "@/lib/voiceNotes/recorderSaves";
-import { loadVoiceNoteAudioBlob, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
+import { loadVoiceNoteAudioBlob, voiceNoteAudioKvKey, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { cachedSpaceAudio, localPlaybackUrl } from "@/lib/voiceNotes/audioPlaybackCache";
 import { readTranscriptPreviews, voiceNoteTranscriptLocator } from "@/lib/voiceNotes/voiceNoteCommits";
 import { captureEvents } from "../captureEvents";
@@ -57,6 +57,11 @@ export interface NoteReads {
   metadata?: MeetingMetadataRead;
   transcript?: TranscriptRead;
 }
+
+const manifestIdentity = (manifest: StoredAudioManifest) => JSON.stringify([
+  manifest.sha256, manifest.createdAt, manifest.size,
+  manifest.parts.map((part) => [part.size, part.sha256]),
+]);
 
 export interface Library {
   status: LibraryStatus;
@@ -428,11 +433,20 @@ export function useLibrary(
           const local = await localPlaybackUrl(voiceSourceId);
           if (local) return local;
           if (pendingAudioRow) return null;
-          return cachedSpaceAudio(String(space.spaceId), String(space.did), VOICE_NOTE_SOURCE, voiceSourceId, async () => {
+          const manifest = await getAudioManifest(space.kv, voiceNoteAudioKvKey(voiceSourceId), { signal });
+          const load = async () => {
             const res = await loadVoiceNoteAudioBlob(space, voiceSourceId, { signal, onProgress });
             if (!res.ok) throw new Error(res.error.message);
             return res.data;
-          }, signal);
+          };
+          // Legacy single-key audio has no revision to validate at a cache hit.
+          if (!manifest) return load();
+          const identity = manifestIdentity(manifest);
+          return cachedSpaceAudio(String(space.spaceId), String(space.did), VOICE_NOTE_SOURCE, voiceSourceId,
+            identity, load, signal, async () => {
+              const current = await getAudioManifest(space.kv, voiceNoteAudioKvKey(voiceSourceId), { signal });
+              return current !== null && manifestIdentity(current) === identity;
+            });
         },
       };
     }

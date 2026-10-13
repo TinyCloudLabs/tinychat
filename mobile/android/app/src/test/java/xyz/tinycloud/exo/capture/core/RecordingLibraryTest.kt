@@ -8,6 +8,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
 import java.io.IOException
+import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -30,6 +31,22 @@ class RecordingLibraryTest {
 
         val cached = id(); begin(lib, cached); commit(lib, cached)
         lib.mutate(cached, "test.saved") { it.getJSONObject("ledger").put("audio", JSONObject().put("state", "saved")) }
+        try { lib.evictCachedAudio(cached); fail("unverified audio was evicted") }
+        catch (e: IllegalStateException) { assertEquals("audio_not_space_backed", e.message) }
+        assertTrue(lib.audio(cached).isFile)
+        lib.mutate(cached, "test.badHash") {
+            it.getJSONObject("ledger").put("audio", JSONObject().put("state", "saved")
+                .put("verifiedInSpace", JSONObject().put("sha256", "0".repeat(64)).put("size", 3)))
+        }
+        try { lib.evictCachedAudio(cached); fail("wrong-hash audio was evicted") }
+        catch (e: IllegalStateException) { assertEquals("audio_not_space_backed", e.message) }
+        assertTrue(lib.audio(cached).isFile)
+        val hash = MessageDigest.getInstance("SHA-256").digest(byteArrayOf(1, 2, 3)).joinToString("") { "%02x".format(it) }
+        lib.mutate(cached, "test.verified") {
+            it.getJSONObject("options").put("uploadAudio", false)
+            it.getJSONObject("ledger").put("audio", JSONObject().put("state", "saved")
+                .put("verifiedInSpace", JSONObject().put("sha256", hash).put("size", 3)))
+        }
         lib.evictCachedAudio(cached)
         assertFalse(lib.audio(cached).exists())
         assertNotNull(lib.read(cached))

@@ -1,4 +1,6 @@
 import { readableError } from "@/lib/readableError";
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
 // IndexedDB persistence for the whole VoiceNotes protocol on the web: capture sessions
 // and their audio, committed recordings and their ledger, account state, remote-op
 // receipts, the outbox, transcripts and the recovery quarantine. The semantics mirror
@@ -562,10 +564,38 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
     },
 
     async evictCachedAudio({ id }) {
-      const note = await transact(db, [STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
-      if (note.ledger?.audio.state !== "saved" || (note.options as { uploadAudio?: boolean } | undefined)?.uploadAudio === false)
-        throw failure("audio_not_space_backed");
-      await audio.delete(id);
+      if (audio.transactional) {
+        await transact(db, [STORES.notes, STORES.tombstones, ...audio.transactional.stores], "readwrite", async (tx) => {
+          const note = await checkedNote(tx, id);
+          const receipt = note.ledger?.audio.verifiedInSpace;
+          const size = (await request(tx.objectStore(STORES.audioMeta).get(id)) as { size?: number } | undefined)?.size;
+          const content = await audio.transactional!.hashIn(tx, id);
+          if (note.ledger?.audio.state !== "saved" || !receipt || !/^[0-9a-f]{64}$/.test(receipt.sha256)
+            || receipt.size !== size || content.size !== size || receipt.sha256 !== content.sha256)
+            throw failure("audio_not_space_backed");
+          audio.transactional!.deleteIn(tx, id);
+        });
+      } else {
+        // Desktop audio is file-backed. Serialize this metadata check with its file delete.
+        const release = await locks.hold(sessionLock(id));
+        if (!release) throw failure("audio_busy");
+        try {
+          const note = await transact(db, [STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
+          const receipt = note.ledger?.audio.verifiedInSpace;
+          if (note.ledger?.audio.state !== "saved" || !receipt || !/^[0-9a-f]{64}$/.test(receipt.sha256))
+            throw failure("audio_not_space_backed");
+          const size = await audio.size(id);
+          const hash = sha256.create();
+          for (let offset = 0; offset < size; offset += 1024 * 1024) {
+            const bytes = await audio.read(id, offset, Math.min(1024 * 1024, size - offset));
+            if (!bytes.length) throw failure("audio_not_space_backed");
+            hash.update(bytes);
+          }
+          if (receipt.size !== size || receipt.sha256 !== bytesToHex(hash.digest()))
+            throw failure("audio_not_space_backed");
+          await audio.delete(id);
+        } finally { release(); }
+      }
     },
 
     async listPending() {
