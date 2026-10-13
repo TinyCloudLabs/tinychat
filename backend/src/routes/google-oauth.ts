@@ -24,8 +24,8 @@ import {
  *  - `GET /start` and `GET /callback` mount WITHOUT `authMiddleware`. The callback is a top-level
  *    browser navigation from Google and carries no Bearer; global CSRF exempts GET. The
  *    anti-forgery control is the `state` param, minted by and validated in the SPA.
- *  - `POST /exchange|/refresh|/revoke` mount BEHIND `authMiddleware` (global CSRF covers the
- *    unsafe methods automatically).
+ *  - `GET /desktop/start` and `POST /exchange|/refresh|/revoke` mount BEHIND
+ *    `authMiddleware` (global CSRF covers the unsafe methods automatically).
  *
  * Browser-only exchanges never take custody. When autojoin is wired, reconnect first disables
  * unattended access and revocation removes its server credential. Only `{ code, state }`
@@ -327,7 +327,7 @@ export function createGoogleOAuthRouter(
     res.redirect(302, oauth.authorizeUrl({ state, challenge }));
   });
 
-  /** Desktop client: exact loopback URI, ephemeral port, mandatory S256 challenge. */
+  /** Authenticated desktop client: exact loopback URI, ephemeral port, mandatory S256 challenge. */
   router.get("/desktop/start", (req: Request, res: Response) => {
     const state = firstQueryValue(req.query.state);
     const challenge = firstQueryValue(req.query.challenge);

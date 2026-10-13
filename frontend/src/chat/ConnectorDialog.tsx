@@ -1133,7 +1133,9 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
           stateRef.current = state;
           verifierRef.current = verifier;
           if (autojoin) throw new Error("Enable Calendar autojoin from Exo on the web.");
-          const code = await startDesktopGoogleOAuth({ backendUrl, state, challenge,
+          const bearer = sessionStore.getToken();
+          if (!bearer || sessionStore.isExpired()) { failWith({ kind: "session", message: "" }); return; }
+          const code = await startDesktopGoogleOAuth({ backendUrl, bearer, state, challenge,
             onRedirectUri: (uri) => { desktopRedirectUriRef.current = uri; } });
           if (nativeGenerationRef.current !== generation || codeHandledRef.current) return;
           codeHandledRef.current = true;

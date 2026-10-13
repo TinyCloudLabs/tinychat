@@ -15,6 +15,7 @@ export function googleRefreshGrant(stored: string): { refreshToken: string; clie
 /** Rust binds the port first; only then do we obtain and open Google's URL. */
 export async function startDesktopGoogleOAuth(input: {
   backendUrl: string;
+  bearer: string;
   state: string;
   challenge: string;
   onRedirectUri: (uri: string) => void;
@@ -23,7 +24,9 @@ export async function startDesktopGoogleOAuth(input: {
   input.onRedirectUri(redirectUri);
   try {
     const query = new URLSearchParams({ state: input.state, challenge: input.challenge, redirectUri });
-    const response = await fetch(`${input.backendUrl}/api/connectors/google/oauth/desktop/start?${query}`);
+    const response = await fetch(`${input.backendUrl}/api/connectors/google/oauth/desktop/start?${query}`, {
+      headers: { Authorization: `Bearer ${input.bearer}` },
+    });
     if (!response.ok) {
       if (response.status === 503) throw new Error("Google desktop sign-in needs a Desktop OAuth client configuration.");
       throw new Error("Could not start Google sign-in.");
