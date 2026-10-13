@@ -27,7 +27,9 @@ import {
   defaultFirefliesClientOptions,
   FirefliesClient,
 } from "@/lib/connectors/firefliesClient";
-import { syncFireflies } from "@/lib/connectors/firefliesSync";
+import { isFirefliesSyncInFlight, syncFireflies } from "@/lib/connectors/firefliesSync";
+import { readBackgroundDrainGeneration } from "./useBackgroundDrain";
+import { isFirefliesStale } from "@/lib/connectors/firefliesFreshness";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
 import {
   isGmeetSyncInFlight,
@@ -153,20 +155,35 @@ export async function runFirefliesSyncNow(opts: {
   apiKey: string;
   signal: AbortSignal;
   onProgress: (p: SyncProgress) => void;
+  isCurrent?: () => boolean;
+  onJoined?: () => void;
+  onJoinSettled?: () => void;
 }): Promise<RowSyncOutcome> {
-  const client = new FirefliesClient({
-    apiKey: opts.apiKey,
-    ...defaultFirefliesClientOptions(),
-  });
-  const res = await syncFireflies({
-    client,
-    store: connectorStore,
-    tcw: opts.tcw,
-    onProgress: opts.onProgress,
-    signal: opts.signal,
-  });
-  if (res.ok) return { ok: true };
-  return { ok: false, message: res.error.message, retryAfterMs: res.error.retryAfterMs ?? null };
+  try {
+    const client = new FirefliesClient({
+      apiKey: opts.apiKey,
+      ...defaultFirefliesClientOptions(),
+    });
+    const res = await syncFireflies({
+      client,
+      store: connectorStore,
+      tcw: opts.tcw,
+      onProgress: opts.onProgress,
+      signal: opts.signal,
+      isCurrent: opts.isCurrent,
+      manualRequest: true,
+      onJoined: opts.onJoined,
+      onJoinSettled: opts.onJoinSettled,
+    });
+    if (res.ok) return { ok: true };
+    return { ok: false, message: res.error.message, retryAfterMs: res.error.retryAfterMs ?? null };
+  } catch (cause) {
+    return {
+      ok: false,
+      message: cause instanceof Error ? cause.message : "Fireflies sync failed",
+      retryAfterMs: null,
+    };
+  }
 }
 
 /**
@@ -313,9 +330,20 @@ export function ConnectorsCard({
       cancelled = true;
     };
   }, [tcw, patchRow]);
+  useEffect(() => {
+    const onConnectorStateUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ connectorId?: ConnectorId }>).detail;
+      if (detail?.connectorId === "fireflies") void refreshRow("fireflies");
+    };
+    window.addEventListener("tinychat:connector-state-updated", onConnectorStateUpdated);
+    return () => {
+      window.removeEventListener("tinychat:connector-state-updated", onConnectorStateUpdated);
+    };
+  }, [refreshRow]);
 
   const handleSyncNow = useCallback(
     async (d: ConnectorDescriptor, driveMode: "auto" | "snapshot" = "auto") => {
+      const generation = readBackgroundDrainGeneration();
       // ENGINE DISPATCH — by registry id, and exhaustively. There is no shared
       // default here on purpose: a descriptor moving coming-soon → available
       // WITHOUT its own entry below would otherwise be fetched with the
@@ -356,6 +384,7 @@ export function ConnectorsCard({
         actionError: null,
         actionRetryAfterMs: null,
       });
+      try {
       if (!isSecretsUnlocked(tcw)) {
         const unlock = await unlockSecrets<SecretsErr>(tcw);
         if (!unlock.ok) {
@@ -392,6 +421,9 @@ export function ConnectorsCard({
       if (engine === "gmeet" && isGmeetSyncInFlight()) {
         patchRow(d.id, { joinedBackgroundSync: true });
       }
+      if (engine === "fireflies" && isFirefliesSyncInFlight()) {
+        patchRow(d.id, { joinedBackgroundSync: true });
+      }
       const onProgress = (p: SyncProgress) => patchRow(d.id, { progress: p });
       const syncRes =
         engine === "gmeet"
@@ -411,6 +443,9 @@ export function ConnectorsCard({
               apiKey: keyRes.data,
               signal: ac.signal,
               onProgress,
+              isCurrent: () => generation === readBackgroundDrainGeneration(),
+              onJoined: () => patchRow(d.id, { joinedBackgroundSync: true }),
+              onJoinSettled: () => patchRow(d.id, { joinedBackgroundSync: false }),
             });
       if (syncAbortRefs.current[d.id] === ac) {
         delete syncAbortRefs.current[d.id];
@@ -438,6 +473,14 @@ export function ConnectorsCard({
         actionError: null,
         actionRetryAfterMs: null,
       });
+      } catch (cause) {
+        patchRow(d.id, {
+          actionError: cause instanceof Error ? cause.message : "Sync failed. Try again.",
+        });
+      } finally {
+        if (syncAbortRefs.current[d.id]) delete syncAbortRefs.current[d.id];
+        patchRow(d.id, { syncing: false, joinedBackgroundSync: false, progress: null });
+      }
     },
     [tcw, patchRow, backendUrl, sessionStore],
   );
@@ -577,7 +620,7 @@ const ConnectorRow: FC<{
   // A coming-soon row dims only its icon and its status dot; its text keeps
   // full contrast (a dimmed row put muted text under 4.5:1).
   const containerCls = "flex flex-col gap-2 py-3";
-  const status = rowStatus(comingSoon, state);
+  const status = rowStatus(comingSoon, state, d.id);
   // role="group" + aria-label carries the "coming soon" status to screen
   // readers; aria-disabled on a plain <div> has no semantic effect.
   const groupProps = comingSoon
@@ -686,7 +729,10 @@ const ConnectorRow: FC<{
         )}
       </div>
       {!comingSoon && connected && state.connection && (
-        <ConnectedStatusLine connection={state.connection} />
+        <ConnectedStatusLine
+          connection={state.connection}
+          stale={d.id === "fireflies" && isFirefliesStale(state.connection.lastSyncedAt)}
+        />
       )}
       {!comingSoon && state.syncing && state.joinedBackgroundSync && (
         <p className="text-xs text-muted-foreground">
@@ -721,8 +767,9 @@ const ConnectorRow: FC<{
   );
 };
 
-const ConnectedStatusLine: FC<{ connection: ConnectorConnection }> = ({
+const ConnectedStatusLine: FC<{ connection: ConnectorConnection; stale: boolean }> = ({
   connection,
+  stale,
 }) => {
   const count = connection.itemCount;
   const meetings = `${count} meeting${count === 1 ? "" : "s"}`;
@@ -736,7 +783,7 @@ const ConnectedStatusLine: FC<{ connection: ConnectorConnection }> = ({
   const { relative, absolute } = formatRelativeTime(connection.lastSyncedAt);
   return (
     <p className="text-xs text-muted-foreground" title={absolute}>
-      Last synced {relative} · {meetings}
+      {stale ? `Stale since ${absolute}` : `Last synced ${relative}`} · {meetings}
     </p>
   );
 };
@@ -747,12 +794,16 @@ const ConnectedStatusLine: FC<{ connection: ConnectorConnection }> = ({
  * The row's status, as a dot plus text. Nothing until the persisted connection
  * has loaded (the action area shows a placeholder then).
  */
-function rowStatus(comingSoon: boolean, state: RowState): { tone: StatusTone; label: string } | null {
+function rowStatus(comingSoon: boolean, state: RowState, connectorId: ConnectorId): { tone: StatusTone; label: string } | null {
   if (comingSoon) return { tone: "neutral", label: "Coming soon" };
   if (!state.loaded) return null;
   if (state.connection?.status !== "connected") return { tone: "neutral", label: "Not connected" };
   if (state.connection.lastSyncStatus === "error") return { tone: "destructive", label: "Last sync failed" };
   if (state.connection.lastSyncStatus === "partial") return { tone: "warning", label: "Last sync incomplete" };
+  if (connectorId === "fireflies" && state.connection.lastSyncedAt
+    && isFirefliesStale(state.connection.lastSyncedAt)) {
+    return { tone: "warning", label: "Stale" };
+  }
   return { tone: "primary", label: "Connected" };
 }
 
