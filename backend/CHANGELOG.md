@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.5.1-beta.2
+
+### Patch Changes
+
+- 20faa03: Refresh saved transcriber transcripts when ptx publishes a newer version, keeping previous copies in an immutable archive and preserving edited meeting titles and start times (TC-989).
+
 ## 0.5.1-beta.1
 
 ### Patch Changes
