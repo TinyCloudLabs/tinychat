@@ -46,6 +46,8 @@ jobs:
             BUILD_REVISION=${{ github.sha }}
           platforms: linux/amd64
           push: true
+          cache-from: type=gha,scope=tinychat-backend
+          cache-to: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && 'type=gha,mode=max,scope=tinychat-backend' || '' }}
           tags: |
             ${{ env.DOCKER_IMAGE }}:latest
             ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
@@ -62,6 +64,8 @@ jobs:
           file: infra/phala-ingress/Dockerfile
           platforms: linux/amd64
           push: true
+          cache-from: type=gha,scope=tinychat-ingress
+          cache-to: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && 'type=gha,mode=max,scope=tinychat-ingress' || '' }}
           tags: |
             ${{ env.INGRESS_IMAGE }}:ingress-latest
             ${{ env.INGRESS_IMAGE }}:ingress-${{ github.sha }}

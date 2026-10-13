@@ -13,10 +13,10 @@ name: Desktop build (Exo)
 # invokes always come from the same trusted commit, and re-releasing an older tag never runs that tag's older scripts
 # (exo-desktop@0.2.0-beta.3 failed on an unknown --ad-hoc-sign that way).
 #
-# Cache: the Rust target dir and cargo registry/git (whisper.cpp, MLX, anarlog and ~1,100 crates; SwiftPM build
-# products live in the Rust target dir) share one key across CI and release jobs. Only main's own CI builds write it
-# (pushes and the weekly warm-up in desktop.yml); PRs and release builds only restore it. SwiftPM's repository cache
-# (mlx-swift, speech-swift, WhisperKit clones) is cached separately, keyed on Cargo.lock.
+# Cache: GitHub-owned actions/cache stores Cargo downloads and compiler artifacts keyed by Cargo.lock, rustc version,
+# and the Apple Silicon target. PRs restore; main and tag builds may save. Only compilation directories are cached:
+# Tauri bundles (including ad-hoc-signed .app and .dmg outputs) are excluded. SwiftPM's repository cache
+# (mlx-swift, speech-swift, WhisperKit clones) is separate, keyed on Cargo.lock.
 #
 # Jobs. The Developer ID certificate and the App Store Connect key are never on a runner that runs project or
 # third-party build code (bun install and its postinstall scripts, the Vite build, cargo and every crate's build
@@ -136,6 +136,7 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       SAVE_CACHE: ${{ github.ref == 'refs/heads/main' && inputs.ref == '' && !inputs.sign }}
+      SAVE_RUST_CACHE: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
     # Cold builds compile whisper.cpp, MLX and ~1,100 crates on 3 vCPUs.
     timeout-minutes: 150
     outputs:
@@ -162,8 +163,35 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: "1.3.9"
-
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        if: inputs.ref == '' && !inputs.sign
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Record Rust compiler version
+        id: rust-version
+        run: echo "version=$(rustc --version | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Tauri Rust dependencies
+        id: rust-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/src-tauri/target/debug/deps
+            desktop/src-tauri/target/debug/build
+            desktop/src-tauri/target/debug/.fingerprint
+            desktop/src-tauri/target/debug/incremental
+            desktop/src-tauri/target/release/deps
+            desktop/src-tauri/target/release/build
+            desktop/src-tauri/target/release/.fingerprint
+            desktop/src-tauri/target/release/incremental
+          key: rust-tauri-${{ runner.os }}-${{ runner.arch }}-aarch64-apple-darwin-${{ steps.rust-version.outputs.version }}-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            rust-tauri-${{ runner.os }}-${{ runner.arch }}-aarch64-apple-darwin-${{ steps.rust-version.outputs.version }}-
 
       - name: Require pinned Xcode
         run: test -d "$DEVELOPER_DIR"
@@ -187,13 +215,6 @@ jobs:
           swift --version
           xcrun --find metal
           df -h /
-
-      # One key for CI and release jobs (the default key includes the job id); written only from main.
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: desktop/src-tauri
-          shared-key: exo-desktop-macos-arm64
-          save-if: ${{ env.SAVE_CACHE == 'true' }}
 
       - name: Restore SwiftPM repository cache
         id: swiftpm
@@ -333,6 +354,22 @@ jobs:
         with:
           path: ~/Library/Caches/org.swift.swiftpm
           key: ${{ steps.swiftpm.outputs.cache-primary-key }}
+      - name: Save Tauri Rust dependencies
+        if: env.SAVE_RUST_CACHE == 'true' && steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/src-tauri/target/debug/deps
+            desktop/src-tauri/target/debug/build
+            desktop/src-tauri/target/debug/.fingerprint
+            desktop/src-tauri/target/debug/incremental
+            desktop/src-tauri/target/release/deps
+            desktop/src-tauri/target/release/build
+            desktop/src-tauri/target/release/.fingerprint
+            desktop/src-tauri/target/release/incremental
+          key: rust-tauri-${{ runner.os }}-${{ runner.arch }}-aarch64-apple-darwin-${{ steps.rust-version.outputs.version }}-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
 
   sign:
     name: ${{ inputs.sign && 'Sign and notarize (desktop-release)' || 'Sign (dry run, ad-hoc, no secrets)' }}
