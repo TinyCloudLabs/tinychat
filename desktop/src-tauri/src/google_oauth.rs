@@ -3,7 +3,7 @@ use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc, Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -11,6 +11,9 @@ use std::{
 use tauri_plugin_opener::OpenerExt;
 
 const TIMEOUT: Duration = Duration::from_secs(300);
+const READ_POLL: Duration = Duration::from_millis(50);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_CONNECTIONS: usize = 16;
 const PATH: &str = "/oauth/google";
 
 #[derive(Default)]
@@ -136,19 +139,38 @@ fn run_listener(
     socket: TcpListener,
     port: u16,
     state: &str,
-    cancel: &AtomicBool,
+    cancel: &Arc<AtomicBool>,
     timeout: Duration,
 ) -> Result<String, String> {
     let deadline = Instant::now() + timeout;
+    let (sender, receiver) = mpsc::channel();
+    let active = Arc::new(AtomicUsize::new(0));
     while Instant::now() < deadline {
         if cancel.load(Ordering::SeqCst) {
             return Err("Sign-in cancelled".into());
         }
+        if let Ok(result) = receiver.try_recv() {
+            return result;
+        }
         match socket.accept() {
             Ok((mut stream, peer)) if peer.ip().is_loopback() => {
-                if let Some(result) = handle_request(&mut stream, port, state) {
-                    return result;
+                if active.load(Ordering::SeqCst) >= MAX_CONNECTIONS {
+                    respond(&mut stream, 503, "Sign-in listener busy");
+                    continue;
                 }
+                active.fetch_add(1, Ordering::SeqCst);
+                let sender = sender.clone();
+                let active = active.clone();
+                let state = state.to_owned();
+                let cancel = cancel.clone();
+                std::thread::spawn(move || {
+                    if let Some(result) =
+                        handle_request(&mut stream, port, &state, &cancel, deadline)
+                    {
+                        let _ = sender.send(result);
+                    }
+                    active.fetch_sub(1, Ordering::SeqCst);
+                });
             }
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -157,6 +179,9 @@ fn run_listener(
             Err(_) => return Err("Local sign-in listener failed".into()),
         }
     }
+    if cancel.load(Ordering::SeqCst) {
+        return Err("Sign-in cancelled".into());
+    }
     Err("Google sign-in timed out. Try again.".into())
 }
 
@@ -164,12 +189,34 @@ fn handle_request(
     stream: &mut TcpStream,
     port: u16,
     state: &str,
+    cancel: &AtomicBool,
+    deadline: Instant,
 ) -> Option<Result<String, String>> {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let request_deadline = Instant::now() + REQUEST_TIMEOUT;
     let mut bytes = [0u8; 8192];
     let mut size = 0;
     while size < bytes.len() {
-        let read = stream.read(&mut bytes[size..]).ok()?;
+        if cancel.load(Ordering::SeqCst) {
+            return None;
+        }
+        let remaining = deadline
+            .min(request_deadline)
+            .checked_duration_since(Instant::now())?;
+        stream
+            .set_read_timeout(Some(remaining.min(READ_POLL)))
+            .ok()?;
+        let read = match stream.read(&mut bytes[size..]) {
+            Ok(read) => read,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue
+            }
+            Err(_) => return None,
+        };
         if read == 0 {
             break;
         }
@@ -209,18 +256,23 @@ fn handle_request(
                 code = Some(value.into_owned())
             }
             "state" if returned_state.is_none() => returned_state = Some(value.into_owned()),
-            "error" if error.is_none() => error = Some(value.into_owned()),
-            _ => {
+            "error" if error.is_none() && !value.is_empty() => error = Some(value.into_owned()),
+            "code" | "state" | "error" => {
                 respond(stream, 400, "Invalid sign-in return");
                 return None;
             }
+            _ => {}
         }
     }
     if returned_state.as_deref() != Some(state) {
         respond(stream, 400, "Sign-in state did not match");
         return None;
     }
-    if let Some(code) = code.filter(|_| error.is_none()) {
+    if code.is_some() && error.is_some() {
+        respond(stream, 400, "Invalid sign-in return");
+        return None;
+    }
+    if let Some(code) = code {
         respond(stream, 200, "Google sign-in received. Return to Exo.");
         return Some(Ok(code));
     }
@@ -262,7 +314,7 @@ mod tests {
                 socket,
                 port,
                 "expectedstate123456",
-                &AtomicBool::new(false),
+                &Arc::new(AtomicBool::new(false)),
                 Duration::from_secs(2),
             )
         });
@@ -279,10 +331,121 @@ mod tests {
             socket,
             0,
             "expectedstate123456",
-            &AtomicBool::new(false),
+            &Arc::new(AtomicBool::new(false)),
             Duration::from_millis(30)
         )
         .unwrap_err()
         .contains("timed out"));
+    }
+
+    #[test]
+    fn google_metadata_is_accepted_but_duplicate_security_fields_are_rejected() {
+        let socket = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = socket.local_addr().unwrap().port();
+        socket.set_nonblocking(true).unwrap();
+        let task = std::thread::spawn(move || {
+            run_listener(
+                socket,
+                port,
+                "expectedstate123456",
+                &Arc::new(AtomicBool::new(false)),
+                Duration::from_secs(2),
+            )
+        });
+        for query in [
+            "code=one&code=two&state=expectedstate123456",
+            "code=one&state=expectedstate123456&state=expectedstate123456",
+            "error=access_denied&error=other&state=expectedstate123456",
+            "code=one&error=access_denied&state=expectedstate123456",
+        ] {
+            assert!(request(port, query).starts_with("HTTP/1.1 400"), "{query}");
+        }
+        assert!(request(port, "code=good&state=expectedstate123456&scope=openid+email+profile&authuser=0&prompt=consent&iss=https%3A%2F%2Faccounts.google.com&hd=example.com").starts_with("HTTP/1.1 200"));
+        assert_eq!(task.join().unwrap().unwrap(), "good");
+    }
+
+    #[test]
+    fn slow_connection_does_not_block_real_callback() {
+        let socket = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = socket.local_addr().unwrap().port();
+        socket.set_nonblocking(true).unwrap();
+        let task = std::thread::spawn(move || {
+            run_listener(
+                socket,
+                port,
+                "expectedstate123456",
+                &Arc::new(AtomicBool::new(false)),
+                Duration::from_secs(2),
+            )
+        });
+        let mut slow = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        slow.write_all(b"GET ").unwrap();
+        let trickle = std::thread::spawn(move || {
+            for _ in 0..20 {
+                std::thread::sleep(Duration::from_millis(25));
+                if slow.write_all(b"a").is_err() {
+                    break;
+                }
+            }
+        });
+        std::thread::sleep(Duration::from_millis(40));
+        let start = Instant::now();
+        assert!(request(port, "code=good&state=expectedstate123456").starts_with("HTTP/1.1 200"));
+        assert_eq!(task.join().unwrap().unwrap(), "good");
+        assert!(start.elapsed() < Duration::from_secs(1));
+        trickle.join().unwrap();
+    }
+
+    #[test]
+    fn partial_connection_cannot_extend_absolute_deadline() {
+        let socket = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = socket.local_addr().unwrap().port();
+        socket.set_nonblocking(true).unwrap();
+        let mut slow = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        slow.write_all(b"GET ").unwrap();
+        let trickle = std::thread::spawn(move || {
+            for _ in 0..20 {
+                std::thread::sleep(Duration::from_millis(25));
+                if slow.write_all(b"a").is_err() {
+                    break;
+                }
+            }
+        });
+        let start = Instant::now();
+        let result = run_listener(
+            socket,
+            port,
+            "expectedstate123456",
+            &Arc::new(AtomicBool::new(false)),
+            Duration::from_millis(150),
+        );
+        assert!(result.unwrap_err().contains("timed out"));
+        assert!(start.elapsed() < Duration::from_millis(500));
+        trickle.join().unwrap();
+    }
+
+    #[test]
+    fn cancellation_interrupts_partial_request() {
+        let socket = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = socket.local_addr().unwrap().port();
+        socket.set_nonblocking(true).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
+        let task = std::thread::spawn(move || {
+            run_listener(
+                socket,
+                port,
+                "expectedstate123456",
+                &worker_cancel,
+                Duration::from_secs(2),
+            )
+        });
+        let mut slow = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        slow.write_all(b"GET ").unwrap();
+        std::thread::sleep(Duration::from_millis(40));
+        let start = Instant::now();
+        cancel.store(true, Ordering::SeqCst);
+        assert!(task.join().unwrap().unwrap_err().contains("cancelled"));
+        assert!(start.elapsed() < Duration::from_millis(300));
     }
 }
