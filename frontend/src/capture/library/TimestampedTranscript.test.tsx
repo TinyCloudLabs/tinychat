@@ -33,6 +33,12 @@ test("no local audio leaves timestamps readable with a seek reason", () => {
   expect(html).not.toContain('aria-label="Play from');
 });
 
+test("timestamp controls keep a 44 px coarse-pointer target", () => {
+  const html = renderToStaticMarkup(<TimestampedTranscript sentences={sentences} hasAudio />);
+  expect(html).toContain("min-h-11");
+  expect(html).toContain("[@media(pointer:fine)]:min-h-0");
+});
+
 test("a single speaker has no repeated label; an hour of segments keeps its final timestamp", () => {
   const hour = Array.from({ length: 121 }, (_, index) => ({
     index, speaker_name: "You", text: `Sentence ${index}.`, start_time: index * 30, end_time: index * 30 + 2,
@@ -79,4 +85,30 @@ test("timestamp seeks, playback highlights, manual scroll suspends follow, and t
   expect(host.textContent).toContain("Follow playback");
   await act(async () => { (Array.from(host.querySelectorAll("button")).find((button) => button.textContent === "Follow playback")!).click(); });
   expect(scrolls).toBe(2);
+});
+
+test("repeated clock ticks render no unchanged rows in a 2,000-segment note", async () => {
+  cleanup = installDom();
+  const host = document.createElement("div");
+  document.body.append(host);
+  root = createRoot(host);
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 900 });
+  Element.prototype.getBoundingClientRect = () => ({ top: 400, bottom: 430 } as DOMRect);
+  const long = Array.from({ length: 2000 }, (_, index) => ({
+    index, speaker_name: null, text: `Sentence ${index}.`, start_time: index * 2, end_time: index * 2 + 2,
+  }));
+  const renders = new Map<number, number>();
+  const onRowRender = (index: number) => renders.set(index, (renders.get(index) ?? 0) + 1);
+  const render = (elapsed: number) => act(async () => root!.render(
+    <NotePlaybackContext.Provider value={{ seek: null, elapsed, playing: true, playFrom: () => {}, onClock: () => {} }}>
+      <TimestampedTranscript sentences={long} hasAudio onRowRender={onRowRender} />
+    </NotePlaybackContext.Provider>,
+  ));
+  await render(0.25);
+  const initial = [...renders.values()].reduce((sum, count) => sum + count, 0);
+  for (const elapsed of [0.5, 0.75, 1, 1.5]) await render(elapsed);
+  expect([...renders.values()].reduce((sum, count) => sum + count, 0)).toBe(initial);
+  await render(2.25);
+  expect([...renders.values()].reduce((sum, count) => sum + count, 0)).toBe(initial + 2);
+  expect(host.querySelectorAll('[data-active="true"]')).toHaveLength(1);
 });

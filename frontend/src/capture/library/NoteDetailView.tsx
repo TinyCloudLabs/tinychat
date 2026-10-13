@@ -286,7 +286,7 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
               <summary className="flex min-h-11 cursor-pointer items-center rounded-md px-2 text-meta hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring" aria-label="Transcript copy and export options">▾</summary>
               <div className="absolute right-0 z-10 min-w-48 rounded-md border bg-popover p-1 shadow-sm">
                 <button type="button" className="block w-full rounded-sm px-3 py-2 text-left text-meta hover:bg-accent" onClick={props.onCopy}>Copy text</button>
-                <button type="button" className="block w-full rounded-sm px-3 py-2 text-left text-meta hover:bg-accent" onClick={props.onCopyWithTimestamps}>Copy with timestamps</button>
+                {props.onCopyWithTimestamps && <button type="button" className="block w-full rounded-sm px-3 py-2 text-left text-meta hover:bg-accent" onClick={props.onCopyWithTimestamps}>Copy with timestamps</button>}
                 <button type="button" className="block w-full rounded-sm px-3 py-2 text-left text-meta hover:bg-accent" onClick={() => void exportMarkdown()}>Export as Markdown</button>
               </div>
             </details>}

@@ -125,6 +125,14 @@ describe("NoteDetailView", () => {
     expect(render({ transcript: undefined })).toContain("Loading the transcript…");
   });
 
+  test("timed copy is absent when the caller has no handler", () => {
+    const html = render({ transcript: { status: "ok", sentences: [
+      { index: 0, speaker_name: null, text: "Ready.", start_time: 1, end_time: 2 },
+    ] } });
+    expect(html).not.toContain("Copy with timestamps");
+    expect(html).toContain("Export as Markdown");
+  });
+
   test("an upload whose audio was not stored says so", () => {
     const html = render({ item: UPLOAD, audio: null, metadata: { status: "ok", metadata: { audio: { stored: false } } } });
     expect(html).toContain('data-testid="note-audio-missing"');
