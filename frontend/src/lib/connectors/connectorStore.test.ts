@@ -1435,6 +1435,10 @@ describe("connectorStore.updateSyncState / getConnection", () => {
       suspectProofAtById: {
         "failed-transcript": "2026-10-12T12:00:00.000Z",
         "no-longer-pending": "2026-10-12T12:00:00.000Z",
+        ...Object.fromEntries(Array.from({ length: 51 }, (_, index) => [
+          `stale-${index}`,
+          "2026-10-12T12:00:00.000Z",
+        ])),
       },
     } as Parameters<typeof recordFirefliesAttempt>[1] & { suspectProofAtById: Record<string, string> };
     await recordFirefliesAttempt(f.tcw, writeAttempt);

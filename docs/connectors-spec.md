@@ -432,13 +432,18 @@ algorithm for Connect, Sync now, the background catch-up, and Meeting sources:
    `listing_started_at`. Suspects seen during a completed proof are demoted to
    plain pending and their seen state is cleared; they can start a fresh proof if
    a later retry is not-found. `suspect_proof_at_by_id` stores the completion time
-   of the last proof that observed each pending ID, with at most 50 entries. A
-   new proof may include only IDs without a proof in the preceding 24 hours.
-   Completing a proof updates only the IDs in that fixed generation; it does not
-   reset other IDs' cooldowns. Every attempt write prunes the map to current
-   `pending_ids`. Invalid map data drops the continuation cursor but preserves
-   pending IDs. These additive `v: 1` fields allow older records to remain
-   readable. The SQL watermark never advances while `pending_ids` is non-empty.
+   of the last proof that observed each pending ID, with at most 50 entries. An
+   ID without a proof in the preceding 24 hours may trigger a new proof. When a
+   due ID starts a proof, every not-found retry from that invocation joins its
+   fixed membership, including IDs still cooling down; later arrivals wait for a
+   subsequent skip-zero generation. Completion updates each observed member's
+   timestamp without resetting other IDs' cooldowns. On legacy records missing
+   the map, valid `suspect_proof_at` seeds it, otherwise valid `last_attempt_at`;
+   if neither is valid, there is no inherited cooldown. Every attempt write
+   prunes the map to current `pending_ids`. Invalid map data drops the
+   continuation cursor but preserves pending IDs. These additive `v: 1` fields
+   allow older records to remain readable. The SQL watermark never advances while
+   `pending_ids` is non-empty.
    `listing_started_at` is recorded at skip zero and becomes `last_synced_at` only
    after the whole ordinary chain reaches the date boundary or true end of history
    without item errors, abort, budget exhaustion, or pending IDs.

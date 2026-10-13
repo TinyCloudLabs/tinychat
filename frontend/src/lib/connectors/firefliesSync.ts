@@ -411,19 +411,27 @@ async function runFirefliesSync(
             for (const id of attempt?.suspectProofIds ?? []) {
               if (pendingIds.has(id)) suspectProofIds.add(id);
             }
-            suspectProofAt = typeof attempt?.suspectProofAt === "string"
+            const persistedProofAt = typeof attempt?.suspectProofAt === "string"
               && Number.isFinite(Date.parse(attempt.suspectProofAt))
               ? attempt.suspectProofAt
               : null;
+            const persistedLastAttemptAt = typeof attempt?.lastAttemptAt === "string"
+              && Number.isFinite(Date.parse(attempt.lastAttemptAt))
+              ? attempt.lastAttemptAt
+              : null;
+            suspectProofAt = persistedProofAt;
             if (attempt?.suspectProofAtById !== undefined) {
               for (const [id, proofAt] of Object.entries(attempt.suspectProofAtById)) {
                 if (pendingIds.has(id)) suspectProofAtById.set(id, proofAt);
               }
-            } else if (suspectIds.size === 0 && suspectProofAt) {
-              // Legacy generations persisted their start, not completion time;
-              // use the latest attempt as a conservative cooldown boundary.
-              for (const id of suspectProofIds) {
-                if (pendingIds.has(id)) suspectProofAtById.set(id, attemptAt);
+            } else if (suspectIds.size === 0 && suspectProofIds.size > 0) {
+              // Migrate old v1 records from stored proof evidence. When the
+              // completion timestamp is unavailable, last_attempt_at bounds it.
+              const legacyProofAt = persistedProofAt ?? persistedLastAttemptAt;
+              if (legacyProofAt) {
+                for (const id of suspectProofIds) {
+                  if (pendingIds.has(id)) suspectProofAtById.set(id, legacyProofAt);
+                }
               }
             }
             if (suspectIds.size > 0 && (suspectProofIds.size === 0 || !suspectProofAt)) {
@@ -660,13 +668,13 @@ async function runFirefliesSync(
                   || !Number.isFinite(Date.parse(proofAt))
                   || runAtMs - Date.parse(proofAt) >= FIREFLIES_SUSPECT_PROOF_INTERVAL_MS;
               });
-              // Keep generation membership fixed from its skip-zero start. A
-              // late not-found ID waits until this proof completes, then starts
-              // its own zero-start proof if its per-ID cooldown allows it.
+              // Cooldown decides whether to start a proof. Once a due ID
+              // starts one, this full-history pass covers every not-found
+              // retry from the same invocation; membership freezes at skip zero.
               if (suspectIds.size === 0 && candidates.length > 0) {
-                suspectIds = new Set(candidates);
+                suspectIds = new Set(pendingNotFoundRetries);
                 suspectSeenIds.clear();
-                suspectProofIds = new Set(candidates);
+                suspectProofIds = new Set(pendingNotFoundRetries);
                 suspectProofAt = attemptAt;
                 restartListingAtTop();
               }

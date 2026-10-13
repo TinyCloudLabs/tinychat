@@ -239,8 +239,9 @@ export async function recordFirefliesAttempt(
     ? rawProofAtById as Record<string, unknown>
     : null;
   const proofAtByIdEntries = proofAtByIdRecord ? Object.entries(proofAtByIdRecord) : [];
+  const pendingProofEntries = proofAtByIdEntries.filter(([id]) => pendingIdSet.has(id));
   const proofAtByIdInvalid = rawProofAtById !== undefined && (!proofAtByIdRecord
-    || proofAtByIdEntries.length > FIREFLIES_MAX_PENDING_IDS
+    || pendingProofEntries.length > FIREFLIES_MAX_PENDING_IDS
     || proofAtByIdEntries.some(([id, at]) => !id
       || typeof at !== "string"
       || !Number.isFinite(Date.parse(at))));
@@ -248,8 +249,7 @@ export async function recordFirefliesAttempt(
     ? undefined
     : proofAtByIdInvalid
       ? {}
-      : Object.fromEntries(proofAtByIdEntries.filter(([id]) => pendingIdSet.has(id))
-        .map(([id, at]) => [id, at as string]));
+      : Object.fromEntries(pendingProofEntries.map(([id, at]) => [id, at as string]));
   const hasCursor = attempt.listingSkip !== undefined
     || attempt.listingStartedAt !== undefined
     || attempt.listingAnchor !== undefined;

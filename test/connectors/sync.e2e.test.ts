@@ -659,6 +659,133 @@ test("pending not-found IDs wait for a zero-start proof generation", async () =>
   }
 });
 
+test("stale legacy proof timestamps are immediately eligible after map loss", async () => {
+  const proofTime = "2026-10-01T12:00:00.000Z";
+  const upgradeTime = "2026-10-04T12:00:00.000Z";
+  const variants = [
+    { name: "legacy proof timestamp", suspectProofAt: proofTime, lastAttemptAt: proofTime },
+    { name: "rollback attempt timestamp", suspectProofAt: null, lastAttemptAt: proofTime },
+    { name: "invalid legacy timestamps", suspectProofAt: "invalid", lastAttemptAt: "also-invalid" },
+  ];
+
+  for (const variant of variants) {
+    _resetConnectorSchemaMemoForTests();
+    const now = Date.parse(upgradeTime);
+    const items = buildSeed(120) as SeedTranscript[];
+    items.forEach((item, index) => { item.date = now - index * 1_000; });
+    const pending = items[10]!;
+    const fake = makeFakeTinyCloud({ did: `did:test:legacy-proof-map-${variant.name}` });
+    for (const item of items) {
+      if (item.id === pending.id) continue;
+      const normalized = connectorStore.normalizeFirefliesTranscript(item);
+      expect((await connectorStore.insertMeeting(fake.tcw, normalized.meeting)).ok).toBe(true);
+      expect((await connectorStore.putTranscriptBody(fake.tcw, "fireflies", item.id, normalized.sentences)).ok).toBe(true);
+    }
+    expect((await connectorStore.updateSyncState(fake.tcw, {
+      connectorId: "fireflies",
+      status: "connected",
+      lastSyncedAt: "2026-10-03T12:00:00.000Z",
+      lastSyncStatus: "partial",
+      lastSyncError: "legacy failed transcript",
+      itemCount: items.length - 1,
+    })).ok).toBe(true);
+    fake.kv.entries.set(firefliesAttemptKvKey(), JSON.stringify({
+      v: 1,
+      last_attempt_at: variant.lastAttemptAt,
+      last_attempt_status: "partial",
+      listing_skip: 100,
+      listing_started_at: proofTime,
+      listing_anchor: items[99]!.id,
+      listing_anchor_date: items[99]!.date,
+      listing_previous_neighbor: items[98]!.id,
+      pending_ids: [pending.id],
+      suspect_ids: [],
+      suspect_seen_ids: [],
+      suspect_proof_ids: [pending.id],
+      suspect_proof_at: variant.suspectProofAt,
+    }));
+    const provider = makeInMemoryFireflies(items);
+    provider.failNullAlways(pending.id);
+
+    expect((await runEngine(provider.client, fake, {
+      now: () => upgradeTime,
+    })).ok).toBe(true);
+    expect(provider.calls.find((call) => call.operation === "list")?.skip).toBe(0);
+    expect(JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey())))
+      .suspect_proof_at).toBe(upgradeTime);
+    expect(requiredSyncState(fake).last_sync_status).toBe("partial");
+
+    provider.recoverNull(pending.id);
+    for (let run = 0; run < 3 && requiredSyncState(fake).last_sync_status !== "ok"; run++) {
+      expect((await runEngine(provider.client, fake, {
+        now: () => upgradeTime,
+      })).ok).toBe(true);
+    }
+    expect(requiredSyncState(fake).last_sync_status).toBe("ok");
+    expect(missingIds(items.map((item) => item.id), new Set([...fake.sql.meetings.values()].map((row) => row.source_id)))).toEqual([]);
+    expect(missingIds(items.map((item) => item.id), transcriptBodyKeys(fake))).toEqual([]);
+  }
+});
+
+test("a cooling deleted ID joins a due proof generation", async () => {
+  _resetConnectorSchemaMemoForTests();
+  const now = Date.parse("2026-10-13T12:00:00.000Z");
+  const items = buildSeed(120) as SeedTranscript[];
+  items.forEach((item, index) => { item.date = now - index * 1_000; });
+  const deleted = items[10]!;
+  const failing = items[11]!;
+  const fake = makeFakeTinyCloud({ did: "did:test:cooling-deletion-joins-proof" });
+  for (const item of items) {
+    if (item.id === deleted.id || item.id === failing.id) continue;
+    const normalized = connectorStore.normalizeFirefliesTranscript(item);
+    expect((await connectorStore.insertMeeting(fake.tcw, normalized.meeting)).ok).toBe(true);
+    expect((await connectorStore.putTranscriptBody(fake.tcw, "fireflies", item.id, normalized.sentences)).ok).toBe(true);
+  }
+  const watermark = new Date(now - 3 * 86_400_000).toISOString();
+  expect((await connectorStore.updateSyncState(fake.tcw, {
+    connectorId: "fireflies",
+    status: "connected",
+    lastSyncedAt: watermark,
+    lastSyncStatus: "partial",
+    lastSyncError: "pending not-found IDs",
+    itemCount: items.length - 2,
+  })).ok).toBe(true);
+  const recentProof = new Date(now - 60 * 60_000).toISOString();
+  fake.kv.entries.set(firefliesAttemptKvKey(), JSON.stringify({
+    v: 1,
+    last_attempt_at: recentProof,
+    last_attempt_status: "partial",
+    pending_ids: [deleted.id, failing.id],
+    suspect_ids: [],
+    suspect_seen_ids: [],
+    suspect_proof_ids: [deleted.id],
+    suspect_proof_at: recentProof,
+    suspect_proof_at_by_id: { [deleted.id]: recentProof },
+  }));
+  const provider = makeInMemoryFireflies(items);
+  provider.deleteFromProvider(deleted.id);
+  provider.failNullAlways(failing.id);
+
+  expect((await runEngine(provider.client, fake, {
+    now: () => new Date(now).toISOString(),
+  })).ok).toBe(true);
+  expect(provider.calls.filter((call) => call.operation === "list" && call.skip === 0)).toHaveLength(1);
+  const attempt = JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey())));
+  expect(attempt.pending_ids).not.toContain(deleted.id);
+  expect(attempt.pending_ids).toContain(failing.id);
+  expect(attempt.suspect_proof_at_by_id).not.toHaveProperty(deleted.id);
+  expect(requiredSyncState(fake).last_sync_status).toBe("partial");
+
+  provider.recoverNull(failing.id);
+  expect((await runEngine(provider.client, fake, {
+    now: () => new Date(now).toISOString(),
+  })).ok).toBe(true);
+  const liveIds = items.filter((item) => item.id !== deleted.id).map((item) => item.id);
+  expect(requiredSyncState(fake).last_sync_status).toBe("ok");
+  expect(missingIds(liveIds, new Set([...fake.sql.meetings.values()].map((row) => row.source_id)))).toEqual([]);
+  expect(missingIds(liveIds, transcriptBodyKeys(fake))).toEqual([]);
+});
+
 test("proof cooldown is retained per ID across rotating retry cohorts", async () => {
   const counts = [1, 25, 26, 50];
   for (const count of counts) {
