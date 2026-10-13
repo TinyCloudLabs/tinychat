@@ -74,6 +74,13 @@ describe("TranscriberView", () => {
     expect(html).toContain("Accept the invite to have the notetaker join");
   });
 
+  test("TC-988: declined and frozen ineligible outcomes do not ask the user to accept", () => {
+    const html = render({ calendarOutcomes: [{ id: "declined", title: "Declined invite", start: 1_800_000_000_000,
+      reason: "event_ineligible" }] });
+    expect(html).toContain("The event no longer meets the attendance or meeting requirements for autojoin.");
+    expect(html).not.toContain("Accept the invite to have the notetaker join");
+  });
+
   test("dark says the backend is not configured and hides the form", () => {
     const html = render({ listStatus: "dark" });
     expect(html).toContain('data-testid="meeting-bot"');

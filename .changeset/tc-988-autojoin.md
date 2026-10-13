@@ -3,4 +3,4 @@
 "@tinychat/frontend": patch
 ---
 
-Widen Calendar autojoin's late-join window, show an invite acceptance hint for RSVP skips, and record discovery and dispatch lag (TC-988).
+Widen Calendar autojoin's late-join window, preserve truthful RSVP outcomes without hiding dispatch failures, skip unchanged RSVP writes, and record discovery and dispatch lag (TC-988).

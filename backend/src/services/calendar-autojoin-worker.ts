@@ -178,8 +178,17 @@ export class CalendarAutojoinWorker {
           next.nextAttemptAt = old.nextAttemptAt;
           next.attemptCount = old.attemptCount;
         }
-        if (this.now() >= dispatchCutoff(next)) { next.phase = "terminal"; next.disposition = "missed_window"; }
-        else if (!eligible) { next.phase = "terminal"; next.disposition = "not_accepted"; }
+        if (!eligible) {
+          next.phase = "terminal";
+          next.disposition = event.attendees?.find(attendee => attendee.self)?.responseStatus === "declined"
+            ? "event_ineligible" : "not_accepted";
+          // RSVP outcomes are unchanged by scan timing. Avoid another write on the shared storage lane.
+          if (old?.id === next.id && old.phase === "terminal" && !old.errorCode
+            && old.disposition === next.disposition && old.firstSeenAt === next.firstSeenAt
+            && old.start === next.start && old.end === next.end && old.meetingUrl === next.meetingUrl
+            && old.title === next.title) continue;
+        }
+        else if (this.now() >= dispatchCutoff(next)) { next.phase = "terminal"; next.disposition = "missed_window"; }
         await store.putOccurrence(next);
       }
       await store.putConnection({ ...current, scanComplete: true, errorCode: undefined, lastScanAt: this.now(), nextScanAt: this.now() + 55_000 + Math.floor(this.random() * 10_000) });
@@ -189,8 +198,11 @@ export class CalendarAutojoinWorker {
     let row = await this.options.store.getOccurrence(original.tenant, original.id);
     if (!row) return;
     // For legacy rows, record the first observation by this version; never invent old discovery timing.
-    if (row.firstSeenAt === undefined) row = (await this.options.store.updateOccurrence(row.tenant, row.id,
-      current => current && { ...current, firstSeenAt: current.firstSeenAt ?? this.now() }))!;
+    if (row.firstSeenAt === undefined) {
+      row = await this.options.store.updateOccurrence(row.tenant, row.id,
+        current => current && { ...current, firstSeenAt: current.firstSeenAt ?? this.now() });
+      if (!row) return;
+    }
     if (row.sharedCapture) { await this.reconcileShared(row); return; }
     if (row.meetingId) { await this.reconcileRecording(row); return; }
     if (row.idempotencyKey) {
@@ -233,8 +245,12 @@ export class CalendarAutojoinWorker {
       const event = await this.google(connection, token => this.options.calendar.getEvent(token, row.eventId));
       const eligible = event && eligibleCalendarEvent(event);
       if (!eligible || calendarOccurrenceIdentity(row.tenant, row.subject, event!) !== row.id) {
-        const reason = event && calendarOccurrenceIdentity(row.tenant, row.subject, event) === row.id
-          && !event.organizer?.self && calendarMeetEvent(event) ? "not_accepted" : "event_ineligible";
+        // A frozen POST may already have committed. Preserve lookup-only recovery and never
+        // promise that accepting again can restart it; its occurrence must remain deduplicated.
+        const reason = !row.idempotencyKey && event && calendarOccurrenceIdentity(row.tenant, row.subject, event) === row.id
+          && !event.organizer?.self && calendarMeetEvent(event)
+          && event.attendees?.find(attendee => attendee.self)?.responseStatus !== "declined"
+          ? "not_accepted" : "event_ineligible";
         if (row.idempotencyKey) { await this.requestStop(row, reason); await this.defer(row, undefined); }
         else await this.finish(row, reason);
         return;

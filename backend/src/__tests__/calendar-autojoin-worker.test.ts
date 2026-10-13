@@ -162,6 +162,120 @@ describe("TC-988 late joins, RSVP outcomes, and discovery timing", () => {
     expect((await status(f)).lastDispatchLag).toEqual({ sentAt: START + 600_000, seconds: 600, discovered: 480 });
   });
 
+  test("never-accepted invites stay not_accepted after the cutoff, including late discovery", async () => {
+    for (const responseStatus of ["needsAction", "tentative"]) {
+      for (const discoveredAt of [START - 120_000, START + 960_000]) {
+        const f = await fixture();
+        f.setNow(discoveredAt);
+        f.current.events = [event({ organizer: { self: false }, attendees: [{ self: true, responseStatus }] })];
+        await f.worker().tick();
+        expect(await f.row()).toMatchObject({ phase: "terminal", disposition: "not_accepted", firstSeenAt: discoveredAt });
+        f.setNow(START + 1_020_000);
+        await f.worker().tick();
+        expect(await f.row()).toMatchObject({ phase: "terminal", disposition: "not_accepted", firstSeenAt: discoveredAt });
+        expect((await status(f)).outcomes.map(row => row.reason)).toEqual(["not_accepted"]);
+        expect(f.posts).toHaveLength(0);
+        expect(await f.store.getMarker(TENANT, f.id)).toBeNull();
+      }
+    }
+  });
+
+  test("declined invites remain event_ineligible across the cutoff and can be accepted in-window", async () => {
+    const f = await fixture();
+    f.setNow(START - 120_000);
+    f.current.events = [event({ organizer: { self: false }, attendees: [{ self: true, responseStatus: "declined" }] })];
+    await f.worker().tick();
+    expect((await status(f)).outcomes.map(row => row.reason)).toEqual(["event_ineligible"]);
+    expect(f.posts).toHaveLength(0);
+    f.current.events[0]!.attendees![0]!.responseStatus = "accepted";
+    f.setNow(START + 480_000);
+    await f.worker().tick();
+    expect(f.posts).toHaveLength(1);
+
+    const late = await fixture();
+    late.setNow(START + 960_000);
+    late.current.events = [event({ organizer: { self: false }, attendees: [{ self: true, responseStatus: "declined" }] })];
+    await late.worker().tick();
+    expect((await status(late)).outcomes.map(row => row.reason)).toEqual(["event_ineligible"]);
+    expect(late.posts).toHaveLength(0);
+  });
+
+  test("declining between discovery and dispatch uses event_ineligible without a sent marker", async () => {
+    const f = await fixture();
+    f.calendar.getEvent = async () => event({ organizer: { self: false }, attendees: [{ self: true, responseStatus: "declined" }] });
+    await f.worker().tick();
+    expect(await f.row()).toMatchObject({ phase: "terminal", disposition: "event_ineligible" });
+    expect((await status(f)).outcomes.map(row => row.reason)).toEqual(["event_ineligible"]);
+    expect(f.posts).toHaveLength(0);
+    expect(await f.store.getMarker(TENANT, f.id)).toBeNull();
+    f.calendar.getEvent = async () => event();
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(f.posts).toHaveLength(1);
+  });
+
+  test("unchanged RSVP outcomes skip occurrence writes while edits and acceptance still persist", async () => {
+    for (const responseStatus of ["needsAction", "tentative", "declined"]) {
+      const f = await fixture();
+      f.setNow(START - 180_000);
+      f.current.events = [event({ organizer: { self: false }, attendees: [{ self: true, responseStatus }] })];
+      const put = spyOn(f.store, "putOccurrence");
+      try {
+        await f.worker().tick();
+        const first = await f.row();
+        expect(put).toHaveBeenCalledTimes(1);
+        f.advance(60_000);
+        await f.worker().tick();
+        expect(put).toHaveBeenCalledTimes(1);
+        expect(await f.row()).toEqual(first);
+        f.current.events[0]!.summary = "Updated invite";
+        f.advance(60_000);
+        await f.worker().tick();
+        expect(put).toHaveBeenCalledTimes(2);
+        expect(await f.row()).toMatchObject({ title: "Updated invite", firstSeenAt: START - 180_000 });
+        f.current.events[0]!.attendees![0]!.responseStatus = "accepted";
+        f.advance(60_000);
+        await f.worker().tick();
+        expect(f.posts).toHaveLength(1);
+        expect(await f.row()).toMatchObject({ phase: "sent", firstSeenAt: START - 180_000 });
+      } finally { put.mockRestore(); }
+    }
+  });
+
+  test("frozen retries that lose RSVP eligibility never promise that re-accepting will send", async () => {
+    for (const responseStatus of ["needsAction", "tentative", "declined"]) {
+      const f = await fixture();
+      await f.seedUnknown();
+      f.current.events = [event({ organizer: { self: false }, attendees: [{ self: true, responseStatus }] })];
+      await f.worker().tick();
+      expect(await f.row()).toMatchObject({ stopRequested: true, errorCode: "event_ineligible" });
+      expect((await status(f)).outcomes.map(row => row.reason)).toEqual(["event_ineligible"]);
+      f.current.events[0]!.attendees![0]!.responseStatus = "accepted";
+      f.advance(60_000);
+      await f.worker().tick();
+      expect(f.posts).toHaveLength(0);
+      expect((await status(f)).outcomes.map(row => row.reason)).toEqual(["event_ineligible"]);
+      expect(f.lookups.length).toBeGreaterThan(1);
+    }
+  });
+
+  test("legacy discovery backfill safely exits if the occurrence was concurrently deleted", async () => {
+    const f = await fixture();
+    await f.seedUnknown();
+    const update = f.store.updateOccurrence.bind(f.store);
+    const calls = spyOn(f.store, "updateOccurrence").mockImplementation(async (tenant, id, mutate) => {
+      await f.store.deleteOccurrence(tenant, id);
+      return update(tenant, id, mutate);
+    });
+    try {
+      await f.worker().tick();
+      expect(calls).toHaveBeenCalledTimes(1);
+      expect(await f.row()).toBeNull();
+      expect(f.posts).toHaveLength(0);
+      expect(f.lookups).toHaveLength(0);
+    } finally { calls.mockRestore(); }
+  });
+
   test("firstSeenAt is set once across pending rescans, event edits, dispatch, and restart", async () => {
     const f = await fixture();
     f.setNow(START - 180_000);
