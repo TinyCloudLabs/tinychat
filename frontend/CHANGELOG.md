@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.7.2-beta.5
+
+### Patch Changes
+
+- b1b58a1: Open Google consent in the system browser on Exo Mac, receive the authorization code through a validated one-shot loopback listener, and exchange it using a Google Desktop OAuth client. Offer a same-tab return when a web popup is blocked.
+
 ## 0.7.2-beta.4
 
 ### Patch Changes
