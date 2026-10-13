@@ -1,5 +1,11 @@
 # exo-desktop
 
+## 0.7.0-beta.7
+
+### Patch Changes
+
+- b32bc87: fix(exo): show local transcripts before upload, mark them saved only after a verified write, and show transcription and upload progress side by side on the Mac
+
 ## 0.7.0-beta.6
 
 No changes in this release.
