@@ -32,6 +32,7 @@ import {
   type PrivateCloudCreated,
   type PrivateCloudJob,
   type PrivateCloudTranscript,
+  type PrivateCloudTranscriptionStats,
   type PtxPutResponse,
 } from "../privateCloud";
 import { captureCapabilities, captureEngineKind, NativeFileUploadStatusError, resolveNativeFileUploadCapability } from "./captureEngine";
@@ -39,7 +40,12 @@ import { currentAccountGeneration, isAccountContextCurrent, isAccountWorkAllowed
 import { nativeRecordingSource, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { whenVoiceNoteSavesIdle } from "./recorderSaves";
+import { transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "./transcriptionErrors";
+import type { VoiceNoteTranscriptionFailure } from "./transcriptionErrors";
+export type { VoiceNoteTranscriptionFailure } from "./transcriptionErrors";
+
 import {
+  bareMimeType,
   base64ToBytes,
   bytesToBase64,
   prepareTranscriptionAudio,
@@ -56,6 +62,7 @@ import {
   type VoiceNoteTranscriptSave,
   type VoiceNoteTranscriptAccount,
 } from "./voiceNoteStore";
+import type { VoiceNoteTranscriptionStatsMetadata } from "./voiceNoteRows";
 
 // ── Upload ─────────────────────────────────────────────────────────────
 
@@ -418,6 +425,48 @@ export function voiceNoteSentences(transcript: Pick<PrivateCloudTranscript, "seg
   }));
 }
 
+export const MIN_INCOMPLETE_TRANSCRIPT_DURATION_SECONDS = 600;
+export const MIN_INCOMPLETE_TRANSCRIPT_COVERAGE_RATIO = 0.35;
+export const VAD_DROP_REJECT_PCT = 10;
+export const VAD_DROP_REJECTION_ENABLED = false;
+
+/**
+ * TODO(TC-1045): enable only after ptx #93 deploys and Miller confirms the field semantics.
+ * PTX defines this as the percent of non-silent audio (frames >= -50 dBFS) not sent;
+ * silence does not dilute it, and completed post-deploy jobs should be <= 10.
+ * `voiced_seconds` sums across channels and can exceed duration on separate stereo.
+ */
+export function shouldRejectForVadDrop(stats: PrivateCloudTranscriptionStats | null | undefined): boolean {
+  const dropped = stats?.dropped_above_floor_pct;
+  return typeof dropped === "number" && Number.isFinite(dropped) && dropped > VAD_DROP_REJECT_PCT;
+}
+
+function transcriptStatsMetadata(transcript: PrivateCloudTranscript): VoiceNoteTranscriptionStatsMetadata {
+  const metadata: VoiceNoteTranscriptionStatsMetadata = {};
+  const duration = transcript.duration_seconds;
+  const audio = transcript.stats?.tinfoil_audio_seconds;
+  if (typeof duration === "number" && Number.isFinite(duration) && duration >= 0
+    && typeof audio === "number" && Number.isFinite(audio) && audio >= 0) {
+    metadata.transcription_duration_seconds = duration;
+    metadata.transcription_audio_seconds = audio;
+  }
+  const voiced = transcript.stats?.voiced_seconds;
+  if (typeof voiced === "number" && Number.isFinite(voiced) && voiced >= 0)
+    metadata.transcription_voiced_seconds = voiced;
+  const dropped = transcript.stats?.dropped_above_floor_pct;
+  if (typeof dropped === "number" && Number.isFinite(dropped) && dropped >= 0 && dropped <= 100)
+    metadata.transcription_vad_dropped_above_floor_pct = dropped;
+  if (typeof transcript.stats?.vad_fallback === "boolean")
+    metadata.transcription_vad_fallback = transcript.stats.vad_fallback;
+  return metadata;
+}
+
+function rejectsForIncompleteCoverage(metadata: VoiceNoteTranscriptionStatsMetadata): boolean {
+  const duration = metadata.transcription_duration_seconds;
+  const audio = metadata.transcription_audio_seconds;
+  return duration !== undefined && duration >= MIN_INCOMPLETE_TRANSCRIPT_DURATION_SECONDS
+    && audio !== undefined && audio / duration < MIN_INCOMPLETE_TRANSCRIPT_COVERAGE_RATIO;
+}
 /** Engine metadata, as the desktop's private cloud transcripts record it. */
 function engineMetadata(transcribedAt: string) {
   return {
@@ -428,9 +477,10 @@ function engineMetadata(transcribedAt: string) {
 }
 
 /** The transcript as it is saved onto the note. No sentences = the no-speech outcome. */
-export function prepareVoiceNoteTranscript(transcript: PrivateCloudTranscript, transcribedAt: string, rev: number): VoiceNoteTranscriptSave {
+export function prepareVoiceNoteTranscript(transcript: PrivateCloudTranscript, transcribedAt: string, rev: number,
+  statsMetadata: VoiceNoteTranscriptionStatsMetadata = transcriptStatsMetadata(transcript)): VoiceNoteTranscriptSave {
   const sentences = voiceNoteSentences(transcript);
-  if (sentences.length === 0) return noSpeechTranscript(transcribedAt, rev);
+  if (sentences.length === 0) return noSpeechTranscript(transcribedAt, rev, statsMetadata);
   return {
     rev,
     sentences,
@@ -443,18 +493,20 @@ export function prepareVoiceNoteTranscript(transcript: PrivateCloudTranscript, t
       transcript_text: sentences.map((s) => s.text).join("\n"),
       transcription_outcome: "transcribed",
       speaker_labels: transcript.diarized ? "diarized" : "single-speaker",
+      ...statsMetadata,
     },
   };
 }
 
 /** PTX found no speech: recorded on the note so it is not offered again. */
-export function noSpeechTranscript(transcribedAt: string, rev: number): VoiceNoteTranscriptSave {
+export function noSpeechTranscript(transcribedAt: string, rev: number,
+  statsMetadata: VoiceNoteTranscriptionStatsMetadata = {}): VoiceNoteTranscriptSave {
   return {
     rev,
     sentences: [],
     speakers: [],
     metadata: { ...engineMetadata(transcribedAt), transcript_text: null, transcription_outcome: "no_speech",
-      speaker_labels: "none" },
+      speaker_labels: "none", ...statsMetadata },
   };
 }
 
@@ -538,25 +590,6 @@ const RELEASE_CODES: ReadonlySet<string> = new Set([
   "transcription_off",
 ]);
 
-/** Failures Retry cannot fix for this note. */
-const NOT_RETRYABLE_CODES: ReadonlySet<string> = new Set([
-  "recording_too_large",
-  "recording_too_long",
-  "recording_too_long_for_phone",
-  "unsupported_recording",
-  "invalid_audio",
-  "no_speech",
-  "decode_failed",
-  "decode_unavailable",
-  "feature_unavailable",
-  "service_misconfigured",
-  "audio_size_mismatch",
-  "VOICE_NOTE_AUDIO_CORRUPT",
-  "invalid_argument",
-  "voice_note_not_found",
-  "transcription_off",
-]);
-
 export function voiceNoteErrorCode(err: unknown): string {
   return err instanceof PrivateCloudError || err instanceof VoiceNoteAudioError ? err.code : "transcription_error";
 }
@@ -587,7 +620,7 @@ export function accountChangedError(): PrivateCloudError {
 export function acceptedContentTypes(capabilities: PrivateCloudCapabilities): string[] {
   const listed = capabilities.content_types;
   return Array.isArray(listed) && listed.every((t) => typeof t === "string")
-    ? (listed as string[])
+    ? (listed as string[]).map(bareMimeType)
     : ["audio/mpeg", "audio/wav", "audio/ogg"];
 }
 
@@ -1005,76 +1038,15 @@ export function createVoiceNoteCloudForBuild(
 
 // ── One note, end to end ───────────────────────────────────────────────
 
-/** A failure as the card shows it. */
-export interface VoiceNoteTranscriptionFailure {
-  code: string;
-  message: string;
-  retryable: boolean;
-  /** Correlation id, shown as a reference. */
-  reference: string | null;
-}
-
 export function voiceNoteTranscriptionFailure(err: unknown): VoiceNoteTranscriptionFailure {
   const code = voiceNoteErrorCode(err);
-  const reference = err instanceof PrivateCloudError ? err.correlationId : null;
-  let message: string;
-  switch (code) {
-    case "recording_too_long_for_phone":
-    case "recording_too_long":
-    case "recording_too_large":
-      message = "Private cloud can't transcribe a recording this long or large.";
-      break;
-    case "decode_failed":
-    case "decode_unavailable":
-      message = "This phone could not read the recording to transcribe it.";
-      break;
-    case "no_speech":
-      message = "No speech was found in this note.";
-      break;
-    case "active_transcription_exists":
-      message =
-        "Another private cloud transcription for your account hasn't finished (an unfinished upload expires within 2 hours). Try again later.";
-      break;
-    case "connection_lost":
-      message = "Lost contact with private cloud transcription. The job may still be running; Retry checks on it.";
-      break;
-    case "feature_unavailable":
-      message = "Private transcription is unavailable on this device. Try again.";
-      break;
-    case "voice_note_not_found":
-      message = "This voice note no longer exists.";
-      break;
-    case "transcript_save_failed":
-      message = "The transcript could not be saved to your space. Retry saves it again.";
-      break;
-    case "note_unreadable":
-      message = "Could not read this note from your space just now. Retry tries again.";
-      break;
-    case "audio_read_failed":
-      message = "Could not read this note's audio from this device or your space. Retry tries again.";
-      break;
-    case "audio_not_ready":
-      message = "This recording is still being saved on this device. Try again when it finishes.";
-      break;
-    case "audio_size_mismatch":
-      message = "The recording changed on disk after it stopped, so it was not uploaded.";
-      break;
-    case "audio_upload_pending":
-      message = "This note's audio is still being saved to your space. Try again when the upload finishes.";
-      break;
-    case "VOICE_NOTE_AUDIO_CORRUPT":
-      message = "This note's audio is damaged and can't be transcribed.";
-      break;
-    case "transcription_off":
-      message = "Transcription was turned off.";
-      break;
-    default:
-      message =
-        err instanceof PrivateCloudError
-          ? privateCloudMessage(err)
-          : "Transcription failed. Try again.";
-  }
-  return { code, message, retryable: !NOT_RETRYABLE_CODES.has(code), reference };
+  const failure = voiceNoteTranscriptionFailureForCode(code);
+  return {
+    ...failure,
+    message: transcriptionErrorCopy(code)
+      ?? (err instanceof PrivateCloudError ? privateCloudMessage(err) : failure.message),
+    reference: err instanceof PrivateCloudError ? err.correlationId : null,
+  };
 }
 
 /**
@@ -1118,13 +1090,13 @@ export async function transcribeVoiceNote(args: {
   const accountCheckpoint = () => {
     if (!stillCurrent()) throw new StaleAccountContext();
   };
-  const persistFailure = async (error: unknown) => {
+  const persistFailure = async (error: unknown, statsMetadata: VoiceNoteTranscriptionStatsMetadata = {}) => {
     const code = voiceNoteErrorCode(error);
     const current = stillCurrent();
     if (["audio_upload_pending", "transcription_off", "upload_outcome_unknown", "account_changed",
       "active_transcription_exists"].includes(code)
       || !current) return;
-    try { await patchVoiceNoteTranscriptionFailure(tcw, sourceId, code, accountCheckpoint); }
+    try { await patchVoiceNoteTranscriptionFailure(tcw, sourceId, code, accountCheckpoint, statsMetadata); }
     catch (persistError) { logPipelineError("[VoiceNotes] Could not persist the transcription failure", persistError); }
   };
   /** The job is done with: forget it, then delete it at PTX (best-effort: PTX deletes it within 24 h). */
@@ -1273,12 +1245,24 @@ export async function transcribeVoiceNote(args: {
     logPipeline("transcription", sourceId, "done", { engine: "private-cloud" });
     return "no_speech";
   }
-  const prepared = prepareVoiceNoteTranscript(transcript, transcribedAt(), rev);
+  const statsMetadata = transcriptStatsMetadata(transcript);
+  if (rejectsForIncompleteCoverage(statsMetadata)
+    || (VAD_DROP_REJECTION_ENABLED && shouldRejectForVadDrop(transcript.stats))) {
+    const incomplete = new PrivateCloudError(
+      "transcript_incomplete",
+      "Private Transcription returned a transcript that may be incomplete. Try again later.",
+      { transcriptionId },
+    );
+    await persistFailure(incomplete, statsMetadata);
+    await finish(transcriptionId);
+    throw incomplete;
+  }
+  const prepared = prepareVoiceNoteTranscript(transcript, transcribedAt(), rev, statsMetadata);
   try {
     await save(prepared);
   } catch (err) {
     if (err instanceof PrivateCloudError && err.code === "voice_note_not_found") await finish(transcriptionId);
-    await persistFailure(err);
+    await persistFailure(err, statsMetadata);
     // Otherwise the job keeps its transcript: Retry re-joins it and saves again.
     throw err;
   }
@@ -1305,6 +1289,7 @@ export type NoteTranscriptionState =
 
 /** Why private cloud was not on when a note was offered to it. */
 export type TranscriptionBlockedReason = "checking" | "unavailable" | "check-failed" | "no-consent";
+export type TranscriptionAdmissionRefusal = TranscriptionBlockedReason | "account-changed";
 
 export type TranscriptionAvailability = "checking" | "available" | "failed";
 
@@ -1351,7 +1336,7 @@ export interface VoiceNoteTranscriber {
    * The user's "Use Private instead" for a note committed to another mode (its on-device job is
    * cancelled by the caller first). Runs like `transcribe`, and its Retry keeps the choice.
    */
-  transcribePrivately(sourceId: string): void;
+  transcribePrivately(sourceId: string): TranscriptionAdmissionRefusal | null;
   /**
    * Use the committed native options. A note that did not begin in the app (a shortcut, intent or widget start, or a
    * source this app does not know) is never sent from here, whatever the defaults say: it is held, and only
@@ -1479,10 +1464,10 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     }
     snapshot = { ...state, jobs: new Map(jobs) };
   }
-  /** This session's choices, so a Retry after a released failure keeps the choice. */
+  /** Keep the in-memory choice for same-session retry; settleChoice clears the persisted resume choice. */
   const chosenPrivate = new Set<string>();
   const isChosen = (sourceId: string) => chosenPrivate.has(sourceId) || choices.has(sourceId);
-  /** The persisted choice goes once the note is done or its job can no longer be retried; a pending job keeps it. */
+  /** The persisted choice is cleared once done, terminal, or awaiting an explicit retry. */
   const settleChoice = (sourceId: string) => {
     if (cloud !== null && !cloud.pendingSourceIds().includes(sourceId)) choices.remove(sourceId);
   };
@@ -1506,17 +1491,18 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   };
 
   /** Every job, new or resumed, starts here. Only `explicit` (the user's Transcribe on this note) may pass a held note. */
-  const enqueue = (sourceId: string, audio: VoiceNoteAudio | undefined, explicit: boolean) => {
+  const enqueue = (sourceId: string, audio: VoiceNoteAudio | undefined, explicit: boolean): TranscriptionAdmissionRefusal | null => {
     if (!on() || cloud === null) {
+      const reason = identityCurrent() ? blockedReason() : "account-changed";
       if (explicit || !isHeld(sourceId)) block(sourceId);
-      return;
+      return reason;
     }
-    if (!explicit && isHeld(sourceId)) return;
+    if (!explicit && isHeld(sourceId)) return null;
     // Queued, running, or just saved (the list may not show it yet): never a second job.
     const current = jobs.get(sourceId);
-    if (current?.kind === "active" || current?.kind === "done") return;
+    if (current?.kind === "active" || current?.kind === "done") return null;
     // A failure waits for the user's Retry; no automatic hand-off or resume restarts it.
-    if (!explicit && current?.kind === "failed") return;
+    if (!explicit && current?.kind === "failed") return null;
     const account = { generation: currentAccountGeneration(), did: deps.tcw().did };
     waiting.add(sourceId);
     jobs.set(sourceId, { kind: "active", status: { kind: "waiting", position: waiting.size } });
@@ -1573,14 +1559,18 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           settleChoice(sourceId);
         } else {
           logPipelineError("transcription", err, sourceId);
+          const code = voiceNoteErrorCode(err);
           const failure = voiceNoteTranscriptionFailure(err);
           jobs.set(sourceId, { kind: "failed", ...failure });
-          // A failure Retry can fix keeps the choice, so a relaunch does not turn it back into Local.
-          if (!failure.retryable) settleChoice(sourceId);
+          // Incomplete coverage is retryable only by explicit tap; do not restart it on relaunch.
+          if (!failure.retryable || code === "transcript_incomplete") {
+            settleChoice(sourceId);
+          }
         }
         emit();
       }
     });
+    return null;
   };
 
   /** Notes a previous run left in flight, first (one active job per account). Once per transcriber. */
@@ -1690,11 +1680,15 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
 
     transcribePrivately(sourceId) {
       chosenPrivate.add(sourceId);
+      const refusal = enqueue(sourceId, undefined, true);
+      if (refusal !== null) {
+        chosenPrivate.delete(sourceId);
+        return refusal;
+      }
       choices.add(sourceId);
-      enqueue(sourceId, undefined, true);
       release(sourceId);
+      return null;
     },
-
     noteSaved(recording, audio) {
       if (recording.options && recording.options.transcriber !== "private-cloud") return;
       if (recording.source !== "in_app") {

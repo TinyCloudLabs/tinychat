@@ -62,7 +62,7 @@ import {
 import { createPrivateCloudTranscriptionRouter } from "./routes/private-cloud-transcription.js";
 import { createCalendarAutojoinRouter } from "./routes/calendar-autojoin.js";
 import { CalendarAutojoinConnection } from "./services/calendar-autojoin-connection.js";
-import { KvCalendarAutojoinStore, TenantCoordinator } from "./services/calendar-autojoin-store.js";
+import { kvCalendarAutojoinStores, TenantCoordinator } from "./services/calendar-autojoin-store.js";
 import { CalendarAutojoinWorker } from "./services/calendar-autojoin-worker.js";
 import { ExternalOperationLimiter, GoogleCalendarClient } from "./services/google-calendar.js";
 import {
@@ -78,7 +78,7 @@ import {
   privateCloudTranscriptionConfigFromEnv,
   type PrivateCloudTranscriptionConfig,
 } from "./services/private-cloud-transcription.js";
-import { BackendStorageLane, REQUEST_LANE_WAIT_MS } from "./services/backend-storage-lane.js";
+import { BackendStorageLane } from "./services/backend-storage-lane.js";
 import { runInWriteLane } from "./services/write-lane.js";
 import { ConnectorQueue } from "./services/connector-queue.js";
 import { ConnectorTeardownService } from "./services/connector-teardown.js";
@@ -837,18 +837,20 @@ async function main() {
         if (secret.kind === "oauth") await google.revoke(secret.refreshToken ?? secret.accessToken);
       },
     });
-    // Same lane, two priorities: request handlers (status/enable/disable) queue ahead of the
-    // reconcile worker and give up before the client's 20 s abort; the worker yields to them.
-    // The worker shares the one connection service (it single-flights token refreshes), so its
-    // few calls through it (cleanupEnabling, accessToken) run foreground under the request budget.
-    const store = new KvCalendarAutojoinStore(node, transcriberStorageLane, { waitTimeoutMs: REQUEST_LANE_WAIT_MS });
-    const workerStore = new KvCalendarAutojoinStore(node, transcriberStorageLane, { priority: "background" });
+    // Same lane; see kvCalendarAutojoinStores for the priorities. The worker shares the one
+    // connection service (it single-flights token refreshes), so its few calls through it
+    // (cleanupEnabling, accessToken) run foreground under the request budget.
+    const stores = kvCalendarAutojoinStores(node, transcriberStorageLane);
     // Fail boot rather than claiming unattended recovery on a KV without prefix listing.
-    await workerStore.listConnections();
+    await stores.worker.listConnections();
     const coordinator = new TenantCoordinator();
-    calendarAutojoin = new CalendarAutojoinConnection({ store, credentials, oauth: google, coordinator, calendar });
+    calendarAutojoin = new CalendarAutojoinConnection({
+      store: stores.request, credentials, oauth: google, coordinator, calendar,
+      // TC-1047: disable, disconnect and needs_reconnect cancel the tenant's due-time timers.
+      onDisabled: tenant => calendarAutojoinWorker?.cancelTenant(tenant),
+    });
     calendarAutojoinWorker = new CalendarAutojoinWorker({
-      store: workerStore, coordinator, calendar, connection: calendarAutojoin, api: transcriberApi,
+      store: stores.worker, dispatchStore: stores.dispatch, coordinator, calendar, connection: calendarAutojoin, api: transcriberApi,
       index: transcriberIndex, limiter, botName: process.env.TRANSCRIPTION_BOT_NAME || undefined,
       // TC-581: one capture per Meet across tenants. The flag gates only sharing the transcript.
       meetingCoordinator: new TenantCoordinator(),
@@ -879,8 +881,8 @@ async function main() {
   //    and re-checks. Neither reads a session, a store or a credential — `/callback` renders one
   //    nonce'd page that postMessages `{code, state}` to the pinned app origin and nothing else
   //    (or, for the Exo app's `native.` states, 302s them to one constant deep link).
-  //  - Everything else — the three POSTs that actually reach Google's token endpoint — goes
-  //    through `authMiddleware`, with global CSRF already covering the unsafe methods.
+  //  - Everything else — desktop start and the three POSTs that reach Google's token endpoint
+  //    or revoke a token — goes through `authMiddleware`. Global CSRF covers unsafe methods.
   if (googleMeetOAuthEnabled()) {
     app.use(
       "/api/connectors/google/oauth",

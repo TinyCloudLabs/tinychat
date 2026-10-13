@@ -269,9 +269,17 @@ export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNote
   return { ...row, inserted: true };
 }
 
+export interface VoiceNoteTranscriptionStatsMetadata {
+  transcription_audio_seconds?: number;
+  transcription_voiced_seconds?: number;
+  transcription_duration_seconds?: number;
+  transcription_vad_dropped_above_floor_pct?: number;
+  transcription_vad_fallback?: boolean;
+}
+
 /** Persist retryable transcription failures without replacing a terminal result. */
 export async function patchVoiceNoteTranscriptionFailure(tcw: TinyCloudWeb, sourceId: string, errorCode: string,
-  checkpoint: () => void = () => undefined): Promise<void> {
+  checkpoint: () => void = () => undefined, statsMetadata: VoiceNoteTranscriptionStatsMetadata = {}): Promise<void> {
   if (["audio_upload_pending", "transcription_off", "upload_outcome_unknown", "account_changed",
     "active_transcription_exists"].includes(errorCode)) return;
   checkpoint();
@@ -281,15 +289,15 @@ export async function patchVoiceNoteTranscriptionFailure(tcw: TinyCloudWeb, sour
   }
   const row = await resolveVoiceNoteRow(tcw, sourceId, checkpoint);
   if (!row) return;
-  await execute(tcw, `UPDATE connector_meeting SET metadata = json_set(COALESCE(metadata,'{}'),
-    '$.transcription_outcome', 'failed', '$.transcription_error_code', ?), updated_at = ?
+  await execute(tcw, `UPDATE connector_meeting SET metadata = json_patch(COALESCE(metadata,'{}'), ?), updated_at = ?
     WHERE id = ? AND source = 'exo-voice-note'
       AND COALESCE(json_extract(metadata, '$.transcription_outcome'), '') NOT IN ('transcribed','no_speech')
       AND NOT (json_extract(metadata, '$.transcription_outcome') IS NULL
         AND typeof(json_extract(metadata, '$.transcript_text')) = 'text'
         AND length(trim(json_extract(metadata, '$.transcript_text'))) > 0)
       AND NOT EXISTS (SELECT 1 FROM voice_note_transcript t WHERE t.source_id = ? AND t.outcome IN ('transcribed','no_speech'))`,
-  [errorCode, new Date().toISOString(), row.id, sourceId], checkpoint);
+  [JSON.stringify({ ...statsMetadata, transcription_outcome: "failed", transcription_error_code: errorCode }),
+    new Date().toISOString(), row.id, sourceId], checkpoint);
 }
 export async function patchVoiceNoteAudio(tcw: TinyCloudWeb, recording: VoiceNoteRecording, platform: string,
   audio: { base: string; mimeType: string; size: number; parts: number }, checkpoint: () => void = () => undefined): Promise<VoiceNoteRow> {

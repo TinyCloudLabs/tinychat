@@ -9,6 +9,7 @@ mod ptx_upload;
 mod recorder;
 #[cfg(debug_assertions)]
 mod dev_log;
+mod google_oauth;
 // Release-profile library tests validate probe names without putting the
 // self-test in the ordinary shipped binary.
 #[cfg(all(
@@ -37,7 +38,17 @@ fn install_recorder_runtime<R: tauri::Runtime>(app: &mut tauri::App<R>) {
 pub fn run() {
     #[cfg(debug_assertions)]
     dev_log::install();
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .manage(google_oauth::GoogleOAuthListener::default());
+
+    #[cfg(not(feature = "transcription"))]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        google_oauth::google_oauth_listen,
+        google_oauth::google_oauth_wait,
+        google_oauth::google_oauth_cancel,
+        google_oauth::google_oauth_open_browser,
+    ]);
 
     // anarlog (MIT) transcription stack: local capture + on-device Whisper.
     // Ordering is load-bearing:
@@ -76,6 +87,10 @@ pub fn run() {
         // one is callable only where a capability grants it.
         #[cfg(not(debug_assertions))]
         let builder = builder.invoke_handler(tauri::generate_handler![
+            google_oauth::google_oauth_listen,
+            google_oauth::google_oauth_wait,
+            google_oauth::google_oauth_cancel,
+            google_oauth::google_oauth_open_browser,
             recorder::files::append_audio_chunk,
             ptx_upload::ptx_audio_metadata,
             ptx_upload::ptx_upload_audio,
@@ -115,6 +130,10 @@ pub fn run() {
         // native wiring in one invoke before any recording is attempted.
         #[cfg(debug_assertions)]
         let builder = builder.invoke_handler(tauri::generate_handler![
+            google_oauth::google_oauth_listen,
+            google_oauth::google_oauth_wait,
+            google_oauth::google_oauth_cancel,
+            google_oauth::google_oauth_open_browser,
             recorder::files::append_audio_chunk,
             ptx_upload::ptx_audio_metadata,
             ptx_upload::ptx_upload_audio,

@@ -94,10 +94,11 @@ services:
       # Google Meet OAuth proxy (WP-A) — dark by default: unset flag = the five
       # /api/connectors/google/oauth/* routes are never mounted (404). Armed, the three client
       # vars below are mandatory and the backend refuses to build the router without them.
-      # Ordinary Google connection stays browser-only. Autojoin consent additionally stores
+      # Browser and Mac Google clients are separate. Autojoin consent additionally stores
       # encrypted Google credentials when transcription + CONNECTOR_CREDENTIAL_MASTER are set.
       GOOGLE_MEET_OAUTH_ENABLED: ${GOOGLE_MEET_OAUTH_ENABLED:-false}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_DESKTOP_CLIENT_ID: ${GOOGLE_OAUTH_DESKTOP_CLIENT_ID:-}
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-}
       # TC-581: share a colliding calendar capture with accepted invitees. Off unless exactly "true".

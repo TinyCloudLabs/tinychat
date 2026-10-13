@@ -1,5 +1,29 @@
 # @tinychat/frontend
 
+## 0.7.2-beta.5
+
+### Patch Changes
+
+- b1b58a1: Open Google consent in the system browser on Exo Mac, receive the authorization code through a validated one-shot loopback listener, and exchange it using a Google Desktop OAuth client. Offer a same-tab return when a web popup is blocked.
+
+## 0.7.2-beta.4
+
+### Patch Changes
+
+- c88319e: Preserve Fireflies' last successful sync time on failed runs, surface 24-hour staleness, and run a bounded browser catch-up when a stale connector is available on mount or unlock.
+
+## 0.7.2-beta.3
+
+### Patch Changes
+
+- e844f56: Normalize PTX MIME types and surface durable transcription outcomes in the Library.
+
+## 0.7.2-beta.2
+
+### Patch Changes
+
+- f7a1fa8: Route explicit Private transcription requests through the committed-mode override.
+
 ## 0.7.2-beta.1
 
 ### Patch Changes

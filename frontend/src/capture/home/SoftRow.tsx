@@ -20,7 +20,7 @@ import {
 } from "./captureIssues";
 import { RowBadge } from "../library/RowBadge";
 import { HOME_COPY } from "./homeCopy";
-import { pipelineTrackLabel, PipelineTrackSummary } from "../pipeline/PipelineTrackSummary";
+import { pipelineTrackLabel, pipelineTranscriptStatus, PipelineTrackSummary } from "../pipeline/PipelineTrackSummary";
 import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 
 export interface SoftRowProps {
@@ -58,7 +58,7 @@ export function softRowLabel(
 ): string {
   const parts = [props.title];
   if (props.badge) parts.push(props.badge);
-  if (props.pipeline && !props.pipeline.done) parts.push(pipelineTrackLabel(props.pipeline));
+  if (props.pipeline && (!props.pipeline.done || pipelineTranscriptStatus(props.pipeline) !== null)) parts.push(pipelineTrackLabel(props.pipeline));
   parts.push(stateLine(props.issue, props.meta));
   if (props.durationSecs != null)
     parts.push(formatSpokenDuration(props.durationSecs));
@@ -110,7 +110,7 @@ export function SoftRow(props: SoftRowProps) {
           {props.badge && <RowBadge>{props.badge}</RowBadge>}
           {stateLine(issue, props.meta)}
         </span>
-        {props.pipeline && !props.pipeline.done && <PipelineTrackSummary pipeline={props.pipeline} />}
+        {props.pipeline && (!props.pipeline.done || pipelineTranscriptStatus(props.pipeline) !== null) && <PipelineTrackSummary pipeline={props.pipeline} />}
       </span>
       {(props.durationSecs != null ||
         props.href !== undefined ||

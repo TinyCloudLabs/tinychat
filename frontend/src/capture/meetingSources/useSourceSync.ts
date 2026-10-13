@@ -15,6 +15,7 @@ import {
   type SecretsErr,
 } from "@/lib/connectors/connectorSecrets";
 import { isGmeetSyncInFlight } from "@/lib/connectors/gmeetSync";
+import { readBackgroundDrainGeneration } from "@/chat/useBackgroundDrain";
 import type { ConnectorDescriptor, ConnectorId, SyncProgress } from "@/lib/connectors/types";
 import { SECRETS_UNAVAILABLE_IN_APP_MESSAGE, secretsAvailable } from "@/lib/openkeyNative";
 
@@ -24,7 +25,14 @@ export const FULL_RESCAN_BUSY_MESSAGE =
 
 export type DriveMode = "auto" | "snapshot";
 
-type SyncEngineInput = { tcw: TinyCloudWeb; signal: AbortSignal; onProgress: (p: SyncProgress) => void };
+type SyncEngineInput = {
+  tcw: TinyCloudWeb;
+  signal: AbortSignal;
+  onProgress: (p: SyncProgress) => void;
+  onJoined?: () => void;
+  onJoinSettled?: () => void;
+  isCurrent?: () => boolean;
+};
 type SyncOutcome = { ok: true } | { ok: false; message: string; retryAfterMs?: number | null };
 
 export interface SourceSyncDeps {
@@ -63,10 +71,12 @@ export interface SourceSyncRun {
   /** Aborted by Stop. The run still settles (and writes its final state) before it resolves. */
   signal?: AbortSignal;
   onProgress?: (p: SyncProgress) => void;
+  /** Account/session validity captured by the mounted controller. */
+  isCurrent?: () => boolean;
   /** This press only joined a run another lane owns: its signal and progress are ignored by the engine. */
   onJoined?: () => void;
+  onJoinSettled?: () => void;
 }
-
 /** One sync attempt. Resolves to the message to show on the row, or null when it worked. Never rejects. */
 export async function runSourceSync(
   d: ConnectorDescriptor,
@@ -86,6 +96,7 @@ export async function runSourceSync(
       const unlock = await deps.unlockSecrets<SecretsErr>(tcw);
       if (!unlock.ok) return unlock.error?.message ?? "Could not unlock secrets";
     }
+    if (input.isCurrent?.() === false) return null;
     const key = await deps.getConnectorKey<SecretsErr>(tcw, d);
     if (!key.ok) {
       return (
@@ -95,6 +106,7 @@ export async function runSourceSync(
           : "Could not read API key")
       );
     }
+    if (input.isCurrent?.() === false) return null;
     if (d.id === "google-meet" && deps.isGmeetSyncInFlight()) input.onJoined?.();
     const outcome =
       d.id === "google-meet"
@@ -107,7 +119,15 @@ export async function runSourceSync(
             signal,
             onProgress,
           })
-        : await deps.runFirefliesSyncNow({ tcw, apiKey: key.data, signal, onProgress });
+        : await deps.runFirefliesSyncNow({
+            tcw,
+            apiKey: key.data,
+            signal,
+            onProgress,
+            isCurrent: input.isCurrent,
+            onJoined: input.onJoined,
+            onJoinSettled: input.onJoinSettled,
+          });
     return outcome.ok ? null : formatRowError(outcome.message, outcome.retryAfterMs ?? null);
   } catch (cause) {
     console.error(`Meeting source sync failed for ${d.id}`, cause);
@@ -150,10 +170,13 @@ export function useSourceSync(input: {
   const [error, setError] = useState<SourceSyncController["error"]>(null);
   const inFlight = useRef(false);
   const abort = useRef<AbortController | null>(null);
+  const joinedRef = useRef(false);
 
   const sync = useCallback(
     async (d: ConnectorDescriptor, driveMode: DriveMode = "auto") => {
       if (inFlight.current) return;
+      const generation = readBackgroundDrainGeneration();
+      const isCurrent = () => generation === readBackgroundDrainGeneration();
       inFlight.current = true;
       const controller = new AbortController();
       abort.current = controller;
@@ -170,8 +193,16 @@ export function useSourceSync(input: {
             sessionStore,
             driveMode,
             signal: controller.signal,
+            isCurrent,
             onProgress: setProgress,
-            onJoined: () => setJoined(true),
+            onJoined: () => {
+              joinedRef.current = true;
+              setJoined(true);
+            },
+            onJoinSettled: () => {
+              joinedRef.current = false;
+              setJoined(false);
+            },
           },
           deps,
         );
@@ -180,6 +211,7 @@ export function useSourceSync(input: {
         abort.current = null;
         inFlight.current = false;
         setSyncingId(null);
+        joinedRef.current = false;
         setJoined(false);
         setProgress(null);
         onSettled(d.id);
@@ -188,7 +220,9 @@ export function useSourceSync(input: {
     [tcw, backendUrl, sessionStore, onSettled, deps],
   );
 
-  const stop = useCallback(() => abort.current?.abort(), []);
+  const stop = useCallback(() => {
+    if (!joinedRef.current) abort.current?.abort();
+  }, []);
 
   return { syncingId, joined, progress, error, sync, stop };
 }

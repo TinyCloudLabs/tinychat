@@ -1,5 +1,11 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { PipelineTrackSummary } from "@/capture/pipeline/PipelineTrackSummary";
+import { buildNotePipelineInput, type NotePipelineFacts } from "../voiceNotes/useNotePipeline";
+import { spaceLaneSnapshot } from "../spaceWriteLane";
 
 import { CONNECTORS_SQL_DB_NAME, transcriptKvKey } from "./connectorStore.js";
 import type { FirefliesSentence } from "./firefliesClient.js";
@@ -15,6 +21,7 @@ import {
   transcriptCopyText,
   type MeetingAudioRead,
 } from "./meetingExplorer.js";
+import { notePipeline } from "../voiceNotes/notePipeline";
 
 type SqlResult =
   | { ok: true; data: { rows: unknown[][] } }
@@ -58,6 +65,50 @@ function fakeTcw(opts: { sql?: SqlResult; kv?: KvResult }) {
     },
   };
   return { tcw: tcw as unknown as TinyCloudWeb, sqlCalls, kvKeys };
+}
+
+function realListingSpace() {
+  const sqlite = new Database(":memory:");
+  sqlite.exec(`CREATE TABLE connector_meeting (
+    id TEXT PRIMARY KEY, source TEXT, source_id TEXT, title TEXT, started_at TEXT,
+    duration_secs REAL, metadata TEXT
+  );
+  CREATE TABLE voice_note_transcript (source_id TEXT PRIMARY KEY, outcome TEXT);`);
+  const tcw = {
+    sql: {
+      db() {
+        return {
+          async query(sql: string, params: unknown[] = []) {
+            try {
+              return { ok: true as const, data: { rows: sqlite.query(sql).values(...(params as never[])) } };
+            } catch (error) {
+              return { ok: false as const, error: { code: "SQL_ERROR", message: String(error) } };
+            }
+          },
+        };
+      },
+    },
+  } as unknown as TinyCloudWeb;
+  return { sqlite, tcw };
+}
+
+function pipelineFacts(id: string, rowMetadata: Record<string, unknown> | null): NotePipelineFacts {
+  return {
+    id,
+    device: "web",
+    online: true,
+    saved: true,
+    rowMetadata,
+    localNote: null,
+    native: null,
+    capture: { finalizing: false, issue: null },
+    pending: null,
+    lane: spaceLaneSnapshot(),
+    onDeviceStatus: null,
+    transcriptSync: null,
+    cloudJob: null,
+    noteSync: { syncing: false, failed: false, skip: null, syncedAt: null, attempting: false },
+  };
 }
 
 /**
@@ -165,7 +216,7 @@ describe("listMeetings", () => {
   it("defaults to fireflies, google-meet, the transcriber, exo local AND exo voice notes", async () => {
     const { tcw, sqlCalls } = fakeTcw({ sql: { ok: true, data: { rows: [] } } });
     await listMeetings(tcw);
-    expect(sqlCalls[0].params).toEqual(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-voice-note", "exo-upload"]);
+    expect(sqlCalls.at(-1)?.params).toEqual(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-voice-note", "exo-upload"]);
     expect(EXPLORER_MEETING_SOURCES).toEqual(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-voice-note", "exo-upload"]);
   });
 
@@ -259,7 +310,7 @@ describe("listMeetingsRead", () => {
     const read = await listMeetingsRead(tcw);
     expect(read.status).toBe("ok");
     expect(read.status === "ok" && read.meetings.map((m) => m.durationSecs)).toEqual([42, null]);
-    expect(sqlCalls[0].sql).toContain("duration_secs");
+    expect(sqlCalls.at(-1)?.sql).toContain("duration_secs");
   });
 
   it("carries voice-note pipeline metadata from the listing only for voice notes", async () => {
@@ -301,11 +352,68 @@ describe("listMeetingsRead", () => {
     expect(read.meetings[1]?.metadata).toBeUndefined();
     expect(read.meetings[2]?.metadata).toBeNull();
     expect(read.meetings[3]?.metadata).toBeUndefined();
-    expect(sqlCalls[0]?.sql).toContain("json_valid(metadata)");
-    expect(sqlCalls[0]?.sql).toContain("json_extract(metadata, '$.note_kv_key')");
-    expect(sqlCalls[0]?.sql).toContain("json_extract(metadata, '$.audio_kv_key')");
-    expect(sqlCalls[0]?.sql).toContain("json_extract(metadata, '$.audio.stored')");
-    expect(sqlCalls[0]?.sql).not.toMatch(/SELECT[^\n]*,\s*metadata\s+FROM/s);
+    expect(sqlCalls.at(-1)?.sql).toContain("json_valid(COALESCE(metadata, '{}'))");
+    expect(sqlCalls.at(-1)?.sql).toContain("json_extract(metadata, '$.note_kv_key')");
+    expect(sqlCalls.at(-1)?.sql).toContain("json_extract(metadata, '$.audio_kv_key')");
+    expect(sqlCalls.at(-1)?.sql).toContain("json_extract(metadata, '$.audio.stored')");
+    expect(sqlCalls.at(-1)?.sql).not.toMatch(/SELECT[^\n]*,\s*metadata\s+FROM/s);
+  });
+  it("resolves legacy transcript evidence and commit outcomes in the real listing SQL without loading bodies", async () => {
+    const { sqlite, tcw } = realListingSpace();
+    sqlite.query("INSERT INTO connector_meeting VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+      "legacy-row", "exo-voice-note", "legacy-note", null, "2026-10-12T00:00:00Z", 30,
+      JSON.stringify({ transcript_text: "Legacy words", transcription_outcome: null }),
+    );
+    sqlite.query("INSERT INTO connector_meeting VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+      "stale-row", "exo-voice-note", "stale-note", null, "2026-10-11T00:00:00Z", 60,
+      JSON.stringify({ transcription_outcome: "pending", transcription_error_code: "service_busy" }),
+    );
+    sqlite.query("INSERT INTO connector_meeting VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+      "failed-row", "exo-voice-note", "failed-note", null, "2026-10-10T00:00:00Z", 20,
+      JSON.stringify({ transcription_outcome: "failed", transcription_error_code: "recording_too_large" }),
+    );
+    sqlite.query("INSERT INTO connector_meeting VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+      "null-metadata-row", "exo-voice-note", "null-metadata-note", null, "2026-10-09T00:00:00Z", 25, null,
+    );
+    sqlite.query("INSERT INTO voice_note_transcript VALUES (?, ?)").run("stale-note", "transcribed");
+    sqlite.query("INSERT INTO voice_note_transcript VALUES (?, ?)").run("null-metadata-note", "no_speech");
+
+    const read = await listMeetingsRead(tcw, ["exo-voice-note"]);
+    expect(read.status).toBe("ok");
+    if (read.status !== "ok") return;
+    const legacy = read.meetings.find((meeting) => meeting.sourceId === "legacy-note")!;
+    const stale = read.meetings.find((meeting) => meeting.sourceId === "stale-note")!;
+    const nullMetadata = read.meetings.find((meeting) => meeting.sourceId === "null-metadata-note")!;
+    expect(buildNotePipelineInput(pipelineFacts("legacy-note", legacy.metadata ?? null)).transcript.inSpace).toBe("transcribed");
+    expect(buildNotePipelineInput(pipelineFacts("stale-note", stale.metadata ?? null)).transcript.inSpace).toBe("transcribed");
+    expect(buildNotePipelineInput(pipelineFacts("null-metadata-note", nullMetadata.metadata ?? null)).transcript.inSpace).toBe("no_speech");
+    expect(legacy.metadata).not.toHaveProperty("transcript_text");
+    expect(stale.metadata).not.toHaveProperty("transcript_text");
+    expect(stale.metadata).toMatchObject({ transcript_commit_outcome: "transcribed" });
+    const failed = read.meetings.find((meeting) => meeting.sourceId === "failed-note")!;
+    const failedPipeline = buildNotePipelineInput(pipelineFacts("failed-note", failed.metadata ?? null));
+    expect(failedPipeline.transcript).toMatchObject({ persistedState: "failed", errorCode: "recording_too_large" });
+    const html = renderToStaticMarkup(createElement(PipelineTrackSummary, { pipeline: notePipeline(failedPipeline) }));
+    expect(html).toContain("Private cloud couldn&#x27;t accept this recording&#x27;s length or size. Try again.");
+    expect(failed.metadata).not.toHaveProperty("transcript_text");
+    sqlite.close();
+  });
+
+  it("lists legacy transcript evidence when the commit table does not exist", async () => {
+    const { sqlite, tcw } = realListingSpace();
+    sqlite.exec("DROP TABLE voice_note_transcript");
+    sqlite.query("INSERT INTO connector_meeting VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+      "legacy-no-commit-table", "exo-voice-note", "legacy-no-commit-table", null,
+      "2026-10-12T00:00:00Z", 30, JSON.stringify({ transcript_text: "Legacy words" }),
+    );
+    const read = await listMeetingsRead(tcw, ["exo-voice-note"]);
+    expect(read.status).toBe("ok");
+    if (read.status === "ok") {
+      const note = read.meetings.find((meeting) => meeting.sourceId === "legacy-no-commit-table")!;
+      expect(buildNotePipelineInput(pipelineFacts(note.sourceId, note.metadata ?? null)).transcript.inSpace).toBe("transcribed");
+      expect(note.metadata).not.toHaveProperty("transcript_text");
+    }
+    sqlite.close();
   });
 
   it("an ordinary empty space is ok and empty; a store error, a refused read or a throwing transport is failed", async () => {
