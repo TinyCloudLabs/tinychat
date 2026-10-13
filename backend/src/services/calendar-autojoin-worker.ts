@@ -166,6 +166,11 @@ export class CalendarAutojoinWorker {
           if (old && old.phase !== "terminal") await this.finish(old, "event_ineligible");
           continue;
         }
+        if (!eligible && event.attendees?.find(attendee => attendee.self)?.responseStatus === "declined") {
+          if (old?.phase === "pending") await this.finish(old, "event_ineligible");
+          else if (old?.disposition === "not_accepted") await store.deleteOccurrence(connection.tenant, old.id);
+          continue;
+        }
         if (await store.getMarker(connection.tenant, id)) continue;
         const next: CalendarOccurrence = {
           id, tenant: connection.tenant, subject: connection.subject!, ...candidate,
@@ -180,8 +185,7 @@ export class CalendarAutojoinWorker {
         }
         if (!eligible) {
           next.phase = "terminal";
-          next.disposition = event.attendees?.find(attendee => attendee.self)?.responseStatus === "declined"
-            ? "event_ineligible" : "not_accepted";
+          next.disposition = "not_accepted";
           // RSVP outcomes are unchanged by scan timing. Avoid another write on the shared storage lane.
           if (old?.id === next.id && old.phase === "terminal" && !old.errorCode
             && old.disposition === next.disposition && old.firstSeenAt === next.firstSeenAt

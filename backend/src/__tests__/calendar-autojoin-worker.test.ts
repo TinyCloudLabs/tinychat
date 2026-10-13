@@ -180,12 +180,13 @@ describe("TC-988 late joins, RSVP outcomes, and discovery timing", () => {
     }
   });
 
-  test("declined invites remain event_ineligible across the cutoff and can be accepted in-window", async () => {
+  test("declined invites create no row across the cutoff and can be accepted in-window", async () => {
     const f = await fixture();
     f.setNow(START - 120_000);
     f.current.events = [event({ organizer: { self: false }, attendees: [{ self: true, responseStatus: "declined" }] })];
     await f.worker().tick();
-    expect((await status(f)).outcomes.map(row => row.reason)).toEqual(["event_ineligible"]);
+    expect(await f.row()).toBeNull();
+    expect((await status(f)).outcomes).toEqual([]);
     expect(f.posts).toHaveLength(0);
     f.current.events[0]!.attendees![0]!.responseStatus = "accepted";
     f.setNow(START + 480_000);
@@ -196,8 +197,48 @@ describe("TC-988 late joins, RSVP outcomes, and discovery timing", () => {
     late.setNow(START + 960_000);
     late.current.events = [event({ organizer: { self: false }, attendees: [{ self: true, responseStatus: "declined" }] })];
     await late.worker().tick();
-    expect((await status(late)).outcomes.map(row => row.reason)).toEqual(["event_ineligible"]);
+    expect(await late.row()).toBeNull();
+    expect((await status(late)).outcomes).toEqual([]);
     expect(late.posts).toHaveLength(0);
+  });
+
+  test("declining removes an earlier not_accepted hint", async () => {
+    const f = await fixture();
+    f.current.events = [event({ organizer: { self: false }, attendees: [{ self: true, responseStatus: "needsAction" }] })];
+    await f.worker().tick();
+    expect(await f.row()).toMatchObject({ disposition: "not_accepted" });
+    f.current.events[0]!.attendees![0]!.responseStatus = "declined";
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(await f.row()).toBeNull();
+    expect((await status(f)).outcomes).toEqual([]);
+    expect(await f.store.getMarker(TENANT, f.id)).toBeNull();
+  });
+
+  test("declining a pending invite during discovery finishes it as event_ineligible", async () => {
+    const f = await fixture();
+    f.setNow(START - 180_000);
+    await f.worker().tick();
+    expect(await f.row()).toMatchObject({ phase: "pending" });
+    f.current.events = [event({ organizer: { self: false }, attendees: [{ self: true, responseStatus: "declined" }] })];
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(await f.row()).toMatchObject({ phase: "terminal", disposition: "event_ineligible" });
+    expect(f.posts).toHaveLength(0);
+  });
+
+  test("many future declined invites cannot evict an older failure from the 30-item list", async () => {
+    const f = await fixture();
+    await f.seedUnknown({ phase: "terminal", disposition: "missed_window", start: START - 86_400_000,
+      end: START - 86_400_000 + 1_800_000, idempotencyKey: undefined });
+    f.current.events = Array.from({ length: 35 }, (_, i) => event({ id: `declined-${i}`,
+      organizer: { self: false }, attendees: [{ self: true, responseStatus: "declined" }],
+      start: { dateTime: new Date(START + (i + 1) * 60_000).toISOString() },
+      end: { dateTime: new Date(START + (i + 1) * 60_000 + 1_800_000).toISOString() } }));
+    await f.worker().tick();
+    expect(await f.store.listOccurrences(TENANT)).toHaveLength(1);
+    expect((await status(f)).outcomes).toEqual([expect.objectContaining({ reason: "missed_window" })]);
+    expect(f.posts).toHaveLength(0);
   });
 
   test("declining between discovery and dispatch uses event_ineligible without a sent marker", async () => {
@@ -215,7 +256,7 @@ describe("TC-988 late joins, RSVP outcomes, and discovery timing", () => {
   });
 
   test("unchanged RSVP outcomes skip occurrence writes while edits and acceptance still persist", async () => {
-    for (const responseStatus of ["needsAction", "tentative", "declined"]) {
+    for (const responseStatus of ["needsAction", "tentative"]) {
       const f = await fixture();
       f.setNow(START - 180_000);
       f.current.events = [event({ organizer: { self: false }, attendees: [{ self: true, responseStatus }] })];
