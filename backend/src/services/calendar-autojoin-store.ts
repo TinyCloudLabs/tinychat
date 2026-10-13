@@ -239,13 +239,14 @@ export class KvCalendarAutojoinStore extends JsonCalendarAutojoinStore {
  * Same lane, three priorities. Request handlers (status/enable/disable) queue ahead of the
  * reconcile worker and give up before the client's 20 s abort; the worker's scans and listings
  * yield to them. TC-1047: the dispatch path of one due occurrence (its reads, capture claims, the
- * intent write and the post-send writes) queues with requests, under the same wait budget: a
- * timeout before the intent write sends nothing, and the attempt is retried.
+ * intent write and the post-send writes) queues with requests, but with no wait budget: no client
+ * waits on it, and under contention it must be late rather than fail and retry, which would add
+ * more lane work. A storage failure before the intent write still sends nothing and is retried.
  */
 export function kvCalendarAutojoinStores(node: TinyCloudNode, lane: BackendStorageLane) {
   return {
     request: new KvCalendarAutojoinStore(node, lane, { waitTimeoutMs: REQUEST_LANE_WAIT_MS }),
     worker: new KvCalendarAutojoinStore(node, lane, { priority: "background" }),
-    dispatch: new KvCalendarAutojoinStore(node, lane, { priority: "foreground", waitTimeoutMs: REQUEST_LANE_WAIT_MS }),
+    dispatch: new KvCalendarAutojoinStore(node, lane, { priority: "foreground" }),
   };
 }

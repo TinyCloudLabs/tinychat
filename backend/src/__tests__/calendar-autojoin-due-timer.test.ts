@@ -55,12 +55,16 @@ async function advance(ms: number, step = 5, until: () => boolean = () => false)
   }
 }
 
-function harness(store: CalendarAutojoinStore, dispatchStore?: CalendarAutojoinStore) {
+function harness(store: CalendarAutojoinStore, dispatchStore?: CalendarAutojoinStore, coordinator = new TenantCoordinator()) {
   const events = new Map<string, GoogleCalendarEvent[]>();
   const posts: { input: CreateMeetingInput; key: string; at: number }[] = [];
   const gets: { tenant: string; at: number }[] = [];
   const records = new Map<string, TranscriptionMeeting>();
-  const hooks: { getEvent?: (tenant: string, event: GoogleCalendarEvent | null) => Promise<GoogleCalendarEvent | null> } = {};
+  const hooks: {
+    getEvent?: (tenant: string, event: GoogleCalendarEvent | null) => Promise<GoogleCalendarEvent | null>;
+    /** Runs when a POST is sent, before ptx answers. */
+    create?: () => Promise<void>;
+  } = {};
   const tenantOf = (token: string) => token.slice("tok:".length);
   const calendar: GoogleCalendarPort = {
     async listEvents(token) { return structuredClone(events.get(tenantOf(token)) ?? []); },
@@ -76,6 +80,7 @@ function harness(store: CalendarAutojoinStore, dispatchStore?: CalendarAutojoinS
     async createMeeting(input, options) {
       const key = options!.idempotencyKey!;
       posts.push({ input: structuredClone(input), key, at: Date.now() });
+      await hooks.create?.();
       if (!records.has(key)) {
         records.set(key, { id: `mtg_${records.size + 1}`, status: "in_progress", platform: "google_meet",
           meeting_url: input.meeting_url, metadata: input.metadata, created_at: new Date().toISOString() });
@@ -88,7 +93,6 @@ function harness(store: CalendarAutojoinStore, dispatchStore?: CalendarAutojoinS
     async deleteMeeting() {},
     async getTranscript() { return { pending: true, status: "processing" }; },
   };
-  const coordinator = new TenantCoordinator();
   const worker = new CalendarAutojoinWorker({
     store, dispatchStore, coordinator, calendar, api, index: new MemoryTranscriberIndexStore(), random: () => 0,
     connection: {
@@ -341,8 +345,8 @@ describe("TC-1047 due-time timers", () => {
     await advance(1_000, 5);
     const id = calendarOccurrenceIdentity(QA, SUBJECT, meetEvent(T0 + 65_000))!;
     expect((await store.getOccurrence(QA, id))?.nextAttemptAt).toBe(T0 + 5_000);
-    // The meeting moves; the next scan rewrites the row's due time past the timer horizon.
-    const moved = T0 + 200_000;
+    // The meeting moves; the next scan rewrites the row's due time past the timer horizon (5 min).
+    const moved = T0 + 8 * 60_000;
     h.events.set(QA, [meetEvent(moved)]);
     await store.updateConnection(QA, c => c && { ...c, nextScanAt: 0 });
     await h.worker.tick();
@@ -353,8 +357,9 @@ describe("TC-1047 due-time timers", () => {
     expect(reads).not.toHaveBeenCalled();
     reads.mockRestore();
     expect(h.gets).toHaveLength(0);
-    await advance(moved - 60_000 - Date.now() + 2_000, 20, () => h.posts.length > 0);
+    await advance(moved - 60_000 - Date.now() + 2_000, 50, () => h.posts.length > 0);
     expect(h.posts).toHaveLength(1);
+    expect(h.posts[0]!.at - (moved - 60_000)).toBeGreaterThanOrEqual(0);
     expect(h.posts[0]!.at - (moved - 60_000)).toBeLessThanOrEqual(2_000);
     await h.stop();
   });
@@ -381,7 +386,7 @@ describe("TC-1047 due-time timers", () => {
     await h.stop();
   });
 
-  test("a lane timeout before the intent write sends no POST and the row is retried soon after", async () => {
+  test("a storage failure (a lane timeout) before the intent write sends no POST and the row is retried soon after", async () => {
     let failIntent = true;
     const f = await seeded(store => Object.assign(Object.create(store) as CalendarAutojoinStore, {
       async putOccurrence(row: CalendarOccurrence) {
@@ -417,5 +422,232 @@ describe("TC-1047 due-time timers", () => {
       expect(done[0]).not.toContain(value);
     }
     await f.stop();
+  });
+});
+
+describe("TC-1047 review: liveness and bookkeeping", () => {
+  const tickDone = () => logs.filter(line => line.includes("code=tick_done"));
+  async function seeded(start = T0 + 65_000, patch: Partial<CalendarConnection> = {}) {
+    const store = new MemoryCalendarAutojoinStore();
+    const h = harness(store);
+    const event = meetEvent(start);
+    const row = pendingRow(QA, event);
+    h.events.set(QA, [event]);
+    await store.putConnection(connectionRow(QA, { nextScanAt: T0 + 3_600_000, ...patch }));
+    await store.putOccurrence(row);
+    return { ...h, store, event, row, dueAt: row.nextAttemptAt, read: () => store.getOccurrence(QA, row.id) };
+  }
+  /** Wraps one store method so that, while `on`, each call waits for `open()` (before or after the real call). */
+  function hold<K extends "getConnection" | "getMarker" | "listOccurrences">(store: MemoryCalendarAutojoinStore, method: K, after = false) {
+    const original = (store[method] as (...args: unknown[]) => Promise<unknown>).bind(store);
+    const state = { on: false, calls: 0, ...gate<void>() };
+    spyOn(store, method).mockImplementation((async (...args: unknown[]) => {
+      if (!state.on) return original(...args);
+      state.calls++;
+      if (!after) await state.opened;
+      const result = await original(...args);
+      if (after) await state.opened;
+      return result;
+    }) as never);
+    return state;
+  }
+
+  test("under lane contention past the request budget, the dispatch waits and sends once, with no failure or retry", async () => {
+    const values = new Map<string, unknown>();
+    const delay = { ms: 0 };
+    const lane = new BackendStorageLane();
+    const stores = kvCalendarAutojoinStores(slowNode(values, delay), lane);
+    const h = harness(stores.worker, stores.dispatch);
+    const event = meetEvent(T0 + 65_000);
+    const row = pendingRow(QA, event);
+    h.events.set(QA, [event]);
+    await stores.request.putConnection(connectionRow(QA, { nextScanAt: T0 + 3_600_000 }));
+    await stores.request.putOccurrence(row);
+    delay.ms = 10;
+    let attemptAtPost: number | undefined;
+    h.hooks.create = async () => {
+      const key = [...values.keys()].find(k => k.startsWith("calendar-autojoin/v1/occurrences/") && k.endsWith(`/${row.id}`))!;
+      attemptAtPost = (values.get(key) as CalendarOccurrence).attemptCount;
+    };
+    h.worker.start();
+    await advance(2_000, 5);
+    // Request work holds the lane for 20 s, past the 12 s request wait budget, across the due time.
+    const held = gate<void>();
+    const holder = lane.run(() => held.opened);
+    await advance(row.nextAttemptAt + 18_000 - Date.now(), 50);
+    expect(h.posts).toHaveLength(0);
+    const releasedAt = Date.now();
+    held.open();
+    await holder;
+    await advance(5_000, 5, () => h.posts.length > 0);
+    expect(h.posts).toHaveLength(1);
+    expect(h.posts[0]!.at - releasedAt).toBeLessThanOrEqual(2_000);
+    expect(attemptAtPost).toBe(1); // the one attempt, never deferred
+    expect(logs.filter(line => line.includes("op=wait-timeout"))).toEqual([]);
+    await advance(1_000, 5);
+    expect(h.gets).toHaveLength(2); // the dispatch's Google read, then the recording check's
+    await h.stop();
+  }, 20_000);
+
+  test("a tick snapshot of a row its timer has since ended does not call Google again", async () => {
+    const f = await seeded();
+    f.worker.start();
+    await advance(1_000, 5);
+    // The invite is not accepted any more: the timer's dispatch ends the row not_accepted.
+    f.events.set(QA, [meetEvent(T0 + 65_000, { organizer: { self: false }, attendees: [{ self: true, responseStatus: "needsAction" }] })]);
+    const listing = hold(f.store, "listOccurrences", true);
+    listing.on = true;
+    const tick = f.worker.tick(); // snapshots the pending row, then stalls
+    await flush();
+    expect(listing.calls).toBe(1);
+    listing.on = false;
+    await advance(f.dueAt - Date.now() + 100, 5);
+    expect(f.gets).toHaveLength(1);
+    expect(await f.read()).toMatchObject({ phase: "terminal", disposition: "not_accepted" });
+    listing.open();
+    await tick;
+    expect(f.gets).toHaveLength(1);
+    expect(f.posts).toHaveLength(0);
+    await f.stop();
+  });
+
+  test("a scan that overlaps a timer's dispatch keeps its lastDispatchLag", async () => {
+    const f = await seeded(T0 + 65_000, { scanComplete: true });
+    // A second invite makes the scan read a marker, where it is held with its stale connection row.
+    f.events.set(QA, [f.event, meetEvent(T0 + 3 * 3_600_000, { id: "event-later" })]);
+    const response = gate<void>();
+    f.hooks.create = () => response.opened;
+    f.worker.start();
+    await advance(f.dueAt - T0 + 100, 5);
+    expect(f.posts).toHaveLength(1); // sent; ptx has not answered yet
+    const marker = hold(f.store, "getMarker");
+    marker.on = true;
+    await f.store.updateConnection(QA, c => c && { ...c, nextScanAt: 0 });
+    const tick = f.worker.tick();
+    await flush();
+    expect(marker.calls).toBe(1);
+    response.open(); // ptx answers; the dispatch records its lag while the scan holds the tenant lock
+    await flush();
+    expect((await f.store.getConnection(QA))?.lastDispatchLag?.sentAt).toBe(f.posts[0]!.at);
+    marker.open();
+    await tick;
+    expect((await f.store.getConnection(QA))).toMatchObject({ lastScanAt: Date.now(), lastDispatchLag: { sentAt: f.posts[0]!.at } });
+    await f.stop();
+  });
+
+  test("the horizon: no timer past five minutes at first boot; a later tick arms it", async () => {
+    const f = await seeded(T0 + 8 * 60_000); // due at 7 min
+    const four = pendingRow(QA, meetEvent(T0 + 5 * 60_000, { id: "event-four" })); // due at 4 min
+    await f.store.putOccurrence(four);
+    f.events.set(QA, [f.event, meetEvent(T0 + 5 * 60_000, { id: "event-four" })]);
+    f.worker.start();
+    await advance(1_000, 5);
+    // The first tick has no measured period: the five-minute floor still arms the row due at 4 min.
+    expect(tickDone().at(-1)).toEndWith(" timers=1");
+    await advance(2 * 60_000 + 30_000 - Date.now() + T0, 50);
+    expect(tickDone().at(-1)).toEndWith(" timers=2");
+    await f.stop();
+  });
+
+  test("the cap: at most 1,000 timers; the rest wait for the tick", async () => {
+    const f = await seeded();
+    for (let i = 0; i < 1_004; i++) await f.store.putOccurrence({ ...f.row, id: `row-${i}` });
+    f.worker.start();
+    await advance(1_000, 5);
+    expect(tickDone()).toHaveLength(1);
+    expect(tickDone()[0]).toMatch(/ rows=1005 scans=0 timers=1000$/);
+    await f.stop();
+  }, 20_000);
+
+  test("stop() waits for an in-flight timer dispatch, sends nothing, and no timer fires after it", async () => {
+    const f = await seeded();
+    const later = pendingRow(QA, meetEvent(T0 + 80_000, { id: "event-later" }));
+    await f.store.putOccurrence(later);
+    const held = gate<void>();
+    f.hooks.getEvent = async (_tenant, found) => { await held.opened; return found; };
+    f.worker.start();
+    await advance(f.dueAt - T0 + 100, 5);
+    expect(f.gets).toHaveLength(1);
+    let stopped = false;
+    const stopping = f.worker.stop().then(() => { stopped = true; });
+    await flush();
+    expect(stopped).toBe(false);
+    held.open();
+    await stopping;
+    const reads = spyOn(f.store, "getOccurrence");
+    await advance(later.nextAttemptAt - Date.now() + 40_000, 50);
+    expect(reads).not.toHaveBeenCalled();
+    expect(f.gets).toHaveLength(1);
+    expect(f.posts).toHaveLength(0);
+  });
+
+  test("a timer that fires while its row is busy re-checks the row once the run ends", async () => {
+    // A legacy row: the run's firstSeenAt write re-arms it for now, and that timer finds the row busy.
+    const f = await seeded(T0 + 65_000, { scanComplete: false });
+    await f.store.putOccurrence({ ...f.row, firstSeenAt: undefined });
+    const connection = hold(f.store, "getConnection");
+    const reads = spyOn(f.store, "getOccurrence");
+    f.worker.start();
+    await advance(1_000, 5);
+    reads.mockClear();
+    connection.on = true;
+    await advance(f.dueAt - Date.now(), 5);
+    expect(reads).toHaveBeenCalledTimes(1);
+    expect(connection.calls).toBe(1);
+    jest.advanceTimersByTime(1); // the re-armed timer fires: the row is busy
+    await flush();
+    connection.on = false;
+    connection.open(); // no scan yet, so no dispatch and no write
+    await advance(20, 1);
+    expect(reads).toHaveBeenCalledTimes(2); // the re-check
+    expect((await f.read())?.phase).toBe("pending");
+    await f.stop();
+  });
+
+  test("a scan that ends the row before its due time cancels its timer", async () => {
+    const f = await seeded();
+    f.worker.start();
+    await advance(1_000, 5);
+    expect(tickDone().at(-1)).toEndWith(" timers=1");
+    f.events.set(QA, [meetEvent(T0 + 65_000, { organizer: { self: false }, attendees: [{ self: true, responseStatus: "declined" }] })]);
+    await f.store.updateConnection(QA, c => c && { ...c, nextScanAt: 0 });
+    await f.worker.tick();
+    expect(await f.read()).toMatchObject({ phase: "terminal", disposition: "event_ineligible", nextAttemptAt: f.dueAt });
+    expect(tickDone().at(-1)).toEndWith(" timers=0");
+    await f.stop();
+  });
+
+  test("a tick that reads the tenant disabled cancels its timers", async () => {
+    const f = await seeded(T0 + 100_000); // due at 40 s
+    f.worker.start();
+    await advance(1_000, 5);
+    // Disabled without the connection service's hook: only the tick at 30 s can see it.
+    await f.store.updateConnection(QA, c => c && { ...c, state: "disabled", generation: 2 });
+    await advance(f.dueAt - Date.now() + 5_000, 50);
+    expect(f.gets).toHaveLength(0);
+    expect((await f.read())?.phase).toBe("pending");
+    await advance(20_000, 50);
+    expect(await f.read()).toMatchObject({ phase: "terminal", disposition: "autojoin_disabled" });
+    await f.stop();
+  });
+
+  test("a snapshot superseded by a frozen intent never sends, even from a second worker on the same lock", async () => {
+    const store = new MemoryCalendarAutojoinStore();
+    const coordinator = new TenantCoordinator();
+    const [a, b] = [harness(store, undefined, coordinator), harness(store, undefined, coordinator)];
+    const event = meetEvent(T0 + 60_000);
+    const held = gate<void>();
+    for (const h of [a, b]) {
+      h.events.set(QA, [event]);
+      h.hooks.getEvent = async (_tenant, found) => { await held.opened; return found; };
+    }
+    await store.putConnection(connectionRow(QA, { nextScanAt: T0 + 3_600_000 }));
+    await store.putOccurrence(pendingRow(QA, event));
+    const ticks = [a.worker.tick(), b.worker.tick()];
+    await flush();
+    expect(a.gets.length + b.gets.length).toBe(2); // both hold a snapshot with no intent
+    held.open();
+    await Promise.all(ticks);
+    expect(a.posts.length + b.posts.length).toBe(1);
   });
 });
