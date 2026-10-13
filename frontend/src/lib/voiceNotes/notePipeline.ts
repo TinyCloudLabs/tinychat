@@ -14,7 +14,7 @@ import {
   percentText,
 } from "./notePipelineCopy";
 
-export type PipelineDevice = "phone" | "mac";
+export type PipelineDevice = "phone" | "mac" | "browser";
 export type PipelineRoute = "off" | "on-device" | "private-cloud";
 export type StepKey = "phone" | "space" | "transcript" | "notes";
 export type StepState = "done" | "active" | "waiting" | "blocked" | "failed" | "upcoming" | "skipped";
@@ -209,7 +209,7 @@ function phoneStep(input: NotePipelineInput): Result {
 }
 
 function spaceStep(input: NotePipelineInput): Result {
-  if (input.space.saved) return input.space.localOnly ? { state: "done", caption: input.device === "mac" ? "Audio stays on this Mac" : "Audio stays on this phone" } : { state: "done" };
+  if (input.space.saved) return input.space.localOnly ? { state: "done", caption: `Audio stays on this ${input.device === "mac" ? "Mac" : input.device}` } : { state: "done" };
   const { device, online } = input;
   const pending = input.space.pending;
   if (pending?.held !== undefined) {

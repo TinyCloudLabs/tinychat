@@ -190,7 +190,7 @@ test("system audio setting explains the capture scope and timing", () => {
 describe("SettingsPanel, web", () => {
   const out = html({ variant: "microphone-only", extrasAvailable: false });
   test("only the microphone, and the line about what needs the app", () => {
-    expect(out).toContain("Local transcription, meeting audio and auto-save need the Exo app.");
+    expect(out).toContain("Local transcription and meeting audio need the Exo app.");
     expect(out).toContain("MacBook Pro Microphone");
     expect(out).not.toContain("Whisper");
     expect(out).not.toContain('role="switch"');

@@ -57,18 +57,20 @@ public struct CaptureDefaults: Codable, Equatable {
     public var transitionGen: Int64
     public var transcriber: String
     public var identifySpeakers: Bool
+    public var uploadAudio: Bool?
 
     public init(accountDid: String? = nil, transitionGen: Int64 = 0,
-                transcriber: String = "on-device", identifySpeakers: Bool = false) {
+                transcriber: String = "on-device", identifySpeakers: Bool = false, uploadAudio: Bool? = nil) {
         self.accountDid = accountDid
         self.transitionGen = transitionGen
         self.transcriber = transcriber
         self.identifySpeakers = identifySpeakers
+        self.uploadAudio = uploadAudio
     }
 
     public var options: CaptureOptions {
         CaptureOptions(transcriber: accountDid == nil ? "on-device" : transcriber,
-                       identifySpeakers: identifySpeakers, uploadAudio: false)
+                       identifySpeakers: identifySpeakers, uploadAudio: uploadAudio ?? false)
     }
 
     public func validateTransition(from stored: CaptureDefaults) throws {
@@ -93,7 +95,7 @@ public struct CaptureAccountState: Codable, Equatable {
     public var defaults: CaptureDefaults {
         CaptureDefaults(accountDid: status == "signed_in" ? accountDid : nil,
                         transitionGen: transitionGen, transcriber: options.transcriber,
-                        identifySpeakers: options.identifySpeakers)
+                        identifySpeakers: options.identifySpeakers, uploadAudio: options.uploadAudio)
     }
 }
 

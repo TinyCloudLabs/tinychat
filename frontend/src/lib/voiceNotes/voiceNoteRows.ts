@@ -263,7 +263,8 @@ export async function patchVoiceNoteAudio(tcw: TinyCloudWeb, recording: VoiceNot
   checkpoint();
   await execute(tcw, `UPDATE connector_meeting SET metadata = json_patch(COALESCE(metadata,'{}'), ?), updated_at = ?
     WHERE id = ? AND source = 'exo-voice-note'`, [JSON.stringify({ audio_kv_key: audio.base, audio_format: "parts-v1",
-    audio_mime_type: audio.mimeType, audio_bytes: audio.size, audio_parts: audio.parts, audio: { stored: true, base: audio.base },
+    audio_mime_type: audio.mimeType, audio_bytes: audio.size, audio_parts: audio.parts,
+    audio: { stored: true, base: audio.base, reason: null, device: null },
     capture: { platform, duration_ms: recording.durationMs, silenced_ms: recording.silencedMs,
       silenced_events: recording.silencedEvents, no_signal_ms: recording.noSignalMs,
       ...(recording.version === 2 ? { version: 2, wall_ms: recording.wallMs, paused_ms: recording.pausedMs,

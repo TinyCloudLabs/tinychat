@@ -42,11 +42,14 @@ export function withOnPhone(
   // A failed note still gets its on-phone stand-in below, but it is not actively saving.
   // Withhold the misleading badge from a matching space row.
   const pending = new Set(notes.filter((note) => !note.failed).map((note) => note.id));
+  const held = new Set(notes.map((note) => note.id));
   const rowIds = new Set<string>();
   const rows = items.map((item) => {
     if (item.source !== VOICE_NOTE_SOURCE) return item;
     rowIds.add(item.sourceId);
-    return pending.has(item.sourceId) ? { ...item, saving: true as const } : item;
+    return held.has(item.sourceId)
+      ? { ...item, hasLocalAudio: true as const, ...(pending.has(item.sourceId) ? { saving: true as const } : {}) }
+      : item;
   });
   const standIns = [...notes, ...lingering].filter((note) => !rowIds.has(note.id)).map(onPhoneItem);
   if (standIns.length === 0) return rows;

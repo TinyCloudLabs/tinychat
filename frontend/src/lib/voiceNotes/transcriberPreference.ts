@@ -3,6 +3,7 @@ import { readableError } from "@/lib/readableError";
 import { captureEngineAvailable, captureEngineKind, onDeviceTranscriptionAvailable } from "./captureEngine";
 import { withCaptureDeadline } from "./accountHandoff";
 import { VoiceNotes, type CaptureOptions, type TranscriberId } from "./nativeVoiceNotes";
+import { appPlatform } from "@/lib/platform";
 
 const TRANSCRIBER_KEY = "exo.voiceNotes.transcriber";
 const SPEAKERS_KEY = "exo.voiceNotes.identifySpeakers";
@@ -50,10 +51,14 @@ export function readUploadAudioPreference(): boolean {
   catch { return memoryPreference.uploadAudio === true; }
 }
 
-export function setUploadAudioPreference(enabled: boolean): void {
-  storage()?.setItem(UPLOAD_AUDIO_KEY, enabled ? "1" : "0");
-  memoryPreference = { ...memoryPreference, uploadAudio: enabled };
-  for (const listener of listeners) listener();
+export async function setUploadAudioPreference(enabled: boolean): Promise<void> {
+  if (appPlatform() === "web") {
+    storage()?.setItem(UPLOAD_AUDIO_KEY, enabled ? "1" : "0");
+    memoryPreference = { ...memoryPreference, uploadAudio: enabled };
+    for (const listener of listeners) listener();
+    return;
+  }
+  await commitPreference({ uploadAudio: enabled });
 }
 
 /** What the engine will start the next recording with: the one truth the default mode is shown from. */
@@ -77,7 +82,8 @@ async function writeEffectiveDefaults(pref: CaptureOptions, attempting?: (before
   const current = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
   const effective = effectiveCaptureOptions(pref, current.accountDid !== null);
   // A preference write must not re-assign the previous DID during sign-out.
-  if (current.status === "transitioning" || (current.transcriber === effective.transcriber && current.identifySpeakers === effective.identifySpeakers)) return null;
+  if (current.status === "transitioning" || (current.transcriber === effective.transcriber && current.identifySpeakers === effective.identifySpeakers
+    && (current.uploadAudio ?? false) === effective.uploadAudio)) return null;
   attempting?.(current);
   await withCaptureDeadline(VoiceNotes.setCaptureDefaults({ ...current, ...effective, transitionGen: current.transitionGen }));
   return current;
@@ -98,12 +104,13 @@ let unreconciled: unknown = null;
 async function restoreAfterFailure(
   caught: unknown,
   store: Storage | undefined,
-  prior: { transcriber: string | null; speakers: string | null } | null,
+  prior: { transcriber: string | null; speakers: string | null; uploadAudio: string | null } | null,
   before: EngineDefaults | null,
 ): Promise<unknown> {
   const problems: string[] = [];
   if (store && prior) {
-    for (const [key, value] of [[TRANSCRIBER_KEY, prior.transcriber], [SPEAKERS_KEY, prior.speakers]] as const) {
+    for (const [key, value] of [[TRANSCRIBER_KEY, prior.transcriber], [SPEAKERS_KEY, prior.speakers],
+      [UPLOAD_AUDIO_KEY, prior.uploadAudio]] as const) {
       try {
         if (value === null) store.removeItem(key); else store.setItem(key, value);
       } catch (failure) {
@@ -114,11 +121,13 @@ async function restoreAfterFailure(
   }
   if (before) {
     const shown = effectiveCaptureOptions(readTranscriberPreference(), before.accountDid !== null);
-    const unchanged = shown.transcriber === before.transcriber && shown.identifySpeakers === before.identifySpeakers;
+    const unchanged = shown.transcriber === before.transcriber && shown.identifySpeakers === before.identifySpeakers
+      && shown.uploadAudio === (before.uploadAudio ?? false);
     const target = unchanged ? before : {
       ...before,
       transcriber: leastCloud(before.transcriber, shown.transcriber),
       identifySpeakers: before.identifySpeakers && shown.identifySpeakers,
+      uploadAudio: before.uploadAudio ?? false,
     };
     try {
       await withCaptureDeadline(VoiceNotes.setCaptureDefaults(target));
@@ -176,7 +185,8 @@ export function writeAccountDefaults(
 async function commitPreference(change: Partial<CaptureOptions>): Promise<void> {
   await inOrder(async () => {
     const store = storage();
-    const prior = store ? { transcriber: store.getItem(TRANSCRIBER_KEY), speakers: store.getItem(SPEAKERS_KEY) } : null;
+    const prior = store ? { transcriber: store.getItem(TRANSCRIBER_KEY), speakers: store.getItem(SPEAKERS_KEY),
+      uploadAudio: store.getItem(UPLOAD_AUDIO_KEY) } : null;
     const pref = { ...readTranscriberPreference(), ...change };
     const chosenTranscriber = change.transcriber !== undefined;
     let before: EngineDefaults | null = null;
@@ -185,6 +195,7 @@ async function commitPreference(change: Partial<CaptureOptions>): Promise<void> 
       if (store) {
         if (chosenTranscriber) store.setItem(TRANSCRIBER_KEY, pref.transcriber);
         store.setItem(SPEAKERS_KEY, pref.identifySpeakers ? "1" : "0");
+        store.setItem(UPLOAD_AUDIO_KEY, pref.uploadAudio ? "1" : "0");
       }
     } catch (caught) {
       throw await restoreAfterFailure(caught, store, prior, before);

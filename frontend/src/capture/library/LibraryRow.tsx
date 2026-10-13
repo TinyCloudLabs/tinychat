@@ -22,6 +22,8 @@ export type LibraryItem = MeetingListItem & {
   onPhone?: true;
   /** A voice note whose row is in the space while this device still holds its copy. */
   saving?: true;
+  /** The recording remains on this device after its space row has synced. */
+  hasLocalAudio?: true;
   /** A voice note's own words (its first moment, else its transcript), which title its row. */
   snippet?: string | null;
 };
@@ -47,7 +49,8 @@ export function libraryRowBadge(item: LibraryItem, where: string = HOME_COPY.onT
   if (item.onPhone) return where.charAt(0).toUpperCase() + where.slice(1);
   if (item.metadata?.audio_stored === 0) {
     const platform = item.metadata.audio_device_platform;
-    return `Audio is on your ${platform === "ios" ? "iPhone" : platform === "tauri" ? "Mac" : platform === "android" ? "phone" : "browser"}`;
+    if (item.hasLocalAudio || item.saving) return `Audio stays on this ${platform === "tauri" || platform === "mac" ? "Mac" : platform === "web" ? "browser" : "phone"}`;
+    return `Audio is on your ${platform === "ios" ? "iPhone" : platform === "tauri" || platform === "mac" ? "Mac" : platform === "android" ? "phone" : "browser"}`;
   }
   return item.saving ? HOME_COPY.savingBadge : null;
 }

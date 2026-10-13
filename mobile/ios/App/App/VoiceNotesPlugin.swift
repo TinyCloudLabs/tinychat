@@ -176,7 +176,8 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionData
             let state = try capture.accountState()
             call.resolve(["status": state.status, "accountDid": state.accountDid as Any? ?? NSNull(),
                           "transitionGen": state.transitionGen, "transcriber": state.options.transcriber,
-                          "identifySpeakers": state.options.identifySpeakers])
+                          "identifySpeakers": state.options.identifySpeakers,
+                          "uploadAudio": state.options.uploadAudio ?? false])
         } catch { reject(call, error) }
     }
 
@@ -246,7 +247,8 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionData
                 let current = self.capture.defaults()
                 let next = CaptureDefaults(accountDid: call.getString("accountDid"), transitionGen: Int64(gen),
                                            transcriber: call.getString("transcriber") ?? current.transcriber,
-                                           identifySpeakers: call.getBool("identifySpeakers") ?? current.identifySpeakers)
+                                           identifySpeakers: call.getBool("identifySpeakers") ?? current.identifySpeakers,
+                                           uploadAudio: call.getBool("uploadAudio") ?? current.uploadAudio ?? false)
                 call.resolve(["claimed": try self.capture.setDefaults(next)])
             } catch { self.reject(call, error) }
         }

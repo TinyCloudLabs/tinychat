@@ -291,6 +291,10 @@ describe("saveVoiceNote", () => {
     expect(uploaded.ok).toBe(true);
     expect(space.kv.has(voiceNoteAudioManifestKey(note.id))).toBe(true);
     expect(space.kv.get(transcriptKey)).toBe('[{"text":"Already transcribed"}]');
+    const uploadedRow = await space.tcw.sql.db(CONNECTORS_SQL_DB_NAME).query("SELECT metadata FROM connector_meeting WHERE source_id = ?", [note.id]);
+    expect(uploadedRow.ok).toBe(true);
+    if (uploadedRow.ok) expect(JSON.parse(String(uploadedRow.data.rows[0]?.[0])).audio).toEqual({ stored: true,
+      base: voiceNoteAudioKvKey(note.id) });
   });
   test("a Markdown sync failure leaves the audio save successful and retries separately", async () => {
     const space = fakeSpace();
@@ -470,7 +474,7 @@ describe("saveVoiceNote", () => {
       audio_mime_type: "audio/mp4",
       audio_bytes: 3,
       audio_parts: 1,
-      audio: { stored: true, base: AUDIO_BASE },
+      audio: { stored: true, base: AUDIO_BASE, reason: null, device: null },
     }));
     expect(metadata.capture).toEqual({
       platform: "android",

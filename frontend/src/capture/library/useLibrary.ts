@@ -280,9 +280,10 @@ export function useLibrary(
     return merged.map((entry) => {
       if (entry.source !== VOICE_NOTE_SOURCE) return entry;
       const snippet = moments.get(entry.sourceId) ?? noteSnippet(list.previews.get(entry.sourceId));
-      return snippet === null ? entry : { ...entry, snippet };
+      return { ...entry, ...(snippet === null ? {} : { snippet }),
+        ...(localAudioIds.has(entry.sourceId) ? { hasLocalAudio: true as const } : {}) };
     });
-  }, [list.items, list.previews, moments, onPhoneNotes, currentHandoff.lingering]);
+  }, [list.items, list.previews, moments, onPhoneNotes, currentHandoff.lingering, localAudioIds]);
 
   // The open note by its id; a stand-in's sheet stays open when its row replaces it.
   const item = useMemo(() => {
@@ -297,13 +298,13 @@ export function useLibrary(
   // The open voice note, by recording: a stand-in and its row are one note.
   const openRecordingId = item?.source === VOICE_NOTE_SOURCE ? item.sourceId : null;
   useEffect(() => {
-    if (!openRecordingId) return;
+    if (!options.visible) return;
     let live = true;
     void VoiceNotes.listPending().then(({ recordings }) => {
       if (live) setLocalAudioIds(new Set(recordings.filter((note) => note.owner === tcw.did).map((note) => note.id)));
     }, () => { if (live) setLocalAudioIds(new Set()); });
     return () => { live = false; };
-  }, [openRecordingId, tcw.did, invalidationRevision, onPhoneNotes]);
+  }, [options.visible, tcw.did, invalidationRevision, onPhoneNotes]);
   const lastOpened = useRef<string | null>(null);
   useEffect(() => {
     // A note just closed may have had its moments edited: read them again.

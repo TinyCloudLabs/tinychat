@@ -763,7 +763,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
     setLocalAttempt((count) => count + 1);
     setRowAttempt((count) => count + 1);
   }, [nativeRead.reread, refreshQuarantine]);
-  const device: PipelineDevice = platform === "tauri" ? "mac" : "phone";
+  const device: PipelineDevice = platform === "tauri" ? "mac" : platform === "web" ? "browser" : "phone";
   const hasOnDevice = !localTranscriptionUnavailable() && nativeVoiceNotesAvailable();
   const { states, autoSyncs, autoTranscriptSyncs } = useMemo(() => {
     const out = new Map<string, PipelineState>();

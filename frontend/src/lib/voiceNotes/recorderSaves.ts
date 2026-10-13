@@ -16,7 +16,6 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import {
   VoiceNotes,
-  nativePlatform,
   nativeRecordingSource,
   type VoiceNoteRecording,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -29,6 +28,7 @@ import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNote
 import { readableError } from "@/lib/readableError";
 import { logPipelineError } from "@/lib/debugLog";
 import { captureEvents } from "@/capture/captureEvents";
+import { appPlatform } from "@/lib/platform";
 
 export const TINYCLOUD_NETWORK_FAILURE_MESSAGE =
   "Couldn't reach your TinyCloud space. This note is still on your phone — try again.";
@@ -80,7 +80,7 @@ export async function uploadLocalVoiceNote(tcw: TinyCloudWeb, id: string): Promi
   if (!recording || recording.owner !== tcw.did) throw new Error("Audio is not on this device");
   savesInFlight.add(id);
   try {
-    const result = await saveVoiceNote(tcw, recording, nativeRecordingSource(recording), nativePlatform(), {}, true);
+    const result = await saveVoiceNote(tcw, recording, nativeRecordingSource(recording), appPlatform(), {}, true);
     if (!result.ok) throw new Error(result.error.message);
     captureEvents.emit("library-changed", { source: "exo-voice-note", sourceId: id });
   } finally {
@@ -350,7 +350,7 @@ export async function saveRecording(
   savesInFlight.add(recording.id);
   try {
     const native = nativeRecordingSource(recording);
-    const saved = await saveVoiceNote(tcw, recording, native, nativePlatform(), { onProgress,
+    const saved = await saveVoiceNote(tcw, recording, native, appPlatform(), { onProgress,
       onRowCreated: (rowId) => recordRowId(tcw, recording, ctx, rowId, checkActive),
       checkpoint: checkActive });
     if (!saved.ok) return isDiscarded(recording.id)
@@ -443,7 +443,7 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
       checkActive();
       return source.readPart(offset, length);
     } };
-    const saved = await saveVoiceNote(tcw, recording, checkedSource, nativePlatform(), {
+    const saved = await saveVoiceNote(tcw, recording, checkedSource, appPlatform(), {
       ...audioOptions,
       onRowCreated: (rowId) => recordRowId(tcw, recording, ctx, rowId, checkActive),
       onUploadStart: (total) => {

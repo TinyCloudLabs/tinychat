@@ -514,6 +514,20 @@ describe("desktop recorder adapter", () => {
     reopened.dispose();
   });
 
+  test("adopts a native-started Mac session with the durable upload preference", async () => {
+    const bridge = new FakeBridge();
+    bridge.current = "native-note";
+    bridge.state = "recording";
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null });
+    await store.setCaptureDefaults({ accountDid: null, transitionGen: 0, transcriber: "on-device",
+      identifySpeakers: false, uploadAudio: true });
+    const engine = await rig(bridge, dbName, env);
+    expect((await engine.plugin.status()).options?.uploadAudio).toBe(true);
+    engine.dispose();
+  });
+
   test("native import failure enters quarantine and can be discarded", async () => {
     const bridge = new FakeBridge();
     const engine = await rig(bridge);

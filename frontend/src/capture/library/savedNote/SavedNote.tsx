@@ -4,6 +4,7 @@ import { PlatformContext } from "@/lib/platform";
 import { voiceNoteTitle } from "@/lib/voiceNotes/voiceNoteStore";
 import { uploadLocalVoiceNote } from "@/lib/voiceNotes/recorderSaves";
 import { readableError } from "@/lib/readableError";
+import { Button } from "@/components/ui/button";
 import { useResolvedTheme } from "@/lib/theme";
 import { useRecorder } from "../../recorder/RecorderProvider";
 import { NotePipelineContext } from "../../pipeline/NotePipelineContext";
@@ -99,9 +100,9 @@ export default function SavedNote({
     audioStorage: localOnly ? (hasLocalAudio ? (
       <div className="flex flex-col items-start gap-2 text-sm">
         <p>Audio stays on this {platform === "tauri" ? "Mac" : platform === "web" ? "browser" : "phone"}.</p>
-        <button type="button" className="underline" disabled={uploading} onClick={upload}>
+        <Button type="button" variant="outline" disabled={uploading} onClick={upload}>
           {uploading ? "Uploading audio to your TinyCloud space…" : "Upload audio to TinyCloud"}
-        </button>
+        </Button>
         {uploadError && <p role="alert">{uploadError}</p>}
       </div>
     ) : <div role="status"><p>Audio is on your {onDevice}</p><p>Transcribe on your {onDevice}</p></div>) : null,

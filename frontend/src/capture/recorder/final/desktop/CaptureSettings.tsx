@@ -372,7 +372,7 @@ export function SettingsPanel({
     return (
       <>
         <p className="cs-lede">
-          Local transcription, meeting audio and auto-save need the Exo app.
+          Local transcription and meeting audio need the Exo app.
         </p>
         <MicrophoneSection microphone={microphone} />
       </>
@@ -685,9 +685,15 @@ export function CaptureSettings({
 
   const onToggle = (switchKey: SwitchKey, on: boolean) => {
     if (switchKey === "uploadAudio") {
-      setUploadAudioPreference(on);
-      setLoad((current) => current.status === "ready"
-        ? { status: "ready", data: { ...current.data, uploadAudio: on } } : current);
+      setSwitches((s) => ({ ...s, uploadAudio: { pending: true, error: null } }));
+      void setUploadAudioPreference(on).then(() => {
+        setSwitches((s) => ({ ...s, uploadAudio: NO_SWITCH }));
+        setLoad((current) => current.status === "ready"
+          ? { status: "ready", data: { ...current.data, uploadAudio: on } } : current);
+      }, (caught: unknown) => {
+        setSwitches((s) => ({ ...s, uploadAudio: { pending: false,
+          error: `Could not change this setting: ${messageOf(caught)}` } }));
+      });
       return;
     }
     if (!extras) return;

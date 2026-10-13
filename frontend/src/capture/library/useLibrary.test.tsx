@@ -669,6 +669,9 @@ describe("useLibrary, which audio a note on the phone plays", () => {
       await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
       expect(await localUrlOf(seen.at(-1)!)).toMatch(/^blob:/);
       expect({ local: counts.local() - before.local, remote: counts.remote() - before.remote, fetched: counts.fetches() }).toEqual({ local: 2, remote: 0, fetched: 0 });
+      await render({ ...base, onPhone: [], noteId: "play" });
+      expect(seen.at(-1)!.note.item?.hasLocalAudio).toBe(true);
+      expect(await localUrlOf(seen.at(-1)!)).toMatch(/^blob:/);
     });
   });
 

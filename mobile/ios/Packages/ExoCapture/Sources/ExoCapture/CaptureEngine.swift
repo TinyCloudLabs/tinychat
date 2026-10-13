@@ -317,7 +317,8 @@ public final class CaptureEngine {
                                                         accountDid: preserveTransition ? current.accountDid : value.accountDid,
                                                         transitionGen: value.transitionGen,
                                                         options: CaptureOptions(transcriber: value.transcriber,
-                                                                                identifySpeakers: value.identifySpeakers)))
+                                                                                identifySpeakers: value.identifySpeakers,
+                                                                                uploadAudio: value.uploadAudio ?? false)))
         var claimed: [String] = []
         if let did = value.accountDid {
             if var live = info, live.owner == nil {

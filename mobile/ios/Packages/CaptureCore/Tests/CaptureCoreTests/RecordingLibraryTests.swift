@@ -39,6 +39,18 @@ final class RecordingLibraryTests: XCTestCase {
             .validateTransition(from: current))
     }
 
+    func testUploadAudioDefaultIsStoredForNativeQuickActions() throws {
+        let enabled = CaptureDefaults(accountDid: "did:a", transitionGen: 1, uploadAudio: true)
+        let decoded = try JSONDecoder().decode(CaptureDefaults.self, from: JSONEncoder().encode(enabled))
+        XCTAssertEqual(decoded.options.uploadAudio, true)
+        XCTAssertEqual(CaptureDefaults().options.uploadAudio, false)
+        XCTAssertNil(CaptureOptions().uploadAudio) // Old sidecars remain decodable without the new field.
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        try library.setAccountState(CaptureAccountState(status: "signed_in", accountDid: "did:a", transitionGen: 1,
+                                                       options: enabled.options))
+        XCTAssertEqual(try library.accountState().defaults.options.uploadAudio, true)
+    }
+
     func testFailedSegmentRollCanRetryWithoutDuplicateJournalEvent() throws {
         let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
         let id = UUID().uuidString.lowercased()
