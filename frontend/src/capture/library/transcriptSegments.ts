@@ -2,6 +2,7 @@ import type { FirefliesSentence } from "@/lib/connectors/firefliesClient";
 import { formatClockDuration } from "./formatters";
 
 export function sentenceTime(sentence: FirefliesSentence): number | null {
+  if ("timing" in sentence && sentence.timing !== "engine") return null;
   const { start_time: start, end_time: end } = sentence;
   return Number.isFinite(start) && Number.isFinite(end) && start >= 0 && end > start && end - start <= 30 ? start : null;
 }

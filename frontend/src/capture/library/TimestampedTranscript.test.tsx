@@ -26,6 +26,33 @@ test("missing and coarse timings stay plain; no synthetic clock for a whole-note
   expect(transcriptWithTimestamps(untimed)).toBe("You: Old mono note.");
 });
 
+test("engine and valid legacy segments can seek, highlight, and copy timestamps; coarse and unknown timing cannot", async () => {
+  const mixed = [
+    { index: 0, speaker_name: "You", text: "Engine.", start_time: 0, end_time: 2, timing: "engine" },
+    { index: 1, speaker_name: "You", text: "Coarse.", start_time: 0, end_time: 2, timing: "coarse" },
+    { index: 2, speaker_name: "You", text: "Legacy.", start_time: 0, end_time: 2 },
+    { index: 3, speaker_name: "You", text: "Unknown.", start_time: 0, end_time: 2, timing: "unknown" },
+  ];
+  expect(hasSegmentTimes(mixed.slice(0, 3))).toBe(true);
+  expect(transcriptWithTimestamps(mixed)).toBe("[00:00] You: Engine.\nYou: Coarse.\n[00:00] You: Legacy.\nYou: Unknown.");
+
+  cleanup = installDom();
+  const host = document.createElement("div");
+  document.body.append(host);
+  root = createRoot(host);
+  let playedFrom = -1;
+  await act(async () => root!.render(
+    <NotePlaybackContext.Provider value={{ seek: null, elapsed: 1, playing: true, playFrom: (seconds) => { playedFrom = seconds; }, onClock: () => {} }}>
+      <TimestampedTranscript sentences={mixed} hasAudio />
+    </NotePlaybackContext.Provider>,
+  ));
+  const rows = Array.from(host.querySelectorAll('[data-testid="transcript-segment"]'));
+  expect(rows.map((row) => row.getAttribute("data-active"))).toEqual(["true", null, "true", null]);
+  expect(rows.map((row) => row.querySelectorAll('button[aria-label^="Play from"]').length)).toEqual([1, 0, 1, 0]);
+  await act(async () => { (rows[0]!.querySelector("button") as HTMLButtonElement).click(); });
+  expect(playedFrom).toBe(0);
+});
+
 test("no local audio leaves timestamps readable with a seek reason", () => {
   const html = renderToStaticMarkup(<TimestampedTranscript sentences={sentences} hasAudio={false} />);
   expect(html).toContain("0:42");
