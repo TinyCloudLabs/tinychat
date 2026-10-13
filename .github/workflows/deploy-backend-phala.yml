@@ -478,6 +478,7 @@ jobs:
           # can still bring their own key). Declared in all four places for the allowed_envs reason.
           ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
           ASSEMBLYAI_HOSTED_HANDLE_KEY: ${{ secrets.ASSEMBLYAI_HOSTED_HANDLE_KEY }}
+          ASSEMBLYAI_HOSTED_ADMIN_KEY: ${{ secrets.ASSEMBLYAI_HOSTED_ADMIN_KEY }}
         run: |
           ENV_FILE="$RUNNER_TEMP/phala-prod.env"
           DEPLOY_RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -558,6 +559,7 @@ jobs:
             printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY=$PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY"
             printf '%s\n' "ASSEMBLYAI_API_KEY=$ASSEMBLYAI_API_KEY"
             printf '%s\n' "ASSEMBLYAI_HOSTED_HANDLE_KEY=$ASSEMBLYAI_HOSTED_HANDLE_KEY"
+            printf '%s\n' "ASSEMBLYAI_HOSTED_ADMIN_KEY=$ASSEMBLYAI_HOSTED_ADMIN_KEY"
           } > "$ENV_FILE"
 
           echo "::group::Deploy environment keys"

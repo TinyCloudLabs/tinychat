@@ -1923,10 +1923,23 @@ paths:
         - bearerAuth: []
       responses:
         "200":
-          description: Job state, including missing, uncertain and deleted states.
+          description: Job state, including missing, needs_reconciliation and deleted states.
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "503":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+
+  /api/transcriber/assemblyai/hosted/admin/reconcile:
+    post:
+      operationId: reconcileAssemblyAiHostedJobs
+      summary: Retry AssemblyAI lookup for blocked paid outcomes
+      description: Requires a session and X-AssemblyAI-Admin-Key matching ASSEMBLYAI_HOSTED_ADMIN_KEY. Unknown outcomes remain blocked.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Counts of checked and recovered note jobs.
+        "404":
           $ref: "#/components/responses/AssemblyAiHostedFailure"
 
   /api/transcriber/assemblyai/hosted/uploads/{upload_id}:
@@ -2719,6 +2732,7 @@ components:
             - assemblyai_unavailable
             - assemblyai_hosted_unavailable
             - assemblyai_job_uncertain
+            - assemblyai_needs_reconciliation
         message:
           type: string
         retry_after_seconds:

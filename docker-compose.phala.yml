@@ -128,6 +128,7 @@ services:
       ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY:-}
       ASSEMBLYAI_HOSTED_HANDLE_KEY: ${ASSEMBLYAI_HOSTED_HANDLE_KEY:-}
       ASSEMBLYAI_HOSTED_SPOOL_DIR: /var/lib/tinychat/assemblyai
+      ASSEMBLYAI_HOSTED_ADMIN_KEY: ${ASSEMBLYAI_HOSTED_ADMIN_KEY:-}
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock:ro
       - assemblyai-data:/var/lib/tinychat/assemblyai

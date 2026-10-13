@@ -1,6 +1,5 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmod, mkdir, open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 // Bun exposes libc flock through FFI; the backend's Node typecheck has no Bun declarations.
 // @ts-expect-error runtime-provided module
@@ -80,12 +79,11 @@ export function assemblyAiHostedConfigFromEnv(env: Record<string, string | undef
     if (!/^\d{1,15}$/.test(rawDaily) || Number(rawDaily) < 1) fail("ASSEMBLYAI_HOSTED_DAILY_BYTES must be a positive integer");
     dailyBytes = Number(rawDaily);
   }
-  const spoolDir = env.ASSEMBLYAI_HOSTED_SPOOL_DIR?.trim() || join(tmpdir(), "tinychat-assemblyai");
-  if (!isAbsolute(spoolDir)) fail("ASSEMBLYAI_HOSTED_SPOOL_DIR must be an absolute path");
-
   if (!apiKey || !handleKey) {
     return { hosted: false, reason: !apiKey && !handleKey ? "both_unset" : !apiKey ? "api_key_unset" : "handle_key_unset" };
   }
+  const spoolDir = env.ASSEMBLYAI_HOSTED_SPOOL_DIR?.trim();
+  if (!spoolDir || !isAbsolute(spoolDir)) fail("ASSEMBLYAI_HOSTED_SPOOL_DIR must be explicitly set to an absolute persistent path; refusing hosted routes");
   return { hosted: true, apiKey, handleKey, dailyBytes, spoolDir };
 }
 
@@ -171,8 +169,8 @@ export interface HostedUpload {
   sourceId?: string;
 }
 
-type NoteJob = { address: string; sourceId: string; uploadId: string; bootId: string; state: "receiving" | "submitting" | "submitted" | "uncertain" | "deleted"; handle?: string; expiresAt?: number; byteSize?: number; contentType?: string };
-export type NoteJobView = { status: "receiving" | "submitting" | "submitted" | "uncertain" | "deleted"; upload_id: string; id?: string };
+type NoteJob = { address: string; sourceId: string; uploadId: string; bootId: string; state: "receiving" | "submitting" | "submitted" | "needs_reconciliation" | "uncertain" | "deleted"; handle?: string; expiresAt?: number; byteSize?: number; contentType?: string; uploadUrl?: string; transcriptId?: string };
+export type NoteJobView = { status: "receiving" | "submitting" | "submitted" | "needs_reconciliation" | "deleted"; upload_id: string; id?: string };
 
 /** How a background submit ended. Codes are the router's public error codes. */
 export type SubmitOutcome =
@@ -182,7 +180,8 @@ export type SubmitOutcome =
 export type CreateUploadResult =
   | { ok: true; upload: HostedUpload }
   | { ok: true; job: NoteJobView }
-  | { ok: false; code: "assemblyai_quota_exceeded" | "assemblyai_busy"; retryAfterSeconds: number };
+  | { ok: false; code: "assemblyai_quota_exceeded" | "assemblyai_busy"; retryAfterSeconds: number }
+  | { ok: false; code: "assemblyai_needs_reconciliation" };
 
 export type LookupResult =
   | { kind: "active"; upload: HostedUpload }
@@ -235,7 +234,7 @@ export class HostedUploadStore {
   private noteFile(key: string): string { return join(this.spoolDir, `note-${key}.json`); }
 
   private viewNoteJob(job: NoteJob): NoteJobView {
-    return { status: job.state, upload_id: job.uploadId, ...(job.handle ? { id: job.handle } : {}) };
+    return { status: job.state === "uncertain" ? "needs_reconciliation" : job.state, upload_id: job.uploadId, ...(job.handle ? { id: job.handle } : {}) };
   }
 
   private async saveNoteJob(key: string, job: NoteJob): Promise<void> {
@@ -270,12 +269,31 @@ export class HostedUploadStore {
     if (job?.uploadId === upload.id && job.state === "receiving") await this.saveNoteJob(key, { ...job, state: "submitting" });
   }
 
+  /** Save provider references before crossing the transcript POST boundary. */
+  async noteProviderReference(upload: HostedUpload, reference: { uploadUrl?: string; transcriptId?: string }): Promise<void> {
+    if (!upload.sourceId) return;
+    const key = this.noteKey(upload.owner, upload.sourceId);
+    const job = this.noteJobs.get(key);
+    if (job?.uploadId === upload.id) await this.saveNoteJob(key, { ...job, ...reference });
+  }
+
+  reconciliationJobs(): { key: string; job: NoteJob }[] {
+    return [...this.noteJobs].filter(([, job]) => job.state === "needs_reconciliation" || job.state === "uncertain")
+      .map(([key, job]) => ({ key, job }));
+  }
+
+  async reconcileFound(key: string, transcriptId: string, handleKey: string, nowMs: number): Promise<void> {
+    const job = this.noteJobs.get(key);
+    if (!job || !["needs_reconciliation", "uncertain"].includes(job.state)) return;
+    await this.saveNoteJob(key, { ...job, transcriptId, state: "submitted", handle: issueHandle(handleKey, transcriptId, job.address, nowMs), expiresAt: nowMs + HANDLE_TTL_SECONDS * 1000 });
+  }
+
   async settleNote(upload: HostedUpload, outcome: SubmitOutcome): Promise<void> {
     if (!upload.sourceId) return;
     const key = this.noteKey(upload.owner, upload.sourceId);
     const job = this.noteJobs.get(key);
     if (job?.uploadId === upload.id) await this.saveNoteJob(key, outcome.status === "submitted"
-      ? { ...job, state: "submitted", handle: outcome.handle, expiresAt: outcome.expiresAt } : { ...job, state: "uncertain" });
+      ? { ...job, state: "submitted", handle: outcome.handle, expiresAt: outcome.expiresAt } : { ...job, state: "needs_reconciliation" });
   }
 
   async deleteNoteHandle(address: string, handle: string): Promise<void> {
@@ -325,6 +343,25 @@ export class HostedUploadStore {
     this.spoolLock = lock;
     libc.close();
     try {
+      const initialNames = await readdir(this.spoolDir);
+      const identityFile = join(this.spoolDir, "spool.json");
+      if (!initialNames.includes("spool.json")) {
+        const priorState = initialNames.some((name) => name !== ".hosted-writer.lock");
+        if (priorState && process.env.ASSEMBLYAI_HOSTED_ACK_FRESH_SPOOL !== "true")
+          throw new Error("[startup] FATAL: hosted spool identity missing with prior files; refusing hosted routes. Restore the persistent volume or set ASSEMBLYAI_HOSTED_ACK_FRESH_SPOOL=true after operator review");
+        console.error(`[assemblyai-hosted] initializing fresh hosted spool at ${this.spoolDir}; verify persistent volume before accepting paid jobs alert=true`);
+        const identity = await open(identityFile, "wx", 0o600);
+        try { await identity.writeFile(JSON.stringify({ installId: randomUUID(), createdAt: new Date().toISOString() })); await identity.sync(); }
+        finally { await identity.close(); }
+        const directory = await open(this.spoolDir, "r");
+        try { await directory.sync(); } finally { await directory.close(); }
+      } else {
+        let identity: unknown;
+        try { identity = JSON.parse(await readFile(identityFile, "utf8")); } catch { /* rejected below */ }
+        if (!identity || typeof identity !== "object" || typeof (identity as Record<string, unknown>).installId !== "string" ||
+          typeof (identity as Record<string, unknown>).createdAt !== "string")
+          throw new Error("[startup] FATAL: hosted spool identity invalid; refusing hosted routes");
+      }
       const marker = await open(join(this.spoolDir, ".hosted-boot-id"), "w", 0o600);
       try { await marker.writeFile(this.bootId); await marker.sync(); }
       finally { await marker.close(); }
@@ -345,6 +382,7 @@ export class HostedUploadStore {
   /** Run once at boot, under the writer lock. Never retry an interrupted paid submission. */
   private async recover(): Promise<void> {
     const names = await readdir(this.spoolDir);
+    const consumed = new Set<string>();
     for (const name of names) {
       const quarantined = /^note-([0-9a-f]{64})(?:-[^.]+)?\.json(?:\..+)?\.quarantine$/.exec(name);
       if (quarantined) this.quarantinedKeys.add(quarantined[1]!);
@@ -364,7 +402,7 @@ export class HostedUploadStore {
             const state: unknown = JSON.parse(await readFile(join(this.spoolDir, legacy), "utf8"));
             if (!this.validNoteJob(key, state) || state.uploadId !== job.uploadId) throw new Error("invalid state");
             job = state;
-          } catch { this.quarantinedKeys.add(key); await this.quarantine(legacy); await this.quarantine(name); continue; }
+          } catch { this.quarantinedKeys.add(key); await this.quarantine(legacy); consumed.add(legacy); await this.quarantine(name); continue; }
         }
         // Receiving has not crossed the paid boundary. Recreate an empty spool under the same
         // upload ID: the client resends every part. Older records lack size/type and fail closed.
@@ -381,11 +419,12 @@ export class HostedUploadStore {
               received: [], path, expiresAt: now + UPLOAD_TTL_MS, dayKey, state: "receiving",
               abort: null, submitDeadline: 0, sourceId: job.sourceId });
             this.charged.set(dayKey, (this.charged.get(dayKey) ?? 0) + job.byteSize);
-          } else job = { ...job, state: "uncertain" };
+          } else job = { ...job, state: "needs_reconciliation" };
         }
         // A transcript POST may have succeeded even if its response was lost. Without a stored
         // handle/provider identity there is no safe retry, so client lookup sees uncertainty.
-        if (job.bootId !== this.bootId && job.state === "submitting") job = { ...job, state: "uncertain" };
+        if (job.bootId !== this.bootId && job.state === "submitting") job = { ...job, state: "needs_reconciliation" };
+        if (job.state === "uncertain") job = { ...job, state: "needs_reconciliation" };
         job = { ...job, bootId: this.bootId };
         await this.saveNoteJob(key, job);
         if (names.includes(legacy)) await rm(join(this.spoolDir, legacy), { force: true });
@@ -393,7 +432,7 @@ export class HostedUploadStore {
     }
     for (const name of names) {
       const match = /^note-([0-9a-f]{64})-.+\.json$/.exec(name);
-      if (match && !this.noteJobs.has(match[1]!)) {
+      if (match && !consumed.has(name) && !this.noteJobs.has(match[1]!)) {
         this.quarantinedKeys.add(match[1]!);
         await this.quarantine(name);
       }
@@ -416,10 +455,12 @@ export class HostedUploadStore {
       && typeof job.sourceId === "string" && job.sourceId.length > 0 && job.sourceId.length <= 256
       && this.noteKey(job.address, job.sourceId) === key
       && typeof job.uploadId === "string" && UPLOAD_ID_RE.test(job.uploadId)
-      && ["receiving", "submitting", "submitted", "uncertain", "deleted"].includes(job.state ?? "")
+      && ["receiving", "submitting", "submitted", "needs_reconciliation", "uncertain", "deleted"].includes(job.state ?? "")
       && (job.handle === undefined || typeof job.handle === "string")
       && (job.byteSize === undefined || (Number.isSafeInteger(job.byteSize) && job.byteSize > 0 && job.byteSize <= MAX_HOSTED_BYTES))
-      && (job.contentType === undefined || HOSTED_CONTENT_TYPES.includes(job.contentType));
+      && (job.contentType === undefined || HOSTED_CONTENT_TYPES.includes(job.contentType))
+      && (job.uploadUrl === undefined || (typeof job.uploadUrl === "string" && job.uploadUrl.startsWith("https://")))
+      && (job.transcriptId === undefined || (typeof job.transcriptId === "string" && ASSEMBLYAI_TRANSCRIPT_ID_RE.test(job.transcriptId)));
   }
 
   private async quarantine(name: string): Promise<void> {
@@ -448,11 +489,12 @@ export class HostedUploadStore {
         if (upload && upload.owner === address && upload.state === "receiving" && upload.expiresAt <= nowMs)
           await this.abandonLocked(upload);
         else if (upload && upload.owner === address) return { ok: true, upload };
-        else if (["uncertain", "submitting"].includes(this.noteJob(address, sourceId)!.status)) return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
+        else if (job.status === "needs_reconciliation") return { ok: false, code: "assemblyai_needs_reconciliation" };
+        else if (job.status === "submitting") return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
         else return { ok: true, job: this.noteJob(address, sourceId)! };
       }
       if (sourceId && this.quarantinedKeys.has(this.noteKey(address, sourceId)))
-        return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
+        return { ok: false, code: "assemblyai_needs_reconciliation" };
       return this.createLocked(address, byteSize, contentType, nowMs, sourceId);
     });
   }

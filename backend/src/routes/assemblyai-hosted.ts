@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { openAsBlob } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import express, { Router } from "express";
@@ -85,6 +85,7 @@ export const ASSEMBLYAI_HOSTED_ERRORS = {
   assemblyai_unavailable: { status: 502, message: "AssemblyAI could not be reached." },
   assemblyai_hosted_unavailable: { status: 503, message: "TinyCloud's AssemblyAI account is not available." },
   assemblyai_job_uncertain: { status: 409, message: "The previous submission could not be reconciled safely. Contact support before retrying this note." },
+  assemblyai_needs_reconciliation: { status: 409, message: "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI." },
 } as const;
 
 export type AssemblyAiHostedErrorCode = keyof typeof ASSEMBLYAI_HOSTED_ERRORS;
@@ -100,6 +101,45 @@ export interface AssemblyAiHostedRouterOptions {
   now?: () => number;
   /** `alert` = operator fault. */
   log?: (line: string, alert: boolean) => void;
+}
+
+/** Provider lookup never authorizes a second paid POST. Missing or ambiguous results stay blocked. */
+export async function reconcileHostedJobs(config: Extract<AssemblyAiHostedConfig, { hosted: true }>, store: HostedUploadStore,
+  fetchImpl: typeof fetch = fetch.bind(globalThis)): Promise<{ checked: number; recovered: number }> {
+  let recovered = 0;
+  const jobs = store.reconciliationJobs();
+  for (const { key, job } of jobs) {
+    try {
+      let id = job.transcriptId;
+      if (id) {
+        const response = await fetchImpl(`${ASSEMBLYAI_API}/v2/transcript/${id}`, { method: "GET", headers: { authorization: config.apiKey }, redirect: "manual", signal: AbortSignal.timeout(15_000) });
+        const body = response.status === 200 ? parseJson(await readCapped(response, TRANSCRIPT_BODY)) as { id?: unknown; audio_url?: unknown } | undefined : null;
+        if (response.status !== 200 || body?.id !== id || (job.uploadUrl && body.audio_url !== job.uploadUrl)) id = undefined;
+      } else if (job.uploadUrl) {
+        let path = "/v2/transcript?limit=200";
+        const matches: string[] = [];
+        let complete = false;
+        for (let page = 0; page < 20 && path; page++) {
+          const response = await fetchImpl(`${ASSEMBLYAI_API}${path}`, { method: "GET", headers: { authorization: config.apiKey }, redirect: "manual", signal: AbortSignal.timeout(15_000) });
+          if (response.status !== 200) break;
+          const body = parseJson(await readCapped(response, 512 * 1024)) as { transcripts?: { id?: unknown; audio_url?: unknown }[]; page_details?: { prev_url?: unknown } } | undefined;
+          if (!Array.isArray(body?.transcripts) || !body.page_details || typeof body.page_details !== "object") break;
+          matches.push(...body.transcripts.filter((entry) => entry.audio_url === job.uploadUrl && typeof entry.id === "string" && ASSEMBLYAI_TRANSCRIPT_ID_RE.test(entry.id)).map((entry) => entry.id as string));
+          if (matches.length > 1) break;
+          const previous = body.page_details?.prev_url;
+          if (typeof previous !== "string") { complete = true; break; }
+          const url = new URL(previous);
+          path = url.origin === ASSEMBLYAI_API && url.pathname === "/v2/transcript" ? `${url.pathname}${url.search}` : "";
+        }
+        if (complete && matches.length === 1) id = matches[0];
+      }
+      if (id) { await store.reconcileFound(key, id, config.handleKey, Date.now()); recovered++; }
+      else console.error(`[assemblyai-hosted] paid outcome unresolved journal=note-${key}.json; inspect AssemblyAI processing history; note remains blocked alert=true`);
+    } catch {
+      console.error("[assemblyai-hosted] provider reconciliation failed; note remains blocked alert=true");
+    }
+  }
+  return { checked: jobs.length, recovered };
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -308,6 +348,14 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
     next();
   });
 
+  router.post("/hosted/admin/reconcile", handle("admin_reconcile", async (req, res) => {
+    const expected = process.env.ASSEMBLYAI_HOSTED_ADMIN_KEY;
+    const presented = req.get("x-assemblyai-admin-key") ?? "";
+    if (!expected || !presented || !timingSafeEqual(createHash("sha256").update(presented).digest(), createHash("sha256").update(expected).digest()))
+      return fail(res, { code: "assemblyai_upload_not_found" });
+    ok(res, 200, await reconcileHostedJobs(hosted!, store!, fetchImpl));
+  }));
+
   router.post(
     "/hosted/uploads",
     handle("create_upload", async (req, res) => {
@@ -322,11 +370,12 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
       if (typeof content_type !== "string" || !HOSTED_CONTENT_TYPES.includes(content_type)) return fail(res, { code: "unsupported_audio" });
       if (typeof source_id === "string") {
         const existing = store!.noteJob(locals(res).address, source_id);
+        if (existing?.status === "needs_reconciliation") return fail(res, { code: "assemblyai_needs_reconciliation" });
         if (existing && (existing.status !== "receiving" || store!.lookup(existing.upload_id, locals(res).address, now()).kind !== "expired"))
           return ok(res, 200, { ...existing, part_size: HOSTED_PART_SIZE });
       }
       const created = await store!.create(locals(res).address, byte_size, content_type, now(), source_id as string | undefined);
-      if (!created.ok) return fail(res, { code: created.code, retryAfterSeconds: created.retryAfterSeconds });
+      if (!created.ok) return fail(res, { code: created.code, ...(created.code === "assemblyai_needs_reconciliation" ? {} : { retryAfterSeconds: created.retryAfterSeconds }) });
       if ("job" in created) return ok(res, 200, { ...created.job, part_size: HOSTED_PART_SIZE });
       ok(
         res,
@@ -395,6 +444,7 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
       if (typeof uploaded?.upload_url !== "string" || !uploaded.upload_url.startsWith("https://")) {
         return failed({ code: "assemblyai_unavailable", upstreamStatus: 200, reason: "off_contract" });
       }
+      await store!.noteProviderReference(upload, { uploadUrl: uploaded.upload_url });
       const created = await call("POST", "/v2/transcript", SMALL_BODY, {
         body: JSON.stringify({ audio_url: uploaded.upload_url, speaker_labels: speakerLabels && !multichannel,
           multichannel, language_detection: true, speech_models: SPEECH_MODELS }),
@@ -415,6 +465,7 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
       ) {
         return failed({ code: "assemblyai_unavailable", upstreamStatus: created.response.status, reason: "off_contract" });
       }
+      await store!.noteProviderReference(upload, { transcriptId: parsed.id });
       const issuedAt = now();
       return settle(null, {
         status: "submitted", handle: issueHandle(hosted!.handleKey, parsed.id, upload.owner, issuedAt),
@@ -496,7 +547,8 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
       if (typeof sourceId === "string") {
         const job = store!.noteJob(locals(res).address, sourceId);
         if (!job || job.upload_id !== id) return fail(res, { code: "invalid_request" });
-        if (job.status === "uncertain" || job.status === "deleted") return fail(res, { code: "assemblyai_job_uncertain" });
+        if (job.status === "needs_reconciliation") return fail(res, { code: "assemblyai_needs_reconciliation" });
+        if (job.status === "deleted") return fail(res, { code: "assemblyai_job_uncertain" });
         if (job.status === "submitted") return ok(res, 202, { upload_id: id, status: "submitted", id: job.id });
       }
       const found = await store!.resolve(id, locals(res).address, now());
