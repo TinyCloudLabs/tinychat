@@ -174,6 +174,7 @@ jobs:
         id: rust-version
         run: echo "version=$(rustc --version | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
 
+      # Preserve shared-key: exo-desktop-macos-arm64 as the stable CI/release namespace; compiler, target and lockfile extend it.
       - name: Restore Tauri Rust dependencies
         id: rust-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -189,9 +190,9 @@ jobs:
             desktop/src-tauri/target/release/build
             desktop/src-tauri/target/release/.fingerprint
             desktop/src-tauri/target/release/incremental
-          key: rust-tauri-${{ runner.os }}-${{ runner.arch }}-aarch64-apple-darwin-${{ steps.rust-version.outputs.version }}-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+          key: rust-tauri-exo-desktop-macos-arm64-${{ runner.os }}-${{ runner.arch }}-aarch64-apple-darwin-${{ steps.rust-version.outputs.version }}-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
           restore-keys: |
-            rust-tauri-${{ runner.os }}-${{ runner.arch }}-aarch64-apple-darwin-${{ steps.rust-version.outputs.version }}-
+            rust-tauri-exo-desktop-macos-arm64-${{ runner.os }}-${{ runner.arch }}-aarch64-apple-darwin-${{ steps.rust-version.outputs.version }}-
 
       - name: Require pinned Xcode
         run: test -d "$DEVELOPER_DIR"
@@ -369,7 +370,7 @@ jobs:
             desktop/src-tauri/target/release/build
             desktop/src-tauri/target/release/.fingerprint
             desktop/src-tauri/target/release/incremental
-          key: rust-tauri-${{ runner.os }}-${{ runner.arch }}-aarch64-apple-darwin-${{ steps.rust-version.outputs.version }}-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+          key: rust-tauri-exo-desktop-macos-arm64-${{ runner.os }}-${{ runner.arch }}-aarch64-apple-darwin-${{ steps.rust-version.outputs.version }}-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
 
   sign:
     name: ${{ inputs.sign && 'Sign and notarize (desktop-release)' || 'Sign (dry run, ad-hoc, no secrets)' }}
