@@ -35,6 +35,8 @@ export interface RestoreAttempt<T> {
 }
 
 export interface RestoreDeps<M, T> {
+  /** Durable capture handoff before an auth verdict clears the local token. */
+  beforeClear?: () => Promise<void>;
   /**
    * Load the app manifest. ANY rejection counts as unreachable: the manifest is
    * public app config, so failing to get it — network, 5xx, a backend that is
@@ -55,6 +57,16 @@ export type RestoreOutcome<T> =
   | { kind: "unavailable"; message: string }
   /** An unexpected, non-network failure. Cleared, as before TC-514. */
   | { kind: "failed"; message: string };
+
+/** `code` of the client's RestoredSessionMissingSpaceError (packages/client/src/tinycloud.ts). */
+const MISSING_SPACE_CODE = "restored-session-missing-space";
+
+export const MISSING_SPACE_MESSAGE =
+  "Your saved session is missing its TinyCloud space, so Exo can't open or save your notes with it. Tap Sign in to sign in again; notes recorded on this device stay on it until they upload.";
+
+function isMissingSpaceError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === MISSING_SPACE_CODE;
+}
 
 export type RestoreFailureKind = "transient" | "auth";
 
@@ -134,11 +146,13 @@ export async function restorePersistedSession<M, T>(
   deps: RestoreDeps<M, T>,
 ): Promise<RestoreOutcome<T>> {
   if (!sessionStore.hasSession() || sessionStore.isExpired()) {
+    await deps.beforeClear?.();
     return { kind: "signedOut" };
   }
   const address = sessionStore.getAddress();
   const token = sessionStore.getToken();
   if (!address || !token) {
+    await deps.beforeClear?.();
     sessionStore.clear();
     return { kind: "signedOut" };
   }
@@ -163,6 +177,7 @@ export async function restorePersistedSession<M, T>(
     if (classifyRestoreFailure({ status: "restore-failed", error: caught }, deps.isOffline()) === "transient") {
       return unavailable();
     }
+    await deps.beforeClear?.();
     sessionStore.clear();
     return { kind: "failed", message: caught instanceof Error ? caught.message : "Unexpected error" };
   }
@@ -170,9 +185,18 @@ export async function restorePersistedSession<M, T>(
   if (restored.status === "restored" && restored.tcw) {
     return { kind: "restored", address, tcw: restored.tcw };
   }
+  if (isMissingSpaceError(restored.error)) {
+    // The stored session cannot work, so it is cleared like any refused one, but the user is
+    // told why instead of landing on an unexplained sign-in screen.
+    console.error("[session] restored session has no space");
+    await deps.beforeClear?.();
+    sessionStore.clear();
+    return { kind: "failed", message: MISSING_SPACE_MESSAGE };
+  }
   if (classifyRestoreFailure(restored, deps.isOffline()) === "transient") {
     return unavailable();
   }
+  await deps.beforeClear?.();
   sessionStore.clear();
   return { kind: "signedOut" };
 }

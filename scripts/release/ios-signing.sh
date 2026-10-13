@@ -12,6 +12,7 @@
 #   ios-signing.sh verify-ipa <ipa> require an App Store build signed by APPLE_TEAM_ID: valid deep signature, Apple
 #                                   Distribution authority, the team's App Store profile (no devices, not an
 #                                   in-house ProvisionsAllDevices profile, no get-task-allow) for xyz.tinycloud.exo
+#                                   and its ExoWidgets extension
 set -euo pipefail
 
 BUNDLE_ID=xyz.tinycloud.exo
@@ -61,7 +62,7 @@ write_key() {
 }
 
 verify_ipa() {
-  local ipa=${1:?usage: ios-signing.sh verify-ipa <ipa>} tmp app details authority team profile
+  local ipa=${1:?usage: ios-signing.sh verify-ipa <ipa>} tmp app appex details authority team profile bundle signed
   [ -f "$ipa" ] || fail "no .ipa at $ipa"
   [ -n "${APPLE_TEAM_ID:-}" ] || fail "APPLE_TEAM_ID is required"
   tmp=$(mktemp -d)
@@ -70,17 +71,23 @@ verify_ipa() {
   [ -d "$app" ] || fail "the .ipa has no Payload/App.app"
 
   codesign --verify --deep --strict --verbose=2 "$app" || fail "App.app does not pass codesign --verify --deep --strict"
-  details=$(codesign -dvv "$app" 2>&1)
+  appex="$app/PlugIns/ExoWidgets.appex"
+  [ -d "$appex" ] || fail "the .ipa has no ExoWidgets.appex"
+  [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$appex/Info.plist")" = "$BUNDLE_ID.widgets" ] || fail "ExoWidgets has the wrong bundle ID"
+  [ "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$appex/Info.plist")" = com.apple.widgetkit-extension ] || fail "ExoWidgets is not a WidgetKit extension"
+  for signed in "$app" "$appex"; do
+  codesign --verify --strict --verbose=2 "$signed" || fail "$signed does not pass codesign verification"
+  details=$(codesign -dvv "$signed" 2>&1)
   authority=$(grep -m1 '^Authority=' <<<"$details" || true)
   team=$(sed -n 's/^TeamIdentifier=//p' <<<"$details")
   case "$authority" in
     *"Apple Distribution"* | *"iPhone Distribution"*) ;;
-    *) fail "App.app is not signed for App Store distribution ($authority)" ;;
+    *) fail "$signed is not signed for App Store distribution ($authority)" ;;
   esac
-  [ "$team" = "$APPLE_TEAM_ID" ] || fail "App.app is signed by team '$team', expected APPLE_TEAM_ID"
+  [ "$team" = "$APPLE_TEAM_ID" ] || fail "$signed is signed by team '$team', expected APPLE_TEAM_ID"
 
   profile="$tmp/profile.plist"
-  security cms -D -i "$app/embedded.mobileprovision" >"$profile" 2>/dev/null || fail "App.app has no readable embedded.mobileprovision"
+  security cms -D -i "$signed/embedded.mobileprovision" >"$profile" 2>/dev/null || fail "$signed has no readable embedded.mobileprovision"
   if /usr/libexec/PlistBuddy -c 'Print :ProvisionedDevices' "$profile" >/dev/null 2>&1; then
     fail "the embedded profile lists devices, so it is not an App Store profile"
   fi
@@ -90,9 +97,12 @@ verify_ipa() {
   fi
   [ "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:get-task-allow' "$profile" 2>/dev/null || echo false)" = false ] ||
     fail "the embedded profile allows get-task-allow (a development profile)"
-  [ "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$profile")" = "$APPLE_TEAM_ID.$BUNDLE_ID" ] ||
-    fail "the embedded profile is not for $BUNDLE_ID in APPLE_TEAM_ID"
-  echo "App.app: $authority, TeamIdentifier matches, App Store profile '$(/usr/libexec/PlistBuddy -c 'Print :Name' "$profile")'"
+  bundle=$BUNDLE_ID
+  [ "$signed" = "$appex" ] && bundle="$BUNDLE_ID.widgets"
+  [ "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$profile")" = "$APPLE_TEAM_ID.$bundle" ] ||
+    fail "the embedded profile is not for $bundle in APPLE_TEAM_ID"
+  echo "$bundle: $authority, TeamIdentifier matches, App Store profile '$(/usr/libexec/PlistBuddy -c 'Print :Name' "$profile")'"
+  done
   rm -rf "$tmp"
 }
 

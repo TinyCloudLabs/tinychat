@@ -1,17 +1,9 @@
-// "Private cloud" transcription engine: the webview half.
+// Private cloud transcription API shared by voice notes and audio uploads.
 //
-// Three callers upload to TinyCloud Private Transcription (PTX):
+// Both callers create jobs in the webview with `createPrivateCloudJob` below
+// and PUT audio to this build's PTX origin (`buildPtxUploadOrigin`).
 //
-//   - Local recording (desktop): native code (desktop/src-tauri/src/cloud)
-//     opens each stopped recording itself and gives this module only an
-//     opaque capture handle; it hashes, creates the job and uploads natively.
-//   - Voice notes (Exo mobile, lib/voiceNotes) and Upload audio (every
-//     platform, lib/audioUpload.ts) make the create call from the webview with
-//     `createPrivateCloudJob` below and PUT the audio to this build's PTX
-//     origin (`buildPtxUploadOrigin`).
-//
-// Every caller asks the backend whether this account may upload
-// (capabilities 200, not 404), polls the job through the backend (bearer),
+// Every caller checks service capabilities, polls the job through the backend (bearer),
 // fetches the transcript, and deletes it after it is saved. Each client's
 // jobs carry its own channel labels (`privateCloudJobClient`).
 //
@@ -30,7 +22,9 @@ export type TranscriptionEngine = "on-device" | "private-cloud";
 
 export const ENGINE_STORAGE_KEY = "exo.transcriber.engine";
 export const PRIVATE_CLOUD_CONSENT_KEY = "exo.transcriber.privateCloudConsent";
-/** The one cloud job this Mac is waiting on, so a relaunch can finish it. */
+/** Each account's private cloud recording this Mac has not saved yet, so a
+ *  relaunch can finish it. Suffixed with the account's DID (accountStorageKey);
+ *  the bare key is the pre-TC-772 record shared by every account. */
 export const PRIVATE_CLOUD_PENDING_KEY = "exo.transcriber.privateCloudPending";
 
 export const PRIVATE_CLOUD_BASE_PATH = "/api/transcriber/private-cloud";
@@ -139,7 +133,7 @@ export function privateCloudMessage(err: PrivateCloudError): string {
     case "recording_too_long_for_cloud":
     case "recording_too_long":
     case "recording_too_large":
-      return "Private cloud transcription takes recordings up to 2 hours.";
+      return "Private cloud can't transcribe a recording this long or large.";
     case "no_speech":
       return "No speech was found in the recording.";
     case "invalid_audio":
@@ -180,6 +174,10 @@ export function privateCloudMessage(err: PrivateCloudError): string {
       return "This recording is no longer available to upload.";
     case "unauthenticated":
       return "Your session expired. Sign in again, then retry.";
+    case "offline":
+    case "request_timeout":
+    case "service_unavailable":
+      return "Couldn't reach private cloud transcription. Check your connection and try again.";
     case "service_misconfigured":
       return "Private cloud transcription is misconfigured. The team has been alerted.";
     case "transcription_not_found":
@@ -187,7 +185,7 @@ export function privateCloudMessage(err: PrivateCloudError): string {
     case "cancelled":
       return "The upload was cancelled.";
     default:
-      return err.message || "Private cloud transcription failed.";
+      return "Private cloud transcription couldn't complete. Try again.";
   }
 }
 
@@ -208,9 +206,9 @@ export interface PrivateCloudApi {
   readonly backendUrl: string;
   /** The session token native code sends with the create call, or null when signed out. */
   bearer(): string | null;
-  /** Null when the feature is dark or this account is not in the cohort (404). */
-  capabilities(): Promise<PrivateCloudCapabilities | null>;
-  /** This account's jobs (tenant-scoped by the backend); empty when the feature is dark. */
+  /** The service capabilities; a missing route is a retryable error. */
+  capabilities(): Promise<PrivateCloudCapabilities>;
+  /** This account's jobs (tenant-scoped by the backend). */
   list(): Promise<PrivateCloudJob[]>;
   get(id: string): Promise<PrivateCloudJob>;
   result(id: string): Promise<PrivateCloudResult>;
@@ -298,14 +296,14 @@ export function createPrivateCloudApi(
 
     async capabilities() {
       const response = await request("/capabilities", "GET");
-      if (response.status === 404) return null;
+      if (response.status === 404) throw new PrivateCloudError("service_unavailable", "Private transcription could not be reached. Try again.");
       if (!response.ok) throw await readError(response);
       return json<PrivateCloudCapabilities>(response);
     },
 
     async list() {
       const response = await request("/transcriptions?limit=20", "GET");
-      if (response.status === 404) return [];
+      if (response.status === 404) throw new PrivateCloudError("service_unavailable", "Private transcription could not be reached. Try again.");
       if (!response.ok) throw await readError(response);
       const body = await json<{ transcriptions?: unknown }>(response);
       if (!Array.isArray(body.transcriptions)) throw new PrivateCloudError("upstream_bad_response", "Unexpected job list");
@@ -363,9 +361,8 @@ export function createPrivateCloudApi(
 // client field, but it records and echoes each job's `channel_mode` and
 // `channel_labels`, which every client sets at create, so they tell the
 // clients apart without new state anywhere:
-//   - Exo desktop (native, desktop/src-tauri/src/cloud/client.rs): separate,
-//     ["Speaker 1", "Speaker 2"];
-//   - Exo mobile voice notes (lib/voiceNotes): mixed, ["Exo voice note"];
+//   - Earlier desktop jobs: separate, ["Speaker 1", "Speaker 2"];
+//   - Voice notes on every platform (lib/voiceNotes): mixed, ["Exo voice note"];
 //   - Upload audio (lib/audioUpload.ts, every platform): mixed, ["Exo upload"],
 //     with or without diarization (PTX records the labels either way).
 // A job that matches neither (or a relay that does not relay them) is
@@ -480,9 +477,9 @@ export async function createPrivateCloudJob(
     });
   }
   if (response.status === 401) throw new PrivateCloudError("unauthenticated", "Session expired");
-  // Dark, or this account is not in the cohort: the same 404 every caller gets.
+  // A missing route is a service failure, never an account decision.
   if (response.status === 404) {
-    throw new PrivateCloudError("feature_unavailable", "Private cloud transcription is not available for this account");
+    throw new PrivateCloudError("service_unavailable", "Private transcription could not be reached. Try again.");
   }
   if (response.status === 200 || response.status === 201) {
     let body: unknown;
@@ -509,7 +506,7 @@ export async function createPrivateCloudJob(
 // ── PTX upload (webview callers) ───────────────────────────────────────
 
 /**
- * The PTX origin audio may be uploaded to, or null (the engine is hidden).
+ * The PTX origin audio may be uploaded to, or null when this build is unconfigured.
  * A bare origin only: https, or http to a loopback port in dev builds.
  */
 export function parsePtxUploadOrigin(raw: string | null | undefined, allowLoopbackHttp: boolean): string | null {
@@ -528,7 +525,7 @@ export function parsePtxUploadOrigin(raw: string | null | undefined, allowLoopba
   return url.origin;
 }
 
-/** This build's PTX upload origin (VITE_EXO_PTX_UPLOAD_ORIGIN), or null: then no webview caller offers private cloud. */
+/** This build's PTX upload origin (VITE_EXO_PTX_UPLOAD_ORIGIN), or null in an unconfigured dev build. */
 export function buildPtxUploadOrigin(): string | null {
   return parsePtxUploadOrigin(import.meta.env.VITE_EXO_PTX_UPLOAD_ORIGIN, import.meta.env.DEV === true);
 }
@@ -683,8 +680,8 @@ export function putFileToPtx(input: PtxFileUpload): Promise<void> {
 
 // ── Polling ────────────────────────────────────────────────────────────
 
-/** Private cloud polling (plan §4.7): 5 s ± 20 %, 30 s after a minute of
- *  transient failures, and "connection lost" (not failed) after 10 minutes. */
+/** Private cloud polling: 5 s ± 20 %, 30 s after a minute of transient
+ *  failures, then "connection lost" (not failed). */
 export interface CloudPolling {
   intervalMs: number;
   slowIntervalMs: number;
@@ -724,7 +721,7 @@ export interface CloudJobPoller {
   /** The job's status, riding out transient failures. */
   readJob(id: string): Promise<PrivateCloudJob>;
   /** Poll a job to its transcript (plan §4.7): transient failures are ridden
-   *  out for 10 minutes, then `connectionLost()` is thrown, not a failure.
+   *  out for a bounded interval, then `connectionLost()` is thrown, not a failure.
    *  An aborted `signal` stops it with a `cancelled` error at the next step. */
   pollTranscript(id: string, onProgress: (p: CloudJobProgress) => void, signal?: AbortSignal): Promise<PrivateCloudTranscript>;
 }
@@ -738,7 +735,7 @@ export function createCloudJobPoller(
   const sleep = (baseMs: number) => clock.sleep(Math.round(baseMs * (0.8 + 0.4 * clock.random())));
 
   /** Rides out transient failures: waits and returns while they last under
-   *  10 minutes, backing off after one; then "connection lost". */
+ *  a bounded interval, backing off after one; then "connection lost". */
   const transientTolerance = () => {
     let failingSince: number | null = null;
     return {
@@ -817,86 +814,12 @@ export function createCloudJobPoller(
   };
 }
 
-// ── Native bridge ──────────────────────────────────────────────────────
-
-type Unlisten = () => void;
-
-/** `exo://capture-ready`: a handle for the stopped session's recording, or why there is none. */
-export interface CaptureReadyEvent {
-  sessionId: string;
-  captureHandle?: string;
-  sizeBytes?: number;
-  format?: string;
-  partial: boolean;
-  error?: { code: string; message: string };
-}
-
-export interface UploadProgressEvent {
-  captureHandle: string;
-  sentBytes: number;
-  totalBytes: number;
-}
-
-export interface PrivateCloudSubmitArgs {
-  captureHandle: string;
-  /** The create call's Idempotency-Key (UUID); the same id re-joins the same job. */
-  attemptId: string;
-  backendUrl: string;
-  bearer: string;
-  language: string;
-}
-
-/** The Exo native commands (desktop/src-tauri/src/cloud/commands.rs). */
-export interface PrivateCloudNative {
-  status(): Promise<{ configured: boolean }>;
-  submit(args: PrivateCloudSubmitArgs): Promise<{ transcriptionId: string; status: string | null }>;
-  /** Abort an upload in flight and release the handle; the recording stays on disk. */
-  cancel(captureHandle: string): Promise<void>;
-  onCaptureReady(cb: (e: CaptureReadyEvent) => void): Promise<Unlisten>;
-  onUploadProgress(cb: (e: UploadProgressEvent) => void): Promise<Unlisten>;
-}
-
-/** Native rejections are the serialized CloudError `{code, message, correlationId?, ...}`. */
-export function toPrivateCloudError(err: unknown): PrivateCloudError {
-  if (err instanceof PrivateCloudError) return err;
-  if (err && typeof err === "object" && typeof (err as { code?: unknown }).code === "string") {
-    const e = err as { code: string; message?: string; correlationId?: string; retryAfterSeconds?: number; transcriptionId?: string };
-    return new PrivateCloudError(e.code, e.message ?? e.code, {
-      correlationId: e.correlationId ?? null,
-      retryAfterSeconds: e.retryAfterSeconds ?? null,
-      transcriptionId: e.transcriptionId ?? null,
-    });
-  }
-  return new PrivateCloudError("native_error", err instanceof Error ? err.message : String(err));
-}
-
-/** Loaded lazily: `@tauri-apps/api` must never enter the web bundle's main chunk. */
-export async function loadPrivateCloudNative(): Promise<PrivateCloudNative> {
-  const [{ invoke }, { listen }] = await Promise.all([import("@tauri-apps/api/core"), import("@tauri-apps/api/event")]);
-  const call = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
-    try {
-      return await invoke<T>(cmd, args);
-    } catch (err) {
-      throw toPrivateCloudError(err);
-    }
-  };
-  return {
-    status: () => call("cloud_transcription_status"),
-    submit: (args) => call("cloud_transcription_submit", { ...args }),
-    cancel: (captureHandle) => call("cloud_transcription_cancel", { captureHandle }),
-    onCaptureReady: (cb) => listen<CaptureReadyEvent>("exo://capture-ready", (e) => cb(e.payload)),
-    onUploadProgress: (cb) => listen<UploadProgressEvent>("exo://cloud-upload-progress", (e) => cb(e.payload)),
-  };
-}
-
 // ── Engine choice ──────────────────────────────────────────────────────
 
 /**
- * Whether private cloud can be offered: `available`; `hidden` (this build has
- * no PTX origin, or the backend answers 404: dark or not in the cohort);
- * `failed` (the check itself failed — offline, 5xx, timeout — so try again).
+ * Whether private cloud can be offered. A failed check can be retried.
  */
-export type PrivateCloudAvailability = "available" | "hidden" | "failed";
+export type PrivateCloudAvailability = "available" | "failed";
 
 /**
  * The engine a Local recording uses. An explicit choice wins; with none,
@@ -933,50 +856,84 @@ export function hasPrivateCloudConsent(): boolean {
 
 // ── Pending job (relaunch) ─────────────────────────────────────────────
 
+/** A private cloud recording not yet saved: written at Stop (or when its view
+ *  closes mid-recording), before any upload, and kept until its transcript is
+ *  saved or it is discarded. */
 export interface PendingCloudJob {
+  /** The create call's Idempotency-Key, reused by every upload of this recording. */
   attemptId: string;
+  /** Null until the backend names the job (no upload has been accepted yet). */
   transcriptionId: string | null;
   sessionId: string;
   startedAt: string;
   language: string;
+  /** The recording's audio file, for "Transcribe on this Mac"; "" when unknown
+   *  (a record from before TC-772). Uploads re-open it by session id instead. */
+  audioPath: string;
+  /** An upload was started with `attemptId`, so a job may exist even while
+   *  `transcriptionId` is null (its create answer was lost). */
+  submitted: boolean;
 }
 
-export interface PendingCloudStore {
-  read(): PendingCloudJob | null;
-  write(job: PendingCloudJob): void;
+/** One JSON record kept across relaunches (a job or recording Exo must not forget). */
+export interface RecordStore<T> {
+  read(): T | null;
+  write(record: T): void;
   clear(): void;
 }
 
-export const localStoragePendingCloudStore: PendingCloudStore = {
-  read() {
-    try {
-      const raw = globalThis.localStorage?.getItem(PRIVATE_CLOUD_PENDING_KEY);
-      if (!raw) return null;
-      const v = JSON.parse(raw) as Partial<PendingCloudJob>;
-      if (typeof v.attemptId !== "string" || typeof v.sessionId !== "string" || typeof v.startedAt !== "string") return null;
-      return {
-        attemptId: v.attemptId,
-        transcriptionId: typeof v.transcriptionId === "string" ? v.transcriptionId : null,
-        sessionId: v.sessionId,
-        startedAt: v.startedAt,
-        language: typeof v.language === "string" ? v.language : "en",
-      };
-    } catch {
-      return null;
-    }
-  },
-  write(job) {
-    try {
-      globalThis.localStorage?.setItem(PRIVATE_CLOUD_PENDING_KEY, JSON.stringify(job));
-    } catch {
-      // Best-effort: without it a relaunch cannot resume this job.
-    }
-  },
-  clear() {
-    try {
-      globalThis.localStorage?.removeItem(PRIVATE_CLOUD_PENDING_KEY);
-    } catch {
-      // Nothing to clear.
-    }
-  },
-};
+export type PendingCloudStore = RecordStore<PendingCloudJob>;
+
+/** A RecordStore in localStorage under `key`. Best-effort: `parse` returns null
+ *  for a malformed record, and without storage nothing outlives a relaunch. */
+export function localStorageRecordStore<T>(key: string, parse: (v: Record<string, unknown>) => T | null): RecordStore<T> {
+  return {
+    read() {
+      try {
+        const raw = globalThis.localStorage?.getItem(key);
+        if (!raw) return null;
+        const v: unknown = JSON.parse(raw);
+        return v !== null && typeof v === "object" ? parse(v as Record<string, unknown>) : null;
+      } catch {
+        return null;
+      }
+    },
+    write(record) {
+      try {
+        globalThis.localStorage?.setItem(key, JSON.stringify(record));
+      } catch {
+        // Best-effort: without it a relaunch cannot pick this record up.
+      }
+    },
+    clear() {
+      try {
+        globalThis.localStorage?.removeItem(key);
+      } catch {
+        // Nothing to clear.
+      }
+    },
+  };
+}
+
+/** A pending record as stored, or null when malformed. */
+export function parsePendingCloudJob(v: Record<string, unknown>): PendingCloudJob | null {
+  if (typeof v.attemptId !== "string" || typeof v.sessionId !== "string" || typeof v.startedAt !== "string") return null;
+  return {
+    attemptId: v.attemptId,
+    transcriptionId: typeof v.transcriptionId === "string" ? v.transcriptionId : null,
+    sessionId: v.sessionId,
+    startedAt: v.startedAt,
+    language: typeof v.language === "string" ? v.language : "en",
+    audioPath: typeof v.audioPath === "string" ? v.audioPath : "",
+    // Before TC-772 a record was written only as its upload started.
+    submitted: typeof v.submitted === "boolean" ? v.submitted : true,
+  };
+}
+
+/** The record under the old key shared by every account (before TC-772). It
+ *  names no account, so only the account whose backend can read its job
+ *  adopts it (localTranscriber's legacy migration). */
+export const legacyPendingCloudStore: PendingCloudStore = localStorageRecordStore(
+  PRIVATE_CLOUD_PENDING_KEY,
+  parsePendingCloudJob,
+);

@@ -1,3 +1,4 @@
+import { clearSessionAfterHandoff } from "./sessionSignedOut";
 import type { SessionStore } from "@tinyboilerplate/client";
 
 const REQUEST_HEADER_NAME = "X-Requested-With";
@@ -64,7 +65,7 @@ export async function fetchBackendSelfAttestation(input: {
 }): Promise<BackendAttestationClientResult> {
   const token = input.sessionStore.getToken();
   if (!token || input.sessionStore.isExpired()) {
-    if (token && input.sessionStore.isExpired()) input.sessionStore.clear();
+    if (token && input.sessionStore.isExpired()) await clearSessionAfterHandoff(input.sessionStore);
     return { status: "unauthenticated", message: "Session expired. Please sign in again." };
   }
 
@@ -92,7 +93,7 @@ export async function fetchBackendSelfAttestation(input: {
       };
     }
     if (response.status === 401) {
-      input.sessionStore.clear();
+      await clearSessionAfterHandoff(input.sessionStore);
       return { status: "unauthenticated", message: "Session expired. Please sign in again." };
     }
     if (!response.ok) {

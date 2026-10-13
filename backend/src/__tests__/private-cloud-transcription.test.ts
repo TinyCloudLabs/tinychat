@@ -1,17 +1,6 @@
 // Exo private cloud transcription (routes/private-cloud-transcription.ts; plan §4.4 P4).
-// Pinned here:
-//   1. dark: flag unset/false ⇒ nothing mounted; a non-cohort address gets the byte-identical 404;
-//   2. armed config is validated (bad/missing/weak ⇒ throw, never a silent default);
-//   3. session auth, CSRF and the /api/transcriber rate-limit bucket guard every route;
-//   4. PTX sees an HMAC tenant_ref, never the address; the PTX key never reaches the caller;
-//   5. per-tenant admission is PTX's atomic decision, relayed unchanged under concurrency;
-//   6. only a relative `/uploads/<id>` path is returned — anything else is upstream_bad_response;
-//   7. upstream failures map to stable public codes with a correlation id, and PTX 401/403 is an
-//      operator fault logged with alert=true; logs are content-free;
-//   8. no route accepts audio;
-//   9. every success body is rebuilt by a strict DTO (unknown fields dropped, off-contract values
-//      rejected), PTX bodies are read under per-route size caps, and responses are no-store;
-//  10. the served OpenAPI omits the feature while dark; the deploy canary probes the mount.
+// Pinned here: universal signed-in access, typed 503 for absent config, authentication,
+// CSRF, tenant isolation, stable error codes, strict DTOs and a fixed 401 deploy probe.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
@@ -34,10 +23,9 @@ import {
   createPtxClient,
   privateCloudTranscriptionConfigFromEnv,
   tenantRefFor,
-  withoutPrivateCloudOpenApi,
   type PrivateCloudTranscriptionConfig,
 } from "../services/private-cloud-transcription.js";
-import { JOB_ERRORS, MAX_RECORDING_BYTES } from "../services/private-cloud-transcription-dto.js";
+import { JOB_ERRORS } from "../services/private-cloud-transcription-dto.js";
 import { runPrivateCloudE2E } from "../../scripts/e2e-private-cloud-transcription.js";
 
 const SESSION_KEY = "synthetic-session-signing-key";
@@ -49,6 +37,8 @@ const ADDRESS_C = "0xCcccCCCCccccCCCCccccCCCCccccCCCCccccCCCC";
 const TRANSCRIPT_TEXT = "alice: the quick brown fox";
 const BASE = "/api/transcriber/private-cloud";
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const MOCK_PTX_MAX_BYTES = 120_960_000;
+const NEXT_PTX_MAX_BYTES = 181_440_000;
 
 const closers: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -235,7 +225,7 @@ async function startMockPtx() {
 
   app.get("/v1/transcriptions/capabilities", (_req, res) => {
     res.json({
-      max_bytes: MAX_RECORDING_BYTES,
+      max_bytes: MOCK_PTX_MAX_BYTES,
       max_duration_seconds: 7200,
       max_channels: 2,
       content_types: state.diarization === null ? MAIN_CONTENT_TYPES : AUDIO_CONTENT_TYPES,
@@ -352,11 +342,9 @@ async function startMockPtx() {
 
 function enabledEnv(ptxUrl: string, extra: Record<string, string> = {}) {
   return {
-    PRIVATE_CLOUD_TRANSCRIPTION_ENABLED: "true",
     PRIVATE_CLOUD_TRANSCRIPTION_API_URL: ptxUrl,
     PRIVATE_CLOUD_TRANSCRIPTION_API_KEY: PTX_KEY,
     PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY: TENANT_KEY,
-    PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS: `${ADDRESS_A},${ADDRESS_B}`,
     ...extra,
   };
 }
@@ -367,14 +355,13 @@ async function startBackend(config: PrivateCloudTranscriptionConfig, clientOptio
   app.use(express.json({ limit: "1mb" }));
   app.use(createCsrfMiddleware());
   applyRateLimiters(app);
-  if (config.enabled) {
+  {
     app.use(
       PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
       createAuthMiddleware(SESSION_KEY),
       createPrivateCloudTranscriptionRouter({
-        client: createPtxClient({ ...config, ...clientOptions }),
-        tenantKey: config.tenantKey,
-        accountAllowed: config.accountAllowed,
+        client: config.enabled ? createPtxClient({ ...config, ...clientOptions }) : null,
+        tenantKey: config.enabled ? config.tenantKey : null,
         log: (line, alert) => logs.push({ line, alert }),
       }),
     );
@@ -440,14 +427,8 @@ function create(base: string, as: string = ADDRESS_A, key: string = randomUUID()
 // ── Config ──────────────────────────────────────────────────────────
 
 describe("config", () => {
-  test("unset or false is dark; anything but true/false refuses", () => {
+  test("no PTX settings leaves the route mounted but misconfigured", () => {
     expect(privateCloudTranscriptionConfigFromEnv({})).toEqual({ enabled: false });
-    expect(privateCloudTranscriptionConfigFromEnv({ PRIVATE_CLOUD_TRANSCRIPTION_ENABLED: "false" })).toEqual({ enabled: false });
-    for (const flag of ["1", "yes", "TRUE", "on"]) {
-      expect(() => privateCloudTranscriptionConfigFromEnv({ PRIVATE_CLOUD_TRANSCRIPTION_ENABLED: flag })).toThrow(
-        "PRIVATE_CLOUD_TRANSCRIPTION_ENABLED",
-      );
-    }
   });
 
   test("armed, every missing or unsafe value refuses without echoing it", () => {
@@ -461,8 +442,6 @@ describe("config", () => {
       [{ PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY: "" }, "PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY"],
       [{ PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY: "short-weak-value" }, "PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY"],
       [{ PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY: TENANT_KEY, PRIVATE_CLOUD_TRANSCRIPTION_API_KEY: TENANT_KEY }, "reuse"],
-      [{ PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS: `*,${ADDRESS_A}` }, "only entry"],
-      [{ PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS: "alice.eth" }, "entry 1"],
     ];
     for (const [patch, message] of cases) {
       let thrown: Error | null = null;
@@ -478,18 +457,6 @@ describe("config", () => {
     expect(local.enabled && local.baseUrl).toBe("http://127.0.0.1:8080");
   });
 
-  test("allowlist: empty admits nobody, `*` everyone, entries are case-insensitive", () => {
-    const allowed = (accounts: string, address: string) => {
-      const config = privateCloudTranscriptionConfigFromEnv({ ...enabledEnv("https://p.example"), PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS: accounts });
-      return config.enabled && config.accountAllowed(address);
-    };
-    expect(allowed("", ADDRESS_A)).toBe(false);
-    expect(allowed(" , ", ADDRESS_A)).toBe(false);
-    expect(allowed("*", ADDRESS_C)).toBe(true);
-    expect(allowed(` ${ADDRESS_A.toUpperCase().replace("0X", "0x")} `, ADDRESS_A.toLowerCase())).toBe(true);
-    expect(allowed(ADDRESS_A, ADDRESS_B)).toBe(false);
-  });
-
   test("tenant_ref is a stable, case-insensitive HMAC of the address, never the address", () => {
     const ref = tenantRefFor(TENANT_KEY, ADDRESS_A);
     expect(ref).toMatch(/^[0-9a-f]{64}$/);
@@ -501,9 +468,9 @@ describe("config", () => {
   });
 });
 
-// ── Dark launch, cohort, auth, CSRF, limiter ────────────────────────
+// ── Universal access, auth, CSRF, limiter ────────────────────────
 
-describe("dark launch and access", () => {
+describe("access", () => {
   const ROUTES: [string, string][] = [
     ["GET", "/capabilities"],
     ["POST", "/transcriptions"],
@@ -514,39 +481,23 @@ describe("dark launch and access", () => {
     ["DELETE", "/transcriptions/trn_0123456789ABCDEFGHJKMNPQRS"],
   ];
 
-  test("flag off: every route 404s, even for a signed-in cohort address, and PTX is never called", async () => {
-    const ptx = await startMockPtx();
-    // Every other var is fully configured: the flag alone keeps the routes unmounted.
-    for (const flag of [undefined, "", "false"]) {
-      const dark = await startBackend(
-        privateCloudTranscriptionConfigFromEnv({ ...enabledEnv(ptx.url), PRIVATE_CLOUD_TRANSCRIPTION_ENABLED: flag }),
-      );
-      for (const [method, path] of ROUTES) {
-        const r = await call(dark.url, method, path, { headers: { "Idempotency-Key": randomUUID() }, body: method === "POST" ? createBody() : undefined });
-        expect(r.status).toBe(404);
-      }
+  test("all signed-in accounts can use Private", async () => {
+    const { backend } = await setup();
+    for (const address of [ADDRESS_A, ADDRESS_B, ADDRESS_C]) {
+      expect((await call(backend.url, "GET", "/capabilities", { as: address })).status).toBe(200);
     }
-    expect(ptx.requests).toHaveLength(0);
   });
 
-  test("a non-cohort address gets the same 404 as the flag being off", async () => {
-    const { ptx, backend } = await setup();
-    const dark = await startBackend({ enabled: false });
+  test("absent PTX settings return typed 503 after authentication on every route", async () => {
+    const backend = await startBackend(privateCloudTranscriptionConfigFromEnv({}));
     for (const [method, path] of ROUTES) {
-      const body = method === "POST" ? createBody() : undefined;
-      const hidden = await call(backend.url, method, path, { as: ADDRESS_C, headers: { "Idempotency-Key": randomUUID() }, body });
-      const off = await call(dark.url, method, path, { as: ADDRESS_C, headers: { "Idempotency-Key": randomUUID() }, body });
-      expect(hidden.status).toBe(404);
-      expect(hidden.text).toBe(off.text);
-      expect(hidden.headers.get("x-correlation-id")).toBeNull();
+      const unauth = await call(backend.url, method, path, { as: null, headers: { "Idempotency-Key": randomUUID() }, body: method === "POST" ? createBody() : undefined });
+      expect(unauth.status).toBe(401);
+      const signedIn = await call(backend.url, method, path, { as: ADDRESS_C, headers: { "Idempotency-Key": randomUUID() }, body: method === "POST" ? createBody() : undefined });
+      expect(signedIn.status).toBe(503);
+      expect(signedIn.json.error.code).toBe("service_misconfigured");
+      expect(signedIn.headers.get("cache-control")).toBe("no-store");
     }
-    expect(ptx.requests).toHaveLength(0);
-    expect((await call(backend.url, "GET", "/capabilities", { as: ADDRESS_B })).status).toBe(200);
-  });
-
-  test("`*` admits any signed-in address", async () => {
-    const { backend } = await setup({ PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS: "*" });
-    expect((await call(backend.url, "GET", "/capabilities", { as: ADDRESS_C })).status).toBe(200);
   });
 
   test("no bearer or a bad bearer is 401 before PTX is asked anything", async () => {
@@ -620,7 +571,6 @@ describe("create", () => {
       [null, { ...valid, content_type: "video/mp4" }, 400, "invalid_request"],
       [null, { ...valid, byte_size: 0 }, 400, "invalid_request"],
       [null, { ...valid, byte_size: 1.5 }, 400, "invalid_request"],
-      [null, { ...valid, byte_size: MAX_RECORDING_BYTES + 1 }, 413, "recording_too_large"],
       [null, { ...valid, sha256: "ABC" }, 400, "invalid_request"],
       [null, { ...valid, language: "english" }, 400, "invalid_request"],
       [null, { ...valid, channel_mode: "stereo" }, 400, "invalid_request"],
@@ -637,7 +587,7 @@ describe("create", () => {
       expect([r.status, r.json.error.code]).toEqual([status, code]);
       expect(r.json.error.correlation_id).toMatch(/^[0-9a-f-]{36}$/);
     }
-    const max = await create(backend.url, ADDRESS_A, randomUUID(), { ...valid, byte_size: MAX_RECORDING_BYTES });
+    const max = await create(backend.url, ADDRESS_A, randomUUID(), { ...valid, byte_size: MOCK_PTX_MAX_BYTES });
     expect(max.status).toBe(201);
     expect(ptx.requests.filter((q) => q.method === "POST")).toHaveLength(1);
   });
@@ -767,7 +717,7 @@ describe("status, result, list, cancel, delete", () => {
     const { ptx, backend } = await setup();
     const caps = await call(backend.url, "GET", "/capabilities");
     // PTX main reports no diarization stage: the relay says it cannot diarize.
-    expect(caps.json).toMatchObject({ max_bytes: MAX_RECORDING_BYTES, admission: "open", diarization: false });
+    expect(caps.json).toMatchObject({ max_bytes: MOCK_PTX_MAX_BYTES, admission: "open", diarization: false });
     expect(ptx.requests[0]!.headers["x-tenant-ref"]).toBeUndefined();
 
     const id = (await create(backend.url)).json.id;
@@ -1043,8 +993,6 @@ describe("correlation ids and logs", () => {
 describe("Phala deploy environment", () => {
   const root = resolve(import.meta.dir, "../../..");
   const KEYS = [
-    "PRIVATE_CLOUD_TRANSCRIPTION_ENABLED",
-    "PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS",
     "PRIVATE_CLOUD_TRANSCRIPTION_API_URL",
     "PRIVATE_CLOUD_TRANSCRIPTION_API_KEY",
     "PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY",
@@ -1056,7 +1004,7 @@ describe("Phala deploy environment", () => {
   const deploy = workflow.jobs.deploy.steps.find((s) => s.name === "Deploy to Phala Cloud")!;
   const sync = workflow.jobs.deploy.steps.find((s) => s.name === "Sync CVM allowed_envs")!;
 
-  test("workflow env, printf writer, compose and .env.example all carry every var; flag defaults off", () => {
+  test("workflow env, printf writer, compose and .env.example carry every PTX setting", () => {
     const compose = loadYaml(readFileSync(resolve(root, "docker-compose.phala.yml"), "utf8")) as {
       services: Record<string, { environment: Record<string, string> }>;
     };
@@ -1067,11 +1015,6 @@ describe("Phala deploy environment", () => {
       expect(compose.services["tinychat-backend"]!.environment[key]).toStartWith(`\${${key}:-`);
       expect(example).toMatch(new RegExp(`^${key}=`, "m"));
     }
-    expect(deploy.env!.PRIVATE_CLOUD_TRANSCRIPTION_ENABLED).toBe("${{ vars.PRIVATE_CLOUD_TRANSCRIPTION_ENABLED || 'false' }}");
-    expect(compose.services["tinychat-backend"]!.environment.PRIVATE_CLOUD_TRANSCRIPTION_ENABLED).toBe(
-      "${PRIVATE_CLOUD_TRANSCRIPTION_ENABLED:-false}",
-    );
-    expect(example).toMatch(/^PRIVATE_CLOUD_TRANSCRIPTION_ENABLED=false$/m);
     expect(deploy.env!.PRIVATE_CLOUD_TRANSCRIPTION_API_KEY).toContain("secrets.PRIVATE_CLOUD_TRANSCRIPTION_API_KEY");
     expect(deploy.env!.PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY).toContain("secrets.PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY");
     expect(deploy.env!.PRIVATE_CLOUD_TRANSCRIPTION_API_URL).toContain("vars.PRIVATE_CLOUD_TRANSCRIPTION_API_URL");
@@ -1084,7 +1027,6 @@ describe("Phala deploy environment", () => {
       const result = Bun.spawnSync(["/bin/bash", "-c", writer], { cwd: temp, env: { RUNNER_TEMP: temp } });
       expect(result.exitCode).toBe(0);
       const env = readFileSync(resolve(temp, "phala-prod.env"), "utf8");
-      expect(env).toContain("PRIVATE_CLOUD_TRANSCRIPTION_ENABLED=false\n");
       for (const key of KEYS) expect(env).toMatch(new RegExp(`^${key}=`, "m"));
       expect(deploy.run).toContain('-e "$ENV_FILE"');
       expect(sync.env?.ENV_FILE).toBe("${{ runner.temp }}/phala-prod.env");
@@ -1290,6 +1232,19 @@ describe("response DTOs", () => {
     expect((await call(backend.url, "GET", `/transcriptions/${ID}/result`)).json.language).toBeNull();
   });
 
+  test("a larger PTX-advertised max_bytes is accepted and relayed", async () => {
+    const { ptx, backend } = await setup();
+    ptx.state.override = (path) => path === "/v1/transcriptions/capabilities"
+      ? { status: 200, body: { max_bytes: NEXT_PTX_MAX_BYTES, max_duration_seconds: 10800, max_channels: 2,
+          content_types: ["audio/mpeg"], transcript_ttl_seconds: 86400, admission: "open" } }
+      : null;
+    const caps = await call(backend.url, "GET", "/capabilities");
+    expect(caps.json.max_bytes).toBe(NEXT_PTX_MAX_BYTES);
+    const large = await create(backend.url, ADDRESS_A, randomUUID(), { ...createBody(), byte_size: NEXT_PTX_MAX_BYTES });
+    expect(large.status).toBe(201);
+    expect(JSON.parse(ptx.requests.find((request) => request.method === "POST")!.body).byte_size).toBe(NEXT_PTX_MAX_BYTES);
+  });
+
   test("an off-contract value anywhere in a success body is upstream_bad_response", async () => {
     const { ptx, backend } = await setup();
     const done = completedResult(ID);
@@ -1305,7 +1260,7 @@ describe("response DTOs", () => {
       [`/transcriptions/${ID}`, 200, job({ status: "failed", error: { code: "cancelled" } })],
       [`/transcriptions/${ID}`, 200, job({ status: "cancelled", error: { code: "no_speech" } })],
       [`/transcriptions/${ID}`, 200, job({ byte_size: "1000" })],
-      [`/transcriptions/${ID}`, 200, job({ byte_size: MAX_RECORDING_BYTES + 1 })],
+      [`/transcriptions/${ID}`, 200, job({ byte_size: Number.MAX_SAFE_INTEGER + 1 })],
       [`/transcriptions/${ID}`, 200, job({ channels: 3 })],
       [`/transcriptions/${ID}`, 200, job({ progress: { stage: "transcribing", queue_position: 0, regions_completed: 8, regions_total: 7 } })],
       [`/transcriptions/${ID}`, 200, job({ progress: { stage: "../x", queue_position: 0, regions_completed: 0, regions_total: 0 } })],
@@ -1439,7 +1394,7 @@ describe("bounded upstream reads", () => {
 // ── Cache-Control, auth/CSRF exception, key separation, OpenAPI, canary (Sol #3–#7) ──
 
 describe("no-store", () => {
-  test("every answer under the mount is no-store; the hidden 404 stays identical to dark", async () => {
+  test("every answer under the mount is no-store", async () => {
     const { ptx, backend } = await setup();
     const created = await create(backend.url);
     const id = created.json.id;
@@ -1461,8 +1416,9 @@ describe("no-store", () => {
     ];
     expect(responses[5]!.json.text).toContain(TRANSCRIPT_TEXT);
     for (const r of responses) expect(r.headers.get("cache-control")).toBe("no-store");
-    const hidden = await call(backend.url, "GET", "/capabilities", { as: ADDRESS_C });
-    expect(hidden.headers.get("cache-control")).toBeNull();
+    const anotherAccount = await call(backend.url, "GET", "/capabilities", { as: ADDRESS_C });
+    expect(anotherAccount.status).toBe(200);
+    expect(anotherAccount.headers.get("cache-control")).toBe("no-store");
   });
 });
 
@@ -1484,7 +1440,7 @@ describe("auth and CSRF (documented exception to the error shape)", () => {
 });
 
 describe("credential separation", () => {
-  test("armed, the batch key and tenant key must differ from the meeting TRANSCRIPTION_API_KEY", () => {
+  test("configured, the batch key and tenant key must differ from the meeting TRANSCRIPTION_API_KEY", () => {
     const env = enabledEnv("https://ptx-batch.example");
     expect(() => privateCloudTranscriptionConfigFromEnv({ ...env, TRANSCRIPTION_API_KEY: PTX_KEY })).toThrow("distinct key from TRANSCRIPTION_API_KEY");
     expect(() => privateCloudTranscriptionConfigFromEnv({ ...env, TRANSCRIPTION_API_KEY: ` ${PTX_KEY} ` })).toThrow("TRANSCRIPTION_API_KEY");
@@ -1494,30 +1450,12 @@ describe("credential separation", () => {
   });
 });
 
-describe("served OpenAPI while dark", () => {
-  test("drops every private-cloud path and PrivateCloud component, leaves no dangling $ref, and does not mutate the source", () => {
+describe("served OpenAPI", () => {
+  test("always advertises the mounted Private routes", () => {
     const spec = loadYaml(readFileSync(resolve(import.meta.dir, "../../openapi.yaml"), "utf8")) as any;
-    const before = JSON.stringify(spec);
-    const dark = withoutPrivateCloudOpenApi(spec) as any;
-    expect(JSON.stringify(spec)).toBe(before);
-    const text = JSON.stringify(dark);
-    expect(text).not.toContain("private-cloud");
-    expect(text).not.toContain("PrivateCloud");
-    const refs: string[] = [];
-    (function walk(o: unknown) {
-      if (!o || typeof o !== "object") return;
-      for (const [k, v] of Object.entries(o)) {
-        if (k === "$ref") refs.push(v as string);
-        else walk(v);
-      }
-    })(dark);
-    for (const ref of refs) {
-      const [, , section, name] = ref.split("/");
-      expect(dark.components[section!][name!]).toBeDefined();
-    }
-    expect(Object.keys(dark.paths).length).toBe(Object.keys(spec.paths).filter((p: string) => !p.startsWith(BASE)).length);
+    expect(spec.paths[`${BASE}/capabilities`]).toBeDefined();
     const index = readFileSync(resolve(import.meta.dir, "../index.ts"), "utf8");
-    expect(index).toContain("privateCloudTranscription.enabled ? fullSpec : withoutPrivateCloudOpenApi(fullSpec)");
+    expect(index).toContain("const spec = fullSpec");
   });
 });
 
@@ -1530,22 +1468,15 @@ describe("deploy canary", () => {
   const run = verify.run!;
   const block = run.slice(run.indexOf("# >>> private-cloud canary"), run.indexOf("# <<< private-cloud canary"));
 
-  test("the probe expects what this deploy shipped", () => {
-    expect(verify.env!.PRIVATE_CLOUD_TRANSCRIPTION_ENABLED).toBe("${{ vars.PRIVATE_CLOUD_TRANSCRIPTION_ENABLED || 'false' }}");
+  test("the probe always expects 401", () => {
     expect(block).toContain("/api/transcriber/private-cloud/capabilities");
-  });
-
-  test.each([
-    ["true", "401", 0],
-    ["true", "404", 1],
-    ["false", "404", 0],
-    ["false", "401", 1],
-    ["", "404", 0],
-  ])("flag=%p answered %s → exit %d", (flag, status, exit) => {
-    const script = `curl() { printf '%s' "$STUB_STATUS"; }\nsleep() { :; }\n${block}`;
-    const result = Bun.spawnSync(["/bin/bash", "-c", script], {
-      env: { PRODUCTION_API_URL: "https://api.example", PRIVATE_CLOUD_TRANSCRIPTION_ENABLED: flag, STUB_STATUS: status },
-    });
-    expect(result.exitCode).toBe(exit);
+    expect(block).toContain("PRIVATE_CLOUD_EXPECT=401");
+    for (const [status, exit] of [["401", 0], ["404", 1], ["503", 1]] as const) {
+      const script = `curl() { printf '%s' "$STUB_STATUS"; }\nsleep() { :; }\n${block}`;
+      const result = Bun.spawnSync(["/bin/bash", "-c", script], {
+        env: { PRODUCTION_API_URL: "https://api.example", STUB_STATUS: status },
+      });
+      expect(result.exitCode).toBe(exit);
+    }
   });
 });

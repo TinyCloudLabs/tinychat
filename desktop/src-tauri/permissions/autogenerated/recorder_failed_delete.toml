@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-recorder-failed-delete"
+description = "Enables the recorder_failed_delete command without any pre-configured scope."
+commands.allow = ["recorder_failed_delete"]
+
+[[permission]]
+identifier = "deny-recorder-failed-delete"
+description = "Denies the recorder_failed_delete command without any pre-configured scope."
+commands.deny = ["recorder_failed_delete"]

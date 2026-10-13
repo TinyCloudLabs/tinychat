@@ -1,0 +1,247 @@
+[
+  {
+    "screen": "legacy-connectors",
+    "selector": "button[aria-label=\"Toggle theme\"]",
+    "check": "touch-target",
+    "reason": "The legacy header's theme toggle is 32px (size-8). The header goes in PR3; Settings → Appearance replaces it.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-connectors",
+    "selector": "nav[aria-label=\"Connectors sections\"] a",
+    "check": "touch-target",
+    "reason": "The Sources and Library tabs drop to md:min-h-0 on touch tablets and phones in landscape (connectorsNav). PR3 moves Library to Capture.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-connectors",
+    "selector": "[role=tablist][aria-label=\"Transcription source\"] > [role=tab]",
+    "check": "touch-target",
+    "reason": "The Transcriber's kind tabs are 28px (TranscriberSection). PR7 replaces them with the Upload and Meeting sheets.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-connectors",
+    "selector": "#transcriber-meeting-url, #transcriber-bot-name",
+    "check": "touch-target",
+    "reason": "The meeting link and bot name fields are 36px (TranscriberSection). PR7's Meeting sheet replaces them.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-connectors",
+    "selector": "#transcriber-meeting-url, #transcriber-bot-name",
+    "check": "input-size",
+    "reason": "The meeting link and bot name fields are 14px, so iOS zooms into them (TranscriberSection). PR7's Meeting sheet replaces them.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-connectors",
+    "selector": "button[aria-label=\"Send bot to meeting\"], button[aria-label=\"Refresh transcriber meetings\"]",
+    "check": "touch-target",
+    "reason": "Explicit h-9 and h-8 heights (TranscriberSection). PR7's Meeting sheet replaces them.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-settings",
+    "selector": "button[aria-label=\"Toggle theme\"]",
+    "check": "touch-target",
+    "reason": "The legacy header's theme toggle is 32px (size-8). The header goes in PR3; Settings → Appearance replaces it.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-settings",
+    "selector": "button[aria-label=\"Back to chat\"]",
+    "check": "touch-target",
+    "reason": "The icon-only Back button is 34px wide on phones (SettingsPage). PR3 gives Settings a PageHeader.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "shell-capture",
+    "selector": "[role=tablist][aria-label=\"Transcription source\"] > [role=tab]",
+    "check": "touch-target",
+    "reason": "The Transcriber's kind tabs are 28px (TranscriberSection, moved to Capture as is). PR7 replaces them with the Upload and Meeting sheets.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "shell-capture-web",
+    "selector": "[role=tablist][aria-label=\"Transcription source\"] > [role=tab]",
+    "check": "touch-target",
+    "reason": "The Transcriber's kind tabs are 28px (TranscriberSection, moved to Capture as is). PR7 replaces them with the Upload and Meeting sheets.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "shell-capture",
+    "selector": "#transcriber-meeting-url, #transcriber-bot-name",
+    "check": "touch-target",
+    "reason": "The meeting link and bot name fields are 36px (TranscriberSection). PR7's Meeting sheet replaces them.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "shell-capture-web",
+    "selector": "#transcriber-meeting-url, #transcriber-bot-name",
+    "check": "touch-target",
+    "reason": "The meeting link and bot name fields are 36px (TranscriberSection). PR7's Meeting sheet replaces them.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "shell-capture",
+    "selector": "#transcriber-meeting-url, #transcriber-bot-name",
+    "check": "input-size",
+    "reason": "The meeting link and bot name fields are 14px, so iOS zooms into them (TranscriberSection). PR7's Meeting sheet replaces them.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "shell-capture-web",
+    "selector": "#transcriber-meeting-url, #transcriber-bot-name",
+    "check": "input-size",
+    "reason": "The meeting link and bot name fields are 14px, so iOS zooms into them (TranscriberSection). PR7's Meeting sheet replaces them.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "shell-capture",
+    "selector": "button[aria-label=\"Send bot to meeting\"], button[aria-label=\"Refresh transcriber meetings\"]",
+    "check": "touch-target",
+    "reason": "Explicit h-9 and h-8 heights (TranscriberSection). PR7's Meeting sheet replaces them.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "shell-capture-web",
+    "selector": "button[aria-label=\"Send bot to meeting\"], button[aria-label=\"Refresh transcriber meetings\"]",
+    "check": "touch-target",
+    "reason": "Explicit h-9 and h-8 heights (TranscriberSection). PR7's Meeting sheet replaces them.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "shell-boot-offline",
+    "selector": "button[data-testid=offline-voice-note-record], button[data-testid=offline-voice-note-stop]",
+    "check": "touch-target",
+    "reason": "The offline recorder's Record and Stop drop to md:h-9 on touch tablets and phones on their side (OfflineVoiceNotes). PR4 restyles the offline recorder.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "shell-capture-scrolled",
+    "selector": "[role=tablist][aria-label=\"Transcription source\"] > [role=tab]",
+    "check": "touch-target",
+    "reason": "The Transcriber's kind tabs are 28px (TranscriberSection, moved to Capture as is). PR7 replaces them with the Upload and Meeting sheets.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "shell-capture-scrolled",
+    "selector": "#transcriber-meeting-url, #transcriber-bot-name",
+    "check": "touch-target",
+    "reason": "The meeting link and bot name fields are 36px (TranscriberSection). PR7's Meeting sheet replaces them.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "shell-capture-scrolled",
+    "selector": "#transcriber-meeting-url, #transcriber-bot-name",
+    "check": "input-size",
+    "reason": "The meeting link and bot name fields are 14px, so iOS zooms into them (TranscriberSection). PR7's Meeting sheet replaces them.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "shell-capture-scrolled",
+    "selector": "button[aria-label=\"Send bot to meeting\"], button[aria-label=\"Refresh transcriber meetings\"]",
+    "check": "touch-target",
+    "reason": "Explicit h-9 and h-8 heights (TranscriberSection). PR7's Meeting sheet replaces them.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "meeting-sources-connected",
+    "selector": ".ms-window .ms-btn1, .ms-window .ms-btn2, .ms-window .ms-close, .ms-window .ms-switch, .ms-window .ms-link, .ms-window .ms-icon-btn, .ms-window .ms-check input",
+    "check": "touch-target",
+    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar. These are the design's pointer-sized controls (34px buttons, 36px close, 22px switch, inline links, 28px copy button, checkbox); the entry card and the confirmation buttons are not listed and must stay 44px.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-connected",
+    "selector": ".ms-soon",
+    "check": "text-size",
+    "reason": "The design's Coming soon badge is 10.5px uppercase.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-not-connected",
+    "selector": ".ms-window .ms-btn1, .ms-window .ms-btn2, .ms-window .ms-close, .ms-window .ms-switch, .ms-window .ms-link, .ms-window .ms-icon-btn, .ms-window .ms-check input",
+    "check": "touch-target",
+    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar. These are the design's pointer-sized controls (34px buttons, 36px close, 22px switch, inline links, 28px copy button, checkbox); the entry card and the confirmation buttons are not listed and must stay 44px.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-not-connected",
+    "selector": ".ms-soon",
+    "check": "text-size",
+    "reason": "The design's Coming soon badge is 10.5px uppercase.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-manage",
+    "selector": ".ms-window .ms-btn1, .ms-window .ms-btn2, .ms-window .ms-close, .ms-window .ms-switch, .ms-window .ms-link, .ms-window .ms-icon-btn, .ms-window .ms-check input",
+    "check": "touch-target",
+    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar. These are the design's pointer-sized controls (34px buttons, 36px close, 22px switch, inline links, 28px copy button, checkbox); the entry card and the confirmation buttons are not listed and must stay 44px.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-manage",
+    "selector": ".ms-soon",
+    "check": "text-size",
+    "reason": "The design's Coming soon badge is 10.5px uppercase.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-rotate",
+    "selector": ".ms-window .ms-btn1, .ms-window .ms-btn2, .ms-window .ms-close, .ms-window .ms-switch, .ms-window .ms-link, .ms-window .ms-icon-btn, .ms-window .ms-check input",
+    "check": "touch-target",
+    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar. These are the design's pointer-sized controls (34px buttons, 36px close, 22px switch, inline links, 28px copy button, checkbox); the entry card and the confirmation buttons are not listed and must stay 44px.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-rotate",
+    "selector": ".ms-soon",
+    "check": "text-size",
+    "reason": "The design's Coming soon badge is 10.5px uppercase.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-disconnect",
+    "selector": ".ms-window .ms-btn1, .ms-window .ms-btn2, .ms-window .ms-close, .ms-window .ms-switch, .ms-window .ms-link, .ms-window .ms-icon-btn, .ms-window .ms-check input",
+    "check": "touch-target",
+    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar. These are the design's pointer-sized controls (34px buttons, 36px close, 22px switch, inline links, 28px copy button, checkbox); the entry card and the confirmation buttons are not listed and must stay 44px.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-disconnect",
+    "selector": ".ms-soon",
+    "check": "text-size",
+    "reason": "The design's Coming soon badge is 10.5px uppercase.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-lookup-loading",
+    "selector": ".ms-window .ms-btn1, .ms-window .ms-btn2, .ms-window .ms-close, .ms-window .ms-switch, .ms-window .ms-link, .ms-window .ms-icon-btn, .ms-window .ms-check input",
+    "check": "touch-target",
+    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar. These are the design's pointer-sized controls (34px buttons, 36px close, 22px switch, inline links, 28px copy button, checkbox); the entry card and the confirmation buttons are not listed and must stay 44px.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-lookup-loading",
+    "selector": ".ms-soon",
+    "check": "text-size",
+    "reason": "The design's Coming soon badge is 10.5px uppercase.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-lookup-failed",
+    "selector": ".ms-window .ms-btn1, .ms-window .ms-btn2, .ms-window .ms-close, .ms-window .ms-switch, .ms-window .ms-link, .ms-window .ms-icon-btn, .ms-window .ms-check input",
+    "check": "touch-target",
+    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar. These are the design's pointer-sized controls (34px buttons, 36px close, 22px switch, inline links, 28px copy button, checkbox); the entry card and the confirmation buttons are not listed and must stay 44px.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-lookup-failed",
+    "selector": ".ms-soon",
+    "check": "text-size",
+    "reason": "The design's Coming soon badge is 10.5px uppercase.",
+    "removeIn": "n/a"
+  }
+]

@@ -1,0 +1,94 @@
+/* Parallel audio and transcript status rows. */
+.pipeline-stepper {
+  width: 100%;
+  font: inherit;
+  font-size: 1rem;
+  color: var(--ink);
+}
+
+.pipeline-stepper-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.pipeline-stepper-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
+  min-width: 0;
+}
+
+.pipeline-stepper-label {
+  flex: 0 1 auto;
+  max-width: 100%;
+  font-size: 0.78125rem;
+  line-height: 1.3;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+.pipeline-stepper-list > li[data-current] .pipeline-stepper-label {
+  color: var(--ink);
+  font-weight: 600;
+}
+.pipeline-stepper-status {
+  flex: 1 1 10em;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 0.78125rem;
+  line-height: 1.3;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.pipeline-stepper-notice {
+  margin: 10px 0 0;
+  font-size: 0.78125rem;
+  line-height: 1.4;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* The pill's own 12.5px / 36px / 44px are fixed pixels; here they follow the root font like the text beside them. */
+.pipeline-stepper .soft-pill {
+  min-height: 2.25rem;
+  padding: 0 0.875rem;
+  font-size: 0.78125rem;
+}
+.pipeline-stepper .soft-pill-hit {
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+}
+
+.pipeline-stepper-blocker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin-top: 10px;
+}
+.pipeline-stepper-action-error {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 0.78125rem;
+  line-height: 1.4;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.pipeline-stepper-cause {
+  flex: 1 1 12rem;
+  min-width: 0;
+  margin: 0;
+  font-size: 0.78125rem;
+  line-height: 1.4;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}

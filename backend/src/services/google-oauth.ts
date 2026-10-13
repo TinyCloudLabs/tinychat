@@ -24,7 +24,8 @@ export const GOOGLE_MEET_SCOPES = [
 ].join(" ");
 
 export const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events.owned.readonly";
-export const GOOGLE_AUTOJOIN_SCOPES = `${GOOGLE_MEET_SCOPES} ${GOOGLE_CALENDAR_SCOPE} openid`;
+/** `email` (TC-581) lets a shared calendar capture match this account against the owner's invite. */
+export const GOOGLE_AUTOJOIN_SCOPES = `${GOOGLE_MEET_SCOPES} ${GOOGLE_CALENDAR_SCOPE} openid email`;
 
 /** The arming flag. Mirrors `connectorWebhooksEnabled()` (index.ts :140-142) exactly. */
 export const GOOGLE_MEET_OAUTH_ENABLED_ENV = "GOOGLE_MEET_OAUTH_ENABLED";
@@ -130,6 +131,8 @@ export interface GoogleTokenPayload {
   scope?: string;
   /** Internal only: verified OIDC subject; never returned to the browser. */
   subject?: string;
+  /** Internal only (TC-581): set only when the ID token says `email_verified === true`; never returned to the browser. */
+  email?: string;
 }
 
 /**
@@ -195,8 +198,10 @@ export interface GoogleOAuthClientOptions {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   /** Tests can substitute verification; production uses Google's signature/issuer/audience/expiry validator. */
-  verifyIdToken?: (idToken: string, audience: string) => Promise<{ sub?: string; nonce?: string }>;
+  verifyIdToken?: (idToken: string, audience: string) => Promise<VerifiedIdentity>;
 }
+
+interface VerifiedIdentity { sub?: string; nonce?: string; email?: string; email_verified?: boolean }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -228,7 +233,7 @@ export class GoogleOAuthClient implements GoogleOAuthPort {
     });
     this.verifyIdToken = options.verifyIdToken ?? (async (idToken, audience) => {
       const ticket = await verifier.verifyIdToken({ idToken, audience });
-      return ticket.getPayload() as { sub?: string; nonce?: string };
+      return ticket.getPayload() as VerifiedIdentity;
     });
   }
 
@@ -290,6 +295,9 @@ export class GoogleOAuthClient implements GoogleOAuthPort {
         const identity = await this.verifyIdToken(idToken, this.config.clientId);
         if (!identity?.sub || identity.nonce !== input.nonce) throw new Error("invalid identity");
         tokens.subject = identity.sub;
+        if (identity.email_verified === true && typeof identity.email === "string" && identity.email.length > 0) {
+          tokens.email = identity.email;
+        }
       } catch {
         throw new GoogleOAuthError({ status: 400, error: "invalid_identity", operation: "exchange" });
       }

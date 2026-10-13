@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "split": "dev",
+  "kind": "speech",
+  "turns": [
+    {
+      "id": "smoke-1",
+      "speaker": "You",
+      "start": 0,
+      "end": 2.05,
+      "text": "The blue kite is flying today.",
+      "sentenceEnds": [6],
+      "tags": [],
+      "words": [
+        { "w": "The", "start": 0, "end": 0.25 },
+        { "w": "blue", "start": 0.25, "end": 0.55 },
+        { "w": "kite", "start": 0.55, "end": 0.95 },
+        { "w": "is", "start": 0.95, "end": 1.2 },
+        { "w": "flying", "start": 1.2, "end": 1.65 },
+        { "w": "today", "start": 1.65, "end": 2.05 }
+      ]
+    }
+  ],
+  "vocabularyVersion": 1
+}

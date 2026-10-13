@@ -1,8 +1,9 @@
 # Connector webhooks — the delegation gate, and the option it selected
 
-**Status: RESOLVED by product decision — Option C is SELECTED and is what this branch builds.
-The backend holds no connector delegation, `backendDelegationPermissions()` stays at v1's
-`threads/`-only scope, and the drafted Option-B consent flow is rejected and deleted.**
+**Historical decision for Fireflies webhook ingestion: Option C is selected.**
+Fireflies deliveries still queue ids for the browser to import; they do not
+create a Fireflies connector delegation. TC-641 adds a separate, feature-gated
+Private Transcription writer. Its current authorization and node gate are in §4.
 
 This is no longer a record of blocked work. The gate below was real, it was walked, and it came
 out at **C**: the server receives signed webhook notifications and queues meeting ids only; the
@@ -291,3 +292,35 @@ none exists today, and Option C's cost is one deferred visit, not a lost meeting
    because a connectors-scoped SQL grant confines to nothing while `V3_VERDICT.json` stands.
 
 Reopening any of this is an operator decision recorded here, not a build-time judgement call.
+
+## 4. TC-641: a separate Private Transcription grant, blocked from prod by TC-825
+
+The earlier "no connector delegation" decision in §§1–3 applies to the
+**Fireflies Option C** webhook route, not to Private Transcription's
+`/api/transcriber/meetings` surface. TC-641 captures the real SDK V1 grant
+shape, verifies its signed UCAN and parent SIWE at acceptance and every use,
+and derives the owner and applications space from the signed chain rather than
+from the portable bundle's unsigned fields. Its narrow SQL `[read, write]`
+grant is for `xyz.tinycloud.tinychat/connectors`; KV `[get, put]` is limited
+to `connectors/tinycloud-transcriber/`. Fireflies custody and the browser
+drain are unchanged. Fireflies and Google consent copy is grant-status-aware:
+the original bytes render when delivery is inactive, while an active grant (or
+unknown status) discloses the separate Private Notetaker transcript writer.
+`test/connectors/fixtures/V3_VERDICT.json` is unchanged.
+
+**The scope-escape gate is still open.** Node SQL/DuckDB exact-database
+scoping is tracked as **TC-825**. Until its fix is deployed, a signed SQL
+capability scoped to the connectors database can address another database
+in the applications space. There is no production risk acceptance; keep
+`TRANSCRIPT_SERVER_DELIVERY_ENABLED=false` in production. With the flag off,
+POST `/api/delegations` rejects before body parsing. Dev-only cohort
+validation needs separate operator approval. The backend grant deliberately
+does **not** contain `tinycloud.sql/schema`: the browser creates tables
+with its own session before minting, and a missing table is a retryable
+`schema_missing` status rather than backend DDL.
+
+The older assertions above about an unverified generic delegation describe
+the pre-TC-641 implementation and are retained as the historical reason
+Fireflies chose Option C. They do not describe the new signed transcript
+grant. Its rollout and governor are documented in `docs/deployment.md` and
+`docs/connector-webhooks-kv-write-budget.md` §2.4.

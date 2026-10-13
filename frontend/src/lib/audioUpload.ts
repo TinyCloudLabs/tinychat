@@ -15,6 +15,7 @@
 // recorded as not stored.
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { captureEvents } from "@/capture/captureEvents";
 
 import {
   AudioStoreQuotaError,
@@ -32,6 +33,7 @@ import {
   type AssemblyAiKeyMode,
   type AssemblyAiTranscript,
 } from "./assemblyai";
+import { withHostedUploadQueue } from "./hostedUploadQueue";
 import type { NormalizedMeeting } from "./connectors/connectorStore";
 import type { FirefliesSentence } from "./connectors/firefliesClient";
 import { NO_SPEECH_MESSAGE, type LocalTranscriptSaver, type PreparedLocalTranscript } from "./localTranscriber";
@@ -58,11 +60,6 @@ export const UPLOAD_MEETING_SOURCE = "exo-upload";
 export const UPLOAD_MEETING_SOURCE_LABEL = "Uploaded audio";
 
 export type UploadEngine = "private-cloud" | "assemblyai";
-
-export const UPLOAD_ENGINE_LABELS: Readonly<Record<UploadEngine, string>> = {
-  "private-cloud": "Private",
-  assemblyai: "AssemblyAI",
-};
 
 export const UPLOAD_ENGINE_STORAGE_KEY = "exo.transcriber.uploadEngine";
 export const UPLOAD_PENDING_STORAGE_KEY = "exo.transcriber.uploadPending";
@@ -380,6 +377,11 @@ export type AudioStage = "storing" | "stored" | "quota" | "failed" | "not-stored
 
 export interface UploadState {
   engine: UploadEngine;
+  /**
+   * AssemblyAI: whose account this upload uses, as stored with the job (not
+   * the current Settings, which may have changed since it started).
+   */
+  assemblyAiMode?: AssemblyAiKeyMode;
   fileName: string;
   stage: UploadStage;
   /** Percent of the file sent to the engine while uploading. */
@@ -515,6 +517,11 @@ export interface UploadRunner {
   reset(): void;
 }
 
+/** Whose AssemblyAI account a stored job uses, as the runner reads it: a record from before key modes used the user's own key. */
+function jobAssemblyAiMode(job: Pick<PendingUpload, "engine" | "assemblyAiMode">): AssemblyAiKeyMode | undefined {
+  return job.engine === "assemblyai" ? (job.assemblyAiMode ?? "own") : undefined;
+}
+
 export function createUploadRunner(): UploadRunner {
   let state: UploadState | null = null;
   let running = false;
@@ -577,9 +584,11 @@ export function createUploadRunner(): UploadRunner {
     audioAbort = null;
     if (task !== null) await task;
   };
-  const showElsewhere = (job: Pick<PendingUpload, "engine" | "file"> | null, fallback?: UploadInput) => {
+  const showElsewhere = (job: Pick<PendingUpload, "engine" | "file" | "assemblyAiMode"> | null, fallback?: UploadInput) => {
+    const mode = job !== null ? jobAssemblyAiMode(job) : fallback?.engine === "assemblyai" ? (fallback.assemblyAiMode ?? "hosted") : undefined;
     state = {
       engine: job?.engine ?? fallback?.engine ?? "private-cloud",
+      ...(mode !== undefined ? { assemblyAiMode: mode } : {}),
       fileName: job?.file.name ?? fallback?.file.name ?? "",
       stage: "elsewhere",
       uploadPct: null,
@@ -721,7 +730,7 @@ export function createUploadRunner(): UploadRunner {
     const poller = createCloudJobPoller(pc.api, {
       clock: deps.clock,
       connectionLost: () =>
-        new PrivateCloudError("offline", "Lost contact with private cloud transcription for 10 minutes. The job may still be running; Retry keeps waiting."),
+        new PrivateCloudError("offline", "Lost contact with private cloud transcription. The job may still be running; Retry keeps waiting."),
     });
     let transcript: PrivateCloudTranscript;
     try {
@@ -740,39 +749,43 @@ export function createUploadRunner(): UploadRunner {
   }
 
   async function transcribeAssemblyAi(deps: UploadDeps, job: PendingUpload, client: AssemblyAiClient, r: Run): Promise<UploadTranscript> {
-    if (job.jobId === null) {
-      let uploadRef = job.uploadRef ?? null;
-      if (uploadRef === null) {
-        const file = r.file;
-        if (file === null) throw new NeedsFileError("The upload didn't reach AssemblyAI before the page closed. Choose the file again.");
-        runSet(r, { stage: "uploading", uploadPct: 0, detail: null });
-        uploadRef = await client.upload(file, {
-          signal: r.signal,
-          contentType: storedContentType(file),
-          onProgress: (done, total) => runSet(r, { uploadPct: total > 0 ? Math.round((done / total) * 100) : null }),
-        });
-        stillLive(r);
-        // Kept before the transcript is requested: a reload while the file is still being sent on
-        // re-joins that submission instead of losing the file.
-        job = runPersist(r, deps, { ...job, uploadRef, uploadCreatedAt: (deps.clock ?? REAL_CLOCK).now(), cleanup: undefined });
-      }
-      runSet(r, { stage: "queued", uploadPct: null, detail: "Sending the file to AssemblyAI…" });
-      let created: AssemblyAiTranscript;
-      // Persist before sending: a lost response or reload cannot prove the POST wasn't accepted.
-      if (job.assemblyAiMode === "hosted") job = runPersist(r, deps, { ...job, uploadSubmitting: true });
-      try {
-        created = await client.createTranscript(uploadRef, { speakerLabels: job.diarize, signal: r.signal });
-      } catch (err) {
-        // Hosted references survive all ambiguous failures, including rate limits and session expiry.
-        const ended = err instanceof AssemblyAiError && err.uploadEnded && !(err.kind === "not-found" && job.uploadSubmitting);
-        if (job.assemblyAiMode === "hosted" ? ended : !(err instanceof AssemblyAiError && err.kind === "network")) {
-          runPersist(r, deps, { ...job, uploadRef: undefined, uploadSubmitting: undefined });
+    const prepareUpload = async () => {
+      if (job.jobId === null) {
+        let uploadRef = job.uploadRef ?? null;
+        if (uploadRef === null) {
+          const file = r.file;
+          if (file === null) throw new NeedsFileError("The upload didn't reach AssemblyAI before the page closed. Choose the file again.");
+          runSet(r, { stage: "uploading", uploadPct: 0, detail: null });
+          uploadRef = await client.upload(file, {
+            signal: r.signal,
+            contentType: storedContentType(file),
+            onProgress: (done, total) => runSet(r, { uploadPct: total > 0 ? Math.round((done / total) * 100) : null }),
+          });
+          stillLive(r);
+          // Kept before the transcript is requested: a reload while the file is still being sent on
+          // re-joins that submission instead of losing the file.
+          job = runPersist(r, deps, { ...job, uploadRef, uploadCreatedAt: (deps.clock ?? REAL_CLOCK).now(), cleanup: undefined });
         }
-        throw err;
+        runSet(r, { stage: "queued", uploadPct: null, detail: "Sending the file to AssemblyAI…" });
+        let created: AssemblyAiTranscript;
+        // Persist before sending: a lost response or reload cannot prove the POST wasn't accepted.
+        if (job.assemblyAiMode === "hosted") job = runPersist(r, deps, { ...job, uploadSubmitting: true });
+        try {
+          created = await client.createTranscript(uploadRef, { speakerLabels: job.diarize, signal: r.signal });
+        } catch (err) {
+          // Hosted references survive all ambiguous failures, including rate limits and session expiry.
+          const ended = err instanceof AssemblyAiError && err.uploadEnded && !(err.kind === "not-found" && job.uploadSubmitting);
+          if (job.assemblyAiMode === "hosted" ? ended : !(err instanceof AssemblyAiError && err.kind === "network")) {
+            runPersist(r, deps, { ...job, uploadRef: undefined, uploadSubmitting: undefined });
+          }
+          throw err;
+        }
+        stillLive(r);
+        job = runPersist(r, deps, { ...job, jobId: created.id, uploadRef: undefined, uploadSubmitting: undefined });
       }
-      stillLive(r);
-      job = runPersist(r, deps, { ...job, jobId: created.id, uploadRef: undefined, uploadSubmitting: undefined });
-    }
+    };
+    if (job.assemblyAiMode === "hosted") await withHostedUploadQueue(deps.tcw.did, async () => { stillLive(r); await prepareUpload(); });
+    else await prepareUpload();
     runSet(r, { stage: "queued", uploadPct: null, detail: "Queued at AssemblyAI…" });
     const done = await pollAssemblyAiTranscript(client, job.jobId!, {
       clock: deps.clock,
@@ -904,6 +917,7 @@ export function createUploadRunner(): UploadRunner {
         // Signed out meanwhile: nothing more is written for this account from this tab.
         if (!live(r)) return;
         job = persist(deps, { ...job, saved: true, audio });
+        captureEvents.emit("library-changed", { source: prepared.meeting.source, sourceId: prepared.meeting.sourceId });
         set({ savedTitle: prepared.meeting.title });
       }
       try {
@@ -955,8 +969,10 @@ export function createUploadRunner(): UploadRunner {
   }
 
   const show = (job: PendingUpload) => {
+    const mode = jobAssemblyAiMode(job);
     state = {
       engine: job.engine,
+      ...(mode !== undefined ? { assemblyAiMode: mode } : {}),
       fileName: job.file.name,
       stage: job.saved ? "saving" : "preparing",
       uploadPct: null,

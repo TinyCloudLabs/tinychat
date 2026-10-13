@@ -5,9 +5,12 @@ import { CONNECTORS_SQL_DB_NAME, transcriptKvKey } from "./connectorStore.js";
 import type { FirefliesSentence } from "./firefliesClient.js";
 import {
   EXPLORER_MEETING_SOURCES,
+  findMeetingId,
   listMeetings,
+  listMeetingsRead,
   meetingSourceLabel,
   readMeetingAudio,
+  readMeetingMetadata,
   readTranscript,
   transcriptCopyText,
   type MeetingAudioRead,
@@ -112,6 +115,7 @@ describe("listMeetings", () => {
         sourceId: "src-1",
         title: "Standup",
         startedAt: "2026-08-01T10:00:00.000Z",
+        durationSecs: null,
       },
       {
         id: "row-2",
@@ -119,6 +123,7 @@ describe("listMeetings", () => {
         sourceId: "src-2",
         title: "Retro",
         startedAt: "2026-07-30T10:00:00.000Z",
+        durationSecs: null,
       },
     ]);
   });
@@ -187,7 +192,7 @@ describe("listMeetings", () => {
       sql: { ok: true, data: { rows: [["row-1", "fireflies", "src-1", null, 1723600000]] } },
     });
     expect(await listMeetings(tcw)).toEqual([
-      { id: "row-1", source: "fireflies", sourceId: "src-1", title: null, startedAt: null },
+      { id: "row-1", source: "fireflies", sourceId: "src-1", title: null, startedAt: null, durationSecs: null },
     ]);
   });
 
@@ -217,6 +222,7 @@ describe("listMeetings", () => {
         sourceId: "conf-7",
         title: "Keeper",
         startedAt: null,
+        durationSecs: null,
       },
     ]);
   });
@@ -237,11 +243,147 @@ describe("listMeetings", () => {
   });
 });
 
+describe("listMeetingsRead", () => {
+  it("reads duration_secs, and only a number counts", async () => {
+    const { tcw, sqlCalls } = fakeTcw({
+      sql: {
+        ok: true,
+        data: {
+          rows: [
+            ["row-1", "exo-voice-note", "rec-1", "Voice note", "2026-10-06T09:28:00.000Z", 42],
+            ["row-2", "fireflies", "src-2", "Standup", "2026-10-05T14:00:00.000Z", "1880"],
+          ],
+        },
+      },
+    });
+    const read = await listMeetingsRead(tcw);
+    expect(read.status).toBe("ok");
+    expect(read.status === "ok" && read.meetings.map((m) => m.durationSecs)).toEqual([42, null]);
+    expect(sqlCalls[0].sql).toContain("duration_secs");
+  });
+
+  it("carries voice-note pipeline metadata from the listing only for voice notes", async () => {
+    const projectedMetadata = JSON.stringify({
+      transcription_outcome: "transcribed",
+      note_kv_key: "recording-note.md",
+      note_edited_at: "2026-10-11T10:00:00.000Z",
+      audio_kv_key: "voice/audio",
+      audio_stored: 1,
+    });
+    const { tcw, sqlCalls } = fakeTcw({
+      sql: { ok: true, data: { rows: [
+        ["row-voice", "exo-voice-note", "rec-1", null, "2026-10-11T10:00:00.000Z", 42, projectedMetadata],
+        ["row-meeting", "fireflies", "src-1", "Standup", "2026-10-10T10:00:00.000Z", 180, null],
+        ["row-no-metadata", "exo-voice-note", "rec-2", null, "2026-10-09T10:00:00.000Z", 42, null],
+        ["row-invalid-metadata", "exo-voice-note", "rec-3", null, "2026-10-08T10:00:00.000Z", 42, "invalid"],
+      ] } },
+    });
+
+    const read = await listMeetingsRead(tcw);
+    expect(read.status).toBe("ok");
+    if (read.status !== "ok") return;
+    expect(read.meetings[0]?.metadata).toEqual({
+      transcription_outcome: "transcribed",
+      note_kv_key: "recording-note.md",
+      note_edited_at: "2026-10-11T10:00:00.000Z",
+      audio_kv_key: "voice/audio",
+      audio_stored: 1,
+    });
+    expect(read.meetings[0]?.metadata).not.toHaveProperty("transcript_text");
+    expect(read.meetings[1]).toMatchObject({
+      id: "row-meeting",
+      source: "fireflies",
+      sourceId: "src-1",
+      title: "Standup",
+      startedAt: "2026-10-10T10:00:00.000Z",
+      durationSecs: 180,
+    });
+    expect(read.meetings[1]?.metadata).toBeUndefined();
+    expect(read.meetings[2]?.metadata).toBeNull();
+    expect(read.meetings[3]?.metadata).toBeUndefined();
+    expect(sqlCalls[0]?.sql).toContain("json_valid(metadata)");
+    expect(sqlCalls[0]?.sql).toContain("json_extract(metadata, '$.note_kv_key')");
+    expect(sqlCalls[0]?.sql).toContain("json_extract(metadata, '$.audio_kv_key')");
+    expect(sqlCalls[0]?.sql).toContain("json_extract(metadata, '$.audio.stored')");
+    expect(sqlCalls[0]?.sql).not.toMatch(/SELECT[^\n]*,\s*metadata\s+FROM/s);
+  });
+
+  it("an ordinary empty space is ok and empty; a store error, a refused read or a throwing transport is failed", async () => {
+    for (const error of [
+      { code: "STORE_ERROR", message: "no such table: connector_meeting" },
+      { code: "SQL_DB_NOT_FOUND", message: "no database" },
+    ]) {
+      expect(await listMeetingsRead(fakeTcw({ sql: { ok: false, error } }).tcw)).toEqual({ status: "ok", meetings: [] });
+    }
+    // An expired session: an error the Library shows (with Try again), never an empty Library.
+    for (const error of [
+      { code: "SQL_ERROR", message: "boom" },
+      { code: "AUTH_UNAUTHORIZED", message: "unauthorized" },
+    ]) {
+      expect(await listMeetingsRead(fakeTcw({ sql: { ok: false, error } }).tcw)).toEqual({ status: "failed" });
+    }
+    expect(await listMeetingsRead(throwingTcw())).toEqual({ status: "failed" });
+    expect(await listMeetingsRead(throwingTcw("sync"))).toEqual({ status: "failed" });
+  });
+});
+
+describe("findMeetingId", () => {
+  it("finds a row's id by source and source id, in one read", async () => {
+    const { tcw, sqlCalls } = fakeTcw({ sql: { ok: true, data: { rows: [["row-9"]] } } });
+    expect(await findMeetingId(tcw, "exo-voice-note", "rec-1")).toEqual({ status: "ok", id: "row-9" });
+    expect(sqlCalls).toHaveLength(1);
+    expect(sqlCalls[0].params).toEqual(["exo-voice-note", "rec-1"]);
+    expect(sqlCalls[0].sql).toContain("WHERE source = ? AND source_id = ?");
+  });
+
+  it("no row (or no table yet) is absent; a store error or a throwing transport is failed", async () => {
+    expect(await findMeetingId(fakeTcw({ sql: { ok: true, data: { rows: [] } } }).tcw, "exo-voice-note", "rec-1")).toEqual({ status: "absent" });
+    expect(
+      await findMeetingId(fakeTcw({ sql: { ok: false, error: { code: "STORE_ERROR", message: "no such table: connector_meeting" } } }).tcw, "s", "x"),
+    ).toEqual({ status: "absent" });
+    expect(await findMeetingId(fakeTcw({ sql: { ok: false, error: { code: "SQL_ERROR", message: "boom" } } }).tcw, "s", "x")).toEqual({
+      status: "failed",
+    });
+    expect(await findMeetingId(throwingTcw(), "s", "x")).toEqual({ status: "failed" });
+  });
+});
+
+describe("readMeetingMetadata", () => {
+  it("reads the row's metadata object; no row or a non-object is absent; a rejected query is failed", async () => {
+    const meta = { capture: "upload", transcript_provider: "assemblyai", assemblyai_account: "own" };
+    expect(await readMeetingMetadata(fakeTcw({ sql: { ok: true, data: { rows: [[JSON.stringify(meta)]] } } }).tcw, "m-1")).toEqual({
+      status: "ok",
+      metadata: meta,
+    });
+    expect(await readMeetingMetadata(fakeTcw({ sql: { ok: true, data: { rows: [] } } }).tcw, "m-1")).toEqual({ status: "absent" });
+    expect(await readMeetingMetadata(fakeTcw({ sql: { ok: true, data: { rows: [["[1,2]"]] } } }).tcw, "m-1")).toEqual({
+      status: "absent",
+    });
+    expect(
+      await readMeetingMetadata(fakeTcw({ sql: { ok: false, error: { code: "SQL_ERROR", message: "boom" } } }).tcw, "m-1"),
+    ).toEqual({ status: "failed" });
+  });
+});
+
 describe("readTranscript", () => {
   const stored = [
     sentence({ index: 0, speaker_name: "Ada", text: "Morning." }),
     sentence({ index: 1, speaker_name: null, text: "Morning back." }),
   ];
+
+  it("reads a committed body key instead of the fixed key", async () => {
+    const { tcw, kvKeys } = fakeTcw({ kv: { ok: true, data: { data: JSON.stringify(stored), headers: {} } } });
+    const key = "xyz.tinycloud.tinychat/connectors/exo-voice-note/transcript-rev/rec/hash";
+    expect(await readTranscript(tcw, "exo-voice-note", "rec", key)).toEqual({ status: "ok", sentences: stored });
+    expect(kvKeys).toEqual([key]);
+  });
+
+  it("shows the winning legacy row text when the fixed body is stale", async () => {
+    const { tcw } = fakeTcw({ kv: { ok: true, data: { data: JSON.stringify(stored), headers: {} } } });
+    expect(await readTranscript(tcw, "exo-voice-note", "rec", undefined, "Newer words")).toEqual({
+      status: "ok", sentences: [{ index: 0, speaker_name: null, text: "Newer words", start_time: 0, end_time: 0 }],
+    });
+  });
 
   it("parses a JSON-stringified payload", async () => {
     const { tcw } = fakeTcw({

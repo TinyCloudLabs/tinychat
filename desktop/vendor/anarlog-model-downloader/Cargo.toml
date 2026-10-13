@@ -1,0 +1,26 @@
+# Vendored from https://github.com/fastrepl/anarlog @ 864ddc1f692116d128eea2692fd72b0a51007768
+# (crates/model-downloader, MIT-licensed). See PROVENANCE.md for the local change and why.
+[package]
+name = "model-downloader"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+specta = ["dep:specta"]
+
+[dependencies]
+anlg-download-interface = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "download-interface" }
+anlg-file = { path = "../anarlog-file", package = "file" }
+
+serde = { version = "1", features = ["derive"] }
+specta = { version = "2.0.0-rc.22", features = ["derive"], optional = true }
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "macros", "fs", "sync", "time"] }
+tokio-util = "0.7.15"
+tracing = "0.1"
+zip = "2"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["time", "net", "io-util"] }
+wiremock = "0.6"

@@ -1,6 +1,6 @@
 // ── Re-export everything ─────────────────────────────────────────────
 
-export { connectWallet, type ConnectWalletConfig, type ConnectWalletResult } from "./openkey.js";
+export { connectWallet, type ConnectWalletConfig, type ConnectWalletResult, type EIP1193Provider } from "./openkey.js";
 
 export {
   createTinyCloudWeb,

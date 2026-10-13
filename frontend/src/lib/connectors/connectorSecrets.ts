@@ -7,6 +7,7 @@
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
+import { secretsAvailable, SECRETS_UNAVAILABLE_IN_APP_MESSAGE } from "../openkeyNative";
 import type { ConnectorDescriptor } from "./types";
 
 /** Same Result shape the SDK uses. Errors propagate untouched. */
@@ -38,6 +39,9 @@ function isNotFoundShaped(err: unknown): boolean {
 }
 
 export function isSecretsUnlocked(tcw: SecretsTcw): boolean {
+  // Native OpenKey sessions have no secrets space at all; report locked so
+  // every deferred path stays a no-op instead of touching tcw.secrets.
+  if (!secretsAvailable()) return false;
   return tcw.secrets.isUnlocked;
 }
 
@@ -126,6 +130,14 @@ function notifySecretsUnlocked(): void {
 export async function unlockSecrets<E>(
   tcw: SecretsTcw,
 ): Promise<SecretsResult<void, E>> {
+  // Choke-point gate (native OpenKey sessions carry no secrets capability):
+  // every production unlock site funnels here, so one refusal covers them all.
+  if (!secretsAvailable()) {
+    return {
+      ok: false,
+      error: { code: "secrets-unavailable", message: SECRETS_UNAVAILABLE_IN_APP_MESSAGE } as E,
+    };
+  }
   const result = (await tcw.secrets.unlock()) as SecretsResult<void, E>;
   // Rewrite only this one error's message into something the user can act on.
   // The code and the rest of the error are preserved for logs — no swallowing,

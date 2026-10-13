@@ -91,8 +91,11 @@ export class AudioStoreQuotaError extends AudioStoreError {
 
 interface RetryOptions {
   signal?: AbortSignal;
+  schedule?: <T>(call: (signal?: AbortSignal) => Promise<T>, operation?: string, timeoutMs?: number,
+    payloadBytes?: number) => Promise<T>;
   /** Waits before each retry of a transient failure; its length bounds the retries. Tests pass zeros. */
   retryDelaysMs?: readonly number[];
+  onRetry?: (attempt: number, code: string) => void;
 }
 
 export interface PutAudioOptions extends RetryOptions {
@@ -101,6 +104,8 @@ export interface PutAudioOptions extends RetryOptions {
   sha256?: string | null;
   /** Bytes per stored part, at most (and by default) {@link MAX_AUDIO_PART_SIZE}. */
   partSize?: number;
+  /** Called after resumable-part discovery and before the first audio transfer. */
+  onUploadStart?: (totalBytes: number) => void;
   onProgress?: (storedBytes: number, totalBytes: number) => void;
 }
 
@@ -194,14 +199,16 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  * with bounded backoff. An aborted call throws AbortError; any other failure is
  * returned for the caller to classify.
  */
-async function withRetry<T>(call: () => Promise<Result<T>>, opts: RetryOptions): Promise<Result<T>> {
+async function withRetry<T>(call: (signal?: AbortSignal) => Promise<Result<T>>, opts: RetryOptions, operation = "audio KV request",
+  payloadBytes = 0): Promise<Result<T>> {
   const { signal } = opts;
   const delays = opts.retryDelaysMs ?? RETRY_DELAYS_MS;
   for (let attempt = 0; ; attempt++) {
     if (signal?.aborted) throw abortError();
-    const res = await call();
+    const res = await (opts.schedule ? opts.schedule(call, operation, undefined, payloadBytes) : call(signal));
     if (!res.ok && (res.error.code === "ABORTED" || signal?.aborted)) throw abortError();
     if (res.ok || attempt >= delays.length || !isTransient(res.error)) return res;
+    opts.onRetry?.(attempt + 1, res.error.code ?? "STORE_ERROR");
     await sleep(delays[attempt]!, signal);
   }
 }
@@ -213,8 +220,8 @@ async function listKeys(kv: TinyCloudKv, prefix: string, opts: RetryOptions): Pr
   let cursor: string | undefined;
   for (;;) {
     const page = await withRetry(
-      () => kv.list({ path: prefix, ...(cursor === undefined ? {} : { cursor }), signal: opts.signal }),
-      opts,
+      (deadlineSignal) => kv.list({ path: prefix, ...(cursor === undefined ? {} : { cursor }), signal: deadlineSignal ?? opts.signal }),
+      opts, `KV list ${prefix}`,
     );
     if (!page.ok) throw kvError(`list ${prefix}`, page.error);
     for (const key of page.data.keys) {
@@ -262,6 +269,7 @@ export async function putAudio(
   }
 
   const existing = new Set(await listKeys(kv, `${base}/p/`, opts));
+  opts.onUploadStart?.(total);
 
   const parts: StoredAudioPart[] = [];
   let stored = 0;
@@ -285,8 +293,8 @@ export async function putAudio(
         throw new AudioStoreError(AUDIO_SOURCE_READ_FAILED, `audioStore read part ${index}: got ${got} of ${length} bytes`);
       }
       const res = await withRetry(
-        () => kv.put(key, part, { contentType: "application/octet-stream", signal: opts.signal }),
-        opts,
+        (deadlineSignal) => kv.put(key, part, { contentType: "application/octet-stream", signal: deadlineSignal ?? opts.signal }),
+        opts, `KV put ${key}`, length,
       );
       if (!res.ok) throw kvError(`put part ${index}`, res.error);
       etag = res.data?.headers?.etag ?? null;
@@ -307,8 +315,8 @@ export async function putAudio(
     createdAt: new Date().toISOString(),
   };
   const written = await withRetry(
-    () => kv.put(audioManifestKey(base), JSON.stringify(manifest), { contentType: "application/json", signal: opts.signal }),
-    opts,
+    (deadlineSignal) => kv.put(audioManifestKey(base), JSON.stringify(manifest), { contentType: "application/json", signal: deadlineSignal ?? opts.signal }),
+    opts, `KV put ${audioManifestKey(base)}`,
   );
   if (!written.ok) throw kvError("put manifest", written.error);
   return manifest;
@@ -373,7 +381,8 @@ export async function getAudioManifest(
   base: string,
   opts: RetryOptions = {},
 ): Promise<StoredAudioManifest | null> {
-  const res = await withRetry(() => kv.get(audioManifestKey(base), { signal: opts.signal }), opts);
+  const res = await withRetry((deadlineSignal) => kv.get(audioManifestKey(base), { signal: deadlineSignal ?? opts.signal }), opts,
+    `KV get ${audioManifestKey(base)}`);
   if (!res.ok) {
     if (res.error.code === "KV_NOT_FOUND") return null;
     throw kvError("get manifest", res.error);
@@ -409,13 +418,13 @@ export async function getAudio(
     const key = audioPartKey(base, index);
     const res = await withRetry(
       // The SDK's binary read is `new Uint8Array(await response.arrayBuffer())`.
-      () => kv.get<Uint8Array<ArrayBuffer>>(key, {
+      (deadlineSignal) => kv.get<Uint8Array<ArrayBuffer>>(key, {
         binary: true,
-        ...(signal ? { signal } : {}),
+        ...(deadlineSignal || signal ? { signal: deadlineSignal ?? signal } : {}),
         // Refuse an oversized part at the node instead of downloading it.
         ...(expected > 0 ? { maxResponseBytes: expected } : {}),
       }),
-      opts,
+      opts, `KV get ${key}`,
     );
     if (!res.ok) throw kvError(`get part ${index}`, res.error);
     const bytes = res.data.data;

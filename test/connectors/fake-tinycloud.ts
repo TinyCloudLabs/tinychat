@@ -582,7 +582,7 @@ export function makeFakeTinyCloud(opts: MakeFakeOptions = {}): FakeTinyCloud {
 
   const tcw = {
     did: opts.did ?? "did:example:mock-tinycloud",
-    spaceId: undefined,
+    spaceId: "tinycloud:mock-space",
     sql: {
       db: (name: string) => {
         dbNamesRequested.push(name);

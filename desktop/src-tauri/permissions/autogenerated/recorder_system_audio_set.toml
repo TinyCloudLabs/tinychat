@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-recorder-system-audio-set"
+description = "Enables the recorder_system_audio_set command without any pre-configured scope."
+commands.allow = ["recorder_system_audio_set"]
+
+[[permission]]
+identifier = "deny-recorder-system-audio-set"
+description = "Denies the recorder_system_audio_set command without any pre-configured scope."
+commands.deny = ["recorder_system_audio_set"]

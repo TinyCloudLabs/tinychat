@@ -105,6 +105,17 @@ describe("audioStore", () => {
     }
   });
 
+  test("reports each transient retry with its attempt and error code", async () => {
+    const fake = new FakeKv();
+    const part = `${BASE}/p/000001`;
+    fake.putFailures.set(part, { code: "NETWORK_ERROR", message: "temporary", service: "kv" });
+    const retries: Array<[number, string]> = [];
+    await putAudio(fake.kv, BASE, blobPartSource(audioBlob()), {
+      ...OPTS, retryDelaysMs: [0], onRetry: (attempt, code) => retries.push([attempt, code]),
+    });
+    expect(retries).toEqual([[1, "NETWORK_ERROR"]]);
+  });
+
   test("an interrupted upload resumes without re-sending stored parts and reads back byte-identical", async () => {
     const fake = new FakeKv();
     const controller = new AbortController();

@@ -12,40 +12,36 @@
 //
 // TinyCloud SQLite authorizer restrictions (from listen): no CREATE INDEX,
 // no UNIQUE constraints, no REFERENCES. Dedup is app-level (SELECT before
-// INSERT). CREATE TABLE IF NOT EXISTS can return "not authorized" when the
-// table already exists — on that error, probe SELECT 1 FROM <table> LIMIT 1
-// and treat success as schema-ready.
+// INSERT). Schema existence is checked through sqlite_master before any DDL,
+// so existing tables remain readable when storage is full.
 //
 // Sequential writes only — TinyCloud drops concurrent responses.
 //
 // All exported functions return Result-style objects (spec §4). Callers
 // branch on `.ok`; nothing throws across the module boundary.
 
+import { reportStorageError, reportStorageWriteSucceeded, storageSaveMessage, trackStorageWrites } from "../storageStatus";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import { APP_ID } from "../threadStore";
+import {
+  CONNECTORS_SQL_DB_NAME,
+  CONNECTORS_KV_PREFIX,
+  CONNECTOR_SCHEMA,
+  transcriptKvKey,
+  type NormalizedMeeting,
+} from "@tinyboilerplate/core";
+export {
+  CONNECTORS_SQL_DB_NAME,
+  CONNECTORS_KV_PREFIX,
+  transcriptKvKey,
+  type NormalizedMeeting,
+} from "@tinyboilerplate/core";
 import type {
   FirefliesSentence,
   FirefliesTranscript,
 } from "./firefliesClient";
 import type { ConnectorConnection, ConnectorId } from "./types";
 
-/** Full resolved SQL db path — must match the granted resource string. */
-export const CONNECTORS_SQL_DB_NAME = `${APP_ID}/connectors`;
-
-/**
- * Full resolved KV key prefix — must match the granted resource string.
- * The manifest grants `tinycloud.kv` on `connectors/`, which resolves to
- * `${APP_ID}/connectors/` (trailing slash = prefix match), so every key the
- * store writes has to start here. Single source of the prefix — callers build
- * keys through {@link transcriptKvKey}, never by hand.
- */
-export const CONNECTORS_KV_PREFIX = `${APP_ID}/connectors`;
-
-/** Full KV key for a source's transcript body. */
-export function transcriptKvKey(source: string, sourceId: string): string {
-  return `${CONNECTORS_KV_PREFIX}/${source}/transcript/${sourceId}`;
-}
 
 /** Connector-scoped Drive Changes cursor; it is not the UI sync timestamp. */
 export function driveCursorKvKey(source: string): string {
@@ -68,6 +64,8 @@ export function meetingKvKey(source: string, sourceId: string): string {
 export interface StoreError {
   code: string;
   message: string;
+  /** Raw underlying error object; it may contain credential-bearing URLs. Never log this directly. */
+  cause?: unknown;
 }
 
 export type StoreResult<T> =
@@ -79,49 +77,12 @@ type UnderlyingError = { code?: string; message?: string };
 function fail(err: UnderlyingError, context: string): { ok: false; error: StoreError } {
   const code = typeof err.code === "string" && err.code.length > 0 ? err.code : "STORE_ERROR";
   const msg = typeof err.message === "string" && err.message.length > 0 ? err.message : "unknown";
-  return { ok: false, error: { code, message: `${context}: [${code}] ${msg}` } };
+  reportStorageError(err);
+  return { ok: false, error: { code, message: storageSaveMessage(err) ?? `${context}: [${code}] ${msg}` } };
 }
 
-/** Schema statements, executed one at a time so the "not authorized" fallback
- *  can probe per-table. Kept intentionally minimal — no CREATE INDEX / UNIQUE /
- *  REFERENCES (authorizer forbids them); dedup is app-level. */
-const SCHEMA: { sql: string; table: string }[] = [
-  {
-    table: "connector_state",
-    sql: `CREATE TABLE IF NOT EXISTS connector_state (
-      connector_id TEXT PRIMARY KEY,
-      status TEXT NOT NULL,
-      last_synced_at TEXT,
-      last_sync_status TEXT,
-      last_sync_error TEXT,
-      item_count INTEGER NOT NULL DEFAULT 0,
-      updated_at TEXT NOT NULL
-    )`,
-  },
-  {
-    table: "connector_meeting",
-    sql: `CREATE TABLE IF NOT EXISTS connector_meeting (
-      id TEXT PRIMARY KEY,
-      source TEXT NOT NULL,
-      source_id TEXT NOT NULL,
-      title TEXT,
-      started_at TEXT,
-      duration_secs REAL,
-      organizer_email TEXT,
-      participants TEXT,
-      summary_overview TEXT,
-      summary_action_items TEXT,
-      keywords TEXT,
-      meeting_type TEXT,
-      metadata TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )`,
-  },
-];
-
 function store(tcw: TinyCloudWeb) {
-  return tcw.sql.db(CONNECTORS_SQL_DB_NAME);
+  return trackStorageWrites(tcw.sql.db(CONNECTORS_SQL_DB_NAME));
 }
 
 function cellStr(row: unknown[], idx: number, fallback: string | null): string | null {
@@ -139,7 +100,8 @@ function cellNum(row: unknown[], idx: number, fallback: number | null): number |
 // ── Schema bootstrap (memoized per space, keyed by tcw.did) ─────────────
 
 const schemaReadySpaces = new Set<string>();
-const schemaInFlight = new Map<string, Promise<StoreResult<void>>>();
+type SchemaFlight = { promise: Promise<StoreResult<void>>; checkpoints: Set<() => void> };
+const schemaInFlight = new Map<string, SchemaFlight>();
 
 /** For tests only — clear the per-process memo between cases. */
 export function _resetConnectorSchemaMemoForTests(): void {
@@ -147,7 +109,8 @@ export function _resetConnectorSchemaMemoForTests(): void {
   schemaInFlight.clear();
 }
 
-export async function ensureSchema(tcw: TinyCloudWeb): Promise<StoreResult<void>> {
+export async function ensureSchema(tcw: TinyCloudWeb, checkpoint: () => void = () => undefined): Promise<StoreResult<void>> {
+  checkpoint();
   const did = typeof tcw.did === "string" && tcw.did.length > 0 ? tcw.did : null;
   const space =
     typeof tcw.spaceId === "string" && tcw.spaceId.length > 0 ? tcw.spaceId : null;
@@ -155,32 +118,54 @@ export async function ensureSchema(tcw: TinyCloudWeb): Promise<StoreResult<void>
   if (memoKey && schemaReadySpaces.has(memoKey)) return { ok: true, data: undefined };
 
   const inFlight = memoKey ? schemaInFlight.get(memoKey) : undefined;
-  if (inFlight) return inFlight;
+  if (inFlight) {
+    inFlight.checkpoints.add(checkpoint);
+    const result = await inFlight.promise;
+    checkpoint();
+    return result;
+  }
+
+  const checkpoints = new Set([checkpoint]);
+  const checkCallers = () => {
+    let cancelled: unknown;
+    for (const check of checkpoints) {
+      try { check(); return; }
+      catch (error) { cancelled = error; checkpoints.delete(check); }
+    }
+    throw cancelled ?? new Error("Schema bootstrap has no active caller");
+  };
 
   const run = (async (): Promise<StoreResult<void>> => {
     const db = store(tcw);
-    for (const { sql, table } of SCHEMA) {
-      const res = await db.execute(sql);
-      if (res.ok) continue;
-      // "not authorized" on CREATE TABLE IF NOT EXISTS most likely means the
-      // table already exists and the authorizer blocks redundant DDL. Probe
-      // with a SELECT — success means schema is ready for this table.
-      const msg = (res.error.message ?? "").toLowerCase();
-      if (msg.includes("not authorized")) {
-        const probe = await db.query(`SELECT 1 FROM ${table} LIMIT 1`);
-        if (probe.ok) continue;
-      }
-      return fail(res.error, `ensureSchema(${table})`);
+    const tables = CONNECTOR_SCHEMA.map(({ table }) => table);
+    checkCallers();
+    const existingResult = await db.query(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`,
+      tables,
+    );
+    if (!existingResult.ok) return fail(existingResult.error, "ensureSchema probe");
+    const existingRows = existingResult.data.rows as unknown as unknown[][];
+    const existing = new Set(existingRows.map((row) => row[0]).filter((name): name is string => typeof name === "string"));
+    for (const { sql, table } of CONNECTOR_SCHEMA) {
+      if (existing.has(table)) continue;
+      checkCallers();
+      const created = await db.execute(sql);
+      if (!created.ok) return fail(created.error, `ensureSchema(${table})`);
     }
+    checkCallers();
     if (memoKey) schemaReadySpaces.add(memoKey);
     return { ok: true, data: undefined };
   })();
 
   if (memoKey) {
-    schemaInFlight.set(memoKey, run);
-    void run.catch(() => {}).finally(() => schemaInFlight.delete(memoKey));
+    schemaInFlight.set(memoKey, { promise: run, checkpoints });
+    void run.catch(() => {}).finally(() => {
+      if (schemaInFlight.get(memoKey)?.promise === run) schemaInFlight.delete(memoKey);
+    });
   }
-  return run;
+  const result = await run;
+  checkpoint();
+  return result;
 }
 
 // ── Connector state ─────────────────────────────────────────────────────
@@ -271,22 +256,6 @@ export async function updateSyncState(
 
 // ── Meeting rows ────────────────────────────────────────────────────────
 
-export interface NormalizedMeeting {
-  /** crypto.randomUUID() — assigned by normalize, kept stable across retries. */
-  id: string;
-  source: string;
-  sourceId: string;
-  title: string | null;
-  startedAt: string | null;
-  durationSecs: number | null;
-  organizerEmail: string | null;
-  participants: { name: string; email: string | null }[];
-  summaryOverview: string | null;
-  summaryActionItems: string | null;
-  keywords: string[] | null;
-  meetingType: string | null;
-  metadata: Record<string, unknown>;
-}
 
 export async function listKnownSourceIds(
   tcw: TinyCloudWeb,
@@ -569,34 +538,47 @@ export async function upsertMeeting(
     }
   }
 
-  const upd = await store(tcw).execute(
-    `UPDATE connector_meeting SET
-       title = ?, started_at = ?, duration_secs = ?, organizer_email = ?,
-       participants = ?, summary_overview = ?, summary_action_items = ?,
-       keywords = ?, meeting_type = ?, metadata = ?, updated_at = ?
-     WHERE id = ?`,
-    [
-      options.preserveExistingTitle ? cellStr(row, 2, meeting.title) : keepStr(meeting.title, 2),
-      acceptsIncomingDatetime ? meeting.startedAt : existingStartedAt,
-      meeting.durationSecs !== null ? meeting.durationSecs : cellNum(row, 4, null),
-      keepStr(meeting.organizerEmail, 5),
-      meeting.participants.length > 0
-        ? JSON.stringify(meeting.participants)
-        : (cellStr(row, 6, null) ?? "[]"),
-      ownsStandaloneNotesField("summary_overview")
-        ? meeting.summaryOverview
-        : keepStr(meeting.summaryOverview, 7),
-      ownsStandaloneNotesField("summary_action_items")
-        ? meeting.summaryActionItems
-        : keepStr(meeting.summaryActionItems, 8),
-      meeting.keywords !== null ? JSON.stringify(meeting.keywords) : cellStr(row, 9, null),
-      keepStr(meeting.meetingType, 10),
-      JSON.stringify(mergedMetadata),
-      now,
-      existingId,
-    ],
-  );
-  if (!upd.ok) return fail(upd.error, "upsertMeeting(update)");
+  const updateValues = [
+    options.preserveExistingTitle ? cellStr(row, 2, meeting.title) : keepStr(meeting.title, 2),
+    acceptsIncomingDatetime ? meeting.startedAt : existingStartedAt,
+    meeting.durationSecs !== null ? meeting.durationSecs : cellNum(row, 4, null),
+    keepStr(meeting.organizerEmail, 5),
+    meeting.participants.length > 0
+      ? JSON.stringify(meeting.participants)
+      : (cellStr(row, 6, null) ?? "[]"),
+    ownsStandaloneNotesField("summary_overview")
+      ? meeting.summaryOverview
+      : keepStr(meeting.summaryOverview, 7),
+    ownsStandaloneNotesField("summary_action_items")
+      ? meeting.summaryActionItems
+      : keepStr(meeting.summaryActionItems, 8),
+    meeting.keywords !== null ? JSON.stringify(meeting.keywords) : cellStr(row, 9, null),
+    keepStr(meeting.meetingType, 10),
+    JSON.stringify(mergedMetadata),
+  ];
+  const currentValues = [
+    cellStr(row, 2, null),
+    existingStartedAt,
+    cellNum(row, 4, null),
+    cellStr(row, 5, null),
+    cellStr(row, 6, null) ?? "[]",
+    cellStr(row, 7, null),
+    cellStr(row, 8, null),
+    cellStr(row, 9, null),
+    cellStr(row, 10, null),
+    JSON.stringify(existingMetadata),
+  ];
+  if (updateValues.some((value, index) => value !== currentValues[index])) {
+    const upd = await store(tcw).execute(
+      `UPDATE connector_meeting SET
+         title = ?, started_at = ?, duration_secs = ?, organizer_email = ?,
+         participants = ?, summary_overview = ?, summary_action_items = ?,
+         keywords = ?, meeting_type = ?, metadata = ?, updated_at = ?
+       WHERE id = ?`,
+      [...updateValues, now, existingId],
+    );
+    if (!upd.ok) return fail(upd.error, "upsertMeeting(update)");
+  }
 
   if (sentences.length > 0 || options.preserveTranscriptBody) {
     const kv = await (options.preserveTranscriptBody ? putMissingTranscriptBody : putTranscriptBody)(tcw, meeting.source, meeting.sourceId, sentences);
@@ -627,6 +609,7 @@ export async function putTranscriptBody(
   const key = transcriptKvKey(source, sourceId);
   const res = await tcw.kv.put(key, JSON.stringify(sentences));
   if (!res.ok) return fail(res.error, "putTranscriptBody");
+  reportStorageWriteSucceeded();
   return { ok: true, data: undefined };
 }
 
@@ -654,6 +637,7 @@ export async function putDriveCursor(
   if (!cursor) return { ok: false, error: { code: "STORE_INVALID_CURSOR", message: "putDriveCursor: cursor is required" } };
   const res = await tcw.kv.put(driveCursorKvKey(source), cursor);
   if (!res.ok) return fail(res.error, "putDriveCursor");
+  reportStorageWriteSucceeded();
   return { ok: true, data: undefined };
 }
 

@@ -20,7 +20,6 @@ import {
   CHANNEL_MODES,
   CONTENT_TYPES,
   LANGUAGE_RE,
-  MAX_RECORDING_BYTES,
   TRANSCRIPTION_ID_RE,
   parseCancelled,
   parseCapabilities,
@@ -33,8 +32,8 @@ import {
 
 /**
  * Exo private cloud transcription (plan §4.4 P4). Mounted at `/api/transcriber/private-cloud`
- * behind `authMiddleware` ONLY when `PRIVATE_CLOUD_TRANSCRIPTION_ENABLED=true`; otherwise every
- * path 404s. Global CSRF (`X-Requested-With`) and the `/api/transcriber` rate-limit bucket apply.
+ * behind `authMiddleware`. Global CSRF (`X-Requested-With`) and the
+ * `/api/transcriber` rate-limit bucket apply.
  *
  *   GET    /capabilities                 PTX limits, content types, diarization + admission mode
  *   POST   /transcriptions               { content_type, byte_size, sha256, language?, channel_mode?,
@@ -57,13 +56,12 @@ import {
  * Documented exception to the error shape: 401 (session auth) and 403 `csrf_rejected` are answered
  * by the backend-wide middleware in front of this mount, before the caller is known, with the
  * backend-wide `{ error, message }` shape and no correlation id — the same answer every other
- * authenticated route gives, and the same whether this feature is armed or not.
+ * authenticated route gives, including when PTX is not configured.
  */
 
 export interface PrivateCloudTranscriptionRouterOptions {
-  client: PtxClient;
-  tenantKey: string;
-  accountAllowed: (address: string) => boolean;
+  client: PtxClient | null;
+  tenantKey: string | null;
   /** Injectable for tests. `alert` = operator fault. */
   log?: (line: string, alert: boolean) => void;
 }
@@ -104,7 +102,6 @@ function parseCreateBody(raw: unknown): CreateBody | PublicError["code"] {
   const { content_type, byte_size, sha256, language, channel_mode, channel_labels, diarize } = raw;
   if (typeof content_type !== "string" || !CONTENT_TYPES.includes(content_type)) return "invalid_request";
   if (typeof byte_size !== "number" || !Number.isSafeInteger(byte_size) || byte_size < 1) return "invalid_request";
-  if (byte_size > MAX_RECORDING_BYTES) return "recording_too_large";
   if (typeof sha256 !== "string" || !SHA256_RE.test(sha256)) return "invalid_request";
   const body: CreateBody = { content_type, byte_size, sha256 };
   if (language !== undefined) {
@@ -139,25 +136,24 @@ function parseCreateBody(raw: unknown): CreateBody | PublicError["code"] {
 }
 
 export function createPrivateCloudTranscriptionRouter(options: PrivateCloudTranscriptionRouterOptions): Router {
-  const { client, tenantKey, accountAllowed } = options;
+  const { client, tenantKey } = options;
   const log = options.log ?? ((line: string, alert: boolean) => (alert ? console.error(line) : console.log(line)));
   const router = Router();
 
-  // Cohort gate. A non-member leaves this router and gets the app's ordinary 404: exactly what
-  // every caller gets while the flag is off, so "dark" and "not in the cohort" look the same
-  // (which is why nothing — not even Cache-Control — is set before this check).
   router.use((req: Request, res: Response, next: NextFunction) => {
     const address = req.user?.address;
-    if (typeof address !== "string" || !accountAllowed(address)) {
-      next("router");
-      return;
-    }
     const incoming = req.get("x-correlation-id");
     const correlationId = incoming !== undefined && UUID_RE.test(incoming) ? incoming.toLowerCase() : randomUUID();
     res.setHeader("X-Correlation-Id", correlationId);
     // Capabilities, job metadata and transcript text must not outlive upstream deletion in a cache.
     res.setHeader("Cache-Control", "no-store");
-    res.locals.privateCloud = { correlationId, tenantRef: tenantRefFor(tenantKey, address) } satisfies Context;
+    if (!client || !tenantKey) {
+      const error = PUBLIC_ERRORS.service_misconfigured;
+      res.status(error.status).json({ error: { code: "service_misconfigured", message: error.message, correlation_id: correlationId } });
+      log(`[private-cloud] status=503 code=service_misconfigured class=operator_fault cid=${correlationId} alert=true`, true);
+      return;
+    }
+    res.locals.privateCloud = { correlationId, tenantRef: tenantRefFor(tenantKey, address!) } satisfies Context;
     next();
   });
 
@@ -172,7 +168,7 @@ export function createPrivateCloudTranscriptionRouter(options: PrivateCloudTrans
     return async (req, res, next) => {
       const ctx = res.locals.privateCloud as Context;
       const call = (request: Omit<PtxRequest, "correlationId" | "tenantRef" | "maxBytes">, tenantScoped = true) =>
-        client.request({
+        client!.request({
           ...request,
           correlationId: ctx.correlationId,
           maxBytes: RESPONSE_LIMITS[route],

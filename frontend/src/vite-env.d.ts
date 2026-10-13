@@ -18,6 +18,14 @@ interface ImportMetaEnv {
    */
   readonly VITE_EXO_NATIVE_GOOGLE_OAUTH?: string;
   /**
+   * The registered public native OpenKey OAuth client id (public value). On
+   * iOS and Android, sign-in always runs the native OpenKey delegation flow
+   * (PAR + PKCE in the system browser) instead of the embedded widget
+   * (TC-775); this must be set in every build those platforms ship from. Web
+   * and desktop are unaffected.
+   */
+  readonly VITE_OPENKEY_NATIVE_CLIENT_ID?: string;
+  /**
    * The TinyCloud Private Transcription (ptx-batch) origin that voice notes (Exo mobile) and Upload
    * audio (every platform) upload to, e.g. `https://<app_id>-8080.<gateway>`. Unset = neither offers
    * private transcription, whatever the backend says; the backend never supplies an upload origin.
@@ -40,3 +48,12 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+/**
+ * The build line's baseline (TC-840), baked in by vite.config.ts: the shared
+ * product version, the commit being built and the release channel when the
+ * pipeline names one. `undefined` outside a Vite build (bun tests).
+ */
+declare const __EXO_BUILD_INFO__:
+  | { version?: string; commit?: string; build?: string; channel?: string }
+  | undefined;

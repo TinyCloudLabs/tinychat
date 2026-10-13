@@ -98,6 +98,7 @@ class FakeSqlDb {
   meetings = new Map<string, MeetingRow>();
   states = new Map<string, StateRow>();
   createdTables = new Set<string>();
+  createAttempts = 0;
   tracker = new OpTracker();
   /** When set, the NEXT CREATE TABLE call fails with the given error. Consumed on use. */
   nextCreateError: SqlError | null = null;
@@ -123,6 +124,9 @@ class FakeSqlDb {
       const err = this.nextQueryError;
       this.nextQueryError = null;
       return { ok: false, error: err };
+    }
+    if (/FROM sqlite_master/i.test(s)) {
+      return { ok: true, data: { rows: params.filter((table) => this.createdTables.has(String(table))).map((table) => [table]) } };
     }
     // Targeted upsert lookup: full column set for (source, source_id).
     if (/^SELECT\s+id,\s*created_at[\s\S]*FROM\s+connector_meeting/i.test(s)) {
@@ -233,6 +237,7 @@ class FakeSqlDb {
     const s = sql.trim();
     const createMatch = s.match(/^CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+(\w+)/i);
     if (createMatch) {
+      this.createAttempts++;
       if (this.nextCreateError) {
         const err = this.nextCreateError;
         this.nextCreateError = null;
@@ -544,19 +549,15 @@ describe("connectorStore.ensureSchema", () => {
     expect(CONNECTORS_SQL_DB_NAME).toBe("xyz.tinycloud.tinychat/connectors");
   });
 
-  test("schema fallback probe: 'not authorized' on CREATE TABLE is accepted when SELECT 1 succeeds", async () => {
+  test("reads existing schema without attempting DDL", async () => {
     const f = makeFake();
-    // Pretend both tables already exist (some other process created them),
-    // and the authorizer refuses the redundant CREATE. The probe must recover.
     f.sql.createdTables.add("connector_state");
     f.sql.createdTables.add("connector_meeting");
-    f.sql.nextCreateError = { code: "AUTH_UNAUTHORIZED", message: "not authorized" };
+    f.sql.nextCreateError = { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage quota exceeded" };
     const res = await ensureSchema(f.tcw);
     expect(res.ok).toBe(true);
-    // A subsequent operation must succeed too — schema is treated as ready.
-    const rows = await listKnownSourceIds(f.tcw, "fireflies");
-    expect(rows.ok).toBe(true);
-    if (rows.ok) expect(rows.data).toEqual([]);
+    expect(f.sql.createAttempts).toBe(0);
+    expect(f.sql.nextCreateError?.code).toBe("STORAGE_QUOTA_EXCEEDED");
   });
 
   test("schema failure that is NOT 'not authorized' surfaces as { ok: false, error }", async () => {
@@ -1515,6 +1516,20 @@ describe("connectorStore.upsertMeeting — update path (the meeting.summarized c
     const key = transcriptKvKey("fireflies", "mtg-1");
     expect(JSON.parse(f.kv.entries.get(key) ?? "[]")).toHaveLength(2);
   });
+  test("identical input leaves updated_at unchanged, while content changes bump it", async () => {
+    const f = makeFake();
+    const original = meetingFixture({ id: "row-stable" });
+    expect((await upsertMeeting(f.tcw, original, [S("a")])).ok).toBe(true);
+    const unchangedUpdatedAt = "2026-10-12T00:00:00.000Z";
+    f.sql.meetings.get("row-stable")!.updated_at = unchangedUpdatedAt;
+
+    expect((await upsertMeeting(f.tcw, { ...original, id: "throwaway" }, [S("a")])).ok).toBe(true);
+    expect(f.sql.meetings.get("row-stable")?.updated_at).toBe(unchangedUpdatedAt);
+    expect((await upsertMeeting(f.tcw, { ...original, id: "throwaway", title: "Changed" }, [S("a")])).ok).toBe(true);
+    expect(f.sql.meetings.get("row-stable")?.updated_at).not.toBe(unchangedUpdatedAt);
+  });
+
+
 
   test("a later null field does NOT erase an already-stored value (summaries lag transcripts)", async () => {
     const f = makeFake();

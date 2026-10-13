@@ -154,7 +154,8 @@ export const FOCUS_DEBOUNCE_MS = 45 * 60 * 1000;
  *  as "no attempt yet", and it is the only thing the mount path asks. */
 let lastAttemptStartedAt = 0;
 let featureDark = false;
-let drainLane: Promise<unknown> = Promise.resolve();
+import { resetSpaceLaneForTests, runOnSpaceLane } from "@/lib/spaceWriteLane";
+export { runOnSpaceLane } from "@/lib/spaceWriteLane";
 let record: BackgroundDrainRecord | null = null;
 const recordListeners = new Set<() => void>();
 /** The record's account boundary. Advanced by every clear (sign-out) and test
@@ -174,14 +175,7 @@ let storeGeneration = 0;
  * than corrupting — this makes it not happen.)
  */
 export function enqueueDrainWork<T>(work: () => Promise<T>): Promise<T> {
-  const run = drainLane.then(() => work());
-  // The lane itself never rejects; the caller's promise still carries the
-  // caller's failure.
-  drainLane = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run;
+  return runOnSpaceLane(work);
 }
 
 /** The clock, seam-first. Read exactly once per decision, so a tick can never
@@ -504,15 +498,14 @@ export function badgePendingCount(record: BackgroundDrainRecord | null): number 
 }
 
 /**
- * The Connectors button's accessible name, with the count folded in.
+ * The Connectors navigation item's accessible name, with the count folded in.
  *
- * Generic copy only — a provider name in the header would leak which service a
- * user connected to anyone reading the screen (or the accessibility tree). When
- * there is nothing to say the label is byte-identical to what it has always
- * been.
+ * Generic copy only — a provider name in the navigation would leak which
+ * service a user connected to anyone reading the screen (or the accessibility
+ * tree). When there is nothing to say the label is just "Connectors". The item
+ * is a link now, so it never turns into a close control.
  */
-export function connectorsAriaLabel(showConnectors: boolean, count: number): string {
-  if (showConnectors) return "Close connectors";
+export function connectorsAriaLabel(count: number): string {
   if (count <= 0) return "Connectors";
   return `Connectors — ${count} ${count === 1 ? "meeting" : "meetings"} waiting`;
 }
@@ -533,7 +526,7 @@ export function badgePillLabel(count: number): string {
 export function resetBackgroundDrainForTests(): void {
   lastAttemptStartedAt = 0;
   featureDark = false;
-  drainLane = Promise.resolve();
+  resetSpaceLaneForTests();
   record = null;
   recordListeners.clear();
   storeGeneration += 1;

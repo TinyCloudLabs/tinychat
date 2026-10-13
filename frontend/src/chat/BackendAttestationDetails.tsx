@@ -1,6 +1,8 @@
 import type { FC, ReactNode } from "react";
 import { ExternalLinkIcon } from "lucide-react";
 
+import { HowItWorksLink } from "@/components/ui/how-it-works-link";
+
 import type { BackendSelfAttestation } from "@/lib/backendAttestation";
 import type {
   BackendVerdict,
@@ -40,7 +42,7 @@ export const BackendAttestationDetails: FC<{
   ];
 
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2.5 text-[11px] leading-relaxed text-foreground">
+    <div className="flex flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2.5 text-xs leading-relaxed text-foreground">
       {/* Quote validity — relayed Phala alongside the trustless on-chain anchor. */}
       <LegBlock leg={verdict.legQuote}>
         <SubCheckRow
@@ -77,7 +79,7 @@ export const BackendAttestationDetails: FC<{
       )}
 
       {/* External anchors — independent places to re-check the same evidence. */}
-      <div className="flex flex-wrap gap-x-3 gap-y-1 border-t border-border/60 pt-2 text-[10px] text-muted-foreground">
+      <div className="flex flex-wrap gap-x-3 gap-y-1 border-t border-border/60 pt-2 text-xs text-muted-foreground">
         {links.map((link) => (
           <a
             key={link.url}
@@ -92,27 +94,25 @@ export const BackendAttestationDetails: FC<{
         ))}
       </div>
 
-      {/* REQUIRED honesty line — same tier language as AttestationDetails. */}
-      <p className="border-t border-border/60 pt-2 text-[10px] text-muted-foreground">
-        {verdict.attested ? (
-          <>
-            All three legs pass: the TDX quote is verified (relayed via Phala and
-            anchored trustlessly on-chain), bound to the backend's signing key and
-            server identity, and the served code measurement (RTMR3) replays. This
-            attests the <span className="font-semibold">endpoint and code identity</span>
-            , not each individual response byte.
-          </>
-        ) : (
-          <>
-            Backend attestation is{" "}
-            <span className="font-semibold">incomplete</span>. The compose leg
-            cannot fully bind yet — the backend does not serve the app-compose file,
-            so <code className="font-mono text-[10px]">sha256(app_compose)</code> can't
-            be checked against the measured compose hash. This proves endpoint and
-            code identity (relayed vs trustless anchors), not each response byte.
-          </>
-        )}
-      </p>
+      {/* REQUIRED honesty line — same tier language as AttestationDetails. One
+          sentence; what the three legs check, and why the compose leg can't bind
+          yet, is How it works → verification. */}
+      <div className="flex flex-col border-t border-border/60 pt-2">
+        <p className="text-xs text-muted-foreground">
+          {verdict.attested ? (
+            <>
+              This attests the <span className="font-semibold">endpoint and code identity</span>, not each
+              individual response byte.
+            </>
+          ) : (
+            <>
+              Backend attestation is <span className="font-semibold">incomplete</span>: it proves endpoint and
+              code identity, not each response byte.
+            </>
+          )}
+        </p>
+        <HowItWorksLink section="verification" className="w-fit">What verification checks</HowItWorksLink>
+      </div>
     </div>
   );
 };
@@ -127,7 +127,7 @@ const LegBlock: FC<{
     className={`flex flex-col gap-1 ${topBorder ? "border-t border-border/60 pt-2" : ""}`}
   >
     <Leg ok={leg.ok} label={<span className="font-medium">{leg.label}</span>} />
-    <p className="pl-3 text-[10px] text-muted-foreground">{leg.detail}</p>
+    <p className="pl-3 text-xs text-muted-foreground">{leg.detail}</p>
     <div className="flex flex-col gap-1 pl-3">{children}</div>
   </div>
 );
@@ -145,7 +145,7 @@ const SubCheckRow: FC<{ check: SubCheck; tag?: ReactNode }> = ({ check, tag }) =
             <TrustTag>{tag}</TrustTag>
           </>
         ) : null}
-        <span className="block text-[10px] text-muted-foreground">
+        <span className="block text-xs text-muted-foreground">
           {check.detail}
         </span>
       </>
@@ -167,7 +167,7 @@ const Leg: FC<{ ok: boolean; label: ReactNode }> = ({ ok, label }) => (
 
 /** Small inline tag noting WHO a leg's verdict trusts (relayed vs trustless). */
 const TrustTag: FC<{ children: ReactNode }> = ({ children }) => (
-  <span className="rounded bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
+  <span className="rounded bg-muted px-1 py-px text-xs font-medium uppercase tracking-wide text-muted-foreground">
     {children}
   </span>
 );

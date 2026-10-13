@@ -15,12 +15,18 @@ import { join } from "node:path";
 import {
   classifyRestoreFailure,
   isTransientRestoreError,
+  MISSING_SPACE_MESSAGE,
   restorePersistedSession,
   restoreUnavailableMessage,
   type RestoreAttempt,
   type RestoreDeps,
   type RestoreSessionStore,
 } from "./sessionRestore";
+import { renderToStaticMarkup } from "react-dom/server";
+import { BootSurface } from "../shell/BootSurface";
+import { handoffBeforeCredentialClear } from "./voiceNotes/accountHandoff";
+import { createFakeVoiceNotes } from "./voiceNotes/fakeVoiceNotes";
+import { __setVoiceNotesForTests, VoiceNotes } from "./voiceNotes/nativeVoiceNotes";
 
 const ADDRESS = "0x0000000000000000000000000000000000000001";
 
@@ -51,6 +57,31 @@ const MANIFEST = { app_id: "xyz.tinycloud.tinychat" };
 const TCW = { did: `did:pkh:eip155:1:${ADDRESS}`, spaceId: "tinycloud:space" };
 type Tcw = typeof TCW;
 
+test("a definitive restore verdict waits for capture handoff before clearing credentials", async () => {
+  const store = new FakeSessionStore({ token: "token", address: ADDRESS });
+  const order: string[] = [];
+  const originalClear = store.clear.bind(store);
+  store.clear = () => { order.push("clear"); originalClear(); };
+  await restorePersistedSession(store, {
+    isOffline: () => false,
+    loadManifest: async () => MANIFEST,
+    restore: async () => ({ status: "expired", tcw: null }),
+    beforeClear: async () => { order.push("handoff"); },
+  });
+  expect(order).toEqual(["handoff", "clear"]);
+});
+
+test("a failed capture handoff preserves the persisted session", async () => {
+  const store = new FakeSessionStore({ token: "token", address: ADDRESS });
+  await expect(restorePersistedSession(store, {
+    isOffline: () => false,
+    loadManifest: async () => MANIFEST,
+    restore: async () => ({ status: "expired", tcw: null }),
+    beforeClear: async () => { throw new Error("disk failed"); },
+  })).rejects.toThrow("disk failed");
+  expect(store.cleared).toBe(0);
+});
+
 function deps(over: Partial<RestoreDeps<typeof MANIFEST, Tcw>> = {}) {
   const calls = { manifest: 0, restore: [] as string[] };
   const d: RestoreDeps<typeof MANIFEST, Tcw> = {
@@ -73,6 +104,50 @@ function deps(over: Partial<RestoreDeps<typeof MANIFEST, Tcw>> = {}) {
 
 const signedIn = () => new FakeSessionStore({ token: "bearer", address: ADDRESS });
 const offlineFetch = () => Promise.reject(new TypeError("Failed to fetch"));
+
+test("Moto stale signed-in native state with no web session becomes unowned on cold shortcut", async () => {
+  const previous = VoiceNotes;
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: "did:example:old", transitionGen: 16,
+      transcriber: "private-cloud", identifySpeakers: false });
+    const store = new FakeSessionStore(null);
+    const outcome = await restorePersistedSession(store, {
+      isOffline: () => false, loadManifest: async () => MANIFEST,
+      restore: async () => ({ status: "missing", tcw: null }),
+      beforeClear: async () => {
+        const native = await fake.plugin.getCaptureDefaults();
+        const result = await handoffBeforeCredentialClear(native.accountDid, null);
+        if (!result.ok) throw new Error(result.message ?? "Native handoff failed");
+      },
+    });
+    expect(outcome.kind).toBe("signedOut");
+    expect((await fake.plugin.getCaptureDefaults()).status).toBe("signed_out");
+    await fake.plugin.start();
+    expect(await fake.plugin.status()).toMatchObject({ owner: null, options: { transcriber: "on-device" } });
+  } finally { __setVoiceNotesForTests(previous, { available: null }); }
+});
+
+test("offline boot keeps a held web session and native signed-in account untouched", async () => {
+  const previous = VoiceNotes;
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: "did:example:held", transitionGen: 2,
+      transcriber: "private-cloud", identifySpeakers: false });
+    let handoffs = 0;
+    const outcome = await restorePersistedSession(new FakeSessionStore({ token: "bearer", address: ADDRESS }), {
+      isOffline: () => true,
+      loadManifest: async () => { throw new TypeError("Failed to fetch"); },
+      restore: async () => ({ status: "restored", tcw: TCW }),
+      beforeClear: async () => { handoffs++; },
+    });
+    expect(outcome.kind).toBe("unavailable");
+    expect(handoffs).toBe(0);
+    expect((await fake.plugin.getCaptureDefaults()).status).toBe("signed_in");
+  } finally { __setVoiceNotesForTests(previous, { available: null }); }
+});
 
 describe("isTransientRestoreError", () => {
   test("network-level fetch failures from every engine are transient", () => {
@@ -220,6 +295,45 @@ describe("restorePersistedSession", () => {
     expect(store.cleared).toBe(1);
   });
 
+  test("a restored session with no space is explained to the user, not dropped to a bare sign-in", async () => {
+    const store = signedIn();
+    const cleared: string[] = [];
+    const { d } = deps({
+      beforeClear: async () => { cleared.push("handoff"); },
+      restore: async () => ({
+        status: "restore-failed",
+        tcw: null,
+        // What the client's restore boundary returns (RestoredSessionMissingSpaceError).
+        error: Object.assign(new Error("Restored TinyCloud session has no spaceId: the SDK reported none"), {
+          code: "restored-session-missing-space",
+        }),
+      }),
+    });
+    const logged: unknown[][] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => void logged.push(args);
+    let outcome;
+    try {
+      outcome = await restorePersistedSession(store, d);
+    } finally {
+      console.error = originalError;
+    }
+
+    expect(outcome).toEqual({ kind: "failed", message: MISSING_SPACE_MESSAGE });
+    expect(cleared).toEqual(["handoff"]);
+    expect(store.cleared).toBe(1);
+    expect(logged.length).toBe(1);
+
+    // App maps `failed` to recoverableError with this message (asserted in the App wiring
+    // tests below); BootSurface is what the user then reads, with a Sign in action.
+    const markup = renderToStaticMarkup(
+      BootSurface({ state: "recoverableError", error: outcome.message, onAction: () => {} }),
+    );
+    expect(markup).toContain("missing its TinyCloud space");
+    expect(markup).toContain(">Sign in</button>");
+    expect(markup).not.toContain("Sign in to start chatting");
+  });
+
   test("an unexpected throw is classified the same way", async () => {
     const network = signedIn();
     expect(
@@ -271,20 +385,24 @@ describe("App wiring (TC-514)", () => {
   });
 
   test("the restore path no longer clears the session on its own", () => {
-    // Whether to clear is lib/sessionRestore's verdict, not a blanket catch.
-    expect(restoreRegion).not.toContain(".clear()");
-    expect(restoreRegion).not.toMatch(/catch \(caught\) \{\s+sessionStore\.clear\(\)/);
+    // The browser/widget restore still delegates its verdict to
+    // lib/sessionRestore. Native E1 boot cleanup is a separate earlier path.
+    const browserRestore = restoreRegion.slice(restoreRegion.indexOf("const restored = await restorePersistedSession"));
+    expect(browserRestore).not.toContain(".clear()");
+    expect(browserRestore).not.toMatch(/catch \(caught\) \{\s+sessionStore\.clear\(\)/);
   });
 
   test("a held session lands in `offline`, a verdict in the old states", () => {
     expect(restoreRegion).toMatch(/case "unavailable":\s+setError\(restored\.message\);\s+setState\("offline"\);/);
-    expect(restoreRegion).toMatch(/case "signedOut":\s+setState\("unauthenticated"\);/);
+    expect(restoreRegion).toMatch(/case "signedOut":\s+if \(!await captureHandoff\(\)\).*setState\("unauthenticated"\);/s);
     expect(restoreRegion).toMatch(/case "failed":\s+setError\(restored\.message\);\s+setState\("recoverableError"\);/);
   });
 
   test("Try again re-runs the restore while offline and signs in otherwise", () => {
-    expect(app).toContain('const authAction = state === "offline" ? restoreSession : signIn;');
-    expect(app).toContain("<Button size=\"sm\" onClick={authAction}");
+    expect(app).toContain("const authAction = nativeSignInFlow.authAction;");
+    expect(readFileSync(join(import.meta.dir, "../shell/useNativeSignIn.ts"), "utf8")).toContain('authAction: state === "offline" ? restoreSession : native ? openScreen : signIn,');
+    // The sign-in surface is the one place with the action (the app header and
+    // its button went with the shell, TC-761).
     expect(app).toMatch(/<BootSurface\s+state=\{state\}\s+error=\{error\}\s+onAction=\{authAction\}/);
     // No sign-in button is wired straight to OpenKey any more.
     expect(app).not.toContain("onClick={signIn}");
@@ -292,9 +410,11 @@ describe("App wiring (TC-514)", () => {
   });
 
   test("coming back online re-runs the restore, only while a session is held", () => {
-    const effect = restoreRegion.slice(restoreRegion.indexOf('if (state !== "offline") return;'));
+    const effect = restoreRegion.slice(restoreRegion.indexOf('if (state !== "offline" && state !== "recoverableError") return;'));
+    expect(effect).toContain('if (state !== "offline" && state !== "recoverableError") return;');
     expect(effect).toContain('window.addEventListener("online", onOnline);');
     expect(effect).toContain('window.removeEventListener("online", onOnline);');
-    expect(effect).toContain("const onOnline = () => void restoreSession();");
+    expect(effect).toContain("if (navigator.onLine !== false) void restoreSession();");
+    expect(effect).toContain('document.addEventListener("visibilitychange", onVisible);');
   });
 });

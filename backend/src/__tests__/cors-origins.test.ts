@@ -96,21 +96,21 @@ describe("app CORS origins", () => {
   });
 
   test.each([WEB_ORIGIN, EXO_DESKTOP_ORIGIN, EXO_DESKTOP_WINDOWS_ORIGIN])(
-    "allows the AssemblyAI delete preflight (DELETE + X-AssemblyAI-Key) from %s",
+    "allows the hosted AssemblyAI part preflight from %s",
     async (origin) => {
       const response = await fetch(`${baseUrl}/health`, {
         method: "OPTIONS",
         headers: {
           Origin: origin,
-          "Access-Control-Request-Method": "DELETE",
-          "Access-Control-Request-Headers": "authorization,x-requested-with,x-assemblyai-key",
+          "Access-Control-Request-Method": "PUT",
+          "Access-Control-Request-Headers": "authorization,x-requested-with,content-type",
         },
       });
 
       expect(response.status).toBe(204);
       expect(response.headers.get("access-control-allow-origin")).toBe(origin);
-      expect(response.headers.get("access-control-allow-methods")).toContain("DELETE");
-      expect(response.headers.get("access-control-allow-headers")).toContain("x-assemblyai-key");
+      expect(response.headers.get("access-control-allow-methods")).toContain("PUT");
+      expect(response.headers.get("access-control-allow-headers")).toContain("authorization");
     },
   );
 });

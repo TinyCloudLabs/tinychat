@@ -44,125 +44,114 @@ Build notes:
 `bun run build:desktop` produces installers with local transcription enabled
 (builds the frontend first with production env: `VITE_BACKEND_URL=https://api.tinycloud.chat`).
 
-## Local transcription (anarlog MIT layer)
+## Desktop recorder and local Whisper
 
-Local recording is the second Transcriber mode: **Meeting bot** (backend bot)
-and **Local recording** (this Mac) live side by side in Connectors → Sources.
-Local mode captures microphone + system audio, transcribes on-device with
-whisper.cpp after you stop, and saves into the same Meetings store as a meeting
-with source `exo-local` (label "Exo Local") — so it shows up in Meetings,
-meeting chat, and retrieval like any other connector.
+The shared recorder is the desktop recording flow. It writes crash-recoverable
+segments under Exo's app-data vault, imports them into a mono 16 kHz, 64 kbps
+note file, and exposes bounded file reads to the webview for uploads. The
+System audio setting defaults on: enabled segments mix microphone and system
+audio; disabled segments record the microphone alone. Pause releases the mic.
 
-The `transcription` Cargo feature is enabled by default in desktop dev and
-release builds. The feature wires up:
+The `transcription` Cargo feature is enabled by default. It supplies the
+anarlog MIT transcription, local-stt, settings and audio-actual plugins.
+`tauri-plugin-transcription` records segments and runs batch Whisper after a
+note stops. `tauri-plugin-local-stt` manages model downloads and the local
+Whisper server. The shared server lease gives recording priority over Whisper
+jobs. The frontend stores the note and transcript through the shared recorder
+store and upload path; the desktop-only cloud capture uploader was retired.
 
-- `audio-actual` → a managed `Arc<dyn AudioProvider>` (the transcription plugin's
-  setup panics without it);
-- `tauri-plugin-settings` → provides `vault_base()`/`global_base()` (sessions and
-  model directories);
-- `tauri-plugin-transcription` → mic/system-audio capture;
-- `tauri-plugin-local-stt` → in-process whisper.cpp server + model downloads.
+The webview gets only the commands it needs through
+`src-tauri/capabilities-transcription/transcription.json`. The capture and
+file commands are declared in `build.rs`. Native recorder state and its model
+download listener start on the first recorder command; a corrupt settings
+file returns an error from the command instead of blocking app launch.
 
-Permissions are injected at runtime from
-`src-tauri/capabilities-transcription/transcription.json` (kept outside
-`capabilities/` so feature-off builds never validate commands they don't have).
-It grants exactly the eight plugin commands the Local recording UI invokes —
-not the plugins' `default` sets, which include model deletion, mic mute,
-voiceprint and export commands Exo doesn't use.
+Whisper models download into `models/stt/` under Exo's app-data dir. The
+vendored model downloader retries and resumes partial downloads and checks
+size and CRC32 before installation. The vendored Whisper transcription code
+reports work during receive, decode, VAD and inference, so long quiet notes do
+not look stalled. Its supported maximum is eight hours.
 
-### What works at the pinned rev (864ddc1)
+The webview cannot invoke the transcription plugin's `start_capture` or
+`start_transcription`, nor the retired local capture/transcription commands.
+It also lacks plugin device/state/model-download grants. The main capability
+enumerates core APIs without menu or tray, and denies `core:image:from_path`,
+so an icon path cannot read an arbitrary local file. Native recorder capture
+reserves fresh session folders beneath the current vault's `sessions/`
+directory, rejecting symlinks and collisions before any batch-only capture.
+On-device transcription takes identifiers, not a webview-selected audio path
+or URL: native code resolves regular audio without following symlinks, starts
+its own in-process Whisper server, validates the loopback URL, and forces the
+Whisper provider. The upstream server start/stop grants remain for the
+recorder's existing model lease; TC-927 will replace them with a native
+lifetime lease to close the same-host stale-port race.
 
-| Engine | Mode | Status |
-|---|---|---|
-| Whisper via whisper.cpp | Batch, after Stop | Shipped. Verified on-Mac in the release app: record → transcribe → save as Exo Local → relaunch |
-| Apple Speech | Live, macOS 26+ | Follow-up; needs locale-asset download + availability gate |
-| Soniqo Parakeet | Live or batch | Built but not exposed: third-party speech-swift + model weights unreviewed |
-| AM / Argmax | Requires proprietary sidecar + `AM_API_KEY` | Out of scope |
+`EXO_IPC_SELFTEST=1 bun run dev:desktop` probes the real webview ACL in
+debug builds. macOS CI runs `cargo test --release --lib --locked`, launches a
+release-profile app with `ipc-selftest` against an isolated vault, and requires
+its `[EXO_IPC_SELFTEST] ALL PASSED` sentinel with no FAIL/TIMEOUT lines. CI
+also fails when generated permissions (including untracked files) differ from
+the committed tree. Ordinary release builds compile the self-test out.
 
-Whisper models download on first use from `hyprnote.s3.us-east-1.amazonaws.com`
-(size + checksum validated by anarlog's `model-downloader`) into
-`models/stt/` under the app-data dir. Recordings land in `sessions/<id>/`.
+The vault lives under `~/Library/Application Support/xyz.tinycloud.exo` in
+both dev and release builds. Exo's vendored anarlog storage crate uses the
+host bundle identifier, so it does not share an upstream app's vault. A
+`vault_path` in Exo's own `global.json` or `CHAR_VAULT_BASE` can redirect it.
 
-Long recordings: the vendored `transcribe-whisper-local`
-(`desktop/vendor/anarlog-transcribe-whisper-local`, see its `PROVENANCE.md`,
-with small progress hooks in the vendored `audio-chunking` and
-`whisper-local`) reports progress while it receives, decodes, VAD-scans and
-transcribes audio, so long, mostly quiet recordings and slow machines don't
-trip the 30 s / 60 s stream-idle timeouts, while a stalled server still does.
-Supported maximum: **8 hours** (stereo). Longer recordings, or a temp volume
-without room for the decoded audio (~0.5 GB per stereo hour + 0.5 GB), are
-rejected before decoding with a clear error. `NSAppSleepDisabled` keeps App
-Nap from starving background transcription. If transcription still fails, the panel keeps the
-recording: **Retry transcription** re-runs Whisper on the same audio.
+macOS prompts for microphone and system-audio capture when those sources are
+used. `Entitlements.plist` grants audio input to signed bundles.
 
-### Storage paths
+## Native transcription eval (A2)
 
-`~/Library/Application Support/xyz.tinycloud.exo` in **every** build. Upstream
-anarlog hardcodes `anarlog`/`hyprnote` folders for release builds; the vendored
-`storage` crate (`desktop/vendor/anarlog-storage`, MIT — see its
-`PROVENANCE.md`) is patched via `[patch]` to use the host bundle identifier, so
-Exo never shares or follows another app's vault redirect. The only remaining
-redirects are explicit: a `vault_path` in Exo's own
-`xyz.tinycloud.exo/global.json` (Exo never writes one) or the
-`CHAR_VAULT_BASE` environment variable (developer override).
+`desktop/Cargo.toml` is a separate Linux evaluation workspace; the Tauri app
+keeps its own manifest and lockfile under `src-tauri/`. The runner uses the
+shared `local-transcription` mono importer and the production
+`owhisper-client`/`TranscribeService` path. Run the single synthetic smoke
+fixture and score the production-import response with A1:
 
-macOS prompts: Microphone (`NSMicrophoneUsageDescription`) and system-audio
-capture (`NSAudioCaptureUsageDescription`, process tap — macOS 14.2+). Dev
-builds attribute these to the launching terminal. `Entitlements.plist` adds
-`com.apple.security.device.audio-input` for signed/hardened-runtime bundles.
+```sh
+cargo run --release --locked --manifest-path desktop/Cargo.toml -p transcript-quality-runner -- \
+  --fixture desktop/eval/transcript-quality/smoke \
+  --model <model.bin> --input mono --vocabulary off --output <run-dir>
+bun desktop/eval/transcript-quality/score-smoke.ts \
+  desktop/eval/transcript-quality/smoke <run-dir>
+```
 
-### Private cloud engine
+The runner reads the production `systemAudio` toggle from the fixture's
+`spec.json` and records it in `run.json`. The supported model filenames are
+`ggml-small-q8_0.bin` (`QuantizedSmall`) and
+`ggml-large-v3-turbo-q8_0.bin` (`QuantizedLargeTurbo`); `request.model` records
+the same WhisperModel ID that the desktop client sends. `smoke/` is excluded
+from A3's `fixtures/` baseline and G18 fixture namespace.
 
-Local recording has a second engine, **Private cloud**: after Stop, the
-recording is uploaded to TinyCloud Private Transcription (a dedicated
-confidential VM that sends speech segments to Tinfoil) and the transcript is
-saved as the same Exo Local meeting, with `transcription_engine:
-"private-cloud"` in its metadata. `src-tauri/src/cloud/origins.rs` compiles in
-the production `ptx-batch` origin (`PTX_UPLOAD_ORIGIN`), so
-`cloud_transcription_status` reports `configured: true`. The picker shows the
-engine when the backend also answers
-`GET /api/transcriber/private-cloud/capabilities` with 200 (flag on, account
-in the cohort); with no explicit choice stored, Private cloud is the default
-until an on-device model is downloaded.
+Use the release profile for eval runs: the shipped app uses it too, and the
+Whisper C++ build and G17 runtime metrics differ under debug assertions.
 
-Local recording's upload is native (`reqwest` in `cloud/client.rs`), not a
-webview fetch; for it the webview reaches only the backend's
-`/api/transcriber/private-cloud/*` routes. The PTX origin is still in the CSP
-`connect-src` because Upload audio's Private engine PUTs a picked file from the
-webview (see Content-Security-Policy below).
+The app and runner both construct the native request with
+`RequestSpec::production`; macOS release tests verify the app's mapping to
+`TranscriptionParams` (language, keywords, model, and WhisperLocal provider).
 
-Native side (`src-tauri/src/cloud/`):
+The glossary file is data only; production keywords remain empty until E.
+`bun desktop/eval/transcript-quality/check-workspace-sync.ts <closure.json>`
+checks both manifests' patch targets and build profiles and both lockfiles.
+Each package in the eval dependency closure must have the same name, version,
+source and checksum in the app closure; path packages must also resolve to the
+same manifest path. Shared packages cannot enable features absent from the app.
+The only allowed eval-only package is anarlog's test-data crate `data`;
+app-only feature-unified packages are allowed.
 
-- `registry.rs`: on the transcription plugin's `stopped` event for a
-  cloud-bound capture (the webview gives those `cloud-<uuid>` session ids;
-  on-device captures are never opened), opens
-  `vault/sessions/<session>/audio.{mp3,wav,ogg}` with `openat` + `O_NOFOLLOW`
-  at each step, requires a regular file ≤ 120,960,000 bytes (2 h), keeps the
-  descriptor, and emits `exo://capture-ready` with a random 128-bit handle.
-  The webview never passes a path.
-- `commands.rs`: `cloud_transcription_submit` hashes the descriptor, creates
-  the job at the compiled backend origin (bearer + `Idempotency-Key`), and PUTs
-  the same descriptor to `PTX_UPLOAD_ORIGIN` + the backend's relative
-  `/uploads/trn_…` path, with an exact `Content-Length` and no redirects.
-  After acceptance, recovery goes through job status only: PTX deletes a job's
-  upload capabilities when it accepts the upload, so a replayed PUT gets 401.
-  `cloud_transcription_cancel` aborts an upload and releases the handle.
-- The commands are declared in `build.rs` (app ACL manifest) and granted only
-  by `capabilities-transcription/transcription.json`, which also denies the
-  webview `event:emit`, so it cannot forge the plugin's `stopped` event.
-- Debug builds only: `EXO_DEBUG_PTX_ORIGIN=http://127.0.0.1:<port>` points
-  the uploader at a local PTX stand-in.
-
-### Known gaps
-
-- Speakers are labelled by channel: **You** = microphone, **Others** = system
-  audio (the remote side of a call); a real capture confirmed the order.
-  Without headphones the mic also hears the speakers; the saved transcript
-  drops mic phrases that clearly echo system audio and merges consecutive
-  segments per speaker (`frontend/src/lib/localTranscriptTurns.ts`).
-- One capture at a time: the shared RootActor rejects a second `start_capture`.
-- Calling any other plugin command needs an explicit grant in
-  `capabilities-transcription/transcription.json`.
+On Linux, the CPU runner must match the app's enabled features on
+`whisper-local`, `transcribe-whisper-local`, `audio-chunking`,
+`exo-local-transcription`, `whisper-rs`, and `whisper-rs-sys`, except for the
+explicit Metal/accelerator features listed in the checker. On macOS, run the
+runner with `--release --features metal` and check exact feature equality with
+`bun desktop/eval/transcript-quality/check-workspace-sync.ts --platform macos
+<closure.json>`. Unexpected features or package drift fail either check.
+The checker requires `src-tauri/.cargo/` to contain only `config.toml`,
+whose sole table and key are `[env] POSTHOG_API_KEY`. Extra app config
+files (including extensionless `config`) and any eval-workspace `.cargo/`
+files fail parity: Cargo build, target, profile and patch overrides can
+otherwise change shipped code without changing the runner.
 
 ## Content-Security-Policy
 
@@ -186,9 +175,8 @@ the Vite dev server directly and applies no CSP.
   directly with the user's own key when they choose that engine (deleting the
   finished transcript goes through the backend, as AssemblyAI's CORS allows no
   DELETE). Local
-  recording talks to its plugins over IPC only. Upload audio's Private engine
-  PUTs the file to the production ptx-batch origin (`VITE_EXO_PTX_UPLOAD_ORIGIN`,
-  the same CVM as `PTX_UPLOAD_ORIGIN` in `src-tauri/src/cloud/origins.rs`).
+  recording talks to its plugins over IPC only. The frontend's Private engine
+  PUTs audio to the production ptx-batch origin (`VITE_EXO_PTX_UPLOAD_ORIGIN`).
 - `frame-src https://openkey.so`: the OpenKey sign-in/approval iframe.
 - `img-src` allows `https:`, `data:` and `blob:` (chat markdown and avatars);
   `object-src 'none'`, `base-uri 'none'`, `form-action 'self'`.

@@ -1,0 +1,683 @@
+// The shared voice-note saves: one pending run at a time (the recorder and
+// PendingVoiceNotesSaver share it), saving to the space kept apart from
+// removing the device copy, the pending store the recorder views read, always
+// re-listed from the phone, and the discard guard (PR5): a discarded recording
+// is deleted, never saved, even after a relaunch. The plugin is a scripted
+// fake; the store's save is swapped through harness/fakeVoiceNoteStore.
+import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+
+import { fakeVoiceNoteStore } from "@/harness/fakeVoiceNoteStore";
+import { __setVoiceNotesForTests, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
+import { currentAccountGeneration } from "./accountContext";
+
+const realStore = { ...(await import("./voiceNoteStore")) };
+mock.module("./voiceNoteStore", () => ({
+  ...realStore,
+  saveVoiceNote: (...args: Parameters<typeof realStore.saveVoiceNote>) => (fakeVoiceNoteStore.save ?? realStore.saveVoiceNote)(...args),
+}));
+afterAll(() => mock.module("./voiceNoteStore", () => realStore));
+const saves = await import("./recorderSaves");
+
+describe("voice-note network error copy", () => {
+  test.each([
+    "Load failed",
+    "The network connection was lost.",
+    "Failed to fetch",
+    "saveVoiceNote(audio): audioStore put part 0 failed: NETWORK_ERROR: Failed to fetch",
+  ])("maps WebKit network failures to actionable copy (%s)", (raw) => {
+    const original = console.warn;
+    const logged: unknown[][] = [];
+    console.warn = (...args: unknown[]) => { logged.push(args); };
+    try {
+      expect(saves.messageOf(new TypeError(raw))).toBe(
+        "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
+      );
+      const output = logged.map((args) => args.join(" ")).join(" ");
+      expect(output).toContain("TinyCloud network failure");
+      expect(output).not.toContain("do-not-log");
+      expect(output).not.toContain("https://space.example");
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test("classifies WebKit's CORS-hidden upload refusal as a rejected node upload", () => {
+    const original = console.warn;
+    console.warn = () => {};
+    try {
+      const error = new TypeError("Fetch API cannot load https://tee.node.tinycloud.xyz/kv?token=secret due to access control checks.");
+      expect(saves.messageOf(error)).toBe(saves.TINYCLOUD_UPLOAD_REJECTED_MESSAGE);
+      expect(saves.classifyNoteFailure(error)).toBe("rejected");
+    } finally { console.warn = original; }
+  });
+
+  test("renders SDK result objects without object coercion", () => {
+    expect(saves.messageOf({ code: "KV_REJECTED", message: "Payload too large", status: 413 }))
+      .toBe("KV_REJECTED: Payload too large: 413");
+    expect(saves.messageOf({ detail: "unknown" })).toBe('{"detail":"unknown"}');
+  });
+
+  test("native console logs only a stable operation, never bearer tokens", () => {
+    const original = console.warn;
+    const logged: unknown[][] = [];
+    console.warn = (...args: unknown[]) => { logged.push(args); };
+    try {
+      saves.logVoiceNoteError("reconcile failed", new Error("authorization: Bearer private-token"));
+      expect(logged).toHaveLength(1);
+      expect(logged[0]).toHaveLength(1);
+      expect(String(logged[0]?.[0])).toContain("reconcile failed");
+      expect(String(logged[0]?.[0])).not.toContain("private-token");
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test("does not map SDK NETWORK_ERROR codes for HTTP or SQL server failures", () => {
+    expect(saves.messageOf(Object.assign(new Error("Failed to list keys: 403 - capability denied"),
+      { code: "NETWORK_ERROR" }))).toBe("Failed to list keys: 403 - capability denied");
+    expect(saves.messageOf(Object.assign(new Error("Failed to execute query: 500 - internal error"),
+      { code: "NETWORK_ERROR" }))).toBe("Failed to execute query: 500 - internal error");
+  });
+
+  test("logs a non-network error code without its credential-bearing message", () => {
+    const original = console.warn;
+    const logged: unknown[][] = [];
+    console.warn = (...args: unknown[]) => { logged.push(args); };
+    try {
+      saves.logVoiceNoteError("reconcile failed", Object.assign(
+        new Error('{"token":"secret-token","authorization":"Bearer private-bearer"}'),
+        { code: "discard_migration_failed" },
+      ));
+      const output = logged.map((args) => args.join(" ")).join(" ");
+      expect(output).toContain("code=discard_migration_failed");
+      expect(output).not.toContain("secret-token");
+      expect(output).not.toContain("private-bearer");
+    } finally {
+      console.warn = original;
+    }
+  });
+});
+
+describe("pipeline save signals", () => {
+  test.each([
+    [{ code: "NETWORK_ERROR", message: "connection refused" }, "offline"],
+    [{ code: "SPACE_LANE_QUEUE_TIMEOUT", message: "waited" }, "timeout"],
+    [{ name: "VoiceNoteSaveTimeout", message: "waited" }, "timeout"],
+    [{ code: "STORAGE_QUOTA_EXCEEDED", message: "full" }, "quota"],
+    [{ code: "VOICE_NOTE_SOURCE_READ_FAILED", message: "source unavailable" }, "source"],
+    [{ code: "VOICE_NOTE_AUDIO_TOO_LARGE", message: "too large" }, "source"],
+    [{ code: "STORE_CORRUPT_AUDIO", message: "corrupt" }, "source"],
+    [{ code: "AUTH_UNAUTHORIZED", message: "denied", meta: { status: 403 } }, "auth"],
+    [{ code: "NETWORK_ERROR", message: "Failed to execute query: 403 - capability denied" }, "auth"],
+    [{ code: "SQL_ERROR", message: "error", meta: { status: 503 } }, "server"],
+    [{ code: "NETWORK_ERROR", message: "Failed to execute query: 500 - internal error" }, "server"],
+    [{ code: "UNKNOWN", message: "unusual issue" }, "other"],
+  ] as const)("classifies %j once with a useful kind", (error, kind) => {
+    expect(saves.classifyNoteFailure(error)).toBe(kind);
+  });
+
+  test("online state and held reasons publish on the pending snapshot", () => {
+    phone.pending = [recording("held-note", 1)];
+    saves.pendingStore.setAccount(tcw.did);
+    return saves.pendingStore.refresh(null).then(() => {
+      saves.pendingStore.setHeld("held-note", "other-account");
+      expect(saves.pendingStore.snapshot().notes?.[0]?.held).toBe("other-account");
+      saves.pendingStore.setAccount(null);
+      return saves.pendingStore.refresh(null).then(() => {
+        expect(saves.pendingStore.snapshot().notes?.[0]?.held).toBe("signed-out");
+      });
+    });
+  });
+
+  test("online state is a snapshot signal", () => {
+    saves.pendingStore.setOnline(false);
+    expect(saves.pendingStore.snapshot().online).toBe(false);
+    saves.pendingStore.setOnline(true);
+    expect(saves.pendingStore.snapshot().online).toBe(true);
+  });
+});
+
+/** A fresh copy of the module, as after a WebView reload: its in-memory guards and store are new. */
+let instances = 0;
+const reloaded = () => import(`./recorderSaves.ts?reload=${++instances}`) as Promise<typeof saves>;
+
+/** localStorage for one test (bun has none), as the WebView keeps it across reloads. */
+function withStorage(): Map<string, string> {
+  const items = new Map<string, string>();
+  (globalThis as { localStorage?: unknown }).localStorage = {
+    getItem: (key: string) => items.get(key) ?? null,
+    setItem: (key: string, value: string) => void items.set(key, value),
+    removeItem: (key: string) => void items.delete(key),
+  };
+  return items;
+}
+
+const tcw = { did: "did:example:alice" } as TinyCloudWeb;
+
+function recording(id: string, startedAt: number): VoiceNoteRecording {
+  return { id, startedAt, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+    version: 2, owner: tcw.did, rev: 1 };
+}
+
+/** The phone: what is listed as pending, and how deleteAudio and listPending behave. */
+const phone = {
+  pending: [] as VoiceNoteRecording[],
+  deleteFailures: 0,
+  deletes: 0,
+  lists: 0,
+  holdList: null as Promise<void> | null,
+  ledgerUpdates: [] as unknown[],
+  ledgerConflicts: 0,
+};
+
+const plugin = {
+  async listPending() {
+    phone.lists++;
+    if (phone.holdList) await phone.holdList;
+    return { recordings: [...phone.pending] };
+  },
+  async deleteAudio({ id }: { id: string }) {
+    phone.deletes++;
+    if (phone.deleteFailures > 0) {
+      phone.deleteFailures--;
+      throw new Error("the file is busy");
+    }
+    phone.pending = phone.pending.filter((r) => r.id !== id);
+  },
+  async readAudioChunk({ id, offset, length }: { id: string; offset: number; length: number }) {
+    return { id, offset, base64: btoa("\u0000".repeat(length)), bytesRead: length, size: 4, eof: true };
+  },
+  async updateLedger(options: unknown) {
+    phone.ledgerUpdates.push(options);
+    if (phone.ledgerConflicts > 0) {
+      phone.ledgerConflicts--;
+      phone.pending = phone.pending.map((note) => ({ ...note, rev: 2 }));
+      throw Object.assign(new Error("ledger changed"), { code: "rev_conflict" });
+    }
+    return { rev: 3 };
+  },
+} as unknown as VoiceNotesPlugin;
+
+let saveCalls = 0;
+const ok = async () => {
+  saveCalls++;
+  return { ok: true, data: { inserted: true } } as never;
+};
+const fails = async () => {
+  saveCalls++;
+  return { ok: false, error: { code: "NETWORK", message: "The network connection was lost." } } as never;
+};
+
+beforeEach(() => {
+  __setVoiceNotesForTests(plugin, { available: true });
+  Object.assign(phone, { pending: [], deleteFailures: 0, deletes: 0, lists: 0, holdList: null, ledgerUpdates: [], ledgerConflicts: 0 });
+  saveCalls = 0;
+  fakeVoiceNoteStore.save = ok;
+});
+afterEach(() => {
+  fakeVoiceNoteStore.save = null;
+  delete (globalThis as { localStorage?: unknown }).localStorage;
+});
+
+describe("savePendingRecordings", () => {
+  test("starting Save now clears the old failure and failed-row marker", async () => {
+    phone.pending = [recording("retrying", 1)];
+    await saves.pendingStore.refresh(null);
+    saves.pendingStore.reportNoteFailure("retrying", "Load failed");
+    expect(saves.pendingStore.snapshot()).toMatchObject({
+      lastError: "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
+      notes: [{ id: "retrying", failed: { kind: "offline", message: "Couldn't reach your TinyCloud space. This note is still on your phone — try again." } }],
+    });
+    const finish = saves.pendingStore.beginManualSave();
+    try {
+      expect(saves.pendingStore.snapshot()).toMatchObject({ running: true, lastError: null, notes: [{ id: "retrying" }] });
+      expect(saves.pendingStore.snapshot().notes?.[0]?.failed).toBeUndefined();
+    } finally { finish(); }
+  });
+
+  test("a manual owner-aware save keeps the shared saving and idle state until it settles", async () => {
+    const finish = saves.pendingStore.beginManualSave();
+    expect(saves.pendingStore.snapshot().running).toBe(true);
+    expect(saves.voiceNoteSaveBusy()).toBe(true);
+    let idle = false;
+    const waiting = saves.whenVoiceNoteSavesIdle().then(() => { idle = true; });
+    await Promise.resolve();
+    expect(idle).toBe(false);
+    finish();
+    await waiting;
+    expect(saves.pendingStore.snapshot().running).toBe(false);
+    expect(saves.voiceNoteSaveBusy()).toBe(false);
+  });
+
+  test("single-flight: a second call while one runs gets the same run", async () => {
+    let release!: () => void;
+    phone.holdList = new Promise((resolve) => {
+      release = resolve;
+    });
+    const first = saves.savePendingRecordings(tcw);
+    const second = saves.savePendingRecordings(tcw);
+    expect(second === first).toBe(true);
+    expect(saves.pendingStore.snapshot().running).toBe(true);
+    release();
+    phone.holdList = null;
+    expect(await first).toEqual({ total: 0, left: [], saved: [], lastError: null });
+    expect(saves.pendingStore.snapshot().running).toBe(false);
+    // Once it has finished, the next call is a new run.
+    const third = saves.savePendingRecordings(tcw);
+    expect(third === first).toBe(false);
+    await third;
+  });
+
+  test("a recording that cannot be saved stays on the phone, oldest first, with the failure", async () => {
+    phone.pending = [recording("b", 2), recording("a", 1)];
+    fakeVoiceNoteStore.save = fails;
+    const run = await saves.savePendingRecordings(tcw);
+    expect(run.saved).toEqual([]);
+    expect(run.left.map((r) => r.id)).toEqual(["a", "b"]);
+    expect(run.lastError).toBe("Couldn't reach your TinyCloud space. This note is still on your phone — try again.");
+    expect(saves.pendingStore.snapshot()).toMatchObject({
+      listing: { state: "ok", count: 2 },
+      running: false,
+      lastError: "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
+    });
+  });
+
+  test("an uploaded note remains on the phone and is never uploaded twice", async () => {
+    const note = recording("kept", 1);
+    phone.pending = [note];
+    const first = await saves.savePendingRecordings(tcw);
+    expect(first.saved.map((r) => r.id)).toEqual(["kept"]);
+    expect(first.lastError).toBeNull();
+    expect(saves.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 0 });
+    const second = await saves.savePendingRecordings(tcw);
+    expect(second.saved).toEqual([]);
+    expect(second.left).toEqual([]);
+    expect(second.lastError).toBeNull();
+    expect(saves.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 0 });
+    expect(saveCalls).toBe(1);
+    expect(phone.deletes).toBe(0);
+    expect(phone.pending).toEqual([note]);
+  });
+});
+
+describe("saveRecording", () => {
+  test("renewal's save-idle waiter resolves when an account pipeline save fails", async () => {
+    const note = recording("account-save-idle", 1);
+    const accountTcw = { ...tcw, spaceId: "space" } as TinyCloudWeb;
+    let finish!: () => void;
+    fakeVoiceNoteStore.save = async () => {
+      await new Promise<void>((resolve) => { finish = resolve; });
+      return fails();
+    };
+    const saving = saves.saveNoteForAccount(accountTcw,
+      { did: tcw.did, spaceId: "space", generation: currentAccountGeneration() }, note);
+    expect(saves.voiceNoteSaveBusy()).toBe(true);
+    let idle = false;
+    const waiting = saves.whenVoiceNoteSavesIdle().then(() => { idle = true; });
+    await Promise.resolve();
+    expect(idle).toBe(false);
+    finish();
+    expect(await saving).toMatchObject({ kind: "failed", failure: "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
+      failureKind: "offline", failureCause: { code: "NETWORK", message: "The network connection was lost." } });
+    await waiting;
+    expect(idle).toBe(true);
+    expect(saves.voiceNoteSaveBusy()).toBe(false);
+  });
+
+  test("a save in the space leaves the device copy for local playback", async () => {
+    const note = recording("one", 1);
+    phone.pending = [note];
+    const outcome = await saves.saveRecording(tcw, note);
+    expect(outcome.kind).toBe("saved");
+    expect(outcome.kind === "saved" && outcome.cleanupError).toBeNull();
+    expect(await saves.saveRecording(tcw, note)).toEqual({ kind: "already-saved", cleanupError: null });
+    expect(saveCalls).toBe(1);
+    expect(phone.deletes).toBe(0);
+    expect(phone.pending).toEqual([note]);
+  });
+
+  test("every v1 note, including one missing ownerUnknown, is held by the sign-in saver", async () => {
+    const bareV1: VoiceNoteRecording = {
+      id: "bare-v1", startedAt: 0, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4,
+      silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+    };
+    phone.pending = [bareV1];
+    expect(await saves.savePendingRecordings(tcw)).toMatchObject({ total: 1, left: [bareV1], saved: [] });
+    expect(saveCalls).toBe(0);
+    expect(phone.deletes).toBe(0);
+  });
+
+  test("legacy and unowned v2 notes never reach saveVoiceNote", async () => {
+    const legacy = { ...recording("legacy-held", 1), ownerUnknown: true };
+    const unowned = { ...recording("unowned-held", 2), version: 2 as const, owner: null };
+    const other = { ...recording("other-account", 3), version: 2 as const, owner: "did:example:bob" };
+    phone.pending = [legacy, unowned, other];
+    expect(await saves.saveRecording(tcw, legacy)).toEqual({ kind: "held", reason: "legacy" });
+    expect(await saves.saveRecording(tcw, unowned)).toEqual({ kind: "held", reason: "unowned" });
+    expect(await saves.saveRecording(tcw, other)).toEqual({ kind: "held", reason: "other-account" });
+    expect(saveCalls).toBe(0);
+    expect(phone.deletes).toBe(0);
+    expect(phone.pending).toHaveLength(3);
+  });
+
+  test("owned v2 upload updates the native audio ledger and retains local audio", async () => {
+    const note = { ...recording("owned-v2", 3), version: 2 as const, owner: "did:example:alice", rev: 2 };
+    phone.pending = [note];
+    const rowVersion = saves.pendingStore.snapshot().rowVersion;
+    fakeVoiceNoteStore.save = async (...args) => {
+      await args[4]?.onRowCreated?.("actual-row");
+      expect(phone.ledgerUpdates[0]).toEqual({ id: note.id, did: note.owner, rev: 2,
+        patch: { audio: { state: "pending", rowId: "actual-row", at: null } } });
+      expect(saves.pendingStore.snapshot().rowVersion).toBe(rowVersion + 1);
+      return { ok: true, data: { id: "actual-row", inserted: true, createdAt: "2026-10-07T00:00:00Z" } } as never;
+    };
+    expect((await saves.saveRecording(tcw, note)).kind).toBe("saved");
+    expect(phone.ledgerUpdates).toEqual([
+      { id: note.id, did: note.owner, rev: 2, patch: { audio: { state: "pending", rowId: "actual-row", at: null } } },
+      { id: note.id, did: note.owner, rev: 2, patch: { audio: { state: "saved", rowId: "actual-row", at: expect.any(Number) } } },
+    ]);
+    expect(phone.pending).toEqual([note]);
+    expect(phone.deletes).toBe(0);
+  });
+
+  test("starts the on-device transcript sync as soon as a row is created while audio remains queued", async () => {
+    const note = { ...recording("owned-v2-transcript-first", 31), stt: {
+      state: "done" as const, pack: null, engine: "apple-speech" as const,
+      segmentsDone: 1, windowsDone: 1, error: null,
+    } };
+    phone.pending = [note];
+    let rowCreated!: () => void;
+    const created = new Promise<void>((resolve) => { rowCreated = resolve; });
+    let finishUpload!: () => void;
+    const uploadGate = new Promise<void>((resolve) => { finishUpload = resolve; });
+    fakeVoiceNoteStore.save = async (...args) => {
+      await args[4]?.onRowCreated?.("transcript-first-row");
+      rowCreated();
+      await uploadGate;
+      return { ok: true, data: { id: "transcript-first-row", inserted: true, createdAt: "2026-10-07T00:00:00Z" } } as never;
+    };
+
+    const saving = saves.saveRecording(tcw, note);
+    await created;
+    for (let attempt = 0; attempt < 20 && phone.lists === 0; attempt++) await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(phone.lists).toBeGreaterThan(0);
+    expect(phone.ledgerUpdates[0]).toMatchObject({ patch: { audio: { state: "pending", rowId: "transcript-first-row" } } });
+    finishUpload();
+    expect((await saving).kind).toBe("saved");
+  });
+
+  test("a changed ledger rev is re-read and patched once without another upload", async () => {
+    const note = recording("owned-rev-conflict", 4);
+    phone.pending = [note];
+    phone.ledgerConflicts = 1;
+    const result = await saves.saveRecording(tcw, note);
+    expect(result).toMatchObject({ kind: "saved", cleanupError: null });
+    expect(saveCalls).toBe(1);
+    expect(phone.ledgerUpdates).toMatchObject([{ rev: 1 }, { rev: 2 }]);
+    expect(phone.deletes).toBe(0);
+  });
+});
+
+describe("after a reload", () => {
+  test("after a reload, an old localStorage marker cannot suppress a pending native ledger", async () => {
+    const storage = withStorage();
+    const before = await reloaded();
+    const note = recording("reload", 1);
+    phone.pending = [note];
+    const first = await before.savePendingRecordings(tcw);
+    expect(first.saved.map((r) => r.id)).toEqual(["reload"]);
+    expect(saveCalls).toBe(1);
+    // The phone kept its copy; the note is marked as in the space, durably.
+    expect(phone.pending.map((r) => r.id)).toEqual(["reload"]);
+    expect(JSON.parse(storage.get(saves.VOICE_NOTE_CLOUD_SAVED_KEY)!)).toEqual(["reload"]);
+
+    // A fresh module: its in-memory guards are gone; the phone and localStorage are not.
+    const after = await reloaded();
+    const second = await after.savePendingRecordings(tcw);
+    expect(saveCalls).toBe(2);
+    expect(second.saved.map((r) => r.id)).toEqual(["reload"]);
+    expect(second.left).toEqual([]);
+    expect(phone.pending).toEqual([note]);
+    expect(storage.has(saves.VOICE_NOTE_CLOUD_SAVED_KEY)).toBe(true);
+    expect(after.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 0 });
+  });
+
+  test("a cold start whose listing fails says so, never \"nothing pending\"", async () => {
+    const cold = await reloaded();
+    expect(cold.pendingStore.snapshot().listing).toEqual({ state: "unknown" });
+    __setVoiceNotesForTests({ ...plugin, listPending: async () => Promise.reject(new Error("no bridge")) } as VoiceNotesPlugin, { available: true });
+    const run = await cold.savePendingRecordings(tcw);
+    expect(run).toEqual({ total: 0, left: [], saved: [], lastError: "Could not check this phone for unsaved notes: no bridge" });
+    expect(cold.pendingStore.snapshot()).toEqual({
+      listing: { state: "error", message: "Could not check this phone for unsaved notes: no bridge" },
+      accountDid: null,
+      running: false,
+      lastError: null,
+      notes: undefined,
+      uploadingId: null,
+      rowVersion: 0,
+      online: true,
+    });
+    expect(cold.pendingCount(cold.pendingStore.snapshot())).toBe(0);
+  });
+});
+
+describe("pendingStore", () => {
+  test("B sees only B's and unowned notes; A's notes do not enter the signed-in count", async () => {
+    phone.pending = [recording("old-account", 1), { ...recording("current", 2), owner: "did:example:bob" },
+      { ...recording("unowned", 3), owner: null, ownerUnknown: true }];
+    saves.pendingStore.reportNoteFailure("old-account", "A's upload failed");
+    saves.pendingStore.setAccount("did:example:bob");
+    await saves.pendingStore.refresh(null);
+    expect(saves.pendingStore.snapshot()).toMatchObject({ accountDid: "did:example:bob", listing: { state: "ok", count: 2 }, lastError: null });
+    saves.pendingStore.setAccount(null);
+    await saves.pendingStore.refresh(null);
+    expect(saves.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 3 });
+  });
+  test("a discard that went through is remembered as discarded after its marker is retired; one that failed is not", async () => {
+    saves.markDiscarded("gone");
+    expect(saves.wasDiscarded("gone")).toBe(true);
+    expect(await saves.deleteDiscarded("gone")).toBeNull();
+    expect(saves.isDiscarded("gone")).toBe(false);
+    expect(saves.wasDiscarded("gone")).toBe(true);
+    saves.markDiscarded("stays");
+    saves.unmarkDiscarded("stays");
+    expect(saves.isDiscarded("stays")).toBe(false);
+    expect(saves.wasDiscarded("stays")).toBe(false);
+  });
+  test("the notes the Library lists are this account's and unowned ones, not a discarded one, and absent when the listing failed", async () => {
+    phone.pending = [{ ...recording("alice-note", 1), owner: tcw.did }, { ...recording("bob-note", 2), owner: "did:example:bob" },
+      { ...recording("unowned", 3), owner: null, ownerUnknown: true }, { ...recording("tossed", 4), owner: "did:example:bob" }];
+    saves.markDiscarded("tossed");
+    saves.pendingStore.setAccount("did:example:bob");
+    expect(saves.pendingStore.snapshot().notes).toBeUndefined();
+    await saves.pendingStore.refresh(null);
+    expect(saves.pendingStore.snapshot().notes).toEqual([
+      { id: "bob-note", startedAt: 2, durationMs: 1000 }, { id: "unowned", startedAt: 3, durationMs: 1000 }]);
+    __setVoiceNotesForTests({ ...plugin, listPending: async () => Promise.reject(new Error("no bridge")) } as VoiceNotesPlugin, { available: true });
+    await saves.pendingStore.refresh(null);
+    expect(saves.pendingStore.snapshot()).toMatchObject({ listing: { state: "error" }, notes: undefined });
+    saves.pendingStore.setAccount(null);
+    saves.clearDiscarded("tossed");
+  });
+  test("A's late save result, failed or finished, never replaces or clears B's pending state", async () => {
+    phone.pending = [{ ...recording("bob-note", 1), owner: "did:example:bob" }];
+    saves.pendingStore.setAccount(tcw.did);
+    const forA = saves.pendingStore.forAccount(tcw.did!);
+    saves.pendingStore.setAccount("did:example:bob");
+    const forB = saves.pendingStore.forAccount("did:example:bob");
+    await saves.pendingStore.refresh(null);
+    forB.reportError("Could not save notes on this phone: B's space timed out");
+    forA.reportError("Could not save notes on this phone: A's space timed out");
+    await forA.refresh(null);
+    expect(saves.pendingStore.snapshot()).toMatchObject({ accountDid: "did:example:bob", listing: { state: "ok", count: 1 },
+      lastError: "Could not save notes on this phone: B's space timed out" });
+    await forB.refresh(null);
+    expect(saves.pendingStore.snapshot().lastError).toBeNull();
+    saves.pendingStore.setAccount(null);
+  });
+  test("a run that began before its account was registered still reports once that account registers, never after another", async () => {
+    phone.pending = [recording("alice-note", 1)];
+    saves.pendingStore.setAccount(null);
+    const forAlice = saves.pendingStore.forAccount(tcw.did!);
+    saves.pendingStore.setAccount(tcw.did);
+    forAlice.reportError("Could not save notes on this phone: Alice's space timed out");
+    expect(saves.pendingStore.snapshot()).toMatchObject({ accountDid: tcw.did,
+      lastError: "Could not save notes on this phone: Alice's space timed out" });
+    await forAlice.refresh(null);
+    expect(saves.pendingStore.snapshot().lastError).toBeNull();
+    saves.pendingStore.setAccount(null);
+    const forAliceAgain = saves.pendingStore.forAccount(tcw.did!);
+    saves.pendingStore.setAccount("did:example:bob");
+    saves.pendingStore.setAccount(null);
+    forAliceAgain.reportError("Alice's late failure");
+    expect(saves.pendingStore.snapshot().lastError).toBeNull();
+  });
+  test("a run from an earlier session of the same account never writes into the next one (A → null → A, A → B → A)", async () => {
+    phone.pending = [recording("alice-note", 1)];
+    for (const via of [null, "did:example:bob"]) {
+      saves.pendingStore.setAccount(tcw.did);
+      const earlier = saves.pendingStore.forAccount(tcw.did!);
+      saves.pendingStore.setAccount(via);
+      saves.pendingStore.setAccount(tcw.did);
+      const later = saves.pendingStore.forAccount(tcw.did!);
+      later.reportError("This session's failure");
+      earlier.reportError("The earlier session's failure");
+      await earlier.refresh(null);
+      expect(saves.pendingStore.snapshot()).toMatchObject({ accountDid: tcw.did, lastError: "This session's failure" });
+      saves.pendingStore.setAccount(null);
+    }
+  });
+  test("a new automatic save preserves an earlier note's failure until that note succeeds", async () => {
+    const failed = recording("failed-earlier", 1);
+    const newer = recording("newer-save", 2);
+    phone.pending = [failed, newer];
+    saves.pendingStore.setAccount(tcw.did);
+    await saves.pendingStore.refresh(null);
+    saves.pendingStore.reportNoteFailure(failed.id, "Earlier upload failed");
+    const finish = saves.pendingStore.beginAutomaticSave();
+    expect(saves.pendingStore.snapshot()).toMatchObject({ running: true, lastError: "Earlier upload failed" });
+    saves.pendingStore.reportNoteFailure(newer.id, "Newer upload failed");
+    expect(saves.pendingStore.snapshot().lastError).toBe("Newer upload failed");
+    newer.ledger = { audio: { state: "saved", rowId: "newer", at: 2 } } as VoiceNoteRecording["ledger"];
+    await saves.pendingStore.refresh(null);
+    expect(saves.pendingStore.snapshot().lastError).toBe("Earlier upload failed");
+    finish();
+    failed.ledger = { audio: { state: "saved", rowId: "earlier", at: 3 } } as VoiceNoteRecording["ledger"];
+    await saves.pendingStore.refresh(null);
+    expect(saves.pendingStore.snapshot()).toMatchObject({ running: false, lastError: null });
+    saves.pendingStore.setAccount(null);
+  });
+  test("refresh lists the phone; a listing that fails is an error state, never a cached count", async () => {
+    phone.pending = [recording("a", 1), recording("b", 2)];
+    await saves.pendingStore.refresh(null);
+    const snapshot = saves.pendingStore.snapshot();
+    expect(snapshot.listing).toEqual({ state: "ok", count: 2 });
+    expect(saves.pendingStore.snapshot()).toBe(snapshot);
+    __setVoiceNotesForTests({ ...plugin, listPending: async () => Promise.reject(new Error("no bridge")) } as VoiceNotesPlugin, { available: true });
+    await saves.pendingStore.refresh(null);
+    expect(saves.pendingStore.snapshot().listing).toEqual({ state: "error", message: "Could not check this phone for unsaved notes: no bridge" });
+  });
+});
+
+describe("discard guard", () => {
+  test("saveRecording deletes a discarded recording instead of saving it", async () => {
+    const storage = withStorage();
+    const note = recording("discard-one", 1);
+    phone.pending = [note];
+    saves.markDiscarded(note.id);
+    expect(storage.get(saves.VOICE_NOTE_DISCARDED_KEY)).toBe('["discard-one"]');
+    expect(await saves.saveRecording(tcw, note)).toEqual({ kind: "discarded", cleanupError: null });
+    expect(saveCalls).toBe(0);
+    expect(phone.pending).toEqual([]);
+    // Gone from the phone: nothing is left to guard.
+    expect(saves.isDiscarded(note.id)).toBe(false);
+    expect(storage.has(saves.VOICE_NOTE_DISCARDED_KEY)).toBe(false);
+  });
+
+  test("a pending run deletes a discarded recording and saves the rest", async () => {
+    phone.pending = [recording("discard-keep", 2), recording("discard-drop", 1)];
+    saves.markDiscarded("discard-drop");
+    const run = await saves.savePendingRecordings(tcw);
+    expect(run.saved.map((r) => r.id)).toEqual(["discard-keep"]);
+    expect(run.left).toEqual([]);
+    expect(run.lastError).toBeNull();
+    expect(saveCalls).toBe(1);
+    expect(phone.pending.map((r) => r.id)).toEqual(["discard-keep"]);
+    expect(saves.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 0 });
+  });
+
+  test("the mark survives a reload: the stored id still deletes the recording", async () => {
+    withStorage();
+    saves.markDiscarded("discard-reload");
+    // A fresh module: nothing in memory; only localStorage kept the id.
+    const after = await reloaded();
+    expect(after.isDiscarded("discard-reload")).toBe(true);
+    phone.pending = [recording("discard-reload", 1)];
+    const run = await after.savePendingRecordings(tcw);
+    expect(run.saved).toEqual([]);
+    expect(saveCalls).toBe(0);
+    expect(phone.pending).toEqual([]);
+    expect(after.isDiscarded("discard-reload")).toBe(false);
+  });
+
+  test("discarded and also marked as in the space: deleted, never saved, and both marks cleared", async () => {
+    // A reload with both marks on one note still on the phone; the discard check runs first.
+    const storage = withStorage();
+    storage.set(saves.VOICE_NOTE_DISCARDED_KEY, '["discard-saved"]');
+    storage.set(saves.VOICE_NOTE_CLOUD_SAVED_KEY, '["discard-saved"]');
+    const after = await reloaded();
+    const note = recording("discard-saved", 1);
+    phone.pending = [note];
+    expect(await after.saveRecording(tcw, note)).toEqual({ kind: "discarded", cleanupError: null });
+    expect(phone.pending).toEqual([]);
+    expect(saveCalls).toBe(0);
+    expect(after.isDiscarded(note.id)).toBe(false);
+    expect(storage.has(saves.VOICE_NOTE_DISCARDED_KEY)).toBe(false);
+    expect(storage.has(saves.VOICE_NOTE_CLOUD_SAVED_KEY)).toBe(false);
+    // Met again (a late "autoStopped"): nothing to save or delete.
+    expect(await after.saveRecording(tcw, note)).toEqual({ kind: "already-saved", cleanupError: null });
+    expect(saveCalls).toBe(0);
+  });
+
+  test("a failed delete keeps the id marked, and the next run deletes it", async () => {
+    const storage = withStorage();
+    phone.pending = [recording("discard-busy", 1)];
+    phone.deleteFailures = 1;
+    saves.markDiscarded("discard-busy");
+    const first = await saves.savePendingRecordings(tcw);
+    expect(first.saved).toEqual([]);
+    expect(first.lastError).toBe("Discarded, but this phone kept its copy: the file is busy");
+    expect(saves.isDiscarded("discard-busy")).toBe(true);
+    expect(storage.get(saves.VOICE_NOTE_DISCARDED_KEY)).toBe('["discard-busy"]');
+    // Still on the phone, and counted.
+    expect(saves.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 1 });
+
+    const second = await saves.savePendingRecordings(tcw);
+    expect(second.lastError).toBeNull();
+    expect(saves.isDiscarded("discard-busy")).toBe(false);
+    expect(phone.pending).toEqual([]);
+    expect(saveCalls).toBe(0);
+  });
+
+  test("without localStorage the guard still holds for this session", async () => {
+    (globalThis as { localStorage?: unknown }).localStorage = {
+      getItem: () => {
+        throw new Error("storage disabled");
+      },
+      setItem: () => {
+        throw new Error("storage disabled");
+      },
+      removeItem: () => {
+        throw new Error("storage disabled");
+      },
+    };
+    const note = recording("discard-no-storage", 1);
+    phone.pending = [note];
+    saves.markDiscarded(note.id);
+    expect(saves.isDiscarded(note.id)).toBe(true);
+    expect((await saves.saveRecording(tcw, note)).kind).toBe("discarded");
+    expect(saveCalls).toBe(0);
+  });
+});

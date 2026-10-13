@@ -11,6 +11,9 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { navItems } from "../shell/navItems";
+import { PATHS } from "../shell/routes";
+
 import { supportsBackgroundNotifications } from "./backgroundSyncState";
 import {
   consentCopyText,
@@ -59,40 +62,38 @@ describe("supportsBackgroundNotifications", () => {
 });
 
 describe("Connectors page composition", () => {
-  test("ConnectorsPage hands the card the backendUrl and sessionStore it already has", () => {
+  test("ConnectorsPage hands the Meeting sources view the backendUrl and sessionStore it already has", () => {
     const page = read("ConnectorsPage.tsx");
-    const usage = page.slice(page.indexOf("<ConnectorsCard"));
+    const usage = page.slice(page.indexOf("<MeetingSourcesFeature"));
     expect(usage).toContain("backendUrl={backendUrl}");
     expect(usage).toContain("sessionStore={sessionStore}");
   });
 
-  test("Connectors is a first-class route and Settings no longer owns connector UI", () => {
+  test("Connectors is a first-class destination and Settings no longer owns connector UI", () => {
     const app = read("../App.tsx");
     const settings = read("SettingsPage.tsx");
 
-    // Connectors is a SUBTREE now (Sources | Library), so the route match and
-    // the sidebar target moved to connectorsNav's constants — see
-    // connectorsNav.test.tsx for the IA's own assertions.
-    expect(app).toContain("const showConnectors = /\\/chat\\/connectors(");
-    expect(app).toContain("navigate(CONNECTORS_SOURCES_PATH)");
-    expect(app).toContain("<ConnectorsPage");
+    // The shell owns the address and the navigation item (shell/routes.ts,
+    // shell/navItems.ts — see their tests); App hands the shell the page.
+    const connectors = navItems(0).find((item) => item.id === "connectors");
+    expect(PATHS.connectors).toBe("/chat/connectors");
+    expect(connectors?.href).toBe(PATHS.connectors);
+    expect(app).toContain("connectors={LOCAL_VALIDATION ? null : <ConnectorsPage");
     expect(settings).not.toContain("ConnectorsCard");
     expect(settings).not.toContain("TranscriberSection");
     expect(settings).not.toContain("meetingsSlot");
   });
 
-  test("Connectors navigation lives in the persistent chat sidebar", () => {
-    const app = read("../App.tsx");
+  test("Connectors navigation lives in the app shell", () => {
     const threadList = read("ThreadList.tsx");
-    const header = app.slice(app.indexOf("<header"), app.indexOf("</header>"));
+    const shell = read("../shell/AppShell.tsx");
 
-    expect(header).not.toContain("connectorsAriaLabel");
-    expect(threadList).toContain('aria-label="Workspace navigation"');
-    expect(threadList.indexOf("{navigation}")).toBeLessThan(
-      threadList.indexOf("<ThreadListPrimitive.New"),
-    );
-    expect(app).toContain("connectorsSurface={<ConnectorsPage");
-    expect(app).toContain('showConnectors ? "hidden" : "h-full"');
+    // The chat list carries chats only; the destinations are the shell's.
+    expect(threadList).not.toContain("{navigation}");
+    expect(threadList).not.toContain("connectorsAriaLabel");
+    // Chat stays mounted: the shell hides its slot when another surface shows.
+    expect(shell).toContain('<div data-surface="chat" className={surface("chat")}>');
+    expect(shell).toContain('const surface = (name: Shown) => (shown === name ? "h-full" : "hidden");');
   });
 
   test("the card builds BOTH typed clients from those props — no new globals", () => {
@@ -121,6 +122,7 @@ describe("Connectors page composition", () => {
     for (const name of [
       "ConnectorsCard.tsx",
       "BackgroundSyncSection.tsx",
+      "useBackgroundSync.ts",
       "backgroundSyncState.ts",
     ]) {
       const source = read(name);
@@ -310,13 +312,13 @@ describe("Google Meet OAuth connect variant", () => {
   test("the native flow is off unless the build enables it", () => {
     const authorize = connectHalf.slice(connectHalf.indexOf("const handleAuthorize"));
     const nativeBranch = authorize.slice(0, authorize.indexOf("authorizeInSystemBrowser(nativePorts);"));
-    expect(nativeBranch).toContain("if (!nativeGoogleOAuthEnabled()) {");
+    expect(nativeBranch).toContain("if (!secretsAvailable() || !nativeGoogleOAuthEnabled()) {");
     expect(nativeBranch).toContain('setError({ kind: "native-unavailable", message: "" });');
   });
 
   test("inside the app with native OAuth off, the dialog explains instead of offering Continue with Google (TC-522)", () => {
     const render = connectHalf.slice(connectHalf.indexOf("<Dialog open={open}"), connectHalf.indexOf("</Dialog>"));
-    expect(connectHalf).toContain("const authorizeSurface = googleAuthorizeSurface();");
+    expect(connectHalf).toContain("googleAuthorizeSurface()");
     // No consent copy, no custody checkbox: the explanation alone…
     expect(render).toContain('{phase === "authorize" && authorizeSurface === "unavailable-in-app" && <NativeUnavailablePanel />}');
     expect(render).toContain('{phase === "authorize" && authorizeSurface !== "unavailable-in-app" && (');

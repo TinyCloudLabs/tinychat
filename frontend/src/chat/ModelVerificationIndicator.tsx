@@ -30,7 +30,11 @@ import { isRetryableStatus } from "@/lib/modelVerificationState";
  * States: "Verifying…" (spinner) → "Enclave verified" (teal) · "Not verifiable"
  * (grey, no probe, non-TEE) · "Couldn't verify" (grey, graceful on a throw).
  */
-export const ModelVerificationIndicator: FC<{ model: string }> = ({ model }) => {
+export const ModelVerificationIndicator: FC<{
+  model: string;
+  /** `inline` opens the details in place (inside the model sheet); `popover` floats them below the pill. */
+  layout?: "popover" | "inline";
+}> = ({ model, layout = "popover" }) => {
   const { status, mr, verifiedAt, reverify } = useModelVerification(model);
   const [open, setOpen] = useState(false);
 
@@ -48,7 +52,13 @@ export const ModelVerificationIndicator: FC<{ model: string }> = ({ model }) => 
   };
 
   return (
-    <div className="relative">
+    <div
+      className="relative"
+      onKeyDown={(event) => {
+        // Escape (and Android Back, which sends one) folds the details away.
+        if (event.key === "Escape" && open) setOpen(false);
+      }}
+    >
       <button
         type="button"
         onClick={onClick}
@@ -75,7 +85,14 @@ export const ModelVerificationIndicator: FC<{ model: string }> = ({ model }) => 
       </button>
 
       {open && expandable && (
-        <div className="absolute left-0 z-30 mt-1.5 w-80 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-popover p-2 shadow-lg">
+        <div
+          {...(layout === "popover" ? { "data-overlay-open": "true" } : {})}
+          className={
+            layout === "inline"
+              ? "mt-2 rounded-lg bg-surface-2 p-2"
+              : "absolute right-0 z-40 mt-1.5 w-80 max-w-[calc(100vw-2rem)] rounded-lg bg-popover p-2 shadow-float"
+          }
+        >
           {/* Model-level = no per-message signature → enclave-only breakdown. */}
           <AttestationDetails mr={mr} signature={null} context="model-level" />
 
@@ -146,7 +163,7 @@ function pillClass(
   expandable: boolean,
 ): string {
   const base =
-    "inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-[11px] font-semibold transition-colors";
+    "inline-flex h-11 items-center gap-1.5 rounded-md border px-2.5 text-[11px] font-semibold transition-colors fine:h-8";
   if (status === "verified") {
     // DISTINCT TEAL — endpoint attestation, never confused with the per-message
     // GREEN "Response verified".

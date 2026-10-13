@@ -5,10 +5,13 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   type FC,
+  type ReactNode,
 } from "react";
 import {
   ActionBarPrimitive,
@@ -37,6 +40,7 @@ import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
+import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import {
   Dialog,
   DialogContent,
@@ -77,17 +81,46 @@ interface ThreadProps {
   onRetrySelection: () => void;
   onReload: () => void;
   canvasEnabled?: boolean;
+  /** The composer's toolbar, beside Send: the model chip and the usage chip. */
+  composerToolbar?: ReactNode;
 }
 
-export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onReload, canvasEnabled = false }) => {
+export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onReload, canvasEnabled = false, composerToolbar }) => {
   const threadId = useAuiState((s) => s.threadListItem.remoteId ?? s.threadListItem.id) as string | undefined;
   const isRunning = useAuiState((s) => s.thread.isRunning);
+  const isEmpty = useAuiState((s) => s.thread.isEmpty);
+  const viewportRef = useRef<HTMLDivElement>(null);
   const threadRuntime = useThreadRuntime();
   const applyCanvasToRuntime = useCallback((canvas: CanvasModel) => {
     threadRuntime.import(repositoryFromCanvas(canvas));
   }, [threadRuntime]);
   const [surface, setSurface] = useState<"chat" | "canvas">("chat");
   useEffect(() => setSurface("chat"), [threadId]);
+  useLayoutEffect(() => {
+    if (!isEmpty) return;
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+
+    let frame: number | null = null;
+    const pinToTop = () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        viewport.scrollTo({ top: 0, behavior: "instant" });
+      });
+    };
+    const resizeObserver = new ResizeObserver(pinToTop);
+    resizeObserver.observe(viewport);
+    // Also pin on mount and thread switch; ResizeObserver covers later layout
+    // changes such as minimising the recorder while assistant-ui has a pending
+    // scroll-to-bottom intent for the empty thread.
+    pinToTop();
+
+    return () => {
+      resizeObserver.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, [threadId, isEmpty]);
   return (
     <TooltipProvider delayDuration={300}>
       <ShareThreadProvider tcw={tcw}>
@@ -99,7 +132,7 @@ export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onRe
               <Button type="button" variant={surface === "canvas" ? "default" : "outline"} size="sm" aria-pressed={surface === "canvas"} onClick={() => setSurface("canvas")}>Canvas</Button>
             </div>
           )}
-          <ThreadPrimitive.Viewport className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
+          <ThreadPrimitive.Viewport ref={viewportRef} autoScroll={!isEmpty} data-scroll-root className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
             {surface === "canvas" ? (
               <div className="h-full w-full">
                 <Suspense fallback={<div className="flex h-full items-center justify-center text-sm text-muted-foreground">Loading canvas…</div>}>
@@ -118,7 +151,7 @@ export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onRe
                 <ThreadBody />
               </div>}
 
-            <Composer selection={selection} />
+            <Composer selection={selection} toolbar={composerToolbar} isEmpty={isEmpty} />
           </ThreadPrimitive.Viewport>
         </ThreadPrimitive.Root>
       </ShareThreadProvider>
@@ -311,7 +344,8 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
                 max={365}
                 value={durationDays}
                 onChange={(event) => setDurationDays(Number(event.currentTarget.value) || 7)}
-                className="h-9 w-20 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                // 16 px and 44 px on touch (no iOS focus zoom); compact with a mouse.
+                className="h-11 w-20 rounded-md border border-input bg-background px-3 text-body outline-none focus-visible:ring-2 focus-visible:ring-ring fine:h-9 fine:text-sm"
               />
               <span className="text-muted-foreground">days</span>
             </label>
@@ -437,12 +471,14 @@ const HistorySkeleton: FC = () => (
 const ThreadWelcome: FC = () => {
   return (
     <ThreadPrimitive.Empty>
-      <div className="flex w-full flex-1 flex-col items-center justify-center gap-6 py-16 text-center">
+      <div className="relative -top-8 flex w-full flex-1 flex-col items-center justify-center gap-6 px-4 py-16 pb-24 text-center sm:top-0">
         <div className="flex flex-col items-center gap-2">
-          <h1 className="text-2xl font-semibold tracking-tight">TinyCloud Chat</h1>
-          <p className="max-w-sm text-sm text-muted-foreground">
+          {/* The chat header's title is the screen's h1. */}
+          <h2 className="font-display text-title-2">TinyCloud Chat</h2>
+          <p className="max-w-sm text-callout text-muted-foreground">
             Your conversations are private and stored in your TinyCloud space.
           </p>
+          <HowItWorksLink section="your-data" />
         </div>
         <div className="grid w-full max-w-xl grid-cols-1 gap-2 sm:grid-cols-2">
           {WELCOME_SUGGESTIONS.map((s) => (
@@ -452,6 +488,7 @@ const ThreadWelcome: FC = () => {
               method="replace"
               autoSend={false}
               className="rounded-xl border border-border bg-card px-4 py-3 text-left text-sm text-foreground transition-colors hover:bg-accent"
+              data-testid={s.title === "Markdown demo" ? "chat-markdown-demo" : undefined}
             >
               <span className="block font-medium">{s.title}</span>
               <span className="block text-xs text-muted-foreground">
@@ -484,46 +521,53 @@ const WELCOME_SUGGESTIONS = [
   },
 ];
 
-const Composer: FC<{ selection: SelectionView }> = ({ selection }) => {
+// The composer is an input group: the message on top, and a toolbar row with
+// the model and usage chips and Send. Its bottom padding follows the shell:
+// above the tab bar it needs no safe area (the bar has it), over the keyboard
+// it tightens to 8 px, and at the screen's edge it clears the home indicator.
+const Composer: FC<{ selection: SelectionView; toolbar?: ReactNode; isEmpty: boolean }> = ({ selection, toolbar, isEmpty }) => {
   return (
-    <div className="sticky bottom-0 z-10 w-full max-w-[46rem] bg-gradient-to-t from-background via-background to-transparent pb-[max(1rem,env(safe-area-inset-bottom))] pt-2">
+    <div className="sticky bottom-0 z-10 w-full max-w-[46rem] bg-gradient-to-t from-background via-background to-transparent pb-[max(1rem,env(safe-area-inset-bottom))] pt-2 [html[data-keyboard=open]_&]:pb-2 [html[data-nav=tabbar]:not([data-keyboard=open])_&]:pb-3">
       <div className="relative">
-        <ScrollToBottom />
+        <ScrollToBottom hidden={isEmpty} />
       </div>
-      <ComposerPrimitive.Root className="flex items-end gap-2 rounded-2xl border border-input bg-card p-2 shadow-sm transition-shadow focus-within:border-ring focus-within:shadow-md">
+      <ComposerPrimitive.Root className="flex flex-col rounded-2xl border border-input bg-card shadow-sm transition-shadow focus-within:border-ring focus-within:shadow-md">
         <ComposerPrimitive.Input
           autoFocus
           rows={1}
           placeholder="Message TinyCloud Chat…"
           disabled={!selection.canSend}
-          // text-base (16px) on mobile prevents iOS Safari from auto-zooming
-          // the page when the field gains focus; desktop keeps the compact 14px.
-          className="max-h-40 flex-1 resize-none bg-transparent px-3 py-2 text-base outline-none placeholder:text-muted-foreground sm:text-sm"
+          // Always 16px: smaller text makes iOS zoom the page when the field
+          // gains focus, and the composer reads the same on every device.
+          className="max-h-40 min-h-11 resize-none bg-transparent px-4 pb-1 pt-3 text-body outline-none placeholder:text-muted-foreground"
         />
-        <ThreadPrimitive.If running={false}>
-          <ComposerPrimitive.Send asChild>
-            <TooltipIconButton
-              tooltip={selection.canSend ? "Send" : (selection.message ?? "Choose a model before sending")}
-              side="top"
-              type="submit"
-              disabled={!selection.canSend}
-              className="size-11 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 md:size-9"
-            >
-              <SendHorizontalIcon className="size-4" />
-            </TooltipIconButton>
-          </ComposerPrimitive.Send>
-        </ThreadPrimitive.If>
-        <ThreadPrimitive.If running>
-          <ComposerPrimitive.Cancel asChild>
-            <TooltipIconButton
-              tooltip="Stop"
-              side="top"
-              className="size-11 rounded-full border border-input text-foreground hover:bg-accent md:size-9"
-            >
-              <Square className="size-4 fill-current" />
-            </TooltipIconButton>
-          </ComposerPrimitive.Cancel>
-        </ThreadPrimitive.If>
+        <div className="flex items-center gap-2 p-1.5 pl-2.5">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5">{toolbar}</div>
+          <ThreadPrimitive.If running={false}>
+            <ComposerPrimitive.Send asChild>
+              <TooltipIconButton
+                tooltip={selection.canSend ? "Send" : (selection.message ?? "Choose a model before sending")}
+                side="top"
+                type="submit"
+                disabled={!selection.canSend}
+                className="size-11 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 fine:size-9"
+              >
+                <SendHorizontalIcon className="size-4" />
+              </TooltipIconButton>
+            </ComposerPrimitive.Send>
+          </ThreadPrimitive.If>
+          <ThreadPrimitive.If running>
+            <ComposerPrimitive.Cancel asChild>
+              <TooltipIconButton
+                tooltip="Stop"
+                side="top"
+                className="size-11 shrink-0 rounded-full border border-input text-foreground hover:bg-accent fine:size-9"
+              >
+                <Square className="size-4 fill-current" />
+              </TooltipIconButton>
+            </ComposerPrimitive.Cancel>
+          </ThreadPrimitive.If>
+        </div>
       </ComposerPrimitive.Root>
     </div>
   );
@@ -541,7 +585,7 @@ const UserMessage: FC = () => (
 const AssistantMessage: FC = () => (
   <MessagePrimitive.Root className="group flex w-full flex-col gap-1">
     <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-      <span className="flex size-5 items-center justify-center rounded-full bg-primary text-[10px] font-semibold text-primary-foreground">
+      <span className="flex size-5 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
         T
       </span>
       <span>TinyCloud Chat</span>
@@ -704,13 +748,16 @@ const ReceiptFooter: FC = () => {
   );
 };
 
-export const ScrollToBottom: FC = () => (
-  <ThreadPrimitive.ScrollToBottom asChild>
-    <TooltipIconButton
-      tooltip="Scroll to bottom"
-      className="absolute -top-10 left-1/2 z-10 size-11 -translate-x-1/2 rounded-full border border-border bg-background shadow-sm disabled:invisible md:size-8"
-    >
-      <ArrowDownIcon />
-    </TooltipIconButton>
-  </ThreadPrimitive.ScrollToBottom>
-);
+export const ScrollToBottom: FC<{ hidden?: boolean }> = ({ hidden = false }) => {
+  if (hidden) return null;
+  return (
+    <ThreadPrimitive.ScrollToBottom asChild>
+      <TooltipIconButton
+        tooltip="Scroll to bottom"
+        className="absolute -top-10 left-1/2 z-10 size-[44px] -translate-x-1/2 rounded-full border border-border bg-background shadow-sm disabled:invisible md:size-8"
+      >
+        <ArrowDownIcon className="size-[20px]" />
+      </TooltipIconButton>
+    </ThreadPrimitive.ScrollToBottom>
+  );
+};

@@ -1,5 +1,10 @@
 // Agent access enablement + renewal affordance (C3).
-// Rendered as a fixed bottom banner — consistent with the billingNotice pattern.
+// Rendered at the bottom of the chat thread column — consistent with the billingNotice pattern.
+// When access is available, it floats 7.75rem above whatever covers the bottom
+// (the tab bar on a phone, the keyboard or the home indicator;
+// index.css --tc-bottom-chrome), clear of the composer and its toolbar row. It
+// sits just above the conversation (z 5) and under everything the user opens:
+// the composer's menus (inside its z-10 layer), sheets and dialogs.
 // Hidden when capability is "unavailable" or "probing". Disappears after enable
 // and returns with explicit reconnect copy if a private-data tool reports expiry
 // or the backend answers a turn without private access.
@@ -11,6 +16,8 @@ import { useAgentAccess, type AgentCapability, type UseAgentEnablementResult } f
 import type { AgentDelegationErrorCode } from "../lib/agentChatApi";
 import { isChatViewPath } from "./chatViewPath";
 import { openkeyPasskeysSupported } from "../lib/openkeyPasskeys";
+import { Button } from "@/components/ui/button";
+import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 
 interface AgentEnablementBannerProps {
   capability: AgentCapability;
@@ -40,7 +47,7 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
         role="status"
         aria-live="polite"
         aria-atomic="true"
-        className="fixed bottom-[calc(6rem+env(safe-area-inset-bottom))] left-1/2 z-[60] -translate-x-1/2"
+        className="fixed bottom-[calc(var(--tc-bottom-chrome)+8rem)] left-1/2 z-[5] -translate-x-1/2 md:absolute md:bottom-32"
       >
         <div className="flex items-center gap-2 rounded-lg border border-border bg-popover px-4 py-2.5 text-sm text-popover-foreground shadow-lg">
           <span className="size-1.5 rounded-full bg-green-500" />
@@ -67,24 +74,26 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
       aria-label="Agent tools"
       aria-live="polite"
       aria-atomic="true"
-      className="fixed bottom-[calc(6rem+env(safe-area-inset-bottom))] left-3 right-3 z-[60] sm:left-1/2 sm:right-auto sm:-translate-x-1/2"
+      data-agent-enable-banner
+      className="fixed bottom-[calc(var(--tc-bottom-chrome)+7.75rem)] left-3 right-3 z-[5] sm:left-1/2 sm:right-auto sm:-translate-x-1/2 md:absolute md:bottom-32"
     >
-      <div className="flex flex-col gap-2 rounded-lg border border-border bg-popover px-4 py-2.5 text-sm text-popover-foreground shadow-lg sm:flex-row sm:items-center sm:gap-3">
+      <div className="flex items-center gap-2 rounded-lg border border-border bg-popover px-4 py-1.5 text-sm text-popover-foreground shadow-lg sm:gap-3">
         {enableError ? (
           <>
-            <span className="text-xs text-destructive">{enableError}</span>
+            <span className="text-xs text-destructive" data-agent-enable-error>{enableError}</span>
             <button
               type="button"
               onClick={() => void onEnable()}
               disabled={enabling}
-              className="min-h-11 shrink-0 rounded-md bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed sm:min-h-0"
+              data-agent-enable-action
+              className="min-h-11 shrink-0 rounded-md bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed fine:min-h-0"
             >
               {enabling ? `${reconnecting ? "Reconnecting" : "Connecting"}…` : "Retry"}
             </button>
           </>
         ) : (
           <>
-            <div className="flex flex-col gap-0.5">
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5" data-agent-enable-copy>
               <span className="text-xs text-muted-foreground">
                 {reconnecting
                   ? reconnectReason === "delegation_expired"
@@ -94,13 +103,13 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
                       : "Private agent access needs reconnecting"
                   : "Connect private agent access"}
               </span>
-              <span className="text-[11px] leading-none text-muted-foreground/70">
+              <span data-agent-enable-helper className="hidden text-xs leading-snug text-muted-foreground sm:block">
                 {unverified
                   ? "That reply couldn't use your meetings. Reconnect if this keeps happening."
                   : reconnecting
                     ? "Reconnect to let the agent read your private meeting transcripts again."
                     : passkeysSupported
-                      ? "You'll be prompted to sign with your passkey once to authorize access."
+                      ? "You'll be prompted to sign in with your passkey once to authorize access."
                       : "You'll be prompted to sign in with OpenKey once to authorize access."}
               </span>
             </div>
@@ -108,7 +117,8 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
               type="button"
               onClick={() => void onEnable()}
               disabled={enabling}
-              className="min-h-11 shrink-0 rounded-md bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed sm:min-h-0"
+              data-agent-enable-action
+              className="min-h-11 shrink-0 rounded-md bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed fine:min-h-0"
             >
               {enabling ? `${reconnecting ? "Reconnecting" : "Connecting"}…` : action}
             </button>
@@ -142,31 +152,35 @@ export function ChatViewAgentEnablementBanner() {
 }
 
 
-/** Settings retains these controls even while access is already connected. */
+/**
+ * Settings retains these controls even while access is already connected. What
+ * access covers is a one-line InfoTip on the card's title (SettingsPage) and
+ * the agent-access section of How it works.
+ */
 export function AgentAccessControls(props: UseAgentEnablementResult) {
   const connected = props.capability === "enabled";
   const unknown = props.status === null;
   const unverified = unknown && props.reconnectReason === "delegation_unverified";
   return (
     <div className="space-y-3">
-      <p className="text-xs text-muted-foreground">Controls private agent memory and meeting access. Public web search stays available.</p>
       <p role="status" className="text-xs font-medium">
         {props.disconnecting ? "Disconnecting…" : connected ? "Connected"
           : unverified ? "Access could not be verified" : unknown ? "Access status unknown" : "Disconnected"}
       </p>
       <div className="flex flex-wrap gap-2">
-        <button type="button" onClick={() => void props.onEnable()}
+        <Button type="button" size="sm" onClick={() => void props.onEnable()}
           disabled={props.enabling || props.disconnecting || props.capability === "probing"}
-          className="rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50">
+          className="font-semibold">
           {props.enabling ? "Connecting…" : connected || props.reconnectReason ? "Reconnect agent" : "Connect agent"}
-        </button>
-        {(connected || props.disconnecting || unknown) && <button type="button" onClick={() => void props.onDisconnect()}
+        </Button>
+        {(connected || props.disconnecting || unknown) && <Button type="button" size="sm" variant="outline" onClick={() => void props.onDisconnect()}
           disabled={props.disconnecting || props.capability === "probing"}
-          className="rounded-md border border-border px-3 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50">
+          className="font-semibold">
           {props.disconnecting ? "Disconnecting…" : unknown && !unverified ? "Retry disconnect" : "Disconnect agent"}
-        </button>}
+        </Button>}
       </div>
       {props.enableError && <p role="alert" className="text-xs text-destructive">{props.enableError}</p>}
+      <HowItWorksLink section="agent-access" />
     </div>
   );
 }

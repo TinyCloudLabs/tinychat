@@ -3,14 +3,13 @@ import {
   useContext,
   useSyncExternalStore,
   type FC,
-  type ReactNode,
 } from "react";
 import {
   ThreadListItemPrimitive,
   ThreadListPrimitive,
   useAuiState,
 } from "@assistant-ui/react";
-import { PlusIcon, Trash2Icon } from "lucide-react";
+import { SquarePenIcon, Trash2Icon } from "lucide-react";
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -71,38 +70,41 @@ const ThreadListItem: FC = () => {
 };
 
 interface ThreadListProps {
-  navigation?: ReactNode;
+  /** After a chat is chosen (closes the Chats sheet). */
   onNavigate?: () => void;
 }
 
-export const ThreadList: FC<ThreadListProps> = ({
-  navigation,
-  onNavigate,
-}) => (
+/**
+ * The saved chats. Its place in the app is the Chats column on wide screens
+ * and the Chats sheet elsewhere; both put "Chats" and New chat above it
+ * (ChatsSheet.tsx), and the app's own navigation lives in the shell.
+ */
+export const ThreadList: FC<ThreadListProps> = ({ onNavigate }) => (
   <ThreadListNavigateContext.Provider value={onNavigate}>
     <TooltipProvider delayDuration={300}>
-      <nav
-        aria-label="Workspace navigation"
-        className="flex h-full flex-col gap-2 p-2"
-      >
-        {navigation}
-        <ThreadListPrimitive.New
-          onClick={onNavigate}
-          className="flex min-h-11 items-center justify-start gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent md:min-h-0"
-        >
-          <PlusIcon className="size-4" />
-          New chat
-        </ThreadListPrimitive.New>
+      <nav aria-label="Chats" className="flex min-h-0 flex-1 flex-col">
         {/* `relative` makes this scroll container the containing block for the
             absolutely-positioned `sr-only` spans inside each row's tooltip
             button — without it they escape the overflow clip and extend the
             document below the viewport (phantom scrollable space). */}
-        <ThreadListPrimitive.Root className="relative flex flex-1 flex-col gap-0.5 overflow-y-auto pr-0.5">
+        <ThreadListPrimitive.Root className="relative flex flex-1 flex-col gap-0.5 overflow-y-auto px-2 pb-2">
           <ThreadListContents />
         </ThreadListPrimitive.Root>
       </nav>
     </TooltipProvider>
   </ThreadListNavigateContext.Provider>
+);
+
+/** Starts a new chat: the [+ New] beside "Chats" in the column and the sheet. */
+export const NewChatButton: FC<{ onNavigate?: () => void }> = ({ onNavigate }) => (
+  <ThreadListPrimitive.New
+    onClick={onNavigate}
+    aria-label="New chat"
+    title="New chat"
+    className="tap-transparent flex size-11 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-surface-2 hover:text-foreground active:bg-surface-2 fine:size-9"
+  >
+    <SquarePenIcon aria-hidden className="size-5" />
+  </ThreadListPrimitive.New>
 );
 
 // The sidebar list is read sequentially from KV on sign-in, so it can be empty

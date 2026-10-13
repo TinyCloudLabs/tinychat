@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -7,9 +8,9 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import OpenKey from "@openkey/sdk";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { NativeSession, OpenKeyNative } from "@openkey/sdk-capacitor";
 import {
   SessionStore,
   clearPersistedSession,
@@ -30,35 +31,34 @@ import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
 import { uploadRunner } from "./lib/audioUpload";
 import { openkeyPasskeysSupported } from "./lib/openkeyPasskeys";
 import { useVisualViewportFit } from "./lib/useVisualViewport";
-import { useChatRuntime } from "./chat/runtime";
-import { Thread } from "./chat/Thread";
-import { ThreadList } from "./chat/ThreadList";
-import { AgentAccessProvider, useAgentAccess } from "./chat/useAgentEnablement";
-import { ChatViewAgentEnablementBanner } from "./chat/AgentEnablementBanner";
+import { ChatWorkspace } from "./chat/ChatWorkspace";
+import { ModelPicker, type ModelOption } from "./chat/ModelPicker";
+import { UsageIndicator } from "./chat/UsageIndicator";
+import { AgentAccessProvider } from "./chat/useAgentEnablement";
 import { PricingDialog } from "./chat/PricingDialog";
+import { StorageFullDialog } from "./chat/StorageFullDialog";
+import {
+  isStorageReadOnly,
+  MANAGE_STORAGE_URL,
+  STORAGE_READ_ONLY_NOTICE,
+  subscribeStorageReadOnly,
+} from "./lib/storageStatus";
 import { RatesDialog } from "./chat/RatesDialog";
 import {
-  appendCompaction,
-  getLatestCompaction,
   readMemoryCache,
   useLocalThreadStorage,
 } from "./lib/threadStore";
 import { resolveLocalValidation, prepareLocalSignIn } from "./lib/localValidation";
-import { completeChat, type ChatMessage } from "./lib/chatApi";
-import { COMPACTION_SUMMARY_MAX_TOKENS, DEFAULT_CONTEXT_TOKENS } from "./chat/compaction";
+import { DEFAULT_CONTEXT_TOKENS } from "./chat/compaction";
 import { loadSharedThreadFromToken, readShareTokenFromLocation } from "./lib/tinychatShareLinks";
 import { historyPrefetch } from "./lib/historyPrefetch";
 import {
-  aggregateTurnCredits,
   createBillingClient,
-  formatCredits,
-  getCachedRates,
   type BillingClient,
   type BillingConfig,
   type BillingStatus,
 } from "./lib/billingApi";
 import {
-  emitReceipt,
   onBillingEvent,
   onModelSelectionError,
   onPaywallError,
@@ -69,16 +69,27 @@ import {
   shouldRefetch,
   type RefetchTrigger,
 } from "./lib/billingConfigPolicy";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { SettingsPage } from "./chat/SettingsPage";
+import { AboutPage } from "./chat/AboutPage";
 import { ConnectorsPage } from "./chat/ConnectorsPage";
+import { CaptureSurface } from "./capture/CaptureSurface";
+import { HeaderLiveChip } from "./capture/recorder/HeaderLiveChip";
+import { RecordButton } from "./capture/recorder/RecordButton";
+import { RecorderProvider } from "./capture/recorder/RecorderProvider";
+import { MicDeniedRecovery } from "./capture/recorder/MicDeniedRecovery";
+import { RecorderShell } from "./capture/recorder/RecorderShell";
+import { UploadResumer } from "./capture/upload/UploadResumer";
+import { useOpenSavedNote } from "./capture/library/useOpenSavedNote";
+import { resetNavigationMemory } from "./shell/navigation";
 import {
-  CONNECTORS_LIBRARY_PATH,
-  CONNECTORS_SOURCES_PATH,
-  connectorsTabFor,
-} from "./chat/connectorsNav";
+  homePath,
+  legacyRedirectFor,
+  redirectsWhenSignedOut,
+  screenFor,
+} from "./shell/routes";
+import { PlatformContext } from "./lib/platform";
+import { useSizeClass } from "./lib/sizeClass";
 // W5 — the cohort meetings view. It renders NOTHING unless the backend's read
 // API answers for this address (dark flag / non-cohort = 404 = invisible), and
 // it needs neither the vault nor a connector key: a session is the whole
@@ -92,82 +103,63 @@ import { BackendReconciler } from "./chat/BackendReconciler";
 import {
   BackgroundDrainer,
   badgePendingCount,
-  badgePillLabel,
   clearBackgroundDrainRecord,
   readBackgroundDrainRecord,
-  connectorsAriaLabel,
   subscribeBackgroundDrainRecord,
 } from "./chat/useBackgroundDrain";
 import { TranscriberLibrarySyncProvider } from "./chat/useTranscriberLibrarySync";
-import { QuickVoiceNote } from "./chat/QuickVoiceNote";
-import { OfflineVoiceNotes } from "./chat/OfflineVoiceNotes";
+import { DeviceCaptureSurface, DeviceCaptureSettings } from "./capture/DeviceCaptureSurface";
 import { PendingVoiceNotesSaver } from "./chat/PendingVoiceNotesSaver";
-import { nativeVoiceNotesAvailable } from "./lib/voiceNotes/nativeVoiceNotes";
+import { VoiceNotes } from "./lib/voiceNotes/nativeVoiceNotes";
+import { captureCapabilities, captureEngineAvailable } from "./lib/voiceNotes/captureEngine";
+import { RecordingOverlay } from "./capture/recorder/RecordingOverlay";
+import { shouldMountRecordingOverlay } from "./capture/recorder/recordingOverlayVisibility";
+import { handoffBeforeCredentialClear, withCaptureDeadline } from "./lib/voiceNotes/accountHandoff";
+import { createVoiceNotePipeline } from "./lib/voiceNotes/voiceNotePipeline";
+import { nextTransitionGen } from "./lib/voiceNotes/accountHandoff";
+import { writeAccountDefaults } from "./lib/voiceNotes/transcriberPreference";
+import { advanceAccountGeneration } from "./lib/voiceNotes/accountContext";
 import { GmeetSessionSync } from "./chat/useGmeetSessionSync";
-import { ModelVerificationIndicator } from "./chat/ModelVerificationIndicator";
-import { createConnectorMeetingsClient } from "./lib/connectors/meetingsApi";
-import { createBrowserMeetingTurnRetriever } from "./lib/meetingChat/retriever";
-import { createMeetingMessageRegistry } from "./chat/pendingHandoff";
-import {
-  ChevronDownIcon,
-  MicIcon,
-  PanelLeftIcon,
-  PlugIcon,
-  SettingsIcon,
-  ShieldCheckIcon,
-  ShieldIcon,
-} from "lucide-react";
-import { isResponseVerifiableModel, isTeeCapableModel } from "./lib/completionStore";
 import type {
   ModelSelectionController,
   SelectionView,
 } from "./chat/modelSelection";
 import { clearAgentSessionCache } from "./lib/agentDelegation";
+import { isSignInCancelled } from "./lib/authErrors";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
+import { clearSessionAfterHandoff, registerSessionSignedOutHook } from "./lib/sessionSignedOut";
+import {
+  describeAuthFailure, isNativeOpenKeySession, isNativeOpenKeySignIn, isNativeStorageError, logNativeOpenKeyError,
+  restoreNativeAtBoot, nativeRenewalServices, secretsAvailable,
+  setNativeSessionActive, signInNative, signOutNative, type NativeSignInHints,
+  type NativeSignInConfig,
+  NATIVE_SIGN_OUT_WARNING, NATIVE_SIGN_OUT_STORAGE_WARNING,
+} from "./lib/openkeyNative";
+import { NativeRenewal, guardNativeTinyCloudCalls, NATIVE_SESSION_ENDED_MESSAGE, NATIVE_STORAGE_MESSAGE } from "./lib/openkeyNativeRenewal";
 import { isAuthSettledSignedOut } from "./lib/authRouting";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
+import { clearTranscriptDelegationSchedule, ensureTranscriptWriterDelegation } from "./lib/transcriptDelegation";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
 import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
-import { useConversationCanvasFeature } from "./chat/useExperimentalFeatures";
-import { promotedCanvasForTurn, useLocalCanvasStorage } from "./lib/conversationCanvasStore";
+import { useLocalCanvasStorage } from "./lib/conversationCanvasStore";
+import type { AppState } from "./lib/appState";
+import { BootSurface } from "./shell/BootSurface";
+import { NativeSignIn } from "./shell/NativeSignIn";
+import { useNativeSignIn } from "./shell/useNativeSignIn";
 
+// AppState and stateLabel live in lib/appState; re-exported for imports from App.
+export { stateLabel, type AppState } from "./lib/appState";
+
+const OPENKEY_SIGN_OUT_UNPROVEN_NOTE = "Signed out of Exo. To use a different account, also sign out at openkey.so.";
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const LOCAL_VALIDATION = resolveLocalValidation(import.meta.env, globalThis.location?.hostname);
-const APP_NAME = "TinyCloud Chat";
+const APP_NAME = "Exo";
 const BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL ||
   `${globalThis.location?.protocol ?? "http:"}//localhost:3014`;
 const TINYCLOUD_HOSTS = import.meta.env.VITE_TINYCLOUD_HOST
   ? [import.meta.env.VITE_TINYCLOUD_HOST]
   : undefined;
-export type AppState =
-  | "booting"
-  | "unauthenticated"
-  | "connecting"
-  | "signing"
-  | "ready"
-  | "recoverableError"
-  // A persisted session is HELD but couldn't be restored because the network
-  // (or the backend) is unreachable. Not signed out: "Try again" and the
-  // browser's `online` event re-run the restore, never OpenKey (TC-514).
-  | "offline";
-
-interface ModelOption {
-  id: string;
-  /** When the paywall is on, whether the current tier may use this model. */
-  allowed?: boolean;
-  requiredTier?: "plus" | "pro";
-  /** Per-model credit rates (spec §5.4 — always present from /api/chat/models). */
-  creditsPerKInput?: number;
-  creditsPerKOutput?: number;
-  multiplier?: number;
-  /**
-   * Context window in tokens (spec §D.4). Plumbed from /api/chat/models so the
-   * adapter can size compaction; absent → DEFAULT_CONTEXT_TOKENS via
-   * contextTokensFor below.
-   */
-  contextLength?: number;
-}
 
 export function App() {
   // Track the visible viewport so the shell shrinks above the soft keyboard
@@ -179,6 +171,10 @@ export function App() {
   const signOutInFlightRef = useRef(false);
   const restoredRef = useRef(false);
   const restoreInFlightRef = useRef(false);
+  const restoreRetryAfterRef = useRef(0);
+  const restoreRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const nativeRenewalRef = useRef<NativeRenewal | null>(null);
+  const signOutRef = useRef<(options?: { terminal?: string }) => Promise<void>>(undefined);
   const selectionControllerRef = useRef<ModelSelectionController | null>(null);
   // Live ref the runtime reads at model-context request time. Initialized to
   // null and reconciled by useChatRuntime + MemoryPanel from the per-space
@@ -191,6 +187,102 @@ export function App() {
   const [did, setDid] = useState<string | null>(null);
   const [spaceId, setSpaceId] = useState<string | null>(null);
   const [tcw, setTcw] = useState<TinyCloudWeb | null>(null);
+  const [captureFailClosed, setCaptureFailClosed] = useState(false);
+  const [captureReadyTcw, setCaptureReadyTcw] = useState<TinyCloudWeb | null>(null);
+  const voiceNotePipeline = useMemo(() => tcw ? createVoiceNotePipeline(tcw) : null, [tcw]);
+  const captureHandoffInFlight = useRef<Promise<boolean> | null>(null);
+  const performCaptureHandoff = useCallback(async () => {
+    if (!captureEngineAvailable() || LOCAL_VALIDATION) return true;
+    try {
+      const native = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
+      if (native.status === "signed_out") {
+        if (voiceNotePipeline?.isAccepting()) { advanceAccountGeneration(); voiceNotePipeline.cancelAll(); }
+        return true;
+      }
+      const storedAddress = sessionStoreRef.current.getAddress();
+      const accountDid = did ?? native.accountDid ?? (native.status === "transitioning" && storedAddress
+        ? `did:pkh:eip155:1:${storedAddress}` : null);
+      if (!accountDid && native.status === "transitioning") {
+        await withCaptureDeadline(VoiceNotes.setAccountState({ status: "signed_out", accountDid: null,
+          transitionGen: nextTransitionGen(native.transitionGen) }));
+        return true;
+      }
+      const result = await handoffBeforeCredentialClear(accountDid, voiceNotePipeline);
+      if (!result.ok) {
+        setError(result.message);
+        setCaptureFailClosed(result.failClosed);
+        if (!result.failClosed && voiceNotePipeline && !voiceNotePipeline.isAccepting()) {
+          voiceNotePipeline.resume();
+          if (tcw?.did && tcw.spaceId) {
+            const generation = advanceAccountGeneration();
+            void voiceNotePipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation })
+              .catch((caught: unknown) => console.warn("[VoiceNotes] Could not resume saving after failed sign-out", caught));
+          }
+        }
+        return false;
+      }
+      setCaptureFailClosed(false);
+      return true;
+    } catch {
+      setError("Couldn't update this phone's recording settings. Try again.");
+      return false;
+    }
+  }, [did, tcw, voiceNotePipeline]);
+  const captureHandoff = useCallback((): Promise<boolean> => {
+    if (captureHandoffInFlight.current) return captureHandoffInFlight.current;
+    const task = performCaptureHandoff();
+    captureHandoffInFlight.current = task;
+    void task.finally(() => { if (captureHandoffInFlight.current === task) captureHandoffInFlight.current = null; })
+      .catch(() => undefined);
+    return task;
+  }, [performCaptureHandoff]);
+  const completeLocalSignOut = useCallback((warning: string | null, terminal = false) => {
+    nativeRenewalRef.current?.stop();
+    nativeRenewalRef.current = null;
+    if (tcw) { try { tcw.cleanup(); } catch { /* Continue local cleanup. */ } }
+    resetNavigationMemory();
+    const storedAddress = sessionStoreRef.current.getAddress() ?? address;
+    if (storedAddress) clearPersistedSession(storedAddress);
+    clearTranscriptDelegationSchedule(storedAddress);
+    sessionStoreRef.current.clear();
+    voiceNotePipeline?.cancelAll();
+    openkeyRef.current = null;
+    setNativeSessionActive(false);
+    historyPrefetch.clear();
+    clearAgentSessionCache();
+    clearBackgroundDrainRecord();
+    uploadRunner.reset();
+    selectionControllerRef.current = null;
+    memoryRef.current = null;
+    setSelectionView((view) => ({ ...view, threadId: null, model: null, canSend: false, canPick: false }));
+    setTcw(null);
+    setCaptureReadyTcw(null);
+    setAddress(null);
+    setDid(null);
+    setSpaceId(null);
+    setModels(OFFERED_CHAT_MODELS.map(({ id, contextTokens }) => ({ id, contextLength: contextTokens })));
+    setBillingStatus(null);
+    setPricingOpen(false);
+    setError(warning);
+    setState(terminal ? "unauthenticated" : warning ? "recoverableError" : "unauthenticated");
+  }, [address, tcw, voiceNotePipeline]);
+  useEffect(() => registerSessionSignedOutHook(sessionStoreRef.current, captureHandoff,
+    () => completeLocalSignOut(null)), [captureHandoff, completeLocalSignOut]);
+  const restoreCaptureAfterAuthAbort = useCallback(async () => {
+    if (!did || !tcw || !captureEngineAvailable()) return;
+    try {
+      await withCaptureDeadline(writeAccountDefaults((current) => ({ accountDid: did, transitionGen: nextTransitionGen(current.transitionGen) })));
+      if (voiceNotePipeline && tcw.spaceId) {
+        voiceNotePipeline.resume();
+        const generation = advanceAccountGeneration();
+        void voiceNotePipeline.reconcileAll({ did, spaceId: tcw.spaceId, generation })
+          .catch((caught: unknown) => console.warn("[VoiceNotes] Could not resume saving after sign-out was cancelled", caught));
+      }
+      setCaptureFailClosed(false);
+    } catch {
+      setCaptureFailClosed(true);
+    }
+  }, [did, tcw, voiceNotePipeline]);
   const [models, setModels] = useState<ModelOption[]>(() =>
     OFFERED_CHAT_MODELS.map(({ id, contextTokens }) => ({ id, contextLength: contextTokens })),
   );
@@ -206,10 +298,6 @@ export function App() {
   });
   const [error, setError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  // The chat screen's voice note bar: opened to record (the header button) or to
-  // show a recording that is already running (one started on the offline screen).
-  const [voiceNoteOpen, setVoiceNoteOpen] = useState<false | "record" | "show">(false);
 
   // ── Billing / paywall state ──────────────────────────────────────
   // config is fetched once on load (public, cached); status is fetched after
@@ -230,6 +318,8 @@ export function App() {
   // two triggers) — bounded + only-when-null already, this makes it storm-proof.
   const configFetchInFlightRef = useRef(false);
   const [pricingOpen, setPricingOpen] = useState(false);
+  const [storageDialogOpen, setStorageDialogOpen] = useState(false);
+  const storageReadOnly = useSyncExternalStore(subscribeStorageReadOnly, isStorageReadOnly, () => false);
   const [ratesOpen, setRatesOpen] = useState(false);
   const [billingNotice, setBillingNotice] = useState<string | null>(null);
   const [shareToken, setShareToken] = useState<string | null>(initialShareToken);
@@ -252,11 +342,11 @@ export function App() {
   // Soft refresh after an import: bumping this key remounts the inner runtime
   // tree so useChatRuntime re-runs listThreads() cold. The dialog already
   // clears the index cache, so this avoids window.location.reload while still
-  // surfacing imported rows. Header state (model picker, memory popover) and
-  // the auth session survive the bump because they live above ChatWorkspace.
+  // surfacing imported rows. The model picker, the memory popover and the auth
+  // session survive the bump because they live above ChatWorkspace; the Chats
+  // sheet, inside it, comes back closed.
   const [importRefreshKey, setImportRefreshKey] = useState(0);
   const onImported = useCallback(() => {
-    setSidebarOpen(false);
     setImportRefreshKey((k) => k + 1);
   }, []);
   const onMemoryUpdated = useCallback((_doc: string | null) => {}, []);
@@ -288,6 +378,27 @@ export function App() {
     }
   }, [tcw]);
 
+  const nativeConfig: NativeSignInConfig = {
+    backendUrl: BACKEND_URL,
+    tinycloudHost: TINYCLOUD_HOSTS?.[0] ?? "https://tee.node.tinycloud.xyz",
+    tinycloudHosts: TINYCLOUD_HOSTS,
+  };
+
+  const startNativeRenewal = async (rawTcw: TinyCloudWeb, session: NativeSession, openkey: OpenKeyNative, renewAt?: number): Promise<TinyCloudWeb> => {
+    nativeRenewalRef.current?.stop();
+    const services = await nativeRenewalServices(nativeConfig, openkey);
+    const renewal = new NativeRenewal({
+      openkey, tcw: rawTcw, session, sessionStore: sessionStoreRef.current,
+      ...services,
+      onTerminal: (message) => { void signOutRef.current?.({ terminal: message }); },
+      onStorage: () => { setError(NATIVE_STORAGE_MESSAGE); setBillingNotice(NATIVE_STORAGE_MESSAGE); },
+      onUnavailable: (message) => { setError(message); setBillingNotice(message); },
+    });
+    nativeRenewalRef.current = renewal;
+    renewal.start(renewAt);
+    return guardNativeTinyCloudCalls(rawTcw, renewal);
+  };
+
   // Dev-only probe seam. The browser-e2e lane (test/connectors/browser-lane.ts)
   // asserts against REAL space storage — SQL rows, KV bodies, secrets — through
   // this handle, because a UI-only assertion cannot tell "synced" from "looks
@@ -302,20 +413,6 @@ export function App() {
       w.__tcw = null;
     };
   }, [tcw]);
-
-  // Close the mobile drawer when the viewport crosses into md+ so the Radix
-  // overlay (a portal sibling not covered by md:hidden on SheetContent) can't
-  // linger as a full-screen backdrop after a resize-while-open.
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const mql = window.matchMedia("(min-width: 768px)");
-    const handler = (event: MediaQueryListEvent | MediaQueryList) => {
-      if (event.matches) setSidebarOpen(false);
-    };
-    handler(mql);
-    mql.addEventListener("change", handler);
-    return () => mql.removeEventListener("change", handler);
-  }, []);
 
   // Restore an existing session on boot (both Bearer token AND tcw for KV).
   //
@@ -332,7 +429,74 @@ export function App() {
     setError(null);
     setState("booting");
     try {
+      if (isNativeOpenKeySignIn()) {
+        // iOS/Android take only the native restore path. There is no widget
+        // fallback here: a persisted widget session from a pre-native-only
+        // build is a one-time cleanup below, not something to restore.
+        const boot = await restoreNativeAtBoot(nativeConfig,
+          sessionStoreRef.current.hasSession() && !sessionStoreRef.current.isExpired());
+        if (boot.kind === "restored") {
+          restoreRetryAfterRef.current = 0;
+          if (boot.verified) sessionStoreRef.current.setSession(boot.verified.token, boot.verified.expiresIn, boot.verified.address);
+          setNativeSessionActive(true);
+          const nativeTcw = await startNativeRenewal(boot.tcw, boot.session, boot.openkey, boot.renewAt);
+          setTcw(nativeTcw);
+          setAddress(boot.address);
+          setDid(boot.tcw.did ?? `did:pkh:eip155:1:${boot.address}`);
+          setSpaceId(boot.tcw.spaceId ?? null);
+          setState("ready");
+          void ensureTranscriptWriterDelegation({ tcw: nativeTcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
+          return;
+        }
+        if (boot.kind === "storage") {
+          setError(NATIVE_STORAGE_MESSAGE);
+          setState("recoverableError");
+          return;
+        }
+        if (boot.kind === "unavailable") {
+          restoreRetryAfterRef.current = Date.now() + 15_000;
+          setError("Exo can't connect right now. Your recordings stay on this phone.");
+          setState("offline");
+          return;
+        }
+        if (boot.kind === "failed") {
+          restoreRetryAfterRef.current = Date.now() + 15_000;
+          setError("Couldn't restore your session. Sign in again to continue syncing.");
+          setState("recoverableError");
+          return;
+        }
+        if (boot.kind === "configuration") {
+          setError("Native sign-in is not configured in this build.");
+          setState("recoverableError");
+          return;
+        }
+        // "none" or "terminal": no native session to restore. Clear any
+        // persisted widget session once; the user signs in again natively.
+        if (!await captureHandoff()) { setState("recoverableError"); return; }
+        const storedAddress = sessionStoreRef.current.getAddress();
+        if (storedAddress) clearPersistedSession(storedAddress);
+        if (boot.kind === "terminal") {
+          try {
+            await boot.revoke();
+          } catch (caught) {
+            logNativeOpenKeyError("boot sign-out revoke", caught);
+            if (isNativeStorageError(caught)) {
+              setError(NATIVE_STORAGE_MESSAGE);
+              setState("recoverableError");
+              return;
+            }
+          }
+        }
+        sessionStoreRef.current.clear();
+        setNativeSessionActive(false);
+        if (boot.kind === "terminal") setError(NATIVE_SESSION_ENDED_MESSAGE);
+        setState("unauthenticated");
+        return;
+      }
       const restored = await restorePersistedSession(sessionStoreRef.current, {
+        beforeClear: async () => {
+          if (!await captureHandoff()) throw new Error("Couldn't update this phone's recording settings. Try again.");
+        },
         isOffline: browserIsOffline,
         loadManifest: async () => {
           // The manifest must ride along here, not just on the fresh sign-in
@@ -365,12 +529,14 @@ export function App() {
           setDid(restored.tcw.did ?? `did:pkh:eip155:1:${restored.address}`);
           setSpaceId(restored.tcw.spaceId ?? null);
           setState("ready");
+          void ensureTranscriptWriterDelegation({ tcw: restored.tcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
           return;
         case "unavailable":
           setError(restored.message);
           setState("offline");
           return;
         case "signedOut":
+          if (!await captureHandoff()) { setState("recoverableError"); return; }
           setState("unauthenticated");
           return;
         case "failed":
@@ -378,10 +544,13 @@ export function App() {
           setState("recoverableError");
           return;
       }
+    } catch (caught) {
+      setError(describeAuthFailure(caught));
+      setState("recoverableError");
     } finally {
       restoreInFlightRef.current = false;
     }
-  }, []);
+  }, [captureHandoff]);
 
   useEffect(() => {
     if (restoredRef.current) return;
@@ -389,14 +558,63 @@ export function App() {
     void restoreSession();
   }, [restoreSession]);
 
-  // "Exo will reconnect when you're back online" is a promise — keep it. Only
-  // while a held session is waiting; event-driven, nothing polls.
+  // A failed restore retries on a real lifecycle event, with a minimum gap.
   useEffect(() => {
-    if (state !== "offline") return;
-    const onOnline = () => void restoreSession();
+    if (state !== "offline" && state !== "recoverableError") return;
+    const onOnline = () => {
+      if (restoreRetryTimerRef.current) return;
+      const remaining = restoreRetryAfterRef.current - Date.now();
+      if (remaining > 0) {
+        restoreRetryTimerRef.current = setTimeout(() => {
+          restoreRetryTimerRef.current = null;
+          if (navigator.onLine !== false) void restoreSession();
+        }, remaining);
+      } else if (navigator.onLine !== false) void restoreSession();
+    };
+    const onVisible = () => { if (document.visibilityState === "visible") onOnline(); };
     window.addEventListener("online", onOnline);
-    return () => window.removeEventListener("online", onOnline);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      document.removeEventListener("visibilitychange", onVisible);
+      if (restoreRetryTimerRef.current) clearTimeout(restoreRetryTimerRef.current);
+      restoreRetryTimerRef.current = null;
+    };
   }, [state, restoreSession]);
+
+  useEffect(() => {
+    if (state !== "ready" || !isNativeOpenKeySignIn() || !nativeRenewalRef.current) return;
+    let disposed = false;
+    let listener: { remove: () => Promise<void> } | undefined;
+    void import("@capacitor/app").then(async ({ App: CapacitorApp }) => {
+      const handle = await CapacitorApp.addListener("appStateChange", ({ isActive }) => {
+        if (isActive) void nativeRenewalRef.current?.check(true).catch(() => {});
+      });
+      if (disposed) void handle.remove();
+      else listener = handle;
+    });
+    const online = () => void nativeRenewalRef.current?.check(true).catch(() => {});
+    window.addEventListener("online", online);
+    return () => {
+      disposed = true;
+      window.removeEventListener("online", online);
+      if (listener) void listener.remove();
+    };
+  }, [state]);
+
+  useEffect(() => {
+    if (state !== "ready" || !tcw || LOCAL_VALIDATION) return;
+    const recheck = () => void ensureTranscriptWriterDelegation({
+      tcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current,
+    });
+    const visible = () => { if (document.visibilityState === "visible") recheck(); };
+    window.addEventListener("focus", recheck);
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      window.removeEventListener("focus", recheck);
+      document.removeEventListener("visibilitychange", visible);
+    };
+  }, [state, tcw]);
 
   // A1 — keep the policy-input refs in sync with render state.
   useEffect(() => {
@@ -498,6 +716,10 @@ export function App() {
   // backend is enforcing the paywall.
   useEffect(() => {
     return onPaywallError((payload) => {
+      if (payload.error === "STORAGE_QUOTA_EXCEEDED" || payload.error === "STORAGE_LIMIT_REACHED") {
+        setStorageDialogOpen(true);
+        return;
+      }
       // A1 trigger (b): a 402 means the backend is enforcing the paywall — if a
       // transient failure left us config-null, recover it now so the pricing
       // dialog can actually mount (no-op when a config is already held).
@@ -582,10 +804,33 @@ export function App() {
     };
   }, [state]);
 
-  const signIn = useCallback(async () => {
+  const signIn = useCallback(async (hints?: NativeSignInHints) => {
     setError(null);
+    // Each tab's remembered place belongs to the account that left it.
+    resetNavigationMemory();
     try {
       setState("connecting");
+      if (isNativeOpenKeySignIn()) {
+        // TC-775 E1: OpenKey delegation sign-in in the system browser. The SDK
+        // keeps the session key in the device secure store; nothing wallet-shaped
+        // signs in the WebView. Throws a user-facing message on cancel/deny.
+        const native = await signInNative(nativeConfig, hints);
+        setAddress(native.verified.address);
+        sessionStoreRef.current.setSession(
+          native.verified.token,
+          native.verified.expiresIn,
+          native.verified.address,
+        );
+        setNativeSessionActive(true);
+        const nativeTcw = native.tcw as TinyCloudWeb;
+        const readyTcw = await startNativeRenewal(nativeTcw, native.session, native.openkey);
+        setTcw(readyTcw);
+        setDid(nativeTcw.did ?? `did:pkh:eip155:1:${native.verified.address}`);
+        setSpaceId(nativeTcw.spaceId ?? null);
+        setState("ready");
+        void ensureTranscriptWriterDelegation({ tcw: readyTcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
+        return;
+      }
       const { address: connectedAddress, openkey, web3Provider } = await connectWallet({
         appName: APP_NAME,
         host: OPENKEY_HOST,
@@ -634,131 +879,143 @@ export function App() {
       setDid(signedTcw.did ?? null);
       setSpaceId(signedTcw.spaceId ?? null);
       setState("ready");
+      void ensureTranscriptWriterDelegation({ tcw: signedTcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
     } catch (caught) {
-      setError(errorMessage(caught));
+      if (isSignInCancelled(caught)) {
+        setError(null);
+        setState("unauthenticated");
+        return;
+      }
+      setError(describeAuthFailure(caught));
       setState("recoverableError");
     }
   }, []);
 
-  const signOut = useCallback(async () => {
+  const signOut = useCallback(async (options: { terminal?: string } = {}) => {
     if (signOutInFlightRef.current) return;
     signOutInFlightRef.current = true;
+    nativeRenewalRef.current?.stop();
     setSigningOut(true);
     setError(null);
     try {
-      const openKeyOutcome = await signOutOpenKeySession(
-        openkeyRef.current,
-        () => new OpenKey({ appName: APP_NAME, host: OPENKEY_HOST, passkeysSupported: openkeyPasskeysSupported() }),
-      );
-      // OpenKey clears this client's local auth before showing its widget, even
-      // when the user cancels. Never retain that spent client for another flow.
-      openkeyRef.current = null;
-
-      let openKeyWarning: string | null = null;
-      if (openKeyOutcome.status === "cancelled") {
-        openKeyWarning =
-          "OpenKey stayed signed in on this device. TinyChat is signed out locally. " +
-          "Sign out at openkey.so before choosing another account.";
-      } else if (openKeyOutcome.status === "unverified") {
-        const detail = openKeyOutcome.reason ? ` (${openKeyOutcome.reason})` : "";
-        openKeyWarning =
-          `OpenKey sign-out could not be verified${detail}. TinyChat is signed out locally. ` +
-          "Sign out at openkey.so before choosing another account.";
+      if (!await captureHandoff()) {
+        // A terminal renewal has already exhausted its grant; restarting it
+        // would call onTerminal again and repeat this failed handoff.
+        if (!options.terminal) void nativeRenewalRef.current?.resume();
+        return;
       }
-
-      if (tcw) {
+      let openKeyWarning: string | null = options.terminal ?? null;
+      const nativeSession = isNativeOpenKeySession();
+      if (nativeSession && !options.terminal) {
+        // Native sign-out revokes the OpenKey delegation grant and clears the
+        // secure-store session unless secure storage needs another attempt.
         try {
-          await tcw.signOut?.();
+          await withCaptureDeadline(signOutNative());
         } catch (caught) {
-          console.warn("[App] TinyCloud sign-out cleanup failed", caught);
+          logNativeOpenKeyError("sign-out revoke", caught);
+          if (isNativeStorageError(caught)) {
+            // The SDK may still have the session and grant in secure storage.
+            // Keep the native marker and current session for another attempt.
+            setError(NATIVE_SIGN_OUT_STORAGE_WARNING);
+            await restoreCaptureAfterAuthAbort();
+            setState("ready");
+            void nativeRenewalRef.current?.resume();
+            return;
+          }
+          if (caught instanceof Error && caught.message.startsWith("Native sign-in is not configured")) {
+            // Keep the SDK record and key available for revocation once the
+            // native client is configured again.
+            setError(caught.message);
+            await restoreCaptureAfterAuthAbort();
+            setState("ready");
+            void nativeRenewalRef.current?.resume();
+            return;
+          }
+          openKeyWarning = NATIVE_SIGN_OUT_WARNING;
+        }
+      } else if (!nativeSession && !options.terminal) {
+        const openKeyClient = openkeyRef.current ?? new OpenKey({ appName: APP_NAME, host: OPENKEY_HOST,
+          passkeysSupported: openkeyPasskeysSupported() });
+        // The user answers OpenKey's own confirmation here, so no deadline runs.
+        // signOutOpenKeySession reports every failure as an outcome rather than throwing.
+        const openKeyOutcome = await signOutOpenKeySession(openKeyClient, () => openKeyClient);
+        // OpenKey clears this client's local auth before showing its widget, even
+        // when the user cancels. Never retain that spent client for another flow.
+        openkeyRef.current = null;
+
+        if (openKeyOutcome.status === "cancelled") {
+          openKeyWarning =
+            "OpenKey stayed signed in on this device. Exo is signed out locally. " +
+            "Sign out at openkey.so before choosing another account.";
+        } else if (openKeyOutcome.status === "unverified" || openKeyOutcome.status === "remote-unavailable") {
+          // Revocation could not be proved (no verified answer, no sheet, or an error): a calm note, not an alarm.
+          openKeyWarning = OPENKEY_SIGN_OUT_UNPROVEN_NOTE;
         }
       }
-      // TinyCloudWeb.signOut is local cleanup. Remove the persisted session
-      // directly as well so a client cleanup failure cannot restore this user.
-      if (address) clearPersistedSession(address);
-      sessionStoreRef.current.clear();
-      // Drop the in-memory history prefetch cache and stop its queue — it holds
-      // the signed-out account's message docs.
-      historyPrefetch.clear();
-      // Clear the agent session cache so the next sign-in re-probes.
-      clearAgentSessionCache();
-      // Drop the background-drain counts: they belong to the account that is
-      // leaving, and the next user must never inherit them. ONLY the record —
-      // this page load's attempt/dark latches are about the page, not the user.
-      clearBackgroundDrainRecord();
-      // Stop this tab's audio upload work: it runs with the leaving account's
-      // session and space. Its stored job stays for that account's next visit.
-      uploadRunner.reset();
-      selectionControllerRef.current = null;
-      memoryRef.current = null;
-      setSelectionView((view) => ({ ...view, threadId: null, model: null, canSend: false, canPick: false }));
-      setTcw(null);
-      setAddress(null);
-      setDid(null);
-      setSpaceId(null);
-      setModels(OFFERED_CHAT_MODELS.map(({ id, contextTokens }) => ({ id, contextLength: contextTokens })));
-      setBillingStatus(null);
-      setPricingOpen(false);
-      setError(openKeyWarning);
-      setState(openKeyWarning ? "recoverableError" : "unauthenticated");
+
+      if (tcw && !nativeSession && !options.terminal) {
+        try {
+          const cleanup = Promise.resolve(tcw.signOut?.());
+          if (captureEngineAvailable()) await withCaptureDeadline(cleanup);
+          else await cleanup;
+        } catch (caught) {
+          logNativeOpenKeyError("TinyCloud sign-out cleanup", caught);
+        }
+      }
+      // TinyCloudWeb.signOut is local cleanup. The shared completion also
+      // removes persisted account data, so a cleanup failure cannot restore it.
+      completeLocalSignOut(openKeyWarning, Boolean(options.terminal));
     } finally {
       signOutInFlightRef.current = false;
       setSigningOut(false);
     }
-  }, [address, tcw]);
+  }, [tcw, captureHandoff, restoreCaptureAfterAuthAbort, completeLocalSignOut]);
+
+  useEffect(() => { signOutRef.current = signOut; }, [signOut]);
 
   const isReady = state === "ready" && tcw !== null;
   // The offline state still HOLDS a session, so its "Try again" re-runs the
   // restore. Only a settled signed-out state (no restorable session) starts the
   // full OpenKey sign-in.
-  const authAction = state === "offline" ? restoreSession : signIn;
+  // On iOS and Android signing in opens Exo's own sign-in screen, which then
+  // runs `signIn` with the hints it collected. The screen is also asked for
+  // by the signed-out local home and the recorder.
+  const nativeSignIn = isNativeOpenKeySignIn();
   // Authentication has answered, and the answer is "not signed in" — the
   // only condition under which a private surface may be redirected away.
   const authSettledSignedOut = isAuthSettledSignedOut(state);
 
   const navigate = useNavigate();
   const location = useLocation();
-  const showSettings = !LOCAL_VALIDATION && location.pathname.endsWith("/chat/settings");
-  // Connectors owns a nested route now (Sources | Library), so the match spans
-  // the whole subtree — `endsWith("/chat/connectors")` cannot see
-  // /chat/connectors/library, and the sidebar entry and the workspace both key
-  // off this one flag.
-  const showConnectors = !LOCAL_VALIDATION && /\/chat\/connectors(\/|$)/.test(location.pathname);
-  const connectorsTab = connectorsTabFor(location.pathname);
-  // The standalone Meetings page is gone: meetings live under Connectors →
-  // Library. Old links (bookmarks, shared URLs, the pre-Library header button)
-  // still resolve — they are replaced with the canonical address below.
-  const legacyMeetings = location.pathname.endsWith("/chat/meetings");
+  // The recorder's Open: the Library, then the note just saved.
+  const openSavedNote = useOpenSavedNote(tcw);
+  const platform = useContext(PlatformContext);
+  const { size } = useSizeClass();
+  // Which screen the address shows (shell/routes.ts). The App stays mounted at
+  // /chat/*: the shell toggles surfaces, so the chat runtime, drafts and
+  // streams survive every move between them.
+  const screen = useMemo(() => screenFor(location.pathname), [location.pathname]);
+  const showSettings = !LOCAL_VALIDATION && screen.id === "settings";
+  // Retired addresses (/chat/meetings, /chat/connectors/library) still resolve:
+  // they are replaced with their new home below.
+  const legacy = legacyRedirectFor(location.pathname);
 
-  // TC-522: the one-tap voice note, inside the Exo mobile app only. Offered
-  // wherever the Voice notes card is NOT on screen (Connectors has its own
-  // Record and picks a running recording up), so only one view of the
-  // recorder is ever mounted. Leaving for Connectors, or signing out, closes it.
-  const voiceNotesInApp = useMemo(() => nativeVoiceNotesAvailable(), []);
-  const quickVoiceNoteAvailable =
-    voiceNotesInApp && isReady && !LOCAL_VALIDATION && !showConnectors && !shareToken;
-  useEffect(() => {
-    if (!quickVoiceNoteAvailable) setVoiceNoteOpen(false);
-  }, [quickVoiceNoteAvailable]);
+  // Voice notes exist inside the Exo mobile app only. Once ready, the one
+  // recorder (RecorderProvider, below) serves every view of it; a recording
+  // still running from the offline screen is picked up there, never restarted.
+  const voiceNotesInApp = useMemo(() => captureEngineAvailable(), []);
 
-  // TC-515: with the session held but out of reach (`offline`), the app can
-  // still record a voice note; it stays on the phone until the session is back.
-  // Not signed out: there is no account to save to then. "Try again" (`booting`)
-  // keeps the recorder on screen, so a running recording stays visible.
-  const [offlineCapture, setOfflineCapture] = useState(false);
-  useEffect(() => {
-    if (state === "offline") setOfflineCapture(true);
-    else if (state !== "booting") setOfflineCapture(false);
-  }, [state]);
-  const offlineRecorder = voiceNotesInApp && !LOCAL_VALIDATION && offlineCapture;
-  // A recording started offline keeps running through the restore: once the
-  // session is back, the chat screen's bar shows it (picked up, never restarted).
-  const offlineRecordingRef = useRef(false);
-  useEffect(() => {
-    if (state !== "ready" || !offlineRecordingRef.current) return;
-    offlineRecordingRef.current = false;
-    if (quickVoiceNoteAvailable) setVoiceNoteOpen("show");
-  }, [state, quickVoiceNoteAvailable]);
+  const capabilities = captureCapabilities();
+  const deviceCapture = voiceNotesInApp && capabilities.offlineRecorder && !LOCAL_VALIDATION &&
+    (state === "offline" || state === "unauthenticated" || state === "recoverableError");
+  const settleSignedOut = useCallback(() => {
+    setError(null);
+    setState("unauthenticated");
+  }, []);
+  const nativeSignInFlow = useNativeSignIn({
+    native: nativeSignIn, state, localHome: deviceCapture && state !== "recoverableError", signIn, restoreSession, settleSignedOut,
+  });
+  const authAction = nativeSignInFlow.authAction;
 
   // The pending-count badge follows the drain record's store directly — no
   // polling, no second count, no state of its own. Whichever path settles the
@@ -772,12 +1029,13 @@ export function App() {
     readBackgroundDrainRecord,
   );
   // Hidden on the connectors route: the detailed queue state is visible there.
-  const pendingMeetings = showConnectors ? 0 : badgePendingCount(drainRecord);
+  const pendingMeetings = screen.destination === "connectors" ? 0 : badgePendingCount(drainRecord);
 
-  // Belt-and-suspenders guard: if the user lands on (or is on) /chat/settings
-  // or /chat/connectors while signed out (post-signOut flip, deep link, etc.),
-  // kick them to /chat. These pages only render inside the isReady branch below,
-  // so this is the sole place the URL gets normalized.
+  // Belt-and-suspenders guard: if the user lands on (or is on) Settings or
+  // Connectors while signed out (post-signOut flip, deep link, etc.), send them
+  // home. These pages only render inside the isReady branch below, so this is
+  // the sole place the URL gets normalized. Capture never redirects: the
+  // sign-in surface renders in place (shell/routes.ts).
   //
   // Keyed on the SETTLED signed-out states, not on `!isReady`: a cold reload of
   // a private surface starts in `booting` and stays there until the persisted
@@ -785,22 +1043,22 @@ export function App() {
   // breaks the share/bookmark/reload contract these routes exist for. While
   // authentication is still deciding the address is held and BootSurface shows.
   useEffect(() => {
-    if (authSettledSignedOut && (showSettings || showConnectors)) {
-      navigate("/chat", { replace: true });
+    if (authSettledSignedOut && (screen.destination === "connectors" || (!deviceCapture && redirectsWhenSignedOut(screen)))) {
+      navigate(homePath(platform), { replace: true });
     }
-  }, [authSettledSignedOut, showSettings, showConnectors, navigate]);
+  }, [authSettledSignedOut, deviceCapture, screen, platform, navigate]);
 
-  // Forward the retired /chat/meetings address to its canonical home. `replace`
-  // keeps the dead route out of history, so Back does not bounce through it.
-  // Signed out, the guard above still wins: Library is only reachable ready.
+  // Forward a retired address (LEGACY_REDIRECTS) to its canonical home.
+  // `replace` keeps the dead route out of history, so Back does not bounce
+  // through it. Signed out, it goes home instead: Library is only reachable ready.
   useEffect(() => {
-    if (!legacyMeetings) return;
+    if (!legacy) return;
     // Same rule as the guard above: mid-restore is not an answer. Hold the
     // legacy address until authentication settles, or the cold forward lands
-    // on /chat instead of Library.
+    // home instead of Library.
     if (!isReady && !authSettledSignedOut) return;
-    navigate(isReady ? CONNECTORS_LIBRARY_PATH : "/chat", { replace: true });
-  }, [legacyMeetings, isReady, authSettledSignedOut, navigate]);
+    navigate(isReady ? legacy.to : homePath(platform), { replace: true });
+  }, [legacy, isReady, authSettledSignedOut, platform, navigate]);
 
   // A1 trigger (a): entering the settings page recovers a config-null session
   // (the Plan & Usage card lives there). No-op when a config is already held.
@@ -808,123 +1066,59 @@ export function App() {
     if (showSettings) refetchConfigOnTrigger("settings-entry");
   }, [showSettings, refetchConfigOnTrigger]);
 
-  // Prefer history-back so the previous chat scroll/composer focus restores
-  // naturally; fall back to /chat when there's no in-app history (deep link or
-  // refresh on /chat/settings). react-router v7 stamps `idx` on history state.
+  // Settings' Back: history-back, so wherever the user came from restores its
+  // scroll and focus naturally; home when there's no in-app history (deep link
+  // or refresh on /chat/settings). react-router v7 stamps `idx` on history state.
   const onBack = useCallback(() => {
     const idx = (window.history.state as { idx?: number } | null)?.idx;
     if (typeof idx === "number" && idx > 0) {
       navigate(-1);
     } else {
-      navigate("/chat");
+      navigate(homePath(platform), { replace: true });
     }
-  }, [navigate]);
+  }, [navigate, platform]);
 
-  return (
-    <div
-      className="flex flex-col bg-background text-foreground pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]"
-      style={{ height: "var(--tc-app-height, 100dvh)" }}
-    >
-      <header className="flex items-center justify-between gap-1.5 border-b border-border px-3 py-2.5 sm:gap-3 sm:px-4">
-        <div className="flex min-w-0 items-center gap-1.5 sm:gap-3">
-          {isReady && !LOCAL_VALIDATION && (
-            <Button
-              variant="outline"
-              size="sm"
-              aria-label="Open chat list"
-              onClick={() => setSidebarOpen(true)}
-              className="h-11 w-11 shrink-0 p-0 md:hidden"
-            >
-              <PanelLeftIcon className="size-4" />
-            </Button>
-          )}
-          <span className="flex shrink-0 items-center gap-2 text-sm font-semibold tracking-tight">
-            <span className="flex size-6 items-center justify-center rounded-md bg-primary text-xs font-bold text-primary-foreground">
-              T
-            </span>
-            <span className="hidden sm:inline">TinyCloud Chat</span>
-          </span>
-          {isReady && (
-            <ModelPicker
-              model={selectionView.model}
-              models={models}
-              disabled={!selectionView.canPick}
-              status={selectionView.message}
-              onPick={pickModel}
-            />
-          )}
-          {isReady && selectionView.model && (
-            // Intentionally hidden below the `sm` breakpoint: the header is
-            // space-constrained on mobile and the per-message badge still
-            // surfaces verification there. Desktop shows the model-level pill.
-            <span className="hidden sm:inline-flex">
-              <ModelVerificationIndicator model={selectionView.model} />
-            </span>
-          )}
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-          {isReady && paywallEnabled && (
-            // A2 — render the chip on mobile too. The chip already degrades to a
-            // compact tier label under `sm` (the usage numbers + bar are
-            // `hidden sm:*` inside UsageIndicator), so this surfaces the
-            // tier/usage affordance on narrow viewports without a redesign and
-            // without crowding the header (the attestation pill stays
-            // `hidden sm:inline-flex`).
-            <UsageIndicator
-              status={billingStatus}
-              tierName={billingTierName}
-              onClick={openPricing}
-              onOpenRates={openRates}
-            />
-          )}
-          <span className="hidden sm:inline-flex">
-            <ThemeToggle />
-          </span>
-          {quickVoiceNoteAvailable && (
-            <Button
-              variant="outline"
-              size="sm"
-              aria-label="Record a voice note"
-              aria-pressed={voiceNoteOpen !== false}
-              onClick={() => setVoiceNoteOpen((open) => open || "record")}
-              className="h-11 shrink-0 gap-1.5 px-3 md:h-8"
-              data-testid="header-voice-note"
-            >
-              <MicIcon className="size-4" />
-              Voice note
-            </Button>
-          )}
-          {isReady && (
-            <Button
-              variant="outline"
-              size="sm"
-              aria-label={showSettings ? "Close settings" : "Settings"}
-              aria-pressed={showSettings}
-              onClick={() => (showSettings ? onBack() : navigate("/chat/settings"))}
-              className="h-11 w-11 p-0 md:h-8 md:w-8"
-            >
-              <SettingsIcon className="size-4" />
-            </Button>
-          )}
-          {(state === "unauthenticated" || state === "recoverableError" || state === "offline") && (
-            <Button size="sm" onClick={authAction} className="h-11 md:h-8">
-              {state === "unauthenticated" ? "Sign in" : "Try again"}
-            </Button>
-          )}
-        </div>
-      </header>
-
-      {voiceNoteOpen && quickVoiceNoteAvailable && tcw && (
-        <QuickVoiceNote
-          autoStart={voiceNoteOpen === "record"}
-          tcw={tcw}
-          backendUrl={BACKEND_URL}
-          sessionStore={sessionStoreRef.current}
-          onClose={() => setVoiceNoteOpen(false)}
-          onOpenLibrary={() => navigate(CONNECTORS_LIBRARY_PATH)}
+  // The composer's toolbar: the model chip (a sheet on phones) and, with the
+  // paywall on, the usage chip. App owns both, so they survive ChatWorkspace's
+  // import-refresh remount.
+  const composerToolbar = isReady ? (
+    <>
+      <ModelPicker
+        model={selectionView.model}
+        models={models}
+        disabled={!selectionView.canPick}
+        status={selectionView.message}
+        onPick={pickModel}
+        presentation={size === "compact" ? "sheet" : "popover"}
+      />
+      {paywallEnabled && (
+        <UsageIndicator
+          status={billingStatus}
+          tierName={billingTierName}
+          onClick={openPricing}
+          onOpenRates={openRates}
         />
       )}
+    </>
+  ) : null;
 
+  return (
+    <RecorderProvider
+      tcw={isReady ? tcw : null}
+      backendUrl={BACKEND_URL}
+      sessionStore={sessionStoreRef.current}
+      enabled={voiceNotesInApp && !LOCAL_VALIDATION}
+      onAccountReady={setCaptureReadyTcw}
+      pipeline={voiceNotePipeline}
+      signedOut={state === "unauthenticated" && !sessionStoreRef.current.hasSession()}
+      onSignedOut={captureHandoff}
+      onSignIn={authAction}
+      minimiseOnSignIn={nativeSignIn}
+    >
+    <div
+      className="flex flex-col bg-background text-foreground"
+      style={{ height: "var(--tc-app-height, 100dvh)" }}
+    >
       {LOCAL_VALIDATION && (
         <div role="status" className="border-b px-4 py-2 text-sm">
           Local validation: chats and memory stay in this tab and reset on reload.
@@ -932,66 +1126,81 @@ export function App() {
         </div>
       )}
 
-      <main className="min-h-0 flex-1">
+      <div className="min-h-0 flex-1">
         {shareToken ? (
-          <SharedThreadSurface
-            token={shareToken}
-            onClose={() => {
-              setShareToken(null);
-              if (window.location.hash.startsWith("#share=")) {
-                window.history.replaceState(null, "", window.location.pathname + window.location.search);
-              }
-            }}
-          />
+          <main className="h-full pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
+            <SharedThreadSurface
+              token={shareToken}
+              onClose={() => {
+                setShareToken(null);
+                if (window.location.hash.startsWith("#share=")) {
+                  window.history.replaceState(null, "", window.location.pathname + window.location.search);
+                }
+              }}
+            />
+          </main>
         ) : isReady && tcw ? (
           <AgentAccessProvider tcw={tcw} sessionStore={sessionStoreRef.current} backendUrl={BACKEND_URL}
             appName={APP_NAME} openkeyHost={OPENKEY_HOST} tinycloudHosts={tcw.hosts}>
             <TranscriberLibrarySyncProvider enabled={!LOCAL_VALIDATION} tcw={tcw} backendUrl={BACKEND_URL} sessionStore={sessionStoreRef.current}>
-            {/* ChatWorkspace stays mounted while an app surface is active —
-                visibility toggle (not a <Routes> swap) preserves the
+            {/* The shell keeps ChatWorkspace mounted while another surface is
+                shown — a visibility toggle (not a <Routes> swap) preserves the
                 assistant runtime, the active thread, and composer state across
-                nav. */}
-            <div className={showSettings ? "hidden" : "contents"}>
-              <ChatWorkspace
-                key={importRefreshKey}
-                tcw={tcw}
-                sessionStore={sessionStoreRef.current}
-                selectionControllerRef={selectionControllerRef}
-                selectionView={selectionView}
-                memoryRef={memoryRef}
-                onSelectionView={setSelectionView}
-                onSelectionAuthFailure={() => {
-                  sessionStoreRef.current.clear();
-                  setError("Your session expired. Sign in again to continue.");
-                  setState("recoverableError");
-                }}
-                onMemoryUpdated={onMemoryUpdated}
-                contextTokensFor={contextTokensFor}
-                sidebarOpen={sidebarOpen}
-                setSidebarOpen={setSidebarOpen}
-                showConnectors={showConnectors}
-                pendingMeetings={pendingMeetings}
-                onToggleConnectors={() =>
-                  !LOCAL_VALIDATION && (showConnectors ? onBack() : navigate(CONNECTORS_SOURCES_PATH))
-                }
-                onOpenChat={() => navigate("/chat")}
-                connectorsSurface={LOCAL_VALIDATION ? null : <ConnectorsPage
+                navigation. */}
+            <RecorderShell
+              onOpenNote={openSavedNote}
+              screen={screen}
+              platform={platform}
+              pendingMeetings={pendingMeetings}
+              chat={
+                <ChatWorkspace
+                  key={importRefreshKey}
                   tcw={tcw}
-                  backendUrl={BACKEND_URL}
                   sessionStore={sessionStoreRef.current}
-                  tab={connectorsTab}
-                  meetingsSlot={
-                    <MeetingsSection
-                      backendUrl={BACKEND_URL}
-                      sessionStore={sessionStoreRef.current}
-                    />
+                  backendUrl={BACKEND_URL}
+                  selectionControllerRef={selectionControllerRef}
+                  selectionView={selectionView}
+                  memoryRef={memoryRef}
+                  onSelectionView={setSelectionView}
+                  onSelectionAuthFailure={() => { void (async () => {
+                    try { await clearSessionAfterHandoff(sessionStoreRef.current); }
+                    catch { return; }
+                    setError("Your session expired. Sign in again to continue.");
+                    setState("recoverableError");
+                  })(); }}
+                  onMemoryUpdated={onMemoryUpdated}
+                  contextTokensFor={contextTokensFor}
+                  composerToolbar={composerToolbar}
+                  // Record (phone app), and the live chip while the keyboard is up.
+                  headerRecorder={
+                    <>
+                      <HeaderLiveChip />
+                      <RecordButton variant="icon" />
+                    </>
                   }
-                />}
-                billingStatus={billingStatus}
-              />
-            </div>
-            {showSettings && (
-              <SettingsPage
+                  settings={!LOCAL_VALIDATION}
+                  billingStatus={billingStatus}
+                />
+              }
+              capture={LOCAL_VALIDATION ? null : <CaptureSurface
+                tcw={tcw}
+                backendUrl={BACKEND_URL}
+                sessionStore={sessionStoreRef.current}
+                active={screen.destination === "capture"}
+                screen={screen}
+                meetingsSlot={
+                  <MeetingsSection
+                    backendUrl={BACKEND_URL}
+                    sessionStore={sessionStoreRef.current}
+                  />
+                }
+              />}
+              connectors={LOCAL_VALIDATION ? null : <ConnectorsPage
+                tcw={tcw}
+                backendUrl={BACKEND_URL}
+                sessionStore={sessionStoreRef.current}
+              />}
+              settings={LOCAL_VALIDATION ? null : <SettingsPage
                 address={address}
                 did={did}
                 spaceId={spaceId}
@@ -1011,23 +1220,48 @@ export function App() {
                 onOpenRates={openRates}
                 backendUrl={BACKEND_URL}
                 sessionStore={sessionStoreRef.current}
-              />
-            )}
+              />}
+              about={<AboutPage onBack={onBack} />}
+            />
             </TranscriberLibrarySyncProvider>
           </AgentAccessProvider>
-        ) : (
-          <BootSurface
-            state={state}
-            error={error}
-            onAction={authAction}
-            voiceNotes={
-              offlineRecorder ? (
-                <OfflineVoiceNotes onRecordingChange={(recording) => { offlineRecordingRef.current = recording; }} />
-              ) : null
-            }
+        ) : deviceCapture && !nativeSignInFlow.screenShown ? (
+          <RecorderShell
+            screen={screen}
+            platform={platform}
+            pendingMeetings={0}
+            chat={<BootSurface state={state} error={error} onAction={authAction} />}
+            capture={<DeviceCaptureSurface did={did} offline={state === "offline"} error={error}
+              onSignIn={authAction} onRetry={() => void restoreSession()} screen={screen} />}
+            connectors={null}
+            settings={<DeviceCaptureSettings onBack={onBack} onSignIn={authAction} offline={state === "offline"} />}
+            about={null}
           />
+        ) : (
+          <main className="h-full overflow-y-auto pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
+            {nativeSignInFlow.screenShown
+                ? <NativeSignIn state={state} error={error} onSignIn={(hints) => void signIn(hints)}
+                  onClose={nativeSignInFlow.onClose} />
+                : <BootSurface state={state} error={error} onAction={authAction} />}
+          </main>
         )}
-      </main>
+      </div>
+      {shouldMountRecordingOverlay({ voiceNotesInApp, isReady, deviceCapture,
+        nativeSignInScreenShown: nativeSignInFlow.screenShown, shareTokenPresent: !!shareToken }) && <RecordingOverlay />}
+      {captureFailClosed && <div role="alert" className="fixed inset-x-4 bottom-4 z-[60] rounded-xl border bg-card p-4 shadow-lg">
+        Recordings are being kept unassigned until Exo can update this phone.
+        <button type="button" className="ml-3 underline" onClick={() => void signOut()}>Retry</button>
+      </div>}
+      <MicDeniedRecovery enabled={platform === "android" && voiceNotesInApp && capabilities.micDeniedPresentation && !LOCAL_VALIDATION && (authSettledSignedOut || state === "offline")} onContinue={nativeSignInFlow.micRecoveryContinue} />
+      {storageReadOnly && (
+        <div role="region" aria-label="Storage full: read-only" aria-live="polite" className="border-t border-border bg-muted px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] text-sm">
+          <strong>Storage full: read-only.</strong>{" "}
+          {STORAGE_READ_ONLY_NOTICE}{" "}
+          <a className="font-medium underline underline-offset-2" href={MANAGE_STORAGE_URL} target="_blank" rel="noreferrer">
+            Manage storage
+          </a>
+        </div>
+      )}
 
       {paywallEnabled && billingConfig && (
         <PricingDialog
@@ -1038,6 +1272,7 @@ export function App() {
           onOpenRates={openRates}
         />
       )}
+      <StorageFullDialog open={storageDialogOpen} onOpenChange={setStorageDialogOpen} />
 
       <RatesDialog
         open={ratesOpen}
@@ -1049,7 +1284,7 @@ export function App() {
           visit"). Same gate as the authenticated surfaces; renders nothing in
           every state, coordinates with Settings on a shared lane, and never
           unlocks — see useBackgroundDrain.ts. */}
-      {!LOCAL_VALIDATION && state === "ready" && tcw && (
+      {!LOCAL_VALIDATION && state === "ready" && tcw && secretsAvailable() && (
         <BackgroundDrainer
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
@@ -1059,10 +1294,11 @@ export function App() {
 
       {/* TC-515: voice notes left on the phone (recorded offline, or a save that
           failed) are saved once the session is ready, without opening
-          Connectors. The Voice notes card's own single-flight retry. */}
-      {voiceNotesInApp && !LOCAL_VALIDATION && state === "ready" && tcw && (
+          Capture. The Voice notes card's own single-flight retry. */}
+      {voiceNotesInApp && !LOCAL_VALIDATION && state === "ready" && tcw && captureReadyTcw === tcw && voiceNotePipeline && (
         <PendingVoiceNotesSaver
           tcw={tcw}
+          pipeline={voiceNotePipeline}
           backendUrl={BACKEND_URL}
           sessionStore={sessionStoreRef.current}
         />
@@ -1072,7 +1308,7 @@ export function App() {
           drainer above (gmeet has no webhook queue). Same ready gate; renders
           nothing, defers silently while the vault is locked, and is a no-op for
           every user while the registry row is coming-soon. */}
-      {!LOCAL_VALIDATION && state === "ready" && tcw && (
+      {!LOCAL_VALIDATION && state === "ready" && tcw && secretsAvailable() && (
         <GmeetSessionSync
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
@@ -1085,8 +1321,20 @@ export function App() {
           them. Renders nothing, queues on the drain's lane so the one space has
           a single writer, and is a no-op for every address outside the dark
           cohort — see BackendReconciler.tsx. */}
-      {!LOCAL_VALIDATION && state === "ready" && tcw && (
+      {!LOCAL_VALIDATION && state === "ready" && tcw && secretsAvailable() && (
         <BackendReconciler
+          tcw={tcw}
+          sessionStore={sessionStoreRef.current}
+          backendUrl={BACKEND_URL}
+        />
+      )}
+
+      {/* TC-761: an upload a reload interrupted picks up at launch, without
+          opening the Upload sheet. Same ready gate; renders nothing, and never
+          unlocks: an own-key AssemblyAI upload with the vault locked waits as
+          "Upload paused" until the user taps Continue — see UploadResumer.tsx. */}
+      {!LOCAL_VALIDATION && state === "ready" && tcw && (
+        <UploadResumer
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
           backendUrl={BACKEND_URL}
@@ -1098,7 +1346,7 @@ export function App() {
           role="status"
           aria-live="polite"
           aria-atomic="true"
-          className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] left-1/2 z-[60] -translate-x-1/2"
+          className="fixed bottom-[calc(var(--tc-bottom-chrome)+1rem)] left-1/2 z-[60] -translate-x-1/2"
         >
           <div className="flex items-center gap-2 rounded-lg border border-border bg-popover px-4 py-2.5 text-sm text-popover-foreground shadow-lg">
             <span className="size-1.5 rounded-full bg-green-500" />
@@ -1107,454 +1355,7 @@ export function App() {
         </div>
       )}
     </div>
-  );
-}
-
-// Compact, clickable usage chip in the header. Shows the current tier and a
-// thin progress bar of credit-budget consumption. Opens the pricing dialog on
-// click. On hover/focus, an expanded popover surfaces exact numbers + reset
-// date + a "How credits work" link to the rates table (spec §5.5). Renders
-// even before status loads (shows "Plans") so the entry point is always
-// present once the paywall is on.
-function ModelPicker(props: {
-  model: string | null;
-  models: ModelOption[];
-  disabled: boolean;
-  status?: string;
-  onPick: (id: string) => void;
-}) {
-  const { model, models, disabled, status, onPick } = props;
-  const [open, setOpen] = useState(false);
-  const [focusedIndex, setFocusedIndex] = useState(-1);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointer = (event: MouseEvent) => {
-      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setOpen(false);
-        triggerRef.current?.focus();
-      }
-    };
-    document.addEventListener("mousedown", onPointer);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onPointer);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  useEffect(() => {
-    if (!open || models.length === 0) return;
-    const active = Math.max(0, models.findIndex((entry) => entry.id === model));
-    setFocusedIndex(active);
-    queueMicrotask(() => optionRefs.current[active]?.focus());
-  }, [open, model, models]);
-
-  const select = (id: string) => {
-    onPick(id);
-    setOpen(false);
-    triggerRef.current?.focus();
-  };
-  const onListKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (models.length === 0) return;
-    let next = focusedIndex;
-    if (event.key === "ArrowDown") next = (focusedIndex + 1) % models.length;
-    else if (event.key === "ArrowUp") next = (focusedIndex - 1 + models.length) % models.length;
-    else if (event.key === "Home") next = 0;
-    else if (event.key === "End") next = models.length - 1;
-    else if ((event.key === "Enter" || event.key === " ") && models[focusedIndex]) {
-      event.preventDefault();
-      select(models[focusedIndex]!.id);
-      return;
-    } else return;
-    event.preventDefault();
-    setFocusedIndex(next);
-    optionRefs.current[next]?.focus();
-  };
-
-  return (
-    <div className="relative min-w-0" ref={containerRef}>
-      <button
-        ref={triggerRef}
-        type="button"
-        disabled={disabled}
-        onClick={() => setOpen((value) => !value)}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-controls="model-picker-popup"
-        aria-label="Model"
-        title={status}
-        className="flex h-11 max-w-full items-center gap-1.5 rounded-md border border-input bg-background pl-2.5 pr-2 text-xs text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60 md:h-8"
-      >
-        {model && isResponseVerifiableModel(model) ? (
-          <ShieldCheckIcon className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-        ) : model && isTeeCapableModel(model) ? (
-          <ShieldIcon className="size-3.5 shrink-0 text-muted-foreground" />
-        ) : null}
-        <span className="max-w-[7rem] truncate sm:max-w-[12rem]">
-          {model ?? status ?? "Choosing model…"}
-        </span>
-        <ChevronDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
-      </button>
-      {open && (
-        <div
-          id="model-picker-popup"
-          role="listbox"
-          aria-label="Model"
-          onKeyDown={onListKeyDown}
-          className="absolute left-0 z-30 mt-1.5 max-h-72 w-80 max-w-[calc(100vw-6.5rem)] overflow-y-auto rounded-lg border border-border bg-popover p-1 text-xs shadow-lg"
-        >
-          {models.map((entry, index) => {
-            const active = entry.id === model;
-            return (
-              <button
-                key={entry.id}
-                ref={(element) => { optionRefs.current[index] = element; }}
-                type="button"
-                role="option"
-                aria-selected={active}
-                tabIndex={focusedIndex === index ? 0 : -1}
-                onClick={() => select(entry.id)}
-                onFocus={() => setFocusedIndex(index)}
-                className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent focus:bg-accent focus:outline-none ${active ? "bg-accent/60" : ""}`}
-              >
-                <span className="flex-1 truncate">{entry.id}</span>
-                {isResponseVerifiableModel(entry.id) ? (
-                  <ShieldCheckIcon aria-label="Response verified" className="size-3.5 text-emerald-600 dark:text-emerald-400" />
-                ) : isTeeCapableModel(entry.id) ? (
-                  <ShieldIcon aria-label="TEE capable" className="size-3.5 text-muted-foreground" />
-                ) : null}
-                {typeof entry.multiplier === "number" ? (
-                  <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary tabular-nums">
-                    {Number.parseFloat(entry.multiplier.toFixed(1))}×
-                  </span>
-                ) : (
-                  <span className="text-[10px] text-muted-foreground">Rates unavailable</span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      )}
-      {status && <div role="status" className="absolute left-0 top-full mt-0.5 whitespace-nowrap text-[10px] text-muted-foreground">{status}</div>}
-    </div>
-  );
-}
-
-function UsageIndicator(props: {
-  status: BillingStatus | null;
-  tierName: string | null;
-  onClick: () => void;
-  onOpenRates: () => void;
-}) {
-  const { status, tierName, onClick, onOpenRates } = props;
-  const [open, setOpen] = useState(false);
-  const usage = status?.usage;
-  const pct =
-    usage && usage.limit > 0
-      ? Math.min(100, Math.round((usage.used / usage.limit) * 100))
-      : 0;
-  const tierLabel = tierName ?? "Plans";
-  const near = pct >= 90;
-  const resetsLabel = usage?.resetsAt ? formatResetsAt(usage.resetsAt) : null;
-  // Compact "12K / 50K" rendered in the visible chip so touch users (who can't
-  // hover) still see live usage at a glance (spec §5.5 transparency).
-  const compactUsage =
-    usage && usage.limit > 0
-      ? `${formatCompact(usage.used)} / ${formatCompact(usage.limit)}`
-      : null;
-
-  return (
-    <div
-      className="relative"
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
-      onFocusCapture={() => setOpen(true)}
-      onBlurCapture={(e) => {
-        // Close only when focus leaves the whole popover subtree.
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-          setOpen(false);
-        }
-      }}
-    >
-      <button
-        type="button"
-        onClick={onClick}
-        aria-label="View plans and usage"
-        className="flex h-8 items-center gap-1.5 rounded-md border border-input bg-background px-2 text-xs text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:gap-2 sm:px-2.5"
-      >
-        <span className="font-medium">{tierLabel}</span>
-        {compactUsage && (
-          <span className="hidden tabular-nums text-muted-foreground sm:inline">{compactUsage}</span>
-        )}
-        {usage && usage.limit > 0 && (
-          <span
-            className="hidden h-1.5 w-12 overflow-hidden rounded-full bg-muted sm:inline-flex"
-            aria-hidden
-          >
-            <span
-              className={`block h-full rounded-full ${near ? "bg-destructive" : "bg-primary"}`}
-              style={{ width: `${pct}%` }}
-            />
-          </span>
-        )}
-      </button>
-      {open && (
-        <div
-          role="region"
-          aria-label="Usage and plan details"
-          className="absolute right-0 top-full z-30 mt-1.5 w-64 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-popover p-3 text-xs text-popover-foreground shadow-lg"
-        >
-          {usage && usage.limit > 0 && (
-            <>
-              <div className="tabular-nums text-foreground">
-                {usage.used.toLocaleString()} / {formatCredits(usage.limit)}
-              </div>
-              {resetsLabel && (
-                <div className="mt-0.5 text-muted-foreground">
-                  Resets {resetsLabel}
-                </div>
-              )}
-            </>
-          )}
-          <button
-            type="button"
-            aria-haspopup="dialog"
-            onClick={() => {
-              setOpen(false);
-              onOpenRates();
-            }}
-            className={`${usage && usage.limit > 0 ? "mt-2" : ""} text-xs text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}
-          >
-            How credits work →
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Short numeric label for the always-visible chip (e.g. 12_400 → "12K").
-function formatCompact(n: number): string {
-  if (!Number.isFinite(n)) return String(n);
-  if (n >= 1_000_000) return `${Math.round(n / 100_000) / 10}M`.replace(/\.0M$/, "M");
-  if (n >= 1_000) return `${Math.round(n / 100) / 10}K`.replace(/\.0K$/, "K");
-  return n.toString();
-}
-
-function formatResetsAt(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  try {
-    return d.toLocaleDateString(undefined, {
-      month: "short",
-      day: "numeric",
-    });
-  } catch {
-    return d.toDateString();
-  }
-}
-
-function ChatWorkspace(props: {
-  tcw: TinyCloudWeb;
-  sessionStore: SessionStore;
-  selectionControllerRef: React.MutableRefObject<ModelSelectionController | null>;
-  selectionView: SelectionView;
-  memoryRef: React.MutableRefObject<string | null>;
-  onSelectionView: (view: SelectionView) => void;
-  onSelectionAuthFailure: () => void;
-  onMemoryUpdated: (doc: string | null) => void;
-  contextTokensFor: (modelId: string) => number;
-  sidebarOpen: boolean;
-  setSidebarOpen: React.Dispatch<React.SetStateAction<boolean>>;
-  showConnectors: boolean;
-  pendingMeetings: number;
-  onToggleConnectors: () => void;
-  onOpenChat: () => void;
-  connectorsSurface: React.ReactNode;
-  billingStatus: BillingStatus | null;
-}) {
-  const {
-    agentEnabledRef, activeThreadIdRef, privateAccessRef, onDelegationError,
-  } = useAgentAccess();
-  const meetingMessageRegistry = useMemo(() => createMeetingMessageRegistry(), [props.tcw]);
-  const conversationCanvas = useConversationCanvasFeature(props.tcw, props.billingStatus);
-  // One instance per mounted workspace: its thread selection state is
-  // intentionally in-memory only, survives render churn, and vanishes on a
-  // workspace reload. It receives only browser-local handles and the existing
-  // session-backed metadata/content client.
-  const meetingRetriever = useMemo(
-    () => createBrowserMeetingTurnRetriever({
-      tcw: props.tcw,
-      meetings: createConnectorMeetingsClient(BACKEND_URL, {
-        sessionStore: props.sessionStore,
-      }),
-    }),
-    [props.tcw, props.sessionStore, privateAccessRef.current],
-  );
-
-  const deps = useMemo(
-    () => ({
-      tcw: props.tcw,
-      sessionStore: props.sessionStore,
-      backendUrl: BACKEND_URL,
-      selectionControllerRef: props.selectionControllerRef,
-      onSelectionView: props.onSelectionView,
-      onSelectionAuthFailure: props.onSelectionAuthFailure,
-      memoryRef: props.memoryRef,
-      onMemoryUpdated: props.onMemoryUpdated,
-      activeThreadIdRef,
-      agentEnabledRef,
-      privateAccessRef,
-      onAgentDelegationError: onDelegationError,
-      meetingRetriever,
-      meetingMessageRegistry,
-      // ── Compaction deps (§D.3) ─────────────────────────────────────
-      contextTokensFor: props.contextTokensFor,
-      getPromotedCanvas: (threadId: string) => promotedCanvasForTurn(props.tcw, threadId),
-      getCheckpoint: (threadId: string) => getLatestCompaction(props.tcw, threadId),
-      appendCompaction: (threadId: string, coversThroughMessageId: string, summary: string) =>
-        appendCompaction(props.tcw, threadId, coversThroughMessageId, summary),
-      // Plain single-shot summarization (§C.9): bypasses the runtime exchange
-      // ring, so it never writes thread storage / memory nor triggers extraction
-      // (§F.3). max_tokens is hard-capped by the summary budget.
-      summarize: ({ model, messages }: { model: string; messages: ChatMessage[] }) => {
-        // Compaction is a real billed background call with NO pending visible
-        // reply, so its credits bump the SESSION METER ONLY — never a badge
-        // (edge case a). Fold once via aggregateTurnCredits so in-app usage
-        // tracks the ledger; a 0-token/aborted summarize contributes 0.
-        let folded = false;
-        return completeChat({
-          backendUrl: BACKEND_URL,
-          sessionStore: props.sessionStore,
-          model,
-          messages,
-          maxTokens: COMPACTION_SUMMARY_MAX_TOKENS,
-          onUsage: (usage) => {
-            if (folded) return;
-            folded = true;
-            void getCachedRates(
-              createBillingClient(BACKEND_URL, props.sessionStore),
-            )
-              .then((rates) => {
-                const m = rates.models.find((r) => r.id === model);
-                if (!m) return;
-                const { backgroundCredits } = aggregateTurnCredits(0, [
-                  {
-                    rates: m,
-                    promptTokens: usage.promptTokens,
-                    completionTokens: usage.completionTokens,
-                  },
-                ]);
-                if (backgroundCredits > 0) {
-                  emitReceipt(model, backgroundCredits, model);
-                }
-              })
-              .catch(() => {
-                // receipts are UI sugar; a rates failure must never surface
-              });
-          },
-        });
-      },
-    }),
-    [
-      props.tcw,
-      props.sessionStore,
-      props.selectionControllerRef,
-      props.onSelectionView,
-      props.onSelectionAuthFailure,
-      props.memoryRef,
-      props.onMemoryUpdated,
-      props.contextTokensFor,
-      onDelegationError,
-      meetingRetriever,
-      meetingMessageRegistry,
-      // activeThreadIdRef and agentEnabledRef are stable refs — omitted intentionally.
-    ],
-  );
-
-  const runtime = useChatRuntime(deps);
-  const closeSidebar = useCallback(
-    () => props.setSidebarOpen(false),
-    [props.setSidebarOpen],
-  );
-  const handleChatNavigate = useCallback(() => {
-    closeSidebar();
-    if (props.showConnectors) props.onOpenChat();
-  }, [closeSidebar, props.showConnectors, props.onOpenChat]);
-  const handleConnectorsNavigate = useCallback(() => {
-    closeSidebar();
-    props.onToggleConnectors();
-  }, [closeSidebar, props.onToggleConnectors]);
-  const { showConnectors, pendingMeetings } = props;
-  const connectorsNavigation = (
-    <Button
-      variant="ghost"
-      size="sm"
-      aria-label={connectorsAriaLabel(showConnectors, pendingMeetings)}
-      aria-pressed={showConnectors}
-      onClick={handleConnectorsNavigate}
-      className={`relative min-h-11 w-full justify-start gap-2 px-3 py-2 text-sm font-medium md:min-h-0 ${
-        showConnectors ? "bg-accent text-accent-foreground" : ""
-      }`}
-    >
-      <PlugIcon className="size-4" />
-      Connectors
-      {pendingMeetings > 0 && (
-        <span
-          aria-hidden="true"
-          className="absolute right-3 top-1/2 flex h-4 min-w-4 -translate-y-1/2 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground"
-        >
-          {badgePillLabel(pendingMeetings)}
-        </span>
-      )}
-    </Button>
-  );
-
-  return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <div className="grid h-full grid-cols-1 md:grid-cols-[260px_1fr]">
-        <aside className="hidden min-h-0 border-r border-border bg-muted/40 md:block">
-          <ThreadList
-            navigation={connectorsNavigation}
-            onNavigate={handleChatNavigate}
-          />
-        </aside>
-        <section className="min-h-0">
-          <div className={showConnectors ? "hidden" : "h-full"}>
-            <Thread
-              tcw={props.tcw}
-              selection={props.selectionView}
-              onRetrySelection={() => props.selectionControllerRef.current?.retry()}
-              onReload={() => props.selectionControllerRef.current?.reload()}
-              canvasEnabled={conversationCanvas.enabled}
-            />
-          </div>
-          {showConnectors && props.connectorsSurface}
-        </section>
-      </div>
-      <Sheet open={props.sidebarOpen} onOpenChange={props.setSidebarOpen}>
-        <SheetContent className="md:hidden bg-muted/40">
-          <SheetTitle className="sr-only">Chats</SheetTitle>
-          <SheetDescription className="sr-only">
-            List of your saved chats
-          </SheetDescription>
-          <ThreadList
-            navigation={connectorsNavigation}
-            onNavigate={handleChatNavigate}
-          />
-        </SheetContent>
-      </Sheet>
-      {/* C3: first-time enablement + expired-delegation reconnect affordance —
-          chat views only (isChatViewPath). */}
-      <ChatViewAgentEnablementBanner />
-    </AssistantRuntimeProvider>
+    </RecorderProvider>
   );
 }
 
@@ -1653,66 +1454,6 @@ function SharedMessage({ item }: { item: StoredMessageItem }) {
       </div>
     </div>
   );
-}
-
-function BootSurface(props: {
-  state: AppState;
-  error: string | null;
-  /** Sign in, or — in the `offline` state — retry the session restore. */
-  onAction: () => void;
-  /** The offline voice recorder (TC-515), under the action. */
-  voiceNotes?: React.ReactNode;
-}) {
-  const message =
-    props.state === "booting"
-      ? "Restoring your session…"
-      : props.state === "connecting"
-        ? "Finish the OpenKey prompt to continue."
-        : props.state === "signing"
-          ? "Creating your TinyCloud session…"
-          : props.state === "recoverableError"
-            ? (props.error ?? "Something went wrong.")
-            : props.state === "offline"
-              ? (props.error ?? "You're offline.")
-              : "Sign in to start chatting. Your conversations live in your TinyCloud space.";
-
-  const busy = props.state === "booting" || props.state === "connecting" || props.state === "signing";
-
-  return (
-    <div className="flex h-full items-center justify-center p-6">
-      <div className="flex max-w-sm flex-col items-center gap-5 text-center">
-        <span className="flex size-12 items-center justify-center rounded-2xl bg-primary text-xl font-bold text-primary-foreground">
-          T
-        </span>
-        <div className="flex flex-col gap-1.5">
-          <h1 className="text-xl font-semibold tracking-tight">TinyCloud Chat</h1>
-          <p className="text-sm text-muted-foreground">{message}</p>
-        </div>
-        {(props.state === "unauthenticated" || props.state === "recoverableError" || props.state === "offline") && (
-          <Button onClick={props.onAction} className="h-11 px-6 md:h-9 md:px-4">
-            {props.state === "unauthenticated" ? "Sign in" : "Try again"}
-          </Button>
-        )}
-        {busy && (
-          <span className="text-xs text-muted-foreground">Working…</span>
-        )}
-        {props.voiceNotes}
-      </div>
-    </div>
-  );
-}
-
-export function stateLabel(state: AppState): string {
-  const labels: Record<AppState, string> = {
-    booting: "Starting",
-    unauthenticated: "Signed out",
-    connecting: "Connecting",
-    signing: "Signing in",
-    ready: "Connected",
-    recoverableError: "Needs attention",
-    offline: "Offline",
-  };
-  return labels[state];
 }
 
 function errorMessage(error: unknown): string {

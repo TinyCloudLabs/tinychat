@@ -16,6 +16,9 @@ beforeAll(async () => {
     target: "browser",
     minify: false,
     define: { "import.meta.env": "{}" },
+    // index.css's @font-face URLs point into frontend/public, served at the
+    // site root. Bun's CSS bundler would try to resolve them as files.
+    external: ["/fonts/*"],
   });
   if (!built.success) throw new Error(built.logs.join("\n"));
   bundle = await built.outputs[0]!.text();

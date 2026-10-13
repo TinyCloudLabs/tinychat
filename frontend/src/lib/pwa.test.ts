@@ -59,10 +59,18 @@ describe("serviceWorkerDecision", () => {
 describe("PWA build config", () => {
   const config = readFileSync(path.join(import.meta.dir, "../../vite.config.ts"), "utf8");
 
-  test("the worker caches nothing at runtime: API and cross-origin traffic stays network-only", () => {
-    expect(config).toContain("runtimeCaching: []");
+  test("the worker caches only the notes renderer's WASM at runtime: API and cross-origin traffic stays network-only", () => {
+    const rules = config.match(/runtimeCaching: \[([\s\S]*?)\n {8}\],/)![1];
+    expect(rules.match(/urlPattern/g)).toHaveLength(1);
+    expect(rules).toContain("sameOrigin &&");
+    expect(rules).toContain("franken_markdown_bg");
+    expect(rules).toContain('handler: "CacheFirst"');
     expect(config).toContain('navigateFallback: "index.html"');
     expect(config).toContain("navigateFallbackDenylist: [/^\\/agents(?:\\/|$)/, /^\\/api(?:\\/|$)/]");
+  });
+
+  test("the 7.7 MB notes renderer WASM is not precached: it is fetched on first Preview, never at install", () => {
+    expect(config).toMatch(/globIgnores: \[[^\]]*"\*\*\/franken_markdown_bg\*\.wasm"[^\]]*\]/);
   });
 
   test("an update waits for the user instead of swapping the shell under the page", () => {

@@ -169,6 +169,23 @@ test('later invalid catalog metadata cannot erase an earlier content match', asy
   expect(r.ok).toBe(true); expect(r.matches.map(m => m.record.id)).toEqual(['a', 'c']); expect(r.omissions.some(o => o.code === 'UNSUPPORTED_SOURCE')).toBe(true);
 });
 
+test('compares CLI prereleases using semver precedence', () => {
+  expect(lib.compareSemver('1.2.0-beta.8', '1.1.0')).toBeGreaterThan(0);
+  expect(lib.compareSemver('1.2.0-beta.8', '1.2.0-beta.7')).toBeGreaterThan(0);
+  expect(lib.compareSemver('1.2.0-beta.8', '1.2.0-beta.9')).toBeLessThan(0);
+  expect(lib.compareSemver('0.9.0', '0.9.0')).toBe(0);
+  expect(lib.compareSemver('1.1.9', '1.1.0')).toBeGreaterThan(0);
+  expect(lib.compareSemver('1.2.0-beta.10', '1.2.0-beta.9')).toBeGreaterThan(0);
+  expect(lib.compareSemver('1.2.0', '1.2.0-beta.8')).toBeGreaterThan(0);
+  expect(lib.compareSemver('2.0.0-rc.1', '1.2.0')).toBeGreaterThan(0);
+  expect(lib.compareSemver('1.2.0-beta.8', '1.2.0-beta.8')).toBe(0);
+});
+test('accepts CLI prereleases newer than the configured minimum', async () => {
+  const f = fixture(); f.state.cliVersion = '1.2.0-beta.8';
+  const result = await invoke(f, 'find', { term: 'absent' });
+  expect(result.ok).toBe(true);
+  expect(result.cliVersion).toBe('1.2.0-beta.8');
+});
 
 test('all retrieval commands reject an incompatible installed CLI before data access', async () => {
   const f = fixture(); f.state.cliVersion = '0.8.9';

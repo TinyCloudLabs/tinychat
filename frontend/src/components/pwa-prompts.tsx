@@ -70,7 +70,7 @@ function PwaToast({ children }: { children: ReactNode }) {
   return (
     <div
       role="status"
-      className="pointer-events-none fixed inset-x-0 bottom-[calc(env(safe-area-inset-bottom)+5.5rem)] z-50 flex justify-center px-4 md:bottom-[calc(env(safe-area-inset-bottom)+1rem)] md:justify-end"
+      className="pointer-events-none fixed inset-x-0 bottom-[calc(var(--tc-bottom-chrome)+8rem)] z-50 flex justify-center px-4 md:justify-end wide:bottom-[calc(var(--tc-bottom-chrome)+1rem)]"
     >
       <div className="pointer-events-auto flex w-full max-w-sm items-center gap-2 rounded-xl border bg-background py-2 pl-4 pr-2 text-sm text-foreground shadow-lg">
         {children}

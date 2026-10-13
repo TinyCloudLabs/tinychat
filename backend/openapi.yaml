@@ -98,7 +98,7 @@ paths:
                   type: string
       responses:
         "200":
-          description: Backend session token
+          description: Fresh backend bearer token, expiring no later than 30 days or the signed SIWE expiration time
           content:
             application/json:
               schema:
@@ -109,6 +109,9 @@ paths:
                     type: string
                   expiresIn:
                     type: integer
+                    description: Seconds until the bearer JWT exp, at most 2592000 and no later than the SIWE Expiration Time
+                    minimum: 1
+                    maximum: 2592000
                   address:
                     type: string
         "400":
@@ -119,7 +122,7 @@ paths:
   /api/delegations/status:
     get:
       operationId: getDelegationStatus
-      summary: Check stored delegation status
+      summary: Check the signed transcript-writer grant and delivery eligibility
       security:
         - bearerAuth: []
       responses:
@@ -133,7 +136,9 @@ paths:
                 active:
                   value:
                     status: active
-                    expiresAt: "2026-05-20T12:00:00.000Z"
+                    expiresAt: "2026-11-20T12:00:00.000Z"
+                    verified: true
+                    delivery: enabled
                 expired:
                   value:
                     status: expired
@@ -146,13 +151,25 @@ paths:
                   value:
                     status: none
                     expiresAt: null
+                schema_missing:
+                  value:
+                    status: active
+                    expiresAt: "2026-11-20T12:00:00.000Z"
+                    verified: true
+                    delivery: schema_missing
+                disabled:
+                  value:
+                    status: none
+                    expiresAt: null
+                    verified: false
+                    delivery: disabled
         "401":
           $ref: "#/components/responses/Unauthenticated"
 
   /api/delegations:
     post:
       operationId: storeDelegation
-      summary: Store and activate a portable delegation
+      summary: Verify, activate and store a narrowly scoped signed transcript-writer grant
       security:
         - bearerAuth: []
       requestBody:
@@ -161,10 +178,17 @@ paths:
           application/json:
             schema:
               type: object
-              required: [serialized]
+              required: [serialized, siwe, signature]
               properties:
                 serialized:
                   type: string
+                  description: One portable delegation; its signed UCAN grants only connector SQL read/write and transcriber KV get/put.
+                siwe:
+                  type: string
+                  description: The user's signed TinyCloud session SIWE message.
+                signature:
+                  type: string
+                  description: The wallet signature over siwe; the session key signs the delegation silently.
       responses:
         "200":
           description: Delegation active
@@ -176,6 +200,20 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`delivery_disabled` — flag off or address outside the configured cohort; checked before parsing the body. `delegation_rejected` — the TinyCloud node refused the grant's activation (401/403); nothing is stored."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "429":
+          description: "`delegation_rate_limited` — more than six accepts per address per hour."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "503":
+          $ref: "#/components/responses/UpstreamError"
     delete:
       operationId: revokeDelegation
       summary: Remove stored delegation
@@ -1512,6 +1550,63 @@ paths:
               schema:
                 $ref: "#/components/schemas/ConnectorError"
 
+  /api/transcriber/webhooks/ptx:
+    post:
+      operationId: receivePrivateTranscriptionCompletion
+      summary: Wake the backend transcript writer after a ptx meeting completion
+      description: >-
+        Public raw-body endpoint, mounted only with TRANSCRIPT_SERVER_DELIVERY_ENABLED=true.
+        A completion is a wake signal, not authority: the worker verifies the indexed
+        meeting, its signed user delegation, the upstream owner and the transcript before
+        writing to the user's connector SQL row and KV body. A sweep backs up lost wakes.
+        With TRANSCRIPTION_WEBHOOK_SECRET configured, X-Webhook-Signature must be
+        sha256=<lowercase hex HMAC-SHA256 over the exact raw JSON bytes>. Without it,
+        unsigned wakes are accepted; admission still cannot trigger upstream I/O.
+      security: []
+      parameters:
+        - name: X-Webhook-Signature
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, data]
+              properties:
+                type:
+                  type: string
+                  enum: [meeting.completed, meeting.failed]
+                data:
+                  type: object
+                  required: [meeting_id, metadata]
+                  properties:
+                    meeting_id:
+                      type: string
+                    metadata:
+                      type: object
+                      required: [tinychat_address]
+                      properties:
+                        tinychat_address:
+                          type: string
+                          pattern: "^0x[0-9a-fA-F]{40}$"
+      responses:
+        "202":
+          description: Valid wake accepted; no delivery is promised by the response.
+        "400":
+          description: Malformed JSON, unsupported event, gzip or non-JSON content.
+        "401":
+          description: Missing or invalid HMAC when a webhook secret is configured.
+        "404":
+          description: Server delivery disabled.
+        "413":
+          description: Raw body exceeds 16 KiB.
+        "429":
+          description: More than 60 requests/min/IP or 600 requests/min globally.
+
   /api/transcriber/meetings:
     get:
       operationId: listTranscriberMeetings
@@ -1523,6 +1618,8 @@ paths:
         the browser never sees; the tenant is ALWAYS the session address. Each
         row's status is refreshed upstream on read; a row whose upstream read
         failed is returned as `{id, unavailable: true}` rather than dropped.
+        A completed row also wakes server delivery; an unrecoverable create intent is
+        resolved through a matching ptx idempotency lookup before listing.
       security:
         - bearerAuth: []
       responses:
@@ -1697,92 +1794,13 @@ paths:
         "503":
           $ref: "#/components/responses/TranscriberUnavailable"
 
-  /api/transcriber/assemblyai/transcripts/{id}:
-    parameters:
-      - name: id
-        in: path
-        required: true
-        description: The AssemblyAI transcript id.
-        schema:
-          type: string
-          pattern: "^[A-Za-z0-9-]{8,64}$"
-    delete:
-      operationId: deleteAssemblyAiTranscript
-      summary: Delete an AssemblyAI transcript (and its uploaded audio) with the user's own key
-      description: >-
-        Exo transcribes uploads with AssemblyAI directly from the client using the
-        user's own key, then deletes the AssemblyAI copy through this route,
-        because browsers cannot send DELETE to AssemblyAI (its CORS allows only
-        POST, PUT and GET). The key travels in the `X-AssemblyAI-Key` header and
-        is forwarded once to `DELETE https://api.assemblyai.com/v2/transcript/{id}`;
-        it is never logged, stored or echoed. The upstream host is fixed. Requires
-        `X-Requested-With: XMLHttpRequest`. Every response is
-        `Cache-Control: no-store`; errors carry a fixed message and never
-        AssemblyAI's text. A rejected key is 422, never 401 (401 means the session
-        expired). Deleting an already-deleted transcript succeeds again (204).
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: X-AssemblyAI-Key
-          in: header
-          required: true
-          description: The user's AssemblyAI API key.
-          schema:
-            type: string
-      responses:
-        "204":
-          description: AssemblyAI deleted the transcript (or it was already deleted)
-        "400":
-          description: Malformed id, or missing/empty key (invalid_request); AssemblyAI was not called
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AssemblyAiDeleteError"
-        "401":
-          $ref: "#/components/responses/Unauthenticated"
-        "403":
-          description: Missing X-Requested-With (CSRF)
-        "404":
-          description: >-
-            AssemblyAI has no such transcript (assemblyai_transcript_not_found).
-            AssemblyAI itself answers an unknown id with 400 "Transcript lookup
-            error, transcript id not found", not 404; that answer maps here.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AssemblyAiDeleteError"
-        "422":
-          description: AssemblyAI rejected the key (assemblyai_key_rejected)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AssemblyAiDeleteError"
-        "429":
-          description: >-
-            AssemblyAI is rate limiting (assemblyai_rate_limited), or this backend's
-            /api/transcriber bucket is exhausted. A numeric Retry-After from
-            AssemblyAI is relayed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AssemblyAiDeleteError"
-        "502":
-          description: >-
-            AssemblyAI failed, timed out, could not be reached, or gave any other
-            answer (assemblyai_unavailable). Never carries Retry-After; an
-            unexpected 4xx will not succeed on retry.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AssemblyAiDeleteError"
-
   /api/transcriber/assemblyai/capabilities:
     get:
       operationId: getAssemblyAiCapabilities
       summary: Whether AssemblyAI under TinyCloud's account is available, and its limits
       description: >-
         Always mounted. `hosted` is false when the server key or the handle key is not
-        configured; clients can still use their own AssemblyAI key.
+        configured; the hosted route then answers unavailable.
         `daily_bytes_remaining` is this account's allowance left today (UTC), null when
         hosted mode is off. The allowance is in memory: a backend restart resets it.
       security:
@@ -1995,6 +2013,9 @@ paths:
                   type: string
                 speaker_labels:
                   type: boolean
+                multichannel:
+                  type: boolean
+                  description: Separate stereo channels (for Mac Me/Them recordings).
       responses:
         "202":
           description: Submitting (or, on a repeat, already settled)
@@ -2129,11 +2150,8 @@ paths:
       operationId: getPrivateCloudTranscriptionCapabilities
       summary: Exo private cloud transcription limits and admission mode
       description: >-
-        Exo desktop's "Private cloud" engine. Mounted only when
-        PRIVATE_CLOUD_TRANSCRIPTION_ENABLED=true, and then only for addresses in
-        PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS: otherwise every path under
-        /api/transcriber/private-cloud answers the server's ordinary 404, so a dark
-        deployment and a non-cohort address look the same. Relays the TinyCloud
+        Exo desktop's "Private cloud" engine is mounted for every signed-in account.
+        With no PTX configuration it answers 503 `service_misconfigured`. Relays the TinyCloud
         Private Transcription batch service's capabilities. Every success body under
         this prefix is rebuilt field by field from the upstream answer (fields outside
         the contract are dropped; an off-contract value is `upstream_bad_response`),
@@ -2482,6 +2500,8 @@ components:
           type: [string, "null"]
         ended_at:
           type: [string, "null"]
+        completed_at:
+          type: [string, "null"]
         error:
           type: [object, "null"]
           properties:
@@ -2547,20 +2567,6 @@ components:
       properties:
         error:
           type: string
-        message:
-          type: string
-    AssemblyAiDeleteError:
-      type: object
-      required: [error, message]
-      properties:
-        error:
-          type: string
-          enum:
-            - invalid_request
-            - assemblyai_transcript_not_found
-            - assemblyai_key_rejected
-            - assemblyai_rate_limited
-            - assemblyai_unavailable
         message:
           type: string
     AssemblyAiCapabilities:
@@ -3076,11 +3082,15 @@ components:
         verified:
           type: boolean
           description: >-
-            Whether the stored delegation's `att` has been cryptographically verified. Present
-            and `false` on every `active` response today: the §9.2 verification chokepoint does
-            not exist yet, so `active` means stored, unexpired and addressed to this backend —
-            the resources, delegator and expiry behind it all come from the bundle's unsigned
-            top-level fields. Additive on purpose; the `status` enum is unchanged.
+            Cryptographic UCAN/SIWE verification of the stored grant, re-run at use time.
+            False for missing, expired or stale grants.
+        delivery:
+          type: string
+          enum: [enabled, disabled, schema_missing]
+          description: >-
+            Disabled when the feature flag or cohort excludes this address. schema_missing
+            means the browser should create the connector tables using its own session
+            before a retry; the backend never issues DDL.
 
     ChatMessage:
       type: object

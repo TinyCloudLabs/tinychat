@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { isChatViewPath } from "./chatViewPath";
-import { CONNECTORS_LIBRARY_PATH, CONNECTORS_SOURCES_PATH } from "./connectorsNav";
+import { CONNECTORS_LIBRARY_PATH, CONNECTORS_SOURCES_PATH } from "../shell/routes";
 
 describe("isChatViewPath", () => {
   test("the chat view is /chat, with or without one trailing slash", () => {
@@ -19,6 +19,14 @@ describe("isChatViewPath", () => {
     expect(isChatViewPath(`${CONNECTORS_SOURCES_PATH}/`)).toBe(false);
     expect(isChatViewPath(CONNECTORS_LIBRARY_PATH)).toBe(false);
     expect(isChatViewPath(`${CONNECTORS_LIBRARY_PATH}/`)).toBe(false);
+  });
+
+  test("Capture, its Library and a note are not chat views", () => {
+    expect(isChatViewPath("/chat/capture")).toBe(false);
+    expect(isChatViewPath("/chat/capture/")).toBe(false);
+    expect(isChatViewPath("/chat/capture/library")).toBe(false);
+    expect(isChatViewPath("/chat/capture/library/")).toBe(false);
+    expect(isChatViewPath("/chat/capture/library/7f3a")).toBe(false);
   });
 
   test("Settings is not a chat view, trailing slash included", () => {

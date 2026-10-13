@@ -1,0 +1,87 @@
+{
+  "alternationSeed": 781,
+  "amiCropSeconds": [
+    300,
+    900
+  ],
+  "files": {
+    "ami-es2004a-10m.rttm": {
+      "bytes": 10080,
+      "sha256": "ae06f6a6a6477acbd96d9aa84e94a6005769bc033a583444a07e4d7eee1c976c"
+    },
+    "ami-es2004a-10m.wav": {
+      "bytes": 19200078,
+      "sha256": "7af4f7dab40f7f4ca17936efbe8fd6df38f980bb28ffe9c17add967b68b3707b"
+    },
+    "ami-es2004a-10m.words.json": {
+      "bytes": 157485,
+      "sha256": "40650b9646c3af514259082c5d9125a2b90d798ead8bad777a0979aa69a23ce7"
+    },
+    "ls-1089-10m.ref.txt": {
+      "bytes": 6441,
+      "sha256": "fa9697027ffd95ffc803b34326a40eb344680aa7ec0eac04ace8ffd6e3e42a9f"
+    },
+    "ls-1089-10m.wav": {
+      "bytes": 14703088,
+      "sha256": "02b8c590106a34a4f8f5d563fbb97b7cdecac9c1909391b4b37839255430a9a7"
+    },
+    "ls-alt-2spk-10m.ref.json": {
+      "bytes": 26981,
+      "sha256": "d2d19fe9261788945d36bc9b2495e56d02809ac7de93a88cb0d61061fa792bdd"
+    },
+    "ls-alt-2spk-10m.rttm": {
+      "bytes": 12134,
+      "sha256": "e23bb0d4980ff5b1f94679b4510d6ab318450db7abf359f05df8484055a0f48a"
+    },
+    "ls-alt-2spk-10m.wav": {
+      "bytes": 19200044,
+      "sha256": "d1ede847896b4e65b975db8f1cf6429194a38285735977604e05cff8708e7a41"
+    },
+    "models/diarization/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx": {
+      "bytes": 29596978,
+      "sha256": "357a834f702b80161e5b981182c038e18553c1f2ca752ed6cec2052365d4129b"
+    },
+    "models/diarization/model.int8.onnx": {
+      "bytes": 1540506,
+      "sha256": "d582f4b4c6b48205de7e0643c57df0df5615a3c176189be3fc461e9d18827b5d"
+    },
+    "models/full/decoder.int8.onnx": {
+      "bytes": 11845275,
+      "sha256": "179e50c43d1a9de79c8a24149a2f9bac6eb5981823f2a2ed88d655b24248db4e"
+    },
+    "models/full/encoder.int8.onnx": {
+      "bytes": 652184281,
+      "sha256": "acfc2b4456377e15d04f0243af540b7fe7c992f8d898d751cf134c3a55fd2247"
+    },
+    "models/full/joiner.int8.onnx": {
+      "bytes": 6355277,
+      "sha256": "3164c13fc2821009440d20fcb5fdc78bff28b4db2f8d0f0b329101719c0948b3"
+    },
+    "models/full/tokens.txt": {
+      "bytes": 93939,
+      "sha256": "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d"
+    },
+    "models/silero_vad.onnx": {
+      "bytes": 643854,
+      "sha256": "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"
+    },
+    "models/small/decoder.int8.onnx": {
+      "bytes": 3955863,
+      "sha256": "f7c331c5504c2e593c76ed22b728e3f554af6c4a383dde862e719ced08b1da19"
+    },
+    "models/small/encoder.int8.onnx": {
+      "bytes": 131113202,
+      "sha256": "0f35509ddeb9b39002fb077d979a9fe74f06eb0bc4dd5c34f512f82e5111d657"
+    },
+    "models/small/joiner.int8.onnx": {
+      "bytes": 1411403,
+      "sha256": "bf7dff69e9f2cdbe9943d70da358f38b361c115ba0105bae7e908e0d6ec782f6"
+    },
+    "models/small/tokens.txt": {
+      "bytes": 9953,
+      "sha256": "450e56bd2f036fe5b6aa821865838cc5aa9d8b0106134ce9a9ba0664abe6cd10"
+    }
+  },
+  "libriSpeechUtterances": 60,
+  "version": 1
+}

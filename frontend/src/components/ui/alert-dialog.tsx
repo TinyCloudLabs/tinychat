@@ -17,7 +17,9 @@ const AlertDialogOverlay = React.forwardRef<
   <AlertDialogPrimitive.Overlay
     ref={ref}
     className={cn(
-      "fixed inset-0 z-50 bg-black/50 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0",
+      "fixed inset-0 z-50 bg-black/50 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:duration-250 data-[state=closed]:duration-150",
+      // Reduced motion: the same fade, in 150ms.
+      "motion-reduce:data-[state=open]:duration-150 motion-reduce:data-[state=closed]:duration-150",
       className,
     )}
     {...props}
@@ -34,12 +36,14 @@ const AlertDialogContent = React.forwardRef<
     <AlertDialogPrimitive.Content
       ref={ref}
       className={cn(
-        "fixed left-1/2 top-1/2 z-50 grid w-full max-w-md -translate-x-1/2 -translate-y-1/2 gap-4 border bg-popover p-6 text-popover-foreground shadow-md outline-none rounded-md",
+        "fixed left-1/2 top-1/2 z-50 grid w-full max-w-md -translate-x-1/2 -translate-y-1/2 gap-4 bg-popover p-6 text-popover-foreground shadow-float outline-none rounded-lg",
         // Fade + zoom only, centered in place. The slide-*-1/2 utilities pin the
         // enter/exit translate to -50%/-50% so it matches the -translate-1/2
         // centering — without them, animate-in resets translate to 0 and the
         // dialog slides up-and-left into place (the unwanted "slide from bottom").
-        "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95 data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-1/2 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-1/2",
+        "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:zoom-in-[0.97] data-[state=closed]:zoom-out-[0.97] data-[state=open]:duration-250 data-[state=open]:ease-smooth data-[state=closed]:duration-150 data-[state=closed]:ease-exit data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-1/2 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-1/2",
+        // Reduced motion: a 150ms fade in place, no zoom.
+        "motion-reduce:data-[state=open]:zoom-in-100 motion-reduce:data-[state=closed]:zoom-out-100 motion-reduce:data-[state=open]:duration-150 motion-reduce:data-[state=closed]:duration-150",
         "focus-visible:ring-2 focus-visible:ring-ring/50",
         className,
       )}

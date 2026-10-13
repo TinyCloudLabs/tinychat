@@ -28,14 +28,15 @@ export function AgentSetupCard() {
         value={prompt}
         rows={2}
         onFocus={event => event.currentTarget.select()}
-        className="mt-1.5 w-full resize-y rounded-md border border-border bg-muted/30 p-3 text-xs leading-relaxed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        // 16 px on touch, so iOS doesn't zoom into it on focus.
+        className="mt-1.5 w-full resize-y rounded-md border border-border bg-muted/30 p-3 text-body leading-relaxed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:text-xs"
       />
       <div className="mt-3 flex flex-wrap items-center gap-3">
         <Button type="button" variant="outline" size="sm" onClick={copy} className="gap-1.5">
           {copyState === 'copied' ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
           {copyState === 'copied' ? 'Copied' : 'Copy prompt'}
         </Button>
-        <a href={setup.setupUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs underline underline-offset-4">
+        <a href={setup.setupUrl} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center gap-1 text-xs underline underline-offset-4 fine:min-h-0">
           Setup details <ExternalLinkIcon className="size-3" />
         </a>
       </div>

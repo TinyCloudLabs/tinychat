@@ -104,8 +104,9 @@ simulator.
   needs Android 9 (API 28). Raising the app's minSdk to 26 removes the override. Voice-note
   transcription already needs 26, so that is a reasonable product call, but not this spike's.
 - **compileSdk 36** is fine for 1.1.0.
-- **Java, no Kotlin plugin.** Every Health Connect call is a Kotlin `suspend` function. From Java it
-  is a method with a trailing `Continuation`. `Suspend.java` runs it with
+- **Java Health Connect plugin.** The app now has a Kotlin Gradle plugin for other native code, but
+  this Health Connect spike remains Java. Every Health Connect call is a Kotlin `suspend` function.
+  From Java it is a method with a trailing `Continuation`. `Suspend.java` runs it with
   `kotlinx.coroutines.future.FutureKt.future` and waits on the plugin's own worker thread.
   `kotlinx-coroutines-android` is declared explicitly because connect-client's coroutines are a
   runtime-only dependency.

@@ -14,6 +14,7 @@ import {
   createCsrfMiddleware,
   createNonceStore,
 } from "@tinyboilerplate/server";
+import { APP_ID } from "@tinyboilerplate/core";
 import { applySecurityDefaults } from "./security.js";
 import { applyRateLimiters } from "./rate-limits.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
@@ -50,8 +51,8 @@ import { createConnectorCredentialRouter } from "./routes/connector-credentials.
 import { createConnectorMeetingsRouter } from "./routes/connector-meetings.js";
 import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oauth.js";
 import { createTranscriberRouter } from "./routes/transcriber.js";
-import { ASSEMBLYAI_DELETE_MOUNT, createAssemblyAiDeleteRouter } from "./routes/assemblyai-delete.js";
-import { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, isHostedPartPath } from "./routes/assemblyai-hosted.js";
+import { createTranscriberWebhookRouter } from "./routes/transcriber-webhook.js";
+import { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter } from "./routes/assemblyai-hosted.js";
 import {
   DEFAULT_MAX_CONCURRENT_UPLOADS,
   HostedUploadStore,
@@ -67,16 +68,18 @@ import { ExternalOperationLimiter, GoogleCalendarClient } from "./services/googl
 import {
   createTranscriptionApiClient,
   transcriptionApiConfigFromEnv,
+  transcriptDeliveryConfigFromEnv,
 } from "./services/transcription-api.js";
 import { KvTranscriberIndexStore } from "./services/transcriber-index.js";
+import { TranscriptDeliveryWorker, WriteGovernor } from "./services/transcript-delivery.js";
 import {
   PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
   createPtxClient,
   privateCloudTranscriptionConfigFromEnv,
-  withoutPrivateCloudOpenApi,
   type PrivateCloudTranscriptionConfig,
 } from "./services/private-cloud-transcription.js";
 import { BackendStorageLane } from "./services/backend-storage-lane.js";
+import { runInWriteLane } from "./services/write-lane.js";
 import { ConnectorQueue } from "./services/connector-queue.js";
 import { ConnectorTeardownService } from "./services/connector-teardown.js";
 import {
@@ -117,14 +120,14 @@ import {
   startConnectorQueueMaintenanceTimer,
 } from "./services/connector-drain.js";
 import { assertStrongSecret, WebhookTokenService } from "./services/webhook-tokens.js";
-import { APP_ID } from "./manifest.js";
 import { createTinychatBackendIdentity } from "./startup.js";
 import { appCorsOrigins } from "./cors-origins.js";
 import { agentStreamPolicyFromEnv, type AgentStreamPolicy } from "./agent-stream-policy.js";
 import { localValidationFromEnv, localValidationGuard } from "./local-validation.js";
+import { createApiBodyParser } from "./body-parsing.js";
 
 const BACKEND_PRIVATE_KEY = process.env.BACKEND_PRIVATE_KEY;
-const TINYCLOUD_HOST = process.env.TINYCLOUD_HOST ?? "https://node.tinycloud.xyz";
+const TINYCLOUD_HOST = process.env.TINYCLOUD_HOST ?? "https://tee.node.tinycloud.xyz";
 const PORT = Number.parseInt(process.env.PORT ?? "3014", 10);
 const DEFAULT_HTTPS_CERT_FILE = "../frontend/localhost.pem";
 const DEFAULT_HTTPS_KEY_FILE = "../frontend/localhost-key.pem";
@@ -256,6 +259,14 @@ export function validateLedgerStartupConfig(
 
 async function main() {
   const localValidation = localValidationFromEnv(process.env);
+  let transcriptDeliveryConfig;
+  try {
+    transcriptDeliveryConfig = transcriptDeliveryConfigFromEnv(process.env);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : "Invalid transcript delivery configuration");
+    process.exit(1);
+    return;
+  }
   const diagnosticUrl = process.env.MEETING_DIAGNOSTIC_FOREGROUND_BASE_URL;
   const diagnosticKey = process.env.MEETING_DIAGNOSTIC_FOREGROUND_API_KEY;
   if ((diagnosticUrl !== undefined || diagnosticKey !== undefined) && (!diagnosticUrl?.trim() || !diagnosticKey?.trim())) {
@@ -288,8 +299,8 @@ async function main() {
     return;
   }
 
-  // Exo private cloud transcription: dark unless PRIVATE_CLOUD_TRANSCRIPTION_ENABLED=true, and
-  // armed with a missing or weak var it refuses boot rather than mounting a half-configured proxy.
+  // Partial PTX configuration refuses boot; a fully absent configuration remains mounted and
+  // answers authenticated callers with service_misconfigured.
   let privateCloudTranscription: PrivateCloudTranscriptionConfig;
   try {
     privateCloudTranscription = privateCloudTranscriptionConfigFromEnv(process.env);
@@ -505,6 +516,43 @@ async function main() {
         };
       })()
     : null;
+  const transcriptionConfig = transcriptionApiConfigFromEnv();
+  const transcriberStorageLane = connectorWebhooks?.backendStorageLane ?? new BackendStorageLane();
+  const transcriberApi = transcriptionConfig ? createTranscriptionApiClient(transcriptionConfig) : null;
+  const transcriberIndex = new KvTranscriberIndexStore(node, transcriberStorageLane);
+  const transcriptCoordinator = new TenantCoordinator();
+  const transcriptEligibility = (address: string) =>
+    transcriptDeliveryConfig.enabled &&
+    (!transcriptDeliveryConfig.allowlist || transcriptDeliveryConfig.allowlist.has(address.toLowerCase()));
+  const transcriptWorker = transcriptDeliveryConfig.enabled && transcriberApi
+    ? new TranscriptDeliveryWorker({
+        api: transcriberApi,
+        index: transcriberIndex,
+        delegationStore,
+        delegationCache,
+        storageLane: transcriberStorageLane,
+        sweepMs: transcriptDeliveryConfig.sweepMs,
+        node,
+        backendDid: did,
+        configuredHost: TINYCLOUD_HOST,
+        eligibility: transcriptEligibility,
+        coordinator: transcriptCoordinator,
+        limiter: new ExternalOperationLimiter(4),
+        governor: new WriteGovernor(transcriptDeliveryConfig.maxWritesPerMin),
+        runInWriteLane,
+      })
+    : null;
+  if (transcriptWorker) {
+    if (!transcriptDeliveryConfig.webhookSecret) {
+      console.warn("[transcript-delivery] webhook unsigned-wake mode enabled");
+    }
+    app.use("/api/transcriber/webhooks/ptx", createTranscriberWebhookRouter(
+      transcriptWorker, transcriptDeliveryConfig.webhookSecret,
+    ));
+  } else {
+    // An unmounted webhook must remain 404 even before the global CSRF gate.
+    app.post("/api/transcriber/webhooks/ptx", (_req, res) => res.sendStatus(404));
+  }
 
   // W9 / D4 — the process that actually CONSUMES the cohort queues, or nothing at all. Assigned
   // below only when the dark flag is armed; `shutdown` releases its lease so a rolling deploy
@@ -530,8 +578,7 @@ async function main() {
     // raw window would also run for the authenticated companions (/config, /pending, /drain):
     // it would Buffer-ify their JSON bodies and set req._body so the global parser skips them,
     // and it would apply a token-keyed limiter whose key is undefined there, collapsing every
-    // user into one bucket. Companion routes must stay ONE segment deep (index-wiring.test.ts
-    // pins both halves).
+    // user into one bucket. Companion routes must stay ONE segment deep.
     app.post(
       "/api/connectors/webhooks/:source/:token",
       // W9 (plan §8.1 W9 / §10; findings §6 control 6) — the Host-header allowlist, FIRST on the
@@ -583,20 +630,9 @@ async function main() {
   // so it applies to that mount specifically (like the nras-proxy mount above).
   app.use("/api/phala-verify", express.json({ limit: "256kb" }));
 
-  // 1 MB global body limit (raised from 64 KB): a long chat history serialized as
-  // {model, messages} can exceed 64 KB well below the model's context window, and
-  // the bare parser 413 (non-JSON PayloadTooLargeError) is un-catchable client-side.
-  // Auth + rate limiting already sit in front of this parser (see below), so the
-  // larger limit does not widen the unauthenticated attack surface. (compaction §C.4a)
-  const globalJsonParser = express.json({ limit: "1mb" });
-  app.use((req, res, next) => {
-    // Hosted AssemblyAI parts are raw audio, read only by their route's own 1 MiB raw parser.
-    if (req.path === "/api/nras-proxy" || req.path.startsWith("/api/nras-proxy/") || isHostedPartPath(req.path)) {
-      next();
-      return;
-    }
-    globalJsonParser(req, res, next);
-  });
+  // Delegation acceptance gates eligibility before its route-local body parser.
+  app.use(createApiBodyParser());
+
   app.use(createCsrfMiddleware());
   // ST5 — global 120/15min limiter plus a separate, larger bucket for the
   // verification proxies so badge traffic can't 429 /api/chat (see rate-limits.ts).
@@ -620,11 +656,12 @@ async function main() {
       node,
       backendDid: did,
       store: delegationStore,
-      cache: delegationCache,
       authMiddleware,
-      // OPTION C — NOTHING connector-shaped is wired here, and nothing may be. This is the
-      // generic chat delegation; the Fireflies webhook toggle is a separate, optional feature
-      // that must never be able to refuse or revoke it (see routes/delegations.ts).
+      configuredHost: TINYCLOUD_HOST,
+      eligibility: transcriptEligibility,
+      schemaMissing: (address) => transcriptWorker?.hasSchemaMissing(address) ?? false,
+      coordinator: transcriptCoordinator,
+      onGrantChanged: (address, previousEnvelope) => transcriptWorker?.invalidateGrant(address, previousEnvelope),
     }),
   );
 
@@ -632,7 +669,7 @@ async function main() {
   // JSON parser, CSRF, `applyRateLimiters`' dedicated companion bucket and `authMiddleware`.
   // A prefix mount is correct HERE and forbidden in the raw window above — every path inside
   // the router is ONE segment deep, so none of them can be matched by the public
-  // `/:source/:token` mount (index-wiring.test.ts pins both halves).
+  // `/:source/:token` mount.
   if (connectorWebhooks) {
     app.use(
       "/api/connectors/webhooks",
@@ -790,10 +827,6 @@ async function main() {
     }
   }
 
-  const transcriptionConfig = transcriptionApiConfigFromEnv();
-  const transcriberStorageLane = connectorWebhooks?.backendStorageLane ?? new BackendStorageLane();
-  const transcriberApi = transcriptionConfig ? createTranscriptionApiClient(transcriptionConfig) : null;
-  const transcriberIndex = new KvTranscriberIndexStore(node, transcriberStorageLane);
   let calendarAutojoin: CalendarAutojoinConnection | undefined;
   let calendarAutojoinWorker: CalendarAutojoinWorker | undefined;
   if (googleMeetOAuthEnabled() && transcriberApi && process.env.CONNECTOR_CREDENTIAL_MASTER) {
@@ -815,6 +848,13 @@ async function main() {
     calendarAutojoinWorker = new CalendarAutojoinWorker({
       store, coordinator, calendar, connection: calendarAutojoin, api: transcriberApi,
       index: transcriberIndex, limiter, botName: process.env.TRANSCRIPTION_BOT_NAME || undefined,
+      // TC-581: one capture per Meet across tenants. The flag gates only sharing the transcript.
+      meetingCoordinator: new TenantCoordinator(),
+      sharingEnabled: process.env.CALENDAR_AUTOJOIN_SHARING === "true",
+      webhookUrl: transcriptDeliveryConfig.enabled ? transcriptDeliveryConfig.webhookUrl : undefined,
+      onRecordingCompleted: transcriptWorker
+        ? async (tenant, meetingId) => { await transcriptWorker.wake(tenant, meetingId, "completed"); }
+        : undefined,
     });
     app.use("/api/connectors/google/autojoin", authMiddleware, createCalendarAutojoinRouter({ connection: calendarAutojoin }));
     console.log("[startup] calendar-autojoin enabled; deployment requires one backend writer, with stop-and-drain replacement.");
@@ -938,6 +978,10 @@ async function main() {
       createTranscriberRouter({
         api: transcriberApi!,
         index: transcriberIndex,
+        webhookUrl: transcriptDeliveryConfig.enabled ? transcriptDeliveryConfig.webhookUrl : undefined,
+        onObservedCompletion: transcriptWorker
+          ? async (address, meetingId) => { await transcriptWorker.wake(address, meetingId, "observed"); }
+          : undefined,
         ...(process.env.TRANSCRIPTION_BOT_NAME
           ? { defaultBotName: process.env.TRANSCRIPTION_BOT_NAME }
           : {}),
@@ -948,11 +992,6 @@ async function main() {
       "[startup] TRANSCRIPTION_API_URL / TRANSCRIPTION_API_KEY not set — /api/transcriber is disabled.",
     );
   }
-
-  // AssemblyAI delete proxy for Exo uploads (routes/assemblyai-delete.ts). Always mounted: the
-  // user brings their own AssemblyAI key, so there is nothing to configure here. Browsers cannot
-  // DELETE at AssemblyAI (its CORS allows POST/PUT/GET only), so every client deletes through this.
-  app.use(ASSEMBLYAI_DELETE_MOUNT, authMiddleware, createAssemblyAiDeleteRouter());
 
   // Hosted AssemblyAI (routes/assemblyai-hosted.ts): the same mount, always, so the frontend can
   // tell "off" (capabilities `hosted: false`) from "dark". Uploads live in this process only: the
@@ -970,25 +1009,19 @@ async function main() {
   app.use(ASSEMBLYAI_HOSTED_MOUNT, authMiddleware, createAssemblyAiHostedRouter({ config: assemblyAiHosted, store: hostedUploads }));
 
   // Exo private cloud transcription (routes/private-cloud-transcription.ts). A different PTX
-  // deployment (`ptx-batch`) and key from the meeting transcriber above. Flag off = never mounted,
-  // so every path 404s; a non-cohort address gets the same 404 from inside the router.
-  if (privateCloudTranscription.enabled) {
-    app.use(
-      PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
-      authMiddleware,
-      createPrivateCloudTranscriptionRouter({
-        client: createPtxClient(privateCloudTranscription),
-        tenantKey: privateCloudTranscription.tenantKey,
-        accountAllowed: privateCloudTranscription.accountAllowed,
-      }),
-    );
-    console.log("[startup] private cloud transcription enabled for its account allowlist.");
-  }
+  // deployment (`ptx-batch`) and key from the meeting transcriber above.
+  app.use(
+    PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
+    authMiddleware,
+    createPrivateCloudTranscriptionRouter({
+      client: privateCloudTranscription.enabled ? createPtxClient(privateCloudTranscription) : null,
+      tenantKey: privateCloudTranscription.enabled ? privateCloudTranscription.tenantKey : null,
+    }),
+  );
 
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const fullSpec = loadYaml(readFileSync(resolve(__dirname, "../openapi.yaml"), "utf-8")) as object;
-  // Dark means undiscoverable too: while the flag is off the served spec omits private cloud.
-  const spec = privateCloudTranscription.enabled ? fullSpec : withoutPrivateCloudOpenApi(fullSpec);
+  const spec = fullSpec;
   app.get("/api/openapi.json", (_req, res) => res.json(spec));
   app.use("/api/docs", apiReference({ spec: { content: spec } }));
 
@@ -1053,6 +1086,7 @@ async function main() {
     : null;
 
   calendarAutojoinWorker?.start();
+  transcriptWorker?.start();
   let shuttingDown = false;
   const shutdown = (signal: string) => {
     if (shuttingDown) return;
@@ -1067,7 +1101,7 @@ async function main() {
     const httpDrained = new Promise<void>(resolve => server.close(() => resolve()));
     server.closeIdleConnections();
     // Hosted AssemblyAI submits in flight are aborted; each deletes its own spool as it settles.
-    void Promise.allSettled([httpDrained, calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])
+    void Promise.allSettled([httpDrained, transcriptWorker?.stop(), calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])
       .then((results) => process.exit(results.some((result) => result.status === "rejected") ? 1 : 0));
     setTimeout(() => process.exit(1), 120_000).unref();
   };

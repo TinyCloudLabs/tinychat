@@ -1,0 +1,94 @@
+/* The desktop note view: the note in the main region with the recording kept in a bar under it. */
+.soft-skin.pr.dr.nv {
+  padding: 22px 40px 20px;
+}
+.nv .nv-col {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: 820px;
+  margin: 0 auto;
+}
+.nv .nv-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+}
+.nv .nv-min {
+  position: static;
+  transform: none;
+  flex: none;
+}
+.nv .nv-title {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 400;
+}
+.nv .nv-top .pr-nsaved {
+  margin-left: auto;
+}
+.nv .nv-err {
+  padding: 0;
+}
+.nv .nv-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.nv .nv-body .nt-wta {
+  font-size: 16px;
+}
+.nv .nv-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 10px 8px 14px;
+  border-radius: 999px;
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--gedge);
+}
+.nv .nv-rec {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 8px;
+  color: var(--ink);
+}
+.nv .nv-rec:disabled {
+  opacity: 0.6;
+}
+.nv .nv-time {
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+}
+.nv .nv-time[data-dim="true"] {
+  color: var(--dim);
+}
+.nv .nv-status {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dim);
+  font-size: 13px;
+}
+.nv .nv-done {
+  height: 44px;
+}
+.nv .nv-expand {
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 999px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}

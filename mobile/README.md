@@ -38,48 +38,36 @@ Record on the phone, save to the user's TinyCloud space, play back from it.
   `{APP_ID}/connectors/exo-voice-note/audio/{id}`. That is inside the existing
   `connectors/` grant, so no manifest change is needed. Notes show up in
   Library.
-- UI: the Voice notes card at the top of Connectors → Sources. It renders only
-  inside the native app.
+- UI: the Voice notes card on Capture (the app's landing), and the one-tap bar
+  from the Chat header's microphone. Both render only inside the native app.
 
 ### Transcription (private cloud)
 
-Voice notes are transcribed with the same private cloud path as the desktop's
-Exo Local engine (`frontend/src/lib/voiceNotes/voiceNoteTranscription.ts`):
+Voice notes use the shared Private job flow
+(`frontend/src/lib/voiceNotes/voiceNoteTranscription.ts`):
 
 - **Offered only when** all of these hold:
   - this build has a PTX upload origin (`VITE_EXO_PTX_UPLOAD_ORIGIN`, a bare
-    https origin; unset in every build today);
+    https origin required for production builds);
   - the device can upload: iOS, or Android 8.0+ (API 26; the plugin's
     `status()` reports `androidSdkInt`). Below API 26, Capacitor's native HTTP
     sends an empty file body;
   - the backend answers `GET /api/transcriber/private-cloud/capabilities`
-    with 200 for the signed-in account (404 = dark or not in the cohort).
+    with 200 (a 404 is a retryable service failure).
 
-  Until then the card shows nothing about transcription. The user confirms
+  An unavailable service shows a retryable check failure. The user confirms
   "Use private cloud" once (kept per account DID). New notes are transcribed
   after they are saved, and older notes get a Transcribe button. "Turn off"
   drops waiting notes, stops the running one before its upload, and cancels
   jobs still waiting for an upload. A note already uploaded finishes.
-- **Audio:** PTX and the relay take `audio/mpeg`, `audio/wav` or `audio/ogg`,
-  not the phone's AAC. The webview decodes the note with WebAudio (resampled to
-  16 kHz mono, which is what PTX decodes every upload to) and writes a 16-bit
-  PCM WAV: 1.9 MB per minute, about 4× the AAC. Notes up to 10 minutes
-  (`VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS`) are offered in this version. The
-  note's recorded length (and the AAC's size) is checked before decoding.
-- **Upload:** create at the backend (bearer, `Idempotency-Key`), then one PUT
-  of the WAV to `<PTX origin>/uploads/trn_…` with the job capability through
-  Capacitor's native HTTP (`CapacitorHttp`, `dataType: "file"`): PTX sends no
-  CORS headers, and the backend never sees audio. The bytes cross the JS bridge
-  as base64. A native file upload (background `URLSession`, streamed
-  `HttpURLConnection`) is the follow-up for long notes. It would need a native
-  transcoder too, unless PTX and the relay accept `audio/mp4`; in that case the
-  recorded file can be sent as it is (the client already does this when the
-  capabilities list the note's type).
+- **Audio and upload:** create at the backend (bearer, `Idempotency-Key`), then
+  upload from the local recording file to `<PTX origin>/uploads/trn_…` with the
+  job capability. The native uploader streams the file; the backend never sees
+  its audio bytes. PTX capabilities determine the accepted content types.
 - **Which client owns a job:** a voice note's job is created with
   `channel_mode: "mixed"` and `channel_labels: ["Exo voice note"]`, and the
-  desktop's with `separate` / `["Speaker 1", "Speaker 2"]`. PTX echoes both on
-  every job, so Exo desktop's tenant-list recovery skips phone jobs. The phone
-  never lists the account's jobs: it re-joins only the ones it remembers.
+  older desktop jobs used `separate` / `["Speaker 1", "Speaker 2"]`. PTX echoes
+  both on every job. Voice notes re-join only the jobs they remember.
 - **Result:** polled through the backend, then saved onto the note.
   - Sentences go into the note's transcript key: one speaker, "You", merged
     into turns of at most 60 s.
@@ -101,7 +89,7 @@ Exo Local engine (`frontend/src/lib/voiceNotes/voiceNoteTranscription.ts`):
 
 A HealthKit / Health Connect prototype (TC-525): a native `Health` plugin
 (`app/src/main/java/xyz/tinycloud/exo/health/`, `App/App/HealthPlugin.swift`), the JS contract
-`frontend/src/lib/health/nativeHealth.ts`, and a development-only card in Connectors → Sources that
+`frontend/src/lib/health/nativeHealth.ts`, and a development-only card in Connectors that
 shows only in builds with `VITE_EXO_HEALTH_SPIKE=true`. Only Android debug builds declare health
 permissions (`app/src/debug/AndroidManifest.xml`), and only the iOS Debug configuration compiles the
 plugin and carries the HealthKit entitlements (`App/App.entitlements`). Release builds of both apps
@@ -653,8 +641,9 @@ second only for a run you dispatched.
 Use the TestFlight build on a real iPhone. A simulator cannot check any of
 this.
 
-- [ ] Sign in (OpenKey email + code). Connectors → Sources shows the **Voice
-      notes** card, which appears only when the native plugin is registered.
+- [ ] Sign in (OpenKey email + code). The app opens on **Capture**, which
+      shows the **Voice notes** card; it appears only when the native plugin is
+      registered.
 - [ ] Start a note. iOS asks for the microphone once, the orange mic indicator
       shows, and the level meter moves when you speak.
 - [ ] Stop and save. The note appears in the list and in Library. Play it
@@ -673,11 +662,60 @@ this.
 
 ## Sign-in on mobile
 
-Tested on Android: OpenKey's embedded widget works inside the WebView with
-**email + code**. The virtual-passkey test harness does not apply (Android
-WebView DevTools has no `WebAuthn` domain). Passkeys inside the WebView need
-androidx.webkit WebAuthn support and Digital Asset Links on openkey.so, and
-this is untested. Google sign-in inside a WebView is blocked by Google
-(`disallowed_useragent`), so OpenKey's "Continue with Google" needs its own
-system-browser handoff on OpenKey's side (TC-520 territory). The Google
-connectors have one already (see "Google connectors (OAuth)").
+On iOS and Android, native OpenKey sign-in through the system browser is the
+only sign-in path — there is no embedded-widget fallback on these platforms.
+Web and the Tauri desktop app still use OpenKey's embedded widget.
+
+### Native sign-in and renewal (TC-775 E1/E2)
+
+On iOS and Android, sign-in always runs the OpenKey native delegation flow
+instead of the embedded widget. `OpenKeyNative` (from
+`@openkey/sdk-capacitor`) runs PAR + PKCE in the system browser —
+`ASWebAuthenticationSession` on iOS, a Custom Tab on Android — and OpenKey
+returns a capability-limited TinyCloud delegation bound to an Ed25519 session
+key the plugin keeps in the device secure store (Keychain / Android Keystore).
+The session JWK never touches WebView localStorage. Details:
+`frontend/src/lib/openkeyNative.ts`; the OpenKey protocol contract is
+`docs/native-tinycloud-delegation.md` in the openkey repo.
+
+- Config (public, not a secret): `VITE_OPENKEY_NATIVE_CLIENT_ID`, the
+  registered native client id, set in `frontend/.env.production`. The redirect
+  URI (`xyz.tinycloud.exo://openkey/callback`) is a constant in
+  `openkeyNative.ts`. The OpenKey API issuer is derived from the same
+  `VITE_OPENKEY_HOST` the web widget reads (`api.` + host + `/api/auth`, so
+  `https://api.openkey.so/api/auth` for the default `https://openkey.so`); a
+  malformed host fails sign-in with the "not configured in this build" error. The backend nonce for the session SIWE is address-less: `GET
+  /api/auth/nonce` without `?address=` issues an unbound, single-use,
+  5-minute nonce that `/verify` binds to the recovered signer.
+- The delegation covers the manifest's applications-space KV/SQL entries plus
+  capabilities/read — no secrets or vault. Everything that unlocks or stores
+  credentials (connect, Sync now, disconnect key-delete, own AssemblyAI key,
+  the background drains) is gated behind `secretsAvailable()` for native
+  delegation sessions and shows "set up from Exo on the web or desktop" copy.
+  Voice notes are unaffected. A widget session persisted on the device from
+  before native sign-in was the only path is cleared once on next boot; it is
+  not restored — the user signs in again through the native flow.
+- Android: the plugin's redirect activity matches `${openkeyRedirectScheme}` /
+  `${openkeyRedirectHost}` / `/callback`, set to `xyz.tinycloud.exo` / `openkey`
+  in `app/build.gradle`. It does not touch the `oauth` / `/google` filter on
+  MainActivity. Android backup rules exclude the plugin's device-bound
+  `openkey_secure_store.xml` from cloud backup and device transfer. iOS already
+  registers the `xyz.tinycloud.exo` scheme.
+- `scripts/android-dev/signin-openkey-native.sh` is the emulator harness
+  (Custom Tab + mailinator email OTP).
+- The same SDK instance handles boot, sign-in, renewal and sign-out so queued
+  revocations and unfinished exchanges are retried. Boot restores a surviving
+  native session before checking the backend JWT; an expired JWT is replaced
+  through delegation renewal and backend verification. Renewal runs on a timer,
+  when the app returns to the foreground, and before TinyCloud KV/SQL calls.
+  It installs the renewed delegation into the live TinyCloudWeb instance. A
+  voice-note save delays the swap until it finishes or the old delegation has
+  less than 60 seconds left; a forced swap schedules recovery of any aborted
+  pending save after its save guard settles. A terminal renewal signs out
+  locally, while a secure-storage error remains retryable and is shown in the
+  app. A failed new sign-in leaves an existing SDK session in place. A failed
+  handoff after consent revokes the new grant before showing an error. If
+  secure storage fails during sign-out, the app keeps the native session for
+  another attempt.
+- `@openkey/sdk-capacitor` is the published `0.1.0-beta.2` npm package (beta
+  dist-tag). Its `@tinycloud/web-sdk` peer is `^2.11.0 || ^3.1.0`.

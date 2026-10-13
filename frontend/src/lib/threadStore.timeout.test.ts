@@ -21,6 +21,8 @@ type Statement = { sql: string; params?: unknown[] };
 class SqlService {
   readonly sqlite = new Database(":memory:");
   drop: { match: RegExp; commit: boolean } | null = null;
+  abortAfterCommit = false;
+  messageBatches = 0;
   readonly droppedSignals: Array<AbortSignal | undefined> = [];
 
   private dropped(sql: string, signal: AbortSignal | undefined, apply: () => void): boolean {
@@ -44,6 +46,7 @@ class SqlService {
   };
 
   batch = async (statements: Statement[], options?: { signal?: AbortSignal }) => {
+    if (statements.some((statement) => statement.sql.includes("INSERT INTO messages"))) this.messageBatches++;
     const apply = () => {
       this.sqlite.transaction(() => {
         for (const statement of statements) this.sqlite.query(statement.sql).run(...((statement.params ?? []) as never[]));
@@ -53,6 +56,10 @@ class SqlService {
       return new Promise<never>(() => {});
     }
     apply();
+    if (this.abortAfterCommit) {
+      this.abortAfterCommit = false;
+      return { ok: false as const, error: { code: "ABORTED", message: "Request was aborted.", service: "sql" } };
+    }
     return { ok: true as const, data: { results: [] } };
   };
 }
@@ -72,6 +79,16 @@ function storedIds(service: SqlService, threadId: string): string[] {
 }
 
 const MODEL = OFFERED_CHAT_MODELS[0].id;
+
+test("a committed append aborted by graph retirement reconciles its message ID without replay", async () => {
+  const service = new SqlService();
+  const tcw = cloud(service);
+  await appendMessage(tcw, "retired", message("first"), MODEL);
+  service.abortAfterCommit = true;
+  await expect(appendMessage(tcw, "retired", message("u1"), MODEL)).resolves.toBeUndefined();
+  expect(storedIds(service, "retired")).toEqual(["first", "u1"]);
+  expect(service.messageBatches).toBe(2);
+});
 
 test("a dropped write response times out as a retryable error, the thread's queue keeps going, and the retry reconciles by id", async () => {
   const service = new SqlService();

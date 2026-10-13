@@ -1,131 +1,65 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import {
-  upsertMeeting,
-  listKnownSourceIds,
+  normalizeTranscriberTranscript,
+  transcriberMeetingTitle,
+  TRANSCRIBER_MEETING_SOURCE,
   transcriptKvKey,
-  type NormalizedMeeting,
-  type StoreResult,
-  type UpsertMeetingOutcome,
-} from "./connectors/connectorStore";
-import type { FirefliesSentence } from "./connectors/firefliesClient";
+  writeTranscriberMeeting,
+} from "@tinyboilerplate/core";
+import type { WrittenTranscriberMeeting } from "@tinyboilerplate/core";
+import { listKnownSourceIds } from "./connectors/connectorStore";
+import type { StoreResult } from "./connectors/connectorStore";
+import { webConnectorPort } from "./connectors/connectorPort";
+import { reportStorageError, reportStorageWriteSucceeded, storageSaveMessage } from "./storageStatus";
 import type { TranscriberMeeting, TranscriberTranscript } from "./transcriberApi";
-
-/**
- * Save a TRANSCRIBER meeting into the user's OWN TinyCloud space, the way the Fireflies and
- * Google Meet connectors do: one `connector_meeting` row (SQL) plus the transcript body in KV
- * under the granted `connectors/` prefix, so the Meetings explorer lists it alongside the others.
- *
- * SIMPLE on purpose. The transcriber's transcript is mapped 1:1 onto the store's existing
- * sentence shape; a proper transcript-normalization step is being added separately by another
- * engineer and will slot in between `transcript()` and `upsertMeeting` here.
- */
-
-/** `connector_meeting.source` for every meeting this module writes. */
-export const TRANSCRIBER_MEETING_SOURCE = "tinycloud-transcriber";
+export { normalizeTranscriberTranscript, transcriberMeetingTitle, TRANSCRIBER_MEETING_SOURCE };
 
 /** Human label for the explorer chip. */
 export const TRANSCRIBER_MEETING_SOURCE_LABEL = "TinyCloud Transcriber";
 
-export function transcriberMeetingTitle(meeting: Pick<TranscriberMeeting, "meeting_url" | "metadata">): string {
-  if (meeting.metadata?.source === "google-calendar-autojoin" && meeting.metadata.calendar_title?.trim()) {
-    return meeting.metadata.calendar_title.trim();
-  }
-  try {
-    const u = new URL(meeting.meeting_url);
-    const room = u.pathname.split("/").filter(Boolean).pop();
-    return room ? `${room} (${u.host})` : u.host;
-  } catch {
-    return meeting.meeting_url;
-  }
-}
+/** Lets callers serialize each individual completeness read without holding
+ *  the shared lane for the full list of saved recordings. */
+export type TranscriberSpaceReadScheduler = <T>(read: () => Promise<T>) => Promise<T | null>;
 
-export function normalizeTranscriberTranscript(
-  meeting: TranscriberMeeting,
-  transcript: TranscriberTranscript,
-): { meeting: NormalizedMeeting; sentences: FirefliesSentence[] } {
-  const segments = Array.isArray(transcript.segments) ? transcript.segments : [];
-  const sentences: FirefliesSentence[] = segments.map((s, index) => ({
-    index,
-    speaker_name: s.speaker_name?.trim() ? s.speaker_name.trim() : null,
-    text: s.text,
-    start_time: Number.isFinite(s.start) ? s.start : 0,
-    end_time: Number.isFinite(s.end) ? s.end : 0,
-  }));
-
-  const seen = new Set<string>();
-  const participants: { name: string; email: string | null }[] = [];
-  for (const sp of transcript.speakers ?? []) {
-    const name = sp.name?.trim();
-    if (!name || seen.has(name)) continue;
-    seen.add(name);
-    participants.push({ name, email: null });
-  }
-
-  const lastEnd = sentences.length > 0 ? sentences[sentences.length - 1]!.end_time : 0;
-  const durationSecs =
-    typeof transcript.duration_seconds === "number" && Number.isFinite(transcript.duration_seconds)
-      ? Math.round(transcript.duration_seconds)
-      : lastEnd > 0
-        ? Math.round(lastEnd)
-        : null;
-
-  return {
-    meeting: {
-      id: crypto.randomUUID(),
-      source: TRANSCRIBER_MEETING_SOURCE,
-      sourceId: meeting.id,
-      title: transcriberMeetingTitle(meeting),
-      startedAt: (meeting.metadata?.source === "google-calendar-autojoin" ? meeting.metadata.scheduled_start : null)
-        ?? meeting.started_at ?? meeting.created_at ?? null,
-      durationSecs,
-      organizerEmail: null,
-      participants,
-      summaryOverview: null,
-      summaryActionItems: null,
-      keywords: null,
-      meetingType: null,
-      metadata: {
-        ...meeting.metadata,
-        meeting_url: meeting.meeting_url,
-        platform: meeting.platform,
-        language: transcript.language ?? null,
-        transcript_text: transcript.text ?? null,
-        capture: transcript.capture ?? meeting.capture ?? null,
-        transcript_provider: transcript.provider ?? meeting.transcript_provider ?? null,
-        fallback_from: transcript.fallback_from ?? meeting.fallback_from ?? null,
-        fallback_reason: transcript.fallback_reason ?? meeting.fallback_reason ?? null,
-      },
-    },
-    sentences,
-  };
-}
-
-/** Write (or refresh) the meeting in the user's space. Idempotent by `(source, sourceId)`. */
+/** Insert the row and body if absent; repair a missing body without replacing user edits. */
 export async function saveTranscriberMeeting(
   tcw: TinyCloudWeb,
   meeting: TranscriberMeeting,
   transcript: TranscriberTranscript,
-): Promise<StoreResult<UpsertMeetingOutcome>> {
-  const normalized = normalizeTranscriberTranscript(meeting, transcript);
-  return upsertMeeting(tcw, normalized.meeting, normalized.sentences, {
-    preserveExistingTitle: true,
-    preserveTranscriptBody: true,
-  });
+): Promise<StoreResult<WrittenTranscriberMeeting>> {
+  const saved = await writeTranscriberMeeting(
+    webConnectorPort(tcw), await normalizeTranscriberTranscript(meeting, transcript), { ensureSchema: true },
+  );
+  if (!saved.ok) {
+    reportStorageError(saved);
+    return { ok: false, error: { code: saved.code, message: storageSaveMessage(saved) ?? saved.message } };
+  }
+  if (saved.data.row === "inserted" || saved.data.body === "written") reportStorageWriteSucceeded();
+  return { ok: true, data: saved.data };
 }
 
 /** The transcriber meeting ids already saved in this space. */
-export async function listSavedTranscriberMeetingIds(tcw: TinyCloudWeb): Promise<StoreResult<string[]>> {
-  const rows = await listKnownSourceIds(tcw, TRANSCRIBER_MEETING_SOURCE);
+export async function listSavedTranscriberMeetingIds(
+  tcw: TinyCloudWeb,
+  scheduleRead: TranscriberSpaceReadScheduler = (read) => read(),
+  isCurrent: () => boolean = () => true,
+): Promise<StoreResult<string[]>> {
+  const rows = await scheduleRead(() => listKnownSourceIds(tcw, TRANSCRIBER_MEETING_SOURCE));
+  if (rows === null) return { ok: true, data: [] };
   if (!rows.ok) return rows;
   const complete: string[] = [];
   for (const id of rows.data) {
+    // Don't queue more old-account reads after the pass has been cancelled.
+    if (!isCurrent()) break;
     try {
-      const body = await tcw.kv.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, id));
+      const body = await scheduleRead(() => tcw.kv.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, id)));
+      if (body === null || !isCurrent()) break;
       if (body.ok) complete.push(id);
+      else console.debug("[transcriberSave] incomplete meeting", id, "kv-read-failed");
       // Unknown reads remain incomplete. Save rechecks this key before writing,
       // so one unavailable body cannot block the other records or be overwritten.
-    } catch { /* This recording is retried independently by the sync pass. */ }
+    } catch { console.debug("[transcriberSave] incomplete meeting", id, "kv-read-threw"); }
   }
   return { ok: true, data: complete };
 }

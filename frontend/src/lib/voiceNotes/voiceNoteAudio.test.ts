@@ -1,9 +1,8 @@
 // Voice-note audio for private cloud transcription. Rules:
-//   1. the phone's AAC is decoded and written as 16 kHz mono 16-bit PCM WAV, the one accepted format
-//      a webview can produce, which is exactly what PTX decodes every upload to;
+//   1. the phone's AAC stays in MPEG-4 when PTX accepts it, otherwise it is decoded to WAV;
 //   2. the WAV is a canonical RIFF file PTX's ffprobe gate reads as one `wav` audio stream;
 //   3. the hash and size sent at create are of the exact bytes uploaded;
-//   4. a note over the phone's limit (or PTX's byte cap) is refused before anything is uploaded;
+//   4. a note over PTX's advertised duration or byte cap is refused before upload;
 //   5. a type PTX already accepts is sent as recorded.
 
 import { describe, expect, test } from "bun:test";
@@ -21,7 +20,6 @@ import {
   prepareTranscriptionAudio,
   sha256Hex,
   TRANSCRIPTION_SAMPLE_RATE,
-  VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS,
   VoiceNoteAudioError,
   WAV_BYTES_PER_SECOND,
   type AudioDecoder,
@@ -113,7 +111,7 @@ describe("prepareTranscriptionAudio", () => {
     expect(new DataView(base64ToBytes(prepared.base64).buffer).getUint16(22, true)).toBe(1);
   });
 
-  test("a note over the phone's limit is refused before anything else happens", async () => {
+  test("a note over PTX's advertised duration is refused before upload", async () => {
     const err = await prepareTranscriptionAudio(m4a, {
       acceptedContentTypes: RELAY_TYPES,
       maxBytes: MAX_BYTES,
@@ -121,19 +119,17 @@ describe("prepareTranscriptionAudio", () => {
       decode: toneDecoder(2.5),
     }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(VoiceNoteAudioError);
-    expect((err as VoiceNoteAudioError).code).toBe("recording_too_long_for_phone");
-    expect(VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS).toBe(600);
+    expect((err as VoiceNoteAudioError).code).toBe("recording_too_long");
   });
 
-  test("a recording too big to be within the limit is refused before it is decoded", async () => {
+  test("a recording too large for the advertised duration is refused before decode", async () => {
     const decode = toneDecoder(1);
     const big = { mimeType: "audio/mp4", base64: bytesToBase64(new Uint8Array(2 * MAX_ENCODED_BYTES_PER_SECOND + 1)) };
     const err = await prepareTranscriptionAudio(big, { acceptedContentTypes: RELAY_TYPES, maxBytes: MAX_BYTES, maxSeconds: 2, decode })
       .catch((e: unknown) => e);
-    expect((err as VoiceNoteAudioError).code).toBe("recording_too_long_for_phone");
+    expect((err as VoiceNoteAudioError).code).toBe("recording_too_long");
     expect(decode.calls).toEqual([]);
-    // The phone's 64 kbps AAC at the 10-minute cap fits with room to spare.
-    expect(MAX_ENCODED_BYTES_PER_SECOND * VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS).toBeGreaterThan(2 * 8_000 * 600 - 1);
+    expect(MAX_ENCODED_BYTES_PER_SECOND * 7_200).toBeGreaterThan(2 * 8_000 * 600 - 1);
   });
 
   test("PTX's byte cap applies to the WAV", async () => {

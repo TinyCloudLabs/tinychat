@@ -30,6 +30,10 @@ class FakeStore implements SyncStore {
   bodies = new Map<string, FirefliesSentence[]>();
   state: UpdateSyncStateInput | null = null;
   schemaEnsured = 0;
+  rejectInsertFor: string | null = null;
+  rejectBodyFor: string | null = null;
+  countCalls = 0;
+  updateCalls = 0;
   ensureSchemaError: Error | null = null;
   /** Optional hook so a test can throw at insertMeeting boundary (per-item error). */
   insertHook: ((m: NormalizedMeeting) => void) | null = null;
@@ -55,9 +59,10 @@ class FakeStore implements SyncStore {
         error: { code: "INSERT", message: err instanceof Error ? err.message : String(err) },
       };
     }
-    const dup = this.meetings.some(
-      (m) => m.source === meeting.source && m.sourceId === meeting.sourceId,
-    );
+    if (this.rejectInsertFor === meeting.sourceId) {
+      return { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Your TinyCloud storage is full, so this change was not saved." } };
+    }
+    const dup = this.meetings.some((m) => m.source === meeting.source && m.sourceId === meeting.sourceId);
     if (dup) return ok(false);
     this.meetings.push(meeting);
     return ok(true);
@@ -69,16 +74,21 @@ class FakeStore implements SyncStore {
     sourceId: string,
     sentences: FirefliesSentence[],
   ): Promise<StoreResult<void>> {
+    if (this.rejectBodyFor === sourceId) {
+      return { ok: false, error: { code: "STORAGE_LIMIT_REACHED", message: "Write exceeds remaining storage" } };
+    }
     this.bodies.set(`${source}/${sourceId}`, sentences);
     return ok(undefined);
   }
 
   async updateSyncState(_: TinyCloudWeb, input: UpdateSyncStateInput): Promise<StoreResult<void>> {
+    this.updateCalls++;
     this.state = input;
     return ok(undefined);
   }
 
   async countMeetings(_: TinyCloudWeb, source: string): Promise<StoreResult<number>> {
+    this.countCalls++;
     return ok(this.meetings.filter((m) => m.source === source).length);
   }
 }
@@ -274,6 +284,45 @@ describe("syncFireflies — per-item error skip", () => {
     expect(res.data.added).toBe(2);
     expect(res.data.errors.some((e) => e.includes("sql exploded"))).toBe(true);
     expect(store.state?.lastSyncStatus).toBe("ok");
+  });
+});
+
+describe("syncFireflies — storage rejection abort", () => {
+  test("rejected meeting insert stops fetching and skips follow-up writes", async () => {
+    const store = new FakeStore();
+    store.rejectInsertFor = "a";
+    const { client, fetches } = makeClient({
+      newIds: ["c", "b", "a"],
+      getTranscript: (id) => ({ ok: true, data: transcript(id) }),
+    });
+
+    const result = await syncFireflies({ client, store, tcw: fakeTcw() });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("storage");
+    expect(fetches).toEqual(["a"]);
+    expect(store.countCalls).toBe(0);
+    expect(store.updateCalls).toBe(0);
+  });
+
+  test("rejected transcript body stops after the current meeting and skips sync-state write", async () => {
+    const store = new FakeStore();
+    store.rejectBodyFor = "a";
+    const { client, fetches } = makeClient({
+      newIds: ["c", "b", "a"],
+      getTranscript: (id) => ({ ok: true, data: transcript(id) }),
+    });
+
+    const result = await syncFireflies({ client, store, tcw: fakeTcw() });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("storage");
+    expect(fetches).toEqual(["a"]);
+    expect(store.meetings.map((meeting) => meeting.sourceId)).toEqual(["a"]);
+    expect(store.countCalls).toBe(0);
+    expect(store.updateCalls).toBe(0);
   });
 });
 

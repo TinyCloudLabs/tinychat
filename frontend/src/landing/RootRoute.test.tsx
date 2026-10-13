@@ -8,15 +8,16 @@ import { isValidElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter, Navigate } from "react-router-dom";
 
-import { APP_HOME_PATH, RootRoute } from "./RootRoute";
+import { PATHS } from "../shell/routes";
+import { RootRoute } from "./RootRoute";
 
 describe("RootRoute", () => {
-  test("the native shell replaces / with the chat surface", () => {
+  test("the native shell replaces / with Capture, the phone app's landing", () => {
     const element = RootRoute({ nativeShell: true });
     expect(isValidElement(element)).toBe(true);
     expect(element.type).toBe(Navigate);
-    expect(element.props).toEqual({ to: "/chat", replace: true });
-    expect(APP_HOME_PATH).toBe("/chat");
+    expect(element.props).toEqual({ to: "/chat/capture", replace: true });
+    expect(PATHS.capture).toBe("/chat/capture");
   });
 
   test("the native shell never renders the landing page", () => {
@@ -40,7 +41,7 @@ describe("RootRoute", () => {
 });
 
 // main.tsx calls createRoot on import, so its wiring is asserted against the
-// source, as connectorsNav.test.tsx does for App.tsx.
+// source, as ConnectorsPage.test.tsx does for App.tsx.
 describe("main.tsx routes / through RootRoute", () => {
   const main = readFileSync(join(import.meta.dir, "..", "main.tsx"), "utf8");
 

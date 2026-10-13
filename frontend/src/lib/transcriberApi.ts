@@ -1,3 +1,4 @@
+import { clearSessionAfterHandoff } from "./sessionSignedOut";
 import type { SessionStore } from "@tinyboilerplate/client";
 
 /**
@@ -53,6 +54,7 @@ export interface TranscriberMeeting {
   created_at: string;
   started_at?: string | null;
   ended_at?: string | null;
+  completed_at?: string | null;
   error?: { type: string; code: string; message: string } | null;
   capture?: TranscriberCapture;
   transcript_provider?: string;
@@ -62,6 +64,8 @@ export interface TranscriberMeeting {
     source?: string;
     calendar_title?: string;
     scheduled_start?: string;
+    /** TC-581: another account's calendar bot captured this; this account can read and remove it, not end it. */
+    shared?: boolean;
     [key: string]: unknown;
   };
 }
@@ -104,7 +108,7 @@ export type TranscriberResult<T> =
   | { status: "offline" }
   | { status: "feature-dark" }
   | { status: "not-found" }
-  | { status: "retryable"; httpStatus: number; code: string | null }
+  | { status: "retryable"; httpStatus: number; code: string | null; message?: string }
   | { status: "rejected"; httpStatus: number; code: string | null; message: string | null };
 
 export type TranscriptResult =
@@ -149,7 +153,7 @@ export function createTranscriberClient(
     const token = sessionStore.getToken();
     if (!token) return { status: "unauthenticated" };
     if (sessionStore.isExpired()) {
-      sessionStore.clear();
+      await clearSessionAfterHandoff(sessionStore);
       return { status: "unauthenticated" };
     }
 
@@ -174,7 +178,7 @@ export function createTranscriberClient(
     }
 
     if (response.status === 401) {
-      sessionStore.clear();
+      await clearSessionAfterHandoff(sessionStore);
       return { status: "unauthenticated" };
     }
     if (response.status === 404) {
@@ -183,7 +187,7 @@ export function createTranscriberClient(
     if (!response.ok) {
       const { code, message } = await readError(response);
       if (response.status === 429 || response.status >= 500) {
-        return { status: "retryable", httpStatus: response.status, code };
+        return { status: "retryable", httpStatus: response.status, code, ...(message ? { message } : {}) };
       }
       return { status: "rejected", httpStatus: response.status, code, message };
     }

@@ -1,0 +1,12 @@
+# Vendored from https://github.com/fastrepl/anarlog @ 864ddc1f692116d128eea2692fd72b0a51007768
+# (crates/whisper-local-model, MIT-licensed). See PROVENANCE.md for the local change and why.
+[package]
+name = "whisper-local-model"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anlg-language = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "language" }
+serde = { version = "1", features = ["derive"] }
+specta = { version = "2.0.0-rc.22", features = ["derive"] }
+strum = { version = "0.28", features = ["derive"] }

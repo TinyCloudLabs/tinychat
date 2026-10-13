@@ -1,0 +1,95 @@
+// "Where your audio goes": the route a recording takes, as a small node-and-line
+// diagram (plan §2.7). The source is filled with ink, processing stops are
+// hollow, and the user's space is filled with primary; once the recording has
+// landed, that last node carries a check.
+import { CheckIcon } from "lucide-react";
+import type { CSSProperties } from "react";
+
+import { cn } from "@/lib/utils";
+import "./RouteLine.css";
+import { routeSourceName, TRANSCRIBER_NAME } from "./final/finalCopy";
+
+export interface RouteNode {
+  label: string;
+  kind: "source" | "processing" | "destination";
+}
+
+/** A voice note from the phone app: straight to the space, through private cloud for its
+ * transcript, or transcribed on this phone before either ever leaves it. */
+export function voiceNoteRoute(route: "off" | "on-device" | "private-cloud" | "assemblyai"): RouteNode[] {
+  const phone = routeSourceName("ios");
+  if (route === "assemblyai") return [
+    { label: phone, kind: "source" },
+    { label: "Exo's server", kind: "processing" },
+    { label: TRANSCRIBER_NAME.assemblyai, kind: "processing" },
+    { label: "Your space", kind: "destination" },
+  ];
+  if (route === "private-cloud") {
+    return [
+      { label: phone, kind: "source" },
+      { label: TRANSCRIBER_NAME["private-cloud"], kind: "processing" },
+      { label: "Your space", kind: "destination" },
+    ];
+  }
+  if (route === "on-device") {
+    return [
+      { label: `${phone} (transcribed here)`, kind: "source" },
+      { label: "Your space", kind: "destination" },
+    ];
+  }
+  return [
+    { label: phone, kind: "source" },
+    { label: "Your space", kind: "destination" },
+  ];
+}
+
+function Node(props: { kind: RouteNode["kind"]; landed: boolean }) {
+  if (props.kind === "destination" && props.landed) {
+    return (
+      <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground motion-safe:animate-in motion-safe:zoom-in-50 motion-safe:duration-500">
+        <CheckIcon className="size-3" strokeWidth={3} />
+      </span>
+    );
+  }
+  return (
+    <span
+      className={cn(
+        "size-2.5 shrink-0 rounded-full",
+        props.kind === "source" && "bg-foreground",
+        props.kind === "processing" && "border-[1.5px] border-muted-foreground",
+        props.kind === "destination" && "bg-primary",
+      )}
+    />
+  );
+}
+
+export function RouteLine(props: { nodes: readonly RouteNode[]; landed?: boolean; className?: string }) {
+  const landed = props.landed ?? false;
+  return (
+    <div className="route-line-container w-full text-[1rem]" data-route-line-container="">
+      <ol
+        aria-label="Where your audio goes"
+        data-route-line=""
+        data-landed={landed ? "" : undefined}
+        style={{ "--route-node-count": props.nodes.length } as CSSProperties}
+        className={cn("route-line grid w-full grid-cols-[repeat(var(--route-node-count),minmax(0,1fr))] items-start gap-x-2", props.className)}
+      >
+        {props.nodes.map((node, index) => {
+          const last = index === props.nodes.length - 1;
+          return (
+            <li key={node.label} data-node={node.kind} className="flex min-w-0 flex-col gap-1.5">
+              <span data-route-node-indicator="" className="flex h-4 items-center" aria-hidden="true">
+                <Node kind={node.kind} landed={landed && last} />
+                {!last && <span data-route-connector="" className="mx-1.5 h-[1.5px] flex-1 rounded-full bg-muted-foreground/40" />}
+              </span>
+              <span data-route-label="" className="min-w-0 text-meta text-muted-foreground [word-break:normal] [overflow-wrap:break-word]">
+                {node.label}
+                {landed && last && <span className="sr-only"> (saved)</span>}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}

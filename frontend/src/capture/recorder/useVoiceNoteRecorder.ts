@@ -1,0 +1,145 @@
+// The voice-note recorder for React: one controller
+// (voiceNoteRecorderController.ts) per signed-in session, its listeners
+// attached while mounted. RecorderProvider calls this exactly once; every
+// recorder view reads it through useRecorder().
+import { useEffect, useMemo, useSyncExternalStore } from "react";
+import type { SessionStore } from "@tinyboilerplate/client";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { captureEvents } from "@/capture/captureEvents";
+
+import type { VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
+import { pendingStore, type PendingSnapshot } from "@/lib/voiceNotes/recorderSaves";
+import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
+import { voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
+import type { RecorderState } from "./recorderReducer";
+import { HIDDEN_SNAPSHOT, noSubscription, transcriptionProps, type VoiceNoteTranscriptionProps } from "./transcriptionProps";
+import { createVoiceNoteRecorderController } from "./voiceNoteRecorderController";
+import type { RecorderNote, RecorderNoteStatus, RecorderTranscriberChoice, TranscriberChoiceResult, TranscriberChoiceScope } from "./voiceNoteRecorderController";
+import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
+import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
+
+export interface VoiceNoteRecorderOptions {
+  tcw: TinyCloudWeb | null;
+  /** False turns the recorder off until the session's native defaults are set. */
+  enabled?: boolean;
+  backendUrl?: string;
+  sessionStore?: SessionStore;
+  /** A recording landed in the space (by Stop, the limit, or a pending save). */
+  onSaved?: (recording: VoiceNoteRecording) => void;
+  pipeline?: VoiceNotePipeline | null;
+}
+
+export interface VoiceNoteRecorder {
+  /** The Exo mobile app with its VoiceNotes plugin; nothing else records. */
+  available: boolean;
+  state: RecorderState;
+  transcriber: RecorderTranscriberChoice;
+  note: RecorderNote | null;
+  noteStatus: RecorderNoteStatus;
+  noteSyncError: string | null;
+  setNoteText(md: string): Promise<void>;
+  markMoment(): number;
+  setTranscriber(id: TranscriberId, options: { scope: TranscriberChoiceScope }): Promise<TranscriberChoiceResult>;
+  setIdentifySpeakers(on: boolean, scope: "recording" | "default"): Promise<"ok" | "needs_consent" | "locked_signed_out" | "unavailable">;
+  pending: PendingSnapshot;
+  transcription: VoiceNoteTranscriptionProps | undefined;
+  record(): void;
+  stop(): void;
+  pause(): void;
+  resume(): void;
+  /** Stop the live recording and delete it; nothing is saved. */
+  discard(): void;
+  retryPending(): void | Promise<void>;
+  openSettings(): Promise<void>;
+  dismissShortcutRecovery(): Promise<void>;
+  /** The receipt was read. */
+  dismissOutcome(): void;
+  dismissCaptureIssue(id: string): boolean;
+  setOnPresent(onPresent: (() => void) | undefined): void;
+  /** Input levels (0..1), fanned out without React state. */
+  subscribeLevel(listener: (level: number) => void): () => void;
+}
+
+/** Default for every mounted recorder, including the app and browser harness. */
+export function notifySavedVoiceNote(recording: VoiceNoteRecording): void {
+  captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId: recording.id });
+}
+
+export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionStore, onSaved = notifySavedVoiceNote, pipeline }: VoiceNoteRecorderOptions): VoiceNoteRecorder {
+  const available = enabled && captureEngineAvailable();
+
+  // Private cloud transcription for this account (null without one), shared across mounts.
+  const transcriber = useMemo(
+    () =>
+      available && tcw !== null && backendUrl !== undefined && sessionStore !== undefined
+        ? voiceNoteTranscriberFor(tcw, backendUrl, sessionStore)
+        : null,
+    [available, backendUrl, sessionStore, tcw],
+  );
+  const controller = useMemo(() => createVoiceNoteRecorderController({ tcw, available, transcriber, pipeline }), [available, tcw, transcriber, pipeline]);
+  // The private-cloud availability check: once the account is ready, and again each time the app comes back to the foreground.
+  useEffect(() => {
+    if (transcriber === null) return;
+    // False once this account is no longer the signed-in one (switch, sign-out, unmount): its check stops and resumes nothing.
+    let current = true;
+    const check = () => {
+      transcriber.check({ automatic: true, current: () => current }).catch((caught: unknown) => console.error("[Recorder] The private transcription check threw", caught));
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") check();
+    };
+    check();
+    window.addEventListener("visibilitychange", onVisible);
+    return () => {
+      current = false;
+      window.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [transcriber]);
+  useEffect(() => {
+    controller.setOnSaved(onSaved);
+    return () => controller.setOnSaved(undefined);
+  }, [controller, onSaved]);
+  useEffect(() => controller.attach(), [controller]);
+
+  const state = useSyncExternalStore(controller.subscribe, controller.getState);
+  const transcriberChoice = useSyncExternalStore(controller.subscribe, controller.getTranscriber);
+  const note = useSyncExternalStore(controller.subscribe, controller.getNote);
+  const noteStatus = useSyncExternalStore(controller.subscribe, controller.getNoteStatus);
+  const noteSyncError = useSyncExternalStore(controller.subscribe, controller.getNoteSyncError);
+  const snapshot = useSyncExternalStore(
+    transcriber ? transcriber.subscribe : noSubscription,
+    () => transcriber?.snapshot() ?? HIDDEN_SNAPSHOT,
+  );
+  const pending = useSyncExternalStore(pendingStore.subscribe, pendingStore.snapshot);
+
+  return useMemo(
+    () => ({
+      available,
+      state,
+      transcriber: transcriberChoice,
+      note,
+      noteStatus,
+      noteSyncError,
+      setNoteText: controller.setNoteText,
+      markMoment: controller.markMoment,
+      setTranscriber: controller.setTranscriber,
+      setIdentifySpeakers: controller.setIdentifySpeakers,
+      pending,
+      transcription: transcriptionProps(transcriber, snapshot),
+      record: () => void controller.record(),
+      stop: () => void controller.stop(),
+      pause: () => void controller.pause(),
+      resume: () => void controller.resume(),
+      discard: () => void controller.discard(),
+      retryPending: () => controller.retryPending(),
+      openSettings: () => controller.openSettings(),
+      dismissShortcutRecovery: () => controller.dismissShortcutRecovery(),
+      dismissOutcome: controller.dismissOutcome,
+      dismissCaptureIssue: controller.dismissCaptureIssue,
+      setOnPresent: controller.setOnPresent,
+      subscribeLevel: controller.subscribeLevel,
+    }),
+    [available, controller, note, noteStatus, noteSyncError, pending, snapshot, state, transcriber, transcriberChoice],
+  );
+}

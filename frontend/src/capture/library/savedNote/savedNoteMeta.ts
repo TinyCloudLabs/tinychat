@@ -1,0 +1,82 @@
+import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
+import type { AppPlatform } from "@/lib/platform";
+import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
+import { detailWhen, formatSpokenDuration } from "../formatters";
+import type { LibraryItem } from "../LibraryRow";
+import { SAVED_NOTE_COPY } from "./savedNoteCopy";
+
+const PRIVATE_CLOUD = "tinycloud-private-transcription";
+
+const text = (value: unknown): string | null =>
+  typeof value === "string" && value !== "" ? value : null;
+
+/** Where it was recorded: the phone that did, else this device. */
+function recordedOn(
+  metadata: Record<string, unknown> | null,
+  platform: AppPlatform,
+): string | null {
+  const captured = (metadata?.capture as { platform?: unknown } | undefined)
+    ?.platform;
+  switch (text(captured)) {
+    case "ios":
+      return "recorded on iPhone";
+    case "android":
+      return "recorded on Android phone";
+    case "tauri":
+      return "recorded on this Mac";
+    case "web":
+      return "recorded in the browser";
+  }
+  // A note made here before the platform was recorded on it.
+  return platform === "tauri" ? "recorded on this Mac" : null;
+}
+
+/** A voice note names who made its transcript only once its transcription outcome says it was transcribed. */
+function transcriptRoute(
+  source: string,
+  metadata: Record<string, unknown> | null,
+): string | null {
+  if (source === VOICE_NOTE_SOURCE && metadata?.transcription_outcome !== "transcribed")
+    return null;
+  const provider = text(metadata?.transcript_provider);
+  const engine = text(metadata?.transcription_engine);
+  if (provider === PRIVATE_CLOUD || engine === "private-cloud")
+    return `${TRANSCRIBER_NAME["private-cloud"]} transcript`;
+  if (provider === "assemblyai") return `${TRANSCRIBER_NAME.assemblyai} transcript`;
+  if (provider === "whispercpp") return `${TRANSCRIBER_NAME["on-device"]} transcript`;
+  return null;
+}
+
+/**
+ * The saved note's meta line: "Oct 8, 2026 · 12:10 PM · 1 min · recorded on iPhone · Local transcript · saved to your space".
+ * "saved to your space" ends it only once every step is done (`settled`); until then the pipeline stepper under the
+ * line says where the note is.
+ */
+export function savedNoteMeta(
+  item: LibraryItem,
+  metadata: Record<string, unknown> | null,
+  platform: AppPlatform,
+  settled: boolean,
+): string {
+  return [
+    detailWhen(item.startedAt),
+    item.durationSecs !== null ? formatSpokenDuration(item.durationSecs) : null,
+    item.source === VOICE_NOTE_SOURCE ? recordedOn(metadata, platform) : null,
+    transcriptRoute(item.source, metadata),
+    settled ? SAVED_NOTE_COPY.savedToSpace : null,
+  ]
+    .filter((part): part is string => !!part)
+    .join(" · ");
+}
+
+/** "Oct 9, 3:20 AM" for the note's last edit; null when the time cannot be read. */
+export function editedLabel(iso: string): string | null {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}

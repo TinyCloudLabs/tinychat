@@ -32,6 +32,7 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { CONNECTORS_SQL_DB_NAME, transcriptKvKey } from "./connectorStore";
+import { normalizeTranscriptText } from "../voiceNotes/voiceNoteCommits";
 import type { FirefliesSentence } from "./firefliesClient";
 import { GMEET_MEETING_SOURCE } from "./gmeetNormalize";
 import {
@@ -85,6 +86,10 @@ export interface MeetingListItem {
   sourceId: string;
   title: string | null;
   startedAt: string | null;
+  /** `connector_meeting.duration_secs`; null when the source did not say. */
+  durationSecs: number | null;
+  /** Voice-note row metadata needed to derive the list pipeline after a relaunch. */
+  metadata?: Record<string, unknown> | null;
 }
 
 /**
@@ -111,30 +116,62 @@ function cellStr(row: unknown[], idx: number): string | null {
 }
 
 /**
+ * The list read with "nothing stored" kept apart from "the read did not land"
+ * (the Library offers Try again for the second). A connectors db or table that
+ * does not exist yet is an ordinary empty list. A refused read (an expired
+ * session) is a failure, never "no meetings": a user with notes must not be
+ * told they have none.
+ */
+export type MeetingListRead = { status: "ok"; meetings: MeetingListItem[] } | { status: "failed" };
+
+function notStoredYet(res: unknown): boolean {
+  const code = errorCode(res);
+  const err = (res as { error?: { message?: unknown } } | null)?.error;
+  const message = typeof err?.message === "string" ? err.message.toLowerCase() : "";
+  return /NOT_FOUND/i.test(code) || message.includes("no such table");
+}
+
+/** Rows come back POSITIONAL; anything that is not a finite number reads as absent. */
+function cellNum(row: unknown[], idx: number): number | null {
+  const v = row[idx];
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+/**
  * Meetings stored for `sources`, newest first ACROSS the whole set — one query,
  * one merged list, ordered by `started_at` over the union rather than grouped
- * by connector. A failed read (including the table not existing) is
- * indistinguishable from "no meetings" on purpose.
+ * by connector.
  *
  * An empty `sources` runs no query at all: `source IN ()` is not valid SQL, and
  * "browse nothing" already has an answer.
  */
-export async function listMeetings(
+export async function listMeetingsRead(
   tcw: TinyCloudWeb,
   sources: readonly string[] = EXPLORER_MEETING_SOURCES,
-): Promise<MeetingListItem[]> {
-  if (sources.length === 0) return [];
+): Promise<MeetingListRead> {
+  if (sources.length === 0) return { status: "ok", meetings: [] };
   const placeholders = sources.map(() => "?").join(", ");
   const res = await tolerate(() =>
     tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
-      `SELECT id, source, source_id, title, started_at FROM connector_meeting
+      `SELECT id, source, source_id, title, started_at, duration_secs,
+              CASE WHEN source = 'exo-voice-note' AND metadata IS NOT NULL THEN
+                CASE WHEN json_valid(metadata) THEN json_object(
+                  'transcription_outcome', json_extract(metadata, '$.transcription_outcome'),
+                  'note_kv_key',           json_extract(metadata, '$.note_kv_key'),
+                  'note_edited_at',        json_extract(metadata, '$.note_edited_at'),
+                  'audio_kv_key',          json_extract(metadata, '$.audio_kv_key'),
+                  'audio_stored',          json_extract(metadata, '$.audio.stored'))
+                ELSE 'invalid' END
+              END AS pipeline_metadata
+       FROM connector_meeting
        WHERE source IN (${placeholders}) ORDER BY started_at DESC`,
       [...sources],
     ),
   );
-  if (!res || !res.ok) return [];
+  if (!res) return { status: "failed" };
+  if (!res.ok) return notStoredYet(res) ? { status: "ok", meetings: [] } : { status: "failed" };
   const rows: unknown = res.data?.rows;
-  if (!Array.isArray(rows)) return [];
+  if (!Array.isArray(rows)) return { status: "ok", meetings: [] };
 
   const meetings: MeetingListItem[] = [];
   for (const row of rows as unknown[][]) {
@@ -146,15 +183,77 @@ export async function listMeetings(
     // (source, source_id), so a row missing either half is unreadable. Drop it
     // rather than render a row that can only ever fail to expand.
     if (!id || !source || !sourceId) continue;
-    meetings.push({
+    const item: MeetingListItem = {
       id,
       source,
       sourceId,
       title: cellStr(row, 3),
       startedAt: cellStr(row, 4),
-    });
+      durationSecs: cellNum(row, 5),
+    };
+    if (source === VOICE_NOTE_SOURCE) {
+      const rawPipelineMetadata = cellStr(row, 6);
+      if (rawPipelineMetadata === null) {
+        // The listing read the row and confirmed there is no metadata. Keep
+        // this distinct from an unreadable value, which lets the pipeline
+        // hook batch-read only the missing evidence.
+        item.metadata = null;
+      } else if (rawPipelineMetadata === "invalid") {
+        console.warn(`Meeting explorer: voice-note row ${id} has invalid metadata JSON; its pipeline will batch-read metadata`);
+      } else {
+        try {
+          const metadata: unknown = JSON.parse(rawPipelineMetadata);
+          if (metadata !== null && typeof metadata === "object" && !Array.isArray(metadata)) {
+            item.metadata = metadata as Record<string, unknown>;
+          } else {
+            console.warn(`Meeting explorer: voice-note row ${id} has non-object metadata; its pipeline will batch-read metadata`);
+          }
+        } catch {
+          console.warn(`Meeting explorer: voice-note row ${id} has invalid metadata JSON; its pipeline will batch-read metadata`);
+        }
+      }
+    }
+    meetings.push(item);
   }
-  return meetings;
+  return { status: "ok", meetings };
+}
+
+/**
+ * The same list, with every failure read as "no meetings" (including the
+ * table not existing): the tolerant answer for callers that have no failed
+ * state to show.
+ */
+export async function listMeetings(
+  tcw: TinyCloudWeb,
+  sources: readonly string[] = EXPLORER_MEETING_SOURCES,
+): Promise<MeetingListItem[]> {
+  const read = await listMeetingsRead(tcw, sources);
+  return read.status === "ok" ? read.meetings : [];
+}
+
+/**
+ * The `connector_meeting.id` of the row a source wrote for `sourceId` (a voice
+ * note's row, by its recording id): what a note's address needs. One read;
+ * `absent` when no row has it yet, `failed` when the read did not land.
+ */
+export type MeetingIdRead = { status: "ok"; id: string } | { status: "absent" } | { status: "failed" };
+
+export async function findMeetingId(
+  tcw: TinyCloudWeb,
+  source: string,
+  sourceId: string,
+): Promise<MeetingIdRead> {
+  const res = await tolerate(() =>
+    tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
+      "SELECT id FROM connector_meeting WHERE source = ? AND source_id = ? LIMIT 1",
+      [source, sourceId],
+    ),
+  );
+  if (!res) return { status: "failed" };
+  if (!res.ok) return notStoredYet(res) ? { status: "absent" } : { status: "failed" };
+  const row: unknown = res.data?.rows?.[0];
+  const id = Array.isArray(row) ? cellStr(row, 0) : null;
+  return id ? { status: "ok", id } : { status: "absent" };
 }
 
 /**
@@ -197,14 +296,18 @@ export async function readTranscript(
   tcw: TinyCloudWeb,
   source: string,
   sourceId: string,
+  bodyKey: string = transcriptKvKey(source, sourceId),
+  expectedText?: string | null,
 ): Promise<TranscriptRead> {
-  const res = await tolerate(() => tcw.kv.get(transcriptKvKey(source, sourceId)));
+  const untimed = (): TranscriptRead => ({ status: "ok", sentences: [{ index: 0, speaker_name: null,
+    text: expectedText ?? "", start_time: 0, end_time: 0 }] });
+  const res = await tolerate(() => tcw.kv.get(bodyKey));
   if (!res) return { status: "failed" };
   if (!res.ok) {
     // A missing key is the ordinary "no transcript stored" answer; every other
     // error (auth, transport, store) is a miss worth retrying.
     return /NOT_FOUND/i.test(errorCode(res))
-      ? { status: "absent" }
+      ? expectedText ? untimed() : { status: "absent" }
       : { status: "failed" };
   }
 
@@ -213,19 +316,24 @@ export async function readTranscript(
     try {
       payload = JSON.parse(payload);
     } catch {
-      return { status: "absent" };
+      return expectedText ? untimed() : { status: "absent" };
     }
   }
-  if (!Array.isArray(payload)) return { status: "absent" };
+  if (!Array.isArray(payload)) return expectedText ? untimed() : { status: "absent" };
 
+  const sentences = payload.filter(
+    (s): s is FirefliesSentence =>
+      typeof s === "object"
+      && s !== null
+      && typeof (s as { text?: unknown }).text === "string",
+  );
+  if (expectedText != null && normalizeTranscriptText(sentences.map((s) => s.text).join(" ")) !== normalizeTranscriptText(expectedText)) {
+    console.info("[VoiceNotes] legacy_body_mismatch", { sourceId });
+    return untimed();
+  }
   return {
     status: "ok",
-    sentences: payload.filter(
-      (s): s is FirefliesSentence =>
-        typeof s === "object"
-        && s !== null
-        && typeof (s as { text?: unknown }).text === "string",
-    ),
+    sentences,
   };
 }
 
@@ -241,21 +349,21 @@ export function transcriptCopyText(sentences: FirefliesSentence[]): string {
 }
 
 /**
- * Where a meeting's original audio is stored, read from its own row when the
- * meeting is opened — the list query never selects `metadata`, which can carry
- * a whole transcript. `stored` only for a finished upload
- * (`metadata.audio.stored === true`); same settled/transient split as
- * {@link TranscriptRead}.
+ * One meeting's own row metadata (provenance, the stored audio's place, a
+ * voice note's transcript outcome), read when the meeting is opened — the list
+ * query never selects `metadata`, which can carry a whole transcript. Same
+ * settled/transient split as {@link TranscriptRead}: no row, or metadata that
+ * is not a JSON object, is `absent`.
  */
-export type MeetingAudioRead =
-  | { status: "stored"; base: string }
+export type MeetingMetadataRead =
+  | { status: "ok"; metadata: Record<string, unknown> }
   | { status: "absent" }
   | { status: "failed" };
 
-export async function readMeetingAudio(
+export async function readMeetingMetadata(
   tcw: TinyCloudWeb,
   id: string,
-): Promise<MeetingAudioRead> {
+): Promise<MeetingMetadataRead> {
   const res = await tolerate(() =>
     tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
       "SELECT metadata FROM connector_meeting WHERE id = ?",
@@ -272,8 +380,34 @@ export async function readMeetingAudio(
   } catch {
     return { status: "absent" };
   }
+  return metadata !== null && typeof metadata === "object" && !Array.isArray(metadata)
+    ? { status: "ok", metadata: metadata as Record<string, unknown> }
+    : { status: "absent" };
+}
+
+/**
+ * Where a meeting's original audio is stored. `stored` only for a finished
+ * upload (`metadata.audio.stored === true`); same settled/transient split as
+ * {@link TranscriptRead}.
+ */
+export type MeetingAudioRead =
+  | { status: "stored"; base: string }
+  | { status: "absent" }
+  | { status: "failed" };
+
+/** The stored audio a row's metadata points at, if any. */
+export function meetingAudioFrom(metadata: Record<string, unknown> | null): MeetingAudioRead {
   const audio = (metadata as { audio?: { stored?: unknown; base?: unknown } } | null)?.audio;
   return audio?.stored === true && typeof audio.base === "string" && audio.base.length > 0
     ? { status: "stored", base: audio.base }
     : { status: "absent" };
+}
+
+export async function readMeetingAudio(
+  tcw: TinyCloudWeb,
+  id: string,
+): Promise<MeetingAudioRead> {
+  const read = await readMeetingMetadata(tcw, id);
+  if (read.status === "failed") return { status: "failed" };
+  return meetingAudioFrom(read.status === "ok" ? read.metadata : null);
 }

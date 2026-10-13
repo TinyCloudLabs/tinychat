@@ -15,7 +15,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { BackgroundSyncView, consentVariantForProbe } from "./BackgroundSyncSection";
+import { BackgroundSyncSection, BackgroundSyncView, consentVariantForProbe } from "./BackgroundSyncSection";
 import {
   HISTORICAL_RESYNC_CONFIRM_COPY,
   applyEnableResult,
@@ -197,10 +197,13 @@ describe("the cohort off state (B-ingest)", () => {
 
   test("the disconnect note renders, below the bullets that point at it", () => {
     const body = text(cohortOff);
-    expect(body).toContain("Disconnecting undoes all of it");
-    expect(body.indexOf("Disconnecting undoes all of it")).toBeGreaterThan(
+    // Both variants open the note this way; the render here has no observed delivery status, so it
+    // shows the transcript-writer variant, which qualifies "all of it".
+    expect(body).toContain("Disconnecting undoes all of");
+    expect(body.indexOf("Disconnecting undoes all of")).toBeGreaterThan(
       body.indexOf("see below"),
     );
+    expect(body).toContain("Disconnecting Fireflies does not remove the separate Notetaker permission");
   });
 
   test("a real checkbox exists under B-ingest — and does NOT exist under C", () => {
@@ -511,7 +514,25 @@ describe("google-meet gets no background-sync surface", () => {
     const at = card.indexOf("<BackgroundSyncSection");
     expect(at).toBeGreaterThan(0);
     expect(card.slice(0, at)).toContain(
-      "supportsBackgroundNotifications(d, rows[d.id].connection) && (",
+      "supportsBackgroundNotifications(d, rows[d.id].connection) && secretsAvailable() && (",
     );
+  });
+});
+
+// The container's state machine now lives in `useBackgroundSync` so the
+// Meeting sources panel can run it too. The Connectors card must be unchanged:
+// before any effect has run, the section renders exactly what the view renders
+// for the initial state.
+describe("BackgroundSyncSection over useBackgroundSync", () => {
+  test("renders the view's initial state, byte for byte", () => {
+    const descriptor = { id: "fireflies", name: "Fireflies", source: "fireflies" } as ConnectorDescriptor;
+    const section = renderToStaticMarkup(
+      <BackgroundSyncSection
+        tcw={{} as never}
+        descriptor={descriptor}
+        webhooks={{} as never}
+      />,
+    );
+    expect(section).toBe(render(initialBackgroundSyncState()));
   });
 });

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup, renderToStaticMarkup as renderStatic } from "react-dom/server";
+import { MemoryRouter } from "react-router-dom";
 
 import { AgentAccessControls, AgentEnablementBanner } from "./AgentEnablementBanner";
 
@@ -55,7 +56,20 @@ describe("AgentEnablementBanner", () => {
     expect(markup).toContain("Connect private agent access");
     expect(markup).toContain(">Connect agent</button>");
     expect(markup).not.toContain("Reconnect");
-    expect(markup).toContain("sign with your passkey");
+    expect(markup).toContain("You&#x27;ll be prompted to sign in with your passkey once to authorize access.");
+  });
+
+  it("marks the banner parts so the minimized-phone layout can retain only the action", () => {
+    const markup = renderToStaticMarkup(
+      <AgentEnablementBanner {...baseProps} reconnectReason={null} />,
+    );
+    expect(markup).toContain("data-agent-enable-banner");
+    expect(markup).toContain("data-agent-enable-copy");
+    expect(markup).toContain("data-agent-enable-action");
+    const failed = renderToStaticMarkup(
+      <AgentEnablementBanner {...baseProps} reconnectReason={null} enableError="Could not connect." />,
+    );
+    expect(failed).toContain("data-agent-enable-error");
   });
 
   it("does not promise a passkey where OpenKey offers none (desktop)", () => {
@@ -63,13 +77,15 @@ describe("AgentEnablementBanner", () => {
       <AgentEnablementBanner {...baseProps} reconnectReason={null} passkeysSupported={false} />,
     );
 
-    expect(markup).toContain("sign in with OpenKey once to authorize access");
+    expect(markup).toContain("You&#x27;ll be prompted to sign in with OpenKey once to authorize access.");
     expect(markup).not.toContain("passkey");
   });
 });
 
 
 describe("Settings agent controls", () => {
+  // The controls link to How it works, so they render inside a router, as in the app.
+  const renderToStaticMarkup = (node: React.ReactElement) => renderStatic(<MemoryRouter>{node}</MemoryRouter>);
   const props = {
     capability: "enabled" as const, status: "active" as const, revision: "r",
     enableError: null, enabling: false, disconnecting: false, reconnectReason: null,
@@ -78,7 +94,13 @@ describe("Settings agent controls", () => {
   it("shows both reconnect and disconnect while connected", () => {
     const html = renderToStaticMarkup(<AgentAccessControls {...props} />);
     expect(html).toContain("Reconnect agent"); expect(html).toContain("Disconnect agent");
-    expect(html).toContain("Public web search stays available.");
+    // What access covers moved off the controls: a one-line InfoTip on the
+    // Settings card's title, and How it works → Agent access.
+    expect(html).toContain('href="/chat/about#agent-access"');
+    const settings = readFileSync(join(import.meta.dir, "SettingsPage.tsx"), "utf8");
+    const card = settings.slice(settings.indexOf('title="Agent access"'), settings.indexOf("<AgentAccessControls"));
+    expect(card).toContain("<InfoTip");
+    expect(card).toContain("Public web search stays available.");
   });
   it("shows Connect after confirmed disconnection and keeps failures distinct", () => {
     const html = renderToStaticMarkup(<AgentAccessControls {...props} capability="available" status="none" />);
@@ -101,15 +123,19 @@ describe("Settings agent controls", () => {
 
 // App.tsx pulls in @tinycloud/web-sdk, which a bun test process cannot
 // evaluate, so its wiring is asserted against the source (as
-// connectorsNav.test.tsx does). The route gate itself is unit-tested in
+// ConnectorsPage.test.tsx does). The route gate itself is unit-tested in
 // chatViewPath.test.ts and exercised on real navigation in
 // test/agent-banner-route.e2e.test.ts.
 describe("App mounts the banner through the chat-view gate", () => {
   const app = readFileSync(join(import.meta.dir, "..", "App.tsx"), "utf8");
+  // App mounts the banner through ChatWorkspace.
+  const workspace = readFileSync(join(import.meta.dir, "ChatWorkspace.tsx"), "utf8");
 
   it("mounts only the chat-view-gated banner, never the bare one", () => {
-    expect(app.split("<ChatViewAgentEnablementBanner />")).toHaveLength(2);
+    expect(workspace.split("<ChatViewAgentEnablementBanner />")).toHaveLength(2);
+    expect(app).not.toContain("<ChatViewAgentEnablementBanner");
     expect(app).not.toContain("<AgentEnablementBanner");
+    expect(workspace).not.toContain("<AgentEnablementBanner");
   });
 
   it("the gate is the positive chat-view classifier", () => {

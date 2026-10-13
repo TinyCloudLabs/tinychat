@@ -1,0 +1,73 @@
+import { type RefObject } from "react";
+import type {
+  MomentField as MomentFieldState,
+  MomentFlow,
+} from "./momentController";
+import { NOTES_COPY } from "./notesCopy";
+import { EnterIcon } from "./notesIcons";
+
+export interface MomentFieldProps {
+  field: MomentFieldState;
+  flow: MomentFlow;
+  onFocus?: () => void;
+  /** Called once the moment is saved or cancelled; `refocus` is false when the field lost focus to something else. */
+  onClosed: (result: "saved" | "cancelled", refocus: boolean) => void;
+}
+
+/** The one-line field under the timer: Enter or ↵ saves, Escape cancels, blur saves. */
+export function MomentField({ field, flow, onFocus, onClosed }: MomentFieldProps) {
+  const { time } = field;
+  const save = (refocus: boolean) => {
+    if (!flow.isOpen()) return;
+    flow.commit();
+    onClosed("saved", refocus);
+  };
+  return (
+    <div className="pr-moment">
+      <span className="pr-moment-time soft-title">{time ?? "…"}</span>
+      <input
+        type="text"
+        // Mounting focuses it inside the tap that opened it; the keyboard only comes up for a focus made in a gesture.
+        autoFocus
+        onFocus={() => onFocus?.()}
+        autoComplete="off"
+        enterKeyHint="done"
+        placeholder={
+          time === null
+            ? NOTES_COPY.momentPendingPlaceholder
+            : NOTES_COPY.momentPlaceholder(time)
+        }
+        aria-label={
+          time === null
+            ? NOTES_COPY.momentLabelPending
+            : NOTES_COPY.momentLabel(time)
+        }
+        onInput={(event) => flow.type(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          // Gboard sends keyCode 13 while composition is active to commit the
+          // one-line field. IME confirmation itself is 229 and must not save.
+          if (event.key === "Enter" && (!event.nativeEvent.isComposing || event.nativeEvent.keyCode === 13)) {
+            event.preventDefault();
+            save(true);
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            flow.cancel();
+            onClosed("cancelled", true);
+          }
+        }}
+        onBlur={() => save(false)}
+      />
+      <button
+        type="button"
+        aria-label={NOTES_COPY.saveMoment}
+        onPointerDown={(event) => event.preventDefault()}
+        onClick={() => save(true)}
+      >
+        <EnterIcon />
+      </button>
+    </div>
+  );
+}
+
+export type MarkButtonRef = RefObject<HTMLButtonElement | null>;

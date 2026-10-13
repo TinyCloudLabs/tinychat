@@ -17,11 +17,11 @@
 // to storage, never logged, never sent anywhere, and `GET /config` cannot
 // bring them back — losing them means rotating, which the copy says.
 //
-// CONSENT VARIANTS (residual F011). The off state renders one of two pinned
-// texts from `consentCopy.ts`, always verbatim — the renderer owns only the
-// `**bold**`/`*em*` markers: Option C for everyone, and the B-ingest cohort
-// text only when the cohort-gated meetings read API answers this session with
-// an affirmative "ok" (`consentVariantForProbe`). Every other answer — the 404
+// CONSENT VARIANTS (residual F011). The off state selects Fireflies Option C
+// or B-ingest from the cohort probe, then selects its transcript-writer disclosure
+// from the shared delegation status. Inactive keeps the pinned original bytes;
+// unknown shows the disclosure. The renderer owns only `**bold**`/`*em*` markers.
+// Only an affirmative "ok" (`consentVariantForProbe`) selects B-ingest. Every other answer — the 404
 // that means "not in the cohort", an auth or transport failure, a thrown
 // programmer error, no `meetings` client at all — fails closed to Option C: a
 // non-cohort user must never read the cohort's custody terms, and an error
@@ -30,22 +30,20 @@
 // custody (the token, the 90-day copy), so the button stays inert until the
 // box is checked.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type FC } from "react";
+import type { FC } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CopyIcon, Loader2Icon, RadioIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { InfoTip } from "@/components/ui/info-tip";
+import { StatusDot, type StatusTone } from "@/components/ui/status-dot";
 import {
   BACKEND_INGEST_CONSENT_COPY,
   BACKGROUND_SYNC_CONSENT_COPY,
+  transcriptAwareConsentCopy,
   type BackgroundSyncConsentCopy,
 } from "@/lib/connectors/consentCopy";
-import {
-  isSecretsUnlocked,
-  unlockSecrets,
-  type SecretsErr,
-} from "@/lib/connectors/connectorSecrets";
-import { ingestQueuedMeetings } from "@/lib/connectors/targetedSync";
+import type { TranscriptConsentState } from "@/lib/transcriptDeliveryState";
 import type { ConnectorWebhooksClient } from "@/lib/connectors/webhooksApi";
 import type { ConnectorMeetingsClient } from "@/lib/connectors/meetingsApi";
 import type { ConnectorDescriptor } from "@/lib/connectors/types";
@@ -57,22 +55,26 @@ import {
   disableBackgroundSync,
   dismissReveal,
   enableBackgroundSync,
-  initialBackgroundSyncState,
-  loadOnMount,
   queueNotices,
-  refreshQueue,
   requestHistoricalResync,
   rotateCredentials,
-  syncQueuedMeetings,
-  type BackgroundSyncDeps,
   type BackgroundSyncState,
+  type BackgroundSyncStatus,
   type QueueNotice,
 } from "./backgroundSyncState";
+
+/** The status label's dot: "On" in primary, a problem in warning, everything else neutral. */
+const STATUS_TONE: Readonly<Record<BackgroundSyncStatus["tone"], StatusTone>> = {
+  ok: "primary",
+  warn: "warning",
+  off: "neutral",
+  muted: "neutral",
+};
 import {
-  enqueueDrainWork,
-  publishBackgroundDrainConnectorState,
-  readBackgroundDrainGeneration,
-} from "./useBackgroundDrain";
+  consentVariantForProbe,
+  useBackgroundSync,
+  type OffStateConsentVariant,
+} from "./useBackgroundSync";
 
 // ── Container ────────────────────────────────────────────────────────
 
@@ -99,162 +101,24 @@ export interface BackgroundSyncSectionProps {
   onFeatureDark?: (dark: boolean) => void;
 }
 
-/** The only two texts an off state may render — A and B never ship (consentCopy.ts). */
-export type OffStateConsentVariant = "C" | "B-ingest";
+export { consentVariantForProbe, type OffStateConsentVariant };
 
-/**
- * F011's whole decision, as a pure function so the fail-closed matrix is
- * directly unit-testable: ONLY an affirmative `"ok"` from the cohort-gated
- * meetings list selects the B-ingest copy. `feature-dark` (the not-in-cohort
- * 404), `unauthenticated`, `offline`, `retryable`, `rejected`, a missing
- * result — every one of them is Option C. The parameter is deliberately loose
- * (`{ status: string }`) so no widening of the client's result union can ever
- * make an unconsidered status affirmative.
- */
-export function consentVariantForProbe(
-  result: { status: string } | null | undefined,
-): OffStateConsentVariant {
-  return result?.status === "ok" ? "B-ingest" : "C";
-}
-
-export function BackgroundSyncSection({
-  tcw,
-  descriptor,
-  webhooks,
-  meetings,
-  onIngested,
-  onFeatureDark,
-}: BackgroundSyncSectionProps) {
-  const [state, setState] = useState<BackgroundSyncState>(initialBackgroundSyncState);
-  // React may keep this mounted state around after Connectors closes; an emit
-  // into an unmounted tree is dropped rather than warned about.
-  const alive = useRef(true);
-  useEffect(() => {
-    alive.current = true;
-    return () => {
-      alive.current = false;
-    };
-  }, []);
-
-  // A ref mirror of the emitted state, so every transition can be published to
-  // the shared drain record — the headless drainer's counts and this surface's
-  // counts are the same fact, and a sync here must not leave a stale count
-  // elsewhere. The mirror is what makes that survive an unmount mid-run: the
-  // publish happens BEFORE the alive check, so a user who starts a sync and
-  // navigates away still gets the settled numbers into the store.
-  const stateRef = useRef<BackgroundSyncState>(initialBackgroundSyncState());
-  // The store generation this section instance belongs to, captured ONCE at
-  // mount. Because the ref-mirror deliberately publishes past unmount, a run
-  // still unwinding after sign-out cleared the record would otherwise
-  // repopulate it with the previous account's counts — the store drops any
-  // publish whose captured generation is stale.
-  const [publishGeneration] = useState(readBackgroundDrainGeneration);
-  const emit = useCallback(
-    (updater: (prev: BackgroundSyncState) => BackgroundSyncState) => {
-      const next = updater(stateRef.current);
-      stateRef.current = next;
-      // The numbers are already in hand after every run — no re-count, no HTTP.
-      publishBackgroundDrainConnectorState(
-        descriptor.source,
-        next,
-        !isSecretsUnlocked(tcw),
-        publishGeneration,
-      );
-      if (!alive.current) return;
-      setState(next);
-    },
-    [descriptor.source, tcw, publishGeneration],
-  );
-
-  const deps: BackgroundSyncDeps = useMemo(
-    () => ({
-      source: descriptor.source,
-      webhooks,
-      secrets: {
-        isUnlocked: () => isSecretsUnlocked(tcw),
-        // Reachable ONLY from the user-initiated sync action — never on mount.
-        unlock: () => unlockSecrets<SecretsErr>(tcw),
-      },
-      ingest: (items) =>
-        ingestQueuedMeetings({ tcw, descriptor, items, webhooks }),
-    }),
-    [tcw, descriptor, webhooks],
-  );
-
-  // On the shared drain lane: the app-shell headless drain may already be
-  // mid-run when Connectors opens, and two concurrent drains could re-surface
-  // and double-fetch the same meeting. Serializing changes WHEN this starts,
-  // never what it does.
-  useEffect(() => {
-    void enqueueDrainWork(() => loadOnMount(deps, emit));
-  }, [deps, emit]);
-
-  // F011 — which consent text an off state shows, plus the B-ingest
-  // attestation's checked state. Both start C-safe: the variant is Option C
-  // until proven otherwise, and the attestation starts unchecked.
-  const [consentVariant, setConsentVariant] = useState<OffStateConsentVariant>("C");
-  const [ingestConsentChecked, setIngestConsentChecked] = useState(false);
-
-  // The cohort probe — deliberately its OWN effect, NOT a rider on the drain
-  // lane above: it is a read of a different API (the cohort-gated meetings
-  // list), and queueing it behind a drain run would delay the consent decision
-  // for no custody reason. It asks once per mount (the card's useMemo keeps
-  // `meetings` stable) and only an affirmative "ok" ever selects B-ingest —
-  // see `consentVariantForProbe` for the full fail-closed matrix. Accepted
-  // transient: until the probe answers, a cohort user's off state briefly
-  // shows Option C, because fail-closed reads "no affirmative signal yet" as
-  // C; the probe starts at mount alongside loadOnMount's own /config
-  // round-trip, so it typically settles in the same network beat.
-  useEffect(() => {
-    // Re-arm the fail-closed default whenever the probe's inputs change.
-    setConsentVariant("C");
-    if (!meetings) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const probe = await meetings.list({ source: descriptor.source, limit: 1 });
-        if (cancelled) return;
-        setConsentVariant(consentVariantForProbe(probe));
-      } catch {
-        // `list()` resolves for every HTTP state — a throw is a programmer
-        // error, and a failed probe is no affirmative signal: stay on C.
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [meetings, descriptor.source]);
-
-  // `loading` is "we have not asked yet" and says nothing either way; every
-  // other phase is a probe that answered.
-  useEffect(() => {
-    if (state.phase === "loading") return;
-    onFeatureDark?.(state.phase === "dark");
-  }, [state.phase, onFeatureDark]);
-
-  const runSync = useCallback(async () => {
-    // Same lane as the headless drain — a click while it is in flight waits
-    // its turn instead of racing it for the same queue.
-    await enqueueDrainWork(() => syncQueuedMeetings(deps, emit));
-    onIngested?.();
-  }, [deps, emit, onIngested]);
-
+export function BackgroundSyncSection(props: BackgroundSyncSectionProps) {
+  const sync = useBackgroundSync(props);
+  const { state, deps, emit } = sync;
   return (
     <BackgroundSyncView
       state={state}
-      connectorName={descriptor.name}
-      consentVariant={consentVariant}
-      ingestConsentChecked={ingestConsentChecked}
-      onIngestConsentChange={setIngestConsentChecked}
+      connectorName={props.descriptor.name}
+      consentVariant={sync.consentVariant}
+      transcriptConsent={sync.transcriptConsent}
+      ingestConsentChecked={sync.ingestConsentChecked}
+      onIngestConsentChange={sync.setIngestConsentChecked}
       onEnable={() => void enableBackgroundSync(deps, emit)}
       onRotate={() => void rotateCredentials(deps, emit)}
       onDisable={() => void disableBackgroundSync(deps, emit)}
-      onSync={() => void runSync()}
-      onRetry={() =>
-        void (state.phase === "enabled"
-          ? refreshQueue(deps, emit) // read-only — no drain, no lane needed
-          : enqueueDrainWork(() => loadOnMount(deps, emit)))
-      }
+      onSync={() => void sync.runSync()}
+      onRetry={sync.retry}
       onDismissReveal={() => emit(dismissReveal)}
       onCopy={copyToClipboard}
       onRequestHistoricalResync={() => emit(requestHistoricalResync)}
@@ -278,12 +142,12 @@ export interface BackgroundSyncViewProps {
   state: BackgroundSyncState;
   connectorName: string;
   /**
-   * F011: which pinned consent text the off state renders. Optional with a C
-   * default so every pre-cohort call site — and every frozen test — keeps
-   * producing byte-identical Option-C markup; only the container's probe ever
-   * passes "B-ingest", and only on an affirmative cohort signal.
+   * F011's cohort choice. C is the default; only an affirmative probe passes
+   * B-ingest. The independent transcript status defaults to the disclosure.
    */
   consentVariant?: OffStateConsentVariant;
+  /** Unknown status shows the transcript-writer disclosure, not an untrue denial. */
+  transcriptConsent?: TranscriptConsentState;
   /** The B-ingest attestation's checked state. Unrendered (and inert) under C. */
   ingestConsentChecked?: boolean;
   onIngestConsentChange?: (checked: boolean) => void;
@@ -305,6 +169,7 @@ export function BackgroundSyncView({
   state,
   connectorName,
   consentVariant = "C",
+  transcriptConsent = "unknown",
   ingestConsentChecked = false,
   onIngestConsentChange,
   onEnable,
@@ -325,6 +190,10 @@ export function BackgroundSyncView({
   const status = backgroundSyncStatus(state);
   const notices = queueNotices(state);
   const busy = state.busy;
+  const consentCopy = transcriptAwareConsentCopy(
+    consentVariant === "B-ingest" ? BACKEND_INGEST_CONSENT_COPY : BACKGROUND_SYNC_CONSENT_COPY,
+    transcriptConsent,
+  );
 
   return (
     <div className="mt-2 flex flex-col gap-2 rounded-md border border-border bg-muted/20 p-3">
@@ -332,20 +201,21 @@ export function BackgroundSyncView({
         <div className="flex min-w-0 items-start gap-2">
           <RadioIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
           <div className="min-w-0">
-            <p className="text-sm font-medium text-foreground">
+            <p className="flex items-center text-sm font-medium text-foreground">
               Background notifications
-            </p>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              Optional. {connectorName} tells us the moment a meeting is ready.
+              <InfoTip label="About background notifications" className="-my-3 fine:-my-1">
+                Optional. {connectorName} tells us the moment a meeting is ready.
+              </InfoTip>
             </p>
           </div>
         </div>
-        <span
+        <StatusDot
+          tone={STATUS_TONE[status.tone]}
           data-status-label={status.label}
-          className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+          className="shrink-0 text-xs font-medium text-muted-foreground"
         >
           {status.label}
-        </span>
+        </StatusDot>
       </div>
 
       {state.phase === "signed-out" && (
@@ -383,12 +253,11 @@ export function BackgroundSyncView({
         </div>
       )}
 
-      {/* Anything that is not an affirmed cohort verdict renders Option C —
-          the same JSX it always rendered, so the non-cohort surface stays
-          byte-identical to the frozen drain-UX increment. */}
+      {/* Without an affirmative cohort verdict, select Option C. Its inactive
+          rendering preserves the original copy byte for byte. */}
       {state.phase === "off" && consentVariant !== "B-ingest" && (
         <>
-          <ConsentCopyBlock copy={BACKGROUND_SYNC_CONSENT_COPY} />
+          <ConsentCopyBlock copy={consentCopy} />
           <div>
             <Button size="sm" onClick={onEnable} disabled={busy !== null} className="gap-1.5">
               {busy === "enabling" && (
@@ -405,13 +274,13 @@ export function BackgroundSyncView({
           verbatim like everything else from consentCopy.ts. */}
       {state.phase === "off" && consentVariant === "B-ingest" && (
         <>
-          <ConsentCopyBlock copy={BACKEND_INGEST_CONSENT_COPY} />
+          <ConsentCopyBlock copy={consentCopy} />
           {/* The disconnect note sits BELOW the bullets — the last bullet
               points forward at it — as its own paragraph, markers resolved by
               the same Emphasized the bullets use. */}
-          {BACKEND_INGEST_CONSENT_COPY.disconnectNote && (
+          {consentCopy.disconnectNote && (
             <p className="text-xs text-muted-foreground">
-              <Emphasized text={BACKEND_INGEST_CONSENT_COPY.disconnectNote} />
+              <Emphasized text={consentCopy.disconnectNote} />
             </p>
           )}
           {/* A real, controlled checkbox, not decoration: under B-ingest the
@@ -426,7 +295,7 @@ export function BackgroundSyncView({
               checked={ingestConsentChecked}
               onChange={(event) => onIngestConsentChange?.(event.target.checked)}
             />
-            <span>{BACKEND_INGEST_CONSENT_COPY.consentCheckbox}</span>
+            <span>{consentCopy.consentCheckbox}</span>
           </label>
           <div>
             <Button
@@ -623,11 +492,11 @@ const RevealField: FC<{
   onCopy: (value: string, label: string) => void;
 }> = ({ label, value, copyLabel, onCopy }) => (
   <div className="flex flex-col gap-1">
-    <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+    <span className="text-xs font-medium text-muted-foreground">
       {label}
     </span>
     <div className="flex items-start gap-2">
-      <code className="min-w-0 flex-1 break-all rounded bg-muted px-2 py-1 text-[11px] text-foreground">
+      <code className="min-w-0 flex-1 break-all rounded bg-muted px-2 py-1 text-xs text-foreground">
         {value}
       </code>
       <Button

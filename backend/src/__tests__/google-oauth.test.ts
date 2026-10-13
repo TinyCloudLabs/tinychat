@@ -32,6 +32,7 @@ import {
   renderCallbackPage,
 } from "../routes/google-oauth.js";
 import { applySecurityDefaults } from "../security.js";
+import { browserTokenPayload } from "../services/calendar-autojoin-connection.js";
 
 /**
  * WP-A tests (gmeet-connector plan §8): the OAuth client's Google-specific parameters, the
@@ -1162,6 +1163,27 @@ describe("autojoin OIDC exchange", () => {
     expect(calls).toEqual([["signed-token", CLIENT_ID]]);
     expect(result).toEqual({ access_token: "access", refresh_token: "refresh", scope: "actual-scope", subject: "google-subject" });
     expect(result).not.toHaveProperty("id_token");
+  });
+
+  test("TC-581: the autojoin scope asks for email alongside openid", () => {
+    expect(GOOGLE_AUTOJOIN_SCOPES.split(" ")).toEqual(expect.arrayContaining(["openid", "email"]));
+  });
+
+  test.each([
+    ["verified", { email_verified: true }, "Person@Example.test"],
+    ["unverified", { email_verified: false }, undefined],
+    ["unverified string", { email_verified: "true" }, undefined],
+    ["unstated", {}, undefined],
+  ] as const)("TC-581: the internal email is set only when email_verified is true: %s", async (_name, claims, expected) => {
+    const upstream = recordingFetch(() => jsonResponse(200, { access_token: "access", refresh_token: "refresh", scope: "actual-scope", id_token: "signed-token" }));
+    const client = new GoogleOAuthClient(TEST_CONFIG, { fetchImpl: upstream.impl, verifyIdToken: async () =>
+      ({ sub: "google-subject", nonce: "bound-nonce", email: "Person@Example.test", ...claims } as never) });
+    const result = await client.exchangeCode({ code: "code", verifier: VERIFIER, nonce: "bound-nonce" });
+    expect(result.subject).toBe("google-subject");
+    expect(result.email).toBe(expected);
+    if (expected === undefined) expect(result).not.toHaveProperty("email");
+    expect(browserTokenPayload(result)).not.toHaveProperty("email");
+    expect(JSON.stringify(browserTokenPayload(result))).not.toContain("Example.test");
   });
 
   test.each(["missing", "nonce", "signature"])("rejects invalid identity: %s", async (failure) => {

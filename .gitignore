@@ -40,3 +40,4 @@ smithers.db-wal
 # Signing keys (the Android upload key lives only in CI secrets and the team password manager)
 *.jks
 *.keystore
+mobile/android/app/libs/sherpa-onnx-static-link-onnxruntime-*.aar

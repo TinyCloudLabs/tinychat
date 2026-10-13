@@ -1,11 +1,11 @@
 [package]
 name = "exo-desktop"
-version = "0.5.1"
+version = "0.6.0"
 description = "Exo — TinyCloud chat desktop app (exo.tinycloud.xyz)"
 edition = "2021"
 publish = false
 
-# Standalone package: the tinychat repo has no root Cargo workspace.
+# Tauri keeps its own lockfile, independent of the native evaluation workspace.
 [workspace]
 
 [lib]
@@ -19,13 +19,15 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+exo-local-transcription = { path = "../local-transcription", optional = true }
 
 # --- Transcription (anarlog, MIT layer) -------------------------------------
-# Local meeting capture + on-device Whisper, reused from fastrepl/anarlog's
+# Desktop recording + on-device Whisper, reused from fastrepl/anarlog's
 # MIT-licensed Tauri plugins. This is a first-class desktop feature, included
 # by default despite its large native dependency graph.
-# Plugin permissions are injected at runtime from
-# capabilities-transcription/ (see src/lib.rs and ../README.md).
+# Transcription starts through Exo's guarded staged-note Whisper command,
+# not the plugins' unrestricted start commands; capabilities-transcription/
+# is injected at runtime (see src/lib.rs and ../README.md).
 [dependencies.tauri-plugin-transcription]
 git = "https://github.com/fastrepl/anarlog"
 rev = "864ddc1f692116d128eea2692fd72b0a51007768"
@@ -48,6 +50,22 @@ git = "https://github.com/fastrepl/anarlog"
 rev = "864ddc1f692116d128eea2692fd72b0a51007768"
 optional = true
 
+[dependencies.cpal]
+version = "0.17.3"
+optional = true
+
+# Recovery encodes the upstream recorder's crash-retained WAV when its normal
+# MP3 finalization did not run. The crate is already in listener-core's graph.
+[dependencies.anlg-mp3]
+package = "mp3"
+git = "https://github.com/fastrepl/anarlog"
+rev = "864ddc1f692116d128eea2692fd72b0a51007768"
+optional = true
+
+[dependencies.hound]
+version = "3.5"
+optional = true
+
 # `vault_base()` (session audio + settings) is read from the StartupSnapshot
 # state that only tauri-plugin-settings::init() manages, and the local-stt
 # models dir resolves through the same plugin.
@@ -56,21 +74,32 @@ git = "https://github.com/fastrepl/anarlog"
 rev = "864ddc1f692116d128eea2692fd72b0a51007768"
 optional = true
 
-# Debug-only smoke runner (src/smoke.rs) needs tokio::time; the private cloud
-# uploader (src/cloud) uses it for its idle watchdog.
-[dependencies.tokio]
-version = "1"
-features = ["time"]
+# Recorder and debug smoke runner use tokio for timers and task coordination.
+# Wrapper parameter types and the recorder's exact session lookup come from
+# the same pinned revision as the two plugins.
+[dependencies.anlg-language]
+package = "language"
+git = "https://github.com/fastrepl/anarlog"
+rev = "864ddc1f692116d128eea2692fd72b0a51007768"
 optional = true
 
-# --- Private cloud engine (src/cloud) ---------------------------------------
-# Uploads a stopped recording to TinyCloud Private Transcription through a
-# descriptor opened with openat/O_NOFOLLOW (rustix), hashed with sha2, and
-# streamed by reqwest with redirects disabled. Part of the `transcription`
-# feature because it only ever uploads a capture the transcription plugin made.
+[dependencies.anlg-transcription-core]
+package = "transcription-core"
+git = "https://github.com/fastrepl/anarlog"
+rev = "864ddc1f692116d128eea2692fd72b0a51007768"
+optional = true
+
 [dependencies.reqwest]
-version = "0.13"
-features = ["stream"]
+version = "0.13.4"
+optional = true
+
+[dependencies.parking_lot]
+version = "0.12"
+optional = true
+
+[dependencies.tokio]
+version = "1"
+features = ["time", "sync"]
 optional = true
 
 [dependencies.rustix]
@@ -84,10 +113,6 @@ optional = true
 
 [dependencies.hex]
 version = "0.4"
-optional = true
-
-[dependencies.getrandom]
-version = "0.3"
 optional = true
 
 [dependencies.uuid]
@@ -112,10 +137,22 @@ optional = true
 # as it happens (using per-frame / per-token hooks added to the vendored
 # `audio-chunking` and `whisper-local`) and supports recordings up to 8 hours.
 # See vendor/anarlog-transcribe-whisper-local/PROVENANCE.md.
+# `whisper-local-model` is vendored because the pinned rev downloads models from
+# a retired S3 bucket (403 for Large Turbo); it points them at Hugging Face.
+# See vendor/anarlog-whisper-local-model/PROVENANCE.md.
+# `model-downloader` is vendored so a model download retries transient
+# failures, resumes from its partial file, and falls back to a second host;
+# `local-model` passes the Whisper fallback URL to it, and `file` retries a
+# failed ranged chunk instead of failing the whole download. See
+# vendor/anarlog-model-downloader/PROVENANCE.md and vendor/anarlog-file/PROVENANCE.md.
 [patch."https://github.com/fastrepl/anarlog"]
 storage = { path = "../vendor/anarlog-storage" }
 transcribe-whisper-local = { path = "../vendor/anarlog-transcribe-whisper-local" }
 whisper-local = { path = "../vendor/anarlog-whisper-local" }
+whisper-local-model = { path = "../vendor/anarlog-whisper-local-model" }
+model-downloader = { path = "../vendor/anarlog-model-downloader" }
+local-model = { path = "../vendor/anarlog-local-model" }
+file = { path = "../vendor/anarlog-file" }
 audio-chunking = { path = "../vendor/anarlog-audio-chunking" }
 
 # The yujonglee swift-rs fork runs `swift build` with SwiftPM's default build
@@ -131,16 +168,29 @@ transcription = [
     "dep:tauri-plugin-transcription",
     "dep:tauri-plugin-local-stt",
     "dep:audio-actual",
+    "dep:cpal",
+    "dep:anlg-mp3",
+    "dep:exo-local-transcription",
+    "dep:hound",
     "dep:tauri-plugin-settings",
     "dep:tokio",
-    "dep:reqwest",
     "dep:rustix",
     "dep:sha2",
     "dep:hex",
-    "dep:getrandom",
     "dep:uuid",
     "dep:futures-util",
+    "dep:anlg-language",
+    "dep:anlg-transcription-core",
+    "dep:reqwest",
+    "dep:parking_lot",
 ]
+ipc-selftest = ["transcription"]
+
+[dev-dependencies]
+ractor = "0.15"
+tokio = { version = "1", features = ["rt", "macros"] }
+tempfile = "3"
+
 
 # macOS 27 dyld rejects some stripped proc-macro dylibs with a misaligned
 # LINKEDIT string pool (rust-lang/rust#157750). Keep build-time crates unstripped

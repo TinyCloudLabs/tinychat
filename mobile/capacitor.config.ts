@@ -11,6 +11,14 @@ const config: CapacitorConfig = {
   appId: "xyz.tinycloud.exo",
   appName: "Exo",
   webDir: "../frontend/dist",
+  loggingBehavior: "none",
+  experimental: {
+    ios: {
+      spm: {
+        swiftToolsVersion: "6.2",
+      },
+    },
+  },
   plugins: {
     // Edge-to-edge on both platforms (Android 15+ enforces it): the web view
     // runs under the status bar and gesture bar, and the frontend keeps its

@@ -1,0 +1,610 @@
+// Runtime invariants of the shell (TC-761, plan §8.3), on the real AppShell
+// and surfaces (frontend/src/harness/shellIntegrationHarness.tsx), under
+// StrictMode:
+//
+//   1. Nothing the user is in the middle of is lost: a draft and a streaming
+//      reply survive every tab, Settings, rotation and size class, and the chat
+//      and Capture surfaces never remount.
+//   2. One recorder: the native plugin never has more than one view listening
+//      (the provider's eight, plus the one shared `inputs` listener the
+//      recorder's microphone picker attaches), and none on Connectors. The web
+//      app has no native plugin, so no listener at all.
+//   3. Android Back closes overlays first, the top one first, then goes home.
+//   4. Retired addresses end on the Library.
+//   5. How it works opens at the section a link names, with its heading
+//      focused; a malformed or unknown anchor opens it at the top.
+//   6. An InfoTip opens on a tap and closes on a second tap, an outside tap
+//      or Escape.
+//   7. Discard asks in a dialog, with focus on Keep; confirmed, it stops and
+//      deletes the recording and closes the recorder.
+//   8. A note stays open across size classes: Capture's panes are the same
+//      elements (the fixed tree), and nothing remounts.
+//
+// SHELL_ENGINE=webkit runs it in WebKit (the phone app's engine); Chromium by default (CI).
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { createRequire } from "node:module";
+import { chromium, webkit, type Browser, type BrowserType, type Page } from "playwright";
+import { OFFERED_CHAT_MODELS } from "../packages/core/src/chatModels";
+
+const frontend = new URL("../frontend/", import.meta.url).pathname;
+
+let bundle = "";
+let css = "";
+/** Held chat streams: each call finishes its reply. */
+let releases: Array<() => void> = [];
+let chatRequests = 0;
+
+beforeAll(async () => {
+  const built = await Bun.build({
+    entrypoints: [`${frontend}src/harness/shellIntegrationHarness.tsx`],
+    root: frontend,
+    target: "browser",
+    minify: false,
+    define: { "import.meta.env": "{}" },
+    external: ["/fonts/*"],
+  });
+  if (!built.success) throw new Error(built.logs.join("\n"));
+  bundle = await built.outputs.find((output) => output.kind === "entry-point")!.text();
+  // Stylesheets the components import themselves (the Soft skin) come out of the build beside the script.
+  const componentCss = await Promise.all(built.outputs.filter((output) => output.path.endsWith(".css")).map((output) => output.text()));
+
+  const requireFromFrontend = createRequire(`${frontend}package.json`);
+  const postcss = requireFromFrontend("postcss");
+  const tailwindcss = requireFromFrontend("tailwindcss");
+  const source = await Bun.file(`${frontend}src/index.css`).text();
+  const config = (await import(`${frontend}tailwind.config.js`)).default;
+  config.content = [`${frontend}index.html`, `${frontend}src/**/*.{js,ts,jsx,tsx}`];
+  css = (await postcss([tailwindcss(config)]).process(source, { from: `${frontend}src/index.css` })).css + componentCss.join("\n");
+}, 120_000);
+
+const encoder = new TextEncoder();
+const chunk = (content: string) => encoder.encode(`data: ${JSON.stringify({ id: "c1", choices: [{ delta: { content } }] })}\n\n`);
+
+function startServer() {
+  return Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      const url = new URL(request.url);
+      if (url.pathname === "/bundle.js") return new Response(bundle, { headers: { "content-type": "text/javascript" } });
+      if (url.pathname === "/app.css") return new Response(css, { headers: { "content-type": "text/css" } });
+      if (url.pathname === "/api/chat/model-selection") {
+        return Response.json({ model: OFFERED_CHAT_MODELS[0].id, reason: "healthy" });
+      }
+      if (url.pathname === "/api/chat" && request.method === "POST") {
+        chatRequests += 1;
+        // The reply starts at once and finishes only when the test releases it.
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(chunk("Hello"));
+            releases.push(() => {
+              controller.enqueue(chunk(" there"));
+              controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+              controller.close();
+            });
+          },
+        });
+        return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+      }
+      if (url.pathname.startsWith("/api/")) return new Response("not found", { status: 404 });
+      return new Response(
+        '<!doctype html><html class="dark"><head><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body><div id="root"></div><script type="module" src="/bundle.js"></script></body></html>',
+        { headers: { "content-type": "text/html" } },
+      );
+    },
+  });
+}
+
+const engines: Record<string, BrowserType> = { webkit, chromium };
+const name = process.env.SHELL_ENGINE ?? "chromium";
+const engine = engines[name];
+if (!engine) throw new Error(`SHELL_ENGINE must be one of ${Object.keys(engines).join(", ")}`);
+
+const settle = (page: Page) => page.waitForTimeout(250);
+const mounts = (page: Page) => page.evaluate(() => ({ ...window.__mounts }));
+const activeListeners = (page: Page) => page.evaluate(() => window.shellHarness!.voiceNotes().active);
+
+async function go(page: Page, path: string) {
+  await page.evaluate((to) => window.shellHarness!.navigate(to), path);
+  await page.waitForFunction((to) => window.location.pathname === to, path);
+  await settle(page);
+}
+
+describe.serial(`shell invariants (${name})`, () => {
+  let browser: Browser;
+  let server: ReturnType<typeof Bun.serve>;
+
+  beforeAll(async () => {
+    server = startServer();
+    browser = await engine.launch({ headless: true });
+  }, 30_000);
+  afterAll(async () => {
+    await browser?.close();
+    server?.stop(true);
+  }, 30_000);
+
+  async function open(path: string, viewport = { width: 390, height: 844 }) {
+    const page = await browser.newPage({ viewport });
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`http://127.0.0.1:${server.port}${path}`);
+    await page.waitForFunction(() => window.shellHarness !== undefined);
+    return { page, errors };
+  }
+
+  test("a draft and a streaming reply survive tabs, Settings, rotation and every size class; nothing remounts", async () => {
+    releases = [];
+    chatRequests = 0;
+    const { page, errors } = await open("/chat");
+    const composer = page.locator('textarea[placeholder^="Message"]');
+    await page.waitForFunction(() => {
+      const field = document.querySelector<HTMLTextAreaElement>('textarea[placeholder^="Message"]');
+      return field !== null && !field.disabled;
+    });
+
+    // Start a reply and leave it streaming; then write a draft.
+    await composer.fill("What did we decide on Friday?");
+    await composer.press("Enter");
+    await page.getByText("Hello", { exact: true }).waitFor();
+    expect(chatRequests).toBe(1);
+    await composer.fill("my draft");
+
+    await go(page, "/chat/capture");
+    await go(page, "/chat/connectors");
+    await go(page, "/chat");
+    await go(page, "/chat/settings");
+    await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
+    // Settings' Back (and Android Back) returns through history.
+    await page.evaluate(() => window.shellHarness!.back());
+    await page.waitForFunction(() => window.location.pathname === "/chat");
+
+    for (const [width, height] of [[844, 390], [1023, 768], [1024, 768], [390, 844]]) {
+      await page.setViewportSize({ width, height });
+      await settle(page);
+    }
+
+    releases.splice(0).forEach((release) => release());
+    await page.getByText("Hello there", { exact: true }).waitFor();
+
+    expect(await composer.inputValue()).toBe("my draft");
+    const counted = await mounts(page);
+    expect(counted.chat).toBe(1);
+    expect(counted.capture).toBe(1);
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 60_000);
+
+  test("one recorder (the phone app): the provider's eight listeners from ready on; navigation, Settings and resizes add none; the recorder's picker adds the shared inputs listener", async () => {
+    const { page, errors } = await open("/chat/capture");
+    const stats = () => page.evaluate(() => window.shellHarness!.voiceNotes());
+    let highest = 0;
+    const sample = async () => {
+      for (let i = 0; i < 5; i++) {
+        highest = Math.max(highest, await activeListeners(page));
+        await page.waitForTimeout(30);
+      }
+    };
+
+    await page.getByTestId("voice-note-record").waitFor();
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().active === 8);
+    const addsAtReady = (await stats()).adds;
+
+    for (const path of ["/chat", "/chat/connectors", "/chat/settings", "/chat/capture", "/chat"]) {
+      await go(page, path);
+      await sample();
+    }
+    for (const [width, height] of [[844, 390], [820, 1180], [1280, 800], [390, 844]]) {
+      await page.setViewportSize({ width, height });
+      await settle(page);
+      await sample();
+    }
+    // The phone app's Capture home (tablet widths included) has no settings picker: nothing is added by the home.
+    expect((await stats()).adds).toBe(addsAtReady);
+
+    // Record from the chat header: the recorder opens and records.
+    await page.getByTestId("header-voice-note").click();
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().recording);
+    await page.waitForFunction(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Done")?.disabled === false);
+    await sample();
+    // Minimise keeps it recording: the Ribbon follows to Connectors.
+    await page.getByRole("button", { name: "Minimise recorder" }).click();
+    await page.getByTestId("ribbon").waitFor();
+    expect((await stats()).recording).toBe(true);
+    await go(page, "/chat/connectors");
+    await page.getByTestId("ribbon").waitFor();
+    // On its side the rail floats the same Ribbon, with no rail button or island beside it.
+    await page.setViewportSize({ width: 844, height: 390 });
+    await page.getByTestId("ribbon").waitFor();
+    expect(await page.getByTestId("rail-live").count()).toBe(0);
+    expect(await page.getByTestId("recorder-island").count()).toBe(0);
+    await page.setViewportSize({ width: 390, height: 844 });
+    // Stop from the Ribbon: the save runs and the island turns into its receipt.
+    await page.getByTestId("ribbon-stop").click();
+    await page.waitForFunction(() => !window.shellHarness!.voiceNotes().recording);
+    await page.waitForFunction(() => /landed|failed/.test(document.querySelector('[data-testid="recorder-island"]')?.getAttribute("data-state") ?? ""));
+    await sample();
+
+    // Opening the recorder attached the shared `inputs` listener (its microphone picker), once.
+    expect((await stats()).adds).toBe(addsAtReady + 1);
+    expect(highest).toBe(9);
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 60_000);
+
+  test("one recorder (the web app): no native plugin, so no native listener at any width; the home still offers the microphone settings", async () => {
+    const { page, errors } = await open("/chat/capture?platform=web", { width: 1280, height: 800 });
+    await page.getByTestId("desktop-capture-home").waitFor();
+    for (const [width, height] of [[820, 1180], [1280, 800], [1024, 768]]) {
+      await page.setViewportSize({ width, height });
+      await settle(page);
+      await page.getByTestId("capture-settings-button").waitFor();
+      expect(await page.evaluate(() => window.shellHarness!.voiceNotes())).toMatchObject({ adds: 0, active: 0 });
+    }
+    for (const path of ["/chat", "/chat/connectors", "/chat/capture"]) await go(page, path);
+    expect(await page.evaluate(() => window.shellHarness!.voiceNotes())).toMatchObject({ adds: 0, active: 0 });
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 60_000);
+
+  test("full-page Stop shows the saved receipt, not an immediate close to Capture home", async () => {
+    // TC-781, "Stop loses the local playback receipt": the full-page recorder (unlike the
+    // island, covered above) was never actually checked end to end for Stop -> receipt.
+    const { page, errors } = await open("/chat/capture");
+
+    await page.getByTestId("voice-note-record").click();
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().recording);
+    await page.getByRole("button", { name: "Done" }).waitFor();
+    await page.waitForFunction(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Done")?.disabled === false);
+
+    await page.getByRole("button", { name: "Done" }).click();
+    await page.waitForFunction(() => !window.shellHarness!.voiceNotes().recording);
+    // The full-page recorder stays open and shows the receipt, with its Play control, for the
+    // RECEIPT_MS window — not an immediate close to Capture home.
+    await page.getByTestId("voice-note-receipt").waitFor({ timeout: 1_000 });
+    await page.getByTestId("note-audio-play").waitFor({ timeout: 2_000 });
+    expect(await page.getByTestId("recording-overlay").count()).toBe(1);
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 60_000);
+
+  test("the receipt's display clock waits for Play before it starts, even with a slow native read", async () => {
+    // Round 2: removing one of two redundant listPending() scans was not enough on its own — a
+    // single slow listPending() or localAudioUrl() can still outrun a clock anchored at commit.
+    // The instant fake can't establish this timing, so this delays both by 2.5 s: well under the
+    // 3 s RECEIPT_MS window, but enough that the old commit-anchored timer (which started
+    // counting at Stop, not at Play) would have closed the sheet before Play ever showed, or cut
+    // its visible time far short of a full 3 s. `unownedNotes=1` so the background space-save is
+    // held rather than attempted — outcome stays "local" (not "failed") long enough to actually
+    // exercise the display clock, instead of racing the harness's incomplete voice-note-identity
+    // SQL schema fixture.
+    const { page, errors } = await open("/chat/capture?nativeReadDelayMs=2500&unownedNotes=1");
+
+    await page.getByTestId("voice-note-record").click();
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().recording);
+    await page.getByRole("button", { name: "Done" }).waitFor();
+    await page.waitForFunction(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Done")?.disabled === false);
+
+    const stoppedAt = Date.now();
+    await page.getByRole("button", { name: "Done" }).click();
+    await page.waitForFunction(() => !window.shellHarness!.voiceNotes().recording);
+
+    await page.getByTestId("note-audio-play").waitFor({ timeout: 8_000 });
+    const readyAfterMs = Date.now() - stoppedAt;
+    expect(readyAfterMs).toBeGreaterThan(2_000); // genuinely waited for the slow read, not a fluke
+
+    // Once Play is up, it must stay for its own full RECEIPT_MS window from there — not an
+    // abbreviated one left over from a clock that had already been running since Stop.
+    await page.waitForTimeout(2_500);
+    expect(await page.getByTestId("voice-note-receipt").count()).toBe(1);
+    expect(await page.getByTestId("note-audio-play").count()).toBe(1);
+
+    // It still closes eventually — the display clock, not the hard ceiling, is what's exercised
+    // here (RECEIPT_MAX_MS is 15 s).
+    await page.waitForFunction(() => document.querySelector('[data-testid="recording-overlay"]') === null, undefined, { timeout: 10_000 });
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 60_000);
+
+  test("a receipt that becomes ready near the 15 s ceiling still gets its own full window, not whatever the ceiling had left", async () => {
+    // Round 2: the hard ceiling (RECEIPT_MAX_MS, 15 s) bounds only the *wait* for readiness — it
+    // used to keep running after Play appeared, so a read landing at 14 s got cut to ~1 s instead
+    // of its own full window, and a user who pressed Play near the ceiling could have playback
+    // itself interrupted. Delaying the native read to 14 s (close enough to the 15 s ceiling that
+    // the display window, from readiness, runs well past it) exercises exactly that boundary. This
+    // receipt offers Open, so its window is RECEIPT_ACTION_MS (10 s), not RECEIPT_MS (3 s).
+    // The check point below is an absolute time from Stop, not relative to when the Play control
+    // was detected, so it isn't eaten into by that detection's own polling/IPC latency.
+    const { page, errors } = await open("/chat/capture?nativeReadDelayMs=14000&unownedNotes=1");
+
+    await page.getByTestId("voice-note-record").click();
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().recording);
+    await page.getByRole("button", { name: "Done" }).waitFor();
+    await page.waitForFunction(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Done")?.disabled === false);
+
+    const stoppedAt = Date.now();
+    await page.getByRole("button", { name: "Done" }).click();
+    await page.waitForFunction(() => !window.shellHarness!.voiceNotes().recording);
+
+    await page.getByTestId("note-audio-play").waitFor({ timeout: 18_000 });
+    expect(Date.now() - stoppedAt).toBeGreaterThan(12_000); // genuinely waited for the slow read, not a fluke
+
+    // 16 s from Stop: a full 1 s past the old, still-running ceiling (15 s) — which would have
+    // closed the sheet by now — and inside the ready-based window.
+    await page.waitForTimeout(Math.max(0, stoppedAt + 16_000 - Date.now()));
+    expect(await page.getByTestId("voice-note-receipt").count()).toBe(1);
+    expect(await page.getByTestId("note-audio-play").count()).toBe(1);
+
+    // 20 s from Stop is 6+ s after the ~14 s-late readiness: past the 3 s window, so only the
+    // longer Open window (10 s from readiness) keeps it open.
+    await page.waitForTimeout(Math.max(0, stoppedAt + 20_000 - Date.now()));
+    expect(await page.getByTestId("voice-note-receipt").count()).toBe(1);
+
+    // And it still closes eventually, once that window actually elapses.
+    await page.waitForFunction(() => document.querySelector('[data-testid="recording-overlay"]') === null, undefined, { timeout: 10_000 });
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 60_000);
+
+  test("discard: the question takes focus to Keep and returns it to Discard; confirmed, the recording is deleted and the recorder closes", async () => {
+    const { page, errors } = await open("/chat/capture");
+    const stats = () => page.evaluate(() => window.shellHarness!.voiceNotes());
+    const focusedName = () => page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.trim() ?? null);
+
+    await page.getByTestId("voice-note-record").click();
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().recording);
+    await page.getByTestId("phone-recorder").waitFor();
+    const discard = page.getByRole("button", { name: "Discard recording", exact: true });
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('button[aria-label="Discard recording"]')?.disabled);
+
+    // Asked in a dialog: focus moves to Keep.
+    await discard.click();
+    const question = page.getByRole("alertdialog", { name: "Discard this recording?" });
+    await question.waitFor();
+    expect(await focusedName()).toBe("Keep recording");
+
+    // Keep: nothing happens to the recording, and focus returns to the Discard control.
+    await question.getByRole("button", { name: "Keep recording" }).click();
+    await question.waitFor({ state: "detached" });
+    expect(await focusedName()).toBe("Discard recording");
+    expect((await stats()).recording).toBe(true);
+
+    // Discard: stopped, deleted from the phone, nothing saved, and the recorder closes.
+    await discard.click();
+    await question.getByRole("button", { name: "Discard recording" }).click();
+    await page.waitForFunction(() => !window.shellHarness!.voiceNotes().recording);
+    await page.waitForFunction(() => document.querySelector('[data-testid="recorder-announcer"]')?.textContent === "Recording discarded");
+    await page.waitForFunction(() => document.querySelector('[data-testid="recording-overlay"]') === null);
+    expect((await stats()).deleted).toEqual(["fake-1"]);
+    expect(await page.getByTestId("recorder-island").count()).toBe(0);
+    expect(await page.getByTestId("voice-note-record").count()).toBe(1);
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 60_000);
+
+  test("offline → ready: the offline recorder's listeners go before the provider's arrive; never above eight", async () => {
+    const { page, errors } = await open("/chat");
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().active === 8);
+    const watch = page.evaluate(
+      () =>
+        new Promise<number>((resolve) => {
+          let max = 0;
+          const timer = setInterval(() => {
+            max = Math.max(max, window.shellHarness!.voiceNotes().active);
+          }, 5);
+          setTimeout(() => {
+            clearInterval(timer);
+            resolve(max);
+          }, 1500);
+        }),
+    );
+    await page.evaluate(() => window.shellHarness!.setState("offline"));
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().active === 2);
+    await page.evaluate(() => window.shellHarness!.setState("ready"));
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().active === 8);
+    expect(await watch).toBeLessThanOrEqual(8);
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 60_000);
+
+  test("Android Back closes the top overlay first, then the next, then goes home", async () => {
+    const { page, errors } = await open("/chat");
+    const openDialogs = () =>
+      page.evaluate(() =>
+        [...document.querySelectorAll('[role="dialog"][data-state="open"]')].map(
+          (dialog) => dialog.querySelector("h2")?.textContent ?? "",
+        ),
+      );
+
+    // The model sheet (vaul), then the Chats sheet (Radix) over it.
+    const chip = page.getByRole("button", { name: "Model" });
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.disabled);
+    await chip.click();
+    await page.locator('[data-testid="model-sheet"][data-state="open"]').waitFor();
+    await page.evaluate(() => document.querySelector<HTMLButtonElement>('button[aria-label="Chats"]')!.click());
+    await page.waitForFunction(() => document.querySelectorAll('[role="dialog"][data-state="open"]').length === 2);
+    expect(await openDialogs()).toEqual(["Model", "Chats"]);
+
+    await page.evaluate(() => window.shellHarness!.back());
+    await page.waitForFunction(() => document.querySelectorAll('[role="dialog"][data-state="open"]').length === 1);
+    expect(await openDialogs()).toEqual(["Model"]);
+    // The next press comes once the closed sheet has finished leaving: until
+    // its exit animation ends it is still the top layer, and a press then is
+    // simply dropped.
+    await page.waitForFunction(() => document.querySelectorAll('[role="dialog"]').length === 1);
+
+    await page.evaluate(() => window.shellHarness!.back());
+    await page.waitForFunction(() => document.querySelectorAll('[role="dialog"][data-state="open"]').length === 0);
+
+    // No overlay left: Chat is not the Android app's home, so Back goes to Capture…
+    await page.evaluate(() => window.shellHarness!.back());
+    await page.waitForFunction(() => window.location.pathname === "/chat/capture");
+    // …and at home it minimises, never exits.
+    await settle(page);
+    await page.evaluate(() => window.shellHarness!.back());
+    expect(await page.evaluate(() => window.shellHarness!.minimized())).toBe(1);
+    expect(await page.evaluate(() => window.location.pathname)).toBe("/chat/capture");
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 60_000);
+
+  test("How it works opens at the anchor's section with its heading focused; a bad anchor opens at the top", async () => {
+    const at = async (path: string) => {
+      const { page, errors } = await open(path);
+      await page.locator("[data-about-section]").first().waitFor();
+      await settle(page);
+      return { page, errors };
+    };
+
+    const { page, errors } = await at("/chat/about#connectors");
+    await page.waitForFunction(() => document.activeElement?.id === "about-connectors-heading");
+    const placed = await page.evaluate(() => {
+      const scroller = document.querySelector<HTMLElement>('[data-surface="about"] [data-scroll-root]')!;
+      const section = document.getElementById("connectors")!;
+      return {
+        scrolled: scroller.scrollTop,
+        offset: section.getBoundingClientRect().top - scroller.getBoundingClientRect().top,
+      };
+    });
+    expect(placed.scrolled).toBeGreaterThan(0);
+    // Its top sits just under the sticky header (scroll-margin), not mid-page.
+    expect(placed.offset).toBeGreaterThanOrEqual(0);
+    expect(placed.offset).toBeLessThan(100);
+    expect(errors).toEqual([]);
+    await page.close();
+
+    for (const path of ["/chat/about#%E0%A4%A", "/chat/about#nope"]) {
+      const bad = await at(path);
+      const top = await bad.page.evaluate(
+        () => document.querySelector<HTMLElement>('[data-surface="about"] [data-scroll-root]')!.scrollTop,
+      );
+      expect(top).toBe(0);
+      expect(bad.errors).toEqual([]);
+      await bad.page.close();
+    }
+  }, 60_000);
+
+  test("an InfoTip opens on a tap and closes on a second tap, an outside tap or Escape", async () => {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`http://127.0.0.1:${server.port}/chat/settings`);
+    await page.waitForFunction(() => window.shellHarness !== undefined);
+    if (process.env.INFOTIP_DEBUG) {
+      page.on("console", (message) => console.log("[page]", message.text()));
+      await page.evaluate(() => {
+        for (const type of ["pointerdown", "pointerup", "pointercancel", "mousedown", "focus", "click", "touchstart", "touchend"]) {
+          document.addEventListener(type, (event) => {
+            const target = event.target as Element | null;
+            console.log(type, (event as PointerEvent).pointerType ?? "", target?.getAttribute?.("aria-label") ?? target?.tagName);
+          }, true);
+        }
+      });
+    }
+
+    // The trigger is a button named for what it explains.
+    const trigger = page.getByRole("button", { name: "About agent access", exact: true });
+    await trigger.waitFor();
+    const describedBy = () => trigger.getAttribute("aria-describedby");
+    const step = async (name: string, wait: Promise<unknown>) => {
+      try {
+        await wait;
+      } catch (error) {
+        throw new Error(`${name}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+      }
+    };
+    const isOpen = (name: string) =>
+      step(
+        name,
+        page.waitForFunction(
+          () => {
+            const button = document.querySelector('button[aria-label="About agent access"]');
+            const id = button?.getAttribute("aria-describedby");
+            return !!id && document.getElementById(id)?.textContent?.includes("Public web search stays available.");
+          },
+          undefined,
+          { timeout: 5_000 },
+        ),
+      );
+    const isClosed = (name: string) =>
+      step(
+        name,
+        page.waitForFunction(
+          () => !document.querySelector('button[aria-label="About agent access"]')?.hasAttribute("aria-describedby"),
+          undefined,
+          { timeout: 5_000 },
+        ),
+      );
+
+    expect(await describedBy()).toBeNull();
+    await trigger.tap();
+    await isOpen("a tap opens it");
+    expect(await page.getByRole("tooltip").textContent()).toContain("Public web search stays available.");
+
+    // A second tap closes it, and stays closed.
+    await trigger.tap();
+    await isClosed("a second tap closes it");
+    await settle(page);
+    expect(await describedBy()).toBeNull();
+
+    // An outside tap closes it.
+    await trigger.tap();
+    await isOpen("a third tap opens it again");
+    await page.getByRole("heading", { name: "Account", exact: true }).tap();
+    await isClosed("an outside tap closes it");
+
+    // Escape closes it.
+    await trigger.tap();
+    await isOpen("a tap after the outside tap opens it");
+    await page.keyboard.press("Escape");
+    await isClosed("Escape closes it");
+
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 60_000);
+
+  test("a note open across resizes: the same panes and the same note, nothing remounts", async () => {
+    const { page, errors } = await open("/chat/capture/library/meeting-weekly");
+    const PANES = ["capture-list-pane", "capture-home", "capture-library", "capture-detail", "note-detail"];
+    const note = page.locator('[data-testid="note-detail"][data-note-id="meeting-weekly"]');
+    await note.waitFor();
+    await page.getByText("We agreed to ship the beta").waitFor();
+    // Tag each pane's element; a remount or a re-parent would drop the tag.
+    await page.evaluate((ids) => {
+      for (const id of ids) (document.querySelector(`[data-testid="${id}"]`) as HTMLElement & { __pane?: string }).__pane = id;
+    }, PANES);
+    const samePanes = () =>
+      page.evaluate(
+        (ids) => ids.every((id) => (document.querySelector(`[data-testid="${id}"]`) as (HTMLElement & { __pane?: string }) | null)?.__pane === id),
+        PANES,
+      );
+    const listBeside = () =>
+      page.evaluate(() => {
+        const list = document.querySelector<HTMLElement>('[data-testid="capture-list-pane"]')!.getBoundingClientRect();
+        const detail = document.querySelector<HTMLElement>('[data-testid="capture-detail"]')!.getBoundingClientRect();
+        return list.width > 0 && detail.width > 0 && list.right <= detail.left + 1;
+      });
+
+    for (const [width, height, wide] of [[1024, 768, true], [390, 844, false], [820, 1180, true], [390, 844, false]] as const) {
+      await page.setViewportSize({ width, height });
+      await settle(page);
+      await note.waitFor();
+      expect(await samePanes()).toBe(true);
+      expect(await listBeside()).toBe(wide);
+      expect(await page.getByText("We agreed to ship the beta").isVisible()).toBe(true);
+    }
+    expect(await page.evaluate(() => window.location.pathname)).toBe("/chat/capture/library/meeting-weekly");
+    expect((await mounts(page)).capture).toBe(1);
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 60_000);
+
+  test("retired addresses end on the Library", async () => {
+    for (const path of ["/chat/connectors/library", "/chat/meetings"]) {
+      const { page, errors } = await open(path);
+      await page.waitForFunction(() => window.location.pathname === "/chat/capture/library");
+      await page.getByRole("heading", { name: "Library", exact: true }).waitFor();
+      expect(errors).toEqual([]);
+      await page.close();
+    }
+  }, 60_000);
+});

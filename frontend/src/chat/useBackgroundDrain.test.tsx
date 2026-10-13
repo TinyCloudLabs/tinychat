@@ -662,7 +662,7 @@ describe("app wiring", () => {
   });
 
   test("the Settings surface routes its drain-capable entries through the shared lane", () => {
-    const section = read("BackgroundSyncSection.tsx");
+    const section = read("useBackgroundSync.ts");
     expect(section).toContain("enqueueDrainWork(() => loadOnMount(deps, emit))");
     expect(section).toContain("enqueueDrainWork(() => syncQueuedMeetings(deps, emit))");
   });

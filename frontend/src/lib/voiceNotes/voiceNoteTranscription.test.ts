@@ -15,9 +15,12 @@
 //   9. a note whose outcome is saved is never transcribed again, even if its PTX delete failed.
 
 import { Database } from "bun:sqlite";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { captureEvents } from "@/capture/captureEvents";
+import { advanceAccountGeneration, mountVoiceNoteAccount } from "./accountContext";
 
 import { _resetConnectorSchemaMemoForTests, transcriptKvKey } from "../connectors/connectorStore";
+import { memoryHoldStore } from "@/harness/memoryHoldStore";
 import {
   buildPtxUploadOrigin,
   interpretUploadResponse,
@@ -34,6 +37,13 @@ import {
   type PtxPutResponse,
 } from "../privateCloud";
 import { base64ToBytes, bytesToBase64, type AudioDecoder } from "./voiceNoteAudio";
+import { createFakeVoiceNotes } from "./fakeVoiceNotes";
+import { __resetCaptureEngineForTests, __setInstalledEngineForTests, captureCapabilities } from "./captureEngine";
+import { __setVoiceNotesForTests, VoiceNotes, type LocalTranscript, type VoiceNoteRecording } from "./nativeVoiceNotes";
+import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
+import { readTranscriptCommit } from "./voiceNoteCommits";
+import { pendingStore } from "./recorderSaves";
+import { advanceAccountGeneration } from "./accountContext";
 import {
   VOICE_NOTE_SOURCE,
   listVoiceNotes,
@@ -46,11 +56,16 @@ import {
 } from "./voiceNoteStore";
 import {
   accountStorageKey,
+  capacitorPtxPut,
+  createVoiceNoteTranscriber,
   createVoiceNoteCloud,
   createVoiceNoteCloudForBuild,
   localStorageVoiceNoteConsentStore,
+  localStorageVoiceNoteHoldStore,
   localStorageVoiceNotePendingStore,
+  localStorageVoiceNotePrivateChoiceStore,
   maxTranscriptionSeconds,
+  privateCloudAccepts,
   prepareVoiceNoteTranscript,
   transcribeVoiceNote,
   transcriptionStatusText,
@@ -59,6 +74,7 @@ import {
   VOICE_NOTE_CONSENT_KEY,
   VOICE_NOTE_PENDING_JOBS_KEY,
   type PtxPutRequest,
+  type VoiceNoteHoldStore,
   type VoiceNoteTranscriptionStatus,
 } from "./voiceNoteTranscription";
 
@@ -72,8 +88,78 @@ const CAPS: PrivateCloudCapabilities = {
   max_duration_seconds: 7_200,
   content_types: ["audio/mpeg", "audio/wav", "audio/ogg"],
   admission: "open",
+  diarization: true,
 };
 const AUDIO = { mimeType: "audio/mp4", base64: bytesToBase64(new Uint8Array([1, 2, 3, 4])) };
+const originalVoiceNotes = VoiceNotes;
+test("native PTX upload passes the file descriptor and progress across the JS boundary", async () => {
+  const fake = createFakeVoiceNotes();
+  let upload: unknown;
+  let progressListener: ((event: { uploadId: string; loaded: number; total: number }) => void) | undefined;
+  fake.plugin.uploadAudio = async (request) => { upload = request; return { status: 201, body: null }; };
+  fake.plugin.addListener = (async (_event: string, listener: never) => {
+    progressListener = listener as typeof progressListener;
+    return { remove: async () => {} };
+  }) as typeof fake.plugin.addListener;
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  const progress: number[] = [];
+  try {
+    const result = await capacitorPtxPut({ url: `${ORIGIN}/uploads/${ID}`, capability: CAP, contentType: "audio/mp4",
+      base64: "", nativeFileId: "rec-1", contentLength: 181_440_000, correlationId: "upload-1",
+      onProgress: (loaded, total) => progress.push(loaded / total) });
+    progressListener?.({ uploadId: "upload-1", loaded: 90_720_000, total: 181_440_000 });
+    expect(result.status).toBe(201);
+    expect(upload).toMatchObject({ id: "rec-1", contentLength: 181_440_000, contentType: "audio/mp4", uploadId: "upload-1" });
+    expect(progress).toEqual([0.5]);
+  } finally { __setVoiceNotesForTests(originalVoiceNotes, { available: null }); }
+});
+
+test("an account change during native upload setup prevents the native task from starting", async () => {
+  const fake = createFakeVoiceNotes();
+  let registerListener!: (handle: { remove(): Promise<void> }) => void;
+  let starts = 0;
+  fake.plugin.addListener = (() => new Promise((resolve) => { registerListener = resolve; })) as typeof fake.plugin.addListener;
+  fake.plugin.uploadAudio = async () => { starts++; return { status: 201, body: null }; };
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    const attempt = capacitorPtxPut({ url: `${ORIGIN}/uploads/${ID}`, capability: CAP, contentType: "audio/mp4",
+      base64: "", nativeFileId: "rec-1", contentLength: 4, correlationId: "setup-cancel",
+      canStart: () => true });
+    await Promise.resolve();
+    advanceAccountGeneration();
+    registerListener({ remove: async () => {} });
+    await expect(attempt).rejects.toMatchObject({ code: "transcription_off" });
+    expect(starts).toBe(0);
+  } finally { __setVoiceNotesForTests(originalVoiceNotes, { available: null }); }
+});
+
+test("an account-generation change cancels an in-flight native upload", async () => {
+  const fake = createFakeVoiceNotes();
+  let rejectUpload!: (reason: unknown) => void;
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const cancelled: string[] = [];
+  fake.plugin.uploadAudio = async () => new Promise((_, reject) => { rejectUpload = reject; markStarted(); });
+  fake.plugin.cancelAudioUpload = async ({ uploadId }) => { cancelled.push(uploadId); rejectUpload(Object.assign(new Error("cancelled"), { code: "cancelled" })); };
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    const attempt = capacitorPtxPut({ url: `${ORIGIN}/uploads/${ID}`, capability: CAP, contentType: "audio/mp4",
+      base64: "", nativeFileId: "rec-1", contentLength: 4, correlationId: "generation-cancel" });
+    await started;
+    advanceAccountGeneration();
+    await expect(attempt).rejects.toMatchObject({ code: "upload_outcome_unknown" });
+    expect(cancelled).toEqual(["generation-cancel"]);
+  } finally { __setVoiceNotesForTests(originalVoiceNotes, { available: null }); }
+});
+beforeEach(() => {
+  const fake = createFakeVoiceNotes();
+  fake.plugin.listPending = async () => ({ recordings: [{ ...RECORDING, ledger: {
+    transcriptSync: { state: "pending", rev: 0, at: null },
+  }, owner: "did:test:voice", ownerUnknown: false } as never] });
+  fake.plugin.getTranscript = async () => ({ transcript: null });
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+});
+afterEach(() => __setVoiceNotesForTests(originalVoiceNotes, { available: null }));
 
 const silentDecoder = (seconds = 1): AudioDecoder => async (_bytes, sampleRate) => ({
   channels: [new Float32Array(Math.round(seconds * sampleRate)).fill(0.25)],
@@ -123,6 +209,7 @@ function harness(script: {
   removeFails?: boolean;
   uploadSupported?: () => Promise<boolean>;
   decode?: AudioDecoder;
+  nativeTransport?: boolean;
 }) {
   const calls: string[] = [];
   const creates: { attemptId: string; body: PrivateCloudCreateBody }[] = [];
@@ -193,6 +280,7 @@ function harness(script: {
     async put(request) {
       calls.push(`put:${request.url}`);
       puts.push(request);
+      if (script.nativeTransport) return capacitorPtxPut(request);
       const next = putAnswers.shift();
       if (next === undefined) throw new Error("unexpected put");
       if (next instanceof PrivateCloudError) throw next;
@@ -204,6 +292,15 @@ function harness(script: {
 
 const run = (h: ReturnType<typeof harness>, report: (s: VoiceNoteTranscriptionStatus) => void = () => {}) =>
   h.cloud.transcribe({ sourceId: "rec-1", capabilities: CAPS, loadAudio: async () => AUDIO }, report);
+
+test("Private asks PTX to identify speakers only when enabled, mono, and supported", async () => {
+  for (const [identifySpeakers, channelCount, diarization] of [[true, 1, true], [false, 1, true], [true, 2, true], [true, 1, false]] as const) {
+    const h = harness({});
+    await h.cloud.transcribe({ sourceId: `rec-${identifySpeakers}-${channelCount}-${diarization}`, capabilities: { ...CAPS, diarization },
+      loadAudio: async () => AUDIO, identifySpeakers, channelCount }, () => {});
+    expect(h.creates[0]?.body.diarize).toBe(identifySpeakers && channelCount === 1 && diarization ? true : undefined);
+  }
+});
 
 describe("gating", () => {
   test("a PTX origin is a bare https origin; http only to a loopback port when allowed", () => {
@@ -239,10 +336,15 @@ describe("gating", () => {
     }
   });
 
-  test("the longest note offered is the phone's limit, or PTX's when lower", () => {
-    expect(maxTranscriptionSeconds(null)).toBe(600);
-    expect(maxTranscriptionSeconds(CAPS)).toBe(600);
+  test("the supported duration comes from PTX", () => {
+    expect(maxTranscriptionSeconds(null)).toBe(Number.POSITIVE_INFINITY);
+    expect(maxTranscriptionSeconds(CAPS)).toBe(7_200);
     expect(maxTranscriptionSeconds({ ...CAPS, max_duration_seconds: 120 })).toBe(120);
+    expect(maxTranscriptionSeconds({ ...CAPS, max_duration_seconds: 10_800 })).toBe(10_800);
+    expect(privateCloudAccepts(7_200, CAPS)).toBe(true);
+    expect(privateCloudAccepts(7_201, CAPS)).toBe(false);
+    expect(privateCloudAccepts(null, CAPS)).toBe(true);
+    expect(privateCloudAccepts(1, null)).toBe(false);
   });
 });
 
@@ -295,6 +397,14 @@ describe("interpretUploadResponse (desktop upload_result)", () => {
 });
 
 describe("createVoiceNoteCloud.transcribe", () => {
+  test.each([3_600, 10_800])("uploads a %i-second note when PTX advertises that duration", async (durationSeconds) => {
+    const h = harness({});
+    await h.cloud.transcribe({ sourceId: "rec-1", capabilities: { ...CAPS, max_duration_seconds: durationSeconds },
+      loadAudio: async () => AUDIO, durationSeconds }, () => {});
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+  });
+
   test("happy path: create (metadata only) → one PUT of the WAV to the build's origin → poll → result", async () => {
     const h = harness({});
     const statuses: VoiceNoteTranscriptionStatus[] = [];
@@ -420,12 +530,12 @@ describe("createVoiceNoteCloud.transcribe", () => {
     expect(voiceNoteTranscriptionFailure(err)).toEqual(expect.objectContaining({ retryable: true }));
   });
 
-  test("a note over the phone's limit is refused before any job exists", async () => {
+  test("a note over PTX's advertised duration is refused before any job exists", async () => {
     const h = harness({});
     const err = await h.cloud
       .transcribe({ sourceId: "rec-1", capabilities: { ...CAPS, max_duration_seconds: 0.5 }, loadAudio: async () => AUDIO }, () => {})
       .catch((e: unknown) => e);
-    expect((err as { code: string }).code).toBe("recording_too_long_for_phone");
+    expect((err as { code: string }).code).toBe("recording_too_long");
     expect(h.creates).toHaveLength(0);
     expect(h.pending.read("rec-1")).toBeNull();
     expect(voiceNoteTranscriptionFailure(err)).toEqual(expect.objectContaining({ retryable: false }));
@@ -518,7 +628,7 @@ describe("turning transcription off", () => {
   test("off before anything is sent: no job is created", async () => {
     const h = harness({});
     const err = await h.cloud
-      .transcribe({ sourceId: "rec-1", capabilities: CAPS, loadAudio: async () => AUDIO, allowed: () => false }, () => {})
+      .transcribe({ sourceId: "rec-1", capabilities: CAPS, loadAudio: async () => AUDIO, allowed: (scope) => scope === "account" }, () => {})
       .catch((e: unknown) => e);
     expect((err as PrivateCloudError).code).toBe("transcription_off");
     expect(h.creates).toHaveLength(0);
@@ -535,7 +645,8 @@ describe("turning transcription off", () => {
         sourceId: "rec-1",
         capabilities: CAPS,
         loadAudio: async () => AUDIO,
-        allowed: () => {
+        allowed: (scope) => {
+          if (scope === "account") return true;
           // Turned off once the job exists (the third question is right before the PUT).
           if (h.creates.length > 0) allowed = false;
           return allowed;
@@ -594,9 +705,9 @@ describe("turning transcription off", () => {
 });
 
 describe("per device capability and per account storage", () => {
-  test("a device that cannot upload (Android below 8.0) is hidden without asking the backend", async () => {
+  test("a device that cannot upload fails availability without asking the backend", async () => {
     const unable = harness({ uploadSupported: async () => false });
-    expect(await unable.cloud.capabilities()).toBeNull();
+    expect(((await unable.cloud.capabilities().catch((error) => error)) as PrivateCloudError).code).toBe("feature_unavailable");
     expect(unable.calls).toEqual([]);
     const able = harness({ uploadSupported: async () => true });
     expect(await able.cloud.capabilities()).toEqual(CAPS);
@@ -606,6 +717,8 @@ describe("per device capability and per account storage", () => {
     const storage = memoryStorage();
     const a = localStorageVoiceNoteConsentStore("did:a", storage);
     const b = localStorageVoiceNoteConsentStore("did:b", storage);
+    storage.setItem(accountStorageKey(VOICE_NOTE_CONSENT_KEY, "did:a"), "1");
+    expect(a.get()).toBe(false);
     a.set(true);
     expect([a.get(), b.get()]).toEqual([true, false]);
     expect(storage.map.has(accountStorageKey(VOICE_NOTE_CONSENT_KEY, "did:a"))).toBe(true);
@@ -622,6 +735,20 @@ describe("per device capability and per account storage", () => {
 });
 
 describe("transcript normalization", () => {
+  test("diarized Private turns retain their speaker labels", () => {
+    const transcript: PrivateCloudTranscript = {
+      ...TRANSCRIPT, diarized: true,
+      speakers: [{ id: "speaker_0", name: "Speaker 1", channel: 0 }, { id: "speaker_1", name: "Speaker 2", channel: 0 }],
+      segments: [
+        { channel: 0, start: 0, end: 1, text: "hello", speaker_id: "speaker_0" },
+        { channel: 0, start: 1, end: 2, text: "hi", speaker_id: "speaker_1" },
+      ],
+    };
+    expect(voiceNoteSentences(transcript).map((sentence) => sentence.speaker_name)).toEqual(["Speaker 1", "Speaker 2"]);
+    expect(prepareVoiceNoteTranscript(transcript, "2026-10-12T00:00:00Z", 1)).toMatchObject({
+      speakers: ["Speaker 1", "Speaker 2"], metadata: { speaker_labels: "diarized" },
+    });
+  });
   test("segments become time-ordered 'You' turns of at most 60 s, trimmed, empty ones dropped", () => {
     expect(voiceNoteSentences(TRANSCRIPT)).toEqual([
       { index: 0, speaker_name: "You", text: "Remember to book the venue.", start_time: 0.5, end_time: 9 },
@@ -639,7 +766,7 @@ describe("transcript normalization", () => {
   });
 
   test("the save carries the desktop's engine metadata; no sentences is the no-speech outcome", () => {
-    const prepared = prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z");
+    const prepared = prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z", 1);
     expect(prepared.speakers).toEqual(["You"]);
     expect(prepared.metadata).toEqual({
       transcription_engine: "private-cloud",
@@ -652,7 +779,7 @@ describe("transcript normalization", () => {
       speaker_labels: "single-speaker",
       transcribed_at: "2026-10-03T10:00:00.000Z",
     });
-    const silent = prepareVoiceNoteTranscript({ ...TRANSCRIPT, segments: [] }, "2026-10-03T10:00:00.000Z");
+    const silent = prepareVoiceNoteTranscript({ ...TRANSCRIPT, segments: [] }, "2026-10-03T10:00:00.000Z", 1);
     expect(silent.sentences).toEqual([]);
     expect(silent.metadata.transcription_outcome).toBe("no_speech");
   });
@@ -674,6 +801,7 @@ function sqliteSpace() {
     }
   };
   return {
+    sqlite,
     kv,
     tcw: {
       did: "did:test:voice",
@@ -713,6 +841,193 @@ const RECORDING = {
 describe("transcribeVoiceNote (one note end to end)", () => {
   beforeEach(() => _resetConnectorSchemaMemoForTests());
 
+  for (const platform of ["ios", "android", "tauri"] as const) {
+    test(`${platform} native file upload uses metadata and never reads audio over the JS bridge`, async () => {
+      const space = sqliteSpace();
+      expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, platform)).ok).toBe(true);
+      const fake = createFakeVoiceNotes();
+      let readCalls = 0;
+      let uploadRequest: unknown;
+      let progressListener: ((event: { uploadId: string; loaded: number; total: number }) => void) | undefined;
+      fake.plugin.listPending = async () => ({ recordings: [{ ...RECORDING, sizeBytes: 4, ledger: {
+        audio: { state: "saved" }, transcriptSync: { state: "pending", rev: 0, at: null },
+      } } as never] });
+      fake.plugin.getTranscript = async () => ({ transcript: null });
+      fake.plugin.audioMetadata = async () => ({ size: 4, mimeType: "audio/mp4", sha256: "a".repeat(64) });
+      fake.plugin.readAudioChunk = async () => { readCalls++; throw new Error("must not read native audio over JS"); };
+      fake.plugin.uploadAudio = async (request) => {
+        uploadRequest = request;
+        progressListener?.({ uploadId: request.uploadId, loaded: 2, total: 4 });
+        return { status: 201, body: { status: "queued" } };
+      };
+      fake.plugin.addListener = (async (_event: string, listener: never) => {
+        progressListener = listener as typeof progressListener;
+        return { remove: async () => {} };
+      }) as typeof fake.plugin.addListener;
+      __setVoiceNotesForTests(fake.plugin, { available: true });
+      __setInstalledEngineForTests(platform === "tauri" ? "tauri" : "native", { ...captureCapabilities(), nativeFileUpload: true });
+      const h = harness({ nativeTransport: true });
+      const progress: VoiceNoteTranscriptionStatus[] = [];
+      const outcome = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: {
+        ...CAPS, content_types: [...CAPS.content_types, "audio/mp4"],
+      }, sourceId: "rec-1", overrideCommitted: true, explicit: true,
+      report: (status) => progress.push(status) });
+      expect(outcome).toBe("transcribed");
+      expect(h.creates[0]?.body).toMatchObject({ content_type: "audio/mp4", byte_size: 4, sha256: "a".repeat(64) });
+      expect(uploadRequest).toMatchObject({ id: "rec-1", contentLength: 4, contentType: "audio/mp4" });
+      expect(readCalls).toBe(0);
+      expect(progress).toContainEqual({ kind: "uploading", progress: 0.5 });
+      __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+      __resetCaptureEngineForTests();
+    });
+  }
+
+  test("missing native file at metadata time falls back to the committed space copy", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+    const fake = createFakeVoiceNotes();
+    fake.plugin.listPending = async () => ({ recordings: [{ ...RECORDING, ledger: {
+      audio: { state: "saved" }, transcriptSync: { state: "pending", rev: 0, at: null },
+    } } as never] });
+    fake.plugin.getTranscript = async () => ({ transcript: null });
+    fake.plugin.audioMetadata = async () => { throw Object.assign(new Error("gone"), { code: "not_found" }); };
+    __setVoiceNotesForTests(fake.plugin, { available: true });
+    const h = harness({});
+    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud,
+      capabilities: { ...CAPS, content_types: [...CAPS.content_types, "audio/mp4"] },
+      sourceId: "rec-1", overrideCommitted: true, explicit: true, nativePlatform: "ios", report: () => {} })).toBe("transcribed");
+    expect(h.creates[0]?.body.byte_size).toBe(4);
+    expect(h.puts[0]?.nativeFileId).toBeUndefined();
+    expect(h.puts[0]?.base64).toBe(AUDIO.base64);
+    __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+  });
+
+  test("launch resume deletes an old cloud job for an on-device note and the next launch does not retry it", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+    space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata,
+      '$.capture.version', 2, '$.capture.options.transcriber', 'on-device') WHERE source_id = 'rec-1'`).run();
+    VoiceNotes.listPending = async () => ({ recordings: [] }); // The native sidecar has been removed.
+    const h = harness({});
+    h.pending.write("rec-1", { attemptId: "00000000-0000-4000-8000-00000000abcd", transcriptionId: ID });
+    const launch = () => createVoiceNoteTranscriber({
+      cloud: h.cloud, consent: { get: () => true, set: () => {} }, tcw: () => space.tcw, holds: memoryHoldStore(),
+    });
+    await launch().check();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(h.removed).toEqual([ID]);
+    expect(h.pending.sourceIds()).toEqual([]);
+    expect(h.creates).toHaveLength(0);
+    expect(h.puts).toHaveLength(0);
+
+    await launch().check();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(h.removed).toEqual([ID]);
+    expect(h.pending.sourceIds()).toEqual([]);
+    expect(h.creates).toHaveLength(0);
+  });
+
+  test("a native on-device choice also deletes a pending cloud job for a legacy-shaped space row", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+    VoiceNotes.listPending = async () => ({ recordings: [{ ...RECORDING,
+      options: { transcriber: "on-device", identifySpeakers: false } } as never] });
+    const h = harness({});
+    h.pending.write("rec-1", { attemptId: "00000000-0000-4000-8000-00000000abcd", transcriptionId: ID2 });
+    const error = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+      sourceId: "rec-1", report: () => {} }).catch((caught: unknown) => caught);
+    expect((error as PrivateCloudError).code).toBe("transcription_off");
+    expect(h.removed).toEqual([ID2]);
+    expect(h.pending.sourceIds()).toEqual([]);
+    expect(h.creates).toHaveLength(0);
+  });
+
+  test("manual Retry obeys the committed v2 choice after the native sidecar is gone", async () => {
+    for (const transcriber of ["off", "on-device", "private-cloud"] as const) {
+      _resetConnectorSchemaMemoForTests();
+      const space = sqliteSpace();
+      expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+      space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata,
+        '$.capture.version', 2, '$.capture.options.transcriber', ?) WHERE source_id = 'rec-1'`).run(transcriber);
+      VoiceNotes.listPending = async () => ({ recordings: [] });
+      const h = harness({});
+      const attempt = transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+        sourceId: "rec-1", report: () => {} });
+      if (transcriber === "private-cloud") {
+        expect(await attempt).toBe("transcribed");
+        expect(h.creates).toHaveLength(1);
+      } else {
+        expect((await attempt.catch((error: unknown) => error) as PrivateCloudError).code).toBe("transcription_off");
+        expect(h.calls).toEqual([]);
+      }
+    }
+  });
+
+  test("overrideCommitted (Use Private instead) transcribes a note committed to Local or Audio only", async () => {
+    for (const transcriber of ["off", "on-device"] as const) {
+      _resetConnectorSchemaMemoForTests();
+      const space = sqliteSpace();
+      expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+      space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata,
+        '$.capture.version', 2, '$.capture.options.transcriber', ?) WHERE source_id = 'rec-1'`).run(transcriber);
+      VoiceNotes.listPending = async () => ({ recordings: [{ ...RECORDING, options: { transcriber, identifySpeakers: false } } as never] });
+      const h = harness({});
+      const outcome = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS,
+        sourceId: "rec-1", overrideCommitted: true, explicit: true, report: () => {} });
+      expect(outcome).toBe("transcribed");
+      expect(h.creates).toHaveLength(1);
+    }
+  });
+
+  test("a note owned by another account is rejected before contacting private cloud", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android")).ok).toBe(true);
+    const list = VoiceNotes.listPending.bind(VoiceNotes);
+    VoiceNotes.listPending = async () => ({ recordings: (await list()).recordings.map((note) => ({ ...note, owner: "did:other" })) });
+    const h = harness({});
+    await expect(transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+      sourceId: "rec-1", report: () => {} })).rejects.toMatchObject({ code: "transcript_save_failed" });
+    expect(h.calls).toEqual([]);
+  });
+
+  test("Library Transcribe saves other-device and old random-id notes absent from this phone", async () => {
+    for (const rowId of ["vn-rec-1", "older-random-row"]) {
+      _resetConnectorSchemaMemoForTests();
+      const space = sqliteSpace();
+      expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android")).ok).toBe(true);
+      if (rowId !== "vn-rec-1") space.sqlite.query("UPDATE connector_meeting SET id = ? WHERE id = 'vn-rec-1'").run(rowId);
+      VoiceNotes.listPending = async () => ({ recordings: [] });
+      VoiceNotes.getTranscript = async () => { throw new Error("No phone transcript read expected"); };
+      const h = harness({});
+      expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+        sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+      expect(h.creates).toHaveLength(1);
+      expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1, speakerLabels: false });
+    }
+  });
+
+  test("a claimed iOS v1 phone copy without a ledger can be transcribed", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+    VoiceNotes.listPending = async () => ({ recordings: [{ ...RECORDING, version: 1,
+      owner: "did:test:voice", ownerUnknown: false } as never] });
+    const h = harness({});
+    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+      sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+    expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1 });
+  });
+
+  test("only diarizing metadata sets the commit's speaker-label flag", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+    for (const [index, label] of ["single-speaker", "diarized", "channels", "channel-you-others", "none"].entries()) {
+      const prepared = prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z", index + 1);
+      prepared.metadata.speaker_labels = label;
+      expect((await saveVoiceNoteTranscript(space.tcw, "rec-1", prepared)).ok).toBe(true);
+      expect((await readTranscriptCommit(space.tcw, "rec-1"))?.speakerLabels).toBe(index > 0 && index < 4);
+    }
+  });
+
   test("the transcript lands on the note's transcript key and row, then the PTX job is deleted", async () => {
     const space = sqliteSpace();
     expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android")).ok).toBe(true);
@@ -721,11 +1036,13 @@ describe("transcribeVoiceNote (one note end to end)", () => {
       tcw: space.tcw,
       cloud: h.cloud,
       capabilities: CAPS,
+      explicit: true,
       sourceId: "rec-1",
       report: () => {},
       now: () => new Date("2026-10-03T10:00:00.000Z"),
     });
     expect(outcome).toBe("transcribed");
+    expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1, speakerLabels: false });
     expect(JSON.parse(space.kv.get(transcriptKvKey(VOICE_NOTE_SOURCE, "rec-1")) as string)).toEqual([
       { index: 0, speaker_name: "You", text: "Remember to book the venue.", start_time: 0.5, end_time: 9 },
     ]);
@@ -740,11 +1057,100 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     expect(h.pending.read("rec-1")).toBeNull();
   });
 
+  test("a private-cloud job started under A cannot notify B after the account switches before its save", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android")).ok).toBe(true);
+    const h = harness({});
+    const events: unknown[] = [];
+    const off = captureEvents.on("library-changed", (detail) => events.push(detail));
+    try {
+      let switched = false;
+      expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+        sourceId: "rec-1", report: (status) => {
+          if (status.kind === "saving" && !switched) {
+            switched = true;
+            advanceAccountGeneration();
+          }
+        } })).toBe("transcribed");
+      expect(switched).toBe(true);
+      expect(events).toEqual([]);
+      expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1 });
+    } finally {
+      off();
+    }
+  });
+
+  test("a queued private-cloud job retains its original account before its first task runs", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android")).ok).toBe(true);
+    const h = harness({});
+    const transcriber = createVoiceNoteTranscriber({
+      cloud: h.cloud, consent: { get: () => true, set: () => {} }, tcw: () => space.tcw,
+    });
+    await transcriber.check();
+    const landed = Promise.withResolvers<void>();
+    const unsubscribe = transcriber.subscribe((event) => {
+      if (event.kind === "saved") landed.resolve();
+    });
+    const events: unknown[] = [];
+    const off = captureEvents.on("library-changed", (detail) => events.push(detail));
+    const unmount = mountVoiceNoteAccount(space.tcw.did);
+    try {
+      transcriber.transcribe("rec-1");
+      advanceAccountGeneration();
+      await landed.promise;
+      expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1 });
+      expect(events).toEqual([]);
+    } finally {
+      unmount();
+      unsubscribe();
+      off();
+    }
+  });
+
+  for (const transition of ["sign-out", "mounted account swap"] as const) {
+    test(`a late on-device sync cannot notify after ${transition}`, async () => {
+      const space = sqliteSpace();
+      expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+      const started = Promise.withResolvers<void>();
+      const pending = Promise.withResolvers<{ transcript: LocalTranscript | null }>();
+      VoiceNotes.getTranscript = () => { started.resolve(); return pending.promise; };
+      const unmountA = mountVoiceNoteAccount(space.tcw.did);
+      const events: unknown[] = [];
+      const off = captureEvents.on("library-changed", (detail) => events.push(detail));
+      let unmountB: (() => void) | undefined;
+      try {
+        const syncing = syncOnDeviceTranscript(space.tcw, { id: "rec-1", ledger: { audio: { state: "saved" } } });
+        await started.promise;
+        if (transition === "sign-out") advanceAccountGeneration();
+        else {
+          unmountA();
+          unmountB = mountVoiceNoteAccount("did:test:other");
+        }
+        pending.resolve({ transcript: {
+          version: 1, noteId: "rec-1", transcriber: "on-device", rev: 1,
+          engine: "apple-speech", model: null, language: "en", outcome: "transcribed",
+          diarized: false, segments: [{ start: 0, end: 1000, text: "Local words", speaker: null }],
+          createdAt: "2026-10-03T10:00:00.000Z",
+        } });
+        await syncing;
+        // A sign-out abandons the sync (the next launch's catch-up saves it); a swap of the mounted account still saves, silently.
+        if (transition === "sign-out") expect(await readTranscriptCommit(space.tcw, "rec-1")).toBeNull();
+        else expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1 });
+        expect(events).toEqual([]);
+      } finally {
+        unmountA();
+        unmountB?.();
+        off();
+      }
+    });
+  }
+
   test("no speech is saved as an outcome (the note is not offered again) and the job is deleted", async () => {
     const space = sqliteSpace();
     await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios");
     const h = harness({ jobs: [job("failed", { error: { code: "no_speech", message: "No speech was found in the recording." } })] });
-    const outcome = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, sourceId: "rec-1", report: () => {} });
+    const outcome = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} });
     expect(outcome).toBe("no_speech");
     expect(space.kv.get(transcriptKvKey(VOICE_NOTE_SOURCE, "rec-1"))).toBe("[]");
     const listed = await listVoiceNotes(space.tcw);
@@ -757,7 +1163,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     await saveVoiceNote(space.tcw, { ...RECORDING, id: "other" }, AUDIO, "android");
     const h = harness({});
     h.pending.write("rec-1", { attemptId: "00000000-0000-4000-8000-00000000abcd", transcriptionId: ID2 });
-    const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, sourceId: "rec-1", audio: AUDIO, report: () => {} })
+    const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", audio: AUDIO, report: () => {} })
       .catch((e: unknown) => e);
     expect((err as PrivateCloudError).code).toBe("voice_note_not_found");
     expect(voiceNoteTranscriptionFailure(err).retryable).toBe(false);
@@ -773,13 +1179,13 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     const space = sqliteSpace();
     await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android");
     const h = harness({ removeFails: true });
-    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
     expect(h.calls).toContain(`remove:${ID}`);
     // Forgotten before the delete was tried: a later run (Retry, relaunch) cannot re-join it, and
     // a 404 from PTX's own deletion can never turn into a second upload.
     expect(h.pending.read("rec-1")).toBeNull();
     const calls = h.calls.length;
-    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
     expect(h.calls.slice(calls)).toEqual([]);
     expect(h.puts).toHaveLength(1);
   });
@@ -787,18 +1193,18 @@ describe("transcribeVoiceNote (one note end to end)", () => {
   test("a note whose row already records an outcome is not transcribed again; a leftover job is deleted", async () => {
     const space = sqliteSpace();
     await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android");
-    await saveVoiceNoteTranscript(space.tcw, "rec-1", prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z"));
+    await saveVoiceNoteTranscript(space.tcw, "rec-1", prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z", 1));
     const h = harness({});
     // An older build saved the transcript, then lost the race to forget its job.
     h.pending.write("rec-1", { attemptId: "00000000-0000-4000-8000-00000000abcd", transcriptionId: ID });
-    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
     expect(h.calls).toEqual([`remove:${ID}`]);
     expect(h.pending.read("rec-1")).toBeNull();
   });
 
-  test("the note's own length is checked before its audio is read", async () => {
+  test("the note's own length is checked against PTX before its audio is read", async () => {
     const space = sqliteSpace();
-    await saveVoiceNote(space.tcw, { ...RECORDING, durationMs: 11 * 60_000 }, AUDIO, "android");
+    await saveVoiceNote(space.tcw, { ...RECORDING, durationMs: 7_201_000 }, AUDIO, "android");
     const h = harness({});
     let loads = 0;
     const realGet = (space.tcw as { kv: { get: (k: string) => Promise<unknown> } }).kv.get;
@@ -806,9 +1212,9 @@ describe("transcribeVoiceNote (one note end to end)", () => {
       loads++;
       return realGet(k);
     };
-    const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, sourceId: "rec-1", report: () => {} })
+    const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} })
       .catch((e: unknown) => e);
-    expect((err as { code: string }).code).toBe("recording_too_long_for_phone");
+    expect((err as { code: string }).code).toBe("recording_too_long");
     expect(loads).toBe(0);
     expect(h.creates).toHaveLength(0);
   });
@@ -819,21 +1225,117 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     const h = harness({});
     const realPut = (space.tcw as { kv: { put: (k: string, v: string) => Promise<unknown> } }).kv.put;
     (space.tcw as { kv: { put: unknown } }).kv.put = async () => ({ ok: false, error: { code: "KV_ERROR", message: "offline" } });
-    const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, sourceId: "rec-1", report: () => {} })
+    const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} })
       .catch((e: unknown) => e);
     expect(voiceNoteTranscriptionFailure(err)).toEqual(expect.objectContaining({ code: "transcript_save_failed", retryable: true }));
     expect(h.removed).toEqual([]);
     expect(h.pending.read("rec-1")?.transcriptionId).toBe(ID);
 
     (space.tcw as { kv: { put: unknown } }).kv.put = realPut;
-    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
     expect(h.puts).toHaveLength(1);
     expect(h.removed).toEqual([ID]);
   });
 });
 
 describe("transcribeVoiceNote reads the note's stored audio (TC-517)", () => {
-  beforeEach(() => _resetConnectorSchemaMemoForTests());
+  beforeEach(() => {
+    _resetConnectorSchemaMemoForTests();
+    const fake = createFakeVoiceNotes();
+    fake.plugin.listPending = async () => ({ recordings: [] });
+    fake.plugin.getTranscript = async () => ({ transcript: null });
+    __setVoiceNotesForTests(fake.plugin, { available: true });
+  });
+
+  test("internal audio read details are logged through errors, never shown in transcription copy", () => {
+    const failure = voiceNoteTranscriptionFailure(new Error("loadVoiceNoteAudio: Key not found: private/key"));
+    expect(failure.message).toBe("Transcription failed. Try again.");
+    expect(failure.message).not.toContain("private/key");
+  });
+
+  test("uses retained local audio before the space copy when the KV key is missing", async () => {
+    const space = sqliteSpace();
+    const localBytes = new Uint8Array([9, 8, 7, 6, 5]);
+    await storeVoiceNote(space.tcw, RECORDING, AUDIO, "android");
+    for (const key of [...space.kv.keys()]) if (key.startsWith(`${voiceNoteAudioKvKey("rec-1")}/`)) space.kv.delete(key);
+    space.kv.delete(voiceNoteAudioKvKey("rec-1"));
+
+    const fake = createFakeVoiceNotes();
+    fake.plugin.listPending = async () => ({ recordings: [{ ...RECORDING, sizeBytes: localBytes.byteLength, ledger: {
+      audio: { state: "saved" }, transcriptSync: { state: "pending", rev: 0, at: null },
+    } } as never] });
+    fake.plugin.getTranscript = async () => ({ transcript: null });
+    fake.plugin.readAudioChunk = async ({ id, offset, length }) => {
+      const bytes = localBytes.slice(offset, offset + length);
+      return { id, offset, base64: bytesToBase64(bytes), bytesRead: bytes.byteLength, size: localBytes.byteLength,
+        eof: offset + bytes.byteLength >= localBytes.byteLength };
+    };
+    __setVoiceNotesForTests(fake.plugin, { available: true });
+
+    let decoded: Uint8Array | null = null;
+    const quiet = silentDecoder();
+    const h = harness({ decode: async (buffer, rate) => {
+      decoded = new Uint8Array(buffer.slice(0));
+      return quiet(buffer, rate);
+    } });
+    await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} });
+    expect(decoded).toEqual(localBytes);
+  });
+
+  for (const [platformShape, fail] of [
+    ["iOS not_found", async () => { throw Object.assign(new Error("gone"), { code: "not_found" }); }],
+    ["Android FileNotFoundException", async () => { throw Object.assign(new Error("gone"), { code: "java.io.FileNotFoundException: /recording.m4a" }); }],
+    ["web tombstoned", async () => { throw Object.assign(new Error("gone"), { code: "tombstoned" }); }],
+    ["truncated native read", async ({ id, offset }: { id: string; offset: number }) => ({
+      id, offset, base64: bytesToBase64(new Uint8Array([9, 8])), bytesRead: 2, size: 5, eof: false,
+    })],
+  ] as const) {
+    test(`falls back to the committed space copy for ${platformShape}`, async () => {
+      const space = sqliteSpace();
+      await saveVoiceNote(space.tcw as never, RECORDING, AUDIO, "android");
+      const fake = createFakeVoiceNotes();
+      fake.plugin.listPending = async () => ({ recordings: [{ ...RECORDING, sizeBytes: 5, ledger: {
+        audio: { state: "saved" }, transcriptSync: { state: "pending", rev: 0, at: null },
+      } } as never] });
+      fake.plugin.getTranscript = async () => ({ transcript: null });
+      fake.plugin.readAudioChunk = fail as typeof fake.plugin.readAudioChunk;
+      __setVoiceNotesForTests(fake.plugin, { available: true });
+      let decoded: Uint8Array | null = null;
+      const quiet = silentDecoder();
+      const h = harness({ decode: async (buffer, rate) => {
+        decoded = new Uint8Array(buffer.slice(0));
+        return quiet(buffer, rate);
+      } });
+      expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+      expect(decoded).toEqual(base64ToBytes(AUDIO.base64));
+    });
+  }
+
+  test("does not read the space copy after an unrecognized local read error", async () => {
+    const space = sqliteSpace();
+    await saveVoiceNote(space.tcw as never, RECORDING, AUDIO, "android");
+    const fake = createFakeVoiceNotes();
+    fake.plugin.listPending = async () => ({ recordings: [{ ...RECORDING, sizeBytes: 5, ledger: {
+      audio: { state: "saved" }, transcriptSync: { state: "pending", rev: 0, at: null },
+    } } as never] });
+    fake.plugin.getTranscript = async () => ({ transcript: null });
+    fake.plugin.readAudioChunk = async () => { throw Object.assign(new Error("denied"), { code: "permission_denied" }); };
+    __setVoiceNotesForTests(fake.plugin, { available: true });
+    let audioReads = 0;
+    const client = space.tcw as unknown as { kv: { get: (key: string) => Promise<unknown> } };
+    const originalGet = client.kv.get;
+    client.kv.get = async (key) => {
+      if (key.startsWith(voiceNoteAudioKvKey("rec-1"))) audioReads++;
+      return originalGet(key);
+    };
+    try {
+      const h = harness({});
+      await expect(transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} }))
+        .rejects.toThrow("Could not read this note's local audio");
+      expect(audioReads).toBe(0);
+      expect(h.creates).toHaveLength(0);
+    } finally { client.kv.get = originalGet; }
+  });
 
   test("a note stored in parts is reassembled, in order, for the upload", async () => {
     const space = sqliteSpace();
@@ -848,7 +1350,7 @@ describe("transcribeVoiceNote reads the note's stored audio (TC-517)", () => {
         return quiet(buffer, rate);
       },
     });
-    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
     expect(decoded).toEqual(bytes);
   });
 
@@ -859,10 +1361,10 @@ describe("transcribeVoiceNote reads the note's stored audio (TC-517)", () => {
     for (const key of [...space.kv.keys()]) if (key.startsWith(`${voiceNoteAudioKvKey("rec-1")}/`)) space.kv.delete(key);
     space.kv.set(voiceNoteAudioKvKey("rec-1"), JSON.stringify(AUDIO));
     const h = harness({});
-    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
   });
 
-  test("a note of unknown length that is too large is refused from its manifest, before any part is read", async () => {
+  test("a note of unknown length over PTX's byte limit is refused from its manifest before any part is read", async () => {
     const space = sqliteSpace();
     // 10 min at twice the phone's bitrate is the most read back; this note claims more.
     const big = new Uint8Array(600 * 16_000 + 1);
@@ -874,18 +1376,416 @@ describe("transcribeVoiceNote reads the note's stored audio (TC-517)", () => {
       gets.push(k);
       return realGet(k);
     };
-    const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, sourceId: "rec-1", report: () => {} })
+    const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: { ...CAPS, max_bytes: 1_000 }, explicit: true, sourceId: "rec-1", report: () => {} })
       .catch((e: unknown) => e);
-    expect((err as { code: string }).code).toBe("recording_too_long_for_phone");
+    expect((err as { code: string }).code).toBe("recording_too_large");
     expect(gets.filter((k) => k.includes("/p/"))).toEqual([]);
     expect(h.creates).toHaveLength(0);
   });
 });
 
+describe("every path that creates or resumes an off-phone job consults the hold (real cloud, pending, consent and hold stores)", () => {
+  beforeEach(() => _resetConnectorSchemaMemoForTests());
+  const settle = async () => { for (let i = 0; i < 30; i++) await new Promise((resolve) => setTimeout(resolve, 0)); };
+  const ATTEMPT = "00000000-0000-4000-8000-00000000abcd";
+
+  /** A saved private-cloud note whose row says where it began (`source: null`: a v1 row that says nothing), plus an interrupted attempt. */
+  async function setup(source: string | null, opts: { consented?: boolean; holds?: Record<string, "held" | "released">; pending?: boolean; secondJob?: boolean } = {}) {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+    if (source !== null) {
+      space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata, '$.capture.version', 2,
+        '$.capture.options.transcriber', 'private-cloud', '$.capture.source', ?) WHERE source_id = 'rec-1'`).run(source);
+    }
+    VoiceNotes.listPending = async () => ({ recordings: [] });
+    const storage = memoryStorage();
+    const h = harness(opts.secondJob ? {
+      creates: [
+        { id: ID, status: "awaiting_upload", upload: { path: `/uploads/${ID}`, capability: CAP } },
+        { id: ID2, status: "awaiting_upload", upload: { path: `/uploads/${ID2}`, capability: CAP } },
+      ],
+      puts: [{ status: 201, body: { status: "queued" } }, { status: 201, body: { status: "queued" } }],
+      jobs: [job("completed"), job("completed")],
+    } : {});
+    if (opts.pending !== false) h.pending.write("rec-1", { attemptId: ATTEMPT, transcriptionId: null });
+    const consent = localStorageVoiceNoteConsentStore(DID, storage);
+    consent.set(opts.consented ?? true);
+    const choices = localStorageVoiceNotePrivateChoiceStore(DID, storage);
+    const holds = localStorageVoiceNoteHoldStore(DID, storage);
+    if (opts.holds) holds.write(opts.holds);
+    const launch = (store: VoiceNoteHoldStore = holds) => createVoiceNoteTranscriber({
+      cloud: h.cloud, consent: localStorageVoiceNoteConsentStore(DID, storage), tcw: () => space.tcw, holds: store,
+      choices: localStorageVoiceNotePrivateChoiceStore(DID, storage) });
+    return { space, h, launch, holds, choices, storage };
+  }
+  const untouched = (h: { creates: unknown[]; puts: unknown[] }) => {
+    expect(h.creates).toHaveLength(0);
+    expect(h.puts).toHaveLength(0);
+  };
+
+  test("Sol r6 (1): a persisted hold plus an interrupted attempt, and consent: check() does not run it", async () => {
+    const { h, launch, holds } = await setup("widget", { holds: { "rec-1": "held" } });
+    const transcriber = launch();
+    expect(transcriber.snapshot().jobs.get("rec-1")?.kind).toBe("held");
+    await transcriber.check();
+    await settle();
+    untouched(h);
+    expect(transcriber.snapshot().jobs.get("rec-1")?.kind).toBe("held");
+    expect(holds.read()).toEqual({ "rec-1": "held" });
+    expect(h.pending.sourceIds()).toEqual(["rec-1"]);
+  });
+
+  test("Sol r6 (1): the same through consent(), the account-level action", async () => {
+    const { h, launch, holds } = await setup("widget", { consented: false, holds: { "rec-1": "held" } });
+    const transcriber = launch();
+    await transcriber.check();
+    transcriber.consent();
+    await settle();
+    untouched(h);
+    expect(transcriber.snapshot().jobs.get("rec-1")?.kind).toBe("held");
+    expect(holds.read()).toEqual({ "rec-1": "held" });
+  });
+
+  test("Sol r6 (2): a note held just before check() is not run by the resume that check() starts", async () => {
+    const { h, launch, holds } = await setup("widget");
+    const transcriber = launch();
+    transcriber.noteSaved({ id: "rec-1", durationMs: 9_000, source: "widget", options: { transcriber: "private-cloud", identifySpeakers: false } });
+    expect(holds.read()).toEqual({ "rec-1": "held" });
+    await transcriber.check();
+    await settle();
+    untouched(h);
+    expect(transcriber.snapshot().jobs.get("rec-1")?.kind).toBe("held");
+  });
+
+  test("save-now and reconcile (noteSaved again) after the interrupted attempt: still no job", async () => {
+    const { h, launch } = await setup("quick_action");
+    const transcriber = launch();
+    await transcriber.check();
+    await settle();
+    untouched(h);
+    for (let i = 0; i < 2; i++) {
+      transcriber.noteSaved({ id: "rec-1", durationMs: 9_000, source: "quick_action", options: { transcriber: "private-cloud", identifySpeakers: false } });
+      await settle();
+    }
+    untouched(h);
+    expect(transcriber.snapshot().jobs.get("rec-1")?.kind).toBe("held");
+  });
+
+  for (const source of ["quick_action", "app_shortcut", "intent", "control", "tile", "widget", "notification", "from-the-future", null] as const) {
+    test(`an interrupted attempt for a note never offered to the transcriber is checked against its saved source (${source ?? "no source"}): held, not run, and the hold is kept`, async () => {
+      const { h, launch, holds } = await setup(source);
+      const transcriber = launch();
+      expect(transcriber.snapshot().jobs.get("rec-1")).toBeUndefined();
+      await transcriber.check();
+      await settle();
+      untouched(h);
+      expect(transcriber.snapshot().jobs.get("rec-1")?.kind).toBe("held");
+      expect(holds.read()).toEqual({ "rec-1": "held" });
+      expect(launch().snapshot().jobs.get("rec-1")?.kind).toBe("held");
+    });
+  }
+
+  test("an interrupted attempt for a note the row says began in the app is still resumed", async () => {
+    const { h, launch } = await setup("in_app");
+    const transcriber = launch();
+    await transcriber.check();
+    await settle();
+    expect(h.creates).toHaveLength(1);
+    expect(transcriber.snapshot().jobs.get("rec-1")?.kind).toBe("done");
+  });
+
+  test("a legacy consent holds an in-app Private note until the new disclosure is confirmed", async () => {
+    const { h, launch, storage } = await setup("in_app", { consented: false });
+    storage.setItem(accountStorageKey(VOICE_NOTE_CONSENT_KEY, DID), "1");
+    const transcriber = launch();
+    expect(transcriber.snapshot().consented).toBe(false);
+    await transcriber.check();
+    await settle();
+    untouched(h);
+    transcriber.consent();
+    await settle();
+    expect(h.creates).toHaveLength(1);
+  });
+
+  test("default Private notes remain blocked across a relaunch and all resume after the new consent", async () => {
+    const { space, h, launch, choices } = await setup("in_app", { consented: false, pending: false, secondJob: true });
+    expect((await saveVoiceNote(space.tcw, { ...RECORDING, id: "rec-2" }, AUDIO, "ios")).ok).toBe(true);
+    space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata, '$.capture.version', 2,
+      '$.capture.options.transcriber', 'private-cloud', '$.capture.source', 'in_app') WHERE source_id = 'rec-2'`).run();
+    const first = launch();
+    await first.check();
+    for (const id of ["rec-1", "rec-2"]) first.noteSaved({ id, durationMs: 9_000, options: { transcriber: "private-cloud" }, source: "in_app" });
+    expect(choices.ids()).toEqual(["rec-1", "rec-2"]);
+    untouched(h);
+
+    const relaunched = launch();
+    for (const id of ["rec-1", "rec-2"]) expect(relaunched.snapshot().jobs.get(id)).toEqual({ kind: "blocked", reason: "no-consent" });
+    await relaunched.check();
+    await settle();
+    untouched(h); // Not now leaves the durable blocker and Review action in place.
+    relaunched.consent();
+    await settle();
+    expect(h.creates).toHaveLength(2);
+    expect(choices.ids()).toEqual([]);
+  });
+
+  test("the hold list cannot be read: an in-app note is still resumed, a shortcut note is not", async () => {
+    const unreadable: VoiceNoteHoldStore = { read: () => { throw new Error("unreadable"); }, write: () => {} };
+    const silence = console.error;
+    console.error = () => {};
+    try {
+      const shortcut = await setup("widget");
+      await shortcut.launch(unreadable).check();
+      await settle();
+      untouched(shortcut.h);
+
+      _resetConnectorSchemaMemoForTests();
+      const inApp = await setup("in_app");
+      await inApp.launch(unreadable).check();
+      await settle();
+      expect(inApp.h.creates).toHaveLength(1);
+    } finally {
+      console.error = silence;
+    }
+  });
+
+  test("the hold list cannot be read and the note was explicitly released before: it is not resumed until the user asks again", async () => {
+    const unreadable: VoiceNoteHoldStore = { read: () => { throw new Error("unreadable"); }, write: () => {} };
+    const silence = console.error;
+    console.error = () => {};
+    try {
+      const { h, launch } = await setup("widget", { holds: { "rec-1": "released" } });
+      const transcriber = launch(unreadable);
+      await transcriber.check();
+      await settle();
+      untouched(h);
+      expect(transcriber.snapshot().jobs.get("rec-1")?.kind).toBe("held");
+    } finally {
+      console.error = silence;
+    }
+  });
+
+  test("the user's own Transcribe on a held note runs it (Retry is the same action), and a later launch resumes it", async () => {
+    const { h, launch, holds } = await setup("widget", { holds: { "rec-1": "held" }, pending: false });
+    const transcriber = launch();
+    await transcriber.check();
+    transcriber.transcribe("rec-1");
+    await settle();
+    expect(h.creates).toHaveLength(1);
+    expect(transcriber.snapshot().jobs.get("rec-1")?.kind).toBe("done");
+    expect(holds.read()).toEqual({ "rec-1": "released" });
+
+    // An attempt interrupted after that Transcribe is resumed by a later launch: the user asked for it.
+    const next = harness({});
+    next.pending.write("rec-1", { attemptId: ATTEMPT, transcriptionId: null });
+    _resetConnectorSchemaMemoForTests();
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+    space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata, '$.capture.version', 2,
+      '$.capture.options.transcriber', 'private-cloud', '$.capture.source', 'widget') WHERE source_id = 'rec-1'`).run();
+    const later = createVoiceNoteTranscriber({ cloud: next.cloud, consent: { get: () => true, set: () => {} }, tcw: () => space.tcw, holds });
+    expect(later.snapshot().jobs.get("rec-1")).toBeUndefined();
+    await later.check();
+    await settle();
+    expect(next.creates).toHaveLength(1);
+    expect(later.snapshot().jobs.get("rec-1")?.kind).toBe("done");
+  });
+
+  test("a Transcribe the user asks for while consent is off does nothing and leaves the hold", async () => {
+    const { h, launch, holds } = await setup("widget", { consented: false, holds: { "rec-1": "held" } });
+    const transcriber = launch();
+    await transcriber.check();
+    transcriber.transcribe("rec-1");
+    await settle();
+    untouched(h);
+    expect(holds.read()).toEqual({ "rec-1": "held" });
+  });
+});
+
 describe("progress copy", () => {
   test("progress copy", () => {
+    expect(transcriptionStatusText({ kind: "uploading" })).toBe("Sending audio to Private transcription…");
+    expect(transcriptionStatusText({ kind: "uploading", progress: 0.42 })).toBe("Sending audio to Private transcription · 42%");
     expect(transcriptionStatusText({ kind: "queued", position: 3 })).toBe("Queued (position 3)…");
     expect(transcriptionStatusText({ kind: "processing", completed: 2, total: 5 })).toBe("Transcribing in private cloud… 2/5");
     expect(transcriptionStatusText({ kind: "processing", completed: null, total: null })).toBe("Transcribing in private cloud…");
   });
 });
+
+describe("an explicit move to private cloud survives a restart", () => {
+  async function onDeviceNote() {
+    _resetConnectorSchemaMemoForTests();
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+    space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata,
+      '$.capture.version', 2, '$.capture.options.transcriber', 'on-device') WHERE source_id = 'rec-1'`).run();
+    VoiceNotes.listPending = async () => ({
+      recordings: [{ ...RECORDING, owner: "did:test:voice", options: { transcriber: "on-device", identifySpeakers: false }, stt: { state: "cancelled" } } as never],
+    });
+    return space;
+  }
+  const settle = async (t: ReturnType<typeof createVoiceNoteTranscriber>) => {
+    for (let i = 0; i < 30 && t.snapshot().jobs.get("rec-1")?.kind === "active"; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+
+  test("the relaunch rejoins the uploaded job instead of deleting it as a leftover", async () => {
+    const space = await onDeviceNote();
+    const storage = memoryStorage();
+    const pending = localStorageVoiceNotePendingStore(DID, storage);
+    const launch = (h: ReturnType<typeof harness>) =>
+      createVoiceNoteTranscriber({
+        cloud: h.cloud,
+        consent: { get: () => true, set: () => {} },
+        choices: localStorageVoiceNotePrivateChoiceStore(DID, storage),
+        holds: localStorageVoiceNoteHoldStore(DID, storage),
+        tcw: () => space.tcw,
+      });
+    const first = harness({ pending, jobs: [new PrivateCloudError("offline", "network gone")] });
+    const t = launch(first);
+    await t.check();
+    t.transcribePrivately("rec-1");
+    await settle(t);
+    expect(first.puts).toHaveLength(1);
+    expect(pending.read("rec-1")?.transcriptionId).toBe(ID);
+
+    const second = harness({ pending, jobs: [job("completed")] });
+    const restarted = launch(second);
+    await restarted.check();
+    await settle(restarted);
+    // The finished job is deleted only after its transcript was saved from it, never as a leftover.
+    expect(restarted.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "done", outcome: "transcribed" });
+    expect(second.puts).toHaveLength(0);
+    expect(localStorageVoiceNotePrivateChoiceStore(DID, storage).ids()).toEqual([]);
+  });
+
+  test("the same leftover job without a choice is still deleted", async () => {
+    const space = await onDeviceNote();
+    const storage = memoryStorage();
+    const pending = localStorageVoiceNotePendingStore(DID, storage);
+    pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
+    const h = harness({ pending, jobs: [job("completed")] });
+    const t = createVoiceNoteTranscriber({
+      cloud: h.cloud,
+      consent: { get: () => true, set: () => {} },
+      choices: localStorageVoiceNotePrivateChoiceStore(DID, storage),
+        holds: localStorageVoiceNoteHoldStore(DID, storage),
+      tcw: () => space.tcw,
+    });
+    await t.check();
+    await settle(t);
+    expect(h.removed).toEqual([ID]);
+  });
+
+  test("a choice whose job failed before reaching the cloud is not retried by the next launch", async () => {
+    const space = await onDeviceNote();
+    const storage = memoryStorage();
+    const choices = localStorageVoiceNotePrivateChoiceStore(DID, storage);
+    const h = harness({ jobs: [job("completed")], creates: [new PrivateCloudError("invalid_argument", "no")] });
+    const t = createVoiceNoteTranscriber({ cloud: h.cloud, consent: { get: () => true, set: () => {} }, choices, holds: memoryHoldStore(), tcw: () => space.tcw });
+    await t.check();
+    t.transcribePrivately("rec-1");
+    await settle(t);
+    expect(t.snapshot().jobs.get("rec-1")?.kind).toBe("failed");
+    expect(choices.ids()).toEqual([]);
+  });
+
+  test("turning private cloud off revokes the choice", async () => {
+    const space = await onDeviceNote();
+    const storage = memoryStorage();
+    const choices = localStorageVoiceNotePrivateChoiceStore(DID, storage);
+    choices.add("rec-1");
+    const h = harness({ jobs: [job("completed")] });
+    const t = createVoiceNoteTranscriber({ cloud: h.cloud, consent: { get: () => true, set: () => {} }, choices, holds: memoryHoldStore(), tcw: () => space.tcw });
+    await t.turnOff();
+    expect(choices.ids()).toEqual([]);
+  });
+});
+
+test("a retryable audio-read failure before the cloud job exists retains the user's Private choice on restart", async () => {
+  _resetConnectorSchemaMemoForTests();
+  const space = sqliteSpace();
+  expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+  space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata,
+    '$.capture.version', 2, '$.capture.options.transcriber', 'on-device') WHERE source_id = 'rec-1'`).run();
+  VoiceNotes.listPending = async () => ({ recordings: [{ ...RECORDING, owner: "did:test:voice",
+    options: { transcriber: "on-device", identifySpeakers: false }, stt: { state: "cancelled" } } as never] });
+  const storage = memoryStorage();
+  const pending = localStorageVoiceNotePendingStore(DID, storage);
+  const choices = localStorageVoiceNotePrivateChoiceStore(DID, storage);
+  const client = space.tcw as unknown as { kv: { get: (key: string) => Promise<unknown> } };
+  const originalGet = client.kv.get;
+  client.kv.get = async key => key.startsWith(voiceNoteAudioKvKey("rec-1"))
+    ? { ok: false, error: { code: "NETWORK_ERROR", message: "KV offline" } }
+    : originalGet(key);
+  const launch = (h: ReturnType<typeof harness>) => createVoiceNoteTranscriber({
+    cloud: h.cloud, consent: { get: () => true, set: () => {} },
+    choices: localStorageVoiceNotePrivateChoiceStore(DID, storage),
+        holds: localStorageVoiceNoteHoldStore(DID, storage), tcw: () => space.tcw,
+  });
+  const settle = async (t: ReturnType<typeof createVoiceNoteTranscriber>) => {
+    for (let i = 0; i < 200 && t.snapshot().jobs.get("rec-1")?.kind === "active"; i++)
+      await new Promise(resolve => setTimeout(resolve, 50));
+  };
+  const first = harness({ pending });
+  const t = launch(first);
+  await t.check();
+  t.transcribePrivately("rec-1");
+  await settle(t);
+  expect(t.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", retryable: true });
+  expect(first.creates).toHaveLength(0);
+  expect(pending.sourceIds()).toEqual([]);
+  const retainedAfterFailure = choices.has("rec-1");
+  client.kv.get = originalGet;
+  const second = harness({ pending, jobs: [job("completed")] });
+  const restarted = launch(second);
+  await restarted.check();
+  await settle(restarted);
+  expect({ retainedAfterFailure, job: restarted.snapshot().jobs.get("rec-1") }).toMatchObject({
+    retainedAfterFailure: true, job: { kind: "done", outcome: "transcribed" },
+  });
+}, 15000);
+
+test("Library Transcribe uses local audio while the space upload is pending", async () => {
+  _resetConnectorSchemaMemoForTests();
+  const space = sqliteSpace();
+  expect((await saveVoiceNote(space.tcw, { ...RECORDING, version: 2, source: "in_app", options: { transcriber: "private-cloud", identifySpeakers: false } }, AUDIO, "ios")).ok).toBe(true);
+  space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata,
+    '$.capture.version', 2, '$.capture.options.transcriber', 'private-cloud') WHERE source_id = 'rec-1'`).run();
+  for (const key of [...space.kv.keys()]) if (key.startsWith(voiceNoteAudioKvKey("rec-1"))) space.kv.delete(key);
+
+  const recording = { ...RECORDING, version: 2 as const, owner: "did:test:voice", source: "in_app" as const, ledger: {
+    audio: { state: "pending" as const, rowId: null, at: null },
+    transcriptSync: { state: "pending" as const, rev: 0, at: null },
+  }, options: { transcriber: "private-cloud" as const, identifySpeakers: false } } as unknown as VoiceNoteRecording;
+  VoiceNotes.listPending = async () => ({ recordings: [recording] });
+  let audioReads = 0;
+  const client = space.tcw as unknown as { kv: { get: (key: string) => Promise<unknown> } };
+  const originalGet = client.kv.get;
+  client.kv.get = async (key) => {
+    if (key.startsWith(voiceNoteAudioKvKey("rec-1"))) audioReads++;
+    return originalGet(key);
+  };
+  VoiceNotes.readAudioChunk = async ({ id, offset, length }) => ({ id, offset,
+    base64: bytesToBase64(new Uint8Array(length)), bytesRead: length, size: RECORDING.sizeBytes, eof: offset + length >= RECORDING.sizeBytes });
+
+  const finishTrackedUpload = pendingStore.beginAutomaticSave();
+  try {
+    const h = harness({});
+    const transcriber = createVoiceNoteTranscriber({
+      cloud: h.cloud, consent: { get: () => true, set: () => {} }, tcw: () => space.tcw, holds: memoryHoldStore(),
+    });
+    await transcriber.check();
+    // The row is visible and the audio upload is pending, but its native file is valid.
+    // Keep a save busy to prove local-first transcription does not wait on the upload queue.
+    transcriber.transcribe("rec-1");
+    for (let i = 0; i < 100 && transcriber.snapshot().jobs.get("rec-1")?.kind === "active"; i++)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "done", outcome: "transcribed" });
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+    expect(audioReads).toBe(0);
+  } finally {
+    finishTrackedUpload();
+    client.kv.get = originalGet;
+  }
+}, 15000);

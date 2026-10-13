@@ -44,7 +44,7 @@
 // Both dialogs are CONTROLLED (open + onOpenChange props) so the card owns the
 // "which dialog is open" state and can refresh row data on close.
 
-import { useCallback, useEffect, useRef, useState, type FC } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FC } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
@@ -98,6 +98,7 @@ import {
   type NativeOAuthAttempt,
   type NativeOAuthPorts,
 } from "@/lib/connectors/googleOAuthNative";
+import { secretsAvailable, SECRETS_UNAVAILABLE_IN_APP_MESSAGE } from "@/lib/openkeyNative";
 import {
   syncGoogleMeet,
   type GmeetSyncError,
@@ -110,8 +111,10 @@ import {
   GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY,
   GOOGLE_TESTING_MODE_REAUTH_COPY,
   googleConsentCopyForSystemBrowser,
+  transcriptAwareConsentCopy,
   type BackgroundSyncConsentCopy,
 } from "@/lib/connectors/consentCopy";
+import { subscribeTranscriptConsent, transcriptConsentState } from "@/lib/transcriptDeliveryState";
 import {
   disconnectRetry,
   disconnectStatusMessage,
@@ -374,22 +377,34 @@ const ApiKeyConnectDialog: FC<ConnectorConnectDialogProps> = ({
           </DialogDescription>
         </DialogHeader>
 
-        {(phase === "key-entry" || phase === "validating") && (
-          <KeyEntryPanel
-            apiKey={apiKey}
-            onChange={setApiKey}
-            onSubmit={handleContinue}
-            validating={phase === "validating"}
-            error={error}
-          />
+        {!secretsAvailable() ? (
+          <p
+            data-testid="api-key-connect-unavailable-in-app"
+            className="flex items-start gap-2 rounded-md border border-border bg-muted/30 p-2 text-xs text-muted-foreground"
+          >
+            <InfoIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+            <span>{SECRETS_UNAVAILABLE_IN_APP_MESSAGE}</span>
+          </p>
+        ) : (
+          <>
+            {(phase === "key-entry" || phase === "validating") && (
+              <KeyEntryPanel
+                apiKey={apiKey}
+                onChange={setApiKey}
+                onSubmit={handleContinue}
+                validating={phase === "validating"}
+                error={error}
+              />
+            )}
+            {phase === "verified" && user && (
+              <VerifiedPanel user={user} error={error} />
+            )}
+            {phase === "saving" && <SavingPanel />}
+            {phase === "syncing" && <SyncingPanel progress={progress} />}
+            {phase === "done" && summary && <DonePanel summary={summary} />}
+            {phase === "error" && error && <SyncFailedPanel error={error} />}
+          </>
         )}
-        {phase === "verified" && user && (
-          <VerifiedPanel user={user} error={error} />
-        )}
-        {phase === "saving" && <SavingPanel />}
-        {phase === "syncing" && <SyncingPanel progress={progress} />}
-        {phase === "done" && summary && <DonePanel summary={summary} />}
-        {phase === "error" && error && <SyncFailedPanel error={error} />}
 
         <ConnectFooter
           phase={phase}
@@ -721,6 +736,9 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
 }) => {
   const [phase, setPhase] = useState<OAuthConnectPhase>("authorize");
   const [custodyConsent, setCustodyConsent] = useState(false);
+  const transcriptConsent = useSyncExternalStore(
+    subscribeTranscriptConsent, transcriptConsentState, transcriptConsentState,
+  );
   const autojoin = purpose === "autojoin";
   const [error, setError] = useState<OAuthErrorState | null>(null);
   const [progress, setProgress] = useState<GmeetSyncProgress | null>(null);
@@ -794,9 +812,16 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   const busy =
     phase === "exchange" || phase === "save-token" || phase === "initial-sync";
   // Inside the Exo app: the system browser, or (while this build keeps it off) an
-  // explanation in place of "Continue with Google". Never a popup there.
-  const authorizeSurface = googleAuthorizeSurface();
-  const consentCopy = autojoin ? GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY : GOOGLE_MEET_CONSENT_COPY;
+  // explanation in place of "Continue with Google". Never a popup there. Native
+  // OpenKey sessions have no vault to hold the refresh token, so the surface is
+  // unavailable in the app even when native Google OAuth is enabled.
+  const authorizeSurface = secretsAvailable()
+    ? googleAuthorizeSurface()
+    : "unavailable-in-app";
+  const consentCopy = transcriptAwareConsentCopy(
+    autojoin ? GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY : GOOGLE_MEET_CONSENT_COPY,
+    transcriptConsent,
+  );
 
   const handleOpenChange = useCallback(
     (next: boolean) => {
@@ -1048,7 +1073,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     // once this build allows it (the private-use return needs a claimed https link first).
     const nativePorts = capacitorNativeOAuthPorts();
     if (nativePorts !== null) {
-      if (!nativeGoogleOAuthEnabled()) {
+      if (!secretsAvailable() || !nativeGoogleOAuthEnabled()) {
         setError({ kind: "native-unavailable", message: "" });
         return;
       }
@@ -1233,7 +1258,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
             />
             {autojoin && <label className="flex items-start gap-2 text-xs">
               <input type="checkbox" checked={custodyConsent} onChange={(event) => setCustodyConsent(event.target.checked)} />
-              <span>{GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY.consentCheckbox}</span>
+              <span>{consentCopy.consentCheckbox}</span>
             </label>}
           </>
         )}
@@ -1903,7 +1928,7 @@ function formatRetryIn(ms: number): string {
  * google-meet has no webhook is actually known. `supportsBackgroundNotifications`
  * refuses the surface for this source for the same reason.
  */
-const WEBHOOKLESS_STEPS: readonly DisconnectStep[] = [
+export const WEBHOOKLESS_STEPS: readonly DisconnectStep[] = [
   "record-purge",
   "disable-webhooks",
 ];
@@ -1914,13 +1939,13 @@ const WEBHOOKLESS_STEPS: readonly DisconnectStep[] = [
  * LOUD: `feature-dark` with no established darkness is a hard failure in the
  * runner, never a silent success.
  */
-const NO_DELIVERY_LANE: DisconnectWebhooks = {
+export const NO_DELIVERY_LANE: DisconnectWebhooks = {
   disable: () => Promise.resolve({ status: "feature-dark" }),
   recordPurge: () => Promise.resolve({ status: "feature-dark" }),
 };
 
 /** What the upstream `POST /revoke` did. Never fatal except `locked`. */
-interface UpstreamRevokeState {
+export interface UpstreamRevokeState {
   status: "revoked" | "no-token" | "failed" | "locked" | "server-unavailable";
   /** Google's or the vault's own words, when there are any. */
   message?: string;
@@ -2014,7 +2039,7 @@ export async function revokeGoogleUpstream(input: {
   }
 }
 
-function upstreamRevokeMessage(state: UpstreamRevokeState): string | null {
+export function upstreamRevokeMessage(state: UpstreamRevokeState): string | null {
   switch (state.status) {
     case "revoked":
       return null;
@@ -2035,7 +2060,7 @@ function upstreamRevokeMessage(state: UpstreamRevokeState): string | null {
  * connector that has none, and "your API key" for a connection that is not a
  * key. Failures and the running labels stay the module's.
  */
-function googleDisconnectStatusMessage(progress: DisconnectProgress): string | null {
+export function googleDisconnectStatusMessage(progress: DisconnectProgress): string | null {
   if (progress.done) {
     return progress.mode === "delete-data"
       ? "Disconnected. Your Google Meet meetings have been deleted from your space."

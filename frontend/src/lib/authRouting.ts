@@ -12,10 +12,10 @@
 // Everything else is still deciding, and a still-deciding app must keep the
 // address it was given.
 
-import type { AppState } from "../App";
+import type { AppState } from "./appState";
 
 // A total map rather than a comparison chain, so adding an AppState is a type
-// error here until it is classified — the same shape as `stateLabel` in App.
+// error here until it is classified — the same shape as `stateLabel` in appState.ts.
 const SETTLED_SIGNED_OUT: Record<AppState, boolean> = {
   // Restoring a persisted session — the cold-reload window.
   booting: false,
@@ -36,4 +36,21 @@ const SETTLED_SIGNED_OUT: Record<AppState, boolean> = {
 
 export function isAuthSettledSignedOut(state: AppState): boolean {
   return SETTLED_SIGNED_OUT[state];
+}
+
+const NATIVE_SIGN_IN_STATES: ReadonlySet<AppState> = new Set<AppState>(["unauthenticated", "recoverableError", "connecting", "signing"]);
+
+/**
+ * Whether the native app shows its own sign-in screen. It replaces the boot
+ * surface's "Sign in" in every state that offers or runs a sign-in; the
+ * restoring and offline states keep the boot surface. The signed-out local
+ * home stays in front until its "Sign in to sync" (or the recorder) asks for it.
+ */
+export function showsNativeSignIn(options: {
+  native: boolean;
+  state: AppState;
+  localHome: boolean;
+  requested: boolean;
+}): boolean {
+  return options.native && NATIVE_SIGN_IN_STATES.has(options.state) && (!options.localHome || options.requested);
 }

@@ -30,6 +30,16 @@ export default tseslint.config(
     },
   },
   {
+    // fake-indexeddb replaces a browser's IndexedDB; it belongs to tests and test kits only.
+    ignores: ["**/testing/**", "**/*.test.*"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        { patterns: [{ group: ["fake-indexeddb", "fake-indexeddb/*"], message: "fake-indexeddb is for tests only (**/testing/** and *.test.*)." }] },
+      ],
+    },
+  },
+  {
     files: ["**/src/types/**/*.ts"],
     rules: {
       "@typescript-eslint/no-namespace": "off",

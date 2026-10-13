@@ -1,0 +1,238 @@
+// What the recorder says went wrong with a recording (TC-866), as the Recent
+// rows and the "on this phone" card show it. Pure: the provider's
+// `captureIssues` map in, row models and one line of copy out. An issue's
+// `detail` is diagnostic and never reaches this file's output.
+import type { RecorderCaptureIssue } from "../recorder/recorderReducer";
+import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
+import type { LibraryItem } from "../library/LibraryRow";
+import { FINALIZATION_PENDING, formatDuration } from "../recorder/recorderCopy";
+import { HOME_COPY } from "./homeCopy";
+
+/** The recorder's issues, plus a session native gave up on and parked with its audio kept (`listQuarantine`). */
+/** `unplayable`: native kept the audio but there is nothing to recover from, so only Delete applies. */
+export type HomeIssue =
+  | RecorderCaptureIssue
+  | { kind: "quarantined"; unplayable?: true };
+
+export type CaptureIssues = Readonly<Record<string, HomeIssue>>;
+
+/** The row's state line for an issue. */
+export function issueMeta(issue: HomeIssue): string {
+  switch (issue.kind) {
+    case "finalization_timed_out":
+      return HOME_COPY.timedOutMeta;
+    case "recoveryFailed":
+      return HOME_COPY.recoveryFailedMeta;
+    case "quarantined":
+      return HOME_COPY.quarantinedMeta;
+    case "write_failed":
+      return HOME_COPY.writeFailedMeta;
+    case "partial_audio":
+      return HOME_COPY.partialAudioMeta;
+  }
+}
+
+/** Saved, with some audio missing: a quiet line under a normal row, never an error. */
+export function issueIsInformational(
+  issue: HomeIssue,
+): issue is Extract<HomeIssue, { kind: "partial_audio" }> {
+  return issue.kind === "partial_audio";
+}
+
+/** A real failure: the "!" tile and "Needs attention". A timed-out save is still finishing, and a partial one was saved. */
+export function issueIsFailure(issue: HomeIssue): boolean {
+  return issue.kind !== "finalization_timed_out" && !issueIsInformational(issue);
+}
+
+/** "About 0:12 is missing", or null when the recorder doesn't know how much (never a guess). */
+export function partialAudioMissingLine(issue: HomeIssue): string | null {
+  if (!issueIsInformational(issue)) return null;
+  const { missingMs } = issue;
+  if (missingMs === undefined || !Number.isFinite(missingMs) || missingMs <= 0) return null;
+  return missingMs < 1000
+    ? HOME_COPY.partialAudioMissingBrief
+    : HOME_COPY.partialAudioMissing(formatDuration(missingMs));
+}
+
+/** Whether Try again and Delete can apply: the recording could not be recovered, and its audio is still on the phone. */
+export function issueIsRecoverable(
+  issue: HomeIssue,
+): issue is Extract<HomeIssue, { kind: "recoveryFailed" | "quarantined" }> {
+  return issue.kind === "recoveryFailed" || issue.kind === "quarantined";
+}
+
+/** Whether Try again is offered: not for audio native could not play back. */
+export function issueCanRetry(issue: HomeIssue): boolean {
+  return !(issue.kind === "quarantined" && issue.unplayable);
+}
+
+/** Changes when a recording newly fails recovery (or stops failing): the cue to read what native has parked. */
+export function recoveryFailedKey(
+  issues: Readonly<Record<string, RecorderCaptureIssue>>,
+): string {
+  return Object.keys(issues)
+    .filter((id) => issues[id]!.kind === "recoveryFailed")
+    .sort()
+    .join(",");
+}
+
+/**
+ * The recorder's issues with what native parked: a quarantined session
+ * replaces a `recoveryFailed` one or a `partial_audio` notice (same recording,
+ * now with its audio kept: a real failure outranks an informational line),
+ * and a recording the user deleted drops out.
+ */
+/** What native calls audio it kept but can never play back: Android `unplayable`, iOS `no_audio_track`. */
+export function isUnplayableReason(reason: string): boolean {
+  return reason === "unplayable" || reason === "no_audio_track";
+}
+
+/** Dismisses a partial-audio notice. Null once it is dismissed; otherwise the line to show, with the failure logged (a dismissal that is not saved leaves the notice up). */
+export function dismissNotice(
+  id: string,
+  dismiss: (id: string) => boolean,
+): string | null {
+  try {
+    if (dismiss(id)) return null;
+    console.error("[CaptureHome] The partial-audio notice was not dismissed", id);
+  } catch (caught) {
+    console.error("[CaptureHome] Dismissing the partial-audio notice failed", id, caught);
+  }
+  return HOME_COPY.dismissFailed;
+}
+
+export function withQuarantine(
+  issues: Readonly<Record<string, RecorderCaptureIssue>>,
+  quarantined: readonly { id: string; reason: string }[],
+  deletedIds: ReadonlySet<string>,
+): CaptureIssues {
+  const merged: Record<string, HomeIssue> = { ...issues };
+  for (const { id, reason } of quarantined) {
+    const current = merged[id];
+    if (current === undefined || current.kind === "recoveryFailed" || current.kind === "partial_audio")
+      merged[id] =
+        isUnplayableReason(reason)
+          ? { kind: "quarantined", unplayable: true }
+          : { kind: "quarantined" };
+  }
+  for (const id of deletedIds) delete merged[id];
+  return merged;
+}
+
+/** The issues whose Library row opens a sheet instead of its note. A timed-out one resolves itself, and a partial one was saved: those rows still open the note (a partial one has its own Details control). */
+export function issueHasSheet(issue: HomeIssue): boolean {
+  return issue.kind !== "finalization_timed_out" && !issueIsInformational(issue);
+}
+
+export function issueSheetCopy(issue: HomeIssue): {
+  title: string;
+  body: string;
+} | null {
+  switch (issue.kind) {
+    case "finalization_timed_out":
+      return HOME_COPY.timedOutSheet;
+    case "recoveryFailed":
+      return HOME_COPY.recoveryFailedSheet;
+    case "quarantined":
+      return issue.unplayable
+        ? HOME_COPY.unplayableSheet
+        : HOME_COPY.quarantinedSheet;
+    case "write_failed":
+      return HOME_COPY.writeFailedSheet;
+    case "partial_audio":
+      return HOME_COPY.partialAudioSheet;
+  }
+}
+
+/** The issue an open sheet shows: the provider's current one for that recording, none once it clears or the skin is off. */
+export function sheetIssue(
+  id: string | null,
+  issues: CaptureIssues,
+  enabled: boolean,
+): HomeIssue | null {
+  return (enabled && id !== null ? issues[id] : undefined) ?? null;
+}
+
+/** The issue a Library item carries: a voice note whose recording id has one. */
+export function issueForItem(
+  item: LibraryItem,
+  issues: CaptureIssues,
+): HomeIssue | undefined {
+  return item.source === VOICE_NOTE_SOURCE ? issues[item.sourceId] : undefined;
+}
+
+export interface OrphanIssue {
+  id: string;
+  issue: HomeIssue;
+}
+
+/**
+ * Recordings with an issue and no Library row yet (they are not in the space),
+ * newest issue first. Recent and the Library list both show these. A partial
+ * one is not among them: it marks a normal row, and with no row the "on this
+ * phone" card already accounts for the recording.
+ */
+export function orphanIssues(
+  items: readonly LibraryItem[],
+  issues: CaptureIssues,
+): OrphanIssue[] {
+  const inLibrary = new Set(
+    items
+      .filter((item) => item.source === VOICE_NOTE_SOURCE)
+      .map((item) => item.sourceId),
+  );
+  return Object.keys(issues)
+    .filter((id) => !inLibrary.has(id) && issues[id]?.kind !== "partial_audio")
+    .reverse()
+    .map((id) => ({ id, issue: issues[id]! }));
+}
+
+export type RecentEntry =
+  | { type: "item"; item: LibraryItem; issue?: HomeIssue }
+  | { type: "issue"; id: string; issue: HomeIssue };
+
+/**
+ * Recent's rows: the recordings with an issue and no Library row come first
+ * (`orphanIssues`); then the Library's latest, up to `limit` rows in all. An
+ * issue row is never cut to make room.
+ */
+export function recentEntries(
+  items: readonly LibraryItem[],
+  issues: CaptureIssues,
+  limit: number,
+): RecentEntry[] {
+  const orphans: RecentEntry[] = orphanIssues(items, issues).map(
+    (orphan): RecentEntry => ({ type: "issue", ...orphan }),
+  );
+  const rest = items.slice(0, Math.max(0, limit - orphans.length)).map(
+    (item): RecentEntry => ({
+      type: "item",
+      item,
+      issue: issueForItem(item, issues),
+    }),
+  );
+  return [...orphans, ...rest];
+}
+
+/**
+ * The "on this phone" card's second line. A save error shows as it is, except
+ * the "Exo will finish it automatically" one (FINALIZATION_PENDING): a
+ * recording that could not be recovered or fully written outranks that, and
+ * the card never says both. Nothing wrong keeps the plain line.
+ */
+export function cardNote(
+  issues: CaptureIssues,
+  lastError: string | null,
+): string {
+  if (lastError && lastError !== FINALIZATION_PENDING) return lastError;
+  const kinds = Object.values(issues).map((issue) => issue.kind);
+  if (kinds.includes("recoveryFailed"))
+    return `${HOME_COPY.notInSpace} · ${HOME_COPY.willRetry}`;
+  if (kinds.includes("quarantined"))
+    return `${HOME_COPY.notInSpace} · ${HOME_COPY.quarantinedCard}`;
+  if (kinds.includes("write_failed"))
+    return `${HOME_COPY.notInSpace} · ${HOME_COPY.writeFailedMeta}`;
+  if (lastError || kinds.includes("finalization_timed_out"))
+    return HOME_COPY.willFinish;
+  return HOME_COPY.notInSpace;
+}

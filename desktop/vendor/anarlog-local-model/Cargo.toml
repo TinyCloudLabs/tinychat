@@ -1,0 +1,20 @@
+# Vendored from https://github.com/fastrepl/anarlog @ 864ddc1f692116d128eea2692fd72b0a51007768
+# (crates/local-model, MIT-licensed). See PROVENANCE.md for the local change and why.
+[package]
+name = "local-model"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anlg-am = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "am" }
+anlg-file = { path = "../anarlog-file", package = "file" }
+anlg-model-downloader = { path = "../anarlog-model-downloader", package = "model-downloader" }
+anlg-transcribe-soniqo = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "transcribe-soniqo" }
+anlg-transcribe-speechanalyzer = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "transcribe-speechanalyzer" }
+anlg-whisper-local-model = { path = "../anarlog-whisper-local-model", package = "whisper-local-model" }
+
+serde = { version = "1", features = ["derive"] }
+specta = { version = "2.0.0-rc.22", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
