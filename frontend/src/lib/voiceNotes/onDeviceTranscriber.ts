@@ -226,7 +226,7 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
       }
       published.delete(resultKey);
     }
-  } catch (err) {
+  } catch {
     if (!isCurrent(tcw, ctx)) return true;
     publish(key, { state: "failed", message: LOCAL_COPY.transcriptCheckFailed });
     return false;
