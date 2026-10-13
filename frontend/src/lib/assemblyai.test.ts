@@ -24,17 +24,17 @@ describe("assemblyAiSentences", () => {
       ],
     };
     expect(assemblyAiSentences(t, null)).toEqual([
-      { index: 0, speaker_name: "Speaker A", text: "Hello there.", start_time: 0.25, end_time: 1.5 },
-      { index: 1, speaker_name: "Speaker B", text: "Hi.", start_time: 1.6, end_time: 2.1 },
+      { index: 0, speaker_name: "Speaker A", speaker_id: "A", text: "Hello there.", start_time: 0.25, end_time: 1.5, timing: "engine" },
+      { index: 1, speaker_name: "Speaker B", speaker_id: "B", text: "Hi.", start_time: 1.6, end_time: 2.1, timing: "engine" },
     ]);
   });
 
   test("without speaker labels, sentences carry no speaker; bare text is kept as one sentence", () => {
     const t: AssemblyAiTranscript = { id: "t1", status: "completed", utterances: null, text: "One. Two.", audio_duration: 4 };
     expect(assemblyAiSentences(t, [{ text: "One.", start: 0, end: 900 }])).toEqual([
-      { index: 0, speaker_name: null, text: "One.", start_time: 0, end_time: 0.9 },
+      { index: 0, speaker_name: null, text: "One.", start_time: 0, end_time: 0.9, timing: "engine" },
     ]);
-    expect(assemblyAiSentences(t, [])).toEqual([{ index: 0, speaker_name: null, text: "One. Two.", start_time: 0, end_time: 4 }]);
+    expect(assemblyAiSentences(t, [])).toEqual([{ index: 0, speaker_name: null, text: "One. Two.", start_time: 0, end_time: 4, timing: "coarse" }]);
   });
 });
 

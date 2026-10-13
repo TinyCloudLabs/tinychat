@@ -76,11 +76,12 @@ export interface NoteSttState {
   segmentsDone: number; windowsDone: number; error: string | null;
 }
 export interface LocalTranscript {
-  version: 1; noteId: string; transcriber: TranscriberId; rev: number;
+  version: 1 | 2; noteId: string; transcriber: TranscriberId; rev: number;
   engine: "parakeet-tdt-0.6b-v3" | "parakeet-tdt-110m-en" | "apple-speech" | "whispercpp" | "assemblyai" | "tinycloud-private-transcription";
   model: string | null; language: string | null; outcome: "transcribed" | "no_speech"; diarized: boolean;
   /** start/end are milliseconds: the native sidecar's canonical-JSON writer only accepts integers. */
   segments: { start: number; end: number; text: string; speaker: string | null;
+    channel?: 0 | 1; speakerId?: string | null; timing?: "engine" | "coarse" | "unknown";
     /** Eval-only lineage. Not included in production transcripts. Times are seconds. */
     words?: { text: string; start: number; end: number; channel: number | undefined;
       timing: "token" | "fallback" | "none" }[] }[]; createdAt: string;
@@ -162,6 +163,8 @@ export interface RecoveryCompletedEvent {
 
 export interface VoiceNoteRecording {
   id: string;
+  /** Mac capture's declared channel layout; older notes are mono. */
+  channels?: 1 | 2;
   startedAt: number;
   durationMs: number;
   mimeType: string;

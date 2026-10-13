@@ -15,7 +15,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { createHostedVoiceNoteTrack } from "./hostedVoiceNotes";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
-import { MAX_TURN_SECONDS } from "../localTranscriptTurns";
+import { splitLongTimedSegment } from "./timedSegments";
 import {
   buildPtxUploadOrigin,
   createPrivateCloudApi,
@@ -380,41 +380,29 @@ export function localStorageVoiceNoteHoldStore(
 
 // ── Transcript → note ──────────────────────────────────────────────────
 
-/** A voice note has one speaker: whoever held the phone. Same label as Exo Local's mic channel. */
-export const VOICE_NOTE_SPEAKER = "You";
-
-/**
- * PTX segments (one speech region each, ≤ 30 s) as readable sentences: in
- * time order, consecutive regions merged into turns of at most
- * MAX_TURN_SECONDS (the readable-transcripts rule Exo Local uses, which keeps
- * each sentence under meeting chat's excerpt span).
- */
-export function voiceNoteSentences(transcript: Pick<PrivateCloudTranscript, "segments" | "diarized" | "speakers">): FirefliesSentence[] {
+/** Keep PTX's speech regions and speaker/channel identity in the saved body. */
+export function voiceNoteSentences(transcript: Pick<PrivateCloudTranscript, "segments" | "diarized" | "speakers" | "channels">): FirefliesSentence[] {
   const speakerNames = new Map(transcript.speakers?.map((speaker) => [speaker.id, speaker.name]));
   const segments = transcript.segments
     .map((seg) => ({ start: seg.start, end: seg.end, text: typeof seg.text === "string" ? seg.text.trim() : "",
+      channel: seg.channel === 0 || seg.channel === 1 ? seg.channel as 0 | 1 : undefined,
+      speakerId: transcript.diarized ? seg.speaker_id ?? null : null,
       speaker: transcript.diarized && seg.speaker_id
         ? speakerNames.get(seg.speaker_id) ?? (seg.speaker_id.match(/^speaker_(\d+)$/)
           ? `Speaker ${Number(seg.speaker_id.slice(8)) + 1}` : seg.speaker_id)
-        : VOICE_NOTE_SPEAKER }))
+        : transcript.channels === 2 ? seg.channel === 0 ? "Me" : "Them" : null }))
     .filter((seg) => seg.text.length > 0 && Number.isFinite(seg.start) && Number.isFinite(seg.end))
-    .sort((a, b) => a.start - b.start);
-  const turns: { start: number; end: number; texts: string[]; speaker: string }[] = [];
-  for (const seg of segments) {
-    const last = turns[turns.length - 1];
-    if (last !== undefined && last.speaker === seg.speaker && Math.max(last.end, seg.end) - last.start <= MAX_TURN_SECONDS) {
-      last.texts.push(seg.text);
-      last.end = Math.max(last.end, seg.end);
-      continue;
-    }
-    turns.push({ start: seg.start, end: seg.end, texts: [seg.text], speaker: seg.speaker });
-  }
-  return turns.map((turn, index) => ({
+    .sort((a, b) => a.start - b.start || a.end - b.end)
+    .flatMap((seg) => splitLongTimedSegment({ ...seg, timing: "engine" as const }, 30));
+  return segments.map((turn, index) => ({
     index,
     speaker_name: turn.speaker,
-    text: turn.texts.join(" "),
+    text: turn.text,
     start_time: turn.start,
     end_time: turn.end,
+    ...(turn.channel === undefined ? {} : { channel: turn.channel }),
+    ...(turn.speakerId === null ? {} : { speaker_id: turn.speakerId }),
+    timing: turn.timing,
   }));
 }
 
@@ -442,7 +430,7 @@ export function prepareVoiceNoteTranscript(transcript: PrivateCloudTranscript, t
       language: transcript.language ?? null,
       transcript_text: sentences.map((s) => s.text).join("\n"),
       transcription_outcome: "transcribed",
-      speaker_labels: transcript.diarized ? "diarized" : "single-speaker",
+      speaker_labels: transcript.channels === 2 ? "channels" : transcript.diarized ? "diarized" : "single-speaker",
     },
   };
 }

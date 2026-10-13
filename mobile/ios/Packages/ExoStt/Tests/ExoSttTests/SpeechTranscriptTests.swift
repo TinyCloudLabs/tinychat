@@ -24,6 +24,21 @@ final class SpeechTranscriptTests: XCTestCase {
         XCTAssertEqual(segments.map { $0["text"] as? String }, ["Yes"])
     }
 
+    func testLongPhraseSplitsWithCoarseInteriorBounds() {
+        let segments = SpeechTranscript.segments([
+            SpeechPhrase(text: "One sentence. Another sentence. The last sentence.", startSeconds: 2, endSeconds: 68),
+        ])
+        XCTAssertEqual(segments.count, 3)
+        XCTAssertEqual(segments.first?["start"] as? Int, 2000)
+        XCTAssertEqual(segments.last?["end"] as? Int, 68000)
+        for segment in segments {
+            let start = segment["start"] as! Int
+            let end = segment["end"] as! Int
+            XCTAssertLessThanOrEqual(end - start, 30000)
+            XCTAssertEqual(segment["timing"] as? String, "coarse")
+        }
+    }
+
     func testAnEndBeforeItsStartCollapsesToZeroLength() {
         let segments = SpeechTranscript.segments([SpeechPhrase(text: "Hi", startSeconds: 2, endSeconds: 1)])
         XCTAssertEqual(segments[0]["start"] as? Int, 2000)

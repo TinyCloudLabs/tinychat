@@ -67,7 +67,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
     const caps = await client.capabilities();
     return caps.hosted;
   };
-  const run = async (recording: Pick<VoiceNoteRecording, "id" | "owner" | "source" | "options" | "startedAt" | "sizeBytes" | "mimeType" | "durationMs">) => {
+  const run = async (recording: Pick<VoiceNoteRecording, "id" | "owner" | "source" | "options" | "startedAt" | "sizeBytes" | "mimeType" | "durationMs" | "channels">) => {
     const id = recording.id;
     if (active.has(id) || !consented() || (recording.owner && recording.owner !== did) || recording.source !== "in_app" || recording.options?.transcriber !== "assemblyai") return;
     active.add(id);
@@ -148,8 +148,8 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
             const opId = crypto.randomUUID();
             await native.beginRemoteOp({ id, did, opId, provider: "assemblyai", mode: "hosted", kind: "hosted_submit",
               fingerprint: `${source.size}:${source.mimeType}`, startedAt: Date.now() });
-            const submitted = await client.createTranscript(uploadId, { speakerLabels: recording.options?.identifySpeakers !== false,
-              multichannel: (recording as VoiceNoteRecording & { layout?: string }).layout === "stereo" });
+            const submitted = await client.createTranscript(uploadId, { speakerLabels: recording.channels === 2 || recording.options?.identifySpeakers !== false,
+              multichannel: recording.channels === 2 });
             handle = submitted.id;
             persist(id, { handle });
             await native.recordRemoteResult({ id, did, opId, result: { outcome: "created", jobId: handle } });
@@ -169,20 +169,23 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         await sleep(POLL_MS);
       }
       guard();
-      const stereo = (recording as VoiceNoteRecording & { layout?: string }).layout === "stereo";
-      const sentences = assemblyAiSentences(transcript, transcript.utterances?.length ? null : await client.getSentences(handle))
-        .map((sentence) => stereo ? { ...sentence, speaker_name: sentence.speaker_name === "Speaker 1" ? "Me"
-          : sentence.speaker_name === "Speaker 2" ? "Them" : sentence.speaker_name } : sentence);
+      const stereo = recording.channels === 2;
+      const sentences = assemblyAiSentences(transcript, await client.getSentences(handle), { stereo })
+        .map((sentence) => stereo && sentence.channel !== undefined ? { ...sentence,
+          speaker_name: sentence.channel === 0 ? "Me" : "Them" } : sentence);
       const local = recording.sizeBytes > 0 ? await native.getTranscript({ id }) : { transcript: null };
       const commit = await readCommit(account, id);
       const rev = Math.max(local.transcript?.rev ?? 0, commit?.rev ?? 0) + 1;
       const at = new Date().toISOString();
       const outcome = sentences.length ? "transcribed" : "no_speech";
-      const prepared: LocalTranscript = { version: 1, noteId: id, transcriber: "assemblyai", rev,
+      const prepared: LocalTranscript = { version: 2, noteId: id, transcriber: "assemblyai", rev,
         engine: "assemblyai", model: transcript.speech_model_used ?? null, language: transcript.language_code ?? null,
-        outcome, diarized: recording.options?.identifySpeakers !== false, createdAt: at,
+        outcome, diarized: stereo || recording.options?.identifySpeakers !== false, createdAt: at,
         segments: sentences.map((s) => ({ start: Math.round(s.start_time * 1000), end: Math.round(s.end_time * 1000),
-          text: s.text, speaker: s.speaker_name ?? null })) };
+          text: s.text, speaker: s.speaker_name ?? null,
+          ...(s.speaker_id === undefined ? {} : { speakerId: s.speaker_id }),
+          ...(s.channel === undefined ? {} : { channel: s.channel }),
+          ...(s.timing === undefined ? {} : { timing: s.timing }) })) };
       state(id, { kind: "saving" });
       if (recording.sizeBytes > 0 && (!local.transcript || local.transcript.rev < rev)) await native.putTranscript({ id, transcript: prepared });
       guard();
@@ -190,7 +193,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         speakers: [...new Set(sentences.map((s) => s.speaker_name).filter((s): s is string => !!s))],
         metadata: { transcription_engine: "assemblyai", transcript_provider: "assemblyai", inference_provider: "assemblyai",
           assemblyai_account: "tinycloud", transcription_outcome: outcome, transcript_text: sentences.map((s) => s.text).join("\n") || null,
-          speaker_labels: recording.options?.identifySpeakers !== false ? "diarized" : "single-speaker", transcribed_at: at,
+          speaker_labels: stereo ? "channels" : recording.options?.identifySpeakers !== false ? "diarized" : "single-speaker", transcribed_at: at,
           model: transcript.speech_model_used ?? null, language: transcript.language_code ?? null } }, { generation, did });
       if (!saved.ok) throw new Error("The transcript is ready, but could not be saved to your space. Try again.");
       transcriptSaved = true;

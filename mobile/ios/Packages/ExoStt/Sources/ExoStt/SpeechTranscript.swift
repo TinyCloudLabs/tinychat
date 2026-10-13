@@ -12,12 +12,25 @@ enum SpeechTranscript {
     /// Milliseconds, not fractional seconds: CanonicalJSON only accepts whole-integer NSNumbers (TC-836 —
     /// the only type every other timestamp in this schema already uses). Phrases without any words are dropped.
     static func segments(_ phrases: [SpeechPhrase]) -> [[String: Any]] {
-        phrases.compactMap { phrase in
+        phrases.flatMap { phrase -> [[String: Any]] in
             let text = phrase.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { return nil }
+            guard !text.isEmpty else { return [] }
             let start = Int((phrase.startSeconds * 1000).rounded())
             let end = max(start, Int((phrase.endSeconds * 1000).rounded()))
-            return ["start": start, "end": end, "text": text, "speaker": NSNull()]
+            let words = text.split(whereSeparator: \.isWhitespace)
+            let needed = max(1, Int(ceil(Double(end - start) / 30_000)))
+            let byCharacter = words.count < needed
+            let tokens = byCharacter ? text.map(String.init) : words.map(String.init)
+            let count = min(tokens.count, needed)
+            return (0..<count).map { index in
+                let from = index * tokens.count / count
+                let to = (index + 1) * tokens.count / count
+                let pieceStart = start + (end - start) * index / count
+                let pieceEnd = start + (end - start) * (index + 1) / count
+                return ["start": pieceStart, "end": pieceEnd,
+                        "text": tokens[from..<to].joined(separator: byCharacter ? "" : " "), "speaker": NSNull(),
+                        "timing": count == 1 ? "engine" : "coarse"]
+            }
         }
     }
 

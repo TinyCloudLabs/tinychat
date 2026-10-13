@@ -36,6 +36,7 @@ import {
   UPLOAD_TTL_MS,
   assemblyAiHostedConfigFromEnv,
   issueHandle,
+  rebuildSentences,
   type AssemblyAiHostedConfig,
 } from "../services/assemblyai-hosted.js";
 
@@ -48,6 +49,13 @@ const ADDRESS_C = "0xcccccccccccccccccccccccccccccccccccccccc";
 const TRANSCRIPT_ID = "6ca36708-a9e5-4195-b97c-2dbd098babbf";
 const UPLOAD_URL = "https://cdn.assemblyai.com/upload/synthetic-upload-ref";
 const UPSTREAM_DETAIL = "UPSTREAM-DETAIL account and audio info";
+
+test("sentence reconstruction keeps grounded words and numeric stereo channel", () => {
+  expect(rebuildSentences({ sentences: [{ start: 0, end: 40_000, text: "One. Two.", speaker: "A", channel: 1,
+    words: [{ start: 0, end: 10_000, text: "One." }, { start: 31_000, end: 40_000, text: "Two." }] }] }))
+    .toEqual({ sentences: [{ start: 0, end: 40_000, text: "One. Two.", speaker: "A", channel: 1,
+      words: [{ start: 0, end: 10_000, text: "One." }, { start: 31_000, end: 40_000, text: "Two." }] }] });
+});
 const T0 = Date.parse("2026-10-04T12:00:00Z");
 
 test("removed personal-key transcript delete returns 410 instead of an already-deleted 404", async () => {
