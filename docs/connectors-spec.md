@@ -200,23 +200,22 @@ query GetTranscript($id: String!) {
 
 - `validateKey()` → runs `GetUser`; distinguishes `invalid-key` (GraphQL auth error /
   401/403) from `network-error` — the connect dialog shows different messages.
-- `listNewTranscriptIds({ knownIds, batchSize = 25, onProgress })` — pages
-  `ListTranscripts` newest-first with `limit/skip`; **early-exit** as soon as a page
-  contains an already-known id (collect the new ones from that page first). Batch size
-  cap 50. Sleep `delayMs` (default 800) between pages.
+- `listNewTranscriptIds(...)` lists newest-first, skips known IDs rather than
+  stopping at the first known row, and reports whether the date boundary or true
+  end of history was reached. Every run uses the same behavior. The listing is
+  bounded by 20 provider pages and at most 50 detail fetches; the exclusive date
+  boundary is `last_synced_at - 24 h`. With no watermark, only those budgets bound
+  the initial listing.
 - `getTranscript(id)` — full detail fetch. The sync engine sleeps `delayMs` **between
   detail fetches too** (listen bug: it only slept in the list loop and could burst-hit
   rate limits on backfill).
 
-Rate limiting — handle **both** transport layers (listen handles both; fireflies-sync
-only handles one — copy listen's approach here):
+Rate limiting:
 
-- HTTP 429 → read `retry-after` header (seconds), wait, retry (max 3).
-- GraphQL error with `code === "too_many_requests"` (or message matching
-  `/rate limit|too many requests|retry after/i`) → parse "retry after <date>" from the
-  message, wait until then (fallback 60s), retry (max 3).
-- On exhaustion return a typed `rate-limited` error carrying `retryAfterMs` so the UI
-  can say "Fireflies rate limit — try again in N minutes".
+- HTTP 429 and GraphQL rate-limit responses retry at most 3 times. Retry-After
+  waits are abortable; delays above 60 seconds stop the run as partial rather
+  than holding a sync or disconnect open indefinitely.
+- On exhaustion return a typed `rate-limited` error carrying `retryAfterMs`.
 
 ## 6. Storage (`connectorStore.ts`)
 
@@ -378,26 +377,48 @@ do not work around it in product code.
 
 ## 8. Sync engine (`firefliesSync.ts`)
 
-`syncFireflies({ client, store, tcw, onProgress, signal })` → `Promise<Result<SyncResult>>`:
+`syncFireflies({ client, store, tcw, onProgress, signal })` uses one listing
+algorithm for Connect, Sync now, the background catch-up, and Meeting sources:
 
-1. `store.ensureSchema(tcw)`; `knownIds = store.listKnownSourceIds("fireflies")`.
-2. A normal sync lists newest-first and stops at a known ID. Catch-up mode skips
-   known IDs, pages to the exclusive watermark-minus-lag date boundary, and stops
-   after the bounded cap.
-3. For each selected ID (oldest-first): provider detail fetch → normalize →
-   `store.insertMeeting` + `store.putTranscriptBody` → sleep `delayMs`. Provider
-   listing/detail requests run outside the shared space lane; each space operation
-   is serialized individually inside it.
-4. One Fireflies single-flight is shared by Connect, Sync now, and catch-up.
-   Disconnect aborts and waits for it before purge/teardown; the engine rechecks
-   connector status and account generation before final state writes.
-5. Only a complete full-listing reconcile with no errors, abort, or truncation is
-   `ok` and advances `last_synced_at`. Per-item errors, aborts, and capped backlog
-   are `partial`; terminal failures are `error`. These preserve the previous
-   success timestamp, including the first-run insert path (NULL).
-6. Attempt KV writes are engine-only and best-effort. Their failures do not change
-   sync/ingest/disconnect outcomes. The engine imports nothing from React and
-   touches no UI globals; e2e drivers run it against the mock upstream + fake tcw.
+1. Read SQL `connector_state.last_synced_at` as the authoritative last-success
+   watermark. List newest-first, skip known IDs (a SQL row whose KV body is
+   missing is not complete), and stop at the exclusive date boundary
+   `last_synced_at - 24 h`. With a NULL watermark, there is no date boundary.
+2. Every run is bounded by 20 provider pages and at most 50 transcript details.
+   A listing is complete only after reaching the date boundary or true end of
+   history. Exhausting either budget is partial, not success.
+3. Fetch details outside the shared space lane. At each item boundary, write the
+   SQL row and KV body together inside the lane; after the item starts, finish
+   both writes before honoring abort. Recheck account generation inside queued
+   callbacks and before state writes.
+4. Only a complete listing with no item errors, abort, or terminal error advances
+   `last_synced_at`. Incomplete/error/aborted runs preserve it, including NULL on
+   the first failed or partial insert. Targeted webhook ingest writes no success
+   watermark; its successful Fireflies status is `partial` until a listing
+   reconcile completes.
+5. One single-flight is shared by Connect/reconnect, Sync now, and catch-up in a
+   tab. Disconnect aborts the catch-up and waits for the active item boundary
+   before purge/teardown. Connect explicitly authorizes reactivating a retained
+   disconnected row; ordinary runs cannot write `connected` over disconnect or
+   purge.
+6. The per-space KV attempt record is
+   `${APP_ID}/connectors/fireflies/sync-attempt`, JSON with `v: 1`,
+   `lastAttemptAt`, and `lastAttemptStatus`. It is best-effort and written only
+   by the sync engine; its failure never changes sync, ingest, or disconnect
+   outcomes. A `running` record older than 15 minutes is abandoned.
+   `last_synced_at` remains authoritative; the KV record is advisory pacing only.
+7. Same-tab single-flight does not prevent cross-tab Sync now overlap. Cross-tab
+   deduplication is out of scope: TinyCloud user SQL does not support a unique
+   index, so this build does not claim cross-tab serialization.
+8. A background catch-up starts only on mount or unlock when Fireflies is
+   connected, secrets are already unlocked, and SQL success is older than 24 h.
+   Focus only drains queued webhook IDs. In the default route-dark deployment,
+   mount/unlock still perform stale reconciliation; webhook probing/draining is
+   dark. Server-side ingest without an open tab is out of scope (TC-641).
+9. `last_synced_at` is a trustworthy success watermark only after all clients
+   have upgraded to this build; older clients may have written it on targeted
+   webhook attempts. The 24 h lag bound intentionally revisits recent history
+   to reconcile webhook holes.
 
 ## 9. UI
 

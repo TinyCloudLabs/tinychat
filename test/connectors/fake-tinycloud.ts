@@ -367,6 +367,7 @@ export class FakeSqlDb {
         last_sync_error,
         item_count,
         updated_at,
+        preserveLastSyncedAt,
       ] = params as [
         string,
         string,
@@ -375,11 +376,15 @@ export class FakeSqlDb {
         string | null,
         number,
         string,
+        number | undefined,
       ];
+      const existing = this.states.get(connector_id);
       this.states.set(connector_id, {
         connector_id,
         status,
-        last_synced_at,
+        last_synced_at: preserveLastSyncedAt === 1 && existing
+          ? existing.last_synced_at
+          : last_synced_at,
         last_sync_status,
         last_sync_error,
         item_count,

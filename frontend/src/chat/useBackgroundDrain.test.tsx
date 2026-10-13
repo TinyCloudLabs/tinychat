@@ -444,9 +444,9 @@ describe("stale Fireflies catch-up", () => {
     const { promise } = start(b, {
       connection: connection({ lastSyncedAt: "2026-10-11T11:59:59.000Z" }),
       now: () => now,
-      catchUpFireflies: async (_tcw, descriptor, maxNewTranscripts) => {
+      catchUpFireflies: async (_tcw, descriptor, detailCap) => {
         expect(descriptor.id).toBe("fireflies");
-        limits.push(maxNewTranscripts);
+        limits.push(detailCap);
       },
     });
     await promise;
@@ -466,8 +466,8 @@ describe("stale Fireflies catch-up", () => {
         getConnection: conn.getConnection,
         connectors: [fireflies],
         ingest: async () => neverIngest(),
-        catchUpFireflies: async (_tcw, _descriptor, maxNewTranscripts) => {
-          limits.push(maxNewTranscripts);
+        catchUpFireflies: async (_tcw, _descriptor, detailCap) => {
+          limits.push(detailCap);
         },
         now: () => now,
       },
@@ -797,6 +797,9 @@ describe("Fireflies catch-up reconciles holes after webhook drain", () => {
     } = {
       async ensureSchema() { return { ok: true, data: undefined }; },
       async listKnownSourceIds() { return { ok: true, data: meetings.map((m) => m.sourceId) }; },
+      async hasTranscriptBody(_tcw, _source, sourceId) {
+        return { ok: true, data: bodies.has(sourceId) };
+      },
       async insertMeeting(_tcw, meeting) {
         if (meetings.some((m) => m.sourceId === meeting.sourceId)) return { ok: true, data: false };
         meetings.push(meeting);
@@ -820,7 +823,9 @@ describe("Fireflies catch-up reconciles holes after webhook drain", () => {
         stateWrites.push(input);
         return { ok: true, data: undefined };
       },
-      async getConnection() { return { ok: true, data: { status: "connected" as const } }; },
+      async getConnection() {
+        return { ok: true, data: { status: "connected" as const, lastSyncedAt: watermark } };
+      },
       async countMeetings() { return { ok: true, data: meetings.length }; },
     };
     const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -864,12 +869,8 @@ describe("Fireflies catch-up reconciles holes after webhook drain", () => {
         createClient: () => client,
         sleepImpl: async () => {},
       }),
-      catchUpFireflies: async (tcw, _descriptor, maxNewTranscripts) => {
-        const syncOptions = Object.assign(
-          { client, store, tcw, maxNewTranscripts },
-          { catchUpWatermark: watermark },
-        );
-        await syncFireflies(syncOptions);
+      catchUpFireflies: async (tcw, _descriptor, detailCap) => {
+        await syncFireflies({ client, store, tcw, detailCap });
       },
     });
 
@@ -885,15 +886,20 @@ describe("Fireflies catch-up reconciles holes after webhook drain", () => {
     expect(calls).toContain("get:gap-old");
     expect(calls).not.toContain("get:below-watermark");
     expect(stateWrites[0]?.preserveLastSyncedAt).toBe(true);
+    expect(stateWrites[0]?.lastSyncStatus).toBe("partial");
+    expect(stateWrites[1]?.preserveLastSyncedAt).toBe(false);
+    expect(stateWrites[1]?.lastSyncStatus).toBe("ok");
     expect(syncState?.lastSyncedAt).not.toBe(watermark);
   });
 });
 function realCatchUpHarness(
   ids = ["meeting-1"],
-  options: { onList?: () => Promise<void>; attempt?: () => void } = {},
+  options: { onList?: () => Promise<void>; attempt?: () => void; lastSyncedAt?: string | null } = {},
 ) {
   const calls: string[] = [];
   const meetings: NormalizedMeeting[] = [];
+  const bodies = new Set<string>();
+  const lastSyncedAt = options.lastSyncedAt ?? "2026-10-09T02:49:00.000Z";
   let state: UpdateSyncStateInput | null = null;
   let attempt: {
     v: 1;
@@ -927,19 +933,28 @@ function realCatchUpHarness(
   const store: SyncStore = {
     async ensureSchema() { return { ok: true, data: undefined }; },
     async listKnownSourceIds() { return { ok: true, data: meetings.map((m) => m.sourceId) }; },
+    async hasTranscriptBody(_tcw, _source, sourceId) {
+      return { ok: true, data: bodies.has(sourceId) };
+    },
     async insertMeeting(_tcw, meeting) {
       if (meetings.some((m) => m.sourceId === meeting.sourceId)) return { ok: true, data: false };
       meetings.push(meeting);
       return { ok: true, data: true };
     },
-    async putTranscriptBody() { return { ok: true, data: undefined }; },
+    async putTranscriptBody(_tcw, _source, sourceId) {
+      bodies.add(sourceId);
+      return { ok: true, data: undefined };
+    },
     async updateSyncState(_tcw, input) {
       state = input;
       return { ok: true, data: undefined };
     },
     async countMeetings() { return { ok: true, data: meetings.length }; },
     async getConnection() {
-      return { ok: true, data: { status: "connected" as const } };
+      return {
+        ok: true,
+        data: { status: "connected" as const, lastSyncedAt },
+      };
     },
     async recordFirefliesAttempt(_tcw, input) {
       attempt = {
@@ -982,8 +997,11 @@ describe("Fireflies catch-up ignores the dark webhook route", () => {
           ok: true as const,
           data: connection({ lastSyncedAt: "2026-10-09T02:49:00.000Z" }),
         }),
-        catchUpFireflies: async (space: TinyCloudWeb, _descriptor: ConnectorDescriptor, max: number) => {
-          await syncFireflies({ client: harness.client, store: harness.store, tcw: space, maxNewTranscripts: max });
+        catchUpFireflies: async (space: TinyCloudWeb, _descriptor: ConnectorDescriptor, detailCap: number, options) => {
+          await syncFireflies({
+            client: harness.client, store: harness.store, tcw: space, detailCap,
+            signal: options.signal, isCurrent: options.isCurrent,
+          });
         },
         now: () => Date.parse("2026-10-13T12:00:00.000Z"),
       },
@@ -1028,8 +1046,11 @@ describe("Fireflies catch-up pacing and generation", () => {
           ok: true as const,
           data: connection({ lastSyncedAt: "2026-10-09T02:49:00.000Z" }),
         }),
-        catchUpFireflies: async (space, _descriptor, max) => {
-          await syncFireflies({ client: harness.client, store: harness.store, tcw: space, maxNewTranscripts: max });
+        catchUpFireflies: async (space, _descriptor, detailCap, options) => {
+          await syncFireflies({
+            client: harness.client, store: harness.store, tcw: space, detailCap,
+            signal: options.signal, isCurrent: options.isCurrent,
+          });
         },
         now: () => now,
       },
@@ -1061,8 +1082,11 @@ describe("Fireflies catch-up pacing and generation", () => {
           ok: true as const,
           data: connection({ lastSyncedAt: "2026-10-09T02:49:00.000Z" }),
         }),
-        catchUpFireflies: async (space: TinyCloudWeb, _descriptor: ConnectorDescriptor, max: number) => {
-          await syncFireflies({ client: harness.client, store: harness.store, tcw: space, maxNewTranscripts: max });
+        catchUpFireflies: async (space: TinyCloudWeb, _descriptor: ConnectorDescriptor, detailCap: number, options) => {
+          await syncFireflies({
+            client: harness.client, store: harness.store, tcw: space, detailCap,
+            signal: options.signal, isCurrent: options.isCurrent,
+          });
         },
         now: () => Date.parse("2026-10-13T12:00:00.000Z"),
       },
@@ -1099,8 +1123,11 @@ describe("Fireflies catch-up pacing and generation", () => {
           ok: true as const,
           data: connection({ lastSyncedAt: "2026-10-09T02:49:00.000Z" }),
         }),
-        catchUpFireflies: async (space: TinyCloudWeb, _descriptor: ConnectorDescriptor, max: number) => {
-          await syncFireflies({ client: harness.client, store: harness.store, tcw: space, maxNewTranscripts: max });
+        catchUpFireflies: async (space: TinyCloudWeb, _descriptor: ConnectorDescriptor, detailCap: number, options) => {
+          await syncFireflies({
+            client: harness.client, store: harness.store, tcw: space, detailCap,
+            signal: options.signal, isCurrent: options.isCurrent,
+          });
         },
         now: () => Date.parse("2026-10-13T12:00:00.000Z"),
       },
@@ -1134,15 +1161,16 @@ describe("Fireflies catch-up cancellation and lane boundaries", () => {
         catchUpFireflies: async (
           space: TinyCloudWeb,
           _descriptor: ConnectorDescriptor,
-          max: number,
-          options?: { signal: AbortSignal },
+          detailCap: number,
+          options?: { signal: AbortSignal; isCurrent: () => boolean },
         ) => {
           await syncFireflies({
             client: harness.client,
             store: harness.store,
             tcw: space,
-            maxNewTranscripts: max,
+            detailCap,
             signal: options?.signal,
+            isCurrent: options?.isCurrent,
           });
         },
         now: () => Date.parse("2026-10-13T12:00:00.000Z"),
@@ -1177,8 +1205,11 @@ describe("Fireflies catch-up cancellation and lane boundaries", () => {
           ok: true as const,
           data: connection({ lastSyncedAt: "2026-10-09T02:49:00.000Z" }),
         }),
-        catchUpFireflies: async (space: TinyCloudWeb, _descriptor: ConnectorDescriptor, max: number) => {
-          await syncFireflies({ client: harness.client, store: harness.store, tcw: space, maxNewTranscripts: max });
+        catchUpFireflies: async (space: TinyCloudWeb, _descriptor: ConnectorDescriptor, detailCap: number, options) => {
+          await syncFireflies({
+            client: harness.client, store: harness.store, tcw: space, detailCap,
+            signal: options.signal, isCurrent: options.isCurrent,
+          });
         },
         now: () => Date.parse("2026-10-13T12:00:00.000Z"),
       },

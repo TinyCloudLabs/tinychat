@@ -24,7 +24,13 @@ export const FULL_RESCAN_BUSY_MESSAGE =
 
 export type DriveMode = "auto" | "snapshot";
 
-type SyncEngineInput = { tcw: TinyCloudWeb; signal: AbortSignal; onProgress: (p: SyncProgress) => void };
+type SyncEngineInput = {
+  tcw: TinyCloudWeb;
+  signal: AbortSignal;
+  onProgress: (p: SyncProgress) => void;
+  onJoined?: () => void;
+  onJoinSettled?: () => void;
+};
 type SyncOutcome = { ok: true } | { ok: false; message: string; retryAfterMs?: number | null };
 
 export interface SourceSyncDeps {
@@ -65,6 +71,7 @@ export interface SourceSyncRun {
   onProgress?: (p: SyncProgress) => void;
   /** This press only joined a run another lane owns: its signal and progress are ignored by the engine. */
   onJoined?: () => void;
+  onJoinSettled?: () => void;
 }
 
 /** One sync attempt. Resolves to the message to show on the row, or null when it worked. Never rejects. */
@@ -107,7 +114,14 @@ export async function runSourceSync(
             signal,
             onProgress,
           })
-        : await deps.runFirefliesSyncNow({ tcw, apiKey: key.data, signal, onProgress });
+        : await deps.runFirefliesSyncNow({
+            tcw,
+            apiKey: key.data,
+            signal,
+            onProgress,
+            onJoined: input.onJoined,
+            onJoinSettled: input.onJoinSettled,
+          });
     return outcome.ok ? null : formatRowError(outcome.message, outcome.retryAfterMs ?? null);
   } catch (cause) {
     console.error(`Meeting source sync failed for ${d.id}`, cause);
@@ -150,6 +164,7 @@ export function useSourceSync(input: {
   const [error, setError] = useState<SourceSyncController["error"]>(null);
   const inFlight = useRef(false);
   const abort = useRef<AbortController | null>(null);
+  const joinedRef = useRef(false);
 
   const sync = useCallback(
     async (d: ConnectorDescriptor, driveMode: DriveMode = "auto") => {
@@ -171,7 +186,14 @@ export function useSourceSync(input: {
             driveMode,
             signal: controller.signal,
             onProgress: setProgress,
-            onJoined: () => setJoined(true),
+            onJoined: () => {
+              joinedRef.current = true;
+              setJoined(true);
+            },
+            onJoinSettled: () => {
+              joinedRef.current = false;
+              setJoined(false);
+            },
           },
           deps,
         );
@@ -180,6 +202,7 @@ export function useSourceSync(input: {
         abort.current = null;
         inFlight.current = false;
         setSyncingId(null);
+        joinedRef.current = false;
         setJoined(false);
         setProgress(null);
         onSettled(d.id);
@@ -188,7 +211,9 @@ export function useSourceSync(input: {
     [tcw, backendUrl, sessionStore, onSettled, deps],
   );
 
-  const stop = useCallback(() => abort.current?.abort(), []);
+  const stop = useCallback(() => {
+    if (!joinedRef.current) abort.current?.abort();
+  }, []);
 
   return { syncingId, joined, progress, error, sync, stop };
 }

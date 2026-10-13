@@ -342,6 +342,7 @@ const ApiKeyConnectDialog: FC<ConnectorConnectDialogProps> = ({
       signal: ac.signal,
       isCurrent: () => generation === readBackgroundDrainGeneration(),
       allowMissingConnection: true,
+      manualRequest: true,
     });
     abortRef.current = null;
     // Refresh the parent's row state whether or not sync succeeded — the

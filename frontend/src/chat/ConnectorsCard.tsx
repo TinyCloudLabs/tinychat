@@ -156,6 +156,8 @@ export async function runFirefliesSyncNow(opts: {
   signal: AbortSignal;
   onProgress: (p: SyncProgress) => void;
   isCurrent?: () => boolean;
+  onJoined?: () => void;
+  onJoinSettled?: () => void;
 }): Promise<RowSyncOutcome> {
   const client = new FirefliesClient({
     apiKey: opts.apiKey,
@@ -168,6 +170,9 @@ export async function runFirefliesSyncNow(opts: {
     onProgress: opts.onProgress,
     signal: opts.signal,
     isCurrent: opts.isCurrent,
+    manualRequest: true,
+    onJoined: opts.onJoined,
+    onJoinSettled: opts.onJoinSettled,
   });
   if (res.ok) return { ok: true };
   return { ok: false, message: res.error.message, retryAfterMs: res.error.retryAfterMs ?? null };
@@ -430,6 +435,8 @@ export function ConnectorsCard({
               signal: ac.signal,
               onProgress,
               isCurrent: () => generation === readBackgroundDrainGeneration(),
+              onJoined: () => patchRow(d.id, { joinedBackgroundSync: true }),
+              onJoinSettled: () => patchRow(d.id, { joinedBackgroundSync: false }),
             });
       if (syncAbortRefs.current[d.id] === ac) {
         delete syncAbortRefs.current[d.id];

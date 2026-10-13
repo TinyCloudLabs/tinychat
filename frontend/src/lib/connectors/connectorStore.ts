@@ -660,6 +660,16 @@ async function putMissingTranscriptBody(
   if (!/NOT_FOUND/i.test(existing.error.code ?? "")) return fail(existing.error, "putMissingTranscriptBody");
   return putTranscriptBody(tcw, source, sourceId, sentences);
 }
+export async function hasTranscriptBody(
+  tcw: TinyCloudWeb,
+  source: string,
+  sourceId: string,
+): Promise<StoreResult<boolean>> {
+  const existing = await tcw.kv.get(transcriptKvKey(source, sourceId));
+  if (existing.ok) return { ok: true, data: true };
+  if (/NOT_FOUND/i.test(existing.error.code ?? "")) return { ok: true, data: false };
+  return fail(existing.error, "hasTranscriptBody");
+}
 
 export async function putTranscriptBody(
   tcw: TinyCloudWeb,

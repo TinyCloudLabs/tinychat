@@ -119,8 +119,18 @@ describe("Full rescan and Stop reach the engine", () => {
     let joined = 0;
     await runSourceSync(gmeet, { ...input, onJoined: () => joined++ }, deps({ isGmeetSyncInFlight: () => true }));
     expect(joined).toBe(1);
-    await runSourceSync(fireflies, { ...input, driveMode: "snapshot", onJoined: () => joined++ }, deps({ isGmeetSyncInFlight: () => true }));
-    expect(joined).toBe(1);
+    await runSourceSync(
+      fireflies,
+      { ...input, driveMode: "snapshot", onJoined: () => joined++ },
+      deps({
+        runFirefliesSyncNow: async (engineInput) => {
+          engineInput.onJoined?.();
+          return { ok: true };
+        },
+      }),
+    );
+    expect(joined).toBe(2);
+
   });
 
   test("the caller's signal and progress reach the engine", async () => {

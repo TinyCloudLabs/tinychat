@@ -106,9 +106,8 @@ export interface BackgroundDrainHooks {
   catchUpFireflies?: (
     tcw: TinyCloudWeb,
     descriptor: ConnectorDescriptor,
-    maxNewTranscripts: number,
+    detailCap: number,
     options: {
-      watermark: string | null;
       signal: AbortSignal;
       isCurrent: () => boolean;
     },
@@ -555,22 +554,23 @@ async function drainConnectedConnectors(
   let darkDiscoveredThisRun = false;
 
   for (const descriptor of connectors) {
-    if (darkDiscoveredThisRun) break;
     if (generation !== storeGeneration) return;
+    if (darkDiscoveredThisRun && descriptor.source !== "fireflies") continue;
     if (descriptor.status !== "available") continue;
-    if (featureDark && descriptor.id !== "fireflies") continue;
+    if (featureDark && descriptor.source !== "fireflies") continue;
     try {
       const connectionResult = await enqueueDrainWork(() => readConnection(tcw, descriptor.id));
       if (generation !== storeGeneration) return;
       const connection = connectionResult.ok ? connectionResult.data : null;
+      if (connection?.status !== "connected") continue;
       let state = initialBackgroundSyncState();
       const emit: BackgroundSyncEmit = (updater) => {
         state = updater(state);
       };
 
       const supportsWebhooks = supportsBackgroundNotifications(descriptor, connection);
-      if (!supportsWebhooks) continue;
-      if (!featureDark && webhooks && supportsWebhooks) {
+      if (!supportsWebhooks && descriptor.id !== "fireflies") continue;
+      if (supportsWebhooks && !featureDark && !darkDiscoveredThisRun && webhooks) {
         await enqueueDrainWork(() =>
           loadOnMount(buildHeadlessDrainDeps(tcw, descriptor, webhooks, hooks.ingest), emit),
         );
@@ -584,7 +584,7 @@ async function drainConnectedConnectors(
 
       if (
         (trigger === "mount" || trigger === "unlock")
-        && descriptor.id === "fireflies"
+        && descriptor.source === "fireflies"
         && connection?.status === "connected"
         && isSecretsUnlocked(tcw)
         && isFirefliesStale(connection.lastSyncedAt, readClock(options))
@@ -618,7 +618,6 @@ async function drainConnectedConnectors(
             activeCatchUps.add(entry);
             try {
               entry.promise = catchUp(tcw, descriptor, FIREFLIES_CATCH_UP_MAX_TRANSCRIPTS, {
-                watermark: connection.lastSyncedAt,
                 signal: controller.signal,
                 isCurrent,
               });
@@ -687,9 +686,8 @@ export function buildHeadlessDrainDeps(
 async function runFirefliesCatchUp(
   tcw: TinyCloudWeb,
   descriptor: ConnectorDescriptor,
-  maxNewTranscripts: number,
+  detailCap: number,
   options: {
-    watermark: string | null;
     signal: AbortSignal;
     isCurrent: () => boolean;
   },
@@ -709,8 +707,7 @@ async function runFirefliesCatchUp(
       client,
       store: connectorStore,
       tcw,
-      maxNewTranscripts,
-      catchUpWatermark: options.watermark,
+      detailCap,
       signal: options.signal,
       isCurrent,
     });

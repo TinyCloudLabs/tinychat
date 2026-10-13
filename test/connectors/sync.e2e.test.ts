@@ -10,10 +10,8 @@
 //   2. Initial sync — every seeded meeting lands as a SQL row + KV transcript
 //      body; source_id set matches the seed exactly; KV bodies equal the seed
 //      sentences byte-for-byte after JSON round-trip.
-//   3. Second sync no-op — early-exit fires on the first list page, so the
-//      mock sees FEWER list calls than a full crawl (1 vs the 2 pages needed
-//      for a full crawl of 30 items at batchSize 25), zero detail fetches,
-//      and `added === 0`.
+//   3. Second sync no-op — the listing still scans through known rows to a
+//      date boundary or true history end, while fetching zero transcript bodies.
 //   4. Incremental — after mutating the mock's seed (unshift a newer id), the
 //      next sync picks up exactly one meeting; row + KV body land; the count
 //      grows by 1.
@@ -27,6 +25,7 @@ import { FirefliesClient } from "../../frontend/src/lib/connectors/firefliesClie
 import * as connectorStore from "../../frontend/src/lib/connectors/connectorStore";
 import {
   _resetConnectorSchemaMemoForTests,
+  firefliesAttemptKvKey,
   transcriptKvKey,
 } from "../../frontend/src/lib/connectors/connectorStore";
 import { syncFireflies } from "../../frontend/src/lib/connectors/firefliesSync";
@@ -114,6 +113,7 @@ describe("sync e2e (spec §10 driver 2)", () => {
       client,
       store: connectorStore,
       tcw: fake.tcw,
+      allowMissingConnection: true,
     });
     expect(res.ok).toBe(true);
     if (res.ok) {
@@ -129,7 +129,8 @@ describe("sync e2e (spec §10 driver 2)", () => {
     // Vacuity guard on the store side.
     expect(fake.sql.meetings.size).toBe(SEED_COUNT);
     expect(fake.sql.meetings.size).toBeGreaterThan(0);
-    expect(fake.kv.entries.size).toBe(SEED_COUNT);
+    expect(fake.kv.entries.size).toBe(SEED_COUNT + 1);
+    expect(fake.kv.entries.has(firefliesAttemptKvKey())).toBe(true);
 
     // Source-id set matches the seed exactly.
     const seededIds = new Set(seed.map((t) => t.id));
@@ -187,7 +188,7 @@ describe("sync e2e (spec §10 driver 2)", () => {
     expect(fake.kv.entries.size).toBe(1);
   });
 
-  test("second sync is a no-op via early-exit — 0 added, mock sees fewer list calls than a full crawl", async () => {
+  test("second sync is a no-op after a bounded date-boundary listing", async () => {
     _resetConnectorSchemaMemoForTests();
     const fake = makeFakeTinyCloud({ did: "did:test:sync-noop" });
     const client = new FirefliesClient({
@@ -202,6 +203,7 @@ describe("sync e2e (spec §10 driver 2)", () => {
       client,
       store: connectorStore,
       tcw: fake.tcw,
+      allowMissingConnection: true,
     });
     expect(first.ok).toBe(true);
     if (first.ok) expect(first.data.added).toBe(SEED_COUNT);
@@ -211,8 +213,8 @@ describe("sync e2e (spec §10 driver 2)", () => {
     const fullCrawlListCalls = handle.counts.transcripts;
     expect(fullCrawlListCalls).toBeGreaterThan(1);
 
-    // Now the no-op run — everything is known, so the paginator early-exits
-    // on the very first page as soon as it hits a known id.
+    // The listing scans to the SQL watermark's 24 h lag boundary; known
+    // meetings with stored bodies never trigger detail requests.
     handle.resetCounters();
     const second = await syncFireflies({
       client,
@@ -226,16 +228,15 @@ describe("sync e2e (spec §10 driver 2)", () => {
       expect(second.data.errors).toEqual([]);
     }
 
-    // Mock saw fewer list calls than the full crawl (exactly one — page 1 hits
-    // a known id and breaks). And zero detail fetches, because there was
-    // nothing new to fetch.
+    // A recent watermark reaches the 24 h date boundary before the full crawl
+    // ends. Known meetings never trigger detail requests.
     expect(handle.counts.transcripts).toBeLessThan(fullCrawlListCalls);
     expect(handle.counts.transcripts).toBe(1);
     expect(handle.counts.transcript).toBe(0);
 
     // Store state didn't grow.
     expect(fake.sql.meetings.size).toBe(SEED_COUNT);
-    expect(fake.kv.entries.size).toBe(SEED_COUNT);
+    expect(fake.kv.entries.size).toBe(SEED_COUNT + 1);
   });
 
   test("adding one transcript to the mock seed at runtime → incremental sync picks up exactly 1", async () => {
@@ -253,6 +254,7 @@ describe("sync e2e (spec §10 driver 2)", () => {
       client,
       store: connectorStore,
       tcw: fake.tcw,
+      allowMissingConnection: true,
     });
     expect(first.ok).toBe(true);
     if (first.ok) expect(first.data.added).toBe(SEED_COUNT);
@@ -265,7 +267,7 @@ describe("sync e2e (spec §10 driver 2)", () => {
     const newTx: SeedTranscript = {
       id: newTxId,
       title: "Incremental new meeting",
-      date: Date.parse("2026-08-01T10:00:00.000Z"),
+      date: Date.now(),
       duration: 20,
       organizer_email: "new@example.com",
       speakers: [{ id: 1, name: "Ada" }],
@@ -358,5 +360,44 @@ describe("sync e2e (spec §10 driver 2)", () => {
       if (m.duration_source === "sentences") overrideCount += 1;
     }
     expect(overrideCount).toBe(1);
+  });
+  test("failed and partial updates preserve the SQL success watermark, including first insert", async () => {
+    _resetConnectorSchemaMemoForTests();
+    const fake = makeFakeTinyCloud({ did: "did:test:sync-preserve-watermark" });
+    const initialPartial = await connectorStore.updateSyncState(fake.tcw, {
+      connectorId: "fireflies",
+      status: "connected",
+      lastSyncedAt: null,
+      lastSyncStatus: "partial",
+      lastSyncError: "listing cap",
+      itemCount: 0,
+      preserveLastSyncedAt: true,
+    });
+    expect(initialPartial.ok).toBe(true);
+    expect(fake.sql.states.get("fireflies")?.last_synced_at).toBeNull();
+
+    const lastSuccess = "2026-10-09T02:49:00.000Z";
+    const success = await connectorStore.updateSyncState(fake.tcw, {
+      connectorId: "fireflies",
+      status: "connected",
+      lastSyncedAt: lastSuccess,
+      lastSyncStatus: "ok",
+      lastSyncError: null,
+      itemCount: 1,
+    });
+    expect(success.ok).toBe(true);
+    const laterPartial = await connectorStore.updateSyncState(fake.tcw, {
+      connectorId: "fireflies",
+      status: "connected",
+      lastSyncedAt: null,
+      lastSyncStatus: "partial",
+      lastSyncError: "item error",
+      itemCount: 1,
+      preserveLastSyncedAt: true,
+    });
+
+    expect(laterPartial.ok).toBe(true);
+    expect(fake.sql.states.get("fireflies")?.last_synced_at).toBe(lastSuccess);
+    expect(fake.sql.states.get("fireflies")?.last_sync_status).toBe("partial");
   });
 });
