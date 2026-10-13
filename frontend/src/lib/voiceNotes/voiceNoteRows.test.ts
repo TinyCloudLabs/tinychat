@@ -227,7 +227,7 @@ describe("voice-note identity and transcript authority", () => {
     expect((await ensureVoiceNoteIdentity(b.tcw)).status).toBe("blocked");
     expect(constraints).toBe(3);
   });
-  test("a full space leaves the note local with a specific identity state", async () => {
+test("a full space leaves the note local with a specific identity state", async () => {
     const { tcw } = space();
     await ensureSchema(tcw);
     const originalDb = tcw.sql.db.bind(tcw.sql);
@@ -386,6 +386,81 @@ describe("voice-note identity and transcript authority", () => {
     await commitVoiceNoteTranscript(tcw, "rec", { rev: 1, outcome: "no_speech", text: null, sentences: [] });
     expect((sqlite.query(SQL_MEETING_METADATA_QUERY).all() as { source_id: string }[]).some((r) => r.source_id === "rec")).toBe(false);
   });
+});
+
+test("a failed space setup marks every pending upload retryable", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "off", identifySpeakers: false });
+    await fake.plugin.start();
+    const recording = await fake.plugin.stop();
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh();
+    const originalDb = tcw.sql.db.bind(tcw.sql);
+    tcw.sql.db = ((name: string) => ({ ...originalDb(name), execute: async (statement: string, params: unknown[] = []) =>
+      statement.includes("CREATE TABLE IF NOT EXISTS voice_note_transcript")
+        ? { ok: false, error: { code: "SERVER_ERROR", message: "schema temporarily unavailable", meta: { status: 500 } } }
+        : originalDb(name).execute(statement, params as never[]),
+    })) as typeof tcw.sql.db;
+    const pipeline = createVoiceNotePipeline(tcw);
+    await expect(pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId,
+      generation: currentAccountGeneration() })).rejects.toThrow("schema temporarily unavailable");
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === recording.id)?.failed)
+      .toMatchObject({ kind: "server" });
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === recording.id)?.upload).toBeUndefined();
+  } finally {
+    pendingStore.setAccount(null);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+test("an unanswered space setup ends as a visible timeout", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  setVoiceNoteSaveDeadlineForTests(15);
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "off", identifySpeakers: false });
+    await fake.plugin.start();
+    const recording = await fake.plugin.stop();
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh();
+    const originalDb = tcw.sql.db.bind(tcw.sql);
+    tcw.sql.db = ((name: string) => ({ ...originalDb(name), query: async (statement: string, params: unknown[] = []) =>
+      statement.includes("SELECT name FROM sqlite_master")
+        ? new Promise<never>(() => undefined)
+        : originalDb(name).query(statement, params as never[]),
+    })) as typeof tcw.sql.db;
+    const pipeline = createVoiceNotePipeline(tcw);
+    await expect(pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId,
+      generation: currentAccountGeneration() })).rejects.toThrow("taking too long");
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === recording.id)?.failed)
+      .toMatchObject({ kind: "timeout" });
+  } finally {
+    setVoiceNoteSaveDeadlineForTests(null);
+    pendingStore.setAccount(null);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+test("a setup Result error keeps its message rather than rendering an object", async () => {
+  const { tcw } = space();
+  const originalDb = tcw.sql.db.bind(tcw.sql);
+  tcw.sql.db = ((name: string) => ({ ...originalDb(name), query: async (statement: string, params: unknown[] = []) =>
+    statement.includes("SELECT name FROM sqlite_master")
+      ? { ok: false, error: { code: "NETWORK_ERROR", message: "The node is unavailable" } }
+      : originalDb(name).query(statement, params as never[]),
+  })) as typeof tcw.sql.db;
+  const result = await ensureVoiceNoteIdentity(tcw);
+  expect(result.status).toBe("retry");
+  expect(result.reason).toContain("The node is unavailable");
+  expect(result.reason).not.toContain("[object Object]");
 });
 
 test("cancelAll stops an upload at its next KV checkpoint and quiescent waits", async () => {

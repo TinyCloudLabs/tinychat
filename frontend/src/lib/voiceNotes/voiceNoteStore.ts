@@ -380,8 +380,8 @@ export async function saveVoiceNote(
 ): Promise<StoreResult<UpsertMeetingOutcome & { noteSyncError?: NoteSyncErrorCode }>> {
   try {
     opts.checkpoint?.();
-    const before = await ensureVoiceNoteIdentity(tcw, opts.checkpoint);
-    if (before.status !== "established") return { ok: false, error: { code: before.status, message: before.reason ?? before.status } };
+    const before = await withVoiceNoteSaveDeadline("voice-note space setup", () => ensureVoiceNoteIdentity(tcw, opts.checkpoint));
+    if (before.status !== "established") return { ok: false, error: { code: before.status, message: before.reason ?? before.status, cause: before.cause } };
     opts.checkpoint?.();
     const row = await createVoiceNoteRow(tcw, recording, voiceNoteTitle(recording.startedAt), opts.checkpoint);
     opts.checkpoint?.();

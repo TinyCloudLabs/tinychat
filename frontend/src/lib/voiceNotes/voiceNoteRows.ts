@@ -1,4 +1,5 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { readableError } from "@/lib/readableError";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
 import { CONNECTORS_KV_PREFIX, CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connectors/connectorStore";
 import { runOnSpaceLane, SpaceLaneQueueWaitTimeout, spaceLaneSnapshot, subscribeSpaceLane } from "../spaceWriteLane";
@@ -13,7 +14,7 @@ export const TRANSCRIPT_TABLE_DDL = `CREATE TABLE IF NOT EXISTS voice_note_trans
   speaker_labels INTEGER, participants TEXT, transcribed_at TEXT, committed_at TEXT NOT NULL)`;
 export const VOICE_NOTE_INDEX_DDL = "CREATE UNIQUE INDEX IF NOT EXISTS uq_connector_meeting_voice_note ON connector_meeting(source_id) WHERE source = 'exo-voice-note'";
 export type VoiceNoteIdentity = "established" | "needs_authorization" | "blocked" | "retry" | "storage_full";
-export interface IdentityResult { status: VoiceNoteIdentity; reason?: string }
+export interface IdentityResult { status: VoiceNoteIdentity; reason?: string; cause?: unknown }
 
 function db(tcw: TinyCloudWeb) { return tcw.sql.db(CONNECTORS_SQL_DB_NAME); }
 function errorOf(result: { ok: boolean; error?: { code?: string; message?: string; meta?: unknown; requiredAction?: unknown } }): Error {
@@ -59,11 +60,11 @@ function isConstraint(e: unknown): boolean {
   return /UNIQUE|CONSTRAINT/i.test(`${x.code ?? ""} ${x.message ?? ""}`);
 }
 function identityFailure(e: unknown): IdentityResult {
-  if (isAuthorization(e)) return { status: "needs_authorization", reason: String(e) };
+  if (isAuthorization(e)) return { status: "needs_authorization", reason: readableError(e), cause: e };
   const detail = `${(e as { code?: string }).code ?? ""} ${(e as { message?: string }).message ?? ""}`;
   if (/QUOTA|STORAGE.*(FULL|GROW)|SPACE.*FULL/i.test(detail))
-    return { status: "storage_full", reason: "Your TinyCloud storage is full; this note remains on your phone" };
-  return { status: "retry", reason: String(e) };
+    return { status: "storage_full", reason: "Your TinyCloud storage is full; this note remains on your phone", cause: e };
+  return { status: "retry", reason: readableError(e), cause: e };
 }
 const identityInFlight = new WeakMap<TinyCloudWeb, { key: string; promise: Promise<IdentityResult>;
   checkpoints: Set<() => void> }>();
@@ -243,7 +244,7 @@ export async function resolveVoiceNoteRows(tcw: TinyCloudWeb, sourceIds: readonl
 export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNoteRecording, title: string,
   checkpoint: () => void = () => undefined): Promise<VoiceNoteRow & { inserted: boolean }> {
   const identity = await ensureVoiceNoteIdentity(tcw, checkpoint);
-  if (identity.status !== "established") throw Object.assign(new Error(identity.reason ?? identity.status), { code: identity.status });
+  if (identity.status !== "established") throw Object.assign(new Error(identity.reason ?? identity.status), { code: identity.status, cause: identity.cause });
   const now = new Date().toISOString();
   const changes = await execute(tcw, `INSERT INTO connector_meeting
     (id, source, source_id, title, started_at, duration_secs, organizer_email, participants, summary_overview,
@@ -309,7 +310,7 @@ export async function commitVoiceNoteTranscript(
 ): Promise<TranscriptCommit> {
   checkpoint();
   const identity = await ensureVoiceNoteIdentity(tcw, checkpoint);
-  if (identity.status !== "established") throw Object.assign(new Error(identity.reason ?? identity.status), { code: identity.status });
+  if (identity.status !== "established") throw Object.assign(new Error(identity.reason ?? identity.status), { code: identity.status, cause: identity.cause });
   checkpoint();
   const row = await resolveVoiceNoteRow(tcw, sourceId, checkpoint);
   if (!row) throw new Error("Voice note row is missing");
