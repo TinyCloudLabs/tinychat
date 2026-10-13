@@ -287,3 +287,44 @@ test("native OpenKey sessions sync meetings without a secrets space", async () =
     setSecretsAvailableForTests(null);
   }
 });
+
+test("a mounted publication refresh emits library-changed once for an already known id", async () => {
+  const { Database } = await import("bun:sqlite");
+  const { saveTranscriberMeeting, refreshTranscriberMeeting, listSavedTranscriberMeetingIds, listSavedTranscriberVersions } = await import("@/lib/transcriberSave");
+  const f = setup();
+  const sql = new Database(":memory:");
+  const bodies = new Map<string, string>();
+  f.tcw = {
+    ...f.tcw,
+    sql: { db: () => ({
+      query: async (query: string, params: never[] = []) => ({ ok: true, data: { rows: sql.query(query).values(...params) } }),
+      execute: async (query: string, params: never[] = []) => ({ ok: true, data: sql.query(query).run(...params) }),
+    }) },
+    kv: {
+      get: async (key: string) => bodies.has(key) ? { ok: true, data: { data: bodies.get(key) } }
+        : { ok: false, error: { code: "KV_NOT_FOUND" } },
+      put: async (key: string, value: string, options?: { ifNoneMatch?: string }) => {
+        if (options?.ifNoneMatch === "*" && bodies.has(key)) return { ok: false, error: { code: "KV_PRECONDITION_FAILED" } };
+        bodies.set(key, value); return { ok: true };
+      },
+    },
+  } as unknown as TinyCloudWeb;
+  const meeting = { id: "initial", status: "completed" as const, platform: "jitsi", meeting_url: "https://example.test/fixture",
+    created_at: "2026-01-01T00:00:00Z", transcript: { version: 2 } };
+  const transcript = { meeting_id: "initial", status: "completed" as const, version: 1, segments: [] };
+  f.saver = { listSaved: listSavedTranscriberMeetingIds, listVersions: listSavedTranscriberVersions,
+    save: saveTranscriberMeeting, refresh: refreshTranscriberMeeting };
+  f.client.list = async () => ({ status: "ok", value: { meetings: [meeting] } });
+  f.client.transcript = async () => ({ status: "ok", value: { status: "ready", transcript: { ...transcript, version: 2 } } });
+  const changes: string[] = [];
+  const unsubscribe = captureEvents.on("library-changed", (detail) => changes.push(detail?.sourceId ?? ""));
+  try {
+    expect((await saveTranscriberMeeting(f.tcw, meeting, transcript)).ok).toBe(true);
+    await mount(f);
+    expect(changes).toEqual(["initial"]);
+    await act(async () => { fire("focus"); });
+    expect(changes).toEqual(["initial"]);
+    expect(sql.query("SELECT json_extract(metadata, '$.ptx_transcript_version') AS version FROM connector_meeting").get())
+      .toEqual({ version: 2 });
+  } finally { unsubscribe(); sql.close(); }
+});

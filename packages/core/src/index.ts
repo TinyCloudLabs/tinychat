@@ -8,6 +8,7 @@ export {
   TRANSCRIPT_WRITER_POLICY,
   TRANSCRIPT_WRITER_PERMISSIONS,
   transcriptKvKey,
+  archiveKvKey,
   connectorMeetingId,
   transcriberMeetingTitle,
   normalizeTranscriberTranscript,

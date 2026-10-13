@@ -46,7 +46,7 @@ export interface TranscriptionMeeting {
   platform: string;
   meeting_url: string;
   bot?: { name?: string; joined_at?: string | null };
-  transcript?: { status?: string };
+  transcript?: { status?: string; version?: number };
   created_at: string;
   started_at?: string | null;
   completed_at?: string | null;
@@ -67,6 +67,7 @@ export interface TranscriptionSegment {
 }
 
 export interface TranscriptionTranscript {
+  version?: number;
   meeting_id: string;
   status: TranscriptionMeetingStatus;
   language?: string;

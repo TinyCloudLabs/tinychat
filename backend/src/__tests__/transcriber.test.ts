@@ -657,7 +657,8 @@ describe("TC-581 shared meetings in the router", () => {
     const h = harness(ADDRESS_B, index);
     h.store.set("mtg_shared", meeting("mtg_shared", {
       status: "completed", platform: "google_meet", meeting_url: "https://meet.google.com/abc-defg-hij",
-      started_at: "2026-09-25T12:00:10.000Z", ended_at: "2026-09-25T12:30:00.000Z", transcript: { status: "completed" },
+      started_at: "2026-09-25T12:00:10.000Z", ended_at: "2026-09-25T12:30:00.000Z", transcript: { status: "completed", version: 2 },
+      completed_at: "2026-09-25T12:30:00.000Z", capture: { private: true },
       bot: { name: "A's bot" },
       metadata: { tinychat_address: ADDRESS_A.toLowerCase(), source: "google-calendar-autojoin", calendar_occurrence_id: "owner-occ",
         calendar_title: "A's private title", scheduled_start: "2026-09-25T12:00:00.000Z" },
@@ -672,7 +673,7 @@ describe("TC-581 shared meetings in the router", () => {
   const scrubbed = {
     id: "mtg_shared", status: "completed", platform: "google_meet", meeting_url: "https://meet.google.com/abc-defg-hij",
     created_at: "2026-08-18T10:00:00.000Z", started_at: "2026-09-25T12:00:10.000Z", ended_at: "2026-09-25T12:30:00.000Z",
-    transcript: { status: "completed" },
+    transcript: { status: "completed", version: 2 },
     metadata: { source: "google-calendar-autojoin", calendar_title: "Team sync (B's title)", scheduled_start: "2026-09-25T12:00:00.000Z", shared: true },
   };
 
@@ -683,6 +684,9 @@ describe("TC-581 shared meetings in the router", () => {
       expect(listed.status).toBe(200);
       const shared = listed.body.meetings.find((m: { id: string }) => m.id === "mtg_shared");
       expect(shared).toEqual(scrubbed);
+      expect(shared.transcript.version).toBe(2);
+      expect(shared).not.toHaveProperty("completed_at");
+      expect(shared).not.toHaveProperty("capture");
       expect(listed.body.meetings.find((m: { id: string }) => m.id === "mtg_own").metadata).toEqual({ tinychat_address: ADDRESS_B.toLowerCase() });
       const one = await call(base, "/api/transcriber/meetings/mtg_shared");
       expect(one.status).toBe(200);
