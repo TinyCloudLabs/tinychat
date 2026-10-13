@@ -633,6 +633,44 @@ describe("FirefliesClient.getTranscript", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.kind).toBe("graphql-error");
   });
+  test("structured GraphQL object_not_found errors carry deletion evidence", async () => {
+    const { fetchImpl } = mockFetch({
+      responses: [() => jsonResponse({
+        errors: [{
+          message: "Transcript not found",
+          extensions: { code: "object_not_found" },
+        }],
+      })],
+    });
+    const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
+    const result = await client.getTranscript("deleted");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.kind).toBe("graphql-error");
+      expect(result.error.notFound).toBe(true);
+    }
+  });
+
+  test("message text alone does not carry deletion evidence", async () => {
+    const { fetchImpl } = mockFetch({
+      responses: [() => jsonResponse({ errors: [{ message: "Transcript not found" }] })],
+    });
+    const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
+    const result = await client.getTranscript("unknown");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.notFound).toBeUndefined();
+  });
+  test("structured GraphQL 404 status also carries deletion evidence", async () => {
+    const { fetchImpl } = mockFetch({
+      responses: [() => jsonResponse({
+        errors: [{ message: "Unknown", extensions: { status: 404 } }],
+      })],
+    });
+    const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
+    const result = await client.getTranscript("deleted");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.notFound).toBe(true);
+  });
 });
 
 describe("resolveFirefliesClientDefaults", () => {

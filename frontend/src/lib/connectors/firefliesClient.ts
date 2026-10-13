@@ -662,6 +662,8 @@ export class FirefliesClient {
 
       const errors = Array.isArray(payload.errors) ? payload.errors : null;
       if (errors && errors.length > 0) {
+        const notFound = errors.some((error) =>
+          error?.extensions?.code === "object_not_found" || error?.extensions?.status === 404);
         const rl = errors.find(isRateLimitError);
         if (rl) {
           const parsed = typeof rl.message === "string" ? parseRetryAfterFromMessage(rl.message) : null;
@@ -695,6 +697,7 @@ export class FirefliesClient {
           error: {
             kind: "graphql-error",
             message: first?.message ?? "Fireflies returned an unknown GraphQL error",
+            ...(notFound ? { notFound: true as const } : {}),
           },
         };
       }

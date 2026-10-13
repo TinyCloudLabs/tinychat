@@ -269,7 +269,7 @@ watermark; UI staleness is derived from it at read time (24 hours). Failed, part
 aborted, truncated, and targeted webhook-ingest runs never advance it. Attempt metadata
 is advisory KV at `${APP_ID}/connectors/fireflies/sync-attempt`, written only by the
 Fireflies sync engine as a JSON string, for example:
-`{"v":1,"last_attempt_at":"2026-10-13T12:00:00.000Z","last_attempt_status":"partial","listing_skip":50,"listing_started_at":"2026-10-13T10:00:00.000Z","listing_anchor":"transcript-49","listing_anchor_date":1791892800000,"listing_previous_neighbor":"transcript-48","pending_ids":["failed-transcript"],"suspect_ids":["failed-transcript"],"suspect_seen_ids":[]}`.
+`{"v":1,"last_attempt_at":"2026-10-13T12:00:00.000Z","last_attempt_status":"partial","listing_skip":50,"listing_started_at":"2026-10-13T10:00:00.000Z","listing_anchor":"transcript-49","listing_anchor_date":1791892800000,"listing_previous_neighbor":"transcript-48","pending_ids":["failed-transcript"],"suspect_ids":["failed-transcript"],"suspect_seen_ids":[],"suspect_proof_ids":["failed-transcript"],"suspect_proof_at":"2026-10-13T11:00:00.000Z"}`.
 Readers accept JSON strings and SDK-decoded objects. `pending_ids` is capped at 50;
 each run retries up to half the detail budget (maximum 25, minimum 1 for a positive
 budget), rotating failures so listing retains its budget. Pending IDs keep the SQL
@@ -410,25 +410,35 @@ algorithm for Connect, Sync now, the background catch-up, and Meeting sources:
    `${APP_ID}/connectors/fireflies/sync-attempt`, version `v: 1`, with
    `listing_skip`, `listing_started_at`, `listing_anchor`,
    `listing_anchor_date`, `listing_previous_neighbor`, `pending_ids`,
-   `suspect_ids`, and `suspect_seen_ids`. Attempt writes are best-effort and
-   written only by the sync engine. Their failure does not change sync or ingest
-   outcomes and cannot make an unpersisted cursor resumable. Connect's stale-record
-   clear is also best-effort. Keep-data Disconnect has a separate, explicit
-   continuation-clear step; its failure is retryable and may defer disconnect
-   completion. A `running` record older than 15 minutes is abandoned.
+   `suspect_ids`, `suspect_seen_ids`, `suspect_proof_ids`, and
+   `suspect_proof_at`. Attempt writes are best-effort and written only by the
+   sync engine. Their failure does not change sync or ingest outcomes and cannot
+   make an unpersisted cursor resumable. Connect's stale-record clear is also
+   best-effort. Keep-data Disconnect has a separate, explicit continuation-clear
+   step; its failure is retryable and may defer disconnect completion. A
+   `running` record older than 15 minutes is abandoned.
    `pending_ids` is capped at 50. Each run retries at most
    `max(1, min(25, floor(detailCap / 2)))` pending IDs when `detailCap >= 1`,
    rotating failed IDs to the end so listing retains its budget. If adding another
    failure would exceed the cap, or a failure cannot otherwise be recorded, the
    old cursor remains unchanged. A detail error never proves deletion: a pending
-   null/404 retry remains pending and becomes suspect. Only a complete listing
-   chain removes a suspect that was absent from the chain's summaries. A confirmed
-   drop forces `listing_skip` to zero while retaining `listing_started_at`, so
-   the next run rescans from the top. Message text alone is never deletion proof.
-   The SQL watermark never advances while `pending_ids` is non-empty.
+   null transcript, HTTP 404, or GraphQL error with
+   `extensions.code === "object_not_found"` or `extensions.status === 404` is
+   not-found evidence; arbitrary error-message text is not.
+   A pending not-found retry becomes suspect. Its proof listing uses the same
+   bounded continuation and budgets but has no date cutoff, so only reaching the
+   true end of history proves absence. A complete proof drops suspects absent
+   from its summaries and restarts the listing at zero while retaining
+   `listing_started_at`. Suspects seen during a completed proof are demoted to
+   plain pending and their seen state is cleared; they can start a fresh proof if
+   a later retry is not-found. `suspect_proof_ids` and `suspect_proof_at` retain
+   the last proof generation, so the same suspect set is re-proven at most once
+   per 24 hours; a changed set can start its own generation. These arrays are
+   capped at 50. The SQL watermark never advances while `pending_ids` is
+   non-empty.
    `listing_started_at` is recorded at skip zero and becomes `last_synced_at` only
-   after the whole chain reaches the date boundary or true end of history without
-   item errors, abort, budget exhaustion, or pending IDs.
+   after the whole ordinary chain reaches the date boundary or true end of history
+   without item errors, abort, budget exhaustion, or pending IDs.
    The cursor binds `listing_skip - 1` to its ID, listed date, and immediately
    preceding neighbor. On mismatch the client searches a bounded window at least
    one page in each direction; it rebases only when all three match at exactly one

@@ -68,6 +68,10 @@ export interface FirefliesAttempt {
   suspectIds?: string[];
   /** Suspect IDs observed during their complete-listing proof chain. */
   suspectSeenIds?: string[];
+  /** IDs in the most recent proof generation; bounds the 24-hour re-proof pace. */
+  suspectProofIds?: string[];
+  /** Start time of the most recent suspect proof generation. */
+  suspectProofAt?: string | null;
 }
 export async function getFirefliesAttempt(
   tcw: TinyCloudWeb,
@@ -119,10 +123,19 @@ export async function getFirefliesAttempt(
     || !suspectArray.every((id) => typeof id === "string" && id.length > 0)
     || !seenArray.every((id) => typeof id === "string" && id.length > 0)
     || seenArray.some((id) => !suspectArray.includes(id)));
+  const rawProofIds = row.suspect_proof_ids;
+  const proofIdsPresent = Object.hasOwn(row, "suspect_proof_ids");
+  const proofIdsArray = Array.isArray(rawProofIds) ? rawProofIds : null;
+  const proofIdsInvalid = proofIdsPresent && (!proofIdsArray
+    || proofIdsArray.length > FIREFLIES_MAX_PENDING_IDS
+    || !proofIdsArray.every((id) => typeof id === "string" && id.length > 0));
+  const rawProofAt = row.suspect_proof_at;
+  const proofAtValid = rawProofAt === undefined || rawProofAt === null
+    || (typeof rawProofAt === "string" && Number.isFinite(Date.parse(rawProofAt)));
   const validAnchorDate = anchorDate === null
     || (typeof anchorDate === "number" && Number.isFinite(anchorDate))
     || (typeof anchorDate === "string" && Number.isFinite(Date.parse(anchorDate)));
-  const cursorValid = !pendingInvalid && !suspectInvalid
+  const cursorValid = !pendingInvalid && !suspectInvalid && !proofIdsInvalid && proofAtValid
     && Number.isSafeInteger(skip)
     && (skip as number) >= 0
     && typeof startedAt === "string"
@@ -146,7 +159,11 @@ export async function getFirefliesAttempt(
   const suspectSeenIds = !suspectInvalid && seenArray
     ? [...new Set(seenArray as string[])]
     : [];
+  const suspectProofIds = !proofIdsInvalid && proofIdsArray
+    ? [...new Set(proofIdsArray as string[])].slice(0, FIREFLIES_MAX_PENDING_IDS)
+    : [];
   const includeSuspects = !suspectInvalid && suspectPresent;
+  const includeProofIds = !proofIdsInvalid && proofIdsPresent;
   return {
     ok: true,
     data: {
@@ -172,6 +189,8 @@ export async function getFirefliesAttempt(
         : {}),
       ...(pendingIds.length > 0 ? { pendingIds } : {}),
       ...(includeSuspects ? { suspectIds, suspectSeenIds } : {}),
+      ...(includeProofIds ? { suspectProofIds } : {}),
+      ...(proofAtValid && typeof rawProofAt === "string" ? { suspectProofAt: rawProofAt } : {}),
     },
   };
 }
@@ -189,12 +208,16 @@ export async function recordFirefliesAttempt(
   const dedupedSeen = attempt.suspectSeenIds === undefined
     ? undefined
     : [...new Set(attempt.suspectSeenIds.filter((id) => typeof id === "string" && id.length > 0))];
+  const dedupedProofIds = attempt.suspectProofIds === undefined
+    ? undefined
+    : [...new Set(attempt.suspectProofIds.filter((id) => typeof id === "string" && id.length > 0))];
   const hasCursor = attempt.listingSkip !== undefined
     || attempt.listingStartedAt !== undefined
     || attempt.listingAnchor !== undefined;
   const cursorOverflow = ((dedupedPending?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS
     || (dedupedSuspects?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS
-    || (dedupedSeen?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS) && hasCursor;
+    || (dedupedSeen?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS
+    || (dedupedProofIds?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS) && hasCursor;
   const listingSkip = cursorOverflow ? null : attempt.listingSkip;
   const listingStartedAt = cursorOverflow ? null : attempt.listingStartedAt;
   const listingAnchor = cursorOverflow ? null : attempt.listingAnchor;
@@ -220,6 +243,12 @@ export async function recordFirefliesAttempt(
     ...(dedupedSeen === undefined
       ? {}
       : { suspect_seen_ids: dedupedSeen.slice(0, FIREFLIES_MAX_PENDING_IDS) }),
+    ...(dedupedProofIds === undefined
+      ? {}
+      : { suspect_proof_ids: dedupedProofIds.slice(0, FIREFLIES_MAX_PENDING_IDS) }),
+    ...(attempt.suspectProofAt === undefined
+      ? {}
+      : { suspect_proof_at: attempt.suspectProofAt }),
   }));
   if (!res.ok) return fail(res.error, "recordFirefliesAttempt");
   return { ok: true, data: undefined };
