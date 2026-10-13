@@ -1901,6 +1901,7 @@ describe("an explicit move to private cloud survives a restart", () => {
     transcriber.transcribePrivately("rec-1");
     await settle(transcriber);
     expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "transcript_incomplete" });
+    expect(choices.ids()).toEqual([]);
     expect(first.creates).toHaveLength(1);
     expect(first.puts).toHaveLength(1);
 
@@ -1914,7 +1915,6 @@ describe("an explicit move to private cloud survives a restart", () => {
     await settle(restarted);
     expect(retry.creates).toHaveLength(0);
     expect(retry.puts).toHaveLength(0);
-
 
     restarted.transcribePrivately("rec-1");
     await settle(restarted);
@@ -1931,7 +1931,15 @@ describe("an explicit move to private cloud survives a restart", () => {
       stats: { tinfoil_calls: 1, tinfoil_audio_seconds: 1_248 },
     } as unknown as PrivateCloudTranscript;
     const created = { id: ID, status: "awaiting_upload" as const, upload: { path: `/uploads/${ID}`, capability: CAP } };
-    const h = harness({ pending, result: incomplete, creates: [created, created] });
+    const h = harness({
+      pending,
+      result: incomplete,
+      creates: [created, created],
+      puts: [
+        { status: 201, body: { status: "queued" } },
+        { status: 201, body: { status: "queued" } },
+      ],
+    });
     const transcriber = createVoiceNoteTranscriber({
       cloud: h.cloud,
       consent: { get: () => true, set: () => {} },
@@ -1948,6 +1956,7 @@ describe("an explicit move to private cloud survives a restart", () => {
     transcriber.transcribe("rec-1");
     await settle(transcriber);
     expect(h.creates).toHaveLength(2);
+    expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "transcript_incomplete" });
     expect(h.puts).toHaveLength(2);
   });
 

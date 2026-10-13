@@ -1464,7 +1464,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     }
     snapshot = { ...state, jobs: new Map(jobs) };
   }
-  /** This session's explicit choices; coverage failures require another deliberate tap. */
+  /** Keep the in-memory choice for same-session retry; settleChoice clears the persisted resume choice. */
   const chosenPrivate = new Set<string>();
   const isChosen = (sourceId: string) => chosenPrivate.has(sourceId) || choices.has(sourceId);
   /** The persisted choice is cleared once done, terminal, or awaiting an explicit retry. */
