@@ -173,10 +173,11 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
     });
   }
   /** One lane slot per key, so other lane users interleave with a long listing. A key removed
-   * between the listing and its read is skipped. A deadline (or the store's wait budget, started
-   * once) covers the whole listing, so a request listing many keys rejects instead of outlasting
-   * the client. */
-  private async list<T>(prefix: string, deadline = this.defaultDeadline()): Promise<T[]> {
+   * between the listing and its read is skipped. An explicit deadline covers the whole listing
+   * (getStatus). Without one, each slot gets the store's wait budget on its own, like any single
+   * read: write flows that list inside them (disableLocked) must not fail partway on a tenant with
+   * many rows. */
+  private async list<T>(prefix: string, deadline?: number): Promise<T[]> {
     const keys = await this.run(() => this.json.keys(prefix), deadline);
     const rows: T[] = [];
     for (const key of keys) {

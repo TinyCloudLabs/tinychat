@@ -1,14 +1,15 @@
 import { describe, expect, jest, test } from "bun:test";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import {
-  BackendStorageLane, BackendStorageLaneTimeout, FOREGROUND_BURST, REQUEST_LANE_WAIT_MS,
+  BackendStorageLane, BackendStorageLaneTimeout, FOREGROUND_BURST, REQUEST_LANE_WAIT_MS, type BackendStorageLanePriority,
 } from "../services/backend-storage-lane.js";
-import { CalendarAutojoinConnection } from "../services/calendar-autojoin-connection.js";
+import { CalendarAutojoinConnection, GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE } from "../services/calendar-autojoin-connection.js";
 import {
   KvCalendarAutojoinStore, TenantCoordinator, type CalendarConnection, type CalendarOccurrence,
 } from "../services/calendar-autojoin-store.js";
-import type { CredentialStore } from "../services/credential-store.js";
-import type { GoogleOAuthPort } from "../services/google-oauth.js";
+import { CredentialStore, InMemoryCredentialRowStore } from "../services/credential-store.js";
+import { GOOGLE_AUTOJOIN_SCOPES, type GoogleOAuthPort } from "../services/google-oauth.js";
+import { createHash } from "node:crypto";
 import { JsonTranscriberIndexStore, type JsonKv } from "../services/transcriber-index.js";
 
 function gate() {
@@ -80,17 +81,28 @@ describe("backend storage lane", () => {
     expect(await lane.run(async () => "next")).toBe("next");
   });
 
-  test("a budgeted listing rejects once the whole listing exceeds the budget", async () => {
-    const keys = Array.from({ length: 10 }, (_, i) => `calendar-autojoin/v1/connections/${i}`);
+  test("an explicit deadline bounds a whole listing", async () => {
+    const keys = Array.from({ length: 10 }, (_, i) => `calendar-autojoin/v1/occurrences/x/${i}`);
     let reads = 0;
     const node = { kv: {
       async get() { reads++; await new Promise(resolve => setTimeout(resolve, 25)); return { ok: true, data: { data: { tenant: "t" } } }; },
       async list() { return { ok: true, data: { keys } }; },
     } } as unknown as TinyCloudNode;
     const store = new KvCalendarAutojoinStore(node, new BackendStorageLane(), { waitTimeoutMs: 60 });
-    await expect(store.listConnections()).rejects.toBeInstanceOf(BackendStorageLaneTimeout);
-    // Ten 25 ms reads would take 250 ms; the 60 ms budget stops the listing well before that.
+    await expect(store.listOccurrences("t", Date.now() + 60)).rejects.toBeInstanceOf(BackendStorageLaneTimeout);
+    // Ten 25 ms reads would take 250 ms; the 60 ms deadline stops the listing well before that.
     expect(reads).toBeLessThan(keys.length);
+  });
+
+  test("without a deadline, the store's wait budget applies to each listing slot, not the whole listing", async () => {
+    const keys = Array.from({ length: 10 }, (_, i) => `calendar-autojoin/v1/connections/${i}`);
+    const node = { kv: {
+      async get() { await new Promise(resolve => setTimeout(resolve, 25)); return { ok: true, data: { data: { tenant: "t" } } }; },
+      async list() { return { ok: true, data: { keys } }; },
+    } } as unknown as TinyCloudNode;
+    const store = new KvCalendarAutojoinStore(node, new BackendStorageLane(), { waitTimeoutMs: 60 });
+    // 250 ms of reads under a 60 ms per-slot budget: every slot starts at once on an idle lane.
+    expect(await store.listConnections()).toHaveLength(keys.length);
   });
 
   test("one deadline bounds a whole status read: connection row plus occurrence listing", async () => {
@@ -147,6 +159,7 @@ function slowNode(values: Map<string, unknown>, delay: { ms: number }) {
     async get(key: string) {
       await sleep(delay.ms);
       gets.push(key);
+      if (!values.has(key)) return { ok: false, error: { code: "KV_NOT_FOUND", service: "kv", message: `Key not found: ${key}` } };
       return { ok: true, data: { data: structuredClone(values.get(key)) } };
     },
     async put(key: string, value: unknown) {
@@ -158,6 +171,11 @@ function slowNode(values: Map<string, unknown>, delay: { ms: number }) {
     async list({ prefix }: { prefix: string }) {
       await sleep(delay.ms);
       return { ok: true, data: { keys: [...values.keys()].filter(key => key.startsWith(prefix)) } };
+    },
+    async delete(key: string) {
+      await sleep(delay.ms);
+      values.delete(key);
+      return { ok: true, data: {} };
     },
   } } as unknown as TinyCloudNode;
   return { node, gets, puts };
@@ -183,10 +201,10 @@ const occurrenceRow = (tenant: string, id: string, extra: Partial<CalendarOccurr
 });
 
 /** Occupies the lane until `release()`; resolves once the job has actually started. */
-async function holdLane(lane: BackendStorageLane) {
+async function holdLane(lane: BackendStorageLane, priority: BackendStorageLanePriority = "background") {
   const started = gate();
   const held = gate();
-  const job = lane.run(async () => { started.open(); await held.opened; }, { priority: "background" });
+  const job = lane.run(async () => { started.open(); await held.opened; }, { priority });
   await started.opened;
   return async () => { held.open(); await job; };
 }
@@ -269,6 +287,9 @@ describe("TC-1006: request reads do not queue behind the auto-join worker", () =
       await Promise.resolve();
       expect(settled).toBe(false);
       jest.advanceTimersByTime(1);
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      // Checked before awaiting `read`: a read that ignores its budget fails here instead of hanging.
+      expect(settled).toBe(true);
       await expect(read).rejects.toBeInstanceOf(BackendStorageLaneTimeout);
       expect(reads.count).toBe(0);
       await release();
@@ -303,6 +324,20 @@ describe("TC-1006: background work is not starved", () => {
     expect(positions[0]).toBeLessThanOrEqual(FOREGROUND_BURST + 1);
     expect(positions[1] - positions[0] - 1).toBeLessThanOrEqual(FOREGROUND_BURST);
     expect(positions[2] - positions[1] - 1).toBeLessThanOrEqual(FOREGROUND_BURST);
+  });
+
+  test("foreground work run while no background work waited does not count toward the burst", async () => {
+    const lane = new BackendStorageLane();
+    // A long foreground-only stretch: nothing was overtaken.
+    await Promise.all(Array.from({ length: FOREGROUND_BURST * 2 }, () => lane.run(async () => {})));
+    const order: string[] = [];
+    // Held by a foreground job too: starting a background job would reset the count by itself.
+    const release = await holdLane(lane, "foreground");
+    const background = lane.run(async () => { order.push("bg"); }, { priority: "background" });
+    const foreground = [lane.run(async () => { order.push("fg1"); }), lane.run(async () => { order.push("fg2"); })];
+    await release();
+    await Promise.all([background, ...foreground]);
+    expect(order).toEqual(["fg1", "fg2", "bg"]);
   });
 });
 
@@ -351,5 +386,100 @@ describe("TC-1006: write ordering and consistency", () => {
     expect(await index.list("0xalice")).toEqual(["c", "b"]);
     // A cold reader sees the same committed document.
     expect(await new JsonTranscriberIndexStore(slowJson(values, { ms: 0 }), lane).list("0xalice")).toEqual(["c", "b"]);
+  });
+});
+
+describe("TC-1006 review: request-store write flows on a tenant with many rows", () => {
+  const VERIFIER = "a".repeat(43);
+  const CHALLENGE = createHash("sha256").update(VERIFIER).digest("base64url");
+  // 20 ms node ops against a 100 ms request budget: the ratio of a ~2.25 s prod op to 12 s.
+  const OP_MS = 20;
+  const BUDGET_MS = 100;
+  const ROWS = 12;
+
+  const DISABLE = `0x${"1".repeat(40)}`;
+  const RECONNECT = `0x${"2".repeat(40)}`;
+  const DISCONNECT = `0x${"3".repeat(40)}`;
+  const EXCHANGE = `0x${"4".repeat(40)}`;
+  const STATUS = `0x${"5".repeat(40)}`;
+
+  async function manyRowsFixture() {
+    const lane = new BackendStorageLane();
+    const values = new Map<string, unknown>();
+    const delay = { ms: 0 };
+    const { node } = slowNode(values, delay);
+    const store = new KvCalendarAutojoinStore(node, lane, { waitTimeoutMs: BUDGET_MS });
+    const credentials = new CredentialStore(new InMemoryCredentialRowStore(), {
+      master: () => "Zk9pQ2xUb0FzRHZFcldxTnBZeEhtQjNnU2o1dDBjMD0=", previousMaster: () => null,
+    });
+    const revokes: string[] = [];
+    const oauth: GoogleOAuthPort = {
+      authorizeUrl(input) { return `https://accounts.google.com/oauth?state=${input.state}`; },
+      async exchangeCode() {
+        return { access_token: "new-access", refresh_token: "new-refresh", expires_in: 3600, scope: GOOGLE_AUTOJOIN_SCOPES, subject: "google-subject" };
+      },
+      async refresh() { return { access_token: "rotated", expires_in: 3600 }; },
+      async revoke(token) { revokes.push(token); },
+    };
+    // The status read after disable/enable is not under test here (see the known-limitation test).
+    const connection = new CalendarAutojoinConnection({
+      store, credentials, oauth, coordinator: new TenantCoordinator(), calendar: { async probePrimary() {} }, statusBudgetMs: 60_000,
+    });
+    async function seed(tenant: string) {
+      await store.putConnection({ ...connectionRow(tenant), credentialRef: GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE });
+      for (let i = 0; i < ROWS; i++) {
+        await store.putOccurrence(occurrenceRow(tenant, `invite-${i}`, { phase: "terminal", disposition: "not_accepted" }));
+      }
+      await store.putOccurrence(occurrenceRow(tenant, "live", { phase: "sent", meetingId: "meeting-live", generation: 1 }));
+      await credentials.store({ source: GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, address: tenant, secret: {
+        kind: "oauth", accessToken: `access-${tenant}`, refreshToken: `refresh-${tenant}`,
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(), scope: GOOGLE_AUTOJOIN_SCOPES,
+      } });
+    }
+    return { store, credentials, revokes, connection, seed, slow() { delay.ms = OP_MS; } };
+  }
+
+  test("disable, needsReconnect, disconnect and exchange complete on an idle lane", async () => {
+    const { store, credentials, revokes, connection, seed, slow } = await manyRowsFixture();
+    for (const tenant of [DISABLE, RECONNECT, DISCONNECT, EXCHANGE]) await seed(tenant);
+    slow();
+    // Each flow lists ROWS + 1 rows inside disableLocked: far more than one budget of node ops.
+    expect((ROWS + 2) * OP_MS).toBeGreaterThan(BUDGET_MS);
+
+    await connection.disable(DISABLE);
+    expect((await store.getConnection(DISABLE))?.state).toBe("disabled");
+    expect((await store.getOccurrence(DISABLE, "live"))?.stopRequested).toBe(true);
+    expect(await credentials.status(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, DISABLE)).toBeFalsy();
+
+    await connection.needsReconnect(RECONNECT, 1);
+    expect(await store.getConnection(RECONNECT)).toMatchObject({ state: "needs_reconnect", errorCode: "needs_reconnect" });
+    expect((await store.getOccurrence(RECONNECT, "live"))?.stopRequested).toBe(true);
+
+    expect(await connection.disconnect(DISCONNECT)).toEqual({ status: "disconnected", upstreamRevoked: "ok" });
+    expect(revokes).toEqual([`refresh-${DISCONNECT}`]);
+    expect((await store.getOccurrence(DISCONNECT, "live"))?.stopRequested).toBe(true);
+
+    await connection.begin(EXCHANGE, { state: "state-0123456789abcdef", challenge: CHALLENGE, consent: true });
+    const tokens = await connection.exchange(EXCHANGE, { state: "state-0123456789abcdef", code: "code", verifier: VERIFIER });
+    expect(tokens.setupId).toBeTruthy();
+    expect(await store.getConnection(EXCHANGE)).toMatchObject({ state: "enabling", generation: 2, setupId: tokens.setupId });
+    expect((await store.getOccurrence(EXCHANGE, "live"))?.stopRequested).toBe(true);
+    expect(await credentials.status(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, EXCHANGE)).toBeTruthy();
+  }, 20_000);
+
+  test("known limitation: a status read whose rows exceed the one status deadline answers 503 fast instead of hanging", async () => {
+    const f = await manyRowsFixture();
+    await f.seed(STATUS);
+    f.slow();
+    // getStatus deliberately bounds its whole read (connection row + listing) by one deadline so the
+    // Connectors card never outwaits the client; past ~budget/op rows it rejects (route 503) on every
+    // call. Follow-up: a capped or cached outcome listing.
+    const status = new CalendarAutojoinConnection({
+      store: f.store, credentials: f.credentials, oauth: {} as GoogleOAuthPort, coordinator: new TenantCoordinator(),
+      calendar: { async probePrimary() {} }, statusBudgetMs: BUDGET_MS,
+    });
+    const started = Date.now();
+    await expect(status.getStatus(STATUS)).rejects.toBeInstanceOf(BackendStorageLaneTimeout);
+    expect(Date.now() - started).toBeLessThan((ROWS + 2) * OP_MS);
   });
 });
