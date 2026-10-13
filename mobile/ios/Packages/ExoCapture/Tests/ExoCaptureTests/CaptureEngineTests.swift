@@ -122,6 +122,8 @@ import XCTest
             let entered = expectation(description: "commit reached stage.begin")
             let completed = expectation(description: "stop committed")
             let release = DispatchSemaphore(value: 0)
+            var sttWakeups = 0
+            engine.captureSessionEnded = { sttWakeups += 1 }
             engine.library.gate = { point in
                 if point == "stage.begin" {
                     entered.fulfill()
@@ -137,11 +139,13 @@ import XCTest
                 completed.fulfill()
             }
             wait(for: [entered], timeout: 5)
+            XCTAssertEqual(sttWakeups, 0, "STT must wait for the committed audio")
             XCTAssertThrowsError(try engine.retryRecovery(id)) {
                 XCTAssertEqual($0 as? CaptureError, .recordingInProgress)
             }
             release.signal()
             wait(for: [completed], timeout: 10)
+            XCTAssertEqual(sttWakeups, 1)
             XCTAssertFalse(recovered)
             XCTAssertEqual(try engine.library.listCommitted().filter { $0["id"] as? String == id }.count, 1)
             engine.removeObserver(token)

@@ -10,10 +10,33 @@ public enum CaptureResumeError: Error, LocalizedError {
     public var errorDescription: String? { code }
 }
 
+private final class FinishBackgroundTask {
+    private let lock = NSLock()
+    private let log = Logger(subsystem: "xyz.tinycloud.exo", category: "capture")
+    private var identifier: UIBackgroundTaskIdentifier = .invalid
+
+    func begin() {
+        identifier = UIApplication.shared.beginBackgroundTask(withName: "Finish voice note") { [self] in
+            log.error("Voice-note finalization exceeded background time; recovery will retry on launch")
+            end()
+        }
+    }
+
+    func end() {
+        lock.lock()
+        let task = identifier
+        identifier = .invalid
+        lock.unlock()
+        guard task != .invalid else { return }
+        DispatchQueue.main.async { UIApplication.shared.endBackgroundTask(task) }
+    }
+}
+
 public final class CaptureEngine {
     public static let shared = CaptureEngine()
     public let library: RecordingLibrary
     private let log = Logger(subsystem: "xyz.tinycloud.exo", category: "capture")
+    private let stopSignposter = OSSignposter(subsystem: "xyz.tinycloud.exo", category: "capture.stop")
     private let defaultsKey = "exo.capture.defaults.v2"
     private let recovery = DispatchGroup()
     private var startedRecovery = false
@@ -38,6 +61,8 @@ public final class CaptureEngine {
     private var consecutiveStalls = 0
     private var stallBackoffActive = false
     private var writer: AacAdtsWriter?
+    private var stopInProgress = false
+    private var pendingStopFinalizations = 0
     private var info: SessionInfo?
     private var intent = "stopped"
     private var availability = "available"
@@ -244,6 +269,12 @@ public final class CaptureEngine {
     /// ended, so the STT queue can resume from its checkpoint.
     public var captureSessionStarted: (() -> Void)?
     public var captureSessionEnded: (() -> Void)?
+
+    private func resumeSttIfIdle() {
+        if info == nil && !stopInProgress && pendingStopFinalizations == 0 {
+            captureSessionEnded?()
+        }
+    }
     public func presentRecorder() {
         if let id = info?.id {
             log.notice("presentRecorder id=\(id, privacy: .public)")
@@ -360,7 +391,7 @@ public final class CaptureEngine {
     public func start(source: String = "in_app", requestedLimitMs: Int64? = nil,
                       override: CaptureOptions? = nil) throws -> [String: Any] {
         recoverOnce()
-        guard info == nil else { throw CaptureError.alreadyRecording }
+        guard info == nil && !stopInProgress else { throw CaptureError.alreadyRecording }
         guard let free = try library.root.resourceValues(forKeys: [.volumeAvailableCapacityKey]).volumeAvailableCapacity else {
             throw CaptureError.io("read available storage")
         }
@@ -408,7 +439,7 @@ public final class CaptureEngine {
                 limitTimer?.invalidate(); limitTimer = nil
                 try? library.delete(session.id)
                 info = nil; intent = "stopped"; attempts.stop()
-                captureSessionEnded?()
+                resumeSttIfIdle()
             }
             throw error
         }
@@ -771,6 +802,7 @@ public final class CaptureEngine {
     }
 
     public func pause() throws {
+        guard !stopInProgress else { throw CaptureError.notRecording }
         guard let session = info else { throw CaptureError.notRecording }
         if intent == "paused" { return }
         guard intent == "recording" else { throw CaptureError.notRecording }
@@ -809,6 +841,7 @@ public final class CaptureEngine {
     }
 
     public func resume() throws {
+        guard !stopInProgress else { throw CaptureError.notRecording }
         try attemptResume(automatic: false)
     }
 
@@ -1054,47 +1087,76 @@ public final class CaptureEngine {
 
     public func stop(reason stopReason: String = "user",
                      completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        let signpost = stopSignposter.beginInterval("Stop Main Handoff")
+        defer { stopSignposter.endInterval("Stop Main Handoff", signpost) }
+        guard !stopInProgress else { completion(.failure(CaptureError.notRecording)); return }
         guard let session = info else { completion(.failure(CaptureError.notRecording)); return }
+        stopInProgress = true
         clearResumeNotification(); attempts.stop(); cancelRetry()
-        guard stopInput() else {
-            completion(.failure(CaptureError.io("stop capture input")))
-            return
-        }
-        closeNoSignal()
-        let stoppedAt = wallClock.nowMilliseconds()
-        let final: (audioMs: Int64, heartbeatAt: Int64?)
-        do { final = try writer?.finish(at: stoppedAt) ?? (audioMs: 0, heartbeatAt: nil) }
-        catch {
-            emit("writeFailure", ["id": session.id, "error": String(describing: error)], retained: true)
-            library.endLiveCapture(session.id)
+        limitTimer?.invalidate(); limitTimer = nil
+        let backgroundTask = FinishBackgroundTask()
+        backgroundTask.begin()
+        let finishingWriter = writer
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            let result: Result<(stoppedAt: Int64, audioMs: Int64, heartbeatAt: Int64?), Error>
+            do {
+                guard stopInput() else { throw CaptureError.io("stop capture input") }
+                let stoppedAt = wallClock.nowMilliseconds()
+                let final = try finishingWriter?.finish(at: stoppedAt) ?? (audioMs: 0, heartbeatAt: nil)
+                result = .success((stoppedAt, final.audioMs, final.heartbeatAt))
+            } catch { result = .failure(error) }
             deactivateGraph(tapRemoved: true)
-            limitTimer?.invalidate(); limitTimer = nil
-            writer = nil; info = nil; intent = "stopped"; availability = "available"; reason = "write_failed"
-            captureSessionEnded?()
-            emitState()
-            DispatchQueue.global(qos: .utility).async { [self] in
-                guard claimRecovery(session.id) else {
-                    log.notice("recovery skipped id=\(session.id, privacy: .public) reason=already_recovering")
-                    return
-                }
-                defer { releaseRecovery(session.id) }
-                do { try recoverSession(session.id) }
-                catch {
-                    log.error("Write-failure recovery failed: \(String(describing: error), privacy: .public)")
-                    DispatchQueue.main.async {
-                        self.emit("recoveryFailed", ["id": session.id, "reason": String(describing: error)], retained: true)
-                    }
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let final):
+                    self.finishStop(session: session, stopReason: stopReason, stoppedAt: final.stoppedAt,
+                                    audioMs: final.audioMs, heartbeatAt: final.heartbeatAt,
+                                    backgroundTask: backgroundTask, completion: completion)
+                case .failure(let error):
+                    self.failStop(session: session, error: error, backgroundTask: backgroundTask,
+                                  completion: completion)
                 }
             }
-            completion(.failure(error))
-            return
         }
-        deactivateGraph(tapRemoved: true)
+    }
+
+    private func failStop(session: SessionInfo, error: Error, backgroundTask: FinishBackgroundTask,
+                          completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        let id = session.id
+        backgroundTask.end()
+        emit("writeFailure", ["id": id, "error": String(describing: error)], retained: true)
+        library.endLiveCapture(id)
+        writer = nil; info = nil; intent = "stopped"; availability = "available"; reason = "write_failed"
+        stopInProgress = false
+        resumeSttIfIdle()
+        emitState()
+        DispatchQueue.global(qos: .utility).async { [self] in
+            guard claimRecovery(id) else {
+                log.notice("recovery skipped id=\(id, privacy: .public) reason=already_recovering")
+                return
+            }
+            defer { releaseRecovery(id) }
+            do { try recoverSession(id) }
+            catch {
+                log.error("Write-failure recovery failed: \(String(describing: error), privacy: .public)")
+                DispatchQueue.main.async {
+                    self.emit("recoveryFailed", ["id": id, "reason": String(describing: error)], retained: true)
+                }
+            }
+        }
+        completion(.failure(error))
+    }
+
+    private func finishStop(session: SessionInfo, stopReason: String, stoppedAt: Int64,
+                            audioMs finalAudioMs: Int64, heartbeatAt: Int64?,
+                            backgroundTask: FinishBackgroundTask,
+                            completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        closeNoSignal()
         // Keep the live mark until commit publishes its sidecar. A launch sweep can still be
         // running here; dropping the mark would let it commit this stop as a recovered note.
         if openSpan != nil { closeSpan(at: stoppedAt, journal: false) }
         var next = transitions ?? CaptureTransitionMachine()
-        let stopEvents = next.stopped(at: stoppedAt, audioMs: final.audioMs, reason: stopReason)
+        let stopEvents = next.stopped(at: stoppedAt, audioMs: finalAudioMs, reason: stopReason)
         transitions = next
         if let since = pausedSince { pausedMs += max(0, stoppedAt - since) }
         let paused = pausedMs
@@ -1104,17 +1166,15 @@ public final class CaptureEngine {
         let firstAudio = firstAudioAt
         let inputStopped = captureStoppedAt
         let muxConfig = self.muxConfig()
-        limitTimer?.invalidate(); limitTimer = nil
         writer = nil; info = nil; intent = "stopped"; availability = "available"; reason = stopReason
-        captureSessionEnded?()
+        stopInProgress = false
+        pendingStopFinalizations += 1
         emitState()
-        let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Finish voice note") {
-            self.log.error("Voice-note finalization exceeded background time; recovery will retry on launch")
-        }
+        // STT reads the committed audio, so resume it only once the mux has published that file.
         DispatchQueue.global(qos: .userInitiated).async { [self] in
-            defer { DispatchQueue.main.async { UIApplication.shared.endBackgroundTask(backgroundTask) } }
+            defer { backgroundTask.end() }
             do {
-                let duration = final.audioMs
+                let duration = finalAudioMs
                 guard duration > 0 else {
                     try library.delete(session.id)
                     throw CaptureError.noAudio
@@ -1123,7 +1183,7 @@ public final class CaptureEngine {
                     try library.appendJournal(session.id, event, fullSync: index == stopEvents.count - 1)
                 }
                 let lastHeartbeat: Int64?
-                if let at = final.heartbeatAt { lastHeartbeat = at }
+                if let at = heartbeatAt { lastHeartbeat = at }
                 else {
                     lastHeartbeat = try library.readJournal(session.id)
                         .last(where: { $0["e"] as? String == "hb" })?["t"] as? Int64
@@ -1150,12 +1210,16 @@ public final class CaptureEngine {
                 }
                 DispatchQueue.main.async {
                     self.emit("committed", committed, retained: true)
+                    self.pendingStopFinalizations -= 1
+                    self.resumeSttIfIdle()
                     completion(.success(committed))
                 }
             } catch {
                 library.endLiveCapture(session.id)
                 log.error("finalize stage=failed id=\(session.id, privacy: .public) error=\(String(describing: error), privacy: .public)")
                 DispatchQueue.main.async {
+                    self.pendingStopFinalizations -= 1
+                    self.resumeSttIfIdle()
                     completion(.failure(error))
                     if let captureError = error as? CaptureError,
                        case .finalizationTimedOut = captureError {
@@ -1221,6 +1285,7 @@ public final class CaptureEngine {
     }
 
     public func discard() throws -> String? {
+        guard !stopInProgress else { throw CaptureError.notRecording }
         guard let session = info else { return nil }
         clearResumeNotification(); attempts.stop(); cancelRetry()
         try library.delete(session.id)
@@ -1228,7 +1293,7 @@ public final class CaptureEngine {
         deactivateGraph(tapRemoved: true)
         _ = try? writer?.finish(at: wallClock.nowMilliseconds())
         writer = nil; info = nil; intent = "stopped"; reason = "user"
-        captureSessionEnded?()
+        resumeSttIfIdle()
         limitTimer?.invalidate(); limitTimer = nil
         emitState()
         return session.id
