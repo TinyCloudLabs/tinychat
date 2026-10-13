@@ -89,9 +89,9 @@ describe("PhoneRecorder", () => {
     expect(html).toContain('aria-live="polite"');
   });
 
-  test("the scale has three stops: Audio only, Local and Private", () => {
+  test("the scale has four stops: Audio only, Local, Private and Powerful", () => {
     const html = render();
-    expect((html.match(/data-available=/g) ?? []).length).toBe(3);
+    expect((html.match(/data-available=/g) ?? []).length).toBe(4);
   });
 
   test("signed out, the first render has Local open and the other stops closed; signed in opens Audio only and Private (Local waits for its model)", () => {
@@ -114,11 +114,13 @@ describe("PhoneRecorder", () => {
       "false",
       "true",
       "false",
+      "false",
     ]);
     expect(stops({ signedIn: true, transcriber: local })).toEqual([
       "true",
       "false",
       "true",
+      "false",
     ]);
     __setOnDeviceSttForTests(createFakeOnDeviceStt().plugin);
     __resetOnDeviceSttStoreForTests();

@@ -120,17 +120,15 @@ describe("How it works: the canonical claims", () => {
     expect(where).toContain("It never receives your audio.");
     expect(where).toContain("Private cloud transcribes voice notes, uploads and desktop recordings.");
     expect(where).toContain("Exo deletes it at AssemblyAI after saving the transcript to your TinyCloud space.");
-    expect(where).toContain("it never stores or logs it.");
     expect(where).toContain("AssemblyAI is not part of TinyCloud’s private transcription.");
     expect(where).toContain("A local recording stays on this Mac.");
   });
 
-  test("uploads: the formats and the 2-hour limit, except with your own AssemblyAI key", () => {
+  test("uploads: the supported formats and the 2-hour limit", () => {
     const uploads = text("uploads");
     expect(uploads).toContain(
       "Private transcription and TinyCloud’s AssemblyAI account take MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio, up to 2 hours.",
     );
-    expect(uploads).toContain("With your own AssemblyAI key, most audio and video files work.");
   });
 
   test("your data: storage is qualified by kind of recording", () => {

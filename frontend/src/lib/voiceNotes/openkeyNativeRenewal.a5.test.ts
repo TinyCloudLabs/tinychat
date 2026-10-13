@@ -27,6 +27,6 @@ test("the real voice-note save runs after the a4 renewal fixture", async () => {
     { did, spaceId: "space", generation: currentAccountGeneration() },
     { ...note, version: 2, owner: did },
     () => { if (++checks === 2) throw new Error("real pipeline save checkpoint"); });
-  expect(outcome).toMatchObject({ kind: "failed", failure: "real pipeline save checkpoint", failureKind: "other",
-    failureCause: { message: "real pipeline save checkpoint" } });
+  expect(outcome).toMatchObject({ kind: "failed", failure: "STORE_ERROR: real pipeline save checkpoint", failureKind: "other" });
+  if (outcome.kind === "failed") expect((outcome.failureCause as Error).message).toBe("real pipeline save checkpoint");
 });

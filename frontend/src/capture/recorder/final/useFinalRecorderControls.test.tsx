@@ -317,7 +317,7 @@ describe("useFinalRecorderControls gives PhoneRecorder's outputs", () => {
       transcriberApi: api,
     });
     expect(hook).toEqual(phone);
-    expect(controls.choice.mode).toBe("private");
+    expect(controls.choice.mode).toBe("powerful");
     expect(controls.choice.identifySpeakers).toBe(true);
   });
 });

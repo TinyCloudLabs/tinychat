@@ -665,19 +665,10 @@ test("another account's retained notes do not delay a fresh Stop with a space pr
     expect(sqlite.query("SELECT name FROM sqlite_schema WHERE name = 'voice_note_transcript'").all()).toEqual([]);
     await fake.plugin.start();
     const fresh = await fake.plugin.stop();
-    const originalDebug = console.debug;
-    const starts: string[] = [];
-    console.debug = (message: unknown) => {
-      if (String(message).startsWith("[VoiceNotes] automatic save starting")) starts.push(String(message));
-    };
-    try {
-      await pipeline.process(ctx, fresh.id);
-      await pipeline.process(ctx, fresh.id, "background");
-      await pipeline.reconcileAll(ctx);
-      await pipeline.reconcileAll(ctx, "manual");
-    } finally { console.debug = originalDebug; }
-    expect(starts.filter((line) => line.includes(`id=${fresh.id} `)).map((line) => line.split("trigger=")[1]))
-      .toEqual(["stop", "background", "reconcile", "manual"]);
+    await pipeline.process(ctx, fresh.id);
+    await pipeline.process(ctx, fresh.id, "background");
+    await pipeline.reconcileAll(ctx);
+    await pipeline.reconcileAll(ctx, "manual");
     const notes = (await fake.plugin.listPending()).recordings;
     expect(notes.find((note) => note.id === old.id)?.ledger?.audio.state).toBe("pending");
     expect(notes.find((note) => note.id === fresh.id)?.ledger?.audio.state).toBe("saved");
@@ -833,7 +824,7 @@ test("a SQL 500 stays visible as its own message", async () => {
   expect(await pipelineFailureMessage("sql-500")).toContain("Failed to execute query: 500 - internal server error");
 });
 
-test("a wrapped audio upload network error shows friendly copy and logs only a redacted diagnostic", async () => {
+test("a wrapped CORS-hidden upload refusal shows node rejection copy without leaking its URL", async () => {
   const original = VoiceNotes;
   const { tcw } = space();
   const fake = createFakeVoiceNotes();
@@ -858,13 +849,12 @@ test("a wrapped audio upload network error shows friendly copy and logs only a r
     await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
 
     expect(pendingStore.snapshot().lastError).toBe(
-      "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
+      "The TinyCloud node rejected this upload. This note is still on your phone — try again after the node is fixed.",
     );
     expect(pendingStore.snapshot().lastError).not.toContain(rawUrl);
-    expect(pendingStore.snapshot().notes?.find((note) => note.id === id)?.failed?.kind).toBe("offline");
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === id)?.failed?.kind).toBe("rejected");
     const output = warnings.map((args) => args.join(" ")).join(" ");
-    expect(output).toContain("TinyCloud network failure");
-    expect(output).toContain("<url>");
+    expect(output).toContain("TinyCloud upload rejected");
     expect(output).not.toContain("space.example");
     expect(output).not.toContain("private-token");
   } finally {

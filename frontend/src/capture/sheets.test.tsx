@@ -164,9 +164,9 @@ describe("Upload sheet", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     const job = runner.snapshot();
     expect(job?.assemblyAiMode).toBe("own");
-    // Settings now says TinyCloud's account; the job's route still names the user's key.
+    // A persisted user-key job cannot resume now that Powerful runs through Exo's server.
     const html = renderUpload({ job, assemblyAiMode: "hosted" });
-    expect(html).toContain("Powerful · your key");
+    expect(html).toContain("Powerful · choose file again");
     expect(html).not.toContain("TinyCloud&#x27;s account");
     // And the other way round.
     const hosted = renderUpload({ job: upload({ engine: "assemblyai", assemblyAiMode: "hosted" }), assemblyAiMode: "own" });
@@ -191,7 +191,7 @@ describe("Upload sheet", () => {
 
   test("the route names whose account Powerful uses", () => {
     expect(uploadRoute("assemblyai", "hosted").map((n) => n.label)).toEqual(["This browser", "Powerful · TinyCloud's account", "Your space"]);
-    expect(uploadRoute("assemblyai", "own")[1].label).toBe("Powerful · your key");
+    expect(uploadRoute("assemblyai", "own")[1].label).toBe("Powerful · choose file again");
     expect(uploadRoute("private-cloud", "own")[1].label).toBe("Private");
   });
 });

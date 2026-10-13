@@ -1725,13 +1725,20 @@ export function voiceNoteTranscriberFor(
   const hosted = createHostedVoiceNoteTrack(() => ref.current, backendUrl, sessionStore, did);
   let powerfulAvailable = false;
   const listeners = new Set<(event: VoiceNoteTranscriberEvent) => void>();
-  const emit = (event: VoiceNoteTranscriberEvent = { kind: "changed" }) => { for (const listener of listeners) listener(event); };
+  const makeSnapshot = (): VoiceNoteTranscriberSnapshot => ({
+    ...privateTranscriber.snapshot(), powerfulAvailable, powerfulConsented: hosted.consented(),
+    jobs: new Map([...privateTranscriber.snapshot().jobs, ...hosted.jobs]),
+  });
+  let combinedSnapshot = makeSnapshot();
+  const emit = (event: VoiceNoteTranscriberEvent = { kind: "changed" }) => {
+    combinedSnapshot = makeSnapshot();
+    for (const listener of listeners) listener(event);
+  };
   privateTranscriber.subscribe(emit);
   hosted.subscribe(() => emit());
   const transcriber: VoiceNoteTranscriber = {
     ...privateTranscriber,
-    snapshot: () => ({ ...privateTranscriber.snapshot(), powerfulAvailable, powerfulConsented: hosted.consented(),
-      jobs: new Map([...privateTranscriber.snapshot().jobs, ...hosted.jobs]) }),
+    snapshot: () => combinedSnapshot,
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     async check(options) {
       await Promise.all([privateTranscriber.check(options), hosted.check().then((available) => {

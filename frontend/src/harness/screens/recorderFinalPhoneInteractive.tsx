@@ -181,6 +181,8 @@ function Interactive({
   const transcription: VoiceNoteTranscriptionProps = {
     availability: "available",
     consented,
+    powerfulAvailable: true,
+    powerfulConsented: true,
     maxSeconds: 600,
     jobs: new Map(),
     onTranscribe: () => {},

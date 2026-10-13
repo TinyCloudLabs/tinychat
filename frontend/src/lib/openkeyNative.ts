@@ -177,7 +177,7 @@ function safeErrorMessage(message: string): string {
     .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
     .replace(/([?&](?:code|token|refresh_token|access_token|session_key|key)=)[^&\s]+/gi, "$1[redacted]")
     .replace(/("(?:d|privateJwk|refreshToken|accessToken|sessionKey)"\s*:\s*")[^"]+"/gi, "$1[redacted]\"")
-    .replace(/((?:refresh[_-]?token|access[_-]?token|private[_-]?key|sessionKey|authorization)\s*[:=]\s*)\S+/gi, "$1[redacted]")
+    .replace(/((?:token|secret|password|refresh[_-]?token|access[_-]?token|private[_-]?key|sessionKey|authorization)\s*[:=]\s*)\S+/gi, "$1[redacted]")
     .replace(/\b(?:eyJ[A-Za-z0-9_-]+\.){2}[A-Za-z0-9_-]+\b/g, "[redacted]")
     .replace(/\b0x[a-f\d]{64,}\b/gi, "[redacted]")
     .replace(/\b[A-Za-z0-9_-]{80,}\b/g, "[redacted]")

@@ -157,6 +157,7 @@ describe("DesktopRecorder", () => {
       "true",
       "false",
       "false",
+      "false",
     ]);
     const html = render({ signedIn: false, transcriber: local });
     expect(html).toContain('aria-valuetext="Audio only"');
@@ -180,6 +181,7 @@ describe("DesktopRecorder", () => {
       "true",
       "false",
       "true",
+      "false",
     ]);
   });
   test("signed out on the Mac with Whisper ready, Local is selected and available with the Whisper caption", () => {
@@ -188,7 +190,7 @@ describe("DesktopRecorder", () => {
     const html = render({ signedIn: false, transcriber: local });
     expect(html).toContain('aria-valuetext="Local"');
     expect(html).toContain("Whisper on this Mac, after you stop.");
-    expect([...html.matchAll(/data-available="(true|false)"/g)].map((m) => m[1])).toEqual(["false", "true", "false"]);
+    expect([...html.matchAll(/data-available="(true|false)"/g)].map((m) => m[1])).toEqual(["false", "true", "false", "false"]);
     expect(html).not.toContain("Just the recording, kept on this Mac.");
   });
 
@@ -197,7 +199,7 @@ describe("DesktopRecorder", () => {
     const local = { id: "on-device" as const, identifySpeakers: false, source: "default" as const };
     const html = render({ signedIn: true, transcriber: local });
     expect(html).toContain('aria-valuetext="Local"');
-    expect([...html.matchAll(/data-available="(true|false)"/g)].map((m) => m[1])).toEqual(["true", "true", "true"]);
+    expect([...html.matchAll(/data-available="(true|false)"/g)].map((m) => m[1])).toEqual(["true", "true", "true", "false"]);
   });
 
   test("a failed note save changes the notes button and raises an alert", () => {
