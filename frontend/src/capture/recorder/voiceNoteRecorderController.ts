@@ -15,7 +15,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { App } from "@capacitor/app";
 import { setCapturePlaybackBlocked, stopAllPlayback } from "@/lib/audio/playback";
 import { Capacitor } from "@capacitor/core";
-import { deviceName } from "@/lib/platform";
+import { captureDeviceName } from "@/lib/voiceNotes/captureEngine";
 
 import {
   VoiceNotes,
@@ -365,12 +365,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         send({ type: "STOP_FAILED", status: "active", error, id,
           mic: micFromStatus(status), audioMs: status.audioMs, elapsedMs: status.elapsedMs, elapsedAt: Date.now() });
       } else {
-        send({ type: "STOP_FAILED", status: "idle", error: error ?? `Another recording is active on ${deviceName()}.`, id });
+        send({ type: "STOP_FAILED", status: "idle", error: error ?? `Another recording is active on ${captureDeviceName()}.`, id });
         acceptNativeOptions(status);
         send(activePickup(status));
       }
     } catch (caught) {
-      send({ type: "STOP_FAILED", status: "unknown", error: `Could not check whether ${deviceName()} stopped recording: ${messageOf(caught)}`, id });
+      send({ type: "STOP_FAILED", status: "unknown", error: `Could not check whether ${captureDeviceName()} stopped recording: ${messageOf(caught)}`, id });
     }
   };
 
@@ -380,7 +380,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       if (state.phase !== "discarding") return;
       if (status.state === "idle") {
         send({ type: "DISCARD_FAILED", id: shown, committed: true,
-          error: `${error} The recording ended; its audio is safe on ${deviceName()}.` });
+          error: `${error} The recording ended; its audio is safe on ${captureDeviceName()}.` });
         void pendingStore.refresh();
       } else if (status.id === shown) {
         acceptNativeOptions(status);
@@ -979,7 +979,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         const code = errorCode(caught);
         if (code === "already_committed") {
           if (shown) unmarkDiscarded(shown);
-          await reconcileDiscardFailure(shown, `Already saved on ${deviceName()}. The note is still available.`);
+          await reconcileDiscardFailure(shown, `Already saved on ${captureDeviceName()}. The note is still available.`);
           return;
         }
         if (code !== "not_recording" && code !== "no_audio_captured") {
@@ -1037,7 +1037,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
               native.status === "signed_in" && native.accountDid === tcw.did
                 ? { accountDid: native.accountDid, transitionGen: native.transitionGen } : null));
             if (!claimed) {
-              account.reportError(`The recording account on ${deviceName()} is not ready. Try again shortly.`);
+              account.reportError(`The recording account on ${captureDeviceName()} is not ready. Try again shortly.`);
               return;
             }
             if (generation !== currentAccountGeneration()) {

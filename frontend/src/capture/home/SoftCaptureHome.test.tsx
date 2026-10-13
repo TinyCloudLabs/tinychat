@@ -150,6 +150,13 @@ describe("Recent", () => {
 });
 
 describe("the in-progress card", () => {
+  test("keeps the pending recording and Save now visible until its pipeline loads", () => {
+    const item = note(1, { id: "on-phone:rec-1", title: null, onPhone: true });
+    const html = home({ inProgress: voice(1), recent: { status: "ready", items: [item] }, pipelineNotes: [item], pipelines: new Map() });
+    expect(html).toContain('data-testid="voice-note-retry"');
+    expect(html).toContain("Save now");
+  });
+
   test("shows every unfinished pipeline row and no Save now when notes are moving", () => {
     const a = note(1, { id: "on-phone:rec-1", sourceId: "rec-1", title: null, onPhone: true });
     const b = note(2, { id: "on-phone:rec-2", sourceId: "rec-2", title: null, onPhone: true });
@@ -290,7 +297,7 @@ describe("capture-issue rows", () => {
     test("is not in the way of the other rows or the on-this-phone card", () => {
       const html = home({ inProgress: voice(2), recent: { status: "ready", items: [note(1), note(2)] } }, { "rec-1": partial });
       expect(html.match(/data-notice="true"/g)).toHaveLength(1);
-      expect(html).not.toContain("Not in your space yet");
+      expect(html).toContain('data-testid="voice-note-retry"');
       expect(html).not.toContain("automatically");
     });
 

@@ -1,4 +1,5 @@
 import { deviceName, type AppPlatform } from "@/lib/platform";
+import { captureDeviceName } from "@/lib/voiceNotes/captureEngine";
 import type { TranscriptionAvailability } from "@/lib/voiceNotes/voiceNoteTranscription";
 
 const MODE_NAMES = {
@@ -87,7 +88,7 @@ export const FINAL_COPY = {
   stopAndSaveRecorded: "Stop and save what's recorded.",
   stopAt: (text: string) => `Stops at ${text}`,
   needsApp: "needs the app",
-  onThisPhone: `on ${deviceName()}`,
+  get onThisPhone() { return `on ${captureDeviceName()}`; },
   onThisMac: "on this Mac",
   sealedEnclave: "sealed enclave",
   identifySpeakers: "Identify speakers",
@@ -109,7 +110,7 @@ export const FINAL_COPY = {
     powerfulName: MODE_NAMES.powerful,
     noTranscript: "no transcript",
     skipCaption: {
-      phone: `Just the recording, kept on ${deviceName()}.`,
+      get phone() { return `Just the recording, kept on ${captureDeviceName()}.`; },
       desktop: "Just the recording, saved to your space.",
       web: "Just the recording, saved to your space.",
     },
@@ -117,8 +118,7 @@ export const FINAL_COPY = {
       "Only the audio is saved. Transcribe it later if you like.",
     localPhoneCaption: "Nothing leaves it; a little slower.",
     localDesktopCaption: "Whisper on this Mac, after you stop.",
-    localPhoneExplanation:
-      `${deviceName().replace(/^t/, "T")} transcribes it after you stop. Nothing leaves it.`,
+    get localPhoneExplanation() { return `${captureDeviceName().replace(/^t/, "T")} transcribes it after you stop. Nothing leaves it.`; },
     localDesktopExplanation: (model: string) =>
       `Whisper ${model} transcribes on this Mac after you stop, and nothing leaves the machine. Change the model in ⚙︎ Settings.`,
     localWebExplanation:

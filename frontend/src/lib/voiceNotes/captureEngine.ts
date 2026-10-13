@@ -1,5 +1,5 @@
 import { Capacitor } from "@capacitor/core";
-import { deviceName } from "@/lib/platform";
+import { appPlatform, deviceName } from "@/lib/platform";
 import { installVoiceNotesEngine, nativeVoiceNotesAvailable, VoiceNotes, MIN_ANDROID_SDK_FOR_FILE_UPLOAD, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 
 export type CaptureEngineKind = "native" | "web" | "tauri";
@@ -83,6 +83,16 @@ export function captureEngineKind(): CaptureEngineKind | null {
   if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) return factories.has("tauri") ? "tauri" : null;
   if (typeof MediaRecorder !== "undefined" && typeof navigator !== "undefined" && navigator.mediaDevices && factories.has("web")) return "web";
   return null;
+}
+
+/** Name the device holding local audio, using the installed recorder rather than the webview running the UI. */
+export function captureDeviceName(): string {
+  const kind = captureEngineKind();
+  if (kind === "native") return "this phone";
+  if (kind === "tauri") return deviceName("tauri");
+  if (kind === "web") return deviceName("web");
+  const platform = appPlatform();
+  return platform === "ios" || platform === "android" ? "this phone" : deviceName(platform);
 }
 
 /** Whether this shell has a recorder; Private checks the Android uploader separately. */

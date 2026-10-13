@@ -1600,7 +1600,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
     await recorder.discard();
     expect(onPhone.map((recording) => recording.id)).toEqual([id]);
     expect(isDiscarded(id)).toBe(false);
-    expect(recorder.getState().error).toContain("Already saved on this browser");
+    expect(recorder.getState().error).toContain("Already saved on this phone");
   });
 
   test("a failed Stop checks native status before showing a live recorder", async () => {
