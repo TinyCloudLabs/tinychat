@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.7.1-beta.2
+
+### Patch Changes
+
+- 1c5e68b: Publish TinyChat retrieval pack 0.1.1-onboarding.21 with metadata-only backend-pending coverage.
+
 ## 0.7.1-beta.1
 
 ### Patch Changes
