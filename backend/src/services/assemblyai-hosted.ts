@@ -331,7 +331,7 @@ export class HostedUploadStore {
     private readonly removeSpool: typeof rm = rm,
     private readonly tombstoneLimits = { global: MAX_UPLOAD_TOMBSTONES, account: MAX_ACCOUNT_UPLOAD_TOMBSTONES },
     private readonly outcomeLimits = { global: MAX_SETTLED_OUTCOMES, account: MAX_ACCOUNT_SETTLED_OUTCOMES },
-    private readonly identityStore?: Pick<JsonKv, "get" | "put">,
+    private readonly identityStore?: Pick<JsonKv, "get"> & { putIfAbsent(key: string, value: unknown): Promise<boolean> },
     private readonly freshInstallId = process.env.ASSEMBLYAI_HOSTED_FRESH_INSTALL,
   ) {}
 
@@ -367,7 +367,8 @@ export class HostedUploadStore {
           throw new Error("[startup] FATAL: fresh hosted spool requires ASSEMBLYAI_HOSTED_FRESH_INSTALL=<expected-new-id>; refusing hosted routes");
         console.error(`[assemblyai-hosted] initializing fresh hosted spool at ${this.spoolDir}; verify persistent volume before accepting paid jobs alert=true`);
         const newIdentity = { installId: this.freshInstallId, createdAt: new Date().toISOString() };
-        await this.identityStore.put(HOSTED_IDENTITY_KEY, newIdentity);
+        if (!await this.identityStore.putIfAbsent(HOSTED_IDENTITY_KEY, newIdentity))
+          throw new Error("[startup] FATAL: hosted off-volume identity was enrolled by another writer; refusing hosted routes");
         const identity = await open(identityFile, "wx", 0o600);
         try { await identity.writeFile(JSON.stringify(newIdentity)); await identity.sync(); }
         finally { await identity.close(); }
@@ -382,7 +383,8 @@ export class HostedUploadStore {
         if (expected && expected.installId !== (identity as SpoolIdentity).installId)
           throw new Error("[startup] FATAL: hosted spool identity differs from off-volume identity; refusing hosted routes");
         // Migrate an existing persistent spool before recovery or any hosted route can run.
-        if (!expected) await this.identityStore.put(HOSTED_IDENTITY_KEY, identity);
+        if (!expected && !await this.identityStore.putIfAbsent(HOSTED_IDENTITY_KEY, identity))
+          throw new Error("[startup] FATAL: hosted off-volume identity was enrolled by another writer; refusing hosted routes");
       }
       const marker = await open(join(this.spoolDir, ".hosted-boot-id"), "w", 0o600);
       try { await marker.writeFile(this.bootId); await marker.sync(); }

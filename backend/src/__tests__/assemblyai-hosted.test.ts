@@ -58,7 +58,11 @@ function identityFor(dir: string) {
   if (!values) { values = new Map(); identities.set(dir, values); }
   return {
     get: async <T>(key: string): Promise<T | null> => (values!.get(key) as T | undefined) ?? null,
-    put: async (key: string, value: unknown): Promise<void> => { values!.set(key, value); },
+    putIfAbsent: async (key: string, value: unknown): Promise<boolean> => {
+      if (values!.has(key)) return false;
+      values!.set(key, value);
+      return true;
+    },
   };
 }
 function makeStore(dir: string, bytes: number, max: number, removeSpool?: typeof fsPromises.rm,
@@ -306,6 +310,46 @@ describe("Exo note idempotency", () => {
     await second.close();
     rmSync(join(dir, "spool.json"));
     await expect(makeStore(dir, DEFAULT_DAILY_BYTES, 4).init()).rejects.toThrow("hosted spool missing but off-volume identity exists");
+  });
+
+  test("two fresh volumes sharing KV both read absent; only one starts and reaches a paid call", async () => {
+    const dirs = [mkdtempSync(join(tmpdir(), "tinychat-assemblyai-race-a-")), mkdtempSync(join(tmpdir(), "tinychat-assemblyai-race-b-"))];
+    for (const dir of dirs) closers.push(() => rmSync(dir, { recursive: true, force: true }));
+    const values = new Map<string, unknown>();
+    let reads = 0;
+    let releaseReads!: () => void;
+    const bothRead = new Promise<void>((resolve) => { releaseReads = resolve; });
+    const identityStore = {
+      get: async <T>(key: string): Promise<T | null> => {
+        const value = (values.get(key) as T | undefined) ?? null;
+        if (++reads === 2) releaseReads();
+        await bothRead;
+        return value;
+      },
+      putIfAbsent: async (key: string, value: unknown): Promise<boolean> => {
+        if (values.has(key)) return false;
+        values.set(key, value);
+        return true;
+      },
+    };
+    const stores = dirs.map(dir => new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4, undefined, undefined, undefined, identityStore, "same-install-id"));
+    const results = await Promise.allSettled(stores.map(store => store.init()));
+    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter(result => result.status === "rejected")).toHaveLength(1);
+    expect(String((results.find(result => result.status === "rejected") as PromiseRejectedResult).reason))
+      .toContain("enrolled by another writer");
+    const winner = stores[results.findIndex(result => result.status === "fulfilled")]!;
+    closers.push(() => winner.close());
+    let paidCalls = 0;
+    const created = await winner.create(ADDRESS_A, 3, "audio/mp4", Date.now(), "race-note");
+    if (!created.ok || !("upload" in created)) throw new Error("upload not created");
+    await winner.writePart(created.upload, 0, audio(3));
+    expect(await winner.submitIfComplete(created.upload, Date.now, async () => {
+      paidCalls++;
+      return { status: "submitted", handle: issueHandle(HANDLE_KEY, TRANSCRIPT_ID, ADDRESS_A, Date.now()) };
+    })).toBe(true);
+    await winner.idle();
+    expect(paidCalls).toBe(1);
   });
 
   test("a paid note survives complete spool-volume loss without a second paid call", async () => {
