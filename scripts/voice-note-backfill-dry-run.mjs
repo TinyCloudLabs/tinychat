@@ -3,6 +3,8 @@ import { execFileSync } from 'node:child_process';
 import process from 'node:process';
 import { planVoiceNoteBackfill } from './voice-note-backfill-plan.mjs';
 
+const TC = `${execFileSync('npm', ['prefix', '--global'], { encoding: 'utf8' }).trim()}/bin/tc`;
+
 const SPACE = 'applications';
 const DB = 'xyz.tinycloud.tinychat/connectors';
 const PREFIX = `${DB}/exo-voice-note`;
@@ -36,7 +38,7 @@ function parseArgs(args) {
 
 function tc(profile, args, { raw = false } = {}) {
   try {
-    return execFileSync('tc', ['--quiet', '-p', profile, ...args], {
+    return execFileSync(TC, ['--quiet', '--profile', profile, ...args], {
       encoding: raw ? 'buffer' : 'utf8',
       maxBuffer: 16 * 1024 * 1024,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -182,9 +184,8 @@ function run(profile, maxSeconds) {
     counts,
     failed_with_code_eligible: planned.filter(item => item.classification === 'eligible' && item.failedWithCode).length,
     eligible,
-    apply: 'open Exo Library, Transcribe each listed note',
   };
-  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify(report, null, 2)}\napply: open Exo Library, Transcribe each listed note\n`);
 }
 
 try {
