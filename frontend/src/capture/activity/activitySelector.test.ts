@@ -52,6 +52,33 @@ test("a retained local transcript is represented as sync, not fresh transcriptio
   expect(jobs.find((job) => job.kind === "sync")?.detail).toBe("Syncing to your TinyCloud space…");
 });
 
+test("durable transcript outcomes have honest note statuses without phantom Activity jobs", () => {
+  const cases = [
+    { state: "pending", expected: "Transcript Pending" },
+    { state: "failed", expected: "Transcript Failed · Private Transcription returned a transcript that may be incomplete. Try again later." },
+    { state: "skipped", expected: "Transcript Not transcribed" },
+  ] as const;
+  for (const { state, expected } of cases) {
+    const current = view({
+      route: "off",
+      space: { saved: true, pending: null, lane: { busy: false, depth: 0 } },
+      transcript: { inSpace: null, persistedState: state, errorCode: state === "failed" ? "transcript_incomplete" : null, cloud: null, onDevice: null },
+    });
+    const jobs = activityForNote(current, "ios");
+    expect(jobs).toEqual([]);
+    expect(noteStatus(jobs, current.pipeline)).toBe(expected);
+  }
+  const syncing = view({
+    route: "off",
+    hasNotesOrMoments: true,
+    space: { saved: true, pending: null, lane: { busy: false, depth: 0 } },
+    transcript: { inSpace: null, persistedState: "failed", errorCode: "transcript_incomplete", cloud: null, onDevice: null },
+    notes: { state: "syncing" },
+  });
+  // Notes sync can run independently of the durable transcript outcome.
+  expect(noteStatus(activityForNote(syncing, "ios"), syncing.pipeline)).toContain("Transcript Failed");
+});
+
 test("finish, model wait, known local queue and wrong account use distinct copy", () => {
   const finishing = activityForNote(view({ capture: { finalizing: true, issue: null } }), "ios");
   expect(finishing.find((job) => job.kind === "finish")?.detail).toBe("Finishing the recording…");

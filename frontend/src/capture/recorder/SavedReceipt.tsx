@@ -207,7 +207,7 @@ export function NeedsOnDeviceModel(props: { guide: ReturnType<typeof localModelG
 /** The stepper on the Soft skin's tokens, which the receipt's own page does not carry. */
 function ReceiptStepper(props: { view: NotePipelineView }) {
   const jobs = activityForNote(props.view, props.view.input?.device === "mac" ? "tauri" : props.view.input?.device === "browser" ? "web" : props.view.input?.device === "android" ? "android" : "ios");
-  const status = noteStatus(jobs);
+  const status = noteStatus(jobs, props.view.pipeline);
   const actions = jobs.flatMap((job) => job.action ? [job.action] : job.retry ? [{ label: "Try again", run: job.retry }] : []);
   return (
     <div className="flex flex-wrap items-center gap-3 text-callout" data-testid="voice-note-receipt-pipeline">

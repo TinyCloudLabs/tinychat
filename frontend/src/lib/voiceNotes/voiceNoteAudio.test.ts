@@ -164,6 +164,20 @@ describe("prepareTranscriptionAudio", () => {
       durationSeconds: null,
     });
   });
+  test("a raw PTX type is matched after parameters and sent without parameters", async () => {
+    const original = { mimeType: "audio/webm;codecs=opus", base64: bytesToBase64(new Uint8Array([1, 2, 3])) };
+    const decode = toneDecoder(1);
+    const prepared = await prepareTranscriptionAudio(original, {
+      acceptedContentTypes: ["audio/webm"],
+      maxBytes: MAX_BYTES,
+      decode,
+    });
+    expect(decode.calls).toEqual([]);
+    expect(prepared.contentType).toBe("audio/webm");
+    expect(prepared.base64).toBe(original.base64);
+    expect(prepared.byteSize).toBe(3);
+  });
+
 
   test("without WAV among the accepted types there is nothing to send", async () => {
     const err = await prepareTranscriptionAudio(m4a, { acceptedContentTypes: ["audio/mpeg"], maxBytes: MAX_BYTES, decode: toneDecoder(1) })

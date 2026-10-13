@@ -131,7 +131,10 @@ import type {
   SyncProgress,
   SyncResult,
 } from "@/lib/connectors/types";
-import { removeBackgroundDrainConnectorRecord } from "./useBackgroundDrain";
+import {
+  readBackgroundDrainGeneration,
+  removeBackgroundDrainConnectorRecord,
+} from "./useBackgroundDrain";
 import {
   GMEET_CONNECTOR_ID,
   mintGmeetAccessToken,
@@ -300,6 +303,7 @@ const ApiKeyConnectDialog: FC<ConnectorConnectDialogProps> = ({
   }, [apiKey]);
 
   const handleSaveAndSync = useCallback(async () => {
+    const generation = readBackgroundDrainGeneration();
     setError(null);
     setPhase("saving");
     if (!isSecretsUnlocked(tcw)) {
@@ -329,15 +333,30 @@ const ApiKeyConnectDialog: FC<ConnectorConnectDialogProps> = ({
     setProgress({ phase: "listing", done: 0, total: null });
     const ac = new AbortController();
     abortRef.current = ac;
-    const client = new FirefliesClient({ apiKey, ...defaultFirefliesClientOptions() });
-    const syncRes = await syncFireflies({
-      client,
-      store: connectorStore,
-      tcw,
-      onProgress: setProgress,
-      signal: ac.signal,
-    });
-    abortRef.current = null;
+    let syncRes: Awaited<ReturnType<typeof syncFireflies>>;
+    try {
+      const client = new FirefliesClient({ apiKey, ...defaultFirefliesClientOptions() });
+      syncRes = await syncFireflies({
+        client,
+        store: connectorStore,
+        tcw,
+        onProgress: setProgress,
+        signal: ac.signal,
+        isCurrent: () => generation === readBackgroundDrainGeneration(),
+        allowMissingConnection: true,
+        manualRequest: true,
+      });
+    } catch (cause) {
+      setError({
+        kind: "network",
+        message: cause instanceof Error ? cause.message : "Fireflies sync failed",
+      });
+      setPhase("error");
+      onConnected();
+      return;
+    } finally {
+      abortRef.current = null;
+    }
     // Refresh the parent's row state whether or not sync succeeded — the
     // engine's updateSyncState ran either way.
     onConnected();
@@ -1730,6 +1749,10 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
           connectorStore.listKnownSourceIds(tcw, descriptor.source),
         // Wipes meetings + KV bodies + state row.
         purgeConnector: () => connectorStore.purgeConnector(tcw, descriptor.source),
+        clearFirefliesAttempt: () =>
+          descriptor.id === "fireflies"
+            ? connectorStore.clearFirefliesAttempt(tcw)
+            : Promise.resolve({ ok: true, data: undefined }),
         getConnection: () => connectorStore.getConnection(tcw, descriptor.id),
         countMeetings: () => connectorStore.countMeetings(tcw, descriptor.source),
         updateSyncState: (input) => connectorStore.updateSyncState(tcw, input),

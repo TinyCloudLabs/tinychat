@@ -251,6 +251,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
               layout={layoutForNav(nav) === "rail" ? "rail" : "desktop"}
               inProgress={inProgress}
               recent={{ status: library.status, items: library.items }}
+              pipelines={pipelines}
               onRetryRecent={library.retry}
               onUpload={() => setSheet("upload")}
               {...(bot.listStatus === "dark" ? {} : { onMeeting: () => setSheet("meeting") })}

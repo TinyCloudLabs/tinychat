@@ -61,6 +61,7 @@ import {
   voiceNoteMarkdownKvKey,
   voiceNoteTranscriptState,
   type NoteSyncSkipReason,
+  type VoiceNoteTranscriptState,
 } from "./voiceNoteStore";
 import type { NoteTranscriptionState } from "./voiceNoteTranscription";
 
@@ -252,7 +253,7 @@ function onDeviceInput(facts: NotePipelineFacts): PipelineOnDevice | null {
   const status = facts.onDeviceStatus;
   if (status === null) return facts.desktopJob ? {
     stt: { state: facts.desktopJob.state === "transcribing" ? "running" : facts.desktopJob.state, error: facts.desktopJob.error },
-    queue: { position: facts.desktopJob.position ?? null, inLine: facts.desktopJob.inLine ?? 0, percent: facts.desktopJob.progress },
+    queue: { position: facts.desktopJob.position ?? (facts.desktopJob.state === "queued" ? 1 : null), inLine: facts.desktopJob.inLine ?? 1, percent: facts.desktopJob.progress },
     model: null, download: "idle", sync: facts.transcriptSync,
   } : null;
   const place = onDeviceQueuePlace(status, facts.id);
@@ -268,11 +269,33 @@ function onDeviceInput(facts: NotePipelineFacts): PipelineOnDevice | null {
   };
 }
 
+function projectedTranscriptState(metadata: Record<string, unknown>): VoiceNoteTranscriptState["status"] {
+  const terminal = (value: unknown): "transcribed" | "no_speech" | null =>
+    value === "transcribed" || value === "no_speech" ? value : null;
+  const committed = terminal(metadata.transcript_commit_outcome);
+  if (committed !== null) return committed;
+  const legacy = terminal(metadata.legacy_transcript_outcome);
+  if (legacy !== null) return legacy;
+  if (typeof metadata.transcript_text === "string" && metadata.transcript_text.trim().length > 0) return "transcribed";
+  return voiceNoteTranscriptState(metadata).status;
+}
+
 export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineInput {
   const desktopLocal = facts.device === "mac" && (facts.desktopJob != null || desktopCommittedLocal(facts.rowMetadata));
-  const route = desktopLocal ? "on-device" : pipelineRoute(facts.native, facts.cloudJob !== null,
-    facts.onDeviceStatus === null ? null : onDeviceQueuePlace(facts.onDeviceStatus, facts.id));
-  const rowState = facts.rowMetadata === null ? "none" : voiceNoteTranscriptState(facts.rowMetadata).status;
+  const queue = facts.onDeviceStatus === null ? null : onDeviceQueuePlace(facts.onDeviceStatus, facts.id);
+  const route = desktopLocal ? "on-device" : pipelineRoute(facts.native, facts.cloudJob !== null, queue);
+  const liveTranscriptWork = facts.cloudJob?.kind === "active"
+    || (queue !== null && queue.position !== null)
+    || facts.native?.stt?.state === "queued"
+    || facts.native?.stt?.state === "running"
+    || facts.desktopJob?.state === "queued"
+    || facts.desktopJob?.state === "transcribing";
+  const rowState = facts.rowMetadata === null ? "none" : projectedTranscriptState(facts.rowMetadata);
+  const persistedState = facts.saved && !liveTranscriptWork
+    && (rowState === "pending" || rowState === "failed" || rowState === "skipped") ? rowState : undefined;
+  const errorCode = rowState === "failed" && typeof facts.rowMetadata?.transcription_error_code === "string"
+    ? facts.rowMetadata.transcription_error_code
+    : undefined;
   const rowOutcome = rowState === "transcribed" || rowState === "no_speech" ? rowState : "none";
   // The ledger's own record that the transcript reached the space is durable evidence too (a receipt has no library row read).
   const ledgerOutcome = facts.native?.transcriptSync?.state === "saved" ? facts.native.transcriptOutcome ?? "none" : "none";
@@ -305,6 +328,8 @@ export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineIn
     },
     transcript: {
       inSpace: outcome === "none" ? null : outcome,
+      ...(persistedState === undefined ? {} : { persistedState }),
+      ...(errorCode === undefined ? {} : { errorCode }),
       onDevice: route === "on-device" ? onDeviceInput(facts) : null,
       cloud: route === "private-cloud" ? facts.cloudJob : null,
       // Jobs are written the moment a saved note is handed over, after the check: no job and no check pending is no hand-over.

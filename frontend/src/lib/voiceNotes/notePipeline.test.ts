@@ -245,6 +245,14 @@ describe("notePipeline: shape", () => {
     const privateResult = notePipeline(input({ ...cloud({ kind: "done", outcome: "no_speech" }), space: SAVED }));
     expect(privateResult.steps.find((s) => s.key === "transcript")).toMatchObject({ state: "done", sublabel: "No speech found" });
   });
+  test("durable pending, failed and skipped row states survive an otherwise idle route", () => {
+    for (const state of ["pending", "failed", "skipped"] as const) {
+      const pipeline = notePipeline(input({ space: SAVED, transcript: { persistedState: state } }));
+      expect(pipeline.transcriptionState).toBe(state);
+      expect(pipeline.steps.find((step) => step.key === "transcript")?.state).toBe("skipped");
+    }
+  });
+
 
   test("progress is carried as 0..1 for uploads, model downloads, local and private transcription", () => {
     const progress = (patch: Patch) => notePipeline(input(patch)).steps.find((s) => s.state === "active")?.progress;

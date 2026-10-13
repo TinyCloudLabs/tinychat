@@ -43,6 +43,260 @@ import type {
 import type { ConnectorConnection, ConnectorId } from "./types";
 
 
+/** Fireflies attempt metadata; SQL `last_synced_at` remains the success clock. */
+export function firefliesAttemptKvKey(): string {
+  return `${CONNECTORS_KV_PREFIX}/fireflies/sync-attempt`;
+}
+
+export const FIREFLIES_MAX_PENDING_IDS = 50;
+
+export interface FirefliesAttempt {
+  v: 1;
+  lastAttemptAt: string;
+  lastAttemptStatus: "running" | "ok" | "partial" | "error";
+  /** Provider listing offset to resume after every consumed row is stored. */
+  listingSkip?: number | null;
+  /** Timestamp at skip zero; the SQL watermark commits this chain start. */
+  listingStartedAt?: string | null;
+  /** Summary ID at listingSkip - 1, binding the offset to provider history. */
+  listingAnchor?: string | null;
+  listingAnchorDate?: number | string | null;
+  listingPreviousNeighbor?: string | null;
+  /** Failed IDs are retried on every run; capped to keep the record small. */
+  pendingIds?: string[];
+  /** Pending not-found retries; absence must be proven by a complete listing. */
+  suspectIds?: string[];
+  /** Suspect IDs observed during their complete-listing proof chain. */
+  suspectSeenIds?: string[];
+  /** IDs in the most recent proof generation; bounds the 24-hour re-proof pace. */
+  suspectProofIds?: string[];
+  /** Start time of the most recent suspect proof generation. */
+  suspectProofAt?: string | null;
+  /** Last completed proof time per still-pending ID. */
+  suspectProofAtById?: Record<string, string>;
+}
+export async function getFirefliesAttempt(
+  tcw: TinyCloudWeb,
+): Promise<StoreResult<FirefliesAttempt | null>> {
+  const res = await tcw.kv.get(firefliesAttemptKvKey());
+  if (!res.ok) return fail(res.error, "getFirefliesAttempt");
+  const raw = res.data.data;
+  let value: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      return { ok: true, data: null };
+    }
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: true, data: null };
+  }
+  const row = value as Record<string, unknown>;
+  if (row.v !== 1
+    || typeof row.last_attempt_at !== "string"
+    || (row.last_attempt_status !== "running" && row.last_attempt_status !== "ok"
+      && row.last_attempt_status !== "partial" && row.last_attempt_status !== "error")) {
+    return { ok: true, data: null };
+  }
+  const skip = row.listing_skip;
+  const startedAt = row.listing_started_at;
+  const anchor = row.listing_anchor;
+  const anchorDate = row.listing_anchor_date;
+  const previousNeighbor = row.listing_previous_neighbor;
+  const hasAnchorDate = Object.hasOwn(row, "listing_anchor_date");
+  const hasPreviousNeighbor = Object.hasOwn(row, "listing_previous_neighbor");
+  const hasCursor = skip !== undefined || startedAt !== undefined || anchor !== undefined
+    || hasAnchorDate || hasPreviousNeighbor;
+  const rawPending = row.pending_ids;
+  const pendingPresent = Object.hasOwn(row, "pending_ids");
+  const pendingArray = Array.isArray(rawPending) ? rawPending : null;
+  const pendingInvalid = pendingPresent && (!pendingArray
+    || pendingArray.length > FIREFLIES_MAX_PENDING_IDS
+    || !pendingArray.every((id) => typeof id === "string" && id.length > 0));
+  const rawSuspects = row.suspect_ids;
+  const rawSeen = row.suspect_seen_ids;
+  const suspectPresent = Object.hasOwn(row, "suspect_ids") || Object.hasOwn(row, "suspect_seen_ids");
+  const suspectArray = Array.isArray(rawSuspects) ? rawSuspects : null;
+  const seenArray = Array.isArray(rawSeen) ? rawSeen : null;
+  const suspectInvalid = suspectPresent && (!suspectArray || !seenArray
+    || suspectArray.length > FIREFLIES_MAX_PENDING_IDS
+    || seenArray.length > FIREFLIES_MAX_PENDING_IDS
+    || !suspectArray.every((id) => typeof id === "string" && id.length > 0)
+    || !seenArray.every((id) => typeof id === "string" && id.length > 0)
+    || seenArray.some((id) => !suspectArray.includes(id)));
+  const rawProofIds = row.suspect_proof_ids;
+  const proofIdsPresent = Object.hasOwn(row, "suspect_proof_ids");
+  const proofIdsArray = Array.isArray(rawProofIds) ? rawProofIds : null;
+  const proofIdsInvalid = proofIdsPresent && (!proofIdsArray
+    || proofIdsArray.length > FIREFLIES_MAX_PENDING_IDS
+    || !proofIdsArray.every((id) => typeof id === "string" && id.length > 0));
+  const rawProofAt = row.suspect_proof_at;
+  const proofAtValid = rawProofAt === undefined || rawProofAt === null
+    || (typeof rawProofAt === "string" && Number.isFinite(Date.parse(rawProofAt)));
+  const rawProofAtById = row.suspect_proof_at_by_id;
+  const proofAtByIdPresent = Object.hasOwn(row, "suspect_proof_at_by_id");
+  const proofAtByIdRecord = rawProofAtById && typeof rawProofAtById === "object"
+    && !Array.isArray(rawProofAtById)
+    ? rawProofAtById as Record<string, unknown>
+    : null;
+  const proofAtByIdEntries = proofAtByIdRecord ? Object.entries(proofAtByIdRecord) : [];
+  const proofAtByIdInvalid = proofAtByIdPresent && (!proofAtByIdRecord
+    || proofAtByIdEntries.length > FIREFLIES_MAX_PENDING_IDS
+    || proofAtByIdEntries.some(([id, at]) => !id
+      || typeof at !== "string"
+      || !Number.isFinite(Date.parse(at))));
+  const validAnchorDate = anchorDate === null
+    || (typeof anchorDate === "number" && Number.isFinite(anchorDate))
+    || (typeof anchorDate === "string" && Number.isFinite(Date.parse(anchorDate)));
+  const cursorValid = !pendingInvalid && !suspectInvalid && !proofIdsInvalid && !proofAtByIdInvalid && proofAtValid
+    && Number.isSafeInteger(skip)
+    && (skip as number) >= 0
+    && typeof startedAt === "string"
+    && Number.isFinite(Date.parse(startedAt))
+    && ((skip as number) === 0
+      ? anchor == null && (anchorDate === undefined || anchorDate === null)
+        && (previousNeighbor === undefined || previousNeighbor === null)
+      : typeof anchor === "string" && anchor.length > 0
+        && hasAnchorDate && validAnchorDate
+        && hasPreviousNeighbor
+        && ((skip as number) === 1
+          ? previousNeighbor === null
+          : typeof previousNeighbor === "string" && previousNeighbor.length > 0));
+  const pendingIds = pendingArray
+    ? [...new Set(pendingArray.filter((id): id is string => typeof id === "string" && id.length > 0))]
+        .slice(0, FIREFLIES_MAX_PENDING_IDS)
+    : [];
+  const pendingIdSet = new Set(pendingIds);
+  const suspectProofAtById = proofAtByIdInvalid
+    ? {}
+    : Object.fromEntries(proofAtByIdEntries.filter(([id]) => pendingIdSet.has(id))
+      .map(([id, at]) => [id, at as string]));
+  const suspectIds = !suspectInvalid && suspectArray
+    ? [...new Set(suspectArray as string[])]
+    : [];
+  const suspectSeenIds = !suspectInvalid && seenArray
+    ? [...new Set(seenArray as string[])]
+    : [];
+  const suspectProofIds = !proofIdsInvalid && proofIdsArray
+    ? [...new Set(proofIdsArray as string[])].slice(0, FIREFLIES_MAX_PENDING_IDS)
+    : [];
+  const includeSuspects = !suspectInvalid && suspectPresent;
+  const includeProofIds = !proofIdsInvalid && proofIdsPresent;
+  return {
+    ok: true,
+    data: {
+      v: 1,
+      lastAttemptAt: row.last_attempt_at,
+      lastAttemptStatus: row.last_attempt_status,
+      ...(hasCursor
+        ? cursorValid
+          ? {
+              listingSkip: skip as number,
+              listingStartedAt: startedAt as string,
+              listingAnchor: typeof anchor === "string" ? anchor : null,
+              listingAnchorDate: anchorDate as number | string | null,
+              listingPreviousNeighbor: typeof previousNeighbor === "string" ? previousNeighbor : null,
+            }
+          : {
+              listingSkip: null,
+              listingStartedAt: null,
+              listingAnchor: null,
+              listingAnchorDate: null,
+              listingPreviousNeighbor: null,
+            }
+        : {}),
+      ...(pendingIds.length > 0 ? { pendingIds } : {}),
+      ...(includeSuspects ? { suspectIds, suspectSeenIds } : {}),
+      ...(includeProofIds ? { suspectProofIds } : {}),
+      ...(proofAtByIdPresent ? { suspectProofAtById } : {}),
+      ...(proofAtValid && typeof rawProofAt === "string" ? { suspectProofAt: rawProofAt } : {}),
+    },
+  };
+}
+
+export async function recordFirefliesAttempt(
+  tcw: TinyCloudWeb,
+  attempt: FirefliesAttempt,
+): Promise<StoreResult<void>> {
+  const dedupedPending = attempt.pendingIds === undefined
+    ? undefined
+    : [...new Set(attempt.pendingIds.filter((id) => typeof id === "string" && id.length > 0))];
+  const dedupedSuspects = attempt.suspectIds === undefined
+    ? undefined
+    : [...new Set(attempt.suspectIds.filter((id) => typeof id === "string" && id.length > 0))];
+  const dedupedSeen = attempt.suspectSeenIds === undefined
+    ? undefined
+    : [...new Set(attempt.suspectSeenIds.filter((id) => typeof id === "string" && id.length > 0))];
+  const dedupedProofIds = attempt.suspectProofIds === undefined
+    ? undefined
+    : [...new Set(attempt.suspectProofIds.filter((id) => typeof id === "string" && id.length > 0))];
+  const pendingIdsForRecord = dedupedPending?.slice(0, FIREFLIES_MAX_PENDING_IDS);
+  const pendingIdSet = new Set(pendingIdsForRecord ?? []);
+  const rawProofAtById = attempt.suspectProofAtById;
+  const proofAtByIdRecord = rawProofAtById && typeof rawProofAtById === "object"
+    && !Array.isArray(rawProofAtById)
+    ? rawProofAtById as Record<string, unknown>
+    : null;
+  const proofAtByIdEntries = proofAtByIdRecord ? Object.entries(proofAtByIdRecord) : [];
+  const pendingProofEntries = proofAtByIdEntries.filter(([id]) => pendingIdSet.has(id));
+  const proofAtByIdInvalid = rawProofAtById !== undefined && (!proofAtByIdRecord
+    || pendingProofEntries.length > FIREFLIES_MAX_PENDING_IDS
+    || proofAtByIdEntries.some(([id, at]) => !id
+      || typeof at !== "string"
+      || !Number.isFinite(Date.parse(at))));
+  const proofAtByIdForRecord = rawProofAtById === undefined
+    ? undefined
+    : proofAtByIdInvalid
+      ? {}
+      : Object.fromEntries(pendingProofEntries.map(([id, at]) => [id, at as string]));
+  const hasCursor = attempt.listingSkip !== undefined
+    || attempt.listingStartedAt !== undefined
+    || attempt.listingAnchor !== undefined;
+  const cursorOverflow = ((dedupedPending?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS
+    || (dedupedSuspects?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS
+    || (dedupedSeen?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS
+    || (dedupedProofIds?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS
+    || proofAtByIdInvalid) && hasCursor;
+  const listingSkip = cursorOverflow ? null : attempt.listingSkip;
+  const listingStartedAt = cursorOverflow ? null : attempt.listingStartedAt;
+  const listingAnchor = cursorOverflow ? null : attempt.listingAnchor;
+  const listingAnchorDate = cursorOverflow ? null : attempt.listingAnchorDate;
+  const listingPreviousNeighbor = cursorOverflow ? null : attempt.listingPreviousNeighbor;
+  const res = await tcw.kv.put(firefliesAttemptKvKey(), JSON.stringify({
+    v: 1,
+    last_attempt_at: attempt.lastAttemptAt,
+    last_attempt_status: attempt.lastAttemptStatus,
+    ...(listingSkip === undefined ? {} : { listing_skip: listingSkip }),
+    ...(listingStartedAt === undefined ? {} : { listing_started_at: listingStartedAt }),
+    ...(listingAnchor === undefined ? {} : { listing_anchor: listingAnchor }),
+    ...(listingAnchorDate === undefined ? {} : { listing_anchor_date: listingAnchorDate }),
+    ...(listingPreviousNeighbor === undefined
+      ? {}
+      : { listing_previous_neighbor: listingPreviousNeighbor }),
+    ...(pendingIdsForRecord === undefined
+      ? {}
+      : { pending_ids: pendingIdsForRecord }),
+    ...(dedupedSuspects === undefined
+      ? {}
+      : { suspect_ids: dedupedSuspects.slice(0, FIREFLIES_MAX_PENDING_IDS) }),
+    ...(dedupedSeen === undefined
+      ? {}
+      : { suspect_seen_ids: dedupedSeen.slice(0, FIREFLIES_MAX_PENDING_IDS) }),
+    ...(dedupedProofIds === undefined
+      ? {}
+      : { suspect_proof_ids: dedupedProofIds.slice(0, FIREFLIES_MAX_PENDING_IDS) }),
+    ...(attempt.suspectProofAt === undefined
+      ? {}
+      : { suspect_proof_at: attempt.suspectProofAt }),
+    ...(proofAtByIdForRecord === undefined
+      ? {}
+      : { suspect_proof_at_by_id: proofAtByIdForRecord }),
+  }));
+  if (!res.ok) return fail(res.error, "recordFirefliesAttempt");
+  return { ok: true, data: undefined };
+}
+
 /** Connector-scoped Drive Changes cursor; it is not the UI sync timestamp. */
 export function driveCursorKvKey(source: string): string {
   return `${CONNECTORS_KV_PREFIX}/${source}/drive-page-token`;
@@ -220,8 +474,9 @@ export interface UpdateSyncStateInput {
   lastSyncStatus: "ok" | "partial" | "error" | null;
   lastSyncError: string | null;
   itemCount: number;
+  /** Fireflies failures update status but must not move its last-success clock. */
+  preserveLastSyncedAt?: boolean;
 }
-
 export async function updateSyncState(
   tcw: TinyCloudWeb,
   input: UpdateSyncStateInput,
@@ -229,13 +484,14 @@ export async function updateSyncState(
   const schema = await ensureSchema(tcw);
   if (!schema.ok) return schema;
   const now = new Date().toISOString();
+  const preserve = input.connectorId === "fireflies" && input.preserveLastSyncedAt === true;
   const res = await store(tcw).execute(
     `INSERT INTO connector_state
       (connector_id, status, last_synced_at, last_sync_status, last_sync_error, item_count, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(connector_id) DO UPDATE SET
        status = excluded.status,
-       last_synced_at = excluded.last_synced_at,
+       last_synced_at = CASE WHEN ? = 1 THEN connector_state.last_synced_at ELSE excluded.last_synced_at END,
        last_sync_status = excluded.last_sync_status,
        last_sync_error = excluded.last_sync_error,
        item_count = excluded.item_count,
@@ -243,11 +499,12 @@ export async function updateSyncState(
     [
       input.connectorId,
       input.status,
-      input.lastSyncedAt,
+      preserve ? null : input.lastSyncedAt,
       input.lastSyncStatus,
       input.lastSyncError,
       input.itemCount,
       now,
+      preserve ? 1 : 0,
     ],
   );
   if (!res.ok) return fail(res.error, "updateSyncState");
@@ -599,6 +856,54 @@ async function putMissingTranscriptBody(
   if (!/NOT_FOUND/i.test(existing.error.code ?? "")) return fail(existing.error, "putMissingTranscriptBody");
   return putTranscriptBody(tcw, source, sourceId, sentences);
 }
+export async function listTranscriptBodyIds(
+  tcw: TinyCloudWeb,
+  source: string,
+): Promise<StoreResult<Set<string>>> {
+  const prefix = `${CONNECTORS_KV_PREFIX}/${source}/transcript/`;
+  const ids = new Set<string>();
+  const cursors = new Set<string>();
+  let cursor: string | undefined;
+  try {
+    for (;;) {
+      const page = await tcw.kv.list({ path: prefix, ...(cursor === undefined ? {} : { cursor }) });
+      if (!page.ok) return fail(page.error, "listTranscriptBodyIds");
+      if (!page.data || !Array.isArray(page.data.keys)) {
+        return fail({ code: "KV_LIST_MALFORMED", message: "invalid transcript listing" }, "listTranscriptBodyIds");
+      }
+      for (const key of page.data.keys) {
+        if (typeof key !== "string" || !key.startsWith(prefix)) {
+          return fail({ code: "KV_LIST_MALFORMED", message: "unexpected transcript key" }, "listTranscriptBodyIds");
+        }
+        ids.add(key.slice(prefix.length));
+      }
+      const metadata = page.data as typeof page.data & {
+        cursor?: unknown;
+        nextCursor?: unknown;
+        truncated?: unknown;
+      };
+      const next = metadata.nextCursor ?? metadata.cursor;
+      const more = metadata.truncated === true || typeof next === "string";
+      if (!more) return { ok: true, data: ids };
+      if (typeof next !== "string" || next.length === 0 || cursors.has(next)) {
+        return fail({ code: "KV_LIST_MALFORMED", message: "invalid transcript listing cursor" }, "listTranscriptBodyIds");
+      }
+      cursors.add(next);
+      cursor = next;
+    }
+  } catch {
+    return fail({ code: "KV_LIST_TRANSPORT", message: "listing rejected" }, "listTranscriptBodyIds");
+  }
+}
+
+/** Clear advisory continuation metadata without writing an attempt from disconnect. */
+export async function clearFirefliesAttempt(tcw: TinyCloudWeb): Promise<StoreResult<void>> {
+  const res = await tcw.kv.delete(firefliesAttemptKvKey());
+  if (!res.ok && !/NOT_FOUND/i.test(res.error.code ?? "")) {
+    return fail(res.error, "clearFirefliesAttempt");
+  }
+  return { ok: true, data: undefined };
+}
 
 export async function putTranscriptBody(
   tcw: TinyCloudWeb,
@@ -769,42 +1074,47 @@ export async function removeGmeetNotes(
 
 // ── Purge ───────────────────────────────────────────────────────────────
 
-/** List one SDK-defined complete prefix response, failing closed before mutation. */
+/** List and validate every SDK page before purge mutates any stored data. */
 async function listKvPrefix(
   tcw: TinyCloudWeb,
   path: string,
 ): Promise<StoreResult<string[]>> {
-  let page: Awaited<ReturnType<typeof tcw.kv.list>>;
-  try {
-    page = await tcw.kv.list({ path });
-  } catch {
-    return fail({ code: "KV_LIST_TRANSPORT", message: "listing rejected" }, `purgeConnector(list:${path})`);
-  }
-  if (!page || page.ok !== true) return fail(page?.error, `purgeConnector(list:${path})`);
-  if (!page.data || typeof page.data !== "object" || Array.isArray(page.data) || !Array.isArray(page.data.keys)) {
-    return fail({ code: "KV_LIST_MALFORMED", message: "invalid list envelope" }, `purgeConnector(list:${path})`);
-  }
-  // Purge intentionally makes one bounded list request per complete source
-  // prefix. A continuation cursor means the complete set is unknown, so fail
-  // before deleting any key rather than report a partial purge as success.
-  const cursor = (page.data as { cursor?: unknown }).cursor;
-  if (cursor !== undefined && cursor !== null) {
-    return fail({ code: "KV_LIST_MALFORMED", message: "unexpected list cursor" }, `purgeConnector(list:${path})`);
-  }
   const keys: string[] = [];
-  for (const key of page.data.keys) {
-    if (typeof key !== "string" || !key.startsWith(path)) {
-      return fail({ code: "KV_LIST_MALFORMED", message: "unexpected listed key" }, `purgeConnector(list:${path})`);
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+  while (true) {
+    let page: Awaited<ReturnType<typeof tcw.kv.list>>;
+    try {
+      page = await tcw.kv.list({ path, ...(cursor ? { cursor } : {}) });
+    } catch {
+      return fail({ code: "KV_LIST_TRANSPORT", message: "listing rejected" }, `purgeConnector(list:${path})`);
     }
-    keys.push(key);
+    if (!page || page.ok !== true) return fail(page?.error, `purgeConnector(list:${path})`);
+    if (!page.data || typeof page.data !== "object" || Array.isArray(page.data) || !Array.isArray(page.data.keys)) {
+      return fail({ code: "KV_LIST_MALFORMED", message: "invalid list envelope" }, `purgeConnector(list:${path})`);
+    }
+    for (const key of page.data.keys) {
+      if (typeof key !== "string" || !key.startsWith(path)) {
+        return fail({ code: "KV_LIST_MALFORMED", message: "unexpected listed key" }, `purgeConnector(list:${path})`);
+      }
+      keys.push(key);
+    }
+    const metadata = page.data as { cursor?: unknown; nextCursor?: unknown; truncated?: unknown };
+    const next = metadata.nextCursor ?? metadata.cursor;
+    const more = metadata.truncated === true || typeof next === "string";
+    if (!more) return { ok: true, data: keys };
+    if (typeof next !== "string" || next.length === 0 || seenCursors.has(next)) {
+      return fail({ code: "KV_LIST_MALFORMED", message: "invalid list cursor" }, `purgeConnector(list:${path})`);
+    }
+    seenCursors.add(next);
+    cursor = next;
   }
-  return { ok: true, data: keys };
 }
 
 /**
- * Delete every source-scoped reconciled meeting and transcript KV record,
- * then the Drive cursor, SQL rows, and state row. Listing and deletion stay
- * sequential because TinyCloud drops concurrent responses on one space.
+ * Delete every source-scoped meeting and transcript KV record, Drive cursor,
+ * Fireflies sync-attempt record, SQL rows, and state row. Listing and deletion
+ * stay sequential because TinyCloud drops concurrent responses on one space.
  */
 export async function purgeConnector(
   tcw: TinyCloudWeb,
@@ -837,6 +1147,12 @@ export async function purgeConnector(
   }
   const cursor = await tcw.kv.delete(driveCursorKvKey(source));
   if (!cursor.ok && cursor.error?.code !== "KV_NOT_FOUND") return fail(cursor.error, "purgeConnector(cursor)");
+  if (source === "fireflies") {
+    const attempt = await tcw.kv.delete(firefliesAttemptKvKey());
+    if (!attempt.ok && attempt.error?.code !== "KV_NOT_FOUND") {
+      return fail(attempt.error, "purgeConnector(firefliesAttempt)");
+    }
+  }
   const res = await store(tcw).batch([
     { sql: "DELETE FROM connector_meeting WHERE source = ?", params: [source] },
     { sql: "DELETE FROM connector_state WHERE connector_id = ?", params: [source] },

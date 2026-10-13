@@ -1,6 +1,7 @@
 import { deviceName, type AppPlatform } from "@/lib/platform";
 export { deviceName } from "@/lib/platform";
-import type { PipelineStep } from "@/lib/voiceNotes/notePipeline";
+import type { NotePipeline, PipelineStep } from "@/lib/voiceNotes/notePipeline";
+import { pipelineTranscriptStatus } from "../pipeline/PipelineTrackSummary";
 import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import type { UploadState } from "@/lib/audioUpload";
 import type { PausedUpload } from "@/capture/upload/pausedUpload";
@@ -137,10 +138,13 @@ export function activityForFileUpload(upload: UploadState | null, paused: Paused
   return { title, jobs: [{ kind, state: failed || upload.stage === "saved" ? "needs-attention" : upload.stage === "elsewhere" || upload.stage === "queued" ? "waiting" : "running", label: kind === "transcribe" ? "Transcribe" : kind === "sync" ? "Sync" : "Upload audio", destination: kind === "sync" || upload.stage === "saved" ? "your TinyCloud space" : destination, detail, progress: upload.stage === "uploading" && upload.uploadPct != null ? upload.uploadPct / 100 : undefined, diagnostics: upload.error ? `${upload.error.message}${upload.error.reference ? ` · ${upload.error.reference}` : ""}` : undefined, action: failed && upload.error?.retry ? { label: "Retry", run: actions.retry } : { label: "Open upload", run: actions.open } }] };
 }
 
-export function noteStatus(jobs: readonly ActivityJob[]): string | null {
+export function noteStatus(jobs: readonly ActivityJob[], pipeline?: NotePipeline): string | null {
+  const transcriptStatus = pipeline ? pipelineTranscriptStatus(pipeline) : null;
   const failed = jobs.find((job) => job.state === "needs-attention");
-  if (failed) return `Needs attention · ${failed.detail}`;
+  if (failed) return [ `Needs attention · ${failed.detail}`, transcriptStatus ].filter(Boolean).join(" · ");
   const running = jobs.filter((job) => job.state === "running");
-  if (running.length > 1) return running.map((job) => job.kind === "transcribe" ? "Transcribing" : job.kind === "upload-audio" ? "Uploading audio" : job.label).join(" · ");
-  return running[0]?.detail ?? jobs.find((job) => job.state === "retrying")?.detail ?? jobs[0]?.detail ?? null;
+  const status = running.length > 1
+    ? running.map((job) => job.kind === "transcribe" ? "Transcribing" : job.kind === "upload-audio" ? "Uploading audio" : job.label).join(" · ")
+    : running[0]?.detail ?? jobs.find((job) => job.state === "retrying")?.detail ?? jobs[0]?.detail ?? null;
+  return [status, transcriptStatus].filter(Boolean).join(" · ") || null;
 }

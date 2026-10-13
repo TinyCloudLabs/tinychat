@@ -128,6 +128,10 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
   return Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+export function bareMimeType(value: string): string {
+  return value.split(";", 1)[0].trim().toLowerCase();
+}
+
 /** What is uploaded to PTX for one note. */
 export interface PreparedTranscriptionAudio {
   contentType: string;
@@ -156,10 +160,11 @@ export async function prepareTranscriptionAudio(
   const maxSeconds = options.maxSeconds ?? Number.POSITIVE_INFINITY;
   const tooLarge = () => new VoiceNoteAudioError("recording_too_large", "The recording is larger than the private cloud limit.");
   const recorded = base64ToBytes(audio.base64);
-  if (options.acceptedContentTypes.includes(audio.mimeType)) {
+  const contentType = bareMimeType(audio.mimeType);
+  if (options.acceptedContentTypes.some((type) => bareMimeType(type) === contentType)) {
     if (recorded.byteLength > options.maxBytes) throw tooLarge();
     return {
-      contentType: audio.mimeType,
+      contentType,
       base64: audio.base64,
       byteSize: recorded.byteLength,
       sha256: await sha256Hex(recorded),

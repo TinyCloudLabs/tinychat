@@ -20,6 +20,7 @@ import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import type { AppPlatform } from "@/lib/platform";
 import { activityForNote, noteStatus } from "../activity/activitySelector";
+import { pipelineTranscriptStatus } from "../pipeline/PipelineTrackSummary";
 
 export type LibraryItem = MeetingListItem & {
   /** A voice note on this device with no row in the space yet. */
@@ -66,6 +67,7 @@ function LibraryRowContent(props: LibraryRowProps & { activityStatus: string | n
   const soft = useSoftHome();
   const status = props.activityStatus;
   const badge = status ? null : libraryRowBadge(item);
+  const transcriptStatus = props.pipeline ? pipelineTranscriptStatus(props.pipeline) : null;
   if (soft) {
     const issue = issueForItem(item, soft.issues);
     const lineReplaced = issue !== undefined && !issueIsInformational(issue);
@@ -94,13 +96,14 @@ function LibraryRowContent(props: LibraryRowProps & { activityStatus: string | n
   return (
     <ListRow
       href={notePath(item.id)}
-      selected={props.selected}
       leading={<Icon />}
       title={libraryRowTitle(item)}
+      selected={props.selected}
       meta={
         <>
           {badge && <RowBadge>{badge}</RowBadge>}
           {libraryRowMeta(item, props.now, props.grouped)}
+          {!status && transcriptStatus && ` · ${transcriptStatus}`}
         </>
       }
       aside={
@@ -123,6 +126,8 @@ const MemoLibraryRowContent = memo(LibraryRowContent, (before, after) => before.
   (before.activityStatus !== null || after.activityStatus !== null || before.pipeline === after.pipeline));
 
 export function LibraryRow(props: LibraryRowProps) {
-  const activityStatus = props.activityView && props.platform ? noteStatus(activityForNote(props.activityView, props.platform)) : null;
+  const activityStatus = props.activityView && props.platform
+    ? noteStatus(activityForNote(props.activityView, props.platform), props.activityView.pipeline)
+    : null;
   return <MemoLibraryRowContent {...props} activityStatus={activityStatus} />;
 }

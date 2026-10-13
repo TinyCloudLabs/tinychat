@@ -25,6 +25,7 @@ import type { AppPlatform } from "@/lib/platform";
 import { activityForNote, deviceName, noteStatus } from "../activity/activitySelector";
 import type { LocalTranscript } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { transcriptionStatusText } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { voiceNoteTranscriptionFailureForCode } from "@/lib/voiceNotes/transcriptionErrors";
 import { localTranscriptToSave, voiceNoteTitle, voiceNoteTranscriptState, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 import { detailWhen, formatSpokenDuration } from "./formatters";
@@ -119,6 +120,7 @@ function Frame(props: { title: string; pushed: boolean; onBack: () => void; acti
 export function VoiceNoteTranscriptionStatus(props: {
   item: LibraryItem;
   outcome: "none" | "pending" | "failed" | "skipped" | "transcribed" | "no_speech";
+  errorCode?: string | null;
   transcription: VoiceNoteTranscriptionProps | undefined;
   provider?: "private" | "powerful" | "unknown";
 }) {
@@ -169,6 +171,20 @@ export function VoiceNoteTranscriptionStatus(props: {
       </div>
     );
   }
+  if (props.outcome === "failed") {
+    const failure = voiceNoteTranscriptionFailureForCode(props.errorCode);
+    const canChoosePrivate = transcription?.availability === "available"
+      || (transcription?.availability === "failed" && transcription.consented);
+    const privateFits = item.durationSecs === null || transcription === undefined || privateCloudFits(transcription, item.durationSecs);
+    return (
+      <div className="flex flex-col gap-2" data-testid="voice-note-transcription-failed">
+        <p role="alert" className="min-w-0 text-callout text-destructive">{failure.message}</p>
+        {failure.retryable && (captureCapabilities().localTranscription || (canChoosePrivate && privateFits))
+          && <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} label="Try again" />}
+      </div>
+    );
+  }
+
   // Nothing to choose from: Local needs the phone's engine, Private needs private cloud on offer (or unreachable, with its own Check again).
   const localCapable = captureCapabilities().localTranscription;
   const choosable = transcription?.availability === "available" || (transcription?.availability === "failed" && transcription.consented);
@@ -183,10 +199,9 @@ export function VoiceNoteTranscriptionStatus(props: {
   return (
     <div className="flex flex-col gap-2">
       <p className="text-callout text-muted-foreground">
-        {props.outcome === "failed" ? "Transcription failed" : props.outcome === "skipped" ? "Transcription skipped" : "Not transcribed"}
+        {props.outcome === "skipped" ? "Transcription skipped" : "Not transcribed"}
       </p>
-      <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs}
-        label={props.outcome === "failed" ? "Try again" : undefined} />
+      <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} />
     </div>
   );
 }
@@ -212,6 +227,9 @@ export function transcriptStepLine(pipeline: NotePipeline): string | null {
 /** A voice note with no transcript yet: where its pipeline stands, else what the phone says about its on-device transcription, else where private cloud stands, else "No transcript.". */
 function NoTranscript(props: { item: LibraryItem; metadata: MeetingMetadataRead; transcription: VoiceNoteTranscriptionProps | undefined }) {
   const outcome = voiceNoteTranscriptState(props.metadata.status === "ok" ? props.metadata.metadata : null).status;
+  const errorCode = props.metadata.status === "ok" && typeof props.metadata.metadata.transcription_error_code === "string"
+    ? props.metadata.metadata.transcription_error_code
+    : null;
   const view = useContext(NotePipelineContext);
   const capture = props.metadata.status === "ok" ? props.metadata.metadata.capture : null;
   const options = capture && typeof capture === "object" ? (capture as { options?: { transcriber?: string } }).options : null;
@@ -228,7 +246,7 @@ function NoTranscript(props: { item: LibraryItem; metadata: MeetingMetadataRead;
     // stepper skips the transcript step nothing will start one, and the Transcribe action below stands.
     const privateComing = stepperShown && line !== null && view.route === "private-cloud" && job === undefined;
     const stepperCovers = onPhoneRoute || privateComing || job?.kind === "active" || job?.kind === "failed";
-    const status = stepperCovers ? null : VoiceNoteTranscriptionStatus({ item: props.item, outcome, transcription: props.transcription, provider });
+    const status = stepperCovers ? null : VoiceNoteTranscriptionStatus({ item: props.item, outcome, errorCode, transcription: props.transcription, provider });
     // "Will appear here" would sit beside a Transcribe action that says it won't unless asked.
     const shownLine = status !== null && line === SAVED_NOTE_COPY.transcriptHere ? null : line;
     return (
@@ -240,7 +258,7 @@ function NoTranscript(props: { item: LibraryItem; metadata: MeetingMetadataRead;
     );
   }
   // A plain function of its props (no hooks), so its "nothing to say" is known here.
-  const status = VoiceNoteTranscriptionStatus({ item: props.item, outcome, transcription: props.transcription, provider }) ?? (
+  const status = VoiceNoteTranscriptionStatus({ item: props.item, outcome, errorCode, transcription: props.transcription, provider }) ?? (
     <p className="text-callout text-muted-foreground" data-testid={props.item.onPhone ? "note-transcript-on-phone" : undefined}>
       {props.item.onPhone ? "No transcript yet. It shows here once this note is saved to your space." : "No transcript."}
     </p>
@@ -360,7 +378,7 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
 export function NoteDetailView(props: NoteDetailViewProps) {
   const { item, metadata } = props;
   const activityJobs = props.activityView && props.platform ? activityForNote(props.activityView, props.platform) : [];
-  const activityStatus = noteStatus(activityJobs);
+  const activityStatus = noteStatus(activityJobs, props.activityView?.pipeline);
   const activityRetry = activityJobs.find((job) => job.retry)?.retry;
   if (item === null) {
     return (
