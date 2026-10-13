@@ -448,7 +448,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         const finish = pendingStore.beginAutomaticSave();
         try {
           const result = await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id, "stop", startPrivate);
-          if (result === "owned-by-another-run") {
+          if (result === "owned-by-another-run" || result === "retry-scheduled") {
             send({ type: "LOCAL_UPLOAD_IN_FLIGHT", id: recording.id });
             void pendingStore.refresh();
             return;
@@ -529,7 +529,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         const finish = pendingStore.beginAutomaticSave();
         try {
           const result = await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id, "background");
-          if (result === "owned-by-another-run") {
+          if (result === "owned-by-another-run" || result === "retry-scheduled") {
             send({ type: "LOCAL_UPLOAD_IN_FLIGHT", id: recording.id });
             return;
           }

@@ -131,20 +131,30 @@ test("Powerful accepts webm with codec parameters and sends the base MIME type",
   expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
 });
 
-test("Powerful uploads local audio while its TinyCloud commit read is stalled", async () => {
+test("Powerful checks the space commit before sending audio to the provider", async () => {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
   const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", gate);
   const lane = track(); lane.consent();
   const running = lane.run(recording);
   try {
-    for (let turn = 0; turn < 100 && !calls.includes("POST /hosted/transcripts"); turn++) await Bun.sleep(1);
-    expect(calls).toContain("POST /hosted/uploads");
-    expect(calls).toContain("POST /hosted/transcripts");
+    await Bun.sleep(10);
+    expect(calls).not.toContain("POST /hosted/uploads");
+    expect(calls).not.toContain("POST /hosted/transcripts");
     expect(calls).not.toContain("space:save");
   } finally { release(); }
   await running;
   expect(lane.jobs.get(recording.id)?.kind).toBe("done");
+});
+
+test("noteSaved after Powerful completes does not create a second paid upload", async () => {
+  const { calls, recording, track } = harness();
+  const lane = track(); lane.consent();
+  await lane.run(recording);
+  // The text/audio save finishes later and calls the same hand-off again.
+  await lane.run(recording);
+  expect(calls.filter((call) => call === "POST /hosted/uploads")).toHaveLength(1);
+  expect(calls.filter((call) => call === "POST /hosted/transcripts")).toHaveLength(1);
 });
 
 test("Powerful waits for the account's Upload audio submission before creating an upload", async () => {

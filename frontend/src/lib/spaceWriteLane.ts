@@ -15,9 +15,10 @@ let nextLaneJobId = 0;
 const laneListeners = new Set<() => void>();
 function publishLane(): void { for (const listener of laneListeners) listener(); }
 export interface SpaceLaneSnapshot { busy: boolean; depth: number }
-export function spaceLaneSnapshot(): SpaceLaneSnapshot {
-  return { busy: Object.values(lanes).some((lane) => lane.active !== null || lane.queued.size > 0),
-    depth: Object.values(lanes).reduce((depth, lane) => depth + lane.queued.size, 0) };
+export function spaceLaneSnapshot(track?: keyof typeof lanes): SpaceLaneSnapshot {
+  const selected = track ? [lanes[track]] : Object.values(lanes);
+  return { busy: selected.some((lane) => lane.active !== null || lane.queued.size > 0),
+    depth: selected.reduce((depth, lane) => depth + lane.queued.size, 0) };
 }
 export function subscribeSpaceLane(listener: () => void): () => void {
   laneListeners.add(listener);

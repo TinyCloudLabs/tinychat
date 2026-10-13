@@ -513,6 +513,7 @@ const uploadStates = new Map<string, {
   lastPercent: number;
 }>();
 let generalFailure: string | null = null;
+let statusRestoreGeneration = 0;
 
 function currentFailure(): string | null {
   return generalFailure ?? [...noteFailures.values()].at(-1)?.message ?? null;
@@ -784,6 +785,7 @@ export const pendingStore = {
     persistNoteStatus(id);
     publishPending({ notes: pendingSnapshot.notes?.map((note) => note.id === id ? { ...note, retryAt: at ?? undefined } : note) });
   },
+  retryAt(id: string): number | undefined { return retryTimes.get(id); },
   setHeld(id: string, held: PendingNote["held"]): void {
     if (held) heldReasons.set(id, held);
     else heldReasons.delete(id);
@@ -863,6 +865,7 @@ function listingFailure(caught: unknown): string {
 
 /** Re-list the phone and exclude retained copies already saved to the space. */
 async function relistPending(lastError?: string | null): Promise<void> {
+  const restoreGeneration = ++statusRestoreGeneration;
   if (lastError !== undefined) generalFailure = lastError;
   try {
     const { recordings } = await withVoiceNoteSaveDeadline("native listPending for pending count", () => VoiceNotes.listPending());
@@ -873,12 +876,6 @@ async function relistPending(lastError?: string | null): Promise<void> {
       isDiscarded(recording.id) || (recording.ledger?.audio.state !== "saved" && !savedThisSession.has(recording.id)),
     );
     const pendingIds = new Set(pending.map((note) => note.id));
-    const retained = await readPendingSaveStates(activeAccountDid, [...pendingIds]);
-    for (const [id, status] of retained) {
-      if (status.failed && !noteFailures.has(id)) noteFailures.set(id, status.failed);
-      if (status.held && !heldReasons.has(id)) heldReasons.set(id, status.held);
-      if (status.retryAt && !retryTimes.has(id)) retryTimes.set(id, status.retryAt);
-    }
     for (const id of noteFailures.keys()) if (!pendingIds.has(id)) noteFailures.delete(id);
     const notes = pending
       .filter((recording) => !isDiscarded(recording.id))
@@ -890,6 +887,22 @@ async function relistPending(lastError?: string | null): Promise<void> {
         ...((activeAccountDid ? heldReasons.get(recording.id) : "signed-out") ?
           { held: activeAccountDid ? heldReasons.get(recording.id)! : "signed-out" as const } : {}) }));
     publishPending({ accountDid: activeAccountDid, listing: { state: "ok", count: pending.length }, notes, lastError: currentFailure() });
+    const did = activeAccountDid;
+    void readPendingSaveStates(did, [...pendingIds]).then((retained) => {
+      if (restoreGeneration !== statusRestoreGeneration || did !== activeAccountDid) return;
+      if (retained.size === 0) return;
+      for (const [id, status] of retained) {
+        if (!pendingIds.has(id)) continue;
+        if (status.failed && !noteFailures.has(id)) noteFailures.set(id, status.failed);
+        if (status.held && !heldReasons.has(id)) heldReasons.set(id, status.held);
+        if (status.retryAt && !retryTimes.has(id)) retryTimes.set(id, status.retryAt);
+      }
+      publishPending({ notes: pendingSnapshot.notes?.map((note) => ({ ...note,
+        ...(noteFailures.has(note.id) ? { failed: noteFailures.get(note.id)! } : {}),
+        ...(heldReasons.has(note.id) ? { held: heldReasons.get(note.id)! } : {}),
+        ...(retryTimes.has(note.id) ? { retryAt: retryTimes.get(note.id)! } : {}),
+      })), lastError: currentFailure() });
+    }).catch((error) => console.warn("[VoiceNotes] Could not restore pending save status", error));
   } catch (caught) {
     publishPending({ listing: { state: "error", message: listingFailure(caught) }, notes: undefined, lastError: currentFailure() });
   }

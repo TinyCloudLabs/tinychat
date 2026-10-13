@@ -185,6 +185,8 @@ test("a pending save failure is restored after volatile status is cleared", asyn
     pendingStore.setAccount("did:other");
     pendingStore.setAccount(tcw.did);
     await pendingStore.refresh();
+    for (let turn = 0; turn < 20 && !pendingStore.snapshot().notes?.find((note) => note.id === started.id)?.failed; turn++)
+      await Bun.sleep(1);
     expect(pendingStore.snapshot().notes?.find((note) => note.id === started.id)).toMatchObject({
       failed: { kind: "timeout" }, held: "unowned",
     });
@@ -203,14 +205,18 @@ test("reconcile honors a persisted retry due time", async () => {
     const started = await fake.plugin.start();
     await fake.plugin.stop();
     await putPendingSaveState(tcw.did, { id: started.id, retryAt: Date.now() + 80 });
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh();
     const running = createVoiceNotePipeline(tcw).reconcileAll({
       did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration(),
     });
     await Bun.sleep(10);
     expect(sqlite.query("SELECT id FROM connector_meeting WHERE source_id = ?").all(started.id)).toEqual([]);
     await running;
-    expect(sqlite.query("SELECT id FROM connector_meeting WHERE source_id = ?").all(started.id))
-      .toEqual([{ id: `vn-${started.id}` }]);
+    expect(sqlite.query("SELECT id FROM connector_meeting WHERE source_id = ?").all(started.id)).toEqual([]);
+    for (let turn = 0; turn < 150 && sqlite.query("SELECT id FROM connector_meeting WHERE source_id = ?").all(started.id).length === 0; turn++)
+      await Bun.sleep(1);
+    expect(sqlite.query("SELECT id FROM connector_meeting WHERE source_id = ?").all(started.id)).toEqual([{ id: `vn-${started.id}` }]);
   } finally { __setVoiceNotesForTests(original, { available: null }); }
 });
 import { pendingStore, saveNoteForAccount } from "./recorderSaves";
@@ -1526,7 +1532,7 @@ test("a never-settling audio KV put reports a visible timeout and clears Saving 
       putStarted();
       return new Promise((_resolve, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
     }) as typeof tcw.kv.put;
-    const pipeline = createVoiceNotePipeline(tcw, { saveRetryDelaysMs: [1, 1] });
+    const pipeline = createVoiceNotePipeline(tcw, { saveRetryDelaysMs: [] });
     const reconcile = pipeline.reconcileAll(account);
     await started;
     expect(pendingStore.snapshot().running).toBe(true);
@@ -1551,10 +1557,12 @@ test("a lane timeout is retrying before its final failed attempt", async () => {
     await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
     const started = await fake.plugin.start();
     await fake.plugin.stop();
+    const next = await fake.plugin.start();
+    await fake.plugin.stop();
     pendingStore.setAccount(tcw.did);
     await pendingStore.refresh();
     const put = tcw.kv.put.bind(tcw.kv);
-    tcw.kv.put = ((key, value, options) => key.includes("/p/")
+    tcw.kv.put = ((key, value, options) => key.includes(started.id) && key.includes("/p/")
       ? new Promise((_resolve, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }))
       : put(key, value, options)) as typeof tcw.kv.put;
     setVoiceNoteSaveDeadlineForTests(10);
@@ -1566,6 +1574,11 @@ test("a lane timeout is retrying before its final failed attempt", async () => {
     expect(waiting?.retryAt).toBeGreaterThan(Date.now());
     expect(waiting?.failed).toBeUndefined();
     await running;
+    expect((await fake.plugin.listPending()).recordings.find((note) => note.id === next.id)?.ledger?.audio.state).toBe("saved");
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === started.id)?.failed).toBeUndefined();
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === started.id)?.retryAt).toBeGreaterThan(Date.now());
+    for (let turn = 0; turn < 150 && pendingStore.snapshot().notes?.find((note) => note.id === started.id)?.failed?.kind !== "timeout"; turn++)
+      await Bun.sleep(1);
     expect(pendingStore.snapshot().notes?.find((note) => note.id === started.id)?.failed?.kind).toBe("timeout");
   } finally {
     setVoiceNoteSaveDeadlineForTests(null);

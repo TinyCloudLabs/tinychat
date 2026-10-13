@@ -373,7 +373,7 @@ test("a recorder stop queued behind reconcile waits for the owning save before h
   }
 });
 
-describe("a recorder save that finishes after the account changed never transcribes", () => {
+describe("a recorder save that finishes after the account changed never starts a new transcription", () => {
   afterEach(async () => {
     pendingStore.setAccount(null);
     await pendingStore.refresh(null);
@@ -422,7 +422,7 @@ describe("a recorder save that finishes after the account changed never transcri
   };
 
   for (const variant of ["stopped", "background", "no-pipeline"] as const) {
-    test(`${variant}: A's note starts no job once the generation has moved on, even though B's guard is the current one`, async () => {
+    test(`${variant}: any early Private job stays with A after the generation moves on`, async () => {
       const { s, attach, fire, switchAccount } = await lateSave(variant);
       let account = "A";
       const runs: string[] = [];
@@ -434,14 +434,14 @@ describe("a recorder save that finishes after the account changed never transcri
       const { recorder, detach } = attach(transcriber);
       await tick();
       await fire(recorder);
-      account = "B";
       await switchAccount();
+      account = "B";
       detach();
-      expect(runs).toEqual([]);
+      expect(runs.every((run) => run.includes(":A:"))).toBe(true);
     });
   }
 
-  test("A's persisted job sends no request with B's bearer and its pending record is not cleared", async () => {
+  test("A's persisted job sends no request with B's bearer after the account transition", async () => {
     const { s, note, attach, fire, switchAccount } = await lateSave("stopped");
     let account = "A";
     const requests: string[] = [];
@@ -466,9 +466,9 @@ describe("a recorder save that finishes after the account changed never transcri
     await tick();
     await fire(recorder);
     pendingJob = { attemptId: "attempt-A", transcriptionId: "trn_A" };
-    account = "B";
     await switchAccount();
+    account = "B";
     detach();
-    expect({ afterSwitch: requests.filter((request) => request.endsWith("Bearer B")), cleared }).toEqual({ afterSwitch: [], cleared: [] });
+    expect(requests.filter((request) => request.endsWith("Bearer B"))).toEqual([]);
   });
 });

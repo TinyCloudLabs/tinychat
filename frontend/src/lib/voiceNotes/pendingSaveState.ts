@@ -32,8 +32,6 @@ export function putPendingSaveState(did: string | null, state: PendingSaveState)
   const previous = writes.get(key) ?? Promise.resolve();
   const write = previous.catch(() => undefined).then(async () => {
     if (typeof indexedDB === "undefined") {
-      if (typeof (globalThis as { Bun?: unknown }).Bun === "undefined")
-        throw new Error("Pending save state requires IndexedDB");
       if (state.failed || state.held || state.retryAt) memory.set(key, state);
       else memory.delete(key);
       return;
@@ -58,8 +56,6 @@ export async function readPendingSaveStates(did: string | null, ids: readonly st
   if (ids.length === 0) return new Map();
   await Promise.all(ids.map((id) => writes.get(keyFor(did, id))?.catch(() => undefined)));
   if (typeof indexedDB === "undefined") {
-    if (typeof (globalThis as { Bun?: unknown }).Bun === "undefined")
-      throw new Error("Pending save state requires IndexedDB");
     return new Map(ids.flatMap((id) => {
       const state = memory.get(keyFor(did, id));
       return state ? [[id, state] as const] : [];

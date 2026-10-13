@@ -6,6 +6,12 @@ import { VoiceNotes, __setVoiceNotesForTests, type LocalTranscript, type VoiceNo
 import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
 import { advanceAccountGeneration } from "./accountContext";
 import { resetSpaceLaneForTests, runOnSpaceLane } from "../spaceWriteLane";
+const realCommits = { ...(await import("./voiceNoteCommits")) };
+let spaceCommitPresent = true;
+mock.module("./voiceNoteCommits", () => ({ ...realCommits,
+  readTranscriptCommit: async () => spaceCommitPresent
+    ? { rev: 1, outcome: "transcribed" } : null,
+}));
 
 type SaveResult = { ok: true; data: unknown } | { ok: false; error: { code: string; message: string } };
 let save: (saved: { rev: number }, checkpoint?: () => void) => Promise<SaveResult> = async () => ({ ok: true, data: {} });
@@ -31,6 +37,7 @@ const account = () => ({ did: (currentDid = `did:test:${++seq}`), spaceId: "spac
 type FakeLedger = { audio?: { state: string; rowId?: string | null }; transcript: Record<string, unknown>; transcriptSync: { state: string; rev?: number; at?: number } };
 let phone: { rev: number; ledger: FakeLedger };
 let pendingOwner: string | null | undefined;
+let listings = 0;
 let ledgerWrites: { rev: number; patch: Record<string, unknown> }[];
 let updateLedger: (args: { id: string; did: string; rev: number; patch: Record<string, unknown> }) => Promise<unknown>;
 let getTranscript: () => Promise<{ transcript: LocalTranscript | null }>;
@@ -38,9 +45,11 @@ const warn = console.warn;
 const realPlugin = VoiceNotes;
 
 beforeEach(() => {
+  spaceCommitPresent = true;
   failures = [];
   save = async () => ({ ok: true, data: {} });
   pendingOwner = undefined;
+  listings = 0;
   getTranscript = async () => ({ transcript });
   phone = { rev: 4, ledger: { audio: { state: "pending", rowId: "vn-rec-1" }, transcript: { state: "done", outcome: "transcribed", attempts: 1 }, transcriptSync: { state: "pending" } } };
   ledgerWrites = [];
@@ -51,8 +60,8 @@ beforeEach(() => {
   };
   __setVoiceNotesForTests({
     getTranscript: () => getTranscript(),
-    listPending: async () => ({ recordings: [{ id: "rec-1", owner: pendingOwner === undefined ? currentDid : pendingOwner,
-      rev: phone.rev, ledger: phone.ledger }] }),
+    listPending: async () => { listings++; return { recordings: [{ id: "rec-1", owner: pendingOwner === undefined ? currentDid : pendingOwner,
+      rev: phone.rev, ledger: phone.ledger }] }; },
     updateLedger: (args: Parameters<typeof updateLedger>[0]) => updateLedger(args),
   } as unknown as VoiceNotesPlugin, { available: true });
   console.warn = () => {};
@@ -64,6 +73,7 @@ afterEach(() => {
 afterAll(() => {
   mock.restore();
   mock.module("./voiceNoteStore", () => realStore);
+  mock.module("./voiceNoteCommits", () => realCommits);
 });
 
 describe("syncOnDeviceTranscript publishes the result", () => {
@@ -475,6 +485,18 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     await syncOnDeviceTranscript(tcw, SAVED);
     expect(ledgerWrites).toEqual([]);
     expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "synced" });
+  });
+
+  test("a saved native ledger repairs a missing space transcript using its first pending listing", async () => {
+    const tcw = account();
+    phone.ledger.transcriptSync = { state: "saved", rev: 1, at: 1 };
+    spaceCommitPresent = false;
+    let writes = 0;
+    let listingsBeforeSave = 0;
+    save = async () => { listingsBeforeSave = listings; writes++; return { ok: true, data: {} }; };
+    await syncOnDeviceTranscript(tcw, SAVED);
+    expect(writes).toBe(1);
+    expect(listingsBeforeSave).toBe(1);
   });
 
   test("a rev_conflict on the ledger write is retried once against the new rev", async () => {

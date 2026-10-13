@@ -45,8 +45,8 @@ export interface PipelinePending {
 }
 
 /**
- * `spaceLaneSnapshot()` (P1): the global write lane. `busy`: a job is running or queued. `depth`: every queued job,
- * including this note and the ones behind it, so it is NOT a position and is never shown. Only `busy` is read.
+ * The text lane snapshot controls space-read copy. `busy` means a text request
+ * is running or queued; `depth` counts queued text requests, not a note position.
  */
 export interface PipelineSpaceLane { busy: boolean; depth: number }
 

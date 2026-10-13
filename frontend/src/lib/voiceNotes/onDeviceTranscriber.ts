@@ -8,7 +8,8 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { localTranscriptToSave, patchVoiceNoteTranscriptionFailure, saveVoiceNoteTranscript } from "./voiceNoteStore";
-import { VoiceNotes, type LocalTranscript, type NoteSttState } from "./nativeVoiceNotes";
+import { VoiceNotes, type LocalTranscript, type NoteSttState, type VoiceNoteRecording } from "./nativeVoiceNotes";
+import { readTranscriptCommit } from "./voiceNoteCommits";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { LOCAL_COPY } from "./notePipelineCopy";
 import { assertAccountContext, captureAccountContext, isAccountContextCurrent, isAccountWorkAllowed, StaleAccountContext, type AccountContext } from "./accountContext";
@@ -137,7 +138,7 @@ function abandonSync(key: string, id: string, tcw: TinyCloudWeb): void {
 }
 
 async function ownsNativeNote(tcw: TinyCloudWeb, key: string, id: string, ctx: AccountContext,
-  failureState: "failed" | "unrecorded", missingExpected = false): Promise<boolean> {
+  failureState: "failed" | "unrecorded", missingExpected = false): Promise<VoiceNoteRecording | null> {
   let recordings: Awaited<ReturnType<typeof VoiceNotes.listPending>>["recordings"];
   try {
     checkpoint(tcw, ctx)();
@@ -147,21 +148,21 @@ async function ownsNativeNote(tcw: TinyCloudWeb, key: string, id: string, ctx: A
     }));
     checkpoint(tcw, ctx)();
   } catch (err) {
-    if (!isCurrent(tcw, ctx)) return false;
+    if (!isCurrent(tcw, ctx)) return null;
     console.warn("[OnDeviceStt] Could not verify local note ownership", err);
     publish(key, { state: failureState, message: LOCAL_COPY.transcriptCheckFailed });
-    return false;
+    return null;
   }
   const note = recordings.find((recording) => recording.id === id);
   if (!note) {
     if (missingExpected) publish(key, { state: "failed", message: LOCAL_COPY.missingTranscript });
-    return false;
+    return null;
   }
   if (note.owner !== ctx.did) {
     publish(key, { state: failureState, message: "This note belongs to another account on this phone" });
-    return false;
+    return null;
   }
-  return true;
+  return note;
 }
 
 async function recordAndPublish(tcw: TinyCloudWeb, key: string, id: string, transcript: LocalTranscript,
@@ -182,7 +183,8 @@ async function recordAndPublish(tcw: TinyCloudWeb, key: string, id: string, tran
 
 async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: boolean, failed: boolean, ctx: AccountContext): Promise<boolean> {
   if (!isCurrent(tcw, ctx)) return true;
-  if (!await ownsNativeNote(tcw, key, id, ctx, "failed", expected || failed)) return !isCurrent(tcw, ctx);
+  const current = await ownsNativeNote(tcw, key, id, ctx, "failed", expected || failed);
+  if (!current) return !isCurrent(tcw, ctx);
   let transcript: LocalTranscript | null;
   try {
     checkpoint(tcw, ctx)();
@@ -207,26 +209,29 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
   }
   if (!isCurrent(tcw, ctx)) return true;
   const resultKey = JSON.stringify([ctx.spaceId, ctx.did, id, transcript.rev]);
-  if (published.has(resultKey)) return recordAndPublish(tcw, key, id, transcript, ctx);
   // The row-created callback, native STT event and post-upload reconcile can
-  // all request this same result. Check the durable ledger after reading the
-  // current local revision, before commitVoiceNoteTranscript does any KV/SQL.
+  // all request this same result. The first listPending already supplied the
+  // durable ledger. Verify its space commit so a missing copy can be repaired.
   try {
     checkpoint(tcw, ctx)();
-    const pending = await withVoiceNoteSaveDeadline(`native listPending transcript rev id=${id}`, () => VoiceNotes.listPending());
-    checkpoint(tcw, ctx)();
-    const current = pending.recordings.find((note) => note.id === id);
-    if (current?.owner === ctx.did && current.ledger?.transcriptSync.state === "saved"
+    if (current.ledger?.transcriptSync.state === "saved"
       && current.ledger.transcriptSync.rev >= transcript.rev
       && current.ledger.transcript.outcome === transcript.outcome) {
-      publish(key, { state: "synced" });
-      return false;
+      const commit = await withVoiceNoteSaveDeadline(`space transcript commit id=${id}`,
+        () => readTranscriptCommit(tcw, id, checkpoint(tcw, ctx)));
+      checkpoint(tcw, ctx)();
+      if (commit && commit.rev >= transcript.rev && commit.outcome === transcript.outcome) {
+        publish(key, { state: "synced" });
+        return false;
+      }
+      published.delete(resultKey);
     }
   } catch (err) {
     if (!isCurrent(tcw, ctx)) return true;
     publish(key, { state: "failed", message: LOCAL_COPY.transcriptCheckFailed });
     return false;
   }
+  if (published.has(resultKey)) return recordAndPublish(tcw, key, id, transcript, ctx);
   publish(key, { state: "syncing" });
   try {
     checkpoint(tcw, ctx)();
