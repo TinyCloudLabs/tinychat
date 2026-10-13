@@ -119,7 +119,7 @@ async function hostedError(response: Response): Promise<AssemblyAiError> {
 }
 
 interface HostedSubmission {
-  status: "missing" | "receiving" | "submitting" | "submitted" | "failed" | "needs_reconciliation" | "deleted";
+  status: "missing" | "receiving" | "submitting" | "submitted" | "failed" | "needs_reconciliation" | "unresolved" | "deleted";
   id?: string;
   upload_id?: string;
   error?: { code?: string } | null;

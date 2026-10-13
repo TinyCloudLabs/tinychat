@@ -64,7 +64,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
   services: { client?: ReturnType<typeof createHostedAssemblyAiClient>; native?: VoiceNotesPlugin;
     readCommit?: typeof readTranscriptCommit; createRow?: typeof createVoiceNoteRow;
     save?: typeof saveVoiceNoteTranscript; readNote?: typeof readVoiceNoteForTranscription;
-    loadAudio?: typeof loadVoiceNoteAudio; sleep?: typeof pause } = {}) {
+    loadAudio?: typeof loadVoiceNoteAudio; sleep?: typeof pause; reconciliationDelayMs?: number } = {}) {
   const client = services.client ?? createHostedAssemblyAiClient({ backendUrl, sessionStore });
   const native = services.native ?? VoiceNotes;
   const readCommit = services.readCommit ?? readTranscriptCommit;
@@ -85,7 +85,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       if (currentAccountGeneration() !== generation || tcw().did !== did) return;
       try {
         const job = await client.lookupJob(id);
-        if (job.status !== "needs_reconciliation") {
+        if (job.status === "submitted" && job.id) {
           jobs.set(id, { kind: "failed", message: "Exo reconciled the earlier attempt. Try again.", retryable: true, reference: null, code: "reconciled" });
           notify();
           return;
@@ -93,7 +93,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       } catch { /* A read failure does not authorize another paid submission. */ }
       watchReconciliation(id, generation);
     };
-    const timer = setTimeout(() => { void check(); }, 30_000);
+    const timer = setTimeout(() => { void check(); }, services.reconciliationDelayMs ?? 30_000);
     (timer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
     reconciliationChecks.set(id, timer);
   };
@@ -168,7 +168,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         let reconciled: Awaited<ReturnType<typeof client.lookupJob>> | null = null;
         const reconcile = async () => {
           const job = await client.lookupJob(id);
-          if (job.status === "needs_reconciliation")
+          if (job.status === "needs_reconciliation" || job.status === "unresolved")
             throw new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI.");
           if (job.status === "deleted")
             throw new AssemblyAiError("rejected", "This note's earlier transcript was deleted. Contact support before retrying.");

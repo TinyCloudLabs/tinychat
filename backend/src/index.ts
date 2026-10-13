@@ -70,7 +70,7 @@ import {
   transcriptionApiConfigFromEnv,
   transcriptDeliveryConfigFromEnv,
 } from "./services/transcription-api.js";
-import { KvTranscriberIndexStore } from "./services/transcriber-index.js";
+import { KvJsonKv, KvTranscriberIndexStore } from "./services/transcriber-index.js";
 import { TranscriptDeliveryWorker, WriteGovernor } from "./services/transcript-delivery.js";
 import {
   PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
@@ -1000,7 +1000,8 @@ async function main() {
   // The persistent spool admits one writer under flock. Startup recovery completes before mount.
   let hostedUploads: HostedUploadStore | null = null;
   if (assemblyAiHosted.hosted) {
-    hostedUploads = new HostedUploadStore(assemblyAiHosted.spoolDir, assemblyAiHosted.dailyBytes, DEFAULT_MAX_CONCURRENT_UPLOADS);
+    hostedUploads = new HostedUploadStore(assemblyAiHosted.spoolDir, assemblyAiHosted.dailyBytes, DEFAULT_MAX_CONCURRENT_UPLOADS,
+      undefined, undefined, undefined, new KvJsonKv(node));
     await hostedUploads.init();
     await reconcileHostedJobs(assemblyAiHosted, hostedUploads);
     const sweeper = hostedUploads;

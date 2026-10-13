@@ -7,6 +7,7 @@ import { dlopen, FFIType } from "bun:ffi";
 import type { FileHandle } from "node:fs/promises";
 
 import { assertStrongSecret } from "./webhook-tokens.js";
+import type { JsonKv } from "./transcriber-index.js";
 
 /**
  * AssemblyAI under TinyCloud's account for Exo uploads ("hosted" mode, contract C10).
@@ -170,7 +171,10 @@ export interface HostedUpload {
 }
 
 type NoteJob = { address: string; sourceId: string; uploadId: string; bootId: string; state: "receiving" | "submitting" | "submitted" | "needs_reconciliation" | "uncertain" | "deleted"; handle?: string; expiresAt?: number; byteSize?: number; contentType?: string; uploadUrl?: string; transcriptId?: string };
-export type NoteJobView = { status: "receiving" | "submitting" | "submitted" | "needs_reconciliation" | "deleted"; upload_id: string; id?: string };
+export type NoteJobView = { status: "receiving" | "submitting" | "submitted" | "needs_reconciliation" | "deleted"; upload_id: string; id?: string }
+  | { status: "unresolved" };
+export const HOSTED_IDENTITY_KEY = "assemblyai/hosted/spool-identity";
+type SpoolIdentity = { installId: string; createdAt: string };
 
 /** How a background submit ended. Codes are the router's public error codes. */
 export type SubmitOutcome =
@@ -257,7 +261,9 @@ export class HostedUploadStore {
   }
 
   noteJob(address: string, sourceId: string): NoteJobView | null {
-    const job = this.noteJobs.get(this.noteKey(address, sourceId));
+    const key = this.noteKey(address, sourceId);
+    if (this.quarantinedKeys.has(key)) return { status: "unresolved" };
+    const job = this.noteJobs.get(key);
     return job ? this.viewNoteJob(job) : null;
   }
 
@@ -277,9 +283,11 @@ export class HostedUploadStore {
     if (job?.uploadId === upload.id) await this.saveNoteJob(key, { ...job, ...reference });
   }
 
-  reconciliationJobs(): { key: string; job: NoteJob }[] {
-    return [...this.noteJobs].filter(([, job]) => job.state === "needs_reconciliation" || job.state === "uncertain")
+  reconciliationJobs(): { key: string; job: NoteJob | null }[] {
+    const jobs: { key: string; job: NoteJob | null }[] = [...this.noteJobs].filter(([key, job]) => !this.quarantinedKeys.has(key) && (job.state === "needs_reconciliation" || job.state === "uncertain"))
       .map(([key, job]) => ({ key, job }));
+    for (const key of this.quarantinedKeys) jobs.push({ key, job: null });
+    return jobs;
   }
 
   async reconcileFound(key: string, transcriptId: string, handleKey: string, nowMs: number): Promise<void> {
@@ -323,6 +331,8 @@ export class HostedUploadStore {
     private readonly removeSpool: typeof rm = rm,
     private readonly tombstoneLimits = { global: MAX_UPLOAD_TOMBSTONES, account: MAX_ACCOUNT_UPLOAD_TOMBSTONES },
     private readonly outcomeLimits = { global: MAX_SETTLED_OUTCOMES, account: MAX_ACCOUNT_SETTLED_OUTCOMES },
+    private readonly identityStore?: Pick<JsonKv, "get" | "put">,
+    private readonly freshInstallId = process.env.ASSEMBLYAI_HOSTED_FRESH_INSTALL,
   ) {}
 
   /** Take the process-wide writer lock before reading or changing any spool state. */
@@ -345,13 +355,21 @@ export class HostedUploadStore {
     try {
       const initialNames = await readdir(this.spoolDir);
       const identityFile = join(this.spoolDir, "spool.json");
+      if (!this.identityStore) throw new Error("[startup] FATAL: hosted off-volume identity store unavailable; refusing hosted routes");
+      const expected = await this.identityStore.get<SpoolIdentity>(HOSTED_IDENTITY_KEY);
+      if (expected !== null && (!expected || typeof expected.installId !== "string" || !expected.installId))
+        throw new Error("[startup] FATAL: hosted off-volume spool identity invalid; refusing hosted routes");
       if (!initialNames.includes("spool.json")) {
-        const priorState = initialNames.some((name) => name !== ".hosted-writer.lock");
-        if (priorState && process.env.ASSEMBLYAI_HOSTED_ACK_FRESH_SPOOL !== "true")
-          throw new Error("[startup] FATAL: hosted spool identity missing with prior files; refusing hosted routes. Restore the persistent volume or set ASSEMBLYAI_HOSTED_ACK_FRESH_SPOOL=true after operator review");
+        if (expected) throw new Error("[startup] FATAL: hosted spool missing but off-volume identity exists; restore the original persistent volume; refusing hosted routes");
+        if (initialNames.some((name) => name !== ".hosted-writer.lock"))
+          throw new Error("[startup] FATAL: hosted spool identity missing with prior files; refusing hosted routes");
+        if (!this.freshInstallId || !/^[A-Za-z0-9_-]{8,128}$/.test(this.freshInstallId))
+          throw new Error("[startup] FATAL: fresh hosted spool requires ASSEMBLYAI_HOSTED_FRESH_INSTALL=<expected-new-id>; refusing hosted routes");
         console.error(`[assemblyai-hosted] initializing fresh hosted spool at ${this.spoolDir}; verify persistent volume before accepting paid jobs alert=true`);
+        const newIdentity = { installId: this.freshInstallId, createdAt: new Date().toISOString() };
+        await this.identityStore.put(HOSTED_IDENTITY_KEY, newIdentity);
         const identity = await open(identityFile, "wx", 0o600);
-        try { await identity.writeFile(JSON.stringify({ installId: randomUUID(), createdAt: new Date().toISOString() })); await identity.sync(); }
+        try { await identity.writeFile(JSON.stringify(newIdentity)); await identity.sync(); }
         finally { await identity.close(); }
         const directory = await open(this.spoolDir, "r");
         try { await directory.sync(); } finally { await directory.close(); }
@@ -361,6 +379,10 @@ export class HostedUploadStore {
         if (!identity || typeof identity !== "object" || typeof (identity as Record<string, unknown>).installId !== "string" ||
           typeof (identity as Record<string, unknown>).createdAt !== "string")
           throw new Error("[startup] FATAL: hosted spool identity invalid; refusing hosted routes");
+        if (expected && expected.installId !== (identity as SpoolIdentity).installId)
+          throw new Error("[startup] FATAL: hosted spool identity differs from off-volume identity; refusing hosted routes");
+        // Migrate an existing persistent spool before recovery or any hosted route can run.
+        if (!expected) await this.identityStore.put(HOSTED_IDENTITY_KEY, identity);
       }
       const marker = await open(join(this.spoolDir, ".hosted-boot-id"), "w", 0o600);
       try { await marker.writeFile(this.bootId); await marker.sync(); }
@@ -485,6 +507,7 @@ export class HostedUploadStore {
     return this.withAccount(address, async () => {
       if (sourceId && this.noteJob(address, sourceId)) {
         const job = this.noteJob(address, sourceId)!;
+        if (job.status === "unresolved") return { ok: false, code: "assemblyai_needs_reconciliation" };
         const upload = this.uploads.get(job.upload_id);
         if (upload && upload.owner === address && upload.state === "receiving" && upload.expiresAt <= nowMs)
           await this.abandonLocked(upload);

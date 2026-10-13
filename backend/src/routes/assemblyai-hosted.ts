@@ -109,6 +109,10 @@ export async function reconcileHostedJobs(config: Extract<AssemblyAiHostedConfig
   let recovered = 0;
   const jobs = store.reconciliationJobs();
   for (const { key, job } of jobs) {
+    if (!job) {
+      console.error(`[assemblyai-hosted] unresolved quarantined journal=note-${key}.json; inspect AssemblyAI processing history; note remains blocked alert=true`);
+      continue;
+    }
     try {
       let id = job.transcriptId;
       if (id) {
@@ -370,7 +374,7 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
       if (typeof content_type !== "string" || !HOSTED_CONTENT_TYPES.includes(content_type)) return fail(res, { code: "unsupported_audio" });
       if (typeof source_id === "string") {
         const existing = store!.noteJob(locals(res).address, source_id);
-        if (existing?.status === "needs_reconciliation") return fail(res, { code: "assemblyai_needs_reconciliation" });
+        if (existing?.status === "needs_reconciliation" || existing?.status === "unresolved") return fail(res, { code: "assemblyai_needs_reconciliation" });
         if (existing && (existing.status !== "receiving" || store!.lookup(existing.upload_id, locals(res).address, now()).kind !== "expired"))
           return ok(res, 200, { ...existing, part_size: HOSTED_PART_SIZE });
       }
@@ -546,8 +550,8 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
       if (sourceId !== undefined && (typeof sourceId !== "string" || sourceId.length < 1 || sourceId.length > 256)) return fail(res, { code: "invalid_request" });
       if (typeof sourceId === "string") {
         const job = store!.noteJob(locals(res).address, sourceId);
+        if (job?.status === "needs_reconciliation" || job?.status === "unresolved") return fail(res, { code: "assemblyai_needs_reconciliation" });
         if (!job || job.upload_id !== id) return fail(res, { code: "invalid_request" });
-        if (job.status === "needs_reconciliation") return fail(res, { code: "assemblyai_needs_reconciliation" });
         if (job.status === "deleted") return fail(res, { code: "assemblyai_job_uncertain" });
         if (job.status === "submitted") return ok(res, 202, { upload_id: id, status: "submitted", id: job.id });
       }
