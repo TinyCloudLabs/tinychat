@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { installDom } from "@/test/dom";
 import { setCapturePlaybackBlocked, stopAllPlayback } from "@/lib/audio/playback";
+import { NotePlaybackContext, type NotePlayback } from "@/lib/audio/notePlayback";
 import { PHONE_AUDIO_UNAVAILABLE, playbackDuration, scrubTarget } from "./audioPlayback";
 import { MeetingAudioPlayer, MeetingAudioPlayerView, stateForResolvedUrl, type PlayerState } from "./MeetingAudioPlayer";
 
@@ -135,12 +136,14 @@ describe("the player in a DOM", () => {
     playResult: () => Promise<void>;
   }
 
-  const mount = async (props: Partial<React.ComponentProps<typeof MeetingAudioPlayer>>) => {
+  const mount = async (props: Partial<React.ComponentProps<typeof MeetingAudioPlayer>>, playback: NotePlayback | null = null) => {
     cleanupDom = installDom();
     const host = document.createElement("div");
     document.body.appendChild(host);
     root = createRoot(host);
-    const render = (next: typeof props) => act(async () => root!.render(<MeetingAudioPlayer {...next} />));
+    const render = (next: typeof props, nextPlayback = playback) => act(async () => root!.render(
+      <NotePlaybackContext.Provider value={nextPlayback}><MeetingAudioPlayer {...next} /></NotePlaybackContext.Provider>,
+    ));
     await render(props);
     const audio = host.querySelector("audio") as HTMLAudioElement;
     const fake: FakeMedia = { duration: NaN, currentTime: 0, paused: true, readyState: 0, error: null, seekable: [], plays: [], pauses: 0, loads: 0, setTimes: [], playResult: () => Promise.resolve() };
@@ -378,6 +381,19 @@ describe("the player in a DOM", () => {
     await player.render({ url: "blob:note", durationSecs: 42, seek: { seconds: 5, nonce: 2 } });
     expect(player.fake.setTimes).toEqual([20, 5]);
     expect(player.fake.plays.length).toBe(2);
+  });
+
+  test("transcript timestamps and saved-note moments can each seek the same player", async () => {
+    const playback: NotePlayback = { seek: null, elapsed: 0, playing: false, playFrom: () => {}, onClock: () => {} };
+    const props = { url: "blob:note", durationSecs: 100, seek: { seconds: 12, nonce: 1 } };
+    const player = await mount({ url: "blob:note", durationSecs: 100 }, playback);
+    await player.render(props, playback);
+    await player.metadata(100);
+    expect(player.fake.setTimes).toEqual([12]);
+    await player.render(props, { ...playback, seek: { seconds: 42, nonce: 1 } });
+    expect(player.fake.setTimes).toEqual([12, 42]);
+    await player.render({ ...props, seek: { seconds: 7, nonce: 2 } }, { ...playback, seek: { seconds: 42, nonce: 1 } });
+    expect(player.fake.setTimes).toEqual([12, 42, 7]);
   });
 
   test("a playing note pauses when its kept pane is hidden or its view closes", async () => {

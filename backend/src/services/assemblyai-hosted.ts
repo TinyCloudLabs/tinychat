@@ -636,7 +636,13 @@ export interface HostedTranscriptView {
   language_code: string | null;
   audio_duration: number | null;
   text: string | null;
-  utterances: { speaker: string | null; start: number; end: number; text: string }[] | null;
+  utterances: { speaker: string | null; start: number; end: number; text: string; channel?: 0 | 1 }[] | null;
+  audio_channels?: 1 | 2;
+}
+
+/** AssemblyAI numbers its channel strings from 1; saved Exo channels start at 0. */
+function hostedChannel(value: unknown): 0 | 1 | undefined {
+  return value === "1" ? 0 : value === "2" ? 1 : undefined;
 }
 
 /** `GET /v2/transcript/{id}` rebuilt to the public subset, or null when off-contract. */
@@ -658,7 +664,8 @@ export function rebuildTranscript(body: unknown, handle: string): HostedTranscri
               const start = ms(u.start);
               const end = ms(u.end);
               check(end >= start);
-              return { speaker: speaker(u.speaker), start, end, text: text(u.text) };
+              return { speaker: speaker(u.speaker), start, end, text: text(u.text),
+                ...(hostedChannel(u.channel) === undefined ? {} : { channel: hostedChannel(u.channel)! }) };
             });
           })();
     return {
@@ -669,6 +676,7 @@ export function rebuildTranscript(body: unknown, handle: string): HostedTranscri
       audio_duration: duration,
       text: o.text === null || o.text === undefined ? null : text(o.text),
       utterances,
+      ...(o.audio_channels === 1 || o.audio_channels === 2 ? { audio_channels: o.audio_channels as 1 | 2 } : {}),
     };
   });
 }
@@ -684,7 +692,19 @@ export function rebuildSentences(body: unknown) {
         const start = ms(s.start);
         const end = ms(s.end);
         check(end >= start);
-        return { start, end, text: text(s.text), speaker: speaker(s.speaker) };
+        const words = s.words === null || s.words === undefined ? [] : (() => {
+          check(Array.isArray(s.words));
+          return (s.words as unknown[]).flatMap((rawWord) => {
+            const w = obj(rawWord);
+            if (typeof w.start !== "number" || typeof w.end !== "number" || typeof w.text !== "string") return [];
+            const wordStart = ms(w.start), wordEnd = ms(w.end);
+            check(wordEnd >= wordStart);
+            return [{ start: wordStart, end: wordEnd, text: text(w.text) }];
+          });
+        })();
+        return { start, end, text: text(s.text), speaker: speaker(s.speaker),
+          ...(words.length ? { words } : {}),
+          ...(hostedChannel(s.channel) === undefined ? {} : { channel: hostedChannel(s.channel)! }) };
       }),
     };
   });

@@ -119,6 +119,9 @@ export interface FirefliesSentence {
   text: string;
   start_time: number;
   end_time: number;
+  channel?: 0 | 1;
+  speaker_id?: string | null;
+  timing?: "engine" | "coarse" | "unknown";
 }
 
 export interface FirefliesSummary {

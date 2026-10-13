@@ -114,13 +114,23 @@ describe("NoteDetailView", () => {
       },
     });
     expect(html).toContain('data-testid="note-copy"');
-    expect(html).toContain("We ship the beta. On Friday.");
+    expect(html).toContain("We ship the beta.");
+    expect(html).toContain("On Friday.");
+    expect(html).toContain('aria-label="Play from 0:01"');
     expect(html).toContain(">Ben</p>");
     expect(render({ copyState: "copied", transcript: { status: "ok", sentences: [{ index: 0, speaker_name: null, text: "Hi", start_time: 0, end_time: 1 }] } })).toContain("Copied");
     const failed = render({ transcript: { status: "failed" } });
     expect(failed).toContain("Couldn’t load the transcript.");
     expect(failed).toContain("Try again");
     expect(render({ transcript: undefined })).toContain("Loading the transcript…");
+  });
+
+  test("timed copy is absent when the caller has no handler", () => {
+    const html = render({ transcript: { status: "ok", sentences: [
+      { index: 0, speaker_name: null, text: "Ready.", start_time: 1, end_time: 2 },
+    ] } });
+    expect(html).not.toContain("Copy with timestamps");
+    expect(html).toContain("Export as Markdown");
   });
 
   test("an upload whose audio was not stored says so", () => {

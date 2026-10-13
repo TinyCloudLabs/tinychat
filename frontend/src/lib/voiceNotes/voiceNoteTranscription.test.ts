@@ -751,9 +751,10 @@ describe("transcript normalization", () => {
       speakers: ["Speaker 1", "Speaker 2"], metadata: { speaker_labels: "diarized" },
     });
   });
-  test("segments become time-ordered 'You' turns of at most 60 s, trimmed, empty ones dropped", () => {
+  test("PTX regions remain separate timed segments, trimmed and ordered", () => {
     expect(voiceNoteSentences(TRANSCRIPT)).toEqual([
-      { index: 0, speaker_name: "You", text: "Remember to book the venue.", start_time: 0.5, end_time: 9 },
+      { index: 0, speaker_name: null, text: "Remember to book", start_time: 0.5, end_time: 4, channel: 0, timing: "engine" },
+      { index: 1, speaker_name: null, text: "the venue.", start_time: 5, end_time: 9, channel: 0, timing: "engine" },
     ]);
     const long = voiceNoteSentences({
       segments: [
@@ -764,19 +765,19 @@ describe("transcript normalization", () => {
         { channel: 0, start: Number.NaN, end: 1, text: "bad" },
       ],
     });
-    expect(long.map((s) => [s.text, s.start_time, s.end_time])).toEqual([["one two", 0, 59], ["three", 60, 70]]);
+    expect(long.map((s) => [s.text, s.start_time, s.end_time])).toEqual([["one", 0, 30], ["two", 31, 59], ["three", 60, 70]]);
   });
 
   test("the save carries the desktop's engine metadata; no sentences is the no-speech outcome", () => {
     const prepared = prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z", 1);
-    expect(prepared.speakers).toEqual(["You"]);
+    expect(prepared.speakers).toEqual([]);
     expect(prepared.metadata).toEqual({
       transcription_engine: "private-cloud",
       transcript_provider: "tinycloud-private-transcription",
       inference_provider: "tinfoil",
       model: "whisper-large-v3-turbo",
       language: "en",
-      transcript_text: "Remember to book the venue.",
+      transcript_text: "Remember to book\nthe venue.",
       transcription_outcome: "transcribed",
       speaker_labels: "single-speaker",
       transcribed_at: "2026-10-03T10:00:00.000Z",
@@ -1046,14 +1047,15 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     expect(outcome).toBe("transcribed");
     expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1, speakerLabels: false });
     expect(JSON.parse(space.kv.get(transcriptKvKey(VOICE_NOTE_SOURCE, "rec-1")) as string)).toEqual([
-      { index: 0, speaker_name: "You", text: "Remember to book the venue.", start_time: 0.5, end_time: 9 },
+      { index: 0, speaker_name: null, text: "Remember to book", start_time: 0.5, end_time: 4, channel: 0, timing: "engine" },
+      { index: 1, speaker_name: null, text: "the venue.", start_time: 5, end_time: 9, channel: 0, timing: "engine" },
     ]);
     const listed = await listVoiceNotes(space.tcw);
     expect(listed.ok && listed.data[0]).toEqual(expect.objectContaining({
       sourceId: "rec-1",
       durationSecs: 9,
       title: expect.stringContaining("Voice note"),
-      transcript: { status: "transcribed", preview: "Remember to book the venue." },
+      transcript: { status: "transcribed", preview: "Remember to book\nthe venue." },
     }));
     expect(h.removed).toEqual([ID]);
     expect(h.pending.read("rec-1")).toBeNull();

@@ -171,6 +171,7 @@ export function createDesktopWhisperQueue(args: {
       serverLease = lease;
       await lease.ready;
       if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
+      const chunks: Extract<import("@/lib/anarlog/transcription.gen").StreamResponse, { type: "Results" }>[] = [];
       const response = await new Promise<BatchResponse>((resolve, reject) => {
         let settled = false;
         let stop = () => {};
@@ -196,6 +197,8 @@ export function createDesktopWhisperQueue(args: {
         const finish = (event: WhisperEvent) => {
           if (event.session_id !== id || settled) return;
           if (event.type === "progress") {
+            if (event.event.type === "segment" && event.event.response.type === "Results")
+              chunks.push(event.event.response);
             if (event.event.type === "progress") {
               const progress = Math.round(event.event.percentage * 100);
               logPipeline("transcription", id, "progress", { engine: "whisper" });
@@ -220,7 +223,7 @@ export function createDesktopWhisperQueue(args: {
         })();
       });
       if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
-      const transcript = whisperLocalTranscript(note, model, response);
+      const transcript = whisperLocalTranscript(note, model, response, { chunks });
       await store.putTranscript({ id, transcript });
       const persisted = (await store.getTranscript({ id })).transcript;
       if (!persisted || persisted.noteId !== id || persisted.outcome !== transcript.outcome
