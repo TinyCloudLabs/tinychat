@@ -619,7 +619,7 @@ describe("syncFireflies — per-item error skip", () => {
     expect(store.state?.lastSyncStatus).toBe("partial");
     expect(store.state?.preserveLastSyncedAt).toBe(true);
   });
-  test("real FirefliesClient not-found detail error marks incomplete run partial", async () => {
+  test("real FirefliesClient treats a confirmed missing transcript as deleted", async () => {
     const store = new FakeStore();
     const { client, fetches } = makeRealClient(["good", "missing"], { missing: ["missing"] });
 
@@ -627,8 +627,8 @@ describe("syncFireflies — per-item error skip", () => {
 
     expect(result.ok).toBe(true);
     expect(fetches).toEqual(["missing", "good"]);
-    expect(store.state?.lastSyncStatus).toBe("partial");
-    expect(store.state?.preserveLastSyncedAt).toBe(true);
+    expect(store.state?.lastSyncStatus).toBe("ok");
+    expect(store.state?.preserveLastSyncedAt).toBe(false);
   });
 
   test("insertMeeting throw is recorded and the loop continues", async () => {

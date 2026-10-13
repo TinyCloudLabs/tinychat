@@ -160,8 +160,6 @@ export interface FirefliesListing {
 
 export interface ListNewTranscriptIdsOptions {
   knownIds: Iterable<string>;
-  /** Known IDs with failed details/bodies that must be retried before new work. */
-  pendingIds?: readonly string[];
   batchSize?: number;
   /** Maximum detail IDs per run. */
   detailCap?: number;
@@ -240,16 +238,16 @@ function parseRetryAfterFromMessage(message: string): number | null {
   if (!message) return null;
   const m = message.match(/retry\s+after\s+([^;\s]+)/i);
   if (!m) return null;
-  // Preserve the full token (millis + timezone) but strip trailing sentence
-  // punctuation — Date.parse won't tolerate "…Z." otherwise.
   const candidate = m[1].trim().replace(/[.,;]+$/, "");
-  const asDate = Date.parse(candidate);
-  if (Number.isFinite(asDate)) {
-    return Math.max(0, asDate - Date.now());
-  }
+  // Retry-After integer tokens are seconds; parse them before Date.parse,
+  // which accepts some numeric strings as calendar dates.
   const asInt = Number.parseInt(candidate, 10);
   if (Number.isFinite(asInt) && /^\d+$/.test(candidate)) {
     return Math.max(0, asInt * 1000);
+  }
+  const asDate = Date.parse(candidate);
+  if (Number.isFinite(asDate)) {
+    return Math.max(0, asDate - Date.now());
   }
   return null;
 }
@@ -344,12 +342,6 @@ export class FirefliesClient {
       : new Set<string>(opts.knownIds);
     const ids: string[] = [];
     const seenIds = new Set<string>();
-    for (const id of opts.pendingIds ?? []) {
-      if (typeof id === "string" && id.length > 0 && !seenIds.has(id) && ids.length < detailCap) {
-        seenIds.add(id);
-        ids.push(id);
-      }
-    }
     const cutoff = opts.stopBeforeDate ? Date.parse(opts.stopBeforeDate) : Number.NaN;
     let skip = Number.isSafeInteger(opts.startSkip) && (opts.startSkip ?? 0) >= 0
       ? opts.startSkip!
@@ -383,35 +375,58 @@ export class FirefliesClient {
       if (!knownComplete && ids.length < detailCap) ids.push(summary.id);
       return true;
     };
+    const restartAtNewest = () => {
+      skip = 0;
+      nextAnchor = null;
+      ids.length = 0;
+      seenIds.clear();
+      resumeResolved = true;
+      complete = false;
+    };
 
     if (skip > 0) {
       if (!startAnchor) {
-        skip = 0;
-        nextAnchor = null;
-        resumeResolved = true;
+        restartAtNewest();
       } else {
-        // Always inspect one bounded head page so prepends are not lost while
-        // a deep continuation follows its older anchor.
+        // Inspect the newest page for prepends, but never claim completion after
+        // the detail cap stopped this page before its date boundary.
         const head = await fetchPage(0, batchSize);
+        const anchorOffsets = new Set<number>();
+        let ambiguousAnchor = false;
+        let headCapReached = false;
         if (head && !head.ok) {
           if (!opts.signal?.aborted) return head;
         } else if (head?.ok) {
           const summaries = head.data.transcripts ?? [];
           if (summaries.length === 0) complete = true;
-          for (const summary of summaries) {
+          for (let index = 0; index < summaries.length; index++) {
+            const summary = summaries[index]!;
+            if (summary.id === startAnchor) anchorOffsets.add(index);
+            if (anchorOffsets.size > 1) {
+              ambiguousAnchor = true;
+              break;
+            }
             if (!await collectCandidate(summary)) {
               complete = true;
+              break;
+            }
+            if (ids.length >= detailCap) {
+              headCapReached = true;
               break;
             }
           }
         }
 
-        if (!complete && pages < pageBudget && ids.length < detailCap && !opts.signal?.aborted) {
+        if (ambiguousAnchor) {
+          restartAtNewest();
+        } else if (!complete && !headCapReached
+          && pages < pageBudget && ids.length < detailCap && !opts.signal?.aborted) {
           const expected = startSkip - 1;
           const windowStart = Math.max(0, expected - batchSize);
           const windowEnd = expected + batchSize + 1;
-          let foundAnchor = false;
+          let anchorOffset: number | null = null;
           let searchedWindow = true;
+          let searchCapReached = false;
           for (let pageStart = windowStart; pageStart < windowEnd; pageStart += batchSize) {
             const limit = Math.min(batchSize, windowEnd - pageStart);
             const response = await fetchPage(pageStart, limit);
@@ -425,27 +440,43 @@ export class FirefliesClient {
               break;
             }
             const summaries = response.data.transcripts ?? [];
-            const anchorIndex = summaries.findIndex((summary) => summary.id === startAnchor);
-            for (const summary of summaries) {
+            if (summaries.length === 0) break;
+            for (let index = 0; index < summaries.length; index++) {
+              const summary = summaries[index]!;
+              if (summary.id === startAnchor) {
+                const offset = pageStart + index;
+                anchorOffsets.add(offset);
+                if (anchorOffsets.size > 1) {
+                  ambiguousAnchor = true;
+                  break;
+                }
+                anchorOffset = offset;
+              }
               if (!await collectCandidate(summary)) continue;
+              if (ids.length >= detailCap) {
+                searchCapReached = true;
+                break;
+              }
             }
-            if (anchorIndex >= 0) {
-              skip = pageStart + anchorIndex + 1;
-              nextAnchor = startAnchor;
-              foundAnchor = true;
+            if (ambiguousAnchor) break;
+            if (searchCapReached) {
+              searchedWindow = false;
               break;
             }
           }
-          if (foundAnchor) {
+          if (ambiguousAnchor) {
+            restartAtNewest();
+          } else if (searchCapReached) {
+            // The original cursor is safer than rebasing before the anchor was
+            // uniquely found; known IDs will make this bounded window cheaper next run.
+            resumeResolved = false;
+          } else if (anchorOffset !== null) {
+            skip = anchorOffset + 1;
+            nextAnchor = startAnchor;
             resumeResolved = true;
           } else if (searchedWindow) {
-            // A missing anchor usually means provider deletion/contraction.
-            // Restart only after the entire bounded search proved it absent.
-            skip = 0;
-            nextAnchor = null;
-            ids.length = 0;
-            seenIds.clear();
-            resumeResolved = true;
+            // Missing or ambiguous provider positions restart at zero.
+            restartAtNewest();
           }
         }
       }
@@ -491,7 +522,7 @@ export class FirefliesClient {
         complete = true;
         break;
       }
-      if (consumed < summaries.length) break;
+      if (ids.length >= detailCap || consumed < summaries.length) break;
     }
     return { ok: true, data: { ids, complete, nextSkip: skip, nextAnchor } };
   }

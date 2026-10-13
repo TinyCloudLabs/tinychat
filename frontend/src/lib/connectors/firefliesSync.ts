@@ -208,6 +208,11 @@ export function isTerminal(err: FirefliesError): boolean {
   return err.kind === "invalid-key" || err.kind === "rate-limited";
 }
 
+function isDeletedTranscriptError(err: FirefliesError): boolean {
+  return (err.kind === "graphql-error" || err.kind === "network-error")
+    && /\b(?:not found|deleted|404)\b/i.test(err.message);
+}
+
 function firefliesSyncIsCurrent(opts: SyncFirefliesOptions, sequence: number): boolean {
   if (flightSequence !== sequence) return false;
   try {
@@ -383,13 +388,13 @@ async function runFirefliesSync(
               ? new Date(watermarkMs - FIREFLIES_CATCH_UP_LAG_BUFFER_MS).toISOString()
               : null;
             const bodyIds = bodyIdsRes.data;
-            const attemptedPending = new Set<string>();
             const maxDetails = Number.isFinite(opts.detailCap)
               ? Math.min(FIREFLIES_MAX_DETAIL_CAP, Math.max(0, Math.floor(opts.detailCap!)))
               : FIREFLIES_MAX_DETAIL_CAP;
+            const pendingRetryCap = Math.min(25, Math.floor(maxDetails / 2));
             let detailsUsed = 0;
             let storedPrefix = true;
-
+            let pendingRetryStopped = false;
             const processTranscript = async (
               id: string,
               done: number,
@@ -422,6 +427,14 @@ async function runFirefliesSync(
                   storedPrefix = false;
                   cursorBlocked = true;
                   return false;
+                }
+                if (isDeletedTranscriptError(txRes.error)) {
+                  pendingIds.delete(id);
+                  resumeSkip = 0;
+                  resumeAnchor = null;
+                  listingSkip = 0;
+                  listingAnchor = null;
+                  return true;
                 }
                 result.errors.push(`${id}: ${txRes.error.message}`);
                 if (!rememberPending(id)) {
@@ -522,18 +535,28 @@ async function runFirefliesSync(
               }
             };
 
-            const pendingToRetry = [...pendingIds];
+            const pendingToRetry = [...pendingIds].slice(0, pendingRetryCap);
             for (let i = 0; i < pendingToRetry.length && detailsUsed < maxDetails; i++) {
               const id = pendingToRetry[i]!;
-              attemptedPending.add(id);
-              if (!await processTranscript(id, i + 1, pendingToRetry.length)) break;
+              if (!await processTranscript(id, i + 1, pendingToRetry.length)) {
+                pendingRetryStopped = true;
+              }
+              if (terminal || cursorBlocked || signal.aborted || !current()) {
+                pendingRetryStopped = true;
+              }
+              if (pendingRetryStopped) break;
+              if (pendingIds.has(id)) {
+                pendingIds.delete(id);
+                pendingIds.add(id);
+              }
             }
 
-            if (detailsUsed < maxDetails && current() && !signal.aborted) {
-              const knownIds = new Set([...knownRes.data, ...pendingIds, ...attemptedPending]);
+            if (!pendingRetryStopped && !terminal && !cursorBlocked
+              && detailsUsed < maxDetails && current() && !signal.aborted) {
+              const knownIds = new Set([...knownRes.data, ...pendingIds]);
+              const listStartSkip = resumeSkip;
               const listRes = await client.listNewTranscriptIds({
                 knownIds,
-                pendingIds: [],
                 detailCap: maxDetails - detailsUsed,
                 pageBudget: opts.pageBudget,
                 startSkip: resumeSkip,
@@ -541,7 +564,7 @@ async function runFirefliesSync(
                 stopBeforeDate,
                 signal,
                 onProgress,
-                isKnownComplete: (id) => attemptedPending.has(id) || bodyIds.has(id),
+                isKnownComplete: (id) => pendingIds.has(id) || bodyIds.has(id),
               });
               if (!current()) return { ok: true, data: result };
               if (!listRes.ok) {
@@ -559,16 +582,20 @@ async function runFirefliesSync(
                 for (let i = 0; i < idsOldestFirst.length; i++) {
                   if (!await processTranscript(idsOldestFirst[i]!, detailsUsed + 1, maxDetails)) break;
                 }
+                const cursorResetDuringListing = resumeSkip !== listStartSkip;
+                if (cursorResetDuringListing) listingComplete = false;
                 const prefixCommitted = storedPrefix
                   && current()
                   && !signal.aborted
                   && !terminal
                   && !cursorBlocked;
                 if (prefixCommitted) {
-                  const clearCursor = listRes.data.complete && pendingIds.size === 0;
-                  listingSkip = clearCursor ? null : listRes.data.nextSkip;
+                  const clearCursor = listingComplete && pendingIds.size === 0;
+                  listingSkip = clearCursor ? null
+                    : cursorResetDuringListing ? 0 : listRes.data.nextSkip;
                   listingStartedAt = clearCursor ? null : resumeStartedAt;
-                  listingAnchor = clearCursor ? null : listRes.data.nextAnchor;
+                  listingAnchor = clearCursor ? null
+                    : cursorResetDuringListing ? null : listRes.data.nextAnchor;
                 }
               }
             }

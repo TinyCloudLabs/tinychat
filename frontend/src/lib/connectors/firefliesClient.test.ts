@@ -348,6 +348,7 @@ describe("FirefliesClient.listNewTranscriptIds — bounded reconciliation", () =
       { limit: 10, skip: 0 },
       { limit: 11, skip: 0 },
       { limit: 11, skip: 0 },
+      { limit: 10, skip: 11 },
       { limit: 11, skip: 10 },
       { limit: 11, skip: 21 },
     ]);

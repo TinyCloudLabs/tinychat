@@ -1473,6 +1473,61 @@ describe("connectorStore.updateSyncState / getConnection", () => {
     const read = await getFirefliesAttempt(f.tcw);
     expect(read.ok && read.data?.pendingIds).toEqual(pendingIds.slice(0, 50));
   });
+  test("malformed pending_ids drops continuation but keeps pacing and safe IDs", async () => {
+    const f = makeFake();
+    const base = {
+      v: 1,
+      last_attempt_at: "2026-10-13T12:00:00.000Z",
+      last_attempt_status: "partial",
+      listing_skip: 100,
+      listing_started_at: "2026-10-10T00:00:00.000Z",
+      listing_anchor: "anchor-99",
+    };
+    const invalidPending = [
+      "corrupt",
+      ["failed-1", 42],
+      Array.from({ length: 51 }, (_, index) => `failed-${index}`),
+    ];
+    for (const pending_ids of invalidPending) {
+      const value = { ...base, pending_ids };
+      f.kv.get = async () => ({ ok: true, data: { data: JSON.stringify(value), headers: {} } });
+      const result = await getFirefliesAttempt(f.tcw);
+      expect(result).toEqual({
+        ok: true,
+        data: {
+          v: 1,
+          lastAttemptAt: base.last_attempt_at,
+          lastAttemptStatus: "partial",
+          listingSkip: null,
+          listingStartedAt: null,
+          listingAnchor: null,
+          ...(Array.isArray(pending_ids)
+            ? { pendingIds: pending_ids.filter((id): id is string => typeof id === "string").slice(0, 50) }
+            : {}),
+        },
+      });
+    }
+  });
+  test("oversized pending_ids cannot be truncated while keeping a continuation cursor", async () => {
+    const f = makeFake();
+    const pendingIds = Array.from({ length: 51 }, (_, index) => `failed-${index}`);
+
+    expect((await recordFirefliesAttempt(f.tcw, {
+      v: 1,
+      lastAttemptAt: "2026-10-13T12:00:00.000Z",
+      lastAttemptStatus: "partial",
+      listingSkip: 100,
+      listingStartedAt: "2026-10-10T00:00:00.000Z",
+      listingAnchor: "anchor-99",
+      pendingIds,
+    })).ok).toBe(true);
+
+    const persisted = JSON.parse(String(f.kv.entries.get(firefliesAttemptKvKey())));
+    expect(persisted.pending_ids).toEqual(pendingIds.slice(0, 50));
+    expect(persisted.listing_skip).toBeNull();
+    expect(persisted.listing_started_at).toBeNull();
+    expect(persisted.listing_anchor).toBeNull();
+  });
   test("an invalid cursor drops cursor fields but preserves valid attempt pacing", async () => {
     const f = makeFake();
     const value = {

@@ -91,15 +91,22 @@ export async function getFirefliesAttempt(
   const startedAt = row.listing_started_at;
   const anchor = row.listing_anchor;
   const hasCursor = skip !== undefined || startedAt !== undefined || anchor !== undefined;
-  const cursorValid = Number.isSafeInteger(skip)
+  const rawPending = row.pending_ids;
+  const pendingPresent = Object.hasOwn(row, "pending_ids");
+  const pendingArray = Array.isArray(rawPending) ? rawPending : null;
+  const pendingInvalid = pendingPresent && (!pendingArray
+    || pendingArray.length > FIREFLIES_MAX_PENDING_IDS
+    || !pendingArray.every((id) => typeof id === "string" && id.length > 0));
+  const cursorValid = !pendingInvalid
+    && Number.isSafeInteger(skip)
     && (skip as number) >= 0
     && typeof startedAt === "string"
     && Number.isFinite(Date.parse(startedAt))
     && ((skip as number) === 0
       ? anchor === undefined || anchor === null
       : typeof anchor === "string" && anchor.length > 0);
-  const pendingIds = Array.isArray(row.pending_ids)
-    ? [...new Set(row.pending_ids.filter((id): id is string => typeof id === "string" && id.length > 0))]
+  const pendingIds = pendingArray
+    ? [...new Set(pendingArray.filter((id): id is string => typeof id === "string" && id.length > 0))]
         .slice(0, FIREFLIES_MAX_PENDING_IDS)
     : [];
   return {
@@ -126,14 +133,26 @@ export async function recordFirefliesAttempt(
   tcw: TinyCloudWeb,
   attempt: FirefliesAttempt,
 ): Promise<StoreResult<void>> {
+  const dedupedPending = attempt.pendingIds === undefined
+    ? undefined
+    : [...new Set(attempt.pendingIds.filter((id) => typeof id === "string" && id.length > 0))];
+  const cursorOverflowsPending = (dedupedPending?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS
+    && (attempt.listingSkip !== undefined
+      || attempt.listingStartedAt !== undefined
+      || attempt.listingAnchor !== undefined);
+  const listingSkip = cursorOverflowsPending ? null : attempt.listingSkip;
+  const listingStartedAt = cursorOverflowsPending ? null : attempt.listingStartedAt;
+  const listingAnchor = cursorOverflowsPending ? null : attempt.listingAnchor;
   const res = await tcw.kv.put(firefliesAttemptKvKey(), JSON.stringify({
     v: 1,
     last_attempt_at: attempt.lastAttemptAt,
     last_attempt_status: attempt.lastAttemptStatus,
-    ...(attempt.listingSkip === undefined ? {} : { listing_skip: attempt.listingSkip }),
-    ...(attempt.listingStartedAt === undefined ? {} : { listing_started_at: attempt.listingStartedAt }),
-    ...(attempt.listingAnchor === undefined ? {} : { listing_anchor: attempt.listingAnchor }),
-    ...(attempt.pendingIds === undefined ? {} : { pending_ids: attempt.pendingIds.slice(0, FIREFLIES_MAX_PENDING_IDS) }),
+    ...(listingSkip === undefined ? {} : { listing_skip: listingSkip }),
+    ...(listingStartedAt === undefined ? {} : { listing_started_at: listingStartedAt }),
+    ...(listingAnchor === undefined ? {} : { listing_anchor: listingAnchor }),
+    ...(dedupedPending === undefined
+      ? {}
+      : { pending_ids: dedupedPending.slice(0, FIREFLIES_MAX_PENDING_IDS) }),
   }));
   if (!res.ok) return fail(res.error, "recordFirefliesAttempt");
   return { ok: true, data: undefined };

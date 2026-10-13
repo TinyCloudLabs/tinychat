@@ -413,16 +413,18 @@ algorithm for Connect, Sync now, the background catch-up, and Meeting sources:
    stale-record clear is also best-effort. Keep-data Disconnect has a separate,
    explicit continuation-clear step; its failure is retryable and may defer disconnect
    completion. A `running` record older than 15 minutes is abandoned.
-   `pending_ids` is capped at 50 and retried on every run. A bounded incomplete chain
-   advances `listing_skip` over a stored prefix; recoverable item failures may be passed
-   only after being recorded in `pending_ids`. If that list is full, or a failure cannot
-   be recorded, or the run aborts/has a terminal error, the old cursor is preserved.
-   The SQL watermark never advances while `pending_ids` is non-empty.
+   `pending_ids` is capped at 50 and at most 25 (half the detail budget) are retried
+   per run, rotating failed IDs to the end so listing retains its budget. If adding
+   another failure would exceed the cap, or a failure cannot otherwise be recorded,
+   the old cursor remains unchanged. A pending transcript reported missing/deleted is removed and resets
+   `listing_skip` to zero while retaining `listing_started_at`; the next listing
+   rescans from the top to collect any remaining holes. The SQL watermark never
+   advances while `pending_ids` is non-empty.
    `listing_started_at` is recorded at skip zero and becomes `last_synced_at` only after
    the whole chain reaches the date boundary or true end of history with no pending IDs.
    `listing_anchor` is the provider ID at `listing_skip - 1`; on mismatch the client searches
-   a bounded window at least one page in each direction and rebases to the found ID. It
-   restarts from zero only when that window does not contain the anchor. If the KV record
+   a bounded window at least one page in each direction. It rebases only if the anchor
+   occurs exactly once; a missing or ambiguous anchor restarts from zero. If the KV record
    is lost, the next run restarts at the newest page and remains bounded. Connect over a
    missing/disconnected row and keep-data Disconnect clear the continuation. SQL
    `last_synced_at` remains authoritative; the KV record is advisory only.
@@ -446,10 +448,10 @@ algorithm for Connect, Sync now, the background catch-up, and Meeting sources:
    different Fireflies account reuses its prior watermark; use Disconnect with
    delete-data before switching accounts. Keep-data Disconnect retains rows,
    transcript bodies, and the SQL success watermark, but clears the continuation
-   so reconnect starts a bounded reconcile from the current listing top. A
-   persistently failing transcript remains in `pending_ids`, keeps the run partial and the
-   connector stale, while the listing continues through older history. Once stored, a later
-   run clears the pending entry and may complete the reconcile.
+   so reconnect starts a bounded reconcile from the current listing top.
+   A persistently failing transcript remains in `pending_ids`, keeps the run partial and the
+   connector stale, while pending retries rotate and the listing continues through older
+   history. Once stored, a later run clears the pending entry and may complete the reconcile.
 
 ## 9. UI
 
