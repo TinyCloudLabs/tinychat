@@ -1,5 +1,30 @@
 # exo-desktop
 
+## 0.6.0
+
+### Patch Changes
+
+- 73cc903: Show Android Private upload status errors with a retry without delaying the app's first paint, and classify missing desktop audio by its IO error kind.
+- 01dab09: Show the target, version, build number and commit at the foot of the boot screen, the desktop sidebar and the bottom of Settings; a tap copies the line.
+- 3ad0aae: Confine desktop capture and on-device Whisper to vault sessions and identifiers supplied by the webview. Remove main's unrestricted transcription-start permission and core menu/tray defaults, deny image file-path reads, and enforce the release IPC permission gate. Guard Whisper stage cleanup against concurrent staging and recover orphaned note copies.
+- 108e63e: Default the new desktop recorder to capturing system audio and keep corrupt recorder settings from blocking app launch. Remove the classic desktop capture engine and its native private-cloud uploader; retain transcript saving for meetings and uploads.
+- 108e63e: Start existing desktop beta users with system audio on in the new recorder, while preserving choices they make afterward. Remove the unused classic cloud bridge and local-stt model download permissions.
+- 108e63e: Transcribe stopped desktop recorder notes locally with the selected Whisper model, and resume unfinished transcription after a WebView reload.
+- f07bac3: Make unavailable recorder modes actionable, quiet the mic-denied ring, and reserve rail space for the minimized Ribbon.
+- 313dae2: Keep private cloud recordings when the Local recording view closes mid-recording, or when Exo quits before the upload finishes. The next view or launch offers a recording that was never uploaded (Transcribe in private cloud, Transcribe on this Mac, or Discard) and re-sends an interrupted upload. After a relaunch, native code re-opens the audio by session id, only inside Exo's sessions folder and without following symlinks. Every upload of a recording uses the same Idempotency-Key, so it never creates a second transcription job. The pending record is now per account, so another account never sees, resumes or clears it. A pending record from an older version is adopted only by the account whose backend can read its job. A set-aside job's upload handle is released (TC-772).
+- 5e6a289: Keep on-device recordings whose transcript was never saved, whether Exo quit or crashed or the Local recording view closed mid-recording. Local recording offers the recording again with Transcribe or Discard, and Transcribe saves it as a normal Exo Local meeting. A kept recording belongs to the account that recorded it, and one whose audio file is gone can only be discarded (TC-770).
+- 12957c2: Show Mac recording inputs in Via and Capture settings, persist the selected microphone, and report disconnected devices while recording from the current default.
+- 297ca1a: Restore Mac Private transcription uploads from the local recording and report service failures as retryable.
+- d780bde: Stream private voice-note uploads from native recording files instead of sending base64 audio through the WebView.
+- d6c97cd: Disclose Private transcription and Mac system audio capture before use, and require existing Private consents to be confirmed again.
+- 7b17239: Refresh the Library when the new recorder lands a voice note through Stop, Save now, or sign-in recovery, and when on-device or private-cloud transcription (including recovery), a notetaker browser import or newly observed server delivery, or an audio upload commits a transcript. Revalidate only the saved note while preserving its audio and prior reads on failure, and retry failed reads on Try again or reopening. Ignore late saves from a previous account.
+- 58fb057: Make Whisper model downloads resilient (TC-771). A dropped connection or server error now retries instead of failing the download, and a failed download resumes where it stopped instead of starting over. If Hugging Face is unavailable, the download continues from anarlog's model host, and the checksum still has to match before the model is installed. The Local recording panel now gives up only when a download stops making progress, so slow connections can finish Whisper Large Turbo.
+- 14daf66: Honor the saved Local transcription mode and enable speaker identification for Private voice notes.
+- 8249402: Stop note playback whenever capture starts or its controls become unavailable, and avoid opening a Mac output stream for mic-only capture.
+- a3cade0: Read retained voice-note audio locally before the space copy, use safe transcription error copy, and remove the private transcription ten-minute cap.
+- ecdc66f: A note with no transcript now has a Transcribe button with a small provider chip (Local by default, Private when offered), and a failed transcript's "Try again" lets you pick the provider.
+- 56ff56b: Download Whisper models from Hugging Face. The old model host started refusing the Whisper Large Turbo download (403 Forbidden), so "Download model" failed for that model (TC-769).
+
 ## 0.6.0-beta.44
 
 No changes in this release.

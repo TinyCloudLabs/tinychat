@@ -1,5 +1,162 @@
 # @tinychat/frontend
 
+## 0.6.0
+
+### Minor Changes
+
+- acea78c: Capture shows what's in progress and your recent notes. The Library has filters and durations, and each note shows how it got into your space.
+- c05aa4e: Discard a recording you didn't mean to make: "Discard" in the recorder's header asks "Discard?" in place, with Keep and Discard. A discarded recording is stopped and deleted from the phone, never saved to your space, even if the app closes before the delete finishes.
+- 4dae5f8: Shorter screens: hints in tooltips and a How it works page
+- c81e6bc: Exo's new look: navy Night and paper Day themes (following your system), Literata display type, motion tokens.
+- f5f20ac: Record from Capture or the chat header. A focused recorder shows where your audio goes, minimises to a live island that follows you, and shows a receipt when your note lands in your space.
+- ef2f000: Capture, Chat and Connectors are the three destinations: a tab bar on phones, a rail on landscape phones and tablets, a sidebar on desktop. The phone app opens on Capture. Android Back closes sheets first.
+- aa2e1f9: Upload audio and send a notetaker from Capture: each opens its own sheet (a dialog on wider screens) that shows where the audio goes, with a receipt when the transcript lands. Interrupted uploads resume on launch, and wait as "Upload paused · Continue" when your own AssemblyAI key is locked. The desktop app records on this Mac from a card at the top of Capture that keeps recording while you navigate.
+- d5e1894: Add the Android native capture engine, durable voice-note recovery, app shortcut and recording notification controls.
+- 671f28c: Add on-device transcription for Exo voice notes: an "On this phone" transcriber choice in the recorder and Settings, a downloadable Parakeet/sherpa-onnx model with Wi-Fi-only download and sha256 verification, and native decode-and-transcribe after Stop that works signed out and offline.
+- 3661337: Native OpenKey sign-in (TC-775) is now the only sign-in path on iOS and Android — the `VITE_EXO_NATIVE_OPENKEY` build flag is gone, and so is the embedded-widget fallback on those two platforms. A widget session persisted on a device from before this change is cleared once on the next launch; the user signs in again through the native flow. Web and the Tauri desktop app are unchanged and keep the embedded widget. The registered native OpenKey client id is now committed config (`frontend/.env.production`), not something a build flag gated.
+- a376332: Add native iOS voice-note capture with durable segments, recovery, account-aware sidecars, and a home-screen recording shortcut.
+- da282d4: Show native voice recordings in a full-page view with pause, a waveform, and immediate local playback after Stop. Keep committed audio on the phone after upload.
+- 3973e7f: Add iOS recording interruption recovery, stale notification protection, and audio input routing.
+- c79b024: Add Android recording interruption recovery, paused resume notifications, and microphone input selection.
+- 1cabcd5: Keep existing data readable when storage is full and show clear write failures.
+- c65d24f: Add feature-gated server delivery of Private Transcription transcripts into a user's connector SQL and KV space using a verified, narrow session-key delegation. Preserve the browser importer as a ten-minute fallback and keep production rollout blocked on the node SQL-scope fix (TC-825).
+- b6ffb9b: Native OpenKey sign-in for the Exo app (TC-775 E1). Inside the iOS/Android app only, sign-in runs the OpenKey delegation flow (PAR + PKCE in the system browser) and restores a TinyCloudWeb session whose key lives in the device secure store — the web and Tauri desktop keep the embedded widget. The backend's `/api/auth/nonce` now accepts a request without `address` and issues an unbound, single-use, 5-minute nonce that `/verify` binds to the recovered signer. Secrets-dependent surfaces (connector connect/sync/disconnect, queued sync, the background drains, own AssemblyAI key) are gated on native sessions, which have no vault capability; voice notes are unaffected.
+- fb6cce4: Restore native OpenKey sessions across app and backend JWT restarts, renew delegations before expiry, and swap the live TinyCloud session while preserving voice-note pending-save recovery. Bound native backend authentication fetches with a timeout.
+- 99f170a: Keep one native recorder available above sign-in, show local notes while signed out, and durably hand off capture ownership before clearing credentials. Claim signed-out notes at the next ready session and save them through the account-aware pipeline.
+
+### Patch Changes
+
+- 6d9a101: Keep the native renewal test's voice-note save fixture from leaking into later Bun test files.
+- 177ddc9: Expose recorded elapsed time and native mic state reasons
+- 15f5c94: Persist Android capture account state, remote cleanup receipts, and recovery actions.
+- d0f143f: Make the Android compensation debug hook fail both the sign-out and compensation writes so the account remains transitioning.
+- 73cc903: Show Android Private upload status errors with a retry without delaying the app's first paint, and classify missing desktop audio by its IO error kind.
+- ed379a7: Map microphone RMS to the recorder's perceptual level once across native, desktop, and web capture.
+- 108e63e: Add a flag-gated desktop Meeting sources entry and shared modal on Connectors.
+- 99e4f56: Voice-note save failures now retain their cause and upload state across retries and recovery.
+- b32e046: Fix Android STT benchmark VAD framing by feeding Silero one decision window at a time.
+- 01dab09: Show the target, version, build number and commit at the foot of the boot screen, the desktop sidebar and the bottom of Settings; a tap copies the line.
+- 108e63e: Fix the Capture settings e2e: expose one fake service on the harness page and target the Capture heading exactly.
+- 8bb9f4e: Sign-in no longer shows raw errors: Android WebViews without Ed25519 now sign in (or point to the WebView update), closing OpenKey is a quiet cancel, sign-out waits for your OpenKey confirmation, and the app is called Exo on the boot screen and in OpenKey.
+- 9099a86: Signing out no longer says OpenKey sign-out "could not be verified". When OpenKey can't confirm it signed out, Exo shows one calm line: "Signed out of Exo. To use a different account, also sign out at openkey.so."
+- bf477cb: Add pure view models and Soft-skin foundations for the final recorder.
+- 108e63e: Capture settings: the local-model picker is a standard radio group of downloaded models, with the rest as plain rows with Get, and focus follows a download from Get to progress to the new radio.
+- 108e63e: Add the desktop Capture settings popover and the DesktopCaptureExtras seam it reads, behind the final recorder flag.
+- b16eca5: Stop local transcript sync before it writes across account changes.
+- 5dea60d: Keep Android microphone-state reasons within the native contract, carry diagnostic detail separately, and publish read failures only after entering interrupted state.
+- 972778c: Skip queued transcriber completeness reads after the account pass is cancelled.
+- 108e63e: The desktop Capture home's Recent row now says so when a partial-audio notice could not be dismissed: the same inline alert as the phone sheet, on that row, with the notice kept and focus left on Dismiss.
+- 108e63e: Connect the Tauri recorder to the shared voice-note contract and store its audio in Rust-owned files.
+- 108e63e: Default the new desktop recorder to capturing system audio and keep corrupt recorder settings from blocking app launch. Remove the classic desktop capture engine and its native private-cloud uploader; retain transcript saving for meetings and uploads.
+- 108e63e: Start existing desktop beta users with system audio on in the new recorder, while preserving choices they make afterward. Remove the unused classic cloud bridge and local-stt model download permissions.
+- 108e63e: Transcribe stopped desktop recorder notes locally with the selected Whisper model, and resume unfinished transcription after a WebView reload.
+- 108e63e: Store recording Markdown and moments with voice notes
+- 108e63e: Add the recorder engine seam: one selector installs the native, web or desktop engine at boot (web and desktop only with the final recorder on), and native-only calls are gated on the engine's capabilities.
+- f07bac3: Make unavailable recorder modes actionable, quiet the mic-denied ring, and reserve rail space for the minimized Ribbon.
+- 5ce67a5: On iOS, Local transcription uses Apple's built-in on-device speech instead of downloading a 640 MB model. iOS now requires 26.
+- 85aa07b: Keep iOS recording account state and remote cleanup receipts durable, recover parked pauses, and expose recovery actions.
+- 3eea2fc: The phone recorder fits landscape, 320 px phones and large text: the ring is sized from its stage, the controls stay reachable by scrolling, and Done and Discard stay when the microphone drops. Desktop toasts no longer cover the status and timer.
+- 477b730: Recover voice-note saves after a fresh sign-in and show the recorder for cold iOS quick actions.
+- 3e3571a: Fix Android recorder Back handling, Gboard moment submission, automatic-stop copy, new-recording state, status-bar colors, and Recent note opening.
+- ee207ba: Hold each recorder halo atlas bitmap for one frame before closing it. The two smallest rings were seen blank intermittently on WebKit; the WebGL draw itself is correct, and the suspected cause is closing the bitmap straight after `drawImage`. This is a hardening change: the blank was not reproduced on demand, so the fix is unproven until checked on an iPhone.
+- 83cd123: Route voice notes by their committed transcriber choice and expose one recorder choice API
+- 003fe5b: Keep recordings on the phone when sign-out suspends an upload, and move the app to the signed-out screen after a shared 401 session clear.
+- 47cc4f7: Never say Exo will finish a recording automatically when it couldn't recover or save it, and add Try again and Delete (with a confirmation) to the couldn't-recover sheet, including recordings the phone quarantined
+- 94b694c: The Done receipt is honest about a Local note: the source reads "This phone" until a transcript exists, "Saved on this phone" is said once, the gap above the receipt is gone, and a note waiting on the model shows a static "Needs the on-device model" with "Get model" and "Use Private instead" (no spinner), kept open for 10 seconds while there is something to press. A saved note's transcript block is one sentence ("Transcribe on this phone — needs a 640 MB download") with a full-width button, and offers "Transcribe with Private instead" when Private is available. Switching to Private waits until the phone's own record says the on-device job has ended (a note whose Local result already exists is never cancelled or switched, and Android no longer marks a finished note "cancelled"; iOS gets that from #263), a Private choice survives a restart, including after a retryable failure before the cloud job exists, the receipt says "Transcribing" only while a private job is really running (Audio only says nothing; finished and failed Private notes say so), and a receipt with Open stays 10 seconds. On the saved-note sheet the "Get model" and "Transcribe with Private instead" buttons are visible outline buttons in the dark theme too (they use the sheet's own fill and ring, as "Add a note" does).
+- 12ec582: Keep recorder harnesses rendering with a real string space ID, validate capture issue scope after mount, and reconcile status before the best-effort sidecar scan.
+- 5252d10: Choosing Local, or recording on Local, now starts the on-device model download by itself and never blocks recording. The note is saved normally and is transcribed on the phone once the model is ready, including after the app is relaunched mid-download. Progress shows quietly ("Downloading on-device model · 42%"), a failure says so with "Try again", and the Wi-Fi-only rule shows "Waiting for Wi-Fi" instead of a dead end. A Local choice is never silently switched to another transcriber.
+- 0b32ebe: Play a saved note that is still on the phone through the audio element's direct file URL (resolved on Play) instead of fetching it, which iOS answers with status 0.
+- 12957c2: Show Mac recording inputs in Via and Capture settings, persist the selected microphone, and report disconnected devices while recording from the current default.
+- 297ca1a: Restore Mac Private transcription uploads from the local recording and report service failures as retryable.
+- Merges main into the Exo iOS dogfood branch: the Library refreshes after transcript saves together with the account-checked on-device transcript sync, and Notetaker meetings save through the shared core writer.
+- b60d99a: Brings the Exo dogfood fixes onto main's TinyCloud SDK 3.1 and shared-recording changes; shared recordings keep their "Shared recording" label next to the save state.
+- d9c24a7: Show the full-page microphone recovery screen after an Android recording shortcut is denied, with a direct link to app settings.
+- d780bde: Stream private voice-note uploads from native recording files instead of sending base64 audio through the WebView.
+- 3d2d3a2: On iPhone and Android, signing in starts on Exo's own screen: an email field, Continue with Google and Use a passkey. The OpenKey sheet then opens straight on that step, and Android's browser bar is dark.
+- 3177a1b: Route recorder private-cloud choices into native capture
+- fb7e2d9: Add the note pipeline selector, stepper and row halo glyph (not wired into any screen yet).
+- 49fba98: A voice note you just recorded now shows in Recent and the Library right away, marked "Saving…" or "On this phone", and opens from its local copy before the upload finishes. List rows are easier to tell apart: the title is the first moment or a transcript snippet (or "Voice note"), and the subtitle is the time and length.
+- 23eebf2: One name for each transcription mode (Audio only, Local, Private, Powerful) in Settings, Upload, the route diagrams and saved notes, with Settings offering Private only when the recorder does. A voice note names a transcript maker only when it was transcribed. How it works says notes run up to 3 hours. Capture's In progress rows match the voice card, and the Connectors tab and Capture share one Meeting sources view whose row actions sit under the text on phones.
+- e36018b: Update the OpenKey Capacitor SDK and use the shared Kotlin version for Android builds.
+- 9e129f1: Native OpenKey error logs (sign-in, boot restore, renew) now include the HTTP status and OAuth error code, e.g. `boot restore: INVALID_GRANT (HTTP 400 invalid_grant)`, so a forced sign-out can be traced. Messages and tokens are still never logged.
+- 54d9510: Show audio upload and transcript progress as independent tracks, including transcripts saved before their audio upload finishes.
+- d47d9f9: Hide Conversation Canvas while its experimental rollout is paused, without deleting saved Canvas data.
+- 108e63e: A pending-note save that fails after you switch accounts no longer shows its error on the new account's pending notes.
+- 336bfcb: The recorder checks Private transcription again when the account is ready and when the app returns to the foreground, and shows "Checking…" or a failed check with "Check again". Local's "Get the on-device model" now starts the download with visible progress, size and errors, and a saved note waiting on the model says so (with a way to get it, retry, or the reason it failed) instead of "No transcript."
+- d682e75: Hide other accounts' pending voice notes from signed-in capture, preserve a note's save error while newer notes upload, and log automatic save starts for device diagnosis.
+- 9aa2dcc: Handle the private transcription service's 429 `capacity_exhausted` (TC-907). Calendar auto-join counts each create attempt once, so its backoff no longer doubles per attempt. An occurrence the service keeps refusing for capacity now ends after its joining window with the outcome "All TinyCloud notetakers were busy when this meeting started." Before, it was polled every 15 minutes indefinitely and never cleaned up. A manual send that hits the cap now shows the service's "All N meeting notetakers are busy…" message instead of the generic "temporarily unavailable" text, and the backend relays `Retry-After` and `retry_after_seconds` on any upstream 429.
+- 02ba07e: Show automatic voice-note saving and explain when recordings belong to another account. Avoid repeating the space-wide archive sweep for each note.
+- 8665739: Android Back now blurs only text-entry fields, and a failed moment mark clears the recorder's focus state.
+- 69c83e2: The final phone recorder reads and changes the transcriber through the recorder provider, and names the mode that is unavailable.
+- 108e63e: Add a flag-gated desktop recorder note view and a saved voice-note page and sheet with edit, copy and play-from-moment.
+- 688dd3d: Keep voice-note save failures actionable and keep Recent in sync with the retry state.
+- cfc7daf: Pin the OpenKey SDK WebView popup fix and explain when remote OpenKey sign-out is unavailable while completing local sign-out.
+- e604971: Show a quiet "Saved — part of this recording couldn't be written" line on Recent and Library rows and on the saved receipt when a recording is missing some audio, with a details sheet (how much is missing, when known) and a Dismiss button
+- 65cb50f: Add the final phone recorder screen behind VITE_EXO_RECORDER_FINAL (off by default).
+- d6c97cd: Disclose Private transcription and Mac system audio capture before use, and require existing Private consents to be confirmed again.
+- de2d034: Add the minimized final recorder behind the flag: a Ribbon above the tab bar, floating on the rail, and a dock in the sidebar.
+- f044877: Improve theme-aware recorder contrast, visible halo discs, readable notetaker errors, and Chat banner placement.
+- b8f8803: Keep a saved note's pipeline from reporting a false connection error while its space read waits behind uploads, and read again once they finish.
+- be61865: Notes saved after the fact (relaunch, the sign-in claim of signed-out notes, Save now) are now handed to Private transcription once, with their own choice. Off stays off and Local is never sent to the cloud.
+- 108e63e: Phone recorder: note moments with ＋ while recording, and a notes sheet with a Markdown writer and a lazily loaded Markdown preview (TC-881). The preview's WASM is no longer part of the service worker's install; it is cached after its first use.
+- f23b956: Restore recorder controls when Android microphone access is granted while the app is away.
+- 14aca2c: A mode changed mid-recording now stays on screen until the note is saved instead of snapping back to the default at Done. A signed-in phone that never chose a mode no longer defaults to Local while the on-device model is missing: it starts in Private (or Audio only) and says the model is needed; an explicit Local choice is kept and shows the same note.
+- 7b17239: Refresh the Library when the new recorder lands a voice note through Stop, Save now, or sign-in recovery, and when on-device or private-cloud transcription (including recovery), a notetaker browser import or newly observed server delivery, or an audio upload commits a transcript. Revalidate only the saved note while preserving its audio and prior reads on failure, and retry failed reads on Try again or reopening. Ignore late saves from a previous account.
+- c8c1e9b: Exo uses its original neutral palette again (zinc greys, light and dark, following the system theme). Recording is shown in red and warnings in amber.
+- 58717da: Voice notes waiting on your phone now upload after a relaunch: a restored session keeps its space, and a saved session with no space shows a clear error instead of dropping you at sign-in.
+- 108e63e: CI: split the frontend workflow so the Exo UI screens run one viewport per job and the browser harnesses run beside the unit tests; add the recorder follow-ups' interaction suites.
+- 108e63e: Desktop Capture home (wide layout) behind the final-recorder flag: the Capture header with Library and the ⚙︎ settings, the idle start button and Back to recording, Upload, Meeting and Connect existing meetings, the "on this Mac" card on the app, and Recent with All / Notes / Meetings filters and capture-issue rows (including a partial-audio row with Dismiss). The Capture nav dot also shows on the rail.
+- 108e63e: Bind the desktop capture settings to the Tauri recorder's model, system-audio and auto-save commands, and drop the Mac recorder card from Capture when the shared recorder is on.
+- 108e63e: On the Mac app, the recorder's Local choice is Whisper: available (signed in or out) once a Whisper model is selected, named in its caption, and live as models download; saved notes and Recent rows show the after-stop Whisper progress and failure with Retry.
+- 108e63e: Recorder phone UI fixes from the E1 pass: rounded focus rings on the moment field and the ＋ button, the saved note sheet keeps its formatting bar in view in Edit mode, and a failed Open Settings shows a generic line instead of the raw plugin error.
+- 108e63e: Unsaved voice notes keep their Save now row on the web at rail widths ("in this browser"), and native tablets say "on this device" instead of "this Mac". The microphone recovery views show stable lines instead of native error text. Library filter chips are at least 44 px wide.
+- 108e63e: The new recorder is the only recorder: `VITE_EXO_RECORDER_FINAL` is gone and the previous recorder screens, the live-edge indicator and the on-page local transcriber panel are removed. After Done, a receipt-only view shows the saved note.
+- 108e63e: Recorder in a browser: the tab title follows the recording, the screen stays awake, leaving the page asks first, a keep-open notice shows once, a denied microphone gets site-permission guidance with Try again, the microphone list comes from the browser, and Local transcription stays closed on the web.
+- ca5ccda: Fit the final recorder and Capture home on a 320 px phone: the Ribbon's trace stays clear of Pause (whose Day edge now shows), the modes card's labels wrap beside their dots, the paused pill keeps its distance from the minimise button, and the Capture actions fit.
+- 58891dd: Soft-skin phone Capture home and Recent rows, with the capture-issue row states, behind the recorder-final flag (TC-871).
+- b23d76c: Align recorder announcements with the final recorder UI and restore the dock spectrum gain and halo pixel checks.
+- 233219e: Show accurate voice-note progress in lists and restore Save now when an online note is idle.
+- 70a7956: Keep recorder, chat, connector, settings, and Capture controls readable and inside their layouts at 200% text size.
+- c99ac25: Expose native capture recovery and write failures
+- 108e63e: Expose recording note sync status and retry note loads with backoff
+- e7f978f: Announce when microphone access is off in the recorder
+- be3e182: Internal: split App.tsx into chat and shell modules.
+- 108e63e: Test infrastructure: the Meeting sources e2e waits for Radix to move focus instead of reading it the instant the sheet unmounts, and the exo-ui harness readiness cap runs on `performance.now()` so `?freeze=1` can no longer hang a never-ready screen.
+- e315bed: Voice notes now track on-device transcript syncing and queue position, and a stuck transcript read no longer blocks later retries.
+- 5edd171: The note audio player shows how long the recording is as soon as it opens, with a loading state and a calm error, instead of 00:00 / 00:00. The receipt, the saved note, the Library detail and the on-phone note now share one player (play or pause, elapsed over total, scrubber).
+- 08f2cdf: Show each voice note's pipeline (on this phone, in your space, transcript, notes) on the saved-note sheet and the recorder receipt, with its one next action.
+- 598bd04: Show a calm recovery screen with a Reload action instead of a blank screen when the app hits an unexpected error, and recover the iOS and Android web views to the screen the user was on if the system ends their process while Exo is in the background.
+- 9c6a376: On-device transcription no longer freezes the app: the iOS queue answers status and cancel while a note decodes, installed models are verified in the background (reported as "checking"), and cancel, retry and model-load races leave a note in one consistent final state.
+- 108e63e: Show a one-time, dismissible notice in the desktop Capture settings that system audio is now included in Mac recordings.
+- b425f3f: Save voice notes to their owner’s space with deterministic row identities and durable transcript commits.
+- 799d72f: Calendar auto-join sends one bot when two connected accounts auto-join the same Meet (TC-581). The second account sends no bot while the other bot is in the call, and sends its own if that bot leaves within its joining window. It sees a neutral "Already being recorded by another TinyCloud account" state instead of a failure. With `CALENDAR_AUTOJOIN_SHARING` off (the default), that state never promises a transcript. With it on, the second account gets the transcript only if both checks pass: the other account is on its own invite, and its verified Google email accepted the bot owner's own invite. If the other account is not on its own invite, the collision shows as unverified ("an account we couldn't match to your invite") and is never shared. Shared recordings show as "Shared recording" and can be removed from your list, but not ended or deleted. Auto-join now also asks for the `email` scope; existing connections must reconnect before they can be matched or receive a share.
+- 0913742: CI: split the frontend workflow so the Exo UI screens run one viewport per job and the browser harnesses run beside the unit tests.
+- d8881bc: Make the iOS compensation failure probe keep account state transitioning after a failed sign-out handoff.
+- d37cc52: Raise the Exo iOS minimum to iOS 18 and support a separate device test bundle identifier.
+- adbbaa4: Move to TinyCloud js-sdk 3.1.0 (from 2.11.0). Sessions and grants keep their 30-day lifetimes; existing web and desktop sessions are not re-signed.
+- d0c51c3: Open the app's iOS Settings page from the voice recorder's microphone access screen.
+- ec1eac7: Report current iOS microphone permission in voice recorder status so access can refresh after Settings.
+- 85ad869: Add the Halo Ticks recorder ring and level bar visualisers for the final recorder.
+- 108e63e: Hide the legacy screen-edge glow when the final recorder is enabled.
+- 25eb3df: Name local recording finalization and the saved receipt by device, and name the TinyCloud space and Private transcription in audio transfer progress.
+- 14daf66: Honor the saved Local transcription mode and enable speaker identification for Private voice notes.
+- 8249402: Stop note playback whenever capture starts or its controls become unavailable, and avoid opening a Mac output stream for mic-only capture.
+- c3ad09b: Skip unchanged connector meeting row updates and log why saved transcriber meetings are incomplete.
+- c173a11: Keep native renewal stopped when terminal sign-out cannot complete its capture handoff, while preserving renewal after a failed manual sign-out.
+- 77bb2dd: Keep the empty chat welcome visible above the composer, compact the agent prompt during a minimized recording, and follow iOS Dynamic Type for rem-based text.
+- 6f1e7cb: Keep transcriber API reads off the shared TinyCloud space write lane and yield between saved-recording completeness checks.
+- 9c7a923: Voice-note saves now time out visibly while keeping retries safe on slow connections.
+- a3cade0: Read retained voice-note audio locally before the space copy, use safe transcription error copy, and remove the private transcription ten-minute cap.
+- db0a16d: Keep the Settings memory actions within narrow phone viewports.
+- 7e4e880: Restore the recorder's neutral halo disc, visible dark-mode edges, and grey paused ring ticks.
+- ecdc66f: A note with no transcript now has a Transcribe button with a small provider chip (Local by default, Private when offered), and a failed transcript's "Try again" lets you pick the provider.
+- 45e43de: Anchor recorded elapsed time to the native checkpoint receipt
+- 108e63e: Turn on the browser voice-notes engine behind the recorder flag: lazy registration, boot recovery, a fetch upload transport for private-cloud transcription, and mime-derived saved file extensions.
+- 108e63e: Add a browser voice-notes engine (IndexedDB store, MediaRecorder capture, level meter) implementing the full VoiceNotesPlugin contract. Not wired in yet.
+- 92f97f6: Keep partial-audio notices after a recording commits
+- 108e63e: Add the desktop recorder ring view (rail and desktop layouts, in the main region), its discard confirmation and toasts, the overlay mount by layout, and shell × layout capabilities.
+- 382193b: The recorder's ring ticks are neutral zinc instead of blue-violet, the timer no longer jitters (and the ＋ button no longer moves) as the digits change, and Capture and the recorder use the same fonts as Chat and Connectors.
+
 ## 0.6.0-beta.44
 
 ### Patch Changes
