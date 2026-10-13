@@ -180,8 +180,15 @@ export function createDesktopWhisperQueue(args: {
           if (!settled) {
             settled = true; stop();
             void (async () => {
-              try { await whisper.stopTranscription(id); }
+              let stopDeadline: ReturnType<typeof setTimeout> | undefined;
+              try {
+                await Promise.race([
+                  whisper.stopTranscription(id),
+                  new Promise<void>((resolve) => { stopDeadline = setTimeout(resolve, 5_000); }),
+                ]);
+              }
               catch { /* The task may have already stopped. */ }
+              finally { if (stopDeadline !== undefined) clearTimeout(stopDeadline); }
               reject(new Error("Whisper transcription timed out"));
             })();
           }
