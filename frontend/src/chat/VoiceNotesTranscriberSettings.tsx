@@ -2,19 +2,21 @@ import { readableError } from "@/lib/readableError";
 // Settings → Voice notes (plan §2.7): the default transcriber for new recordings. Native-only
 // (mobile voice notes don't exist on web/desktop), and signed-out capture already locks to
 // on-device regardless of this choice (CaptureDefaults.options, CaptureModels.swift/.kt).
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useContext, useEffect, useState, useSyncExternalStore } from "react";
 
 import { CHECK_AGAIN, FINAL_COPY, privateNotOffered, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { SIGNED_OUT } from "@/capture/recorder/final/useTranscriptionChoice";
 import { useRecorder } from "@/capture/recorder/RecorderProvider";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Button } from "@/components/ui/button";
+import { InfoTip } from "@/components/ui/info-tip";
+import { PlatformContext } from "@/lib/platform";
 import { localModelGuide, modelActionLabel } from "@/capture/recorder/final/localModelGuide";
 import { isAppleSpeech, isOnDeviceReady, isOnDeviceStatusLoaded } from "@/lib/voiceNotes/onDeviceStt";
 import { downloadOnDeviceModel, ensureOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import { nativeVoiceNotesAvailable, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { readDefaultTranscriber, setDefaultTranscriber, subscribeTranscriberPreference } from "@/lib/voiceNotes/transcriberPreference";
+import { readDefaultTranscriber, readUploadAudioPreference, setDefaultTranscriber, setUploadAudioPreference, subscribeTranscriberPreference } from "@/lib/voiceNotes/transcriberPreference";
 
 type Transcription = ReturnType<typeof useRecorder>["transcription"];
 
@@ -77,6 +79,8 @@ export function useDefaultTranscriber() {
 }
 
 export function VoiceNotesTranscriberSettings() {
+  const platform = useContext(PlatformContext);
+  const uploadAudio = useSyncExternalStore(subscribeTranscriberPreference, readUploadAudioPreference, readUploadAudioPreference);
   const { transcription, signedIn } = useRecorder();
   const { value, error, choose } = useDefaultTranscriber();
   const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
@@ -85,6 +89,10 @@ export function VoiceNotesTranscriberSettings() {
   const modelLabel = isAppleSpeech(sttStatus) ? "On-device speech" : "On-device model";
   const modelFailed = modelGuide.action?.label === FINAL_COPY.modelTryAgain;
 
+  useEffect(() => {
+    if (platform === "web") void navigator.storage?.persist?.().catch(() => undefined);
+  }, [platform]);
+
   if (!nativeVoiceNotesAvailable() || value === null) return null;
 
   const { privateOffered, options } = transcriberOptions(signedIn, transcription);
@@ -92,6 +100,17 @@ export function VoiceNotesTranscriberSettings() {
   return (
     <div className="flex flex-col gap-3">
       <p className="text-xs text-muted-foreground">New recordings are transcribed this way by default. Each recording can still choose a different route.</p>
+      <div className="flex items-start gap-3">
+        <input id="upload-audio-to-tinycloud" type="checkbox" checked={uploadAudio}
+          onChange={(event) => setUploadAudioPreference(event.target.checked)} />
+        <div className="flex flex-col gap-1 text-sm">
+          <label htmlFor="upload-audio-to-tinycloud">Upload audio to TinyCloud</label>
+          <p className="text-xs text-muted-foreground">{platform === "web"
+            ? "Audio stays in this browser. Browsers can delete it. Turn on Upload audio to keep a copy in TinyCloud."
+            : `Audio stays on this ${platform === "tauri" ? "Mac" : "phone"}. Transcripts and notes still sync to your TinyCloud space. Private transcription still sends audio to be transcribed, then deletes it.`}</p>
+          <InfoTip label="About audio storage">Other devices cannot play or transcribe local-only audio. This device holds the only copy. Local transcription, chat and quota still work. You can upload an individual note later.</InfoTip>
+        </div>
+      </div>
       <SegmentedControl<TranscriberId> aria-label="Default transcriber" value={value} onValueChange={choose} options={options} />
       {!privateOffered && <PrivateUnavailable signedIn={signedIn} transcription={transcription} />}
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}

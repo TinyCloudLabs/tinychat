@@ -110,7 +110,7 @@ export interface NotePipelineInput {
   online: boolean;
   /** `readError`: the list of recordings that failed to save could not be read (the read's own error); a quarantined session could be missing. */
   capture: { finalizing: boolean; issue: PipelineCaptureIssue | null; readError?: string | null };
-  space: { saved: boolean; pending: PipelinePending | null; lane: PipelineSpaceLane };
+  space: { saved: boolean; localOnly?: boolean; pending: PipelinePending | null; lane: PipelineSpaceLane };
   transcript: {
     /** The space row already has a transcript outcome. */
     inSpace: "transcribed" | "no_speech" | null;
@@ -209,7 +209,7 @@ function phoneStep(input: NotePipelineInput): Result {
 }
 
 function spaceStep(input: NotePipelineInput): Result {
-  if (input.space.saved) return { state: "done" };
+  if (input.space.saved) return input.space.localOnly ? { state: "done", caption: input.device === "mac" ? "Audio stays on this Mac" : "Audio stays on this phone" } : { state: "done" };
   const { device, online } = input;
   const pending = input.space.pending;
   if (pending?.held !== undefined) {
@@ -387,7 +387,7 @@ export function notePipeline(input: NotePipelineInput): NotePipeline {
 
   const results: [StepKey, string, Result][] = [
     ["phone", STEP_LABEL.phone(input.device), phone],
-    ["space", STEP_LABEL.space, space],
+    ["space", input.space.localOnly ? "Record in your TinyCloud space" : STEP_LABEL.space, space],
     ["transcript", STEP_LABEL.transcript, transcript],
     ["notes", STEP_LABEL.notes, notes],
   ];

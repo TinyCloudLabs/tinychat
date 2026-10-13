@@ -26,7 +26,7 @@ const APP: SettingsPanelProps = {
       models: models(["QuantizedLargeTurbo"], "QuantizedLargeTurbo"),
       selected: "QuantizedLargeTurbo",
       systemAudio: true,
-      autoSave: false,
+      uploadAudio: false,
     },
   },
   downloads: {},
@@ -35,7 +35,7 @@ const APP: SettingsPanelProps = {
     { id: "BlackHole 2ch", name: "BlackHole 2ch" },
   ], currentId: "MacBook Pro Microphone", selectedMissing: null, select: () => {}, unavailable: false, error: null, retry: null },
   modelError: null,
-  switches: { systemAudio: IDLE, autoSave: IDLE },
+  switches: { systemAudio: IDLE, uploadAudio: IDLE },
   onRetryLoad: () => {},
   onSelectModel: () => {},
   onGetModel: () => {},
@@ -69,7 +69,7 @@ describe("SettingsPanel, app", () => {
           models: models(["QuantizedTinyEn", "QuantizedBaseEn"], "QuantizedBaseEn"),
           selected: "QuantizedBaseEn",
           systemAudio: false,
-          autoSave: false,
+          uploadAudio: false,
         },
       },
     });
@@ -94,7 +94,7 @@ describe("SettingsPanel, app", () => {
           models: models(["QuantizedBaseEn", "QuantizedSmall"], null),
           selected: null,
           systemAudio: false,
-          autoSave: false,
+          uploadAudio: false,
         },
       },
     });
@@ -106,7 +106,7 @@ describe("SettingsPanel, app", () => {
     const out = html({
       load: {
         status: "ready",
-        data: { models: models([], null), selected: null, systemAudio: false, autoSave: false },
+        data: { models: models([], null), selected: null, systemAudio: false, uploadAudio: false },
       },
     });
     expect(out).toContain("No model on this Mac yet. Get one below.");
@@ -129,9 +129,10 @@ describe("SettingsPanel, app", () => {
     expect(out).toContain("BlackHole 2ch");
     expect(out).toContain('aria-checked="true"');
     expect(out).toContain("Also record this Mac&#x27;s audio");
-    expect(out).toContain("Save to your space automatically");
+    expect(out).toContain("Upload audio to TinyCloud");
+    expect(out).toContain("Audio stays on this Mac. Transcripts and notes still sync to your TinyCloud space. Private transcription still sends audio to be transcribed, then deletes it.");
     expect(out).toMatch(/role="switch" aria-checked="true"[^>]*data-testid="switch-system-audio"/);
-    expect(out).toMatch(/role="switch" aria-checked="false"[^>]*data-testid="switch-auto-save"/);
+    expect(out).toMatch(/role="switch" aria-checked="false"[^>]*data-testid="switch-upload-audio"/);
     expect(out.toLowerCase()).not.toContain("shortcut");
   });
 
@@ -157,7 +158,7 @@ describe("SettingsPanel, app", () => {
 
   test("a failed switch shows its error and keeps its value", () => {
     const out = html({
-      switches: { systemAudio: { pending: false, error: "Could not change this setting: no permission" }, autoSave: IDLE },
+      switches: { systemAudio: { pending: false, error: "Could not change this setting: no permission" }, uploadAudio: IDLE },
     });
     expect(out).toContain("Could not change this setting: no permission");
     expect(out).toMatch(/role="switch" aria-checked="true"[^>]*data-testid="switch-system-audio"/);

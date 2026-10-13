@@ -140,6 +140,7 @@ export function useLibrary(
     previews: new Map(),
   });
   const [listing, setListing] = useState(false);
+  const [localAudioIds, setLocalAudioIds] = useState<ReadonlySet<string>>(new Set());
   const [filter, setFilter] = useState<LibraryFilter>("all");
   const reads = useRef(new Map<string, NoteReads>());
   const reading = useRef(new Set<string>());
@@ -295,6 +296,14 @@ export function useLibrary(
 
   // The open voice note, by recording: a stand-in and its row are one note.
   const openRecordingId = item?.source === VOICE_NOTE_SOURCE ? item.sourceId : null;
+  useEffect(() => {
+    if (!openRecordingId) return;
+    let live = true;
+    void VoiceNotes.listPending().then(({ recordings }) => {
+      if (live) setLocalAudioIds(new Set(recordings.filter((note) => note.owner === tcw.did).map((note) => note.id)));
+    }, () => { if (live) setLocalAudioIds(new Set()); });
+    return () => { live = false; };
+  }, [openRecordingId, tcw.did, invalidationRevision, onPhoneNotes]);
   const lastOpened = useRef<string | null>(null);
   useEffect(() => {
     // A note just closed may have had its moments edited: read them again.
@@ -413,14 +422,16 @@ export function useLibrary(
   const audioBase = audio?.status === "stored" ? audio.base : null;
   const voiceSourceId = item?.source === VOICE_NOTE_SOURCE ? item.sourceId : null;
   const pendingAudioRow = voiceSourceId !== null && meta !== null && Object.keys(meta).length === 0;
+  const metadataLoaded = meta !== null;
   // The row is made before the audio is uploaded: while the phone still lists the note, its own copy is the audio.
-  const onThisPhone = voiceSourceId !== null && (item?.onPhone === true || item?.saving === true);
+  const onThisPhone = voiceSourceId !== null && (item?.onPhone === true || localAudioIds.has(voiceSourceId));
+  const localOnlyAudio = (meta?.audio as { stored?: unknown } | undefined)?.stored === false;
   // The stored file is read only when the player asks, one part per queued
   // call; the player's signal stops it when the note closes.
   const noteAudio = useMemo<NoteAudio | null>(() => {
     // The phone's own copy, until the space has the audio.
     if (voiceSourceId !== null && onThisPhone) return localAudio(voiceSourceId);
-    if (voiceSourceId !== null && !pendingAudioRow) {
+    if (voiceSourceId !== null && metadataLoaded && !pendingAudioRow && !localOnlyAudio) {
       return {
         load: async (signal, onProgress) => {
           const res = await loadVoiceNoteAudioBlob(space, voiceSourceId, { signal, onProgress });
@@ -429,9 +440,9 @@ export function useLibrary(
         },
       };
     }
-    if (audioBase !== null) return { load: (signal, onProgress) => getAudio(space.kv, audioBase, { signal, onProgress }) };
+    if (audioBase !== null && !localOnlyAudio) return { load: (signal, onProgress) => getAudio(space.kv, audioBase, { signal, onProgress }) };
     return null;
-  }, [audioBase, onThisPhone, pendingAudioRow, space, voiceSourceId]);
+  }, [audioBase, onThisPhone, localOnlyAudio, metadataLoaded, pendingAudioRow, space, voiceSourceId]);
 
   const retry = useCallback(() => {
     if (list.status === "failed") refresh();

@@ -56,7 +56,7 @@ import {
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
 import type { LocalTranscript } from "./nativeVoiceNotes";
 import { readLegacyTranscriptWinner, readTranscriptCommit, legacyTranscriptMetadata, type TranscriptCommit } from "./voiceNoteCommits";
-import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio,
+import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio, patchVoiceNoteLocalOnly,
   patchVoiceNoteMarkdown, resolveVoiceNoteRow } from "./voiceNoteRows";
 import { runOnSpaceLane } from "../spaceWriteLane";
 import { withVoiceNoteReadDeadline, withVoiceNoteSaveDeadline } from "./saveDeadline";
@@ -380,6 +380,7 @@ export async function saveVoiceNote(
   source: VoiceNoteAudioSource,
   platform: string,
   opts: StoreAudioOptions = {},
+  uploadAudio = recording.options?.uploadAudio !== false,
 ): Promise<StoreResult<UpsertMeetingOutcome & { noteSyncError?: NoteSyncErrorCode }>> {
   try {
     opts.checkpoint?.();
@@ -400,6 +401,17 @@ export async function saveVoiceNote(
     if (!empty.ok && !/PRECONDITION|412/i.test(`${empty.error.code} ${empty.error.message}`))
       return { ok: false, error: { code: empty.error.code ?? "STORE_ERROR", message: empty.error.message, cause: empty.error } };
     opts.checkpoint?.();
+    if (!uploadAudio) {
+      await patchVoiceNoteLocalOnly(tcw, recording, platform, opts.checkpoint);
+      let noteSyncError: NoteSyncErrorCode | undefined;
+      try { await syncRecordingNote(tcw, recording.id, opts.checkpoint); }
+      catch (caught) {
+        opts.checkpoint?.();
+        noteSyncError = "sync_failed";
+        logPipelineError("[VoiceNotes] Local-only note's Markdown did not sync", caught);
+      }
+      return { ok: true, data: { id: row.id, inserted: row.inserted, createdAt: row.createdAt, noteSyncError } };
+    }
     const audio = await putVoiceNoteAudio(tcw, recording.id, source, { ...opts, schedule: (job, operation, timeoutMs, payloadBytes) =>
       (opts.schedule ?? ((call, label, limit, size) => runOnSpaceLane(call, {
         operation: label ?? "voice-note audio KV call", timeoutMs: limit, payloadBytes: size,

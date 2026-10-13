@@ -79,7 +79,7 @@ function harness(failAt?: "part" | "submit" | "result" | "space", noSpeech = fal
   const track = () => createHostedVoiceNoteTrack(() => account, "https://exo.test", {} as SessionStore, account.did, {
     client, native, readCommit: async () => commit, createRow: async () => ({ inserted: true }) as Awaited<ReturnType<typeof import("./voiceNoteRows").createVoiceNoteRow>>,
     readNote: async () => ({ ok: true, data: { captureTranscriber: "assemblyai", durationSeconds: 1 } }) as Awaited<ReturnType<typeof import("./voiceNoteStore").readVoiceNoteForTranscription>>,
-    loadAudio: async () => ({ ok: true, data: { mimeType: "audio/mp4", base64: bytesToBase64(audio) } }) as Awaited<ReturnType<typeof import("./voiceNoteStore").loadVoiceNoteAudio>>,
+    loadAudio: async () => { calls.push("space:audio"); return { ok: true, data: { mimeType: "audio/mp4", base64: bytesToBase64(audio) } } as Awaited<ReturnType<typeof import("./voiceNoteStore").loadVoiceNoteAudio>>; },
     save: async (_account, _id, transcript) => {
       calls.push("space:save");
       if (failAt === "space" && !failed) { failed = true; return { ok: false, error: new Error("offline") } as Awaited<ReturnType<typeof import("./voiceNoteStore").saveVoiceNoteTranscript>>; }
@@ -109,6 +109,17 @@ test("Powerful keeps a no-speech result before deleting the server copy", async 
   expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "no_speech" });
   expect(getLocal()?.outcome).toBe("no_speech");
   expect(calls.indexOf("space:save")).toBeLessThan(calls.indexOf("DELETE /hosted/transcripts/handle-1"));
+});
+
+test("Powerful transcribes local-only audio and deletes the server copy", async () => {
+  const { calls, recording, track } = harness();
+  recording.options!.uploadAudio = false;
+  const lane = track(); lane.consent();
+  await lane.run(recording);
+  expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
+  expect(calls).not.toContain("space:audio");
+  expect(calls).toContain("space:save");
+  expect(calls).toContain("DELETE /hosted/transcripts/handle-1");
 });
 
 test("Powerful accepts webm with codec parameters and sends the base MIME type", async () => {

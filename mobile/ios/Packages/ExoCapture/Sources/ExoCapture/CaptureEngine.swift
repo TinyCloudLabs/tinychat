@@ -1238,9 +1238,10 @@ public final class CaptureEngine {
         guard let session = info else { throw CaptureError.notRecording }
         var actual = changed
         if session.owner == nil { actual.transcriber = "on-device" }
-        try library.appendJournal(session.id, ["e": "options", "t": wallClock.nowMilliseconds(), "a": audioMs,
-                                               "transcriber": actual.transcriber,
-                                               "identifySpeakers": actual.identifySpeakers])
+        var optionEvent: [String: Any] = ["e": "options", "t": wallClock.nowMilliseconds(), "a": audioMs,
+                                          "transcriber": actual.transcriber, "identifySpeakers": actual.identifySpeakers]
+        if let uploadAudio = actual.uploadAudio { optionEvent["uploadAudio"] = uploadAudio }
+        try library.appendJournal(session.id, optionEvent)
         options = actual
         info?.options = actual
     }
@@ -1259,7 +1260,8 @@ public final class CaptureEngine {
                 "maxDurationMs": info?.maxDurationMs ?? 10_800_000,
                 "spans": spans.map(Self.spanObject), "openSpan": openSpan.map(Self.spanObject) as Any? ?? NSNull(),
                 "source": info?.source as Any? ?? NSNull(),
-                "options": ["transcriber": options.transcriber, "identifySpeakers": options.identifySpeakers],
+                "options": ["transcriber": options.transcriber, "identifySpeakers": options.identifySpeakers,
+                            "uploadAudio": options.uploadAudio ?? false],
                 "input": currentInput as Any? ?? NSNull(), "owner": info?.owner as Any? ?? NSNull(),
                 "transitionGen": info?.transitionGen ?? defaults().transitionGen]
     }
@@ -1494,7 +1496,8 @@ public final class CaptureEngine {
                                   source: first["source"] as? String ?? "in_app", owner: recovered.owner,
                                   transitionGen: first["transitionGen"] as? Int64 ?? 0,
                                   options: CaptureOptions(transcriber: option["transcriber"] as? String ?? "on-device",
-                                                          identifySpeakers: option["identifySpeakers"] as? Bool ?? false),
+                                                          identifySpeakers: option["identifySpeakers"] as? Bool ?? false,
+                                                          uploadAudio: option["uploadAudio"] as? Bool),
                                   startedAt: startedAt)
         var sidecar = makeSidecar(session, duration: Int64(frames) * 1024 * 1000 / 48_000,
                                   wallMs: recovered.wallMs, pausedMs: recovered.pausedMs,
@@ -1543,7 +1546,8 @@ public final class CaptureEngine {
                                   source: first["source"] as? String ?? "in_app", owner: recovered.owner,
                                   transitionGen: first["transitionGen"] as? Int64 ?? 0,
                                   options: CaptureOptions(transcriber: choice["transcriber"] as? String ?? "on-device",
-                                                          identifySpeakers: choice["identifySpeakers"] as? Bool ?? false),
+                                                          identifySpeakers: choice["identifySpeakers"] as? Bool ?? false,
+                                                          uploadAudio: choice["uploadAudio"] as? Bool),
                                   startedAt: startedAt)
         let lastSegment = events.compactMap { $0["e"] as? String == "segment" ? $0["index"] as? Int : nil }.last ?? 0
         try DispatchQueue.main.sync {

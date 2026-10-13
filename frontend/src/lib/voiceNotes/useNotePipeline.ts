@@ -264,6 +264,8 @@ export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineIn
     },
     space: {
       saved: facts.saved,
+      localOnly: facts.rowMetadata?.audio_stored === 0 ||
+        (facts.rowMetadata?.audio as { stored?: unknown } | undefined)?.stored === false,
       pending: facts.pending === null ? null : {
         ...(facts.pending.upload ? { upload: facts.pending.upload } : {}),
         ...(facts.pending.failed ? { failed: facts.pending.failed } : {}),
@@ -776,7 +778,8 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
       const rowEntry = source.metadata === undefined && tcw !== null && rowExists ? rows.get(id) : undefined;
       const row = rowEntry !== undefined && tcw !== null && rowEntry.identity === spaceIdentity(tcw) ? rowEntry.read : undefined;
       const rowAudio = source.metadata !== undefined ? source.metadata : row !== undefined && "metadata" in row ? row.metadata : null;
-      const audioSaved = source.audioSaved || native?.audio?.state === "saved" || rowHasCommittedAudio(rowAudio);
+      const audioSaved = source.audioSaved || native?.audio?.state === "saved" || rowHasCommittedAudio(rowAudio)
+        || rowAudio?.audio_stored === 0 || (rowAudio?.audio as { stored?: unknown } | undefined)?.stored === false;
       // The row's answer queues behind uploads on the write lane; the pipeline is shown from what the phone knows meanwhile (`spaceReading`).
       const spaceReading = source.metadata === undefined && tcw !== null && rowExists && row === undefined;
       if (local === undefined || !nativeRead.ready) continue;

@@ -28,6 +28,7 @@ import { deleteNote } from "@/lib/voiceNotes/recordingNotes";
 import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
 import { readableError } from "@/lib/readableError";
 import { logPipelineError } from "@/lib/debugLog";
+import { captureEvents } from "@/capture/captureEvents";
 
 export const TINYCLOUD_NETWORK_FAILURE_MESSAGE =
   "Couldn't reach your TinyCloud space. This note is still on your phone — try again.";
@@ -70,6 +71,22 @@ export function messageOf(error: unknown): string {
   }
   logPipelineError("voice note", error);
   return message;
+}
+
+/** Explicitly put an older local-only recording in the space; changing the device default does not call this. */
+export async function uploadLocalVoiceNote(tcw: TinyCloudWeb, id: string): Promise<void> {
+  if (savesInFlight.has(id)) throw new Error("This note is already being saved");
+  const recording = (await VoiceNotes.listPending()).recordings.find((note) => note.id === id);
+  if (!recording || recording.owner !== tcw.did) throw new Error("Audio is not on this device");
+  savesInFlight.add(id);
+  try {
+    const result = await saveVoiceNote(tcw, recording, nativeRecordingSource(recording), nativePlatform(), {}, true);
+    if (!result.ok) throw new Error(result.error.message);
+    captureEvents.emit("library-changed", { source: "exo-voice-note", sourceId: id });
+  } finally {
+    savesInFlight.delete(id);
+    publishSaveIdle();
+  }
 }
 
 export function errorCode(error: unknown): string | null {

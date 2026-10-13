@@ -272,6 +272,23 @@ export async function patchVoiceNoteAudio(tcw: TinyCloudWeb, recording: VoiceNot
   return row;
 }
 
+/** Publish capture facts without putting a byte of the recording in the space. */
+export async function patchVoiceNoteLocalOnly(tcw: TinyCloudWeb, recording: VoiceNoteRecording, platform: string,
+  checkpoint: () => void = () => undefined): Promise<VoiceNoteRow> {
+  const row = await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
+  if (!row) throw new Error("Voice note row is missing");
+  checkpoint();
+  await execute(tcw, `UPDATE connector_meeting SET metadata = json_patch(COALESCE(metadata,'{}'), ?), updated_at = ?
+    WHERE id = ? AND source = 'exo-voice-note'`, [JSON.stringify({
+    audio: { stored: false, reason: "local_only", device: { platform } },
+    capture: { platform, duration_ms: recording.durationMs, silenced_ms: recording.silencedMs,
+      silenced_events: recording.silencedEvents, no_signal_ms: recording.noSignalMs,
+      ...(recording.version === 2 ? { version: 2, wall_ms: recording.wallMs, paused_ms: recording.pausedMs,
+        spans: recording.spans ?? [], source: recording.source, options: recording.options, input: recording.input } : {}) },
+  }), new Date().toISOString(), row.id], checkpoint);
+  return row;
+}
+
 /** The notes lane changes only its metadata keys, leaving T18 audio and transcript commits intact. */
 export async function patchVoiceNoteMarkdown(tcw: TinyCloudWeb, sourceId: string, key: string, editedAt: string,
   checkpoint: () => void = () => undefined): Promise<void> {

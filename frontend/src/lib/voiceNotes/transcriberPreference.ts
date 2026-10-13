@@ -6,6 +6,7 @@ import { VoiceNotes, type CaptureOptions, type TranscriberId } from "./nativeVoi
 
 const TRANSCRIBER_KEY = "exo.voiceNotes.transcriber";
 const SPEAKERS_KEY = "exo.voiceNotes.identifySpeakers";
+const UPLOAD_AUDIO_KEY = "exo.voiceNotes.uploadAudio";
 const listeners = new Set<() => void>();
 let memoryPreference: CaptureOptions = { transcriber: "on-device", identifySpeakers: true };
 
@@ -24,7 +25,7 @@ export function readTranscriberPreference(): CaptureOptions {
   try {
     const saved = store.getItem(TRANSCRIBER_KEY);
     const transcriber: TranscriberId = saved === "off" || saved === "on-device" || saved === "private-cloud" || saved === "assemblyai" ? saved : "on-device";
-    return { transcriber, identifySpeakers: store.getItem(SPEAKERS_KEY) !== "0" };
+    return { transcriber, identifySpeakers: store.getItem(SPEAKERS_KEY) !== "0", uploadAudio: store.getItem(UPLOAD_AUDIO_KEY) === "1" };
   } catch { return memoryPreference; }
 }
 
@@ -40,7 +41,19 @@ export function effectiveTranscriber(pref: TranscriberId, signedIn: boolean): Tr
 /** Disabled speaker modes keep the preference but send false to native capture. */
 export function effectiveCaptureOptions(pref: CaptureOptions, signedIn: boolean): CaptureOptions {
   const transcriber = effectiveTranscriber(pref.transcriber, signedIn);
-  return { transcriber, identifySpeakers: (transcriber === "private-cloud" || transcriber === "assemblyai") && pref.identifySpeakers };
+  return { transcriber, identifySpeakers: (transcriber === "private-cloud" || transcriber === "assemblyai") && pref.identifySpeakers,
+    uploadAudio: pref.uploadAudio === true };
+}
+
+export function readUploadAudioPreference(): boolean {
+  try { return storage()?.getItem(UPLOAD_AUDIO_KEY) === "1" || (!storage() && memoryPreference.uploadAudio === true); }
+  catch { return memoryPreference.uploadAudio === true; }
+}
+
+export function setUploadAudioPreference(enabled: boolean): void {
+  storage()?.setItem(UPLOAD_AUDIO_KEY, enabled ? "1" : "0");
+  memoryPreference = { ...memoryPreference, uploadAudio: enabled };
+  for (const listener of listeners) listener();
 }
 
 /** What the engine will start the next recording with: the one truth the default mode is shown from. */

@@ -55,9 +55,10 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionData
                 guard let self else { call.reject("Capture plugin was released", "native_error"); return }
                 guard granted else { call.reject("Microphone permission denied", "permission_denied"); return }
                 let current = self.capture.defaults().options
-                let override = call.getString("transcriber") != nil || call.getBool("identifySpeakers") != nil
+                let override = call.getString("transcriber") != nil || call.getBool("identifySpeakers") != nil || call.getBool("uploadAudio") != nil
                     ? CaptureOptions(transcriber: call.getString("transcriber") ?? current.transcriber,
-                                     identifySpeakers: call.getBool("identifySpeakers") ?? current.identifySpeakers) : nil
+                                     identifySpeakers: call.getBool("identifySpeakers") ?? current.identifySpeakers,
+                                     uploadAudio: call.getBool("uploadAudio") ?? false) : nil
                 do { call.resolve(try self.capture.start(requestedLimitMs: requestedLimit.map(Int64.init),
                                                          override: override)) }
                 catch { self.reject(call, error) }
@@ -163,7 +164,8 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionData
         DispatchQueue.main.async {
             let old = self.capture.status()["options"] as? [String: Any] ?? [:]
             let changed = CaptureOptions(transcriber: call.getString("transcriber") ?? old["transcriber"] as? String ?? "on-device",
-                                         identifySpeakers: call.getBool("identifySpeakers") ?? old["identifySpeakers"] as? Bool ?? false)
+                                         identifySpeakers: call.getBool("identifySpeakers") ?? old["identifySpeakers"] as? Bool ?? false,
+                                         uploadAudio: old["uploadAudio"] as? Bool)
             do { try self.capture.setRecordingOptions(changed); call.resolve() }
             catch { self.reject(call, error) }
         }

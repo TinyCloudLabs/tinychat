@@ -290,6 +290,12 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
             <p className="text-callout text-muted-foreground">Couldn’t load this note’s full transcript.</p>
             <Button type="button" variant="outline" onClick={props.onRetry}>Try again</Button>
           </div>
+        ) : metadata.status === "ok" && (metadata.metadata.audio as { stored?: unknown } | undefined)?.stored === false && !props.audio ? (
+          <p className="text-callout text-muted-foreground" data-testid="voice-note-transcribe-on-device">
+            Transcribe on your {((metadata.metadata.capture as { platform?: string } | undefined)?.platform === "ios") ? "iPhone"
+              : ((metadata.metadata.capture as { platform?: string } | undefined)?.platform === "tauri") ? "Mac"
+              : ((metadata.metadata.capture as { platform?: string } | undefined)?.platform === "android") ? "phone" : "browser"}
+          </p>
         ) : (
           <DesktopWhisperStatus
             noteId={item.sourceId}
@@ -367,6 +373,12 @@ export function NoteDetailView(props: NoteDetailViewProps) {
       ) : item.source === VOICE_NOTE_SOURCE && meta && Object.keys(meta).length === 0 ? (
         <p role="status" className="text-callout text-muted-foreground" data-testid="voice-note-saving-from-phone">
           Saving from your phone…
+        </p>
+      ) : item.source === VOICE_NOTE_SOURCE && (meta?.audio as { stored?: unknown } | undefined)?.stored === false ? (
+        <p role="status" className="text-callout text-muted-foreground" data-testid="voice-note-audio-on-device">
+          Audio is on your {((meta?.capture as { platform?: string } | undefined)?.platform === "ios") ? "iPhone"
+            : ((meta?.capture as { platform?: string } | undefined)?.platform === "tauri") ? "Mac"
+            : ((meta?.capture as { platform?: string } | undefined)?.platform === "android") ? "phone" : "browser"}
         </p>
       ) : item.source === UPLOAD_MEETING_SOURCE && metadata?.status === "ok" && !audioKept ? (
         <p className="text-callout text-muted-foreground" data-testid="note-audio-missing">
