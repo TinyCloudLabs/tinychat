@@ -2,4 +2,4 @@
 "@tinychat/frontend": patch
 ---
 
-(TC-983) Lower the transcriber snapshot heartbeat to 50 minutes, bounding `checked_at` lag to ≤ 50 min + 30-second interval + ≤ 60-second pass duration < 1h30s.
+(TC-983) Keep the transcriber heartbeat at 50 minutes; with successful passes of ≤ 60 seconds and timely 30-second timer execution, `checked_at` lag is ≤ H + 2D + I = 50 min + 2×60 s + 30 s = 52 min 30 s < 1h30s.
