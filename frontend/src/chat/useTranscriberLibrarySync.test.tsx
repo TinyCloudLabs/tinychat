@@ -142,7 +142,8 @@ test("mounted sync stores only completed unsaved metadata from its existing list
   expect(listCalls).toBe(1);
   expect(writes).toEqual([PENDING_RECONCILE_SNAPSHOT_KEY]);
   expect(JSON.parse(serialized).sources.transcriber).toEqual({
-    as_of: expect.any(String),
+    changed_at: expect.any(String),
+    checked_at: expect.any(String),
     count: 1,
     meetings: [{
       id: "ptx-pending",

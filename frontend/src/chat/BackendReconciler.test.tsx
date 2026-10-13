@@ -174,7 +174,8 @@ describe("BackendReconciler", () => {
     const serialized = values.get(PENDING_RECONCILE_SNAPSHOT_KEY) ?? "";
     expect(api.calls.filter((call) => call === "list")).toHaveLength(1);
     expect(JSON.parse(serialized).sources["backend-ingest"]).toEqual({
-      as_of: expect.any(String),
+      changed_at: expect.any(String),
+      checked_at: expect.any(String),
       count: 1,
       meetings: [{
         id: "mtg-1",

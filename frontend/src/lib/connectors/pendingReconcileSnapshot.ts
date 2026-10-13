@@ -1,3 +1,11 @@
+/**
+ * Metadata-only pending-reconcile state stored in the user's connector KV.
+ * Per-source `changed_at` records when the projection last changed; `checked_at`
+ * records the last completed existing sync pass that confirmed it. Writers
+ * refresh `checked_at` on change or at most hourly; consumers judge freshness
+ * from `checked_at`, never `changed_at`.
+ */
+
 import { CONNECTORS_KV_PREFIX } from "./connectorStore";
 import type { ConnectorMeetingMeta } from "./meetingsApi";
 import type { TranscriberListRow } from "../transcriberApi";
@@ -19,14 +27,14 @@ export interface PendingReconcileMeeting {
 }
 
 export interface PendingReconcileSourceSnapshot {
-  as_of: string;
+  changed_at: string;
+  checked_at: string;
   count: number;
   meetings: PendingReconcileMeeting[];
 }
 
 export interface PendingReconcileSnapshot {
   version: 1;
-  as_of: string;
   sources: Partial<Record<"backend-ingest" | "transcriber", PendingReconcileSourceSnapshot>>;
 }
 
@@ -39,6 +47,7 @@ export interface PendingSnapshotKv {
 }
 
 const timestampFields = ["ts", "storedAt", "updatedAt", "createdAt", "startedAt", "endedAt", "completedAt"] as const;
+const SNAPSHOT_HEARTBEAT_MS = 60 * 60 * 1000;
 
 export function backendPendingRows(source: string, rows: readonly ConnectorMeetingMeta[]): PendingReconcileMeeting[] {
   return rows.map<PendingReconcileMeeting>((row) => ({
@@ -92,7 +101,7 @@ function metadataRow(raw: unknown): PendingReconcileMeeting | null {
 function sourceSnapshot(raw: unknown): PendingReconcileSourceSnapshot | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const value = raw as Record<string, unknown>;
-  if (typeof value.as_of !== "string" || !Array.isArray(value.meetings)) return null;
+  if (typeof value.changed_at !== "string" || typeof value.checked_at !== "string" || !Array.isArray(value.meetings)) return null;
   const meetings: PendingReconcileMeeting[] = [];
   for (const row of value.meetings) {
     const meeting = metadataRow(row);
@@ -100,7 +109,12 @@ function sourceSnapshot(raw: unknown): PendingReconcileSourceSnapshot | null {
     meetings.push(meeting);
   }
   if (value.count !== meetings.length) return null;
-  return { as_of: value.as_of, count: meetings.length, meetings: meetings.sort((a, b) => a.id.localeCompare(b.id)) };
+  return {
+    changed_at: value.changed_at,
+    checked_at: value.checked_at,
+    count: meetings.length,
+    meetings: meetings.sort((a, b) => a.id.localeCompare(b.id)),
+  };
 }
 
 function parseSnapshot(raw: unknown): PendingReconcileSnapshot | null {
@@ -109,7 +123,7 @@ function parseSnapshot(raw: unknown): PendingReconcileSnapshot | null {
   }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const value = raw as Record<string, unknown>;
-  if (value.version !== 1 || typeof value.as_of !== "string" || !value.sources || typeof value.sources !== "object" || Array.isArray(value.sources)) return null;
+  if (value.version !== 1 || !value.sources || typeof value.sources !== "object" || Array.isArray(value.sources)) return null;
   const input = value.sources as Record<string, unknown>;
   const sources: PendingReconcileSnapshot["sources"] = {};
   for (const name of ["backend-ingest", "transcriber"] as const) {
@@ -118,15 +132,14 @@ function parseSnapshot(raw: unknown): PendingReconcileSnapshot | null {
     if (parsed === null) return null;
     sources[name] = parsed;
   }
-  return { version: 1, as_of: value.as_of, sources };
+  return { version: 1, sources };
 }
 
 
 /**
  * Update one source from an existing browser sync result. The read/compare/write
- * belongs to the caller's serialized TinyCloud lane. A source is written only
- * when its metadata projection changes; `as_of` is the last-change time, not a
- * heartbeat, so age is conservative.
+ * belongs to the caller's serialized TinyCloud lane. `changed_at` tracks
+ * projection changes; `checked_at` advances only on change or after one hour.
  */
 export async function writePendingReconcileSnapshot(
   kv: PendingSnapshotKv,
@@ -137,7 +150,7 @@ export async function writePendingReconcileSnapshot(
 ): Promise<{ ok: true; changed: boolean } | { ok: false }> {
   const read = await kv.get(PENDING_RECONCILE_SNAPSHOT_KEY);
   if (!isCurrent()) return { ok: false };
-  let previous: PendingReconcileSnapshot = { version: 1, as_of: "", sources: {} };
+  let previous: PendingReconcileSnapshot = { version: 1, sources: {} };
   if (read.ok) {
     const data = read.data && typeof read.data === "object" && "data" in read.data ? read.data.data : read.data;
     const parsed = parseSnapshot(data);
@@ -150,15 +163,21 @@ export async function writePendingReconcileSnapshot(
   const meetings = rows.map(metadataRow).filter((row): row is PendingReconcileMeeting => row !== null)
     .sort((a, b) => a.id.localeCompare(b.id));
   const oldSource = previous.sources[source];
-  if (oldSource && JSON.stringify(oldSource.meetings) === JSON.stringify(meetings)) return { ok: true, changed: false };
+  const sameProjection = oldSource !== undefined && JSON.stringify(oldSource.meetings) === JSON.stringify(meetings);
+  const checkedAt = now();
+  if (sameProjection) {
+    const checkedAge = Date.parse(checkedAt) - Date.parse(oldSource.checked_at);
+    if (Number.isFinite(checkedAge) && checkedAge < SNAPSHOT_HEARTBEAT_MS) {
+      return { ok: true, changed: false };
+    }
+  }
 
-  const asOf = now();
+  const changedAt = sameProjection ? oldSource.changed_at : checkedAt;
   const snapshot: PendingReconcileSnapshot = {
     version: 1,
-    as_of: asOf,
     sources: {
       ...previous.sources,
-      [source]: { as_of: asOf, count: meetings.length, meetings },
+      [source]: { changed_at: changedAt, checked_at: checkedAt, count: meetings.length, meetings },
     },
   };
   if (!isCurrent()) return { ok: false };

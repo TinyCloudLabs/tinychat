@@ -84,10 +84,10 @@ describe("backend-only metadata snapshot", () => {
     expect(serialized).not.toMatch(/title|participant|email|url|content|transcript|summary|error|PRIVATE_/i);
     expect(JSON.parse(serialized)).toEqual({
       version: 1,
-      as_of: "2026-10-13T09:00:00.000Z",
       sources: {
         "backend-ingest": {
-          as_of: "2026-10-13T09:00:00.000Z",
+          changed_at: "2026-10-13T09:00:00.000Z",
+          checked_at: "2026-10-13T09:00:00.000Z",
           count: 1,
           meetings: rows,
         },
@@ -98,6 +98,21 @@ describe("backend-only metadata snapshot", () => {
     expect(unchanged).toEqual({ ok: true, changed: false });
     expect(f.writes).toHaveLength(1);
   });
+  test("refreshes checked_at hourly without changing changed_at", async () => {
+    const f = kvFixture();
+    const rows = backendPendingRows("fireflies", [backendRow({ sourceId: "ff-1" })]);
+    await writePendingReconcileSnapshot(f.kv, "backend-ingest", rows, () => "2026-10-13T09:00:00.000Z");
+    const withinHour = await writePendingReconcileSnapshot(f.kv, "backend-ingest", rows, () => "2026-10-13T09:30:00.000Z");
+    expect(withinHour).toEqual({ ok: true, changed: false });
+    expect(f.writes).toHaveLength(1);
+    const afterHour = await writePendingReconcileSnapshot(f.kv, "backend-ingest", rows, () => "2026-10-13T10:00:00.001Z");
+    expect(afterHour).toEqual({ ok: true, changed: true });
+    expect(f.writes).toHaveLength(2);
+    const source = JSON.parse(f.writes[1]?.value ?? "{}").sources["backend-ingest"];
+    expect(source.changed_at).toBe("2026-10-13T09:00:00.000Z");
+    expect(source.checked_at).toBe("2026-10-13T10:00:00.001Z");
+  });
+
   test("does not write a listing after the active account changes during the read", async () => {
     let current = true;
     let writes = 0;
