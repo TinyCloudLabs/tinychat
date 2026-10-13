@@ -10,6 +10,8 @@ import { syncRecordingNote, VOICE_NOTE_SOURCE } from "./voiceNoteStore";
 import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
 import { appPlatform } from "@/lib/platform";
 import type { StoreAudioOptions } from "./voiceNoteStore";
+import { readPendingSaveStates } from "./pendingSaveState";
+import { logPipeline } from "@/lib/debugLog";
 
 export interface VoiceNotePipeline {
   process(ctx: AccountContext, id: string, trigger?: "stop" | "background", onRowCreated?: () => void): Promise<void | "owned-by-another-run">;
@@ -32,7 +34,7 @@ export function saveDeferredForAccountTransition(error: unknown): boolean {
 
 /** T22 extends these lanes with transcription and cleanup, retaining this API. */
 export function createVoiceNotePipeline(tcw: TinyCloudWeb,
-  testOptions: Pick<StoreAudioOptions, "retryDelaysMs"> = {}): VoiceNotePipeline {
+  testOptions: Pick<StoreAudioOptions, "retryDelaysMs"> & { saveRetryDelaysMs?: readonly number[] } = {}): VoiceNotePipeline {
   setAccountWorkPaused(tcw, false);
   let cancellation = 0;
   let accepting = true;
@@ -47,6 +49,12 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     if (!accepting || epoch !== cancellation) throw new VoiceNoteSaveDeferred();
     assertCurrent(ctx);
     if (tcw.did !== ctx.did || tcw.spaceId !== ctx.spaceId) throw new Error("Voice-note space changed");
+  };
+  const waitRetry = async (until: number, check: () => void) => {
+    while (until > Date.now()) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(250, until - Date.now())));
+      check();
+    }
   };
   const syncDesktopAfterUpload = (ctx: AccountContext, note: VoiceNoteRecording | null) => {
     if (!note || appPlatform() !== "tauri" || note.options?.transcriber !== "on-device") return;
@@ -77,11 +85,29 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     const finish = trackPending && note.ledger?.audio.state !== "saved"
       ? pendingStore.beginAutomaticSave() : () => undefined;
     try {
-      const result = await saveNoteForAccount(tcw, ctx, note, check, {
-        ...testOptions,
-        uploadTicket,
-        onRowCreated,
-      });
+      const retryDelays = testOptions.saveRetryDelaysMs ?? [5_000, 30_000, 120_000];
+      let result: Awaited<ReturnType<typeof saveNoteForAccount>>;
+      for (let attempt = 0; ; attempt++) {
+        const retryAt = (await readPendingSaveStates(ctx.did, [id])).get(id)?.retryAt;
+        if (retryAt && retryAt > Date.now()) await waitRetry(retryAt, check);
+        check();
+        pendingStore.setHeld(id, undefined);
+        pendingStore.setRetrying(id, null);
+        result = await saveNoteForAccount(tcw, ctx, note, check, {
+          ...testOptions,
+          uploadTicket,
+          onRowCreated,
+        });
+        if (result.kind !== "failed" || result.failureKind !== "timeout" || attempt >= retryDelays.length) break;
+        const delay = testOptions.saveRetryDelaysMs
+          ? retryDelays[attempt]!
+          : Math.round(retryDelays[attempt]! * (0.8 + Math.random() * 0.4));
+        const nextAttemptAt = Date.now() + delay;
+        pendingStore.setRetrying(id, nextAttemptAt);
+        if (uploadTicket) pendingStore.publishUpload(id, uploadTicket.owner, { state: "retrying", bytes: 0, total: note.sizeBytes });
+        logPipeline("save", id, "retrying");
+        await waitRetry(nextAttemptAt, check);
+      }
       if (result.kind === "failed") {
         check();
         throw Object.assign(new Error(result.failure), {
@@ -102,7 +128,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
       if (!uploadTicket.owns) return Promise.resolve("owned-by-another-run");
       return run(async () => { syncDesktopAfterUpload(ctx, await processOne(ctx, id, epoch, false, uploadTicket, onRowCreated)); });
     },
-    reconcileAll(ctx, _trigger = "reconcile", onSaved) {
+    reconcileAll(ctx, trigger = "reconcile", onSaved) {
       if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());
       const epoch = cancellation;
       return run(async () => {
@@ -145,6 +171,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
         for (const note of [...notes].sort((a, b) => a.startedAt - b.startedAt)) {
           check();
           if (note.owner === ctx.did && !note.ownerUnknown) {
+            if (trigger === "manual") pendingStore.setRetrying(note.id, null);
             let saved: VoiceNoteRecording | null = null;
             try {
               saved = await processOne(ctx, note.id, epoch, true, uploadTickets.get(note.id));

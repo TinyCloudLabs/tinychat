@@ -28,6 +28,7 @@ import { deleteNote } from "@/lib/voiceNotes/recordingNotes";
 import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
 import { readableError } from "@/lib/readableError";
 import { logPipeline, logPipelineError } from "@/lib/debugLog";
+import { putPendingSaveState, readPendingSaveStates } from "./pendingSaveState";
 
 export const TINYCLOUD_NETWORK_FAILURE_MESSAGE =
   "Couldn't reach your TinyCloud space. This note is still on your phone — try again.";
@@ -497,6 +498,11 @@ let accountChanges = 0;
 type NoteFailure = NonNullable<PendingNote["failed"]>;
 const noteFailures = new Map<string, NoteFailure>();
 const heldReasons = new Map<string, NonNullable<PendingNote["held"]>>();
+const retryTimes = new Map<string, number>();
+function persistNoteStatus(id: string): void {
+  void putPendingSaveState(activeAccountDid, { id, failed: noteFailures.get(id), held: heldReasons.get(id), retryAt: retryTimes.get(id) })
+    .catch((error) => console.warn("[VoiceNotes] Could not retain this note's save status", error));
+}
 type UploadProgress = NonNullable<PendingNote["upload"]>;
 export interface PendingUploadTicket { id: string; owner: symbol; owns: boolean }
 const uploadStates = new Map<string, {
@@ -557,7 +563,9 @@ export function classifyNoteFailure(error: unknown): NoteFailure["kind"] {
 
 function clearPendingErrors(): void {
   generalFailure = null;
+  const cleared = [...noteFailures.keys()];
   noteFailures.clear();
+  for (const id of cleared) persistNoteStatus(id);
   const notes = pendingSnapshot.notes?.map(({ failed: _failed, ...note }) => note);
   publishPending({ lastError: null, notes });
 }
@@ -588,10 +596,16 @@ export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
       const outcome = await saveRecording(tcw, recording);
       if (outcome.kind === "saved") {
         noteFailures.delete(recording.id);
+        heldReasons.delete(recording.id);
+        retryTimes.delete(recording.id);
+        persistNoteStatus(recording.id);
         saved.push(recording);
         if (outcome.cleanupError) lastError = outcome.cleanupError;
       } else if (outcome.kind === "already-saved" || outcome.kind === "discarded") {
         noteFailures.delete(recording.id);
+        heldReasons.delete(recording.id);
+        retryTimes.delete(recording.id);
+        persistNoteStatus(recording.id);
         if (outcome.cleanupError) lastError = outcome.cleanupError;
       } else if (outcome.kind === "held") {
         left.push(recording);
@@ -599,6 +613,7 @@ export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
         left.push(recording);
         lastError = outcome.failure;
         noteFailures.set(recording.id, { kind: outcome.failureKind, message: outcome.failure });
+        persistNoteStatus(recording.id);
       }
       // Publish each note's new ledger state as soon as its save settles. A long
       // reconcile pass must not leave the Capture count stale until its last note.
@@ -624,6 +639,7 @@ export interface PendingNote {
   /** This note failed its latest save attempt, so its Recent row must not imply it's still saving. */
   failed?: { kind: "offline" | "rejected" | "timeout" | "quota" | "auth" | "server" | "source" | "other"; message: string };
   held?: "signed-out" | "other-account" | "legacy" | "unowned";
+  retryAt?: number;
   upload?: { state: "waiting" | "preparing" | "uploading" | "retrying"; bytes: number; total: number };
   waitingBehind?: number;
 }
@@ -754,15 +770,24 @@ export const pendingStore = {
     const failure = { kind: classifyNoteFailure(error), message: visibleMessage };
     noteFailures.delete(id);
     noteFailures.set(id, failure);
+    retryTimes.delete(id);
+    persistNoteStatus(id);
     publishPending({
       lastError: currentFailure(),
       notes: pendingSnapshot.notes?.map((note) => note.id === id ? { ...note, failed: failure } : note),
     });
   },
   setOnline(online: boolean): void { publishPending({ online }); },
+  setRetrying(id: string, at: number | null): void {
+    if (at === null) retryTimes.delete(id);
+    else retryTimes.set(id, at);
+    persistNoteStatus(id);
+    publishPending({ notes: pendingSnapshot.notes?.map((note) => note.id === id ? { ...note, retryAt: at ?? undefined } : note) });
+  },
   setHeld(id: string, held: PendingNote["held"]): void {
     if (held) heldReasons.set(id, held);
     else heldReasons.delete(id);
+    persistNoteStatus(id);
     publishPending({ notes: pendingSnapshot.notes?.map((note) => note.id === id ? { ...note, held } : note) });
   },
   enqueueUpload(recording: VoiceNoteRecording | string): PendingUploadTicket {
@@ -806,6 +831,7 @@ export const pendingStore = {
   },
   clearNoteFailure(id: string): void {
     if (!noteFailures.delete(id)) return;
+    persistNoteStatus(id);
     const notes = pendingSnapshot.notes?.map((note) => {
       if (note.id !== id || !note.failed) return note;
       const { failed: _failed, ...rest } = note;
@@ -818,6 +844,7 @@ export const pendingStore = {
       accountChanges++;
       noteFailures.clear();
       heldReasons.clear();
+      retryTimes.clear();
       generalFailure = null;
       publishPending({ accountDid: did, listing: { state: "unknown" }, notes: undefined, lastError: null });
     }
@@ -846,11 +873,18 @@ async function relistPending(lastError?: string | null): Promise<void> {
       isDiscarded(recording.id) || (recording.ledger?.audio.state !== "saved" && !savedThisSession.has(recording.id)),
     );
     const pendingIds = new Set(pending.map((note) => note.id));
+    const retained = await readPendingSaveStates(activeAccountDid, [...pendingIds]);
+    for (const [id, status] of retained) {
+      if (status.failed && !noteFailures.has(id)) noteFailures.set(id, status.failed);
+      if (status.held && !heldReasons.has(id)) heldReasons.set(id, status.held);
+      if (status.retryAt && !retryTimes.has(id)) retryTimes.set(id, status.retryAt);
+    }
     for (const id of noteFailures.keys()) if (!pendingIds.has(id)) noteFailures.delete(id);
     const notes = pending
       .filter((recording) => !isDiscarded(recording.id))
       .map((recording) => ({ id: recording.id, startedAt: recording.startedAt, durationMs: recording.durationMs,
         ...(noteFailures.has(recording.id) ? { failed: noteFailures.get(recording.id)! } : {}),
+        ...(retryTimes.has(recording.id) ? { retryAt: retryTimes.get(recording.id)! } : {}),
         ...(uploadStates.has(recording.id) ? { upload: uploadStates.get(recording.id)!.upload,
           waitingBehind: uploadStates.get(recording.id)!.waitingBehind } : {}),
         ...((activeAccountDid ? heldReasons.get(recording.id) : "signed-out") ?

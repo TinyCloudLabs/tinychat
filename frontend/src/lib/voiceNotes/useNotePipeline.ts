@@ -284,6 +284,7 @@ export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineIn
         ...(facts.pending.upload ? { upload: facts.pending.upload } : {}),
         ...(facts.pending.failed ? { failed: facts.pending.failed } : {}),
         ...(facts.pending.held ? { held: facts.pending.held } : {}),
+        ...(facts.pending.retryAt ? { retryAt: facts.pending.retryAt } : {}),
         ...(facts.pending.waitingBehind !== undefined ? { waitingBehind: facts.pending.waitingBehind } : {}),
       },
       lane: facts.lane,

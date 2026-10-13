@@ -4,7 +4,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { AssemblyAiError, assemblyAiSentences, createHostedAssemblyAiClient, type AssemblyAiTranscript } from "../assemblyai";
 import { base64ToBytes } from "./voiceNoteAudio";
 import { currentAccountGeneration, isAccountWorkAllowed } from "./accountContext";
-import { nativeRecordingSource, VoiceNotes, type LocalTranscript, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
+import { nativePlatform, nativeRecordingSource, VoiceNotes, type LocalTranscript, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { createVoiceNoteRow } from "./voiceNoteRows";
 import { loadVoiceNoteAudio, patchVoiceNoteTranscriptionFailure, readVoiceNoteForTranscription, saveVoiceNoteTranscript, voiceNoteTitle } from "./voiceNoteStore";
@@ -82,8 +82,18 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
     try {
       guard();
       const account = tcw();
-      const prior = await readCommit(account, id);
       const stored = readJobs(did)[id] ?? {};
+      // A new Powerful job uses the committed local file immediately. Space
+      // identity is prepared independently and joined only for publication.
+      const spaceReady = readCommit(account, id).then(async (prior) => {
+        if (!prior) await createRow(account, recording as VoiceNoteRecording, voiceNoteTitle(recording.startedAt), undefined, nativePlatform());
+        return prior;
+      }).then((prior) => ({ prior, error: null as unknown }), (error: unknown) => ({ prior: null, error }));
+      // A resumed job may already have a committed result; avoid another
+      // provider request until that durable state has been checked.
+      const priorState = stored.handle || stored.saved ? await spaceReady : null;
+      if (priorState?.error) throw priorState.error;
+      const prior = priorState?.prior ?? null;
       if (prior) transcriptSaved = true;
       if (prior && !stored.handle) { jobs.set(id, { kind: "done", outcome: prior.outcome }); notify(); return; }
       if (prior && stored.handle && stored.saved) {
@@ -91,7 +101,6 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         catch (error) { console.warn("[HostedVoiceNotes] Could not delete the saved remote transcript", error); }
         jobs.set(id, { kind: "done", outcome: prior.outcome }); notify(); return;
       }
-      if (!prior) await createRow(account, recording as VoiceNoteRecording, voiceNoteTitle(recording.startedAt));
       if (!stored.recording) persist(id, { recording: recording as VoiceNoteRecording });
       let source = nativeRecordingSource(recording, native);
       if (!recording.sizeBytes) {
@@ -159,6 +168,15 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       });
       if (!handle) throw new Error("Powerful did not return a transcript. Try again.");
       persist(id, { handle });
+      const ready = await spaceReady;
+      if (ready.error) throw ready.error;
+      if (ready.prior) {
+        transcriptSaved = true;
+        try { await client.deleteTranscript(handle); persist(id, null); }
+        catch (error) { console.warn("[HostedVoiceNotes] Could not delete the saved remote transcript", error); }
+        jobs.set(id, { kind: "done", outcome: ready.prior.outcome }); notify();
+        return;
+      }
       let transcript: AssemblyAiTranscript;
       for (;;) {
         guard();
