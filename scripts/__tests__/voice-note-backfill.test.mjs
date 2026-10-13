@@ -219,6 +219,8 @@ test('read-only snapshot resolves evidence, dedupes live rows, and redacts text'
       metadata: { platform: 'android', capture: { version: 1, source: 'in_app', duration_ms: 120_000 } } },
     { id: 'nonretryable', source: 'exo-voice-note', source_id: 'nonretryable', duration_secs: 10,
       metadata: { transcription_outcome: 'failed', transcription_error_code: 'recording_too_large' } },
+    { id: 'v2-top-level', source: 'exo-voice-note', source_id: 'v2-top-level', duration_secs: 60,
+      metadata: { transcriber: 'private-cloud', capture: { version: 2 } } },
   ];
   const values = new Map();
   const putManifest = (id, mimeType, size) => {
@@ -232,6 +234,7 @@ test('read-only snapshot resolves evidence, dedupes live rows, and redacts text'
   putManifest('unsafe-body', 'audio/mp4', 2);
   putManifest('committed-body', 'audio/mp4', 2);
   putManifest('v1-null', 'audio/mpeg', 2);
+  putManifest('v2-top-level', 'audio/mp4', 2);
   values.set(`${transcriptPrefix}/unsafe-body`, Buffer.from('SYNTHETIC_LEGACY_BODY_SECRET'));
   values.set(`${transcriptPrefix}/committed-body`, Buffer.from('SYNTHETIC_COMMITTED_BODY_SECRET'));
   const queryCalls = [];
@@ -246,7 +249,7 @@ test('read-only snapshot resolves evidence, dedupes live rows, and redacts text'
     kvList(prefix) { return [...values.keys()].filter(key => key.startsWith(prefix)); },
     kvGet(key) { return values.get(key); },
   });
-  assert.equal(report.total_rows, 5, 'duplicate live row is collapsed to the post-identity keeper');
+  assert.equal(report.total_rows, 6, 'duplicate live row is collapsed to the post-identity keeper');
   assert.equal(report.counts['skip-terminal'], 1);
   assert.equal(report.counts['legacy-body-no-commit'], 1);
   assert.equal(report.counts['has-commit'], 1);
@@ -263,6 +266,9 @@ test('read-only snapshot resolves evidence, dedupes live rows, and redacts text'
   assert.equal(report.eligible[0].plain_body_bytes, 0);
   assert.equal(report.eligible[0].manifest_size_bytes, 2);
   assert.equal(report.notes.find(note => note.source_id === 'nonretryable').error_code, 'recording_too_large');
+  const topLevelTranscriber = report.notes.find(note => note.source_id === 'v2-top-level');
+  assert.equal(topLevelTranscriber.transcriber_option, null);
+  assert.equal(topLevelTranscriber.classification, 'needs-original-phone');
   assert.doesNotMatch(JSON.stringify(report), /SYNTHETIC_(TRANSCRIPT|LEGACY_BODY|COMMITTED_BODY)_SECRET/);
   assert.ok(queryCalls.some(sql => sql.includes('sqlite_schema')));
 });

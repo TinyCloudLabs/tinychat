@@ -103,7 +103,12 @@ if (isDirectExecution()) {
   try {
     const options = parseArgs(process.argv.slice(2));
     if (options.help) {
-      process.stdout.write('Read-only voice-note backfill dry run. Options: --profile NAME, --max-seconds N, --max-bytes N. Writes are not supported.\n');
+      process.stdout.write([
+        'Read-only voice-note backfill dry run. Options: --profile NAME, --max-seconds N, --max-bytes N.',
+        'Defaults: --max-seconds 7200, --max-bytes 120960000. Writes are not supported.',
+        'Assumes PTX accepts six raw MIME types: audio/mpeg, audio/wav, audio/ogg, audio/mp4, audio/webm, audio/flac.',
+        'The planner does not read runtime content_types. If PTX advertises fewer, the app may decode a type treated as raw here to 16 kHz WAV; its raw-size estimate can understate the actual 32000 bytes/second × duration + 44 bytes and miss the byte cap.',
+      ].join('\n') + '\n');
     } else {
       run(options.profile, options.maxSeconds, options.maxBytes);
     }

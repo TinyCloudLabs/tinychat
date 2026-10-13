@@ -33,7 +33,7 @@ export function planVoiceNoteBackfill(rows, audioIndex, { maxSeconds = 7200, max
       : typeof capture.duration_ms === 'number' && Number.isFinite(capture.duration_ms)
         ? capture.duration_ms / 1000 : null;
     const captureVersion = row.captureVersion ?? capture.version ?? null;
-    const transcriberOption = row.transcriberOption ?? objectValue(capture.options).transcriber ?? metadata.transcriber ?? null;
+    const transcriberOption = objectValue(capture.options).transcriber ?? null;
     const legacyWinner = row.legacyWinner?.metadata ?? row.legacyWinner;
     let classification;
     let reason;

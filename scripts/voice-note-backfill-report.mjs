@@ -71,7 +71,7 @@ export function collectVoiceNoteBackfillReport({
       ...bodyIndex.get(row.source_id),
       platform: capture.platform ?? metadata.platform ?? null,
       captureVersion: capture.version ?? null,
-      transcriberOption: objectValue(capture.options).transcriber ?? metadata.transcriber ?? null,
+      transcriberOption: objectValue(capture.options).transcriber ?? null,
     };
   });
 
