@@ -21,7 +21,8 @@ import {
   type VoiceNoteRecording,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
-import { reconcileSavedVoiceNoteAudio, saveVoiceNote, type NoteSyncErrorCode, type VoiceNoteAudio, type VoiceNoteAudioSource, type StoreAudioOptions } from "@/lib/voiceNotes/voiceNoteStore";
+import { saveVoiceNote, type NoteSyncErrorCode, type VoiceNoteAudio, type VoiceNoteAudioSource, type StoreAudioOptions } from "@/lib/voiceNotes/voiceNoteStore";
+import { upgradeSavedAudioReceipt } from "./audioReceiptUpgrade";
 import { assertAccountContext, assertCurrent, captureAccountContext, type AccountContext } from "@/lib/voiceNotes/accountContext";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { deleteNote } from "@/lib/voiceNotes/recordingNotes";
@@ -32,35 +33,6 @@ import { trimCachedAudio } from "@/lib/voiceNotes/audioPlaybackCache";
 
 function enforceAudioCacheAfterSave(id: string): void {
   void trimCachedAudio().catch((error: unknown) => logPipelineError("audio cache trim", error, id));
-}
-
-/** Upgrade saved notes from before receipts existed, without overwriting remote audio bytes. */
-async function reconcileSavedRecording(tcw: TinyCloudWeb, recording: VoiceNoteRecording): Promise<void> {
-  const prior = recording.ledger?.audio.verifiedInSpace;
-  if (prior && /^[0-9a-f]{64}$/.test(prior.sha256) && Number.isSafeInteger(prior.size) && prior.size > 0) return;
-  try {
-    if ((await VoiceNotes.localAudioSize({ id: recording.id })).size <= 0) return;
-    const receipt = await reconcileSavedVoiceNoteAudio(tcw, recording.id, nativeRecordingSource(recording));
-    if (!receipt) return;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const fresh = (await VoiceNotes.listPending()).recordings.find((note) => note.id === recording.id);
-      if (!fresh || fresh.owner !== tcw.did || fresh.ledger?.audio.state !== "saved") return;
-      const existing = fresh.ledger.audio.verifiedInSpace;
-      if (existing && /^[0-9a-f]{64}$/.test(existing.sha256) && Number.isSafeInteger(existing.size)
-        && existing.size > 0) break;
-      try {
-        await VoiceNotes.updateLedger({ id: recording.id, did: tcw.did, rev: fresh.rev ?? 0,
-          patch: { audio: { ...fresh.ledger.audio, verifiedInSpace: receipt } } });
-        break;
-      } catch (error) {
-        if (errorCode(error) !== "rev_conflict" || attempt === 1) throw error;
-      }
-    }
-    enforceAudioCacheAfterSave(recording.id);
-  } catch (error) {
-    // No receipt means the native copy remains protected; a later online pass can retry.
-    logPipelineError("audio cache reconciliation", error, recording.id);
-  }
 }
 
 export const TINYCLOUD_NETWORK_FAILURE_MESSAGE =
@@ -359,7 +331,7 @@ export async function saveRecording(
     if (isDiscarded(recording.id)) throw new Error("Recording was discarded");
   };
   if (recording.ledger?.audio.state === "saved") {
-    await reconcileSavedRecording(tcw, recording);
+    await upgradeSavedAudioReceipt(tcw, recording);
     void syncOnDeviceTranscript(tcw, recording);
     return { kind: "already-saved", cleanupError: null };
   }
@@ -450,7 +422,7 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
   if (!recording.owner) return { kind: "held", reason: "unowned" };
   if (recording.owner !== ctx.did) return { kind: "held", reason: "other-account" };
   if (recording.ledger?.audio.state === "saved") {
-    await reconcileSavedRecording(tcw, recording);
+    await upgradeSavedAudioReceipt(tcw, recording);
     return { kind: "already-saved", cleanupError: null };
   }
   if (audioOptions.uploadTicket && !audioOptions.uploadTicket.owns) return { kind: "in-flight" };

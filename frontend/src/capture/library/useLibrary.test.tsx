@@ -11,6 +11,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { IDBFactory } from "fake-indexeddb";
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
 
 import { saveNote } from "@/lib/voiceNotes/recordingNotes";
 import { VoiceNotes, __setVoiceNotesForTests, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -640,7 +642,7 @@ describe("useLibrary, notes still on this phone", () => {
 
 describe("useLibrary, which audio a note on the phone plays", () => {
   const phoneNote: PendingNote = { id: "rec-play", startedAt: Date.parse("2026-10-06T10:00:00.000Z"), durationMs: 14_000 };
-  async function withLocalAudio(run: (counts: { local: () => number; remote: () => number; fetches: () => number }, space: ReturnType<typeof fakeSpace>) => Promise<void>) {
+  async function withLocalAudio(run: (counts: { local: () => number; remote: () => number; fetches: () => number; replace: () => void }, space: ReturnType<typeof fakeSpace>) => Promise<void>, savedIdentity = false) {
     const space = fakeSpace();
     let remoteReads = 0;
     let localReads = 0;
@@ -648,15 +650,32 @@ describe("useLibrary, which audio a note on the phone plays", () => {
     const realFetch = globalThis.fetch;
     // The WKWebView scheme handler answers a fetch of a local file with status 0; nothing here may fetch it.
     globalThis.fetch = (async () => { fetches++; return new Response(null, { status: 0 as never }); }) as unknown as typeof fetch;
-    space.tcw.kv.get = (async () => {
+    let remoteBytes = new TextEncoder().encode("local bytes");
+    const originalHash = bytesToHex(sha256(remoteBytes));
+    space.tcw.kv.get = (async (key: string) => {
       remoteReads++;
+      if (savedIdentity) {
+        if (key.endsWith("/manifest")) return { ok: true, data: { data: {
+          v: 1, mimeType: "audio/mp4", fileName: "audio.mp4", size: remoteBytes.length,
+          partSize: remoteBytes.length, parts: [{ size: remoteBytes.length, sha256: bytesToHex(sha256(remoteBytes)), etag: null }],
+          sha256: bytesToHex(sha256(remoteBytes)), createdAt: "2026-10-06T10:00:00Z",
+        } } };
+        if (key.endsWith("/p/000000")) return { ok: true, data: { data: remoteBytes } };
+      }
       return { ok: false, error: { code: "KV_NOT_FOUND", message: "Upload is not finished" } };
     }) as typeof space.tcw.kv.get;
     const localUrl = URL.createObjectURL(new Blob(["local bytes"], { type: "audio/mp4" }));
     const original = VoiceNotes;
-    __setVoiceNotesForTests({ localAudioUrl: async () => { localReads++; return { url: localUrl }; } } as VoiceNotesPlugin, { available: true });
+    __setVoiceNotesForTests({
+      localAudioUrl: async () => { localReads++; return { url: localUrl }; },
+      listPending: async () => ({ recordings: [{ id: "rec-play", owner: space.tcw.did,
+        ledger: { audio: savedIdentity
+          ? { state: "saved", verifiedInSpace: { sha256: originalHash, size: 11 } }
+          : { state: "pending" } } }] }),
+    } as VoiceNotesPlugin, { available: true });
     try {
-      await run({ local: () => localReads, remote: () => remoteReads, fetches: () => fetches }, space);
+      await run({ local: () => localReads, remote: () => remoteReads, fetches: () => fetches,
+        replace: () => { remoteBytes = new TextEncoder().encode("newer bytes"); } }, space);
     } finally {
       globalThis.fetch = realFetch;
       __setVoiceNotesForTests(original, { available: null });
@@ -684,9 +703,9 @@ describe("useLibrary, which audio a note on the phone plays", () => {
       await space.answer("list", listedVoice("play"));
       expect(seen.at(-1)!.note.item).toMatchObject({ saving: true, sourceId: "rec-play" });
       const before = { local: counts.local(), remote: counts.remote() };
-      expect(await localUrlOf(seen.at(-1)!)).toMatch(/^blob:/);
+      expect(await playFromSpace(seen.at(-1)!)).toMatch(/^blob:/);
       await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
-      expect(await localUrlOf(seen.at(-1)!)).toMatch(/^blob:/);
+      expect(await playFromSpace(seen.at(-1)!)).toMatch(/^blob:/);
       expect({ local: counts.local() - before.local, remote: counts.remote() - before.remote, fetched: counts.fetches() }).toEqual({ local: 2, remote: 0, fetched: 0 });
     });
   });
@@ -727,8 +746,22 @@ describe("useLibrary, which audio a note on the phone plays", () => {
       expect(seen.at(-1)!.note.item?.saving).toBeUndefined();
       const localBefore = counts.local();
       await playFromSpace(seen.at(-1)!).catch(() => null);
-      expect({ local: counts.local() - localBefore, remoteAsked: counts.remote() > 0 }).toEqual({ local: 1, remoteAsked: false });
-    });
+      expect({ local: counts.local() - localBefore, remoteReads: counts.remote() }).toEqual({ local: 1, remoteReads: 1 });
+    }, true);
+  });
+
+  test("a replacement under the same source id plays space bytes and leaves the old local file alone", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      const base = { tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play", onPhone: [phoneNote] };
+      await render(base);
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      counts.replace();
+      const blob = await playFromSpace(seen.at(-1)!);
+      expect(await blob?.text()).toBe("newer bytes");
+      expect(counts.local()).toBe(0);
+    }, true);
   });
 
   test("an old row without device audio reads its space copy", async () => {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { cachedAudioSize, clearCachedAudio, trimCachedAudio } from "@/lib/voiceNotes/audioPlaybackCache";
+import { cachedAudioSize, clearCachedAudio } from "@/lib/voiceNotes/audioPlaybackCache";
+import { reconcileAudioCache, subscribeAudioCacheAccount } from "@/lib/voiceNotes/audioReceiptUpgrade";
 import { installCaptureEngine } from "@/lib/voiceNotes/captureEngine";
 import { readableError } from "@/lib/readableError";
 
@@ -12,8 +13,17 @@ export function AudioCacheSettings() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    void installCaptureEngine().then(() => trimCachedAudio()).then(cachedAudioSize)
-      .then(setSize, (caught: unknown) => setError(readableError(caught)));
+    let active = true;
+    let revision = 0;
+    const refresh = () => {
+      const current = ++revision;
+      void installCaptureEngine().then(() => reconcileAudioCache()).then(cachedAudioSize)
+        .then((value) => { if (active && current === revision) setSize(value); },
+          (caught: unknown) => { if (active && current === revision) setError(readableError(caught)); });
+    };
+    const unsubscribe = subscribeAudioCacheAccount(refresh);
+    refresh();
+    return () => { active = false; unsubscribe(); };
   }, []);
   const clear = async () => {
     setBusy(true);

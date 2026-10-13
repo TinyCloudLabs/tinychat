@@ -31,7 +31,7 @@ import { readableError } from "@/lib/readableError";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import { getAudio, getAudioManifest, type StoredAudioManifest } from "@/lib/audio/audioStore";
+import { getAudio, getAudioManifest, manifestReceipt, type StoredAudioManifest } from "@/lib/audio/audioStore";
 import {
   listMeetingsRead,
   meetingAudioFrom,
@@ -45,6 +45,7 @@ import { loadNote } from "@/lib/voiceNotes/recordingNotes";
 import { wasDiscarded, type PendingNote } from "@/lib/voiceNotes/recorderSaves";
 import { loadVoiceNoteAudioBlob, voiceNoteAudioKvKey, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { cachedSpaceAudio, localPlaybackUrl } from "@/lib/voiceNotes/audioPlaybackCache";
+import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { readTranscriptPreviews, voiceNoteTranscriptLocator } from "@/lib/voiceNotes/voiceNoteCommits";
 import { captureEvents } from "../captureEvents";
 import type { LibraryFilter } from "./libraryKinds";
@@ -421,19 +422,32 @@ export function useLibrary(
   const voiceSourceId = item?.source === VOICE_NOTE_SOURCE ? item.sourceId : null;
   const pendingAudioRow = voiceSourceId !== null && meta !== null && Object.keys(meta).length === 0;
   // The row is made before the audio is uploaded: while the phone still lists the note, its own copy is the audio.
-  const onThisPhone = voiceSourceId !== null && (item?.onPhone === true || item?.saving === true);
   // The stored file is read only when the player asks, one part per queued
   // call; the player's signal stops it when the note closes.
   const noteAudio = useMemo<NoteAudio | null>(() => {
     // An on-device-only note has no space copy yet. Resolve its URL at Play time.
-    if (voiceSourceId !== null && onThisPhone) return localAudio(voiceSourceId);
+    if (voiceSourceId !== null && item?.onPhone) return localAudio(voiceSourceId);
     if (voiceSourceId !== null) {
       return {
         load: async (signal, onProgress) => {
-          const local = await localPlaybackUrl(voiceSourceId);
-          if (local) return local;
-          if (pendingAudioRow) return null;
+          const localNote = await Promise.resolve().then(() => VoiceNotes.listPending())
+            .then(({ recordings }) => recordings.find((note) => note.id === voiceSourceId))
+            .catch(() => undefined);
+          if (item?.saving && localNote?.ledger?.audio.state !== "saved") {
+            const local = await localPlaybackUrl(voiceSourceId);
+            if (local) return local;
+          }
           const manifest = await getAudioManifest(space.kv, voiceNoteAudioKvKey(voiceSourceId), { signal });
+          const identityReceipt = manifest && await manifestReceipt(manifest);
+          if (identityReceipt) {
+            const receipt = localNote?.ledger?.audio.verifiedInSpace;
+            if (localNote?.owner === space.did && localNote.ledger?.audio.state === "saved"
+              && receipt?.sha256 === identityReceipt.sha256 && receipt.size === identityReceipt.size) {
+              const local = await localPlaybackUrl(voiceSourceId);
+              if (local) return local;
+            }
+          }
+          if (pendingAudioRow) return null;
           const load = async () => {
             const res = await loadVoiceNoteAudioBlob(space, voiceSourceId, { signal, onProgress });
             if (!res.ok) throw new Error(res.error.message);
@@ -452,7 +466,7 @@ export function useLibrary(
     }
     if (audioBase !== null) return { load: (signal, onProgress) => getAudio(space.kv, audioBase, { signal, onProgress }) };
     return null;
-  }, [audioBase, onThisPhone, pendingAudioRow, space, voiceSourceId]);
+  }, [audioBase, item?.onPhone, item?.saving, pendingAudioRow, space, voiceSourceId]);
 
   const retry = useCallback(() => {
     if (list.status === "failed") refresh();
