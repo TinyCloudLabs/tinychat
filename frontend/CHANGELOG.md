@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.7.1-beta.0
+
+### Patch Changes
+
+- 79a072f: Voice notes now persist transcription outcomes and keep unsent or failed notes retryable in the Library.
+
 ## 0.7.0
 
 ### Minor Changes
