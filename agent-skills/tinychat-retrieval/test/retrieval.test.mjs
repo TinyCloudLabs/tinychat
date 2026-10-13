@@ -575,10 +575,46 @@ test('transcribed legacy winners without usable transcript_text fail closed', as
   }
   expect(results.map(([, result]) => result.error?.code)).toEqual(['TRANSCRIPT_OMITTED', 'TRANSCRIPT_OMITTED', 'TRANSCRIPT_OMITTED', 'TRANSCRIPT_OMITTED']);
   expect(results.map(([id, result]) => result.coverage.omissions[0]).every((omission, index) => omission.id === results[index][0] && omission.reason === 'not_transcribed')).toBe(true);
-  f.add('older-fireflies', { date: '2026-09-17T12:00:00Z' });
-  const latest = await invoke(f, 'latest');
-  expect(latest.records.map(row => row.id)).toEqual(['older-fireflies']);
+  for (const withoutTable of [false, true]) {
+    const latestFixture = fixture();
+    latestFixture.add('older-fireflies', { date: '2026-09-17T12:00:00Z' });
+    const whitespace = ['\t', '\n\r', '\u00a0', ' \t\n ', '\u3000'];
+    for (const [index, transcriptText] of whitespace.entries()) {
+      latestFixture.add(`blank-${withoutTable}-${index}`, {
+        source: 'exo-voice-note',
+        sourceId: `blank-${withoutTable}-${index}`,
+        date: '2026-09-18T12:00:00Z',
+        metadata: { transcription_outcome: 'transcribed', transcribed_at: '2026-09-18T11:00:00Z', transcript_text: transcriptText },
+        voiceNoteCommit: false,
+      });
+    }
+    if (withoutTable) latestFixture.db.exec('DROP TABLE voice_note_transcript');
+    const latestResult = await invoke(latestFixture, 'latest');
+    expect(latestResult.records.map(row => row.id)).toEqual(['older-fireflies']);
+    expect((await invoke(latestFixture, 'read', { ref: latestResult.records[0].ref })).ok).toBe(true);
+  }
   expect(f.calls.filter(args => args.includes('get'))).toHaveLength(0);
+});
+
+test('latest SQL trim character set matches String.prototype.trim', async () => {
+  const f = fixture();
+  f.add('legacy', {
+    source: 'exo-voice-note',
+    sourceId: 'trim-set',
+    metadata: { transcription_outcome: 'transcribed', transcribed_at: '2026-01-01T00:00:00Z', transcript_text: 'Readable' },
+    voiceNoteCommit: false,
+  });
+  await invoke(f, 'latest');
+  const queryArgs = f.calls.find(args => args.includes('query') && args[args.indexOf('query') + 1].includes('trim(json_extract'));
+  const query = queryArgs?.[queryArgs.indexOf('query') + 1];
+  const sqlCharacters = query?.match(/trim\(json_extract\(g\.metadata, '\$\.transcript_text'\), char\(([^)]*)\)\)/)?.[1];
+  expect(sqlCharacters).toBeTruthy();
+  const sqlCodePoints = sqlCharacters.split(',').map(Number);
+  const ecmaTrimCodePoints = [];
+  for (let codePoint = 0; codePoint <= 0x10ffff; codePoint++) {
+    if (String.fromCodePoint(codePoint).trim() === '') ecmaTrimCodePoints.push(codePoint);
+  }
+  expect(sqlCodePoints).toEqual(ecmaTrimCodePoints);
 });
 
 test('a missing voice-note commit table uses the eligible legacy winner', async () => {

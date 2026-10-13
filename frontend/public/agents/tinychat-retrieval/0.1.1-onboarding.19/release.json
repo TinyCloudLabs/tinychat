@@ -3,7 +3,7 @@
   "name": "tinychat-retrieval",
   "version": "0.1.1-onboarding.19",
   "archive": "tinychat-retrieval-0.1.1-onboarding.19.tgz",
-  "sha256": "6148c7470b7ad9031bb9884924a14d78f09de4267c20aac74994ea6045f36daa",
+  "sha256": "73475c7a60a589cc8d30faadbb39124ac66d24a5374f405b24905129d773be7d",
   "files": {
     "SKILL.md": "1063fe99602808a1c15573cac4bd7ef7b39b8c1c325df7569161c16664618fbe",
     "assets/permissions.json": "87e584e77f17daf281a0ec0317920868e429f75be25dc53db725dfe3c6a9793c",
@@ -14,7 +14,7 @@
     "lib/opencode-activation.mjs": "828c7d91acaf28f9db4a59e4d5da2d1d4004b63da0f22eb4d20310cc4c3d833b",
     "lib/opencode-continuation.mjs": "f257ae568ce5d9b1ad65215a73268bd6070969f1f4fc6b235646df6a62445252",
     "lib/opencode-plugin.mjs": "86ac3307131649a016b1945a92858bb118b08ceb5c3056ac3cd592e4795a1b23",
-    "lib/retrieval.mjs": "c8061921351254aa67b808901f3a1494d853146516bfcd70d6f1c4c508603460",
+    "lib/retrieval.mjs": "2e86a89971cb024d78fc24b64aa27efc46f81f0c0b2c51c54e0ff4a9fce61bce",
     "lib/session-handoff.mjs": "42a98a521a848627cb985d933861f75154cb3ef6fe3805bd0b97c89e2c507bce",
     "lib/setup.mjs": "b0c17ae8ad2b0a96f59f63d68c05ac08dcb999fbc9763214fc56cd559b3f13dd",
     "pack.json": "91ba2c6df585c1f93feeadee431a556d89be4300fb86876fc83635643f43a97a",

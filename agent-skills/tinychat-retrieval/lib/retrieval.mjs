@@ -36,6 +36,8 @@ const SOURCES = ['fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local
 const COLUMNS = ['id', 'source', 'source_id', 'title', 'started_at', 'organizer_email', 'participants', 'summary_overview', 'summary_action_items', 'metadata', 'updated_at', 'sort_time'];
 const LEGACY_WINNER_FILTER_SQL = "g.source IN ('exo-voice-note', 'exo-voice-note-dup') AND json_valid(g.metadata) AND json_extract(g.metadata, '$.transcription_outcome') IS NOT NULL";
 const LEGACY_WINNER_ORDER_SQL = "ORDER BY COALESCE(json_extract(g.metadata, '$.transcribed_at'), '') DESC, g.id ASC LIMIT 1";
+// Matches ECMAScript TrimString's WhiteSpace ∪ LineTerminator set (ECMA-262: https://tc39.es/ecma262/multipage/text-processing.html#sec-trimstring).
+const SQL_ECMASCRIPT_TRIM_CHARS = 'char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279)';
 // Limit display-only fields at the query boundary; identity and classification fields stay exact.
 const PROJECTION = COLUMNS.map(c => ['title', 'organizer_email', 'participants', 'summary_overview', 'summary_action_items'].includes(c) ? `substr(${c},1,600) AS ${c}` : c === 'sort_time' ? 'julianday(started_at) AS sort_time' : c).join(', ');
 const MESSAGES = {
@@ -138,7 +140,7 @@ function makeQuery(scope, after, limit, bodySearch = false, supportedOnly = fals
   if (supportedOnly) { terms.push(`source IN (${SOURCES.map(() => '?').join(',')})`); params.push(...SOURCES); }
   if (transcriptOnly) {
     const legacyWinnerId = `(SELECT g.id FROM connector_meeting g WHERE g.source_id = connector_meeting.source_id AND ${LEGACY_WINNER_FILTER_SQL} ${LEGACY_WINNER_ORDER_SQL})`;
-    const legacyAdmission = `EXISTS (SELECT 1 FROM connector_meeting g WHERE g.id = ${legacyWinnerId} AND g.source_id = connector_meeting.source_id AND json_extract(g.metadata, '$.transcription_outcome') = 'transcribed' AND json_type(g.metadata, '$.transcript_text') = 'text' AND trim(json_extract(g.metadata, '$.transcript_text')) != '')`;
+    const legacyAdmission = `EXISTS (SELECT 1 FROM connector_meeting g WHERE g.id = ${legacyWinnerId} AND g.source_id = connector_meeting.source_id AND json_extract(g.metadata, '$.transcription_outcome') = 'transcribed' AND json_type(g.metadata, '$.transcript_text') = 'text' AND trim(json_extract(g.metadata, '$.transcript_text'), ${SQL_ECMASCRIPT_TRIM_CHARS}) != '')`;
     const admission = voiceNoteCommitTableAvailable
       ? `(CASE WHEN EXISTS (SELECT 1 FROM voice_note_transcript t WHERE t.source_id = connector_meeting.source_id) THEN EXISTS (SELECT 1 FROM voice_note_transcript t WHERE t.source_id = connector_meeting.source_id AND t.outcome = 'transcribed') ELSE ${legacyAdmission} END)`
       : legacyAdmission;
