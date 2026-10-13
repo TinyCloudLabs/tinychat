@@ -205,6 +205,7 @@ export { googleMeetOAuthEnabled };
  */
 export const GOOGLE_OAUTH_PUBLIC_PATHS: ReadonlySet<string> = new Set([
   "/start",
+  "/desktop/start",
   "/callback",
 ]);
 

@@ -61,6 +61,7 @@ import { CalendarAutojoinSection } from "./CalendarAutojoinSection";
 import { SectionCard } from "@/components/ui/section-card";
 import { StatusDot, type StatusTone } from "@/components/ui/status-dot";
 import { secretsAvailable, SECRETS_UNAVAILABLE_IN_APP_MESSAGE } from "@/lib/openkeyNative";
+import { pendingSameTabReturn } from "@/lib/connectors/googleOAuthSameTab";
 
 interface ConnectorsCardProps {
   tcw: TinyCloudWeb;
@@ -264,7 +265,10 @@ export function ConnectorsCard({
   // a time — the card is a source list, not a multi-dialog dashboard.
   const [dialog, setDialog] = useState<
     { kind: "connect" | "disconnect" | "autojoin"; id: ConnectorId } | null
-  >(null);
+  >(() => {
+    const returned = pendingSameTabReturn();
+    return returned ? { kind: returned.purpose, id: GMEET_CONNECTOR_ID } : null;
+  });
   // Per-connector abort handles for in-flight card syncs so the Stop button
   // can cancel the loop between items. Kept out of state — flipping the ref
   // must not re-render, and swapping controllers between runs is fine.

@@ -27,10 +27,9 @@
 //         registry row's OWN `secretName`/`secretScope`, so the flip commit
 //         changes what is written without touching this file. The access token
 //         stays in memory for the session.
-//     Inside the Exo native app (TC-521) there is no popup: the same flow runs
-//     in the system browser and returns through a fixed deep link, with the
-//     state tagged `native.` (`googleOAuthNative.ts`). It shares the verifier
-//     refs and `runExchange` below; the web branch is untouched.
+//     The phone app uses a system browser and a gated deep link. Tauri uses a
+//     system browser and a one-shot 127.0.0.1 listener. Both share the verifier
+//     refs and `runExchange`; the web uses a popup or same-tab return.
 //
 // Both connect flows write to the same store and reuse the same wallet-unlock
 // choke point; nothing here logs a token, a transcript or a meeting title.
@@ -99,6 +98,9 @@ import {
   type NativeOAuthPorts,
 } from "@/lib/connectors/googleOAuthNative";
 import { secretsAvailable, SECRETS_UNAVAILABLE_IN_APP_MESSAGE } from "@/lib/openkeyNative";
+import { appPlatform } from "@/lib/platform";
+import { cancelDesktopGoogleOAuth, encodeDesktopRefreshToken, googleRefreshGrant, startDesktopGoogleOAuth } from "@/lib/connectors/googleOAuthDesktop";
+import { clearSameTabReturn, pendingSameTabReturn, sameTabState, saveSameTabVerifier } from "@/lib/connectors/googleOAuthSameTab";
 import {
   syncGoogleMeet,
   type GmeetSyncError,
@@ -681,6 +683,7 @@ type OAuthConnectPhase =
 interface OAuthErrorState {
   kind:
     | "popup-blocked"
+    | "desktop-error"
     /** Native app only: the system browser could not be opened. */
     | "browser-unavailable"
     /** Native app only: this build doesn't run Google OAuth in the app yet. */
@@ -754,6 +757,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   const popupRef = useRef<Window | null>(null);
   const stateRef = useRef<string | null>(null);
   const verifierRef = useRef<string | null>(null);
+  const desktopRedirectUriRef = useRef<string | null>(null);
   const codeHandledRef = useRef(false);
   const accessTokenRef = useRef<string | null>(null);
   const refreshTokenRef = useRef<string | null>(null);
@@ -781,6 +785,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   const reset = useCallback(() => {
     closePopup();
     cancelNativeAttempt();
+    if (appPlatform() === "tauri") cancelDesktopGoogleOAuth();
     // A closed dialog leaves nothing in flight either: the "done" phase is
     // closable while the auto-transcription PATCH is still running, and a
     // request nobody is waiting on should not outlive the surface that made it.
@@ -794,6 +799,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     setMeetingCode("");
     stateRef.current = null;
     verifierRef.current = null;
+    desktopRedirectUriRef.current = null;
     accessTokenRef.current = null;
     refreshTokenRef.current = null;
     codeHandledRef.current = false;
@@ -807,7 +813,10 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   }, [open, reset]);
 
   // An unmount mid-attempt must not leave native listeners behind.
-  useEffect(() => cancelNativeAttempt, [cancelNativeAttempt]);
+  useEffect(() => () => {
+    cancelNativeAttempt();
+    if (appPlatform() === "tauri") cancelDesktopGoogleOAuth();
+  }, [cancelNativeAttempt]);
 
   const busy =
     phase === "exchange" || phase === "save-token" || phase === "initial-sync";
@@ -816,8 +825,9 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   // OpenKey sessions have no vault to hold the refresh token, so the surface is
   // unavailable in the app even when native Google OAuth is enabled.
   const authorizeSurface = secretsAvailable()
-    ? googleAuthorizeSurface()
+    ? appPlatform() === "tauri" ? "system-browser" : googleAuthorizeSurface()
     : "unavailable-in-app";
+  const desktopAutojoinUnavailable = autojoin && appPlatform() === "tauri";
   const consentCopy = transcriptAwareConsentCopy(
     autojoin ? GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY : GOOGLE_MEET_CONSENT_COPY,
     transcriptConsent,
@@ -857,7 +867,9 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
       }
       // The registry row names the secret; this file never spells it. That is
       // what lets the flip commit change WHAT is stored without touching here.
-      const save = await saveConnectorKey<SecretsErr>(tcw, descriptor, refreshToken);
+      const storedRefreshToken = desktopRedirectUriRef.current
+        ? encodeDesktopRefreshToken(refreshToken) : refreshToken;
+      const save = await saveConnectorKey<SecretsErr>(tcw, descriptor, storedRefreshToken);
       if (!save.ok) {
         failWith({
           kind: "storage",
@@ -892,7 +904,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
           mintGmeetAccessToken({
             backendUrl,
             sessionStore,
-            refreshToken,
+            refreshToken: storedRefreshToken,
             signal: ac.signal,
           }),
         signal: ac.signal,
@@ -949,7 +961,8 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
             Authorization: `Bearer ${bearer}`,
             [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE,
           },
-          body: JSON.stringify({ code, verifier, ...(autojoin ? { state: transactionState } : {}) }),
+          body: JSON.stringify({ code, verifier, ...(autojoin ? { state: transactionState } : {}),
+            ...(desktopRedirectUriRef.current ? { desktopRedirectUri: desktopRedirectUriRef.current } : {}) }),
         });
       } catch {
         // Deliberately not narrated with the thrown message: a transport error
@@ -984,7 +997,8 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         return;
       }
       accessTokenRef.current = accessToken;
-      refreshTokenRef.current = refreshToken;
+      refreshTokenRef.current = desktopRedirectUriRef.current
+        ? encodeDesktopRefreshToken(refreshToken) : refreshToken;
       await saveAndSync(accessToken, refreshToken, typeof payload.setupId === "string" ? payload.setupId : undefined);
     },
     [autojoin, backendUrl, failWith, saveAndSync, sessionStore],
@@ -994,6 +1008,41 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   useEffect(() => {
     runExchangeRef.current = runExchange;
   }, [runExchange]);
+
+  useEffect(() => {
+    if (!open) return;
+    const returned = pendingSameTabReturn();
+    if (!returned) return;
+    clearSameTabReturn(returned.state);
+    if (returned.error || !returned.code) {
+      setError({ kind: "cancelled", message: "" });
+      return;
+    }
+    stateRef.current = returned.state;
+    verifierRef.current = returned.verifier;
+    codeHandledRef.current = true;
+    void runExchangeRef.current(returned.code);
+  }, [open]);
+
+  const handleSameTabAuthorize = useCallback(() => {
+    void (async () => {
+      try {
+        const state = sameTabState(window.location.pathname, randomUrlSafeToken(24));
+        const verifier = randomUrlSafeToken(32);
+        const challenge = await pkceChallengeS256(verifier);
+        saveSameTabVerifier(state, verifier, autojoin ? "autojoin" : "connect");
+        if (autojoin) {
+          const begun = await beginAutojoinAuthorization({ backendUrl, sessionStore, state, challenge });
+          if (!begun.ok) { setError(begun.error); return; }
+          window.location.assign(begun.authorizationUrl);
+        } else {
+          window.location.assign(`${backendUrl}${GOOGLE_OAUTH_START_PATH}?${new URLSearchParams({ state, challenge })}`);
+        }
+      } catch {
+        setError({ kind: "crypto-unavailable", message: "" });
+      }
+    })();
+  }, [autojoin, backendUrl, sessionStore]);
 
   /**
    * The native app's authorize (TC-521): no popup, so nothing has to happen
@@ -1069,6 +1118,35 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
    */
   const handleAuthorize = useCallback(() => {
     if (autojoin && !custodyConsent) return;
+    if (appPlatform() === "tauri") {
+      setError(null);
+      cancelNativeAttempt();
+      const generation = nativeGenerationRef.current;
+      codeHandledRef.current = false;
+      setPhase("wait-callback");
+      void (async () => {
+        try {
+          const state = randomUrlSafeToken(24);
+          const verifier = randomUrlSafeToken(32);
+          const challenge = await pkceChallengeS256(verifier);
+          if (nativeGenerationRef.current !== generation) return;
+          stateRef.current = state;
+          verifierRef.current = verifier;
+          if (autojoin) throw new Error("Enable Calendar autojoin from Exo on the web.");
+          const code = await startDesktopGoogleOAuth({ backendUrl, state, challenge,
+            onRedirectUri: (uri) => { desktopRedirectUriRef.current = uri; } });
+          if (nativeGenerationRef.current !== generation || codeHandledRef.current) return;
+          codeHandledRef.current = true;
+          void runExchangeRef.current(code);
+        } catch (error) {
+          if (nativeGenerationRef.current !== generation) return;
+          setPhase("authorize");
+          setError({ kind: "desktop-error", message: error instanceof Error ? error.message :
+            typeof error === "string" ? error : "Could not complete Google sign-in." });
+        }
+      })();
+      return;
+    }
     // The Exo native app has no popup and Google refuses its WebView: system browser,
     // once this build allows it (the private-use return needs a claimed https link first).
     const nativePorts = capacitorNativeOAuthPorts();
@@ -1135,7 +1213,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         setError({ kind: "cancelled", message: "" });
       }
     })();
-  }, [autojoin, custodyConsent, authorizeInSystemBrowser, backendUrl, closePopup, failWith, sessionStore]);
+  }, [autojoin, custodyConsent, authorizeInSystemBrowser, backendUrl, cancelNativeAttempt, closePopup, failWith, sessionStore]);
 
   /**
    * The callback listener, live only while we are waiting for one.
@@ -1186,6 +1264,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     codeHandledRef.current = true;
     closePopup();
     cancelNativeAttempt();
+    if (appPlatform() === "tauri") cancelDesktopGoogleOAuth();
     stateRef.current = null;
     verifierRef.current = null;
     setPhase("authorize");
@@ -1250,7 +1329,10 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         </DialogHeader>
 
         {phase === "authorize" && authorizeSurface === "unavailable-in-app" && <NativeUnavailablePanel />}
-        {phase === "authorize" && authorizeSurface !== "unavailable-in-app" && (
+        {phase === "authorize" && desktopAutojoinUnavailable && (
+          <p className="text-xs text-muted-foreground">Enable Calendar autojoin from Exo on the web.</p>
+        )}
+        {phase === "authorize" && authorizeSurface !== "unavailable-in-app" && !desktopAutojoinUnavailable && (
           <>
             <AuthorizePanel
               copy={authorizeSurface === "system-browser" ? googleConsentCopyForSystemBrowser(consentCopy) : consentCopy}
@@ -1262,7 +1344,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
             </label>}
           </>
         )}
-        {phase === "wait-callback" && <WaitCallbackPanel systemBrowser={usesSystemBrowserOAuth()} />}
+        {phase === "wait-callback" && <WaitCallbackPanel systemBrowser={appPlatform() === "tauri" || usesSystemBrowserOAuth()} />}
         {phase === "exchange" && (
           <OAuthStepPanel label="Finishing the Google sign-in…" />
         )}
@@ -1284,9 +1366,10 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
 
         <OAuthConnectFooter
           phase={phase}
-          canAuthorize={authorizeSurface !== "unavailable-in-app"}
+          canAuthorize={authorizeSurface !== "unavailable-in-app" && !desktopAutojoinUnavailable}
           authorizeDisabled={autojoin && !custodyConsent}
           onAuthorize={handleAuthorize}
+          onSameTabAuthorize={error?.kind === "popup-blocked" ? handleSameTabAuthorize : undefined}
           onCancelAuthorize={handleCancelAuthorize}
           onClose={handleClose}
           onStopSync={handleStopSync}
@@ -1348,7 +1431,7 @@ const WaitCallbackPanel: FC<{ systemBrowser: boolean }> = ({ systemBrowser }) =>
   <div className="flex flex-col gap-2 py-2">
     <p className="flex items-center gap-2 text-sm text-muted-foreground">
       <Loader2Icon className="size-4 animate-spin" aria-hidden />
-      Waiting for Google…
+      {systemBrowser ? "Finish in your browser…" : "Waiting for Google…"}
     </p>
     <p className="text-xs text-muted-foreground">
       {systemBrowser
@@ -1537,10 +1620,11 @@ const OAuthConnectFooter: FC<{
   authorizeDisabled?: boolean;
   phase: OAuthConnectPhase;
   onAuthorize: () => void;
+  onSameTabAuthorize?: () => void;
   onCancelAuthorize: () => void;
   onClose: () => void;
   onStopSync: () => void;
-}> = ({ phase, canAuthorize, authorizeDisabled, onAuthorize, onCancelAuthorize, onClose, onStopSync }) => (
+}> = ({ phase, canAuthorize, authorizeDisabled, onAuthorize, onSameTabAuthorize, onCancelAuthorize, onClose, onStopSync }) => (
   <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
     {phase === "authorize" && !canAuthorize && (
       <Button size="sm" onClick={onClose}>
@@ -1556,6 +1640,7 @@ const OAuthConnectFooter: FC<{
         <Button size="sm" disabled={authorizeDisabled} onClick={onAuthorize}>
           Continue with Google
         </Button>
+        {onSameTabAuthorize && <Button size="sm" variant="outline" onClick={onSameTabAuthorize}>Open in this tab</Button>}
       </>
     )}
     {phase === "wait-callback" && (
@@ -2023,7 +2108,7 @@ export async function revokeGoogleUpstream(input: {
         Authorization: `Bearer ${bearer}`,
         [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE,
       },
-      body: JSON.stringify(browserToken ? { token: browserToken } : {}),
+      body: JSON.stringify(browserToken ? { token: googleRefreshGrant(browserToken).refreshToken } : {}),
     });
     if (response.ok) return finished;
     const failure = await readGoogleProxyError(response);
@@ -2220,7 +2305,9 @@ function formatOAuthError(error: OAuthErrorState): string {
   const detail = error.message.length > 0 ? ` (${error.message})` : "";
   switch (error.kind) {
     case "popup-blocked":
-      return "Your browser blocked the Google sign-in window. Allow popups for this site, then press “Continue with Google” again.";
+      return "Your browser blocked the Google sign-in window. Allow popups and try again, or open Google in this tab.";
+    case "desktop-error":
+      return error.message;
     case "native-unavailable":
       return "Connecting Google isn’t available in the Exo app yet. Connect it from Exo on the web; the connection lives in your TinyCloud space, so it works here too.";
     case "browser-unavailable":

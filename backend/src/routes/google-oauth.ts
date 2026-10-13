@@ -8,6 +8,8 @@ import {
   GoogleOAuthError,
   googleOAuthConfigFromEnv,
   googleOAuthNativeReturnEnabled,
+  googleDesktopClientId,
+  validDesktopRedirectUri,
   type GoogleOAuthConfig,
   type GoogleOAuthPort,
 } from "../services/google-oauth.js";
@@ -82,6 +84,7 @@ function firstQueryValue(value: unknown): unknown {
 //   `<nonce>`          — the web SPA (base64url, so it never contains a `.`): the postMessage page,
 //                        byte-for-byte what it has always been.
 //   `native.<nonce>`   — the Exo native app: a 302 to NATIVE_OAUTH_RETURN_URL.
+//   `tab.<path>.<nonce>` — web popup fallback: a 302 to the pinned app origin and path.
 //   `<anything>.<…>`   — an unknown tag: refused at /start and at /callback. Never defaulted.
 //
 // The deep-link TARGET is a constant: nothing in the request chooses where the browser goes, only
@@ -98,7 +101,7 @@ function firstQueryValue(value: unknown): unknown {
 // (`GOOGLE_OAUTH_NATIVE_RETURN`, see `googleOAuthNativeReturnEnabled`): with it off, `native.`
 // states are refused at `/start` and `/callback` never sends a code to the deep link.
 
-/** The `state` tag of the Exo native app (Android, iOS; desktop can register the same scheme). */
+/** The `state` tag of the Exo phone app (Android and iOS). */
 export const NATIVE_OAUTH_CLIENT = "native";
 
 /** Where a native-tagged flow returns. Must match `CFBundleURLSchemes` and the Android intent-filter. */
@@ -110,7 +113,7 @@ export const NATIVE_OAUTH_NOT_COMPLETED = "not_completed";
 /** The nonce after the tag: base64url, the alphabet the app mints it in. */
 const NATIVE_STATE_NONCE_PATTERN = /^[A-Za-z0-9_-]{16,}$/;
 
-export type OAuthReturnClient = "web" | "native";
+export type OAuthReturnClient = "web" | "native" | "tab";
 
 /**
  * The client a (shape-valid) `state` selects, or `null` for a tag no client mints. Callers check
@@ -119,8 +122,17 @@ export type OAuthReturnClient = "web" | "native";
 export function oauthReturnClient(state: string): OAuthReturnClient | null {
   const separator = state.indexOf(".");
   if (separator === -1) return "web";
+  if (state.startsWith("tab.")) return tabReturnPath(state) ? "tab" : null;
   if (state.slice(0, separator) !== NATIVE_OAUTH_CLIENT) return null;
   return NATIVE_STATE_NONCE_PATTERN.test(state.slice(separator + 1)) ? "native" : null;
+}
+
+function tabReturnPath(state: string): string | null {
+  const match = /^tab\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{16,})$/.exec(state);
+  if (!match) return null;
+  const path = Buffer.from(match[1], "base64url").toString("utf8");
+  return path.startsWith("/") && !path.startsWith("//") && !/[\\#\p{Cc}]/u.test(path) &&
+    !path.includes("?") && path.length <= 256 ? path : null;
 }
 
 /** The fixed deep link with `{ code, state }` or `{ error, state }` as its only query. */
@@ -254,6 +266,8 @@ export interface GoogleOAuthRouterOptions {
    * (off). Off: `native.` states are refused at `/start` and get the no-code page at `/callback`.
    */
   nativeReturn?: boolean;
+  desktopClientId?: string;
+  desktopOAuth?: (redirectUri: string) => GoogleOAuthPort;
 }
 
 export function createGoogleOAuthRouter(
@@ -265,6 +279,11 @@ export function createGoogleOAuthRouter(
     options.appOrigin ?? googleAppOriginFromEnv(),
   );
   const nativeReturn = options.nativeReturn ?? googleOAuthNativeReturnEnabled();
+  const desktopClientId = options.desktopClientId ?? googleDesktopClientId();
+  const desktopOAuth = (redirectUri: string): GoogleOAuthPort =>
+    options.desktopOAuth?.(redirectUri) ?? new GoogleOAuthClient({
+      ...config, clientId: desktopClientId, clientSecret: "", redirectUri,
+    });
 
   const router = Router();
   router.use((_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
@@ -308,6 +327,19 @@ export function createGoogleOAuthRouter(
     res.redirect(302, oauth.authorizeUrl({ state, challenge }));
   });
 
+  /** Desktop client: exact loopback URI, ephemeral port, mandatory S256 challenge. */
+  router.get("/desktop/start", (req: Request, res: Response) => {
+    const state = firstQueryValue(req.query.state);
+    const challenge = firstQueryValue(req.query.challenge);
+    const redirectUri = firstQueryValue(req.query.redirectUri);
+    if (!desktopClientId) { res.status(503).json({ error: "desktop_client_unconfigured" }); return; }
+    if (!isValidOAuthState(state) || oauthReturnClient(state) !== "web" ||
+        !isValidPkceChallenge(challenge) || !validDesktopRedirectUri(redirectUri)) {
+      res.status(400).json({ error: "invalid_request" }); return;
+    }
+    res.status(200).json({ authorizationUrl: desktopOAuth(redirectUri).authorizeUrl({ state, challenge }) });
+  });
+
   /**
    * `GET /callback?code=…&state=…` — the popup's landing page. Unauthenticated by necessity
    * (a top-level navigation from Google carries no Bearer) and harmless: it holds no session,
@@ -342,6 +374,16 @@ export function createGoogleOAuthRouter(
       return;
     }
 
+    if (isValidOAuthState(state) && oauthReturnClient(state) === "tab") {
+      const path = tabReturnPath(state)!;
+      const params = new URLSearchParams({ state });
+      if (isBoundedString(code, MAX_CODE_LENGTH)) params.set("google_oauth_code", code);
+      else params.set("google_oauth_error", "not_completed");
+      res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
+      res.redirect(302, `${appOrigin}${path}?${params}`);
+      return;
+    }
+
     if (
       !isBoundedString(code, MAX_CODE_LENGTH) ||
       !isValidOAuthState(state) ||
@@ -372,9 +414,12 @@ export function createGoogleOAuthRouter(
     const body = (req.body ?? {}) as Record<string, unknown>;
     const code = body.code;
     const verifier = body.verifier;
+    const desktopRedirectUri = body.desktopRedirectUri;
     if (
       !isBoundedString(code, MAX_CODE_LENGTH) ||
-      !isBoundedString(verifier, MAX_VERIFIER_LENGTH)
+      !isBoundedString(verifier, MAX_VERIFIER_LENGTH) ||
+      !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier) ||
+      (desktopRedirectUri !== undefined && (!desktopClientId || !validDesktopRedirectUri(desktopRedirectUri)))
     ) {
       logGoogleOAuth("op=exchange result=invalid_request");
       res.status(400).json({ error: "invalid_request" });
@@ -386,7 +431,7 @@ export function createGoogleOAuthRouter(
         if (!tenant) { res.status(401).json({ error: "unauthorized" }); return; }
         await options.autojoin.browserReconnect(tenant.toLowerCase());
       }
-      const payload = await oauth.exchangeCode({ code, verifier });
+      const payload = await (desktopRedirectUri ? desktopOAuth(desktopRedirectUri) : oauth).exchangeCode({ code, verifier });
       // A concurrent autojoin rebind during the network exchange must not outlive this browser account switch.
       if (options.autojoin) await options.autojoin.browserReconnect(req.user!.address.toLowerCase());
       logGoogleOAuth(
@@ -402,13 +447,15 @@ export function createGoogleOAuthRouter(
   router.post("/refresh", async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const refreshToken = body.refreshToken;
-    if (!isBoundedString(refreshToken, MAX_TOKEN_LENGTH)) {
+    const desktop = body.client === "desktop";
+    if (!isBoundedString(refreshToken, MAX_TOKEN_LENGTH) ||
+        (body.client !== undefined && !desktop) || (desktop && !desktopClientId)) {
       logGoogleOAuth("op=refresh result=invalid_request");
       res.status(400).json({ error: "invalid_request" });
       return;
     }
     try {
-      const payload = await oauth.refresh(refreshToken);
+      const payload = await (desktop ? desktopOAuth("http://127.0.0.1:1/oauth/google") : oauth).refresh(refreshToken);
       logGoogleOAuth("op=refresh result=ok");
       res.status(200).json(browserTokenPayload(payload));
     } catch (error) {
