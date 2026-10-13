@@ -179,9 +179,11 @@ export function createDesktopWhisperQueue(args: {
         const timer = setTimeout(() => {
           if (!settled) {
             settled = true; stop();
-            void Promise.resolve().then(() => whisper.stopTranscription(id))
-              .catch(() => { /* The task may have already stopped. */ });
-            reject(new Error("Whisper transcription timed out"));
+            void (async () => {
+              try { await whisper.stopTranscription(id); }
+              catch { /* The task may have already stopped. */ }
+              reject(new Error("Whisper transcription timed out"));
+            })();
           }
         }, timeoutMs);
         const finish = (event: WhisperEvent) => {
@@ -204,6 +206,7 @@ export function createDesktopWhisperQueue(args: {
         void (async () => {
           try {
             stop = await whisper.onTranscription(finish);
+            if (settled) { stop(); return; }
             transcribing = true;
             await whisper.startTranscription({ id, stageId: stagedId!, model });
           } catch (error) { if (!settled) { settled = true; clearTimeout(timer); stop(); reject(error); } }

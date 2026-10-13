@@ -163,6 +163,50 @@ function rig(bridge = new FakeBridge(), dbName = crypto.randomUUID(), env: IdbEn
 }
 
 describe("desktop recorder adapter", () => {
+  slow("Whisper timeout stops native work before staged audio cleanup", async () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    let fireTimeout: (() => void) | null = null;
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    globalThis.setTimeout = ((handler: TimerHandler, timeout?: number) => {
+      const handle = originalSetTimeout(handler, timeout);
+      if (timeout !== undefined && timeout >= 30 * 60_000 && typeof handler === "function") {
+        timeoutHandle = handle;
+        fireTimeout = () => handler();
+      }
+      return handle;
+    }) as typeof setTimeout;
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    whisper.pending = true;
+    let completeStop!: () => void;
+    const stopped = new Promise<void>((resolve) => { completeStop = resolve; });
+    whisper.stopTranscription = async (id) => { whisper.stops.push(id); await stopped; };
+    const engine = await openDesktopVoiceNotes({ bridge, whisper,
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+    try {
+      const id = (await engine.plugin.start()).id;
+      bridge.files.set(id, Uint8Array.of(1, 2));
+      await engine.plugin.stop();
+      await waitFor(() => whisper.calls.length === 1 && fireTimeout !== null);
+      const stagedId = String(bridge.stageCalls.at(-1)?.stageId);
+      fireTimeout!();
+      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+      await waitFor(() => whisper.stops.includes(id));
+      expect(bridge.files.has(stagedId)).toBe(true);
+      expect(whisper.serverStops).toBe(0);
+      completeStop();
+      await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "failed" && !bridge.files.has(stagedId));
+      expect(whisper.serverStops).toBeGreaterThan(0);
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+      completeStop();
+      engine.dispose();
+    }
+  });
+
   slow("stop queues Whisper and commits a local transcript once", async () => {
     const bridge = new FakeBridge();
     bridge.selectedModel = "QuantizedTinyEn";
