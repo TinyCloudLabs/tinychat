@@ -2,6 +2,10 @@ import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from
 import { chmod, mkdir, open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
+// Bun exposes libc flock through FFI; the backend's Node typecheck has no Bun declarations.
+// @ts-expect-error runtime-provided module
+import { dlopen, FFIType } from "bun:ffi";
+import type { FileHandle } from "node:fs/promises";
 
 import { assertStrongSecret } from "./webhook-tokens.js";
 
@@ -16,8 +20,9 @@ import { assertStrongSecret } from "./webhook-tokens.js";
  * transcript to the session address that created it.
  *
  * Upload slots and the daily allowance live in this process. Exo note keys are journaled in the
- * spool directory before paid submission, and must live on a persistent volume. A restart drops
- * unsent spools; an interrupted paid submission remains uncertain rather than being submitted twice.
+ * spool directory before paid submission, and must live on a persistent volume. One process owns
+ * the directory under flock. Startup discards unsent spools, reconciles the note journal once,
+ * and leaves interrupted paid submissions uncertain rather than submitting them twice.
  */
 
 export const MAX_HOSTED_BYTES = 120_960_000;
@@ -166,7 +171,7 @@ export interface HostedUpload {
   sourceId?: string;
 }
 
-type NoteJob = { address: string; sourceId: string; uploadId: string; state: "receiving" | "submitting" | "submitted" | "uncertain" | "deleted"; handle?: string; expiresAt?: number; ownerPid?: number };
+type NoteJob = { address: string; sourceId: string; uploadId: string; bootId: string; state: "receiving" | "submitting" | "submitted" | "uncertain" | "deleted"; handle?: string; expiresAt?: number };
 export type NoteJobView = { status: "receiving" | "submitting" | "submitted" | "uncertain" | "deleted"; upload_id: string; id?: string };
 
 /** How a background submit ended. Codes are the router's public error codes. */
@@ -215,6 +220,9 @@ export class HostedUploadStore {
   /** Background submits in flight. */
   private readonly inFlight = new Set<Promise<void>>();
   private readonly noteJobs = new Map<string, NoteJob>();
+  private readonly quarantinedKeys = new Set<string>();
+  private readonly bootId = randomUUID();
+  private spoolLock: FileHandle | null = null;
 
   /** Serialize account mutations, including file IO, so a claim cannot overtake a part or cleanup. */
   private readonly mutations = new Map<string, Promise<void>>();
@@ -225,39 +233,13 @@ export class HostedUploadStore {
   }
 
   private noteFile(key: string): string { return join(this.spoolDir, `note-${key}.json`); }
-  private noteStateFile(key: string, uploadId: string): string { return join(this.spoolDir, `note-${key}-${uploadId}.json`); }
-
-  private async readNoteJob(key: string): Promise<NoteJob | null> {
-    let claim: NoteJob;
-    try { claim = JSON.parse(await readFile(this.noteFile(key), "utf8")) as NoteJob; }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw error;
-    }
-    try { return JSON.parse(await readFile(this.noteStateFile(key, claim.uploadId), "utf8")) as NoteJob; }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return claim;
-      throw error;
-    }
-  }
-
-  private async waitForNoteJob(key: string): Promise<NoteJob | null> {
-    // The exclusive file may be visible before its first JSON write completes.
-    for (let attempt = 0; attempt < 20; attempt++) {
-      try { return await this.readNoteJob(key); }
-      catch (error) { if (!(error instanceof SyntaxError)) throw error; }
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    return null;
-  }
 
   private viewNoteJob(job: NoteJob): NoteJobView {
     return { status: job.state, upload_id: job.uploadId, ...(job.handle ? { id: job.handle } : {}) };
   }
 
   private async saveNoteJob(key: string, job: NoteJob): Promise<void> {
-    // State is scoped to the claimed upload. An old writer cannot replace a newer key's claim.
-    const file = this.noteStateFile(key, job.uploadId);
+    const file = this.noteFile(key);
     const temporary = `${file}.${randomUUID()}.tmp`;
     const handle = await open(temporary, "wx", 0o600);
     try { await handle.writeFile(JSON.stringify(job)); await handle.sync(); }
@@ -271,8 +253,6 @@ export class HostedUploadStore {
   }
 
   private async removeNoteJob(key: string): Promise<void> {
-    const job = this.noteJobs.get(key);
-    if (job) await rm(this.noteStateFile(key, job.uploadId), { force: true });
     await rm(this.noteFile(key), { force: true });
     this.noteJobs.delete(key);
   }
@@ -327,34 +307,105 @@ export class HostedUploadStore {
     private readonly outcomeLimits = { global: MAX_SETTLED_OUTCOMES, account: MAX_ACCOUNT_SETTLED_OUTCOMES },
   ) {}
 
-  /** Create the spool dir (0700) and reconcile records left by a dead owner. */
+  /** Take the process-wide writer lock before reading or changing any spool state. */
   async init(): Promise<void> {
+    if (this.spoolLock) throw new Error("[assemblyai-hosted] spool already initialized");
     await mkdir(this.spoolDir, { recursive: true, mode: 0o700 });
     await chmod(this.spoolDir, 0o700);
+    const lock = await open(join(this.spoolDir, ".hosted-writer.lock"), "a+", 0o600);
+    const libc = dlopen(process.platform === "darwin" ? "/usr/lib/libSystem.B.dylib" : "libc.so.6", {
+      flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+    });
+    // LOCK_EX | LOCK_NB. The open descriptor retains the kernel lock until close or process exit.
+    if (libc.symbols.flock(lock.fd, 2 | 4) !== 0) {
+      await lock.close();
+      libc.close();
+      throw new Error(`[startup] FATAL: hosted spool writer lock is held: ${this.spoolDir}; refusing hosted routes`);
+    }
+    this.spoolLock = lock;
+    libc.close();
+    try {
+      const marker = await open(join(this.spoolDir, ".hosted-boot-id"), "w", 0o600);
+      try { await marker.writeFile(this.bootId); await marker.sync(); }
+      finally { await marker.close(); }
+      const directory = await open(this.spoolDir, "r");
+      try { await directory.sync(); } finally { await directory.close(); }
+      await this.recover();
+    }
+    catch (error) { await this.close(); throw error; }
+  }
+
+  async close(): Promise<void> {
+    if (this.spoolLock) {
+      await this.spoolLock.close();
+      this.spoolLock = null;
+    }
+  }
+
+  /** Run once at boot, under the writer lock. Never retry an interrupted paid submission. */
+  private async recover(): Promise<void> {
     const names = await readdir(this.spoolDir);
-    const liveSpools = new Set<string>();
-    let incompleteClaim = false;
+    for (const name of names) {
+      const quarantined = /^note-([0-9a-f]{64})(?:-[^.]+)?\.json(?:\..+)?\.quarantine$/.exec(name);
+      if (quarantined) this.quarantinedKeys.add(quarantined[1]!);
+    }
+    // Legacy two-file records are read once and folded into the canonical single-file journal.
     for (const name of names) {
       if (/^note-[0-9a-f]{64}\.json$/.test(name)) {
         const key = name.slice(5, -5);
-        const job = await this.waitForNoteJob(key);
-        if (!job) { incompleteClaim = true; continue; }
-        if (job.state === "receiving" && job.ownerPid && job.ownerPid !== process.pid) {
-          let alive = true;
-          try { process.kill(job.ownerPid, 0); }
-          catch (error) { alive = (error as NodeJS.ErrnoException).code !== "ESRCH"; }
-          if (!alive) {
-            this.noteJobs.set(key, job);
-            await this.removeNoteJob(key);
-            continue;
-          }
+        let raw: unknown;
+        try { raw = JSON.parse(await readFile(this.noteFile(key), "utf8")); }
+        catch { this.quarantinedKeys.add(key); await this.quarantine(name); continue; }
+        if (!this.validNoteJob(key, raw)) { this.quarantinedKeys.add(key); await this.quarantine(name); continue; }
+        let job = raw;
+        const legacy = `note-${key}-${job.uploadId}.json`;
+        if (names.includes(legacy)) {
+          try {
+            const state: unknown = JSON.parse(await readFile(join(this.spoolDir, legacy), "utf8"));
+            if (!this.validNoteJob(key, state) || state.uploadId !== job.uploadId) throw new Error("invalid state");
+            job = state;
+          } catch { this.quarantinedKeys.add(key); await this.quarantine(legacy); await this.quarantine(name); continue; }
         }
-        // A running store may share this directory. Recovery must not erase its claim.
-        this.noteJobs.set(key, job.state === "submitting" ? { ...job, state: "uncertain" } : job);
-        if (job.state === "receiving") liveSpools.add(`${job.uploadId}.part`);
+        // A previous boot's receiving spool cannot prove which parts were durable. It is safe
+        // to restart the upload, but never to infer that a paid transcript POST was absent.
+        if (job.bootId !== this.bootId && (job.state === "receiving" || job.state === "submitting"))
+          job = { ...job, state: "uncertain" };
+        job = { ...job, bootId: this.bootId };
+        await this.saveNoteJob(key, job);
+        if (names.includes(legacy)) await rm(join(this.spoolDir, legacy), { force: true });
       }
     }
-    if (!incompleteClaim) for (const name of names) if (SPOOL_FILE_RE.test(name) && !liveSpools.has(name)) await rm(join(this.spoolDir, name), { force: true });
+    for (const name of names) {
+      const match = /^note-([0-9a-f]{64})-.+\.json$/.exec(name);
+      if (match && !this.noteJobs.has(match[1]!)) {
+        this.quarantinedKeys.add(match[1]!);
+        await this.quarantine(name);
+      }
+    }
+    for (const name of names) {
+      const partial = /^note-([0-9a-f]{64})\.json\..+\.tmp$/.exec(name);
+      if (partial) {
+        this.quarantinedKeys.add(partial[1]!);
+        await this.quarantine(name);
+      }
+    }
+    for (const name of names) if (SPOOL_FILE_RE.test(name)) await rm(join(this.spoolDir, name), { force: true });
+  }
+
+  private validNoteJob(key: string, value: unknown): value is NoteJob {
+    if (!value || typeof value !== "object") return false;
+    const job = value as Partial<NoteJob>;
+    return typeof job.address === "string" && ADDRESS_RE.test(job.address)
+      && typeof job.sourceId === "string" && job.sourceId.length > 0 && job.sourceId.length <= 256
+      && this.noteKey(job.address, job.sourceId) === key
+      && typeof job.uploadId === "string" && UPLOAD_ID_RE.test(job.uploadId)
+      && ["receiving", "submitting", "submitted", "uncertain", "deleted"].includes(job.state ?? "")
+      && (job.handle === undefined || typeof job.handle === "string");
+  }
+
+  private async quarantine(name: string): Promise<void> {
+    await rename(join(this.spoolDir, name), join(this.spoolDir, `${name}.${randomUUID()}.quarantine`));
+    console.error(`[assemblyai-hosted] quarantined invalid spool record ${name} alert=true`);
   }
 
   dailyBytesRemaining(address: string, nowMs: number): number {
@@ -372,12 +423,6 @@ export class HostedUploadStore {
    */
   async create(address: string, byteSize: number, contentType: string, nowMs: number, sourceId?: string): Promise<CreateUploadResult> {
     return this.withAccount(address, async () => {
-      if (sourceId) {
-        const key = this.noteKey(address, sourceId);
-        const persisted = await this.waitForNoteJob(key);
-        if (persisted) this.noteJobs.set(key, persisted);
-        else this.noteJobs.delete(key);
-      }
       if (sourceId && this.noteJob(address, sourceId)) {
         const job = this.noteJob(address, sourceId)!;
         const upload = this.uploads.get(job.upload_id);
@@ -387,6 +432,8 @@ export class HostedUploadStore {
         else if (["uncertain", "submitting"].includes(this.noteJob(address, sourceId)!.status)) return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
         else return { ok: true, job: this.noteJob(address, sourceId)! };
       }
+      if (sourceId && this.quarantinedKeys.has(this.noteKey(address, sourceId)))
+        return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
       return this.createLocked(address, byteSize, contentType, nowMs, sourceId);
     });
   }
@@ -439,22 +486,8 @@ export class HostedUploadStore {
       await handle.close();
       if (sourceId) {
         const key = this.noteKey(address, sourceId);
-        const job: NoteJob = { address, sourceId, uploadId: id, state: "receiving", ownerPid: process.pid };
-        let claim;
-        try { claim = await open(this.noteFile(key), "wx", 0o600); }
-        catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-          const winner = await this.waitForNoteJob(key);
-          this.uploads.delete(id);
-          this.charged.set(dayKey, used);
-          await rm(path, { force: true });
-          if (!winner) return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 1 };
-          this.noteJobs.set(key, winner);
-          return { ok: true, job: this.viewNoteJob(winner) };
-        }
-        try { await claim.writeFile(JSON.stringify(job)); await claim.sync(); }
-        finally { await claim.close(); }
-        this.noteJobs.set(key, job);
+        const job: NoteJob = { address, sourceId, uploadId: id, state: "receiving", bootId: this.bootId };
+        await this.saveNoteJob(key, job);
       }
     } catch (error) {
       this.uploads.delete(id);

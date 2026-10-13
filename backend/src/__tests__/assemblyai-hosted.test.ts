@@ -11,6 +11,8 @@
 
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import * as fsPromises from "node:fs/promises";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -111,6 +113,7 @@ async function setup(options: { answer?: Answer; config?: AssemblyAiHostedConfig
   const config = options.config === null ? ({ hosted: false, reason: "both_unset" } as const) : (options.config ?? hostedConfig(spoolDir, { dailyBytes: options.dailyBytes }));
   const store = config.hosted ? new HostedUploadStore(config.spoolDir, config.dailyBytes, options.maxConcurrent ?? 4, options.removeSpool, undefined, options.outcomeLimits) : null;
   await store?.init();
+  if (store) closers.push(() => store.close());
   const clock = { now: T0 };
   const calls: Upstream[] = [];
   const logs: { line: string; alert: boolean }[] = [];
@@ -188,7 +191,8 @@ async function setup(options: { answer?: Answer; config?: AssemblyAiHostedConfig
     return (await req("GET", `/hosted/uploads/${id}`, { as })).json;
   }
 
-  return { base, tokenFor, req, createUpload, upload, submit, calls, logs, clock, store, spoolDir, spoolFiles: () => readdirSync(spoolDir) };
+  return { base, tokenFor, req, createUpload, upload, submit, calls, logs, clock, store, spoolDir,
+    spoolFiles: () => readdirSync(spoolDir).filter((name) => name !== ".hosted-writer.lock" && name !== ".hosted-boot-id") };
 }
 
 function audio(bytes: number): Uint8Array {
@@ -198,40 +202,36 @@ function audio(bytes: number): Uint8Array {
 }
 
 describe("Exo note idempotency", () => {
-  test("two stores racing on one spool claim one upload and one paid submission", async () => {
+  test("partial records are quarantined and cannot authorize another paid submission after reboot", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinychat-assemblyai-partial-"));
+    closers.push(() => rmSync(dir, { recursive: true, force: true }));
+    const sourceId = "partial-note";
+    const key = createHash("sha256").update(JSON.stringify([ADDRESS_A, sourceId])).digest("hex");
+    writeFileSync(join(dir, `note-${key}.json`), '{"address":');
+    const first = new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await first.init();
+    expect(readdirSync(dir).some((name) => name.startsWith(`note-${key}.json.`) && name.endsWith(".quarantine"))).toBe(true);
+    expect(await first.create(ADDRESS_A, 3, "audio/mp4", T0, sourceId)).toMatchObject({ ok: false, code: "assemblyai_busy" });
+    await first.close();
+    const restarted = new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await restarted.init();
+    expect(await restarted.create(ADDRESS_A, 3, "audio/mp4", T0, sourceId)).toMatchObject({ ok: false, code: "assemblyai_busy" });
+    await restarted.close();
+  });
+
+  test("a second writer is denied until the first releases the spool lock", async () => {
     const dir = mkdtempSync(join(tmpdir(), "tinychat-assemblyai-race-"));
     closers.push(() => rmSync(dir, { recursive: true, force: true }));
     const first = new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4);
     const second = new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4);
-    await Promise.all([first.init(), second.init()]);
-    const results = await Promise.all([
-      first.create(ADDRESS_A, 3, "audio/mp4", T0, "race-note"),
-      second.create(ADDRESS_A, 3, "audio/mp4", T0, "race-note"),
-    ]);
-    const owners = results.filter((result): result is Extract<typeof result, { ok: true; upload: unknown }> => result.ok && "upload" in result);
-    const followers = results.filter((result): result is Extract<typeof result, { ok: true; job: unknown }> => result.ok && "job" in result);
-    expect(owners).toHaveLength(1);
-    expect(followers).toHaveLength(1);
-    expect(followers[0]!.job.upload_id).toBe(owners[0]!.upload.id);
-
-    const owner = results[0] === owners[0] ? first : second;
-    const upload = owners[0]!.upload;
-    const joining = new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4);
-    await joining.init();
-    expect(statSync(upload.path).size).toBe(0);
-    await owner.writePart(upload, 0, audio(3));
-    let uploads = 0;
-    let submissions = 0;
-    await owner.submitIfComplete(upload, () => T0, async () => {
-      uploads++;
-      submissions++;
-      return { status: "submitted", handle: issueHandle(HANDLE_KEY, TRANSCRIPT_ID, ADDRESS_A, T0) };
-    });
-    await owner.idle();
-    expect([uploads, submissions]).toEqual([1, 1]);
-    const restarted = new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4);
-    await restarted.init();
-    expect(restarted.noteJob(ADDRESS_A, "race-note")).toMatchObject({ status: "submitted", upload_id: upload.id });
+    await first.init();
+    await expect(second.init()).rejects.toThrow("hosted spool writer lock is held");
+    const child = Bun.spawn([process.execPath, "-e", `import { HostedUploadStore } from ${JSON.stringify(new URL("../services/assemblyai-hosted.ts", import.meta.url).href)}; await new HostedUploadStore(${JSON.stringify(dir)}, 1000, 4).init()`], { stdout: "pipe", stderr: "pipe" });
+    expect(await child.exited).not.toBe(0);
+    expect(await new Response(child.stderr).text()).toContain("hosted spool writer lock is held");
+    await first.close();
+    await second.init();
+    await second.close();
   });
 
   test("concurrent creates share one account-and-source upload; another account is separate", async () => {
@@ -260,9 +260,11 @@ describe("Exo note idempotency", () => {
     expect(typeof handle).toBe("string");
     expect((await h.req("POST", "/hosted/transcripts", { body })).json.id).toBe(handle);
     expect(h.calls.filter((call) => call.url.endsWith("/v2/transcript") && call.method === "POST")).toHaveLength(1);
+    await h.store!.close();
     const restarted = new HostedUploadStore(h.spoolDir, DEFAULT_DAILY_BYTES, 4);
     await restarted.init();
     expect(restarted.noteJob(ADDRESS_A, "note-1")).toMatchObject({ status: "submitted", upload_id: id, id: handle });
+    await restarted.close();
   });
 
   test("a restart with a paid submission in flight retains an uncertain key", async () => {
@@ -270,10 +272,12 @@ describe("Exo note idempotency", () => {
     const result = await h.store!.create(ADDRESS_A, 3, "audio/mp4", T0, "note-1");
     if (!result.ok) throw new Error("create failed");
     await h.store!.markNoteSubmitting(result.upload);
+    await h.store!.close();
     const restarted = new HostedUploadStore(h.spoolDir, DEFAULT_DAILY_BYTES, 4);
     await restarted.init();
     expect(restarted.noteJob(ADDRESS_A, "note-1")?.status).toBe("uncertain");
     expect((await restarted.create(ADDRESS_A, 3, "audio/mp4", T0, "note-1")).ok).toBe(false);
+    await restarted.close();
   });
 });
 
@@ -578,7 +582,10 @@ describe("uploads and parts", () => {
     const h = await setup();
     await h.createUpload(100);
     expect(h.spoolFiles()).toHaveLength(1);
-    await new HostedUploadStore(h.spoolDir, DEFAULT_DAILY_BYTES, 4).init();
+    await h.store!.close();
+    const restarted = new HostedUploadStore(h.spoolDir, DEFAULT_DAILY_BYTES, 4);
+    await restarted.init();
+    await restarted.close();
     expect(h.spoolFiles()).toEqual([]);
   });
 });
