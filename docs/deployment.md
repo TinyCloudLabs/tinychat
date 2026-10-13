@@ -543,8 +543,11 @@ nothing below may be reported as done on its behalf.
   still defaults to `3014`.
 - **No published port (TC-1012):** `docker-compose.phala.yml` does not publish
   `3001`; only `dstack-ingress` reaches it over the compose network. The deploy
-  workflow fails if `https://<app_id>-3001.<gateway>/health` returns any HTTP
-  status.
+  workflow refuses (before `phala deploy`) any ref whose compose publishes
+  `tinychat-backend` ports, so rolling back to a pre-TC-1012 release needs the
+  ports removal cherry-picked onto it first. After the new build is live it also
+  requires `https://<app_id>-3001.<gateway>/health` to be closed (TLS accepted,
+  no HTTP response) and fails on any HTTP status.
 - **CORS:** the backend allows `FRONTEND_URL`, Exo's fixed Tauri origins, the
   TinyChat Cloudflare Pages project (`*.tinychat-4jq.pages.dev`), and the exact
   documented local origins on port `5186`. Production must still set
