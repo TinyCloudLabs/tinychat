@@ -42,9 +42,11 @@ import { __resetCaptureEngineForTests, __setInstalledEngineForTests, captureCapa
 import { __setVoiceNotesForTests, VoiceNotes, type LocalTranscript, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
 import { readTranscriptCommit } from "./voiceNoteCommits";
+import { resolveVoiceNoteRow } from "./voiceNoteRows";
 import { pendingStore } from "./recorderSaves";
 import { advanceAccountGeneration } from "./accountContext";
 import {
+  readVoiceNoteForTranscription,
   VOICE_NOTE_SOURCE,
   listVoiceNotes,
   saveVoiceNote as storeVoiceNote,
@@ -1228,6 +1230,10 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} })
       .catch((e: unknown) => e);
     expect(voiceNoteTranscriptionFailure(err)).toEqual(expect.objectContaining({ code: "transcript_save_failed", retryable: true }));
+    const failed = await readVoiceNoteForTranscription(space.tcw, "rec-1");
+    expect(failed.ok && failed.data?.transcript).toEqual({ status: "failed", preview: null });
+    const errorRow = await resolveVoiceNoteRow(space.tcw, "rec-1");
+    expect(errorRow?.metadata.transcription_error_code).toBe("transcript_save_failed");
     expect(h.removed).toEqual([]);
     expect(h.pending.read("rec-1")?.transcriptionId).toBe(ID);
 

@@ -7,7 +7,7 @@ import { currentAccountGeneration } from "./accountContext";
 import { nativeRecordingSource, VoiceNotes, type LocalTranscript, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { createVoiceNoteRow } from "./voiceNoteRows";
-import { loadVoiceNoteAudio, readVoiceNoteForTranscription, saveVoiceNoteTranscript, voiceNoteTitle } from "./voiceNoteStore";
+import { loadVoiceNoteAudio, patchVoiceNoteTranscriptionFailure, readVoiceNoteForTranscription, saveVoiceNoteTranscript, voiceNoteTitle } from "./voiceNoteStore";
 import type { VoiceNoteTranscriptionStatus, NoteTranscriptionState } from "./voiceNoteTranscription";
 import { withHostedUploadQueue } from "../hostedUploadQueue";
 
@@ -197,6 +197,13 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       notify();
     } catch (error) {
       logPipelineError("transcription", error, id);
+      const current = currentAccountGeneration() === generation && tcw().did === did;
+      const clientForFailure = current ? tcw() : null;
+      if (clientForFailure && typeof clientForFailure.sql?.db === "function") {
+        const code = error instanceof AssemblyAiError ? error.kind : "transcription_error";
+        try { await patchVoiceNoteTranscriptionFailure(clientForFailure, id, code); }
+        catch (persistError) { console.warn("[HostedVoiceNotes] Could not persist transcription failure", persistError); }
+      }
       const message = error instanceof AssemblyAiError ? error.message
         : error instanceof Error && error.message.startsWith("The transcript is ready") ? error.message
         : "Powerful couldn't finish this transcript. Try again.";

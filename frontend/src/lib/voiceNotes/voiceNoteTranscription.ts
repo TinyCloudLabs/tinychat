@@ -48,6 +48,7 @@ import {
 } from "./voiceNoteAudio";
 import {
   loadVoiceNoteAudio,
+  patchVoiceNoteTranscriptionFailure,
   readVoiceNoteForTranscription,
   saveVoiceNoteTranscript,
   VOICE_NOTE_AUDIO_TOO_LARGE,
@@ -1134,7 +1135,7 @@ export async function transcribeVoiceNote(args: {
     await finish();
     throw new PrivateCloudError("transcription_off", "This note was not recorded for private-cloud transcription");
   }
-  if (note.data.transcript.status !== "none") {
+  if (note.data.transcript.status === "transcribed" || note.data.transcript.status === "no_speech") {
     await finish();
     return note.data.transcript.status;
   }
@@ -1241,7 +1242,13 @@ export async function transcribeVoiceNote(args: {
       report,
     ));
   } catch (err) {
-    if (voiceNoteErrorCode(err) !== "no_speech") throw err;
+    if (voiceNoteErrorCode(err) !== "no_speech") {
+      if (stillCurrent()) {
+        try { await patchVoiceNoteTranscriptionFailure(tcw, sourceId, voiceNoteErrorCode(err)); }
+        catch (persistError) { logPipelineError("[VoiceNotes] Could not persist the transcription failure", persistError); }
+      }
+      throw err;
+    }
     // Silence is an outcome, not a failure: recorded so the note is not offered again.
     await save(noSpeechTranscript(transcribedAt(), rev));
     await finish(err instanceof PrivateCloudError ? err.transcriptionId : null);
@@ -1253,6 +1260,10 @@ export async function transcribeVoiceNote(args: {
     await save(prepared);
   } catch (err) {
     if (err instanceof PrivateCloudError && err.code === "voice_note_not_found") await finish(transcriptionId);
+    if (stillCurrent()) {
+      try { await patchVoiceNoteTranscriptionFailure(tcw, sourceId, voiceNoteErrorCode(err)); }
+      catch (persistError) { logPipelineError("[VoiceNotes] Could not persist the transcript-save failure", persistError); }
+    }
     // Otherwise the job keeps its transcript: Retry re-joins it and saves again.
     throw err;
   }

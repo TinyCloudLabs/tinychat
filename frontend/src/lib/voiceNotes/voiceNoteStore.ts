@@ -57,7 +57,7 @@ import type { VoiceNoteRecording } from "./nativeVoiceNotes";
 import type { LocalTranscript } from "./nativeVoiceNotes";
 import { readLegacyTranscriptWinner, readTranscriptCommit, legacyTranscriptMetadata, type TranscriptCommit } from "./voiceNoteCommits";
 import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio,
-  patchVoiceNoteMarkdown, resolveVoiceNoteRow } from "./voiceNoteRows";
+  patchVoiceNoteMarkdown, patchVoiceNoteTranscriptionFailure as patchTranscriptionFailureRow, resolveVoiceNoteRow } from "./voiceNoteRows";
 import { runOnSpaceLane } from "../spaceWriteLane";
 import { withVoiceNoteReadDeadline, withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { currentAccountGeneration, isVoiceNoteAccountMounted, StaleAccountContext } from "./accountContext";
@@ -69,6 +69,12 @@ export const VOICE_NOTE_SOURCE = "exo-voice-note";
 
 /** Human label for the Library chip. */
 export const VOICE_NOTE_SOURCE_LABEL = "Voice note";
+export async function patchVoiceNoteTranscriptionFailure(tcw: TinyCloudWeb, sourceId: string, errorCode: string,
+  checkpoint: () => void = () => undefined): Promise<void> {
+  await patchTranscriptionFailureRow(tcw, sourceId, errorCode, checkpoint);
+  captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId });
+}
+
 
 /**
  * The note's audio base key: its parts are under `${base}/p/`, its manifest at
@@ -314,9 +320,9 @@ export interface VoiceNoteAudio {
   nativeFileId?: string;
 }
 
-/** Where a note's transcript stands, from its row's metadata. */
+/** Where a note's transcription stands, from its row's metadata. */
 export interface VoiceNoteTranscriptState {
-  status: "none" | "transcribed" | "no_speech";
+  status: "none" | "pending" | "failed" | "skipped" | "transcribed" | "no_speech";
   /** The start of the transcript text, for the card; the full text is in Library. */
   preview: string | null;
 }
@@ -343,7 +349,7 @@ export function voiceNoteTranscriptState(metadata: unknown, commit?: TranscriptC
       parsed = null;
     }
   }
-  if (!parsed || typeof parsed !== "object") return { status: "none", preview: null };
+  if (!parsed || typeof parsed !== "object") return { status: "pending", preview: null };
   const m = parsed as Record<string, unknown>;
   if (m.transcription_outcome === "no_speech") return { status: "no_speech", preview: null };
   if (m.transcription_outcome === "transcribed") {
@@ -352,6 +358,8 @@ export function voiceNoteTranscriptState(metadata: unknown, commit?: TranscriptC
       ? text.length > TRANSCRIPT_PREVIEW_CHARS ? `${text.slice(0, TRANSCRIPT_PREVIEW_CHARS).trimEnd()}…` : text
       : null };
   }
+  if (m.transcription_outcome === "failed") return { status: "failed", preview: null };
+  if (m.transcription_outcome === "skipped") return { status: "skipped", preview: null };
   if (typeof m.transcript_text === "string" && m.transcript_text.trim().length > 0) {
     const text = m.transcript_text.trim();
     return {
@@ -359,7 +367,7 @@ export function voiceNoteTranscriptState(metadata: unknown, commit?: TranscriptC
       preview: text.length > TRANSCRIPT_PREVIEW_CHARS ? `${text.slice(0, TRANSCRIPT_PREVIEW_CHARS).trimEnd()}…` : text,
     };
   }
-  return { status: "none", preview: null };
+  return { status: "pending", preview: null };
 }
 
 export async function readVoiceNoteTranscriptState(tcw: TinyCloudWeb, sourceId: string): Promise<VoiceNoteTranscriptState> {

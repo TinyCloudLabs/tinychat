@@ -7,7 +7,7 @@
 // does for its own source.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import { localTranscriptToSave, saveVoiceNoteTranscript } from "./voiceNoteStore";
+import { localTranscriptToSave, patchVoiceNoteTranscriptionFailure, saveVoiceNoteTranscript } from "./voiceNoteStore";
 import { VoiceNotes, type LocalTranscript, type NoteSttState } from "./nativeVoiceNotes";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { LOCAL_COPY } from "./notePipelineCopy";
@@ -65,11 +65,25 @@ function publish(key: string, next: OnDeviceTranscriptSyncState | null): void {
  */
 export function syncOnDeviceTranscript(
   tcw: TinyCloudWeb,
-  recording: { id: string; owner?: string | null; ledger?: { audio: { state: string; rowId?: string | null } }; stt?: Pick<NoteSttState, "state"> },
+  recording: { id: string; owner?: string | null; ledger?: { audio: { state: string; rowId?: string | null } }; stt?: Pick<NoteSttState, "state"> & Partial<Pick<NoteSttState, "error">> },
   requestedAccount: AccountContext = captureAccountContext(tcw),
 ): Promise<boolean> {
   if (recording.ledger?.audio.state !== "saved" && !recording.ledger?.audio.rowId) return Promise.resolve(false);
   const key = syncKey(tcw, recording.id);
+  if (recording.stt?.state === "failed") {
+    return enqueue(key, async () => {
+      if (!isCurrent(tcw, requestedAccount)) { abandonSync(key, recording.id, tcw); return true; }
+      try {
+        await patchVoiceNoteTranscriptionFailure(tcw, recording.id, "on_device_transcription_failed",
+          checkpoint(tcw, requestedAccount));
+        return false;
+      } catch (error) {
+        if (!isCurrent(tcw, requestedAccount)) { abandonSync(key, recording.id, tcw); return true; }
+        console.warn("[OnDeviceStt] Could not persist the local transcription failure", error);
+        return false;
+      }
+    });
+  }
   const expected = recording.stt?.state === "done";
   return enqueue(key, async () => {
     const abandoned = await syncOnce(tcw, key, recording.id, expected, requestedAccount);

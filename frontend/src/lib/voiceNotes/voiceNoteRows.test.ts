@@ -10,7 +10,7 @@ import { CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connec
 import { SQL_MEETING_METADATA_QUERY } from "../meetingChat/corpus";
 import { legacyTranscriptWinner, readTranscriptCommit, voiceNoteTranscriptLocator } from "./voiceNoteCommits";
 import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio,
-  reconcileDuplicates, sweepArchived, transcriptHash, transcriptRevKvKey } from "./voiceNoteRows";
+  patchVoiceNoteTranscriptionFailure, reconcileDuplicates, resolveVoiceNoteRow, sweepArchived, transcriptHash, transcriptRevKvKey } from "./voiceNoteRows";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __setVoiceNotesForTests, VoiceNotes } from "./nativeVoiceNotes";
 import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
@@ -196,6 +196,30 @@ describe("voice-note identity and transcript authority", () => {
       mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Voice note");
     expect(row.id).toBe("old-random-id");
     expect(sqlite.query("SELECT id FROM connector_meeting WHERE source_id = 'rec'").all()).toHaveLength(1);
+  });
+  test("new rows start pending and an off capture is recorded as skipped", async () => {
+    const { tcw, sqlite } = space();
+    await ensureSchema(tcw);
+    const pending = await createVoiceNoteRow(tcw, { id: "pending", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Pending note");
+    const skipped = await createVoiceNoteRow(tcw, { id: "skipped", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+      options: { transcriber: "off", identifySpeakers: false } }, "Skipped note");
+    expect(pending.metadata.transcription_outcome).toBe("pending");
+    expect(skipped.metadata.transcription_outcome).toBe("skipped");
+    expect(sqlite.query("SELECT COUNT(*) AS count FROM connector_meeting WHERE source='exo-voice-note'").get())
+      .toEqual({ count: 2 });
+  });
+  test("failed transcription is stored with its error code", async () => {
+    const { tcw } = space();
+    await ensureSchema(tcw);
+    await createVoiceNoteRow(tcw, { id: "failed", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Failed note");
+    await patchVoiceNoteTranscriptionFailure(tcw, "failed", "recording_too_large");
+    expect((await resolveVoiceNoteRow(tcw, "failed"))?.metadata).toMatchObject({
+      transcription_outcome: "failed",
+      transcription_error_code: "recording_too_large",
+    });
   });
 
   test("authorization is sign-in-again, while persistent constraints block after three rounds", async () => {
