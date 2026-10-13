@@ -65,7 +65,7 @@ Allowed transitions:
 - `NULL → pending | skipped` when a row is created. Re-save initialization runs only when the insert did not happen, and only for rows without non-blank legacy `transcript_text`. `skipped` means capture selected transcription `off`.
 - `NULL → failed` is allowed only when the row has no non-blank legacy `transcript_text`; `pending | skipped | failed → failed` records a real transcription-attempt failure. Deferrals remain `pending`.
 - Any non-terminal outcome → `transcribed | no_speech` only through the transcript commit mirror.
-- `transcribed` and `no_speech` are terminal and never move back to a non-terminal outcome.
+- `transcribed` and `no_speech` never move back to a non-terminal outcome. A higher-revision commit may replace one terminal outcome with the other.
 - `sweepArchived` may copy a legacy winner's outcome to the canonical row when repairing archived duplicates; the re-save initialization above also writes an outcome. Both preserve legacy transcript evidence.
 
 The `voice_note_transcript` commit table is authoritative whenever it exists; `connector_meeting.metadata.transcription_outcome` is a compatibility mirror/hint. The public readers also recognize legacy transcript text and the terminal legacy winner when no commit exists. The commit's body key and outcome win over stale metadata.

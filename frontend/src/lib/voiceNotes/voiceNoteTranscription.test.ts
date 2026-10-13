@@ -1206,6 +1206,27 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     });
   });
 
+  test("persists failure on the reindexed keeper in a cold pre-index space", async () => {
+    const space = sqliteSpace();
+    await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android");
+    space.sqlite.exec("DROP INDEX uq_connector_meeting_voice_note");
+    space.sqlite.prepare(`INSERT INTO connector_meeting
+      (id, source, source_id, title, started_at, duration_secs, organizer_email, participants,
+       summary_overview, summary_action_items, keywords, meeting_type, metadata, created_at, updated_at)
+      SELECT 'a-keeper', source, source_id, title, started_at, duration_secs, organizer_email, participants,
+       summary_overview, summary_action_items, keywords, meeting_type, metadata, created_at, updated_at
+      FROM connector_meeting WHERE id = 'vn-rec-1'`).run();
+    _resetConnectorSchemaMemoForTests();
+    const coldTcw = { ...space.tcw } as never;
+    const h = harness({});
+    h.cloud.transcribe = async () => { throw new PrivateCloudError("service_busy", "busy"); };
+    await expect(transcribeVoiceNote({ tcw: coldTcw, cloud: h.cloud, capabilities: CAPS,
+      explicit: true, sourceId: "rec-1", report: () => {} })).rejects.toMatchObject({ code: "service_busy" });
+    expect(await resolveVoiceNoteRow(coldTcw, "rec-1")).toMatchObject({
+      id: "a-keeper", metadata: { transcription_outcome: "failed", transcription_error_code: "service_busy" },
+    });
+  });
+
   test("a failure SELECT followed by an account switch cancels its queued UPDATE", async () => {
     const space = sqliteSpace();
     await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android");

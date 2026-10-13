@@ -274,12 +274,13 @@ export async function patchVoiceNoteTranscriptionFailure(tcw: TinyCloudWeb, sour
   checkpoint: () => void = () => undefined): Promise<void> {
   if (["audio_upload_pending", "transcription_off", "upload_outcome_unknown", "account_changed",
     "active_transcription_exists"].includes(errorCode)) return;
-  const row = await resolveVoiceNoteRow(tcw, sourceId, checkpoint);
-  if (!row) return;
+  checkpoint();
   const identity = await ensureVoiceNoteIdentity(tcw, checkpoint);
   if (identity.status !== "established") {
     throw Object.assign(new Error(identity.reason ?? "Voice-note schema setup failed"), { code: identity.status });
   }
+  const row = await resolveVoiceNoteRow(tcw, sourceId, checkpoint);
+  if (!row) return;
   await execute(tcw, `UPDATE connector_meeting SET metadata = json_set(COALESCE(metadata,'{}'),
     '$.transcription_outcome', 'failed', '$.transcription_error_code', ?), updated_at = ?
     WHERE id = ? AND source = 'exo-voice-note'
