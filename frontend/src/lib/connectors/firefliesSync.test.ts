@@ -46,7 +46,7 @@ class FakeStore implements SyncStore {
   rejectBodyFor: string | null = null;
   countCalls = 0;
   updateCalls = 0;
-  ensureSchemaError: Error | null = null;
+  countThrows = false;
   rejectAttempt = false;
   /** Optional hook so a test can throw at insertMeeting boundary (per-item error). */
   insertHook: ((m: NormalizedMeeting) => void) | null = null;
@@ -114,6 +114,7 @@ class FakeStore implements SyncStore {
 
   async countMeetings(_: TinyCloudWeb, source: string): Promise<StoreResult<number>> {
     this.countCalls++;
+    if (this.countThrows) throw new Error("count exploded");
     return ok(this.meetings.filter((m) => m.source === source).length);
   }
   async getConnection(): Promise<StoreResult<ConnectorConnection | null>> {
@@ -156,7 +157,7 @@ interface MockClientOptions {
   /** IDs returned newest-first, as Fireflies listings provide them. */
   newIds: string[];
   getTranscript: (id: string) => FirefliesResult<FirefliesTranscript>;
-  listError?: FirefliesResult<{ ids: string[]; complete: boolean }>;
+  listError?: FirefliesResult<{ ids: string[]; complete: boolean; nextSkip: number | null }>;
   delayMs?: number;
 }
 
@@ -172,6 +173,7 @@ function makeClient(opts: MockClientOptions): { client: SyncClient; fetches: str
         data: {
           ids: opts.newIds.slice(0, cap),
           complete: opts.newIds.length <= cap,
+          nextSkip: opts.newIds.length <= cap ? null : cap,
         },
       };
     },
@@ -206,9 +208,12 @@ function makeRealClient(
     onGet?: (id: string) => void;
     onList?: () => Promise<void>;
     holdGet?: Promise<void>;
+    excessiveRateLimitId?: string;
+    graphqlRateLimitId?: string;
   } = {},
 ): { client: FirefliesClient; fetches: string[]; listCalls: () => number } {
   const fetches: string[] = [];
+  const retryAfter = new Date(Date.now() + 61_000).toISOString();
   let listCalls = 0;
   const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
     const request = JSON.parse(String(init?.body)) as {
@@ -232,6 +237,14 @@ function makeRealClient(
     const id = request.variables?.id ?? "";
     fetches.push(id);
     options.onGet?.(id);
+    if (id === options.excessiveRateLimitId) {
+      return new Response("rate limit", { status: 429, headers: { "retry-after": "61" } });
+    }
+    if (id === options.graphqlRateLimitId) {
+      return new Response(JSON.stringify({
+        errors: [{ message: `Rate limit. Retry after ${retryAfter}` }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
     if (options.holdGet) {
       const signal = init?.signal;
       if (!signal) {
@@ -876,6 +889,54 @@ describe("Fireflies disconnect cancels a running client engine", () => {
     expect(store.meetings).toEqual([]);
     expect(store.state).toBeNull();
     expect(store.connectionStatus).toBeNull();
+  });
+});
+describe("Fireflies sync refuses disconnected non-Connect writes", () => {
+  test("a non-Connect run does not list or write when the connector is disconnected", async () => {
+    const store = new FakeStore();
+    store.connectionStatus = "disconnected";
+    const { client, fetches, listCalls } = makeRealClient(["meeting"]);
+
+    const result = await syncFireflies({ client, store, tcw: fakeTcw() });
+
+    expect(result.ok).toBe(false);
+    expect(fetches).toEqual([]);
+    expect(listCalls()).toBe(0);
+    expect(store.meetings).toEqual([]);
+    expect(store.stateWrites).toEqual([]);
+  });
+
+  test("COUNT failures resolve to a storage result instead of rejecting", async () => {
+    const store = new FakeStore();
+    store.countThrows = true;
+    const { client } = makeRealClient(["meeting"]);
+
+    const result = await syncFireflies({ client, store, tcw: fakeTcw() });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.kind).toBe("storage");
+  });
+});
+
+describe("Fireflies detail cooldown stops the run", () => {
+  test("first excessive HTTP or GraphQL cooldown stops the detail loop as partial", async () => {
+    for (const kind of ["http", "graphql"] as const) {
+      const store = new FakeStore();
+      const failedId = "oldest";
+      const { client, fetches } = makeRealClient(
+        ["newest", "middle", failedId],
+        kind === "http"
+          ? { excessiveRateLimitId: failedId }
+          : { graphqlRateLimitId: failedId },
+      );
+
+      const result = await syncFireflies({ client, store, tcw: fakeTcw() });
+      if (!result.ok) throw new Error(JSON.stringify(result.error));
+      expect(result.ok).toBe(true);
+      expect(fetches).toEqual([failedId]);
+      expect(store.state?.lastSyncStatus).toBe("partial");
+      expect(store.meetings).toEqual([]);
+    }
   });
 });
 describe("Fireflies final state guard", () => {

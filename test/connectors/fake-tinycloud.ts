@@ -421,6 +421,7 @@ export class FakeKv {
   entries = new Map<string, string>();
   /** Every key rejected by the authorizer — drivers can assert on the shape. */
   readonly unauthorized: string[] = [];
+  putHook: ((key: string, value: unknown) => Promise<void>) | null = null;
 
   /** Authorization runs before any storage effect, exactly like the node. */
   private deny(key: string): KvErr | null {
@@ -443,12 +444,22 @@ export class FakeKv {
     return { ok: true, data: { data: this.entries.get(key), headers: {} } };
   }
 
+  async head(key: string): Promise<OkErr<{ data: void; headers: Record<string, string> }, KvErr>> {
+    const denied = this.deny(key);
+    if (denied) return { ok: false, error: denied };
+    if (!this.entries.has(key)) {
+      return { ok: false, error: { code: "KV_NOT_FOUND", message: `no key ${key}` } };
+    }
+    return { ok: true, data: { data: undefined as unknown as void, headers: {} } };
+  }
+
   async put(
     key: string,
     value: unknown,
   ): Promise<OkErr<{ data: void; headers: Record<string, string> }, KvErr>> {
     const denied = this.deny(key);
     if (denied) return { ok: false, error: denied };
+    await this.putHook?.(key, value);
     const stored = typeof value === "string" ? value : JSON.stringify(value);
     this.entries.set(key, stored);
     return {

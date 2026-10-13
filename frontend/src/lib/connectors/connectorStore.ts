@@ -52,8 +52,9 @@ export interface FirefliesAttempt {
   v: 1;
   lastAttemptAt: string;
   lastAttemptStatus: "running" | "ok" | "partial" | "error";
+  /** Provider listing offset to resume when the prior run exhausted its budget. */
+  listingSkip?: number | null;
 }
-
 export async function getFirefliesAttempt(
   tcw: TinyCloudWeb,
 ): Promise<StoreResult<FirefliesAttempt | null>> {
@@ -72,10 +73,12 @@ export async function getFirefliesAttempt(
     return { ok: true, data: null };
   }
   const row = value as Record<string, unknown>;
+  const skip = row.listing_skip;
   if (row.v !== 1
     || typeof row.last_attempt_at !== "string"
     || (row.last_attempt_status !== "running" && row.last_attempt_status !== "ok"
-      && row.last_attempt_status !== "partial" && row.last_attempt_status !== "error")) {
+      && row.last_attempt_status !== "partial" && row.last_attempt_status !== "error")
+    || (skip !== undefined && skip !== null && (!Number.isSafeInteger(skip) || (skip as number) < 0))) {
     return { ok: true, data: null };
   }
   return {
@@ -84,6 +87,7 @@ export async function getFirefliesAttempt(
       v: 1,
       lastAttemptAt: row.last_attempt_at,
       lastAttemptStatus: row.last_attempt_status,
+      ...(typeof skip === "number" ? { listingSkip: skip } : skip === null ? { listingSkip: null } : {}),
     },
   };
 }
@@ -96,6 +100,7 @@ export async function recordFirefliesAttempt(
     v: 1,
     last_attempt_at: attempt.lastAttemptAt,
     last_attempt_status: attempt.lastAttemptStatus,
+    ...(attempt.listingSkip === undefined ? {} : { listing_skip: attempt.listingSkip }),
   }));
   if (!res.ok) return fail(res.error, "recordFirefliesAttempt");
   return { ok: true, data: undefined };
@@ -665,7 +670,7 @@ export async function hasTranscriptBody(
   source: string,
   sourceId: string,
 ): Promise<StoreResult<boolean>> {
-  const existing = await tcw.kv.get(transcriptKvKey(source, sourceId));
+  const existing = await tcw.kv.head(transcriptKvKey(source, sourceId));
   if (existing.ok) return { ok: true, data: true };
   if (/NOT_FOUND/i.test(existing.error.code ?? "")) return { ok: true, data: false };
   return fail(existing.error, "hasTranscriptBody");

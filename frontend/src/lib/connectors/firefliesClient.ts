@@ -152,6 +152,8 @@ export interface FirefliesListing {
   ids: string[];
   /** True only after the date cutoff or the true end of history is reached. */
   complete: boolean;
+  /** Offset for the next bounded run; null once history is complete. */
+  nextSkip: number | null;
 }
 
 export interface ListNewTranscriptIdsOptions {
@@ -161,6 +163,8 @@ export interface ListNewTranscriptIdsOptions {
   detailCap?: number;
   /** Maximum provider listing pages per run. */
   pageBudget?: number;
+  /** Resume a persisted bounded listing at this provider offset. */
+  startSkip?: number;
   /** Exclusive date cutoff; older summaries complete the listing. */
   stopBeforeDate?: string | null;
   /** A known SQL row without a stored body is not complete and must be repaired. */
@@ -334,7 +338,9 @@ export class FirefliesClient {
       : new Set<string>(opts.knownIds);
     const ids: string[] = [];
     const cutoff = opts.stopBeforeDate ? Date.parse(opts.stopBeforeDate) : Number.NaN;
-    let skip = 0;
+    let skip = Number.isSafeInteger(opts.startSkip) && (opts.startSkip ?? 0) >= 0
+      ? opts.startSkip!
+      : 0;
     let pages = 0;
     let complete = false;
 
@@ -361,6 +367,7 @@ export class FirefliesClient {
       }
 
       let hitDateBoundary = false;
+      let consumed = 0;
       for (const summary of page) {
         if (Number.isFinite(cutoff)) {
           const date = firefliesDateMs(summary.date);
@@ -369,6 +376,7 @@ export class FirefliesClient {
             break;
           }
         }
+        consumed++;
         if (typeof summary.id !== "string") continue;
         if (known.has(summary.id) && (await opts.isKnownComplete?.(summary.id) ?? true)) continue;
         ids.push(summary.id);
@@ -376,6 +384,7 @@ export class FirefliesClient {
       }
 
       opts.onProgress?.({ phase: "listing", done: ids.length, total: null });
+      skip += consumed;
       if (hitDateBoundary) {
         complete = true;
         break;
@@ -384,10 +393,10 @@ export class FirefliesClient {
         complete = true;
         break;
       }
-      skip += page.length;
-    }
+      if (consumed < page.length) break;
 
-    return { ok: true, data: { ids, complete } };
+    }
+    return { ok: true, data: { ids, complete, nextSkip: complete ? null : skip } };
   }
 
   private async request<T>(

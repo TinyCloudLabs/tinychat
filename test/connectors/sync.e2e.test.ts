@@ -28,8 +28,8 @@ import {
   firefliesAttemptKvKey,
   transcriptKvKey,
 } from "../../frontend/src/lib/connectors/connectorStore";
+import { initialDisconnectProgress, runDisconnect, type DisconnectDeps } from "../../frontend/src/lib/connectors/connectorLifecycle";
 import { syncFireflies } from "../../frontend/src/lib/connectors/firefliesSync";
-
 import { makeFakeTinyCloud } from "./fake-tinycloud";
 import {
   DURATION_MISMATCH_INDEX,
@@ -334,6 +334,7 @@ describe("sync e2e (spec §10 driver 2)", () => {
       client,
       store: connectorStore,
       tcw: fake.tcw,
+      allowMissingConnection: true,
     });
     expect(res.ok).toBe(true);
 
@@ -399,5 +400,159 @@ describe("sync e2e (spec §10 driver 2)", () => {
     expect(laterPartial.ok).toBe(true);
     expect(fake.sql.states.get("fireflies")?.last_synced_at).toBe(lastSuccess);
     expect(fake.sql.states.get("fireflies")?.last_sync_status).toBe("partial");
+  });
+  test("persisted listing continuation reconciles a 600-transcript NULL-watermark history", async () => {
+    _resetConnectorSchemaMemoForTests();
+    const largeSeed = buildSeed(600) as SeedTranscript[];
+    const largeHandle = await startMockFireflies({ mode: "happy", seed: largeSeed }) as unknown as Handle;
+    const fake = makeFakeTinyCloud({ did: "did:test:sync-600-continuation" });
+    const client = new FirefliesClient({
+      apiKey: HAPPY_KEY,
+      apiUrl: largeHandle.url,
+      delayMs: 0,
+    });
+    try {
+      for (let run = 0; run < 20 && fake.sql.states.get("fireflies")?.last_sync_status !== "ok"; run++) {
+        const result = await syncFireflies({
+          client,
+          store: connectorStore,
+          tcw: fake.tcw,
+          allowMissingConnection: true,
+        });
+        expect(result.ok).toBe(true);
+      }
+      expect(fake.sql.meetings.size).toBe(600);
+      expect(fake.sql.states.get("fireflies")?.last_sync_status).toBe("ok");
+      expect(new Set([...fake.sql.meetings.values()].map((row) => row.source_id)).size).toBe(600);
+    } finally {
+      await largeHandle.stop();
+    }
+  });
+
+  test("stale-watermark continuation reaches a hole after 500 known summaries", async () => {
+    _resetConnectorSchemaMemoForTests();
+    const now = Date.now();
+    const staleSeed = buildSeed(800) as SeedTranscript[];
+    staleSeed.forEach((item, index) => {
+      item.date = Math.floor((now - index * 2 * 60_000) / 1000);
+    });
+    const staleHandle = await startMockFireflies({ mode: "happy", seed: staleSeed }) as unknown as Handle;
+    const fake = makeFakeTinyCloud({ did: "did:test:sync-stale-continuation" });
+    const client = new FirefliesClient({
+      apiKey: HAPPY_KEY,
+      apiUrl: staleHandle.url,
+      delayMs: 0,
+    });
+    const lastSuccess = new Date(now - 30 * 60_000).toISOString();
+    try {
+      for (const item of staleSeed.slice(0, 510)) {
+        const { meeting, sentences } = connectorStore.normalizeFirefliesTranscript(item);
+        expect((await connectorStore.insertMeeting(fake.tcw, meeting)).ok).toBe(true);
+        expect((await connectorStore.putTranscriptBody(fake.tcw, "fireflies", item.id, sentences)).ok).toBe(true);
+      }
+      expect((await connectorStore.updateSyncState(fake.tcw, {
+        connectorId: "fireflies",
+        status: "connected",
+        lastSyncedAt: lastSuccess,
+        lastSyncStatus: "ok",
+        lastSyncError: null,
+        itemCount: 510,
+      })).ok).toBe(true);
+
+      const first = await syncFireflies({ client, store: connectorStore, tcw: fake.tcw });
+      expect(first.ok).toBe(true);
+      expect(fake.sql.meetings.size).toBe(510);
+      expect(fake.sql.states.get("fireflies")?.last_sync_status).toBe("partial");
+
+      const second = await syncFireflies({ client, store: connectorStore, tcw: fake.tcw });
+      expect(second.ok).toBe(true);
+      expect(fake.sql.meetings.size).toBe(560);
+      expect([...fake.sql.meetings.values()].some((row) => row.source_id === staleSeed[510]!.id)).toBe(true);
+      for (let run = 0; run < 10 && fake.sql.states.get("fireflies")?.last_sync_status !== "ok"; run++) {
+        expect((await syncFireflies({ client, store: connectorStore, tcw: fake.tcw })).ok).toBe(true);
+      }
+      expect(fake.sql.meetings.size).toBe(735);
+      expect(fake.sql.states.get("fireflies")?.last_sync_status).toBe("ok");
+    } finally {
+      await staleHandle.stop();
+    }
+  });
+  test("delete-data Disconnect waits for an in-flight body put and leaves no resurrected data", async () => {
+    _resetConnectorSchemaMemoForTests();
+    const transcript = (buildSeed(1) as SeedTranscript[])[0]!;
+    const disconnectHandle = await startMockFireflies({
+      mode: "happy",
+      seed: [transcript],
+    }) as unknown as Handle;
+    const fake = makeFakeTinyCloud({ did: "did:test:sync-disconnect-put-barrier" });
+    const client = new FirefliesClient({
+      apiKey: HAPPY_KEY,
+      apiUrl: disconnectHandle.url,
+      delayMs: 0,
+    });
+    const putStarted = Promise.withResolvers<void>();
+    const releasePut = Promise.withResolvers<void>();
+    const key = transcriptKvKey("fireflies", transcript.id);
+    fake.kv.putHook = async (putKey) => {
+      if (putKey !== key) return;
+      putStarted.resolve();
+      await releasePut.promise;
+    };
+    try {
+      expect((await connectorStore.updateSyncState(fake.tcw, {
+        connectorId: "fireflies",
+        status: "connected",
+        lastSyncedAt: null,
+        lastSyncStatus: "ok",
+        lastSyncError: null,
+        itemCount: 0,
+      })).ok).toBe(true);
+      const sync = syncFireflies({ client, store: connectorStore, tcw: fake.tcw });
+      await putStarted.promise;
+
+      let disconnectSettled = false;
+      const disconnectDeps: DisconnectDeps = {
+        connectorId: "fireflies",
+        source: "fireflies",
+        mode: "delete-data",
+        webhooks: {
+          recordPurge: async () => ({ status: "ok", value: null }),
+          disable: async () => ({ status: "ok", value: { status: "disabled", queueDropped: 0 } }),
+        },
+        secrets: {
+          isUnlocked: () => true,
+          unlock: async () => ({ ok: true }),
+          deleteKey: async () => ({ ok: true }),
+        },
+        store: {
+          listKnownSourceIds: () => connectorStore.listKnownSourceIds(fake.tcw, "fireflies"),
+          purgeConnector: () => connectorStore.purgeConnector(fake.tcw, "fireflies"),
+          getConnection: () => connectorStore.getConnection(fake.tcw, "fireflies"),
+          countMeetings: () => connectorStore.countMeetings(fake.tcw, "fireflies"),
+          updateSyncState: (input) => connectorStore.updateSyncState(fake.tcw, input),
+        },
+      };
+      const disconnected = runDisconnect(
+        disconnectDeps,
+        () => {},
+        initialDisconnectProgress("delete-data"),
+      ).then((progress) => {
+        disconnectSettled = true;
+        return progress;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(disconnectSettled).toBe(false);
+
+      releasePut.resolve();
+      const [syncResult, disconnectResult] = await Promise.all([sync, disconnected]);
+      expect(syncResult.ok).toBe(true);
+      expect(disconnectResult.done).toBe(true);
+      expect(fake.kv.entries.has(key)).toBe(false);
+      expect([...fake.sql.meetings.values()].some((row) => row.source_id === transcript.id)).toBe(false);
+      expect(fake.sql.states.has("fireflies")).toBe(false);
+    } finally {
+      releasePut.resolve();
+      await disconnectHandle.stop();
+    }
   });
 });

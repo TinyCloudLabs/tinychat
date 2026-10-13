@@ -16,10 +16,11 @@ import {
   getConnection,
   getFirefliesAttempt,
   firefliesAttemptKvKey,
-  getMeetingDatetimeStats,
-  meetingKvKey,
   getDriveCursor,
+  getMeetingDatetimeStats,
+  hasTranscriptBody,
   insertMeeting,
+  meetingKvKey,
   listKnownSourceIds,
   normalizeFirefliesTranscript,
   putDriveCursor,
@@ -437,6 +438,7 @@ class FakeKv {
   putKeys: string[] = [];
   putValues: unknown[] = [];
   tracker = new OpTracker();
+  headCalls: string[] = [];
   listCalls: { path: string; cursor?: string }[] = [];
   /** Split each matching prefix listing into deterministic pages when set. */
   listPageSize: number | null = null;
@@ -456,6 +458,15 @@ class FakeKv {
     });
   }
 
+  async head(key: string): Promise<{ ok: true; data: { data: void; headers: Record<string, string> } } | { ok: false; error: KvErr }> {
+    return this.tracker.run("kv.head", () => {
+      this.headCalls.push(key);
+      if (!this.entries.has(key)) {
+        return { ok: false, error: { code: "KV_NOT_FOUND", message: `no key ${key}` } } as const;
+      }
+      return { ok: true, data: { data: undefined as unknown as void, headers: {} } } as const;
+    });
+  }
   async put(key: string, value: unknown): Promise<{ ok: true; data: { data: void; headers: Record<string, string> } } | { ok: false; error: KvErr }> {
     return this.tracker.run("kv.put", () => {
       if (this.nextPutError) {
@@ -1375,12 +1386,14 @@ describe("connectorStore.updateSyncState / getConnection", () => {
       v: 1,
       last_attempt_at: "2026-10-13T12:00:00.000Z",
       last_attempt_status: "partial",
+      listing_skip: 500,
     };
     await recordFirefliesAttempt(f.tcw, {
       v: 1,
       lastAttemptAt: value.last_attempt_at,
       lastAttemptStatus: value.last_attempt_status,
-    } as Parameters<typeof recordFirefliesAttempt>[1]);
+      listingSkip: value.listing_skip,
+    });
     expect(f.kv.entries.get(firefliesAttemptKvKey())).toBe(JSON.stringify(value));
     expect(f.kv.putValues.at(-1)).toBe(JSON.stringify(value));
 
@@ -1393,9 +1406,24 @@ describe("connectorStore.updateSyncState / getConnection", () => {
           v: 1,
           lastAttemptAt: value.last_attempt_at,
           lastAttemptStatus: value.last_attempt_status,
+          listingSkip: 500,
         },
       });
     }
+    const oldRecord = {
+      v: 1,
+      last_attempt_at: value.last_attempt_at,
+      last_attempt_status: value.last_attempt_status,
+    };
+    f.kv.get = async () => ({ ok: true, data: { data: JSON.stringify(oldRecord), headers: {} } });
+    expect(await getFirefliesAttempt(f.tcw)).toEqual({
+      ok: true,
+      data: {
+        v: 1,
+        lastAttemptAt: value.last_attempt_at,
+        lastAttemptStatus: value.last_attempt_status,
+      },
+    });
   });
 });
 
@@ -1419,6 +1447,26 @@ describe("connectorStore.putTranscriptBody / transcriptKvKey", () => {
     const parsed = JSON.parse(stored!);
     expect(Array.isArray(parsed)).toBe(true);
     expect(parsed[0].text).toBe("hi");
+  });
+});
+describe("connectorStore.hasTranscriptBody", () => {
+  test("uses KV metadata for complete-body checks and treats a missing key as incomplete", async () => {
+    const f = makeFake();
+    let bodyReads = 0;
+    f.kv.get = async () => {
+      bodyReads++;
+      throw new Error("body GET must not be used for completeness");
+    };
+    const key = transcriptKvKey("fireflies", "has-body");
+    f.kv.entries.set(key, "large body");
+
+    const present = await hasTranscriptBody(f.tcw, "fireflies", "has-body");
+    const missing = await hasTranscriptBody(f.tcw, "fireflies", "missing");
+
+    expect(present).toEqual({ ok: true, data: true });
+    expect(missing).toEqual({ ok: true, data: false });
+    expect(f.kv.headCalls).toEqual([key, transcriptKvKey("fireflies", "missing")]);
+    expect(bodyReads).toBe(0);
   });
 });
 

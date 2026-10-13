@@ -159,23 +159,31 @@ export async function runFirefliesSyncNow(opts: {
   onJoined?: () => void;
   onJoinSettled?: () => void;
 }): Promise<RowSyncOutcome> {
-  const client = new FirefliesClient({
-    apiKey: opts.apiKey,
-    ...defaultFirefliesClientOptions(),
-  });
-  const res = await syncFireflies({
-    client,
-    store: connectorStore,
-    tcw: opts.tcw,
-    onProgress: opts.onProgress,
-    signal: opts.signal,
-    isCurrent: opts.isCurrent,
-    manualRequest: true,
-    onJoined: opts.onJoined,
-    onJoinSettled: opts.onJoinSettled,
-  });
-  if (res.ok) return { ok: true };
-  return { ok: false, message: res.error.message, retryAfterMs: res.error.retryAfterMs ?? null };
+  try {
+    const client = new FirefliesClient({
+      apiKey: opts.apiKey,
+      ...defaultFirefliesClientOptions(),
+    });
+    const res = await syncFireflies({
+      client,
+      store: connectorStore,
+      tcw: opts.tcw,
+      onProgress: opts.onProgress,
+      signal: opts.signal,
+      isCurrent: opts.isCurrent,
+      manualRequest: true,
+      onJoined: opts.onJoined,
+      onJoinSettled: opts.onJoinSettled,
+    });
+    if (res.ok) return { ok: true };
+    return { ok: false, message: res.error.message, retryAfterMs: res.error.retryAfterMs ?? null };
+  } catch (cause) {
+    return {
+      ok: false,
+      message: cause instanceof Error ? cause.message : "Fireflies sync failed",
+      retryAfterMs: null,
+    };
+  }
 }
 
 /**
@@ -376,6 +384,7 @@ export function ConnectorsCard({
         actionError: null,
         actionRetryAfterMs: null,
       });
+      try {
       if (!isSecretsUnlocked(tcw)) {
         const unlock = await unlockSecrets<SecretsErr>(tcw);
         if (!unlock.ok) {
@@ -464,6 +473,14 @@ export function ConnectorsCard({
         actionError: null,
         actionRetryAfterMs: null,
       });
+      } catch (cause) {
+        patchRow(d.id, {
+          actionError: cause instanceof Error ? cause.message : "Sync failed. Try again.",
+        });
+      } finally {
+        if (syncAbortRefs.current[d.id]) delete syncAbortRefs.current[d.id];
+        patchRow(d.id, { syncing: false, joinedBackgroundSync: false, progress: null });
+      }
     },
     [tcw, patchRow, backendUrl, sessionStore],
   );

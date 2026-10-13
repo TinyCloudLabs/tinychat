@@ -15,6 +15,7 @@ import {
   type SecretsErr,
 } from "@/lib/connectors/connectorSecrets";
 import { isGmeetSyncInFlight } from "@/lib/connectors/gmeetSync";
+import { readBackgroundDrainGeneration } from "@/chat/useBackgroundDrain";
 import type { ConnectorDescriptor, ConnectorId, SyncProgress } from "@/lib/connectors/types";
 import { SECRETS_UNAVAILABLE_IN_APP_MESSAGE, secretsAvailable } from "@/lib/openkeyNative";
 
@@ -30,6 +31,7 @@ type SyncEngineInput = {
   onProgress: (p: SyncProgress) => void;
   onJoined?: () => void;
   onJoinSettled?: () => void;
+  isCurrent?: () => boolean;
 };
 type SyncOutcome = { ok: true } | { ok: false; message: string; retryAfterMs?: number | null };
 
@@ -69,11 +71,12 @@ export interface SourceSyncRun {
   /** Aborted by Stop. The run still settles (and writes its final state) before it resolves. */
   signal?: AbortSignal;
   onProgress?: (p: SyncProgress) => void;
+  /** Account/session validity captured by the mounted controller. */
+  isCurrent?: () => boolean;
   /** This press only joined a run another lane owns: its signal and progress are ignored by the engine. */
   onJoined?: () => void;
   onJoinSettled?: () => void;
 }
-
 /** One sync attempt. Resolves to the message to show on the row, or null when it worked. Never rejects. */
 export async function runSourceSync(
   d: ConnectorDescriptor,
@@ -93,6 +96,7 @@ export async function runSourceSync(
       const unlock = await deps.unlockSecrets<SecretsErr>(tcw);
       if (!unlock.ok) return unlock.error?.message ?? "Could not unlock secrets";
     }
+    if (input.isCurrent?.() === false) return null;
     const key = await deps.getConnectorKey<SecretsErr>(tcw, d);
     if (!key.ok) {
       return (
@@ -102,6 +106,7 @@ export async function runSourceSync(
           : "Could not read API key")
       );
     }
+    if (input.isCurrent?.() === false) return null;
     if (d.id === "google-meet" && deps.isGmeetSyncInFlight()) input.onJoined?.();
     const outcome =
       d.id === "google-meet"
@@ -119,6 +124,7 @@ export async function runSourceSync(
             apiKey: key.data,
             signal,
             onProgress,
+            isCurrent: input.isCurrent,
             onJoined: input.onJoined,
             onJoinSettled: input.onJoinSettled,
           });
@@ -169,6 +175,8 @@ export function useSourceSync(input: {
   const sync = useCallback(
     async (d: ConnectorDescriptor, driveMode: DriveMode = "auto") => {
       if (inFlight.current) return;
+      const generation = readBackgroundDrainGeneration();
+      const isCurrent = () => generation === readBackgroundDrainGeneration();
       inFlight.current = true;
       const controller = new AbortController();
       abort.current = controller;
@@ -185,6 +193,7 @@ export function useSourceSync(input: {
             sessionStore,
             driveMode,
             signal: controller.signal,
+            isCurrent,
             onProgress: setProgress,
             onJoined: () => {
               joinedRef.current = true;

@@ -25,7 +25,7 @@ import {
   FirefliesClient,
 } from "../../frontend/src/lib/connectors/firefliesClient";
 import * as connectorStore from "../../frontend/src/lib/connectors/connectorStore";
-import { _resetConnectorSchemaMemoForTests } from "../../frontend/src/lib/connectors/connectorStore";
+import { _resetConnectorSchemaMemoForTests, firefliesAttemptKvKey } from "../../frontend/src/lib/connectors/connectorStore";
 import { syncFireflies } from "../../frontend/src/lib/connectors/firefliesSync";
 
 import { makeFakeTinyCloud } from "./fake-tinycloud";
@@ -102,6 +102,7 @@ describe("ratelimit e2e (spec §10 driver 3)", () => {
       client,
       store: connectorStore,
       tcw: fake.tcw,
+      allowMissingConnection: true,
     });
     const elapsedMs = Date.now() - t0;
 
@@ -145,6 +146,7 @@ describe("ratelimit e2e (spec §10 driver 3)", () => {
       client,
       store: connectorStore,
       tcw: fake.tcw,
+      allowMissingConnection: true,
     });
 
     expect(res.ok).toBe(true);
@@ -180,6 +182,7 @@ describe("ratelimit e2e (spec §10 driver 3)", () => {
       client,
       store: connectorStore,
       tcw: fake.tcw,
+      allowMissingConnection: true,
     });
     const elapsedMs = Date.now() - t0;
 
@@ -199,7 +202,8 @@ describe("ratelimit e2e (spec §10 driver 3)", () => {
     // Nothing stored — the very first LIST call exhausted retries and the
     // engine bailed before any detail fetch or insert could run.
     expect(fake.sql.meetings.size).toBe(0);
-    expect(fake.kv.entries.size).toBe(0);
+    expect(fake.kv.entries.size).toBe(1);
+    expect(fake.kv.entries.has(firefliesAttemptKvKey())).toBe(true);
     expect(handle.counts.transcript).toBe(0);
 
     // Vacuity guard: the mock saw exactly (initial + MAX_RETRIES) list calls

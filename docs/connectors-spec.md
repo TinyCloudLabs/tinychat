@@ -104,8 +104,8 @@ interface ConnectorDescriptor {
 interface ConnectorConnection {
   connectorId: ConnectorId;
   status: "connected" | "disconnected";
-  lastSyncedAt: string | null; // ISO
-  lastSyncStatus: "ok" | "error" | null;
+  lastSyncedAt: string | null; // ISO; Fireflies stores last complete listing success
+  lastSyncStatus: "ok" | "partial" | "error" | null;
   lastSyncError: string | null;
   itemCount: number;
 }
@@ -403,22 +403,34 @@ algorithm for Connect, Sync now, the background catch-up, and Meeting sources:
    purge.
 6. The per-space KV attempt record is
    `${APP_ID}/connectors/fireflies/sync-attempt`, JSON with `v: 1`,
-   `lastAttemptAt`, and `lastAttemptStatus`. It is best-effort and written only
-   by the sync engine; its failure never changes sync, ingest, or disconnect
-   outcomes. A `running` record older than 15 minutes is abandoned.
-   `last_synced_at` remains authoritative; the KV record is advisory pacing only.
+   `last_attempt_at`, `last_attempt_status`, and optional `listing_skip`. It is
+   best-effort and written only by the sync engine; its failure never changes
+   sync, ingest, or disconnect outcomes. A `running` record older than 15 minutes
+   is abandoned. `listing_skip` is the provider listing offset for a bounded
+   incomplete reconcile; it advances across runs and is cleared only when a
+   listing completes. If the KV record is lost, the next run restarts at the
+   newest page and remains bounded. SQL `last_synced_at` remains authoritative;
+   the KV record is advisory pacing/continuation only.
 7. Same-tab single-flight does not prevent cross-tab Sync now overlap. Cross-tab
    deduplication is out of scope: TinyCloud user SQL does not support a unique
-   index, so this build does not claim cross-tab serialization.
+   index, so this build does not claim cross-tab serialization. Cross-tab purge
+   resurrection is part of this same limitation.
 8. A background catch-up starts only on mount or unlock when Fireflies is
    connected, secrets are already unlocked, and SQL success is older than 24 h.
    Focus only drains queued webhook IDs. In the default route-dark deployment,
-   mount/unlock still perform stale reconciliation; webhook probing/draining is
-   dark. Server-side ingest without an open tab is out of scope (TC-641).
+   stale mount/unlock reconciliation still runs; webhook probing/draining is
+   dark. Connect, Sync now, and Meeting sources sync also run the same listing
+   reconcile when explicitly invoked. Server-side ingest without an open tab is
+   out of scope (TC-641).
 9. `last_synced_at` is a trustworthy success watermark only after all clients
    have upgraded to this build; older clients may have written it on targeted
    webhook attempts. The 24 h lag bound intentionally revisits recent history
-   to reconcile webhook holes.
+   to reconcile webhook holes. Holes older than `W − 24 h` that predate upgrade
+   are never reconciled, and transcripts appearing later with dates older than
+   the boundary are skipped permanently. Reconnecting a kept row under a
+   different Fireflies account reuses its prior watermark; use Disconnect with
+   delete-data before switching accounts. A persistently failing transcript
+   keeps the run partial and the connector stale until it can be stored.
 
 ## 9. UI
 

@@ -333,18 +333,30 @@ const ApiKeyConnectDialog: FC<ConnectorConnectDialogProps> = ({
     setProgress({ phase: "listing", done: 0, total: null });
     const ac = new AbortController();
     abortRef.current = ac;
-    const client = new FirefliesClient({ apiKey, ...defaultFirefliesClientOptions() });
-    const syncRes = await syncFireflies({
-      client,
-      store: connectorStore,
-      tcw,
-      onProgress: setProgress,
-      signal: ac.signal,
-      isCurrent: () => generation === readBackgroundDrainGeneration(),
-      allowMissingConnection: true,
-      manualRequest: true,
-    });
-    abortRef.current = null;
+    let syncRes: Awaited<ReturnType<typeof syncFireflies>>;
+    try {
+      const client = new FirefliesClient({ apiKey, ...defaultFirefliesClientOptions() });
+      syncRes = await syncFireflies({
+        client,
+        store: connectorStore,
+        tcw,
+        onProgress: setProgress,
+        signal: ac.signal,
+        isCurrent: () => generation === readBackgroundDrainGeneration(),
+        allowMissingConnection: true,
+        manualRequest: true,
+      });
+    } catch (cause) {
+      setError({
+        kind: "network",
+        message: cause instanceof Error ? cause.message : "Fireflies sync failed",
+      });
+      setPhase("error");
+      onConnected();
+      return;
+    } finally {
+      abortRef.current = null;
+    }
     // Refresh the parent's row state whether or not sync succeeded — the
     // engine's updateSyncState ran either way.
     onConnected();
