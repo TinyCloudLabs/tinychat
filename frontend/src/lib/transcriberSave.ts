@@ -102,6 +102,7 @@ export async function refreshTranscriberMeeting(
   tcw: TinyCloudWeb,
   row: TranscriberMeeting,
   transcript: TranscriberTranscript,
+  fetchTranscript: () => Promise<TranscriberTranscript | null>,
 ): Promise<StoreResult<void>> {
   // An old ptx image (or malformed publication number) must never replace a saved copy.
   if (!Number.isInteger(transcript.version)) return { ok: true, data: undefined };
@@ -133,42 +134,34 @@ export async function refreshTranscriberMeeting(
     const normalized = await normalizeTranscriberTranscript(row, transcript);
     const body = await tcw.kv.put(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, row.id), normalized.body);
     if (!body.ok) return storageFailure(body.error);
+    // Transcriber metadata is publication-owned; user edits live in separate columns.
     const updated = await db.execute(
-      "UPDATE connector_meeting SET participants = ?, duration_secs = ?, metadata = ?, updated_at = ? WHERE id = ?",
+      "UPDATE connector_meeting SET participants = ?, duration_secs = ?, metadata = ?, updated_at = ? WHERE id = ? AND COALESCE(json_extract(metadata, '$.ptx_transcript_version'), 1) = ?",
       [JSON.stringify(normalized.meeting.participants), normalized.meeting.durationSecs, JSON.stringify({
         ...normalized.meeting.metadata,
         ptx_transcript_version: transcript.version,
         previous_transcript_versions: [...(metadata.previous_transcript_versions as number[] ?? []), oldVersion],
-      }), new Date().toISOString(), id],
+      }), new Date().toISOString(), id, oldVersion],
     );
     if (!updated.ok) return storageFailure(updated.error);
+    const committed = await db.query(
+      "SELECT COALESCE(json_extract(metadata, '$.ptx_transcript_version'), 1) FROM connector_meeting WHERE id = ?", [id],
+    );
+    if (!committed.ok) return storageFailure(committed.error);
+    const vNow = Number((committed.data.rows as unknown[][])[0]?.[0]);
+    if (vNow !== transcript.version) {
+      if (vNow >= transcript.version!) {
+        const latest = await fetchTranscript();
+        if (latest?.version === vNow) {
+          const repaired = await normalizeTranscriberTranscript(row, latest);
+          const repair = await tcw.kv.put(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, row.id), repaired.body);
+          if (!repair.ok) return storageFailure(repair.error);
+        }
+      }
+      return { ok: true, data: undefined };
+    }
     reportStorageWriteSucceeded();
     captureEvents.emit("library-changed", { source: TRANSCRIBER_MEETING_SOURCE, sourceId: row.id });
-    return { ok: true, data: undefined };
-  } catch { return storageFailure({ code: "STORE_ERROR" }); }
-}
-
-/** Developer recovery helper; deliberately has no UI and deletes nothing. */
-export async function restoreTranscriberArchive(
-  tcw: TinyCloudWeb,
-  sourceId: string,
-  version: number,
-): Promise<StoreResult<void>> {
-  try {
-    const result = await tcw.kv.get(archiveKvKey(sourceId, version));
-    if (!result.ok) return storageFailure(result.error);
-    const archive = JSON.parse(result.data.data as string) as TranscriberArchive;
-    const body = await tcw.kv.put(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, sourceId), archive.body);
-    if (!body.ok) return storageFailure(body.error);
-    const restored = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).execute(
-      "UPDATE connector_meeting SET title = ?, participants = ?, duration_secs = ?, metadata = ?, updated_at = ? WHERE id = ?",
-      [archive.row.title, archive.row.participants, archive.row.duration_secs,
-        JSON.stringify({ ...JSON.parse(archive.row.metadata || "{}"), ptx_transcript_version: archive.version }),
-        new Date().toISOString(), await connectorMeetingId(TRANSCRIBER_MEETING_SOURCE, sourceId)],
-    );
-    if (!restored.ok) return storageFailure(restored.error);
-    reportStorageWriteSucceeded();
-    captureEvents.emit("library-changed", { source: TRANSCRIBER_MEETING_SOURCE, sourceId });
     return { ok: true, data: undefined };
   } catch { return storageFailure({ code: "STORE_ERROR" }); }
 }

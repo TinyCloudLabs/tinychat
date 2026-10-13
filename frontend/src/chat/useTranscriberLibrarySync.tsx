@@ -34,6 +34,8 @@ const defaultSaver: TranscriberLibrarySaver = {
 const readOnDrainLane = (isCurrent: () => boolean) => <T,>(read: () => Promise<T>): Promise<T | null> =>
   enqueueDrainWork(() => isCurrent() ? read() : Promise.resolve(null));
 
+export type TranscriberRefreshBackoff = Map<string, { failures: number; retryAt: number }>;
+
 /** One sequential pass. SQL source IDs alone never mark an import complete. */
 export async function syncTranscriberLibrary(input: {
   tcw: TinyCloudWeb;
@@ -45,9 +47,14 @@ export async function syncTranscriberLibrary(input: {
   onState?: (id: string, state: TranscriberSaveState) => void;
   deliveryActive?: () => boolean;
   now?: () => number;
+  refreshBackoff?: TranscriberRefreshBackoff;
 }): Promise<void> {
   const { tcw, client, saver = defaultSaver, isCurrent = () => true, onState = () => {}, observedSaved,
-    deliveryActive = serverDeliveryActive, now = Date.now } = input;
+    deliveryActive = serverDeliveryActive, now = Date.now, refreshBackoff = new Map() } = input;
+  const failedRefresh = (id: string) => {
+    const failures = (refreshBackoff.get(id)?.failures ?? 0) + 1;
+    refreshBackoff.set(id, { failures, retryAt: now() + Math.min(30 * 60_000, 60_000 * 2 ** (failures - 1)) });
+  };
   if (!isCurrent()) return;
   // This API call can be slow or retry for tens of seconds; it does not touch
   // the user's space and must never occupy the serial space-write lane.
@@ -76,7 +83,7 @@ export async function syncTranscriberLibrary(input: {
       const inGrace = row.metadata?.shared !== true && Number.isFinite(completedAt)
         && now() - completedAt < SERVER_DELIVERY_GRACE_MS;
       if (versions.ok && Number.isInteger(version) && version! > (versions.data.get(row.id) ?? 1)
-        && refreshes < 3 && !inGrace) {
+        && refreshes < 3 && !inGrace && (refreshBackoff.get(row.id)?.retryAt ?? 0) <= now()) {
         refreshes++;
         onState(row.id, "saving");
         try {
@@ -86,14 +93,25 @@ export async function syncTranscriberLibrary(input: {
             && fetched.value.transcript.version === version) {
             const fetchedTranscript = fetched.value.transcript;
             const result = await enqueueDrainWork(() => isCurrent()
-              ? (saver.refresh ?? refreshTranscriberMeeting)(tcw, row, fetchedTranscript)
+              ? (saver.refresh ?? refreshTranscriberMeeting)(tcw, row, fetchedTranscript, async () => {
+                const latest = await client.transcript(row.id);
+                return isCurrent() && latest.status === "ok" && latest.value.status === "ready"
+                  ? latest.value.transcript : null;
+              })
               : Promise.resolve(null));
             if (!isCurrent()) return;
             onState(row.id, result?.ok ? "saved" : "error");
-            if (result?.ok) observedSaved?.ids.add(row.id);
+            if (result?.ok) {
+              refreshBackoff.delete(row.id);
+              observedSaved?.ids.add(row.id);
+            } else failedRefresh(row.id);
             continue;
           }
+          failedRefresh(row.id);
+          onState(row.id, "error");
+          continue;
         } catch {
+          failedRefresh(row.id);
           if (isCurrent()) onState(row.id, "error");
           continue;
         }
@@ -148,6 +166,7 @@ export function useTranscriberLibrarySync(input: {
   useEffect(() => {
     let cancelled = false;
     let running = false;
+    const refreshBackoff: TranscriberRefreshBackoff = new Map();
     const observedSaved = { initialized: false, ids: new Set<string>() };
     setSaved({});
     // This sync writes the user's space but never touches the vault; native
@@ -175,7 +194,7 @@ export function useTranscriberLibrarySync(input: {
         if (sessionCurrent() && unlocked()) {
           // Each save takes the drain lane itself; the pass as a whole does not hold it.
           await syncTranscriberLibrary({
-            tcw, client: api, saver, isCurrent, observedSaved, onState: (id, state) => {
+            tcw, client: api, saver, isCurrent, observedSaved, refreshBackoff, onState: (id, state) => {
               if (accountCurrent()) setSaved((old) => ({ ...old, [id]: state }));
             },
           });
