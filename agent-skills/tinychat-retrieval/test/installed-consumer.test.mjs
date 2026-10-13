@@ -41,17 +41,20 @@ else if (args.includes('profile') && args.includes('list')) process.stdout.write
 else if (args.includes('context')) process.stdout.write(JSON.stringify({schemaVersion:1,profile:'tinychat-agent',host:'https://node.example.test',ownerDid:owner,spaceId:${JSON.stringify(context.space)},sessionDid:'did:key:fixture',session:{state:'present',expiresAt:'2099-01-01T00:00:00Z'}}));
 else if (args.includes('status')) process.stdout.write(JSON.stringify({authenticated:true,ownerDid:owner,profile:'tinychat-agent',host:'https://node.example.test'}));
 else if (args.includes('query')) {
- const exact = args.some(a => a.includes('WHERE id = ?'));
- fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify({kind:exact?'exact':'discovery'})+'\\n');
- const columns=['id','source','source_id','title','started_at','organizer_email','participants','summary_overview','summary_action_items','metadata','updated_at','sort_time'];
- const row=[id,mode==='local-speakers'?'exo-local':'fireflies',sourceId,'Synthetic intended meeting',null,null,'[]',null,null,'{}',null,null];
- const params=JSON.parse(args[args.indexOf('--params')+1]);
- let rows=[row];
- if (mode==='catalog-pages' && !exact && args.some(a=>a.includes('LIMIT ?'))) rows=params.length>1?[['later-meeting',...row.slice(1)]]:[row,['later-meeting',...row.slice(1)]];
- if (mode==='many-dated' && !exact) rows=[row,['older-meeting',...row.slice(1)]];
- if (mode==='many-dated' || mode==='local-speakers') { rows[0][4]='2025-04-01T00:00:00Z'; rows[0][11]=2460766.5; if(rows[1]) {rows[1][4]='2025-03-01T00:00:00Z'; rows[1][11]=2460735.5;} }
- if (mode==='changed-catalog' && !exact) rows=[['other-meeting',...row.slice(1)]];
- process.stdout.write(JSON.stringify({columns,rows,rowCount:rows.length}));
+ if (args.some(a => a.includes('sqlite_schema'))) process.stdout.write(JSON.stringify({columns:['name'],rows:[['voice_note_transcript']],rowCount:1}));
+ else {
+  const exact = args.some(a => a.includes('WHERE id = ?'));
+  fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify({kind:exact?'exact':'discovery'})+'\\n');
+  const columns=['id','source','source_id','title','started_at','organizer_email','participants','summary_overview','summary_action_items','metadata','updated_at','sort_time'];
+  const row=[id,mode==='local-speakers'?'exo-local':'fireflies',sourceId,'Synthetic intended meeting',null,null,'[]',null,null,'{}',null,null];
+  const params=JSON.parse(args[args.indexOf('--params')+1]);
+  let rows=[row];
+  if (mode==='catalog-pages' && !exact && args.some(a=>a.includes('LIMIT ?'))) rows=params.length>1?[['later-meeting',...row.slice(1)]]:[row,['later-meeting',...row.slice(1)]];
+  if (mode==='many-dated' && !exact) rows=[row,['older-meeting',...row.slice(1)]];
+  if (mode==='many-dated' || mode==='local-speakers') { rows[0][4]='2025-04-01T00:00:00Z'; rows[0][11]=2460766.5; if(rows[1]) {rows[1][4]='2025-03-01T00:00:00Z'; rows[1][11]=2460735.5;} }
+  if (mode==='changed-catalog' && !exact) rows=[['other-meeting',...row.slice(1)]];
+  process.stdout.write(JSON.stringify({columns,rows,rowCount:rows.length}));
+ }
 } else if (args.includes('get')) {
  fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify({kind:'kv-get',bytes:mode==='fail'?0:fs.statSync(${JSON.stringify(body)}).size})+'\\n');
  if (mode==='fail') {process.stderr.write(JSON.stringify({error:{code:'AUTH_EXPIRED',message:'SECRET_FIXTURE_DETAIL'}})); process.exit(3);}
