@@ -167,13 +167,12 @@ describe.serial(`web recorder chrome (${engineName})`, () => {
     await until("the guard to be removed", async () => !(await leaveGuarded(page)));
   });
 
-  test("Not now records and does not automatically ask again after a relaunch", async () => {
+  test("Not now cancels this start and does not automatically ask again after a relaunch", async () => {
     const { page } = await open(DESKTOP, false);
     await shown(page.getByTestId("private-consent-disclosure"));
     await page.getByRole("button", { name: "Not now" }).click();
-    await shown(view(page));
-    await page.getByRole("button", { name: "Discard recording" }).first().click();
-    await page.getByRole("alertdialog").getByRole("button", { name: "Discard recording" }).click();
+    expect(await view(page).count()).toBe(0);
+    expect(await leaveGuarded(page)).toBe(false);
     await page.reload();
     await shown(view(page));
     expect(await page.getByTestId("private-consent-disclosure").count()).toBe(0);
