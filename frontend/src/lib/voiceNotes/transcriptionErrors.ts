@@ -20,8 +20,8 @@ const NON_RETRYABLE_CODES: ReadonlySet<string> = new Set([
 
 const TRANSCRIPTION_ERROR_COPY: Readonly<Record<string, string>> = {
   recording_too_long_for_phone: "Private cloud can't transcribe a recording this long or large.",
-  recording_too_long: "Private cloud can't transcribe a recording this long or large.",
-  recording_too_large: "Private cloud can't transcribe a recording this long or large.",
+  recording_too_long: "An earlier version could not transcribe this recording. Try again.",
+  recording_too_large: "An earlier version could not transcribe this recording. Try again.",
   unsupported_recording: "Private cloud transcription does not accept this recording's format.",
   invalid_audio: "This note's audio is damaged or unsupported.",
   decode_failed: "This phone could not read the recording to transcribe it.",

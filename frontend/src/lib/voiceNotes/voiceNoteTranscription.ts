@@ -590,7 +590,6 @@ const RELEASE_CODES: ReadonlySet<string> = new Set([
   "transcription_off",
 ]);
 
-
 export function voiceNoteErrorCode(err: unknown): string {
   return err instanceof PrivateCloudError || err instanceof VoiceNoteAudioError ? err.code : "transcription_error";
 }
@@ -1255,8 +1254,7 @@ export async function transcribeVoiceNote(args: {
       { transcriptionId },
     );
     await persistFailure(incomplete, statsMetadata);
-    try { await finish(transcriptionId); }
-    catch (cleanupError) { logPipelineError("Deleting the incomplete private-cloud transcription job failed", cleanupError); }
+    await finish(transcriptionId);
     throw incomplete;
   }
   const prepared = prepareVoiceNoteTranscript(transcript, transcribedAt(), rev, statsMetadata);
@@ -1466,10 +1464,10 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     }
     snapshot = { ...state, jobs: new Map(jobs) };
   }
-  /** This session's choices, so a Retry after a released failure keeps the choice. */
+  /** This session's explicit choices; coverage failures require another deliberate tap. */
   const chosenPrivate = new Set<string>();
   const isChosen = (sourceId: string) => chosenPrivate.has(sourceId) || choices.has(sourceId);
-  /** The persisted choice goes once the note is done or its job can no longer be retried; a pending job keeps it. */
+  /** The persisted choice is cleared once done, terminal, or awaiting an explicit retry. */
   const settleChoice = (sourceId: string) => {
     if (cloud !== null && !cloud.pendingSourceIds().includes(sourceId)) choices.remove(sourceId);
   };
@@ -1561,10 +1559,14 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           settleChoice(sourceId);
         } else {
           logPipelineError("transcription", err, sourceId);
+          const code = voiceNoteErrorCode(err);
           const failure = voiceNoteTranscriptionFailure(err);
           jobs.set(sourceId, { kind: "failed", ...failure });
-          // A failure Retry can fix keeps the choice, so a relaunch does not turn it back into Local.
-          if (!failure.retryable) settleChoice(sourceId);
+          // Incomplete coverage is retryable only by explicit tap; do not restart it on relaunch.
+          if (!failure.retryable || code === "transcript_incomplete") {
+            if (code === "transcript_incomplete") chosenPrivate.delete(sourceId);
+            settleChoice(sourceId);
+          }
         }
         emit();
       }

@@ -129,6 +129,17 @@ describe("the pipeline from composed stores", () => {
     expect(html).toContain("Transcript: Waiting · 2nd");
     expect(html).not.toContain("Transcript Failed");
   });
+  test("queued Mac Whisper work suppresses a stale native and persisted failure in Recent", () => {
+    const pipeline = run({
+      device: "mac",
+      native: { transcriber: "on-device", stt: { state: "failed", error: "decoder" } },
+      desktopJob: { id: ID, state: "queued", error: null, progress: null },
+      rowMetadata: { transcription_outcome: "failed", transcription_error_code: "recording_too_large" },
+    });
+    const html = renderToStaticMarkup(createElement(PipelineTrackSummary, { pipeline }));
+    expect(html).toContain("Transcript: Queued · next");
+    expect(html).not.toContain("Transcript Failed");
+  });
   test("persisted row outcomes reach Recent when the live route is idle", () => {
     for (const outcome of ["pending", "failed", "skipped"] as const) {
       const pipeline = run({ saved: true, rowMetadata: {

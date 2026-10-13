@@ -176,20 +176,22 @@ describe("a voice note's transcription", () => {
     expect(html).toContain('data-testid="transcribe-button"');
   });
 
-  test("a persisted WAV-size failure offers Retry when a 72-minute note now fits raw PTX upload", () => {
-    const html = render({
-      item: { ...VOICE, durationSecs: 4_320 },
-      metadata: { status: "ok", metadata: {
-        transcription_outcome: "failed",
-        transcription_error_code: "recording_too_large",
-      } },
-      transcript: { status: "absent" },
-      transcription: transcription({ maxSeconds: 7_200 }),
-    });
-    expect(html).toContain('data-testid="voice-note-transcription-failed"');
-    expect(html).toContain("Private cloud can&#x27;t transcribe a recording this long or large.");
-    expect(html).toContain("Try again");
-    expect(html).toContain('data-testid="transcribe-button"');
+  test("persisted size and duration failures use retry copy that fits both states", () => {
+    for (const code of ["recording_too_large", "recording_too_long"]) {
+      const html = render({
+        item: { ...VOICE, durationSecs: 4_320 },
+        metadata: { status: "ok", metadata: {
+          transcription_outcome: "failed",
+          transcription_error_code: code,
+        } },
+        transcript: { status: "absent" },
+        transcription: transcription({ maxSeconds: 7_200 }),
+      });
+      expect(html).toContain('data-testid="voice-note-transcription-failed"');
+      expect(html).toContain("An earlier version could not transcribe this recording. Try again.");
+      expect(html).toContain("Try again");
+      expect(html).toContain('data-testid="transcribe-button"');
+    }
   });
   test("persisted incomplete transcript is retryable with explicit may-be-incomplete copy", () => {
     const html = render({

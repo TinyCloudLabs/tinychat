@@ -276,7 +276,9 @@ export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineIn
   const liveTranscriptWork = facts.cloudJob?.kind === "active"
     || (queue !== null && queue.position !== null)
     || facts.native?.stt?.state === "queued"
-    || facts.native?.stt?.state === "running";
+    || facts.native?.stt?.state === "running"
+    || facts.desktopJob?.state === "queued"
+    || facts.desktopJob?.state === "transcribing";
   const rowState = facts.rowMetadata === null ? "none" : projectedTranscriptState(facts.rowMetadata);
   const persistedState = facts.saved && !liveTranscriptWork
     && (rowState === "pending" || rowState === "failed" || rowState === "skipped") ? rowState : undefined;

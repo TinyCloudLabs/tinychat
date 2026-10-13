@@ -1871,6 +1871,52 @@ describe("an explicit move to private cloud survives a restart", () => {
     expect(t.snapshot().jobs.get("rec-1")?.kind).toBe("failed");
     expect(choices.ids()).toEqual([]);
   });
+  test("an incomplete transcript failure does not auto-restart after launch; explicit retry still runs once", async () => {
+    const space = await onDeviceNote();
+    const storage = memoryStorage();
+    const pending = localStorageVoiceNotePendingStore(DID, storage);
+    const choices = localStorageVoiceNotePrivateChoiceStore(DID, storage);
+    const launch = (h: ReturnType<typeof harness>) => createVoiceNoteTranscriber({
+      cloud: h.cloud,
+      consent: { get: () => true, set: () => {} },
+      choices: localStorageVoiceNotePrivateChoiceStore(DID, storage),
+      holds: localStorageVoiceNoteHoldStore(DID, storage),
+      tcw: () => space.tcw,
+    });
+    const settle = async (t: ReturnType<typeof createVoiceNoteTranscriber>) => {
+      for (let i = 0; i < 30 && t.snapshot().jobs.get("rec-1")?.kind === "active"; i++)
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+    const incomplete = {
+      ...TRANSCRIPT,
+      duration_seconds: 4_337,
+      stats: { tinfoil_calls: 1, tinfoil_audio_seconds: 1_248 },
+    } as unknown as PrivateCloudTranscript;
+    const first = harness({ pending, result: incomplete });
+    const transcriber = launch(first);
+    await transcriber.check();
+    transcriber.transcribePrivately("rec-1");
+    await settle(transcriber);
+    expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "transcript_incomplete" });
+    expect(first.creates).toHaveLength(1);
+    expect(first.puts).toHaveLength(1);
+
+    const retry = harness({ pending, result: {
+      ...TRANSCRIPT,
+      duration_seconds: 4_337,
+      stats: { tinfoil_calls: 1, tinfoil_audio_seconds: 4_200 },
+    } as unknown as PrivateCloudTranscript });
+    const restarted = launch(retry);
+    await restarted.check();
+    await settle(restarted);
+    expect(retry.creates).toHaveLength(0);
+    expect(retry.puts).toHaveLength(0);
+
+    restarted.transcribePrivately("rec-1");
+    await settle(restarted);
+    expect(retry.creates).toHaveLength(1);
+    expect(retry.puts).toHaveLength(1);
+  });
 
   test("turning private cloud off revokes the choice", async () => {
     const space = await onDeviceNote();
