@@ -2,7 +2,7 @@
 name: tinychat-retrieval
 description: Find and read existing TinyChat meetings and search literal transcript passages through TinyCloud CLI. Use for meeting recaps, exact meeting follow-ups, and topic searches in the user's connected TinyChat data.
 metadata:
-  version: "0.1.1-onboarding.18"
+  version: "0.1.1-onboarding.19"
 ---
 
 # TinyChat retrieval

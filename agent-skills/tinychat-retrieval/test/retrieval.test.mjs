@@ -15,18 +15,18 @@ function fixture(options = {}) {
   expect(typeof lib.createRetrieval).toBe('function');
   const db = new Database(':memory:'); open.push(db);
   db.exec('CREATE TABLE connector_meeting(id TEXT PRIMARY KEY, source TEXT, source_id TEXT, title TEXT, started_at TEXT, organizer_email TEXT, participants TEXT, summary_overview TEXT, summary_action_items TEXT, metadata TEXT, updated_at TEXT)');
-  db.exec('CREATE TABLE voice_note_transcript(source_id TEXT PRIMARY KEY, body_key TEXT NOT NULL)');
+  db.exec('CREATE TABLE voice_note_transcript(source_id TEXT PRIMARY KEY, body_key TEXT, outcome TEXT)');
   const bodies = new Map(); const calls = [];
   const state = { owner, authenticated: true, fail: null, kvFail: null, transferredBytes: 0, cliVersion: "0.10.0" };
-  const add = (id, { title = id, date = '2026-09-18T12:00:00Z', source = 'fireflies', sourceId = id, metadata = {}, body = [{ text: 'Hello', speaker_name: 'A', start_time: 1 }] } = {}) => {
+  const add = (id, { title = id, date = '2026-09-18T12:00:00Z', source = 'fireflies', sourceId = id, metadata = {}, body = [{ text: 'Hello', speaker_name: 'A', start_time: 1 }], voiceNoteCommit = true, voiceNoteOutcome = 'transcribed', voiceNoteBodyKey } = {}) => {
     db.query('INSERT INTO connector_meeting VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(id, source, sourceId, title, date, 'a@example.test', '[{"name":"A"}]', 'Stored summary', null, JSON.stringify(metadata), '2026-09-18T13:00:00Z');
     const rawBody = JSON.stringify(body);
     bodies.set(sourceId, rawBody);
     bodies.set(`xyz.tinycloud.tinychat/connectors/${source}/transcript/${sourceId}`, rawBody);
-    if (source === 'exo-voice-note') {
-      const key = `xyz.tinycloud.tinychat/connectors/exo-voice-note/transcript-rev/${sourceId}/${'a'.repeat(32)}`;
-      bodies.set(key, rawBody);
-      db.query('INSERT INTO voice_note_transcript VALUES(?,?)').run(sourceId, key);
+    if (source === 'exo-voice-note' && voiceNoteCommit) {
+      const key = voiceNoteBodyKey ?? `xyz.tinycloud.tinychat/connectors/exo-voice-note/transcript-rev/${sourceId}/${'a'.repeat(32)}`;
+      if (key !== null) bodies.set(key, rawBody);
+      db.query('INSERT INTO voice_note_transcript VALUES(?,?,?)').run(sourceId, key, voiceNoteOutcome);
     }
   };
   const runTc = async args => {
@@ -239,7 +239,7 @@ test('search counts searched transcript bodies separately from excluded and fail
 
 
 describe('bounded latest intent', () => {
-  test('resolves newest supported dated meeting in one bounded catalog query despite older pages', async () => {
+  test('resolves newest supported dated meeting with independent bounded selection and coverage queries', async () => {
     const f = fixture();
     for (let i = 0; i < 100; i++) f.add(`older-${i}`, { date: '2026-09-01T00:00:00Z' });
     f.add('latest', { date: '2026-09-20T00:00:00Z' });
@@ -249,9 +249,20 @@ describe('bounded latest intent', () => {
     expect(r.selection).toMatchObject({ intent: 'latest', resolved: true, status: 'selected', nextAction: 'read', tieBreak: 'id-ascending' });
     expect(r.coverage).toMatchObject({ corpusComplete: false, moreCatalogRecords: true, completeWithinScope: false });
     expect(r.continuation).toBeNull();
-    const queries = f.calls.filter(args => args.includes('query')); expect(queries).toHaveLength(1);
+    const queries = f.calls.filter(args => args.includes('query')); expect(queries).toHaveLength(2);
     expect(JSON.parse(queries[0][queries[0].indexOf('--params') + 1]).at(-1)).toBe(51);
     const browse = await invoke(f, 'find', { limit: 5, source: 'fireflies' }); expect(browse.records).toHaveLength(5); expect(browse.continuation).toBeTruthy();
+  });
+  test('selects a supported row beyond a page of 51 newer unsupported rows', async () => {
+    const f = fixture();
+    for (let i = 0; i < 51; i++) f.add(`unsupported-${i}`, { source: 'future-source', date: `2026-09-${String(21 - Math.floor(i / 3)).padStart(2, '0')}T${String(23 - (i % 24)).padStart(2, '0')}:00:00Z` });
+    f.add('supported', { date: '2026-09-01T00:00:00Z' });
+    const result = await invoke(f, 'latest');
+    expect(result.ok).toBe(true);
+    expect(result.records.map(row => row.id)).toEqual(['supported']);
+    expect(result.selection.status).toBe('selected');
+    expect(result.coverage.omissions).toHaveLength(51);
+    expect(result.coverage.omissions[0]).toMatchObject({ id: expect.any(String), source: 'future-source', started_at: expect.any(String) });
   });
   test('ties use deterministic IDs and filters constrain latest intent', async () => {
     const f = fixture(); f.add('z', { date: '2026-09-18T12:00:00Z' }); f.add('a', { date: '2026-09-18T13:00:00+01:00' }); f.add('older', { source: 'google-meet', date: '2026-09-17T12:00:00Z' });
@@ -386,9 +397,9 @@ test('mixed-source catalog pages report consistent coverage for find, latest and
     expect(result.coverage.catalogRecordsExamined).toBe(5);
   }
 });
-test('voice-note bodies prefer the current committed body_key and local speakers are channel labels', async () => {
+test('voice-note body resolution prefers a committed pointer and uses the mirror only without a row', async () => {
   const f = fixture();
-  f.add('voice', { source: 'exo-voice-note', sourceId: 'recording-voice' });
+  f.add('voice', { source: 'exo-voice-note', sourceId: 'recording-voice', metadata: { transcription_outcome: 'transcribed', transcript_text: 'Hello' } });
   f.add('local', { source: 'exo-local', sourceId: 'local:session', body: [{ text: 'Local transcript', speaker_name: 'You' }] });
   const voice = await invoke(f, 'read', { ref: await ref(f, 'voice') });
   expect(voice.ok).toBe(true);
@@ -402,20 +413,117 @@ test('voice-note bodies prefer the current committed body_key and local speakers
   expect(legacyVoice.ok).toBe(true);
   expect(legacyVoice.provenance.sourceLocation.kvKey).toBe('xyz.tinycloud.tinychat/connectors/exo-voice-note/transcript/recording-voice');
 });
+test('legacy transcribed voice notes without commits read and validate the plain key', async () => {
+  const f = fixture();
+  f.add('legacy', { source: 'exo-voice-note', sourceId: 'legacy-recording', metadata: { transcription_outcome: 'transcribed', transcribed_at: '2026-01-01T00:00:00Z', transcript_text: 'Verified transcript' }, body: [{ text: 'Verified transcript' }], voiceNoteCommit: false });
+  const result = await invoke(f, 'read', { ref: await ref(f, 'legacy') });
+  expect(result.ok).toBe(true);
+  expect(result.spans.map(span => span.text)).toEqual(['Verified transcript']);
+  expect(result.provenance.sourceLocation.kvKey).toBe('xyz.tinycloud.tinychat/connectors/exo-voice-note/transcript/legacy-recording');
+});
 
-test('pack, explorer and backend meeting source registries agree', async () => {
-  const expected = ['fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload'];
+test('legacy voice-note transcript mismatch falls back to the newest live-or-dup winner text', async () => {
+  const f = fixture();
+  f.add('live', { source: 'exo-voice-note', sourceId: 'duplicate-recording', metadata: { transcription_outcome: 'failed', transcribed_at: '2026-01-01T00:00:00Z', transcript_text: 'Stale live metadata' }, body: [{ text: 'Stale KV mirror' }], voiceNoteCommit: false });
+  const duplicateMetadata = { transcription_outcome: 'transcribed', transcribed_at: '2026-01-02T00:00:00Z', transcript_text: 'Duplicate winner transcript' };
+  f.db.query('INSERT INTO connector_meeting VALUES(?,?,?,?,?,?,?,?,?,?,?)').run('dup-row', 'exo-voice-note-dup', 'duplicate-recording', 'Duplicate', '2026-09-18T12:00:00Z', null, '[]', null, null, JSON.stringify(duplicateMetadata), null);
+  const result = await invoke(f, 'read', { ref: await ref(f, 'live') });
+  expect(result.ok).toBe(true);
+  expect(result.spans.map(span => span.text)).toEqual(['Duplicate winner transcript']);
+  expect(result.provenance.sourceLocation).toMatchObject({ table: 'connector_meeting', metadataField: 'transcript_text' });
+  expect(result.provenance.sourceLocation.kvKey).toBeUndefined();
+});
+
+test('a missing voice-note commit table uses the eligible legacy winner', async () => {
+  const f = fixture();
+  f.add('legacy', { source: 'exo-voice-note', sourceId: 'pre-commit-recording', metadata: { transcription_outcome: 'transcribed', transcribed_at: '2026-01-01T00:00:00Z', transcript_text: 'Before commit table' }, body: [{ text: 'Before commit table' }], voiceNoteCommit: false });
+  f.db.exec('DROP TABLE voice_note_transcript');
+  const result = await invoke(f, 'read', { ref: await ref(f, 'legacy') });
+  expect(result.ok).toBe(true);
+  expect(result.spans.map(span => span.text)).toEqual(['Before commit table']);
+  expect(result.provenance.sourceLocation.kvKey).toBe('xyz.tinycloud.tinychat/connectors/exo-voice-note/transcript/pre-commit-recording');
+});
+test('missing legacy mirror acquires untimed metadata text and keeps it through local continuation', async () => {
+  const options = await acquisition(), f = fixture({ ...options, envelopeBytes: 6000 });
+  const expected = 'Metadata transcript sentence. '.repeat(900);
+  f.add('legacy', { source: 'exo-voice-note', sourceId: 'missing-mirror', metadata: { transcription_outcome: 'transcribed', transcribed_at: '2026-01-01T00:00:00Z', transcript_text: expected }, body: [{ text: 'Stale mirror' }], voiceNoteCommit: false });
+  f.bodies.delete('missing-mirror');
+  let result = await invoke(f, 'read', { ref: await ref(f, 'legacy') });
+  expect(result.ok).toBe(true);
+  expect(result.provenance).toMatchObject({ bodyOrigin: 'legacy-metadata', sourceLocation: { metadataField: 'transcript_text' } });
+  let text = result.spans.map(span => span.text).join('');
+  while (result.continuation) {
+    result = await invoke(f, 'read', { cursor: result.continuation });
+    expect(result.ok).toBe(true);
+    text += result.spans.map(span => span.text).join('');
+  }
+  expect(text).toBe(expected);
+});
+
+test('voice-note committed no_speech is an omission without fetching its body', async () => {
+  const f = fixture();
+  f.add('silent', { source: 'exo-voice-note', sourceId: 'silent-note', voiceNoteOutcome: 'no_speech', body: [] });
+  const result = await invoke(f, 'read', { ref: await ref(f, 'silent') });
+  expect(result.ok).toBe(false);
+  expect(result.error.code).toBe('TRANSCRIPT_OMITTED');
+  expect(result.coverage.omissions).toEqual([{ id: 'silent', source: 'exo-voice-note', started_at: '2026-09-18T12:00:00Z', reason: 'no_speech' }]);
+  expect(f.calls.filter(args => args.includes('get'))).toHaveLength(0);
+});
+
+test('voice-note no-commit statuses and legacy empty bodies are omissions, not transcript errors', async () => {
+  const f = fixture();
+  for (const status of ['pending', 'failed', 'skipped', 'no_speech', 'none']) f.add(status, { source: 'exo-voice-note', sourceId: `${status}-note`, metadata: { transcription_outcome: status }, voiceNoteCommit: false });
+  f.add('legacy-empty', { source: 'exo-voice-note', sourceId: 'legacy-empty-note', body: [], voiceNoteCommit: false });
+  for (const [id, reason] of [['pending', 'pending'], ['failed', 'failed'], ['skipped', 'skipped'], ['no_speech', 'no_speech'], ['none', 'not_transcribed'], ['legacy-empty', 'not_transcribed']]) {
+    const result = await invoke(f, 'read', { ref: await ref(f, id) });
+    expect(result.error.code).toBe('TRANSCRIPT_OMITTED');
+    expect(result.coverage.omissions[0]).toMatchObject({ id, source: 'exo-voice-note', reason });
+    expect(['MISSING_BODY', 'EMPTY_BODY']).not.toContain(result.error.code);
+  }
+  f.calls.splice(0);
+  const searched = await invoke(f, 'search', { term: 'Hello', scanLimit: 10 });
+  expect(searched.ok).toBe(true);
+  expect(searched.coverage).toMatchObject({ failedBodies: 0, excludedBodies: 6 });
+  expect(searched.coverage.omissions.map(item => item.reason).sort()).toEqual(['failed', 'no_speech', 'not_transcribed', 'not_transcribed', 'pending', 'skipped']);
+  expect(f.calls.filter(args => args.includes('get'))).toHaveLength(0);
+});
+
+test('a committed null body_key fails closed instead of falling back to the mirror', async () => {
+  const f = fixture();
+  f.add('voice', { source: 'exo-voice-note', sourceId: 'null-pointer' });
+  f.db.query('UPDATE voice_note_transcript SET body_key = NULL WHERE source_id = ?').run('null-pointer');
+  const result = await invoke(f, 'read', { ref: await ref(f, 'voice') });
+  expect(result.error.code).toBe('INVALID_METADATA');
+  expect(f.calls.filter(args => args.includes('get'))).toHaveLength(0);
+});
+
+test('pack, explorer and Eliza executor source registries agree with explicit follow-up exclusions', async () => {
+  const root = process.cwd();
   const [pack, explorer, backend] = await Promise.all([
-    readFile(join(process.cwd(), 'agent-skills/tinychat-retrieval/lib/retrieval.mjs'), 'utf8'),
-    readFile(join(process.cwd(), 'frontend/src/lib/connectors/meetingExplorer.ts'), 'utf8'),
-    readFile(join(process.cwd(), 'backend/src/transcripts/tool-contract.ts'), 'utf8'),
+    readFile(join(root, 'agent-skills/tinychat-retrieval/lib/retrieval.mjs'), 'utf8'),
+    readFile(join(root, 'frontend/src/lib/connectors/meetingExplorer.ts'), 'utf8'),
+    readFile(join(root, 'backend/src/transcripts/tool-contract.ts'), 'utf8'),
   ]);
+  const readSourceConstant = async (file, name) => {
+    const source = await readFile(join(root, file), 'utf8');
+    const value = source.match(new RegExp(`export\\s+const\\s+${name}\\s*=\\s*["']([^"']+)["']`))?.[1];
+    expect(value, `${name} source declaration`).toBeTruthy();
+    return value;
+  };
   const packList = pack.match(/const SOURCES = \[([^\]]+)\]/)?.[1].match(/'[^']+'/g).map(value => value.slice(1, -1));
   const backendList = backend.match(/MEETING_SOURCES = \[([^\]]+)\]/)?.[1].match(/"[^"]+"/g).map(value => value.slice(1, -1));
   const explorerBlock = explorer.match(/EXPLORER_MEETING_SOURCES:[\s\S]*?= \[([\s\S]*?)\]/)?.[1];
-  const aliases = { GMEET_MEETING_SOURCE: 'google-meet', TRANSCRIBER_MEETING_SOURCE: 'tinycloud-transcriber', LOCAL_MEETING_SOURCE: 'exo-local', VOICE_NOTE_SOURCE: 'exo-voice-note', UPLOAD_MEETING_SOURCE: 'exo-upload' };
-  const explorerList = explorerBlock.match(/"[^"]+"|[A-Z_]+/g).map(value => value.startsWith('"') ? value.slice(1, -1) : aliases[value]);
-  expect(packList).toEqual(expected);
-  expect(backendList).toEqual(expected);
-  expect(explorerList).toEqual(expected);
+  const constants = {
+    GMEET_MEETING_SOURCE: ['frontend/src/lib/connectors/gmeetNormalize.ts', 'GMEET_MEETING_SOURCE'],
+    TRANSCRIBER_MEETING_SOURCE: ['packages/core/src/connector-meeting.ts', 'TRANSCRIBER_MEETING_SOURCE'],
+    LOCAL_MEETING_SOURCE: ['frontend/src/lib/localTranscriber.ts', 'LOCAL_MEETING_SOURCE'],
+    VOICE_NOTE_SOURCE: ['frontend/src/lib/voiceNotes/voiceNoteStore.ts', 'VOICE_NOTE_SOURCE'],
+    UPLOAD_MEETING_SOURCE: ['frontend/src/lib/audioUpload.ts', 'UPLOAD_MEETING_SOURCE'],
+  };
+  const resolved = Object.fromEntries(await Promise.all(Object.entries(constants).map(async ([alias, [file, name]]) => [alias, await readSourceConstant(file, name)])));
+  const explorerList = explorerBlock.match(/"[^"]+"|[A-Z_]+/g).map(value => value.startsWith('"') ? value.slice(1, -1) : resolved[value]);
+  // Eliza's parser/reader remains a supported subset until TC-995 adds these sources.
+  const backendExcludedForTc995 = ['exo-voice-note', 'exo-upload'];
+  expect(packList).toEqual(explorerList);
+  expect(backendList).toEqual(explorerList.filter(source => !backendExcludedForTc995.includes(source)));
 });

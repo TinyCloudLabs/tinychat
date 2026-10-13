@@ -1,6 +1,6 @@
 # Releasing TinyChat's retrieval skill
 
-TinyChat owns `agent-skills/tinychat-retrieval`. The CLI core skill is released independently by `@tinycloud/cli`. The current setup pins CLI 0.10.0, retrieval 0.1.1-onboarding.18 and skills installer 1.7.0. Automatic first-install activation is scoped to stock OpenCode 1.18.31, a local macOS direct TUI, Node >=22.20, one active conversation and no background agents. Public URLs are not considered available until anonymously verified after deployment.
+The current setup pins CLI 0.10.0, retrieval 0.1.1-onboarding.19 and skills installer 1.7.0. Automatic first-install activation is scoped to stock OpenCode 1.18.31, a local macOS direct TUI, Node >=22.20, one active conversation and no background agents. Public URLs are not considered available until anonymously verified after deployment.
 
 ## Build and check
 

@@ -53,6 +53,7 @@ const MESSAGES = {
   MEETING_NOT_FOUND: 'The selected catalog record no longer exists in this space.',
   MISSING_BODY: 'The catalog record exists but its stored body was not found.',
   EMPTY_BODY: 'The stored body contains no readable text. This is not a complete meeting read.',
+  TRANSCRIPT_OMITTED: 'No transcript text is available for this voice note.',
   UNSUPPORTED_FORMAT: 'The stored body contains an unsupported format or record. No text was silently omitted.',
   UNSUPPORTED_SOURCE: 'This source is not supported by this release.',
   SPACE_NOT_HOSTED: 'The selected space is not available on this host.',
@@ -68,6 +69,12 @@ export class RetrievalError extends Error {
   constructor(code, detail) { super(detail === undefined ? MESSAGES[code] ?? MESSAGES.CLI_ERROR : `${MESSAGES[code] ?? MESSAGES.CLI_ERROR} Source: ${detail}.`); this.code = code; }
 }
 const fail = (code, detail) => { throw new RetrievalError(code, detail); };
+const omitTranscript = (row, reason) => {
+  const error = new RetrievalError('TRANSCRIPT_OMITTED');
+  error.reason = reason;
+  error.omission = { id: row.id, source: row.source, started_at: row.started_at, reason };
+  throw error;
+};
 const bytes = value => Buffer.byteLength(typeof value === 'string' ? value : JSON.stringify(value), 'utf8');
 const digest = value => createHash('sha256').update(value).digest('hex');
 const integer = (v, low, high) => Number.isSafeInteger(v) && v >= low && v <= high;
@@ -155,7 +162,7 @@ function metadata(row) {
 }
 const position = row => ({ id: row.id, time: row.sort_time });
 // Offsets are UTF-16 in each original text record, never in speaker/timestamp decoration.
-export function decodeBody(raw) {
+export function decodeBody(raw, source) {
   let value; try { value = JSON.parse(raw); } catch { fail('UNSUPPORTED_FORMAT'); }
   const records = typeof value === 'string' ? [{ text: value }] : value;
   if (!Array.isArray(records) || records.some(r => !object(r) || typeof r.text !== 'string')) fail('UNSUPPORTED_FORMAT');
@@ -163,7 +170,7 @@ export function decodeBody(raw) {
   return records.map((r, recordIndex) => {
     const speaker = [r.speaker_name, r.speaker, r.speakerName].find(v => typeof v === 'string' && v.trim());
     const startSecs = [r.start_time, r.startTime, r.start].find(v => typeof v === 'number' && Number.isFinite(v) && v >= 0);
-    return { text: r.text, recordIndex, start: 0, end: r.text.length, ...(speaker ? { speaker } : {}), ...(startSecs === undefined ? {} : { startSecs }) };
+    return { text: r.text, recordIndex, start: 0, end: r.text.length, ...(speaker ? { speaker, ...(source === 'exo-local' ? { speakerKind: 'channel' } : {}) } : {}), ...(startSecs === undefined ? {} : { startSecs }) };
   });
 }
 function boundary(text, end) {
@@ -239,44 +246,89 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
     createdAcquisition = true;
     await privateDirectory(acquisitionDir);
   }
-  function decoded(data, row, kvKey) {
+  function decoded(data, row, kvKey, bodyOrigin = 'kv') {
     let raw; try { raw = new TextDecoder('utf-8', { fatal: true }).decode(data); } catch { fail('UNSUPPORTED_FORMAT'); }
-    const spans = decodeBody(raw).map(span => row.source === 'exo-local' ? { ...span, speakerKind: span.speaker === undefined ? undefined : 'channel' } : span);
-    return { spans, provenance: { contentKind: row.contentKind, sourceLocation: { database: DATABASE, table: 'connector_meeting', id: row.id, kvKey }, revision: null, metadataUpdatedAt: row.updated_at, bodySha256: digest(data), hashMeaning: 'SHA-256 of this fetched legacy body only', atomicSnapshot: false, captureComplete: null, originalBytes: data.length, originalRecords: spans.length, offsetUnit: 'UTF-16 within original record text' } };
+    const spans = decodeBody(raw, row.source);
+    const sourceLocation = bodyOrigin === 'legacy-metadata'
+      ? { database: DATABASE, table: 'connector_meeting', id: row.id, metadataField: 'transcript_text' }
+      : { database: DATABASE, table: 'connector_meeting', id: row.id, kvKey };
+    return { spans, provenance: { contentKind: row.contentKind, sourceLocation, bodyOrigin, revision: null, metadataUpdatedAt: row.updated_at, bodySha256: digest(data), hashMeaning: bodyOrigin === 'legacy-metadata' ? 'SHA-256 of the local JSON encoding of validated legacy metadata transcript text' : 'SHA-256 of this fetched legacy body only', atomicSnapshot: false, captureComplete: null, originalBytes: data.length, originalRecords: spans.length, offsetUnit: 'UTF-16 within original record text' } };
+  }
+  function transcriptTextBytes(row, expectedText, retained, file) {
+    if (typeof expectedText !== 'string' || !expectedText.trim()) omitTranscript(row, 'not_transcribed');
+    const data = Buffer.from(JSON.stringify([{ text: expectedText }]), 'utf8');
+    if (data.length > bodyBytes) fail('OUTPUT_LIMIT');
+    if (retained) return writeFile(file, data, { mode: 0o600 }).then(() => decoded(data, row, undefined, 'legacy-metadata'));
+    return decoded(data, row, undefined, 'legacy-metadata');
   }
   async function voiceNoteBodyKey(row) {
+    const legacyKey = `${DATABASE}/${row.source}/transcript/${row.source_id}`;
     const schema = parse(await run(['sql', 'query', "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'voice_note_transcript'", '--db', DATABASE, '--space', context.space]));
     if (!Array.isArray(schema?.columns) || schema.columns.join(',') !== 'name' || !Array.isArray(schema.rows)) fail('INVALID_RESPONSE');
-    if (!schema.rows.length) return `${DATABASE}/${row.source}/transcript/${row.source_id}`;
-    const committed = parse(await run(['sql', 'query', 'SELECT body_key FROM voice_note_transcript WHERE source_id = ? LIMIT 1', '--db', DATABASE, '--space', context.space, '--params', JSON.stringify([row.source_id])]));
-    if (!Array.isArray(committed?.columns) || committed.columns.join(',') !== 'body_key' || !Array.isArray(committed.rows) || committed.rows.some(r => !Array.isArray(r) || r.length !== 1)) fail('INVALID_RESPONSE');
-    const key = committed.rows[0]?.[0];
-    if (key == null) return `${DATABASE}/${row.source}/transcript/${row.source_id}`;
-    const prefix = `${DATABASE}/${row.source}/transcript-rev/${row.source_id}/`;
-    if (typeof key !== 'string' || !key.startsWith(prefix) || !/^[a-f0-9]{32}$/.test(key.slice(prefix.length))) fail('INVALID_METADATA');
-    return key;
-  }
-  async function bodyKey(row) {
-    return row.source === 'exo-voice-note'
-      ? voiceNoteBodyKey(row)
-      : `${DATABASE}/${row.source}/transcript/${row.source_id}`;
+    if (schema.rows.length) {
+      const committed = parse(await run(['sql', 'query', 'SELECT body_key, outcome FROM voice_note_transcript WHERE source_id = ? LIMIT 2', '--db', DATABASE, '--space', context.space, '--params', JSON.stringify([row.source_id])]));
+      if (!Array.isArray(committed?.columns) || committed.columns.join(',') !== 'body_key,outcome' || !Array.isArray(committed.rows) || committed.rows.some(r => !Array.isArray(r) || r.length !== 2) || committed.rows.length > 1) fail('INVALID_RESPONSE');
+      if (committed.rows.length) {
+        const [key, outcome] = committed.rows[0];
+        if (outcome === 'no_speech') omitTranscript(row, 'no_speech');
+        if (outcome !== 'transcribed' || typeof key !== 'string') fail('INVALID_METADATA');
+        const prefix = `${DATABASE}/${row.source}/transcript-rev/${row.source_id}/`;
+        if (!key.startsWith(prefix) || !/^[a-f0-9]{32}$/.test(key.slice(prefix.length))) fail('INVALID_METADATA');
+        return { key, expectedText: null, legacy: false };
+      }
+    }
+    const winner = parse(await run([
+      'sql', 'query',
+      "SELECT g.id, g.metadata FROM connector_meeting g WHERE g.source_id = ? AND g.source IN ('exo-voice-note', 'exo-voice-note-dup') AND json_valid(g.metadata) AND json_extract(g.metadata, '$.transcription_outcome') IS NOT NULL ORDER BY COALESCE(json_extract(g.metadata, '$.transcribed_at'), '') DESC, g.id ASC LIMIT 1",
+      '--db', DATABASE, '--space', context.space, '--params', JSON.stringify([row.source_id]),
+    ]));
+    if (!Array.isArray(winner?.columns) || winner.columns.join(',') !== 'id,metadata' || !Array.isArray(winner.rows) || winner.rows.some(r => !Array.isArray(r) || r.length !== 2) || winner.rows.length > 1) fail('INVALID_RESPONSE');
+    if (!winner.rows.length) omitTranscript(row, 'not_transcribed');
+    let legacyMetadata;
+    try { legacyMetadata = JSON.parse(winner.rows[0][1]); } catch { fail('INVALID_METADATA'); }
+    if (!object(legacyMetadata)) fail('INVALID_METADATA');
+    const outcome = legacyMetadata.transcription_outcome;
+    if (outcome !== 'transcribed') omitTranscript(row, outcome === 'no_speech' ? 'no_speech' : ['pending', 'failed', 'skipped'].includes(outcome) ? outcome : 'not_transcribed');
+    return { key: legacyKey, expectedText: typeof legacyMetadata.transcript_text === 'string' ? legacyMetadata.transcript_text : null, legacy: true };
   }
   async function body(row, expectedHash, retained = false) {
-    const key = await bodyKey(row);
+    const resolved = row.source === 'exo-voice-note'
+      ? await voiceNoteBodyKey(row)
+      : { key: `${DATABASE}/${row.source}/transcript/${row.source_id}`, expectedText: null, legacy: false };
+    const { key, expectedText, legacy } = resolved;
     const directory = retained ? acquisitionDir : await mkdtemp(join(tmpdir(), 'tinychat-read-'));
     const file = join(directory, 'body');
-    let attempted = false;
+    let attempted = false, observedBytes;
     try {
       await chmod(directory, 0o700);
       await writeFile(file, '', { flag: 'wx', mode: 0o600 });
       attempted = true; transfers.remoteBodyAcquisitions++;
-      await run(['kv', 'get', key, '--space', context.space, '--output', file], { outputFile: file, maxOutputBytes: bodyBytes });
-      if ((await stat(file)).size > bodyBytes) fail('OUTPUT_LIMIT');
+      try { await run(['kv', 'get', key, '--space', context.space, '--output', file], { outputFile: file, maxOutputBytes: bodyBytes }); }
+      catch (error) {
+        observedBytes = await lstat(file).then(info => info.isFile() ? info.size : 0).catch(() => 0);
+        const e = classified(error);
+        if (legacy && e.code === 'MISSING_BODY' && expectedText?.trim()) return await transcriptTextBytes(row, expectedText, retained, file);
+        throw e;
+      }
+      const size = (await stat(file)).size;
+      observedBytes = size;
+      if (size > bodyBytes) fail('OUTPUT_LIMIT');
       const data = retained ? await privateFile(file, bodyBytes) : await readFile(file);
       if (expectedHash !== undefined && digest(data) !== expectedHash) fail('REVISION_CHANGED');
+      if (legacy && expectedText !== null) {
+        try {
+          const decodedBody = decoded(data, row, key);
+          const actual = decodedBody.spans.map(span => span.text).join(' ').replace(/\s+/g, ' ').trim();
+          const expected = expectedText.replace(/\s+/g, ' ').trim();
+          if (actual === expected && actual) return decodedBody;
+        } catch (error) {
+          if (!['UNSUPPORTED_FORMAT', 'EMPTY_BODY'].includes(error.code)) throw error;
+        }
+        return await transcriptTextBytes(row, expectedText, retained, file);
+      }
       return decoded(data, row, key);
     } finally {
-      if (attempted) transfers.remoteBodyBytes += await lstat(file).then(info => info.isFile() ? info.size : 0).catch(() => 0);
+      if (attempted) transfers.remoteBodyBytes += observedBytes ?? await lstat(file).then(info => info.isFile() ? info.size : 0).catch(() => 0);
       if (!retained) await rm(directory, { recursive: true, force: true });
     }
   }
@@ -284,7 +336,7 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
     const row = await exact(ref); readAccess.sqlRead = true;
     const data = await body(row, undefined, true); readAccess.bodyRead = true; readAccess.currentAuthorityVerified = true; readAccess.currentBodyRevisionVerified = true;
     const acquiredAt = new Date().toISOString();
-    const manifest = { v: 1, context, contextHash, binding: acquisitionBinding, ref, row, acquiredAt, kvKey: data.provenance.sourceLocation.kvKey, bodySha256: data.provenance.bodySha256 };
+    const manifest = { v: 1, context, contextHash, binding: acquisitionBinding, ref, row, acquiredAt, ...(data.provenance.bodyOrigin === 'legacy-metadata' ? { bodyOrigin: 'legacy-metadata' } : { kvKey: data.provenance.sourceLocation.kvKey }), bodySha256: data.provenance.bodySha256 };
     const raw = JSON.stringify(manifest);
     if (bytes(raw) > 128 * 1024) fail('OUTPUT_LIMIT');
     await writeFile(join(acquisitionDir, 'manifest.json'), raw, { flag: 'wx', mode: 0o600 });
@@ -301,11 +353,17 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
     if (reference(row) !== state.ref) fail('ACQUISITION_INVALID');
     const rawBody = await privateFile(join(acquisitionDir, 'body'), bodyBytes);
     if (digest(rawBody) !== manifest.bodySha256) fail('ACQUISITION_INVALID');
+    const bodyOrigin = manifest.bodyOrigin ?? 'kv';
+    if (bodyOrigin === 'legacy-metadata') {
+      if (row.source !== 'exo-voice-note' || row.extra.transcription_outcome !== 'transcribed' || typeof row.extra.transcript_text !== 'string' || manifest.kvKey !== undefined) fail('ACQUISITION_INVALID');
+    } else if (bodyOrigin !== 'kv') fail('ACQUISITION_INVALID');
     const legacyKey = `${DATABASE}/${row.source}/transcript/${row.source_id}`;
-    const kvKey = manifest.kvKey ?? legacyKey;
+    const kvKey = bodyOrigin === 'legacy-metadata' ? undefined : manifest.kvKey ?? legacyKey;
     const revisionPrefix = `${DATABASE}/exo-voice-note/transcript-rev/${row.source_id}/`;
-    if (kvKey !== legacyKey && (row.source !== 'exo-voice-note' || typeof kvKey !== 'string' || !kvKey.startsWith(revisionPrefix) || !/^[a-f0-9]{32}$/.test(kvKey.slice(revisionPrefix.length)))) fail('ACQUISITION_INVALID');
-    return { row, data: decoded(rawBody, row, kvKey), acquisition: { mode: 'local-historical', binding: acquisitionBinding, acquiredAt: manifest.acquiredAt, manifestSha256: state.acquisition.manifestSha256 } };
+    if (bodyOrigin === 'kv' && kvKey !== legacyKey && (row.source !== 'exo-voice-note' || typeof kvKey !== 'string' || !kvKey.startsWith(revisionPrefix) || !/^[a-f0-9]{32}$/.test(kvKey.slice(revisionPrefix.length)))) fail('ACQUISITION_INVALID');
+    const data = decoded(rawBody, row, kvKey, bodyOrigin);
+    if (bodyOrigin === 'legacy-metadata' && (data.spans.length !== 1 || data.spans[0].text !== row.extra.transcript_text)) fail('ACQUISITION_INVALID');
+    return { row, data, acquisition: { mode: 'local-historical', binding: acquisitionBinding, acquiredAt: manifest.acquiredAt, manifestSha256: state.acquisition.manifestSha256 } };
   }
   function finish(result) { if (bytes(result) > envelopeBytes) fail('OUTPUT_LIMIT'); return result; }
   async function find(input) {
@@ -345,26 +403,24 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
   async function latest(input) {
     keys(input, ['source', 'from', 'to']);
     const scope = filters(input), all = await page(scope, null, 51);
+    const supported = await page(scope, null, 2, false, true);
     const unsupported = new Set(), omissions = [];
-    let row = null, secondSupported = null, examined = 0;
     for (const raw of all) {
-      examined++;
-      try {
-        const candidate = metadata(raw);
-        if (row === null) row = candidate;
-        else if (secondSupported === null) secondSupported = candidate;
-      } catch (error) {
+      try { metadata(raw); }
+      catch (error) {
         if (classified(error).code !== 'UNSUPPORTED_SOURCE') throw error;
         unsupported.add(raw.source);
         omissions.push({ id: raw.id, source: raw.source, started_at: raw.started_at });
       }
     }
+    const selectedRows = supported.map(metadata);
+    const row = selectedRows[0] ?? null, secondSupported = selectedRows[1] ?? null;
     const selected = row !== null && row.sort_time !== null;
     const status = !row ? 'empty' : selected ? 'selected' : 'no-dated-meeting';
     return finish(envelope('latest', {
       records: selected ? [display(row)] : [],
       selection: { intent: 'latest', resolved: selected, status, reason: selected ? 'Newest supported dated catalog record selected. Read this reference; older catalog pages are unnecessary.' : row ? 'No supported meeting has a usable start date; latest cannot be established.' : 'No supported meeting exists within these filters.', ordering: 'startedAt instant descending; undated last; id ascending', tieBreak: 'id-ascending', tiedAtNewest: selected && secondSupported?.sort_time === row.sort_time, nextAction: selected ? 'read' : null },
-      coverage: coverage({ searchScope: 'metadata', unsupportedSources: [...unsupported], omissions, examinedRecords: examined, catalogRecordsExamined: examined, moreCatalogRecords: all.length === 51, completeWithinScope: examined === all.length && all.length < 51, unexaminedRecords: examined < all.length || all.length === 51 ? 'unknown' : 0, discoveryConsistency: 'bounded observation of catalog order; concurrent changes may alter latest' }),
+      coverage: coverage({ searchScope: 'metadata', unsupportedSources: [...unsupported], omissions, examinedRecords: all.length, catalogRecordsExamined: all.length, moreCatalogRecords: all.length === 51, completeWithinScope: all.length < 51, unexaminedRecords: all.length === 51 ? 'unknown' : 0, discoveryConsistency: 'bounded observation of catalog order; concurrent changes may alter latest' }),
     }));
   }
   async function read(input) {
@@ -467,6 +523,11 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
       catch (error) {
         const e = classified(error);
         if (state.pending && e.code === 'REVISION_CHANGED') throw e;
+        if (e.code === 'TRANSCRIPT_OMITTED') {
+          state.excludedBodies++; state.catalogRecordsExamined++; scanned++; state.after = position(row); state.pending = null;
+          addOmission({ ref: rowRef, code: e.code, reason: e.reason, id: row.id, source: row.source, started_at: row.started_at });
+          continue;
+        }
         state.failedBodies++; state.catalogRecordsExamined++; scanned++; state.after = position(row); state.pending = null;
         addOmission({ ref: rowRef, code: e.code });
         if (['AUTH_REQUIRED', 'AUTH_EXPIRED', 'AUTH_OR_PERMISSION', 'PERMISSION_DENIED', 'SPACE_NOT_HOSTED', 'NETWORK_ERROR', 'TIMEOUT', 'CANCELLED'].includes(e.code)) break;
@@ -492,7 +553,7 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
       state.after = position(row); state.pending = null; state.catalogRecordsExamined++; scanned++;
     }
     result.continuation = exhausted ? null : continuation();
-    Object.assign(result.coverage, { ...counts(), matchingPassagesReturned: state.matchesReturned, unexaminedBodies: exhausted ? state.failedBodies : 'unknown', pendingBody: state.pending !== null, completeWithinScope: exhausted && state.failedBodies === 0, unsupportedSources: [...state.unsupportedSources], omissions: result.omissions.filter(item => item.id && item.source).map(({ id, source, started_at }) => ({ id, source, started_at })) });
+    Object.assign(result.coverage, { ...counts(), matchingPassagesReturned: state.matchesReturned, unexaminedBodies: exhausted ? state.failedBodies : 'unknown', pendingBody: state.pending !== null, completeWithinScope: exhausted && state.failedBodies === 0, unsupportedSources: [...state.unsupportedSources], omissions: result.omissions.filter(item => item.id && item.source).map(({ id, source, started_at, reason }) => ({ id, source, started_at, ...(reason ? { reason } : {}) })) });
     return finish(result);
   }
   async function checkVersion() {
@@ -535,7 +596,7 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
         if (createdAcquisition) {
           await writeFile(join(acquisitionDir, 'failure.json'), JSON.stringify({ error: { code: e.code }, contextHash, binding: acquisitionBinding, failedAt: new Date().toISOString() }), { flag: 'wx', mode: 0o600 }).catch(() => {});
         }
-        return { transfers, ...(command === 'read' ? { access: readAccess } : {}), envelopeVersion: 1, packVersion: PACK_VERSION, ok: false, command: ['diagnostics', 'find', 'latest', 'read', 'search'].includes(command) ? command : null, coverage: coverage({ completeWithinScope: false }), continuation: null, error: { code: e.code, message: e.message } };
+        return { transfers, ...(command === 'read' ? { access: readAccess } : {}), envelopeVersion: 1, packVersion: PACK_VERSION, ok: false, command: ['diagnostics', 'find', 'latest', 'read', 'search'].includes(command) ? command : null, coverage: coverage({ completeWithinScope: false, omissions: e.omission ? [e.omission] : [] }), continuation: null, error: { code: e.code, message: e.message, ...(e.reason ? { reason: e.reason } : {}) } };
       }
     },
   };
