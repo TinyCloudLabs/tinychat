@@ -16,6 +16,14 @@ pub(crate) fn with_import_lock<T>(operation: impl FnOnce() -> T) -> T {
     operation()
 }
 
+pub(crate) fn refresh_finishing_quit(app: &tauri::AppHandle) -> Result<(), String> {
+    crate::FINISHING_QUIT.store(
+        !journal::list_stopped(app)?.is_empty(),
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    Ok(())
+}
+
 pub struct RecorderRuntime(std::sync::Once);
 
 impl Default for RecorderRuntime {

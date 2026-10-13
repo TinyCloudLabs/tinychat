@@ -59,6 +59,8 @@ export type ClaimOptions =
   | { id: string; did: string; evidence: "space_row"; rowId: string };
 export interface NoteLedger {
   spaceId?: string | null;
+  /** Local source is durable before the playable file has finished importing. Absent on legacy ready notes. */
+  localAudio?: { state: "preparing" | "ready" | "failed"; error: string | null };
   audio: { state: "pending" | "saved"; rowId: string | null; at: number | null };
   transcript: { state: "pending" | "running" | "retrying" | "blocked" | "needs_attention" | "cancelled" | "failed" | "done";
     outcome: "transcribed" | "no_speech" | null; reason: string | null; attempts: number; nextAttemptAt: number | null };
@@ -225,6 +227,8 @@ export interface VoiceNotesPlugin {
   /** `maxDurationMs`: stop by itself after this much recorded time (clamped to [1 s, 3 h]). */
   start(options?: { maxDurationMs?: number } & Partial<CaptureOptions>): Promise<{ id: string; startedAt: number; maxDurationMs?: number }>;
   stop(): Promise<VoiceNoteRecording>;
+  /** Desktop finishing gate; absent on platforms whose stop already produces ready audio. */
+  awaitAudioReady?(id: string): Promise<void>;
   /**
    * `maxDurationMs`: the current recording's limit (the default when idle).
    * `androidSdkInt`: Android only, the OS API level (Build.VERSION.SDK_INT).

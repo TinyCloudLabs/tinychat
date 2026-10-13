@@ -156,6 +156,11 @@ export interface WebStore extends PluginProtocol {
    */
   commitSession(id: string, build: (session: SessionRecord, sizeBytes: number) => VoiceNoteRecording,
     progress?: Pick<SessionRecord, "audioMs" | "bytes" | "firstAudioAt">): Promise<VoiceNoteRecording | null>;
+  /** Desktop only: the native stop journal owns durable sources while audio is preparing. */
+  commitPreparingSession(id: string, build: (session: SessionRecord) => VoiceNoteRecording): Promise<VoiceNoteRecording | null>;
+  completePreparingAudio(id: string): Promise<VoiceNoteRecording>;
+  failPreparingAudio(id: string, error: string): Promise<void>;
+  retryPreparingAudio(id: string): Promise<void>;
   /** The whole audio of a pending recording, for playback. */
   readNoteAudio(id: string): Promise<{ bytes: Uint8Array; mimeType: string }>;
   /** Drops a session that captured nothing (no tombstone: there is nothing to protect). Rejects `audio_not_empty` rather than delete durable bytes. */
@@ -426,8 +431,54 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
       return recording ? clone(recording) : null;
     },
 
+    async commitPreparingSession(id, build) {
+      await before("note:commit", id);
+      const recording = await transact(db, [STORES.sessions, STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
+        const session = await get<SessionRecord>(tx, STORES.sessions, id);
+        if (!session) return null;
+        if (await get(tx, STORES.tombstones, id)) return null;
+        const built = build(clone(session));
+        built.ledger = { ...(built.ledger ?? emptyLedger()), localAudio: { state: "preparing", error: null } };
+        await put(tx, STORES.notes, built);
+        await del(tx, STORES.sessions, id);
+        return built;
+      });
+      return recording ? clone(recording) : null;
+    },
+
+    async completePreparingAudio(id) {
+      const sizeBytes = await audio.finalize(id);
+      return transact(db, [STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
+        const note = await checkedNote(tx, id);
+        const ready: VoiceNoteRecording = { ...note, sizeBytes,
+          ledger: { ...(note.ledger ?? emptyLedger()), localAudio: { state: "ready", error: null } } };
+        await put(tx, STORES.notes, ready);
+        return clone(ready);
+      });
+    },
+
+    async failPreparingAudio(id, error) {
+      await transact(db, [STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
+        const note = await checkedNote(tx, id);
+        await put(tx, STORES.notes, { ...note,
+          ledger: { ...(note.ledger ?? emptyLedger()), localAudio: { state: "failed", error } } });
+      });
+    },
+
+    async retryPreparingAudio(id) {
+      await transact(db, [STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
+        const note = await checkedNote(tx, id);
+        if (note.ledger?.localAudio?.state !== "failed") throw failure("not_failed_recording");
+        await put(tx, STORES.notes, { ...note,
+          ledger: { ...note.ledger, localAudio: { state: "preparing", error: null } } });
+      });
+    },
+
     async readNoteAudio(id) {
       const note = await transact(db, [STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
+      if (note.ledger?.localAudio?.state !== undefined && note.ledger.localAudio.state !== "ready") {
+        throw failure(note.ledger.localAudio.state === "failed" ? "audio_preparation_failed" : "audio_preparing");
+      }
       return { bytes: await audio.read(id, 0, await audio.size(id)), mimeType: note.mimeType };
     },
 
@@ -505,7 +556,10 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
 
     async readAudioChunk({ id, offset, length }): Promise<VoiceNoteAudioChunk> {
       if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(length) || length <= 0) throw failure("invalid_argument");
-      await transact(db, [STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
+      const note = await transact(db, [STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
+      if (note.ledger?.localAudio?.state !== undefined && note.ledger.localAudio.state !== "ready") {
+        throw failure(note.ledger.localAudio.state === "failed" ? "audio_preparation_failed" : "audio_preparing");
+      }
       const size = await audio.size(id);
       const bytes = await audio.read(id, offset, Math.min(length, MAX_READ_CHUNK_BYTES));
       return { id, offset, base64: bytesToBase64(bytes), bytesRead: bytes.byteLength, size, eof: offset + bytes.byteLength >= size };

@@ -253,6 +253,7 @@ export function createDesktopWhisperQueue(args: {
     if (disposed || activeRun || captureLive() || stopping) return;
     const notes = (await store.listPending()).recordings;
     const next = notes.find((note) => note.options?.transcriber === "on-device"
+      && (!note.ledger?.localAudio || note.ledger.localAudio.state === "ready")
       && !["done", "failed", "cancelled"].includes(note.stt?.state ?? "queued"));
     if (!next) { serverLease?.release(); return; }
     active = next.id;
@@ -291,6 +292,7 @@ export function createDesktopWhisperQueue(args: {
       const notes = (await store.listPending()).recordings;
       for (const note of notes) {
         if (note.options?.transcriber !== "on-device") continue;
+        if (note.ledger?.localAudio && note.ledger.localAudio.state !== "ready") continue;
         if (note.stt?.state === "running") {
           // The Rust task can outlive a WebView reload. Stop that instance before
           // replacing its staged path and starting the durable queued attempt.

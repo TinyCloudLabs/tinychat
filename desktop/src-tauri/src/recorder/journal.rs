@@ -87,6 +87,94 @@ pub fn clear(app: &tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+fn stopped_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let root = path(app)?.parent().unwrap().join("recorder-stopped");
+    fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    File::open(root.parent().unwrap())
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| e.to_string())?;
+    Ok(root)
+}
+
+fn stopped_path(app: &tauri::AppHandle, id: &str) -> Result<PathBuf, String> {
+    if !super::files::valid_recording_id(id) {
+        return Err("invalid_recording_id".into());
+    }
+    Ok(stopped_root(app)?.join(format!("{id}.json")))
+}
+
+pub fn save_stopped(app: &tauri::AppHandle, value: &Journal) -> Result<(), String> {
+    let path = stopped_path(app, &value.id)?;
+    save_stopped_at(&path, value)
+}
+
+pub(crate) fn save_stopped_at(path: &std::path::Path, value: &Journal) -> Result<(), String> {
+    let temp = path.with_extension(format!("json.{}.tmp", uuid::Uuid::new_v4()));
+    let mut file = File::create(&temp).map_err(|e| e.to_string())?;
+    file.write_all(&serde_json::to_vec(value).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    file.sync_all().map_err(|e| e.to_string())?;
+    fs::rename(&temp, &path).map_err(|e| e.to_string())?;
+    File::open(path.parent().unwrap())
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| e.to_string())
+}
+
+pub fn clear_active_if_matches(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
+    clear_active_if_matches_at(&path(app)?, id)
+}
+
+fn clear_active_if_matches_at(path: &std::path::Path, id: &str) -> Result<(), String> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let pending: Journal = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    if pending.id != id {
+        return Ok(());
+    }
+    fs::remove_file(path).map_err(|e| e.to_string())?;
+    File::open(path.parent().unwrap())
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| e.to_string())
+}
+
+pub fn load_stopped(app: &tauri::AppHandle, id: &str) -> Result<Option<Journal>, String> {
+    match fs::read(stopped_path(app, id)?) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| e.to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+pub fn list_stopped(app: &tauri::AppHandle) -> Result<Vec<Journal>, String> {
+    let mut journals = Vec::new();
+    for entry in fs::read_dir(stopped_root(app)?).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if entry.path().extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let bytes = fs::read(entry.path()).map_err(|e| e.to_string())?;
+        journals.push(serde_json::from_slice(&bytes).map_err(|e| e.to_string())?);
+    }
+    journals.sort_by(|a: &Journal, b: &Journal| a.id.cmp(&b.id));
+    Ok(journals)
+}
+
+pub fn clear_stopped(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
+    let path = stopped_path(app, id)?;
+    match fs::remove_file(&path) {
+        Ok(()) => File::open(path.parent().unwrap())
+            .and_then(|dir| dir.sync_all())
+            .map_err(|e| e.to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 fn failed_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let root = path(app)?.parent().unwrap().join("recorder-failed");
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
@@ -223,6 +311,61 @@ fn delete_failed_for_note_at(
 mod tests {
     use super::*;
     #[test]
+    fn stopped_journal_works_while_import_lock_is_held_and_recovers_crash_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let stopped = dir.path().join("note.json");
+        let active = dir.path().join("recorder-session.json");
+        let journal = Journal {
+            id: "note".into(),
+            started_at: 1,
+            segment_id: Some("rec-final".into()),
+            recorded_ms: 60_000,
+            paused_ms: 0,
+            max_duration_ms: 180_000,
+            system_audio: false,
+            spans: vec![],
+        };
+        let (locked_tx, locked_rx) = std::sync::mpsc::sync_channel(0);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+        let lock_holder = std::thread::spawn(move || {
+            super::super::with_import_lock(|| {
+                locked_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+        });
+        locked_rx.recv().unwrap();
+        let (saved_tx, saved_rx) = std::sync::mpsc::sync_channel(0);
+        let worker = std::thread::spawn({
+            let stopped = stopped.clone();
+            let journal = journal.clone();
+            move || {
+                save_stopped_at(&stopped, &journal).unwrap();
+                saved_tx.send(()).unwrap();
+            }
+        });
+        let saved_while_importing = saved_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .is_ok();
+        release_tx.send(()).unwrap();
+        lock_holder.join().unwrap();
+        worker.join().unwrap();
+        assert!(
+            saved_while_importing,
+            "Stop journal waited for another note's import"
+        );
+        fs::write(&active, serde_json::to_vec(&journal).unwrap()).unwrap();
+        clear_active_if_matches_at(&active, "other").unwrap();
+        assert!(active.exists());
+        clear_active_if_matches_at(&active, "note").unwrap();
+        assert!(!active.exists());
+        assert_eq!(
+            serde_json::from_slice::<Journal>(&fs::read(stopped).unwrap())
+                .unwrap()
+                .id,
+            "note"
+        );
+    }
+    #[test]
     fn journal_shape_is_stable() {
         let journal = Journal {
             id: "id".into(),
@@ -245,10 +388,12 @@ mod tests {
         );
         let mut old_journal = value;
         old_journal.as_object_mut().unwrap().remove("spans");
-        assert!(serde_json::from_value::<Journal>(old_journal)
-            .unwrap()
-            .spans
-            .is_empty());
+        assert!(
+            serde_json::from_value::<Journal>(old_journal)
+                .unwrap()
+                .spans
+                .is_empty()
+        );
     }
 
     #[test]

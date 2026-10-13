@@ -1,5 +1,6 @@
 //! Capture lifecycle over anarlog's recorder. Stop closes the current segment
 //! and releases the microphone; resume opens a fresh native capture.
+use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -224,9 +225,10 @@ fn capture_params(
 ) -> Result<tauri_plugin_transcription::CaptureParams, String> {
     Ok(tauri_plugin_transcription::CaptureParams {
         session_id: segment_id.to_owned(),
-        languages: vec!["en"
-            .parse::<anlg_language::Language>()
-            .map_err(|e| e.to_string())?],
+        languages: vec![
+            "en".parse::<anlg_language::Language>()
+                .map_err(|e| e.to_string())?,
+        ],
         onboarding: false,
         model: String::new(),
         base_url: String::new(),
@@ -366,6 +368,14 @@ async fn end_segment(
     elapsed_ms: u64,
 ) -> Result<(), String> {
     app.listener().stop_capture().await;
+    wait_finalization(app, segment_id, elapsed_ms).await
+}
+
+async fn wait_finalization(
+    app: &tauri::AppHandle,
+    segment_id: &str,
+    elapsed_ms: u64,
+) -> Result<(), String> {
     // The upstream WAV->MP3 encode scales with segment length. A snapshot call
     // errors on actor timeout, unlike get_capture_state's false "Inactive".
     let deadline = Instant::now() + Duration::from_secs(30 + elapsed_ms / 15_000);
@@ -378,7 +388,7 @@ async fn end_segment(
                         .iter()
                         .any(|id| id == segment_id) =>
             {
-                break
+                break;
             }
             _ => (),
         }
@@ -388,6 +398,115 @@ async fn end_segment(
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     Ok(())
+}
+
+// anarlog closes the WAV writer before its length-dependent MP3 encode. Its
+// capture snapshot only reports the *later* finalization boundary, so retain
+// our own hard link as soon as the closed RIFF header proves the source is
+// complete. The link survives anarlog deleting audio.wav after encoding.
+fn retain_stopped_source(session: &std::path::Path) -> Result<bool, String> {
+    let retained = session.join("audio.exo-source.wav");
+    if retained.exists() {
+        return Ok(true);
+    }
+    // The pinned upstream writer explicitly fsyncs every WAV source and this
+    // directory before publishing the marker. A complete RIFF header alone
+    // does not prove the separate stereo/debug writers have stopped.
+    if !session.join("audio.exo-source-ready").exists() {
+        return Ok(false);
+    }
+    let wav = session.join("audio.wav");
+    if wav.exists() {
+        let mut file = std::fs::File::open(&wav).map_err(|e| e.to_string())?;
+        let size = file.metadata().map_err(|e| e.to_string())?.len();
+        let mut header = [0u8; 12];
+        if file.read_exact(&mut header).is_ok()
+            && &header[..4] == b"RIFF"
+            && &header[8..] == b"WAVE"
+            && u64::from(u32::from_le_bytes(header[4..8].try_into().unwrap())) + 8 == size
+            && size > 44
+            && hound::WavReader::open(&wav).is_ok_and(|reader| reader.duration() > 0)
+        {
+            match std::fs::hard_link(&wav, &retained) {
+                Ok(()) => (),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                Err(error) => return Err(error.to_string()),
+            }
+            file.sync_all().map_err(|e| e.to_string())?;
+            std::fs::File::open(session)
+                .and_then(|dir| dir.sync_all())
+                .map_err(|e| e.to_string())?;
+            return Ok(true);
+        }
+    }
+    let mp3 = session.join("audio.mp3");
+    if mp3.exists() {
+        // The upstream producer syncs the MP3 before removing the WAV. Only
+        // accept this path after its finalizing actor has exited.
+        return Ok(false);
+    }
+    Ok(false)
+}
+
+async fn durable_source(app: &tauri::AppHandle, segment_id: &str) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let session = files::sessions_root(app)?.join(segment_id);
+        let ready = run_source_step(move || retain_stopped_source(&session)).await?;
+        if ready {
+            return Ok(());
+        }
+        let snapshot = app
+            .listener()
+            .get_capture_snapshot()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !snapshot
+            .finalizing_session_ids
+            .iter()
+            .any(|id| id == segment_id)
+            && snapshot.active_session_id.as_deref() != Some(segment_id)
+        {
+            let session = files::sessions_root(app)?.join(segment_id);
+            let mp3 = session.join("audio.mp3");
+            return run_source_step(move || {
+                let wav = session.join("audio.wav");
+                if mp3.exists() && !wav.exists() {
+                    let file = std::fs::File::open(&mp3).map_err(|e| e.to_string())?;
+                    if file.metadata().map_err(|e| e.to_string())?.len() == 0 {
+                        return Err("capture_audio_empty".into());
+                    }
+                    file.sync_all().map_err(|e| e.to_string())?;
+                    std::fs::File::open(&session)
+                        .and_then(|dir| dir.sync_all())
+                        .map_err(|e| e.to_string())?;
+                    return Ok(());
+                }
+                if !wav.exists()
+                    || hound::WavReader::open(&wav)
+                        .map_err(|e| e.to_string())?
+                        .duration()
+                        == 0
+                {
+                    return Err("capture_audio_empty".into());
+                }
+                Err("capture_audio_missing".into())
+            })
+            .await;
+        }
+        if Instant::now() >= deadline {
+            return Err("capture_source_timeout".into());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn run_source_step<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(operation)
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 async fn run_segment_import<T: Send + 'static>(
@@ -419,7 +538,42 @@ fn import_finished_segment(
 }
 
 fn source_mp3(session: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    // anarlog fsyncs its completed MP3 before unlinking audio.wav. A still
+    // present original WAV means a same-named MP3 may be a partial encode.
     let mp3 = session.join("audio.mp3");
+    if mp3.exists() && !session.join("audio.wav").exists() {
+        if std::fs::metadata(&mp3).map_err(|e| e.to_string())?.len() == 0 {
+            return Err("capture_audio_empty".into());
+        }
+        std::fs::File::open(&mp3)
+            .and_then(|file| file.sync_all())
+            .map_err(|e| e.to_string())?;
+        std::fs::File::open(session)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|e| e.to_string())?;
+        return Ok(mp3);
+    }
+    // Only an interrupted upstream encode uses the retained durable WAV.
+    let retained = session.join("audio.exo-source.wav");
+    if retained.exists() {
+        let recovered = session.join("audio.exo-recovered.mp3");
+        if !recovered.exists() {
+            let temp = session.join(format!(
+                "audio.exo-recovered.{}.mp3.tmp",
+                uuid::Uuid::new_v4()
+            ));
+            anlg_mp3::encode_wav(&retained, &temp)
+                .map_err(|e| format!("recovery_encode_failed: {e}"))?;
+            std::fs::File::open(&temp)
+                .and_then(|file| file.sync_all())
+                .map_err(|e| e.to_string())?;
+            std::fs::rename(&temp, &recovered).map_err(|e| e.to_string())?;
+            std::fs::File::open(session)
+                .and_then(|dir| dir.sync_all())
+                .map_err(|e| e.to_string())?;
+        }
+        return Ok(recovered);
+    }
     if !mp3.exists() {
         let wav = session.join("audio.wav");
         if wav.exists() {
@@ -430,7 +584,16 @@ fn source_mp3(session: &std::path::Path) -> Result<std::path::PathBuf, String> {
             {
                 return Err("capture_audio_empty".into());
             }
-            anlg_mp3::encode_wav(&wav, &mp3).map_err(|e| format!("recovery_encode_failed: {e}"))?;
+            let temp = session.join(format!("audio.{}.mp3.tmp", uuid::Uuid::new_v4()));
+            anlg_mp3::encode_wav(&wav, &temp)
+                .map_err(|e| format!("recovery_encode_failed: {e}"))?;
+            std::fs::File::open(&temp)
+                .and_then(|file| file.sync_all())
+                .map_err(|e| e.to_string())?;
+            std::fs::rename(&temp, &mp3).map_err(|e| e.to_string())?;
+            std::fs::File::open(session)
+                .and_then(|dir| dir.sync_all())
+                .map_err(|e| e.to_string())?;
         } else if session.join("audio.ogg").exists() {
             return Err("unsupported_capture_format".into());
         } else {
@@ -726,11 +889,255 @@ pub async fn recorder_stop(app: tauri::AppHandle) -> Result<CaptureStatus, Strin
     Ok(status)
 }
 
+/// Stop at the durable source boundary. Encoding and import are owned by
+/// recorder_finish, while the source pointer remains in the stop journal.
+#[tauri::command]
+pub async fn recorder_stop_durable(app: tauri::AppHandle) -> Result<CaptureStatus, String> {
+    super::ensure(&app);
+    let (id, segment_id, elapsed, recorded_before) = {
+        let engine = app.state::<Engine>();
+        let mut state = engine.0.lock();
+        if state.busy {
+            return Err("recorder_busy".into());
+        }
+        let id = state.id.clone().ok_or("no_recording")?;
+        let segment_id = state.segment_id.clone().ok_or("already_paused")?;
+        let elapsed = state
+            .segment_started
+            .map(|at| at.elapsed().as_millis() as u64)
+            .unwrap_or(0);
+        state.busy = true;
+        (id, segment_id, elapsed, state.recorded_ms)
+    };
+    app.listener().stop_capture().await;
+    let empty = match durable_source(&app, &segment_id).await {
+        Ok(()) => false,
+        Err(error) if empty_capture(&error) => true,
+        Err(error) => {
+            clear_busy(&app);
+            return Err(error);
+        }
+    };
+    let handle = app.clone();
+    let stop_id = id.clone();
+    let stop_segment = segment_id.clone();
+    let pointer = run_source_step(move || {
+        let mut pointer = journal::load(&handle)?.ok_or("capture_journal_missing")?;
+        if pointer.id != stop_id || pointer.segment_id.as_deref() != Some(&stop_segment) {
+            return Err("capture_journal_mismatch".into());
+        }
+        pointer.recorded_ms = recorded_after_segment(recorded_before, elapsed, empty);
+        if empty {
+            pointer.segment_id = None;
+            if elapsed > 0 {
+                pointer
+                    .spans
+                    .push(empty_segment_span(now_ms(), elapsed, recorded_before));
+            }
+            files::remove_source_session(&files::sessions_root(&handle)?, &stop_segment)?;
+        }
+        journal::save_stopped(&handle, &pointer)?;
+        crate::FINISHING_QUIT.store(true, Ordering::SeqCst);
+        journal::clear(&handle)?;
+        Ok(pointer)
+    })
+    .await;
+    let pointer = match pointer {
+        Ok(pointer) => pointer,
+        Err(error) => {
+            clear_busy(&app);
+            return Err(error);
+        }
+    };
+    let status = {
+        let engine = app.state::<Engine>();
+        let mut state = engine.0.lock();
+        let mut status = state.status();
+        status.state = "idle";
+        status.intent = "stopped";
+        status.reason = if state.auto_stop_requested {
+            Some("max_duration")
+        } else {
+            None
+        };
+        status.audio_ms = pointer.recorded_ms;
+        status.elapsed_ms = pointer.recorded_ms;
+        state.id = None;
+        state.started_at = None;
+        state.segment_id = None;
+        state.segment_started = None;
+        state.recorded_ms = 0;
+        state.spans.clear();
+        state.busy = false;
+        state.blocked_reason = None;
+        state.last_stop_reason = status.reason;
+        status
+    };
+    tracing::info!(target: "exo_dev::recorder", kind = "pipeline", source_id = %id,
+        operation = "recorder", phase = "source_durable");
+    emit_status(&app);
+    Ok(status)
+}
+
+#[tauri::command]
+pub async fn recorder_finish(app: tauri::AppHandle, id: String) -> Result<u64, String> {
+    super::ensure(&app);
+    let handle = app.clone();
+    let lookup_id = id.clone();
+    let pointer = run_source_step(move || {
+        journal::load_stopped(&handle, &lookup_id)?.ok_or("capture_journal_missing".into())
+    })
+    .await?;
+    if pointer.id != id {
+        return Err("capture_journal_mismatch".into());
+    }
+    let Some(segment_id) = pointer.segment_id.clone() else {
+        return files::audio_file_size(app, id).await;
+    };
+    wait_finalization(&app, &segment_id, pointer.recorded_ms).await?;
+    let handle = app.clone();
+    let import_id = id.clone();
+    let import_segment = segment_id.clone();
+    let system_audio = pointer.system_audio;
+    run_segment_import(move || {
+        if journal::load_stopped(&handle, &import_id)?.is_none() {
+            return Err("capture_discarded".into());
+        }
+        let result = import_finished_segment(&handle, &import_segment, &import_id, system_audio);
+        if let Err(error) = &result {
+            if empty_capture(error) {
+                files::remove_source_session(&files::sessions_root(&handle)?, &import_segment)?;
+                let mut ready = pointer;
+                ready.segment_id = None;
+                journal::save_stopped(&handle, &ready)?;
+                return Ok(());
+            }
+            journal::save_failed(
+                &handle,
+                &journal::FailedSegment {
+                    id: import_id,
+                    segment_id: import_segment,
+                    reason: "write_failed".into(),
+                    error: error.clone(),
+                    journal: pointer,
+                },
+            )?;
+        }
+        result
+    })
+    .await?;
+    tracing::info!(target: "exo_dev::recorder", kind = "pipeline", source_id = %id,
+        operation = "recorder", phase = "audio_ready");
+    files::audio_file_size(app, id).await
+}
+
+#[cfg(test)]
+mod durable_stop_tests {
+    use super::{empty_segment_span, recorded_after_segment, retain_stopped_source, source_mp3};
+    use std::io::Write;
+    use std::time::{Duration, Instant};
+
+    fn sparse_wav(path: &std::path::Path, minutes: u64, finalized: bool) {
+        let data_bytes = minutes * 60 * 48_000 * 8;
+        let mut file = std::fs::File::create(path).unwrap();
+        file.write_all(b"RIFF").unwrap();
+        file.write_all(
+            &(if finalized {
+                (data_bytes + 36) as u32
+            } else {
+                36
+            })
+            .to_le_bytes(),
+        )
+        .unwrap();
+        file.write_all(b"WAVEfmt ").unwrap();
+        file.write_all(&16u32.to_le_bytes()).unwrap();
+        file.write_all(&3u16.to_le_bytes()).unwrap();
+        file.write_all(&2u16.to_le_bytes()).unwrap();
+        file.write_all(&48_000u32.to_le_bytes()).unwrap();
+        file.write_all(&384_000u32.to_le_bytes()).unwrap();
+        file.write_all(&8u16.to_le_bytes()).unwrap();
+        file.write_all(&32u16.to_le_bytes()).unwrap();
+        file.write_all(b"data").unwrap();
+        file.write_all(&(data_bytes as u32).to_le_bytes()).unwrap();
+        file.set_len(data_bytes + 44).unwrap();
+    }
+
+    #[test]
+    fn source_receipt_waits_for_closed_header_and_retains_audio_after_upstream_unlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("audio.wav");
+        sparse_wav(&wav, 1, false);
+        assert!(!retain_stopped_source(dir.path()).unwrap());
+        sparse_wav(&wav, 1, true);
+        assert!(!retain_stopped_source(dir.path()).unwrap());
+        std::fs::write(dir.path().join("audio.exo-source-ready"), b"durable\n").unwrap();
+        assert!(retain_stopped_source(dir.path()).unwrap());
+        std::fs::remove_file(wav).unwrap();
+        assert_eq!(
+            std::fs::metadata(dir.path().join("audio.exo-source.wav"))
+                .unwrap()
+                .len(),
+            60 * 48_000 * 8 + 44
+        );
+    }
+
+    #[test]
+    fn final_empty_segment_does_not_extend_a_previously_recorded_note() {
+        assert_eq!(recorded_after_segment(60_000, 800, true), 60_000);
+        let span = empty_segment_span(100_800, 800, 60_000);
+        assert_eq!(span.at_audio_ms, 60_000);
+        assert_eq!(span.audio_ms, 0);
+    }
+
+    #[test]
+    fn completed_upstream_mp3_is_used_without_reencoding_retained_wav() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("audio.exo-source.wav"), b"retained").unwrap();
+        let mp3 = dir.path().join("audio.mp3");
+        std::fs::write(&mp3, b"completed upstream mp3").unwrap();
+        assert_eq!(source_mp3(dir.path()).unwrap(), mp3);
+        assert!(!dir.path().join("audio.exo-recovered.mp3").exists());
+    }
+
+    #[test]
+    fn sparse_duration_fixtures_measure_local_source_boundary() {
+        for minutes in [1, 30, 180] {
+            let dir = tempfile::tempdir().unwrap();
+            sparse_wav(&dir.path().join("audio.wav"), minutes, true);
+            std::fs::write(dir.path().join("audio.exo-source-ready"), b"durable\n").unwrap();
+            let started = Instant::now();
+            assert!(retain_stopped_source(dir.path()).unwrap());
+            let elapsed = started.elapsed();
+            eprintln!(
+                "durable_source_boundary duration={minutes}m elapsed_ms={}",
+                elapsed.as_millis()
+            );
+            assert!(
+                elapsed <= Duration::from_secs(1),
+                "{minutes}m source boundary took {elapsed:?}"
+            );
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoveryReport {
     journal: Option<journal::Journal>,
+    stopped: Vec<journal::Journal>,
     quarantined: Vec<journal::FailedSegment>,
+}
+
+#[tauri::command]
+pub async fn recorder_stopped_list(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    run_source_step(move || {
+        Ok(journal::list_stopped(&app)?
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -783,8 +1190,42 @@ pub async fn recorder_recover(app: tauri::AppHandle) -> Result<RecoveryReport, S
                     journal::save(&app, current)?;
                 }
             }
+            let stopped = journal::list_stopped(&app)?;
+            for current in &stopped {
+                let Some(segment_id) = current.segment_id.as_deref() else {
+                    continue;
+                };
+                if journal::list_failed(&app)?
+                    .iter()
+                    .any(|failed| failed.segment_id == segment_id)
+                {
+                    continue;
+                }
+                if let Err(error) =
+                    import_finished_segment(&app, segment_id, &current.id, current.system_audio)
+                {
+                    if empty_capture(&error) {
+                        files::remove_source_session(&files::sessions_root(&app)?, segment_id)?;
+                        let mut ready = current.clone();
+                        ready.segment_id = None;
+                        journal::save_stopped(&app, &ready)?;
+                    } else {
+                        journal::save_failed(
+                            &app,
+                            &journal::FailedSegment {
+                                id: current.id.clone(),
+                                segment_id: segment_id.into(),
+                                reason: "write_failed".into(),
+                                error,
+                                journal: current.clone(),
+                            },
+                        )?;
+                    }
+                }
+            }
             Ok(RecoveryReport {
                 journal: pending,
+                stopped,
                 quarantined: journal::list_failed(&app)?,
             })
         })
@@ -798,6 +1239,19 @@ pub async fn recorder_acknowledge(app: tauri::AppHandle, id: String) -> Result<(
     tauri::async_runtime::spawn_blocking(move || {
         super::ensure(&app);
         super::with_import_lock(|| {
+            if let Some(stopped) = journal::load_stopped(&app, &id)? {
+                if let Some(segment_id) = stopped.segment_id {
+                    if !files::segment_imported(&app, &id, &segment_id)? {
+                        return Err("journal_not_ready".into());
+                    }
+                }
+                // A kill can land after save_stopped but before the active
+                // journal is cleared. Its matching pointer must not block Start.
+                journal::clear_active_if_matches(&app, &id)?;
+                journal::clear_stopped(&app, &id)?;
+                super::refresh_finishing_quit(&app)?;
+                return Ok(());
+            }
             if app.state::<Engine>().0.lock().id.is_some() {
                 return Err("recording_in_progress".into());
             }

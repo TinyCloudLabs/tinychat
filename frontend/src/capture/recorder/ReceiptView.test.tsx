@@ -54,6 +54,13 @@ describe("ReceiptView", () => {
     expect(html).not.toContain("Saved on this phone");
   });
 
+  test("a legacy Mac note without localAudio is ready rather than preparing", () => {
+    const html = render({ phase: "idle", outcome: "local", startedAt: null,
+      lastSaved: { id: "rec-1", durationMs: 42_000, at: Date.now() } }, "tauri");
+    expect(html).not.toContain("Preparing audio");
+    expect(html).toContain("Getting this Mac&#x27;s audio");
+  });
+
   test("denied shortcut shows the full-page recovery action without a receipt", () => {
     const html = render({ phase: "idle", permissionDenied: true, startedAt: null });
     expect(html).toContain("Microphone access is off");
