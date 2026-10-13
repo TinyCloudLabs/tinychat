@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.7.2-beta.0
+
+### Patch Changes
+
+- 1834edf: TC-1016: reuse notetaker send idempotency keys across retries and coalesce active or concurrent sends for the same meeting URL.
+
 ## 0.7.1
 
 ### Patch Changes
