@@ -293,7 +293,7 @@ describe("a Local note's job ending after the phone dropped it from its queue", 
     await settle();
     expect(phone.reads).toBe(reads + 1);
     expect(stepOf(seen.view!.pipeline, "transcript").state).toBe("failed");
-    expect(seen.view!.pipeline.blocker?.cause).toBe("Couldn't transcribe on this phone");
+    expect(seen.view!.pipeline.blocker?.cause).toBe("Couldn't transcribe on this browser");
   });
 
   test("an event for another note does not read the phone again", async () => {
@@ -575,7 +575,7 @@ describe("a list of 100 notes without row metadata", () => {
     await settleUntil(() => space.log.rowQueries.length > 1);
     expect(space.log.rowQueries).toHaveLength(2);
     expect(space.log.rowQueries[1]).toEqual([IDS[7]]);
-    expect(views.get(IDS[7]!)!.pipeline.blocker?.cause).toBe("Couldn't transcribe on this phone");
+    expect(views.get(IDS[7]!)!.pipeline.blocker?.cause).toBe("Couldn't transcribe on this browser");
   });
 
   test("another account's cache is not reused: the same notes under a new identity are read once more, in one query", async () => {

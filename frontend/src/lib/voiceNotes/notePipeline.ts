@@ -14,7 +14,7 @@ import {
   percentText,
 } from "./notePipelineCopy";
 
-export type PipelineDevice = "phone" | "mac";
+export type PipelineDevice = "phone" | "mac" | "iphone" | "android" | "browser";
 export type PipelineRoute = "off" | "on-device" | "private-cloud";
 export type StepKey = "phone" | "space" | "transcript" | "notes";
 export type StepState = "done" | "active" | "waiting" | "blocked" | "failed" | "upcoming" | "skipped";
@@ -231,8 +231,8 @@ function spaceStep(input: NotePipelineInput): Result {
       case "timeout": return failed(SPACE_COPY.timeout(device), "retry");
       case "rejected": return failed(failure.message, "retry");
       case "server": return failed(SPACE_COPY.server(failure.message, device), "retry");
-      case "source": return failed(SPACE_COPY.source(failure.message));
-      case "other": return failed(SPACE_COPY.unknown(failure.message), "retry");
+      case "source": return failed(SPACE_COPY.source(failure.message, device));
+      case "other": return failed(SPACE_COPY.unknown(failure.message, device), "retry");
     }
   }
   if (!online) return { state: "waiting", caption: SPACE_COPY.offlineCaption };

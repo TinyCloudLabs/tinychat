@@ -6,7 +6,7 @@ let testDeadlineMs: number | null = null;
 export class VoiceNoteSaveTimeout extends Error {
   readonly code = "VOICE_NOTE_OPERATION_TIMEOUT";
   constructor(readonly operation: string, readonly timeoutMs: number, message =
-    "This note is still on your phone, but saving it is taking too long. Check your connection and try again.") {
+    "This note is saved on this device. Sync is taking longer than expected. Check your connection and try again.") {
     super(message);
     this.name = "VoiceNoteSaveTimeout";
   }

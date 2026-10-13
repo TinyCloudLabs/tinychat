@@ -80,8 +80,8 @@ const micFromStatus = (status: CaptureStatus | MicStateEvent): RecorderMic =>
 
 function saveFailureCopy(message: string): string {
   return message === TINYCLOUD_NETWORK_FAILURE_MESSAGE
-    ? message
-    : `Saved on this phone, but uploading to your space failed: ${message}`;
+    ? "Waiting for a connection · syncs by itself"
+    : "Couldn't sync to your TinyCloud space. Retry from Activity.";
 }
 
 export interface VoiceNoteRecorderControllerOptions {

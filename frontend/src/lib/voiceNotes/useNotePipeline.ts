@@ -33,6 +33,7 @@ import {
   type PipelineNotesSync,
   type PipelineOnDevice,
   type PipelineRoute,
+  type StepKey,
 } from "./notePipeline";
 import { isAppleSpeech, OnDeviceStt, type OnDeviceSttStatus } from "./onDeviceStt";
 import { onDeviceQueuePlace, type OnDeviceQueuePlace } from "./onDeviceQueue";
@@ -708,10 +709,13 @@ export interface NotePipelineSource {
 
 export interface NotePipelineView {
   pipeline: NotePipeline;
+  input?: NotePipelineInput;
+  provider?: "local" | "private" | "powerful" | "off";
   /** Where the transcript is made, for the parts of a note that show a transcribe offer of their own. */
   route?: NotePipelineInput["route"];
   /** Runs the blocker's action; its failure shows as `actionError`. */
   onAction: (kind: PipelineActionKind) => void;
+  onRetryStep?: (key: StepKey) => void;
   actionError: string | null;
 }
 
@@ -734,7 +738,15 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
   const platform = useContext(PlatformContext);
   const ids = useMemo(() => entries.map((entry) => entry.id), [entries]);
   const pending = useSyncExternalStore(pendingStore.subscribe, pendingStore.snapshot, pendingStore.snapshot);
-  const laneBusy = useSyncExternalStore(subscribeSpaceLane, () => spaceLaneSnapshot().busy, () => false);
+  const laneBusy = useRef(spaceLaneSnapshot().busy);
+  const timedOutRows = useRef(false);
+  const [laneIdleVersion, setLaneIdleVersion] = useState(0);
+  useEffect(() => subscribeSpaceLane(() => {
+    const busy = spaceLaneSnapshot().busy;
+    const becameIdle = laneBusy.current && !busy;
+    laneBusy.current = busy;
+    if (becameIdle && timedOutRows.current) setLaneIdleVersion((version) => version + 1);
+  }), []);
   const onDeviceStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const syncVersion = useStoreVersion(subscribeRecordingNoteSync);
   const transcriptSyncVersion = useStoreVersion(subscribeOnDeviceTranscriptSync);
@@ -775,6 +787,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
     return [{ id, tcw, signal }];
   });
   const rows = useSpaceRows(wantedRows);
+  timedOutRows.current = [...rows.values()].some((entry) => "error" in entry.read && entry.read.timeout === true);
   // A read that ran out of time is tried once more when the write lane is idle (the uploads that held it up are done); Try again stays.
   const autoRetried = useRef(new Set<string>());
   useEffect(() => {
@@ -785,12 +798,12 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
       if (entry === undefined || entry.identity !== identity) continue;
       const retryKey = `${identity}\t${id}`;
       if (!("error" in entry.read)) { autoRetried.current.delete(retryKey); continue; }
-      if (laneBusy || entry.read.timeout !== true || autoRetried.current.has(retryKey)) continue;
+      if (laneBusy.current || entry.read.timeout !== true || autoRetried.current.has(retryKey)) continue;
       autoRetried.current.add(retryKey);
       due.push(id);
     }
     if (due.length > 0) setRowRetries((before) => { const next = new Map(before); for (const id of due) next.set(id, (before.get(id) ?? 0) + 1); return next; });
-  }, [rows, laneBusy, wantedRows]);
+  }, [rows, laneIdleVersion, wantedRows]);
   const autoSyncVersion = useStoreVersion(subscribeAutoSync);
   const reread = useCallback(() => {
     nativeRead.reread();
@@ -798,7 +811,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
     setLocalAttempt((count) => count + 1);
     setRowAttempt((count) => count + 1);
   }, [nativeRead.reread, refreshQuarantine]);
-  const device: PipelineDevice = platform === "tauri" ? "mac" : "phone";
+  const device: PipelineDevice = platform === "tauri" ? "mac" : platform === "ios" ? "iphone" : platform === "android" ? "android" : "browser";
   const hasOnDevice = onDevicePipelineAvailable(platform);
   const { states, autoSyncs, autoTranscriptSyncs } = useMemo(() => {
     const out = new Map<string, PipelineState>();
@@ -835,7 +848,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
         readError: nativeRead.error ?? rowError,
         capture: { finalizing: recorder.finalizationPendingId === id && issue === null, issue, readError: captureReadError },
         pending: pending.notes?.find((note) => note.id === id) ?? null,
-        lane: { busy: laneBusy, depth: spaceLaneSnapshot().depth },
+        lane: { busy: false, depth: 0 },
         onDeviceStatus: device !== "mac" && hasOnDevice ? onDeviceStatus : null,
         desktopJob: device === "mac" && hasOnDevice ? getDesktopWhisperQueue()?.snapshot().get(id) ?? null : null,
         transcriptSync: tcw === null ? null : onDeviceTranscriptSyncState(tcw, id),
@@ -870,7 +883,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
     }
     return { states: out, autoSyncs: wantsSync, autoTranscriptSyncs: wantsTranscriptSync };
     // The store versions say the per-key getters read above have new answers.
-  }, [entries, locals, rows, natives, nativeRead.ready, nativeRead.error, captureReadError, pending, laneBusy, onDeviceStatus, issues, recorder.finalizationPendingId, recorder.transcription, device, hasOnDevice, syncVersion, transcriptSyncVersion, whisperVersion, autoSyncVersion]);
+  }, [entries, locals, rows, natives, nativeRead.ready, nativeRead.error, captureReadError, pending, onDeviceStatus, issues, recorder.finalizationPendingId, recorder.transcription, device, hasOnDevice, syncVersion, transcriptSyncVersion, whisperVersion, autoSyncVersion]);
   useAutoNoteSync(autoSyncs);
   useAutoTranscriptSync(autoTranscriptSyncs);
   return { states, natives, nativeReady: nativeRead.ready, reread };
@@ -927,7 +940,7 @@ function useNotePipelinesWithLedger(entries: readonly { id: string; source: Note
   }, []);
   const latest = useRef({ entries, recorder, reread });
   latest.current = { entries, recorder, reread };
-  const run = useCallback((id: string, state: PipelineState, kind: PipelineActionKind) => {
+  const run = useCallback((id: string, state: PipelineState, kind: PipelineActionKind, step?: StepKey) => {
     const { entries: current, recorder: rec } = latest.current;
     const source = current.find((entry) => entry.id === id)?.source;
     if (source === undefined) return;
@@ -935,7 +948,7 @@ function useNotePipelinesWithLedger(entries: readonly { id: string; source: Note
     void runPipelineAction(kind, {
       id,
       tcw: source.tcw,
-      pipeline: state.pipeline,
+      pipeline: step === undefined ? state.pipeline : { ...state.pipeline, current: step },
       input: state.input,
       native: state.native,
       transcription: rec.transcription,
@@ -951,8 +964,11 @@ function useNotePipelinesWithLedger(entries: readonly { id: string; source: Note
   }, []);
   const views = useMemo(() => new Map([...states].map(([id, state]): [string, NotePipelineView] => [id, {
     pipeline: state.pipeline,
+    input: state.input,
+    provider: state.input.route === "on-device" ? "local" : state.input.route === "off" ? "off" : state.native?.transcriber === "assemblyai" ? "powerful" : "private",
     route: state.input.route,
     onAction: (kind) => run(id, state, kind),
+    onRetryStep: (key) => run(id, state, "retry", key),
     actionError: state.pipeline.blocker === undefined ? null : failures.get(id) ?? null,
   }])), [states, failures, run]);
   return { views, natives, nativeReady };

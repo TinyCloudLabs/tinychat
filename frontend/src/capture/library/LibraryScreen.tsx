@@ -14,6 +14,8 @@ import { PageHeader } from "@/shell/PageHeader";
 import { LibraryListView } from "./LibraryListView";
 import type { Library } from "./useLibrary";
 import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
+import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
+import type { AppPlatform } from "@/lib/platform";
 
 function RefreshButton(props: { onClick: () => void; busy: boolean }) {
   return (
@@ -42,6 +44,8 @@ export function LibraryScreen(props: {
   /** The column's width and gutters. */
   column: string;
   pipelines?: ReadonlyMap<string, NotePipeline>;
+  activityViews?: ReadonlyMap<string, NotePipelineView>;
+  platform?: AppPlatform;
 }) {
   const { library } = props;
   const refresh = <RefreshButton onClick={library.refresh} busy={library.listing} />;
@@ -65,6 +69,8 @@ export function LibraryScreen(props: {
           now={props.now}
           selectedId={props.selectedId}
           pipelines={props.pipelines}
+          activityViews={props.activityViews}
+          platform={props.platform}
         />
         {props.meetingsSlot}
       </div>

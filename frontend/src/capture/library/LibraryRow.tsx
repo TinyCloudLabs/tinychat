@@ -16,6 +16,9 @@ import { formatClockDuration, rowWhen } from "./formatters";
 import { RowBadge } from "./RowBadge";
 import { KIND_ICON, libraryKind, librarySourceLabel } from "./libraryKinds";
 import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
+import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
+import type { AppPlatform } from "@/lib/platform";
+import { activityForNote, noteStatus } from "../activity/activitySelector";
 
 export type LibraryItem = MeetingListItem & {
   /** A voice note on this device with no row in the space yet. */
@@ -53,12 +56,13 @@ export function libraryRowAsideDuration(item: LibraryItem, lineReplaced: boolean
   return isVoiceNote(item) && !lineReplaced ? null : item.durationSecs;
 }
 
-export function LibraryRow(props: { item: LibraryItem; now: Date; grouped: boolean; selected?: boolean; testId?: string; onRecentOpen?: (id: string) => void; pipeline?: NotePipeline }) {
+export function LibraryRow(props: { item: LibraryItem; now: Date; grouped: boolean; selected?: boolean; testId?: string; onRecentOpen?: (id: string) => void; pipeline?: NotePipeline; activityView?: NotePipelineView; platform?: AppPlatform }) {
   const { item } = props;
   const Icon = KIND_ICON[libraryKind(item.source)];
   const voiceNote = libraryKind(item.source) === "note";
   const soft = useSoftHome();
-  const badge = libraryRowBadge(item);
+  const status = props.activityView && props.platform ? noteStatus(activityForNote(props.activityView, props.platform)) : null;
+  const badge = status ? null : libraryRowBadge(item);
   if (soft) {
     const issue = issueForItem(item, soft.issues);
     const lineReplaced = issue !== undefined && !issueIsInformational(issue);
@@ -68,7 +72,8 @@ export function LibraryRow(props: { item: LibraryItem; now: Date; grouped: boole
         title={libraryRowTitle(item)}
         meta={libraryRowMeta(item, props.now, props.grouped)}
         badge={lineReplaced || isVoiceNote(item) ? undefined : (badge ?? undefined)}
-        pipeline={isVoiceNote(item) ? props.pipeline : undefined}
+        pipeline={status ? undefined : isVoiceNote(item) ? props.pipeline : undefined}
+        activityStatus={status}
         durationSecs={libraryRowAsideDuration(item, lineReplaced)}
         issue={issue}
         onDetails={issue && issueIsInformational(issue) ? (opener: HTMLElement) => soft.openIssue(item.sourceId, opener) : undefined}
@@ -97,6 +102,7 @@ export function LibraryRow(props: { item: LibraryItem; now: Date; grouped: boole
       }
       aside={
         <span className="flex shrink-0 items-center gap-1 text-meta text-muted-foreground">
+          {status && <span className="max-w-40 text-right [overflow-wrap:anywhere]" data-testid="library-note-status">{status}</span>}
           {item.durationSecs !== null && !isVoiceNote(item) && <span className="tnum">{formatClockDuration(item.durationSecs)}</span>}
           <ChevronRightIcon aria-hidden="true" className="size-4" />
         </span>

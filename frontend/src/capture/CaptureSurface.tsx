@@ -53,6 +53,7 @@ import { useRecorder } from "./recorder/RecorderProvider";
 import { continuePausedUpload, pausedUpload } from "./upload/pausedUpload";
 import { UploadSheet } from "./upload/UploadSheet";
 import { useUploadDeps } from "./upload/useUploadDeps";
+import { ActivityPanel } from "./activity/ActivityPanel";
 
 export interface CaptureSurfaceProps {
   tcw: TinyCloudWeb;
@@ -141,6 +142,17 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
   });
   const pipelineEntries = useMemo(() => listPipelineEntries(library.items, tcw), [library.items, tcw]);
   const pipelineViews = useNotePipelines(pipelineEntries);
+  const [activityViews, setActivityViews] = useState(pipelineViews);
+  const activityLatest = useRef(pipelineViews);
+  const activityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    activityLatest.current = pipelineViews;
+    if (activityTimer.current === null) activityTimer.current = setTimeout(() => {
+      activityTimer.current = null;
+      setActivityViews(activityLatest.current);
+    }, 250);
+  }, [pipelineViews]);
+  useEffect(() => () => { if (activityTimer.current !== null) clearTimeout(activityTimer.current); }, []);
   const pipelines = useMemo(() => new Map([...pipelineViews].map(([id, view]) => [id, view.pipeline])), [pipelineViews]);
   const actionTarget = useMemo(() => {
     let selected: { id: string; view: NotePipelineView; priority: number } | null = null;
@@ -197,6 +209,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
       data-testid="capture-surface"
       data-layout={wide ? "panes" : "stack"}
     >
+      <ActivityPanel items={library.items} views={activityViews} platform={platform} onOpenNote={(id) => navigate(PATHS.library + "/" + id)} />
       <div
         className={cn(
           homeOnly ? "relative h-full" : notePage ? "hidden" : wide ? `${SCROLLER} border-r border-border` : noteScreen && !noteSheet ? "hidden" : "relative h-full",
@@ -277,6 +290,8 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
             now={now}
             column={column}
             pipelines={pipelines}
+            activityViews={activityViews}
+            platform={platform}
           />
         </div>
       </div>
@@ -295,6 +310,8 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
               else goUp(navigate, notePage ? PATHS.capture : PATHS.library);
             }}
             transcription={recorder.transcription}
+            activityView={openNote ? activityViews.get(openNote.sourceId) : undefined}
+            platform={platform}
             savedNote={notePage || noteSheet ? { tcw, layout: notePage ? "page" : "sheet" } : undefined}
           />
         ) : wide ? (

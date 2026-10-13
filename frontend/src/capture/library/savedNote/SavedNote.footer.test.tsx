@@ -97,7 +97,7 @@ async function mount(options: { metadata?: MeetingMetadataRead; layout?: "page" 
 }
 
 describe("the saved note's footer", () => {
-  test("a failed Mac Whisper job keeps the transcript Retry action in the stepper", async () => {
+  test("a failed Mac Whisper job keeps the transcript Retry action in the status line", async () => {
     const calls: string[] = [];
     registerDesktopWhisperQueue({ snapshot: () => new Map([["rec-1", { id: "rec-1", state: "failed", error: "decoder", progress: null }]]),
       subscribe: () => () => {}, retry: async (id: string) => { calls.push(id); } } as DesktopWhisperQueue);
@@ -108,18 +108,18 @@ describe("the saved note's footer", () => {
     await act(async () => retry!.click());
     expect(calls).toEqual(["rec-1"]);
   });
-  test("while the stepper shows, the legacy route line is not drawn", async () => {
+  test("while the status line shows, the legacy route line is not drawn", async () => {
     recordings = [recording("on-device", { state: "queued", pack: null, engine: null, segmentsDone: 0, windowsDone: 0, error: null })];
     const container = await mount();
-    expect(present(container, '[aria-label="Where this note is"]')).toBe(true);
+    expect(present(container, '[data-testid="note-detail-status"]')).toBe(true);
     expect(present(container, '[data-testid="how-this-got-here"]')).toBe(false);
   });
 
-  test("a failed metadata read keeps its Try again beside the stepper", async () => {
+  test("a failed metadata read keeps its Try again beside the status line", async () => {
     recordings = [recording("on-device", { state: "queued", pack: null, engine: null, segmentsDone: 0, windowsDone: 0, error: null })];
     let retries = 0;
     const container = await mount({ metadata: { status: "failed", message: "boom" } as MeetingMetadataRead, onRetry: () => { retries += 1; } });
-    expect(present(container, '[aria-label="Where this note is"]')).toBe(true);
+    expect(present(container, '[data-testid="note-detail-status"]')).toBe(true);
     const retry = container.querySelector<HTMLButtonElement>('[data-testid="how-this-got-here-retry"]');
     expect(retry !== null).toBe(true);
     await act(async () => retry!.click());
@@ -129,7 +129,7 @@ describe("the saved note's footer", () => {
   test("once the pipeline is done the footer is drawn", async () => {
     recordings = [recording("off", null)];
     const container = await mount();
-    expect(present(container, '[aria-label="Where this note is"]')).toBe(false);
+    expect(present(container, '[data-testid="note-detail-status"]')).toBe(false);
     expect(present(container, '[data-testid="how-this-got-here"]')).toBe(true);
   });
 });

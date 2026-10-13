@@ -283,8 +283,8 @@ export function SavedReceipt(props: SavedReceiptProps) {
         <>
           <RouteLine nodes={route} landed={saved} />
           {props.outcome === "local" && <p className="text-meta text-muted-foreground">{
-            props.localUpload === "held" ? "Kept on this phone. This note needs an ownership check before upload."
-              : props.localUpload === "in-flight" ? "Another save is finishing in your TinyCloud space…"
+            props.localUpload === "held" ? "This note needs an ownership check before it can sync."
+              : props.localUpload === "in-flight" ? "Waiting to start syncing to your TinyCloud space…"
               : "Saving to your TinyCloud space…"
           }</p>}
           {saved && <p className="text-meta text-muted-foreground">Saved to your TinyCloud space</p>}

@@ -687,7 +687,7 @@ describe("voice-note recorder controller", () => {
       await recorder.record();
       await recorder.stop();
       await tick();
-      const friendly = "Couldn't reach your TinyCloud space. This note is still on your phone — try again.";
+      const friendly = "Waiting for a connection · syncs by itself";
       expect(recorder.getState().error).toBe(friendly);
       expect(warnings.filter(([message]) => String(message).includes("TinyCloud network failure"))).toHaveLength(1);
     } finally {
@@ -1182,7 +1182,7 @@ describe("voice-note recorder controller", () => {
     await Promise.all([first, doubleTap]);
     expect(reconcileRuns).toBe(1);
     expect(pendingStore.snapshot()).toMatchObject({ running: false, listing: { state: "ok", count: 1 } });
-    expect(pendingStore.snapshot().lastError).toContain("saving it is taking too long");
+    expect(pendingStore.snapshot().lastError).toContain("Sync is taking longer than expected");
     setVoiceNoteSaveDeadlineForTests(null);
     pendingStore.setAccount(null);
     detach();

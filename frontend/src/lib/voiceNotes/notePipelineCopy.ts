@@ -2,10 +2,10 @@
 // no em dashes. Every blocker line says what is wrong and, where it is true, that the note is safe.
 import type { PipelineActionKind, PipelineDevice, StepKey } from "./notePipeline";
 
-export const deviceName = (device: PipelineDevice): string => (device === "mac" ? "this Mac" : "this phone");
+export const deviceName = (device: PipelineDevice): string => device === "mac" ? "this Mac" : device === "iphone" ? "this iPhone" : device === "android" ? "this Android phone" : device === "browser" ? "this browser" : "this phone";
 
 export const STEP_LABEL = {
-  phone: (device: PipelineDevice) => (device === "mac" ? "Audio on this Mac" : "Audio on this phone"),
+  phone: (device: PipelineDevice) => `Audio on ${deviceName(device)}`,
   space: "Audio in your space",
   transcript: "Transcript",
   notes: "Notes",
@@ -53,7 +53,7 @@ export const SPACE_COPY = {
   afterRecording: "After recording",
   waiting: "Waiting to upload",
   preparing: "Preparing your space for audio upload…",
-  waitingForSpace: "Waiting for your space to finish another operation",
+  waitingForSpace: "Waiting to start",
   waitingInLine: (position: number) => `Waiting to upload · ${place(position)} in line`,
   uploading: (fraction: number | null) => (fraction === null ? "Uploading audio to your TinyCloud space…" : `Uploading audio to your TinyCloud space · ${percentText(fraction)}`),
   retrying: "Retrying…",
@@ -68,8 +68,8 @@ export const SPACE_COPY = {
   server: (_detail: string | null | undefined, device: PipelineDevice) =>
     `Your space couldn't take this note. It is safe on ${deviceName(device)}. Try again.`,
   unreachable: (device: PipelineDevice) => `Couldn't reach your space. This note is safe on ${deviceName(device)}.`,
-  source: (_message: string | null | undefined) => "Couldn't read the recording on this phone.",
-  unknown: (_message: string | null | undefined) => "Couldn't save this note. It is safe on this phone. Try again.",
+  source: (_message: string | null | undefined, device: PipelineDevice = "phone") => `Couldn't read the recording on ${deviceName(device)}.`,
+  unknown: (_message: string | null | undefined, device: PipelineDevice = "phone") => `Couldn't save this note. It is safe on ${deviceName(device)}. Try again.`,
 };
 
 export const TRANSCRIPT_COPY = {

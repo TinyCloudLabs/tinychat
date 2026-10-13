@@ -5,11 +5,10 @@ import { voiceNoteTitle } from "@/lib/voiceNotes/voiceNoteStore";
 import { useResolvedTheme } from "@/lib/theme";
 import { useRecorder } from "../../recorder/RecorderProvider";
 import { NotePipelineContext } from "../../pipeline/NotePipelineContext";
-import { PipelineStepper } from "../../pipeline/PipelineStepper";
+import { activityForNote, noteStatus } from "../../activity/activitySelector";
 import { rowHasCommittedAudio, useNotePipeline, type NotePipelineSource } from "@/lib/voiceNotes/useNotePipeline";
 import type { MeetingMetadataRead } from "@/lib/connectors/meetingExplorer";
 import type { NoteAudio } from "../NoteDetailView";
-import { TranscribeAction } from "../TranscribeAction";
 import type { LibraryItem } from "../LibraryRow";
 import { savedNoteMeta } from "./savedNoteMeta";
 import { savedNoteStoreFor, type SavedNoteStore } from "./savedNoteStore";
@@ -62,6 +61,9 @@ export default function SavedNote({
   );
   const pipeline = useNotePipeline(item.sourceId, pipelineSource);
   const stepperShown = pipeline !== null && !pipeline.pipeline.done;
+  const jobs = activityForNote(pipeline ?? undefined, platform);
+  const status = noteStatus(jobs);
+  const retry = jobs.find((job) => job.retry)?.retry;
   const view = {
     screen,
     layout,
@@ -71,15 +73,7 @@ export default function SavedNote({
     durationSecs: item.durationSecs,
     title: item.title ?? voiceNoteTitle(Date.parse(item.startedAt ?? "") || Date.now()),
     meta: savedNoteMeta(item, rowMetadata, platform, pipeline?.pipeline.done === true),
-    stepper: stepperShown ? (
-      <PipelineStepper
-        pipeline={pipeline.pipeline}
-        onAction={pipeline.onAction}
-        actionError={pipeline.actionError}
-        transcribeAction={platform === "tauri" ? undefined
-          : <TranscribeAction noteId={item.sourceId} transcription={recorder.transcription} durationSecs={item.durationSecs} label="Try again" />}
-      />
-    ) : null,
+    stepper: status ? <div className="flex flex-wrap items-center gap-3" data-testid="note-detail-status"><p className="sn-hint">{status}</p>{retry && <button type="button" className="min-h-11 text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={retry}>Try again</button>}</div> : null,
     audio,
     transcript,
     // The stepper is the route while the note is still getting here; the legacy route line would say it twice. A failed

@@ -184,17 +184,18 @@ describe("a voice note's transcription", () => {
     expect(render({ transcription: job({ kind: "active", status: { kind: "processing", completed: 1, total: 3 } }) })).toContain(
       "Transcribing in private cloud… 1/3",
     );
-    expect(render({ transcription: job({ kind: "done", outcome: "transcribed" }) })).toContain("Transcript saved.");
+    expect(render({ transcription: job({ kind: "done", outcome: "transcribed" }) })).toContain("Saving the transcript to your TinyCloud space…");
     const failed = (retryable: boolean) =>
       job({ kind: "failed", code: "upload_interrupted", message: "The upload did not complete.", retryable, reference: "cid-7" });
     const retry = render({ transcription: failed(true) });
-    expect(retry).toContain("Reference: cid-7");
+    expect(retry).not.toContain("Reference: cid-7");
+    expect(retry).toContain("Private transcription didn&#x27;t finish.");
     expect(retry).toContain('data-testid="transcribe-button"');
     expect(retry).toContain("Try again");
     expect(render({ transcription: failed(false) })).not.toContain('data-testid="transcribe-button"');
     // Private cloud unavailable right now: the failure is told, but Retry can't help.
     const unavailable = render({ transcription: transcription({ jobs: new Map([["rec-1", { kind: "failed", code: "upload_interrupted", message: "The upload did not complete.", retryable: true, reference: "cid-7" }]]), availability: "failed" }) });
-    expect(unavailable).toContain("The upload did not complete.");
+    expect(unavailable).toContain("Private transcription didn&#x27;t finish.");
     expect(unavailable).not.toContain('data-testid="transcribe-button"');
     expect(unavailable).toContain('data-testid="transcribe-private-recheck"');
   });

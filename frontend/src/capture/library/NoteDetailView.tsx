@@ -20,6 +20,9 @@ import type { MeetingMetadataRead, TranscriptRead } from "@/lib/connectors/meeti
 import { UPLOAD_MEETING_SOURCE } from "@/lib/audioUpload";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
+import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
+import type { AppPlatform } from "@/lib/platform";
+import { activityForNote, deviceName, noteStatus } from "../activity/activitySelector";
 import type { LocalTranscript } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { transcriptionStatusText } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { localTranscriptToSave, voiceNoteTitle, voiceNoteTranscriptState, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
@@ -62,6 +65,8 @@ export interface NoteDetailViewProps {
   audio: NoteAudio | null;
   /** Private cloud transcription (voice notes in the phone app); absent elsewhere. */
   transcription?: VoiceNoteTranscriptionProps;
+  activityView?: NotePipelineView;
+  platform?: AppPlatform;
   /** Whether the Mac's after-stop Whisper job shows here; defaults to the final recorder in the Tauri shell. */
   desktopWhisper?: boolean;
   copyState: "idle" | "copied" | "failed";
@@ -127,7 +132,7 @@ export function VoiceNoteTranscriptionStatus(props: {
   if (job?.kind === "done") {
     return (
       <p data-testid="voice-note-transcription-done" className="text-callout text-muted-foreground">
-        {job.outcome === "no_speech" ? "No speech was found in this note." : "Transcript saved."}
+        {job.outcome === "no_speech" ? "No speech found" : "Saving the transcript to your TinyCloud space…"}
       </p>
     );
   }
@@ -150,8 +155,7 @@ export function VoiceNoteTranscriptionStatus(props: {
     return (
       <div className="flex flex-col gap-2" data-testid="voice-note-transcription-failed">
         <p role="alert" className="min-w-0 text-callout text-destructive">
-          {job.message}
-          {job.reference && <span className="text-muted-foreground"> Reference: {job.reference}</span>}
+          Private transcription didn't finish.
         </p>
         {job.retryable && <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} label="Try again" />}
       </div>
@@ -239,10 +243,11 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
   const voiceNote = item.source === VOICE_NOTE_SOURCE;
   const spaceNoSpeech = metadata?.status === "ok" && metadata.metadata.transcription_outcome === "no_speech";
   const local = voiceNote && !spaceNoSpeech && props.localTranscript?.noteId === item.sourceId ? props.localTranscript : null;
+  const localSyncPending = props.activityView?.input?.transcript.onDevice?.sync?.state === "syncing" && local?.outcome === "transcribed";
   const remoteSentences = transcript?.status === "ok" ? transcript.sentences : [];
   const spaceReadFailed = remoteSentences.length === 0 && local !== null &&
     (transcript?.status === "failed" || metadata?.status === "failed");
-  const sentences = remoteSentences.length > 0 ? remoteSentences
+  const sentences = localSyncPending && local ? localTranscriptToSave(local).sentences : remoteSentences.length > 0 ? remoteSentences
     : local?.outcome === "transcribed" ? localTranscriptToSave(local).sentences : [];
   return (
     <section aria-labelledby="note-transcript" data-testid="note-transcript" className="flex flex-col gap-3">
@@ -267,6 +272,7 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
       </span>
       {sentences.length > 0 ? (
         <div className="flex max-w-[68ch] flex-col gap-4 [-webkit-touch-callout:default] select-text">
+          {localSyncPending && <p className="text-callout text-muted-foreground">Saved on {deviceName(props.platform ?? "web")} · syncing to your TinyCloud space</p>}
           {spaceReadFailed && <div className="flex flex-wrap items-center gap-2" data-testid="note-transcript-local-space-error">
             <p className="text-callout text-muted-foreground">On this device · Couldn’t check your space.</p>
             <Button type="button" variant="outline" onClick={props.onRetry}>Try again</Button>
@@ -336,6 +342,9 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
 
 export function NoteDetailView(props: NoteDetailViewProps) {
   const { item, metadata } = props;
+  const activityJobs = props.activityView && props.platform ? activityForNote(props.activityView, props.platform) : [];
+  const activityStatus = noteStatus(activityJobs);
+  const activityRetry = activityJobs.find((job) => job.retry)?.retry;
   if (item === null) {
     return (
       <Frame title="Note" pushed={props.pushed} onBack={props.onBack}>
@@ -389,6 +398,7 @@ export function NoteDetailView(props: NoteDetailViewProps) {
       <header className="flex flex-col gap-1" data-testid="note-detail" data-note-id={item.id}>
         {!props.pushed && <h2 className="font-display text-title-1 [overflow-wrap:anywhere]">{title}</h2>}
         <p className="tnum text-meta text-muted-foreground">{noteMeta(item)}</p>
+        {activityStatus && <div className="flex flex-wrap items-center gap-3" data-testid="note-detail-status"><p className="text-callout text-muted-foreground">{activityStatus}</p>{activityRetry && <button type="button" className="min-h-11 text-callout text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={activityRetry}>Retry</button>}</div>}
       </header>
       {props.audio ? (
         <MeetingAudioPlayer key={`${item.source}:${item.sourceId}`} {...noteAudioPlayerProps(props.audio)} durationSecs={item.durationSecs} />
