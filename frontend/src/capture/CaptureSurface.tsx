@@ -54,6 +54,7 @@ import { continuePausedUpload, pausedUpload } from "./upload/pausedUpload";
 import { UploadSheet } from "./upload/UploadSheet";
 import { useUploadDeps } from "./upload/useUploadDeps";
 import { ActivityPanel } from "./activity/ActivityPanel";
+import { FailureNotificationHost } from "./activity/FailureNotificationHost";
 import { sidebarActivityStore } from "./activity/sidebarActivityStore";
 import type { NotePipelineSource } from "@/lib/voiceNotes/useNotePipeline";
 
@@ -221,6 +222,9 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
   const activityControl = <ActivityPanel items={library.items} views={activityViews} platform={platform} onOpenNote={openActivityNote}
     upload={upload} paused={paused} onOpenUpload={openActivityUpload} onContinueUpload={continueActivityUpload}
     onRetryUpload={retryActivityUpload} active={active} />;
+  const visibleNoteId = active ? (noteScreen ? screen.noteId ?? null : recentNoteId !== null && openNote ? openNote.id : null)
+    ?? (recorder.sheetOpen && recorder.lastSaved ? library.items.find((item) => item.sourceId === recorder.lastSaved?.id)?.id ?? null : null) : null;
+  const openNotificationPath = useCallback((path: string) => navigate(path), [navigate]);
 
   return (
     <div
@@ -229,6 +233,8 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
       data-layout={wide ? "panes" : "stack"}
     >
       <PipelineBridge entries={pipelineEntries} onViews={setActivityViews} />
+      <FailureNotificationHost accountDid={tcw.did} items={library.items} views={activityViews} platform={platform}
+        visibleNoteId={visibleNoteId} onOpenPath={openNotificationPath} />
       <div
         className={cn(
           homeOnly ? "relative h-full" : notePage ? "hidden" : wide ? `${SCROLLER} border-r border-border` : noteScreen && !noteSheet ? "hidden" : "relative h-full",
