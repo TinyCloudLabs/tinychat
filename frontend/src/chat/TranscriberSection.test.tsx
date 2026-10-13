@@ -211,6 +211,26 @@ describe("TranscriberView", () => {
     expect(html).toContain(">Hide<");
   });
 
+  test("null and legacy Unknown speakers render without labels or dangling separators", () => {
+    const html = render({ meetings: [meeting({ status: "completed" })], open: {
+      id: "mtg_1", status: "ready", transcript: {
+        meeting_id: "mtg_1", status: "completed", speakers: [],
+        segments: [
+          { id: "a", speaker_id: "unknown", speaker_name: null, start: 0, end: 1, text: "No speaker field." },
+          { id: "b", speaker_id: "unknown", speaker_name: null, attribution: "unknown", start: 1, end: 2, text: "Unattributed by ptx." },
+          { id: "c", speaker_id: "unknown", speaker_name: "Unknown", start: 2, end: 3, text: "Legacy placeholder." },
+          { id: "d", speaker_id: "unknown", speaker_name: "  Unknown  ", start: 3, end: 4, text: "Padded placeholder." },
+        ],
+      },
+    } });
+    expect(html).not.toContain('class="font-medium"');
+    expect(html).not.toContain("Unknown");
+    expect(html).not.toContain(": </span>");
+    for (const text of ["No speaker field.", "Unattributed by ptx.", "Legacy placeholder.", "Padded placeholder."]) {
+      expect(html).toContain(text);
+    }
+  });
+
   test("uncertain transcript windows are visible without claiming a speaker identity", () => {
     const html = render({ meetings: [meeting({ status: "completed" })], open: {
       id: "mtg_1", status: "ready", transcript: {

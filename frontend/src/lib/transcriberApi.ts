@@ -81,7 +81,7 @@ export type TranscriberListRow = TranscriberMeeting | TranscriberUnavailableMeet
 export interface TranscriberSegment {
   id: string;
   speaker_id: string;
-  speaker_name: string;
+  speaker_name: string | null;
   attribution?: "identified" | "unknown" | "overlap";
   start: number;
   end: number;
@@ -97,7 +97,7 @@ export interface TranscriberTranscript {
   provider?: string;
   fallback_from?: string;
   fallback_reason?: string | null;
-  speakers?: { id: string; name: string }[];
+  speakers?: { id: string; name: string | null }[];
   segments?: TranscriberSegment[];
   text?: string;
 }

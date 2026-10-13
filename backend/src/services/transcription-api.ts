@@ -60,7 +60,7 @@ export interface TranscriptionMeeting {
 export interface TranscriptionSegment {
   id: string;
   speaker_id: string;
-  speaker_name: string;
+  speaker_name: string | null;
   start: number;
   end: number;
   text: string;
@@ -71,7 +71,7 @@ export interface TranscriptionTranscript {
   status: TranscriptionMeetingStatus;
   language?: string;
   duration_seconds?: number;
-  speakers?: { id: string; name: string }[];
+  speakers?: { id: string; name: string | null }[];
   segments?: TranscriptionSegment[];
   text?: string;
   created_at?: string;
