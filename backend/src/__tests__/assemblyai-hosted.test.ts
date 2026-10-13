@@ -202,6 +202,37 @@ function audio(bytes: number): Uint8Array {
 }
 
 describe("Exo note idempotency", () => {
+  test("a stale receiving job resumes its upload ID and resends parts once", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinychat-assemblyai-resume-"));
+    closers.push(() => rmSync(dir, { recursive: true, force: true }));
+    const first = new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await first.init();
+    const created = await first.create(ADDRESS_A, 3, "audio/mp4", T0, "resume-note");
+    if (!created.ok || !("upload" in created)) throw new Error("upload not created");
+    await first.writePart(created.upload, 0, audio(3));
+    await first.close();
+    const restarted = new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await restarted.init();
+    expect(restarted.noteJob(ADDRESS_A, "resume-note")).toMatchObject({ status: "receiving", upload_id: created.upload.id });
+    const resumed = await restarted.create(ADDRESS_A, 3, "audio/mp4", Date.now(), "resume-note");
+    if (!resumed.ok || !("upload" in resumed)) throw new Error("upload not resumed");
+    expect(resumed.upload.id).toBe(created.upload.id);
+    expect(resumed.upload.received).toEqual([]);
+    let paidCalls = 0;
+    expect(await restarted.submitIfComplete(resumed.upload, Date.now, async () => {
+      paidCalls++;
+      return { status: "submitted", handle: issueHandle(HANDLE_KEY, TRANSCRIPT_ID, ADDRESS_A, Date.now()) };
+    })).toBe(false);
+    await restarted.writePart(resumed.upload, 0, audio(3));
+    expect(await restarted.submitIfComplete(resumed.upload, Date.now, async () => {
+      paidCalls++;
+      return { status: "submitted", handle: issueHandle(HANDLE_KEY, TRANSCRIPT_ID, ADDRESS_A, Date.now()) };
+    })).toBe(true);
+    await restarted.idle();
+    expect(paidCalls).toBe(1);
+    await restarted.close();
+  });
+
   test("partial records are quarantined and cannot authorize another paid submission after reboot", async () => {
     const dir = mkdtempSync(join(tmpdir(), "tinychat-assemblyai-partial-"));
     closers.push(() => rmSync(dir, { recursive: true, force: true }));
