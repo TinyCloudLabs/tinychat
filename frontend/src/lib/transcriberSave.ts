@@ -43,29 +43,36 @@ export async function saveTranscriberMeeting(
   return { ok: true, data: saved.data };
 }
 
-/** The transcriber meeting ids already saved in this space. */
+/** Saved IDs separated from rows whose saved-body completeness is unknown. */
 export async function listSavedTranscriberMeetingIds(
   tcw: TinyCloudWeb,
   scheduleRead: TranscriberSpaceReadScheduler = (read) => read(),
   isCurrent: () => boolean = () => true,
-): Promise<StoreResult<string[]>> {
+): Promise<StoreResult<{ saved: string[]; unknown: string[] }>> {
   const rows = await scheduleRead(() => listKnownSourceIds(tcw, TRANSCRIBER_MEETING_SOURCE));
-  if (rows === null) return { ok: true, data: [] };
+  if (rows === null) return { ok: true, data: { saved: [], unknown: [] } };
   if (!rows.ok) return rows;
-  const complete: string[] = [];
+  const saved: string[] = [];
+  const unknown: string[] = [];
   for (const id of rows.data) {
     // Don't queue more old-account reads after the pass has been cancelled.
     if (!isCurrent()) break;
     try {
       const body = await scheduleRead(() => tcw.kv.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, id)));
       if (body === null || !isCurrent()) break;
-      if (body.ok) complete.push(id);
-      else console.debug("[transcriberSave] incomplete meeting", id, "kv-read-failed");
+      if (body.ok) saved.push(id);
+      else {
+        unknown.push(id);
+        console.debug("[transcriberSave] incomplete meeting", id, "kv-read-failed");
+      }
       // Unknown reads remain incomplete. Save rechecks this key before writing,
       // so one unavailable body cannot block the other records or be overwritten.
-    } catch { console.debug("[transcriberSave] incomplete meeting", id, "kv-read-threw"); }
+    } catch {
+      unknown.push(id);
+      console.debug("[transcriberSave] incomplete meeting", id, "kv-read-threw");
+    }
   }
-  return { ok: true, data: complete };
+  return { ok: true, data: { saved, unknown } };
 }
 
 /** Read only publication numbers: full metadata also contains transcript text. */

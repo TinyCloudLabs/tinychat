@@ -233,7 +233,7 @@ for (const empty of [false, true]) {
     const body = { ...transcript, segments: empty ? [] : transcript.segments };
     expect((await saveTranscriberMeeting(f.tcw, meeting, body)).ok).toBe(false);
     expect(f.sql.query("SELECT COUNT(*) AS n FROM connector_meeting").get()).toEqual({ n: 1 });
-    expect(await listSavedTranscriberMeetingIds(f.tcw)).toEqual({ ok: true, data: [] });
+    expect(await listSavedTranscriberMeetingIds(f.tcw)).toEqual({ ok: true, data: { saved: [], unknown: [meeting.id] } });
     // A new mount has no in-memory knowledge of the failed import. A complete
     // SQL row alone must not suppress this retry.
     const saved: Record<string, string> = {};
@@ -247,7 +247,7 @@ for (const empty of [false, true]) {
     expect(f.sql.query("SELECT COUNT(*) AS n FROM connector_meeting").get()).toEqual({ n: 1 });
     const key = transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, meeting.id);
     expect(JSON.parse(f.bodies.get(key)!)).toHaveLength(empty ? 0 : 2);
-    expect(await listSavedTranscriberMeetingIds(f.tcw)).toEqual({ ok: true, data: [meeting.id] });
+    expect(await listSavedTranscriberMeetingIds(f.tcw)).toEqual({ ok: true, data: { saved: [meeting.id], unknown: [] } });
     // Another return reads completeness, avoiding both fetches and body rewrites.
     await syncTranscriberLibrary({ tcw: f.tcw, client });
     expect(fetches).toBe(1);
@@ -426,7 +426,7 @@ test("notetaker sync refreshes for newly imported and newly observed remote meet
     transcript: async () => ({ status: "ok", value: { status: "ready", transcript } }),
   } as unknown as TranscriberClient;
   const saver = {
-    listSaved: async () => ({ ok: true, data: savedIds }),
+    listSaved: async () => ({ ok: true, data: { saved: savedIds, unknown: [] } }),
     save: async (_: TinyCloudWeb, row: TranscriberMeeting) => {
       if (row.id === "broken") return { ok: false };
       savedIds.push(row.id);
@@ -504,7 +504,7 @@ test("notetaker save finishing after sign-out does not refresh the next account"
     const run = syncTranscriberLibrary({
       tcw: f.tcw, client, isCurrent: () => current,
       saver: {
-        listSaved: async () => ({ ok: true, data: [] }),
+        listSaved: async () => ({ ok: true, data: { saved: [], unknown: [] } }),
         save: () => { started.resolve(); return pending.promise; },
       },
     });
@@ -547,7 +547,7 @@ test("each saved-meeting completeness read gets its own scheduled lane turn", as
     reads++;
     return read();
   });
-  expect(result).toEqual({ ok: true, data: [meeting.id] });
+  expect(result).toEqual({ ok: true, data: { saved: [meeting.id], unknown: [] } });
   // One SQL source-id query plus one KV body check for this saved meeting.
   expect(reads).toBe(2);
   f.sql.close();
@@ -572,7 +572,7 @@ test("slow listSaved is not subject to the per-call voice-note deadline", async 
   try {
     await new Promise((resolve) => setTimeout(resolve, 25));
     expect(settleKind).toBeNull();
-    release({ ok: true, data: [] });
+    release({ ok: true, data: { saved: [], unknown: [] } });
     await sync;
     expect(settleKind).toBe("resolved");
   } finally {
@@ -602,7 +602,7 @@ test("a queued completeness read skips after sign-out so a new-session save can 
       listSaved: async (_tcw, scheduleRead) => {
         announceReadQueued();
         await scheduleRead!(() => { oldAccountReads++; return Promise.resolve("old account read"); });
-        return { ok: true, data: [] };
+        return { ok: true, data: { saved: [], unknown: [] } };
       },
       save: async () => ({ ok: true }),
     },
@@ -633,7 +633,7 @@ test("a voice-note lane save runs while the meetings list request is pending", a
   const sync = syncTranscriberLibrary({
     tcw: {} as TinyCloudWeb,
     client,
-    saver: { listSaved: async () => ({ ok: true, data: [] }), save: async () => ({ ok: true }) },
+    saver: { listSaved: async () => ({ ok: true, data: { saved: [], unknown: [] } }), save: async () => ({ ok: true }) },
   });
   await listStarted;
 
@@ -673,7 +673,7 @@ test("transcriber space reads and writes use the lane, while transcript HTTP sta
     saver: {
       listSaved: async (_tcw, scheduleRead) => scheduleRead!(async () => {
         listSavedCalled = true;
-        return { ok: true, data: [] };
+        return { ok: true, data: { saved: [], unknown: [] } };
       }),
       save: async () => { saveCalled = true; return { ok: true }; },
     },
@@ -719,7 +719,7 @@ test("transcriber sync rechecks the account in the queued lane job before saving
     client,
     isCurrent: () => current,
     saver: {
-      listSaved: async () => ({ ok: true, data: [] }),
+      listSaved: async () => ({ ok: true, data: { saved: [], unknown: [] } }),
       save: async () => { writes++; return { ok: true }; },
     },
   });
@@ -752,7 +752,7 @@ test("an account switch while a fetched transcript waits for the lane prevents i
     client,
     isCurrent: () => current,
     saver: {
-      listSaved: async () => ({ ok: true, data: [] }),
+      listSaved: async () => ({ ok: true, data: { saved: [], unknown: [] } }),
       save: async () => { writes++; return { ok: true }; },
     },
   });
@@ -793,10 +793,28 @@ test("unreadable saved transcript bodies log only the incomplete meeting id and 
   };
   const debug = spyOn(console, "debug").mockImplementation(() => {});
   try {
-    expect(await listSavedTranscriberMeetingIds(f.tcw)).toEqual({ ok: true, data: [] });
+    const scan = await listSavedTranscriberMeetingIds(f.tcw);
+    expect(scan.ok).toBe(true);
+    if (!scan.ok) throw new Error("saved-ID scan failed");
+    expect(scan.data.saved).toEqual([]);
+    expect(scan.data.unknown.sort()).toEqual([meeting.id, thrownMeeting.id].sort());
     expect(debug).toHaveBeenCalledWith("[transcriberSave] incomplete meeting", meeting.id, "kv-read-failed");
     expect(debug).toHaveBeenCalledWith("[transcriberSave] incomplete meeting", thrownMeeting.id, "kv-read-threw");
     expect(debug.mock.calls.flat().join(" ")).not.toContain("private payload");
+    const attempts: string[] = [];
+    let unknownIds: string[] = [];
+    const client = {
+      list: async () => ({ status: "ok", value: { meetings: [meeting, thrownMeeting] } }),
+      transcript: async (id: string) => { attempts.push(id); return { status: "error" }; },
+    } as unknown as TranscriberClient;
+    await syncTranscriberLibrary({
+      tcw: f.tcw,
+      client,
+      deliveryActive: () => false,
+      onPendingSnapshot: (async (_rows: unknown, _saved: unknown, unknown: string[]) => { unknownIds = unknown; }) as never,
+    });
+    expect(attempts).toEqual([meeting.id, thrownMeeting.id]);
+    expect(unknownIds).toEqual([meeting.id, thrownMeeting.id]);
   } finally {
     debug.mockRestore();
     f.sql.close();
