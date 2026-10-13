@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.5.1-beta.1
+
+### Patch Changes
+
+- 244d7a6: Update TinyCloud web, node, core, and services SDKs to 3.2.0 and OpenKey SDK and Capacitor plugin to their stable releases, retaining the session-key patch for the TinyCloud node SDK.
+
 ## 0.5.1-beta.0
 
 ### Patch Changes
