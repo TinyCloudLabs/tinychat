@@ -69,6 +69,7 @@ let handle: Handle;
 
 function makeInMemoryFireflies(seed: SeedTranscript[]) {
   const failures = new Map<string, Response[]>();
+  const permanentlyFailing = new Set<string>();
   const calls: { operation: "list" | "detail"; id?: string; skip?: number }[] = [];
   const fetchImpl = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = JSON.parse(String(init?.body)) as {
@@ -85,6 +86,11 @@ function makeInMemoryFireflies(seed: SeedTranscript[]) {
     }
     const id = request.variables?.id ?? "";
     calls.push({ operation: "detail", id });
+    if (permanentlyFailing.has(id)) {
+      return new Response(JSON.stringify({ errors: [{ message: "persistently unavailable" }] }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
     const queued = failures.get(id);
     if (queued?.length) return queued.shift()!;
     const transcript = seed.find((item) => item.id === id) ?? null;
@@ -101,6 +107,8 @@ function makeInMemoryFireflies(seed: SeedTranscript[]) {
   return {
     client,
     calls,
+    failAlways(id: string) { permanentlyFailing.add(id); },
+    recover(id: string) { permanentlyFailing.delete(id); },
     failNext(id: string, responses: Response[]) { failures.set(id, responses); },
   };
 }
@@ -191,7 +199,11 @@ async function runEngine(
       }
       await runEngine(provider.client, fake);
       expect(["partial", "error"]).toContain(requiredSyncState(fake).last_sync_status);
-      expect(JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey()))).listing_skip).toBe(50);
+      const interruptedAttempt = JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey())));
+      expect(interruptedAttempt.listing_skip).toBe(
+        scenario.name === "item error" || scenario.name === "body write failure" ? 100 : 50,
+      );
+      expect(interruptedAttempt.pending_ids).toContain(targetId);
       for (let attempt = 0; attempt < 6 && requiredSyncState(fake).last_sync_status !== "ok"; attempt++) {
         fake.kv.putHook = null;
         expect((await runEngine(provider.client, fake)).ok).toBe(true);
@@ -269,6 +281,55 @@ async function runEngine(
     expect(requiredSyncState(fake).last_synced_at).toBe(new Date(chainStart).toISOString());
     expect(missingIds(ids, new Set([...fake.sql.meetings.values()].map((row) => row.source_id)))).toEqual([]);
     expect(missingIds(ids, transcriptBodyKeys(fake))).toEqual([]);
+  });
+
+  test.each([600, 1200])("bounded continuation rebases through one prepend per %i-history run", async (historySize) => {
+    _resetConnectorSchemaMemoForTests();
+    const items = buildSeed(historySize) as SeedTranscript[];
+    const fake = makeFakeTinyCloud({ did: `did:test:prepend-every-run-${historySize}` });
+    const provider = makeInMemoryFireflies(items);
+    let now = Date.parse("2026-10-01T00:00:00.000Z");
+    for (let run = 0; run < 40 && requiredSyncState(fake)?.last_sync_status !== "ok"; run++) {
+      const arrival = buildSeed(1)[0] as SeedTranscript;
+      arrival.id = `arrival-${historySize}-${run}`;
+      arrival.date = Math.floor((now + 60 * 60 * 1000) / 1000);
+      items.unshift(arrival);
+      now += 2 * 60 * 60 * 1000;
+      const result = await runEngine(provider.client, fake, { now: () => new Date(now).toISOString() });
+      expect(result.ok).toBe(true);
+    }
+    const ids = items.map((item) => item.id);
+    expect(requiredSyncState(fake).last_sync_status).toBe("ok");
+    expect(missingIds(ids, new Set([...fake.sql.meetings.values()].map((row) => row.source_id)))).toEqual([]);
+    expect(missingIds(ids, transcriptBodyKeys(fake))).toEqual([]);
+  });
+
+  test("a persistent detail failure becomes pending while the 1200-item listing progresses", async () => {
+    _resetConnectorSchemaMemoForTests();
+    const items = buildSeed(1200) as SeedTranscript[];
+    const failingId = items[10]!.id;
+    const fake = makeFakeTinyCloud({ did: "did:test:pending-failure-progress" });
+    const provider = makeInMemoryFireflies(items);
+    provider.failAlways(failingId);
+    let now = Date.parse("2026-10-01T00:00:00.000Z");
+    for (let run = 0; run < 40 && fake.sql.meetings.size < 1199; run++) {
+      const result = await runEngine(provider.client, fake, { now: () => new Date(now).toISOString() });
+      expect(result.ok).toBe(true);
+      expect(requiredSyncState(fake).last_sync_status).toBe("partial");
+      now += 2 * 60 * 60 * 1000;
+    }
+    expect(fake.sql.meetings.size).toBe(1199);
+    expect(transcriptBodyKeys(fake).size).toBe(1199);
+    const attempt = JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey())));
+    expect(attempt.pending_ids).toEqual([failingId]);
+    expect(requiredSyncState(fake).last_synced_at).toBeNull();
+
+    provider.recover(failingId);
+    expect((await runEngine(provider.client, fake, { now: () => new Date(now).toISOString() })).ok).toBe(true);
+    expect(requiredSyncState(fake).last_sync_status).toBe("ok");
+    expect(fake.sql.meetings.size).toBe(1200);
+    expect(transcriptBodyKeys(fake).size).toBe(1200);
+    expect(JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey()))).pending_ids ?? []).toEqual([]);
   });
 
   test("provider top deletions invalidate the offset anchor and restart without losing known rows", async () => {
@@ -350,6 +411,30 @@ test("Connect ignores an old-build cursor left beside a null or disconnected row
     expect(fake.sql.meetings.size).toBe(items.length);
     expect(transcriptBodyKeys(fake).size).toBe(items.length);
   }
+});
+
+test("Connect continues when clearing an old attempt record fails", async () => {
+  _resetConnectorSchemaMemoForTests();
+  const items = buildSeed(2) as SeedTranscript[];
+  const fake = makeFakeTinyCloud({ did: "did:test:connect-clear-failure" });
+  fake.kv.entries.set(firefliesAttemptKvKey(), JSON.stringify({
+    v: 1,
+    last_attempt_at: "2026-10-12T00:00:00.000Z",
+    last_attempt_status: "partial",
+    listing_skip: 50,
+    listing_started_at: "2026-10-10T00:00:00.000Z",
+    listing_anchor: "old",
+  }));
+  fake.kv.deleteErrors.set(firefliesAttemptKvKey(), {
+    code: "KV_ERROR",
+    message: "record clear unavailable",
+  });
+
+  const provider = makeInMemoryFireflies(items);
+  expect((await runEngine(provider.client, fake)).ok).toBe(true);
+
+  expect(requiredSyncState(fake).status).toBe("connected");
+  expect(fake.sql.meetings.size).toBe(items.length);
 });
 
 test("keep-data Disconnect clears a saved continuation before Connect resumes", async () => {

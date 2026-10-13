@@ -199,7 +199,7 @@ describe("FirefliesClient.listNewTranscriptIds — bounded reconciliation", () =
     });
     const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
     const result = await client.listNewTranscriptIds({ knownIds: [], batchSize: 2 });
-    expect(result.ok && result.data).toEqual({ ids: ["a", "b"], complete: true, nextSkip: null, nextAnchor: null });
+    expect(result.ok && result.data).toEqual({ ids: ["a", "b"], complete: true, nextSkip: 2, nextAnchor: "b" });
     expect(calls).toHaveLength(2);
   });
 
@@ -219,7 +219,7 @@ describe("FirefliesClient.listNewTranscriptIds — bounded reconciliation", () =
       detailCap: 10,
       pageBudget: 2,
     });
-    expect(result.ok && result.data).toEqual({ ids: ["new-1", "new-2"], complete: true, nextSkip: null, nextAnchor: null });
+    expect(result.ok && result.data).toEqual({ ids: ["new-1", "new-2"], complete: true, nextSkip: 3, nextAnchor: "new-2" });
     expect(calls).toHaveLength(2);
   });
 
@@ -273,7 +273,7 @@ describe("FirefliesClient.listNewTranscriptIds — bounded reconciliation", () =
       knownIds: [],
       stopBeforeDate: "2026-10-07T00:00:00.000Z",
     });
-    expect(result.ok && result.data).toEqual({ ids: ["inside", "boundary"], complete: true, nextSkip: null, nextAnchor: null });
+    expect(result.ok && result.data).toEqual({ ids: ["inside", "boundary"], complete: true, nextSkip: 2, nextAnchor: "boundary" });
   });
 
   test("onProgress reports each consumed page", async () => {
@@ -334,17 +334,22 @@ describe("FirefliesClient.listNewTranscriptIds — bounded reconciliation", () =
     expect(first.ok && first.data.complete).toBe(false);
     if (!first.ok) throw new Error("unreachable");
 
+    const storedIds = summaries.slice(0, 10).map((item) => item.id);
     const second = await client.listNewTranscriptIds({
-      knownIds: [], batchSize: 11, detailCap: 50, pageBudget: 1,
+      knownIds: storedIds, batchSize: 11, detailCap: 50, pageBudget: 5,
       startSkip: first.data.nextSkip,
       startAnchor: first.data.nextAnchor,
     });
-    expect(second.ok && second.data.ids).toEqual(summaries.slice(10, 20).map((item) => item.id));
-    expect(second.ok && second.data.nextSkip).toBe(20);
-    expect(second.ok && second.data.nextAnchor).toBe("tx-19");
+    expect(second.ok && second.data.ids).toEqual(summaries.slice(10).map((item) => item.id));
+    expect(second.ok && second.data.nextSkip).toBe(30);
+    expect(second.ok && second.data.nextAnchor).toBe("tx-29");
+    expect(second.ok && second.data.complete).toBe(true);
     expect(calls.map((call) => call.body.variables)).toEqual([
       { limit: 10, skip: 0 },
-      { limit: 11, skip: 9 },
+      { limit: 11, skip: 0 },
+      { limit: 11, skip: 0 },
+      { limit: 11, skip: 10 },
+      { limit: 11, skip: 21 },
     ]);
   });
 

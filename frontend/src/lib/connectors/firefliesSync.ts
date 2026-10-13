@@ -24,8 +24,9 @@ import type {
   FirefliesTranscript,
   ListNewTranscriptIdsOptions,
 } from "./firefliesClient";
-import { FIREFLIES_MAX_RETRY_AFTER_MS } from "./firefliesClient";
+import { FIREFLIES_MAX_DETAIL_CAP, FIREFLIES_MAX_RETRY_AFTER_MS } from "./firefliesClient";
 import {
+  FIREFLIES_MAX_PENDING_IDS,
   normalizeFirefliesTranscript,
   type NormalizedMeeting,
   type StoreError,
@@ -73,6 +74,7 @@ export interface SyncStore {
     listingSkip?: number | null;
     listingStartedAt?: string | null;
     listingAnchor?: string | null;
+    pendingIds?: string[];
   } | null>>;
   recordFirefliesAttempt?(
     tcw: TinyCloudWeb,
@@ -83,6 +85,7 @@ export interface SyncStore {
       listingSkip?: number | null;
       listingStartedAt?: string | null;
       listingAnchor?: string | null;
+      pendingIds?: string[];
     },
   ): Promise<StoreResult<void>>;
   countMeetings(tcw: TinyCloudWeb, source: string): Promise<StoreResult<number>>;
@@ -110,6 +113,7 @@ export interface SyncFirefliesOptions {
   onProgress?: (progress: SyncProgress) => void;
   signal?: AbortSignal;
   detailCap?: number;
+  sleepImpl?: (ms: number, signal?: AbortSignal) => Promise<boolean>;
   pageBudget?: number;
   /** False after account/session generation changes. */
   isCurrent?: () => boolean;
@@ -162,9 +166,19 @@ export async function beginFirefliesDisconnect(): Promise<() => void> {
   };
 }
 
-function defaultSleep(ms: number): Promise<void> {
-  if (ms <= 0) return Promise.resolve();
-  return new Promise((r) => setTimeout(r, ms));
+function defaultSleep(ms: number, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(false);
+  if (ms <= 0) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const finish = (completed: boolean) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve(completed);
+    };
+    const timer = setTimeout(() => finish(true), ms);
+    const onAbort = () => finish(false);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function errorMessage(err: unknown): string {
@@ -220,6 +234,7 @@ async function recordAttemptBestEffort(
     listingSkip?: number | null;
     listingStartedAt?: string | null;
     listingAnchor?: string | null;
+    pendingIds?: string[];
   },
   current: () => boolean,
 ): Promise<boolean> {
@@ -257,6 +272,14 @@ async function runFirefliesSync(
   let resumeStartedAt = attemptAt;
   let resumeAnchor: string | null = null;
   let terminal: SyncError | null = null;
+  let pendingIds = new Set<string>();
+  let cursorBlocked = false;
+  const rememberPending = (id: string): boolean => {
+    if (pendingIds.has(id)) return true;
+    if (pendingIds.size >= FIREFLIES_MAX_PENDING_IDS) return false;
+    pendingIds.add(id);
+    return true;
+  };
   let listingComplete = false;
   let listingSkip: number | null = 0;
   let listingStartedAt: string | null = attemptAt;
@@ -284,10 +307,15 @@ async function runFirefliesSync(
         }
 
         if (connectAuthorizes && store.clearFirefliesAttempt) {
-          const cleared = await inSpace("Fireflies clear stale continuation", async () =>
-            current() ? store.clearFirefliesAttempt!(tcw) : null);
-          if (!current() || !cleared) return { ok: true, data: result };
-          if (!cleared.ok) return { ok: false, error: fromStore(cleared.error, "clearFirefliesAttempt") };
+          try {
+            const cleared = await inSpace("Fireflies clear stale continuation", async () =>
+              current() ? store.clearFirefliesAttempt!(tcw) : null);
+            if (!current() || !cleared) return { ok: true, data: result };
+            // Connect never reads the old record and its running write replaces it.
+            // A stale clear failure must not prevent the authorized full reconcile.
+          } catch {
+            // Best effort: Connect starts from the listing top regardless.
+          }
         }
         resumeSkip = 0;
         resumeStartedAt = attemptAt;
@@ -310,6 +338,7 @@ async function runFirefliesSync(
               resumeStartedAt = startedAt;
               resumeAnchor = typeof anchor === "string" ? anchor : null;
             }
+            for (const id of attempt?.pendingIds ?? []) rememberPending(id);
           } catch {
             // Lost or unreadable continuation restarts from the newest page.
           }
@@ -324,6 +353,7 @@ async function runFirefliesSync(
           listingSkip,
           listingStartedAt,
           listingAnchor,
+          pendingIds: [...pendingIds],
         }, current);
         if (!runningAttemptWritten) {
           resumeSkip = 0;
@@ -352,132 +382,194 @@ async function runFirefliesSync(
             const stopBeforeDate = Number.isFinite(watermarkMs)
               ? new Date(watermarkMs - FIREFLIES_CATCH_UP_LAG_BUFFER_MS).toISOString()
               : null;
-            const knownIds = new Set(knownRes.data);
             const bodyIds = bodyIdsRes.data;
-            const listRes = await client.listNewTranscriptIds({
-              knownIds,
-              detailCap: opts.detailCap,
-              pageBudget: opts.pageBudget,
-              startSkip: resumeSkip,
-              startAnchor: resumeAnchor,
-              stopBeforeDate,
-              signal,
-              onProgress,
-              isKnownComplete: (id) => bodyIds.has(id),
-            });
-            if (!current()) return { ok: true, data: result };
-            if (!listRes.ok) {
-              if (listRes.error.kind === "rate-limited"
-                && (listRes.error.retryAfterMs ?? 0) > FIREFLIES_MAX_RETRY_AFTER_MS) {
-                result.errors.push(listRes.error.message);
-              } else if (!signal.aborted) {
-                terminal = fromFireflies(listRes.error);
+            const attemptedPending = new Set<string>();
+            const maxDetails = Number.isFinite(opts.detailCap)
+              ? Math.min(FIREFLIES_MAX_DETAIL_CAP, Math.max(0, Math.floor(opts.detailCap!)))
+              : FIREFLIES_MAX_DETAIL_CAP;
+            let detailsUsed = 0;
+            let storedPrefix = true;
+
+            const processTranscript = async (
+              id: string,
+              done: number,
+              total: number,
+            ): Promise<boolean> => {
+              if (!current() || signal.aborted) {
+                storedPrefix = false;
+                cursorBlocked = true;
+                return false;
               }
-            } else {
-              listingComplete = listRes.data.complete;
-              let storedPrefix = true;
-              const idsOldestFirst = [...listRes.data.ids].reverse();
-              onProgress?.({ phase: "fetching", done: 0, total: idsOldestFirst.length });
-
-              for (let i = 0; i < idsOldestFirst.length; i++) {
-                if (!current() || signal.aborted) {
+              if (detailsUsed > 0 && !await sleep(delayMs, signal)) {
+                storedPrefix = false;
+                cursorBlocked = true;
+                return false;
+              }
+              if (!current() || signal.aborted) {
+                storedPrefix = false;
+                cursorBlocked = true;
+                return false;
+              }
+              detailsUsed++;
+              const txRes = await client.getTranscript(id, signal);
+              if (!current()) {
+                storedPrefix = false;
+                cursorBlocked = true;
+                return false;
+              }
+              if (!txRes.ok) {
+                if (signal.aborted) {
                   storedPrefix = false;
-                  break;
+                  cursorBlocked = true;
+                  return false;
                 }
-                const id = idsOldestFirst[i]!;
-                const txRes = await client.getTranscript(id, signal);
-                if (!current()) {
+                result.errors.push(`${id}: ${txRes.error.message}`);
+                if (!rememberPending(id)) {
                   storedPrefix = false;
-                  break;
+                  cursorBlocked = true;
                 }
-                if (!txRes.ok) {
+                if (txRes.error.kind === "rate-limited"
+                  && (txRes.error.retryAfterMs ?? 0) > FIREFLIES_MAX_RETRY_AFTER_MS) {
                   storedPrefix = false;
-                  if (signal.aborted) break;
-                  if (txRes.error.kind === "rate-limited"
-                    && (txRes.error.retryAfterMs ?? 0) > FIREFLIES_MAX_RETRY_AFTER_MS) {
-                    result.errors.push(`${id}: ${txRes.error.message}`);
-                    break;
-                  }
-                  if (isTerminal(txRes.error)) {
-                    terminal = fromFireflies(txRes.error);
-                    break;
-                  }
-                  result.errors.push(`${id}: ${txRes.error.message}`);
-                  continue;
+                  cursorBlocked = true;
+                  return false;
                 }
-
-                try {
-                  const { meeting, sentences } = normalizeFirefliesTranscript(txRes.data);
-                  const itemWrite = await inSpace("Fireflies store meeting and transcript", async () => {
-                    if (!current()) return null;
-                    const connectionBeforeWrite = await store.getConnection(tcw, SOURCE);
-                    if (!connectionBeforeWrite.ok) return { error: connectionBeforeWrite.error };
-                    if (!current()) return null;
-                    const mayWrite = connectionBeforeWrite.data?.status === "connected"
-                      || (opts.allowMissingConnection === true
-                        && (connectionBeforeWrite.data === null
-                          || connectionBeforeWrite.data.status === "disconnected"));
-                    if (!mayWrite) return { disconnected: true };
-                    if (!current()) return null;
-                    const insert = await store.insertMeeting(tcw, meeting);
-                    if (!insert.ok) return { insert, body: null };
-                    const body = await store.putTranscriptBody(tcw, SOURCE, meeting.sourceId, sentences);
-                    return { insert, body };
-                  });
-                  if (!itemWrite) {
-                    storedPrefix = false;
-                    break;
-                  }
-                  if ("disconnected" in itemWrite) {
-                    storedPrefix = false;
-                    break;
-                  }
-                  if ("error" in itemWrite) {
-                    storedPrefix = false;
-                    terminal = fromStore(itemWrite.error, "getConnection before item write");
-                    break;
-                  }
-                  if (!itemWrite.insert.ok) {
-                    storedPrefix = false;
-                    result.errors.push(`${id}: ${itemWrite.insert.error.message}`);
-                    if (isStorageFullError(itemWrite.insert.error)) {
-                      terminal = fromStore(itemWrite.insert.error, "insertMeeting");
-                      break;
-                    }
-                    continue;
-                  }
-                  if (!itemWrite.body?.ok) {
-                    storedPrefix = false;
-                    const bodyError = itemWrite.body?.error;
-                    result.errors.push(`${id}: ${bodyError?.message ?? "Transcript body write failed"}`);
-                    if (bodyError && isStorageFullError(bodyError)) {
-                      terminal = fromStore(bodyError, "putTranscriptBody");
-                      break;
-                    }
-                    continue;
-                  }
-                  if (itemWrite.insert.data) result.added += 1;
-                  else result.skipped += 1;
-                  onProgress?.({ phase: "storing", done: i + 1, total: idsOldestFirst.length });
-                } catch (err) {
+                if (isTerminal(txRes.error)) {
+                  terminal = fromFireflies(txRes.error);
                   storedPrefix = false;
-                  result.errors.push(`${id}: ${errorMessage(err)}`);
+                  return false;
                 }
-
-                if (i < idsOldestFirst.length - 1 && current() && !signal.aborted) {
-                  await sleep(delayMs);
-                }
+                return true;
               }
 
-              const prefixCommitted = storedPrefix
-                && current()
-                && !signal.aborted
-                && !terminal
-                && result.errors.length === 0;
-              if (prefixCommitted) {
-                listingSkip = listRes.data.complete ? null : listRes.data.nextSkip;
-                listingStartedAt = listRes.data.complete ? null : resumeStartedAt;
-                listingAnchor = listRes.data.complete ? null : listRes.data.nextAnchor;
+              try {
+                const { meeting, sentences } = normalizeFirefliesTranscript(txRes.data);
+                const itemWrite = await inSpace("Fireflies store meeting and transcript", async () => {
+                  if (!current()) return null;
+                  const connectionBeforeWrite = await store.getConnection(tcw, SOURCE);
+                  if (!connectionBeforeWrite.ok) return { error: connectionBeforeWrite.error };
+                  if (!current()) return null;
+                  const mayWrite = connectionBeforeWrite.data?.status === "connected"
+                    || (opts.allowMissingConnection === true
+                      && (connectionBeforeWrite.data === null
+                        || connectionBeforeWrite.data.status === "disconnected"));
+                  if (!mayWrite) return { disconnected: true };
+                  if (!current()) return null;
+                  const insert = await store.insertMeeting(tcw, meeting);
+                  if (!insert.ok) return { insert, body: null };
+                  const body = await store.putTranscriptBody(tcw, SOURCE, meeting.sourceId, sentences);
+                  return { insert, body };
+                });
+                if (!itemWrite) {
+                  storedPrefix = false;
+                  cursorBlocked = true;
+                  return false;
+                }
+                if ("disconnected" in itemWrite) {
+                  storedPrefix = false;
+                  cursorBlocked = true;
+                  return false;
+                }
+                if ("error" in itemWrite) {
+                  storedPrefix = false;
+                  cursorBlocked = true;
+                  terminal = fromStore(
+                    itemWrite.error ?? { code: "STORE_ERROR", message: "Connection read failed" },
+                    "getConnection before item write",
+                  );
+                  return false;
+                }
+                if (!itemWrite.insert.ok) {
+                  result.errors.push(`${id}: ${itemWrite.insert.error.message}`);
+                  if (!rememberPending(id)) {
+                    storedPrefix = false;
+                    cursorBlocked = true;
+                  }
+                  if (isStorageFullError(itemWrite.insert.error)) {
+                    terminal = fromStore(itemWrite.insert.error, "insertMeeting");
+                    storedPrefix = false;
+                    return false;
+                  }
+                  return true;
+                }
+                if (!itemWrite.body?.ok) {
+                  const bodyError = itemWrite.body?.error;
+                  result.errors.push(`${id}: ${bodyError?.message ?? "Transcript body write failed"}`);
+                  if (!rememberPending(id)) {
+                    storedPrefix = false;
+                    cursorBlocked = true;
+                  }
+                  if (bodyError && isStorageFullError(bodyError)) {
+                    terminal = fromStore(bodyError, "putTranscriptBody");
+                    storedPrefix = false;
+                    return false;
+                  }
+                  return true;
+                }
+                pendingIds.delete(id);
+                if (itemWrite.insert.data) result.added += 1;
+                else result.skipped += 1;
+                bodyIds.add(id);
+                onProgress?.({ phase: "storing", done, total });
+                return true;
+              } catch (err) {
+                result.errors.push(`${id}: ${errorMessage(err)}`);
+                if (!rememberPending(id)) {
+                  storedPrefix = false;
+                  cursorBlocked = true;
+                }
+                return true;
+              }
+            };
+
+            const pendingToRetry = [...pendingIds];
+            for (let i = 0; i < pendingToRetry.length && detailsUsed < maxDetails; i++) {
+              const id = pendingToRetry[i]!;
+              attemptedPending.add(id);
+              if (!await processTranscript(id, i + 1, pendingToRetry.length)) break;
+            }
+
+            if (detailsUsed < maxDetails && current() && !signal.aborted) {
+              const knownIds = new Set([...knownRes.data, ...pendingIds, ...attemptedPending]);
+              const listRes = await client.listNewTranscriptIds({
+                knownIds,
+                pendingIds: [],
+                detailCap: maxDetails - detailsUsed,
+                pageBudget: opts.pageBudget,
+                startSkip: resumeSkip,
+                startAnchor: resumeAnchor,
+                stopBeforeDate,
+                signal,
+                onProgress,
+                isKnownComplete: (id) => attemptedPending.has(id) || bodyIds.has(id),
+              });
+              if (!current()) return { ok: true, data: result };
+              if (!listRes.ok) {
+                if (listRes.error.kind === "rate-limited"
+                  && (listRes.error.retryAfterMs ?? 0) > FIREFLIES_MAX_RETRY_AFTER_MS) {
+                  result.errors.push(listRes.error.message);
+                  cursorBlocked = true;
+                } else if (!signal.aborted) {
+                  terminal = fromFireflies(listRes.error);
+                }
+              } else {
+                listingComplete = listRes.data.complete;
+                const idsOldestFirst = [...listRes.data.ids].reverse();
+                onProgress?.({ phase: "fetching", done: 0, total: idsOldestFirst.length });
+                for (let i = 0; i < idsOldestFirst.length; i++) {
+                  if (!await processTranscript(idsOldestFirst[i]!, detailsUsed + 1, maxDetails)) break;
+                }
+                const prefixCommitted = storedPrefix
+                  && current()
+                  && !signal.aborted
+                  && !terminal
+                  && !cursorBlocked;
+                if (prefixCommitted) {
+                  const clearCursor = listRes.data.complete && pendingIds.size === 0;
+                  listingSkip = clearCursor ? null : listRes.data.nextSkip;
+                  listingStartedAt = clearCursor ? null : resumeStartedAt;
+                  listingAnchor = clearCursor ? null : listRes.data.nextAnchor;
+                }
               }
             }
           }
@@ -497,7 +589,8 @@ async function runFirefliesSync(
     if (!countRes.ok) terminal ??= fromStore(countRes.error, "countMeetings");
     else itemCount = countRes.data;
 
-    const reconciled = listingComplete && !signal.aborted && !terminal && result.errors.length === 0;
+    const reconciled = listingComplete && pendingIds.size === 0
+      && !signal.aborted && !terminal && result.errors.length === 0;
     const finalStatus: "ok" | "partial" | "error" =
       terminal ? "error" : reconciled ? "ok" : "partial";
     const stateRes = await inSpace("Fireflies update sync state", async () => {
@@ -524,13 +617,13 @@ async function runFirefliesSync(
     });
     if (!current() || !stateRes) return { ok: true, data: result };
     if (!stateRes.ok) terminal ??= fromStore(stateRes.error, "updateSyncState");
-    if (terminal || signal.aborted || result.errors.length > 0) {
+    if (terminal || signal.aborted || cursorBlocked) {
       listingSkip = resumeSkip;
       listingStartedAt = resumeStartedAt;
       listingAnchor = resumeAnchor;
     }
     const attemptStatus = terminal ? "error"
-      : listingComplete && !signal.aborted && result.errors.length === 0 ? "ok" : "partial";
+      : listingComplete && pendingIds.size === 0 && !signal.aborted && result.errors.length === 0 ? "ok" : "partial";
     await recordAttemptBestEffort(store, tcw, {
       v: 1,
       lastAttemptAt: attemptAt,
@@ -538,6 +631,7 @@ async function runFirefliesSync(
       listingSkip: attemptStatus === "ok" ? null : listingSkip,
       listingStartedAt: attemptStatus === "ok" ? null : listingStartedAt,
       listingAnchor: attemptStatus === "ok" ? null : listingAnchor,
+      pendingIds: [...pendingIds],
     }, current);
     if (terminal) return { ok: false, error: terminal };
     setComplete(finalStatus === "ok");
@@ -552,6 +646,7 @@ async function runFirefliesSync(
       listingSkip,
       listingStartedAt,
       listingAnchor,
+      pendingIds: [...pendingIds],
     }, current);
     return { ok: false, error: terminal };
   }

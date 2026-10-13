@@ -269,10 +269,11 @@ watermark; UI staleness is derived from it at read time (24 hours). Failed, part
 aborted, truncated, and targeted webhook-ingest runs never advance it. Attempt metadata
 is advisory KV at `${APP_ID}/connectors/fireflies/sync-attempt`, written only by the
 Fireflies sync engine as a JSON string, for example:
-`{"v":1,"last_attempt_at":"2026-10-13T12:00:00.000Z","last_attempt_status":"partial","listing_skip":50,"listing_started_at":"2026-10-13T10:00:00.000Z","listing_anchor":"transcript-49"}`.
-Readers accept JSON strings and SDK-decoded objects. A `running` record older than
-15 minutes is abandoned and no longer paces catch-up. SQL `last_synced_at` remains
-authoritative; this KV record is only advisory pacing and bounded-list continuation.
+`{"v":1,"last_attempt_at":"2026-10-13T12:00:00.000Z","last_attempt_status":"partial","listing_skip":50,"listing_started_at":"2026-10-13T10:00:00.000Z","listing_anchor":"transcript-49","pending_ids":["failed-transcript"]}`.
+Readers accept JSON strings and SDK-decoded objects. `pending_ids` is capped at 50,
+retried on each run, and keeps the SQL watermark from advancing until empty. A `running`
+record older than 15 minutes is abandoned and no longer paces catch-up. SQL `last_synced_at`
+remains authoritative; this KV record is only advisory pacing and bounded-list continuation.
 Existing SQL rows need no migration.
 
 The Connectors UI shows “Stale since <date>” when the SQL watermark is older than
@@ -293,11 +294,12 @@ one place (`CONNECTORS_KV_PREFIX`).
 
 Store API (all take `tcw` as first arg, mirror `threadStore` style):
 `ensureSchema`, `getConnection(connectorId)`, `listKnownSourceIds(source)`,
-`insertMeeting(normalized)` (skip if `(source, source_id)` already present — app-level
-dedup, SELECT-before-INSERT is fine since writes are sequential),
+`listTranscriptBodyIds(source)`, `insertMeeting(normalized)` (skip if `(source, source_id)`
+already present — app-level dedup, SELECT-before-INSERT is fine since writes are sequential),
 `putTranscriptBody(sourceId, sentences)`, `updateSyncState(...)`,
-`purgeConnector(source)` (delete meetings rows + KV transcript keys + state row),
-`countMeetings(source)`.
+`getFirefliesAttempt()`, `recordFirefliesAttempt(...)`, `clearFirefliesAttempt()`,
+`purgeConnector(source)` (delete meeting rows + KV meeting/transcript keys + Drive cursor +
+Fireflies `sync-attempt` + state row), `countMeetings(source)`.
 
 **Sequential writes only** — TinyCloud drops concurrent responses (known platform
 gotcha; ImportDialog imports sequentially for the same reason).
@@ -405,19 +407,25 @@ algorithm for Connect, Sync now, the background catch-up, and Meeting sources:
 6. The per-space KV attempt record is
    `${APP_ID}/connectors/fireflies/sync-attempt`, JSON with `v: 1`,
    `last_attempt_at`, `last_attempt_status`, and optional `listing_skip`,
-   `listing_started_at`, and `listing_anchor`. It is best-effort and written only
-   by the sync engine; its failure never changes sync, ingest, or disconnect
-   outcomes and never makes an unpersisted cursor resumable. A `running` record
-   older than 15 minutes is abandoned. A bounded incomplete chain advances
-   `listing_skip` only over a prefix whose SQL rows and KV bodies were all stored.
-   Any item error, body-write failure, terminal error, or abort preserves the
-   previous cursor. `listing_started_at` is recorded at skip zero and becomes
-   `last_synced_at` only after the whole chain reaches the date boundary or true
-   end of history. `listing_anchor` is the provider ID at `listing_skip - 1`;
-   resume verifies it and restarts from zero on a mismatch. If the KV record is
-   lost, the next run restarts at the newest page and remains bounded. Connect
-   over a missing/disconnected row and keep-data Disconnect clear the continuation.
-   SQL `last_synced_at` remains authoritative; the KV record is advisory only.
+   `listing_started_at`, `listing_anchor`, and `pending_ids`. Attempt writes are
+   best-effort and written only by the sync engine. Their failure does not change
+   sync or ingest outcomes and cannot make an unpersisted cursor resumable. Connect's
+   stale-record clear is also best-effort. Keep-data Disconnect has a separate,
+   explicit continuation-clear step; its failure is retryable and may defer disconnect
+   completion. A `running` record older than 15 minutes is abandoned.
+   `pending_ids` is capped at 50 and retried on every run. A bounded incomplete chain
+   advances `listing_skip` over a stored prefix; recoverable item failures may be passed
+   only after being recorded in `pending_ids`. If that list is full, or a failure cannot
+   be recorded, or the run aborts/has a terminal error, the old cursor is preserved.
+   The SQL watermark never advances while `pending_ids` is non-empty.
+   `listing_started_at` is recorded at skip zero and becomes `last_synced_at` only after
+   the whole chain reaches the date boundary or true end of history with no pending IDs.
+   `listing_anchor` is the provider ID at `listing_skip - 1`; on mismatch the client searches
+   a bounded window at least one page in each direction and rebases to the found ID. It
+   restarts from zero only when that window does not contain the anchor. If the KV record
+   is lost, the next run restarts at the newest page and remains bounded. Connect over a
+   missing/disconnected row and keep-data Disconnect clear the continuation. SQL
+   `last_synced_at` remains authoritative; the KV record is advisory only.
 7. Same-tab single-flight does not prevent cross-tab Sync now overlap. Cross-tab
    deduplication is out of scope: TinyCloud user SQL does not support a unique
    index, so this build does not claim cross-tab serialization. Cross-tab purge
@@ -439,8 +447,9 @@ algorithm for Connect, Sync now, the background catch-up, and Meeting sources:
    delete-data before switching accounts. Keep-data Disconnect retains rows,
    transcript bodies, and the SQL success watermark, but clears the continuation
    so reconnect starts a bounded reconcile from the current listing top. A
-   persistently failing transcript keeps the run partial and the connector stale
-   until it can be stored.
+   persistently failing transcript remains in `pending_ids`, keeps the run partial and the
+   connector stale, while the listing continues through older history. Once stored, a later
+   run clears the pending entry and may complete the reconcile.
 
 ## 9. UI
 

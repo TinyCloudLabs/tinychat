@@ -152,14 +152,16 @@ export interface FirefliesListing {
   ids: string[];
   /** True only after the date cutoff or the true end of history is reached. */
   complete: boolean;
-  /** Offset for the next bounded run; null once history is complete. */
-  nextSkip: number | null;
-  /** Summary ID at nextSkip - 1, or null once complete. */
+  /** Provider offset after the last consumed summary, including at EOF/boundary. */
+  nextSkip: number;
+  /** ID at nextSkip - 1, retained when a complete listing has pending details. */
   nextAnchor: string | null;
 }
 
 export interface ListNewTranscriptIdsOptions {
   knownIds: Iterable<string>;
+  /** Known IDs with failed details/bodies that must be retried before new work. */
+  pendingIds?: readonly string[];
   batchSize?: number;
   /** Maximum detail IDs per run. */
   detailCap?: number;
@@ -167,7 +169,7 @@ export interface ListNewTranscriptIdsOptions {
   pageBudget?: number;
   /** Resume a persisted bounded listing at this provider offset. */
   startSkip?: number;
-  /** Summary ID at startSkip - 1; a mismatch restarts listing at zero. */
+  /** Summary ID at startSkip - 1; a mismatch searches a bounded window before restarting. */
   startAnchor?: string | null;
   /** Exclusive date cutoff; older summaries complete the listing. */
   stopBeforeDate?: string | null;
@@ -341,64 +343,132 @@ export class FirefliesClient {
       ? opts.knownIds as Set<string>
       : new Set<string>(opts.knownIds);
     const ids: string[] = [];
+    const seenIds = new Set<string>();
+    for (const id of opts.pendingIds ?? []) {
+      if (typeof id === "string" && id.length > 0 && !seenIds.has(id) && ids.length < detailCap) {
+        seenIds.add(id);
+        ids.push(id);
+      }
+    }
     const cutoff = opts.stopBeforeDate ? Date.parse(opts.stopBeforeDate) : Number.NaN;
     let skip = Number.isSafeInteger(opts.startSkip) && (opts.startSkip ?? 0) >= 0
       ? opts.startSkip!
       : 0;
-    let anchorToVerify = skip > 0 ? opts.startAnchor ?? null : null;
-    let verifyAnchor = skip > 0;
-    if (verifyAnchor && !anchorToVerify) {
-      skip = 0;
-      verifyAnchor = false;
-    }
-    let nextAnchor = skip > 0 ? anchorToVerify : null;
+    const startSkip = skip;
+    const startAnchor = skip > 0 ? opts.startAnchor ?? null : null;
+    let nextAnchor = startAnchor;
     let pages = 0;
     let complete = false;
-    let restarted = false;
+    let resumeResolved = skip === 0;
 
-    while (pages < pageBudget && ids.length < detailCap) {
-      if (opts.signal?.aborted) break;
-      if (pages > 0 && !await defaultSleep(this.delayMs, opts.signal)) break;
-
-      const requestedLimit = Math.min(batchSize, detailCap - ids.length + (verifyAnchor ? 1 : 0));
-      const requestSkip = verifyAnchor ? skip - 1 : skip;
-      const res = await this.request<{ transcripts: FirefliesTranscriptSummary[] | null }>(
+    const fetchPage = async (requestSkip: number, limit: number) => {
+      if (pages >= pageBudget || opts.signal?.aborted) return null;
+      if (pages > 0 && !await defaultSleep(this.delayMs, opts.signal)) return null;
+      pages++;
+      return this.request<{ transcripts: FirefliesTranscriptSummary[] | null }>(
         LIST_TRANSCRIPTS_QUERY,
-        { limit: requestedLimit, skip: requestSkip },
+        { limit, skip: requestSkip },
         opts.signal,
       );
-      if (!res.ok) {
-        if (opts.signal?.aborted) break;
-        return res;
+    };
+    const collectCandidate = async (summary: FirefliesTranscriptSummary): Promise<boolean> => {
+      if (Number.isFinite(cutoff)) {
+        const date = firefliesDateMs(summary.date);
+        if (date !== null && date < cutoff) return false;
       }
+      if (typeof summary.id !== "string" || seenIds.has(summary.id)) return true;
+      seenIds.add(summary.id);
+      const knownComplete = known.has(summary.id)
+        && (await opts.isKnownComplete?.(summary.id) ?? true);
+      if (!knownComplete && ids.length < detailCap) ids.push(summary.id);
+      return true;
+    };
 
-      pages++;
-      const received = res.data.transcripts ?? [];
-      let page = received;
-      if (verifyAnchor) {
-        if (page[0]?.id !== anchorToVerify) {
-          if (!restarted) {
-            restarted = true;
+    if (skip > 0) {
+      if (!startAnchor) {
+        skip = 0;
+        nextAnchor = null;
+        resumeResolved = true;
+      } else {
+        // Always inspect one bounded head page so prepends are not lost while
+        // a deep continuation follows its older anchor.
+        const head = await fetchPage(0, batchSize);
+        if (head && !head.ok) {
+          if (!opts.signal?.aborted) return head;
+        } else if (head?.ok) {
+          const summaries = head.data.transcripts ?? [];
+          if (summaries.length === 0) complete = true;
+          for (const summary of summaries) {
+            if (!await collectCandidate(summary)) {
+              complete = true;
+              break;
+            }
+          }
+        }
+
+        if (!complete && pages < pageBudget && ids.length < detailCap && !opts.signal?.aborted) {
+          const expected = startSkip - 1;
+          const windowStart = Math.max(0, expected - batchSize);
+          const windowEnd = expected + batchSize + 1;
+          let foundAnchor = false;
+          let searchedWindow = true;
+          for (let pageStart = windowStart; pageStart < windowEnd; pageStart += batchSize) {
+            const limit = Math.min(batchSize, windowEnd - pageStart);
+            const response = await fetchPage(pageStart, limit);
+            if (!response) {
+              searchedWindow = false;
+              break;
+            }
+            if (!response.ok) {
+              if (!opts.signal?.aborted) return response;
+              searchedWindow = false;
+              break;
+            }
+            const summaries = response.data.transcripts ?? [];
+            const anchorIndex = summaries.findIndex((summary) => summary.id === startAnchor);
+            for (const summary of summaries) {
+              if (!await collectCandidate(summary)) continue;
+            }
+            if (anchorIndex >= 0) {
+              skip = pageStart + anchorIndex + 1;
+              nextAnchor = startAnchor;
+              foundAnchor = true;
+              break;
+            }
+          }
+          if (foundAnchor) {
+            resumeResolved = true;
+          } else if (searchedWindow) {
+            // A missing anchor usually means provider deletion/contraction.
+            // Restart only after the entire bounded search proved it absent.
             skip = 0;
             nextAnchor = null;
-            anchorToVerify = null;
-            verifyAnchor = false;
             ids.length = 0;
-            continue;
+            seenIds.clear();
+            resumeResolved = true;
           }
-          break;
         }
-        page = page.slice(1);
-        verifyAnchor = false;
       }
-      if (page.length === 0 && received.length === 0) {
+    }
+
+    while (resumeResolved && !complete && pages < pageBudget && ids.length < detailCap) {
+      if (opts.signal?.aborted) break;
+      const requestedLimit = Math.min(batchSize, detailCap - ids.length);
+      const response = await fetchPage(skip, requestedLimit);
+      if (!response) break;
+      if (!response.ok) {
+        if (opts.signal?.aborted) break;
+        return response;
+      }
+
+      const summaries = response.data.transcripts ?? [];
+      if (summaries.length === 0) {
         complete = true;
         break;
       }
-
       let hitDateBoundary = false;
       let consumed = 0;
-      for (const summary of page) {
+      for (const summary of summaries) {
         if (Number.isFinite(cutoff)) {
           const date = firefliesDateMs(summary.date);
           if (date !== null && date < cutoff) {
@@ -407,37 +477,23 @@ export class FirefliesClient {
           }
         }
         consumed++;
-        if (typeof summary.id !== "string") {
-          nextAnchor = null;
-          continue;
-        }
-        nextAnchor = summary.id;
-        if (known.has(summary.id) && (await opts.isKnownComplete?.(summary.id) ?? true)) continue;
-        ids.push(summary.id);
+        if (typeof summary.id === "string") nextAnchor = summary.id;
+        await collectCandidate(summary);
         if (ids.length >= detailCap) break;
       }
-
       opts.onProgress?.({ phase: "listing", done: ids.length, total: null });
       skip += consumed;
       if (hitDateBoundary) {
         complete = true;
         break;
       }
-      if (received.length < requestedLimit) {
+      if (summaries.length < requestedLimit) {
         complete = true;
         break;
       }
-      if (consumed < page.length) break;
+      if (consumed < summaries.length) break;
     }
-    return {
-      ok: true,
-      data: {
-        ids,
-        complete,
-        nextSkip: complete ? null : skip,
-        nextAnchor: complete ? null : nextAnchor,
-      },
-    };
+    return { ok: true, data: { ids, complete, nextSkip: skip, nextAnchor } };
   }
 
   private async request<T>(

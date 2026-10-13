@@ -48,6 +48,8 @@ export function firefliesAttemptKvKey(): string {
   return `${CONNECTORS_KV_PREFIX}/fireflies/sync-attempt`;
 }
 
+export const FIREFLIES_MAX_PENDING_IDS = 50;
+
 export interface FirefliesAttempt {
   v: 1;
   lastAttemptAt: string;
@@ -58,6 +60,8 @@ export interface FirefliesAttempt {
   listingStartedAt?: string | null;
   /** Summary ID at listingSkip - 1, binding the offset to provider history. */
   listingAnchor?: string | null;
+  /** Failed IDs are retried on every run; capped to keep the record small. */
+  pendingIds?: string[];
 }
 export async function getFirefliesAttempt(
   tcw: TinyCloudWeb,
@@ -94,6 +98,10 @@ export async function getFirefliesAttempt(
     && ((skip as number) === 0
       ? anchor === undefined || anchor === null
       : typeof anchor === "string" && anchor.length > 0);
+  const pendingIds = Array.isArray(row.pending_ids)
+    ? [...new Set(row.pending_ids.filter((id): id is string => typeof id === "string" && id.length > 0))]
+        .slice(0, FIREFLIES_MAX_PENDING_IDS)
+    : [];
   return {
     ok: true,
     data: {
@@ -109,6 +117,7 @@ export async function getFirefliesAttempt(
             }
           : { listingSkip: null, listingStartedAt: null, listingAnchor: null }
         : {}),
+      ...(pendingIds.length > 0 ? { pendingIds } : {}),
     },
   };
 }
@@ -124,6 +133,7 @@ export async function recordFirefliesAttempt(
     ...(attempt.listingSkip === undefined ? {} : { listing_skip: attempt.listingSkip }),
     ...(attempt.listingStartedAt === undefined ? {} : { listing_started_at: attempt.listingStartedAt }),
     ...(attempt.listingAnchor === undefined ? {} : { listing_anchor: attempt.listingAnchor }),
+    ...(attempt.pendingIds === undefined ? {} : { pending_ids: attempt.pendingIds.slice(0, FIREFLIES_MAX_PENDING_IDS) }),
   }));
   if (!res.ok) return fail(res.error, "recordFirefliesAttempt");
   return { ok: true, data: undefined };
@@ -906,42 +916,47 @@ export async function removeGmeetNotes(
 
 // ── Purge ───────────────────────────────────────────────────────────────
 
-/** List one SDK-defined complete prefix response, failing closed before mutation. */
+/** List and validate every SDK page before purge mutates any stored data. */
 async function listKvPrefix(
   tcw: TinyCloudWeb,
   path: string,
 ): Promise<StoreResult<string[]>> {
-  let page: Awaited<ReturnType<typeof tcw.kv.list>>;
-  try {
-    page = await tcw.kv.list({ path });
-  } catch {
-    return fail({ code: "KV_LIST_TRANSPORT", message: "listing rejected" }, `purgeConnector(list:${path})`);
-  }
-  if (!page || page.ok !== true) return fail(page?.error, `purgeConnector(list:${path})`);
-  if (!page.data || typeof page.data !== "object" || Array.isArray(page.data) || !Array.isArray(page.data.keys)) {
-    return fail({ code: "KV_LIST_MALFORMED", message: "invalid list envelope" }, `purgeConnector(list:${path})`);
-  }
-  // Purge intentionally makes one bounded list request per complete source
-  // prefix. A continuation cursor means the complete set is unknown, so fail
-  // before deleting any key rather than report a partial purge as success.
-  const cursor = (page.data as { cursor?: unknown }).cursor;
-  if (cursor !== undefined && cursor !== null) {
-    return fail({ code: "KV_LIST_MALFORMED", message: "unexpected list cursor" }, `purgeConnector(list:${path})`);
-  }
   const keys: string[] = [];
-  for (const key of page.data.keys) {
-    if (typeof key !== "string" || !key.startsWith(path)) {
-      return fail({ code: "KV_LIST_MALFORMED", message: "unexpected listed key" }, `purgeConnector(list:${path})`);
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+  while (true) {
+    let page: Awaited<ReturnType<typeof tcw.kv.list>>;
+    try {
+      page = await tcw.kv.list({ path, ...(cursor ? { cursor } : {}) });
+    } catch {
+      return fail({ code: "KV_LIST_TRANSPORT", message: "listing rejected" }, `purgeConnector(list:${path})`);
     }
-    keys.push(key);
+    if (!page || page.ok !== true) return fail(page?.error, `purgeConnector(list:${path})`);
+    if (!page.data || typeof page.data !== "object" || Array.isArray(page.data) || !Array.isArray(page.data.keys)) {
+      return fail({ code: "KV_LIST_MALFORMED", message: "invalid list envelope" }, `purgeConnector(list:${path})`);
+    }
+    for (const key of page.data.keys) {
+      if (typeof key !== "string" || !key.startsWith(path)) {
+        return fail({ code: "KV_LIST_MALFORMED", message: "unexpected listed key" }, `purgeConnector(list:${path})`);
+      }
+      keys.push(key);
+    }
+    const metadata = page.data as { cursor?: unknown; nextCursor?: unknown; truncated?: unknown };
+    const next = metadata.nextCursor ?? metadata.cursor;
+    const more = metadata.truncated === true || typeof next === "string";
+    if (!more) return { ok: true, data: keys };
+    if (typeof next !== "string" || next.length === 0 || seenCursors.has(next)) {
+      return fail({ code: "KV_LIST_MALFORMED", message: "invalid list cursor" }, `purgeConnector(list:${path})`);
+    }
+    seenCursors.add(next);
+    cursor = next;
   }
-  return { ok: true, data: keys };
 }
 
 /**
- * Delete every source-scoped reconciled meeting and transcript KV record,
- * then the Drive cursor, SQL rows, and state row. Listing and deletion stay
- * sequential because TinyCloud drops concurrent responses on one space.
+ * Delete every source-scoped meeting and transcript KV record, Drive cursor,
+ * Fireflies sync-attempt record, SQL rows, and state row. Listing and deletion
+ * stay sequential because TinyCloud drops concurrent responses on one space.
  */
 export async function purgeConnector(
   tcw: TinyCloudWeb,

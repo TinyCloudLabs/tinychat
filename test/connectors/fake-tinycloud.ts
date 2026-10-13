@@ -426,6 +426,7 @@ export class FakeKv {
   /** Every key rejected by the authorizer — drivers can assert on the shape. */
   readonly unauthorized: string[] = [];
   putHook: ((key: string, value: unknown) => Promise<void>) | null = null;
+  deleteErrors = new Map<string, KvErr>();
 
   /** Authorization runs before any storage effect, exactly like the node. */
   private deny(key: string, action: string): KvErr | null {
@@ -493,6 +494,8 @@ export class FakeKv {
   }
 
   async delete(key: string): Promise<OkErr<void, KvErr>> {
+    const forcedError = this.deleteErrors.get(key);
+    if (forcedError) return { ok: false, error: forcedError };
     const denied = this.deny(key, "del");
     if (denied) return { ok: false, error: denied };
     if (!this.entries.has(key)) {

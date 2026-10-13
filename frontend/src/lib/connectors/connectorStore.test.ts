@@ -483,7 +483,7 @@ class FakeKv {
   }
 
   async list(options: { path: string; cursor?: string }): Promise<
-    | { ok: true; data: { keys: string[]; cursor?: string } }
+    | { ok: true; data: { keys: string[]; nextCursor?: string; truncated?: boolean } }
     | { ok: false; error: KvErr }
   > {
     return this.tracker.run(`kv.list:${options.path}:${options.cursor ?? ""}`, () => {
@@ -501,7 +501,9 @@ class FakeKv {
       const next = offset + keys.length;
       return {
         ok: true,
-        data: next < all.length ? { keys, cursor: String(next) } : { keys },
+        data: next < all.length
+          ? { keys, nextCursor: String(next), truncated: true }
+          : { keys, truncated: false },
       } as const;
     });
   }
@@ -757,7 +759,7 @@ describe("connectorStore.purgeConnector", () => {
       { ok: true, data: {} },
       { ok: true, data: { keys: [42] } },
       { ok: true, data: { keys: ["unrelated/private-key"] } },
-      { ok: true, data: { keys: [], cursor: "more" } },
+      { ok: true, data: { keys: [], truncated: true } },
     ];
     for (const reply of cases) {
       const f = makeFake();
@@ -795,6 +797,27 @@ describe("connectorStore.purgeConnector", () => {
     const afterCount = await countMeetings(f.tcw, "fireflies");
     expect(afterCount.ok && afterCount.data === 1).toBe(true);
     expect(f.tracker.maxInFlight).toBe(1);
+  });
+  test("follows nextCursor through every transcript page before completing purge", async () => {
+    const f = makeFake();
+    f.kv.listPageSize = 1;
+    await putTranscriptBody(f.tcw, "fireflies", "body-1", []);
+    await putTranscriptBody(f.tcw, "fireflies", "body-2", []);
+    await putTranscriptBody(f.tcw, "fireflies", "body-3", []);
+    await f.kv.put(meetingKvKey("fireflies", "meeting-1"), "meeting");
+    await recordFirefliesAttempt(f.tcw, {
+      v: 1,
+      lastAttemptAt: "2026-10-13T12:00:00.000Z",
+      lastAttemptStatus: "partial",
+    });
+
+    const purged = await purgeConnector(f.tcw, "fireflies");
+
+    expect(purged.ok).toBe(true);
+    expect(f.kv.entries.size).toBe(0);
+    expect(f.kv.listCalls.filter((call) => call.path.endsWith("/transcript/")).map((call) => call.cursor))
+      .toEqual([undefined, "1", "2"]);
+    expect(f.kv.entries.has(firefliesAttemptKvKey())).toBe(false);
   });
 });
 
@@ -1389,6 +1412,7 @@ describe("connectorStore.updateSyncState / getConnection", () => {
       listing_skip: 500,
       listing_started_at: "2026-10-10T00:00:00.000Z",
       listing_anchor: "mock-tx-251",
+      pending_ids: ["failed-transcript"],
     };
     await recordFirefliesAttempt(f.tcw, {
       v: 1,
@@ -1396,6 +1420,7 @@ describe("connectorStore.updateSyncState / getConnection", () => {
       lastAttemptStatus: value.last_attempt_status,
       listingSkip: value.listing_skip,
       listingStartedAt: value.listing_started_at,
+      pendingIds: value.pending_ids,
       listingAnchor: value.listing_anchor,
     });
     expect(f.kv.entries.get(firefliesAttemptKvKey())).toBe(JSON.stringify(value));
@@ -1413,6 +1438,7 @@ describe("connectorStore.updateSyncState / getConnection", () => {
           listingSkip: 500,
           listingStartedAt: value.listing_started_at,
           listingAnchor: value.listing_anchor,
+          pendingIds: ["failed-transcript"],
         },
       });
     }
@@ -1430,6 +1456,22 @@ describe("connectorStore.updateSyncState / getConnection", () => {
         lastAttemptStatus: value.last_attempt_status,
       },
     });
+  });
+  test("pending attempt IDs are bounded to fifty entries", async () => {
+    const f = makeFake();
+    const pendingIds = Array.from({ length: 60 }, (_, index) => `failed-${index}`);
+
+    expect((await recordFirefliesAttempt(f.tcw, {
+      v: 1,
+      lastAttemptAt: "2026-10-13T12:00:00.000Z",
+      lastAttemptStatus: "partial",
+      pendingIds,
+    })).ok).toBe(true);
+
+    const persisted = JSON.parse(String(f.kv.entries.get(firefliesAttemptKvKey())));
+    expect(persisted.pending_ids).toEqual(pendingIds.slice(0, 50));
+    const read = await getFirefliesAttempt(f.tcw);
+    expect(read.ok && read.data?.pendingIds).toEqual(pendingIds.slice(0, 50));
   });
   test("an invalid cursor drops cursor fields but preserves valid attempt pacing", async () => {
     const f = makeFake();

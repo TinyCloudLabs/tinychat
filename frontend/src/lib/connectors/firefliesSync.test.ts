@@ -133,11 +133,13 @@ class FakeStore implements SyncStore {
   async recordFirefliesAttempt(
     _tcw: TinyCloudWeb,
     input: {
+      v: 1;
       lastAttemptAt: string;
       lastAttemptStatus: "running" | "ok" | "partial" | "error";
       listingSkip?: number | null;
       listingStartedAt?: string | null;
       listingAnchor?: string | null;
+      pendingIds?: string[];
     },
   ): Promise<StoreResult<void>> {
     void input;
@@ -163,7 +165,7 @@ interface MockClientOptions {
   /** IDs returned newest-first, as Fireflies listings provide them. */
   newIds: string[];
   getTranscript: (id: string) => FirefliesResult<FirefliesTranscript>;
-  listError?: FirefliesResult<{ ids: string[]; complete: boolean; nextSkip: number | null; nextAnchor: string | null }>;
+  listError?: FirefliesResult<{ ids: string[]; complete: boolean; nextSkip: number; nextAnchor: string | null }>;
   delayMs?: number;
 }
 
@@ -179,8 +181,8 @@ function makeClient(opts: MockClientOptions): { client: SyncClient; fetches: str
         data: {
           ids: opts.newIds.slice(0, cap),
           complete: opts.newIds.length <= cap,
-          nextSkip: opts.newIds.length <= cap ? null : cap,
-          nextAnchor: opts.newIds.length <= cap ? null : opts.newIds[cap - 1] ?? null,
+          nextSkip: Math.min(opts.newIds.length, cap),
+          nextAnchor: opts.newIds[Math.min(opts.newIds.length, cap) - 1] ?? null,
         },
       };
     },
