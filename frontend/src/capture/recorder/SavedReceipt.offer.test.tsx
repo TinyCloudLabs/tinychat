@@ -141,6 +141,14 @@ describe("the receipt's wording", () => {
     expect(render({ transcriber: "private-cloud", privateOutcome: "no_speech" })).toContain("No speech was found in this note.");
   });
 
+  test("a Powerful note names Powerful while running and when it finishes or fails", () => {
+    const powerful = { transcriber: "assemblyai" as const, route: voiceNoteRoute("assemblyai") };
+    expect(render({ ...powerful, transcribing: true })).toContain("Transcribing with Powerful…");
+    expect(render({ ...powerful, privateOutcome: "transcribed" })).toContain("Transcribed with Powerful");
+    expect(render({ ...powerful, privateOutcome: "no_speech" })).toContain("No speech was found in this note.");
+    expect(render({ ...powerful, privateFailure: "Today's Powerful allowance is used." })).toContain("Powerful couldn&#x27;t finish: Today&#x27;s Powerful allowance is used.");
+  });
+
   test("a failure of a note committed to Private is shown too, not only after a switch", () => {
     expect(render({ transcriber: "private-cloud", privateFailure: "service busy" })).toContain("Couldn&#x27;t transcribe in private cloud: service busy");
   });

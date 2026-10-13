@@ -1,12 +1,13 @@
+import { readableError } from "@/lib/readableError";
 // JS owns the user's default. Native owns a live session's journaled options.
-import { captureCapabilities, captureEngineAvailable, captureEngineKind, onDeviceTranscriptionAvailable } from "./captureEngine";
+import { captureEngineAvailable, captureEngineKind, onDeviceTranscriptionAvailable } from "./captureEngine";
 import { withCaptureDeadline } from "./accountHandoff";
 import { VoiceNotes, type CaptureOptions, type TranscriberId } from "./nativeVoiceNotes";
 
 const TRANSCRIBER_KEY = "exo.voiceNotes.transcriber";
 const SPEAKERS_KEY = "exo.voiceNotes.identifySpeakers";
 const listeners = new Set<() => void>();
-let memoryPreference: CaptureOptions = { transcriber: "on-device", identifySpeakers: false };
+let memoryPreference: CaptureOptions = { transcriber: "on-device", identifySpeakers: true };
 
 export function subscribeTranscriberPreference(listener: () => void): () => void {
   listeners.add(listener);
@@ -22,25 +23,24 @@ export function readTranscriberPreference(): CaptureOptions {
   if (!store) return memoryPreference;
   try {
     const saved = store.getItem(TRANSCRIBER_KEY);
-    const transcriber: TranscriberId = saved === "off" || saved === "on-device" || saved === "private-cloud" || saved === "assemblyai"
-      ? saved : "on-device";
-    return { transcriber, identifySpeakers: store.getItem(SPEAKERS_KEY) === "1" };
+    const transcriber: TranscriberId = saved === "off" || saved === "on-device" || saved === "private-cloud" || saved === "assemblyai" ? saved : "on-device";
+    return { transcriber, identifySpeakers: store.getItem(SPEAKERS_KEY) !== "0" };
   } catch { return memoryPreference; }
 }
 
-/** An installed engine without an on-device route maps the choice to private cloud; the stored preference is untouched. */
+/** Signed-out Mac capture without Whisper records audio only. A signed-in saved choice stays selected. */
 export function effectiveTranscriber(pref: TranscriberId, signedIn: boolean): TranscriberId {
   const transcriber = signedIn ? pref : "on-device";
-  if (transcriber === "on-device" && captureEngineAvailable() && !onDeviceTranscriptionAvailable())
-    return !signedIn && captureEngineKind() === "tauri" ? "off" : "private-cloud";
+  if (signedIn && transcriber === "on-device" && captureEngineKind() === "web") return "private-cloud";
+  if (!signedIn && transcriber === "on-device" && captureEngineAvailable()
+    && captureEngineKind() === "tauri" && !onDeviceTranscriptionAvailable()) return "off";
   return transcriber;
 }
 
 /** Disabled speaker modes keep the preference but send false to native capture. */
 export function effectiveCaptureOptions(pref: CaptureOptions, signedIn: boolean): CaptureOptions {
   const transcriber = effectiveTranscriber(pref.transcriber, signedIn);
-  return { transcriber, identifySpeakers: transcriber === "assemblyai"
-    || transcriber === "on-device" && captureCapabilities().localTranscription ? pref.identifySpeakers : false };
+  return { transcriber, identifySpeakers: (transcriber === "private-cloud" || transcriber === "assemblyai") && pref.identifySpeakers };
 }
 
 /** What the engine will start the next recording with: the one truth the default mode is shown from. */
@@ -117,7 +117,7 @@ async function restoreAfterFailure(
   }
   for (const listener of listeners) listener();
   if (!problems.length) return caught;
-  return new Error(`${caught instanceof Error ? caught.message : String(caught)} (${problems.join("; ")})`, { cause: caught });
+  return new Error(`${readableError(caught)} (${problems.join("; ")})`, { cause: caught });
 }
 
 /** Resolves once the engine's default is the stored one again, or throws why it is not. Waits behind every default write in flight. */
@@ -128,7 +128,7 @@ export function settleDefaults(): Promise<void> {
       await writeEffectiveDefaults(readTranscriberPreference());
     } catch (caught) {
       console.error("[VoiceNotes] The default transcription mode is still not put right; recording is held", caught);
-      throw new Error(`${caught instanceof Error ? caught.message : String(caught)} (the default transcription mode could not be put right, so recording is held)`, { cause: caught });
+      throw new Error(`${readableError(caught)} (the default transcription mode could not be put right, so recording is held)`, { cause: caught });
     }
     unreconciled = null;
   });

@@ -5,11 +5,9 @@ import {
   identifySpeakersControl,
   MODE_STOPS,
   modeAvailability,
-  modeShortLabel,
+  modeStop,
   moveMode,
   scaleStops,
-  SKIP_ENABLED,
-  type ModeFeatures,
   type ModeShell,
 } from "./transcriptionModes";
 
@@ -74,7 +72,7 @@ describe("transcription modes availability", () => {
     }
   });
 
-  test("scaleStops includes disabled rows and removes the Audio only stop only when the flag is off", () => {
+  test("scaleStops includes Powerful on the web", () => {
     const stops = scaleStops("web");
     expect(stops.map(({ id }) => id)).toEqual([
       "skip",
@@ -82,34 +80,21 @@ describe("transcription modes availability", () => {
       "private",
       "powerful",
     ]);
-    expect(stops.find(({ id }) => id === "powerful")?.availability).toEqual({
-      available: false,
-      reason: "Coming with the next update",
-    });
     expect(stops.find(({ id }) => id === "local")?.availability).toEqual({
       available: false,
       reason: "needs the app",
     });
-    expect(
-      scaleStops("web", null, false, {
-        skipEnabled: false,
-        powerfulEnabled: false,
-      }).map(({ id }) => id),
-    ).toEqual(["local", "private", "powerful"]);
   });
 
-  test("Audio only availability follows the feature flag", () => {
-    expect(modeAvailability("skip", "phone")).toEqual(
-      SKIP_ENABLED
-        ? { available: true }
-        : { available: false, reason: "Disabled" },
-    );
-    expect(
-      modeAvailability("skip", "phone", null, false, {
-        skipEnabled: true,
-        powerfulEnabled: false,
-      }),
-    ).toEqual({ available: true });
+  test("Audio only is available", () => {
+    expect(modeAvailability("skip", "phone")).toEqual({ available: true });
+  });
+
+  test("unknown mode ids fail with a typed error", () => {
+    expect(() => modeStop("unlisted" as never)).toThrow("Unknown transcription mode: unlisted");
+    try { modeStop("unlisted" as never); } catch (error) {
+      expect(error).toMatchObject({ code: "unknown_transcription_mode" });
+    }
   });
 
   test("captions and explanations match the shell-specific mode copy", () => {
@@ -152,35 +137,23 @@ describe("transcription modes availability", () => {
         phone: [
           "Fast, accurate, and sealed from Exo.",
           "sealed enclave",
-          "Transcribed in a sealed hardware enclave. Not even Exo can read it. Fast and accurate.",
+          "Sent to a sealed hardware enclave, transcribed, then deleted. Exo never sees it.",
         ],
         desktop: [
           "Fast, accurate, and sealed from Exo.",
           "sealed enclave",
-          "Transcribed in a sealed hardware enclave. Not even Exo can read it. Fast and accurate.",
+          "Sent to a sealed hardware enclave, transcribed, then deleted. Exo never sees it.",
         ],
         web: [
           "Fast, accurate, and sealed from Exo.",
           "sealed enclave",
-          "Transcribed in a sealed hardware enclave. Not even Exo can read it. Fast and accurate.",
+          "Sent to a sealed hardware enclave, transcribed, then deleted. Exo never sees it.",
         ],
       },
       powerful: {
-        phone: [
-          "Most accurate. Audio deleted after processing.",
-          "AssemblyAI",
-          "Uploaded to AssemblyAI, a third-party service: the most accurate, with speaker labels. Audio is deleted after processing.",
-        ],
-        desktop: [
-          "Most accurate. Audio deleted after processing.",
-          "AssemblyAI",
-          "Uploaded to AssemblyAI, a third-party service: the most accurate, with speaker labels. Audio is deleted after processing.",
-        ],
-        web: [
-          "Most accurate. Audio deleted after processing.",
-          "AssemblyAI",
-          "Uploaded to AssemblyAI, a third-party service: the most accurate, with speaker labels. Audio is deleted after processing.",
-        ],
+        phone: ["Most accurate, with speaker labels.", "via Exo's server", "Sent through Exo's server to AssemblyAI, then deleted after the transcript is saved."],
+        desktop: ["Most accurate, with speaker labels.", "via Exo's server", "Sent through Exo's server to AssemblyAI, then deleted after the transcript is saved."],
+        web: ["Most accurate, with speaker labels.", "via Exo's server", "Sent through Exo's server to AssemblyAI, then deleted after the transcript is saved."],
       },
     } as const;
 
@@ -233,10 +206,10 @@ describe("transcription modes availability", () => {
     );
     expect(
       availableStops("desktop", null, false).map((stop) => stop.id),
-    ).toEqual(["skip", "private"]);
+    ).toEqual(["skip", "private", "powerful"]);
     expect(
       availableStops("desktop", null, true).map((stop) => stop.id),
-    ).toEqual(["skip", "local", "private"]);
+    ).toEqual(["skip", "local", "private", "powerful"]);
     expect(scaleStops("desktop", null, false)[1]?.availability).toEqual({
       available: false,
       reason: "Get Whisper for this Mac",
@@ -246,12 +219,9 @@ describe("transcription modes availability", () => {
     });
   });
 
-  test("Powerful remains disabled with its launch copy on every shell", () => {
+  test("Powerful is in the picker on every shell", () => {
     for (const shell of shells) {
-      expect(modeAvailability("powerful", shell)).toEqual({
-        available: false,
-        reason: "Coming with the next update",
-      });
+      expect(scaleStops(shell).some((stop) => stop.id === "powerful")).toBe(true);
     }
   });
 
@@ -355,47 +325,34 @@ describe("transcription modes availability", () => {
     });
   });
 
-  test("arrow navigation skips unavailable Local and Powerful stops", () => {
-    const disabledFeatures: ModeFeatures = {
-      skipEnabled: false,
-      powerfulEnabled: false,
-    };
-    const enabledEdges: ModeFeatures = {
-      skipEnabled: true,
-      powerfulEnabled: true,
-    };
+  test("arrow navigation skips unavailable Local", () => {
     expect(
-      moveMode("local", 1, "phone", model("ready"), false, disabledFeatures),
+      moveMode("local", 1, "phone", model("ready"), false),
     ).toBe("private");
-    expect(moveMode("private", -1, "web", null, false, enabledEdges)).toBe(
+    expect(moveMode("private", -1, "web", null, false)).toBe(
       "skip",
     );
-    expect(moveMode("skip", 1, "web", null, false, enabledEdges)).toBe(
+    expect(moveMode("skip", 1, "web", null, false)).toBe(
       "private",
     );
-    expect(moveMode("private", 1, "web", null, false, enabledEdges)).toBe(
-      "powerful",
-    );
+    expect(moveMode("private", 1, "web", null, false)).toBe("powerful");
   });
 });
 
 describe("Identify speakers", () => {
-  test("is enabled only for selected Powerful, and changes its short label", () => {
+  test("is enabled for Private, and says Not supported for Local and Audio only", () => {
+    expect(identifySpeakersControl("powerful", true)).toMatchObject({ checked: true, disabled: false });
     expect(identifySpeakersControl("private", true, true)).toMatchObject({
       checked: true,
-      disabled: true,
-    });
-    expect(identifySpeakersControl("powerful", false, true)).toMatchObject({
-      checked: false,
       disabled: false,
     });
-    expect(identifySpeakersControl("powerful", true, true)).toMatchObject({
-      checked: true,
-      disabled: false,
+    expect(identifySpeakersControl("private", true, false)).toMatchObject({
+      checked: false, disabled: true, subLabel: "Not supported",
     });
-    expect(modeShortLabel("powerful", true, true)).toBe(
-      "AssemblyAI · speakers",
-    );
-    expect(modeShortLabel("powerful", false, true)).toBe("Powerful");
+    for (const mode of ["local", "skip"] as const) {
+      expect(identifySpeakersControl(mode, true)).toMatchObject({
+        checked: false, disabled: true, subLabel: "Not supported",
+      });
+    }
   });
 });

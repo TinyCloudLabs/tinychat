@@ -25,6 +25,7 @@ const transcription = (
   patch: Partial<VoiceNoteTranscriptionProps> = {},
 ): VoiceNoteTranscriptionProps => ({
   availability: "available",
+  diarization: true,
   consented: true,
   maxSeconds: 600,
   jobs: new Map(),
@@ -109,7 +110,7 @@ function choice(
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("useTranscriptionChoice", () => {
-  test("the scale has Audio only, Local, Private and Powerful; Powerful is disabled", () => {
+  test("the scale has Audio only, Local, Private and Powerful", () => {
     const { result } = choice(transcription(), fakeApi("private-cloud").api);
     expect(result.stops.map((s) => s.stop.id)).toEqual([
       "skip",
@@ -117,9 +118,11 @@ describe("useTranscriptionChoice", () => {
       "private",
       "powerful",
     ]);
-    const powerful = result.stops.find((s) => s.stop.id === "powerful")!;
-    expect(powerful.available).toBe(false);
-    expect(powerful.reason).toBe("Coming with the next update");
+  });
+
+  test("Private speaker detection follows the reported PTX capability", () => {
+    expect(choice(transcription({ diarization: true }), fakeApi("private-cloud").api).result.privateDiarization).toBe(true);
+    expect(choice(transcription({ diarization: false }), fakeApi("private-cloud").api).result.privateDiarization).toBe(false);
   });
 
   test("the displayed mode is always the provider's transcriber, whatever else is stored or consented", () => {
@@ -149,7 +152,7 @@ describe("useTranscriptionChoice", () => {
   test("choosing an unavailable stop returns why and asks the provider for nothing", async () => {
     const { api, calls } = fakeApi("private-cloud");
     const { result } = choice(transcription(), api);
-    expect(result.select("powerful")).toBe("Coming with the next update");
+    expect(result.select("powerful")).toBe("Not available right now");
     await settle();
     expect(calls).toEqual([]);
   });
@@ -216,7 +219,7 @@ describe("useTranscriptionChoice", () => {
   });
 
   test("Identify speakers asks for this recording only", async () => {
-    const { api, calls } = fakeApi("assemblyai");
+    const { api, calls } = fakeApi("private-cloud");
     const { result } = choice(transcription(), api);
     await result.setIdentifySpeakers(true);
     expect(calls).toEqual([["setIdentifySpeakers", true, "recording"]]);
@@ -228,15 +231,15 @@ describe("useTranscriptionChoice", () => {
       api.transcriber = { id, identifySpeakers, source: "recording" };
       return choice(transcription(), api).result.identifySpeakers;
     };
-    expect(shown("assemblyai", true)).toBe(true);
+    expect(shown("private-cloud", true)).toBe(true);
     expect(shown("on-device", false)).toBe(false);
-    expect(shown("assemblyai", false)).toBe(false);
+    expect(shown("private-cloud", false)).toBe(false);
   });
 
   describe("a refused Identify speakers is shown and logged, and the switch stays with the provider", () => {
     const refused = async (result: SetTranscriberResult | Error) => {
       const logged = spyOn(console, "error").mockImplementation(() => {});
-      const { api } = fakeApi("assemblyai", "ok", result);
+      const { api } = fakeApi("private-cloud", "ok", result);
       const { result: scale, notices } = choice(transcription(), api);
       await scale.setIdentifySpeakers(true);
       const errors = logged.mock.calls.map((call) => String(call[0]));

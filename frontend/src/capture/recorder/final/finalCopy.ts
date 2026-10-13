@@ -8,6 +8,19 @@ const MODE_NAMES = {
   powerful: "Powerful",
 } as const;
 
+export const PRIVATE_CONSENT_TITLE = "Use Private transcription?";
+export const PRIVATE_CONSENT_ACTION = "Use Private transcription";
+export const POWERFUL_CONSENT_TITLE = "Use Powerful transcription?";
+export const POWERFUL_CONSENT_ACTION = "Use Powerful transcription";
+export const POWERFUL_CONSENT_BODY = "Powerful sends this note's audio through Exo's server to AssemblyAI, a third-party service, for the most accurate transcript with speaker labels. Exo deletes it from AssemblyAI as soon as the transcript is saved.";
+export function privateConsentDevice(platform: AppPlatform): "phone" | "Mac" | "browser" {
+  return platform === "tauri" ? "Mac" : platform === "web" ? "browser" : "phone";
+}
+
+export function privateConsentBody(device: "phone" | "Mac" | "browser"): string {
+  return `Private transcription sends this note's audio from this ${device} to TinyCloud Private Transcription, a sealed hardware enclave. It's deleted there once the transcript is ready. Exo never sees it.`;
+}
+
 /** One name per transcription mode, keyed by the provider's transcriber id; every surface that names a mode reads this. */
 export const TRANSCRIBER_NAME = {
   off: MODE_NAMES.skip,
@@ -23,8 +36,10 @@ export function routeSourceName(platform: AppPlatform): string {
 }
 
 /** Why Private cannot be chosen right now, and whether checking again can change it. */
-export function privateNotOffered(availability: TranscriptionAvailability | undefined): { reason: string; canRecheck: boolean } {
+export function privateNotOffered(availability: TranscriptionAvailability | undefined, errorCode?: string): { reason: string; canRecheck: boolean } {
   if (availability === "checking") return { reason: "Checking…", canRecheck: false };
+  if (availability === "failed" && errorCode === "native_status_failed")
+    return { reason: "Couldn't check this phone's file upload", canRecheck: true };
   if (availability === "failed") return { reason: "Couldn't check right now", canRecheck: true };
   return { reason: "Not available right now", canRecheck: false };
 }
@@ -40,7 +55,7 @@ export const FINAL_COPY = {
   microphoneOff: "Microphone off",
   idle: "Ready",
   starting: "Starting…",
-  saving: "Saving…",
+  saving: "Finishing…",
   discarding: "Discarding…",
   noSoundFrom: (input: string) => `No sound from ${input}`,
   noSoundFromMicrophone: "No sound from the microphone",
@@ -72,15 +87,13 @@ export const FINAL_COPY = {
     "This recording session already exists. Discard this attempt and start a new recording.",
   stopAndSaveRecorded: "Stop and save what's recorded.",
   stopAt: (text: string) => `Stops at ${text}`,
-  comingNextUpdate: "Coming with the next update",
-  disabled: "Disabled",
   needsApp: "needs the app",
   onThisPhone: "on this phone",
   onThisMac: "on this Mac",
   sealedEnclave: "sealed enclave",
-  assemblyAi: "AssemblyAI",
   identifySpeakers: "Identify speakers",
-  powerfulOnly: "Powerful only",
+  notSupported: "Not supported",
+  speakerTurns: "Labels each speaker's turns",
   whisperUnavailable: "Get Whisper for this Mac",
   modelUnavailable: "Get the on-device model",
   modelTryAgain: "Try again",
@@ -95,7 +108,6 @@ export const FINAL_COPY = {
     localName: MODE_NAMES.local,
     privateName: MODE_NAMES.private,
     powerfulName: MODE_NAMES.powerful,
-    speakersName: "AssemblyAI · speakers",
     noTranscript: "no transcript",
     skipCaption: {
       phone: "Just the recording, kept on this phone.",
@@ -114,9 +126,8 @@ export const FINAL_COPY = {
       "Runs on your phone or Mac in the Exo app. Not available in the browser.",
     privateCaption: "Fast, accurate, and sealed from Exo.",
     privateExplanation:
-      "Transcribed in a sealed hardware enclave. Not even Exo can read it. Fast and accurate.",
-    powerfulCaption: "Most accurate. Audio deleted after processing.",
-    powerfulExplanation:
-      "Uploaded to AssemblyAI, a third-party service: the most accurate, with speaker labels. Audio is deleted after processing.",
+      "Sent to a sealed hardware enclave, transcribed, then deleted. Exo never sees it.",
+    powerfulCaption: "Most accurate, with speaker labels.",
+    powerfulExplanation: "Sent through Exo's server to AssemblyAI, then deleted after the transcript is saved.",
   },
 } as const;

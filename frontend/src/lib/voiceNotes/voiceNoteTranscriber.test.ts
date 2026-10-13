@@ -173,7 +173,7 @@ describe("availability and consent", () => {
     expect(dark.transcriber.snapshot().availability).toBe("failed");
   });
 
-  test("before consent a saved note is not sent; after it, new notes are transcribed with the audio in hand", async () => {
+  test("before consent a saved note is held; after it, held and new notes are transcribed", async () => {
     const s = setup();
     await s.transcriber.check();
     s.transcriber.noteSaved({ id: "rec-before", durationMs: 5_000, source: "in_app" }, AUDIO);
@@ -186,8 +186,11 @@ describe("availability and consent", () => {
     expect(s.consent.value).toBe(true);
     s.transcriber.noteSaved({ id: "rec-after", durationMs: 5_000, source: "in_app" }, AUDIO);
     await tick();
-    expect(s.runs.map((r) => [r.sourceId, r.audio])).toEqual([["rec-after", AUDIO]]);
+    expect(s.runs.map((r) => [r.sourceId, r.audio])).toEqual([["rec-before", undefined]]);
     expect(s.runs[0]!.allowed()).toBe(true);
+    s.runs[0]!.resolve("transcribed");
+    await tick();
+    expect(s.runs.map((r) => [r.sourceId, r.audio])).toEqual([["rec-before", undefined], ["rec-after", AUDIO]]);
   });
 
   test("consent resumes the notes a previous run left in flight, once", async () => {
@@ -343,8 +346,9 @@ describe("blocked notes and waiting positions", () => {
     await s.transcriber.check();
     expect(s.job("n")).toEqual({ kind: "blocked", reason: "no-consent" });
     s.transcriber.consent();
-    expect(s.job("n")).toBeUndefined();
-    expect(s.runs).toHaveLength(0);
+    expect(s.job("n")?.kind).toBe("active");
+    await tick();
+    expect(s.runs).toHaveLength(1);
   });
 
   test("a blocked offer does not replace a held or finished job", async () => {
@@ -447,6 +451,8 @@ describe("voiceNoteTranscriberFor", () => {
     expect(voiceNoteTranscriberFor({} as TinyCloudWeb, "https://api.example", store)).toBeNull();
     // No PTX origin in this build is an explicit failure.
     expect(a1!.snapshot().availability).toBe("failed");
+    // React's external-store hook requires the same object until a change is published.
+    expect(a1!.snapshot()).toBe(a1!.snapshot());
   });
 });
 
@@ -546,7 +552,7 @@ describe("notes that did not begin in the app are held, per note", () => {
     expect(holds.held).toEqual(["n"]);
   });
 
-  test("a hold that cannot be written is still held for this launch, and says so", async () => {
+  test("a hold that cannot be written is still held for this launch", async () => {
     const errors: unknown[][] = [];
     const original = console.error;
     console.error = (...args: unknown[]) => { errors.push(args); };
@@ -558,13 +564,13 @@ describe("notes that did not begin in the app are held, per note", () => {
       await tick();
       expect(s.runs).toHaveLength(0);
       expect(s.job("n")?.kind).toBe("held");
-      expect(errors.length).toBeGreaterThan(0);
+      expect(errors).toHaveLength(0); // Development diagnostics use the debug log, not console.error.
     } finally {
       console.error = original;
     }
   });
 
-  test("a hold list that cannot be read is reported, and shortcut notes are still held", async () => {
+  test("a hold list that cannot be read still leaves shortcut notes held", async () => {
     const errors: unknown[][] = [];
     const original = console.error;
     console.error = (...args: unknown[]) => { errors.push(args); };
@@ -576,7 +582,7 @@ describe("notes that did not begin in the app are held, per note", () => {
       await tick();
       expect(s.runs).toHaveLength(0);
       expect(s.job("n")?.kind).toBe("held");
-      expect(errors.length).toBeGreaterThan(0);
+      expect(errors).toHaveLength(0); // No raw storage error reaches the console.
     } finally {
       console.error = original;
     }

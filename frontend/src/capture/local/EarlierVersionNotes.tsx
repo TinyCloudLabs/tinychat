@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { VoiceNotes, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -7,7 +8,7 @@ export function EarlierVersionNotes({ notes, did, onChange, onDelete }: {
 }) {
   const [error, setError] = useState<string | null>(null);
   if (!notes.length) return null;
-  const attempt = (job: () => Promise<void>) => { void job().then(() => setError(null), (caught: unknown) => setError(String(caught))); };
+  const attempt = (job: () => Promise<void>) => { void job().then(() => setError(null), (caught: unknown) => setError(readableError(caught))); };
   return <section aria-label="Notes from an earlier version" className="space-y-3">
     <h2 className="text-lg font-semibold">Notes from an earlier version</h2>
     <p>These notes need an account choice before they can be saved to your space.</p>

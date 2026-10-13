@@ -26,23 +26,16 @@ import { assertAccountContext, assertCurrent, captureAccountContext, type Accoun
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { deleteNote } from "@/lib/voiceNotes/recordingNotes";
 import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
+import { readableError } from "@/lib/readableError";
+import { logPipelineError } from "@/lib/debugLog";
 
 export const TINYCLOUD_NETWORK_FAILURE_MESSAGE =
   "Couldn't reach your TinyCloud space. This note is still on your phone — try again.";
+export const TINYCLOUD_UPLOAD_REJECTED_MESSAGE =
+  "The TinyCloud node rejected this upload. This note is still on your phone — try again after the node is fixed.";
 
 function rawErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (error && typeof error === "object" && "message" in error) return String((error as { message: unknown }).message);
-  return String(error);
-}
-
-function redactedRawError(message: string): string {
-  return message
-    .replace(/https?:\/\/[^\s"'<>]+/gi, "<url>")
-    .replace(/\b(authorization)(["']?\s*[:=]\s*["']?)(?:bearer\s+)?[^\s"'&,;}]+/gi, "$1$2<redacted>")
-    .replace(/\b(bearer\s+)[^\s,;]+/gi, "$1<redacted>")
-    .replace(/\b(token|api[_-]?key|secret)(["']?\s*[:=]\s*["']?)[^\s"'&,;}]+/gi, "$1$2<redacted>")
-    .slice(0, 240);
+  return readableError(error);
 }
 
 const NETWORK_FAILURE_SUFFIX = /(?:^|:\s)(?:Load failed|The network connection was lost\.|Fetch API cannot load .+? due to access control checks\.|Failed to fetch|NetworkError when attempting to fetch resource\.)\s*$/i;
@@ -51,21 +44,31 @@ export function isTinyCloudNetworkFailure(error: unknown): boolean {
   return NETWORK_FAILURE_SUFFIX.test(rawErrorMessage(error));
 }
 
-/** Log a diagnostic message without passing arbitrary error objects or credential-bearing strings to the console. */
+export function isTinyCloudUploadRejected(error: unknown): boolean {
+  return /Fetch API cannot load .+? due to access control checks\./i.test(rawErrorMessage(error));
+}
+
+/** The native console gets only a stable code; the dev log holds a redacted error chain. */
 export function logVoiceNoteError(operation: string, error: unknown): void {
-  const code = errorCode(error);
-  console.warn(`[VoiceNotes] ${operation}${code ? ` (code=${code})` : ""}: ${redactedRawError(rawErrorMessage(error))}`);
+  const rawCode = errorCode(error);
+  const code = rawCode && /^[A-Za-z0-9_-]{1,64}$/.test(rawCode) ? rawCode : null;
+  logPipelineError(operation, error);
+  console.warn(`[VoiceNotes] ${operation}${code ? ` (code=${code})` : ""}`);
 }
 
 /** Map WebKit's unhelpful network messages to specific recovery copy. */
 export function messageOf(error: unknown): string {
   const message = rawErrorMessage(error);
+  if (isTinyCloudUploadRejected(error)) {
+    logVoiceNoteError("TinyCloud upload rejected", error);
+    return TINYCLOUD_UPLOAD_REJECTED_MESSAGE;
+  }
   if (isTinyCloudNetworkFailure(error)) {
-    // The access-control variant can include a credential-bearing URL. Keep the raw diagnostic useful,
-    // but never pass an Error object or an unredacted URL to the log.
+    // Keep credential-bearing URLs out of the native console.
     logVoiceNoteError("TinyCloud network failure", error);
     return TINYCLOUD_NETWORK_FAILURE_MESSAGE;
   }
+  logPipelineError("voice note", error);
   return message;
 }
 
@@ -250,7 +253,7 @@ export type SaveOutcome =
   | { kind: "discarded"; cleanupError: string | null }
   | { kind: "held"; reason: "signed-out" | "legacy" | "unowned" | "other-account" }
   | { kind: "in-flight" }
-  | { kind: "failed"; failure: string; failureKind: "offline" | "timeout" | "quota" | "auth" | "server" | "source" | "other"; failureCause: unknown };
+  | { kind: "failed"; failure: string; failureKind: "offline" | "rejected" | "timeout" | "quota" | "auth" | "server" | "source" | "other"; failureCause: unknown };
 
 function failedOutcome(error: unknown): Extract<SaveOutcome, { kind: "failed" }> {
   if (errorCode(error) === "ROW_LEDGER_FAILED") {
@@ -527,7 +530,7 @@ export function classifyNoteFailure(error: unknown): NoteFailure["kind"] {
   }
   const explicitKind = chain.map((item) => item && typeof item === "object"
     ? (item as { failureKind?: unknown }).failureKind : undefined)
-    .find((kind) => kind === "offline" || kind === "timeout" || kind === "quota" || kind === "auth"
+    .find((kind) => kind === "offline" || kind === "rejected" || kind === "timeout" || kind === "quota" || kind === "auth"
       || kind === "server" || kind === "source" || kind === "other");
   if (explicitKind) return explicitKind as NoteFailure["kind"];
   const codes = chain.map((item) => errorCode(item)?.toUpperCase() ?? "");
@@ -543,6 +546,7 @@ export function classifyNoteFailure(error: unknown): NoteFailure["kind"] {
   if (chain.some((item) => item instanceof VoiceNoteSaveTimeout
     || (item && typeof item === "object" && (item as { name?: unknown }).name === "VoiceNoteSaveTimeout"))
     || codes.some((code) => code === "SPACE_LANE_QUEUE_TIMEOUT" || code === "VOICE_NOTE_OPERATION_TIMEOUT" || /timeout|timed out/i.test(code))) return "timeout";
+  if (chain.some(isTinyCloudUploadRejected)) return "rejected";
   if (chain.some(isTinyCloudNetworkFailure) || codes.includes("NETWORK_ERROR")
     || messages.some((message) => /offline|network|failed to fetch|load failed/i.test(message))) return "offline";
   return "other";
@@ -615,7 +619,7 @@ export interface PendingNote {
   startedAt: number;
   durationMs: number;
   /** This note failed its latest save attempt, so its Recent row must not imply it's still saving. */
-  failed?: { kind: "offline" | "timeout" | "quota" | "auth" | "server" | "source" | "other"; message: string };
+  failed?: { kind: "offline" | "rejected" | "timeout" | "quota" | "auth" | "server" | "source" | "other"; message: string };
   held?: "signed-out" | "other-account" | "legacy" | "unowned";
   upload?: { state: "waiting" | "uploading" | "retrying"; bytes: number; total: number };
   waitingBehind?: number;

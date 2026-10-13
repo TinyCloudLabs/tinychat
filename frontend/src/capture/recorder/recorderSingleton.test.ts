@@ -42,15 +42,20 @@ test("App mounts RecorderProvider exactly once above the auth gate", () => {
   const ready = app.slice(app.indexOf(") : isReady && tcw ? ("), app.indexOf("<BootSurface"));
   expect(app.indexOf("<RecorderProvider")).toBeLessThan(app.indexOf(") : isReady && tcw ? ("));
   expect(ready).toContain("<RecorderShell");
-  expect(app).toContain("!isReady && <RecordingOverlay />");
+  expect(app).toContain("shouldMountRecordingOverlay({ voiceNotesInApp, isReady, deviceCapture,");
   expect(app).not.toContain("voiceNoteOpen");
   expect(app).not.toContain("QuickVoiceNote");
   expect(app).not.toContain("LiveEdge");
 });
 
-test("offline local home consumes the same recorder above the auth gate", () => {
+test("the standalone overlay remains mounted when native sign-in replaces the device shell", () => {
   const app = readFileSync(join(SRC, "App.tsx"), "utf8");
-  expect(app).not.toContain("<OfflineVoiceNotes");
-  expect(app).toContain("offlineRecorder ? <LocalCaptureHome did={did} offline");
-  expect(app).toContain("signedOutLocalHome ? <LocalCaptureHome onSignIn={authAction}");
+  expect(app).toContain("deviceCapture && !nativeSignInFlow.screenShown ? (");
+  expect(app).toContain("nativeSignInScreenShown: nativeSignInFlow.screenShown, shareTokenPresent: !!shareToken }) && <RecordingOverlay />");
+});
+
+test("signed-out capture uses the same recorder shell above the auth gate", () => {
+  const app = readFileSync(join(SRC, "App.tsx"), "utf8");
+  expect(app).toContain("capture={<DeviceCaptureSurface");
+  expect(app).not.toContain("LocalCaptureHome");
 });

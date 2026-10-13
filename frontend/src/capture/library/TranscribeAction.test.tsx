@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
+import { PlatformContext } from "@/lib/platform";
 import { createFakeOnDeviceStt } from "@/lib/voiceNotes/fakeOnDeviceStt";
 import { __setVoiceNotesForTests, VoiceNotes, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { __resetOnDeviceSttStoreForTests, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
@@ -48,12 +49,12 @@ afterEach(async () => {
   __setOnDeviceSttForTests(originals.onDeviceStt);
 });
 
-async function mount(props: { read: PhoneRead; transcription?: VoiceNoteTranscriptionProps; label?: string; durationSecs?: number | null }) {
+async function mount(props: { read: PhoneRead; transcription?: VoiceNoteTranscriptionProps; label?: string; durationSecs?: number | null; platform?: "ios" | "tauri" }) {
   cleanupDom = installDom();
   const host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
-  await act(async () => root!.render(createElement(MemoryRouter, null, createElement(TranscribeActionFor, { noteId: NOTE, transcription: props.transcription, durationSecs: props.durationSecs === undefined ? 60 : props.durationSecs, read: props.read, label: props.label }))));
+  await act(async () => root!.render(createElement(MemoryRouter, null, createElement(PlatformContext.Provider, { value: props.platform ?? "ios" }, createElement(TranscribeActionFor, { noteId: NOTE, transcription: props.transcription, durationSecs: props.durationSecs === undefined ? 60 : props.durationSecs, read: props.read, label: props.label })) )));
   return host;
 }
 const click = (element: Element) => act(async () => { element.dispatchEvent(new window.MouseEvent("click", { bubbles: true })); });
@@ -116,6 +117,13 @@ describe("the Transcribe action", () => {
   test("a failed Private check offers Check again", async () => {
     const host = await mount({ read: nowhere, transcription: transcription({ availability: "failed" }) });
     expect(host.textContent).toContain("Couldn't check right now");
+    expect(host.textContent).toContain("Check again");
+  });
+
+  test("a native status failure offers Check again before Private consent", async () => {
+    const host = await mount({ read: nowhere, transcription: transcription({ availability: "failed", consented: false,
+      checkErrorCode: "native_status_failed" }) });
+    expect(host.textContent).toContain("Couldn't check this phone's file upload");
     expect(host.textContent).toContain("Check again");
   });
 
@@ -225,6 +233,12 @@ describe("the Transcribe action", () => {
     expect(host.querySelector('[data-testid="transcribe-consent"]')).not.toBeNull();
     await click(host.querySelector('[data-testid="transcribe-consent-enable"]')!);
     expect(calls).toEqual(["consent", "transcribe"]);
+  });
+
+  test("Mac Library Transcribe shows the Mac disclosure", async () => {
+    const host = await mount({ read: nowhere, platform: "tauri", transcription: transcription({ consented: false }) });
+    await click(button(host));
+    expect(host.querySelector('[data-testid="transcribe-consent"]')?.textContent).toContain("from this Mac to TinyCloud Private Transcription");
   });
 
   test("not now leaves the consent question without starting anything", async () => {

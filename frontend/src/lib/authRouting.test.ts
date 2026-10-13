@@ -54,8 +54,9 @@ describe("App wires the private-surface guard to the settled state", () => {
     expect(app).not.toContain("if (!isReady && (showSettings || showConnectors))");
     // Which screens redirect is shell/routes.ts's rule (Settings and
     // Connectors; never Capture); where they go is the platform's home.
-    expect(app).toContain("if (authSettledSignedOut && redirectsWhenSignedOut(screen))");
-    const guard = app.slice(app.indexOf("if (authSettledSignedOut && redirectsWhenSignedOut(screen))"));
+    const guardCondition = 'if (authSettledSignedOut && (screen.destination === "connectors" || (!deviceCapture && redirectsWhenSignedOut(screen))))';
+    expect(app).toContain(guardCondition);
+    const guard = app.slice(app.indexOf(guardCondition));
     expect(guard.slice(0, guard.indexOf("}, ["))).toContain("navigate(homePath(platform), { replace: true });");
     expect(app).toContain("isAuthSettledSignedOut(state)");
   });

@@ -108,11 +108,12 @@ import {
   subscribeBackgroundDrainRecord,
 } from "./chat/useBackgroundDrain";
 import { TranscriberLibrarySyncProvider } from "./chat/useTranscriberLibrarySync";
-import { LocalCaptureHome } from "./capture/local/LocalCaptureHome";
+import { DeviceCaptureSurface, DeviceCaptureSettings } from "./capture/DeviceCaptureSurface";
 import { PendingVoiceNotesSaver } from "./chat/PendingVoiceNotesSaver";
 import { VoiceNotes } from "./lib/voiceNotes/nativeVoiceNotes";
 import { captureCapabilities, captureEngineAvailable } from "./lib/voiceNotes/captureEngine";
 import { RecordingOverlay } from "./capture/recorder/RecordingOverlay";
+import { shouldMountRecordingOverlay } from "./capture/recorder/recordingOverlayVisibility";
 import { handoffBeforeCredentialClear, withCaptureDeadline } from "./lib/voiceNotes/accountHandoff";
 import { createVoiceNotePipeline } from "./lib/voiceNotes/voiceNotePipeline";
 import { nextTransitionGen } from "./lib/voiceNotes/accountHandoff";
@@ -170,6 +171,8 @@ export function App() {
   const signOutInFlightRef = useRef(false);
   const restoredRef = useRef(false);
   const restoreInFlightRef = useRef(false);
+  const restoreRetryAfterRef = useRef(0);
+  const restoreRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nativeRenewalRef = useRef<NativeRenewal | null>(null);
   const signOutRef = useRef<(options?: { terminal?: string }) => Promise<void>>(undefined);
   const selectionControllerRef = useRef<ModelSelectionController | null>(null);
@@ -433,6 +436,7 @@ export function App() {
         const boot = await restoreNativeAtBoot(nativeConfig,
           sessionStoreRef.current.hasSession() && !sessionStoreRef.current.isExpired());
         if (boot.kind === "restored") {
+          restoreRetryAfterRef.current = 0;
           if (boot.verified) sessionStoreRef.current.setSession(boot.verified.token, boot.verified.expiresIn, boot.verified.address);
           setNativeSessionActive(true);
           const nativeTcw = await startNativeRenewal(boot.tcw, boot.session, boot.openkey, boot.renewAt);
@@ -450,8 +454,15 @@ export function App() {
           return;
         }
         if (boot.kind === "unavailable") {
-          setError("Can't reach Exo right now. You're still signed in.");
+          restoreRetryAfterRef.current = Date.now() + 15_000;
+          setError("Exo can't connect right now. Your recordings stay on this phone.");
           setState("offline");
+          return;
+        }
+        if (boot.kind === "failed") {
+          restoreRetryAfterRef.current = Date.now() + 15_000;
+          setError("Couldn't restore your session. Sign in again to continue syncing.");
+          setState("recoverableError");
           return;
         }
         if (boot.kind === "configuration") {
@@ -547,13 +558,28 @@ export function App() {
     void restoreSession();
   }, [restoreSession]);
 
-  // "Exo will reconnect when you're back online" is a promise — keep it. Only
-  // while a held session is waiting; event-driven, nothing polls.
+  // A failed restore retries on a real lifecycle event, with a minimum gap.
   useEffect(() => {
-    if (state !== "offline") return;
-    const onOnline = () => void restoreSession();
+    if (state !== "offline" && state !== "recoverableError") return;
+    const onOnline = () => {
+      if (restoreRetryTimerRef.current) return;
+      const remaining = restoreRetryAfterRef.current - Date.now();
+      if (remaining > 0) {
+        restoreRetryTimerRef.current = setTimeout(() => {
+          restoreRetryTimerRef.current = null;
+          if (navigator.onLine !== false) void restoreSession();
+        }, remaining);
+      } else if (navigator.onLine !== false) void restoreSession();
+    };
+    const onVisible = () => { if (document.visibilityState === "visible") onOnline(); };
     window.addEventListener("online", onOnline);
-    return () => window.removeEventListener("online", onOnline);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      document.removeEventListener("visibilitychange", onVisible);
+      if (restoreRetryTimerRef.current) clearTimeout(restoreRetryTimerRef.current);
+      restoreRetryTimerRef.current = null;
+    };
   }, [state, restoreSession]);
 
   useEffect(() => {
@@ -979,25 +1005,15 @@ export function App() {
   // still running from the offline screen is picked up there, never restarted.
   const voiceNotesInApp = useMemo(() => captureEngineAvailable(), []);
 
-  // TC-515: with the session held but out of reach (`offline`), the app can
-  // still record a voice note; it stays on the phone until the session is back.
-  // Not signed out: there is no account to save to then. "Try again" (`booting`)
-  // keeps the recorder on screen, so a running recording stays visible.
-  const [offlineCapture, setOfflineCapture] = useState(false);
-  useEffect(() => {
-    if (state === "offline") setOfflineCapture(true);
-    else if (state !== "booting") setOfflineCapture(false);
-  }, [state]);
   const capabilities = captureCapabilities();
-  const offlineRecorder = voiceNotesInApp && capabilities.offlineRecorder && !LOCAL_VALIDATION && offlineCapture;
-  const signedOutLocalHome = voiceNotesInApp && capabilities.offlineRecorder && !LOCAL_VALIDATION && state === "unauthenticated" && error === null
-    && globalThis.localStorage?.getItem("exo.signIn.bypassed") === "1";
+  const deviceCapture = voiceNotesInApp && capabilities.offlineRecorder && !LOCAL_VALIDATION &&
+    (state === "offline" || state === "unauthenticated" || state === "recoverableError");
   const settleSignedOut = useCallback(() => {
     setError(null);
     setState("unauthenticated");
   }, []);
   const nativeSignInFlow = useNativeSignIn({
-    native: nativeSignIn, state, localHome: signedOutLocalHome, signIn, restoreSession, settleSignedOut,
+    native: nativeSignIn, state, localHome: deviceCapture && state !== "recoverableError", signIn, restoreSession, settleSignedOut,
   });
   const authAction = nativeSignInFlow.authAction;
 
@@ -1027,10 +1043,10 @@ export function App() {
   // breaks the share/bookmark/reload contract these routes exist for. While
   // authentication is still deciding the address is held and BootSurface shows.
   useEffect(() => {
-    if (authSettledSignedOut && redirectsWhenSignedOut(screen)) {
+    if (authSettledSignedOut && (screen.destination === "connectors" || (!deviceCapture && redirectsWhenSignedOut(screen)))) {
       navigate(homePath(platform), { replace: true });
     }
-  }, [authSettledSignedOut, screen, platform, navigate]);
+  }, [authSettledSignedOut, deviceCapture, screen, platform, navigate]);
 
   // Forward a retired address (LEGACY_REDIRECTS) to its canonical home.
   // `replace` keeps the dead route out of history, so Back does not bounce
@@ -1209,18 +1225,29 @@ export function App() {
             />
             </TranscriberLibrarySyncProvider>
           </AgentAccessProvider>
+        ) : deviceCapture && !nativeSignInFlow.screenShown ? (
+          <RecorderShell
+            screen={screen}
+            platform={platform}
+            pendingMeetings={0}
+            chat={<BootSurface state={state} error={error} onAction={authAction} />}
+            capture={<DeviceCaptureSurface did={did} offline={state === "offline"} error={error}
+              onSignIn={authAction} onRetry={() => void restoreSession()} screen={screen} />}
+            connectors={null}
+            settings={<DeviceCaptureSettings onBack={onBack} onSignIn={authAction} offline={state === "offline"} />}
+            about={null}
+          />
         ) : (
           <main className="h-full overflow-y-auto pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
-            {offlineRecorder ? <LocalCaptureHome did={did} offline onRetry={authAction} />
-              : nativeSignInFlow.screenShown
+            {nativeSignInFlow.screenShown
                 ? <NativeSignIn state={state} error={error} onSignIn={(hints) => void signIn(hints)}
                   onClose={nativeSignInFlow.onClose} />
-              : signedOutLocalHome ? <LocalCaptureHome onSignIn={authAction} />
                 : <BootSurface state={state} error={error} onAction={authAction} />}
           </main>
         )}
       </div>
-      {voiceNotesInApp && !isReady && <RecordingOverlay />}
+      {shouldMountRecordingOverlay({ voiceNotesInApp, isReady, deviceCapture,
+        nativeSignInScreenShown: nativeSignInFlow.screenShown, shareTokenPresent: !!shareToken }) && <RecordingOverlay />}
       {captureFailClosed && <div role="alert" className="fixed inset-x-4 bottom-4 z-[60] rounded-xl border bg-card p-4 shadow-lg">
         Recordings are being kept unassigned until Exo can update this phone.
         <button type="button" className="ml-3 underline" onClick={() => void signOut()}>Retry</button>

@@ -7,12 +7,7 @@ import { useMemo } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import {
-  AssemblyAiError,
-  createAssemblyAiClient,
-  createHostedAssemblyAiClient,
-  readAssemblyAiKey,
-} from "@/lib/assemblyai";
+import { AssemblyAiError, createHostedAssemblyAiClient } from "@/lib/assemblyai";
 import type { UploadDeps } from "@/lib/audioUpload";
 import { createLocalTranscriptSaver } from "@/lib/localTranscriber";
 import { buildPtxUploadOrigin, createPrivateCloudApi, createPrivateCloudJob, type PrivateCloudApi } from "@/lib/privateCloud";
@@ -28,24 +23,18 @@ export interface UploadDepsInput {
   origin: string | null;
   api: PrivateCloudApi;
   hosted: HostedAssemblyAiClient;
-  /** Reads the user's own AssemblyAI key from the vault (unlocking it); injectable for tests. */
-  readKey?: typeof readAssemblyAiKey;
 }
 
-export function buildUploadDeps({ tcw, backendUrl, sessionStore, origin, api, hosted, readKey = readAssemblyAiKey }: UploadDepsInput): UploadDeps {
+export function buildUploadDeps({ tcw, backendUrl, sessionStore, origin, api, hosted }: UploadDepsInput): UploadDeps {
   const space = scheduledSpace(tcw);
   return {
     tcw: space,
     // Not gated on capabilities: a job started earlier must still resume; the relay itself refuses new ones.
     privateCloud:
       origin !== null ? { api, origin, create: (request) => createPrivateCloudJob(backendUrl, { sessionStore }, request) } : null,
-    // Exactly the account the job was started with: a job never moves between TinyCloud's and the user's.
     assemblyAiClient: async (mode) => {
       if (mode === "hosted") return hosted;
-      const read = await readKey(tcw);
-      if (!read.ok) throw new Error(read.message);
-      if (read.data === null) throw new AssemblyAiError("invalid-key", "No AssemblyAI API key is saved. Add one in Settings → Transcription.");
-      return createAssemblyAiClient(read.data, { backend: { url: backendUrl, sessionStore } });
+      throw new AssemblyAiError("rejected", "This older upload used an AssemblyAI key. Choose the file again to use Powerful through Exo's server.");
     },
     save: createLocalTranscriptSaver(space),
   };

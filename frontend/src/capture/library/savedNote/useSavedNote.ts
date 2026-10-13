@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SavedNoteRecord, SavedNoteStore } from "./savedNoteStore";
 
@@ -21,7 +22,7 @@ export interface SavedNote {
 }
 
 const message = (error: unknown) =>
-  error instanceof Error ? error.message : String(error);
+  readableError(error);
 
 /** The note of recording `id`: read once, rewritten by `save`, with every failure kept for the screen to show. */
 export function useSavedNote(id: string, store: SavedNoteStore): SavedNote {

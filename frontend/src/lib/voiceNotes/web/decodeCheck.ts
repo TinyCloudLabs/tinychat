@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 // Checks that a recovered recording's bytes are playable media before recovery publishes them.
 // A killed tab never ran MediaRecorder.stop(), so the recording may lack what a decoder needs.
 //
@@ -84,4 +85,4 @@ export function browserDecodeCheck(scope: DecodeScope = globalThis as DecodeScop
   };
 }
 
-const explain = (error: unknown) => (error instanceof Error ? `${error.name}: ${error.message}` : String(error));
+const explain = (error: unknown) => error instanceof Error ? `${error.name}: ${error.message}` : readableError(error);

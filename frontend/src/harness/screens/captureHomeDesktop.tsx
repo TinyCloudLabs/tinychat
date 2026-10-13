@@ -2,11 +2,17 @@
 // idle, docked, after a stop, with capture issues and empty, in the Tauri app and (idle) on the web. The
 // harness build has no env, so each screen turns the Soft skin on. The interactive screen runs the real
 // recorder over the fake native plugin on the Library fixture, for test/capture-home-desktop.e2e.test.ts.
-import { useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { SheetDialog } from "@/capture/recorder/final/SheetDialog";
+import { Button } from "@/components/ui/button";
+import { SYSTEM_AUDIO_BODY, SYSTEM_AUDIO_MIC_ONLY, SYSTEM_AUDIO_RECORD, SYSTEM_AUDIO_TITLE } from "@/capture/home/desktop/systemAudioDisclosure";
+import "@/capture/home/desktop/systemAudioStart.css";
 
 import { showToast } from "@/capture/recorder/final/desktop/Toasts";
 import type { RecorderValue } from "@/capture/recorder/RecorderProvider";
 import { PlatformContext } from "@/lib/platform";
+import { registerDesktopCaptureExtras } from "@/lib/voiceNotes/desktopCaptureExtras";
+import { createFakeDesktopCaptureExtras } from "@/lib/voiceNotes/fakeDesktopCaptureExtras";
 import { __setOnDeviceSttForTests } from "@/lib/voiceNotes/onDeviceStt";
 import { LIBRARY_ROWS, libraryTcw } from "../fixtures/library";
 import { createRuntimeShim } from "../runtimeShim";
@@ -50,6 +56,20 @@ const IDLE: Partial<RecorderValue> = {
   ready: true,
   phase: "idle",
 };
+
+function SystemAudioDisclosureHome() {
+  const titleId = useId();
+  const descriptionId = useId();
+  const opener = useRef<HTMLElement | null>(null);
+  return <>
+    <Home recorder={IDLE} />
+    <div className="dch-system-audio" data-testid="system-audio-disclosure">
+      <SheetDialog role="dialog" titleId={titleId} descriptionId={descriptionId} title={SYSTEM_AUDIO_TITLE} description={SYSTEM_AUDIO_BODY} onCancel={() => {}} returnFocus={opener}>
+        <div className="dch-system-audio-actions"><Button type="button" variant="outline" data-initial="">{SYSTEM_AUDIO_MIC_ONLY}</Button><Button type="button">{SYSTEM_AUDIO_RECORD}</Button></div>
+      </SheetDialog>
+    </div>
+  </>;
+}
 
 const DOCKED: Partial<RecorderValue> = {
   ...IDLE,
@@ -194,6 +214,7 @@ const interactiveScreen: HarnessScreen = {
   interactive: true,
   render: () => {
     installNativePlugin();
+    registerDesktopCaptureExtras(createFakeDesktopCaptureExtras({ systemAudio: true, systemAudioConsent: false }).extras);
     __setOnDeviceSttForTests(ON_DEVICE_STT);
     return <Home />;
   },
@@ -215,6 +236,7 @@ export const captureHomeDesktopScreens: HarnessScreen[] = [
     readyWhen: CONFIRM,
   },
   screen("idle", () => <Home recorder={IDLE} />),
+  { ...screen("system-audio-disclosure", () => <SystemAudioDisclosureHome />), readyWhen: '[data-testid="system-audio-disclosure"]' },
   screen("idle-web", () => <Home recorder={IDLE} />, "web"),
   screen("docked", () => <Home recorder={DOCKED} />),
   screen("docked-web", () => <Home recorder={DOCKED} />, "web"),

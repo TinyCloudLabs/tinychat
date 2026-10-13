@@ -1,3 +1,4 @@
+import { logPipelineError } from "@/lib/debugLog";
 // Fills `NotePipelineInput` (notePipeline.ts) from the live stores and runs the one action its blocker offers.
 // `buildNotePipelineInput` is pure: it takes the stores' snapshots as plain facts, so a test composes fake stores
 // and asserts what the selector says. The hooks only gather the facts (`useSyncExternalStore` over each store).
@@ -310,6 +311,7 @@ export interface PipelineActionEnv {
   saveNow: () => void | Promise<void>;
   /** The app's sign-in entry; absent where there is none. */
   signIn: (() => void | Promise<void>) | null;
+  reviewConsent?: () => void;
   /** Reads the facts that failed to read again. */
   reread: () => void;
 }
@@ -333,6 +335,10 @@ export async function runPipelineAction(kind: PipelineActionKind, env: PipelineA
       case "sign-in":
         if (env.signIn === null) return "Signing in isn't available here.";
         await env.signIn();
+        return null;
+      case "review-consent":
+        if (!env.reviewConsent) return "Private transcription isn't available here.";
+        env.reviewConsent();
         return null;
       case "get-model":
         return await downloadOnDeviceModel();
@@ -391,7 +397,7 @@ export async function runPipelineAction(kind: PipelineActionKind, env: PipelineA
         }
     }
   } catch (caught) {
-    console.error("[NotePipeline] action failed", kind, env.id, caught);
+    logPipelineError("[NotePipeline] action failed", caught);
     return messageOf(caught);
   }
 }
@@ -445,7 +451,7 @@ function useNativeNotes(ids: readonly string[], rowVersion: number): NativeRead 
           setRead({ key, notes: next, error: null });
         },
         (caught: unknown) => {
-          console.error("[NotePipeline] Could not read the phone's note ledger", caught);
+          logPipelineError("[NotePipeline] Could not read the phone's note ledger", caught);
           if (alive) setRead((previous) => ({ key, notes: previous.key === key ? previous.notes : new Map(), error: `The phone's note list wouldn't open: ${messageOf(caught)}` }));
         },
       );
@@ -457,7 +463,7 @@ function useNativeNotes(ids: readonly string[], rowVersion: number): NativeRead 
     ];
     for (const sub of subs) {
       sub.catch((caught: unknown) => {
-        console.error("[NotePipeline] Could not follow on-device transcription", caught);
+        logPipelineError("[NotePipeline] Could not follow on-device transcription", caught);
         if (alive) setListenError({ key, message: `Updates from the phone failed to start: ${messageOf(caught)}` });
       });
     }
@@ -491,7 +497,7 @@ function useLocalNotes(ids: readonly string[], reread: unknown): ReadonlyMap<str
           const note = await loadNote(id);
           return [id, { note: note === null ? null : { editedAt: note.editedAt, hasContent: note.md.trim().length > 0 || note.moments.length > 0 } }];
         } catch (caught) {
-          console.error("[NotePipeline] Could not read the local note", id, caught);
+          logPipelineError("[NotePipeline] Could not read the local note", caught);
           return [id, { error: `The note's text wouldn't open on this phone: ${messageOf(caught)}` }];
         }
       }),
@@ -578,7 +584,7 @@ function useSpaceRows(wanted: readonly { id: string; tcw: TinyCloudWeb; signal: 
         if (changed) setRows(new Map(cache.current));
       };
       readSpaceRows(tcw, due.map((entry) => entry.id)).then(settle, (caught: unknown) => {
-        console.error("[NotePipeline] Could not read the notes' rows in the space", due.map((entry) => entry.id), caught);
+        logPipelineError("[NotePipeline] Could not read the notes' rows in the space", caught);
         // A call that ran out of time says so as a read; a wait in the lane that ran out keeps its own cause.
         const reason = caught instanceof SpaceLaneQueueWaitTimeout
           ? caught.message
@@ -619,7 +625,7 @@ function useAutoNoteSync(candidates: readonly { tcw: TinyCloudWeb; id: string; k
       if (autoSync.started.has(key)) continue;
       autoSync.started.add(key);
       syncRecordingNote(tcw, id)
-        .catch((caught: unknown) => { console.error("[NotePipeline] Syncing the note failed", id, caught); })
+        .catch((caught: unknown) => { logPipelineError("[NotePipeline] Syncing the note failed", caught); })
         .finally(() => {
           autoSync.settled.add(key);
           for (const listener of [...autoSync.listeners]) listener();
@@ -649,7 +655,7 @@ function useAutoTranscriptSync(candidates: readonly { tcw: TinyCloudWeb; id: str
         if (abandoned) { autoSync.started.delete(key); autoSync.settled.delete(key); }
         else autoSync.settled.add(key);
       }, (caught: unknown) => {
-        console.error("[NotePipeline] Syncing the on-device transcript failed", id, caught);
+        logPipelineError("[NotePipeline] Syncing the on-device transcript failed", caught);
         autoSync.settled.add(key);
         }).finally(notifyAutoSync);
     }
@@ -898,6 +904,7 @@ function useNotePipelinesWithLedger(entries: readonly { id: string; source: Note
       latestTranscription: () => latest.current.recorder.transcription,
       saveNow: rec.retryPending,
       signIn: rec.signIn,
+      reviewConsent: rec.reviewPrivateConsent,
       reread: () => latest.current.reread(),
     }).then((reason) => {
       if (!live.current) return;

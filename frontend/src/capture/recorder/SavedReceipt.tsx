@@ -27,6 +27,7 @@ import { receiptMetaText } from "./recorderCopy";
 import { RouteLine, type RouteNode } from "./RouteLine";
 
 export interface SavedReceiptProps {
+  device?: "phone" | "mac";
   outcome: "local" | "saved" | "failed";
   localUpload?: "uploading" | "held" | "in-flight" | null;
   /** The saved note (absent after a failure). */
@@ -211,6 +212,7 @@ function ReceiptStepper(props: { view: NotePipelineView }) {
 }
 
 export function SavedReceipt(props: SavedReceiptProps) {
+  const deviceName = props.device === "mac" ? "Mac" : "phone";
   const saved = props.outcome === "saved";
   const pipelineView = props.outcome === "failed" ? null : props.pipeline ?? null;
   const stepperShown = pipelineView !== null && !pipelineView.pipeline.done;
@@ -256,7 +258,7 @@ export function SavedReceipt(props: SavedReceiptProps) {
   const route = honestSourceRoute(props.route, onDevice.kind === "transcribed" && onDevice.transcript.outcome !== "no_speech");
   return (
     <section
-      aria-label="Saved on this phone"
+      aria-label={`Saved on this ${deviceName}`}
       data-testid="voice-note-receipt"
       data-outcome={props.outcome}
       className={cn("flex flex-col gap-3 rounded-xl border border-border p-4 motion-safe:animate-rise-in", props.className)}
@@ -276,7 +278,7 @@ export function SavedReceipt(props: SavedReceiptProps) {
       </div>
       {localUrl && <MeetingAudioPlayer url={localUrl} durationSecs={props.saved ? props.saved.durationMs / 1000 : null} onPlayingChange={props.onPlayingChange} />}
       {localError && <p role="alert" className="text-callout text-destructive">{localError}</p>}
-      {!localUrl && !localError && props.saved && <p role="status" className="text-meta text-muted-foreground">Getting this phone&apos;s audio…</p>}
+      {!localUrl && !localError && props.saved && <p role="status" className="text-meta text-muted-foreground">Getting this {deviceName}&apos;s audio…</p>}
       {stepperShown ? <ReceiptStepper view={pipelineView} /> : pipelineWaiting ? null : (
         <>
           <RouteLine nodes={route} landed={saved} />
@@ -288,15 +290,15 @@ export function SavedReceipt(props: SavedReceiptProps) {
           {saved && <p className="text-meta text-muted-foreground">Saved to your TinyCloud space</p>}
         </>
       )}
-      {saved && !stepperShown && props.transcribing && <p className="text-meta text-muted-foreground">Transcribing in private cloud…</p>}
+      {saved && !stepperShown && props.transcribing && <p className="text-meta text-muted-foreground">{props.transcriber === "assemblyai" ? "Transcribing with Powerful…" : "Transcribing in private cloud…"}</p>}
       {saved && props.held && <p role="status" className="text-meta text-muted-foreground" data-testid="voice-note-held">{props.held}</p>}
       {saved && props.privateOutcome && (
         <p className="text-meta text-muted-foreground" data-testid="voice-note-private-done">
-          {props.privateOutcome === "no_speech" ? "No speech was found in this note." : "Transcribed in private cloud"}
+          {props.privateOutcome === "no_speech" ? "No speech was found in this note." : props.transcriber === "assemblyai" ? "Transcribed with Powerful" : "Transcribed in private cloud"}
         </p>
       )}
       {props.privateFailure && !stepperShown && (
-        <p role="alert" className="text-callout text-destructive" data-testid="voice-note-private-failed">Couldn&apos;t transcribe in private cloud: {props.privateFailure}</p>
+        <p role="alert" className="text-callout text-destructive" data-testid="voice-note-private-failed">{props.transcriber === "assemblyai" ? "Powerful couldn't finish: " : "Couldn't transcribe in private cloud: "}{props.privateFailure}</p>
       )}
       {needsModel && (
         <NeedsOnDeviceModel

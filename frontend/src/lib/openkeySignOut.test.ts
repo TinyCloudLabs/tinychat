@@ -107,7 +107,7 @@ describe("signOutOpenKeySession", () => {
       const warn = spyOn(console, "warn").mockImplementation(() => undefined);
       try {
         await expect(signOutOpenKeySession(failing, () => failing)).resolves.toEqual({ status: "unverified" });
-        expect(warn.mock.calls).toEqual([["[OpenKey native] OpenKey sign-out: Error"]]);
+        expect(warn.mock.calls).toEqual([["[OpenKey native] OpenKey sign-out: Error message=offline, token=[redacted]"]]);
       } finally {
         warn.mockRestore();
       }

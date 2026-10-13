@@ -595,19 +595,40 @@ describe("native boot", () => {
     expect(flow.storage.saved.at(-1)?.record.tinycloudSession?.delegationCid).toBe(delegation.delegationCid);
   });
 
-  test("network, server, unavailable and unexpected boot errors preserve the SDK session", async () => {
-    for (const error of [
-      new OpenKeyNativeError("NETWORK", "offline"),
-      new OpenKeyNativeError("SERVER", "error", 503),
-      new OpenKeyNativeError("UNAVAILABLE", "offline"),
-      new Error("unexpected restore failure"),
-    ]) {
+  test("only network errors show offline; other failures preserve the session and offer sign-in", async () => {
+    for (const [error, kind] of [
+      [new OpenKeyNativeError("NETWORK", "offline"), "unavailable"],
+      [new OpenKeyNativeError("SERVER", "error", 503), "failed"],
+      [new OpenKeyNativeError("UNAVAILABLE", "busy"), "failed"],
+      [new Error("unexpected restore failure"), "failed"],
+    ] as const) {
       resetNativeOpenKeyClientForTests();
       const flow = makeFlow();
       flow.openkey.current = async () => { throw error; };
-      expect((await restoreNativeAtBoot(config, true, flow.deps)).kind).toBe("unavailable");
+      expect((await restoreNativeAtBoot(config, true, flow.deps)).kind).toBe(kind);
       expect(flow.order).not.toContain("signOut");
     }
+  });
+
+  test("restores a recent tee.node delegation without a host-migration renewal", async () => {
+    const flow = makeFlow();
+    const recent = { ...delegation, issuedAt: new Date(Date.now() - 5_000).toISOString(), expiresAt: new Date(Date.now() + 295_000).toISOString() };
+    flow.openkey.current = async () => ({ tokens: { accessToken: "a", refreshToken: "r" }, delegation: recent, sessionKey });
+    const boot = await restoreNativeAtBoot(config, true, flow.deps);
+    expect(boot.kind).toBe("restored");
+    expect(flow.order).not.toContain("renew");
+    expect(flow.activation[0]?.host).toBe(HOST);
+    expect(flow.restore[0]?.config.tinycloudHosts).toEqual([HOST]);
+  });
+
+  test("renews an expiring tee.node delegation on the same host", async () => {
+    const flow = makeFlow();
+    flow.openkey.current = async () => ({ tokens: { accessToken: "a", refreshToken: "r" }, delegation, sessionKey });
+    flow.openkey.renew = async () => ({ tokens: { accessToken: "a", refreshToken: "new" }, delegation, sessionKey });
+    const boot = await restoreNativeAtBoot(config, false, flow.deps);
+    expect(boot.kind).toBe("restored");
+    expect(flow.activation[0]?.host).toBe(HOST);
+    expect(flow.verify).toHaveLength(1);
   });
 
   test("classifies terminal and storage errors separately", async () => {
@@ -680,7 +701,7 @@ describe("error message mapping", () => {
     expect(nativeSignInErrorMessage("boom")).toMatch(/failed/i);
   });
 
-  test("logs an SDK code with its HTTP status and OAuth error, and a plain error's name", () => {
+  test("logs name, code, status and a redacted message", () => {
     const prior = console.warn;
     const lines: string[] = [];
     console.warn = (line: string) => { lines.push(line); };
@@ -697,16 +718,16 @@ describe("error message mapping", () => {
       console.warn = prior;
     }
     expect(lines).toEqual([
-      "[OpenKey native] sign-in: SERVER",
-      "[OpenKey native] sign-out: STORAGE",
-      "[OpenKey native] boot restore: INVALID_GRANT (HTTP 400 invalid_grant)",
-      "[OpenKey native] boot restore: SERVER (HTTP 502)",
-      "[OpenKey native] renew: SERVER (HTTP 400)",
-      "[OpenKey native] verify: Error",
+      "[OpenKey native] sign-in: OpenKeyNativeError code=SERVER message=secret detail",
+      "[OpenKey native] sign-out: OpenKeyNativeError code=STORAGE message=secret storage detail",
+      "[OpenKey native] boot restore: OpenKeyNativeError code=INVALID_GRANT status=400 serverError=invalid_grant message=invalid_grant: secret",
+      "[OpenKey native] boot restore: OpenKeyNativeError code=SERVER status=502 message=Renew failed: HTTP 502",
+      "[OpenKey native] renew: OpenKeyNativeError code=SERVER status=400 message=x",
+      "[OpenKey native] verify: Error message=verification failed",
     ]);
   });
 
-  test("never logs the message of a non-native error, whatever it carries", () => {
+  test("redacts credentials in non-native error messages", () => {
     const token = "rt_SYNTHETIC_TOKEN_IN_MESSAGE";
     const lines: string[] = [];
     const prior = console.warn;
@@ -720,8 +741,8 @@ describe("error message mapping", () => {
       console.warn = prior;
     }
     expect(lines).toEqual([
-      "[OpenKey native] sign-in: Error",
-      "[OpenKey native] restore: TypeError",
+      "[OpenKey native] sign-in: Error message=exchange failed for refresh_token=[redacted]",
+      "[OpenKey native] restore: TypeError message=Bearer [redacted]",
       "[OpenKey native] sign-in: unknown error",
       "[OpenKey native] sign-in: unknown error",
     ]);

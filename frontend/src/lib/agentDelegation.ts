@@ -88,7 +88,7 @@ export interface AgentSessionEnvelope {
   delegations: { memory: string; transcripts: string };
 }
 
-const DEFAULT_HOST = "https://node.tinycloud.xyz";
+const DEFAULT_HOST = "https://tee.node.tinycloud.xyz";
 const CSRF_HEADER = "X-Requested-With";
 const CSRF_VALUE = "XMLHttpRequest";
 

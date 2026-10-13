@@ -1,13 +1,15 @@
+import { readableError } from "@/lib/readableError";
 // The centre of the recorder: where this note's audio goes (plan §2.7). A
 // "Transcription" heading, Audio only · Local · Private when private cloud is offered
 // to this build and account, the route as a RouteLine, one short line, and a
 // link to How it works for the rest. Choosing Private the first time
-// asks once ("Use private cloud"); the full disclosure is on How it works.
+// asks once using the Private transcription disclosure.
 // Local never needs a sign-in or a network check: native capture defaults to it
 // already, and the only extra state to show is the model's download progress. Signed out, native
 // (CaptureEngine) forces on-device regardless of what's requested, so this control must too: only
 // "Local" is ever offered or shown selected — never "Audio only".
-import { useEffect, useId, useState, useSyncExternalStore } from "react";
+import { useContext, useEffect, useId, useState, useSyncExternalStore } from "react";
+import { PlatformContext } from "@/lib/platform";
 
 import { Button } from "@/components/ui/button";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
@@ -20,7 +22,7 @@ import { VoiceNotes, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNote
 import { downloadOnDeviceModel, onDeviceSttStore, onDeviceModelLine } from "@/lib/voiceNotes/onDeviceSttStore";
 import { isAppleSpeech, isOnDeviceReady, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { readDefaultTranscriber, setRecordingTranscriber } from "@/lib/voiceNotes/transcriberPreference";
-import { FINAL_COPY, TRANSCRIBER_NAME } from "./final/finalCopy";
+import { FINAL_COPY, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, privateConsentBody, privateConsentDevice, TRANSCRIBER_NAME } from "./final/finalCopy";
 import type { RecorderValue } from "./RecorderProvider";
 import type { SetTranscriberResult } from "./voiceNoteRecorderController";
 import { RouteLine, voiceNoteRoute } from "./RouteLine";
@@ -58,7 +60,7 @@ export async function requestRecordingRoute(
     result = await request();
   } catch (caught) {
     console.error("[Recorder] Could not change the transcription route", caught);
-    outcome.notify(`Could not change the transcription to ${ROUTE_NAME[next]}: ${caught instanceof Error ? caught.message : String(caught)}`);
+    outcome.notify(`Could not change the transcription to ${ROUTE_NAME[next]}: ${readableError(caught)}`);
     return;
   }
   switch (result) {
@@ -141,6 +143,7 @@ export function TranscriptionRouteControl(props: {
   className?: string;
 }) {
   const { transcription, signedIn, recorder } = props;
+  const platform = useContext(PlatformContext);
   const headingId = useId();
   const offered = signedIn && transcription?.availability === "available";
   const consented = transcription?.consented ?? false;
@@ -212,7 +215,10 @@ export function TranscriptionRouteControl(props: {
   }
   else if (offered && consented) line = `${ROUTE_NAME["private-cloud"]} transcribes your notes.`;
   else if (transcription?.availability === "checking" && consented) line = `Checking ${ROUTE_NAME["private-cloud"]}…`;
-  else if (transcription?.availability === "failed" && consented) line = `${ROUTE_NAME["private-cloud"]} isn't available right now.`;
+  else if (transcription?.availability === "failed" && (consented || transcription.checkErrorCode === "native_status_failed"))
+    line = transcription.checkErrorCode === "native_status_failed"
+      ? "Couldn't check this phone's file upload."
+      : `${ROUTE_NAME["private-cloud"]} isn't available right now.`;
   else line = "Audio only.";
 
   return (
@@ -228,7 +234,7 @@ export function TranscriptionRouteControl(props: {
       {askingNow ? (
         <div className="flex flex-col gap-3" data-testid="voice-note-transcription-consent">
           <p className="text-callout text-muted-foreground">
-            After you stop, TinyCloud Private Transcription turns your note into text.
+            <strong>{PRIVATE_CONSENT_TITLE}</strong> {privateConsentBody(privateConsentDevice(platform))}
           </p>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
             <Button type="button" onClick={() => {
@@ -240,8 +246,9 @@ export function TranscriptionRouteControl(props: {
                 notify: setNotice,
               });
             }} data-testid="voice-note-transcription-enable">
-              Use private cloud
+              {PRIVATE_CONSENT_ACTION}
             </Button>
+            <Button type="button" variant="outline" onClick={() => setAsking(false)}>Not now</Button>
             <HowItWorksLink section="transcription" />
           </div>
         </div>
@@ -250,7 +257,10 @@ export function TranscriptionRouteControl(props: {
           <p className="min-w-0 text-callout text-muted-foreground" data-testid="transcription-route-line">
             {line}
           </p>
-          {transcription?.availability === "failed" && consented && (
+          {transcription?.availability === "failed" && transcription.checkErrorCode === "native_status_failed" && route === "on-device" && (
+            <p className="min-w-0 text-callout text-muted-foreground">Couldn&apos;t check this phone&apos;s file upload.</p>
+          )}
+          {transcription?.availability === "failed" && (consented || transcription.checkErrorCode === "native_status_failed") && (
             <Button type="button" variant="outline" size="sm" onClick={transcription.onRecheck} data-testid="voice-note-transcription-recheck">
               Check again
             </Button>
@@ -273,7 +283,7 @@ export function TranscriptionRouteControl(props: {
                 setNotice(null);
                 OnDeviceStt.cancelDownload().catch((caught: unknown) => {
                   console.error("[OnDeviceStt] cancelDownload failed", caught);
-                  setNotice(`Could not cancel the download: ${caught instanceof Error ? caught.message : String(caught)}`);
+                  setNotice(`Could not cancel the download: ${readableError(caught)}`);
                 });
               }}>
               Cancel

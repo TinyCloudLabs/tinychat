@@ -1,0 +1,28 @@
+.dch-system-audio { position: fixed; inset: 0; z-index: 50; }
+.dch-system-audio .pr-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgb(0 0 0 / 0.45);
+}
+.dch-system-audio .pr-sheet {
+  position: fixed;
+  left: 50%;
+  right: auto;
+  top: 50%;
+  bottom: auto;
+  z-index: 51;
+  translate: -50% -50%;
+  width: min(392px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  padding: 24px;
+  border-radius: 14px;
+  background: var(--solid, hsl(var(--popover)));
+  color: var(--ink, hsl(var(--popover-foreground)));
+  outline: none;
+  text-align: left;
+}
+.dch-system-audio .pr-sheet h2 { margin: 0 0 10px; font-size: 20px; line-height: 1.25; }
+.dch-system-audio .pr-sheet p { margin: 0 0 18px; line-height: 1.5; }
+.dch-system-audio-actions { display: flex; flex-wrap: wrap; gap: 8px; }

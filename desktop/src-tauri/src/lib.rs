@@ -49,7 +49,7 @@ pub fn run() {
     let builder = {
         use tauri::Manager;
 
-        let system_audio = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let system_audio = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let meter = std::sync::Arc::new(std::sync::Mutex::new(
             recorder::audio_provider::Meter::default(),
         ));
@@ -102,6 +102,8 @@ pub fn run() {
             recorder::extras::recorder_models_progress,
             recorder::extras::recorder_system_audio_get,
             recorder::extras::recorder_system_audio_set,
+            recorder::extras::recorder_system_audio_consent_get,
+            recorder::extras::recorder_system_audio_consent_set,
             recorder::extras::recorder_auto_save_to_space_get,
             recorder::extras::recorder_auto_save_to_space_set,
         ]);
@@ -139,6 +141,8 @@ pub fn run() {
             recorder::extras::recorder_models_progress,
             recorder::extras::recorder_system_audio_get,
             recorder::extras::recorder_system_audio_set,
+            recorder::extras::recorder_system_audio_consent_get,
+            recorder::extras::recorder_system_audio_consent_set,
             recorder::extras::recorder_auto_save_to_space_get,
             recorder::extras::recorder_auto_save_to_space_set,
             smoke::exo_desktop_smoke,

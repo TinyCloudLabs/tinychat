@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 import type { PluginListenerHandle } from "@capacitor/core";
 import type {
   AudioInput, CaptureOptions, CaptureStatus, MicStateEvent, MissingAudioSpan, VoiceNoteRecording, VoiceNotesPlugin,
@@ -69,7 +70,7 @@ export interface DesktopVoiceNotesOptions {
 }
 
 const copy = <T>(value: T): T => structuredClone(value);
-const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+const errorText = (error: unknown) => readableError(error);
 function ptxCommandError(error: unknown, correlationId?: string): PrivateCloudError | VoiceNoteAudioError {
   const code = errorText(error);
   if (code === "audio_read_failed" || code === "audio_not_ready" || code === "audio_size_mismatch" || code === "not_found") {
@@ -409,10 +410,12 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
           await whisperQueue?.beforeCapture();
           const defaults = await store.getCaptureDefaults();
           const signedIn = defaults.status === "signed_in" && !!defaults.accountDid;
+          const transcriber = signedIn ? startOptions?.transcriber ?? defaults.transcriber
+            : capabilities.desktopWhisper ? "on-device" : "off";
           const captureOptions: CaptureOptions = {
-            transcriber: signedIn ? startOptions?.transcriber ?? defaults.transcriber : capabilities.desktopWhisper ? "on-device" : "off",
-            identifySpeakers: signedIn && (startOptions?.transcriber ?? defaults.transcriber) !== "on-device"
-              ? startOptions?.identifySpeakers ?? defaults.identifySpeakers : false,
+            transcriber,
+            identifySpeakers: signedIn && (transcriber === "private-cloud" || transcriber === "assemblyai")
+              && (startOptions?.identifySpeakers ?? defaults.identifySpeakers),
           };
           id = newId();
           const releaseSession = await store.locks.hold(sessionLock(id));

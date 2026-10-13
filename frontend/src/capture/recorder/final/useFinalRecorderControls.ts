@@ -17,8 +17,8 @@ import { openSettingsFailedLine } from "./shell/micDeniedCopy";
 import { shellForPlatform } from "./shellCapabilities";
 import {
   identifySpeakersControl,
+  modeStop,
   modeShortLabel,
-  MODE_STOPS,
 } from "./transcriptionModes";
 import { useAudioInputs, type AudioInputsSource } from "./useAudioInputs";
 import { useSilencedSince } from "./useSilencedSince";
@@ -116,6 +116,7 @@ export function useFinalRecorderControls({
     elapsedMs,
     inputName: input?.name ?? null,
     silencedSinceMs,
+    device: shell === "desktop" ? "mac" : "phone",
   });
 
   const [modesOpen, setModesOpen] = useState(defaultOpen === "modes");
@@ -187,7 +188,7 @@ export function useFinalRecorderControls({
           },
         };
 
-  const stop = MODE_STOPS.find((s) => s.id === choice.mode)!;
+  const stop = modeStop(choice.mode);
   const sheetOpen = discardOpen || choice.asking;
   const mustSave = view.emphasis === "stop";
   const inputName = input?.name ?? "Microphone";
@@ -200,6 +201,7 @@ export function useFinalRecorderControls({
   const speakers = identifySpeakersControl(
     choice.mode,
     choice.identifySpeakers,
+    choice.privateDiarization,
   );
 
   const openSettings = () => {

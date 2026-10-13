@@ -8,10 +8,9 @@
 // here; this view shows it, or offers Continue when it waits for the user.
 //
 // The route control says where the file goes in one line, and How it works
-// has the rest. The first private cloud upload on a device says, in one
-// sentence, what Private cloud does before it sends anything.
+// has the rest. Private uploads use the account's versioned voice-note disclosure.
 
-import { useCallback, useEffect, useState, useSyncExternalStore, type FC, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type FC, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -26,11 +25,7 @@ import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { ResponsiveSheetBody, ResponsiveSheetFooter } from "@/components/ui/responsive-sheet";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import {
-  readAssemblyAiKey,
-  readAssemblyAiKeyHint,
-  readAssemblyAiKeyMode,
   type AssemblyAiKeyMode,
-  type AssemblyAiKeyStatus,
   type HostedAssemblyAiCapabilities,
 } from "@/lib/assemblyai";
 import {
@@ -42,11 +37,13 @@ import {
   type UploadEngine,
   type UploadState,
 } from "@/lib/audioUpload";
-import { isSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
-import { secretsAvailable, SECRETS_UNAVAILABLE_IN_APP_MESSAGE } from "@/lib/openkeyNative";
 import type { PrivateCloudCapabilities } from "@/lib/privateCloud";
 import { PATHS } from "@/shell/routes";
 import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
+import { privateConsentBody, privateConsentDevice } from "@/capture/recorder/final/finalCopy";
+import { useRecorder } from "@/capture/recorder/RecorderProvider";
+import { localStorageVoiceNoteConsentStore } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { PlatformContext } from "@/lib/platform";
 import { FilePicker } from "./FilePicker";
 
 /** Whether an engine can take a new upload, and if not, why (one line). */
@@ -57,9 +54,6 @@ export type EngineStatus =
 
 /** Private cloud's and TinyCloud's AssemblyAI account's size limit (C1); capabilities may lower it. */
 const PRIVATE_CLOUD_MAX_BYTES = 120_960_000;
-
-/** This device agreed to send uploads to private cloud (the one-sentence consent, asked once). */
-export const UPLOAD_PRIVATE_CONSENT_KEY = "exo.upload.privateCloudConsent";
 
 export const ROUTE_LABELS: Readonly<Record<UploadEngine, string>> = {
   "private-cloud": TRANSCRIBER_NAME["private-cloud"],
@@ -94,7 +88,7 @@ export function fileProblem(
   if (privateCloudContentType(file) === null) {
     return engine === "private-cloud"
       ? "Private transcription takes MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio. Choose Powerful, or convert the file."
-      : "TinyCloud's AssemblyAI account takes MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio. Use your own AssemblyAI key, or convert the file.";
+      : "Powerful takes MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio. Convert the file and try again.";
   }
   if (file.size > maxBytes) return `${who} takes files up to ${formatBytes(maxBytes)} (and 2 hours).`;
   return null;
@@ -105,12 +99,16 @@ export function routeText(engine: UploadEngine, assemblyAiMode: AssemblyAiKeyMod
   if (engine === "private-cloud") return "Transcribed by TinyCloud Private Transcription. A copy of the file stays in your space.";
   return assemblyAiMode === "hosted"
     ? "Sent through Exo's server to AssemblyAI under TinyCloud's account, then deleted there."
-    : "Sent from this device to AssemblyAI with your key, then deleted there.";
+    : "This older upload needs to be chosen again for Powerful.";
 }
 
-/** The one-sentence consent before a device's first private cloud upload. */
-export const PRIVATE_CONSENT_TEXT =
-  "Your file goes over an encrypted connection to TinyCloud Private Transcription, which sends short speech segments to Tinfoil for speech-to-text.";
+/** The shared Build 1 Private disclosure before an account's first upload. */
+export const PRIVATE_CONSENT_TEXT = privateConsentBody("browser");
+
+export function privateConsentAccountDid(did: string | null | undefined): string {
+  if (!did) throw Object.assign(new Error("Private consent requires an account DID."), { code: "private_consent_account_missing" as const });
+  return did;
+}
 
 function stageText(job: UploadState): string {
   const engine = ROUTE_LABELS[job.engine];
@@ -179,8 +177,9 @@ export interface AudioUploadViewProps {
   engines: Readonly<Record<UploadEngine, EngineStatus>>;
   /** Whose AssemblyAI account uploads to AssemblyAI use (Settings → Transcription). */
   assemblyAiMode?: AssemblyAiKeyMode;
-  /** This device has agreed to private cloud uploads; until then the consent sentence shows. */
+  /** This account has confirmed the current Private disclosure. */
   privateConsent?: boolean;
+  privateConsentText?: string;
   /** The checkbox as the user left it. */
   diarize: boolean;
   /** Why speaker identification can't be used with this engine, or null. */
@@ -212,6 +211,7 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
   engines,
   assemblyAiMode = "hosted",
   privateConsent = true,
+  privateConsentText = PRIVATE_CONSENT_TEXT,
   diarize,
   diarizeUnavailable,
   fileProblem: problem,
@@ -389,7 +389,7 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
           )}
           {status.state === "available" && (
             <p className="min-w-0 text-callout text-muted-foreground" data-testid={asking ? "upload-private-consent" : "upload-route-line"}>
-              {asking ? PRIVATE_CONSENT_TEXT : routeText(engine, assemblyAiMode)}
+              {asking ? privateConsentText : routeText(engine, assemblyAiMode)}
             </p>
           )}
           <HowItWorksLink section="uploads" />
@@ -433,34 +433,17 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
 export function assemblyAiStatus(
   mode: AssemblyAiKeyMode,
   hostedCaps: { state: "checking" } | { state: "ok"; caps: Pick<HostedAssemblyAiCapabilities, "hosted"> } | { state: "failed" },
-  keyStatus: AssemblyAiKeyStatus,
 ): EngineStatus {
-  if (mode === "own") {
-    // Native OpenKey sessions have no vault for the key.
-    if (!secretsAvailable()) {
-      return { state: "unavailable", reason: SECRETS_UNAVAILABLE_IN_APP_MESSAGE };
-    }
-    return keyStatus === "saved"
-      ? { state: "available" }
-      : { state: "unavailable", reason: "AssemblyAI with your own account needs your API key, saved in Settings → Transcription.", action: "settings" };
-  }
+  if (mode === "own") return { state: "unavailable", reason: "Choose this file again to use Powerful through Exo's server." };
   if (hostedCaps.state === "checking") return { state: "checking" };
   if (hostedCaps.state === "failed") return { state: "unavailable", reason: "Couldn't reach TinyCloud's AssemblyAI account.", action: "recheck" };
   return hostedCaps.caps.hosted
     ? { state: "available" }
     : {
         state: "unavailable",
-        reason: "TinyCloud's AssemblyAI account isn't available on this server. You can use your own AssemblyAI key instead.",
-        action: "settings",
+        reason: "Powerful isn't available on this server right now.",
+        action: "recheck",
       };
-}
-
-function readPrivateConsent(): boolean {
-  try {
-    return globalThis.localStorage?.getItem(UPLOAD_PRIVATE_CONSENT_KEY) === "1";
-  } catch {
-    return false;
-  }
 }
 
 export interface AudioUploadPanelProps {
@@ -475,6 +458,11 @@ export interface AudioUploadPanelProps {
 /** Stateful owner: engine availability, the picked file and choices, and the app-wide upload runner. */
 export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, sessionStore, onDone, layout }) => {
   const navigate = useNavigate();
+  const recorder = useRecorder();
+  const platform = useContext(PlatformContext);
+  const consentStore = useMemo(() => {
+    return localStorageVoiceNoteConsentStore(privateConsentAccountDid(tcw.did));
+  }, [tcw.did]);
   const job = useSyncExternalStore(uploadRunner.subscribe, uploadRunner.snapshot, uploadRunner.snapshot);
   const paused = useSyncExternalStore(pausedUpload.subscribe, pausedUpload.snapshot, pausedUpload.snapshot);
   const { deps, origin, api, hosted } = useUploadDeps(tcw, backendUrl, sessionStore);
@@ -483,7 +471,8 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
   const [file, setFile] = useState<File | null>(null);
   const [engine, setEngine] = useState<UploadEngine>(readDefaultUploadEngine);
   const [diarize, setDiarize] = useState(true);
-  const [privateConsent, setPrivateConsent] = useState(readPrivateConsent);
+  const [privateConsent, setPrivateConsent] = useState(() => consentStore.get());
+  useEffect(() => setPrivateConsent(consentStore.get()), [tcw.did]);
 
   // Private: this build needs a PTX origin, and the backend must answer 200 for this account.
   const [caps, setCaps] = useState<{ state: "checking" } | { state: "ok"; caps: PrivateCloudCapabilities } | { state: "failed" }>(
@@ -503,10 +492,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
     };
   }, [api, origin, capsRound]);
 
-  // AssemblyAI: TinyCloud's account when the backend has it (capabilities), or the user's own saved key.
-  const [assemblyAiMode] = useState<AssemblyAiKeyMode>(() =>
-    secretsAvailable() ? readAssemblyAiKeyMode() : "hosted",
-  );
+  const assemblyAiMode: AssemblyAiKeyMode = "hosted";
   const [hostedCaps, setHostedCaps] = useState<{ state: "checking" } | { state: "ok"; caps: HostedAssemblyAiCapabilities } | { state: "failed" }>({
     state: "checking",
   });
@@ -523,19 +509,6 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
     };
   }, [hosted, assemblyAiMode, capsRound]);
 
-  // The own key: read without prompting only when the vault is already open.
-  const [keyStatus, setKeyStatus] = useState<AssemblyAiKeyStatus>(readAssemblyAiKeyHint);
-  useEffect(() => {
-    if (!isSecretsUnlocked(tcw)) return;
-    let cancelled = false;
-    void readAssemblyAiKey(tcw).then((r) => {
-      if (!cancelled && r.ok) setKeyStatus(r.data !== null ? "saved" : "none");
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [tcw]);
-
   const privateStatus: EngineStatus =
     origin === null
       ? { state: "unavailable", reason: "Private transcription isn't set up in this version of Exo yet. Use Powerful instead." }
@@ -544,7 +517,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
         : caps.state === "failed"
             ? { state: "unavailable", reason: "Couldn't reach private transcription.", action: "recheck" }
             : { state: "available" };
-  const assemblyStatus = assemblyAiStatus(assemblyAiMode, hostedCaps, keyStatus);
+  const assemblyStatus = assemblyAiStatus(assemblyAiMode, hostedCaps);
 
   const privateDiarization = caps.state === "ok" && caps.caps.diarization === true;
   const diarizeUnavailable =
@@ -560,18 +533,15 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
 
   const onTranscribe = useCallback(() => {
     if (file === null) return;
-    // Transcribe under the consent sentence is the agreement; it is asked once per device.
+    // The upload and recorder share one account-scoped, versioned Private consent.
     if (engine === "private-cloud" && !privateConsent) {
-      try {
-        localStorage.setItem(UPLOAD_PRIVATE_CONSENT_KEY, "1");
-      } catch {
-        // best effort: the sentence shows again next time
-      }
+      consentStore.set(true);
+      recorder.transcription?.onConsent();
       setPrivateConsent(true);
     }
     uploadRunner.start(deps, { file, engine, diarize: diarize && diarizeUnavailable === null, assemblyAiMode });
     setFile(null);
-  }, [deps, file, engine, diarize, diarizeUnavailable, assemblyAiMode, privateConsent]);
+  }, [deps, file, engine, diarize, diarizeUnavailable, assemblyAiMode, privateConsent, consentStore, recorder.transcription]);
 
   return (
     <AudioUploadView
@@ -582,7 +552,8 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
       engine={engine}
       engines={{ "private-cloud": privateStatus, assemblyai: assemblyStatus }}
       assemblyAiMode={assemblyAiMode}
-      privateConsent={privateConsent}
+      privateConsent={privateConsent || recorder.transcription?.consented === true}
+      privateConsentText={privateConsentBody(privateConsentDevice(platform))}
       diarize={diarize}
       diarizeUnavailable={diarizeUnavailable}
       fileProblem={fileProblem(file, engine, maxBytes, assemblyAiMode)}

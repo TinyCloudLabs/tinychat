@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 import {
   createContext,
   useContext,
@@ -9,6 +10,7 @@ import {
 } from "react";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { hapticLight } from "@/lib/haptics";
+import { getDesktopCaptureExtras } from "@/lib/voiceNotes/desktopCaptureExtras";
 import { ModesCard } from "../ModesCard";
 import { PrivacyScale } from "../PrivacyScale";
 import { recorderSizing, type RecorderLayout } from "../shellCapabilities";
@@ -28,7 +30,7 @@ import { useFinalRecorderControls } from "../useFinalRecorderControls";
 import { MicDeniedAction } from "../shell/MicDeniedAction";
 import type { TranscriberApi } from "../useTranscriptionChoice";
 import { ViaMenu } from "../ViaMenu";
-import { FINAL_COPY } from "../finalCopy";
+import { FINAL_COPY, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, POWERFUL_CONSENT_ACTION, POWERFUL_CONSENT_BODY, POWERFUL_CONSENT_TITLE, privateConsentBody } from "../finalCopy";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { openCaptureSettings } from "./openCaptureSettings";
 import { DesktopRing } from "./DesktopRing";
@@ -165,6 +167,25 @@ export function DesktopRecorder({
   // The view replaces a dock, a ribbon or the loading surface, which held focus, so focus moves into it.
   useEffect(() => root.current?.focus({ preventScroll: true }), []);
   const hasNotes = (recorder.note?.md ?? "").length > 0;
+  const [systemAudioCaptured, setSystemAudioCaptured] = useState(false);
+  const [systemAudioError, setSystemAudioError] = useState<Error | null>(null);
+  useEffect(() => {
+    if (view.ring !== "live") {
+      setSystemAudioCaptured(false);
+      return;
+    }
+    const extras = getDesktopCaptureExtras();
+    if (!extras) {
+      setSystemAudioError(Object.assign(new Error("Could not read system audio status."), { code: "system_audio_status_unavailable" as const }));
+      return;
+    }
+    let active = true;
+    void Promise.all([extras.systemAudio.get(), extras.systemAudioConsent.get()]).then(
+      ([enabled, consented]) => { if (active) { setSystemAudioCaptured(enabled && consented); setSystemAudioError(null); } },
+      (error: unknown) => { if (active) setSystemAudioError(Object.assign(new Error("Could not read system audio status.", { cause: error }), { code: "system_audio_status_read_failed" as const })); },
+    );
+    return () => { active = false; };
+  }, [view.ring]);
   // Local with no model: the toast says why, and ⚙︎ Capture settings opens behind the minimised recorder.
   const chooseMode = (id: Parameters<typeof choose>[0]) => {
     const reason = choose(id);
@@ -179,7 +200,7 @@ export function DesktopRecorder({
         await recorder.minimiseSheet();
       } catch (caught) {
         console.error("[Recorder] Could not minimise the recorder to show Capture settings", caught);
-        showToast(`Could not show Capture settings: ${caught instanceof Error ? caught.message : String(caught)}`);
+        showToast(`Could not show Capture settings: ${readableError(caught)}`);
       }
     })();
     return reason;
@@ -212,6 +233,7 @@ export function DesktopRecorder({
         {said}
       </p>
       <Toasts />
+      {systemAudioError && <p role="alert" data-error-code={(systemAudioError as Error & { code: string }).code}>{systemAudioError.message}</p>}
 
       <div className="pr-main dr-main" inert={dialogOpen}>
         <div className="pr-top">
@@ -253,6 +275,9 @@ export function DesktopRecorder({
         >
           {view.statusLine}
         </div>
+        {view.ring === "live" && systemAudioCaptured && (
+          <p className="dr-system-audio" data-testid="desktop-system-audio-label">+ this Mac's audio</p>
+        )}
         {onOpenNotes && (
           <button
             type="button"
@@ -309,6 +334,7 @@ export function DesktopRecorder({
                     mode={choice.mode}
                     shell={shell}
                     identifySpeakers={choice.identifySpeakers}
+                    privateDiarization={choice.privateDiarization}
                     opener={opener}
                     onClose={closeModes}
                     onChoose={(id) => {
@@ -466,10 +492,10 @@ export function DesktopRecorder({
           role="dialog"
           titleId={`${ids}-ct`}
           descriptionId={`${ids}-cd`}
-          title="Use private cloud?"
-          description="After you stop, TinyCloud Private Transcription turns your note into text."
+          title={choice.askingMode === "powerful" ? POWERFUL_CONSENT_TITLE : PRIVATE_CONSENT_TITLE}
+          description={choice.askingMode === "powerful" ? POWERFUL_CONSENT_BODY : privateConsentBody("Mac")}
           keep={{
-            label: "Use private cloud",
+            label: choice.askingMode === "powerful" ? POWERFUL_CONSENT_ACTION : PRIVATE_CONSENT_ACTION,
             onPress: choice.confirmConsent,
           }}
           other={{

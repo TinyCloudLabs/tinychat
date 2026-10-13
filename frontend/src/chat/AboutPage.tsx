@@ -8,6 +8,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
 
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
+import { FINAL_COPY } from "@/capture/recorder/final/finalCopy";
 import { ABOUT_SECTIONS, type AboutSectionId } from "@/lib/about";
 import { VOICE_NOTE_MAX_DURATION_MS } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
@@ -57,7 +58,8 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
         You choose how each recording or upload becomes text. In Settings you pick the default engine for uploaded
         audio; you can still pick the other engine for each upload.
       </p>
-      <Sub>Private cloud</Sub>
+      <Sub>Private transcription</Sub>
+      <p>{FINAL_COPY.modes.privateExplanation}</p>
       <p>
         Your audio is uploaded over an encrypted connection to TinyCloud Private Transcription, a dedicated confidential
         virtual machine on Phala Cloud. It sends short speech segments to Tinfoil for speech-to-text. Tinfoil processes
@@ -83,17 +85,12 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
         The desktop app can transcribe a local recording on-device with Whisper instead. Nothing leaves the machine until
         the transcript is saved to your space. Whisper runs after you stop, not live.
       </p>
-      <Sub>AssemblyAI, for uploads</Sub>
+      <Sub>Powerful · AssemblyAI</Sub>
       <List>
         <li>
-          With TinyCloud’s AssemblyAI account (the default, no key needed), your file goes to Exo’s server (a
+          For Powerful voice notes and uploads, your audio goes to Exo’s server (a
           confidential VM on Phala Cloud), which sends it to AssemblyAI under TinyCloud’s account and AssemblyAI’s
           terms. Exo deletes it at AssemblyAI after saving the transcript to your TinyCloud space.
-        </li>
-        <li>
-          With your own API key, the file goes from this device to AssemblyAI under your key and AssemblyAI’s terms; it
-          does not pass through TinyChat’s server. The key is kept in your encrypted TinyCloud secrets. To delete a
-          finished transcript at AssemblyAI, Exo’s server forwards the key there once; it never stores or logs it.
         </li>
         <li>AssemblyAI is not part of TinyCloud’s private transcription.</li>
       </List>
@@ -125,7 +122,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
       </p>
       <p>
         Private transcription and TinyCloud’s AssemblyAI account take MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio, up to
-        2 hours. With your own AssemblyAI key, most audio and video files work. Where the
+        2 hours. Where the
         file goes depends on the engine you choose.
       </p>
       <See section="transcription" />

@@ -50,15 +50,19 @@ describe("Tauri DesktopCaptureExtras", () => {
     bridge.replies.set("recorder_models_select", () => null);
     bridge.replies.set("recorder_system_audio_get", () => true);
     bridge.replies.set("recorder_system_audio_set", () => null);
+    bridge.replies.set("recorder_system_audio_consent_get", () => false);
+    bridge.replies.set("recorder_system_audio_consent_set", () => null);
     bridge.replies.set("recorder_auto_save_to_space_get", () => false);
     bridge.replies.set("recorder_auto_save_to_space_set", () => null);
-    const { models, systemAudio, autoSaveToSpace } = createTauriDesktopCaptureExtras(bridge);
+    const { models, systemAudio, systemAudioConsent, autoSaveToSpace } = createTauriDesktopCaptureExtras(bridge);
 
     expect(await models.list()).toEqual(rows);
     expect(await models.get()).toBe("QuantizedBase");
     await models.select("QuantizedBase");
     expect(await systemAudio.get()).toBe(true);
     await systemAudio.set(false);
+    expect(await systemAudioConsent.get()).toBe(false);
+    await systemAudioConsent.set(true);
     expect(await autoSaveToSpace.get()).toBe(false);
     await autoSaveToSpace.set(true);
     expect(bridge.log).toEqual([
@@ -67,6 +71,8 @@ describe("Tauri DesktopCaptureExtras", () => {
       'recorder_models_select:{"id":"QuantizedBase"}',
       "recorder_system_audio_get",
       'recorder_system_audio_set:{"enabled":false}',
+      "recorder_system_audio_consent_get",
+      'recorder_system_audio_consent_set:{"consented":true}',
       "recorder_auto_save_to_space_get",
       'recorder_auto_save_to_space_set:{"enabled":true}',
     ]);

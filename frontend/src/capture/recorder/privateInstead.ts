@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 // "Use Private instead" for a note committed to Local: private cloud has to be on offer, and the
 // note short enough for it. The on-device job is stopped first, and Private starts only once the
 // phone's own record of the note says that job has ended, so the two never both transcribe it.
@@ -30,7 +31,7 @@ async function readOnDeviceState(noteId: string): Promise<{ state: string | unde
     return { state: recording.stt?.state };
   } catch (caught) {
     console.error("[OnDeviceStt] reading the note around cancel failed", noteId, caught);
-    return { failure: `Could not confirm the on-device transcription stopped: ${caught instanceof Error ? caught.message : String(caught)}` };
+    return { failure: `Could not confirm the on-device transcription stopped: ${readableError(caught)}` };
   }
 }
 
@@ -52,7 +53,7 @@ async function waitForOnDeviceToEnd(noteId: string, wait: StopWait): Promise<str
         return transcript ? FINISHED : null;
       } catch (caught) {
         console.error("[OnDeviceStt] reading the transcript after cancel failed", noteId, caught);
-        return `Could not confirm the on-device transcription stopped: ${caught instanceof Error ? caught.message : String(caught)}`;
+        return `Could not confirm the on-device transcription stopped: ${readableError(caught)}`;
       }
     }
     if (Date.now() >= deadline) return "The on-device transcription is still stopping. Try again in a moment.";

@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 import {
   useCallback,
   useContext,
@@ -50,10 +51,10 @@ import {
 import {
   modeShortLabel,
   identifySpeakersControl,
-  MODE_STOPS,
+  modeStop,
   type ModeId,
 } from "./transcriptionModes";
-import { FINAL_COPY } from "./finalCopy";
+import { FINAL_COPY, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, POWERFUL_CONSENT_ACTION, POWERFUL_CONSENT_BODY, POWERFUL_CONSENT_TITLE, privateConsentBody, privateConsentDevice } from "./finalCopy";
 import { useAudioInputs, type AudioInputsSource } from "./useAudioInputs";
 import { useSilencedSince } from "./useSilencedSince";
 import { MicDeniedAction } from "./shell/MicDeniedAction";
@@ -121,7 +122,8 @@ export function PhoneRecorder({
   notesViewSeed,
 }: PhoneRecorderProps) {
   const recorder = useRecorder();
-  const shell = shellForPlatform(useContext(PlatformContext));
+  const platform = useContext(PlatformContext);
+  const shell = shellForPlatform(platform);
   const theme = useResolvedTheme() === "dark" ? "night" : "day";
   const { phase, mic } = recorder;
 
@@ -374,7 +376,7 @@ export function PhoneRecorder({
       console.error("[Recorder] Could not mark this moment", error);
       showToast(
         NOTES_COPY.momentFailed(
-          error instanceof Error ? error.message : String(error),
+          readableError(error),
         ),
       );
     },
@@ -605,7 +607,7 @@ export function PhoneRecorder({
           },
         };
 
-  const stop = MODE_STOPS.find((s) => s.id === choice.mode)!;
+  const stop = modeStop(choice.mode);
   const sheetOpen = discardOpen || choice.asking || notesOpen;
   const mustSave = view.emphasis === "stop";
   const inputName = input?.name ?? "Microphone";
@@ -618,6 +620,7 @@ export function PhoneRecorder({
   const speakers = identifySpeakersControl(
     choice.mode,
     choice.identifySpeakers,
+    choice.privateDiarization,
   );
 
   const openSettings = () => {
@@ -864,6 +867,7 @@ export function PhoneRecorder({
                 mode={choice.mode}
                 shell={shell}
                 identifySpeakers={choice.identifySpeakers}
+                privateDiarization={choice.privateDiarization}
                 opener={opener}
                 onClose={closeModes}
                 onChoose={(id) => {
@@ -1088,8 +1092,8 @@ export function PhoneRecorder({
           role="dialog"
           titleId={`${ids}-ct`}
           descriptionId={`${ids}-cd`}
-          title="Use private cloud?"
-          description="After you stop, TinyCloud Private Transcription turns your note into text."
+          title={choice.askingMode === "powerful" ? POWERFUL_CONSENT_TITLE : PRIVATE_CONSENT_TITLE}
+          description={choice.askingMode === "powerful" ? POWERFUL_CONSENT_BODY : privateConsentBody(privateConsentDevice(platform))}
           onCancel={choice.dismissConsent}
           returnFocus={consentOpener}
           fallbackFocus={scale}
@@ -1100,7 +1104,7 @@ export function PhoneRecorder({
             data-initial=""
             onClick={choice.confirmConsent}
           >
-            Use private cloud
+            {choice.askingMode === "powerful" ? POWERFUL_CONSENT_ACTION : PRIVATE_CONSENT_ACTION}
           </button>
           <button
             type="button"

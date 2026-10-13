@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 // The one voice-note recorder, shared by every view of it: the full-page view,
 // the island, the rail and sidebar live controls and the header chip.
 // RecorderProvider calls useVoiceNoteRecorder once (a second controller would
@@ -6,11 +7,19 @@
 // and gives feedback: haptics, and a polite announcement of each change.
 //
 // StaticRecorderProvider serves a fixed value, for the screenshot harness.
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { Button } from "@/components/ui/button";
+import { PlatformContext } from "@/lib/platform";
+import { getDesktopCaptureExtras, type DesktopCaptureExtras } from "@/lib/voiceNotes/desktopCaptureExtras";
+import { chooseSystemAudio, needsSystemAudioDisclosure, SYSTEM_AUDIO_BODY, SYSTEM_AUDIO_MIC_ONLY, SYSTEM_AUDIO_RECORD, SYSTEM_AUDIO_TITLE } from "@/capture/home/desktop/systemAudioDisclosure";
+import { SheetDialog } from "./final/SheetDialog";
+import { PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, POWERFUL_CONSENT_ACTION, POWERFUL_CONSENT_BODY, POWERFUL_CONSENT_TITLE, privateConsentBody } from "./final/finalCopy";
+import { privateConsentDevice } from "./final/finalCopy";
+import { markPrivateConsentPrompted, privateConsentWasPrompted } from "./privateConsentPrompt";
+import "@/capture/home/desktop/systemAudioStart.css";
 import { hapticRecordStarted, hapticSaved, hapticWarning } from "@/lib/haptics";
 import { VOICE_NOTE_MAX_DURATION_MS, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
@@ -99,6 +108,7 @@ export interface RecorderValue {
   tcw: TinyCloudWeb | null;
   sheetOpen: boolean;
   record(): void;
+  reviewPrivateConsent(): void;
   stop(): void;
   pause(): void;
   resume(): void;
@@ -160,6 +170,10 @@ export interface RecorderProviderProps {
 }
 
 export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSaved, onAccountReady, pipeline, signedOut, onSignedOut, onSignIn, minimiseOnSignIn, children }: RecorderProviderProps) {
+  const platform = useContext(PlatformContext);
+  const disclosureTitleId = useId();
+  const disclosureDescriptionId = useId();
+  const device = platform === "tauri" ? "Mac" : "phone";
   const [configured, setConfigured] = useState<{ tcw: TinyCloudWeb; did: string | null } | null>(null);
   const [defaultsError, setDefaultsError] = useState<string | null>(null);
   const [defaultsAttempt, setDefaultsAttempt] = useState(0);
@@ -186,7 +200,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
         globalThis.localStorage?.setItem(key, String(written.transitionGen));
         if (active) { setDefaultsError(null); setConfigured({ tcw, did: tcw.did ?? null }); if (tcw.did) onAccountReady?.(tcw); }
       } catch (caught) {
-        if (active) setDefaultsError(`Could not set this phone's recording account: ${caught instanceof Error ? caught.message : String(caught)}`);
+        if (active) setDefaultsError(`Could not set this phone's recording account: ${readableError(caught)}`);
       }
     })();
     return () => { active = false; };
@@ -198,6 +212,11 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   const [receiptActionable, setReceiptActionable] = useState(false);
   const [receiptReady, setReceiptReadyState] = useState(false);
   const [momentFieldFocused, setMomentFieldFocused] = useState(false);
+  const [disclosure, setDisclosure] = useState<{ kind: "system-audio"; extras: DesktopCaptureExtras } | { kind: "private" | "powerful"; startAfter: boolean } | null>(null);
+  const [disclosureBusy, setDisclosureBusy] = useState(false);
+  const [disclosureError, setDisclosureError] = useState<string | null>(null);
+  const disclosureOpener = useRef<HTMLElement | null>(null);
+  const promptedAccounts = useRef(new Set<string>());
   const setReceiptReady = useCallback(() => setReceiptReadyState(true), []);
   // A new note's receipt starts unready again — each one waits for its own Play control (or
   // load error), not whatever the previous note left behind.
@@ -223,7 +242,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       setAnnouncement(recorderStatusText(state.phase, state.mic, null));
     } else if (before.outcome !== state.outcome && state.outcome === "local") {
       hapticSaved();
-      setAnnouncement("Saved on this phone");
+      setAnnouncement(`Saved on this ${device}`);
     } else if (before.outcome !== state.outcome && state.outcome === "failed") {
       hapticWarning();
       setAnnouncement(RECEIPT_KEPT);
@@ -268,11 +287,79 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
 
   useEffect(() => recorder.setOnPresent(() => setSheetOpen(true)), [recorder.setOnPresent]);
 
-  const record = useCallback(() => {
+  const beginRecording = useCallback(() => {
     setMomentFieldFocused(false);
     setSheetOpen(true);
     startRecording();
   }, [startRecording]);
+  const maybePromptPrivate = useCallback((startAfter: boolean) => {
+    const did = tcw?.did;
+    if (!did || !recorder.transcription || recorder.transcription.consented) return false;
+    if (promptedAccounts.current.has(did) || privateConsentWasPrompted(did)) return false;
+    promptedAccounts.current.add(did);
+    markPrivateConsentPrompted(did);
+    setDisclosure({ kind: "private", startAfter });
+    return true;
+  }, [tcw?.did, recorder.transcription]);
+  const maybePromptPowerful = useCallback((startAfter: boolean) => {
+    if (!tcw?.did || recorder.transcription?.powerfulConsented) return false;
+    setDisclosure({ kind: "powerful", startAfter });
+    return true;
+  }, [tcw?.did, recorder.transcription?.powerfulConsented]);
+  const afterSystemAudio = useCallback(() => {
+    if (recorder.transcriber.id === "private-cloud" && maybePromptPrivate(true)) return;
+    if (recorder.transcriber.id === "assemblyai" && maybePromptPowerful(true)) return;
+    beginRecording();
+  }, [beginRecording, maybePromptPrivate, maybePromptPowerful, recorder.transcriber.id]);
+  const record = useCallback(() => {
+    if (disclosureBusy || disclosure) return;
+    disclosureOpener.current = typeof document !== "undefined" && document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setDisclosureError(null);
+    if (platform !== "tauri") { afterSystemAudio(); return; }
+    setDisclosureBusy(true);
+    void (async () => {
+      try {
+        const extras = getDesktopCaptureExtras();
+        if (!extras) throw Object.assign(new Error("System audio consent is unavailable."), { code: "system_audio_consent_unavailable" as const });
+        if (await needsSystemAudioDisclosure(extras)) setDisclosure({ kind: "system-audio", extras });
+        else afterSystemAudio();
+      } catch (error) {
+        setDisclosureError(`Could not start recording: ${readableError(error)}`);
+      } finally { setDisclosureBusy(false); }
+    })();
+  }, [afterSystemAudio, disclosure, disclosureBusy, platform]);
+  const reviewPrivateConsent = useCallback(() => {
+    disclosureOpener.current = typeof document !== "undefined" && document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setDisclosureError(null);
+    setDisclosure({ kind: "private", startAfter: false });
+  }, []);
+  useEffect(() => {
+    const accountDid = tcw?.did;
+    const transcription = recorder.transcription;
+    if (!accountDid || !state.ready || state.phase !== "idle" || !transcription || transcription.consented || disclosure || disclosureBusy) return;
+    if (![...transcription.jobs.values()].some((job) => job.kind === "blocked")) return;
+    disclosureOpener.current = null;
+    maybePromptPrivate(false);
+  }, [tcw?.did, recorder.transcription, state.ready, state.phase, disclosure, disclosureBusy, maybePromptPrivate]);
+  const chooseAudio = useCallback((choice: "record" | "mic-only") => {
+    if (disclosure?.kind !== "system-audio" || disclosureBusy) return;
+    setDisclosureBusy(true);
+    void chooseSystemAudio(disclosure.extras, choice).then(() => {
+      setDisclosure(null);
+      afterSystemAudio();
+    }, (error: unknown) => setDisclosureError(`Could not save your choice: ${readableError(error)}`))
+      .finally(() => setDisclosureBusy(false));
+  }, [afterSystemAudio, disclosure, disclosureBusy]);
+  const closePrivate = useCallback((confirmed: boolean) => {
+    if (disclosure?.kind !== "private" && disclosure?.kind !== "powerful") return;
+    if (confirmed) {
+      if (disclosure.kind === "powerful") recorder.transcription?.onPowerfulConsent?.();
+      else recorder.transcription?.onConsent();
+    }
+    const startAfter = disclosure.startAfter;
+    setDisclosure(null);
+    if (startAfter && confirmed) beginRecording();
+  }, [beginRecording, disclosure, recorder.transcription]);
   const dismiss = useCallback(() => {
     setMomentFieldFocused(false);
     setSheetOpen(false);
@@ -333,6 +420,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       tcw,
       sheetOpen,
       record,
+      reviewPrivateConsent,
       stop: recorder.stop,
       pause: recorder.pause,
       resume: recorder.resume,
@@ -352,6 +440,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       minimiseSheet,
       openSheet,
       record,
+      reviewPrivateConsent,
       recorder.available,
       recorder.discard,
       recorder.dismissCaptureIssue,
@@ -385,6 +474,24 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   return (
     <RecorderContext.Provider value={value}>
       {children}
+      {disclosureError && !disclosure && <p role="alert">{disclosureError}</p>}
+      {disclosure && <div className="dch-system-audio" data-testid={disclosure.kind === "system-audio" ? "system-audio-disclosure" : disclosure.kind === "powerful" ? "powerful-consent-disclosure" : "private-consent-disclosure"}>
+        <SheetDialog role="dialog" titleId={disclosureTitleId} descriptionId={disclosureDescriptionId}
+          title={disclosure.kind === "system-audio" ? SYSTEM_AUDIO_TITLE : disclosure.kind === "powerful" ? POWERFUL_CONSENT_TITLE : PRIVATE_CONSENT_TITLE}
+          description={disclosure.kind === "system-audio" ? SYSTEM_AUDIO_BODY : disclosure.kind === "powerful" ? POWERFUL_CONSENT_BODY : privateConsentBody(privateConsentDevice(platform))}
+          onCancel={() => disclosure.kind === "system-audio" ? setDisclosure(null) : closePrivate(false)} returnFocus={disclosureOpener}>
+          {disclosureError && <p role="alert">{disclosureError}</p>}
+          <div className="dch-system-audio-actions">
+            {disclosure.kind === "system-audio" ? <>
+              <Button type="button" variant="outline" data-initial="" disabled={disclosureBusy} onClick={() => chooseAudio("mic-only")}>{SYSTEM_AUDIO_MIC_ONLY}</Button>
+              <Button type="button" disabled={disclosureBusy} onClick={() => chooseAudio("record")}>{SYSTEM_AUDIO_RECORD}</Button>
+            </> : <>
+              <Button type="button" variant="outline" data-initial="" onClick={() => closePrivate(false)}>Not now</Button>
+              <Button type="button" onClick={() => closePrivate(true)}>{disclosure.kind === "powerful" ? POWERFUL_CONSENT_ACTION : PRIVATE_CONSENT_ACTION}</Button>
+            </>}
+          </div>
+        </SheetDialog>
+      </div>}
       {defaultsError && <div role="alert" className="fixed inset-x-4 bottom-[max(1rem,env(safe-area-inset-bottom))] z-50 mx-auto flex max-w-xl items-center gap-3 rounded-xl bg-card p-4 text-callout text-card-foreground shadow-float">
         <span className="min-w-0 flex-1">{defaultsError}</span>
         <Button type="button" variant="outline" onClick={() => setDefaultsAttempt((n) => n + 1)}>Retry</Button>
@@ -457,6 +564,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       tcw: null,
       sheetOpen: false,
       record: noop,
+      reviewPrivateConsent: noop,
       stop: noop,
       pause: noop,
       resume: noop,

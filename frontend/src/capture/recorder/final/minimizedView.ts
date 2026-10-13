@@ -40,12 +40,14 @@ export function minimizedView(
   recorder: RecorderValue,
   elapsedMs: number,
   silencedSinceMs: number | null = null,
+  device: "phone" | "mac" = "phone",
 ): MinimizedView {
   const view = selectRecorderView(recorderState(recorder), {
     nowMs: Date.now(),
     elapsedMs,
     inputName: null,
     silencedSinceMs,
+    device,
   });
   const state =
     view.ring === "live"

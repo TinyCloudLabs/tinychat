@@ -432,16 +432,6 @@ describe("backend index middleware wiring", () => {
     expect(mount).toBeGreaterThan(INDEX.indexOf("applyRateLimiters(app)"));
   });
 
-  test("the AssemblyAI delete proxy mounts once, unconditionally, behind auth, CSRF and the transcriber limiter", () => {
-    // Two-space indent = the top level of main(), not inside any feature-flag branch.
-    const mount = INDEX.indexOf("\n  app.use(ASSEMBLYAI_DELETE_MOUNT, authMiddleware, createAssemblyAiDeleteRouter());");
-    expect(mount).toBeGreaterThan(-1);
-    expect(INDEX.match(/app\.use\(\s*ASSEMBLYAI_DELETE_MOUNT/g)).toHaveLength(1);
-    expect(mount).toBeGreaterThan(INDEX.indexOf(API_BODY_PARSER));
-    expect(mount).toBeGreaterThan(INDEX.indexOf("createCsrfMiddleware()"));
-    expect(mount).toBeGreaterThan(INDEX.indexOf("applyRateLimiters(app)"));
-  });
-
   test("hosted AssemblyAI mounts once, unconditionally, behind auth, and its parts skip the global JSON parser", () => {
     const mount = INDEX.indexOf("\n  app.use(ASSEMBLYAI_HOSTED_MOUNT, authMiddleware, createAssemblyAiHostedRouter(");
     expect(mount).toBeGreaterThan(-1);

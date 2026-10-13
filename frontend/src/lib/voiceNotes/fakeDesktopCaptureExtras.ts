@@ -14,6 +14,7 @@ export interface FakeDesktopCaptureExtrasOptions {
   /** Downloads already in flight, started elsewhere, with their progress (null: no byte yet). */
   downloading?: Partial<Record<WhisperModelId, number | null>>;
   systemAudio?: boolean;
+  systemAudioConsent?: boolean;
   autoSaveToSpace?: boolean;
 }
 
@@ -24,6 +25,8 @@ export type FakeCall =
   | "models.download"
   | "systemAudio.get"
   | "systemAudio.set"
+  | "systemAudioConsent.get"
+  | "systemAudioConsent.set"
   | "autoSaveToSpace.get"
   | "autoSaveToSpace.set";
 
@@ -49,6 +52,7 @@ export function createFakeDesktopCaptureExtras(
   const downloaded = new Set<WhisperModelId>(options.downloaded ?? []);
   let selected: WhisperModelId | null = options.selected ?? null;
   let systemAudio = options.systemAudio ?? false;
+  let systemAudioConsent = options.systemAudioConsent ?? false;
   let autoSaveToSpace = options.autoSaveToSpace ?? true;
   const calls: string[] = [];
   const failures = new Map<FakeCall, string>();
@@ -128,6 +132,16 @@ export function createFakeDesktopCaptureExtras(
       async set(on) {
         enter("systemAudio.set", on);
         systemAudio = on;
+      },
+    },
+    systemAudioConsent: {
+      async get() {
+        enter("systemAudioConsent.get");
+        return systemAudioConsent;
+      },
+      async set(consented) {
+        enter("systemAudioConsent.set", consented);
+        systemAudioConsent = consented;
       },
     },
     autoSaveToSpace: {

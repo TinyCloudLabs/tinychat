@@ -410,9 +410,11 @@ describe("App wiring (TC-514)", () => {
   });
 
   test("coming back online re-runs the restore, only while a session is held", () => {
-    const effect = restoreRegion.slice(restoreRegion.indexOf('if (state !== "offline") return;'));
+    const effect = restoreRegion.slice(restoreRegion.indexOf('if (state !== "offline" && state !== "recoverableError") return;'));
+    expect(effect).toContain('if (state !== "offline" && state !== "recoverableError") return;');
     expect(effect).toContain('window.addEventListener("online", onOnline);');
     expect(effect).toContain('window.removeEventListener("online", onOnline);');
-    expect(effect).toContain("const onOnline = () => void restoreSession();");
+    expect(effect).toContain("if (navigator.onLine !== false) void restoreSession();");
+    expect(effect).toContain('document.addEventListener("visibilitychange", onVisible);');
   });
 });

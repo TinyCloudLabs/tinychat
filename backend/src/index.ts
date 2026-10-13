@@ -52,7 +52,6 @@ import { createConnectorMeetingsRouter } from "./routes/connector-meetings.js";
 import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oauth.js";
 import { createTranscriberRouter } from "./routes/transcriber.js";
 import { createTranscriberWebhookRouter } from "./routes/transcriber-webhook.js";
-import { ASSEMBLYAI_DELETE_MOUNT, createAssemblyAiDeleteRouter } from "./routes/assemblyai-delete.js";
 import { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter } from "./routes/assemblyai-hosted.js";
 import {
   DEFAULT_MAX_CONCURRENT_UPLOADS,
@@ -128,7 +127,7 @@ import { localValidationFromEnv, localValidationGuard } from "./local-validation
 import { createApiBodyParser } from "./body-parsing.js";
 
 const BACKEND_PRIVATE_KEY = process.env.BACKEND_PRIVATE_KEY;
-const TINYCLOUD_HOST = process.env.TINYCLOUD_HOST ?? "https://node.tinycloud.xyz";
+const TINYCLOUD_HOST = process.env.TINYCLOUD_HOST ?? "https://tee.node.tinycloud.xyz";
 const PORT = Number.parseInt(process.env.PORT ?? "3014", 10);
 const DEFAULT_HTTPS_CERT_FILE = "../frontend/localhost.pem";
 const DEFAULT_HTTPS_KEY_FILE = "../frontend/localhost-key.pem";
@@ -993,11 +992,6 @@ async function main() {
       "[startup] TRANSCRIPTION_API_URL / TRANSCRIPTION_API_KEY not set — /api/transcriber is disabled.",
     );
   }
-
-  // AssemblyAI delete proxy for Exo uploads (routes/assemblyai-delete.ts). Always mounted: the
-  // user brings their own AssemblyAI key, so there is nothing to configure here. Browsers cannot
-  // DELETE at AssemblyAI (its CORS allows POST/PUT/GET only), so every client deletes through this.
-  app.use(ASSEMBLYAI_DELETE_MOUNT, authMiddleware, createAssemblyAiDeleteRouter());
 
   // Hosted AssemblyAI (routes/assemblyai-hosted.ts): the same mount, always, so the frontend can
   // tell "off" (capabilities `hosted: false`) from "dark". Uploads live in this process only: the

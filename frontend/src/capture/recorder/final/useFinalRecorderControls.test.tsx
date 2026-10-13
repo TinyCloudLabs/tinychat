@@ -25,6 +25,7 @@ import {
 const noop = () => {};
 const PRIVATE_ON: VoiceNoteTranscriptionProps = {
   availability: "available",
+  diarization: true,
   consented: true,
   maxSeconds: 600,
   jobs: new Map(),
@@ -269,16 +270,6 @@ const STATES: [string, Partial<RecorderValue>][] = [
     "Audio only",
     {
       transcriber: { id: "off", identifySpeakers: false, source: "recording" },
-    },
-  ],
-  [
-    "Powerful with Identify speakers",
-    {
-      transcriber: {
-        id: "assemblyai",
-        identifySpeakers: true,
-        source: "recording",
-      },
     },
   ],
   [

@@ -61,6 +61,7 @@ export function NoteView({
     elapsedMs,
     inputName: recorder.mic.input?.name ?? null,
     silencedSinceMs: null,
+    device: "mac",
   });
   const root = useRef<HTMLDivElement>(null);
   const ready = noteStatus === "ready";

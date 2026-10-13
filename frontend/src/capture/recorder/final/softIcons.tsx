@@ -52,13 +52,6 @@ export function ModeIcon({ id, size = 14 }: { id: ModeId; size?: number }) {
           <path d="M8 11V8a4 4 0 0 1 8 0v3" />
         </Icon>
       );
-    case "powerful":
-      return (
-        <Icon size={size}>
-          <path d="M10 4l1.6 4.4L16 10l-4.4 1.6L10 16l-1.6-4.4L4 10l4.4-1.6z" />
-          <path d="M18 14l.8 2.2L21 17l-2.2.8L18 20l-.8-2.2L15 17l2.2-.8z" />
-        </Icon>
-      );
   }
 }
 

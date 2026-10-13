@@ -15,9 +15,15 @@ export interface VoiceNoteTranscriptionProps {
   availability: TranscriptionAvailability;
   /** Why the availability check failed (`availability` "failed"). */
   checkError?: string;
+  checkErrorCode?: string;
   consented: boolean;
+  powerfulAvailable?: boolean;
+  powerfulConsented?: boolean;
+  onPowerfulConsent?: () => void;
   /** The longest note offered, in seconds. */
   maxSeconds: number;
+  /** Whether this deployment can identify speaker turns in Private notes. */
+  diarization?: boolean;
   /** Notes being transcribed, waiting their turn, or whose last attempt failed. */
   jobs: ReadonlyMap<string, NoteTranscriptionState>;
   onTranscribe: (sourceId: string) => void;
@@ -46,8 +52,13 @@ export function transcriptionProps(
   return {
     availability: snapshot.availability,
     ...(snapshot.checkError === undefined ? {} : { checkError: snapshot.checkError }),
+    ...(snapshot.checkErrorCode === undefined ? {} : { checkErrorCode: snapshot.checkErrorCode }),
     consented: snapshot.consented,
+    powerfulAvailable: snapshot.powerfulAvailable,
+    powerfulConsented: snapshot.powerfulConsented,
+    onPowerfulConsent: () => transcriber.consentPowerful?.(),
     maxSeconds: maxTranscriptionSeconds(snapshot.capabilities),
+    diarization: snapshot.capabilities?.diarization === true,
     jobs: snapshot.jobs,
     onTranscribe: (sourceId) => transcriber.transcribe(sourceId),
     onTranscribePrivately: (sourceId) => transcriber.transcribePrivately(sourceId),

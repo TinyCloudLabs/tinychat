@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 // The voice-note recorder's controller, without React: the old Voice notes
 // card's controller moved onto recorderReducer, without the notes list and
 // playback (the Library and a note's detail, capture/library) or the
@@ -150,7 +151,7 @@ export interface VoiceNoteRecorderController {
 }
 
 export function createVoiceNoteRecorderController({ tcw, available, transcriber, pipeline, onDeviceReady,
-  appleInterim, subscribeAppActive, noteLoader = loadNote, noteRetryScheduler = (delayMs, retry) => {
+  subscribeAppActive, noteLoader = loadNote, noteRetryScheduler = (delayMs, retry) => {
     const timer = setTimeout(retry, delayMs);
     return () => clearTimeout(timer);
   } }: VoiceNoteRecorderControllerOptions): VoiceNoteRecorderController {
@@ -158,6 +159,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   let preference = readTranscriberPreference();
   let nativeOptions: CaptureOptions | null = null;
   const signedIn = tcw?.did != null;
+  const privateDiarization = () => transcriber?.snapshot?.().capabilities?.diarization === true;
   const defaultChoice = (): RecorderTranscriberChoice => {
     const options = effectiveCaptureOptions(preference, signedIn);
     return { id: options.transcriber, identifySpeakers: options.identifySpeakers, source: "default" };
@@ -282,7 +284,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       notify();
     })().catch((error: unknown) => {
       if (version !== noteLoadVersion || noteId !== id) return;
-      noteLoadError = error instanceof Error ? error : new Error(String(error));
+      noteLoadError = error instanceof Error ? error : new Error(readableError(error));
       noteStatus = "error";
       notify();
       console.warn("[VoiceNotes] Could not load recording note", error);
@@ -315,7 +317,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     // mode the note was recorded under stays on screen until the receipt.
     const live = state.recordingId !== null && nativeOptions !== null;
     const next: RecorderTranscriberChoice = live
-      ? { id: nativeOptions!.transcriber, identifySpeakers: nativeOptions!.identifySpeakers, source: "recording" }
+      ? { id: nativeOptions!.transcriber,
+        identifySpeakers: nativeOptions!.identifySpeakers, source: "recording" }
       : defaultChoice();
     if (choice.id === next.id && choice.identifySpeakers === next.identifySpeakers && choice.source === next.source) return false;
     choice = next;
@@ -411,6 +414,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     const generation = currentAccountGeneration();
     send({ type: "LOCAL_COMMITTED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
     void pendingStore.refresh();
+    if (recording.options?.transcriber === "assemblyai" && transcriber && generation === currentAccountGeneration()) {
+      transcriber.noteSaved(recording);
+    }
     if (!tcw || (pipeline && !pipeline.isAccepting())) {
       pendingStore.setHeld(recording.id, "signed-out");
       send({ type: "LOCAL_UPLOAD_HELD", id: recording.id, reason: "signed-out" });
@@ -591,7 +597,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       return Math.floor(recordedElapsedAt(state));
     },
     async setTranscriber(id, { scope }) {
-      if (!available || id === "assemblyai") return "unavailable";
+      if (!available) return "unavailable";
       if (id === "on-device" && captureEngineKind() === "tauri") {
         try { await (await import("@/lib/voiceNotes/desktop/desktopVoiceNotes")).refreshDesktopWhisperCapability(); }
         catch { return "unavailable"; }
@@ -603,11 +609,14 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         if (!snapshot?.consented) return "needs_consent";
         if (snapshot.availability !== "available") return "unavailable";
       }
+      if (id === "assemblyai") {
+        const snapshot = transcriber?.snapshot?.();
+        if (!snapshot?.powerfulConsented) return "needs_consent";
+        if (!snapshot.powerfulAvailable) return "unavailable";
+      }
       if (scope === "recording") {
         if (state.phase !== "recording" || !state.recordingId) return "unavailable";
-        const identifySpeakers = id === "on-device" && captureCapabilities().localTranscription
-          && !(appleInterim?.() ?? onDeviceSttStore.snapshot().engine === "apple-speech")
-          ? preference.identifySpeakers : false;
+        const identifySpeakers = (id === "assemblyai" || (id === "private-cloud" && privateDiarization())) && preference.identifySpeakers;
         await VoiceNotes.setRecordingOptions({ transcriber: id, identifySpeakers });
         acceptNativeOptions(await VoiceNotes.status());
       } else {
@@ -623,10 +632,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       if (!available) return "unavailable";
       const id = scope === "recording" ? choice.id : effectiveCaptureOptions(preference, signedIn).transcriber;
       if (scope === "recording" && (state.phase !== "recording" || choice.source !== "recording")) return "unavailable";
-      if (id !== "on-device" && id !== "assemblyai") return "unavailable";
-      if (id === "on-device" && !captureCapabilities().localTranscription) return "unavailable";
-      if (id === "assemblyai" || (id === "on-device" && (appleInterim?.() ?? onDeviceSttStore.snapshot().engine === "apple-speech")))
-        return "unavailable";
+      if (id !== "private-cloud" && id !== "assemblyai") return "unavailable";
+      if (id === "private-cloud" && !privateDiarization()) return "unavailable";
       if (scope === "recording") {
         await VoiceNotes.setRecordingOptions({ identifySpeakers: on });
         acceptNativeOptions(await VoiceNotes.status());
@@ -845,7 +852,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       try {
         // The recording starts from the engine's default: wait for any default write in flight, and refuse to start on one that could not be put right.
         await settleDefaults();
-        const started = await VoiceNotes.start({ maxDurationMs: requested });
+        const started = await VoiceNotes.start({ maxDurationMs: requested,
+          ...(!privateDiarization() ? { identifySpeakers: false } : {}) });
         const elapsedAt = Date.now();
         nativeOptions = null;
         try {

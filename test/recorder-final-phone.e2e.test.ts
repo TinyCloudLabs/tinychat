@@ -465,7 +465,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await page.context().close();
   });
 
-  test("dragging the slider chooses the nearest stop; an unavailable one says why and stays put", async () => {
+  test("dragging the slider chooses the nearest stop at either end", async () => {
     const { page, calls } = await open("consented");
     const box = (await slider(page).boundingBox())!;
     const y = box.y + box.height / 2;
@@ -480,8 +480,8 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await page.mouse.down();
     await page.mouse.move(box.x + box.width - 12, y, { steps: 6 });
     await page.mouse.up();
-    await modeIs(page, "Audio only");
-    await shown(page.getByText("Coming with the next update").first());
+    await modeIs(page, "Powerful");
+    expect(await calls()).toEqual(["transcriber:off:recording", "transcriber:assemblyai:recording"]);
     await page.context().close();
   });
 
@@ -494,16 +494,16 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await page.keyboard.press("ArrowRight");
     await modeIs(page, "Local");
     await page.keyboard.press("ArrowRight");
-    const dialog = page.getByRole("dialog", { name: "Use private cloud?" });
+    const dialog = page.getByRole("dialog", { name: "Use Private transcription?" });
     await shown(dialog);
-    expect(await activeName()).toBe("Use private cloud");
+    expect(await activeName()).toBe("Use Private transcription");
     await modeIs(page, "Local");
     expect(await calls()).toEqual([
       "transcriber:on-device:recording",
       "transcriber:private-cloud:recording",
     ]);
 
-    await page.getByRole("button", { name: "Use private cloud" }).click();
+    await page.getByRole("button", { name: "Use Private transcription" }).click();
     await modeIs(page, "Private");
     await gone(dialog);
     await focused(slider(page));
@@ -519,7 +519,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
 
   test("the consent sheet gives focus back on Not now, Escape, the veil and consent", async () => {
     const { page, calls } = await open("first-run");
-    const dialog = page.getByRole("dialog", { name: "Use private cloud?" });
+    const dialog = page.getByRole("dialog", { name: "Use Private transcription?" });
     await slider(page).focus();
     await page.keyboard.press("ArrowRight");
     await modeIs(page, "Local");
@@ -539,7 +539,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
 
     await page.keyboard.press("ArrowRight");
     await shown(dialog);
-    await page.getByRole("button", { name: "Use private cloud" }).click();
+    await page.getByRole("button", { name: "Use Private transcription" }).click();
     await gone(dialog);
     await focused(slider(page));
     expect((await calls()).filter((c) => c === "consent")).toEqual(["consent"]);
@@ -653,8 +653,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await page.context().close();
   });
 
-  // A provider refusal has no actions; choosing the unavailable Powerful stop while on Audio only
-  // raises a toast whose Use Private action sits in an action row below the message.
+  // A provider refusal keeps the recorder controls visible around its toast.
   const toastScenarios = [
     {
       suffix: "",
@@ -662,13 +661,6 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
       refuse: true,
       message: "Local isn't available right now",
       actions: [] as string[],
-    },
-    {
-      suffix: " with an action row",
-      stop: "powerful",
-      refuse: false,
-      message: "Coming with the next update",
-      actions: ["Use Private"],
     },
   ];
   const prepareToastScenario = (
@@ -1016,7 +1008,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
   test("a Private choice from the first-run scale returns focus after consent is dismissed", async () => {
     const { page } = await open("model-unavailable-first-run");
     await page.locator('.pr-stop[data-stop="private"]').click();
-    const consent = page.getByRole("dialog", { name: "Use private cloud?" });
+    const consent = page.getByRole("dialog", { name: "Use Private transcription?" });
     await shown(consent);
     await consent.getByRole("button", { name: "Not now" }).click();
     await gone(consent);
@@ -1109,7 +1101,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await until(
       "the stops to open after sign-in",
       async () =>
-        (await stops()).join() === ["true", "true", "true", "false"].join(),
+        (await stops()).join() === ["true", "true", "true", "true"].join(),
     );
     await page.context().close();
   });
@@ -1128,7 +1120,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
       .evaluateAll((stops) =>
         stops.map((stop) => stop.getAttribute("data-available")),
       );
-    expect(available).toEqual(["true", "true", "true", "false"]);
+    expect(available).toEqual(["true", "true", "true", "true"]);
     await page.context().close();
   });
 

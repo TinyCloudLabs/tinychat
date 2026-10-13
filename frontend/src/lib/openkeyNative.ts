@@ -168,27 +168,28 @@ class NativeHandoffRetryError extends Error {
 }
 
 function nativeErrorCode(error: unknown): string | null {
-  if (error instanceof NativeSpaceUnavailableError) return error.code;
-  return error instanceof Error && error.name === "OpenKeyNativeError" &&
-    "code" in error && typeof error.code === "string" ? error.code : null;
+  return error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : null;
 }
 
-/**
- * Error messages may carry a token or key, so only an SDK code (with the HTTP
- * status and OAuth error code the SDK recorded), or else an error's name, is logged.
- */
+/** Keep diagnostics useful without printing credentials carried by SDK or fetch errors. */
+function safeErrorMessage(message: string): string {
+  return message
+    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/([?&](?:code|token|refresh_token|access_token|session_key|key)=)[^&\s]+/gi, "$1[redacted]")
+    .replace(/("(?:d|privateJwk|refreshToken|accessToken|sessionKey)"\s*:\s*")[^"]+"/gi, "$1[redacted]\"")
+    .replace(/((?:token|secret|password|refresh[_-]?token|access[_-]?token|private[_-]?key|sessionKey|authorization)\s*[:=]\s*)\S+/gi, "$1[redacted]")
+    .replace(/\b(?:eyJ[A-Za-z0-9_-]+\.){2}[A-Za-z0-9_-]+\b/g, "[redacted]")
+    .replace(/\b0x[a-f\d]{64,}\b/gi, "[redacted]")
+    .replace(/\b[A-Za-z0-9_-]{80,}\b/g, "[redacted]")
+    .slice(0, 240);
+}
+
 export function logNativeOpenKeyError(operation: string, error: unknown): void {
   const code = nativeErrorCode(error);
-  if (!code) {
-    console.warn(`[OpenKey native] ${operation}: ${error instanceof Error ? error.name : "unknown error"}`);
-    return;
-  }
-  const { status, serverError } = error as { status?: unknown; serverError?: unknown };
-  const detail = [
-    typeof status === "number" ? `HTTP ${status}` : null,
-    typeof serverError === "string" && /^[a-z_]{1,64}$/.test(serverError) ? serverError : null,
-  ].filter(Boolean).join(" ");
-  console.warn(`[OpenKey native] ${operation}: ${code}${detail ? ` (${detail})` : ""}`);
+  const { status, serverError } = (error ?? {}) as { status?: unknown; serverError?: unknown };
+  const name = error instanceof Error ? error.name : "unknown error";
+  const message = error instanceof Error ? safeErrorMessage(error.message) : "";
+  console.warn(`[OpenKey native] ${operation}: ${name}${code ? ` code=${code}` : ""}${typeof status === "number" ? ` status=${status}` : ""}${typeof serverError === "string" && /^[a-z_]{1,64}$/.test(serverError) ? ` serverError=${serverError}` : ""}${message ? ` message=${message}` : ""}`);
 }
 
 /**
@@ -461,6 +462,7 @@ export type NativeBootOutcome =
   | { kind: "none" }
   | { kind: "restored"; address: string; tcw: TinyCloudWeb; session: NativeSession; openkey: OpenKeyNative; verified?: NativeSignInResult["verified"]; renewAt?: number }
   | { kind: "unavailable" }
+  | { kind: "failed" }
   | { kind: "storage" }
   | { kind: "configuration" }
   | { kind: "terminal"; revoke: () => Promise<void> };
@@ -496,12 +498,12 @@ export async function restoreNativeAtBoot(
         session = await openkey.renew(siweNonce ? { siweNonce } : {});
         renewed = true;
       } catch (error) {
-        if (nativeCode(error) !== "RENEWAL_TOO_SOON" || Date.now() >= expiresAt) throw error;
+        if (Date.now() >= expiresAt || nativeCode(error) !== "RENEWAL_TOO_SOON") throw error;
         const retryAfterSeconds = (error as { retryAfterSeconds?: unknown }).retryAfterSeconds;
         renewAt = Date.now() + (typeof retryAfterSeconds === "number" ? retryAfterSeconds * 1000 : 15_000);
       }
     }
-    const installed = await installNativeSession(openkey, session, config, d, undefined, !renewed);
+    const installed = await installNativeSession(openkey, session, config, d, undefined, !renewed, true);
     let verified: NativeSignInResult["verified"] | undefined;
     if (renewed) {
       try {
@@ -509,7 +511,7 @@ export async function restoreNativeAtBoot(
       } catch (error) {
         installed.tcw.cleanup();
         logNativeOpenKeyError("backend verification", error);
-        return { kind: "unavailable" };
+        return { kind: isNetworkRestoreError(error) ? "unavailable" : "failed" };
       }
     }
     return { kind: "restored", address: installed.address, tcw: installed.tcw, session, openkey, verified, renewAt };
@@ -517,13 +519,20 @@ export async function restoreNativeAtBoot(
     logNativeOpenKeyError("boot restore", error);
     if (error instanceof Error && error.message.startsWith("Native sign-in is not configured")) return { kind: "configuration" };
     if (nativeCode(error) === "STORAGE") return { kind: "storage" };
-    if (!terminalRenewalError(error)) return { kind: "unavailable" };
+    if (!terminalRenewalError(error)) return { kind: isNetworkRestoreError(error) ? "unavailable" : "failed" };
     const client = openkey;
     return { kind: "terminal", revoke: () => {
       if (!client) return Promise.reject(new Error("Native OpenKey client unavailable during terminal revoke"));
       return withNativeDeadline(client.signOut());
     } };
   }
+}
+
+export function isNetworkRestoreError(error: unknown): boolean {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return true;
+  const code = nativeCode(error);
+  if (code === "NETWORK" || code === "TEMPORARILY_UNAVAILABLE") return true;
+  return error instanceof Error && /(?:failed to fetch|network request failed|network connection was lost|internet connection appears to be offline|load failed)/i.test(error.message);
 }
 
 /**
@@ -564,6 +573,7 @@ export async function installNativeSession(
   d: NativeSignInDeps,
   liveTcw?: TinyCloudWeb,
   alreadyStored = false,
+  restoringExisting = false,
 ): Promise<{ address: string; tcw: TinyCloudWeb }> {
   const { delegation, sessionKey } = session;
   const address = delegation.address;
@@ -576,7 +586,7 @@ export async function installNativeSession(
     !delegation.delegationHeader ||
     !delegation.delegationCid ||
     !delegation.spaceId ||
-    delegation.tinycloudHost !== config.tinycloudHost
+    (!restoringExisting && delegation.tinycloudHost !== config.tinycloudHost)
   ) {
     throw new Error("OpenKey returned an incomplete delegation for a different TinyCloud node.");
   }
@@ -617,7 +627,7 @@ export async function installNativeSession(
     return { address, tcw: liveTcw };
   }
   const restored = await d.restoreSession(address, {
-    tinycloudHosts: config.tinycloudHosts ?? [delegation.tinycloudHost],
+    tinycloudHosts: [delegation.tinycloudHost, ...(config.tinycloudHosts ?? [config.tinycloudHost])].filter((host, index, hosts) => hosts.indexOf(host) === index),
     autoCreateSpace: false,
     sessionStorage: storage,
     provider: createNativeReadOnlyProvider(address, chainId),

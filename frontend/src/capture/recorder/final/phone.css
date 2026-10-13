@@ -753,7 +753,10 @@
   color: var(--dim);
 }
 .pr-mpaction {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
   margin: 2px 0 6px 44px;
   padding: 6px 12px;
   border-radius: 999px;

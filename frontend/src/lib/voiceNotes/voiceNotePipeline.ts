@@ -4,7 +4,7 @@ import { assertCurrent, setAccountWorkPaused, StaleAccountContext, type AccountC
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
 import { VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { errorCode, isDiscarded, pendingStore, saveNoteForAccount, type PendingUploadTicket } from "./recorderSaves";
-import { ensureVoiceNoteIdentity, sweepArchived } from "./voiceNoteRows";
+import { ensureVoiceNoteIdentity } from "./voiceNoteRows";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { syncRecordingNote, VOICE_NOTE_SOURCE } from "./voiceNoteStore";
 import type { StoreAudioOptions } from "./voiceNoteStore";
@@ -26,10 +26,6 @@ export class VoiceNoteSaveDeferred extends Error {
 
 export function saveDeferredForAccountTransition(error: unknown): boolean {
   return error instanceof VoiceNoteSaveDeferred || error instanceof StaleAccountContext;
-}
-
-function logSaveStart(id: string, trigger: "stop" | "background" | "reconcile" | "manual"): void {
-  console.debug(`[VoiceNotes] automatic save starting id=${id} trigger=${trigger}`);
 }
 
 /** T22 extends these lanes with transcription and cleanup, retaining this API. */
@@ -56,11 +52,11 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     try {
     const check = checkFor(ctx, epoch);
     check();
-    const gate = await ensureVoiceNoteIdentity(tcw, check);
-    if (gate.status !== "established") throw Object.assign(new Error(gate.reason ?? gate.status), { code: gate.status });
+    const gate = await withVoiceNoteSaveDeadline("voice-note space setup", () => ensureVoiceNoteIdentity(tcw, check));
+    if (gate.status !== "established") throw Object.assign(new Error(gate.reason ?? gate.status), { code: gate.status, cause: gate.cause });
     check();
-    // Identity does the initial archive repair, and reconcileAll sweeps once for the
-    // session. A fresh Stop must not repeat that space-wide work before its upload.
+    // Identity does the archive repair once per account. A fresh Stop must not
+    // repeat that space-wide work before its upload.
     const note = (await withVoiceNoteSaveDeadline(`native listPending id=${id}`, () => VoiceNotes.listPending())).recordings.find((r) => r.id === id);
     if (!note) return null;
     check();
@@ -88,15 +84,14 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     } finally { if (uploadTicket) pendingStore.settleUploadQueue(uploadTicket); }
   };
   return {
-    process(ctx, id, trigger = "stop") {
+    process(ctx, id, _trigger = "stop") {
       if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());
       const epoch = cancellation;
       const uploadTicket = pendingStore.enqueueUpload(id);
-      logSaveStart(id, trigger);
       if (!uploadTicket.owns) return Promise.resolve("owned-by-another-run");
       return run(async () => { await processOne(ctx, id, epoch, false, uploadTicket); });
     },
-    reconcileAll(ctx, trigger = "reconcile", onSaved) {
+    reconcileAll(ctx, _trigger = "reconcile", onSaved) {
       if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());
       const epoch = cancellation;
       return run(async () => {
@@ -115,12 +110,22 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
             { code: "discard_migration_failed", cause: migrationError });
           return;
         }
-        const gate = await ensureVoiceNoteIdentity(tcw, check);
-        if (gate.status !== "established") throw Object.assign(new Error(gate.reason ?? gate.status), { code: gate.status });
-        check();
-        await sweepArchived(tcw, check);
-        check();
-        await associateLegacyNotes(tcw, ctx.did, notes, check);
+        try {
+          const gate = await withVoiceNoteSaveDeadline("voice-note space setup", () => ensureVoiceNoteIdentity(tcw, check));
+          if (gate.status !== "established") throw Object.assign(new Error(gate.reason ?? gate.status), { code: gate.status, cause: gate.cause });
+          check();
+          // Identity already sweeps archived rows. Running it again here delays
+          // every queued upload behind a second space-wide SQL pass.
+          await associateLegacyNotes(tcw, ctx.did, notes, check);
+        } catch (error) {
+          check();
+          for (const note of notes) {
+            if (note.owner === ctx.did && !note.ownerUnknown && note.ledger?.audio.state !== "saved" && !isDiscarded(note.id)) {
+              pendingStore.reportNoteFailure(note.id, error);
+            }
+          }
+          throw error;
+        }
         let discardError: unknown;
         const saveQueue = notes.filter((note) => note.owner === ctx.did && !note.ownerUnknown &&
           note.ledger?.audio.state !== "saved" && !isDiscarded(note.id)).sort((a, b) => a.startedAt - b.startedAt);
@@ -131,7 +136,6 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
           if (note.owner === ctx.did && !note.ownerUnknown) {
             let saved: VoiceNoteRecording | null = null;
             try {
-              logSaveStart(note.id, trigger);
               saved = await processOne(ctx, note.id, epoch, true, uploadTickets.get(note.id));
               check();
               if (saved) captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId: note.id });

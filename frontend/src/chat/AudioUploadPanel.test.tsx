@@ -6,7 +6,7 @@
 //   4. the route says where the file goes in one line, never more than the mechanism, and
 //      a device's first private cloud upload says what Private cloud does in one sentence;
 //   5. a stored-audio failure is told beside the saved transcript; a failure offers Retry only when it can help;
-//   6. Settings keeps the key in a password field, and offers removal once saved.
+//   6. Settings offers the hosted Powerful engine without a key field.
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -18,8 +18,7 @@ import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { SoftActions } from "@/capture/home/SoftActions";
 import { StaticRecorderProvider } from "@/capture/recorder/RecorderProvider";
 import { AboutPage } from "./AboutPage";
-import { assemblyAiStatus, AudioUploadView, fileProblem, PRIVATE_CONSENT_TEXT, type AudioUploadViewProps } from "./AudioUploadPanel";
-import { TranscriptionSettingsView, type TranscriptionSettingsViewProps } from "./TranscriptionSettings";
+import { assemblyAiStatus, AudioUploadView, fileProblem, PRIVATE_CONSENT_TEXT, privateConsentAccountDid, type AudioUploadViewProps } from "./AudioUploadPanel";
 import type { UploadState } from "@/lib/audioUpload";
 
 const noop = () => {};
@@ -121,9 +120,8 @@ describe("AudioUploadView", () => {
 
   test("the route says where the file goes in one line, within what each party does; How it works has the rest", () => {
     const priv = renderUpload();
-    const aai = renderUpload({ engine: "assemblyai", assemblyAiMode: "own" });
     const hosted = renderUpload({ engine: "assemblyai", assemblyAiMode: "hosted" });
-    for (const html of [priv, aai, hosted]) {
+    for (const html of [priv, hosted]) {
       expect(html).not.toMatch(/verified|attested|end-to-end/i);
       expect(html).toContain('aria-label="Where your audio goes"');
       expect(html).toContain('href="/chat/about#uploads"');
@@ -138,8 +136,6 @@ describe("AudioUploadView", () => {
     expect(hosted).toContain("Sent through Exo&#x27;s server to AssemblyAI under TinyCloud&#x27;s account, then deleted there.");
     expect(hosted).toContain("Powerful · TinyCloud&#x27;s account");
     expect(hosted).not.toContain("your key");
-    expect(aai).toContain("Sent from this device to AssemblyAI with your key, then deleted there.");
-    expect(aai).toContain("Powerful · your key");
     expect(priv).toContain("Transcribed by TinyCloud Private Transcription. A copy of the file stays in your space.");
     // No disclosure paragraphs inline.
     expect(priv).not.toContain("confidential virtual machine");
@@ -163,13 +159,10 @@ describe("AudioUploadView", () => {
     expect(uploads).toContain('href="/chat/about#transcription"');
     for (const html of [uploads, transcription]) expect(html).not.toMatch(/verified|attested|end-to-end/i);
     // TinyCloud's AssemblyAI account: through Exo's server, under AssemblyAI's terms, deleted there after saving.
-    expect(transcription).toContain("your file goes to Exo’s server (a confidential VM on Phala Cloud)");
+    expect(transcription).toContain("your audio goes to Exo’s server (a confidential VM on Phala Cloud)");
     expect(transcription).toContain("under TinyCloud’s account and AssemblyAI’s terms");
     expect(transcription).toContain("Exo deletes it at AssemblyAI after saving the transcript to your TinyCloud space");
-    // The user's own key: from this device, under their key and AssemblyAI's terms; the key passes Exo's server once, for the delete.
-    expect(transcription).toContain("the file goes from this device to AssemblyAI under your key and AssemblyAI’s terms");
-    expect(transcription).toContain("it does not pass through TinyChat’s server");
-    expect(transcription).toContain("forwards the key there once; it never stores or logs it");
+    expect(transcription).not.toContain("your own API key");
     expect(transcription).toContain("AssemblyAI is not part of TinyCloud’s private transcription");
     // Private cloud.
     expect(transcription).toContain("TinyCloud Private Transcription, a dedicated confidential virtual machine on Phala Cloud");
@@ -181,19 +174,24 @@ describe("AudioUploadView", () => {
   test("a device's first private cloud upload says what private cloud does, in one sentence, before Transcribe", () => {
     const first = renderUpload({ privateConsent: false });
     expect(first).toContain('data-testid="upload-private-consent"');
-    expect(first).toContain(PRIVATE_CONSENT_TEXT);
-    expect(PRIVATE_CONSENT_TEXT.split(". ")).toHaveLength(1);
+    expect(first).toContain(PRIVATE_CONSENT_TEXT.replaceAll("'", "&#x27;"));
+    expect(PRIVATE_CONSENT_TEXT).toContain("a sealed hardware enclave");
     expect(first).toMatch(transcribeButton);
     // Once agreed, only the route line; never for AssemblyAI.
     expect(renderUpload()).not.toContain("upload-private-consent");
     expect(renderUpload({ privateConsent: false, engine: "assemblyai" })).not.toContain("upload-private-consent");
   });
 
+  test("Private consent requires an account DID", () => {
+    expect(() => privateConsentAccountDid(null)).toThrow("Private consent requires an account DID.");
+    expect(privateConsentAccountDid("did:test:account")).toBe("did:test:account");
+    try { privateConsentAccountDid(undefined); } catch (error) { expect((error as { code: string }).code).toBe("private_consent_account_missing"); }
+  });
+
   test("a file private cloud can't take is named before anything is sent", () => {
     expect(fileProblem({ name: "clip.mov", type: "video/quicktime", size: 10 }, "private-cloud")).toContain("Choose Powerful");
-    expect(fileProblem({ name: "clip.mov", type: "video/quicktime", size: 10 }, "assemblyai", undefined, "own")).toBeNull();
     // TinyCloud's AssemblyAI account goes through Exo's server, which takes the same audio types.
-    expect(fileProblem({ name: "clip.mov", type: "video/quicktime", size: 10 }, "assemblyai", undefined, "hosted")).toContain("your own AssemblyAI key");
+    expect(fileProblem({ name: "clip.mov", type: "video/quicktime", size: 10 }, "assemblyai", undefined, "hosted")).toContain("Convert the file");
     expect(fileProblem({ name: "long.wav", type: "audio/wav", size: 200_000_000 }, "private-cloud")).toContain("up to");
     const html = renderUpload({ fileProblem: "Private transcription takes MP3…" });
     expect(html).toContain('role="alert"');
@@ -224,86 +222,25 @@ describe("AudioUploadView", () => {
   });
 });
 
-describe("TranscriptionSettingsView", () => {
-  const render = (patch: Partial<TranscriptionSettingsViewProps> = {}) =>
-    renderToStaticMarkup(
-      <TranscriptionSettingsView
-        engine="private-cloud"
-        keyStatus="none"
-        keyMode="hosted"
-        onKeyModeChange={noop}
-        phase="idle"
-        keyInput=""
-        error={null}
-        onEngineChange={noop}
-        onKeyInputChange={noop}
-        onSaveKey={noop}
-        onRemoveKey={noop}
-        onCheckKey={noop}
-        {...patch}
-      />,
-    );
-
-  test("the key is entered in a password field and can be removed once saved; Private is the default engine", () => {
-    const none = render({ keyMode: "own" });
-    expect(none).toMatch(/<input id="assemblyai-api-key" type="password"/);
-    expect(none).toMatch(/role="radio" aria-checked="true"[^>]*>Private</);
-    expect(none).not.toContain("Remove key");
-    const saved = render({ keyStatus: "saved", keyMode: "own" });
-    expect(saved).toContain("Remove key");
-    expect(saved).not.toContain('id="assemblyai-api-key"');
-    // TinyCloud's account is the default and needs no key field.
-    const hostedMode = render();
-    expect(hostedMode).toMatch(/role="radio" aria-checked="true"[^>]*>TinyCloud&#x27;s AssemblyAI account</);
-    expect(hostedMode).not.toContain('id="assemblyai-api-key"');
-  });
-});
-
-describe("Settings → Transcription names the modes like the recorder and Upload", () => {
-  const radios = (html: string) => [...html.matchAll(/role="radio"[^>]*>([^<]*)</g)].map((m) => m[1]);
-  const view = (patch: Partial<TranscriptionSettingsViewProps> = {}) =>
-    renderToStaticMarkup(
-      <TranscriptionSettingsView
-        engine="private-cloud"
-        keyStatus="none"
-        keyMode="hosted"
-        onKeyModeChange={noop}
-        phase="idle"
-        keyInput=""
-        error={null}
-        onEngineChange={noop}
-        onKeyInputChange={noop}
-        onSaveKey={noop}
-        onRemoveKey={noop}
-        onCheckKey={noop}
-        {...patch}
-      />,
-    );
-
-  test("the default-engine radio says Private and Powerful, never AssemblyAI", () => {
-    const html = view();
-    const engine = html.slice(html.indexOf('aria-label="Default transcription engine"'), html.indexOf("</div>", html.indexOf('aria-label="Default transcription engine"')));
-    expect(radios(engine)).toEqual([TRANSCRIBER_NAME["private-cloud"], TRANSCRIBER_NAME.assemblyai]);
-    expect(radios(engine)).toEqual(["Private", "Powerful"]);
-    expect(engine).not.toContain("AssemblyAI");
-  });
-
-  test("Upload and Settings read the same table, and the old separate one is gone", () => {
-    expect(readFileSync(join(import.meta.dir, "TranscriptionSettings.tsx"), "utf8")).toContain("TRANSCRIBER_NAME[e]");
-    expect(readFileSync(join(import.meta.dir, "../lib/audioUpload.ts"), "utf8")).not.toContain("UPLOAD_ENGINE_LABELS");
+describe("Settings → Transcription", () => {
+  test("offers Private and Powerful with no AssemblyAI key field", async () => {
+    const { TranscriptionSettings } = await import("./TranscriptionSettings");
+    const html = renderToStaticMarkup(<MemoryRouter><TranscriptionSettings tcw={null as never} /></MemoryRouter>);
+    const radios = [...html.matchAll(/role="radio"[^>]*>([^<]*)</g)].map((match) => match[1]);
+    expect(radios).toEqual([TRANSCRIBER_NAME["private-cloud"], TRANSCRIBER_NAME.assemblyai]);
+    expect(html).not.toContain("assemblyai-api-key");
+    expect(html).toContain("Exo&#x27;s server");
   });
 });
 
 describe("assemblyAiStatus", () => {
-  test("TinyCloud's account is offered only when the server says it has it; the own key only when one is saved", () => {
-    expect(assemblyAiStatus("hosted", { state: "ok", caps: { hosted: true } }, "none")).toEqual({ state: "available" });
-    const dark = assemblyAiStatus("hosted", { state: "ok", caps: { hosted: false } }, "saved");
-    expect(dark).toMatchObject({ state: "unavailable", action: "settings" });
-    expect(dark.state === "unavailable" && dark.reason).toContain("your own AssemblyAI key");
-    expect(assemblyAiStatus("hosted", { state: "failed" }, "saved")).toMatchObject({ state: "unavailable", action: "recheck" });
-    expect(assemblyAiStatus("hosted", { state: "checking" }, "saved")).toEqual({ state: "checking" });
-    expect(assemblyAiStatus("own", { state: "ok", caps: { hosted: true } }, "none")).toMatchObject({ state: "unavailable", action: "settings" });
-    expect(assemblyAiStatus("own", { state: "failed" }, "saved")).toEqual({ state: "available" });
+  test("Powerful is offered only when the server says it has the hosted account", () => {
+    expect(assemblyAiStatus("hosted", { state: "ok", caps: { hosted: true } })).toEqual({ state: "available" });
+    const dark = assemblyAiStatus("hosted", { state: "ok", caps: { hosted: false } });
+    expect(dark).toMatchObject({ state: "unavailable", action: "recheck" });
+    expect(assemblyAiStatus("hosted", { state: "failed" })).toMatchObject({ state: "unavailable", action: "recheck" });
+    expect(assemblyAiStatus("hosted", { state: "checking" })).toEqual({ state: "checking" });
+    expect(assemblyAiStatus("own", { state: "ok", caps: { hosted: true } })).toMatchObject({ state: "unavailable" });
   });
 });
 

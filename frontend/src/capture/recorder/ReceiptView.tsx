@@ -1,7 +1,8 @@
-import { useMemo } from "react";
+import { useContext, useMemo } from "react";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { PlatformContext } from "@/lib/platform";
 import { useNotePipelineWithLedger } from "@/lib/voiceNotes/useNotePipeline";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { MicrophoneAccessOff } from "./MicrophoneAccessOff";
@@ -33,7 +34,8 @@ export function receiptRouting(args: {
   // Only a job that is really running says "Transcribing": availability alone never does, and a
   // note committed to Audio only or to Local (not moved) has no private job to speak of.
   const transcribing = outcome === "saved" && savedTranscriber !== "off" && privateJob?.kind === "active";
-  const savedRoute = savedTranscriber === "on-device" && !movedToPrivate ? "on-device"
+  const savedRoute = savedTranscriber === "assemblyai" ? "assemblyai"
+    : savedTranscriber === "on-device" && !movedToPrivate ? "on-device"
     : savedTranscriber === "off" ? "off"
     : privateJob !== undefined ? "private-cloud" : "off";
   const privateOutcome = savedTranscriber !== "off" && privateJob?.kind === "done" ? privateJob.outcome : null;
@@ -44,6 +46,8 @@ export function receiptRouting(args: {
 
 /** The full-page receipt once a recording has ended: saved, kept on this phone, or failed (Save now). */
 export function ReceiptView({ recorder, onOpenNote }: ReceiptViewProps) {
+  const device = useContext(PlatformContext) === "tauri" ? "mac" : "phone";
+  const savedOnDevice = `Saved on this ${device === "mac" ? "Mac" : "phone"}`;
   const { phase, outcome, lastSaved } = recorder;
   // The pipeline hook's one live read of the phone's ledger (never a second `listPending`, which on Android runs a
   // recovery scan: two of them on every Stop outran the receipt's display window, TC-781) gives the note's own
@@ -68,7 +72,7 @@ export function ReceiptView({ recorder, onOpenNote }: ReceiptViewProps) {
           <Button type="button" variant="ghost" size="icon" className="size-11 shrink-0" aria-label="Minimise recorder" onClick={recorder.minimiseSheet} data-testid="recorder-minimise"><ChevronDownIcon className="!size-5" /></Button>
           <p role="status" data-testid="voice-note-status" data-mic-state="idle" data-mic-reason="" className="w-fit min-w-0 max-w-full justify-self-center flex items-center justify-center gap-2 rounded-xl bg-surface-2 px-3 py-1.5 text-callout font-semibold text-foreground">
             <CheckIcon className="size-4 text-primary" aria-hidden />
-            <span data-testid="voice-note-status-label" className="min-w-0 [overflow-wrap:anywhere]">Saved on this phone</span>
+            <span data-testid="voice-note-status-label" className="min-w-0 [overflow-wrap:anywhere]">{savedOnDevice}</span>
           </p>
           <span className="size-11" aria-hidden />
         </header>
@@ -81,7 +85,7 @@ export function ReceiptView({ recorder, onOpenNote }: ReceiptViewProps) {
         </div>
 
         <div className="flex min-h-0 flex-col justify-start land:col-start-2 land:row-start-1 land:justify-end">
-          <SavedReceipt outcome={outcome} localUpload={recorder.localUpload} saved={lastSaved} route={voiceNoteRoute(savedRoute)} pipeline={pipeline} pipelineReading={lastSaved !== null && pipeline === null} transcriber={savedTranscriber} sttHint={savedStt} transcribing={transcribing} held={privateJob?.kind === "held" ? privateJob.message : null} movedToPrivate={movedToPrivate} privateFailure={savedTranscriber !== "off" && privateJob?.kind === "failed" ? privateJob.message : null} privateOutcome={privateOutcome} error={honestRecorderError(recorder)} notice={receiptPartialNotice(recorder, lastSaved?.id)} retrying={recorder.pending.running}
+          <SavedReceipt device={device} outcome={outcome} localUpload={recorder.localUpload} saved={lastSaved} route={voiceNoteRoute(savedRoute)} pipeline={pipeline} pipelineReading={lastSaved !== null && pipeline === null} transcriber={savedTranscriber} sttHint={savedStt} transcribing={transcribing} held={privateJob?.kind === "held" ? privateJob.message : null} movedToPrivate={movedToPrivate} privateFailure={savedTranscriber !== "off" && privateJob?.kind === "failed" ? privateJob.message : null} privateOutcome={privateOutcome} error={honestRecorderError(recorder)} notice={receiptPartialNotice(recorder, lastSaved?.id)} retrying={recorder.pending.running}
             onOpen={onOpenNote && lastSaved ? () => { recorder.dismissOutcome(); onOpenNote(lastSaved.id); } : undefined}
             onDone={recorder.dismissOutcome} onSaveNow={recorder.retryPending} onPlayingChange={recorder.setReceiptPlaying} onReady={recorder.setReceiptReady} onUsePrivate={usePrivate} onActionableChange={recorder.setReceiptActionable} />
         </div>

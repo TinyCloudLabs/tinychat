@@ -88,6 +88,7 @@ const CAPS: PrivateCloudCapabilities = {
   max_duration_seconds: 7_200,
   content_types: ["audio/mpeg", "audio/wav", "audio/ogg"],
   admission: "open",
+  diarization: true,
 };
 const AUDIO = { mimeType: "audio/mp4", base64: bytesToBase64(new Uint8Array([1, 2, 3, 4])) };
 const originalVoiceNotes = VoiceNotes;
@@ -291,6 +292,15 @@ function harness(script: {
 
 const run = (h: ReturnType<typeof harness>, report: (s: VoiceNoteTranscriptionStatus) => void = () => {}) =>
   h.cloud.transcribe({ sourceId: "rec-1", capabilities: CAPS, loadAudio: async () => AUDIO }, report);
+
+test("Private asks PTX to identify speakers only when enabled, mono, and supported", async () => {
+  for (const [identifySpeakers, channelCount, diarization] of [[true, 1, true], [false, 1, true], [true, 2, true], [true, 1, false]] as const) {
+    const h = harness({});
+    await h.cloud.transcribe({ sourceId: `rec-${identifySpeakers}-${channelCount}-${diarization}`, capabilities: { ...CAPS, diarization },
+      loadAudio: async () => AUDIO, identifySpeakers, channelCount }, () => {});
+    expect(h.creates[0]?.body.diarize).toBe(identifySpeakers && channelCount === 1 && diarization ? true : undefined);
+  }
+});
 
 describe("gating", () => {
   test("a PTX origin is a bare https origin; http only to a loopback port when allowed", () => {
@@ -707,6 +717,8 @@ describe("per device capability and per account storage", () => {
     const storage = memoryStorage();
     const a = localStorageVoiceNoteConsentStore("did:a", storage);
     const b = localStorageVoiceNoteConsentStore("did:b", storage);
+    storage.setItem(accountStorageKey(VOICE_NOTE_CONSENT_KEY, "did:a"), "1");
+    expect(a.get()).toBe(false);
     a.set(true);
     expect([a.get(), b.get()]).toEqual([true, false]);
     expect(storage.map.has(accountStorageKey(VOICE_NOTE_CONSENT_KEY, "did:a"))).toBe(true);
@@ -723,6 +735,20 @@ describe("per device capability and per account storage", () => {
 });
 
 describe("transcript normalization", () => {
+  test("diarized Private turns retain their speaker labels", () => {
+    const transcript: PrivateCloudTranscript = {
+      ...TRANSCRIPT, diarized: true,
+      speakers: [{ id: "speaker_0", name: "Speaker 1", channel: 0 }, { id: "speaker_1", name: "Speaker 2", channel: 0 }],
+      segments: [
+        { channel: 0, start: 0, end: 1, text: "hello", speaker_id: "speaker_0" },
+        { channel: 0, start: 1, end: 2, text: "hi", speaker_id: "speaker_1" },
+      ],
+    };
+    expect(voiceNoteSentences(transcript).map((sentence) => sentence.speaker_name)).toEqual(["Speaker 1", "Speaker 2"]);
+    expect(prepareVoiceNoteTranscript(transcript, "2026-10-12T00:00:00Z", 1)).toMatchObject({
+      speakers: ["Speaker 1", "Speaker 2"], metadata: { speaker_labels: "diarized" },
+    });
+  });
   test("segments become time-ordered 'You' turns of at most 60 s, trimmed, empty ones dropped", () => {
     expect(voiceNoteSentences(TRANSCRIPT)).toEqual([
       { index: 0, speaker_name: "You", text: "Remember to book the venue.", start_time: 0.5, end_time: 9 },
@@ -1364,7 +1390,7 @@ describe("every path that creates or resumes an off-phone job consults the hold 
   const ATTEMPT = "00000000-0000-4000-8000-00000000abcd";
 
   /** A saved private-cloud note whose row says where it began (`source: null`: a v1 row that says nothing), plus an interrupted attempt. */
-  async function setup(source: string | null, opts: { consented?: boolean; holds?: Record<string, "held" | "released">; pending?: boolean } = {}) {
+  async function setup(source: string | null, opts: { consented?: boolean; holds?: Record<string, "held" | "released">; pending?: boolean; secondJob?: boolean } = {}) {
     const space = sqliteSpace();
     expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
     if (source !== null) {
@@ -1373,15 +1399,24 @@ describe("every path that creates or resumes an off-phone job consults the hold 
     }
     VoiceNotes.listPending = async () => ({ recordings: [] });
     const storage = memoryStorage();
-    const h = harness({});
+    const h = harness(opts.secondJob ? {
+      creates: [
+        { id: ID, status: "awaiting_upload", upload: { path: `/uploads/${ID}`, capability: CAP } },
+        { id: ID2, status: "awaiting_upload", upload: { path: `/uploads/${ID2}`, capability: CAP } },
+      ],
+      puts: [{ status: 201, body: { status: "queued" } }, { status: 201, body: { status: "queued" } }],
+      jobs: [job("completed"), job("completed")],
+    } : {});
     if (opts.pending !== false) h.pending.write("rec-1", { attemptId: ATTEMPT, transcriptionId: null });
     const consent = localStorageVoiceNoteConsentStore(DID, storage);
     consent.set(opts.consented ?? true);
+    const choices = localStorageVoiceNotePrivateChoiceStore(DID, storage);
     const holds = localStorageVoiceNoteHoldStore(DID, storage);
     if (opts.holds) holds.write(opts.holds);
     const launch = (store: VoiceNoteHoldStore = holds) => createVoiceNoteTranscriber({
-      cloud: h.cloud, consent: localStorageVoiceNoteConsentStore(DID, storage), tcw: () => space.tcw, holds: store });
-    return { space, h, launch, holds, storage };
+      cloud: h.cloud, consent: localStorageVoiceNoteConsentStore(DID, storage), tcw: () => space.tcw, holds: store,
+      choices: localStorageVoiceNotePrivateChoiceStore(DID, storage) });
+    return { space, h, launch, holds, choices, storage };
   }
   const untouched = (h: { creates: unknown[]; puts: unknown[] }) => {
     expect(h.creates).toHaveLength(0);
@@ -1459,6 +1494,41 @@ describe("every path that creates or resumes an off-phone job consults the hold 
     expect(transcriber.snapshot().jobs.get("rec-1")?.kind).toBe("done");
   });
 
+  test("a legacy consent holds an in-app Private note until the new disclosure is confirmed", async () => {
+    const { h, launch, storage } = await setup("in_app", { consented: false });
+    storage.setItem(accountStorageKey(VOICE_NOTE_CONSENT_KEY, DID), "1");
+    const transcriber = launch();
+    expect(transcriber.snapshot().consented).toBe(false);
+    await transcriber.check();
+    await settle();
+    untouched(h);
+    transcriber.consent();
+    await settle();
+    expect(h.creates).toHaveLength(1);
+  });
+
+  test("default Private notes remain blocked across a relaunch and all resume after the new consent", async () => {
+    const { space, h, launch, choices } = await setup("in_app", { consented: false, pending: false, secondJob: true });
+    expect((await saveVoiceNote(space.tcw, { ...RECORDING, id: "rec-2" }, AUDIO, "ios")).ok).toBe(true);
+    space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata, '$.capture.version', 2,
+      '$.capture.options.transcriber', 'private-cloud', '$.capture.source', 'in_app') WHERE source_id = 'rec-2'`).run();
+    const first = launch();
+    await first.check();
+    for (const id of ["rec-1", "rec-2"]) first.noteSaved({ id, durationMs: 9_000, options: { transcriber: "private-cloud" }, source: "in_app" });
+    expect(choices.ids()).toEqual(["rec-1", "rec-2"]);
+    untouched(h);
+
+    const relaunched = launch();
+    for (const id of ["rec-1", "rec-2"]) expect(relaunched.snapshot().jobs.get(id)).toEqual({ kind: "blocked", reason: "no-consent" });
+    await relaunched.check();
+    await settle();
+    untouched(h); // Not now leaves the durable blocker and Review action in place.
+    relaunched.consent();
+    await settle();
+    expect(h.creates).toHaveLength(2);
+    expect(choices.ids()).toEqual([]);
+  });
+
   test("the hold list cannot be read: an in-app note is still resumed, a shortcut note is not", async () => {
     const unreadable: VoiceNoteHoldStore = { read: () => { throw new Error("unreadable"); }, write: () => {} };
     const silence = console.error;
@@ -1534,6 +1604,8 @@ describe("every path that creates or resumes an off-phone job consults the hold 
 
 describe("progress copy", () => {
   test("progress copy", () => {
+    expect(transcriptionStatusText({ kind: "uploading" })).toBe("Sending audio to Private transcription…");
+    expect(transcriptionStatusText({ kind: "uploading", progress: 0.42 })).toBe("Sending audio to Private transcription · 42%");
     expect(transcriptionStatusText({ kind: "queued", position: 3 })).toBe("Queued (position 3)…");
     expect(transcriptionStatusText({ kind: "processing", completed: 2, total: 5 })).toBe("Transcribing in private cloud… 2/5");
     expect(transcriptionStatusText({ kind: "processing", completed: null, total: null })).toBe("Transcribing in private cloud…");

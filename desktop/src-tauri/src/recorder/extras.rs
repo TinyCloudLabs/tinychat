@@ -41,6 +41,8 @@ struct Preferences {
     #[serde(rename = "systemAudioV2", default = "default_system_audio")]
     system_audio: bool,
     #[serde(default)]
+    system_audio_consent: bool,
+    #[serde(default)]
     auto_save_to_space: bool,
 }
 
@@ -54,6 +56,7 @@ impl Default for Preferences {
             selected_model: None,
             microphone: None,
             system_audio: true,
+            system_audio_consent: false,
             auto_save_to_space: false,
         }
     }
@@ -234,10 +237,14 @@ pub async fn set_microphone(app: &tauri::AppHandle, id: Option<String>) -> Resul
 }
 
 pub async fn load_system_audio<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
-    let enabled = preferences(app).await?.system_audio;
+    let enabled = effective_system_audio(&preferences(app).await?);
     app.state::<Arc<AtomicBool>>()
         .store(enabled, Ordering::SeqCst);
     Ok(())
+}
+
+fn effective_system_audio(prefs: &Preferences) -> bool {
+    prefs.system_audio && prefs.system_audio_consent
 }
 
 pub fn install(app: &tauri::AppHandle) {
@@ -566,9 +573,27 @@ pub async fn recorder_system_audio_get(app: tauri::AppHandle) -> Result<bool, St
 pub async fn recorder_system_audio_set(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     super::ensure(&app);
     // The live stream cannot change source mid-capture; this applies on next start/resume.
-    save_preferences(&app, |prefs| prefs.system_audio = enabled).await?;
+    let prefs = save_preferences(&app, |prefs| prefs.system_audio = enabled).await?;
     app.state::<Arc<AtomicBool>>()
-        .store(enabled, Ordering::SeqCst);
+        .store(effective_system_audio(&prefs), Ordering::SeqCst);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn recorder_system_audio_consent_get(app: tauri::AppHandle) -> Result<bool, String> {
+    super::ensure(&app);
+    Ok(preferences(&app).await?.system_audio_consent)
+}
+
+#[tauri::command]
+pub async fn recorder_system_audio_consent_set(
+    app: tauri::AppHandle,
+    consented: bool,
+) -> Result<(), String> {
+    super::ensure(&app);
+    let prefs = save_preferences(&app, |prefs| prefs.system_audio_consent = consented).await?;
+    app.state::<Arc<AtomicBool>>()
+        .store(effective_system_audio(&prefs), Ordering::SeqCst);
     Ok(())
 }
 
@@ -617,6 +642,8 @@ mod tests {
         }))
         .unwrap();
         assert!(beta.system_audio);
+        assert!(!beta.system_audio_consent);
+        assert!(!effective_system_audio(&beta));
         assert_eq!(beta.selected_model.as_deref(), Some("QuantizedTinyEn"));
         assert!(beta.auto_save_to_space);
 
@@ -630,6 +657,20 @@ mod tests {
                 .unwrap()
                 .system_audio
         );
+    }
+    #[test]
+    fn system_audio_requires_persisted_consent_and_respects_mic_only() {
+        let mut prefs = Preferences::default();
+        assert!(!effective_system_audio(&prefs));
+        prefs.system_audio_consent = true;
+        assert!(effective_system_audio(&prefs));
+        let stored = serde_json::to_value(&prefs).unwrap();
+        assert_eq!(stored["systemAudioConsent"], true);
+        let mut restored =
+            parse_preferences(&serde_json::json!({ "exo_recorder": stored })).unwrap();
+        assert!(effective_system_audio(&restored));
+        restored.system_audio = false;
+        assert!(!effective_system_audio(&restored));
     }
     #[test]
     fn microphone_survives_preferences_roundtrip() {

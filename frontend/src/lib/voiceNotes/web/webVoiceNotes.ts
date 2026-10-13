@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 // The browser VoiceNotes engine: the webStore (IndexedDB) and webCapture (getUserMedia +
 // MediaRecorder + level meter) composed into a VoiceNotesPlugin the existing recorder
 // controller, saves pipeline and quarantine UI can use unchanged. W1a installs it into
@@ -94,7 +95,7 @@ function mapGetUserMediaError(error: unknown): Error {
       return Object.assign(failure("mic_unavailable", "The microphone is busy or could not be opened."), { cause: error });
     }
   }
-  return error instanceof Error ? error : new Error(String(error));
+  return error instanceof Error ? error : new Error(readableError(error));
 }
 
 function resumeFailureReason(error: unknown): { reason: "resume_not_allowed" | "resume_blocked" | "mic_unavailable"; detail: string } {
@@ -182,7 +183,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
 
   const onWriteFailure = (l: Live, error: unknown) => {
     if (l.writeFailed) return;
-    l.writeFailed = error instanceof Error ? error : new Error(String(error));
+    l.writeFailed = error instanceof Error ? error : new Error(readableError(error));
     console.error("[webVoiceNotes] A recording chunk could not be stored", error);
     // Reported by finish() after committed/autoStopped, which resolve the note's capture issue by design.
     if (l.closed) emit("writeFailure", { id: l.id, error: l.writeFailed.message });

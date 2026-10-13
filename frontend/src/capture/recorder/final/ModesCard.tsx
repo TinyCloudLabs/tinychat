@@ -36,6 +36,7 @@ export interface ModesCardProps {
   mode: ModeId;
   shell: ModeShell;
   identifySpeakers: boolean;
+  privateDiarization: boolean;
   onChoose: (id: ModeId) => void;
   onToggleSpeakers: (enabled: boolean) => void;
   onClose: () => void;
@@ -50,6 +51,7 @@ export function ModesCard({
   mode,
   shell,
   identifySpeakers,
+  privateDiarization,
   onChoose,
   onToggleSpeakers,
   onClose,
@@ -58,7 +60,7 @@ export function ModesCard({
 }: ModesCardProps) {
   const root = useRef<HTMLDivElement>(null);
   const rows = useRef(new Map<ModeId, HTMLButtonElement>());
-  const speakers = identifySpeakersControl(mode, identifySpeakers);
+  const speakers = identifySpeakersControl(mode, identifySpeakers, privateDiarization);
 
   useEffect(() => markKeyboardOpened(root.current), []);
   useEffect(() => {

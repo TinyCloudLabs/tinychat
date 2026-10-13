@@ -60,6 +60,12 @@ describe("TranscriptionRouteControl", () => {
     expect(render(transcription({ availability: "failed", consented: false }))).not.toContain("unavailable");
   });
 
+  test("a native status failure is visible before Private consent", () => {
+    const html = render(transcription({ availability: "failed", consented: false, checkErrorCode: "native_status_failed" }));
+    expect(html).toContain("Couldn&#x27;t check this phone&#x27;s file upload.");
+    expect(html).toContain('data-testid="voice-note-transcription-recheck"');
+  });
+
   test("available and on: Off · On this phone · Private cloud with Private cloud chosen, and its route", () => {
     const html = render(transcription());
     expect(segments(html)).toBe(3);
@@ -70,16 +76,16 @@ describe("TranscriptionRouteControl", () => {
     expect(html).not.toContain("voice-note-transcription-consent");
   });
 
-  test("available without consent: On this phone is chosen (native's own default, not Off); choosing Private cloud asks once, in one sentence", () => {
+  test("available without consent: choosing Private shows the disclosure and both choices", () => {
     const off = render(transcription({ consented: false }));
     expect(off).toContain('data-route="on-device"');
     expect(off).not.toContain("voice-note-transcription-enable");
     const asking = render(transcription({ consented: false }), true);
     expect(asking).toContain('data-testid="voice-note-transcription-consent"');
-    expect(asking).toContain("After you stop, TinyCloud Private Transcription turns your note into text.");
+    expect(asking).toContain("Private transcription sends this note&#x27;s audio from this browser to TinyCloud Private Transcription, a sealed hardware enclave. It&#x27;s deleted there once the transcript is ready. Exo never sees it.");
     expect(asking).not.toContain("minutes");
-    expect(asking).toContain(">Use private cloud</button>");
-    // The disclosure itself is on How it works, not here.
+    expect(asking).toContain(">Use Private transcription</button>");
+    expect(asking).toContain(">Not now</button>");
     expect(asking).not.toContain("Tinfoil");
   });
 

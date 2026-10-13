@@ -40,7 +40,7 @@ import {
  *                                                       { status: "submitted", id: <handle> } |
  *                                                       { status: "failed", error: { code, message } }
  *   DELETE /hosted/uploads/:upload_id                   abandon an unsent upload (refunded) → 204
- *   POST   /hosted/transcripts                          { upload_id, speaker_labels } → 202 { upload_id, status, … }
+ *   POST   /hosted/transcripts                          { upload_id, speaker_labels, multichannel? } → 202 { upload_id, status, … }
  *   GET    /hosted/transcripts/:handle                  rebuilt subset of the transcript
  *   GET    /hosted/transcripts/:handle/sentences        { sentences: [{ start, end, text, speaker }] }
  *   DELETE /hosted/transcripts/:handle                  → 204 (also when AssemblyAI no longer has it)
@@ -140,6 +140,14 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
   const log = options.log ?? ((line: string, alert: boolean) => (alert ? console.error(line) : console.log(line)));
   if (config.hosted && !store) throw new Error("assemblyai hosted router: store is required when hosted");
   const router = Router();
+
+  // Older own-key clients must see a visible failure. A 404 is treated as
+  // "already deleted" and would leave data in the user's AssemblyAI account.
+  router.delete("/transcripts/:id", (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.status(410).json({ error: "assemblyai_own_key_delete_gone",
+      message: "Deleting transcripts with an AssemblyAI personal key is no longer supported. Delete this transcript in your AssemblyAI account." });
+  });
 
   function locals(res: Response): Locals {
     return res.locals.assemblyAiHosted as Locals;
@@ -342,7 +350,7 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
   }
 
   /** The background submit: stream the spool, create the transcript, mint the handle. */
-  async function submit(upload: HostedUpload, speakerLabels: boolean, cid: string, signal: AbortSignal): Promise<SubmitOutcome> {
+  async function submit(upload: HostedUpload, speakerLabels: boolean, multichannel: boolean, cid: string, signal: AbortSignal): Promise<SubmitOutcome> {
     const settle = (failure: Failure | null, outcome: SubmitOutcome): SubmitOutcome => {
       const status = failure ? ASSEMBLYAI_HOSTED_ERRORS[failure.code].status : 201;
       log(
@@ -371,7 +379,8 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
         return failed({ code: "assemblyai_unavailable", upstreamStatus: 200, reason: "off_contract" });
       }
       const created = await call("POST", "/v2/transcript", SMALL_BODY, {
-        body: JSON.stringify({ audio_url: uploaded.upload_url, speaker_labels: speakerLabels, language_detection: true, speech_models: SPEECH_MODELS }),
+        body: JSON.stringify({ audio_url: uploaded.upload_url, speaker_labels: speakerLabels && !multichannel,
+          multichannel, language_detection: true, speech_models: SPEECH_MODELS }),
         contentType: "application/json",
         signal,
       });
@@ -460,7 +469,8 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
     "/hosted/transcripts",
     handle("create_transcript", async (req, res) => {
       const body = req.body as Record<string, unknown> | undefined;
-      if (!req.is("application/json") || typeof body !== "object" || body === null || Array.isArray(body) || typeof body.speaker_labels !== "boolean") {
+      if (!req.is("application/json") || typeof body !== "object" || body === null || Array.isArray(body) || typeof body.speaker_labels !== "boolean"
+        || (body.multichannel !== undefined && typeof body.multichannel !== "boolean")) {
         return fail(res, { code: "invalid_request" });
       }
       const id = typeof body.upload_id === "string" ? body.upload_id : "";
@@ -472,7 +482,7 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
         const upload = found.upload;
         const speakerLabels = body.speaker_labels;
         const cid = locals(res).cid;
-        if (!(await store!.submitIfComplete(upload, now, (signal) => submit(upload, speakerLabels, cid, signal)))) {
+        if (!(await store!.submitIfComplete(upload, now, (signal) => submit(upload, speakerLabels, body.multichannel === true, cid, signal)))) {
           return fail(res, { code: "assemblyai_upload_incomplete" });
         }
       }

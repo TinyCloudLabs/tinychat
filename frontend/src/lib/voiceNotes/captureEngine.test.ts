@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { Capacitor } from "@capacitor/core";
 
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import {
@@ -11,12 +12,13 @@ import {
   captureEngineKind,
   installCaptureEngine,
   registerCaptureEngine,
+  resolveNativeFileUploadCapability,
   type CaptureCapabilities,
   type CaptureEngine,
   type CaptureEngineKind,
 } from "./captureEngine";
 import { VoiceNotes, __setVoiceNotesForTests } from "./nativeVoiceNotes";
-import { effectiveTranscriber } from "./transcriberPreference";
+import { effectiveCaptureOptions, effectiveTranscriber, readTranscriberPreference } from "./transcriberPreference";
 
 const none: CaptureCapabilities = {
   nativeShortcuts: false, presentRecorder: false, openSettings: false, micDeniedPresentation: false,
@@ -30,6 +32,7 @@ const saved = {
   MediaRecorder: global.MediaRecorder,
   mediaDevices: Object.getOwnPropertyDescriptor(navigator, "mediaDevices"),
   voiceNotes: VoiceNotes,
+  getPlatform: Capacitor.getPlatform,
 };
 
 interface Shell { native: boolean; tauri: boolean; mediaRecorder: boolean; mediaDevices: boolean }
@@ -47,6 +50,7 @@ afterEach(() => {
   if (saved.MediaRecorder === undefined) delete global.MediaRecorder; else global.MediaRecorder = saved.MediaRecorder;
   if (saved.mediaDevices) Object.defineProperty(navigator, "mediaDevices", saved.mediaDevices); else delete (navigator as unknown as Record<string, unknown>).mediaDevices;
   __setVoiceNotesForTests(saved.voiceNotes, { available: null });
+  Capacitor.getPlatform = saved.getPlatform;
 });
 
 describe("captureEngineKind: native x tauri internals x MediaRecorder x registered", () => {
@@ -63,7 +67,7 @@ describe("captureEngineKind: native x tauri internals x MediaRecorder x register
           : mediaRecorder && registeredWeb ? "web"
           : null;
         expect(captureEngineKind()).toBe(expected);
-        expect(captureEngineInstallPending()).toBe(expected !== null);
+        expect(captureEngineInstallPending()).toBe(expected === "web" || expected === "tauri");
       });
     }
 
@@ -91,6 +95,31 @@ describe("native", () => {
     expect(captureEngineKind()).toBe("native");
     expect(VoiceNotes).toBe(saved.voiceNotes);
   });
+
+  test("Android reports a typed status failure and re-queries on retry", async () => {
+    Capacitor.getPlatform = () => "android";
+    let reads = 0;
+    setShell({ native: true, tauri: false, mediaRecorder: false, mediaDevices: false });
+    __setVoiceNotesForTests({ ...saved.voiceNotes, status: async () => {
+      reads++;
+      if (reads === 1) throw new Error("native bridge unavailable");
+      return { androidSdkInt: 35 } as Awaited<ReturnType<typeof VoiceNotes.status>>;
+    } }, { available: true });
+    expect(captureEngineInstallPending()).toBe(false);
+    await expect(resolveNativeFileUploadCapability()).rejects.toMatchObject({ code: "native_status_failed" });
+    expect(captureCapabilities().nativeFileUpload).toBe(false);
+    expect(await resolveNativeFileUploadCapability()).toBe(true);
+    expect(captureCapabilities().nativeFileUpload).toBe(true);
+    expect(reads).toBe(2);
+  });
+
+  test("Android's status probe times out instead of waiting forever", async () => {
+    Capacitor.getPlatform = () => "android";
+    setShell({ native: true, tauri: false, mediaRecorder: false, mediaDevices: false });
+    __setVoiceNotesForTests({ ...saved.voiceNotes, status: () => new Promise(() => {}) }, { available: true });
+    await expect(resolveNativeFileUploadCapability()).rejects.toMatchObject({ code: "native_status_failed",
+      cause: { message: "status_timeout" } });
+  }, 8_000);
 });
 
 describe("installCaptureEngine", () => {
@@ -139,22 +168,48 @@ describe("installCaptureEngine", () => {
   });
 });
 
-test("desktop Local follows its selected Whisper model while web routing is unchanged", () => {
+test("a signed-in Local default stays Local while the model is unavailable", () => {
   __setInstalledEngineForTests("tauri", { ...none, offlineRecorder: true });
   expect(effectiveTranscriber("on-device", false)).toBe("off");
-  expect(effectiveTranscriber("on-device", true)).toBe("private-cloud");
+  expect(effectiveTranscriber("on-device", true)).toBe("on-device");
   __setInstalledEngineForTests("tauri", { ...none, offlineRecorder: true, nativeFileUpload: true, desktopWhisper: true });
   expect(effectiveTranscriber("on-device", false)).toBe("on-device");
   expect(effectiveTranscriber("on-device", true)).toBe("on-device");
   __setInstalledEngineForTests("web", none);
-  expect(effectiveTranscriber("on-device", false)).toBe("private-cloud");
+  expect(effectiveTranscriber("on-device", false)).toBe("on-device");
+  expect(effectiveTranscriber("on-device", true)).toBe("private-cloud");
+});
+
+test("Identify speakers defaults on, survives unsupported modes, and is committed for cloud transcription", () => {
+  const key = "exo.voiceNotes.identifySpeakers";
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const values = new Map<string, string>();
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+    getItem: (name: string) => values.get(name) ?? null,
+    setItem: (name: string, value: string) => { values.set(name, value); },
+  } });
+  try {
+    expect(readTranscriberPreference().identifySpeakers).toBe(true);
+    expect(effectiveCaptureOptions({ transcriber: "on-device", identifySpeakers: true }, true).identifySpeakers).toBe(false);
+    expect(effectiveCaptureOptions({ transcriber: "off", identifySpeakers: true }, true).identifySpeakers).toBe(false);
+    expect(effectiveCaptureOptions({ transcriber: "private-cloud", identifySpeakers: true }, true).identifySpeakers).toBe(true);
+    expect(effectiveCaptureOptions({ transcriber: "assemblyai", identifySpeakers: true }, true).identifySpeakers).toBe(true);
+    values.set(key, "0");
+    expect(readTranscriberPreference().identifySpeakers).toBe(false);
+    values.set("exo.voiceNotes.transcriber", "assemblyai");
+    values.set(key, "1");
+    expect(readTranscriberPreference()).toEqual({ transcriber: "assemblyai", identifySpeakers: true });
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  }
 });
 
 describe("App.tsx gates its native-only surfaces on capabilities", () => {
   const app = readFileSync(new URL("../../App.tsx", import.meta.url), "utf8");
-  test("the offline recorder, the signed-out local home and MicDeniedRecovery", () => {
-    expect(app).toContain("voiceNotesInApp && capabilities.offlineRecorder && !LOCAL_VALIDATION && offlineCapture");
-    expect(app).toContain("voiceNotesInApp && capabilities.offlineRecorder && !LOCAL_VALIDATION && state === \"unauthenticated\"");
+  test("the shared device capture shell and MicDeniedRecovery", () => {
+    expect(app).toContain("voiceNotesInApp && capabilities.offlineRecorder && !LOCAL_VALIDATION &&");
+    expect(app).toContain('state === "offline" || state === "unauthenticated" || state === "recoverableError"');
     expect(app).toContain("platform === \"android\" && voiceNotesInApp && capabilities.micDeniedPresentation");
   });
 });

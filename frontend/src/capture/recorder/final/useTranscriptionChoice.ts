@@ -1,3 +1,4 @@
+import { readableError } from "@/lib/readableError";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import {
   isOnDeviceReady,
@@ -55,9 +56,9 @@ export const TRANSCRIBER_FOR: Record<ModeId, TranscriberId> = {
 const MODE_NAME = Object.fromEntries(
   MODE_STOPS.map((stop) => [stop.id, stop.shortName]),
 ) as Record<ModeId, string>;
-const MODE_FOR = Object.fromEntries(
-  Object.entries(TRANSCRIBER_FOR).map(([mode, id]) => [id, mode]),
-) as Record<TranscriberId, ModeId>;
+const MODE_FOR: Record<TranscriberId, ModeId> = {
+  off: "skip", "on-device": "local", "private-cloud": "private", assemblyai: "powerful",
+};
 
 export interface ScaleStop {
   stop: ModeStop;
@@ -96,7 +97,7 @@ export function useOnDeviceModel(): {
       console.error(`[Recorder] Could not ${what}`, caught);
       if (live)
         setError(
-          `Could not ${what}: ${caught instanceof Error ? caught.message : String(caught)}`,
+          `Could not ${what}: ${readableError(caught)}`,
         );
     };
     const succeeded = (next: OnDeviceSttStatus) => {
@@ -165,7 +166,6 @@ export function useTranscriptionChoice({
   notify,
 }: TranscriptionChoiceOptions) {
   const offered = transcription?.availability === "available";
-  const consented = transcription?.consented ?? false;
   const desktop = shell === "desktop";
   const whisperReady = desktop && whisper.ready;
   // Signed out with no Whisper on this Mac there is nothing to transcribe with: the recording is kept as audio only.
@@ -175,6 +175,7 @@ export function useTranscriptionChoice({
   const [asking, setAsking] = useState(false);
   const [pending, setPending] = useState<ModeId | null>(null);
   const [retry, setRetry] = useState<ModeId | null>(null);
+  const consented = retry === "powerful" ? transcription?.powerfulConsented ?? false : transcription?.consented ?? false;
 
   const localModelStatus: { reason?: string; action?: StopAction } =
     shell === "phone" && model && !isOnDeviceReady(model)
@@ -200,13 +201,17 @@ export function useTranscriptionChoice({
       if (!signedIn)
         return { stop, available: true, ...(stop.id === "local" ? localModelStatus : {}) };
       if (stop.id === "private" && !offered) {
-        const { reason, canRecheck } = privateNotOffered(transcription?.availability);
+        const { reason, canRecheck } = privateNotOffered(transcription?.availability, transcription?.checkErrorCode);
         return {
           stop,
           available: false,
           reason,
           ...(canRecheck && transcription ? { action: { label: CHECK_AGAIN, run: transcription.onRecheck } } : {}),
         };
+      }
+      if (stop.id === "powerful" && !transcription?.powerfulAvailable) {
+        return { stop, available: false, reason: "Not available right now",
+          ...(transcription ? { action: { label: CHECK_AGAIN, run: transcription.onRecheck } } : {}) };
       }
       if (stop.id === "local" && shell === "phone" && availability.available)
         return { stop, available: true, ...localModelStatus };
@@ -223,7 +228,7 @@ export function useTranscriptionChoice({
   const failed = (what: string, caught: unknown) => {
     console.error(`[Recorder] Could not ${what}`, caught);
     notify(
-      `Could not ${what}: ${caught instanceof Error ? caught.message : String(caught)}`,
+      `Could not ${what}: ${readableError(caught)}`,
     );
   };
 
@@ -287,7 +292,8 @@ export function useTranscriptionChoice({
   };
 
   const confirmConsent = () => {
-    transcription?.onConsent();
+    if (pending === "powerful") transcription?.onPowerfulConsent?.();
+    else transcription?.onConsent();
     setAsking(false);
     setRetry(pending);
     setPending(null);
@@ -334,11 +340,13 @@ export function useTranscriptionChoice({
       : undefined,
     stops,
     modelNote,
+    privateDiarization: transcription?.diarization === true,
     select,
     step,
     identifySpeakers: api.transcriber.identifySpeakers,
     setIdentifySpeakers,
     asking,
+    askingMode: pending,
     dismissConsent,
     confirmConsent,
   };

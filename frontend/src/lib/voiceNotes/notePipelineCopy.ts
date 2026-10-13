@@ -16,6 +16,7 @@ export const ACTION_LABEL: Record<PipelineActionKind, string> = {
   retry: "Try again",
   "get-model": "Get the model",
   "check-again": "Check again",
+  "review-consent": "Review",
   reread: "Try again",
 };
 
@@ -52,7 +53,7 @@ export const SPACE_COPY = {
   afterRecording: "After recording",
   waiting: "Waiting to upload",
   waitingInLine: (position: number) => `Waiting to upload · ${place(position)} in line`,
-  uploading: (fraction: number | null) => (fraction === null ? "Uploading…" : `Uploading · ${percentText(fraction)}`),
+  uploading: (fraction: number | null) => (fraction === null ? "Uploading audio to your TinyCloud space…" : `Uploading audio to your TinyCloud space · ${percentText(fraction)}`),
   retrying: "Retrying…",
   offline: "Waiting for a connection",
   offlineCaption: "Offline · Resumes automatically",
@@ -110,7 +111,7 @@ export const LOCAL_COPY = {
 export const PRIVATE_COPY = {
   waiting: (position: number) => `Waiting · ${place(position)}`,
   preparing: "Preparing…",
-  sending: "Sending to private cloud",
+  sending: "Sending audio to Private transcription",
   inQueue: (position: number | null) => (position === null ? "In the queue" : `In the queue · #${position}`),
   transcribing: (completed: number | null, total: number | null) =>
     completed === null || total === null ? "Transcribing…" : `Transcribing · ${completed} of ${total}`,
@@ -121,7 +122,7 @@ export const PRIVATE_COPY = {
   unavailable: "Private transcription isn't available right now",
   checkFailed: "Couldn't check whether private transcription is available",
   checking: "Checking private transcription…",
-  noConsent: "Private transcription is turned off",
+  noConsent: "Waiting for your OK to use Private",
   failed: (message: string | null | undefined, reference: string | null) => {
     const copy = hasText(message) ? message.trim() : "Private transcription couldn't finish.";
     return hasText(reference) ? `${copy} · Reference ${reference.trim()}` : copy;

@@ -174,7 +174,7 @@ for (const theme of THEMES) {
           };
         }),
       );
-      expect(rows.length).toBe(4);
+      expect(rows.map((row) => row.mode)).toEqual(["skip", "local", "private", "powerful"]);
       for (const row of rows) {
         expect(row.dots.length).toBe(2);
         for (const dots of row.dots) {

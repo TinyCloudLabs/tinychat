@@ -1,3 +1,5 @@
+import { logPipelineError } from "@/lib/debugLog";
+import { readableError } from "@/lib/readableError";
 // Voice notes in the owner's TinyCloud space: one indexed live
 // `connector_meeting` row, a `voice_note_transcript` commit record, and bodies
 // in KV under the granted `connectors/` prefix.
@@ -245,7 +247,7 @@ type StoreFailure = { ok: false; error: { code: string; message: string; cause?:
 /** A shared audio store rejection as this module's Result, in the codes the UI shows. */
 function audioFailure(op: string, err: unknown): StoreFailure {
   if (!(err instanceof AudioStoreError)) {
-    return { ok: false, error: { code: "STORE_ERROR", message: `${op}: ${err instanceof Error ? err.message : String(err)}`, cause: err } };
+    return { ok: false, error: { code: "STORE_ERROR", message: `${op}: ${readableError(err)}`, cause: err } };
   }
   switch (err.code) {
     case AUDIO_STORAGE_FULL:
@@ -378,8 +380,8 @@ export async function saveVoiceNote(
 ): Promise<StoreResult<UpsertMeetingOutcome & { noteSyncError?: NoteSyncErrorCode }>> {
   try {
     opts.checkpoint?.();
-    const before = await ensureVoiceNoteIdentity(tcw, opts.checkpoint);
-    if (before.status !== "established") return { ok: false, error: { code: before.status, message: before.reason ?? before.status } };
+    const before = await withVoiceNoteSaveDeadline("voice-note space setup", () => ensureVoiceNoteIdentity(tcw, opts.checkpoint));
+    if (before.status !== "established") return { ok: false, error: { code: before.status, message: before.reason ?? before.status, cause: before.cause } };
     opts.checkpoint?.();
     const row = await createVoiceNoteRow(tcw, recording, voiceNoteTitle(recording.startedAt), opts.checkpoint);
     opts.checkpoint?.();
@@ -411,12 +413,12 @@ export async function saveVoiceNote(
     catch (caught) {
       opts.checkpoint?.(); // Cancellation and discard still stop this save.
       noteSyncError = "sync_failed";
-      console.warn("[VoiceNotes] Audio saved, but its Markdown did not sync", caught);
+      logPipelineError("[VoiceNotes] Audio saved, but its Markdown did not sync", caught);
     }
     return { ok: true, data: { id: row.id, inserted: row.inserted, createdAt: row.createdAt, noteSyncError } };
   } catch (caught) {
     return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
-      message: caught instanceof Error ? caught.message : String(caught), cause: caught } };
+      message: readableError(caught), cause: caught } };
   }
 }
 
@@ -551,7 +553,7 @@ export async function saveVoiceNoteTranscript(
   } catch (caught) {
     if (caught instanceof StaleAccountContext) throw caught;
     return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
-      message: caught instanceof Error ? caught.message : String(caught) } };
+      message: readableError(caught) } };
   }
   if (!existing.ok) {
     return { ok: false, error: { code: existing.error.code ?? "STORE_ERROR", message: `saveVoiceNoteTranscript: ${existing.error.message}` } };
@@ -584,7 +586,7 @@ export async function saveVoiceNoteTranscript(
   } catch (caught) {
     if (caught instanceof StaleAccountContext) throw caught;
     return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
-      message: caught instanceof Error ? caught.message : String(caught) } };
+      message: readableError(caught) } };
   }
 }
 
