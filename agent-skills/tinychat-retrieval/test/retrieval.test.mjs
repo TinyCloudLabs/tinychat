@@ -292,6 +292,32 @@ describe('bounded latest intent', () => {
     const result = await invoke(f, 'latest');
     expect(result.records.map(row => row.id)).toEqual(['newer-voice']);
   });
+  test('latest admits a transcribed legacy note when the commit table is absent', async () => {
+    const f = fixture();
+    f.add('older-fireflies', { date: '2026-09-17T12:00:00Z' });
+    f.add('newer-voice', {
+      source: 'exo-voice-note', sourceId: 'legacy-without-table',
+      date: '2026-09-18T12:00:00Z',
+      metadata: { transcription_outcome: 'transcribed', transcribed_at: '2026-09-18T11:00:00Z', transcript_text: 'Transcript' },
+      voiceNoteCommit: false,
+    });
+    f.db.exec('DROP TABLE voice_note_transcript');
+    const result = await invoke(f, 'latest');
+    expect(result.records.map(row => row.id)).toEqual(['newer-voice']);
+  });
+  test('latest ignores a transcribed mirror when the commit outcome is no_speech', async () => {
+    const f = fixture();
+    f.add('older-fireflies', { date: '2026-09-17T12:00:00Z' });
+    f.add('newer-no-speech', {
+      source: 'exo-voice-note', sourceId: 'no-speech-with-stale-mirror',
+      date: '2026-09-18T12:00:00Z',
+      metadata: { transcription_outcome: 'transcribed', transcript_text: 'Stale mirror' },
+      body: [{ text: 'Stale mirror' }],
+      voiceNoteOutcome: 'no_speech',
+    });
+    const result = await invoke(f, 'latest');
+    expect(result.records.map(row => row.id)).toEqual(['older-fireflies']);
+  });
   test('ties use deterministic IDs and filters constrain latest intent', async () => {
     const f = fixture(); f.add('z', { date: '2026-09-18T12:00:00Z' }); f.add('a', { date: '2026-09-18T13:00:00+01:00' }); f.add('older', { source: 'google-meet', date: '2026-09-17T12:00:00Z' });
     const r = await invoke(f, 'latest'); expect(r.ok).toBe(true); expect(r.records[0].id).toBe('a'); expect(r.selection.tiedAtNewest).toBe(true);
@@ -549,6 +575,9 @@ test('transcribed legacy winners without usable transcript_text fail closed', as
   }
   expect(results.map(([, result]) => result.error?.code)).toEqual(['TRANSCRIPT_OMITTED', 'TRANSCRIPT_OMITTED', 'TRANSCRIPT_OMITTED', 'TRANSCRIPT_OMITTED']);
   expect(results.map(([id, result]) => result.coverage.omissions[0]).every((omission, index) => omission.id === results[index][0] && omission.reason === 'not_transcribed')).toBe(true);
+  f.add('older-fireflies', { date: '2026-09-17T12:00:00Z' });
+  const latest = await invoke(f, 'latest');
+  expect(latest.records.map(row => row.id)).toEqual(['older-fireflies']);
   expect(f.calls.filter(args => args.includes('get'))).toHaveLength(0);
 });
 

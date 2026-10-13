@@ -137,8 +137,8 @@ function makeQuery(scope, after, limit, bodySearch = false, supportedOnly = fals
   const terms = ["(source IS NULL OR source != 'exo-voice-note-dup')"], params = [];
   if (supportedOnly) { terms.push(`source IN (${SOURCES.map(() => '?').join(',')})`); params.push(...SOURCES); }
   if (transcriptOnly) {
-    const legacyWinnerOutcome = `(SELECT json_extract(g.metadata, '$.transcription_outcome') FROM connector_meeting g WHERE g.source_id = connector_meeting.source_id AND ${LEGACY_WINNER_FILTER_SQL} ${LEGACY_WINNER_ORDER_SQL})`;
-    const legacyAdmission = `COALESCE(${legacyWinnerOutcome} = 'transcribed', 0)`;
+    const legacyWinnerId = `(SELECT g.id FROM connector_meeting g WHERE g.source_id = connector_meeting.source_id AND ${LEGACY_WINNER_FILTER_SQL} ${LEGACY_WINNER_ORDER_SQL})`;
+    const legacyAdmission = `EXISTS (SELECT 1 FROM connector_meeting g WHERE g.id = ${legacyWinnerId} AND g.source_id = connector_meeting.source_id AND json_extract(g.metadata, '$.transcription_outcome') = 'transcribed' AND json_type(g.metadata, '$.transcript_text') = 'text' AND trim(json_extract(g.metadata, '$.transcript_text')) != '')`;
     const admission = voiceNoteCommitTableAvailable
       ? `(CASE WHEN EXISTS (SELECT 1 FROM voice_note_transcript t WHERE t.source_id = connector_meeting.source_id) THEN EXISTS (SELECT 1 FROM voice_note_transcript t WHERE t.source_id = connector_meeting.source_id AND t.outcome = 'transcribed') ELSE ${legacyAdmission} END)`
       : legacyAdmission;

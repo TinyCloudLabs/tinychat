@@ -67,6 +67,7 @@ const fs = require('node:fs'); const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(receipt)}, JSON.stringify({args})+'\\n');
 if(args.includes('--version')) process.stdout.write('0.10.0');
 else if(args.includes('status')) process.stdout.write(JSON.stringify({authenticated:true,ownerDid:'did:pkh:eip155:1:0x1111111111111111111111111111111111111111',profile:'fixture',host:'https://node.example.test'}));
+else if(args.includes('query') && args[args.indexOf('query')+1].includes('sqlite_schema')) process.stdout.write(JSON.stringify({columns:['name'],rows:[['voice_note_transcript']],rowCount:1}));
 else if(args.includes('query')) process.stdout.write(JSON.stringify({columns:['id','source','source_id','title','started_at','organizer_email','participants','summary_overview','summary_action_items','metadata','updated_at','sort_time'],rows:[['id','fireflies','source','Title','2026-09-20T00:00:00Z',null,'[]',null,null,'{}',null,2461303.5]],rowCount:1}));
 else if(args.includes('get')) { fs.writeFileSync(args[args.indexOf('--output')+1], ${JSON.stringify(rawBody)}); process.stdout.write('{}'); }
 `, { mode: 0o700 });
