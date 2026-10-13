@@ -45,9 +45,9 @@ export class CalendarAutojoinConnection {
     // never deleted (disable/disconnect rewrite them as "disabled"). A never-connected tenant has
     // no outcomes, so skip the prefix listing: on the shared serialized storage lane it pushed this
     // read past the client's 20s abort, showing a never-connected account an error.
-    if (!connection) return { state: "off" as const, enabled: false, lastScanAt: null, errorCode: null, outcomes: [] };
+    if (!connection) return { state: "off" as const, enabled: false, lastScanAt: null, lastDispatchLag: null, errorCode: null, outcomes: [] };
     const outcomes = (await this.options.store.listOccurrences(tenant))
-      .filter(row => !!row.errorCode || ["missed", "missed_window", "failed", "event_ineligible", "event_changed", "already_recorded", "unverified_capture", "capacity_exhausted"].includes(row.disposition ?? ""))
+      .filter(row => !!row.errorCode || ["missed", "missed_window", "not_accepted", "failed", "event_ineligible", "event_changed", "already_recorded", "unverified_capture", "capacity_exhausted"].includes(row.disposition ?? ""))
       .sort((a, b) => b.start - a.start).slice(0, 30)
       .map(row => ({ id: row.id, title: row.title, start: row.start,
         reason: row.errorCode ?? row.disposition ?? "failed", ...(row.meetingId ? { meetingId: row.meetingId } : {}) }));
@@ -57,6 +57,7 @@ export class CalendarAutojoinConnection {
         : connection?.state === "enabled" ? "on" as const : "off" as const,
       enabled: connection?.state === "enabled",
       lastScanAt: connection?.lastScanAt ?? null,
+      lastDispatchLag: connection.lastDispatchLag ?? null,
       errorCode: connection?.errorCode ?? null,
       outcomes,
     };

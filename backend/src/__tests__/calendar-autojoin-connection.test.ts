@@ -269,7 +269,7 @@ describe("Calendar OAuth custody lifecycle", () => {
     const f = fixture();
     let listed = 0;
     f.store.listOccurrences = async () => { listed++; return []; };
-    expect(await f.connection.getStatus(TENANT)).toEqual({ state: "off", enabled: false, lastScanAt: null, errorCode: null, outcomes: [] });
+    expect(await f.connection.getStatus(TENANT)).toEqual({ state: "off", enabled: false, lastScanAt: null, lastDispatchLag: null, errorCode: null, outcomes: [] });
     expect(listed).toBe(0);
   });
 
