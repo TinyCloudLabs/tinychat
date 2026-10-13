@@ -97,16 +97,23 @@ async function mount(options: { metadata?: MeetingMetadataRead; layout?: "page" 
 }
 
 describe("the saved note's footer", () => {
-  test("a failed Mac Whisper job keeps the transcript Retry action in the status line", async () => {
-    const calls: string[] = [];
-    registerDesktopWhisperQueue({ snapshot: () => new Map([["rec-1", { id: "rec-1", state: "failed", error: "decoder", progress: null }]]),
-      subscribe: () => () => {}, retry: async (id: string) => { calls.push(id); } } as DesktopWhisperQueue);
-    const container = await mount({ platform: "tauri", metadata: { status: "ok", metadata: { audio: { stored: true } } } });
-    expect(nativeVoiceNotesAvailable()).toBe(false);
-    const retry = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Try again");
-    expect(retry !== undefined).toBe(true);
-    await act(async () => retry!.click());
-    expect(calls).toEqual(["rec-1"]);
+  describe("on Mac", () => {
+    beforeEach(() => {
+      Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+      __setVoiceNotesForTests(plugins.voiceNotes, { available: false });
+    });
+
+    test("a failed Mac Whisper job keeps the transcript Retry action in the status line", async () => {
+      const calls: string[] = [];
+      registerDesktopWhisperQueue({ snapshot: () => new Map([["rec-1", { id: "rec-1", state: "failed", error: "decoder", progress: null }]]),
+        subscribe: () => () => {}, retry: async (id: string) => { calls.push(id); } } as DesktopWhisperQueue);
+      const container = await mount({ platform: "tauri", metadata: { status: "ok", metadata: { audio: { stored: true } } } });
+      expect(nativeVoiceNotesAvailable()).toBe(false);
+      const retry = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Try again");
+      expect(retry !== undefined).toBe(true);
+      await act(async () => retry!.click());
+      expect(calls).toEqual(["rec-1"]);
+    });
   });
   test("while the status line shows, the legacy route line is not drawn", async () => {
     recordings = [recording("on-device", { state: "queued", pack: null, engine: null, segmentsDone: 0, windowsDone: 0, error: null })];
