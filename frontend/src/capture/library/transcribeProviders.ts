@@ -6,6 +6,7 @@ import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { privateCloudAccepts } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { onDeviceQueuePlace } from "@/lib/voiceNotes/onDeviceQueue";
+import type { TranscriptionAdmissionRefusal } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { onDeviceSttStore, retryOnDeviceNote } from "@/lib/voiceNotes/onDeviceSttStore";
 
 export type TranscribeProvider = "on-device" | "private-cloud";
@@ -42,6 +43,14 @@ export function needsConsent(provider: TranscribeProvider, transcription: VoiceN
   return provider === "private-cloud" && transcription?.consented !== true;
 }
 
+const PRIVATE_REFUSAL_COPY: Record<TranscriptionAdmissionRefusal, string> = {
+  checking: "Private transcription is still checking. Try again in a moment.",
+  unavailable: "Private transcription is unavailable right now. Try again later.",
+  "check-failed": "Couldn’t check Private transcription. Try again in a moment.",
+  "no-consent": "Enable Private transcription before trying again.",
+  "account-changed": "Your account changed. Try again after signing in.",
+};
+
 /** Starts the transcription. The reason it could not start, or null. */
 export async function transcribeWith(
   provider: TranscribeProvider,
@@ -58,6 +67,6 @@ export async function transcribeWith(
   }
   // A user's Private tap is explicit even on web, where there is no phone recording to inspect.
   // This path opts out of the capture-time committed-mode guard; a refusal still reaches the action's alert.
-  transcription.onTranscribePrivately(noteId);
-  return null;
+  const refusal = transcription.onTranscribePrivately(noteId);
+  return typeof refusal === "string" ? PRIVATE_REFUSAL_COPY[refusal] ?? null : null;
 }

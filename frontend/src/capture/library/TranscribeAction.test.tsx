@@ -13,7 +13,11 @@ import { __resetOnDeviceSttStoreForTests, onDeviceSttStore } from "@/lib/voiceNo
 import { __setOnDeviceSttForTests, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { installDom } from "@/test/dom";
 import { NoteDetailView } from "./NoteDetailView";
+import { transcriptionProps } from "@/capture/recorder/transcriptionProps";
+import { createVoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { memoryHoldStore } from "@/harness/memoryHoldStore";
 import { TranscribeActionFor } from "./TranscribeAction";
+import type { PhoneRead } from "./TranscribeAction";
 import { LOCAL_START_FAILED, needsConsent, transcribeProviders, transcribeWith, type PhoneRecording } from "./transcribeProviders";
 
 const NOTE = "rec-1";
@@ -223,6 +227,7 @@ describe("the Transcribe action", () => {
     expect(calls).toEqual(["privately"]);
   });
   test("an Audio-only web note uses explicit Private and surfaces refusal in NoteDetailView", async () => {
+
     const calls: string[] = [];
     cleanupDom = installDom();
     const host = document.createElement("div");
@@ -252,6 +257,51 @@ describe("the Transcribe action", () => {
     } finally {
       console.error = originalError;
     }
+  });
+  test("a Private tap after the account changes alerts and unlocks without starting", async () => {
+    let current = true;
+    let starts = 0;
+    const transcriber = createVoiceNoteTranscriber({
+      cloud: {
+        capabilities: async () => ({
+          max_bytes: 120_960_000,
+          max_duration_seconds: 7_200,
+          content_types: ["audio/webm"],
+          admission: "open",
+          diarization: true,
+        }),
+        pendingSourceIds: () => [],
+      } as never,
+      consent: { get: () => true, set: noop },
+      holds: memoryHoldStore(),
+      tcw: () => ({ did: "did:example:signed-in" } as never),
+      runNote: async () => { starts += 1; return "transcribed"; },
+    });
+    await transcriber.check({ current: () => current });
+    const props = transcriptionProps(transcriber, transcriber.snapshot())!;
+    cleanupDom = installDom();
+    const host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => root!.render(createElement(MemoryRouter, null,
+      createElement(PlatformContext.Provider, { value: "web" },
+        createElement(NoteDetailView, {
+          item: { id: "row-1", source: "exo-voice-note", sourceId: NOTE, title: "Voice note", startedAt: null, durationSecs: 60 },
+          listStatus: "ready",
+          metadata: { status: "ok", metadata: { transcription_outcome: "skipped", capture: { version: 2, options: { transcriber: "off" } }, audio: { stored: true } } },
+          transcript: { status: "absent" },
+          audio: { load: async () => null },
+          transcription: props,
+          copyState: "idle", onCopy: noop, onRetry: noop, pushed: true, onBack: noop,
+        }),
+      ),
+    )));
+
+    current = false;
+    await click(button(host));
+    expect(starts).toBe(0);
+    expect(host.querySelector('[data-testid="transcribe-problem"]')?.textContent).toBe("Your account changed. Try again after signing in.");
+    expect(button(host).disabled).toBe(false);
   });
 
   test("Private without consent asks first; agreeing records it and starts the transcription", async () => {
