@@ -209,7 +209,7 @@ function phoneStep(input: NotePipelineInput): Result {
 }
 
 function spaceStep(input: NotePipelineInput): Result {
-  if (input.space.saved) return input.space.localOnly ? { state: "done", caption: `Audio stays on this ${input.device === "mac" ? "Mac" : input.device}` } : { state: "done" };
+  if (input.space.saved) return input.space.localOnly ? { state: "done", caption: input.device === "browser" ? "Audio stays in this browser" : `Audio stays on this ${input.device === "mac" ? "Mac" : input.device}` } : { state: "done" };
   const { device, online } = input;
   const pending = input.space.pending;
   if (pending?.held !== undefined) {

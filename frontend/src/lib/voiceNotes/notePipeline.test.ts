@@ -459,5 +459,5 @@ describe("which retries let the user choose the provider", () => {
 
 test("a browser's local-only space step names the browser", () => {
   const pipeline = notePipeline(input({ device: "browser", space: { saved: true, localOnly: true, pending: null } }));
-  expect(pipeline.steps.find((step) => step.key === "space")?.caption).toBe("Audio stays on this browser");
+  expect(pipeline.steps.find((step) => step.key === "space")?.caption).toBe("Audio stays in this browser");
 });
