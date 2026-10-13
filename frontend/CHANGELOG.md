@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.6.1-beta.0
+
+### Patch Changes
+
+- 37ef2fa: Treat the private transcriber's literal 'Unknown' speaker as unattributed (null) and keep it out of participants (TC-981).
+
 ## 0.6.0
 
 ### Minor Changes
