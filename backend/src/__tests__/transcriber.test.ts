@@ -134,10 +134,10 @@ async function withServer<T>(app: express.Express, fn: (base: string) => Promise
   }
 }
 
-async function call(base: string, path: string, method = "GET", body?: unknown) {
+async function call(base: string, path: string, method = "GET", body?: unknown, headers: Record<string, string> = {}) {
   const response = await fetch(`${base}${path}`, {
     method,
-    headers: body === undefined ? {} : { "content-type": "application/json" },
+    headers: { ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   const text = await response.text();
@@ -182,6 +182,140 @@ describe("POST /api/transcriber/meetings", () => {
     });
     expect(h.calls[0]?.args[1]).toEqual({ idempotencyKey: expect.stringMatching(/^manual-v1-[0-9a-f-]{36}$/), onAttempt: expect.any(Function) });
     expect(await h.index.list(ADDRESS_A)).toEqual(["mtg_1"]);
+  });
+
+  test("forwards a valid client key and rejects invalid keys before ptx", async () => {
+    const h = harness();
+    await withServer(h.app, async (base) => {
+      const valid = "manual-v1-11111111-1111-4111-8111-111111111111";
+      expect((await call(base, "/api/transcriber/meetings", "POST", {
+        meeting_url: " https://MEET.jit.si/room/?b=2&a=1#fragment ",
+      }, { "Idempotency-Key": valid })).status).toBe(201);
+      // Canonicalization is comparison-only; signed/capability URL bytes go upstream intact.
+      expect((h.calls[0]!.args[0] as { meeting_url: string }).meeting_url).toBe("https://MEET.jit.si/room/?b=2&a=1#fragment");
+      expect((h.calls[0]!.args[1] as { idempotencyKey: string }).idempotencyKey).toBe(valid);
+      for (const invalid of ["", "has a space", "x".repeat(129)]) {
+        const response = await call(base, "/api/transcriber/meetings", "POST", {
+          meeting_url: "https://meet.jit.si/other",
+        }, { "Idempotency-Key": invalid });
+        expect(response).toMatchObject({ status: 400, body: { error: "invalid_idempotency_key" } });
+      }
+    });
+    expect(h.calls.filter(call => call.method === "createMeeting")).toHaveLength(1);
+  });
+
+  test("coalesces concurrent same-user normalized URLs into one ptx create", async () => {
+    const h = harness();
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const original = h.api.createMeeting;
+    h.api.createMeeting = async (input, options) => {
+      await held;
+      return original(input, options);
+    };
+    await withServer(h.app, async (base) => {
+      const one = call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/room/" },
+        { "Idempotency-Key": "manual-v1-11111111-1111-4111-8111-111111111111" });
+      await Bun.sleep(1);
+      const two = call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://MEET.jit.si/room#x" },
+        { "Idempotency-Key": "manual-v1-22222222-2222-4222-8222-222222222222" });
+      release();
+      const responses = await Promise.all([one, two]);
+      expect(responses.map(response => response.status).sort()).toEqual([200, 201]);
+      expect(responses[0]!.body.id).toBe(responses[1]!.body.id);
+    });
+    expect(h.calls.filter(call => call.method === "createMeeting")).toHaveLength(1);
+  });
+
+  test("a cold router finds a preexisting owned active meeting without an initial list", async () => {
+    const index = new MemoryTranscriberIndexStore();
+    const h = harness(ADDRESS_A, index);
+    h.store.set("mtg_existing", meeting("mtg_existing", {
+      status: "in_progress",
+      meeting_url: "https://meet.jit.si/existing/",
+      metadata: { tinychat_address: ADDRESS_A.toLowerCase() },
+    }));
+    await index.add(ADDRESS_A, "mtg_existing");
+    await withServer(h.app, async (base) => {
+      const response = await call(base, "/api/transcriber/meetings", "POST", {
+        meeting_url: "https://MEET.jit.si/existing#browser-only",
+      }, { "Idempotency-Key": "manual-v1-11111111-1111-4111-8111-111111111111" });
+      expect(response.status).toBe(200);
+      expect(response.body.id).toBe("mtg_existing");
+    });
+    expect(h.calls.filter(call => call.method === "createMeeting")).toEqual([]);
+    expect(await index.listPending(ADDRESS_A)).toEqual([]);
+  });
+
+  test("an old terminal row cannot hide a newer active row for the same URL", async () => {
+    const index = new MemoryTranscriberIndexStore();
+    const h = harness(ADDRESS_A, index);
+    const url = "https://meet.jit.si/repeated";
+    h.store.set("mtg_old", meeting("mtg_old", {
+      status: "failed", meeting_url: url, metadata: { tinychat_address: ADDRESS_A.toLowerCase() },
+    }));
+    h.store.set("mtg_new", meeting("mtg_new", {
+      status: "joining", meeting_url: url, metadata: { tinychat_address: ADDRESS_A.toLowerCase() },
+    }));
+    await index.add(ADDRESS_A, "mtg_old");
+    await index.add(ADDRESS_A, "mtg_new");
+    const realGet = h.api.getMeeting;
+    h.api.getMeeting = async (id) => {
+      if (id === "mtg_old") await Bun.sleep(5);
+      return realGet(id);
+    };
+    await withServer(h.app, async (base) => {
+      expect((await call(base, "/api/transcriber/meetings")).status).toBe(200);
+      const response = await call(base, "/api/transcriber/meetings", "POST", { meeting_url: `${url}/` });
+      expect(response.status).toBe(200);
+      expect(response.body.id).toBe("mtg_new");
+    });
+    expect(h.calls.filter(call => call.method === "createMeeting")).toEqual([]);
+  });
+
+  test("an active row attributed to another owner never dedupes this user's send", async () => {
+    const index = new MemoryTranscriberIndexStore();
+    const h = harness(ADDRESS_A, index);
+    h.store.set("mtg_other", meeting("mtg_other", {
+      status: "joining",
+      meeting_url: "https://meet.jit.si/ownership",
+      metadata: { tinychat_address: ADDRESS_B.toLowerCase() },
+    }));
+    await index.add(ADDRESS_A, "mtg_other");
+    await withServer(h.app, async (base) => {
+      const response = await call(base, "/api/transcriber/meetings", "POST", {
+        meeting_url: "https://meet.jit.si/ownership",
+      });
+      expect(response.status).toBe(201);
+      expect(response.body.id).toBe("mtg_1");
+    });
+    expect(h.calls.filter(call => call.method === "createMeeting")).toHaveLength(1);
+  });
+
+  test("a retry after the first response was lost returns the active record without a second create", async () => {
+    const h = harness();
+    const key = "manual-v1-11111111-1111-4111-8111-111111111111";
+    await withServer(h.app, async (base) => {
+      expect((await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/retry" },
+        { "Idempotency-Key": key })).status).toBe(201);
+      const retry = await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/retry/" },
+        { "Idempotency-Key": key });
+      expect(retry.status).toBe(200);
+      expect(retry.body.id).toBe("mtg_1");
+    });
+    expect(h.calls.filter(call => call.method === "createMeeting")).toHaveLength(1);
+  });
+
+  test("terminal resend creates a new bot, while a different URL is always separate", async () => {
+    const h = harness();
+    await withServer(h.app, async (base) => {
+      await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/ended" });
+      h.store.get("mtg_1")!.status = "failed";
+      const replacement = await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/ended" });
+      const separate = await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/other" });
+      expect([replacement.status, replacement.body.id, separate.status, separate.body.id]).toEqual([201, "mtg_2", 201, "mtg_3"]);
+    });
+    expect(h.calls.filter(call => call.method === "createMeeting")).toHaveLength(3);
   });
 
   test("adds webhook_url only for configured delivery, preserving the hashed create body", async () => {
@@ -889,14 +1023,16 @@ describe("TC-581 shares and TC-641 creates share one index document", () => {
     test(`${kind}: pending creates and shares survive each other's writes`, async () => {
       const index: TranscriberIndexStore = kind === "memory"
         ? new MemoryTranscriberIndexStore() : new KvTranscriberIndexStore(kvDocs().node, new BackendStorageLane());
-      await index.beginCreate(ADDRESS_B, intent("manual-v1-a"));
+      expect(await index.beginCreate(ADDRESS_B, intent("manual-v1-a"))).toEqual({ ids: [], shared: {} });
       await index.addShared(ADDRESS_B, "mtg_shared", prov);
       expect(await index.listPending(ADDRESS_B)).toEqual([intent("manual-v1-a")]);
       await index.completeCreate(ADDRESS_B, "manual-v1-a", "mtg_own");
       expect(await index.list(ADDRESS_B)).toEqual(["mtg_own", "mtg_shared"]);
       expect(await index.shares(ADDRESS_B)).toEqual({ mtg_shared: prov });
       expect(await index.listPending(ADDRESS_B)).toEqual([]);
-      await index.beginCreate(ADDRESS_B, intent("manual-v1-b"));
+      expect(await index.beginCreate(ADDRESS_B, intent("manual-v1-b"))).toEqual({
+        ids: ["mtg_own", "mtg_shared"], shared: { mtg_shared: prov },
+      });
       await index.remove(ADDRESS_B, "mtg_own");
       await index.add(ADDRESS_B, "mtg_later");
       expect(await index.listPending(ADDRESS_B)).toEqual([intent("manual-v1-b")]);

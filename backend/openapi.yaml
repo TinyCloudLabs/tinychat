@@ -1646,6 +1646,16 @@ paths:
       summary: Send a notetaker bot to a meeting link
       security:
         - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Stable client send-intent key. Reuse it when retrying the same normalized meeting URL.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+            pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
       requestBody:
         required: true
         content:
@@ -1664,6 +1674,12 @@ paths:
                   type: string
                   description: BCP-47-ish, e.g. `en` or `en-US`.
       responses:
+        "200":
+          description: An existing active meeting for this address and normalized URL
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriberMeeting"
         "201":
           description: "The meeting, with status queued"
           content:
@@ -1672,7 +1688,7 @@ paths:
                 $ref: "#/components/schemas/TranscriberMeeting"
         "400":
           description: >-
-            `invalid_meeting_url` (refused before upstream is called), or the
+            `invalid_meeting_url` or `invalid_idempotency_key` (refused before upstream is called), or the
             upstream taxonomy code (e.g. `unsupported_platform`) with a message.
           content:
             application/json:
@@ -1680,6 +1696,12 @@ paths:
                 $ref: "#/components/schemas/TranscriberError"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "429":
+          description: Too many unresolved create intents, upstream rate limiting, or no bot capacity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriberError"
         "503":
           $ref: "#/components/responses/TranscriberUnavailable"
 

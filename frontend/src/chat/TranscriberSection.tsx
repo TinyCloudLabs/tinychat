@@ -44,6 +44,69 @@ export const POLL_INTERVAL_MS = 5000;
 
 /** How often calendar autojoin outcomes are re-read while the notetaker is on screen. */
 export const CALENDAR_INTERVAL_MS = 60_000;
+const SEND_INTENT_PREFIX = "tinychat.notetaker.send.v1:";
+const SEND_KEY_RE = /^manual-v1-[0-9a-f-]{36}$/;
+
+/** Keep equivalent pasted links on one client/server dedupe key. */
+export function normalizeMeetingUrl(raw: string): string | null {
+  try {
+    const url = new URL(raw.trim());
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    url.hash = "";
+    if (url.pathname !== "/") url.pathname = url.pathname.replace(/\/+$/, "") || "/";
+    url.searchParams.sort();
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+type SendIntentStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+export interface SendIntent {
+  key: string;
+  input: { meeting_url: string; bot_name?: string };
+  /** The terminal meeting whose explicit resend started this intent. */
+  afterMeetingId?: string;
+}
+const sendIntentStorage = (): SendIntentStorage | null => {
+  try { return window.sessionStorage; } catch { return null; }
+};
+const sendIntentStorageKey = (normalizedUrl: string) => `${SEND_INTENT_PREFIX}${encodeURIComponent(normalizedUrl)}`;
+
+function validStoredIntent(raw: string | null): SendIntent | null {
+  if (!raw) return null;
+  // Migrate the key-only shape written by the first TC-1016 implementation.
+  if (SEND_KEY_RE.test(raw)) return { key: raw, input: { meeting_url: "" } };
+  try {
+    const value = JSON.parse(raw) as Partial<SendIntent>;
+    if (!SEND_KEY_RE.test(value.key ?? "") || typeof value.input?.meeting_url !== "string"
+      || (value.input.bot_name !== undefined && typeof value.input.bot_name !== "string")
+      || (value.afterMeetingId !== undefined && typeof value.afterMeetingId !== "string")) return null;
+    return value as SendIntent;
+  } catch {
+    return null;
+  }
+}
+
+export function getOrCreateSendIntent(
+  normalizedUrl: string,
+  input: SendIntent["input"],
+  afterMeetingId?: string,
+  storage = sendIntentStorage(),
+): SendIntent {
+  let stored: string | null = null;
+  try { stored = storage?.getItem(sendIntentStorageKey(normalizedUrl)) ?? null; } catch { /* Memory still works. */ }
+  const existing = validStoredIntent(stored);
+  const intent = existing
+    ? { ...existing, input: existing.input.meeting_url ? existing.input : input }
+    : { key: `manual-v1-${crypto.randomUUID()}`, input, ...(afterMeetingId ? { afterMeetingId } : {}) };
+  try { storage?.setItem(sendIntentStorageKey(normalizedUrl), JSON.stringify(intent)); } catch { /* Memory still works. */ }
+  return intent;
+}
+
+export function clearSendIntentKey(normalizedUrl: string, storage = sendIntentStorage()): void {
+  try { storage?.removeItem(sendIntentStorageKey(normalizedUrl)); } catch { /* Already clear for this component. */ }
+}
 
 export type ListStatus = "idle" | "loading" | "ready" | "dark" | "unavailable" | "offline" | "signed-out";
 
@@ -62,7 +125,7 @@ export interface TranscriberViewProps {
   meetings: TranscriberListRow[];
   /** Per meeting id: whether its transcript has been copied into the user's space. */
   saved: Readonly<Record<string, SaveState>>;
-  form: { url: string; botName: string; submitting: boolean; error: string | null };
+  form: { url: string; botName: string; submitting: boolean; checking?: boolean; active?: boolean; error: string | null };
   busyId: string | null;
   open: OpenTranscriptState | null;
   onUrlChange: (value: string) => void;
@@ -80,7 +143,8 @@ export interface TranscriberViewProps {
 export const TRANSCRIBER_FORM_ID = "transcriber-form";
 
 export function SendNotetakerButton(props: { form: TranscriberViewProps["form"]; listStatus: ListStatus }) {
-  const canSubmit = props.listStatus !== "dark" && !props.form.submitting && props.form.url.trim().length > 0;
+  const canSubmit = props.listStatus !== "dark" && !props.form.submitting && !props.form.checking
+    && !props.form.active && props.form.url.trim().length > 0;
   return (
     <Button
       type="submit"
@@ -90,8 +154,8 @@ export function SendNotetakerButton(props: { form: TranscriberViewProps["form"];
       aria-label="Send notetaker to meeting"
       className="w-full gap-1.5"
     >
-      {props.form.submitting && <Loader2Icon className="size-4 animate-spin" />}
-      <span>{props.form.submitting ? "Sending notetaker…" : "Send notetaker"}</span>
+      {(props.form.submitting || props.form.checking) && <Loader2Icon className="size-4 animate-spin" />}
+      <span>{props.form.checking ? "Checking…" : props.form.submitting ? "Sending notetaker…" : "Send notetaker"}</span>
     </Button>
   );
 }
@@ -216,7 +280,7 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
               autoComplete="off"
               spellCheck={false}
               value={form.url}
-              disabled={form.submitting}
+              disabled={form.submitting || form.checking}
               onChange={(e) => onUrlChange(e.target.value)}
               placeholder="https://meet.google.com/abc-defg-hij"
               className={inputClass}
@@ -231,7 +295,7 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
               autoComplete="off"
               spellCheck={false}
               value={form.botName}
-              disabled={form.submitting}
+              disabled={form.submitting || form.checking}
               onChange={(e) => onBotNameChange(e.target.value)}
               placeholder="TinyCloud Private Notetaker"
               className={inputClass}
@@ -249,6 +313,8 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
               {form.error}
             </p>
           )}
+          {form.checking && <p role="status" className="text-callout text-muted-foreground">Checking whether the notetaker joined…</p>}
+          {form.active && !form.checking && <p role="status" className="text-callout text-muted-foreground">A notetaker is already joining this meeting.</p>}
           {sendInline && <SendNotetakerButton form={form} listStatus={listStatus} />}
         </form>
       )}
@@ -658,6 +724,19 @@ export function activeMeetings(meetings: readonly TranscriberListRow[]): Transcr
   return meetings.filter((m): m is TranscriberMeeting => !("unavailable" in m) && ACTIVE_STATUSES.has(m.status));
 }
 
+export function activeMeetingForUrl(meetings: readonly TranscriberListRow[], normalizedUrl: string): TranscriberMeeting | null {
+  return activeMeetings(meetings).find(meeting => normalizeMeetingUrl(meeting.meeting_url) === normalizedUrl) ?? null;
+}
+
+function terminalMeetingForUrl(meetings: readonly TranscriberListRow[], normalizedUrl: string): TranscriberMeeting | null {
+  return meetings.find((meeting): meeting is TranscriberMeeting => !("unavailable" in meeting)
+    && !ACTIVE_STATUSES.has(meeting.status) && normalizeMeetingUrl(meeting.meeting_url) === normalizedUrl) ?? null;
+}
+
+function isAmbiguousCreateFailure(result: TranscriberResult<unknown>): boolean {
+  return result.status === "offline" || (result.status === "retryable" && result.httpStatus >= 500);
+}
+
 export function meetingBotViewProps(bot: MeetingBot): TranscriberViewProps {
   return {
     calendarOutcomes: bot.calendarOutcomes,
@@ -688,18 +767,39 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
     [calendarClient, backendUrl, sessionStore],
   );
   const [calendarOutcomes, setCalendarOutcomes] = useState<CalendarAutojoinOutcome[]>([]);
+  const sendIntents = useRef(new Map<string, SendIntent>());
+  const intentFor = useCallback((normalizedUrl: string, input: SendIntent["input"], after?: TranscriberMeeting) => {
+    let intent = sendIntents.current.get(normalizedUrl) ?? getOrCreateSendIntent(normalizedUrl, input, after?.id);
+    // A click after the previously represented bot ended is a new send intent. Remember which
+    // terminal row caused it so an ambiguous retry (including after reload) keeps this new key.
+    if (after && intent.afterMeetingId !== after.id) {
+      clearSendIntentKey(normalizedUrl);
+      intent = getOrCreateSendIntent(normalizedUrl, input, after.id);
+    }
+    sendIntents.current.set(normalizedUrl, intent);
+    return intent;
+  }, []);
+  const clearIntent = useCallback((normalizedUrl: string) => {
+    sendIntents.current.delete(normalizedUrl);
+    clearSendIntentKey(normalizedUrl);
+  }, []);
 
   const [listStatus, setListStatus] = useState<ListStatus>("idle");
   const [meetings, setMeetings] = useState<TranscriberListRow[]>([]);
   const [url, setUrl] = useState("");
   const [botName, setBotName] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [checkingUrl, setCheckingUrl] = useState<string | null>(null);
+  const [ambiguousError, setAmbiguousError] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [open, setOpen] = useState<OpenTranscriptState | null>(null);
   const saved = useTranscriberSavedState();
+  const submitLatch = useRef(false);
 
   const anyActive = activeMeetings(meetings).length > 0;
+  const normalizedFormUrl = normalizeMeetingUrl(url);
+  const activeForForm = normalizedFormUrl === null ? null : activeMeetingForUrl(meetings, normalizedFormUrl);
   const timers = meetingBotTimers({ active, anyActive, listStatus });
 
   // The calendar refresh: the next one is scheduled once the last has
@@ -746,6 +846,40 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
     };
   }, [load, active]);
 
+  // A transport/server failure does not prove the create failed: ingress can cut the response
+  // while this backend and ptx commit later. Keep Send disabled until a list read proves whether
+  // this normalized URL has an active bot, retrying the read while the answer is unavailable.
+  useEffect(() => {
+    if (checkingUrl === null) return;
+    let current = true;
+    let timer = 0;
+    const check = async () => {
+      const result = await api.list();
+      if (!current) return;
+      setListStatus(listStatusOf(result));
+      if (result.status !== "ok") {
+        timer = window.setTimeout(() => void check(), POLL_INTERVAL_MS);
+        return;
+      }
+      setMeetings(result.value.meetings);
+      if (activeMeetingForUrl(result.value.meetings, checkingUrl)) {
+        setFormError(null);
+      } else if (result.value.meetings.some(meeting => "unavailable" in meeting)) {
+        timer = window.setTimeout(() => void check(), POLL_INTERVAL_MS);
+        return;
+      } else {
+        if (terminalMeetingForUrl(result.value.meetings, checkingUrl)) clearIntent(checkingUrl);
+        setFormError(ambiguousError);
+      }
+      setCheckingUrl(null);
+    };
+    void check();
+    return () => {
+      current = false;
+      window.clearTimeout(timer);
+    };
+  }, [api, ambiguousError, checkingUrl, clearIntent]);
+
   // The poll: the next read is scheduled only after the last one settled.
   useEffect(() => {
     if (!timers.poll) return;
@@ -767,24 +901,47 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
 
   const submit = useCallback(() => {
     const trimmed = url.trim();
-    if (trimmed.length === 0 || submitting) return;
+    const normalized = normalizeMeetingUrl(trimmed);
+    if (trimmed.length === 0 || submitLatch.current || submitting || checkingUrl !== null || activeForForm) return;
+    if (normalized === null) {
+      setFormError("That doesn't look like a meeting link.");
+      return;
+    }
+    const input = {
+      meeting_url: trimmed,
+      ...(botName.trim() ? { bot_name: botName.trim() } : {}),
+    };
+    const intent = intentFor(normalized, input, terminalMeetingForUrl(meetings, normalized) ?? undefined);
+    submitLatch.current = true;
     setSubmitting(true);
     setFormError(null);
     void (async () => {
-      const result = await api.create({
-        meeting_url: trimmed,
-        ...(botName.trim() ? { bot_name: botName.trim() } : {}),
-      });
-      setSubmitting(false);
-      if (result.status !== "ok") {
-        setFormError(describeFailure(result));
-        return;
+      try {
+        // Preserve fragments in the stable request: Signal uses one as its join capability.
+        const result = await api.create(intent.input, { idempotencyKey: intent.key });
+        if (result.status !== "ok") {
+          if (isAmbiguousCreateFailure(result)) {
+            setAmbiguousError(describeFailure(result));
+            setCheckingUrl(normalized);
+            return;
+          }
+          setFormError(describeFailure(result));
+          return;
+        }
+        if (!ACTIVE_STATUSES.has(result.value.status)) clearIntent(normalized);
+        setUrl("");
+        setMeetings((current) => [result.value, ...current.filter((m) => m.id !== result.value.id)]);
+        setListStatus("ready");
+      } catch {
+        const message = "The transcriber is temporarily unavailable. Try again in a moment.";
+        setAmbiguousError(message);
+        setCheckingUrl(normalized);
+      } finally {
+        submitLatch.current = false;
+        setSubmitting(false);
       }
-      setUrl("");
-      setMeetings((current) => [result.value, ...current.filter((m) => m.id !== result.value.id)]);
-      setListStatus("ready");
     })();
-  }, [api, botName, submitting, url]);
+  }, [activeForForm, api, botName, checkingUrl, clearIntent, intentFor, meetings, submitting, url]);
 
   const stop = useCallback(
     (id: string) => {
@@ -851,7 +1008,7 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
     listStatus,
     meetings,
     saved,
-    form: { url, botName, submitting, error: formError },
+    form: { url, botName, submitting, checking: checkingUrl !== null, active: activeForForm !== null, error: formError },
     busyId,
     open,
     calendarOutcomes,

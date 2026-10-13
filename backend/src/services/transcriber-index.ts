@@ -30,6 +30,11 @@ export interface PendingTranscriberCreate {
   createdAt: number;
 }
 
+export interface TranscriberIndexEntries {
+  ids: string[];
+  shared: Record<string, ShareProvenance>;
+}
+
 /** The stored document. A legacy `{ ids }` document has no shares and no pending creates. */
 interface IndexRecord {
   ids: string[];
@@ -54,9 +59,10 @@ export interface TranscriberIndexStore {
   /** Shared meeting ids for this address, with their provenance. */
   shares(address: string): Promise<Record<string, ShareProvenance>>;
   /** Ids and shares from ONE read of the document, so ownership and sharing can never disagree. */
-  entries(address: string): Promise<{ ids: string[]; shared: Record<string, ShareProvenance> }>;
+  entries(address: string): Promise<TranscriberIndexEntries>;
   listAddresses(): Promise<string[]>;
-  beginCreate(address: string, intent: PendingTranscriberCreate): Promise<void>;
+  /** Adds the durable intent and returns ownership from the same lane read/write. */
+  beginCreate(address: string, intent: PendingTranscriberCreate): Promise<TranscriberIndexEntries>;
   completeCreate(address: string, key: string, meetingId: string): Promise<void>;
   abandonCreate(address: string, key: string): Promise<void>;
   listPending(address: string): Promise<PendingTranscriberCreate[]>;
@@ -242,7 +248,7 @@ export class JsonTranscriberIndexStore implements TranscriberIndexStore {
     return this.view(address, row => structuredClone(row.shared ?? {}));
   }
 
-  entries(address: string): Promise<{ ids: string[]; shared: Record<string, ShareProvenance> }> {
+  entries(address: string): Promise<TranscriberIndexEntries> {
     return this.view(address, row => structuredClone({ ids: row.ids, shared: row.shared ?? {} }));
   }
 
@@ -264,11 +270,19 @@ export class JsonTranscriberIndexStore implements TranscriberIndexStore {
     return this.update(address, row => withShare(row, meetingId, provenance));
   }
 
-  beginCreate(address: string, intent: PendingTranscriberCreate): Promise<void> {
-    return this.update(address, row => {
-      if ((row.pending?.length ?? 0) >= MAX_PENDING) throw new TooManyPendingCreatesError();
-      if (row.pending?.some(existing => existing.key === intent.key)) throw new Error("duplicate_create_intent");
-      return { ...row, pending: [...(row.pending ?? []), { ...intent }] };
+  beginCreate(address: string, intent: PendingTranscriberCreate): Promise<TranscriberIndexEntries> {
+    const key = indexKey(address);
+    return this.lane.run(async () => {
+      const row = await this.read(key);
+      const existing = row.pending?.find(candidate => candidate.key === intent.key);
+      if (existing && existing.hash !== intent.hash) throw new Error("duplicate_create_intent");
+      if (!existing && (row.pending?.length ?? 0) >= MAX_PENDING) throw new TooManyPendingCreatesError();
+      const next = existing ? row : { ...row, pending: [...(row.pending ?? []), { ...intent }] };
+      if (!existing) {
+        await this.json.put(key, next);
+        this.remember(key, next);
+      }
+      return structuredClone({ ids: next.ids, shared: next.shared ?? {} });
     });
   }
 
