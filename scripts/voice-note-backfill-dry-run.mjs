@@ -92,15 +92,37 @@ function readKey(profile, key) {
   return tc(profile, ['kv', 'get', '--raw', key, '--space', SPACE], { raw: true });
 }
 
+function legacyAudioDetails(profile, key) {
+  const raw = readKey(profile, key);
+  let value;
+  try {
+    value = JSON.parse(raw.toString('utf8'));
+    if (typeof value === 'string') value = JSON.parse(value);
+  } catch {
+    return { present: false, valueBytes: raw.byteLength, audioBytes: null };
+  }
+  if (!value || typeof value !== 'object' || typeof value.mimeType !== 'string' || typeof value.base64 !== 'string') {
+    return { present: false, valueBytes: raw.byteLength, audioBytes: null };
+  }
+  return { present: true, valueBytes: raw.byteLength, audioBytes: Buffer.from(value.base64, 'base64').byteLength };
+}
+
 function audioForRow(profile, sourceId, allAudioKeys) {
   const base = `${PREFIX}/audio/${sourceId}`;
   const manifestKey = `${base}/manifest`;
   const legacyKeyPresent = allAudioKeys.has(base);
+  const legacy = legacyKeyPresent ? legacyAudioDetails(profile, base) : null;
   const partKeys = new Set([...allAudioKeys].filter(key => key.startsWith(`${base}/p/`)));
   if (!allAudioKeys.has(manifestKey)) {
-    return legacyKeyPresent
-      ? { present: true, partCount: 1, manifestPartsComplete: true }
-      : { present: false, partCount: partKeys.size, manifestPartsComplete: false };
+    return {
+      present: legacy?.present === true,
+      partCount: legacy?.present === true ? 1 : partKeys.size,
+      manifestPartsComplete: legacy?.present === true,
+      keyShape: !legacyKeyPresent ? 'none' : legacy?.present ? 'legacy-base-value' : 'legacy-base-value-invalid',
+      legacyKeyPresent,
+      legacyKeyBytes: legacy?.valueBytes ?? null,
+      legacyAudioBytes: legacy?.audioBytes ?? null,
+    };
   }
 
   let manifest;
@@ -118,7 +140,28 @@ function audioForRow(profile, sourceId, allAudioKeys) {
     if (partKeys.has(partKey)) presentParts++;
   }
   const manifestPartsComplete = presentParts === manifest.parts.length;
-  return { present: manifestPartsComplete, partCount: presentParts, manifestPartsComplete };
+  return {
+    present: manifestPartsComplete,
+    partCount: presentParts,
+    manifestPartsComplete,
+    keyShape: 'manifest-and-parts',
+    legacyKeyPresent,
+    legacyKeyBytes: legacy?.valueBytes ?? null,
+    legacyAudioBytes: legacy?.audioBytes ?? null,
+  };
+}
+
+function noteSummary(row, audio) {
+  return {
+    source_id: row.source_id,
+    duration_secs: row.duration_secs,
+    platform: row.platform,
+    transcriber_option: row.transcriberOption,
+    audio_present: audio.present,
+    part_count: audio.partCount,
+    manifest_parts_complete: audio.manifestPartsComplete,
+    plain_body_bytes: row.bodyBytes,
+  };
 }
 
 function run(profile, maxSeconds) {
@@ -162,30 +205,37 @@ function run(profile, maxSeconds) {
   });
 
   const planned = planVoiceNoteBackfill(planningRows, audioIndex, { maxSeconds });
-  const counts = Object.fromEntries(['eligible', 'skip-terminal', 'skip-has-body', 'skip-has-commit', 'skip-no-audio', 'skip-over-cap']
-    .map(classification => [classification, planned.filter(item => item.classification === classification).length]));
-  const eligible = planned.filter(item => item.classification === 'eligible').map(item => {
+  const summaryFor = item => {
     const row = planningRows.find(candidate => candidate.source_id === item.source_id);
-    const audio = audioIndex.get(item.source_id);
-    return {
-      source_id: item.source_id,
+    return noteSummary(row, audioIndex.get(item.source_id));
+  };
+  const eligible = planned.filter(item => item.classification === 'eligible').map(summaryFor);
+  const optedOut = planned.filter(item => item.classification === 'skip-opted-out').map(summaryFor);
+  const audioKeyChecks = planningRows.flatMap(row => {
+    const audio = audioIndex.get(row.source_id);
+    if (!audio.legacyKeyPresent && audio.present) return [];
+    return [{
+      source_id: row.source_id,
       duration_secs: row.duration_secs,
-      platform: row.platform,
-      transcriber_option: row.transcriberOption,
+      key_shape: audio.keyShape,
+      legacy_key_present: audio.legacyKeyPresent,
+      legacy_key_bytes: audio.legacyKeyBytes,
+      legacy_audio_bytes: audio.legacyAudioBytes,
       audio_present: audio.present,
       part_count: audio.partCount,
-      manifest_parts_complete: audio.manifestPartsComplete,
-      plain_body_bytes: row.bodyBytes,
-    };
+    }];
   });
   const report = {
     total_rows: planningRows.length,
     max_seconds: maxSeconds,
-    counts,
+    counts: Object.fromEntries(['eligible', 'skip-terminal', 'skip-has-body', 'skip-has-commit', 'skip-opted-out', 'skip-no-audio', 'skip-over-cap']
+      .map(classification => [classification, planned.filter(item => item.classification === classification).length])),
     failed_with_code_eligible: planned.filter(item => item.classification === 'eligible' && item.failedWithCode).length,
     eligible,
+    opted_out: optedOut,
+    audio_key_checks: audioKeyChecks,
   };
-  process.stdout.write(`${JSON.stringify(report, null, 2)}\napply: open Exo Library, Transcribe each listed note\n`);
+  process.stdout.write(`${JSON.stringify(report, null, 2)}\napply: open Exo Library, Transcribe eligible notes; review opted-out notes only if Sam chooses\n`);
 }
 
 try {

@@ -27,16 +27,24 @@ export function planVoiceNoteBackfill(rows, audioIndex, { maxSeconds = 7200 } = 
       classification = 'skip-has-commit';
       reason = 'voice_note_transcript commit already exists';
     } else {
-      const audio = lookupAudio(audioIndex, sourceId);
-      if (!audio || audio.present !== true) {
-        classification = 'skip-no-audio';
-        reason = 'audio manifest or audio parts are absent';
-      } else if (Number.isFinite(row.duration_secs) && row.duration_secs > maxSeconds) {
-        classification = 'skip-over-cap';
-        reason = `duration ${row.duration_secs}s exceeds maxSeconds ${maxSeconds}s`;
+      const optedOut = row.transcriberOption === 'off'
+        || metadata.capture?.options?.transcriber === 'off'
+        || metadata.transcriber === 'off';
+      if (optedOut) {
+        classification = 'skip-opted-out';
+        reason = 'capture transcriber was explicitly off';
       } else {
-        classification = 'eligible';
-        reason = failedWithCode ? `retry failed outcome (${errorCode})` : 'no terminal outcome or transcript body';
+        const audio = lookupAudio(audioIndex, sourceId);
+        if (!audio || audio.present !== true) {
+          classification = 'skip-no-audio';
+          reason = 'audio manifest or audio parts are absent';
+        } else if (Number.isFinite(row.duration_secs) && row.duration_secs > maxSeconds) {
+          classification = 'skip-over-cap';
+          reason = `duration ${row.duration_secs}s exceeds maxSeconds ${maxSeconds}s`;
+        } else {
+          classification = 'eligible';
+          reason = failedWithCode ? `retry failed outcome (${errorCode})` : 'no terminal outcome or transcript body';
+        }
       }
     }
 

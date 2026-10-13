@@ -41,6 +41,15 @@ test('planner classifies every requested outcome with a stable reason', () => {
   ]);
   for (const result of results) assert.ok(result.reason.length > 0, `${result.source_id} needs a reason`);
 });
+test('legacy no-outcome captures explicitly set to off are listed as opted out, not eligible', () => {
+  const result = byId(plan([row('off', { metadata: {
+    capture: { options: { transcriber: 'off' } },
+  } })]), 'off');
+  assert.equal(result.classification, 'skip-opted-out');
+  assert.equal(result.reason, 'capture transcriber was explicitly off');
+  assert.equal(result.failedWithCode, false);
+});
+
 
 test('failed outcome with an error code remains eligible and is separately marked', () => {
   const result = byId(plan([row('failed', { metadata: {
