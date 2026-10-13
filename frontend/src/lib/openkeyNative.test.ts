@@ -610,24 +610,24 @@ describe("native boot", () => {
     }
   });
 
-  test("restores a delegation issued for the previous node after the build changes host", async () => {
+  test("restores a recent tee.node delegation without a host-migration renewal", async () => {
     const flow = makeFlow();
     const recent = { ...delegation, issuedAt: new Date(Date.now() - 5_000).toISOString(), expiresAt: new Date(Date.now() + 295_000).toISOString() };
     flow.openkey.current = async () => ({ tokens: { accessToken: "a", refreshToken: "r" }, delegation: recent, sessionKey });
-    const boot = await restoreNativeAtBoot({ ...config, tinycloudHost: "https://node.tinycloud.xyz", tinycloudHosts: ["https://node.tinycloud.xyz"] }, true, flow.deps);
+    const boot = await restoreNativeAtBoot(config, true, flow.deps);
     expect(boot.kind).toBe("restored");
-    if (boot.kind === "restored") expect(boot.renewAt).toBeGreaterThan(Date.now());
+    expect(flow.order).not.toContain("renew");
     expect(flow.activation[0]?.host).toBe(HOST);
-    expect(flow.restore[0]?.config.tinycloudHosts).toEqual([HOST, "https://node.tinycloud.xyz"]);
+    expect(flow.restore[0]?.config.tinycloudHosts).toEqual([HOST]);
   });
 
-  test("renews an old-host delegation onto the new host when the renewal window opens", async () => {
+  test("renews an expiring tee.node delegation on the same host", async () => {
     const flow = makeFlow();
     flow.openkey.current = async () => ({ tokens: { accessToken: "a", refreshToken: "r" }, delegation, sessionKey });
-    flow.openkey.renew = async () => ({ tokens: { accessToken: "a", refreshToken: "new" }, delegation: { ...delegation, tinycloudHost: "https://node.tinycloud.xyz" }, sessionKey });
-    const boot = await restoreNativeAtBoot({ ...config, tinycloudHost: "https://node.tinycloud.xyz", tinycloudHosts: ["https://node.tinycloud.xyz"] }, true, flow.deps);
+    flow.openkey.renew = async () => ({ tokens: { accessToken: "a", refreshToken: "new" }, delegation, sessionKey });
+    const boot = await restoreNativeAtBoot(config, false, flow.deps);
     expect(boot.kind).toBe("restored");
-    expect(flow.activation[0]?.host).toBe("https://node.tinycloud.xyz");
+    expect(flow.activation[0]?.host).toBe(HOST);
     expect(flow.verify).toHaveLength(1);
   });
 

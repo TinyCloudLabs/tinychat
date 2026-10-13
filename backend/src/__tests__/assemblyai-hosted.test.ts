@@ -50,6 +50,15 @@ const UPLOAD_URL = "https://cdn.assemblyai.com/upload/synthetic-upload-ref";
 const UPSTREAM_DETAIL = "UPSTREAM-DETAIL account and audio info";
 const T0 = Date.parse("2026-10-04T12:00:00Z");
 
+test("removed personal-key transcript delete returns 410 instead of an already-deleted 404", async () => {
+  const h = await setup({ config: null });
+  const response = await h.req("DELETE", `/transcripts/${TRANSCRIPT_ID}`);
+  expect(response.status).toBe(410);
+  expect(response.json).toEqual({ error: "assemblyai_own_key_delete_gone",
+    message: "Deleting transcripts with an AssemblyAI personal key is no longer supported. Delete this transcript in your AssemblyAI account." });
+  expect(response.headers.get("cache-control")).toBe("no-store");
+});
+
 const closers: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
   while (closers.length) await closers.pop()!();

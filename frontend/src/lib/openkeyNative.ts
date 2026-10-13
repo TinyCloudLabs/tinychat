@@ -485,8 +485,7 @@ export async function restoreNativeAtBoot(
     const issuedAt = session.delegation.issuedAt ? new Date(session.delegation.issuedAt).getTime() : NaN;
     const minimumAt = Number.isFinite(issuedAt)
       ? issuedAt + Math.min(60_000, renewalLeadMs(session.delegation)) : 0;
-    const migratingHost = session.delegation.tinycloudHost !== config.tinycloudHost;
-    const wantsRenewal = !backendJwtValid || migratingHost || Date.now() >= nativeRenewAt(session);
+    const wantsRenewal = !backendJwtValid || Date.now() >= nativeRenewAt(session);
     if (wantsRenewal && Date.now() < minimumAt && Date.now() < expiresAt) {
       // OpenKey rejects renewal inside its minimum interval. Restore the live
       // delegation now and let the scheduler refresh the JWT at the first legal time.
@@ -499,7 +498,7 @@ export async function restoreNativeAtBoot(
         session = await openkey.renew(siweNonce ? { siweNonce } : {});
         renewed = true;
       } catch (error) {
-        if (Date.now() >= expiresAt || (nativeCode(error) !== "RENEWAL_TOO_SOON" && !(migratingHost && backendJwtValid && !terminalRenewalError(error)))) throw error;
+        if (Date.now() >= expiresAt || nativeCode(error) !== "RENEWAL_TOO_SOON") throw error;
         const retryAfterSeconds = (error as { retryAfterSeconds?: unknown }).retryAfterSeconds;
         renewAt = Date.now() + (typeof retryAfterSeconds === "number" ? retryAfterSeconds * 1000 : 15_000);
       }
@@ -647,7 +646,7 @@ export async function signOutNative(deps?: {
   const env = deps?.env ?? import.meta.env;
   const create = deps?.createOpenKeyNative ?? (await defaultDeps()).createOpenKeyNative;
   const openkey = nativeClient(
-    nativeClientOptions(env, env.VITE_TINYCLOUD_HOST ?? "https://node.tinycloud.xyz"),
+    nativeClientOptions(env, env.VITE_TINYCLOUD_HOST ?? "https://tee.node.tinycloud.xyz"),
     create,
   );
   await withNativeDeadline(openkey.signOut());

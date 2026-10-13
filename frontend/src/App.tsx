@@ -113,6 +113,7 @@ import { PendingVoiceNotesSaver } from "./chat/PendingVoiceNotesSaver";
 import { VoiceNotes } from "./lib/voiceNotes/nativeVoiceNotes";
 import { captureCapabilities, captureEngineAvailable } from "./lib/voiceNotes/captureEngine";
 import { RecordingOverlay } from "./capture/recorder/RecordingOverlay";
+import { shouldMountRecordingOverlay } from "./capture/recorder/recordingOverlayVisibility";
 import { handoffBeforeCredentialClear, withCaptureDeadline } from "./lib/voiceNotes/accountHandoff";
 import { createVoiceNotePipeline } from "./lib/voiceNotes/voiceNotePipeline";
 import { nextTransitionGen } from "./lib/voiceNotes/accountHandoff";
@@ -379,7 +380,7 @@ export function App() {
 
   const nativeConfig: NativeSignInConfig = {
     backendUrl: BACKEND_URL,
-    tinycloudHost: TINYCLOUD_HOSTS?.[0] ?? "https://node.tinycloud.xyz",
+    tinycloudHost: TINYCLOUD_HOSTS?.[0] ?? "https://tee.node.tinycloud.xyz",
     tinycloudHosts: TINYCLOUD_HOSTS,
   };
 
@@ -1245,7 +1246,8 @@ export function App() {
           </main>
         )}
       </div>
-      {voiceNotesInApp && !isReady && !deviceCapture && <RecordingOverlay />}
+      {shouldMountRecordingOverlay({ voiceNotesInApp, isReady, deviceCapture,
+        nativeSignInScreenShown: nativeSignInFlow.screenShown, shareTokenPresent: !!shareToken }) && <RecordingOverlay />}
       {captureFailClosed && <div role="alert" className="fixed inset-x-4 bottom-4 z-[60] rounded-xl border bg-card p-4 shadow-lg">
         Recordings are being kept unassigned until Exo can update this phone.
         <button type="button" className="ml-3 underline" onClick={() => void signOut()}>Retry</button>

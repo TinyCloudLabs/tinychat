@@ -4,6 +4,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { createHostedAssemblyAiClient } from "../assemblyai";
 import { bytesToBase64 } from "./voiceNoteAudio";
 import { createHostedVoiceNoteTrack } from "./hostedVoiceNotes";
+import { withHostedUploadQueue } from "../hostedUploadQueue";
 import type { VoiceNoteRecording, VoiceNotesPlugin, LocalTranscript } from "./nativeVoiceNotes";
 import type { TranscriptCommit } from "./voiceNoteCommits";
 
@@ -13,7 +14,7 @@ afterEach(() => {
   else Reflect.deleteProperty(globalThis, "localStorage");
 });
 
-function harness(failAt?: "part" | "submit" | "result" | "space", noSpeech = false, spaceOnly = false) {
+function harness(failAt?: "part" | "submit" | "result" | "space", noSpeech = false, spaceOnly = false, mimeType = "audio/mp4") {
   const data = new Map<string, string>();
   Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
     getItem: (key: string) => data.get(key) ?? null,
@@ -27,7 +28,7 @@ function harness(failAt?: "part" | "submit" | "result" | "space", noSpeech = fal
   let commit: TranscriptCommit | null = null;
   let submitted = false;
   const recording = { id: "note-1", owner: "did:test:one", source: "in_app", startedAt: 1,
-    durationMs: 1000, mimeType: "audio/mp4", sizeBytes: audio.length,
+    durationMs: 1000, mimeType, sizeBytes: audio.length,
     options: { transcriber: "assemblyai", identifySpeakers: true } } as VoiceNoteRecording;
   const native = {
     listPending: async () => ({ recordings: spaceOnly ? [] : [recording] }),
@@ -48,8 +49,11 @@ function harness(failAt?: "part" | "submit" | "result" | "space", noSpeech = fal
     const method = init?.method ?? "GET";
     calls.push(`${method} ${path}`);
     if (path === "/capabilities") return json({ hosted: true, max_bytes: 1000, part_size: 2,
-      content_types: ["audio/mp4"], daily_bytes_remaining: 1000 });
-    if (path === "/hosted/uploads" && method === "POST") return json({ upload_id: "upload-1", part_size: 2 });
+      content_types: ["audio/mp4", "audio/webm"], daily_bytes_remaining: 1000 });
+    if (path === "/hosted/uploads" && method === "POST") {
+      expect(JSON.parse(String(init?.body)).content_type).toBe(mimeType.split(";")[0].trim().toLowerCase());
+      return json({ upload_id: "upload-1", part_size: 2 });
+    }
     if (path === "/hosted/uploads/upload-1" && method === "GET") return json({ status: submitted ? "submitted" : "receiving", id: submitted ? "handle-1" : undefined });
     if (path.startsWith("/hosted/uploads/upload-1/parts/") && method === "PUT") {
       if (failAt === "part" && !failed) { failed = true; throw new Error("offline"); }
@@ -105,6 +109,27 @@ test("Powerful keeps a no-speech result before deleting the server copy", async 
   expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "no_speech" });
   expect(getLocal()?.outcome).toBe("no_speech");
   expect(calls.indexOf("space:save")).toBeLessThan(calls.indexOf("DELETE /hosted/transcripts/handle-1"));
+});
+
+test("Powerful accepts webm with codec parameters and sends the base MIME type", async () => {
+  const { recording, track } = harness(undefined, false, false, " Audio/WebM;codecs=opus ");
+  const lane = track(); lane.consent();
+  await lane.run(recording);
+  expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
+});
+
+test("Powerful waits for the account's Upload audio submission before creating an upload", async () => {
+  const { calls, recording, track } = harness();
+  let release!: () => void;
+  const otherUpload = withHostedUploadQueue(recording.owner!, () => new Promise<void>((resolve) => { release = resolve; }));
+  const lane = track(); lane.consent();
+  const note = lane.run(recording);
+  for (let turn = 0; turn < 3; turn++) await Promise.resolve();
+  expect(calls).not.toContain("POST /hosted/uploads");
+  release();
+  await Promise.all([otherUpload, note]);
+  expect(calls).toContain("POST /hosted/uploads");
+  expect(lane.jobs.get(recording.id)?.kind).toBe("done");
 });
 
 for (const interruption of [undefined, "part", "submit", "result", "space"] as const) {

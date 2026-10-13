@@ -141,6 +141,14 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
   if (config.hosted && !store) throw new Error("assemblyai hosted router: store is required when hosted");
   const router = Router();
 
+  // Older own-key clients must see a visible failure. A 404 is treated as
+  // "already deleted" and would leave data in the user's AssemblyAI account.
+  router.delete("/transcripts/:id", (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.status(410).json({ error: "assemblyai_own_key_delete_gone",
+      message: "Deleting transcripts with an AssemblyAI personal key is no longer supported. Delete this transcript in your AssemblyAI account." });
+  });
+
   function locals(res: Response): Locals {
     return res.locals.assemblyAiHosted as Locals;
   }

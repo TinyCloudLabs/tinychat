@@ -182,7 +182,7 @@ async function underLock(options: Options, address: string, key: string, session
         const result = await options.tcw.delegateTo(backendDid, TRANSCRIPT_WRITER_PERMISSIONS, { expiry: lifetime });
         alive();
         if (result.prompted) throw new Error("Transcript delegation unexpectedly requested wallet approval");
-        const portable = toPortableDelegation(result.delegation, address, options.tcw.chainId() ?? session.chainId, options.tcw.hosts[0] ?? "https://node.tinycloud.xyz");
+        const portable = toPortableDelegation(result.delegation, address, options.tcw.chainId() ?? session.chainId, options.tcw.hosts[0] ?? "https://tee.node.tinycloud.xyz");
         const serialized = await serializePortableDelegation(portable);
         alive();
         if (options.sessionStore.getToken() !== token || options.sessionStore.getAddress()?.toLowerCase() !== address) {

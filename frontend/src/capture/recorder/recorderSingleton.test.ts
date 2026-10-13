@@ -42,10 +42,16 @@ test("App mounts RecorderProvider exactly once above the auth gate", () => {
   const ready = app.slice(app.indexOf(") : isReady && tcw ? ("), app.indexOf("<BootSurface"));
   expect(app.indexOf("<RecorderProvider")).toBeLessThan(app.indexOf(") : isReady && tcw ? ("));
   expect(ready).toContain("<RecorderShell");
-  expect(app).toContain("!isReady && !deviceCapture && <RecordingOverlay />");
+  expect(app).toContain("shouldMountRecordingOverlay({ voiceNotesInApp, isReady, deviceCapture,");
   expect(app).not.toContain("voiceNoteOpen");
   expect(app).not.toContain("QuickVoiceNote");
   expect(app).not.toContain("LiveEdge");
+});
+
+test("the standalone overlay remains mounted when native sign-in replaces the device shell", () => {
+  const app = readFileSync(join(SRC, "App.tsx"), "utf8");
+  expect(app).toContain("deviceCapture && !nativeSignInFlow.screenShown ? (");
+  expect(app).toContain("nativeSignInScreenShown: nativeSignInFlow.screenShown, shareTokenPresent: !!shareToken }) && <RecordingOverlay />");
 });
 
 test("signed-out capture uses the same recorder shell above the auth gate", () => {

@@ -127,7 +127,7 @@ import { localValidationFromEnv, localValidationGuard } from "./local-validation
 import { createApiBodyParser } from "./body-parsing.js";
 
 const BACKEND_PRIVATE_KEY = process.env.BACKEND_PRIVATE_KEY;
-const TINYCLOUD_HOST = process.env.TINYCLOUD_HOST ?? "https://node.tinycloud.xyz";
+const TINYCLOUD_HOST = process.env.TINYCLOUD_HOST ?? "https://tee.node.tinycloud.xyz";
 const PORT = Number.parseInt(process.env.PORT ?? "3014", 10);
 const DEFAULT_HTTPS_CERT_FILE = "../frontend/localhost.pem";
 const DEFAULT_HTTPS_KEY_FILE = "../frontend/localhost-key.pem";

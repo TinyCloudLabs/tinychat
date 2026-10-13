@@ -12,6 +12,7 @@ import { captureEvents } from "@/capture/captureEvents";
 
 import type { StoreResult, UpsertMeetingOutcome } from "./connectors/connectorStore";
 import { AssemblyAiError, createHostedAssemblyAiClient, type AssemblyAiClient } from "./assemblyai";
+import { withHostedUploadQueue } from "./hostedUploadQueue";
 import { AudioStoreQuotaError, type StoredAudioManifest } from "./audio/audioStore";
 import {
   createUploadRunner,
@@ -768,6 +769,24 @@ describe("upload runner: an AssemblyAI job keeps its account", () => {
     expect(asked).toEqual(["hosted"]);
     expect(events).toEqual(["save", "hosted delete t-hosted"]);
     expect(saved[0]!.meeting.metadata).toMatchObject({ assemblyai_account: "tinycloud" });
+  });
+
+  test("Upload audio waits for a Powerful submission before creating a hosted upload", async () => {
+    let release!: () => void;
+    const powerful = withHostedUploadQueue(DID, () => new Promise<void>((resolve) => { release = resolve; }));
+    let uploads = 0;
+    const events: string[] = [];
+    const { deps: d } = deps({ events, pending: memoryPending(), audio: audioFake().audio,
+      assemblyAiClient: async () => ({ ...finishing(events, "hosted"),
+        upload: async () => { uploads++; return "u"; } }) as AssemblyAiClient });
+    const runner = createUploadRunner();
+    runner.start(d, { file: file("a.mp3", "audio/mpeg"), engine: "assemblyai", diarize: true, assemblyAiMode: "hosted" });
+    for (let turn = 0; turn < 5; turn++) await Promise.resolve();
+    expect(uploads).toBe(0);
+    release();
+    await powerful;
+    expect((await settled(runner)).stage).toBe("saved");
+    expect(uploads).toBe(1);
   });
 
   test("a resumed job and Discard use the account it was started with, whatever Settings now says", async () => {

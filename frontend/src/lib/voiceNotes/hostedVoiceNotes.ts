@@ -8,6 +8,7 @@ import { readTranscriptCommit } from "./voiceNoteCommits";
 import { createVoiceNoteRow } from "./voiceNoteRows";
 import { loadVoiceNoteAudio, readVoiceNoteForTranscription, saveVoiceNoteTranscript, voiceNoteTitle } from "./voiceNoteStore";
 import type { VoiceNoteTranscriptionStatus, NoteTranscriptionState } from "./voiceNoteTranscription";
+import { withHostedUploadQueue } from "../hostedUploadQueue";
 
 const CONSENT = "exo.voiceNotes.powerfulConsent";
 const PENDING = "exo.voiceNotes.powerfulJobs";
@@ -87,58 +88,62 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         const bytes = base64ToBytes(space.data.base64);
         source = { mimeType: space.data.mimeType, size: bytes.length, readPart: async (offset, length) => bytes.slice(offset, offset + length) };
       }
-      let handle = stored.handle;
-      if (!handle) {
-        const caps = await client.capabilities();
-        if (!caps.hosted) throw new AssemblyAiError("failed", "Powerful isn't available right now. Try again later.");
-        if (source.size > caps.max_bytes) throw new AssemblyAiError("rejected", "This recording is too large for Powerful (120 MB maximum).");
-        if (!caps.content_types.includes(source.mimeType)) throw new AssemblyAiError("rejected", "Powerful cannot read this recording's format.");
-        let uploadId = stored.uploadId;
-        let submitting = false;
-        if (uploadId) {
-          try {
-            const remote = await client.uploadState(uploadId);
-            if (remote.status === "submitted" && remote.id) handle = remote.id;
-            else if (remote.status === "submitting") submitting = true;
-            else if (remote.status === "failed") { uploadId = undefined; persist(id, null); }
-          } catch (error) {
-            if (!(error instanceof AssemblyAiError && (error.kind === "not-found" || error.uploadEnded))) throw error;
-            uploadId = undefined;
-            persist(id, null);
-          }
-        }
+      const handle = await withHostedUploadQueue(did, async () => {
+        let handle = stored.handle;
         if (!handle) {
-          if (!uploadId) {
-            guard();
-            const opId = crypto.randomUUID();
-            await native.beginRemoteOp({ id, did, opId, provider: "assemblyai", mode: "hosted", kind: "hosted_create",
-              fingerprint: `${source.size}:${source.mimeType}`, startedAt: Date.now() });
-            const created = await client.createUpload(source.size, source.mimeType);
-            uploadId = created.uploadId;
-            persist(id, { uploadId });
-            await native.recordRemoteResult({ id, did, opId, result: { outcome: "created", uploadId } });
-          }
-          if (!submitting) {
-            state(id, { kind: "uploading", progress: 0 });
-            const partSize = Math.min(caps.part_size, 1024 * 1024);
-            for (let offset = 0, index = 0; offset < source.size; offset += partSize, index++) {
-              guard();
-              const bytes = await source.readPart(offset, Math.min(partSize, source.size - offset));
-              await client.putPart(uploadId, index, bytes);
-              state(id, { kind: "uploading", progress: Math.min(1, (offset + bytes.length) / source.size) });
+          const caps = await client.capabilities();
+          if (!caps.hosted) throw new AssemblyAiError("failed", "Powerful isn't available right now. Try again later.");
+          if (source.size > caps.max_bytes) throw new AssemblyAiError("rejected", "This recording is too large for Powerful (120 MB maximum).");
+          const contentType = source.mimeType.split(";")[0].trim().toLowerCase();
+          if (!caps.content_types.includes(contentType)) throw new AssemblyAiError("rejected", "Powerful cannot read this recording's format.");
+          let uploadId = stored.uploadId;
+          let submitting = false;
+          if (uploadId) {
+            try {
+              const remote = await client.uploadState(uploadId);
+              if (remote.status === "submitted" && remote.id) handle = remote.id;
+              else if (remote.status === "submitting") submitting = true;
+              else if (remote.status === "failed") { uploadId = undefined; persist(id, null); }
+            } catch (error) {
+              if (!(error instanceof AssemblyAiError && (error.kind === "not-found" || error.uploadEnded))) throw error;
+              uploadId = undefined;
+              persist(id, null);
             }
           }
-          guard();
-          const opId = crypto.randomUUID();
-          await native.beginRemoteOp({ id, did, opId, provider: "assemblyai", mode: "hosted", kind: "hosted_submit",
-            fingerprint: `${source.size}:${source.mimeType}`, startedAt: Date.now() });
-          const submitted = await client.createTranscript(uploadId, { speakerLabels: recording.options?.identifySpeakers !== false,
-            multichannel: (recording as VoiceNoteRecording & { layout?: string }).layout === "stereo" });
-          handle = submitted.id;
-          persist(id, { handle });
-          await native.recordRemoteResult({ id, did, opId, result: { outcome: "created", jobId: handle } });
+          if (!handle) {
+            if (!uploadId) {
+              guard();
+              const opId = crypto.randomUUID();
+              await native.beginRemoteOp({ id, did, opId, provider: "assemblyai", mode: "hosted", kind: "hosted_create",
+                fingerprint: `${source.size}:${source.mimeType}`, startedAt: Date.now() });
+              const created = await client.createUpload(source.size, contentType);
+              uploadId = created.uploadId;
+              persist(id, { uploadId });
+              await native.recordRemoteResult({ id, did, opId, result: { outcome: "created", uploadId } });
+            }
+            if (!submitting) {
+              state(id, { kind: "uploading", progress: 0 });
+              const partSize = Math.min(caps.part_size, 1024 * 1024);
+              for (let offset = 0, index = 0; offset < source.size; offset += partSize, index++) {
+                guard();
+                const bytes = await source.readPart(offset, Math.min(partSize, source.size - offset));
+                await client.putPart(uploadId, index, bytes);
+                state(id, { kind: "uploading", progress: Math.min(1, (offset + bytes.length) / source.size) });
+              }
+            }
+            guard();
+            const opId = crypto.randomUUID();
+            await native.beginRemoteOp({ id, did, opId, provider: "assemblyai", mode: "hosted", kind: "hosted_submit",
+              fingerprint: `${source.size}:${source.mimeType}`, startedAt: Date.now() });
+            const submitted = await client.createTranscript(uploadId, { speakerLabels: recording.options?.identifySpeakers !== false,
+              multichannel: (recording as VoiceNoteRecording & { layout?: string }).layout === "stereo" });
+            handle = submitted.id;
+            persist(id, { handle });
+            await native.recordRemoteResult({ id, did, opId, result: { outcome: "created", jobId: handle } });
+          }
         }
-      }
+        return handle;
+      });
       if (!handle) throw new Error("Powerful did not return a transcript. Try again.");
       persist(id, { handle });
       let transcript: AssemblyAiTranscript;

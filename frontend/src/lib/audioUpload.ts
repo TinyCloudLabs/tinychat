@@ -33,6 +33,7 @@ import {
   type AssemblyAiKeyMode,
   type AssemblyAiTranscript,
 } from "./assemblyai";
+import { withHostedUploadQueue } from "./hostedUploadQueue";
 import type { NormalizedMeeting } from "./connectors/connectorStore";
 import type { FirefliesSentence } from "./connectors/firefliesClient";
 import { NO_SPEECH_MESSAGE, type LocalTranscriptSaver, type PreparedLocalTranscript } from "./localTranscriber";
@@ -748,39 +749,43 @@ export function createUploadRunner(): UploadRunner {
   }
 
   async function transcribeAssemblyAi(deps: UploadDeps, job: PendingUpload, client: AssemblyAiClient, r: Run): Promise<UploadTranscript> {
-    if (job.jobId === null) {
-      let uploadRef = job.uploadRef ?? null;
-      if (uploadRef === null) {
-        const file = r.file;
-        if (file === null) throw new NeedsFileError("The upload didn't reach AssemblyAI before the page closed. Choose the file again.");
-        runSet(r, { stage: "uploading", uploadPct: 0, detail: null });
-        uploadRef = await client.upload(file, {
-          signal: r.signal,
-          contentType: storedContentType(file),
-          onProgress: (done, total) => runSet(r, { uploadPct: total > 0 ? Math.round((done / total) * 100) : null }),
-        });
-        stillLive(r);
-        // Kept before the transcript is requested: a reload while the file is still being sent on
-        // re-joins that submission instead of losing the file.
-        job = runPersist(r, deps, { ...job, uploadRef, uploadCreatedAt: (deps.clock ?? REAL_CLOCK).now(), cleanup: undefined });
-      }
-      runSet(r, { stage: "queued", uploadPct: null, detail: "Sending the file to AssemblyAI…" });
-      let created: AssemblyAiTranscript;
-      // Persist before sending: a lost response or reload cannot prove the POST wasn't accepted.
-      if (job.assemblyAiMode === "hosted") job = runPersist(r, deps, { ...job, uploadSubmitting: true });
-      try {
-        created = await client.createTranscript(uploadRef, { speakerLabels: job.diarize, signal: r.signal });
-      } catch (err) {
-        // Hosted references survive all ambiguous failures, including rate limits and session expiry.
-        const ended = err instanceof AssemblyAiError && err.uploadEnded && !(err.kind === "not-found" && job.uploadSubmitting);
-        if (job.assemblyAiMode === "hosted" ? ended : !(err instanceof AssemblyAiError && err.kind === "network")) {
-          runPersist(r, deps, { ...job, uploadRef: undefined, uploadSubmitting: undefined });
+    const prepareUpload = async () => {
+      if (job.jobId === null) {
+        let uploadRef = job.uploadRef ?? null;
+        if (uploadRef === null) {
+          const file = r.file;
+          if (file === null) throw new NeedsFileError("The upload didn't reach AssemblyAI before the page closed. Choose the file again.");
+          runSet(r, { stage: "uploading", uploadPct: 0, detail: null });
+          uploadRef = await client.upload(file, {
+            signal: r.signal,
+            contentType: storedContentType(file),
+            onProgress: (done, total) => runSet(r, { uploadPct: total > 0 ? Math.round((done / total) * 100) : null }),
+          });
+          stillLive(r);
+          // Kept before the transcript is requested: a reload while the file is still being sent on
+          // re-joins that submission instead of losing the file.
+          job = runPersist(r, deps, { ...job, uploadRef, uploadCreatedAt: (deps.clock ?? REAL_CLOCK).now(), cleanup: undefined });
         }
-        throw err;
+        runSet(r, { stage: "queued", uploadPct: null, detail: "Sending the file to AssemblyAI…" });
+        let created: AssemblyAiTranscript;
+        // Persist before sending: a lost response or reload cannot prove the POST wasn't accepted.
+        if (job.assemblyAiMode === "hosted") job = runPersist(r, deps, { ...job, uploadSubmitting: true });
+        try {
+          created = await client.createTranscript(uploadRef, { speakerLabels: job.diarize, signal: r.signal });
+        } catch (err) {
+          // Hosted references survive all ambiguous failures, including rate limits and session expiry.
+          const ended = err instanceof AssemblyAiError && err.uploadEnded && !(err.kind === "not-found" && job.uploadSubmitting);
+          if (job.assemblyAiMode === "hosted" ? ended : !(err instanceof AssemblyAiError && err.kind === "network")) {
+            runPersist(r, deps, { ...job, uploadRef: undefined, uploadSubmitting: undefined });
+          }
+          throw err;
+        }
+        stillLive(r);
+        job = runPersist(r, deps, { ...job, jobId: created.id, uploadRef: undefined, uploadSubmitting: undefined });
       }
-      stillLive(r);
-      job = runPersist(r, deps, { ...job, jobId: created.id, uploadRef: undefined, uploadSubmitting: undefined });
-    }
+    };
+    if (job.assemblyAiMode === "hosted") await withHostedUploadQueue(deps.tcw.did, async () => { stillLive(r); await prepareUpload(); });
+    else await prepareUpload();
     runSet(r, { stage: "queued", uploadPct: null, detail: "Queued at AssemblyAI…" });
     const done = await pollAssemblyAiTranscript(client, job.jobId!, {
       clock: deps.clock,

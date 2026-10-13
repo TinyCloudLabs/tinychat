@@ -483,7 +483,7 @@ jobs:
           DEPLOY_RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           {
             printf '%s\n' "BACKEND_PRIVATE_KEY=$BACKEND_PRIVATE_KEY"
-            printf '%s\n' "TINYCLOUD_HOST=https://node.tinycloud.xyz"
+            printf '%s\n' "TINYCLOUD_HOST=https://tee.node.tinycloud.xyz"
             printf '%s\n' "FRONTEND_URL=$PRODUCTION_FRONTEND_URL"
             printf '%s\n' "REDPILL_API_KEY=$REDPILL_API_KEY"
             printf '%s\n' "REDPILL_BASE_URL=$REDPILL_BASE_URL"
