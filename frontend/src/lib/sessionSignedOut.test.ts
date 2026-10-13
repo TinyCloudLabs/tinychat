@@ -90,6 +90,10 @@ test("the App registers the shared clear completion that leaves ready UI", () =>
   expect(app).toContain("() => completeLocalSignOut(null)");
   const completion = app.slice(app.indexOf("const completeLocalSignOut = useCallback"),
     app.indexOf("useEffect(() => registerSessionSignedOutHook"));
+  expect(completion).toContain("clearSendIntentsForOwner(storedAddress)");
+  expect(completion.indexOf("clearSendIntentsForOwner(storedAddress)")).toBeLessThan(
+    completion.indexOf("sessionStoreRef.current.clear()"),
+  );
   expect(completion).toContain("setTcw(null);");
   expect(completion).toContain('setState(terminal ? "unauthenticated" : warning ? "recoverableError" : "unauthenticated");');
 });
