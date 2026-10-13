@@ -71,7 +71,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       guard();
       const account = tcw();
       const prior = await readCommit(account, id);
-      let stored = readJobs(did)[id] ?? {};
+      const stored = readJobs(did)[id] ?? {};
       if (prior && !stored.handle) { jobs.set(id, { kind: "done", outcome: prior.outcome }); notify(); return; }
       if (prior && stored.handle && stored.saved) {
         await client.deleteTranscript(stored.handle);

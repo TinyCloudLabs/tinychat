@@ -84,14 +84,14 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     } finally { if (uploadTicket) pendingStore.settleUploadQueue(uploadTicket); }
   };
   return {
-    process(ctx, id, trigger = "stop") {
+    process(ctx, id, _trigger = "stop") {
       if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());
       const epoch = cancellation;
       const uploadTicket = pendingStore.enqueueUpload(id);
       if (!uploadTicket.owns) return Promise.resolve("owned-by-another-run");
       return run(async () => { await processOne(ctx, id, epoch, false, uploadTicket); });
     },
-    reconcileAll(ctx, trigger = "reconcile", onSaved) {
+    reconcileAll(ctx, _trigger = "reconcile", onSaved) {
       if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());
       const epoch = cancellation;
       return run(async () => {
