@@ -3,11 +3,11 @@ import { logPipeline, logPipelineError } from "@/lib/debugLog";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { AssemblyAiError, assemblyAiSentences, createHostedAssemblyAiClient, type AssemblyAiTranscript } from "../assemblyai";
 import { base64ToBytes } from "./voiceNoteAudio";
-import { currentAccountGeneration } from "./accountContext";
+import { currentAccountGeneration, isAccountWorkAllowed } from "./accountContext";
 import { nativeRecordingSource, VoiceNotes, type LocalTranscript, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { createVoiceNoteRow } from "./voiceNoteRows";
-import { loadVoiceNoteAudio, readVoiceNoteForTranscription, saveVoiceNoteTranscript, voiceNoteTitle } from "./voiceNoteStore";
+import { loadVoiceNoteAudio, patchVoiceNoteTranscriptionFailure, readVoiceNoteForTranscription, saveVoiceNoteTranscript, voiceNoteTitle } from "./voiceNoteStore";
 import type { VoiceNoteTranscriptionStatus, NoteTranscriptionState } from "./voiceNoteTranscription";
 import { withHostedUploadQueue } from "../hostedUploadQueue";
 
@@ -74,17 +74,21 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
     logPipeline("transcription", id, "start", { engine: "assemblyai" });
     const generation = currentAccountGeneration();
     const guard = () => {
-      if (currentAccountGeneration() !== generation || tcw().did !== did) throw new Error("The recording account changed. Retry after signing in.");
+      const account = tcw();
+      if (currentAccountGeneration() !== generation || account.did !== did || !isAccountWorkAllowed(account))
+        throw new Error("The recording account changed. Retry after signing in.");
     };
+    let transcriptSaved = false;
     try {
       guard();
       const account = tcw();
       const prior = await readCommit(account, id);
       const stored = readJobs(did)[id] ?? {};
+      if (prior) transcriptSaved = true;
       if (prior && !stored.handle) { jobs.set(id, { kind: "done", outcome: prior.outcome }); notify(); return; }
       if (prior && stored.handle && stored.saved) {
-        await client.deleteTranscript(stored.handle);
-        persist(id, null);
+        try { await client.deleteTranscript(stored.handle); persist(id, null); }
+        catch (error) { console.warn("[HostedVoiceNotes] Could not delete the saved remote transcript", error); }
         jobs.set(id, { kind: "done", outcome: prior.outcome }); notify(); return;
       }
       if (!prior) await createRow(account, recording as VoiceNoteRecording, voiceNoteTitle(recording.startedAt));
@@ -189,14 +193,26 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
           speaker_labels: recording.options?.identifySpeakers !== false ? "diarized" : "single-speaker", transcribed_at: at,
           model: transcript.speech_model_used ?? null, language: transcript.language_code ?? null } }, { generation, did });
       if (!saved.ok) throw new Error("The transcript is ready, but could not be saved to your space. Try again.");
+      transcriptSaved = true;
       persist(id, { saved: true });
-      await client.deleteTranscript(handle);
-      persist(id, null);
+      try { await client.deleteTranscript(handle); persist(id, null); }
+      catch (error) { console.warn("[HostedVoiceNotes] Could not delete the saved remote transcript", error); }
       jobs.set(id, { kind: "done", outcome });
       logPipeline("transcription", id, "done", { engine: "assemblyai" });
       notify();
     } catch (error) {
       logPipelineError("transcription", error, id);
+      const current = currentAccountGeneration() === generation && tcw().did === did && isAccountWorkAllowed(tcw());
+      const clientForFailure = current ? tcw() : null;
+      if (!transcriptSaved && clientForFailure && typeof clientForFailure.sql?.db === "function") {
+        const code = error instanceof AssemblyAiError ? error.kind : "transcription_error";
+        try { await patchVoiceNoteTranscriptionFailure(clientForFailure, id, code, guard); }
+        catch (persistError) { console.warn("[HostedVoiceNotes] Could not persist transcription failure", persistError); }
+      }
+      if (transcriptSaved) {
+        const commit = await readCommit(tcw(), id);
+        if (commit) { jobs.set(id, { kind: "done", outcome: commit.outcome }); notify(); return; }
+      }
       const message = error instanceof AssemblyAiError ? error.message
         : error instanceof Error && error.message.startsWith("The transcript is ready") ? error.message
         : "Powerful couldn't finish this transcript. Try again.";

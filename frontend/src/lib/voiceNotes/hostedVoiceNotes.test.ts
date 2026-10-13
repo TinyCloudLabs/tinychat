@@ -14,7 +14,7 @@ afterEach(() => {
   else Reflect.deleteProperty(globalThis, "localStorage");
 });
 
-function harness(failAt?: "part" | "submit" | "result" | "space", noSpeech = false, spaceOnly = false, mimeType = "audio/mp4") {
+function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noSpeech = false, spaceOnly = false, mimeType = "audio/mp4") {
   const data = new Map<string, string>();
   Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
     getItem: (key: string) => data.get(key) ?? null,
@@ -69,7 +69,10 @@ function harness(failAt?: "part" | "submit" | "result" | "space", noSpeech = fal
       return json({ id: "handle-1", status: "completed", utterances: noSpeech ? [] : [{ start: 0, end: 1000, text: "Hello", speaker: "A" }] });
     }
     if (path === "/hosted/transcripts/handle-1/sentences" && method === "GET") return json({ sentences: [] });
-    if (path === "/hosted/transcripts/handle-1" && method === "DELETE") return json({ ok: true });
+    if (path === "/hosted/transcripts/handle-1" && method === "DELETE") {
+      if (failAt === "delete") throw new Error("offline");
+      return json({ ok: true });
+    }
     throw new Error(`Unexpected request: ${method} ${path}`);
   };
   const client = createHostedAssemblyAiClient({ backendUrl: "https://exo.test",
@@ -109,6 +112,14 @@ test("Powerful keeps a no-speech result before deleting the server copy", async 
   expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "no_speech" });
   expect(getLocal()?.outcome).toBe("no_speech");
   expect(calls.indexOf("space:save")).toBeLessThan(calls.indexOf("DELETE /hosted/transcripts/handle-1"));
+});
+test("Powerful keeps a saved outcome when remote transcript deletion fails", async () => {
+  const { calls, recording, track, getLocal } = harness("delete");
+  const lane = track(); lane.consent();
+  await lane.run(recording);
+  expect(calls).toContain("space:save");
+  expect(getLocal()?.outcome).toBe("transcribed");
+  expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
 });
 
 test("Powerful accepts webm with codec parameters and sends the base MIME type", async () => {

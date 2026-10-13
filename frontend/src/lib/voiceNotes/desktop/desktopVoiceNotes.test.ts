@@ -453,11 +453,16 @@ describe("desktop recorder adapter", () => {
     const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now,
       storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
     const id = (await engine.plugin.start()).id;
+    const failures: string[] = [];
+    const unsubscribeFailed = engine.whisper!.onFailed((failedId) => failures.push(failedId));
     bridge.files.set(id, Uint8Array.of(1, 2, 3));
     bridge.elapsed = 1000;
     await engine.plugin.stop();
     await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "failed");
+    await waitFor(() => failures.length === 1);
+    expect(failures).toEqual([id]);
     expect((await engine.plugin.listPending()).recordings.find((note) => note.id === id)?.stt?.error).toContain("fixture failed");
+    unsubscribeFailed();
     whisper.fail = false;
     await engine.whisper!.retry(id);
     await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
@@ -473,9 +478,13 @@ describe("desktop recorder adapter", () => {
     await absent.plugin.setCaptureDefaults({ accountDid: "did:owner", transitionGen: 1,
       transcriber: "on-device", identifySpeakers: false });
     const missingId = (await absent.plugin.start({ transcriber: "on-device" })).id;
+    const unavailableFailures: string[] = [];
+    const unsubscribeUnavailable = absent.whisper!.onFailed((failedId) => unavailableFailures.push(failedId));
     missing.files.set(missingId, Uint8Array.of(1));
     await absent.plugin.stop();
     await waitFor(() => absent.whisper?.snapshot().get(missingId)?.state === "failed");
+    expect(unavailableFailures).toEqual([]);
+    unsubscribeUnavailable();
     expect(absent.whisper?.snapshot().get(missingId)?.error).toContain("unavailable");
     expect(missingWhisper.calls).toHaveLength(0);
     missing.downloadedModels.add("QuantizedTinyEn");

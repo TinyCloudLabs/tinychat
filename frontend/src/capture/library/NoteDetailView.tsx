@@ -111,7 +111,7 @@ function Frame(props: { title: string; pushed: boolean; onBack: () => void; chil
 /** Where a voice note's transcription stands, when it has no transcript; null when there is nothing to say or offer. */
 export function VoiceNoteTranscriptionStatus(props: {
   item: LibraryItem;
-  outcome: "none" | "transcribed" | "no_speech";
+  outcome: "none" | "pending" | "failed" | "skipped" | "transcribed" | "no_speech";
   transcription: VoiceNoteTranscriptionProps | undefined;
 }) {
   const { item, transcription } = props;
@@ -170,8 +170,11 @@ export function VoiceNoteTranscriptionStatus(props: {
   }
   return (
     <div className="flex flex-col gap-2">
-      <p className="text-callout text-muted-foreground">Not transcribed</p>
-      <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} />
+      <p className="text-callout text-muted-foreground">
+        {props.outcome === "failed" ? "Transcription failed" : props.outcome === "skipped" ? "Transcription skipped" : "Not transcribed"}
+      </p>
+      <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs}
+        label={props.outcome === "failed" ? "Try again" : undefined} />
     </div>
   );
 }

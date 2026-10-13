@@ -353,7 +353,9 @@ export function useLibrary(
           if (version === (readVersions.current.get(note.id) ?? 0) && (stale || staleFields?.has("metadata") || !settled(reads.current.get(note.id)?.metadata))) {
             let metadata = await readMeetingMetadata(space, note.id);
             if (locator && metadata.status === "ok") metadata = { status: "ok", metadata: {
-              ...metadata.metadata, transcription_outcome: locator.outcome,
+              ...metadata.metadata,
+              transcription_outcome: locator.outcome === "none"
+                ? metadata.metadata.transcription_outcome ?? "none" : locator.outcome,
               // The preview is bounded; only the body read may supply full transcript text.
               transcript_text: locator.committed ? null : locator.expectedText,
             } };

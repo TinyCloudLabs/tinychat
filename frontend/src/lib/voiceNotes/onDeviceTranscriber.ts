@@ -7,7 +7,7 @@
 // does for its own source.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import { localTranscriptToSave, saveVoiceNoteTranscript } from "./voiceNoteStore";
+import { localTranscriptToSave, patchVoiceNoteTranscriptionFailure, saveVoiceNoteTranscript } from "./voiceNoteStore";
 import { VoiceNotes, type LocalTranscript, type NoteSttState } from "./nativeVoiceNotes";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { LOCAL_COPY } from "./notePipelineCopy";
@@ -65,14 +65,15 @@ function publish(key: string, next: OnDeviceTranscriptSyncState | null): void {
  */
 export function syncOnDeviceTranscript(
   tcw: TinyCloudWeb,
-  recording: { id: string; owner?: string | null; ledger?: { audio: { state: string; rowId?: string | null } }; stt?: Pick<NoteSttState, "state"> },
+  recording: { id: string; owner?: string | null; ledger?: { audio: { state: string; rowId?: string | null } }; stt?: Pick<NoteSttState, "state"> & Partial<Pick<NoteSttState, "error">> },
   requestedAccount: AccountContext = captureAccountContext(tcw),
 ): Promise<boolean> {
   if (recording.ledger?.audio.state !== "saved" && !recording.ledger?.audio.rowId) return Promise.resolve(false);
   const key = syncKey(tcw, recording.id);
   const expected = recording.stt?.state === "done";
+  const failed = recording.stt?.state === "failed";
   return enqueue(key, async () => {
-    const abandoned = await syncOnce(tcw, key, recording.id, expected, requestedAccount);
+    const abandoned = await syncOnce(tcw, key, recording.id, expected, failed, requestedAccount);
     if (abandoned) abandonSync(key, recording.id, tcw);
     return abandoned;
   });
@@ -177,9 +178,9 @@ async function recordAndPublish(tcw: TinyCloudWeb, key: string, id: string, tran
   }
 }
 
-async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: boolean, ctx: AccountContext): Promise<boolean> {
+async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: boolean, failed: boolean, ctx: AccountContext): Promise<boolean> {
   if (!isCurrent(tcw, ctx)) return true;
-  if (!await ownsNativeNote(tcw, key, id, ctx, "failed", expected)) return !isCurrent(tcw, ctx);
+  if (!await ownsNativeNote(tcw, key, id, ctx, "failed", expected || failed)) return !isCurrent(tcw, ctx);
   let transcript: LocalTranscript | null;
   try {
     checkpoint(tcw, ctx)();
@@ -192,10 +193,14 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
     if (!isCurrent(tcw, ctx)) return true;
     console.warn("[OnDeviceStt] Could not read the local transcript", err);
     publish(key, { state: "failed", message: LOCAL_COPY.transcriptReadFailed });
+    if (expected || failed) await persistOnDeviceFailure(tcw, id, "transcript_read_failed", ctx);
     return false;
   }
   if (!transcript) {
-    if (expected && isCurrent(tcw, ctx)) publish(key, { state: "failed", message: LOCAL_COPY.missingTranscript });
+    if (expected || failed) {
+      if (isCurrent(tcw, ctx)) publish(key, { state: "failed", message: LOCAL_COPY.missingTranscript });
+      await persistOnDeviceFailure(tcw, id, failed ? "on_device_transcription_failed" : "on_device_transcript_missing", ctx);
+    }
     return false;
   }
   if (!isCurrent(tcw, ctx)) return true;
@@ -207,17 +212,26 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
     if (!isCurrent(tcw, ctx)) return true;
     if (result.ok) {
       return await recordAndPublish(tcw, key, id, transcript, ctx);
-    } else {
-      if (!isCurrent(tcw, ctx)) return true;
-      console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", result.error);
-      publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed });
-      return false;
     }
+    console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", result.error);
+    publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed });
+    await persistOnDeviceFailure(tcw, id, "transcript_save_failed", ctx);
+    return false;
   } catch (err) {
     if (!isCurrent(tcw, ctx) || err instanceof StaleAccountContext) return true;
     console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", err);
     publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed });
+    await persistOnDeviceFailure(tcw, id, "transcript_save_failed", ctx);
     return false;
+  }
+}
+
+async function persistOnDeviceFailure(tcw: TinyCloudWeb, id: string, code: string, ctx: AccountContext): Promise<void> {
+  if (!isCurrent(tcw, ctx)) return;
+  try {
+    await patchVoiceNoteTranscriptionFailure(tcw, id, code, checkpoint(tcw, ctx));
+  } catch (error) {
+    if (isCurrent(tcw, ctx)) console.warn("[OnDeviceStt] Could not persist the local transcription failure", error);
   }
 }
 

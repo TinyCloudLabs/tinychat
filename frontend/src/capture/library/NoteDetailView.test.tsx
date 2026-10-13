@@ -166,6 +166,16 @@ describe("a voice note's transcription", () => {
     expect(long).not.toContain("minutes can be transcribed");
   });
 
+  test("a legacy empty body without an outcome remains a transcribe candidate", () => {
+    const html = render({
+      metadata: { status: "ok", metadata: { audio: { stored: true } } },
+      transcript: { status: "ok", sentences: [] },
+      transcription: transcription(),
+    });
+    expect(html).toContain("Not transcribed");
+    expect(html).toContain('data-testid="transcribe-button"');
+  });
+
   test("no speech, progress, just saved, and a failure with Retry only when it can help", () => {
     const silent = render({ metadata: { status: "ok", metadata: { transcription_outcome: "no_speech" } }, transcription: transcription() });
     expect(silent).toContain("No speech was found in this note.");

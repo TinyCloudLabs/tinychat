@@ -86,11 +86,21 @@ FROM connector_meeting m
 WHERE m.source IN (${SUPPORTED_MEETING_SOURCES_SQL})
   AND CASE
     WHEN m.source NOT IN (${TRANSCRIBED_ONLY_SOURCES_SQL}) THEN 1
-    WHEN EXISTS (SELECT 1 FROM voice_note_transcript t WHERE t.source_id = m.source_id)
-      THEN EXISTS (SELECT 1 FROM voice_note_transcript t WHERE t.source_id = m.source_id AND t.outcome = 'transcribed')
-    ELSE COALESCE((SELECT json_extract(g.metadata, '$.transcription_outcome') = 'transcribed'
+    WHEN EXISTS (SELECT 1 FROM voice_note_transcript t WHERE t.source_id = m.source_id) THEN
+      COALESCE((SELECT CASE WHEN t.outcome = 'transcribed' THEN 1 ELSE 0 END
+        FROM voice_note_transcript t WHERE t.source_id = m.source_id), 0)
+    ELSE COALESCE((SELECT CASE
+      WHEN json_extract(g.metadata, '$.transcription_outcome') = 'transcribed'
+        OR (json_extract(g.metadata, '$.transcription_outcome') IS NULL
+          AND typeof(json_extract(g.metadata, '$.transcript_text')) = 'text'
+          AND length(trim(json_extract(g.metadata, '$.transcript_text'))) > 0) THEN 1
+      ELSE 0 END
       FROM connector_meeting g WHERE g.source_id = m.source_id AND g.source IN ('exo-voice-note', 'exo-voice-note-dup')
-        AND json_valid(g.metadata) AND json_extract(g.metadata, '$.transcription_outcome') IS NOT NULL
+        AND json_valid(g.metadata)
+        AND (json_extract(g.metadata, '$.transcription_outcome') IN ('transcribed', 'no_speech')
+          OR (json_extract(g.metadata, '$.transcription_outcome') IS NULL
+            AND typeof(json_extract(g.metadata, '$.transcript_text')) = 'text'
+            AND length(trim(json_extract(g.metadata, '$.transcript_text'))) > 0))
       ${LEGACY_WINNER_SQL_ORDER}), 0)
   END
 ORDER BY started_at DESC, id ASC
@@ -104,8 +114,11 @@ FROM connector_meeting
 WHERE source IN (${SUPPORTED_MEETING_SOURCES_SQL})
   AND CASE
     WHEN source NOT IN (${TRANSCRIBED_ONLY_SOURCES_SQL}) THEN 1
-    WHEN json_valid(metadata) THEN coalesce(json_extract(metadata, '$.transcription_outcome') = 'transcribed', 0)
-    ELSE 0
+    WHEN json_valid(metadata) THEN coalesce(
+      json_extract(metadata, '$.transcription_outcome') = 'transcribed'
+        OR (json_extract(metadata, '$.transcription_outcome') IS NULL
+          AND typeof(json_extract(metadata, '$.transcript_text')) = 'text'
+          AND length(trim(json_extract(metadata, '$.transcript_text'))) > 0), 0)
   END
 ORDER BY started_at DESC, id ASC
 LIMIT ${SQL_DISCOVERY_MAX_MEETINGS + 1}`;

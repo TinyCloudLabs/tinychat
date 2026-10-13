@@ -277,7 +277,8 @@ async function recordRowId(
       });
       checkActive();
       pendingStore.recordRowCreated();
-      if (recording.stt?.state === "done") void syncOnDeviceTranscript(tcw, { ...fresh, ledger: { ...fresh.ledger, audio: { ...patch.audio } } }, ctx);
+      if (recording.stt?.state === "done" || recording.stt?.state === "failed")
+        void syncOnDeviceTranscript(tcw, { ...fresh, ledger: { ...fresh.ledger, audio: { ...patch.audio } } }, ctx);
       return;
     } catch (caught) {
       if (errorCode(caught) !== "rev_conflict") throw caught;
@@ -290,7 +291,7 @@ async function recordRowId(
       if (!current || current.owner !== ctx.did || isLegacyNote(current)) throw caught;
       if (current.ledger?.audio.rowId === rowId) {
         pendingStore.recordRowCreated();
-        if (current.stt?.state === "done") void syncOnDeviceTranscript(tcw, current, ctx);
+        if (current.stt?.state === "done" || current.stt?.state === "failed") void syncOnDeviceTranscript(tcw, current, ctx);
         return;
       }
       fresh = current;
