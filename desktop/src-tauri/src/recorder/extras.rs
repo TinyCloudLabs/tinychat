@@ -391,7 +391,7 @@ pub async fn recorder_models_select(app: tauri::AppHandle, id: String) -> Result
 }
 
 #[tauri::command]
-pub fn recorder_models_progress(app: tauri::AppHandle) -> Vec<Progress> {
+pub async fn recorder_models_progress(app: tauri::AppHandle) -> Vec<Progress> {
     super::ensure(&app);
     app.state::<ExtrasState>()
         .progress

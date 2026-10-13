@@ -177,7 +177,12 @@ export function createDesktopWhisperQueue(args: {
         let progressUpdates = Promise.resolve();
         const timeoutMs = Math.max(30 * 60_000, Math.ceil(note.durationMs * 6));
         const timer = setTimeout(() => {
-          if (!settled) { settled = true; stop(); reject(new Error("Whisper transcription timed out")); }
+          if (!settled) {
+            settled = true; stop();
+            void Promise.resolve().then(() => whisper.stopTranscription(id))
+              .catch(() => { /* The task may have already stopped. */ });
+            reject(new Error("Whisper transcription timed out"));
+          }
         }, timeoutMs);
         const finish = (event: WhisperEvent) => {
           if (event.session_id !== id || settled) return;

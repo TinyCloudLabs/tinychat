@@ -148,57 +148,73 @@ fn read(root: &Path, id: &str, offset: u64, len: u32) -> Result<Vec<u8>, String>
 }
 
 #[tauri::command]
-pub fn append_audio_chunk(
+pub async fn append_audio_chunk(
     app: tauri::AppHandle,
     id: String,
     bytes: Vec<u8>,
 ) -> Result<u64, String> {
-    super::ensure(&app);
-    append(&root(&app)?, &id, &bytes)
+    tauri::async_runtime::spawn_blocking(move || {
+        super::ensure(&app);
+        append(&root(&app)?, &id, &bytes)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn audio_file_size(app: tauri::AppHandle, id: String) -> Result<u64, String> {
-    super::ensure(&app);
-    let root = root(&app)?;
-    let path = audio_path(&root, &id)?;
-    match rustix::fs::open(
-        &path,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-        Mode::empty(),
-    ) {
-        Ok(fd) => {
-            let meta = File::from(fd).metadata().map_err(|e| e.to_string())?;
-            if !meta.is_file() {
-                return Err("audio_not_regular_file".into());
+pub async fn audio_file_size(app: tauri::AppHandle, id: String) -> Result<u64, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        super::ensure(&app);
+        let root = root(&app)?;
+        let path = audio_path(&root, &id)?;
+        match rustix::fs::open(
+            &path,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+        ) {
+            Ok(fd) => {
+                let meta = File::from(fd).metadata().map_err(|e| e.to_string())?;
+                if !meta.is_file() {
+                    return Err("audio_not_regular_file".into());
+                }
+                Ok(meta.len())
             }
-            Ok(meta.len())
+            Err(rustix::io::Errno::NOENT) => Ok(0),
+            Err(e) => Err(e.to_string()),
         }
-        Err(rustix::io::Errno::NOENT) => Ok(0),
-        Err(e) => Err(e.to_string()),
-    }
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn read_audio_chunk(
+pub async fn read_audio_chunk(
     app: tauri::AppHandle,
     id: String,
     offset: u64,
     len: u32,
 ) -> Result<tauri::ipc::Response, String> {
-    super::ensure(&app);
-    Ok(tauri::ipc::Response::new(read(
-        &root(&app)?,
-        &id,
-        offset,
-        len,
-    )?))
+    tauri::async_runtime::spawn_blocking(move || {
+        super::ensure(&app);
+        Ok(tauri::ipc::Response::new(read(
+            &root(&app)?,
+            &id,
+            offset,
+            len,
+        )?))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn finalize_audio_file(app: tauri::AppHandle, id: String) -> Result<u64, String> {
-    super::ensure(&app);
-    finalize_at(&root(&app)?, &id)
+pub async fn finalize_audio_file(app: tauri::AppHandle, id: String) -> Result<u64, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        super::ensure(&app);
+        finalize_at(&root(&app)?, &id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn finalize_at(root: &Path, id: &str) -> Result<u64, String> {
@@ -472,9 +488,13 @@ fn stage_whisper_at(dir: &Path, sessions: &Path, id: &str, stage_id: &str) -> Re
 }
 
 #[tauri::command]
-pub fn recorder_whisper_cleanup_stages(app: tauri::AppHandle) -> Result<u64, String> {
-    super::ensure(&app);
-    cleanup_whisper_stages_at(&root(&app)?, &sessions_root(&app)?)
+pub async fn recorder_whisper_cleanup_stages(app: tauri::AppHandle) -> Result<u64, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        super::ensure(&app);
+        cleanup_whisper_stages_at(&root(&app)?, &sessions_root(&app)?)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[cfg(test)]
@@ -602,23 +622,27 @@ fn cleanup_whisper_stages_at(dir: &Path, sessions: &Path) -> Result<u64, String>
 }
 
 #[tauri::command]
-pub fn delete_audio_file(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    super::ensure(&app);
-    let root = root(&app)?;
-    let sessions = sessions_root(&app)?;
-    let note_cleanup = delete_note_at(&root, &sessions, &id);
-    let segment_cleanup = (|| {
-        if let Some(pending) = super::journal::load(&app)? {
-            if pending.id == id {
-                if let Some(segment_id) = pending.segment_id {
-                    remove_source_session(&sessions, &segment_id)?;
-                    super::journal::remove_failed_source(&app, &segment_id)?;
+pub async fn delete_audio_file(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        super::ensure(&app);
+        let root = root(&app)?;
+        let sessions = sessions_root(&app)?;
+        let note_cleanup = delete_note_at(&root, &sessions, &id);
+        let segment_cleanup = (|| {
+            if let Some(pending) = super::journal::load(&app)? {
+                if pending.id == id {
+                    if let Some(segment_id) = pending.segment_id {
+                        remove_source_session(&sessions, &segment_id)?;
+                        super::journal::remove_failed_source(&app, &segment_id)?;
+                    }
                 }
             }
-        }
-        super::journal::delete_failed_for_note(&app, &id)
-    })();
-    note_cleanup.and(segment_cleanup)
+            super::journal::delete_failed_for_note(&app, &id)
+        })();
+        note_cleanup.and(segment_cleanup)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn delete_note_at(root: &Path, sessions: &Path, id: &str) -> Result<(), String> {
