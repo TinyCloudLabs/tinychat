@@ -1,5 +1,15 @@
 # @tinychat/backend
 
+## 0.5.1
+
+### Patch Changes
+
+- 244d7a6: Update TinyCloud web, node, core, and services SDKs to 3.2.0 and OpenKey SDK and Capacitor plugin to their stable releases, retaining the session-key patch for the TinyCloud node SDK.
+- 37ef2fa: Treat the private transcriber's literal 'Unknown' speaker as unattributed (null) and keep it out of participants (TC-981).
+- 2ac09a6: Widen Calendar autojoin's late-join window, preserve truthful RSVP outcomes without hiding dispatch failures, skip unchanged RSVP writes, and record discovery and dispatch lag (TC-988).
+- 20faa03: Refresh saved transcriber transcripts when ptx publishes a newer version, keeping previous copies in an immutable archive and preserving edited meeting titles and start times (TC-989).
+- 4a1e442: Require a configured HMAC secret and valid signature for PTX transcription webhooks.
+
 ## 0.5.1-beta.4
 
 ### Patch Changes
