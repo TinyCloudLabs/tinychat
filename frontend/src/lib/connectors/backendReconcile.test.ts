@@ -290,6 +290,46 @@ describe("reconcileBackendMeetings — the user-space copy", () => {
     expect(res.data.reconciled).toBe(1);
   });
 
+  test("snapshots only unresolved rows from the existing complete discovery pass", async () => {
+    const { tcw, kv } = makeTcw(tracker);
+    const pending = [meta({ sourceId: "mtg-failed", title: "PRIVATE_TITLE" })];
+    kv.failKeys.add(meetingKvKey(SOURCE, "mtg-failed"));
+    const api = client({ lists: [okList([
+      meta({ sourceId: "mtg-saved" }),
+      ...pending,
+    ])] }, tracker);
+    let listStartedAt = 0;
+    const events: string[] = [];
+    const observedAt = "2026-10-13T09:00:00.000Z";
+    const list = api.list.bind(api);
+    api.list = async (options) => {
+      events.push("list");
+      listStartedAt = Date.now();
+      return list(options);
+    };
+    const snapshots: Array<{ rows: ConnectorMeetingMeta[]; observedAt: string }> = [];
+
+    const result = await reconcileBackendMeetings({
+      tcw,
+      source: SOURCE,
+      meetings: api,
+      secrets: unlocked(),
+      observedAt: () => { events.push("observedAt"); return observedAt; },
+      onPendingSnapshot: (async (rows: ConnectorMeetingMeta[], checkedAt: string) => {
+        events.push("snapshot");
+        snapshots.push({ rows: [...rows], observedAt: checkedAt });
+      }) as never,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]?.rows.map(({ sourceId }) => sourceId)).toEqual(["mtg-failed"]);
+    expect(snapshots[0]?.observedAt).toBe(observedAt);
+    expect(events).toEqual(["observedAt", "list", "snapshot"]);
+    expect(Date.parse(snapshots[0]!.observedAt)).toBeLessThanOrEqual(listStartedAt);
+    expect(api.listArgs).toHaveLength(1);
+  });
+
   test("[delta-06] a stored-but-unacked meeting is reported, never counted as reconciled", async () => {
     const { tcw, kv } = makeTcw(tracker);
     const api = client(

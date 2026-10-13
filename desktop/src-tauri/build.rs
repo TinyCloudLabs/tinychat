@@ -33,6 +33,8 @@ fn main() {
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "exo_desktop_smoke",
+            "append_dev_log",
+            "debug_logging_enabled",
             "append_audio_chunk",
             "ptx_audio_metadata",
             "ptx_upload_audio",
@@ -63,6 +65,8 @@ fn main() {
             "recorder_models_progress",
             "recorder_system_audio_get",
             "recorder_system_audio_set",
+            "recorder_system_audio_consent_get",
+            "recorder_system_audio_consent_set",
             "recorder_auto_save_to_space_get",
             "recorder_auto_save_to_space_set",
         ]),

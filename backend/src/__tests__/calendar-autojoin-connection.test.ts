@@ -265,11 +265,38 @@ describe("Calendar OAuth custody lifecycle", () => {
     expect(status.outcomes.map(outcome => outcome.reason).sort()).toEqual(["lookup_identity_mismatch", "missed_window"]);
   });
 
+  test("RSVP hints cannot displace failures from the 30-item outcomes list", async () => {
+    const f = fixture();
+    await f.store.putConnection({ tenant: TENANT, subject: "google-subject", state: "enabled", generation: 1,
+      scopes: [], nextScanAt: 0 });
+    for (let i = 0; i < 35; i++) {
+      await f.store.putOccurrence({ ...attempt(), id: `invite-${i}`, phase: "terminal", disposition: "not_accepted",
+        start: attempt().start + (i + 1) * 60_000 });
+    }
+    for (const disposition of ["failed", "missed_window", "capacity_exhausted"]) {
+      await f.store.putOccurrence({ ...attempt(), id: disposition, phase: "terminal", disposition });
+    }
+    await f.store.putOccurrence({ ...attempt(), id: "uncertain", disposition: "not_accepted", errorCode: "lookup_identity_mismatch" });
+    const status = await f.connection.getStatus(TENANT);
+    expect(status.outcomes).toHaveLength(30);
+    expect(status.outcomes.slice(0, 4).map(row => row.reason).sort())
+      .toEqual(["capacity_exhausted", "failed", "lookup_identity_mismatch", "missed_window"]);
+    expect(status.outcomes.slice(4).map(row => row.id)).toEqual(Array.from({ length: 26 }, (_, i) => `invite-${34 - i}`));
+    // Even a full list of failures must retain all its slots ahead of future hints.
+    for (let i = 0; i < 30; i++) {
+      await f.store.putOccurrence({ ...attempt(), id: `failure-${i}`, phase: "terminal", disposition: "failed",
+        start: attempt().start - (i + 1) * 60_000 });
+    }
+    const full = await f.connection.getStatus(TENANT);
+    expect(full.outcomes).toHaveLength(30);
+    expect(full.outcomes.every(row => row.reason !== "not_accepted")).toBe(true);
+  });
+
   test("never-connected status is a normal off state read without listing occurrences", async () => {
     const f = fixture();
     let listed = 0;
     f.store.listOccurrences = async () => { listed++; return []; };
-    expect(await f.connection.getStatus(TENANT)).toEqual({ state: "off", enabled: false, lastScanAt: null, errorCode: null, outcomes: [] });
+    expect(await f.connection.getStatus(TENANT)).toEqual({ state: "off", enabled: false, lastScanAt: null, lastDispatchLag: null, errorCode: null, outcomes: [] });
     expect(listed).toBe(0);
   });
 

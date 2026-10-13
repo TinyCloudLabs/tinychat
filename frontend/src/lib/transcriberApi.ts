@@ -50,7 +50,7 @@ export interface TranscriberMeeting {
   platform: string;
   meeting_url: string;
   bot?: { name?: string; joined_at?: string | null };
-  transcript?: { status?: string };
+  transcript?: { status?: string; version?: number };
   created_at: string;
   started_at?: string | null;
   ended_at?: string | null;
@@ -81,7 +81,7 @@ export type TranscriberListRow = TranscriberMeeting | TranscriberUnavailableMeet
 export interface TranscriberSegment {
   id: string;
   speaker_id: string;
-  speaker_name: string;
+  speaker_name: string | null;
   attribution?: "identified" | "unknown" | "overlap";
   start: number;
   end: number;
@@ -89,6 +89,7 @@ export interface TranscriberSegment {
 }
 
 export interface TranscriberTranscript {
+  version?: number;
   meeting_id: string;
   status: TranscriberMeetingStatus;
   language?: string;
@@ -97,7 +98,7 @@ export interface TranscriberTranscript {
   provider?: string;
   fallback_from?: string;
   fallback_reason?: string | null;
-  speakers?: { id: string; name: string }[];
+  speakers?: { id: string; name: string | null }[];
   segments?: TranscriberSegment[];
   text?: string;
 }

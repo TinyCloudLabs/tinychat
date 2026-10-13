@@ -67,6 +67,20 @@ function render(patch: Partial<TranscriberViewProps> = {}): string {
 }
 
 describe("TranscriberView", () => {
+  test("TC-988: not_accepted shows the invite acceptance copy in calendar outcomes", () => {
+    const html = render({ calendarOutcomes: [{ id: "unaccepted", title: "Calendar invite", start: 1_800_000_000_000,
+      reason: "not_accepted" }] });
+    expect(html).toContain("Calendar autojoin outcomes");
+    expect(html).toContain("Accept the invite to have the notetaker join");
+  });
+
+  test("TC-988: declined and frozen ineligible outcomes do not ask the user to accept", () => {
+    const html = render({ calendarOutcomes: [{ id: "declined", title: "Declined invite", start: 1_800_000_000_000,
+      reason: "event_ineligible" }] });
+    expect(html).toContain("The event no longer meets the attendance or meeting requirements for autojoin.");
+    expect(html).not.toContain("Accept the invite to have the notetaker join");
+  });
+
   test("dark says the backend is not configured and hides the form", () => {
     const html = render({ listStatus: "dark" });
     expect(html).toContain('data-testid="meeting-bot"');
@@ -209,6 +223,26 @@ describe("TranscriberView", () => {
     expect(html).toContain("1:05");
     expect(html).toContain("Ada: ");
     expect(html).toContain(">Hide<");
+  });
+
+  test("null and legacy Unknown speakers render without labels or dangling separators", () => {
+    const html = render({ meetings: [meeting({ status: "completed" })], open: {
+      id: "mtg_1", status: "ready", transcript: {
+        meeting_id: "mtg_1", status: "completed", speakers: [],
+        segments: [
+          { id: "a", speaker_id: "unknown", speaker_name: null, start: 0, end: 1, text: "No speaker field." },
+          { id: "b", speaker_id: "unknown", speaker_name: null, attribution: "unknown", start: 1, end: 2, text: "Unattributed by ptx." },
+          { id: "c", speaker_id: "unknown", speaker_name: "Unknown", start: 2, end: 3, text: "Legacy placeholder." },
+          { id: "d", speaker_id: "unknown", speaker_name: "  Unknown  ", start: 3, end: 4, text: "Padded placeholder." },
+        ],
+      },
+    } });
+    expect(html).not.toContain('class="font-medium"');
+    expect(html).not.toContain("Unknown");
+    expect(html).not.toContain(": </span>");
+    for (const text of ["No speaker field.", "Unattributed by ptx.", "Legacy placeholder.", "Padded placeholder."]) {
+      expect(html).toContain(text);
+    }
   });
 
   test("uncertain transcript windows are visible without claiming a speaker identity", () => {

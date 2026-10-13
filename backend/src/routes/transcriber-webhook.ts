@@ -9,17 +9,22 @@ const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
 /** Mount ahead of JSON and CSRF middleware: signatures cover the exact received bytes. */
 export function createTranscriberWebhookRouter(worker: Pick<TranscriptDeliveryWorker, "wake">, secret?: string): Router {
+  const configuredSecret = secret?.trim() ?? "";
   const router = Router();
   router.use(rateLimit({ windowMs: 60_000, limit: 600, keyGenerator: () => "global", standardHeaders: "draft-7", legacyHeaders: false }));
   router.use(rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: "draft-7", legacyHeaders: false }));
   router.post("/", (req: Request, res: Response, next: NextFunction) => {
+    if (!configuredSecret) {
+      res.status(503).json({ error: "webhook_not_configured" });
+      return;
+    }
     if (!req.is("application/json")) {
       res.status(400).json({ error: "invalid_body" });
       return;
     }
     next();
   }, raw({ type: "application/json", limit: "16kb", inflate: false }), async (req: Request, res: Response) => {
-    if (secret && !verifyHmacSha256Signature(req.body, req.headers[PTX_SIGNATURE_HEADER], secret)) {
+    if (!verifyHmacSha256Signature(req.body, req.headers[PTX_SIGNATURE_HEADER], configuredSecret)) {
       res.status(401).json({ error: "invalid_signature" });
       return;
     }

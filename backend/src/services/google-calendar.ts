@@ -51,11 +51,9 @@ function parseInstant(value: string): number {
   return /T.*(?:Z|[+-]\d{2}:\d{2})$/i.test(value) ? Date.parse(value) : NaN;
 }
 
-export function eligibleCalendarEvent(event: GoogleCalendarEvent): EligibleCalendarEvent | null {
+/** Timed, confirmed Meet occurrence, before applying the RSVP consent rule. */
+export function calendarMeetEvent(event: GoogleCalendarEvent): EligibleCalendarEvent | null {
   if (event.status !== "confirmed" || !event.start?.dateTime || !event.end?.dateTime) return null;
-  const self = event.attendees?.find(attendee => attendee.self);
-  if (self && self.responseStatus !== "accepted") return null;
-  if (!event.organizer?.self && self?.responseStatus !== "accepted") return null;
   const start = parseInstant(event.start.dateTime);
   const end = parseInstant(event.end.dateTime);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
@@ -66,7 +64,14 @@ export function eligibleCalendarEvent(event: GoogleCalendarEvent): EligibleCalen
   return { eventId: event.id, start, end, meetingUrl, title: event.summary?.slice(0, 512) || "Calendar meeting" };
 }
 
-export const dispatchCutoff = (event: { start: number; end: number }) => Math.min(event.start + 5 * 60_000, event.end);
+export function eligibleCalendarEvent(event: GoogleCalendarEvent): EligibleCalendarEvent | null {
+  const self = event.attendees?.find(attendee => attendee.self);
+  if (self && self.responseStatus !== "accepted") return null;
+  if (!event.organizer?.self && self?.responseStatus !== "accepted") return null;
+  return calendarMeetEvent(event);
+}
+
+export const dispatchCutoff = (event: { start: number; end: number }) => Math.min(event.start + 15 * 60_000, event.end - 60_000);
 export const inDispatchWindow = (event: { start: number; end: number }, now: number) => now >= event.start - 60_000 && now < dispatchCutoff(event);
 
 export class GoogleCalendarError extends Error {

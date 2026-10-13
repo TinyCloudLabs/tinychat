@@ -1,5 +1,62 @@
 # exo-desktop
 
+## 0.7.0
+
+### Patch Changes
+
+- ddbadf9: fix(exo desktop): allow the system-audio consent commands so Mac recording can start
+- 5918a34: feat(exo): agent-readable logging in dev builds (desktop log file, iOS container log and os_log, Android logcat ExoDev), with secret redaction; release builds stay quiet
+- b32bc87: fix(exo): show local transcripts before upload, mark them saved only after a verified write, and show transcription and upload progress side by side on the Mac
+- 244d7a6: Update TinyCloud web, node, core, and services SDKs to 3.2.0 and OpenKey SDK and Capacitor plugin to their stable releases, retaining the session-key patch for the TinyCloud node SDK.
+
+## 0.7.0-beta.9
+
+No changes in this release.
+
+## 0.7.0-beta.8
+
+### Patch Changes
+
+- 5918a34: feat(exo): agent-readable logging in dev builds (desktop log file, iOS container log and os_log, Android logcat ExoDev), with secret redaction; release builds stay quiet
+
+## 0.7.0-beta.7
+
+### Patch Changes
+
+- b32bc87: fix(exo): show local transcripts before upload, mark them saved only after a verified write, and show transcription and upload progress side by side on the Mac
+
+## 0.7.0-beta.6
+
+No changes in this release.
+
+## 0.7.0-beta.5
+
+No changes in this release.
+
+## 0.7.0-beta.4
+
+No changes in this release.
+
+## 0.7.0-beta.3
+
+### Patch Changes
+
+- ddbadf9: fix(exo desktop): allow the system-audio consent commands so Mac recording can start
+
+## 0.7.0-beta.2
+
+No changes in this release.
+
+## 0.6.1-beta.1
+
+### Patch Changes
+
+- 244d7a6: Update TinyCloud web, node, core, and services SDKs to 3.2.0 and OpenKey SDK and Capacitor plugin to their stable releases, retaining the session-key patch for the TinyCloud node SDK.
+
+## 0.6.1-beta.0
+
+No changes in this release.
+
 ## 0.6.0
 
 ### Patch Changes

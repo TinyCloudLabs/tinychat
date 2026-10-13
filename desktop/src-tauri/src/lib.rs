@@ -7,6 +7,8 @@ mod ipc_selftest;
 mod ptx_upload;
 #[cfg(feature = "transcription")]
 mod recorder;
+#[cfg(debug_assertions)]
+mod dev_log;
 // Release-profile library tests validate probe names without putting the
 // self-test in the ordinary shipped binary.
 #[cfg(all(
@@ -33,6 +35,8 @@ fn install_recorder_runtime<R: tauri::Runtime>(app: &mut tauri::App<R>) {
 }
 
 pub fn run() {
+    #[cfg(debug_assertions)]
+    dev_log::install();
     let builder = tauri::Builder::default();
 
     // anarlog (MIT) transcription stack: local capture + on-device Whisper.
@@ -146,6 +150,8 @@ pub fn run() {
             recorder::extras::recorder_auto_save_to_space_get,
             recorder::extras::recorder_auto_save_to_space_set,
             smoke::exo_desktop_smoke,
+            dev_log::append_dev_log,
+            dev_log::debug_logging_enabled,
         ]);
 
         builder.setup(|app| {

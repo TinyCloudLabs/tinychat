@@ -543,9 +543,6 @@ async function main() {
       })
     : null;
   if (transcriptWorker) {
-    if (!transcriptDeliveryConfig.webhookSecret) {
-      console.warn("[transcript-delivery] webhook unsigned-wake mode enabled");
-    }
     app.use("/api/transcriber/webhooks/ptx", createTranscriberWebhookRouter(
       transcriptWorker, transcriptDeliveryConfig.webhookSecret,
     ));

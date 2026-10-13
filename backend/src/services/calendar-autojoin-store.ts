@@ -15,6 +15,8 @@ export interface CalendarConnection {
   credentialRef?: string;
   nextScanAt: number;
   lastScanAt?: number;
+  /** TC-988: latest actual POST's timing only; additive in the existing v1 JSON. */
+  lastDispatchLag?: { sentAt: number; seconds: number; discovered: number };
   errorCode?: string;
   scanComplete: boolean;
   setupId?: string;
@@ -66,6 +68,8 @@ export interface CalendarOccurrence {
   capacityExhausted?: boolean;
   /** Never put the owner's meeting id in `meetingId`: getStatus returns that to the browser. */
   sharedCapture?: SharedCapture;
+  /** TC-988: first observation, preserved on rescans. Legacy rows may omit this. */
+  firstSeenAt?: number;
   updatedAt: number;
 }
 

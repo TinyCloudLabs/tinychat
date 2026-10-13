@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { CalendarAutojoinWorker, type CalendarAutojoinWorkerOptions } from "../services/calendar-autojoin-worker.js";
 import { CalendarAutojoinConnection, CalendarAutojoinError } from "../services/calendar-autojoin-connection.js";
 import { MemoryCalendarAutojoinStore, TenantCoordinator, type CalendarConnection, type CalendarOccurrence } from "../services/calendar-autojoin-store.js";
@@ -105,6 +105,239 @@ async function fixture(config: Pick<CalendarAutojoinWorkerOptions, "webhookUrl" 
     now: () => now, setNow: (value: number) => { now = value; }, advance: (ms: number) => { now += ms; } };
 }
 
+describe("TC-988 late joins, RSVP outcomes, and discovery timing", () => {
+  const status = (f: Awaited<ReturnType<typeof fixture>>) => new CalendarAutojoinConnection({ store: f.store,
+    coordinator: f.coordinator, credentials: null as never, oauth: null as never, calendar: null as never }).getStatus(TENANT);
+
+  test("first sighting at start + 8 minutes sends and logs only dispatch and discovery seconds", async () => {
+    const f = await fixture();
+    f.setNow(START + 480_000);
+    f.current.events[0]!.organizer!.email = "private@example.test";
+    const create = f.api.createMeeting;
+    f.api.createMeeting = async (...args) => { const meeting = await create(...args); f.advance(120_000); return meeting; };
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await f.worker().tick();
+      expect(f.posts).toHaveLength(1);
+      expect(await f.row()).toMatchObject({ phase: "sent", firstSeenAt: START + 480_000 });
+      expect(log.mock.calls).toEqual([["[calendar-autojoin] code=dispatch_lag seconds=480 discovered=480"]]);
+      const logged = JSON.stringify(log.mock.calls);
+      for (const privateValue of ["Calendar title", "private@example.test", TENANT, SUBJECT, f.id,
+        f.current.events[0]!.id, f.current.events[0]!.hangoutLink!]) expect(logged).not.toContain(privateValue);
+      expect((await status(f)).lastDispatchLag).toEqual({ sentAt: START + 480_000, seconds: 480, discovered: 480 });
+    } finally { log.mockRestore(); }
+  });
+
+  test("first sighting at start + 16 minutes or after end - 1 minute is missed_window", async () => {
+    for (const [now, end] of [[START + 960_000, START + 1_800_000], [START + 540_001, START + 600_000]]) {
+      const f = await fixture();
+      f.setNow(now!);
+      f.current.events[0]!.end = { dateTime: new Date(end!).toISOString() };
+      await f.worker().tick();
+      expect(f.posts).toHaveLength(0);
+      expect(await f.row()).toMatchObject({ phase: "terminal", disposition: "missed_window", firstSeenAt: now });
+      expect((await status(f)).outcomes[0]?.reason).toBe("missed_window");
+    }
+  });
+
+  test("needsAction is visible without a bot; accepting later sends on the next scan with the original discovery time", async () => {
+    const f = await fixture();
+    f.setNow(START + 480_000);
+    f.current.events = [event({ organizer: { self: false }, attendees: [{ self: true, responseStatus: "needsAction" }] })];
+    await f.worker().tick();
+    expect(f.posts).toHaveLength(0);
+    expect(await f.row()).toMatchObject({ phase: "terminal", disposition: "not_accepted", firstSeenAt: START + 480_000 });
+    expect((await status(f)).outcomes).toEqual([expect.objectContaining({ reason: "not_accepted" })]);
+    expect((await status(f)).lastDispatchLag).toBeNull();
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(f.posts).toHaveLength(0);
+    expect((await f.row())?.firstSeenAt).toBe(START + 480_000);
+    f.current.events[0]!.attendees![0]!.responseStatus = "accepted";
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(f.posts).toHaveLength(1);
+    expect(await f.row()).toMatchObject({ phase: "sent", firstSeenAt: START + 480_000 });
+    expect((await status(f)).outcomes).toEqual([]);
+    expect((await status(f)).lastDispatchLag).toEqual({ sentAt: START + 600_000, seconds: 600, discovered: 480 });
+  });
+
+  test("never-accepted invites stay not_accepted after the cutoff, including late discovery", async () => {
+    for (const responseStatus of ["needsAction", "tentative"]) {
+      for (const discoveredAt of [START - 120_000, START + 960_000]) {
+        const f = await fixture();
+        f.setNow(discoveredAt);
+        f.current.events = [event({ organizer: { self: false }, attendees: [{ self: true, responseStatus }] })];
+        await f.worker().tick();
+        expect(await f.row()).toMatchObject({ phase: "terminal", disposition: "not_accepted", firstSeenAt: discoveredAt });
+        f.setNow(START + 1_020_000);
+        await f.worker().tick();
+        expect(await f.row()).toMatchObject({ phase: "terminal", disposition: "not_accepted", firstSeenAt: discoveredAt });
+        expect((await status(f)).outcomes.map(row => row.reason)).toEqual(["not_accepted"]);
+        expect(f.posts).toHaveLength(0);
+        expect(await f.store.getMarker(TENANT, f.id)).toBeNull();
+      }
+    }
+  });
+
+  test("declined invites create no row across the cutoff and can be accepted in-window", async () => {
+    const f = await fixture();
+    f.setNow(START - 120_000);
+    f.current.events = [event({ organizer: { self: false }, attendees: [{ self: true, responseStatus: "declined" }] })];
+    await f.worker().tick();
+    expect(await f.row()).toBeNull();
+    expect((await status(f)).outcomes).toEqual([]);
+    expect(f.posts).toHaveLength(0);
+    f.current.events[0]!.attendees![0]!.responseStatus = "accepted";
+    f.setNow(START + 480_000);
+    await f.worker().tick();
+    expect(f.posts).toHaveLength(1);
+
+    const late = await fixture();
+    late.setNow(START + 960_000);
+    late.current.events = [event({ organizer: { self: false }, attendees: [{ self: true, responseStatus: "declined" }] })];
+    await late.worker().tick();
+    expect(await late.row()).toBeNull();
+    expect((await status(late)).outcomes).toEqual([]);
+    expect(late.posts).toHaveLength(0);
+  });
+
+  test("declining removes an earlier not_accepted hint", async () => {
+    const f = await fixture();
+    f.current.events = [event({ organizer: { self: false }, attendees: [{ self: true, responseStatus: "needsAction" }] })];
+    await f.worker().tick();
+    expect(await f.row()).toMatchObject({ disposition: "not_accepted" });
+    f.current.events[0]!.attendees![0]!.responseStatus = "declined";
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(await f.row()).toBeNull();
+    expect((await status(f)).outcomes).toEqual([]);
+    expect(await f.store.getMarker(TENANT, f.id)).toBeNull();
+  });
+
+  test("declining a pending invite during discovery finishes it as event_ineligible", async () => {
+    const f = await fixture();
+    f.setNow(START - 180_000);
+    await f.worker().tick();
+    expect(await f.row()).toMatchObject({ phase: "pending" });
+    f.current.events = [event({ organizer: { self: false }, attendees: [{ self: true, responseStatus: "declined" }] })];
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(await f.row()).toMatchObject({ phase: "terminal", disposition: "event_ineligible" });
+    expect(f.posts).toHaveLength(0);
+  });
+
+  test("many future declined invites cannot evict an older failure from the 30-item list", async () => {
+    const f = await fixture();
+    await f.seedUnknown({ phase: "terminal", disposition: "missed_window", start: START - 86_400_000,
+      end: START - 86_400_000 + 1_800_000, idempotencyKey: undefined });
+    f.current.events = Array.from({ length: 35 }, (_, i) => event({ id: `declined-${i}`,
+      organizer: { self: false }, attendees: [{ self: true, responseStatus: "declined" }],
+      start: { dateTime: new Date(START + (i + 1) * 60_000).toISOString() },
+      end: { dateTime: new Date(START + (i + 1) * 60_000 + 1_800_000).toISOString() } }));
+    await f.worker().tick();
+    expect(await f.store.listOccurrences(TENANT)).toHaveLength(1);
+    expect((await status(f)).outcomes).toEqual([expect.objectContaining({ reason: "missed_window" })]);
+    expect(f.posts).toHaveLength(0);
+  });
+
+  test("declining between discovery and dispatch uses event_ineligible without a sent marker", async () => {
+    const f = await fixture();
+    f.calendar.getEvent = async () => event({ organizer: { self: false }, attendees: [{ self: true, responseStatus: "declined" }] });
+    await f.worker().tick();
+    expect(await f.row()).toMatchObject({ phase: "terminal", disposition: "event_ineligible" });
+    expect((await status(f)).outcomes.map(row => row.reason)).toEqual(["event_ineligible"]);
+    expect(f.posts).toHaveLength(0);
+    expect(await f.store.getMarker(TENANT, f.id)).toBeNull();
+    f.calendar.getEvent = async () => event();
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(f.posts).toHaveLength(1);
+  });
+
+  test("unchanged RSVP outcomes skip occurrence writes while edits and acceptance still persist", async () => {
+    for (const responseStatus of ["needsAction", "tentative"]) {
+      const f = await fixture();
+      f.setNow(START - 180_000);
+      f.current.events = [event({ organizer: { self: false }, attendees: [{ self: true, responseStatus }] })];
+      const put = spyOn(f.store, "putOccurrence");
+      try {
+        await f.worker().tick();
+        const first = await f.row();
+        expect(put).toHaveBeenCalledTimes(1);
+        f.advance(60_000);
+        await f.worker().tick();
+        expect(put).toHaveBeenCalledTimes(1);
+        expect(await f.row()).toEqual(first);
+        f.current.events[0]!.summary = "Updated invite";
+        f.advance(60_000);
+        await f.worker().tick();
+        expect(put).toHaveBeenCalledTimes(2);
+        expect(await f.row()).toMatchObject({ title: "Updated invite", firstSeenAt: START - 180_000 });
+        f.current.events[0]!.attendees![0]!.responseStatus = "accepted";
+        f.advance(60_000);
+        await f.worker().tick();
+        expect(f.posts).toHaveLength(1);
+        expect(await f.row()).toMatchObject({ phase: "sent", firstSeenAt: START - 180_000 });
+      } finally { put.mockRestore(); }
+    }
+  });
+
+  test("frozen retries that lose RSVP eligibility never promise that re-accepting will send", async () => {
+    for (const responseStatus of ["needsAction", "tentative", "declined"]) {
+      const f = await fixture();
+      await f.seedUnknown();
+      f.current.events = [event({ organizer: { self: false }, attendees: [{ self: true, responseStatus }] })];
+      await f.worker().tick();
+      expect(await f.row()).toMatchObject({ stopRequested: true, errorCode: "event_ineligible" });
+      expect((await status(f)).outcomes.map(row => row.reason)).toEqual(["event_ineligible"]);
+      f.current.events[0]!.attendees![0]!.responseStatus = "accepted";
+      f.advance(60_000);
+      await f.worker().tick();
+      expect(f.posts).toHaveLength(0);
+      expect((await status(f)).outcomes.map(row => row.reason)).toEqual(["event_ineligible"]);
+      expect(f.lookups.length).toBeGreaterThan(1);
+    }
+  });
+
+  test("legacy discovery backfill safely exits if the occurrence was concurrently deleted", async () => {
+    const f = await fixture();
+    await f.seedUnknown();
+    const update = f.store.updateOccurrence.bind(f.store);
+    const calls = spyOn(f.store, "updateOccurrence").mockImplementation(async (tenant, id, mutate) => {
+      await f.store.deleteOccurrence(tenant, id);
+      return update(tenant, id, mutate);
+    });
+    try {
+      await f.worker().tick();
+      expect(calls).toHaveBeenCalledTimes(1);
+      expect(await f.row()).toBeNull();
+      expect(f.posts).toHaveLength(0);
+      expect(f.lookups).toHaveLength(0);
+    } finally { calls.mockRestore(); }
+  });
+
+  test("firstSeenAt is set once across pending rescans, event edits, dispatch, and restart", async () => {
+    const f = await fixture();
+    f.setNow(START - 180_000);
+    await f.worker().tick();
+    expect((await f.row())?.firstSeenAt).toBe(START - 180_000);
+    f.advance(60_000);
+    f.current.events[0]!.summary = "Updated title";
+    await f.worker().tick();
+    expect((await f.row())?.firstSeenAt).toBe(START - 180_000);
+    expect(f.posts).toHaveLength(0);
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(f.posts).toHaveLength(1);
+    expect((await status(f)).lastDispatchLag).toEqual({ sentAt: START - 60_000, seconds: -60, discovered: -180 });
+    f.advance(60_000);
+    await f.worker().tick();
+    expect((await f.row())?.firstSeenAt).toBe(START - 180_000);
+    expect(f.posts).toHaveLength(1);
+  });
+});
+
 describe("calendar dispatch crash and policy boundaries", () => {
   test("new calendar intents carry the webhook in their hash and completion wakes once", async () => {
     const wakes: Array<[string, string]> = [];
@@ -131,6 +364,7 @@ describe("calendar dispatch crash and policy boundaries", () => {
     expect(f.posts[0]!.input).toEqual(frozen.createBody);
     expect(f.posts[0]!.input.webhook_url).toBeUndefined();
     expect(f.hashes.get(f.posts[0]!.key)).toBe(frozen.requestHash);
+    expect((await f.row())?.firstSeenAt).toBe(START - 30_000);
   });
 
   test("a failed intent write cannot POST; the next tick can retry safely", async () => {
@@ -156,7 +390,7 @@ describe("calendar dispatch crash and policy boundaries", () => {
     const put = f.store.putOccurrence.bind(f.store);
     f.store.putOccurrence = async row => {
       await put(row);
-      if (row.idempotencyKey) f.setNow(START + 300_000);
+      if (row.idempotencyKey) f.setNow(START + 900_000);
     };
     await f.worker().tick();
     expect(f.posts).toHaveLength(0);
@@ -207,11 +441,11 @@ describe("calendar dispatch crash and policy boundaries", () => {
 
   test("immediate lost-response lookup after a short event ends secures ownership then stops", async () => {
     const f = await fixture();
-    f.current.events = [event({ end: { dateTime: new Date(START + 10_000).toISOString() } })];
+    f.current.events = [event({ end: { dateTime: new Date(START + 90_000).toISOString() } })];
     const create = f.api.createMeeting;
     f.api.createMeeting = async (...args) => {
       await create(...args);
-      f.setNow(START + 10_000);
+      f.setNow(START + 90_000);
       throw new Error("socket closed unexpectedly");
     };
     await f.worker().tick();
@@ -697,8 +931,8 @@ async function twoTenants(options: { sharing?: boolean; bResponse?: string | nul
   return { store, index, events, posts, stops, deletes, records, gets, googleErrors, tokenErrors, api, calendar, worker, connect,
     connectB, rowA, rowB, meeting, status, attach, holdA, idOf,
     now: () => now, setNow: (value: number) => { now = value; }, advance: (ms: number) => { now += ms; },
-    /** Past B's dispatch window (start + 5 min): a dead owner can no longer be replaced by B's own bot. */
-    afterWindow: () => { now = START + 300_000; } };
+    /** Past B's dispatch window (start + 15 min): a dead owner can no longer be replaced by B's own bot. */
+    afterWindow: () => { now = START + 900_000; } };
 }
 
 describe("TC-907 ptx capacity_exhausted", () => {
@@ -730,7 +964,7 @@ describe("TC-907 ptx capacity_exhausted", () => {
   const runUntil = async (f: Awaited<ReturnType<typeof fixture>>, until: number) => {
     while (f.now() < until) { await f.worker().tick(); f.advance(60_000); }
   };
-  const CUTOFF = START + 300_000;
+  const CUTOFF = START + 900_000;
   const MARGIN = 600_000;
 
   test("an occurrence ptx kept refusing for capacity ends as capacity_exhausted after its window and margin, then is cleaned up", async () => {
@@ -738,8 +972,8 @@ describe("TC-907 ptx capacity_exhausted", () => {
     let creates = 0;
     f.api.createMeeting = async () => { creates++; throw busy(); };
     await runUntil(f, CUTOFF + 60_000);
-    // Retried at ptx's Retry-After for the whole joining window, then lookup-only inside the margin.
-    expect(creates).toBe(6);
+    // Retry-After and exponential backoff govern retries throughout the window; then lookup-only inside the margin.
+    expect(creates).toBe(9);
     expect((await f.row())?.phase).not.toBe("terminal");
     let endedAt = 0;
     for (let i = 0; i < 60 && (await f.row())?.phase !== "terminal"; i++) {
@@ -749,7 +983,7 @@ describe("TC-907 ptx capacity_exhausted", () => {
     }
     expect(endedAt).toBeGreaterThanOrEqual(CUTOFF + MARGIN);
     expect(endedAt).toBeLessThan(CUTOFF + MARGIN + 900_000);
-    expect(creates).toBe(6);
+    expect(creates).toBe(9);
     expect(await f.row()).toMatchObject({ phase: "terminal", disposition: "capacity_exhausted", errorCode: undefined });
     expect(await f.store.getMarker(TENANT, f.id)).toMatchObject({ disposition: "capacity_exhausted" });
     expect((await status(f)).outcomes).toEqual([expect.objectContaining({ reason: "capacity_exhausted" })]);
@@ -761,7 +995,7 @@ describe("TC-907 ptx capacity_exhausted", () => {
     f.advance(31 * 86_400_000);
     await f.worker().tick();
     expect(await f.row()).toBeNull();
-    expect(creates).toBe(6);
+    expect(creates).toBe(9);
   });
 
   test("a slow earlier POST that commits late, inside the margin, is found by lookup and owned normally", async () => {
@@ -829,11 +1063,11 @@ describe("TC-907 ptx capacity_exhausted", () => {
     const f = await fixture();
     let creates = 0;
     f.api.createMeeting = async () => { creates++; if (creates === 1) throw busy(); throw new Error("socket closed"); };
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 20; i++) {
       await f.worker().tick();
       f.advance(60_000);
     }
-    expect(f.now()).toBeGreaterThan(START + 300_000);
+    expect(f.now()).toBeGreaterThan(START + 900_000);
     expect(creates).toBeGreaterThan(1);
     const row = (await f.row())!;
     expect(row.phase).not.toBe("terminal");
@@ -1095,7 +1329,7 @@ describe("TC-581 shared capture across tenants", () => {
       await f.attach();
       await f.holdA();
       f.meeting().status = "failed";
-      f.setNow(START + 300_000);
+      f.setNow(START + 900_000);
       await f.worker().tick();
       expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition, sharedCapture: { result: "not_shared" } });
       expect((await f.rowB())?.errorCode).toBeUndefined();
@@ -1225,7 +1459,7 @@ describe("TC-581 shared capture across tenants", () => {
     await f.connectB();
     await f.worker().tick();
     expect((await f.rowB())?.sharedCapture?.ownerTenant).toBe(A);
-    f.setNow(START + 360_000);
+    f.setNow(START + 960_000);
     await f.worker().tick();
     expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition: "missed_window" });
     expect((await f.rowB())?.errorCode).toBeUndefined();

@@ -117,7 +117,7 @@ test('first-install activation is a separate final native call with explicit sup
 test('pack and installed reference describe activation while preserving the plain installer distinction', async () => {
   const pack = JSON.parse(await readFile(new URL('agent-skills/tinychat-retrieval/pack.json', root), 'utf8'));
   const config = JSON.parse(await readFile(new URL('frontend/src/lib/agent-setup.json', root), 'utf8'));
-  assert.equal(pack.version, '0.1.1-onboarding.17');
+  assert.equal(pack.version, '0.1.1-onboarding.20');
   assert.equal(config.packVersion, pack.version);
   assert.equal(pack.runtime.node, '>=20.0.0');
   assert.equal(pack.opencode.activation, 'automatic-first-install');
@@ -125,7 +125,7 @@ test('pack and installed reference describe activation while preserving the plai
   assert.deepEqual(pack.opencode.supportedActivationPlatforms, ['macos']);
   assert.equal(pack.opencode.restartRequired, false);
   const skill = await readFile(new URL('agent-skills/tinychat-retrieval/SKILL.md', root), 'utf8');
-  assert.match(skill, /version: "0\.1\.1-onboarding\.17"/);
+  assert.match(skill, /version: "0\.1\.1-onboarding\.20"/);
   assert.match(skill, /--activate/);
   assert.match(skill, /setup or login only, stop at the ready receipt/);
   const reference = await readFile(new URL('agent-skills/tinychat-retrieval/references/setup.md', root), 'utf8');

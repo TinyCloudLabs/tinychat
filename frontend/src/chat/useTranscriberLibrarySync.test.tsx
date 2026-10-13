@@ -9,10 +9,11 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { captureEvents } from "@/capture/captureEvents";
 import { notifySecretsUnlockedForTests } from "@/lib/connectors/connectorSecrets";
 import { setSecretsAvailableForTests } from "@/lib/openkeyNative";
+import { PENDING_RECONCILE_SNAPSHOT_KEY } from "@/lib/connectors/pendingReconcileSnapshot";
 import type { TranscriberClient } from "@/lib/transcriberApi";
 import { TRANSCRIBER_MEETING_SOURCE } from "@/lib/transcriberSave";
 import { harnessSessionStore } from "@/harness/stubs";
-import { useTranscriberLibrarySync, type TranscriberLibrarySaver } from "./useTranscriberLibrarySync";
+import { syncTranscriberLibrary, useTranscriberLibrarySync, type TranscriberLibrarySaver } from "./useTranscriberLibrarySync";
 
 const globals = {
   window: (globalThis as { window?: unknown }).window,
@@ -76,7 +77,7 @@ function setup(locked = false) {
   const savedIds = ["initial"];
   const rows = [row("initial")];
   const saver: TranscriberLibrarySaver = {
-    listSaved: async () => ({ ok: true, data: [...savedIds] }),
+    listSaved: async () => ({ ok: true, data: { saved: [...savedIds], unknown: [] } }),
     save: async () => ({ ok: true }),
   };
   const client = {
@@ -85,6 +86,118 @@ function setup(locked = false) {
   } as unknown as TranscriberClient;
   return { tcw, sessionStore, identity, secrets, savedIds, rows, saver, client, backendUrl: "https://example.test" };
 }
+
+test("snapshot uses the already-fetched transcriber list and existing saved-id scan", async () => {
+  const f = setup();
+  f.rows.push(row("pending-unsaved"), { id: "in-progress", status: "processing" } as never);
+  let listCalls = 0;
+  f.client.list = async () => {
+    listCalls++;
+    return { status: "ok", value: { meetings: f.rows } } as never;
+  };
+  let snapshot: { ids: string[]; savedIds: string[] } | undefined;
+  await syncTranscriberLibrary({
+    tcw: f.tcw,
+    client: f.client,
+    saver: f.saver,
+    onPendingSnapshot: async (rows, savedIds) => {
+      snapshot = { ids: rows.map((meeting) => meeting.id), savedIds: [...savedIds] };
+    },
+  });
+  expect(listCalls).toBe(1);
+  expect(snapshot).toEqual({ ids: ["initial", "pending-unsaved", "in-progress"], savedIds: ["initial"] });
+});
+test("captures the transcriber observation immediately before the existing list call", async () => {
+  const f = setup();
+  const events: string[] = [];
+  const observedAt = "2026-10-13T09:00:00.000Z";
+  let callbackAt: string | undefined;
+  f.client.list = async () => {
+    events.push("list");
+    return { status: "ok", value: { meetings: f.rows } } as never;
+  };
+  await syncTranscriberLibrary({
+    tcw: f.tcw,
+    client: f.client,
+    saver: f.saver,
+    observedAt: () => { events.push("observedAt"); return observedAt; },
+    onPendingSnapshot: (async (_rows: unknown, _saved: unknown, _unknown: unknown, at: string) => {
+      events.push("snapshot");
+      callbackAt = at;
+    }) as never,
+  });
+  expect(callbackAt).toBe(observedAt);
+  expect(events).toEqual(["observedAt", "list", "snapshot"]);
+});
+test("mounted sync stores only completed unsaved metadata from its existing list pass", async () => {
+  const f = setup();
+  f.rows.push({
+    id: "ptx-pending",
+    status: "completed",
+    created_at: "2026-10-03T00:00:00Z",
+    completed_at: "2026-10-03T01:00:00Z",
+    meeting_url: "PRIVATE_URL",
+    transcript: { text: "PRIVATE_CONTENT" },
+    metadata: { calendar_title: "PRIVATE_TITLE" },
+  } as never);
+  const entries = new Map<string, string>();
+  const writes: string[] = [];
+  let listCalls = 0;
+  f.client.list = async () => {
+    listCalls++;
+    return { status: "ok", value: { meetings: f.rows } } as never;
+  };
+  Object.assign(f.tcw, {
+    kv: {
+      get: async (key: string) => entries.has(key)
+        ? { ok: true as const, data: { data: entries.get(key) } }
+        : { ok: false as const, error: { code: "KV_NOT_FOUND" } },
+      put: async (key: string, value: string) => {
+        entries.set(key, value);
+        writes.push(key);
+        return { ok: true as const };
+      },
+    },
+  });
+  await mount(f);
+  const serialized = entries.get(`${PENDING_RECONCILE_SNAPSHOT_KEY}/transcriber`) ?? "";
+  expect(listCalls).toBe(1);
+  expect(writes).toEqual([`${PENDING_RECONCILE_SNAPSHOT_KEY}/transcriber`]);
+  const snapshot = JSON.parse(serialized);
+  expect(snapshot).toEqual({
+    version: 1,
+    changed_at: expect.any(String),
+    checked_at: expect.any(String),
+    count: 1,
+    meetings: [{
+      id: "ptx-pending",
+      source: "transcriber",
+      createdAt: "2026-10-03T00:00:00Z",
+      completedAt: "2026-10-03T01:00:00Z",
+      status: "completed",
+      reconciled: false,
+    }],
+  });
+  expect(serialized).not.toMatch(/title|participant|email|url|content|transcript|summary|error|PRIVATE_/i);
+});
+test("does not publish a listed row after the active account changes", async () => {
+  const f = setup();
+  let active = true;
+  let snapshotCalls = 0;
+  f.client.list = async () => ({ status: "ok", value: { meetings: [row("previous-account")] } }) as never;
+  f.saver.listSaved = async () => {
+    active = false;
+    return { ok: true, data: { saved: [], unknown: [] } };
+  };
+  await syncTranscriberLibrary({
+    tcw: f.tcw,
+    client: f.client,
+    saver: f.saver,
+    isCurrent: () => active,
+    onPendingSnapshot: async () => { snapshotCalls++; },
+  });
+  expect(snapshotCalls).toBe(0);
+});
 
 test("focus, online and interval triggers cannot queue overlapping notetaker passes", async () => {
   const f = setup();
@@ -176,6 +289,12 @@ test("an in-flight save cannot emit into a different account", async () => {
   const started = Promise.withResolvers<void>();
   const pending = Promise.withResolvers<{ ok: boolean }>();
   f.saver.save = () => { started.resolve(); return pending.promise; };
+  let snapshotReads = 0;
+  let snapshotWrites = 0;
+  Object.assign(f.tcw, { kv: {
+    get: async () => { snapshotReads++; return { ok: false as const, error: { code: "KV_NOT_FOUND" } }; },
+    put: async () => { snapshotWrites++; return { ok: true as const }; },
+  } });
   const changes: string[] = [];
   const unsubscribe = captureEvents.on("library-changed", (detail) => changes.push(detail?.sourceId ?? ""));
   try {
@@ -185,6 +304,8 @@ test("an in-flight save cannot emit into a different account", async () => {
     pending.resolve({ ok: true });
     await act(async () => {});
     expect(changes).toEqual([]);
+    expect(snapshotReads).toBe(0);
+    expect(snapshotWrites).toBe(0);
   } finally { unsubscribe(); }
 });
 
@@ -286,4 +407,45 @@ test("native OpenKey sessions sync meetings without a secrets space", async () =
     unsubscribe();
     setSecretsAvailableForTests(null);
   }
+});
+
+test("a mounted publication refresh emits library-changed once for an already known id", async () => {
+  const { Database } = await import("bun:sqlite");
+  const { saveTranscriberMeeting, refreshTranscriberMeeting, listSavedTranscriberMeetingIds, listSavedTranscriberVersions } = await import("@/lib/transcriberSave");
+  const f = setup();
+  const sql = new Database(":memory:");
+  const bodies = new Map<string, string>();
+  f.tcw = {
+    ...f.tcw,
+    sql: { db: () => ({
+      query: async (query: string, params: never[] = []) => ({ ok: true, data: { rows: sql.query(query).values(...params) } }),
+      execute: async (query: string, params: never[] = []) => ({ ok: true, data: sql.query(query).run(...params) }),
+    }) },
+    kv: {
+      get: async (key: string) => bodies.has(key) ? { ok: true, data: { data: bodies.get(key) } }
+        : { ok: false, error: { code: "KV_NOT_FOUND" } },
+      put: async (key: string, value: string, options?: { ifNoneMatch?: string }) => {
+        if (options?.ifNoneMatch === "*" && bodies.has(key)) return { ok: false, error: { code: "KV_PRECONDITION_FAILED" } };
+        bodies.set(key, value); return { ok: true };
+      },
+    },
+  } as unknown as TinyCloudWeb;
+  const meeting = { id: "initial", status: "completed" as const, platform: "jitsi", meeting_url: "https://example.test/fixture",
+    created_at: "2026-01-01T00:00:00Z", transcript: { version: 2 } };
+  const transcript = { meeting_id: "initial", status: "completed" as const, version: 1, segments: [] };
+  f.saver = { listSaved: listSavedTranscriberMeetingIds, listVersions: listSavedTranscriberVersions,
+    save: saveTranscriberMeeting, refresh: refreshTranscriberMeeting };
+  f.client.list = async () => ({ status: "ok", value: { meetings: [meeting] } });
+  f.client.transcript = async () => ({ status: "ok", value: { status: "ready", transcript: { ...transcript, version: 2 } } });
+  const changes: string[] = [];
+  const unsubscribe = captureEvents.on("library-changed", (detail) => changes.push(detail?.sourceId ?? ""));
+  try {
+    expect((await saveTranscriberMeeting(f.tcw, meeting, transcript)).ok).toBe(true);
+    await mount(f);
+    expect(changes).toEqual(["initial"]);
+    await act(async () => { fire("focus"); });
+    expect(changes).toEqual(["initial"]);
+    expect(sql.query("SELECT json_extract(metadata, '$.ptx_transcript_version') AS version FROM connector_meeting").get())
+      .toEqual({ version: 2 });
+  } finally { unsubscribe(); sql.close(); }
 });

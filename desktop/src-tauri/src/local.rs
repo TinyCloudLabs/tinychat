@@ -37,6 +37,9 @@ pub async fn recorder_whisper_start(
     stage_id: String,
     model: WhisperModel,
 ) -> Result<(), LocalError> {
+    if crate::recorder::files::valid_recording_id(&id) {
+        tracing::info!(target: "exo_dev::whisper", kind = "pipeline", source_id = %id, operation = "whisper", phase = "start");
+    }
     let sessions = crate::recorder::files::sessions_root(&app)
         .map_err(|e| LocalError::new("recording_unavailable", e))?;
     let staged = crate::recorder::files::staged_session(&sessions, &id, &stage_id)
@@ -58,7 +61,10 @@ pub async fn recorder_whisper_start(
         })
         .await
         .map_err(|e| LocalError::new(e.code, e.message))?;
-    start_whisper_transcription(&app, id, file_path, model).await
+    let result = start_whisper_transcription(&app, id.clone(), file_path, model).await;
+    tracing::info!(target: "exo_dev::whisper", kind = "pipeline", source_id = %id, operation = "whisper",
+        phase = if result.is_ok() { "submitted" } else { "failed" });
+    result
 }
 
 async fn start_whisper_transcription(

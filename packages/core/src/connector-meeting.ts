@@ -10,6 +10,11 @@ export function transcriptKvKey(source: string, sourceId: string): string {
   return `${CONNECTORS_KV_PREFIX}/${source}/transcript/${sourceId}`;
 }
 
+/** Immutable snapshot of a previously saved transcriber publication. */
+export function archiveKvKey(sourceId: string, version: number): string {
+  return `${CONNECTORS_KV_PREFIX}/${TRANSCRIBER_MEETING_SOURCE}/archive/${sourceId}/v${version}`;
+}
+
 /** These are manifest-relative paths; the session already grants both resources. */
 export const TRANSCRIPT_WRITER_POLICY: NonEmptyServerInfoPermissions = [
   { service: "tinycloud.sql", path: "connectors", actions: ["read", "write"] },
@@ -98,14 +103,15 @@ export interface TranscriberMeetingJson {
 }
 
 export interface TranscriberTranscriptJson {
+  version?: number;
   language?: string;
   duration_seconds?: number;
   capture?: unknown;
   provider?: string | null;
   fallback_from?: string | null;
   fallback_reason?: string | null;
-  speakers?: { id: string; name: string }[];
-  segments?: { speaker_name: string; text: string; start: number; end: number }[];
+  speakers?: { id: string; name: string | null }[];
+  segments?: { speaker_name: string | null; text: string; start: number; end: number }[];
   text?: string;
 }
 
@@ -135,6 +141,12 @@ export function transcriberMeetingTitle(meeting: Pick<TranscriberMeetingJson, "m
   }
 }
 
+/** PTX's legacy placeholder and nullable speaker names both mean unattributed speech. */
+function transcriberSpeakerName(name: string | null): string | null {
+  const trimmed = name?.trim();
+  return trimmed && trimmed !== "Unknown" ? trimmed : null;
+}
+
 export async function normalizeTranscriberTranscript(
   meeting: TranscriberMeetingJson,
   transcript: TranscriberTranscriptJson,
@@ -142,7 +154,7 @@ export async function normalizeTranscriberTranscript(
   const segments = Array.isArray(transcript.segments) ? transcript.segments : [];
   const sentences: TranscriptSentence[] = segments.map((s, index) => ({
     index,
-    speaker_name: s.speaker_name?.trim() ? s.speaker_name.trim() : null,
+    speaker_name: transcriberSpeakerName(s.speaker_name),
     text: s.text,
     start_time: Number.isFinite(s.start) ? s.start : 0,
     end_time: Number.isFinite(s.end) ? s.end : 0,
@@ -151,7 +163,7 @@ export async function normalizeTranscriberTranscript(
   const seen = new Set<string>();
   const participants: { name: string; email: string | null }[] = [];
   for (const sp of transcript.speakers ?? []) {
-    const name = sp.name?.trim();
+    const name = transcriberSpeakerName(sp.name);
     if (!name || seen.has(name)) continue;
     seen.add(name);
     participants.push({ name, email: null });
@@ -185,6 +197,7 @@ export async function normalizeTranscriberTranscript(
         meeting_url: meeting.meeting_url,
         platform: meeting.platform,
         language: transcript.language ?? null,
+        ptx_transcript_version: Number.isInteger(transcript.version) ? transcript.version : 1,
         transcript_text: transcript.text ?? null,
         capture: transcript.capture ?? meeting.capture ?? null,
         transcript_provider: transcript.provider ?? meeting.transcript_provider ?? null,

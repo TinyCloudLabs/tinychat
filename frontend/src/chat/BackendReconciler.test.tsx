@@ -28,16 +28,24 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { BackendReconciler, runBackendReconcile } from "./BackendReconciler";
+import { PENDING_RECONCILE_SNAPSHOT_KEY } from "@/lib/connectors/pendingReconcileSnapshot";
 import { meetingKvKey } from "@/lib/connectors/connectorStore";
 import type { BackendReconcileMeetingsClient } from "@/lib/connectors/backendReconcile";
 
 const SOURCE = "fireflies";
 
-function fakeTcw(putKeys: string[]): TinyCloudWeb {
+function fakeTcw(putKeys: string[], values = new Map<string, string>()): TinyCloudWeb {
   return {
     kv: {
-      put: async (key: string) => {
+      get: async (key: string) => {
+        const value = values.get(key);
+        return value === undefined
+          ? { ok: false as const, error: { code: "KV_NOT_FOUND" } }
+          : { ok: true as const, data: { data: value } };
+      },
+      put: async (key: string, raw: unknown) => {
         putKeys.push(key);
+        values.set(key, typeof raw === "string" ? raw : JSON.stringify(raw));
         return { ok: true as const, data: { data: undefined, headers: {} } };
       },
     },
@@ -109,8 +117,10 @@ function fakeClient(): BackendReconcileMeetingsClient & { calls: string[] } {
   };
 }
 
+const activeAddress = { value: "0x1111111111111111111111111111111111111111" };
 const SESSION = {
   getToken: () => "session-token",
+  getAddress: () => activeAddress.value,
   isExpired: () => false,
   clear: () => {},
 } as never;
@@ -146,6 +156,58 @@ describe("BackendReconciler", () => {
     });
     expect(putKeys).toContain(meetingKvKey(SOURCE, "mtg-1"));
     expect(api.calls).toContain("ack:mtg-1");
+  });
+  test("writes only metadata from the existing list when a meeting remains unreconciled", async () => {
+    activeAddress.value = "0x1111111111111111111111111111111111111111";
+    const putKeys: string[] = [];
+    const values = new Map<string, string>();
+    const api = fakeClient();
+    api.markReconciled = async () => ({ status: "retryable", httpStatus: 503, code: "unavailable" });
+    await runBackendReconcile({
+      tcw: fakeTcw(putKeys, values),
+      sessionStore: SESSION,
+      backendUrl: "https://backend.example",
+      source: SOURCE,
+      meetings: api,
+      secrets: { isUnlocked: () => true },
+    });
+    const serialized = values.get(`${PENDING_RECONCILE_SNAPSHOT_KEY}/backend-ingest`) ?? "";
+    expect(api.calls.filter((call) => call === "list")).toHaveLength(1);
+    expect(JSON.parse(serialized)).toEqual({
+      version: 1,
+      changed_at: expect.any(String),
+      checked_at: expect.any(String),
+      count: 1,
+      meetings: [{
+        id: "mtg-1",
+        source: SOURCE,
+        storedAt: "2026-08-10T12:00:00.000Z",
+        updatedAt: "2026-08-10T12:00:00.000Z",
+        status: "unreconciled",
+        reconciled: false,
+      }],
+    });
+    expect(serialized).not.toMatch(/title|participant|email|url|content|transcript|summary|PRIVATE|hello/i);
+  });
+
+  test("does not persist a listed account's rows after the active account changes", async () => {
+    activeAddress.value = "0x1111111111111111111111111111111111111111";
+    const values = new Map<string, string>();
+    const api = fakeClient();
+    api.markReconciled = async () => {
+      activeAddress.value = "0x2222222222222222222222222222222222222222";
+      return { status: "retryable", httpStatus: 503, code: "unavailable" };
+    };
+    await runBackendReconcile({
+      tcw: fakeTcw([], values),
+      sessionStore: SESSION,
+      backendUrl: "https://backend.example",
+      source: SOURCE,
+      meetings: api,
+      secrets: { isUnlocked: () => true },
+    });
+    expect(values.has(PENDING_RECONCILE_SNAPSHOT_KEY)).toBe(false);
+    activeAddress.value = "0x1111111111111111111111111111111111111111";
   });
 
   test("a locked vault is a silent no-op — no request, no write, no prompt", async () => {

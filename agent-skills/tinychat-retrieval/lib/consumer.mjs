@@ -153,7 +153,7 @@ export function createConsumer({ setup, root = join(process.env.XDG_STATE_HOME |
       const body = await readFile(bodyPath);
       if (digest(body) !== manifest.bodySha256) fail('ACQUISITION_INVALID');
       let text; try { text = new TextDecoder('utf-8', { fatal: true }).decode(body); } catch { fail('ACQUISITION_INVALID'); }
-      const records = decodeBody(text);
+      const records = decodeBody(text, value.record.source);
       if (state.layout !== undefined) {
         if (!Array.isArray(state.layout) || !state.layout.length || !Number.isSafeInteger(state.delivered) || state.delivered < 0 || state.delivered > state.layout.length || !Array.isArray(state.issued) || state.issued.some(index => !Number.isSafeInteger(index) || index < 0 || index >= state.layout.length) || new Set(state.issued).size !== state.issued.length || Array.from({ length: state.delivered }, (_, index) => index).some(index => !state.issued.includes(index))) fail('STATE_INCOMPLETE');
         let recordIndex = 0, offset = 0;

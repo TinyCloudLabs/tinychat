@@ -3,7 +3,7 @@ import {
   type CalendarAutojoinStore, type CalendarConnection, type CalendarOccurrence, type SharedCapture, TenantCoordinator,
 } from "./calendar-autojoin-store.js";
 import {
-  calendarOccurrenceIdentity, dispatchCutoff, eligibleCalendarEvent, ExternalOperationLimiter,
+  calendarMeetEvent, calendarOccurrenceIdentity, dispatchCutoff, eligibleCalendarEvent, ExternalOperationLimiter,
   GoogleCalendarError, inDispatchWindow, type GoogleCalendarEvent, type GoogleCalendarPort,
 } from "./google-calendar.js";
 import {
@@ -150,6 +150,8 @@ export class CalendarAutojoinWorker {
   }
   private async remember(connection: CalendarConnection, events: GoogleCalendarEvent[]): Promise<void> {
     const { store, coordinator } = this.options;
+    // Discovery precedes the storage lane: its latency belongs to dispatch lag, not discovery lag.
+    const firstSeenAt = this.now();
     await coordinator.run(connection.tenant, async () => {
       const current = await store.getConnection(connection.tenant);
       if (!current || current.state !== "enabled" || current.generation !== connection.generation || current.subject !== connection.subject) return;
@@ -159,14 +161,21 @@ export class CalendarAutojoinWorker {
         const old = known.find(row => row.subject === connection.subject && (row.id === id || row.eventId === event.id));
         if (old?.idempotencyKey || old?.meetingId || old?.sharedCapture) continue; // Frozen attempts are checked individually.
         const eligible = eligibleCalendarEvent(event);
-        if (!eligible || !id) {
+        const candidate = eligible ?? (!event.organizer?.self ? calendarMeetEvent(event) : null);
+        if (!candidate || !id) {
           if (old && old.phase !== "terminal") await this.finish(old, "event_ineligible");
+          continue;
+        }
+        if (!eligible && event.attendees?.find(attendee => attendee.self)?.responseStatus === "declined") {
+          if (old?.phase === "pending") await this.finish(old, "event_ineligible");
+          else if (old?.disposition === "not_accepted") await store.deleteOccurrence(connection.tenant, old.id);
           continue;
         }
         if (await store.getMarker(connection.tenant, id)) continue;
         const next: CalendarOccurrence = {
-          id, tenant: connection.tenant, subject: connection.subject!, ...eligible,
-          phase: "pending", nextAttemptAt: Math.max(this.now(), eligible.start - 60_000),
+          id, tenant: connection.tenant, subject: connection.subject!, ...candidate,
+          firstSeenAt: old?.id === id ? old.firstSeenAt ?? firstSeenAt : firstSeenAt,
+          phase: "pending", nextAttemptAt: Math.max(this.now(), candidate.start - 60_000),
           attemptCount: 0, stopRequested: false, updatedAt: this.now(),
         };
         // Preserve backoff when discovery has not changed the occurrence.
@@ -174,7 +183,16 @@ export class CalendarAutojoinWorker {
           next.nextAttemptAt = old.nextAttemptAt;
           next.attemptCount = old.attemptCount;
         }
-        if (this.now() >= dispatchCutoff(next)) { next.phase = "terminal"; next.disposition = "missed_window"; }
+        if (!eligible) {
+          next.phase = "terminal";
+          next.disposition = "not_accepted";
+          // RSVP outcomes are unchanged by scan timing. Avoid another write on the shared storage lane.
+          if (old?.id === next.id && old.phase === "terminal" && !old.errorCode
+            && old.disposition === next.disposition && old.firstSeenAt === next.firstSeenAt
+            && old.start === next.start && old.end === next.end && old.meetingUrl === next.meetingUrl
+            && old.title === next.title) continue;
+        }
+        else if (this.now() >= dispatchCutoff(next)) { next.phase = "terminal"; next.disposition = "missed_window"; }
         await store.putOccurrence(next);
       }
       await store.putConnection({ ...current, scanComplete: true, errorCode: undefined, lastScanAt: this.now(), nextScanAt: this.now() + 55_000 + Math.floor(this.random() * 10_000) });
@@ -183,6 +201,12 @@ export class CalendarAutojoinWorker {
   private async reconcileOccurrence(original: CalendarOccurrence): Promise<void> {
     let row = await this.options.store.getOccurrence(original.tenant, original.id);
     if (!row) return;
+    // For legacy rows, record the first observation by this version; never invent old discovery timing.
+    if (row.firstSeenAt === undefined) {
+      row = await this.options.store.updateOccurrence(row.tenant, row.id,
+        current => current && { ...current, firstSeenAt: current.firstSeenAt ?? this.now() });
+      if (!row) return;
+    }
     if (row.sharedCapture) { await this.reconcileShared(row); return; }
     if (row.meetingId) { await this.reconcileRecording(row); return; }
     if (row.idempotencyKey) {
@@ -225,8 +249,14 @@ export class CalendarAutojoinWorker {
       const event = await this.google(connection, token => this.options.calendar.getEvent(token, row.eventId));
       const eligible = event && eligibleCalendarEvent(event);
       if (!eligible || calendarOccurrenceIdentity(row.tenant, row.subject, event!) !== row.id) {
-        if (row.idempotencyKey) { await this.requestStop(row, "event_ineligible"); await this.defer(row, undefined); }
-        else await this.finish(row, "event_ineligible");
+        // A frozen POST may already have committed. Preserve lookup-only recovery and never
+        // promise that accepting again can restart it; its occurrence must remain deduplicated.
+        const reason = !row.idempotencyKey && event && calendarOccurrenceIdentity(row.tenant, row.subject, event) === row.id
+          && !event.organizer?.self && calendarMeetEvent(event)
+          && event.attendees?.find(attendee => attendee.self)?.responseStatus !== "declined"
+          ? "not_accepted" : "event_ineligible";
+        if (row.idempotencyKey) { await this.requestStop(row, reason); await this.defer(row, undefined); }
+        else await this.finish(row, reason);
         return;
       }
       if (row.idempotencyKey && (eligible.start !== row.start || eligible.end !== row.end || eligible.meetingUrl !== row.meetingUrl)) {
@@ -244,6 +274,7 @@ export class CalendarAutojoinWorker {
       // Reserve external capacity BEFORE entering tenant coordination. A queued dispatch may
       // not leave the lock and then send after a disable; the actual POST begins inside it.
       let sent = false; // TC-907: only a sent POST was counted when its intent was written.
+      let dispatchLag: CalendarConnection["lastDispatchLag"];
       const response = await this.limiter.run(async () => {
         let posted: Promise<TranscriptionMeeting> | undefined;
         await this.options.coordinator.run(row.tenant, async () => {
@@ -270,13 +301,24 @@ export class CalendarAutojoinWorker {
             return;
           }
           // Do not await while holding the lock: disable must persist during an in-flight POST.
+          const sentAt = this.now();
           posted = this.options.api.createMeeting(row.createBody!, { idempotencyKey: row.idempotencyKey, retryTransport: false });
           sent = true;
           void posted.catch(() => {});
+          dispatchLag = { sentAt, seconds: (sentAt - row.start) / 1000, discovered: (row.firstSeenAt! - row.start) / 1000 };
+          console.log(`[calendar-autojoin] code=dispatch_lag seconds=${dispatchLag.seconds} discovered=${dispatchLag.discovered}`);
         });
         if (!posted) return null;
         return posted;
       }).then(meeting => ({ meeting, error: undefined as unknown }), error => ({ meeting: null, error }));
+      if (dispatchLag) {
+        const lag = dispatchLag;
+        try {
+          await this.options.store.updateConnection(row.tenant, current => current?.subject === row.subject
+            && current.generation === connection.generation && (current.lastDispatchLag?.sentAt ?? -Infinity) <= lag.sentAt
+            ? { ...current, lastDispatchLag: lag } : current);
+        } catch { console.warn("[calendar-autojoin] code=dispatch_lag_status_failed"); }
+      }
       if (response.meeting) { await this.acceptRecording(row, response.meeting); return; }
       if (!response.error) return;
       await this.defer(row, response.error, sent);

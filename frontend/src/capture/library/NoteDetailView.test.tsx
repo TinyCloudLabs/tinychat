@@ -238,6 +238,52 @@ describe("a voice note with an after-stop Whisper job on the Mac", () => {
     return render({ desktopWhisper: true, ...patch });
   };
 
+  const localTranscript = { version: 1 as const, noteId: "rec-1", transcriber: "on-device" as const,
+    rev: 1, engine: "whispercpp" as const, model: "QuantizedTinyEn", language: "en",
+    outcome: "transcribed" as const, diarized: false,
+    segments: [{ start: 0, end: 1000, text: "Saved on this Mac", speaker: null }], createdAt: "2026-10-13T10:00:00Z" };
+
+  test("shows the durable device text before upload, then the space body by source id", () => {
+    const local = withJob({ state: "done" }, { transcript: { status: "absent" }, localTranscript });
+    expect(local).toContain("Saved on this Mac");
+    expect(local).toContain('data-testid="note-copy"');
+    expect(local).not.toContain("Transcript saved.");
+    const remote = withJob({ state: "done" }, { localTranscript,
+      transcript: { status: "ok", sentences: [{ index: 0, speaker_name: null, text: "Saved in the space", start_time: 0, end_time: 1 }] } });
+    expect(remote).toContain("Saved in the space");
+    expect(remote).not.toContain("Saved on this Mac");
+    expect(withJob({ state: "done" }, { localTranscript: { ...localTranscript, noteId: "another-note" } })).not.toContain("Saved on this Mac");
+  });
+
+  test("an empty durable local result says no speech", () => {
+    const html = withJob({ state: "done" }, { localTranscript: { ...localTranscript, outcome: "no_speech", segments: [] } });
+    expect(html).toContain("No speech was found in this note.");
+    expect(html).not.toContain("Transcript saved.");
+  });
+
+  test("the space's no-speech outcome wins without a local read error", () => {
+    const html = withJob({ state: "done" }, { metadata: { status: "ok", metadata: { transcription_outcome: "no_speech" } }, localTranscript: null });
+    expect(html).toContain("No speech was found in this note.");
+    expect(html).not.toContain("Couldn’t read the transcript saved on this Mac.");
+  });
+
+  test("an older device copy names a failed space read and offers retry", () => {
+    const html = withJob({ state: "done" }, { localTranscript, transcript: { status: "failed", message: "offline" } });
+    expect(html).toContain("Saved on this Mac");
+    expect(html).toContain("On this device · Couldn’t check your space.");
+    expect(html).toContain("Try again");
+    const silent = withJob({ state: "done" }, { localTranscript: { ...localTranscript, outcome: "no_speech", segments: [] },
+      transcript: { status: "failed", message: "offline" } });
+    expect(silent).toContain("No speech was found in this note.");
+    expect(silent).toContain("On this device · Couldn’t check your space.");
+  });
+
+  test("a timed-out local read has a typed message and retry", () => {
+    const html = withJob({ state: "done" }, { localTranscript: null, localTranscriptRead: "timeout", onLocalTranscriptRetry: noop });
+    expect(html).toContain("Checking the transcript on this Mac took too long.");
+    expect(html).toContain("Try again");
+  });
+
   test("signed out (no private-cloud props): queued, progress and failure with Retry show on the page", () => {
     const before = __desktopWhisperQueueReadsForTests();
     expect(withJob({ state: "queued" })).toContain("Waiting to transcribe on this Mac");
