@@ -103,4 +103,27 @@ describe("a note not yet settled in the space", () => {
     expect(render(voice({ saving: true }))).not.toContain("Saving…");
     expect(render(voice())).not.toContain("row-badge");
   });
+  test("Recent and Library distinguish durable pending, failed and skipped transcript states", () => {
+    const pipeline = (state: "pending" | "failed" | "skipped"): NotePipeline => ({
+      steps: [
+        { key: "phone", label: "On this phone", state: "done" },
+        { key: "space", label: "In your space", state: "done" },
+        { key: "transcript", label: "Transcript", state: "skipped" },
+        { key: "notes", label: "Notes", state: "skipped" },
+      ],
+      current: null,
+      done: true,
+      transcriptionState: state,
+      ...(state === "failed" ? { transcriptionErrorCode: "recording_too_large" } : {}),
+    });
+    for (const [state, label] of [
+      ["pending", "Pending"],
+      ["failed", "Failed"],
+      ["skipped", "Not transcribed"],
+    ] as const) {
+      expect(render(voice(), { pipeline: pipeline(state) })).toContain(`Transcript ${label}`);
+      expect(render(voice(), { pipeline: pipeline(state), soft: false })).toContain(`Transcript ${label}`);
+    }
+    expect(render(voice(), { pipeline: pipeline("failed") })).toContain("Private cloud couldn&#x27;t accept this recording&#x27;s length or size. Try again.");
+  });
 });

@@ -14,15 +14,19 @@ import {
   ensureSchema,
   findGmeetNotesAssociation,
   getConnection,
-  getMeetingDatetimeStats,
-  meetingKvKey,
+  getFirefliesAttempt,
+  firefliesAttemptKvKey,
   getDriveCursor,
+  getMeetingDatetimeStats,
+  listTranscriptBodyIds,
   insertMeeting,
+  meetingKvKey,
   listKnownSourceIds,
   normalizeFirefliesTranscript,
   putDriveCursor,
   purgeConnector,
   putTranscriptBody,
+  recordFirefliesAttempt,
   removeGmeetNotes,
   transcriptKvKey,
   updateSyncState,
@@ -308,11 +312,13 @@ class FakeSqlDb {
         last_sync_error,
         item_count,
         updated_at,
-      ] = params as [string, string, string | null, string | null, string | null, number, string];
+        preserveLastSyncedAt,
+      ] = params as [string, string, string | null, string | null, string | null, number, string, number];
+      const existing = this.states.get(connector_id);
       this.states.set(connector_id, {
         connector_id,
         status,
-        last_synced_at,
+        last_synced_at: preserveLastSyncedAt === 1 && existing ? existing.last_synced_at : last_synced_at,
         last_sync_status,
         last_sync_error,
         item_count,
@@ -430,7 +436,9 @@ interface KvErr {
 class FakeKv {
   entries = new Map<string, string>();
   putKeys: string[] = [];
+  putValues: unknown[] = [];
   tracker = new OpTracker();
+  headCalls: string[] = [];
   listCalls: { path: string; cursor?: string }[] = [];
   /** Split each matching prefix listing into deterministic pages when set. */
   listPageSize: number | null = null;
@@ -450,6 +458,15 @@ class FakeKv {
     });
   }
 
+  async head(key: string): Promise<{ ok: true; data: { data: void; headers: Record<string, string> } } | { ok: false; error: KvErr }> {
+    return this.tracker.run("kv.head", () => {
+      this.headCalls.push(key);
+      if (!this.entries.has(key)) {
+        return { ok: false, error: { code: "KV_NOT_FOUND", message: `no key ${key}` } } as const;
+      }
+      return { ok: true, data: { data: undefined as unknown as void, headers: {} } } as const;
+    });
+  }
   async put(key: string, value: unknown): Promise<{ ok: true; data: { data: void; headers: Record<string, string> } } | { ok: false; error: KvErr }> {
     return this.tracker.run("kv.put", () => {
       if (this.nextPutError) {
@@ -460,12 +477,13 @@ class FakeKv {
       const stored = typeof value === "string" ? value : JSON.stringify(value);
       this.entries.set(key, stored);
       this.putKeys.push(key);
+      this.putValues.push(value);
       return { ok: true, data: { data: undefined as unknown as void, headers: {} } } as const;
     });
   }
 
   async list(options: { path: string; cursor?: string }): Promise<
-    | { ok: true; data: { keys: string[]; cursor?: string } }
+    | { ok: true; data: { keys: string[]; nextCursor?: string; truncated?: boolean } }
     | { ok: false; error: KvErr }
   > {
     return this.tracker.run(`kv.list:${options.path}:${options.cursor ?? ""}`, () => {
@@ -483,7 +501,9 @@ class FakeKv {
       const next = offset + keys.length;
       return {
         ok: true,
-        data: next < all.length ? { keys, cursor: String(next) } : { keys },
+        data: next < all.length
+          ? { keys, nextCursor: String(next), truncated: true }
+          : { keys, truncated: false },
       } as const;
     });
   }
@@ -651,6 +671,11 @@ describe("connectorStore.purgeConnector", () => {
     await f.kv.put(meetingKvKey("fireflies", "kv-only"), "reconciled record");
     await f.kv.put(transcriptKvKey("fireflies", "kv-only"), "reconciled transcript");
     await f.kv.put(driveCursorKvKey("fireflies"), "drive-cursor");
+    await f.kv.put(firefliesAttemptKvKey(), JSON.stringify({
+      v: 1,
+      pending_ids: ["stale"],
+      suspect_proof_at_by_id: { stale: "2026-07-01T00:00:00.000Z" },
+    }));
     await updateSyncState(f.tcw, {
       connectorId: "fireflies",
       status: "connected",
@@ -739,7 +764,7 @@ describe("connectorStore.purgeConnector", () => {
       { ok: true, data: {} },
       { ok: true, data: { keys: [42] } },
       { ok: true, data: { keys: ["unrelated/private-key"] } },
-      { ok: true, data: { keys: [], cursor: "more" } },
+      { ok: true, data: { keys: [], truncated: true } },
     ];
     for (const reply of cases) {
       const f = makeFake();
@@ -777,6 +802,27 @@ describe("connectorStore.purgeConnector", () => {
     const afterCount = await countMeetings(f.tcw, "fireflies");
     expect(afterCount.ok && afterCount.data === 1).toBe(true);
     expect(f.tracker.maxInFlight).toBe(1);
+  });
+  test("follows nextCursor through every transcript page before completing purge", async () => {
+    const f = makeFake();
+    f.kv.listPageSize = 1;
+    await putTranscriptBody(f.tcw, "fireflies", "body-1", []);
+    await putTranscriptBody(f.tcw, "fireflies", "body-2", []);
+    await putTranscriptBody(f.tcw, "fireflies", "body-3", []);
+    await f.kv.put(meetingKvKey("fireflies", "meeting-1"), "meeting");
+    await recordFirefliesAttempt(f.tcw, {
+      v: 1,
+      lastAttemptAt: "2026-10-13T12:00:00.000Z",
+      lastAttemptStatus: "partial",
+    });
+
+    const purged = await purgeConnector(f.tcw, "fireflies");
+
+    expect(purged.ok).toBe(true);
+    expect(f.kv.entries.size).toBe(0);
+    expect(f.kv.listCalls.filter((call) => call.path.endsWith("/transcript/")).map((call) => call.cursor))
+      .toEqual([undefined, "1", "2"]);
+    expect(f.kv.entries.has(firefliesAttemptKvKey())).toBe(false);
   });
 });
 
@@ -1290,6 +1336,283 @@ describe("connectorStore.updateSyncState / getConnection", () => {
       expect(c2.data?.lastSyncedAt).toBe("2026-07-02T00:00:00.000Z");
     }
   });
+  test("generic Fireflies state update preserves success without writing attempt metadata", async () => {
+    const f = makeFake();
+    const lastSuccess = "2026-10-09T02:49:58.000Z";
+    await updateSyncState(f.tcw, {
+      connectorId: "fireflies",
+      status: "connected",
+      lastSyncedAt: lastSuccess,
+      lastSyncStatus: "ok",
+      lastSyncError: null,
+      itemCount: 4,
+    });
+
+    await updateSyncState(f.tcw, {
+      connectorId: "fireflies",
+      status: "connected",
+      lastSyncedAt: "2026-10-13T12:00:00.000Z",
+      lastSyncStatus: "error",
+      lastSyncError: "provider unavailable",
+      itemCount: 4,
+      preserveLastSyncedAt: true,
+    });
+
+    const result = await getConnection(f.tcw, "fireflies");
+    expect(result.ok && result.data?.lastSyncedAt).toBe(lastSuccess);
+    expect(result.ok && result.data?.lastSyncStatus).toBe("error");
+    expect(f.kv.entries.has(firefliesAttemptKvKey())).toBe(false);
+  });
+  test("first partial Fireflies attempt keeps last_synced_at null", async () => {
+    const f = makeFake();
+    await updateSyncState(f.tcw, {
+      connectorId: "fireflies",
+      status: "connected",
+      lastSyncedAt: "2026-10-13T12:00:00.000Z",
+      lastSyncStatus: "partial",
+      lastSyncError: null,
+      itemCount: 0,
+      preserveLastSyncedAt: true,
+    });
+
+    const result = await getConnection(f.tcw, "fireflies");
+    expect(result.ok && result.data?.lastSyncedAt).toBeNull();
+    expect(result.ok && result.data?.lastSyncStatus).toBe("partial");
+  });
+  test("first failed Fireflies attempt also keeps last_synced_at null", async () => {
+    const f = makeFake();
+    await updateSyncState(f.tcw, {
+      connectorId: "fireflies",
+      status: "connected",
+      lastSyncedAt: "2026-10-13T12:00:00.000Z",
+      lastSyncStatus: "error",
+      lastSyncError: "provider unavailable",
+      itemCount: 0,
+      preserveLastSyncedAt: true,
+    });
+
+    const result = await getConnection(f.tcw, "fireflies");
+    expect(result.ok && result.data?.lastSyncedAt).toBeNull();
+    expect(result.ok && result.data?.lastSyncStatus).toBe("error");
+  });
+  test("generic disconnected state writes never create attempt metadata", async () => {
+    const f = makeFake();
+    await updateSyncState(f.tcw, {
+      connectorId: "fireflies",
+      status: "disconnected",
+      lastSyncedAt: null,
+      lastSyncStatus: "error",
+      lastSyncError: null,
+      itemCount: 0,
+    });
+    expect(f.kv.entries.has(firefliesAttemptKvKey())).toBe(false);
+  });
+
+  test("versioned attempt record reads JSON strings and decoded objects", async () => {
+    const f = makeFake();
+    const value = {
+      v: 1,
+      last_attempt_at: "2026-10-13T12:00:00.000Z",
+      last_attempt_status: "partial",
+      listing_skip: 500,
+      listing_started_at: "2026-10-10T00:00:00.000Z",
+      listing_anchor: "mock-tx-251",
+      listing_anchor_date: 1700000000000,
+      listing_previous_neighbor: "mock-tx-250",
+      pending_ids: ["failed-transcript"],
+      suspect_proof_at_by_id: { "failed-transcript": "2026-10-12T12:00:00.000Z" },
+    };
+    const writeAttempt = {
+      v: 1 as const,
+      lastAttemptAt: value.last_attempt_at,
+      lastAttemptStatus: value.last_attempt_status,
+      listingSkip: value.listing_skip,
+      listingStartedAt: value.listing_started_at,
+      pendingIds: value.pending_ids,
+      listingAnchor: value.listing_anchor,
+      listingAnchorDate: value.listing_anchor_date,
+      listingPreviousNeighbor: value.listing_previous_neighbor,
+      suspectProofAtById: {
+        "failed-transcript": "2026-10-12T12:00:00.000Z",
+        "no-longer-pending": "2026-10-12T12:00:00.000Z",
+        ...Object.fromEntries(Array.from({ length: 51 }, (_, index) => [
+          `stale-${index}`,
+          "2026-10-12T12:00:00.000Z",
+        ])),
+      },
+    } as Parameters<typeof recordFirefliesAttempt>[1] & { suspectProofAtById: Record<string, string> };
+    await recordFirefliesAttempt(f.tcw, writeAttempt);
+    expect(f.kv.putValues.at(-1)).toBe(JSON.stringify(value));
+
+    for (const data of [JSON.stringify(value), value]) {
+      f.kv.get = async () => ({ ok: true, data: { data, headers: {} } });
+      const result = await getFirefliesAttempt(f.tcw);
+      expect(result).toEqual({
+        ok: true,
+        data: {
+          v: 1,
+          lastAttemptAt: value.last_attempt_at,
+          lastAttemptStatus: value.last_attempt_status,
+          listingSkip: 500,
+          listingStartedAt: value.listing_started_at,
+          listingAnchor: value.listing_anchor,
+          listingAnchorDate: value.listing_anchor_date,
+          listingPreviousNeighbor: value.listing_previous_neighbor,
+          pendingIds: ["failed-transcript"],
+          suspectProofAtById: { "failed-transcript": "2026-10-12T12:00:00.000Z" },
+        },
+      });
+    }
+    const oldRecord = {
+      v: 1,
+      last_attempt_at: value.last_attempt_at,
+      last_attempt_status: value.last_attempt_status,
+    };
+    f.kv.get = async () => ({ ok: true, data: { data: JSON.stringify(oldRecord), headers: {} } });
+    expect(await getFirefliesAttempt(f.tcw)).toEqual({
+      ok: true,
+      data: {
+        v: 1,
+        lastAttemptAt: value.last_attempt_at,
+        lastAttemptStatus: value.last_attempt_status,
+      },
+    });
+  });
+  test("invalid per-ID proof map drops continuation but keeps pending work", async () => {
+    const f = makeFake();
+    const base = {
+      v: 1,
+      last_attempt_at: "2026-10-13T12:00:00.000Z",
+      last_attempt_status: "partial",
+      listing_skip: 100,
+      listing_started_at: "2026-10-10T00:00:00.000Z",
+      listing_anchor: "anchor-99",
+      listing_anchor_date: 1700000000000,
+      listing_previous_neighbor: "anchor-98",
+      pending_ids: ["pending"],
+    };
+    const invalidMaps: unknown[] = [
+      null,
+      [],
+      42,
+      { pending: 42 },
+      { pending: "not-a-date" },
+      Object.fromEntries(Array.from({ length: 51 }, (_, index) => [`id-${index}`, "2026-10-12T12:00:00.000Z"])),
+    ];
+    for (const suspect_proof_at_by_id of invalidMaps) {
+      f.kv.get = async () => ({
+        ok: true,
+        data: { data: JSON.stringify({ ...base, suspect_proof_at_by_id }), headers: {} },
+      });
+      const result = await getFirefliesAttempt(f.tcw);
+      expect(result.ok).toBe(true);
+      if (!result.ok) continue;
+      expect(result.data?.listingSkip).toBeNull();
+      expect(result.data?.listingStartedAt).toBeNull();
+      expect(result.data?.pendingIds).toEqual(["pending"]);
+      expect((result.data as unknown as { suspectProofAtById?: Record<string, string> })?.suspectProofAtById).toEqual({});
+    }
+  });
+  test("pending attempt IDs are bounded to fifty entries", async () => {
+    const f = makeFake();
+    const pendingIds = Array.from({ length: 60 }, (_, index) => `failed-${index}`);
+
+    expect((await recordFirefliesAttempt(f.tcw, {
+      v: 1,
+      lastAttemptAt: "2026-10-13T12:00:00.000Z",
+      lastAttemptStatus: "partial",
+      pendingIds,
+    })).ok).toBe(true);
+
+    const persisted = JSON.parse(String(f.kv.entries.get(firefliesAttemptKvKey())));
+    expect(persisted.pending_ids).toEqual(pendingIds.slice(0, 50));
+    const read = await getFirefliesAttempt(f.tcw);
+    expect(read.ok && read.data?.pendingIds).toEqual(pendingIds.slice(0, 50));
+  });
+  test("malformed pending_ids drops continuation but keeps pacing and safe IDs", async () => {
+    const f = makeFake();
+    const base = {
+      v: 1,
+      last_attempt_at: "2026-10-13T12:00:00.000Z",
+      last_attempt_status: "partial",
+      listing_skip: 100,
+      listing_started_at: "2026-10-10T00:00:00.000Z",
+      listing_anchor: "anchor-99",
+      listing_anchor_date: 1700000000000,
+      listing_previous_neighbor: "anchor-98",
+    };
+    const invalidPending = [
+      "corrupt",
+      ["failed-1", 42],
+      Array.from({ length: 51 }, (_, index) => `failed-${index}`),
+    ];
+    for (const pending_ids of invalidPending) {
+      const value = { ...base, pending_ids };
+      f.kv.get = async () => ({ ok: true, data: { data: JSON.stringify(value), headers: {} } });
+      const result = await getFirefliesAttempt(f.tcw);
+      expect(result).toEqual({
+        ok: true,
+        data: {
+          v: 1,
+          lastAttemptAt: base.last_attempt_at,
+          lastAttemptStatus: "partial",
+          listingSkip: null,
+          listingStartedAt: null,
+          listingAnchor: null,
+          listingAnchorDate: null,
+          listingPreviousNeighbor: null,
+          ...(Array.isArray(pending_ids)
+            ? { pendingIds: pending_ids.filter((id): id is string => typeof id === "string").slice(0, 50) }
+            : {}),
+        },
+      });
+    }
+  });
+  test("oversized pending_ids cannot be truncated while keeping a continuation cursor", async () => {
+    const f = makeFake();
+    const pendingIds = Array.from({ length: 51 }, (_, index) => `failed-${index}`);
+
+    expect((await recordFirefliesAttempt(f.tcw, {
+      v: 1,
+      lastAttemptAt: "2026-10-13T12:00:00.000Z",
+      lastAttemptStatus: "partial",
+      listingSkip: 100,
+      listingStartedAt: "2026-10-10T00:00:00.000Z",
+      listingAnchor: "anchor-99",
+      pendingIds,
+    })).ok).toBe(true);
+
+    const persisted = JSON.parse(String(f.kv.entries.get(firefliesAttemptKvKey())));
+    expect(persisted.pending_ids).toEqual(pendingIds.slice(0, 50));
+    expect(persisted.listing_skip).toBeNull();
+    expect(persisted.listing_started_at).toBeNull();
+    expect(persisted.listing_anchor).toBeNull();
+  });
+  test("an invalid cursor drops cursor fields but preserves valid attempt pacing", async () => {
+    const f = makeFake();
+    const value = {
+      v: 1,
+      last_attempt_at: "2026-10-13T12:00:00.000Z",
+      last_attempt_status: "partial",
+      listing_skip: "bad",
+      listing_started_at: "bad",
+      listing_anchor: "orphan",
+    };
+    f.kv.get = async () => ({ ok: true, data: { data: JSON.stringify(value), headers: {} } });
+    expect(await getFirefliesAttempt(f.tcw)).toEqual({
+      ok: true,
+      data: {
+        v: 1,
+        lastAttemptAt: value.last_attempt_at,
+        lastAttemptStatus: value.last_attempt_status,
+        listingSkip: null,
+        listingStartedAt: null,
+        listingAnchor: null,
+        listingAnchorDate: null,
+        listingPreviousNeighbor: null,
+      },
+    });
+  });
 });
 
 // ── KV key format ───────────────────────────────────────────────────────
@@ -1312,6 +1635,26 @@ describe("connectorStore.putTranscriptBody / transcriptKvKey", () => {
     const parsed = JSON.parse(stored!);
     expect(Array.isArray(parsed)).toBe(true);
     expect(parsed[0].text).toBe("hi");
+  });
+});
+describe("connectorStore.listTranscriptBodyIds", () => {
+  test("uses a single paginated list action and never fetches transcript bodies", async () => {
+    const f = makeFake();
+    const prefix = `${CONNECTORS_KV_PREFIX}/fireflies/transcript/`;
+    f.kv.entries.set(`${prefix}has-body`, "large body");
+    f.kv.entries.set(`${prefix}second`, "another body");
+    f.kv.listPageSize = 1;
+    f.kv.get = async () => { throw new Error("body GET must not be used for completeness"); };
+    f.kv.head = async () => { throw new Error("metadata HEAD is not granted"); };
+
+    const listed = await listTranscriptBodyIds(f.tcw, "fireflies");
+
+    expect(listed).toEqual({ ok: true, data: new Set(["has-body", "second"]) });
+    expect(f.kv.listCalls).toEqual([
+      { path: prefix },
+      { path: prefix, cursor: "1" },
+    ]);
+    expect(f.kv.headCalls).toEqual([]);
   });
 });
 
