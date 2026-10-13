@@ -478,9 +478,13 @@ describe("desktop recorder adapter", () => {
     await absent.plugin.setCaptureDefaults({ accountDid: "did:owner", transitionGen: 1,
       transcriber: "on-device", identifySpeakers: false });
     const missingId = (await absent.plugin.start({ transcriber: "on-device" })).id;
+    const unavailableFailures: string[] = [];
+    const unsubscribeUnavailable = absent.whisper!.onFailed((failedId) => unavailableFailures.push(failedId));
     missing.files.set(missingId, Uint8Array.of(1));
     await absent.plugin.stop();
     await waitFor(() => absent.whisper?.snapshot().get(missingId)?.state === "failed");
+    expect(unavailableFailures).toEqual([]);
+    unsubscribeUnavailable();
     expect(absent.whisper?.snapshot().get(missingId)?.error).toContain("unavailable");
     expect(missingWhisper.calls).toHaveLength(0);
     missing.downloadedModels.add("QuantizedTinyEn");

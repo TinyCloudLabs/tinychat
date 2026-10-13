@@ -1163,6 +1163,15 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     expect(listed.ok && listed.data[0]!.transcript).toEqual({ status: "no_speech", preview: null });
     expect(h.removed).toEqual([ID]);
   });
+
+  test("an active account job deferral leaves the note pending", async () => {
+    const space = sqliteSpace();
+    await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios");
+    const h = harness({ creates: [new PrivateCloudError("active_transcription_exists", "busy", { transcriptionId: ID2 })] });
+    await expect(transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS,
+      explicit: true, sourceId: "rec-1", report: () => {} })).rejects.toMatchObject({ code: "active_transcription_exists" });
+    expect((await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata.transcription_outcome).toBe("pending");
+  });
   test("a failed no-speech commit persists its save failure", async () => {
     const space = sqliteSpace();
     await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios");
@@ -1182,6 +1191,20 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     });
   });
 
+
+  test("persists a service-busy failure in a legacy space without the transcript table", async () => {
+    const space = sqliteSpace();
+    await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android");
+    space.sqlite.exec("DROP TABLE voice_note_transcript");
+    const legacyTcw = { ...space.tcw } as never;
+    const h = harness({});
+    h.cloud.transcribe = async () => { throw new PrivateCloudError("service_busy", "busy"); };
+    await expect(transcribeVoiceNote({ tcw: legacyTcw, cloud: h.cloud, capabilities: CAPS,
+      explicit: true, sourceId: "rec-1", report: () => {} })).rejects.toMatchObject({ code: "service_busy" });
+    expect((await resolveVoiceNoteRow(legacyTcw, "rec-1"))?.metadata).toMatchObject({
+      transcription_outcome: "failed", transcription_error_code: "service_busy",
+    });
+  });
 
   test("a failure SELECT followed by an account switch cancels its queued UPDATE", async () => {
     const space = sqliteSpace();

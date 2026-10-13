@@ -373,13 +373,10 @@ export function voiceNoteTranscriptState(metadata: unknown, commit?: TranscriptC
 export async function readVoiceNoteTranscriptState(tcw: TinyCloudWeb, sourceId: string): Promise<VoiceNoteTranscriptState> {
   const commit = await readTranscriptCommit(tcw, sourceId);
   if (commit) return voiceNoteTranscriptState(null, commit);
-  const row = await resolveVoiceNoteRow(tcw, sourceId);
-  const ownOutcome = row?.metadata.transcription_outcome;
-  const ownState = voiceNoteTranscriptState(row?.metadata);
-  if (["pending", "failed", "skipped"].includes(String(ownOutcome)) || ownState.status === "transcribed")
-    return ownState;
   const legacy = await readLegacyTranscriptWinner(tcw, sourceId);
-  return legacy ? voiceNoteTranscriptState(legacyTranscriptMetadata(legacy)) : ownState;
+  if (legacy) return voiceNoteTranscriptState(legacyTranscriptMetadata(legacy));
+  const row = await resolveVoiceNoteRow(tcw, sourceId);
+  return voiceNoteTranscriptState(row?.metadata);
 }
 
 /**

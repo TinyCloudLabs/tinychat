@@ -220,7 +220,10 @@ export function createDesktopWhisperQueue(args: {
       if (disposed) return;
       const message = whisperFailure(error);
       if (stopping || captureLive() || message.includes("capture_has_priority")) await mark(id, "queued");
-      else { await mark(id, "failed", message); emitFailed(id); }
+      else {
+        await mark(id, "failed", message);
+        if (!message.startsWith("unavailable:")) emitFailed(id);
+      }
     } finally {
       transcribing = false;
       serverLease?.release();

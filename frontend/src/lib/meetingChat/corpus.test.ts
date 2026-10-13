@@ -1,5 +1,5 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import {
   SERVER_DISCOVERY_MAX_MEETINGS,
@@ -138,8 +138,7 @@ describe("SQL meeting metadata discovery", () => {
 
     expect(queries).toEqual([SQL_MEETING_METADATA_LEGACY_QUERY]);
     expect(SQL_MEETING_METADATA_QUERY).toMatch(/^SELECT\b/i);
-    // Provider metadata is never selected: it appears only in the WHERE predicate that admits a
-    // transcribed voice note, as two references inside json_valid/json_extract of one field.
+    // Provider metadata is never selected; JSON fields only participate in filtered admission predicates.
     const [selectList, predicate] = SQL_MEETING_METADATA_QUERY.split(/\bFROM connector_meeting m\b/);
     expect(selectList).not.toMatch(/\bmetadata\b/i);
     expect(predicate).toContain("voice_note_transcript");
@@ -167,6 +166,33 @@ describe("SQL meeting metadata discovery", () => {
     const candidateKeys = Object.keys(result.candidates[0] ?? {});
     for (const forbidden of ["summary", "transcript", "metadata", "providerMetadata"]) {
       expect(candidateKeys).not.toContain(forbidden);
+    }
+  });
+
+  test("a newer no-speech winner blocks an older transcribed duplicate", () => {
+    const sqlite = new Database(":memory:");
+    try {
+      sqlite.exec(`
+        CREATE TABLE connector_meeting (
+          id TEXT, source TEXT, source_id TEXT, title TEXT, started_at TEXT,
+          organizer_email TEXT, participants TEXT, summary_overview TEXT,
+          summary_action_items TEXT, created_at TEXT, updated_at TEXT, metadata TEXT
+        );
+        CREATE TABLE voice_note_transcript (
+          source_id TEXT, outcome TEXT, participants TEXT
+        );
+      `);
+      const insert = sqlite.prepare(
+        "INSERT INTO connector_meeting (id, source, source_id, title, started_at, created_at, updated_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      );
+      insert.run("canonical", "exo-voice-note", "rec", "Note", "2026-02-01", "2026-02-01", "2026-02-01",
+        JSON.stringify({ transcription_outcome: "no_speech", transcribed_at: "2026-02-01T00:00:00.000Z" }));
+      insert.run("duplicate", "exo-voice-note-dup", "rec", "Note", "2026-01-01", "2026-01-01", "2026-01-01",
+        JSON.stringify({ transcription_outcome: "transcribed", transcript_text: "Old transcript", transcribed_at: "2026-01-01T00:00:00.000Z" }));
+
+      expect(sqlite.prepare(SQL_MEETING_METADATA_QUERY).all()).toEqual([]);
+    } finally {
+      sqlite.close();
     }
   });
 

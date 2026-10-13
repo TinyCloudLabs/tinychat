@@ -256,11 +256,12 @@ export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNote
   const row = await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
   if (!row) throw new Error("The voice-note identity index was established but its row is missing");
   if (changes === 0) {
-    await execute(tcw, `UPDATE connector_meeting SET metadata = json_set(COALESCE(metadata,'{}'), '$.transcription_outcome', ?)
+    await execute(tcw, `UPDATE connector_meeting SET metadata = json_set(COALESCE(metadata,'{}'), '$.transcription_outcome', ?),
+      updated_at = ?
       WHERE id = ? AND source = 'exo-voice-note' AND json_extract(metadata, '$.transcription_outcome') IS NULL
         AND NOT (typeof(json_extract(metadata, '$.transcript_text')) = 'text'
           AND length(trim(json_extract(metadata, '$.transcript_text'))) > 0)`,
-    [outcome, row.id], checkpoint);
+    [outcome, now, row.id], checkpoint);
     const initialized = await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
     if (!initialized) throw new Error("The voice-note identity index was established but its row is missing");
     return { ...initialized, inserted: false };
@@ -271,13 +272,21 @@ export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNote
 /** Persist retryable transcription failures without replacing a terminal result. */
 export async function patchVoiceNoteTranscriptionFailure(tcw: TinyCloudWeb, sourceId: string, errorCode: string,
   checkpoint: () => void = () => undefined): Promise<void> {
-  if (["audio_upload_pending", "transcription_off", "upload_outcome_unknown", "account_changed"].includes(errorCode)) return;
+  if (["audio_upload_pending", "transcription_off", "upload_outcome_unknown", "account_changed",
+    "active_transcription_exists"].includes(errorCode)) return;
   const row = await resolveVoiceNoteRow(tcw, sourceId, checkpoint);
   if (!row) return;
+  const identity = await ensureVoiceNoteIdentity(tcw, checkpoint);
+  if (identity.status !== "established") {
+    throw Object.assign(new Error(identity.reason ?? "Voice-note schema setup failed"), { code: identity.status });
+  }
   await execute(tcw, `UPDATE connector_meeting SET metadata = json_set(COALESCE(metadata,'{}'),
     '$.transcription_outcome', 'failed', '$.transcription_error_code', ?), updated_at = ?
     WHERE id = ? AND source = 'exo-voice-note'
       AND COALESCE(json_extract(metadata, '$.transcription_outcome'), '') NOT IN ('transcribed','no_speech')
+      AND NOT (json_extract(metadata, '$.transcription_outcome') IS NULL
+        AND typeof(json_extract(metadata, '$.transcript_text')) = 'text'
+        AND length(trim(json_extract(metadata, '$.transcript_text'))) > 0)
       AND NOT EXISTS (SELECT 1 FROM voice_note_transcript t WHERE t.source_id = ? AND t.outcome IN ('transcribed','no_speech'))`,
   [errorCode, new Date().toISOString(), row.id, sourceId], checkpoint);
 }

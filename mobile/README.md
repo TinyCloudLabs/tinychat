@@ -82,9 +82,11 @@ Voice notes use the shared Private job flow
     relaunch or Retry re-joins it. A job that can no longer be used is
     cancelled, so it doesn't hold the account's one active slot.
 - **Chat:** `exo-voice-note` is in the meeting chat corpus
-  (`SUPPORTED_MEETING_SOURCES`), but a voice note is a candidate only once its
-  row says `transcription_outcome: "transcribed"` (`TRANSCRIBED_ONLY_SOURCES`):
-  an untranscribed or silent note never wins "my latest meeting".
+  (`SUPPORTED_MEETING_SOURCES`). A committed `voice_note_transcript` outcome is
+  authoritative: only `transcribed` is admitted. Without a commit, the shared
+  legacy winner ordering chooses among canonical and duplicate rows first; the
+  winner is admitted only when it is `transcribed` or carries legacy transcript
+  text. A winning `no_speech` row blocks an older transcript duplicate.
 
 ## Health (spike, off by default)
 

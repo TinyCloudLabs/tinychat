@@ -97,7 +97,7 @@ WHERE m.source IN (${SUPPORTED_MEETING_SOURCES_SQL})
       ELSE 0 END
       FROM connector_meeting g WHERE g.source_id = m.source_id AND g.source IN ('exo-voice-note', 'exo-voice-note-dup')
         AND json_valid(g.metadata)
-        AND (json_extract(g.metadata, '$.transcription_outcome') = 'transcribed'
+        AND (json_extract(g.metadata, '$.transcription_outcome') IN ('transcribed', 'no_speech')
           OR (json_extract(g.metadata, '$.transcription_outcome') IS NULL
             AND typeof(json_extract(g.metadata, '$.transcript_text')) = 'text'
             AND length(trim(json_extract(g.metadata, '$.transcript_text'))) > 0))

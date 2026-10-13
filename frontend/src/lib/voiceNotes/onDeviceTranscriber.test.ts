@@ -1,5 +1,5 @@
 // The local transcript -> space write publishes its result per note, so "Adding to this note…" cannot hang forever.
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { VoiceNotes, __setVoiceNotesForTests, type LocalTranscript, type VoiceNotesPlugin } from "./nativeVoiceNotes";
@@ -60,6 +60,10 @@ beforeEach(() => {
 afterEach(() => {
   console.warn = warn;
   __setVoiceNotesForTests(realPlugin, { available: null });
+});
+afterAll(() => {
+  mock.restore();
+  mock.module("./voiceNoteStore", () => realStore);
 });
 
 describe("syncOnDeviceTranscript publishes the result", () => {

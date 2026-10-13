@@ -188,6 +188,17 @@ describe("voice-note identity and transcript authority", () => {
     expect((await ensureVoiceNoteIdentity(tcw)).status).toBe("established");
     expect(tableCreates).toBe(2);
   });
+  test("public transcript state prefers a terminal duplicate over a canonical pending hint", async () => {
+    const { tcw, sqlite } = space();
+    await ensureSchema(tcw);
+    expect((await ensureVoiceNoteIdentity(tcw)).status).toBe("established");
+    insert(sqlite, "canonical", "rec", { transcription_outcome: "pending" });
+    insert(sqlite, "duplicate", "rec", {
+      transcription_outcome: "transcribed", transcript_text: "Legacy transcript", transcribed_at: "2026-01-02T00:00:00.000Z",
+    }, "exo-voice-note-dup");
+    expect(await readVoiceNoteTranscriptState(tcw, "rec")).toMatchObject({ status: "transcribed" });
+  });
+
   test("an old random-id insert before deterministic create resolves to the old live row", async () => {
     const { tcw, sqlite } = space();
     await ensureSchema(tcw);
@@ -251,6 +262,17 @@ describe("voice-note identity and transcript authority", () => {
       status: "transcribed", preview: "Earlier words",
     });
   });
+
+  test("re-save outcome backfill updates the row timestamp", async () => {
+    const { tcw, sqlite } = space();
+    await ensureSchema(tcw);
+    insert(sqlite, "legacy-pending", "legacy-pending");
+    await ensureVoiceNoteIdentity(tcw);
+    await createVoiceNoteRow(tcw, { id: "legacy-pending", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+      options: { transcriber: "off", identifySpeakers: false } }, "Existing note");
+    expect(row(sqlite, "legacy-pending").updatedAt).not.toBe("2026-01-01T00:00:00.000Z");
+  });
   test("failed transcription is stored with its error code", async () => {
     const { tcw } = space();
     await ensureSchema(tcw);
@@ -260,6 +282,18 @@ describe("voice-note identity and transcript authority", () => {
     expect((await resolveVoiceNoteRow(tcw, "failed"))?.metadata).toMatchObject({
       transcription_outcome: "failed",
       transcription_error_code: "recording_too_large",
+    });
+  });
+
+  test("late failure preserves legacy transcript evidence", async () => {
+    const { tcw, sqlite } = space();
+    await ensureSchema(tcw);
+    insert(sqlite, "legacy-failure", "legacy-failure", { transcript_text: "Earlier words" });
+    await ensureVoiceNoteIdentity(tcw);
+    await patchVoiceNoteTranscriptionFailure(tcw, "legacy-failure", "service_busy");
+    expect((await resolveVoiceNoteRow(tcw, "legacy-failure"))?.metadata.transcription_outcome).toBeUndefined();
+    expect(await readVoiceNoteTranscriptState(tcw, "legacy-failure")).toEqual({
+      status: "transcribed", preview: "Earlier words",
     });
   });
 
@@ -288,7 +322,8 @@ describe("voice-note identity and transcript authority", () => {
   });
 
   test("deferral codes do not persist failed outcomes", async () => {
-    for (const code of ["audio_upload_pending", "transcription_off", "upload_outcome_unknown", "account_changed"]) {
+    for (const code of ["audio_upload_pending", "transcription_off", "upload_outcome_unknown", "account_changed",
+      "active_transcription_exists"]) {
       const { tcw } = space();
       await ensureSchema(tcw);
       await createVoiceNoteRow(tcw, { id: code, startedAt: 0, durationMs: 1000,
