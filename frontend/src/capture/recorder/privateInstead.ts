@@ -5,6 +5,19 @@ import { readableError } from "@/lib/readableError";
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { cancelOnDeviceNote } from "@/lib/voiceNotes/onDeviceSttStore";
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
+import type { TranscriptionAdmissionRefusal } from "@/lib/voiceNotes/voiceNoteTranscription";
+
+const PRIVATE_REFUSAL_COPY: Record<TranscriptionAdmissionRefusal, string> = {
+  checking: "Private transcription is still checking. Try again in a moment.",
+  unavailable: "Private transcription is unavailable right now. Try again later.",
+  "check-failed": "Couldn’t check Private transcription. Try again in a moment.",
+  "no-consent": "Enable Private transcription before trying again.",
+  "account-changed": "Your account changed. Try again after signing in.",
+};
+
+export function privateRefusalCopy(refusal: TranscriptionAdmissionRefusal): string {
+  return PRIVATE_REFUSAL_COPY[refusal];
+}
 
 export function privateInsteadOffered(transcription: VoiceNoteTranscriptionProps | undefined, noteId: string, durationSecs: number | null): boolean {
   if (!transcription || transcription.availability !== "available" || !transcription.consented) return false;
@@ -74,6 +87,6 @@ export async function switchToPrivate(
   if (failure !== null) return failure;
   const unconfirmed = await waitForOnDeviceToEnd(noteId, wait);
   if (unconfirmed !== null) return unconfirmed;
-  transcription.onTranscribePrivately(noteId);
-  return null;
+  const refusal = transcription.onTranscribePrivately(noteId);
+  return typeof refusal === "string" ? privateRefusalCopy(refusal) : null;
 }

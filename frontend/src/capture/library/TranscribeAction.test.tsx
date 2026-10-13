@@ -9,6 +9,7 @@ import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcripti
 import { PlatformContext } from "@/lib/platform";
 import { createFakeOnDeviceStt } from "@/lib/voiceNotes/fakeOnDeviceStt";
 import { __setVoiceNotesForTests, VoiceNotes, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { __resetCaptureEngineForTests } from "@/lib/voiceNotes/captureEngine";
 import { __resetOnDeviceSttStoreForTests, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { __setOnDeviceSttForTests, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { installDom } from "@/test/dom";
@@ -37,6 +38,7 @@ let root: Root | null = null;
 
 beforeEach(() => {
   enqueued = [];
+  __resetCaptureEngineForTests();
   __resetOnDeviceSttStoreForTests();
   __setVoiceNotesForTests({ listPending: async () => ({ recordings: [] }) } as unknown as VoiceNotesPlugin, { available: true });
   const fake = createFakeOnDeviceStt();
@@ -52,6 +54,7 @@ afterEach(async () => {
   __resetOnDeviceSttStoreForTests();
   __setVoiceNotesForTests(originals.voiceNotes, { available: null });
   __setOnDeviceSttForTests(originals.onDeviceStt);
+  __resetCaptureEngineForTests();
 });
 
 async function mount(props: { read: PhoneRead; transcription?: VoiceNoteTranscriptionProps; label?: string; durationSecs?: number | null; platform?: "ios" | "tauri" }) {
@@ -145,7 +148,7 @@ describe("the Transcribe action", () => {
 
   test("pressing Transcribe with the default starts Local on the phone and nothing in the cloud", async () => {
     const sent: string[] = [];
-    const host = await mount({ read: onPhone(), transcription: transcription({ onTranscribe: (id) => sent.push(id), onTranscribePrivately: (id) => sent.push(id) }) });
+    const host = await mount({ read: onPhone(), transcription: transcription({ onTranscribe: (id) => { sent.push(id); }, onTranscribePrivately: (id) => { sent.push(id); } }) });
     await click(button(host));
     expect(enqueued).toEqual([NOTE]);
     expect(sent).toEqual([]);
@@ -153,7 +156,7 @@ describe("the Transcribe action", () => {
 
   test("a second press while the start is on its way starts nothing more, and the provider cannot change", async () => {
     const sent: string[] = [];
-    const host = await mount({ read: onPhone(), transcription: transcription({ onTranscribePrivately: (id) => sent.push(id) }) });
+    const host = await mount({ read: onPhone(), transcription: transcription({ onTranscribePrivately: (id) => { sent.push(id); } }) });
     await act(async () => {
       button(host).dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
       button(host).dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
@@ -196,7 +199,7 @@ describe("the Transcribe action", () => {
 
   test("a private job that settles as blocked is the start's answer: the action unlocks", async () => {
     const sent: string[] = [];
-    const host = await mount({ read: nowhere, transcription: transcription({ onTranscribePrivately: (id) => sent.push(id) }) });
+    const host = await mount({ read: nowhere, transcription: transcription({ onTranscribePrivately: (id) => { sent.push(id); } }) });
     await click(button(host));
     expect(sent).toEqual([NOTE]);
     expect(button(host).disabled).toBe(true);
@@ -209,7 +212,7 @@ describe("the Transcribe action", () => {
 
   test("choosing Private sends the note to private cloud and leaves the phone alone", async () => {
     const sent: string[] = [];
-    const host = await mount({ read: onPhone({ committed: "private-cloud" }), transcription: transcription({ onTranscribePrivately: (id) => sent.push(id) }) });
+    const host = await mount({ read: onPhone({ committed: "private-cloud" }), transcription: transcription({ onTranscribePrivately: (id) => { sent.push(id); } }) });
     await choose(host, "private-cloud");
     await click(button(host));
     expect(sent).toEqual([NOTE]);
@@ -220,7 +223,7 @@ describe("the Transcribe action", () => {
     const calls: string[] = [];
     const host = await mount({
       read: onPhone({ committed: "off" }),
-      transcription: transcription({ onTranscribe: () => calls.push("transcribe"), onTranscribePrivately: () => calls.push("privately") }),
+      transcription: transcription({ onTranscribe: () => { calls.push("transcribe"); }, onTranscribePrivately: () => { calls.push("privately"); } }),
     });
     await choose(host, "private-cloud");
     await click(button(host));
@@ -303,12 +306,57 @@ describe("the Transcribe action", () => {
     expect(host.querySelector('[data-testid="transcribe-problem"]')?.textContent).toBe("Your account changed. Try again after signing in.");
     expect(button(host).disabled).toBe(false);
   });
+  test("Local-to-Private after an account change alerts and unlocks without starting", async () => {
+    let current = true;
+    let localState = "failed";
+    let starts = 0;
+    __setVoiceNotesForTests({
+      listPending: async () => ({ recordings: [{ id: NOTE, options: { transcriber: "on-device" }, stt: { state: localState } }] }),
+      getTranscript: async () => ({ transcript: null }),
+    } as unknown as VoiceNotesPlugin, { available: true });
+    OnDeviceStt.cancel = async () => { localState = "cancelled"; };
+    const transcriber = createVoiceNoteTranscriber({
+      cloud: {
+        capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/webm"], admission: "open", diarization: true }),
+        pendingSourceIds: () => [],
+      } as never,
+      consent: { get: () => true, set: noop },
+      holds: memoryHoldStore(),
+      tcw: () => ({ did: "did:example:signed-in" } as never),
+      runNote: async () => { starts += 1; return "transcribed"; },
+    });
+    await transcriber.check({ current: () => current });
+    const props = transcriptionProps(transcriber, transcriber.snapshot())!;
+    cleanupDom = installDom();
+    const host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => root!.render(createElement(MemoryRouter, null,
+      createElement(PlatformContext.Provider, { value: "ios" },
+        createElement(NoteDetailView, {
+          item: { id: "row-1", source: "exo-voice-note", sourceId: NOTE, title: "Voice note", startedAt: null, durationSecs: 60 },
+          listStatus: "ready",
+          metadata: { status: "ok", metadata: { transcription_outcome: "skipped", capture: { version: 2, options: { transcriber: "off" } }, audio: { stored: true } } },
+          transcript: { status: "absent" },
+          audio: { load: async () => null },
+          transcription: props,
+          copyState: "idle", onCopy: noop, onRetry: noop, pushed: true, onBack: noop,
+        }),
+      ),
+    )));
+    await choose(host, "private-cloud");
+    current = false;
+    await click(button(host));
+    expect(starts).toBe(0);
+    expect(host.querySelector('[data-testid="transcribe-problem"]')?.textContent).toBe("Your account changed. Try again after signing in.");
+    expect(button(host).disabled).toBe(false);
+  });
 
   test("Private without consent asks first; agreeing records it and starts the transcription", async () => {
     const calls: string[] = [];
     const host = await mount({
       read: nowhere,
-      transcription: transcription({ consented: false, onConsent: () => calls.push("consent"), onTranscribePrivately: () => calls.push("transcribe") }),
+      transcription: transcription({ consented: false, onConsent: () => { calls.push("consent"); }, onTranscribePrivately: () => { calls.push("transcribe"); } }),
     });
     await click(button(host));
     expect(calls).toEqual([]);
@@ -335,7 +383,7 @@ describe("the Transcribe action", () => {
 
   test("after a failure the same action reads Try again and still lets the provider be chosen", async () => {
     const sent: string[] = [];
-    const host = await mount({ read: onPhone(), label: "Try again", transcription: transcription({ onTranscribePrivately: (id) => sent.push(id) }) });
+    const host = await mount({ read: onPhone(), label: "Try again", transcription: transcription({ onTranscribePrivately: (id) => { sent.push(id); } }) });
     expect(button(host).textContent).toBe("Try again");
     expect(host.querySelector<HTMLSelectElement>('[data-testid="transcribe-provider"]')!.value).toBe("on-device");
     await choose(host, "private-cloud");
@@ -382,7 +430,7 @@ describe("starting a transcription", () => {
       { available: true },
     );
     OnDeviceStt.cancel = async ({ id }) => { cancelled.push(id); };
-    const props = transcription({ onTranscribePrivately: (id) => sent.push(id) });
+    const props = transcription({ onTranscribePrivately: (id) => { sent.push(id); } });
     expect(await transcribeWith("private-cloud", NOTE, props, phone({ hasLocalState: true }))).toBeNull();
     expect(cancelled).toEqual([NOTE]);
     expect(sent).toEqual([NOTE]);
@@ -391,7 +439,7 @@ describe("starting a transcription", () => {
   test("a Private note's explicit retry uses the override route", async () => {
     const calls: string[] = [];
     expect(await transcribeWith("private-cloud", NOTE,
-      transcription({ onTranscribe: () => calls.push("ordinary"), onTranscribePrivately: (id) => calls.push(`private:${id}`) }),
+      transcription({ onTranscribe: () => { calls.push("ordinary"); }, onTranscribePrivately: (id) => { calls.push(`private:${id}`); } }),
       phone({ committed: "private-cloud" }))).toBeNull();
     expect(calls).toEqual([`private:${NOTE}`]);
   });
