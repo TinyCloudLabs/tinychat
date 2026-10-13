@@ -538,34 +538,47 @@ export async function upsertMeeting(
     }
   }
 
-  const upd = await store(tcw).execute(
-    `UPDATE connector_meeting SET
-       title = ?, started_at = ?, duration_secs = ?, organizer_email = ?,
-       participants = ?, summary_overview = ?, summary_action_items = ?,
-       keywords = ?, meeting_type = ?, metadata = ?, updated_at = ?
-     WHERE id = ?`,
-    [
-      options.preserveExistingTitle ? cellStr(row, 2, meeting.title) : keepStr(meeting.title, 2),
-      acceptsIncomingDatetime ? meeting.startedAt : existingStartedAt,
-      meeting.durationSecs !== null ? meeting.durationSecs : cellNum(row, 4, null),
-      keepStr(meeting.organizerEmail, 5),
-      meeting.participants.length > 0
-        ? JSON.stringify(meeting.participants)
-        : (cellStr(row, 6, null) ?? "[]"),
-      ownsStandaloneNotesField("summary_overview")
-        ? meeting.summaryOverview
-        : keepStr(meeting.summaryOverview, 7),
-      ownsStandaloneNotesField("summary_action_items")
-        ? meeting.summaryActionItems
-        : keepStr(meeting.summaryActionItems, 8),
-      meeting.keywords !== null ? JSON.stringify(meeting.keywords) : cellStr(row, 9, null),
-      keepStr(meeting.meetingType, 10),
-      JSON.stringify(mergedMetadata),
-      now,
-      existingId,
-    ],
-  );
-  if (!upd.ok) return fail(upd.error, "upsertMeeting(update)");
+  const updateValues = [
+    options.preserveExistingTitle ? cellStr(row, 2, meeting.title) : keepStr(meeting.title, 2),
+    acceptsIncomingDatetime ? meeting.startedAt : existingStartedAt,
+    meeting.durationSecs !== null ? meeting.durationSecs : cellNum(row, 4, null),
+    keepStr(meeting.organizerEmail, 5),
+    meeting.participants.length > 0
+      ? JSON.stringify(meeting.participants)
+      : (cellStr(row, 6, null) ?? "[]"),
+    ownsStandaloneNotesField("summary_overview")
+      ? meeting.summaryOverview
+      : keepStr(meeting.summaryOverview, 7),
+    ownsStandaloneNotesField("summary_action_items")
+      ? meeting.summaryActionItems
+      : keepStr(meeting.summaryActionItems, 8),
+    meeting.keywords !== null ? JSON.stringify(meeting.keywords) : cellStr(row, 9, null),
+    keepStr(meeting.meetingType, 10),
+    JSON.stringify(mergedMetadata),
+  ];
+  const currentValues = [
+    cellStr(row, 2, null),
+    existingStartedAt,
+    cellNum(row, 4, null),
+    cellStr(row, 5, null),
+    cellStr(row, 6, null) ?? "[]",
+    cellStr(row, 7, null),
+    cellStr(row, 8, null),
+    cellStr(row, 9, null),
+    cellStr(row, 10, null),
+    JSON.stringify(existingMetadata),
+  ];
+  if (updateValues.some((value, index) => value !== currentValues[index])) {
+    const upd = await store(tcw).execute(
+      `UPDATE connector_meeting SET
+         title = ?, started_at = ?, duration_secs = ?, organizer_email = ?,
+         participants = ?, summary_overview = ?, summary_action_items = ?,
+         keywords = ?, meeting_type = ?, metadata = ?, updated_at = ?
+       WHERE id = ?`,
+      [...updateValues, now, existingId],
+    );
+    if (!upd.ok) return fail(upd.error, "upsertMeeting(update)");
+  }
 
   if (sentences.length > 0 || options.preserveTranscriptBody) {
     const kv = await (options.preserveTranscriptBody ? putMissingTranscriptBody : putTranscriptBody)(tcw, meeting.source, meeting.sourceId, sentences);

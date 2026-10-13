@@ -1,6 +1,6 @@
 // Saving a transcriber meeting into the user's space: the mapping onto the shared connector
 // store shape (connector_meeting row + sentence body), and the explorer registration.
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { DelegatedAccess } from "@tinyboilerplate/server";
 import { ensureConnectorSchema, writeTranscriberMeeting } from "@tinyboilerplate/core";
 import { delegatedConnectorPort } from "../../../backend/src/services/user-space-port";
@@ -694,5 +694,28 @@ test("an account switch while a fetched transcript waits for the lane prevents i
   } finally {
     releaseRead();
     releaseOtherWrite();
+  }
+});
+test("unreadable saved transcript bodies log only the incomplete meeting id and reason", async () => {
+  const f = libraryFixture();
+  f.allowWrites();
+  const thrownMeeting = { ...meeting, id: "mtg_thrown" };
+  expect((await saveTranscriberMeeting(f.tcw, meeting, transcript)).ok).toBe(true);
+  expect((await saveTranscriberMeeting(f.tcw, thrownMeeting, transcript)).ok).toBe(true);
+  f.tcw.kv.get = async (key: string) => {
+    if (key === transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, meeting.id)) {
+      return { ok: false, error: { code: "KV_ERROR", message: "private payload" } };
+    }
+    throw new Error("private payload");
+  };
+  const debug = spyOn(console, "debug").mockImplementation(() => {});
+  try {
+    expect(await listSavedTranscriberMeetingIds(f.tcw)).toEqual({ ok: true, data: [] });
+    expect(debug).toHaveBeenCalledWith("[transcriberSave] incomplete meeting", meeting.id, "kv-read-failed");
+    expect(debug).toHaveBeenCalledWith("[transcriberSave] incomplete meeting", thrownMeeting.id, "kv-read-threw");
+    expect(debug.mock.calls.flat().join(" ")).not.toContain("private payload");
+  } finally {
+    debug.mockRestore();
+    f.sql.close();
   }
 });
