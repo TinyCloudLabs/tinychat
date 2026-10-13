@@ -688,6 +688,7 @@ pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, Stri
                     reason: "write_failed".into(),
                     error,
                     journal: current.clone(),
+                    quarantined_journal: None,
                 },
             )?;
         }
@@ -1020,6 +1021,7 @@ pub async fn recorder_finish(app: tauri::AppHandle, id: String) -> Result<u64, S
                     reason: "write_failed".into(),
                     error: error.clone(),
                     journal: pointer,
+                    quarantined_journal: None,
                 },
             )?;
         }
@@ -1181,6 +1183,7 @@ pub async fn recorder_recover(app: tauri::AppHandle) -> Result<RecoveryReport, S
                                     reason: "write_failed".into(),
                                     error,
                                     journal: current.clone(),
+                                    quarantined_journal: None,
                                 },
                             )?,
                             Ok(()) => (),
@@ -1192,36 +1195,7 @@ pub async fn recorder_recover(app: tauri::AppHandle) -> Result<RecoveryReport, S
             }
             let stopped = journal::list_stopped(&app)?;
             for current in &stopped {
-                let Some(segment_id) = current.segment_id.as_deref() else {
-                    continue;
-                };
-                if journal::list_failed(&app)?
-                    .iter()
-                    .any(|failed| failed.segment_id == segment_id)
-                {
-                    continue;
-                }
-                if let Err(error) =
-                    import_finished_segment(&app, segment_id, &current.id, current.system_audio)
-                {
-                    if empty_capture(&error) {
-                        files::remove_source_session(&files::sessions_root(&app)?, segment_id)?;
-                        let mut ready = current.clone();
-                        ready.segment_id = None;
-                        journal::save_stopped(&app, &ready)?;
-                    } else {
-                        journal::save_failed(
-                            &app,
-                            &journal::FailedSegment {
-                                id: current.id.clone(),
-                                segment_id: segment_id.into(),
-                                reason: "write_failed".into(),
-                                error,
-                                journal: current.clone(),
-                            },
-                        )?;
-                    }
-                }
+                recover_stopped_segment(&app, current)?;
             }
             Ok(RecoveryReport {
                 journal: pending,
@@ -1292,6 +1266,17 @@ pub async fn recorder_failed_retry(
                 .into_iter()
                 .filter(|item| item.id == id)
             {
+                if failed.quarantined_journal.is_some() {
+                    match journal::retry_quarantined(&app, &failed, |current| {
+                        recover_stopped_segment(&app, current)
+                    }) {
+                        Ok(()) => (),
+                        Err(error) => {
+                            journal::save_failed(&app, &journal::FailedSegment { error, ..failed })?
+                        }
+                    }
+                    continue;
+                }
                 match import_finished_segment(
                     &app,
                     &failed.segment_id,
@@ -1320,6 +1305,43 @@ pub async fn recorder_failed_retry(
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+fn recover_stopped_segment(
+    app: &tauri::AppHandle,
+    current: &journal::Journal,
+) -> Result<(), String> {
+    let Some(segment_id) = current.segment_id.as_deref() else {
+        return Ok(());
+    };
+    if journal::list_failed(app)?
+        .iter()
+        .any(|failed| failed.segment_id == segment_id)
+    {
+        return Ok(());
+    }
+    if let Err(error) = import_finished_segment(app, segment_id, &current.id, current.system_audio)
+    {
+        if empty_capture(&error) {
+            files::remove_source_session(&files::sessions_root(app)?, segment_id)?;
+            let mut ready = current.clone();
+            ready.segment_id = None;
+            journal::save_stopped(app, &ready)?;
+        } else {
+            journal::save_failed(
+                app,
+                &journal::FailedSegment {
+                    id: current.id.clone(),
+                    segment_id: segment_id.into(),
+                    reason: "write_failed".into(),
+                    error,
+                    journal: current.clone(),
+                    quarantined_journal: None,
+                },
+            )?;
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]

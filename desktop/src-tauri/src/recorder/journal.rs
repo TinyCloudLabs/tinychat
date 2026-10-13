@@ -19,7 +19,7 @@ pub struct MissingAudioSpan {
     pub audio_ms: u64,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Journal {
     pub id: String,
@@ -43,6 +43,8 @@ pub struct FailedSegment {
     pub reason: String,
     pub error: String,
     pub journal: Journal,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quarantined_journal: Option<String>,
 }
 
 fn path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -162,28 +164,25 @@ fn list_stopped_at(
     root: &std::path::Path,
     failed: &std::path::Path,
 ) -> Result<Vec<Journal>, String> {
+    list_stopped_at_with_read(root, failed, |path| fs::read(path))
+}
+
+fn list_stopped_at_with_read(
+    root: &std::path::Path,
+    failed: &std::path::Path,
+    read: impl Fn(&std::path::Path) -> std::io::Result<Vec<u8>>,
+) -> Result<Vec<Journal>, String> {
     let mut journals = Vec::new();
-    let entries = match fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(error) => {
-            quarantine_stopped_at(root, failed, "recorder-stopped", &error.to_string())?;
-            fs::create_dir_all(root).map_err(|e| e.to_string())?;
-            return Ok(journals);
-        }
-    };
+    let entries = fs::read_dir(root).map_err(|e| e.to_string())?;
     for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(error) => {
-                quarantine_stopped_at(root, failed, "recorder-stopped", &error.to_string())?;
-                fs::create_dir_all(root).map_err(|e| e.to_string())?;
-                return Ok(Vec::new());
-            }
-        };
+        let entry = entry.map_err(|e| e.to_string())?;
         if entry.path().extension().and_then(|ext| ext.to_str()) != Some("json") {
             continue;
         }
-        let parsed = fs::read(entry.path())
+        if !entry.file_type().map_err(|e| e.to_string())?.is_file() {
+            continue;
+        }
+        let parsed = read(&entry.path())
             .map_err(|e| e.to_string())
             .and_then(|bytes| serde_json::from_slice::<Journal>(&bytes).map_err(|e| e.to_string()));
         match parsed {
@@ -213,10 +212,10 @@ fn quarantine_stopped_at(
     } else {
         "unknown-stopped-journal"
     };
-    let segment_id = format!("rec-journal-{}", uuid::Uuid::new_v4());
     let quarantine = failed_root.join("journals");
     fs::create_dir_all(&quarantine).map_err(|e| e.to_string())?;
-    let target = quarantine.join(&segment_id);
+    let name = format!("{id}.{}.json", uuid::Uuid::new_v4());
+    let target = quarantine.join(&name);
     fs::rename(source, &target).map_err(|e| e.to_string())?;
     File::open(source.parent().unwrap())
         .and_then(|dir| dir.sync_all())
@@ -224,30 +223,85 @@ fn quarantine_stopped_at(
     File::open(&quarantine)
         .and_then(|dir| dir.sync_all())
         .map_err(|e| e.to_string())?;
-    let failed = FailedSegment {
-        id: id.into(),
-        segment_id: segment_id.clone(),
-        reason: "stopped_journal_invalid".into(),
-        error: error.into(),
-        journal: Journal {
-            id: id.into(),
-            started_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64,
-            segment_id: None,
-            recorded_ms: 0,
-            paused_ms: 0,
-            max_duration_ms: 3 * 60 * 60_000,
-            system_audio: false,
-            spans: Vec::new(),
-        },
-    };
+    let failed = failed_journal_at(&target, id, error)?;
     save_failed_at(failed_root, &failed)?;
     tracing::error!(target: "exo_dev::recorder", kind = "pipeline", source_id = %id,
         operation = "stopped_journal", phase = "quarantined", error = %error,
         path = %target.display());
     Ok(())
+}
+
+fn failed_journal_at(
+    source: &std::path::Path,
+    id: &str,
+    error: &str,
+) -> Result<FailedSegment, String> {
+    let bytes = fs::read(source).unwrap_or_default();
+    let parsed = serde_json::from_slice::<Journal>(&bytes).ok();
+    let partial = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
+    let id = if id == "unknown" {
+        parsed
+            .as_ref()
+            .map(|journal| journal.id.as_str())
+            .filter(|id| super::files::valid_recording_id(id))
+            .unwrap_or(id)
+    } else {
+        id
+    }
+    .to_owned();
+    let segment_id = parsed
+        .as_ref()
+        .and_then(|j| j.segment_id.clone())
+        .or_else(|| {
+            partial
+                .as_ref()?
+                .get("segmentId")?
+                .as_str()
+                .map(str::to_owned)
+        })
+        .filter(|value| super::files::valid_recording_id(value) && value.starts_with("rec-"));
+    let journal = parsed.unwrap_or_else(|| Journal {
+        id: id.clone(),
+        started_at: partial
+            .as_ref()
+            .and_then(|v| v.get("startedAt"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or_default(),
+        segment_id: segment_id.clone(),
+        recorded_ms: partial
+            .as_ref()
+            .and_then(|v| v.get("recordedMs"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or_default(),
+        paused_ms: partial
+            .as_ref()
+            .and_then(|v| v.get("pausedMs"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or_default(),
+        max_duration_ms: partial
+            .as_ref()
+            .and_then(|v| v.get("maxDurationMs"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(3 * 60 * 60_000),
+        system_audio: partial
+            .as_ref()
+            .and_then(|v| v.get("systemAudio"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or_default(),
+        spans: Vec::new(),
+    });
+    let name = source
+        .file_name()
+        .and_then(|v| v.to_str())
+        .ok_or("invalid_journal_path")?;
+    Ok(FailedSegment {
+        id,
+        segment_id: segment_id.unwrap_or_default(),
+        reason: "stopped_journal_invalid".into(),
+        error: error.into(),
+        journal,
+        quarantined_journal: Some(name.into()),
+    })
 }
 
 pub fn clear_stopped(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
@@ -268,6 +322,9 @@ fn failed_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 pub fn save_failed(app: &tauri::AppHandle, failed: &FailedSegment) -> Result<(), String> {
+    if failed.quarantined_journal.is_some() {
+        return save_failed_at(&failed_root(app)?, failed);
+    }
     // A vault may live on another filesystem, where renaming into app data
     // cannot work. The manifest still makes the source recoverable by its
     // original session path and must not leave Stop retrying the import.
@@ -314,12 +371,8 @@ pub fn remove_failed_source(app: &tauri::AppHandle, segment_id: &str) -> Result<
 }
 
 fn save_failed_at(root: &std::path::Path, failed: &FailedSegment) -> Result<(), String> {
-    if !super::files::valid_recording_id(&failed.segment_id)
-        || !failed.segment_id.starts_with("rec-")
-    {
-        return Err("invalid_segment_id".into());
-    }
-    let path = root.join(format!("{}.json", failed.segment_id));
+    let key = failed_key(failed)?;
+    let path = root.join(format!("{key}.json"));
     let temp = path.with_extension("json.tmp");
     let mut file = File::create(&temp).map_err(|e| e.to_string())?;
     file.write_all(&serde_json::to_vec(failed).map_err(|e| e.to_string())?)
@@ -331,6 +384,107 @@ fn save_failed_at(root: &std::path::Path, failed: &FailedSegment) -> Result<(), 
         .map_err(|e| e.to_string())
 }
 
+fn failed_key(failed: &FailedSegment) -> Result<String, String> {
+    if let Some(name) = &failed.quarantined_journal {
+        let name = safe_journal_name(name)?;
+        if name.starts_with("rec-journal-") && !name.ends_with(".json") {
+            return Ok(name.into());
+        }
+        return Ok(format!("journal-{}", name.trim_end_matches(".json")));
+    }
+    if !super::files::valid_recording_id(&failed.segment_id)
+        || !failed.segment_id.starts_with("rec-")
+    {
+        return Err("invalid_segment_id".into());
+    }
+    Ok(failed.segment_id.clone())
+}
+
+fn safe_journal_name(name: &str) -> Result<&str, String> {
+    if let Some(uuid) = name.strip_prefix("rec-journal-") {
+        if uuid::Uuid::parse_str(uuid).is_ok() {
+            return Ok(name);
+        }
+    }
+    let stem = name.strip_suffix(".json").ok_or("invalid_journal_path")?;
+    let Some((id, unique)) = stem.rsplit_once('.') else {
+        return Err("invalid_journal_path".into());
+    };
+    if !super::files::valid_recording_id(id)
+        || uuid::Uuid::parse_str(unique).is_err()
+        || stem.contains('/')
+        || stem.contains('\\')
+    {
+        return Err("invalid_journal_path".into());
+    }
+    Ok(name)
+}
+
+pub fn retry_quarantined(
+    app: &tauri::AppHandle,
+    failed: &FailedSegment,
+    recover: impl FnOnce(&Journal) -> Result<(), String>,
+) -> Result<(), String> {
+    retry_quarantined_at(&stopped_root(app)?, &failed_root(app)?, failed, recover)
+}
+
+fn retry_quarantined_at(
+    stopped: &std::path::Path,
+    failed_root: &std::path::Path,
+    failed: &FailedSegment,
+    recover: impl FnOnce(&Journal) -> Result<(), String>,
+) -> Result<(), String> {
+    if !super::files::valid_recording_id(&failed.id) {
+        return Err("invalid_recording_id".into());
+    }
+    let name = safe_journal_name(
+        failed
+            .quarantined_journal
+            .as_deref()
+            .ok_or("journal_missing")?,
+    )?;
+    let source = failed_root.join("journals").join(name);
+    let destination = stopped.join(format!("{}.json", failed.id));
+    let current = match read_quarantined_at(&source, &failed.id) {
+        Ok(value) => value,
+        Err(error) if !source.exists() => {
+            read_quarantined_at(&destination, &failed.id).map_err(|_| error)?
+        }
+        Err(error) => return Err(error),
+    };
+    save_stopped_at(&destination, &current)?;
+    match fs::remove_file(&source) {
+        Ok(()) => File::open(source.parent().unwrap())
+            .and_then(|dir| dir.sync_all())
+            .map_err(|e| e.to_string())?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+        Err(e) => return Err(e.to_string()),
+    }
+    let manifest = failed_root.join(format!("{}.json", failed_key(failed)?));
+    match fs::remove_file(manifest) {
+        Ok(()) => File::open(failed_root)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|e| e.to_string())?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+        Err(e) => return Err(e.to_string()),
+    }
+    recover(&current)
+}
+
+fn read_quarantined_at(path: &std::path::Path, id: &str) -> Result<Journal, String> {
+    let value: Journal = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    if value.id != id
+        || !super::files::valid_recording_id(&value.id)
+        || value.segment_id.as_deref().is_some_and(|segment| {
+            !super::files::valid_recording_id(segment) || !segment.starts_with("rec-")
+        })
+    {
+        return Err("invalid_journal_association".into());
+    }
+    Ok(value)
+}
+
 pub fn list_failed(app: &tauri::AppHandle) -> Result<Vec<FailedSegment>, String> {
     list_failed_at(&failed_root(app)?)
 }
@@ -340,10 +494,46 @@ fn list_failed_at(root: &std::path::Path) -> Result<Vec<FailedSegment>, String> 
     for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         if entry.path().extension().is_some_and(|ext| ext == "json") {
-            failed.push(
+            let mut item: FailedSegment =
                 serde_json::from_slice(&fs::read(entry.path()).map_err(|e| e.to_string())?)
-                    .map_err(|e| e.to_string())?,
-            );
+                    .map_err(|e| e.to_string())?;
+            if item.reason == "stopped_journal_invalid"
+                && item.quarantined_journal.is_none()
+                && safe_journal_name(&item.segment_id).is_ok()
+                && root.join("journals").join(&item.segment_id).is_file()
+            {
+                item.quarantined_journal = Some(item.segment_id.clone());
+            }
+            failed.push(item);
+        }
+    }
+    let journals = root.join("journals");
+    if journals.exists() {
+        for entry in fs::read_dir(&journals).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if !entry.file_type().map_err(|e| e.to_string())?.is_file() {
+                continue;
+            }
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if safe_journal_name(name).is_err() {
+                continue;
+            }
+            if failed
+                .iter()
+                .any(|item: &FailedSegment| item.quarantined_journal.as_deref() == Some(name))
+            {
+                continue;
+            }
+            let id = name
+                .trim_end_matches(".json")
+                .rsplit_once('.')
+                .map(|(id, _)| id)
+                .unwrap_or("unknown");
+            let recovered =
+                failed_journal_at(&entry.path(), id, "journal_manifest_missing_after_crash")?;
+            save_failed_at(root, &recovered)?;
+            failed.push(recovered);
         }
     }
     Ok(failed)
@@ -379,12 +569,30 @@ fn delete_failed_for_note_at(
         .into_iter()
         .filter(|failed| failed.id == id)
     {
-        super::files::remove_source_session(sessions, &failed.segment_id)?;
-        let failed_sources = root.join("sources");
-        if failed_sources.exists() {
-            super::files::remove_source_session(&failed_sources, &failed.segment_id)?;
+        if let Some(name) = &failed.quarantined_journal {
+            fs::remove_file(root.join("journals").join(safe_journal_name(name)?))
+                .map_err(|e| e.to_string())?;
+            if let Some(segment) = failed.journal.segment_id.as_deref().or_else(|| {
+                if failed.segment_id.starts_with("rec-")
+                    && !failed.segment_id.starts_with("rec-journal-")
+                {
+                    Some(failed.segment_id.as_str())
+                } else {
+                    None
+                }
+            }) {
+                if super::files::valid_recording_id(segment) && segment.starts_with("rec-") {
+                    super::files::remove_source_session(sessions, segment)?;
+                }
+            }
+        } else {
+            super::files::remove_source_session(sessions, &failed.segment_id)?;
+            let failed_sources = root.join("sources");
+            if failed_sources.exists() {
+                super::files::remove_source_session(&failed_sources, &failed.segment_id)?;
+            }
         }
-        fs::remove_file(root.join(format!("{}.json", failed.segment_id)))
+        fs::remove_file(root.join(format!("{}.json", failed_key(&failed)?)))
             .map_err(|e| e.to_string())?;
     }
     File::open(root)
@@ -397,45 +605,248 @@ fn delete_failed_for_note_at(
 mod tests {
     use super::*;
     #[test]
-    fn startup_quarantines_bad_stopped_journals_and_keeps_older_ones() {
+    fn bad_journal_does_not_hide_valid_journals() {
         let dir = tempfile::tempdir().unwrap();
         let stopped = dir.path().join("recorder-stopped");
         let failed = dir.path().join("recorder-failed");
         fs::create_dir_all(&stopped).unwrap();
         fs::create_dir_all(&failed).unwrap();
         fs::write(stopped.join("bad-note.json"), b"{broken").unwrap();
-        fs::write(
-            stopped.join("good-note.json"),
-            br#"{"id":"good-note","startedAt":1,"recordedMs":100,
-            "pausedMs":0,"maxDurationMs":1000}"#,
-        )
-        .unwrap();
+        for id in ["good-one", "good-two"] {
+            fs::write(stopped.join(format!("{id}.json")), format!(
+                r#"{{"id":"{id}","startedAt":1,"segmentId":"rec-{id}","recordedMs":100,"pausedMs":0,"maxDurationMs":1000}}"#
+            )).unwrap();
+        }
         let journals = list_stopped_at(&stopped, &failed).unwrap();
-        assert_eq!(journals.len(), 1);
-        assert_eq!(journals[0].id, "good-note");
-        assert_eq!(journals[0].segment_id, None);
-        assert!(!stopped.join("bad-note.json").exists());
+        assert_eq!(journals.len(), 2);
+        assert_eq!(journals[0].segment_id.as_deref(), Some("rec-good-one"));
+        assert_eq!(journals[1].segment_id.as_deref(), Some("rec-good-two"));
         let failures = list_failed_at(&failed).unwrap();
         assert_eq!(failures.len(), 1);
         assert_eq!(failures[0].id, "bad-note");
-        assert_eq!(failures[0].reason, "stopped_journal_invalid");
-        assert!(failures[0].journal.started_at > 0);
-        assert!(failures[0].journal.max_duration_ms > 0);
-        assert!(
-            failed
-                .join("journals")
-                .join(&failures[0].segment_id)
-                .exists()
-        );
+        assert!(failed
+            .join("journals")
+            .join(failures[0].quarantined_journal.as_ref().unwrap())
+            .exists());
+        assert!(stopped.join("good-one.json").exists());
+        assert!(stopped.join("good-two.json").exists());
+        let audio = dir.path().join("audio");
+        fs::create_dir_all(&audio).unwrap();
+        for journal in &journals {
+            let source = dir.path().join(format!("{}.mp3", journal.id));
+            fs::write(&source, journal.id.as_bytes()).unwrap();
+            exo_local_transcription::audio_import::import_at(
+                &audio,
+                &journal.id,
+                journal.segment_id.as_deref().unwrap(),
+                &source,
+            )
+            .unwrap();
+            assert_eq!(
+                fs::read(audio.join(format!("{}.mp3", journal.id))).unwrap(),
+                journal.id.as_bytes()
+            );
+        }
+    }
 
-        // A directory that cannot be enumerated is moved aside as one unit.
-        fs::remove_dir_all(&stopped).unwrap();
-        fs::write(&stopped, b"unreadable stopped directory fixture").unwrap();
-        assert!(list_stopped_at(&stopped, &failed).unwrap().is_empty());
-        assert!(stopped.is_dir());
-        let failures = list_failed_at(&failed).unwrap();
-        assert_eq!(failures.len(), 2);
-        assert!(failures.iter().any(|item| item.id == "recorder-stopped"));
+    #[test]
+    fn unreadable_stopped_directory_is_never_quarantined_as_a_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let stopped = dir.path().join("recorder-stopped");
+        let failed = dir.path().join("recorder-failed");
+        fs::write(&stopped, b"directory unavailable").unwrap();
+        fs::create_dir_all(&failed).unwrap();
+        assert!(list_stopped_at(&stopped, &failed).is_err());
+        assert_eq!(fs::read(&stopped).unwrap(), b"directory unavailable");
+        assert!(list_failed_at(&failed).unwrap().is_empty());
+    }
+
+    #[test]
+    fn salvageable_journal_recovers_with_serde_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let stopped = dir.path().join("recorder-stopped");
+        let failed = dir.path().join("recorder-failed");
+        fs::create_dir_all(&stopped).unwrap();
+        fs::create_dir_all(&failed).unwrap();
+        fs::write(stopped.join("note.json"), br#"{"id":"note","startedAt":7,"segmentId":"rec-original","recordedMs":900,"pausedMs":10,"maxDurationMs":1000}"#).unwrap();
+        let journals = list_stopped_at(&stopped, &failed).unwrap();
+        assert_eq!(journals.len(), 1);
+        assert_eq!(journals[0].segment_id.as_deref(), Some("rec-original"));
+        assert!(!journals[0].system_audio);
+        assert!(journals[0].spans.is_empty());
+        assert!(list_failed_at(&failed).unwrap().is_empty());
+        let audio = dir.path().join("audio");
+        let source = dir.path().join("session.mp3");
+        fs::create_dir_all(&audio).unwrap();
+        fs::write(&source, b"salvaged audio").unwrap();
+        exo_local_transcription::audio_import::import_at(
+            &audio,
+            &journals[0].id,
+            journals[0].segment_id.as_deref().unwrap(),
+            &source,
+        )
+        .unwrap();
+        assert_eq!(fs::read(audio.join("note.mp3")).unwrap(), b"salvaged audio");
+    }
+
+    #[test]
+    fn retry_rereads_transiently_unreadable_journal_and_restores_full_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let stopped = dir.path().join("recorder-stopped");
+        let failed = dir.path().join("recorder-failed");
+        fs::create_dir_all(&stopped).unwrap();
+        fs::create_dir_all(&failed).unwrap();
+        let original = Journal {
+            id: "note".into(),
+            started_at: 7,
+            segment_id: Some("rec-original".into()),
+            recorded_ms: 900,
+            paused_ms: 10,
+            max_duration_ms: 1000,
+            system_audio: true,
+            spans: vec![],
+        };
+        fs::write(
+            stopped.join("note.json"),
+            serde_json::to_vec(&original).unwrap(),
+        )
+        .unwrap();
+        let journals = list_stopped_at_with_read(&stopped, &failed, |_| {
+            Err(std::io::Error::other("transient read error"))
+        })
+        .unwrap();
+        assert!(journals.is_empty());
+        let failure = list_failed_at(&failed).unwrap().pop().unwrap();
+        assert_eq!(failure.segment_id, "rec-original");
+        let audio = dir.path().join("audio");
+        let source = dir.path().join("session.mp3");
+        fs::create_dir_all(&audio).unwrap();
+        fs::write(&source, b"full note audio").unwrap();
+        retry_quarantined_at(&stopped, &failed, &failure, |restored| {
+            assert_eq!(restored, &original);
+            exo_local_transcription::audio_import::import_at(
+                &audio,
+                &restored.id,
+                restored.segment_id.as_deref().unwrap(),
+                &source,
+            )
+        })
+        .unwrap();
+        assert_eq!(
+            fs::read(audio.join("note.mp3")).unwrap(),
+            b"full note audio"
+        );
+        assert!(audio.join("note.rec-original.imported").exists());
+        assert_eq!(
+            serde_json::from_slice::<Journal>(&fs::read(stopped.join("note.json")).unwrap())
+                .unwrap(),
+            original
+        );
+        assert!(list_failed_at(&failed).unwrap().is_empty());
+    }
+
+    #[test]
+    fn crash_after_rename_recreates_manifest_idempotently() {
+        let dir = tempfile::tempdir().unwrap();
+        let stopped = dir.path().join("recorder-stopped");
+        let failed = dir.path().join("recorder-failed");
+        let quarantined = failed.join("journals");
+        fs::create_dir_all(&stopped).unwrap();
+        fs::create_dir_all(&quarantined).unwrap();
+        let original = Journal {
+            id: "note".into(),
+            started_at: 7,
+            segment_id: Some("rec-original".into()),
+            recorded_ms: 900,
+            paused_ms: 10,
+            max_duration_ms: 1000,
+            system_audio: true,
+            spans: vec![],
+        };
+        let name = format!("note.{}.json", uuid::Uuid::new_v4());
+        fs::write(
+            stopped.join("note.json"),
+            serde_json::to_vec(&original).unwrap(),
+        )
+        .unwrap();
+        fs::rename(stopped.join("note.json"), quarantined.join(&name)).unwrap();
+        let first = list_failed_at(&failed).unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].segment_id, "rec-original");
+        assert_eq!(list_failed_at(&failed).unwrap().len(), 1);
+        let audio = dir.path().join("audio");
+        let source = dir.path().join("session.mp3");
+        fs::create_dir_all(&audio).unwrap();
+        fs::write(&source, b"crash recovered audio").unwrap();
+        retry_quarantined_at(&stopped, &failed, &first[0], |restored| {
+            assert_eq!(restored, &original);
+            exo_local_transcription::audio_import::import_at(
+                &audio,
+                &restored.id,
+                restored.segment_id.as_deref().unwrap(),
+                &source,
+            )
+        })
+        .unwrap();
+        assert_eq!(
+            fs::read(audio.join("note.mp3")).unwrap(),
+            b"crash recovered audio"
+        );
+        assert!(list_failed_at(&failed).unwrap().is_empty());
+    }
+
+    #[test]
+    fn existing_synthetic_journal_failure_can_retry_original_segment() {
+        let dir = tempfile::tempdir().unwrap();
+        let stopped = dir.path().join("recorder-stopped");
+        let failed = dir.path().join("recorder-failed");
+        fs::create_dir_all(&stopped).unwrap();
+        fs::create_dir_all(failed.join("journals")).unwrap();
+        let legacy_key = format!("rec-journal-{}", uuid::Uuid::new_v4());
+        let original = Journal {
+            id: "note".into(),
+            started_at: 7,
+            segment_id: Some("rec-original".into()),
+            recorded_ms: 900,
+            paused_ms: 0,
+            max_duration_ms: 1000,
+            system_audio: false,
+            spans: vec![],
+        };
+        fs::write(
+            failed.join("journals").join(&legacy_key),
+            serde_json::to_vec(&original).unwrap(),
+        )
+        .unwrap();
+        save_failed_at(
+            &failed,
+            &FailedSegment {
+                id: "note".into(),
+                segment_id: legacy_key.clone(),
+                reason: "stopped_journal_invalid".into(),
+                error: "old read failure".into(),
+                journal: original.clone(),
+                quarantined_journal: None,
+            },
+        )
+        .unwrap();
+        let found = list_failed_at(&failed).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].quarantined_journal.as_deref(),
+            Some(legacy_key.as_str())
+        );
+        retry_quarantined_at(&stopped, &failed, &found[0], |restored| {
+            assert_eq!(restored, &original);
+            Ok(())
+        })
+        .unwrap();
+        assert!(list_failed_at(&failed).unwrap().is_empty());
+        assert_eq!(
+            serde_json::from_slice::<Journal>(&fs::read(stopped.join("note.json")).unwrap())
+                .unwrap(),
+            original
+        );
     }
     #[test]
     fn stopped_journal_works_while_import_lock_is_held_and_recovers_crash_window() {
@@ -515,12 +926,10 @@ mod tests {
         );
         let mut old_journal = value;
         old_journal.as_object_mut().unwrap().remove("spans");
-        assert!(
-            serde_json::from_value::<Journal>(old_journal)
-                .unwrap()
-                .spans
-                .is_empty()
-        );
+        assert!(serde_json::from_value::<Journal>(old_journal)
+            .unwrap()
+            .spans
+            .is_empty());
     }
 
     #[test]
@@ -552,6 +961,7 @@ mod tests {
             reason: "write_failed".into(),
             error: "unreadable fixture".into(),
             journal,
+            quarantined_journal: None,
         };
         save_failed_at(&root, &failed).unwrap();
         let listed = list_failed_at(&root).unwrap();
