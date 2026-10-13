@@ -18,7 +18,7 @@ import {
   firefliesAttemptKvKey,
   getDriveCursor,
   getMeetingDatetimeStats,
-  hasTranscriptBody,
+  listTranscriptBodyIds,
   insertMeeting,
   meetingKvKey,
   listKnownSourceIds,
@@ -1387,12 +1387,16 @@ describe("connectorStore.updateSyncState / getConnection", () => {
       last_attempt_at: "2026-10-13T12:00:00.000Z",
       last_attempt_status: "partial",
       listing_skip: 500,
+      listing_started_at: "2026-10-10T00:00:00.000Z",
+      listing_anchor: "mock-tx-251",
     };
     await recordFirefliesAttempt(f.tcw, {
       v: 1,
       lastAttemptAt: value.last_attempt_at,
       lastAttemptStatus: value.last_attempt_status,
       listingSkip: value.listing_skip,
+      listingStartedAt: value.listing_started_at,
+      listingAnchor: value.listing_anchor,
     });
     expect(f.kv.entries.get(firefliesAttemptKvKey())).toBe(JSON.stringify(value));
     expect(f.kv.putValues.at(-1)).toBe(JSON.stringify(value));
@@ -1407,6 +1411,8 @@ describe("connectorStore.updateSyncState / getConnection", () => {
           lastAttemptAt: value.last_attempt_at,
           lastAttemptStatus: value.last_attempt_status,
           listingSkip: 500,
+          listingStartedAt: value.listing_started_at,
+          listingAnchor: value.listing_anchor,
         },
       });
     }
@@ -1422,6 +1428,29 @@ describe("connectorStore.updateSyncState / getConnection", () => {
         v: 1,
         lastAttemptAt: value.last_attempt_at,
         lastAttemptStatus: value.last_attempt_status,
+      },
+    });
+  });
+  test("an invalid cursor drops cursor fields but preserves valid attempt pacing", async () => {
+    const f = makeFake();
+    const value = {
+      v: 1,
+      last_attempt_at: "2026-10-13T12:00:00.000Z",
+      last_attempt_status: "partial",
+      listing_skip: "bad",
+      listing_started_at: "bad",
+      listing_anchor: "orphan",
+    };
+    f.kv.get = async () => ({ ok: true, data: { data: JSON.stringify(value), headers: {} } });
+    expect(await getFirefliesAttempt(f.tcw)).toEqual({
+      ok: true,
+      data: {
+        v: 1,
+        lastAttemptAt: value.last_attempt_at,
+        lastAttemptStatus: value.last_attempt_status,
+        listingSkip: null,
+        listingStartedAt: null,
+        listingAnchor: null,
       },
     });
   });
@@ -1449,24 +1478,24 @@ describe("connectorStore.putTranscriptBody / transcriptKvKey", () => {
     expect(parsed[0].text).toBe("hi");
   });
 });
-describe("connectorStore.hasTranscriptBody", () => {
-  test("uses KV metadata for complete-body checks and treats a missing key as incomplete", async () => {
+describe("connectorStore.listTranscriptBodyIds", () => {
+  test("uses a single paginated list action and never fetches transcript bodies", async () => {
     const f = makeFake();
-    let bodyReads = 0;
-    f.kv.get = async () => {
-      bodyReads++;
-      throw new Error("body GET must not be used for completeness");
-    };
-    const key = transcriptKvKey("fireflies", "has-body");
-    f.kv.entries.set(key, "large body");
+    const prefix = `${CONNECTORS_KV_PREFIX}/fireflies/transcript/`;
+    f.kv.entries.set(`${prefix}has-body`, "large body");
+    f.kv.entries.set(`${prefix}second`, "another body");
+    f.kv.listPageSize = 1;
+    f.kv.get = async () => { throw new Error("body GET must not be used for completeness"); };
+    f.kv.head = async () => { throw new Error("metadata HEAD is not granted"); };
 
-    const present = await hasTranscriptBody(f.tcw, "fireflies", "has-body");
-    const missing = await hasTranscriptBody(f.tcw, "fireflies", "missing");
+    const listed = await listTranscriptBodyIds(f.tcw, "fireflies");
 
-    expect(present).toEqual({ ok: true, data: true });
-    expect(missing).toEqual({ ok: true, data: false });
-    expect(f.kv.headCalls).toEqual([key, transcriptKvKey("fireflies", "missing")]);
-    expect(bodyReads).toBe(0);
+    expect(listed).toEqual({ ok: true, data: new Set(["has-body", "second"]) });
+    expect(f.kv.listCalls).toEqual([
+      { path: prefix },
+      { path: prefix, cursor: "1" },
+    ]);
+    expect(f.kv.headCalls).toEqual([]);
   });
 });
 

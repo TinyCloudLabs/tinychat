@@ -67,6 +67,307 @@ const HAPPY_KEY = "sk-fire-sync-e2e";
 let seed: SeedTranscript[];
 let handle: Handle;
 
+function makeInMemoryFireflies(seed: SeedTranscript[]) {
+  const failures = new Map<string, Response[]>();
+  const calls: { operation: "list" | "detail"; id?: string; skip?: number }[] = [];
+  const fetchImpl = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = JSON.parse(String(init?.body)) as {
+      query: string;
+      variables?: { id?: string; limit?: number; skip?: number };
+    };
+    if (request.query.includes("ListTranscripts")) {
+      const skip = request.variables?.skip ?? 0;
+      const limit = request.variables?.limit ?? 50;
+      calls.push({ operation: "list", skip });
+      return new Response(JSON.stringify({
+        data: { transcripts: seed.slice(skip, skip + limit).map(({ sentences: _s, summary: _m, speakers: _p, meeting_attendees: _a, ...row }) => row) },
+      }), { headers: { "content-type": "application/json" } });
+    }
+    const id = request.variables?.id ?? "";
+    calls.push({ operation: "detail", id });
+    const queued = failures.get(id);
+    if (queued?.length) return queued.shift()!;
+    const transcript = seed.find((item) => item.id === id) ?? null;
+    return new Response(JSON.stringify({ data: { transcript } }), {
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const client = new FirefliesClient({
+    apiKey: HAPPY_KEY,
+    apiUrl: "https://fireflies.invalid/graphql",
+    delayMs: 0,
+    fetchImpl,
+  });
+  return {
+    client,
+    calls,
+    failNext(id: string, responses: Response[]) { failures.set(id, responses); },
+  };
+}
+
+function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json", ...headers },
+  });
+}
+
+function transcriptBodyKeys(fake: ReturnType<typeof makeFakeTinyCloud>): Set<string> {
+  const prefix = `${connectorStore.CONNECTORS_KV_PREFIX}/fireflies/transcript/`;
+  return new Set([...fake.kv.entries.keys()].filter((key) => key.startsWith(prefix)).map((key) => key.slice(prefix.length)));
+}
+
+function missingIds(expected: string[], stored: Set<string>): string[] {
+  return expected.filter((id) => !stored.has(id));
+}
+
+function requiredSyncState(fake: ReturnType<typeof makeFakeTinyCloud>) {
+  return fake.sql.states.get("fireflies")!;
+}
+
+async function runEngine(
+  client: FirefliesClient,
+  fake: ReturnType<typeof makeFakeTinyCloud>,
+  options: Partial<Parameters<typeof syncFireflies>[0]> = {},
+) {
+  return syncFireflies({
+    client,
+    store: connectorStore,
+    tcw: fake.tcw,
+    allowMissingConnection: true,
+    ...options,
+  });
+}
+
+  test("continuation keeps its old resume point after every interrupted prefix", async () => {
+    const cases = [
+      {
+        name: "HTTP 429",
+        fail(id: string, provider: ReturnType<typeof makeInMemoryFireflies>) {
+          provider.failNext(id, [jsonResponse({ errors: [{ message: "rate limited" }] }, 429)]);
+        },
+      },
+      {
+        name: "Retry-After",
+        fail(id: string, provider: ReturnType<typeof makeInMemoryFireflies>) {
+          provider.failNext(id, Array.from({ length: 5 }, () =>
+            jsonResponse({ errors: [{ message: "rate limited" }] }, 429, { "retry-after": "0" }),
+          ));
+        },
+      },
+      {
+        name: "item error",
+        fail(id: string, provider: ReturnType<typeof makeInMemoryFireflies>) {
+          provider.failNext(id, [jsonResponse({ errors: [{ message: "transient item error" }] })]);
+        },
+      },
+      {
+        name: "body write failure",
+        fail(_id: string, _provider: ReturnType<typeof makeInMemoryFireflies>) {},
+      },
+    ];
+
+    for (const scenario of cases) {
+      _resetConnectorSchemaMemoForTests();
+      const items = buildSeed(60) as SeedTranscript[];
+      const fake = makeFakeTinyCloud({ did: `did:test:prefix-${scenario.name}` });
+      const provider = makeInMemoryFireflies(items);
+      const targetId = items[49]!.id;
+      scenario.fail(targetId, provider);
+      if (scenario.name === "body write failure") {
+        let failed = false;
+        fake.kv.putHook = async (key) => {
+          if (!failed && key === transcriptKvKey("fireflies", targetId)) {
+            failed = true;
+            throw new Error("body unavailable");
+          }
+        };
+      }
+
+      const first = await runEngine(provider.client, fake);
+      expect(first.ok).toBe(true);
+      expect(["partial", "error"]).toContain(requiredSyncState(fake).last_sync_status);
+      for (let attempt = 0; attempt < 4 && requiredSyncState(fake).last_sync_status !== "ok"; attempt++) {
+        fake.kv.putHook = null;
+        expect((await runEngine(provider.client, fake)).ok).toBe(true);
+      }
+      const expected = items.map((item) => item.id);
+      expect(missingIds(expected, new Set([...fake.sql.meetings.values()].map((row) => row.source_id)))).toEqual([]);
+      expect(missingIds(expected, transcriptBodyKeys(fake))).toEqual([]);
+      expect(requiredSyncState(fake).last_sync_status).toBe("ok");
+    }
+  });
+
+  test("Stop during a detail batch retains the previous resume point and repairs all meetings", async () => {
+    _resetConnectorSchemaMemoForTests();
+    const items = buildSeed(60) as SeedTranscript[];
+    const fake = makeFakeTinyCloud({ did: "did:test:prefix-stop" });
+    const provider = makeInMemoryFireflies(items);
+    const controller = new AbortController();
+    let stopped = false;
+    const first = await runEngine(provider.client, fake, {
+      signal: controller.signal,
+      onProgress(progress) {
+        if (!stopped && progress.phase === "storing" && progress.done === 1) {
+          stopped = true;
+          controller.abort();
+        }
+      },
+    });
+    expect(first.ok).toBe(true);
+    for (let attempt = 0; attempt < 4 && requiredSyncState(fake).last_sync_status !== "ok"; attempt++) {
+      expect((await runEngine(provider.client, fake)).ok).toBe(true);
+    }
+    const ids = items.map((item) => item.id);
+    expect(missingIds(ids, new Set([...fake.sql.meetings.values()].map((row) => row.source_id)))).toEqual([]);
+    expect(missingIds(ids, transcriptBodyKeys(fake))).toEqual([]);
+    expect(requiredSyncState(fake).last_sync_status).toBe("ok");
+  });
+
+  test("anchor restart plus chain-start watermark covers a multi-day initial backfill with prepends", async () => {
+    _resetConnectorSchemaMemoForTests();
+    const items = buildSeed(600) as SeedTranscript[];
+    const fake = makeFakeTinyCloud({ did: "did:test:prefix-prepend" });
+    const provider = makeInMemoryFireflies(items);
+    const chainStart = Date.parse("2026-10-13T00:00:00.000Z");
+    let now = chainStart;
+    let result = await runEngine(provider.client, fake, { now: () => new Date(now).toISOString() });
+    expect(result.ok).toBe(true);
+    for (let run = 0; run < 20 && requiredSyncState(fake).last_sync_status !== "ok"; run++) {
+      now += 8 * 60 * 60 * 1000;
+      const arrivals = buildSeed(2) as SeedTranscript[];
+      arrivals.forEach((item, index) => {
+        item.id = `late-${run}-${index}`;
+        item.date = Math.floor((now + index) / 1000);
+      });
+      items.unshift(...arrivals);
+      result = await runEngine(provider.client, fake, { now: () => new Date(now).toISOString() });
+      expect(result.ok).toBe(true);
+    }
+    const ids = items.map((item) => item.id);
+    expect(requiredSyncState(fake).last_sync_status).toBe("ok");
+    expect(requiredSyncState(fake).last_synced_at).toBe(new Date(chainStart).toISOString());
+    expect(missingIds(ids, new Set([...fake.sql.meetings.values()].map((row) => row.source_id)))).toEqual([]);
+    expect(missingIds(ids, transcriptBodyKeys(fake))).toEqual([]);
+  });
+
+  test("provider top deletions invalidate the offset anchor and restart without losing known rows", async () => {
+    _resetConnectorSchemaMemoForTests();
+    const items = buildSeed(70) as SeedTranscript[];
+    const fake = makeFakeTinyCloud({ did: "did:test:prefix-delete" });
+    const provider = makeInMemoryFireflies(items);
+    expect((await runEngine(provider.client, fake)).ok).toBe(true);
+    items.splice(0, 10);
+    for (let attempt = 0; attempt < 4 && requiredSyncState(fake).last_sync_status !== "ok"; attempt++) {
+      expect((await runEngine(provider.client, fake)).ok).toBe(true);
+    }
+    const ids = items.map((item) => item.id);
+    expect(requiredSyncState(fake).last_sync_status).toBe("ok");
+    expect(missingIds(ids, new Set([...fake.sql.meetings.values()].map((row) => row.source_id)))).toEqual([]);
+    expect(missingIds(ids, transcriptBodyKeys(fake))).toEqual([]);
+  });
+
+  test("a failed attempt-record put cannot commit an unsafe cursor", async () => {
+    _resetConnectorSchemaMemoForTests();
+    const items = buildSeed(60) as SeedTranscript[];
+    const fake = makeFakeTinyCloud({ did: "did:test:prefix-attempt-put" });
+    const provider = makeInMemoryFireflies(items);
+    let failed = false;
+    fake.kv.putHook = async (key, value) => {
+      if (!failed && key === firefliesAttemptKvKey() && typeof value === "string" && JSON.parse(value).last_attempt_status === "partial") {
+        failed = true;
+        throw new Error("attempt record unavailable");
+      }
+    };
+    expect((await runEngine(provider.client, fake)).ok).toBe(true);
+    expect(failed).toBe(true);
+    fake.kv.putHook = null;
+    items.unshift(...(buildSeed(2) as SeedTranscript[]).map((item, index) => ({
+      ...item,
+      id: `attempt-arrival-${index}`,
+      date: Date.now() + index,
+    })));
+    for (let attempt = 0; attempt < 4 && requiredSyncState(fake).last_sync_status !== "ok"; attempt++) {
+      expect((await runEngine(provider.client, fake)).ok).toBe(true);
+    }
+    const ids = items.map((item) => item.id);
+    expect(requiredSyncState(fake).last_sync_status).toBe("ok");
+    expect(missingIds(ids, new Set([...fake.sql.meetings.values()].map((row) => row.source_id)))).toEqual([]);
+    expect(missingIds(ids, transcriptBodyKeys(fake))).toEqual([]);
+  });
+test("Connect ignores an old-build cursor left beside a null or disconnected row", async () => {
+  for (const status of ["missing", "disconnected"] as const) {
+    _resetConnectorSchemaMemoForTests();
+    const items = buildSeed(4) as SeedTranscript[];
+    const fake = makeFakeTinyCloud({ did: `did:test:old-cursor-${status}` });
+    if (status === "disconnected") {
+      expect((await connectorStore.updateSyncState(fake.tcw, {
+        connectorId: "fireflies",
+        status,
+        lastSyncedAt: null,
+        lastSyncStatus: "error",
+        lastSyncError: "previous purge",
+        itemCount: 0,
+      })).ok).toBe(true);
+    }
+    fake.kv.entries.set(firefliesAttemptKvKey(), JSON.stringify({
+      v: 1,
+      last_attempt_at: "2026-10-12T00:00:00.000Z",
+      last_attempt_status: "partial",
+      listing_skip: 100,
+      listing_started_at: "2026-10-10T00:00:00.000Z",
+      listing_anchor: "purged-by-old-build",
+    }));
+    const provider = makeInMemoryFireflies(items);
+    expect((await runEngine(provider.client, fake)).ok).toBe(true);
+    expect(requiredSyncState(fake).last_sync_status).toBe("ok");
+    expect(provider.calls.filter((call) => call.operation === "list")[0]?.skip).toBe(0);
+    expect(fake.sql.meetings.size).toBe(items.length);
+    expect(transcriptBodyKeys(fake).size).toBe(items.length);
+  }
+});
+
+test("keep-data Disconnect clears a saved continuation before Connect resumes", async () => {
+  _resetConnectorSchemaMemoForTests();
+  const items = buildSeed(60) as SeedTranscript[];
+  const fake = makeFakeTinyCloud({ did: "did:test:keep-disconnect-cursor" });
+  const provider = makeInMemoryFireflies(items);
+  expect((await runEngine(provider.client, fake)).ok).toBe(true);
+  expect(fake.kv.entries.has(firefliesAttemptKvKey())).toBe(true);
+  const result = await runDisconnect({
+    connectorId: "fireflies",
+    source: "fireflies",
+    mode: "keep-data",
+    featureDark: true,
+    webhooks: {
+      disable: async () => ({ status: "feature-dark" }),
+      recordPurge: async () => ({ status: "feature-dark" }),
+    },
+    secrets: {
+      isUnlocked: () => true,
+      unlock: async () => ({ ok: true }),
+      deleteKey: async () => ({ ok: true }),
+    },
+    store: {
+      listKnownSourceIds: () => connectorStore.listKnownSourceIds(fake.tcw, "fireflies"),
+      purgeConnector: () => connectorStore.purgeConnector(fake.tcw, "fireflies"),
+      getConnection: () => connectorStore.getConnection(fake.tcw, "fireflies"),
+      countMeetings: () => connectorStore.countMeetings(fake.tcw, "fireflies"),
+      updateSyncState: (input) => connectorStore.updateSyncState(fake.tcw, input),
+      clearFirefliesAttempt: () => connectorStore.clearFirefliesAttempt(fake.tcw),
+    },
+  }, () => {});
+  expect(result.done).toBe(true);
+  expect(fake.kv.entries.has(firefliesAttemptKvKey())).toBe(false);
+  expect(requiredSyncState(fake).status).toBe("disconnected");
+  for (let attempt = 0; attempt < 4 && requiredSyncState(fake).last_sync_status !== "ok"; attempt++) {
+    expect((await runEngine(provider.client, fake)).ok).toBe(true);
+  }
+  const ids = items.map((item) => item.id);
+  expect(requiredSyncState(fake).last_sync_status).toBe("ok");
+  expect(missingIds(ids, new Set([...fake.sql.meetings.values()].map((row) => row.source_id)))).toEqual([]);
+  expect(missingIds(ids, transcriptBodyKeys(fake))).toEqual([]);
+});
 beforeAll(async () => {
   seed = buildSeed() as SeedTranscript[];
   handle = (await startMockFireflies({ mode: "happy", seed })) as unknown as Handle;
@@ -185,7 +486,18 @@ describe("sync e2e (spec §10 driver 2)", () => {
       "[]",
     );
     expect(prefixed.ok).toBe(true);
-    expect(fake.kv.entries.size).toBe(1);
+    const key = connectorStore.transcriptKvKey("fireflies", "x");
+    const metadata = await fake.tcw.kv.head(key);
+    expect(metadata.ok).toBe(false);
+    if (!metadata.ok) expect(metadata.error.code).toBe("AUTH_UNAUTHORIZED");
+    const listed = await fake.tcw.kv.list({
+      path: `${connectorStore.CONNECTORS_KV_PREFIX}/fireflies/transcript/`,
+    });
+    expect(listed.ok).toBe(true);
+    expect(fake.kv.unauthorized).toEqual([
+      "put:connectors/fireflies/transcript/x",
+      `metadata:${key}`,
+    ]);
   });
 
   test("second sync is a no-op after a bounded date-boundary listing", async () => {

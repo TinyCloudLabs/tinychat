@@ -45,10 +45,13 @@ function resolveManifestPath(path: string): string {
     : `${MANIFEST_PREFIX}/${path}`;
 }
 
-function grantedPaths(service: string): string[] {
+function grantedPermissions(service: string): Array<{ path: string; actions: string[] }> {
   return (MANIFEST.permissions ?? [])
     .filter((p) => p.service === service)
-    .map((p) => resolveManifestPath(p.path));
+    .map((p) => ({
+      path: resolveManifestPath(p.path),
+      actions: Array.isArray(p.actions) ? p.actions : [],
+    }));
 }
 
 /** Path containment per spec: trailing "/" grants a prefix match, else exact. */
@@ -65,14 +68,15 @@ function pathContains(granted: string, requested: string): boolean {
 function authorize(
   service: string,
   requested: string,
+  action: string,
 ): { code: string; message: string } | null {
-  const granted = grantedPaths(service);
-  if (granted.some((g) => pathContains(g, requested))) return null;
+  const granted = grantedPermissions(service);
+  if (granted.some((g) => g.actions.includes(action) && pathContains(g.path, requested))) return null;
   return {
     code: "AUTH_UNAUTHORIZED",
     message:
-      `Unauthorized Action: ${requested} / ${service}` +
-      ` — no grant matches (manifest grants: ${granted.join(", ") || "none"})`,
+      `Unauthorized Action: ${action} ${requested} / ${service}` +
+      ` — no grant matches (manifest grants: ${granted.map((g) => `${g.actions.join(",")}:${g.path}`).join(", ") || "none"})`,
   };
 }
 
@@ -424,16 +428,16 @@ export class FakeKv {
   putHook: ((key: string, value: unknown) => Promise<void>) | null = null;
 
   /** Authorization runs before any storage effect, exactly like the node. */
-  private deny(key: string): KvErr | null {
-    const error = authorize("tinycloud.kv", key);
-    if (error) this.unauthorized.push(key);
+  private deny(key: string, action: string): KvErr | null {
+    const error = authorize("tinycloud.kv", key, action);
+    if (error) this.unauthorized.push(`${action}:${key}`);
     return error;
   }
 
   async get(
     key: string,
   ): Promise<OkErr<{ data: unknown; headers: Record<string, string> }, KvErr>> {
-    const denied = this.deny(key);
+    const denied = this.deny(key, "get");
     if (denied) return { ok: false, error: denied };
     if (!this.entries.has(key)) {
       return {
@@ -445,7 +449,7 @@ export class FakeKv {
   }
 
   async head(key: string): Promise<OkErr<{ data: void; headers: Record<string, string> }, KvErr>> {
-    const denied = this.deny(key);
+    const denied = this.deny(key, "metadata");
     if (denied) return { ok: false, error: denied };
     if (!this.entries.has(key)) {
       return { ok: false, error: { code: "KV_NOT_FOUND", message: `no key ${key}` } };
@@ -457,7 +461,7 @@ export class FakeKv {
     key: string,
     value: unknown,
   ): Promise<OkErr<{ data: void; headers: Record<string, string> }, KvErr>> {
-    const denied = this.deny(key);
+    const denied = this.deny(key, "put");
     if (denied) return { ok: false, error: denied };
     await this.putHook?.(key, value);
     const stored = typeof value === "string" ? value : JSON.stringify(value);
@@ -476,7 +480,7 @@ export class FakeKv {
   async list(
     options: { path: string; cursor?: string },
   ): Promise<OkErr<{ keys: string[]; cursor?: string }, KvErr>> {
-    const denied = this.deny(options.path);
+    const denied = this.deny(options.path, "list");
     if (denied) return { ok: false, error: denied };
     return {
       ok: true,
@@ -489,7 +493,7 @@ export class FakeKv {
   }
 
   async delete(key: string): Promise<OkErr<void, KvErr>> {
-    const denied = this.deny(key);
+    const denied = this.deny(key, "del");
     if (denied) return { ok: false, error: denied };
     if (!this.entries.has(key)) {
       return {
@@ -602,7 +606,7 @@ export function makeFakeTinyCloud(opts: MakeFakeOptions = {}): FakeTinyCloud {
     sql: {
       db: (name: string) => {
         dbNamesRequested.push(name);
-        const denied = authorize("tinycloud.sql", name);
+        const denied = authorize("tinycloud.sql", name, "read");
         if (denied) {
           unauthorizedDbNames.push(name);
           return unauthorizedDb(denied);
