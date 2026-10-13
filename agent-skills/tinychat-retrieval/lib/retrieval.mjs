@@ -33,6 +33,11 @@ export function compareSemver(left, right) {
 }
 export const DATABASE = 'xyz.tinycloud.tinychat/connectors';
 const SOURCES = ['fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload'];
+const PENDING_SNAPSHOT_KEY = `${DATABASE}/pending-reconcile-snapshot`;
+const PENDING_SNAPSHOT_MAX_BYTES = 1024 * 1024;
+const PENDING_SNAPSHOT_FIELDS = new Set(['version', 'changed_at', 'checked_at', 'count', 'meetings']);
+const PENDING_MEETING_FIELDS = new Set(['id', 'source', 'ts', 'storedAt', 'updatedAt', 'createdAt', 'startedAt', 'endedAt', 'completedAt', 'status', 'reconciled']);
+const PENDING_TIMESTAMP_FIELDS = ['ts', 'storedAt', 'updatedAt', 'createdAt', 'startedAt', 'endedAt', 'completedAt'];
 const COLUMNS = ['id', 'source', 'source_id', 'title', 'started_at', 'organizer_email', 'participants', 'summary_overview', 'summary_action_items', 'metadata', 'updated_at', 'sort_time'];
 const LEGACY_WINNER_FILTER_SQL = "g.source IN ('exo-voice-note', 'exo-voice-note-dup') AND json_valid(g.metadata) AND json_extract(g.metadata, '$.transcription_outcome') IS NOT NULL";
 const LEGACY_WINNER_ORDER_SQL = "ORDER BY COALESCE(json_extract(g.metadata, '$.transcribed_at'), '') DESC, g.id ASC LIMIT 1";
@@ -206,7 +211,59 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
   }
   const base = () => ['--profile', context.profile, '--host', context.host, '--json'];
   const run = (args, options = {}) => runTc([...base(), ...args], { signal, ...options });
-  const coverage = extra => ({ catalog: 'connector_meeting SQL rows with legacy KV bodies', excludedCatalogs: ['user-kv-only', 'backend-only'], corpusComplete: false, scope: 'observed', supportedSources: SOURCES, unsupportedSources: [], omissions: [], ...extra });
+  const unknownPending = checkedAt => ({ count: null, unknown: null, checked_at: checkedAt, freshness: 'unknown' });
+  let backendPending = {
+    'backend-ingest': unknownPending(null),
+    transcriber: unknownPending(null),
+  };
+  async function readPendingSource(source) {
+    let directory;
+    try {
+      directory = await mkdtemp(join(tmpdir(), 'tinychat-pending-'));
+      await chmod(directory, 0o700);
+      const outputFile = join(directory, 'snapshot');
+      await writeFile(outputFile, '', { flag: 'wx', mode: 0o600 });
+      await run(['kv', 'get', `${PENDING_SNAPSHOT_KEY}/${source}`, '--space', context.space, '--output', outputFile], {
+        outputFile,
+        maxOutputBytes: PENDING_SNAPSHOT_MAX_BYTES,
+      });
+      const bytes = await privateFile(outputFile, PENDING_SNAPSHOT_MAX_BYTES);
+      const raw = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      let value;
+      try { value = JSON.parse(raw); } catch { return unknownPending(null); }
+      if (!object(value) || value.version !== 1) return unknownPending(null);
+      const checkedAt = typeof value.checked_at === 'string' && timestamp(value.checked_at) ? value.checked_at : null;
+      if (Object.keys(value).some(field => !PENDING_SNAPSHOT_FIELDS.has(field))
+        || !timestamp(value.changed_at) || checkedAt === null
+        || !Array.isArray(value.meetings) || !integer(value.count, 0, Number.MAX_SAFE_INTEGER)
+        || value.count !== value.meetings.length) return unknownPending(checkedAt);
+      const unknownCount = value.meetings.reduce((count, meeting) => {
+        if (!object(meeting) || Object.keys(meeting).some(field => !PENDING_MEETING_FIELDS.has(field))
+          || !safeId(meeting.id) || !safeId(meeting.source) || meeting.reconciled !== false
+          || !['unreconciled', 'completed', 'unknown'].includes(meeting.status)
+          || PENDING_TIMESTAMP_FIELDS.some(field => meeting[field] !== undefined && typeof meeting[field] !== 'string')) {
+          throw new Error('INVALID_PENDING_SNAPSHOT');
+        }
+        return count + Number(meeting.status === 'unknown');
+      }, 0);
+      const age = Date.now() - Date.parse(checkedAt);
+      if (age < 0) return unknownPending(checkedAt);
+      const stale = source === 'backend-ingest' ? age > 24 * 60 * 60 * 1000 : age > 60 * 60 * 1000 + 30 * 1000;
+      return { count: stale ? null : value.count, unknown: stale ? null : unknownCount, checked_at: checkedAt, freshness: stale ? 'stale' : 'fresh' };
+    } catch {
+      return unknownPending(null);
+    } finally {
+      if (directory) await rm(directory, { recursive: true, force: true });
+    }
+  }
+  async function readBackendPending() {
+    const [backendIngest, transcriber] = await Promise.all([
+      readPendingSource('backend-ingest'),
+      readPendingSource('transcriber'),
+    ]);
+    return { 'backend-ingest': backendIngest, transcriber };
+  }
+  const coverage = extra => ({ catalog: 'connector_meeting SQL rows with legacy KV bodies', excludedCatalogs: ['user-kv-only'], backendPending, corpusComplete: false, scope: 'observed', supportedSources: SOURCES, unsupportedSources: [], omissions: [], ...extra });
   const envelope = (command, extra = {}) => ({ envelopeVersion: 1, packVersion: PACK_VERSION, ok: true, command, context, cliVersion, transfers, coverage: coverage({}), continuation: null, ...extra });
   const token = (type, data) => Buffer.from(JSON.stringify({ v: 1, type, context: contextHash, ...data })).toString('base64url');
   function untoken(value, type) {
@@ -610,9 +667,13 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
   }
   return {
     async invoke(command, input = {}) {
-      transfers = { remoteBodyAcquisitions: 0, remoteBodyBytes: 0, countMeaning: 'KV get attempts; bytes observed in output files' };
+      transfers = { remoteBodyAcquisitions: 0, remoteBodyBytes: 0, countMeaning: 'Transcript-body KV get attempts; bytes observed in body output files' };
       readAccess = { authenticated: false, sqlRead: false, bodyRead: false, currentAuthorityVerified: false, currentBodyRevisionVerified: false };
       createdAcquisition = false;
+      backendPending = {
+        'backend-ingest': unknownPending(null),
+        transcriber: unknownPending(null),
+      };
       try {
         validateContext(); if (!['diagnostics', 'find', 'latest', 'read', 'search'].includes(command)) fail('INVALID_INPUT');
         if (acquisitionDir && command === 'read' && !input.cursor) {
@@ -621,8 +682,10 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
           await reserveAcquisition();
         }
         if (!(acquisitionDir && command === 'read' && input.cursor)) {
-          await checkVersion(); await authorize();
+          await checkVersion();
+          await authorize();
           readAccess.authenticated = true;
+          backendPending = await readBackendPending();
         }
         if (command === 'diagnostics') { keys(input, []); return await diagnostics(); }
         return await ({ find, latest, read, search })[command](input);

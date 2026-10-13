@@ -24,14 +24,14 @@ find/search continuation: --cursor OPAQUE_CONTINUATION with context only; do not
 --version reports pack/runtime compatibility; --help prints this help.
 
 Results are JSON envelope v1, <=24000 UTF8 bytes, with explicit continuation.
-SQL catalog only: excludes user-KV-only and backend-only catalogs.
+SQL catalog excludes user-KV-only records; coverage.backendPending summarizes user-space backend-ingest and transcriber metadata snapshots.
 Body limit8MiB; without acquisition options, every page rechecks remote access/body.
 With acquisition options, page 1 verifies auth, exact SQL and a full KV read, then
 retains a private verified body. Continuations validate local integrity and binding,
 serving historical evidence: current authority, SQL identity and KV revision are
 unobserved. Restart with a new exclusive acquisition directory; partial/colliding
 acquisitions are never reused. Diagnostics remains a separate full-body probe.
-transfers counts KV-get attempts and output-file bytes observed in this invocation.
+transfers counts transcript-body KV-get attempts and output-file bytes in this invocation; pending-snapshot reads are separate.
 latest uses newest-first date order and ID-ascending ties; catalog completeness
 is separate from latest selection. Undated/empty scopes return no selection;
 unreadable selected bodies fail without substituting an older meeting.

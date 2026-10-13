@@ -56,9 +56,16 @@ else if (args.includes('query')) {
   process.stdout.write(JSON.stringify({columns,rows,rowCount:rows.length}));
  }
 } else if (args.includes('get')) {
- fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify({kind:'kv-get',bytes:mode==='fail'?0:fs.statSync(${JSON.stringify(body)}).size})+'\\n');
- if (mode==='fail') {process.stderr.write(JSON.stringify({error:{code:'AUTH_EXPIRED',message:'SECRET_FIXTURE_DETAIL'}})); process.exit(3);}
- fs.writeFileSync(args[args.indexOf('--output')+1],fs.readFileSync(${JSON.stringify(body)})); process.stdout.write('{}');
+ const key=args[args.indexOf('get')+1], output=args[args.indexOf('--output')+1];
+ if (key.includes('/pending-reconcile-snapshot/')) {
+  const source=key.split('/').at(-1), checked_at=new Date().toISOString();
+  const row={id:'coverage-'+source,source:source==='transcriber'?'transcriber':'fireflies',status:source==='transcriber'?'completed':'unreconciled',reconciled:false};
+  fs.writeFileSync(output,JSON.stringify({version:1,changed_at:checked_at,checked_at,count:1,meetings:[row]})); process.stdout.write('{}');
+ } else {
+  fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify({kind:'kv-get',bytes:mode==='fail'?0:fs.statSync(${JSON.stringify(body)}).size})+'\\n');
+  if (mode==='fail') {process.stderr.write(JSON.stringify({error:{code:'AUTH_EXPIRED',message:'SECRET_FIXTURE_DETAIL'}})); process.exit(3);}
+  fs.writeFileSync(output,fs.readFileSync(${JSON.stringify(body)})); process.stdout.write('{}');
+ }
 } else process.exit(2);
 `, { mode: 0o700 });
   const installed = await import(pathToFileURL(join(pack, 'lib/consumer.mjs')));
@@ -304,7 +311,12 @@ test('narrow answers retain honest partial coverage and exact speaker evidence',
   assert.equal(first.spans[0].speaker,'A');
   assert.equal(first.spans[0].ref,`lean/r0:0-${first.spans[0].end}`);
   assert.equal(first.coverage.corpusComplete,false);assert.equal(first.provenance.captureComplete,null);
-  assert.deepEqual(first.provenance.excludedCatalogs,['user-kv-only','backend-only']);
+  assert.deepEqual(first.provenance.excludedCatalogs,['user-kv-only']);
+  assert.equal(first.coverage.backendPending['backend-ingest'].count,1);
+  assert.equal(first.coverage.backendPending.transcriber.unknown,0);
+  assert.equal(first.coverage.backendPending.transcriber.freshness,'fresh');
+  assert.equal(typeof first.coverage.backendPending.transcriber.checked_at,'string');
+  assert.doesNotMatch(JSON.stringify(first.coverage.backendPending),/coverage-backend|title|meeting_url|transcript|content/iu);
   assert.equal(f.runs.length,2);
 });
 
