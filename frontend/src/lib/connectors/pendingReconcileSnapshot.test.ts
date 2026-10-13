@@ -127,21 +127,44 @@ describe("backend-only metadata snapshot", () => {
     expect(refreshed.changed_at).toBe(observedAt);
     expect(refreshed.checked_at).toBe("2026-10-13T09:00:30.000Z");
   });
-  test("refreshes the transcriber checked_at hourly without changing changed_at", async () => {
+  test("refreshes the transcriber checked_at every 50 minutes without changing changed_at", async () => {
     const f = kvFixture();
     const rows = transcriberPendingRows([
       { id: "ptx-1", status: "completed", created_at: "2026-10-03T00:00:00Z" },
     ] as TranscriberListRow[], []);
     await writePendingReconcileSnapshot(f.kv, "transcriber", rows, "2026-10-13T09:00:00.000Z");
-    const withinHour = await writePendingReconcileSnapshot(f.kv, "transcriber", rows, "2026-10-13T09:30:00.000Z");
-    expect(withinHour).toEqual({ ok: true, changed: false });
+    const beforeHeartbeat = await writePendingReconcileSnapshot(f.kv, "transcriber", rows, "2026-10-13T09:49:59.999Z");
+    expect(beforeHeartbeat).toEqual({ ok: true, changed: false });
     expect(f.writes).toHaveLength(1);
-    const afterHour = await writePendingReconcileSnapshot(f.kv, "transcriber", rows, "2026-10-13T10:00:00.001Z");
-    expect(afterHour).toEqual({ ok: true, changed: true });
+    const afterHeartbeat = await writePendingReconcileSnapshot(f.kv, "transcriber", rows, "2026-10-13T09:50:00.001Z");
+    expect(afterHeartbeat).toEqual({ ok: true, changed: true });
     expect(f.writes).toHaveLength(2);
     const source = JSON.parse(f.writes[1]?.value ?? "{}");
     expect(source.changed_at).toBe("2026-10-13T09:00:00.000Z");
-    expect(source.checked_at).toBe("2026-10-13T10:00:00.001Z");
+    expect(source.checked_at).toBe("2026-10-13T09:50:00.001Z");
+  });
+  test("keeps transcriber checked_at within pack freshness during maximum-duration sync passes", async () => {
+    const f = kvFixture();
+    const empty: PendingReconcileMeeting[] = [];
+    const origin = Date.parse("2026-10-13T09:00:00.000Z");
+    const intervalMs = 30_000;
+    const passDurationMs = 60_000;
+    const packStaleAfterMs = 3_630_000;
+    let nowMs = origin;
+    const realNow = Date.now;
+    Date.now = () => nowMs;
+    try {
+      nowMs = origin + passDurationMs;
+      await writePendingReconcileSnapshot(f.kv, "transcriber", empty, new Date(origin).toISOString());
+      for (let passStart = origin + 15_000; passStart <= origin + 2 * 60 * 60 * 1000; passStart += intervalMs) {
+        nowMs = passStart + passDurationMs;
+        await writePendingReconcileSnapshot(f.kv, "transcriber", empty, new Date(passStart).toISOString());
+        const snapshot = JSON.parse(f.entries.get(`${PENDING_RECONCILE_SNAPSHOT_KEY}/transcriber`) ?? "{}");
+        expect(nowMs - Date.parse(snapshot.checked_at)).toBeLessThanOrEqual(packStaleAfterMs);
+      }
+    } finally {
+      Date.now = realNow;
+    }
   });
   test("backend-ingest persists an unchanged 08:30 observation to fence an older 08:15 pass", async () => {
     const f = kvFixture();
