@@ -13,6 +13,27 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 class RecordingLibraryTest {
+    @Test fun cacheEvictionRequiresSpaceCopyAndKeepsSidecar() {
+        val lib = library(); val pending = id(); begin(lib, pending); commit(lib, pending)
+        try { lib.evictCachedAudio(pending); fail("pending audio was evicted") }
+        catch (e: IllegalStateException) { assertEquals("audio_not_space_backed", e.message) }
+        assertTrue(lib.audio(pending).isFile)
+
+        val localOnly = id(); begin(lib, localOnly); commit(lib, localOnly)
+        lib.mutate(localOnly, "test.saved") {
+            it.getJSONObject("ledger").put("audio", JSONObject().put("state", "saved"))
+            it.getJSONObject("options").put("uploadAudio", false)
+        }
+        try { lib.evictCachedAudio(localOnly); fail("local-only audio was evicted") }
+        catch (e: IllegalStateException) { assertEquals("audio_not_space_backed", e.message) }
+        assertTrue(lib.audio(localOnly).isFile)
+
+        val cached = id(); begin(lib, cached); commit(lib, cached)
+        lib.mutate(cached, "test.saved") { it.getJSONObject("ledger").put("audio", JSONObject().put("state", "saved")) }
+        lib.evictCachedAudio(cached)
+        assertFalse(lib.audio(cached).exists())
+        assertNotNull(lib.read(cached))
+    }
     @get:Rule val temp = TemporaryFolder()
     private fun id() = UUID.randomUUID().toString()
     private fun library() = RecordingLibrary(temp.newFolder())

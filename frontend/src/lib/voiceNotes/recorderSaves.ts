@@ -28,6 +28,11 @@ import { deleteNote } from "@/lib/voiceNotes/recordingNotes";
 import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
 import { readableError } from "@/lib/readableError";
 import { logPipelineError } from "@/lib/debugLog";
+import { trimCachedAudio } from "@/lib/voiceNotes/audioPlaybackCache";
+
+function enforceAudioCacheAfterSave(id: string): void {
+  void trimCachedAudio().catch((error: unknown) => logPipelineError("audio cache trim", error, id));
+}
 
 export const TINYCLOUD_NETWORK_FAILURE_MESSAGE =
   "Couldn't reach your TinyCloud space. This note is still on your phone — try again.";
@@ -376,6 +381,7 @@ export async function saveRecording(
           }
         }
         savedThisSession.add(recording.id);
+        enforceAudioCacheAfterSave(recording.id);
       } catch (caught) {
         cleanupError = `Saved to your space, but this phone could not update its note status: ${messageOf(caught)}`;
       }
@@ -455,14 +461,15 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
       check();
       try {
         await withVoiceNoteSaveDeadline(`native updateLedger id=${recording.id}`, () => VoiceNotes.updateLedger({ id: recording.id, did: ctx.did, rev: fresh.rev ?? 0, patch }));
+        enforceAudioCacheAfterSave(recording.id);
         return { kind: "saved", audio: null, cleanupError: null, noteSyncError: saved.data.noteSyncError };
       } catch (caught) {
         if (errorCode(caught) !== "rev_conflict") throw caught;
         check();
         const current = (await withVoiceNoteSaveDeadline(`native listPending id=${recording.id}`, () => VoiceNotes.listPending())).recordings.find((note) => note.id === recording.id);
         if (!current || current.owner !== ctx.did || isLegacyNote(current)) throw caught;
-        if (current.ledger?.audio.state === "saved") return { kind: "saved", audio: null, cleanupError: null,
-          noteSyncError: saved.data.noteSyncError };
+        if (current.ledger?.audio.state === "saved") { enforceAudioCacheAfterSave(recording.id); return { kind: "saved", audio: null, cleanupError: null,
+          noteSyncError: saved.data.noteSyncError }; }
         fresh = current;
       }
     }

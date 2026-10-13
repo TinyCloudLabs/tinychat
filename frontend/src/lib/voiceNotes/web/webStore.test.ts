@@ -117,6 +117,19 @@ describe("IDB audio blob store", () => {
 });
 
 describe("readAudioChunk", () => {
+  test("cache eviction keeps the saved note and rejects pending audio", async () => {
+    const { open } = harness();
+    const store = await open();
+    const pending = await noteWith(store, "pending", [bytesOf(10)], "did:a");
+    await expect(store.evictCachedAudio({ id: pending.id })).rejects.toEqual(code("audio_not_space_backed"));
+    expect((await store.readNoteAudio(pending.id)).bytes.length).toBe(10);
+    const cached = await noteWith(store, "cached", [bytesOf(12)], "did:a");
+    await store.updateLedger({ id: cached.id, did: "did:a", rev: cached.rev!,
+      patch: { audio: { state: "saved", rowId: "row", at: 10 } } });
+    await store.evictCachedAudio({ id: cached.id });
+    await expect(store.readNoteAudio(cached.id)).rejects.toEqual(code("not_found"));
+    expect((await store.listPending()).recordings.some((note) => note.id === cached.id)).toBe(true);
+  });
   test("returns the exact bytes in order, flags eof, and never moves more than 4 MiB per call", async () => {
     const { open } = harness();
     const store = await open();

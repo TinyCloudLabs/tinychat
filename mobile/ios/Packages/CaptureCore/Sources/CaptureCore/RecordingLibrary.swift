@@ -666,6 +666,24 @@ public final class RecordingLibrary {
         try queue.sync { try deleteUnlocked(id) }
     }
 
+    /// A space-backed recording may shed its audio while retaining its note, transcript and ledger.
+    public func evictCachedAudio(_ id: String) throws {
+        guard Self.validID(id) else { throw CaptureError.invalidArgument }
+        try queue.sync {
+            let note = try readSidecarUnlocked(id)
+            let ledger = note["ledger"] as? [String: Any]
+            let audio = ledger?["audio"] as? [String: Any]
+            let options = note["options"] as? [String: Any]
+            guard audio?["state"] as? String == "saved", options?["uploadAudio"] as? Bool != false else {
+                throw CaptureError.io("audio_not_space_backed")
+            }
+            if FileManager.default.fileExists(atPath: audioURL(id).path) {
+                try FileManager.default.removeItem(at: audioURL(id))
+                try sync(root)
+            }
+        }
+    }
+
     /// Recovery cleanup of a session that has nothing to publish. The committed check and the
     /// delete share one critical section, so a concurrent commit can never be tombstoned: a
     /// published note is reported (false) and left untouched.

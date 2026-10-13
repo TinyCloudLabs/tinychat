@@ -10,6 +10,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { IDBFactory } from "fake-indexeddb";
 
 import { saveNote } from "@/lib/voiceNotes/recordingNotes";
 import { VoiceNotes, __setVoiceNotesForTests, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -714,7 +715,7 @@ describe("useLibrary, which audio a note on the phone plays", () => {
     }
   });
 
-  test("once the phone no longer lists the note, its row plays from the space", async () => {
+  test("after upload the row still plays from the device with zero space audio reads", async () => {
     await withLocalAudio(async (counts, space) => {
       const seen: Library[] = [];
       const base = { tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play" };
@@ -726,7 +727,62 @@ describe("useLibrary, which audio a note on the phone plays", () => {
       expect(seen.at(-1)!.note.item?.saving).toBeUndefined();
       const localBefore = counts.local();
       await playFromSpace(seen.at(-1)!).catch(() => null);
-      expect({ local: counts.local() - localBefore, remoteAsked: counts.remote() > 0 }).toEqual({ local: 0, remoteAsked: true });
+      expect({ local: counts.local() - localBefore, remoteAsked: counts.remote() > 0 }).toEqual({ local: 1, remoteAsked: false });
     });
+  });
+
+  test("an old row without device audio reads its space copy", async () => {
+    const previousIdb = globalThis.indexedDB;
+    globalThis.indexedDB = new IDBFactory() as unknown as IDBFactory;
+    const space = fakeSpace();
+    let reads = 0;
+    space.tcw.kv.get = (async () => {
+      reads++;
+      return { ok: false, error: { code: "KV_NOT_FOUND", message: "missing" } };
+    }) as typeof space.tcw.kv.get;
+    const original = VoiceNotes;
+    __setVoiceNotesForTests({ localAudioUrl: async () => { throw Object.assign(new Error("not_found"), { code: "not_found" }); } } as VoiceNotesPlugin, { available: true });
+    try {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, onPhone: [], noteId: "play" });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      await playFromSpace(seen.at(-1)!).catch(() => null);
+      expect(reads).toBeGreaterThan(0);
+    } finally {
+      __setVoiceNotesForTests(original, { available: null });
+      globalThis.indexedDB = previousIdb;
+    }
+  });
+
+  test("another device downloads once and plays its cached copy next time", async () => {
+    const previousIdb = globalThis.indexedDB;
+    globalThis.indexedDB = new IDBFactory() as unknown as IDBFactory;
+    const space = fakeSpace();
+    let audioReads = 0;
+    space.tcw.kv.get = (async (key: string) => {
+      if (key.endsWith("/manifest")) {
+        audioReads++;
+        return { ok: true, data: { data: JSON.stringify({ v: 1, mimeType: "audio/mp4", fileName: "note.m4a",
+          size: 4, partSize: 4, parts: [{ size: 4, etag: null }], sha256: null, createdAt: "2026-10-13" }) } };
+      }
+      if (key.includes("/p/")) { audioReads++; return { ok: true, data: { data: new Uint8Array([1, 2, 3, 4]) } }; }
+      return { ok: false, error: { code: "KV_NOT_FOUND", message: "missing" } };
+    }) as typeof space.tcw.kv.get;
+    const original = VoiceNotes;
+    __setVoiceNotesForTests({ localAudioUrl: async () => { throw Object.assign(new Error("not_found"), { code: "not_found" }); },
+      listPending: async () => ({ recordings: [] }) } as VoiceNotesPlugin, { available: true });
+    try {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, onPhone: [], noteId: "play" });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      expect((await playFromSpace(seen.at(-1)!))?.size).toBe(4);
+      expect((await playFromSpace(seen.at(-1)!))?.size).toBe(4);
+      expect(audioReads).toBe(2); // one manifest and one part
+    } finally {
+      __setVoiceNotesForTests(original, { available: null });
+      globalThis.indexedDB = previousIdb;
+    }
   });
 });

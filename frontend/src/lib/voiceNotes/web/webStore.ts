@@ -129,7 +129,7 @@ type ReceiptRow = { key: string; receipt: RemoteOpReceipt; result: ReceiptResult
 type QuarantineRow = { id: string; reason: string; error: string; sizeBytes: number; session: SessionRecord };
 
 type PluginProtocol = Pick<VoiceNotesPlugin,
-  "readAudioChunk" | "deleteAudio" | "listPending" | "getCaptureDefaults" | "setCaptureDefaults" | "setAccountState"
+  "readAudioChunk" | "deleteAudio" | "evictCachedAudio" | "listPending" | "getCaptureDefaults" | "setCaptureDefaults" | "setAccountState"
   | "beginRemoteOp" | "recordRemoteResult" | "claim" | "updateLedger" | "putTranscript" | "getTranscript"
   | "listQuarantine" | "discardFailedRecording" | "deleteQuarantined" | "listOutbox" | "completeOutbox">;
 
@@ -428,7 +428,9 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
 
     async readNoteAudio(id) {
       const note = await transact(db, [STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
-      return { bytes: await audio.read(id, 0, await audio.size(id)), mimeType: note.mimeType };
+      const size = await audio.size(id);
+      if (size === 0) throw failure("not_found");
+      return { bytes: await audio.read(id, 0, size), mimeType: note.mimeType };
     },
 
     async dropEmptySession(id) {
@@ -557,6 +559,13 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
           }
         });
       await finishAudioDelete(id);
+    },
+
+    async evictCachedAudio({ id }) {
+      const note = await transact(db, [STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
+      if (note.ledger?.audio.state !== "saved" || (note.options as { uploadAudio?: boolean } | undefined)?.uploadAudio === false)
+        throw failure("audio_not_space_backed");
+      await audio.delete(id);
     },
 
     async listPending() {

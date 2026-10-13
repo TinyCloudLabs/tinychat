@@ -80,6 +80,8 @@ export function createFakeVoiceNotes(options: FakeVoiceNotesOptions = {}): FakeV
   };
 
   const plugin: VoiceNotesPlugin = {
+    evictCachedAudio: unsupported,
+    localAudioSize: unsupported,
     openSettings: unsupported,
     dismissShortcutRecovery: unsupported,
     consumeShortcutRecord: unsupported,

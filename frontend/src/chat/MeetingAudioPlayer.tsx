@@ -14,7 +14,7 @@ interface MeetingAudioPlayerProps {
   load?: (
     signal: AbortSignal,
     onProgress: (loadedBytes: number, totalBytes: number) => void,
-  ) => Promise<Blob | null>;
+  ) => Promise<Blob | string | null>;
   /** A local native file URL. It is handed straight to the audio element. */
   url?: string;
   /**
@@ -185,6 +185,11 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, onPlay
       if (controller.signal.aborted) return;
       if (!blob) {
         setState({ phase: "missing" });
+        return;
+      }
+      if (typeof blob === "string") {
+        playWhenSourceSet.current = true;
+        setState({ phase: "ready", url: blob });
         return;
       }
       if (urlRef.current) URL.revokeObjectURL(urlRef.current);

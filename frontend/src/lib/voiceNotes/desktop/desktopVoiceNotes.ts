@@ -544,6 +544,12 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       const url = urls.get(id);
       if (url) { URL.revokeObjectURL(url); urls.delete(id); }
     },
+    async evictCachedAudio({ id }) {
+      if (live?.session.id === id) throw failure("recording_in_progress");
+      await store.evictCachedAudio({ id });
+      const url = urls.get(id);
+      if (url) { URL.revokeObjectURL(url); urls.delete(id); }
+    },
     async localAudioUrl({ id }) {
       const cached = urls.get(id);
       if (cached) return { url: cached };
@@ -552,6 +558,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       urls.set(id, url);
       return { url };
     },
+    async localAudioSize({ id }) { return { size: await store.audio.size(id) }; },
     async listInputs() { return bridge.invoke("recorder_list_inputs"); },
     async selectInput({ id }) {
       await run(async () => {

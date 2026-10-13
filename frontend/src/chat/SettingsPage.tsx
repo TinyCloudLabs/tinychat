@@ -33,6 +33,7 @@ import { useConversationCanvasFeature } from "./useExperimentalFeatures";
 import { TranscriptionSettings } from "./TranscriptionSettings";
 import { VoiceNotesTranscriberSettings } from "./VoiceNotesTranscriberSettings";
 import { DebugLogRow } from "./DebugLogRow";
+import { AudioCacheSettings } from "@/capture/AudioCacheSettings";
 import { nativeVoiceNotesAvailable } from "../lib/voiceNotes/nativeVoiceNotes";
 import { useSizeClass } from "../lib/sizeClass";
 import { PageHeader } from "../shell/PageHeader";
@@ -174,6 +175,9 @@ export function SettingsPage({
             />
           </SectionCard>
           <DebugLogRow />
+          <SectionCard icon={DatabaseIcon} title="Audio storage">
+            <AudioCacheSettings />
+          </SectionCard>
           <SectionCard icon={DatabaseIcon} title="Data">
             <p className="text-xs text-muted-foreground">
               Bring your Claude conversation history into this space.

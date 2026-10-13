@@ -41,11 +41,10 @@ import {
   type TranscriptRead,
 } from "@/lib/connectors/meetingExplorer";
 import { scheduledSpace } from "@/lib/spaceQueue";
-import { Capacitor } from "@capacitor/core";
 import { loadNote } from "@/lib/voiceNotes/recordingNotes";
 import { wasDiscarded, type PendingNote } from "@/lib/voiceNotes/recorderSaves";
-import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { loadVoiceNoteAudioBlob, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
+import { cachedSpaceAudio, localPlaybackUrl } from "@/lib/voiceNotes/audioPlaybackCache";
 import { readTranscriptPreviews, voiceNoteTranscriptLocator } from "@/lib/voiceNotes/voiceNoteCommits";
 import { captureEvents } from "../captureEvents";
 import type { LibraryFilter } from "./libraryKinds";
@@ -85,8 +84,9 @@ function localAudio(recordingId: string): NoteAudio {
   return {
     localUrl: async () => {
       try {
-        const { url } = await VoiceNotes.localAudioUrl({ id: recordingId });
-        return Capacitor.convertFileSrc(url);
+        const url = await localPlaybackUrl(recordingId);
+        if (!url) throw new Error("Audio is no longer on this device");
+        return url;
       } catch (caught) {
         throw new Error(`Could not open this phone's audio: ${readableError(caught)}`, { cause: caught });
       }
@@ -420,14 +420,19 @@ export function useLibrary(
   // The stored file is read only when the player asks, one part per queued
   // call; the player's signal stops it when the note closes.
   const noteAudio = useMemo<NoteAudio | null>(() => {
-    // The phone's own copy, until the space has the audio.
+    // An on-device-only note has no space copy yet. Resolve its URL at Play time.
     if (voiceSourceId !== null && onThisPhone) return localAudio(voiceSourceId);
-    if (voiceSourceId !== null && !pendingAudioRow) {
+    if (voiceSourceId !== null) {
       return {
         load: async (signal, onProgress) => {
-          const res = await loadVoiceNoteAudioBlob(space, voiceSourceId, { signal, onProgress });
-          if (!res.ok) throw new Error(res.error.message);
-          return res.data;
+          const local = await localPlaybackUrl(voiceSourceId);
+          if (local) return local;
+          if (pendingAudioRow) return null;
+          return cachedSpaceAudio(String(space.spaceId), String(space.did), VOICE_NOTE_SOURCE, voiceSourceId, async () => {
+            const res = await loadVoiceNoteAudioBlob(space, voiceSourceId, { signal, onProgress });
+            if (!res.ok) throw new Error(res.error.message);
+            return res.data;
+          }, signal);
         },
       };
     }

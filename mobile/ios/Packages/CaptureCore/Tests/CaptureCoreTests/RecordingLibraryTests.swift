@@ -2,6 +2,29 @@ import XCTest
 @testable import CaptureCore
 
 final class RecordingLibraryTests: XCTestCase {
+    func testCacheEvictionRequiresSpaceCopyAndKeepsNote() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let pending = UUID().uuidString.lowercased()
+        _ = try library.commit(pending, sidecar: ["id": pending, "version": 2,
+            "ledger": ["audio": ["state": "pending"]]]) { try Data("pending".utf8).write(to: $0) }
+        XCTAssertThrowsError(try library.evictCachedAudio(pending))
+        XCTAssertNotNil(try library.openAudio(pending))
+
+        let localOnly = UUID().uuidString.lowercased()
+        _ = try library.commit(localOnly, sidecar: ["id": localOnly, "version": 2,
+            "options": ["uploadAudio": false], "ledger": ["audio": ["state": "saved"]]]) {
+            try Data("local-only".utf8).write(to: $0)
+        }
+        XCTAssertThrowsError(try library.evictCachedAudio(localOnly))
+        XCTAssertNotNil(try library.openAudio(localOnly))
+
+        let cached = UUID().uuidString.lowercased()
+        _ = try library.commit(cached, sidecar: ["id": cached, "version": 2,
+            "ledger": ["audio": ["state": "saved"]]]) { try Data("cached".utf8).write(to: $0) }
+        try library.evictCachedAudio(cached)
+        XCTAssertThrowsError(try library.openAudio(cached))
+        XCTAssertEqual((try library.readSidecar(cached))["id"] as? String, cached)
+    }
     private func fixture() throws -> (RecordingLibrary, URL) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         return (try RecordingLibrary(root: root), root)

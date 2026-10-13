@@ -242,6 +242,8 @@ export interface VoiceNotesPlugin {
   cancelAudioUpload?(options: { uploadId: string }): Promise<void>;
   /** Delete after a confirmed save: until then the recording stays on the device. */
   deleteAudio(options: { id: string }): Promise<void>;
+  /** Remove bytes only after the local ledger confirms a space copy; preserve the note and transcript. */
+  evictCachedAudio(options: { id: string }): Promise<void>;
   /** Stopped recordings still on the device, i.e. not yet confirmed saved. */
   listPending(): Promise<{ recordings: VoiceNoteRecording[] }>;
   pause(): Promise<void>;
@@ -262,6 +264,7 @@ export interface VoiceNotesPlugin {
   claim(options: ClaimOptions): Promise<{ owner: string | null }>;
   updateLedger(options: { id: string; did: string; rev: number; patch: Partial<NoteLedger> }): Promise<{ rev: number }>;
   localAudioUrl(options: { id: string }): Promise<{ url: string }>;
+  localAudioSize(options: { id: string }): Promise<{ size: number }>;
   putTranscript(options: { id: string; transcript: LocalTranscript }): Promise<void>;
   getTranscript(options: { id: string }): Promise<{ transcript: LocalTranscript | null }>;
   listInputs(): Promise<{ inputs: AudioInput[]; selectedId: string | null; activeId: string | null }>;

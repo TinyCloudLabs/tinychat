@@ -511,6 +511,11 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
       await store.deleteAudio({ id });
       revokeUrl(id);
     },
+    async evictCachedAudio({ id }) {
+      if (live?.id === id) throw failure("recording_in_progress");
+      await store.evictCachedAudio({ id });
+      revokeUrl(id);
+    },
 
     async localAudioUrl({ id }) {
       const cached = objectUrls.get(id);
@@ -520,6 +525,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
       objectUrls.set(id, url);
       return { url };
     },
+    async localAudioSize({ id }) { return { size: await store.audio.size(id) }; },
     async audioMetadata() { throw failure("not_available_on_web"); },
     async uploadAudio() { throw failure("not_available_on_web"); },
     async cancelAudioUpload() {},

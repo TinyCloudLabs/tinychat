@@ -555,6 +555,18 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
         gcArtifacts(id)
         retire(id)
     }
+    fun evictCachedAudio(id: String) = lock.withLock {
+        requireId(id)
+        val note = read(id) ?: throw IllegalStateException("not_found")
+        if (note.optJSONObject("ledger")?.optJSONObject("audio")?.optString("state") != "saved" ||
+            note.optJSONObject("options")?.optBoolean("uploadAudio", true) == false)
+            throw IllegalStateException("audio_not_space_backed")
+        val file = audio(id)
+        if (file.exists()) {
+            ops.unlink(file, "cache.evict")
+            ops.syncDir(root)
+        }
+    }
     /** Discard applies only to an unpublished session; saved notes use explicit deleteAudio. */
     fun discardUncommitted(id: String) = lock.withLock {
         requireId(id)

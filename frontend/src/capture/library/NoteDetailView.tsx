@@ -38,7 +38,7 @@ import { LazySavedNote } from "./savedNote/LazySavedNote";
 import { SAVED_NOTE_COPY } from "./savedNote/savedNoteCopy";
 import type { SavedNoteStore } from "./savedNote/savedNoteStore";
 
-export type AudioLoad = (signal: AbortSignal, onProgress: (loadedBytes: number, totalBytes: number) => void) => Promise<Blob | null>;
+export type AudioLoad = (signal: AbortSignal, onProgress: (loadedBytes: number, totalBytes: number) => void) => Promise<Blob | string | null>;
 
 /** A note's audio: fetched from the space as a blob, or a file still on this phone, played from its URL. */
 export type NoteAudio = { load: AudioLoad } | { localUrl: () => Promise<string> };
