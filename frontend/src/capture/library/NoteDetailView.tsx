@@ -6,10 +6,12 @@
 //
 // Pushed (a phone): the page header with Back. Beside the list (wide): the
 // title as the pane's heading.
-import { useContext, type ReactNode } from "react";
+import { useContext, useState, type ReactNode } from "react";
 import { CheckIcon, CopyIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
 
 import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
+import { NotePlaybackContext } from "@/lib/audio/notePlayback";
+import { appPlatform } from "@/lib/platform";
 import { Button } from "@/components/ui/button";
 import { Empty } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -32,6 +34,8 @@ import { TranscribeAction } from "./TranscribeAction";
 import { privateCloudFits } from "./transcribeProviders";
 import { HowThisGotHere } from "./HowThisGotHere";
 import { librarySourceLabel } from "./libraryKinds";
+import { TimestampedTranscript } from "./TimestampedTranscript";
+import { hasSegmentTimes, transcriptMarkdown } from "./transcriptSegments";
 import type { LibraryItem } from "./LibraryRow";
 import type { LibraryStatus } from "./LibraryListView";
 import { LazySavedNote } from "./savedNote/LazySavedNote";
@@ -66,6 +70,7 @@ export interface NoteDetailViewProps {
   desktopWhisper?: boolean;
   copyState: "idle" | "copied" | "failed";
   onCopy: () => void;
+  onCopyWithTimestamps?: () => void;
   /** Reads again what did not load (the list, or this note). */
   onRetry: () => void;
   /** A screen of its own (compact), with Back; otherwise a pane beside the list. */
@@ -235,6 +240,7 @@ function savedText(metadata: MeetingMetadataRead): string | null {
 }
 
 export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
+  const [exportError, setExportError] = useState(false);
   const { item, transcript, metadata } = props;
   const voiceNote = item.source === VOICE_NOTE_SOURCE;
   const spaceNoSpeech = metadata?.status === "ok" && metadata.metadata.transcription_outcome === "no_speech";
@@ -244,6 +250,26 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
     (transcript?.status === "failed" || metadata?.status === "failed");
   const sentences = remoteSentences.length > 0 ? remoteSentences
     : local?.outcome === "transcribed" ? localTranscriptToSave(local).sentences : [];
+  const timed = hasSegmentTimes(sentences);
+  const exportMarkdown = async () => {
+    const markdown = transcriptMarkdown(item.title ?? "Voice note", item.startedAt, sentences);
+    const filename = `${(item.title ?? "Voice note").replaceAll(/[^\w -]/g, "").trim() || "voice-note"}.md`;
+    setExportError(false);
+    try {
+      if ((appPlatform() === "ios" || appPlatform() === "android") && navigator.share) {
+        await navigator.share({ files: [new File([markdown], filename, { type: "text/markdown" })], title: item.title ?? "Voice note" });
+        return;
+      }
+      const url = URL.createObjectURL(new Blob([markdown], { type: "text/markdown;charset=utf-8" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) setExportError(true);
+    }
+  };
   return (
     <section aria-labelledby="note-transcript" data-testid="note-transcript" className="flex flex-col gap-3">
       <div className="flex min-h-11 flex-wrap items-center gap-x-3">
@@ -251,10 +277,20 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
           Transcript
         </h2>
         {sentences.length > 0 && (
-          <Button type="button" variant="ghost" onClick={props.onCopy} className="-mr-2" data-testid="note-copy">
-            {props.copyState === "copied" ? <CheckIcon aria-hidden /> : <CopyIcon aria-hidden />}
-            {props.copyState === "copied" ? "Copied" : "Copy"}
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button type="button" variant="ghost" onClick={props.onCopy} data-testid="note-copy">
+              {props.copyState === "copied" ? <CheckIcon aria-hidden /> : <CopyIcon aria-hidden />}
+              {props.copyState === "copied" ? "Copied" : "Copy"}
+            </Button>
+            {timed && <details className="relative">
+              <summary className="flex min-h-11 cursor-pointer items-center rounded-md px-2 text-meta hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring" aria-label="Transcript copy and export options">▾</summary>
+              <div className="absolute right-0 z-10 min-w-48 rounded-md border bg-popover p-1 shadow-sm">
+                <button type="button" className="block w-full rounded-sm px-3 py-2 text-left text-meta hover:bg-accent" onClick={props.onCopy}>Copy text</button>
+                <button type="button" className="block w-full rounded-sm px-3 py-2 text-left text-meta hover:bg-accent" onClick={props.onCopyWithTimestamps}>Copy with timestamps</button>
+                <button type="button" className="block w-full rounded-sm px-3 py-2 text-left text-meta hover:bg-accent" onClick={() => void exportMarkdown()}>Export as Markdown</button>
+              </div>
+            </details>}
+          </div>
         )}
       </div>
       {props.copyState === "failed" && (
@@ -262,6 +298,7 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
           Couldn’t copy. Select the text and copy it instead.
         </p>
       )}
+      {exportError && <p role="alert" className="text-meta text-destructive">Couldn’t export the transcript. Try again.</p>}
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {props.copyState === "copied" ? "Transcript copied to clipboard" : ""}
       </span>
@@ -271,7 +308,7 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
             <p className="text-callout text-muted-foreground">On this device · Couldn’t check your space.</p>
             <Button type="button" variant="outline" onClick={props.onRetry}>Try again</Button>
           </div>}
-          {transcriptBlocks(sentences).map((block, index) => (
+          {timed ? <TimestampedTranscript sentences={sentences} hasAudio={props.audio !== null} /> : transcriptBlocks(sentences).map((block, index) => (
             <div key={index}>
               {block.speaker && <p className="text-meta font-semibold text-muted-foreground">{block.speaker}</p>}
               <p className="whitespace-pre-wrap break-words text-body">{block.text}</p>
@@ -335,6 +372,20 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
 }
 
 export function NoteDetailView(props: NoteDetailViewProps) {
+  return <NotePlaybackProvider><NoteDetailViewContent {...props} /></NotePlaybackProvider>;
+}
+
+function NotePlaybackProvider({ children }: { children: ReactNode }) {
+  const [seek, setSeek] = useState<{ seconds: number; nonce: number } | null>(null);
+  const [clock, setClock] = useState({ elapsed: 0, playing: false });
+  return <NotePlaybackContext.Provider value={{ seek, playFrom: (seconds) => setSeek((current) => ({ seconds, nonce: (current?.nonce ?? 0) + 1 })),
+    elapsed: clock.elapsed, playing: clock.playing, onClock: (elapsed, playing) => setClock((current) =>
+      current.elapsed === elapsed && current.playing === playing ? current : { elapsed, playing }) }}>
+    {children}
+  </NotePlaybackContext.Provider>;
+}
+
+function NoteDetailViewContent(props: NoteDetailViewProps) {
   const { item, metadata } = props;
   if (item === null) {
     return (
