@@ -248,8 +248,8 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
       }, 0);
       const age = Date.now() - Date.parse(checkedAt);
       if (age < 0) return unknownPending(checkedAt);
-      const stale = source === 'backend-ingest' ? age > 24 * 60 * 60 * 1000 : age >= 60 * 60 * 1000 + 30 * 1000;
-      return { count: value.count, unknown: unknownCount, checked_at: checkedAt, freshness: stale ? 'stale' : 'fresh' };
+      const stale = source === 'backend-ingest' ? age > 24 * 60 * 60 * 1000 : age > 60 * 60 * 1000 + 30 * 1000;
+      return { count: stale ? null : value.count, unknown: stale ? null : unknownCount, checked_at: checkedAt, freshness: stale ? 'stale' : 'fresh' };
     } catch {
       return unknownPending(null);
     } finally {

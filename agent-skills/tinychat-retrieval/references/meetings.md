@@ -44,7 +44,7 @@ The supported `connector_meeting` catalog excludes only the distinct `user-kv-on
 
 `coverage.backendPending` separately summarizes the metadata-only v1 snapshots at `xyz.tinycloud.tinychat/connectors/pending-reconcile-snapshot/backend-ingest` and `/transcriber`. Each source reports `count`, `unknown` status count, `checked_at`, and `freshness`; it returns no pending IDs or titles. The backend-ingest snapshot contains unreconciled connector rows; the transcriber snapshot contains completed or uncertain IDs not known saved in the user's space. This does not make their content part of SQL discovery or provide a live backend catalog.
 
-`checked_at` is the source observation time. Backend-ingest is stale only when older than 24 hours; transcriber is stale at 1 hour 30 seconds or more. A missing, future-dated, corrupt, or unsupported-version snapshot reports `freshness: "unknown"` and null counts, never zero. Stale snapshots retain their observed counts but are not current coverage. A source with no recent browser sync may age indefinitely.
+`checked_at` is the source observation time. Backend-ingest and transcriber are stale strictly after 24 hours and 1 hour 30 seconds, respectively; snapshots exactly at either threshold remain fresh. A stale snapshot retains its `checked_at` and `freshness: "stale"` but reports null `count` and `unknown`. A missing, future-dated, corrupt, or unsupported-version snapshot reports `freshness: "unknown"` and null counts, never zero. A source with no recent browser sync may age indefinitely.
 
 Do not repair or migrate either catalog during a read. An empty SQL result is only “no matches in this supported catalog.”
 

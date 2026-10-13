@@ -749,6 +749,11 @@ const pendingSnapshotKey = source => `xyz.tinycloud.tinychat/connectors/pending-
 function pendingSnapshot(source, checkedAt, meetings, version = 1) {
   return { version, changed_at: checkedAt, checked_at: checkedAt, count: meetings.length, meetings };
 }
+async function withFrozenDate(now, run) {
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try { return await run(); } finally { Date.now = originalNow; }
+}
 function pendingRows(source) {
   const rowSource = source === 'transcriber' ? 'transcriber' : 'fireflies';
   return [
@@ -758,9 +763,9 @@ function pendingRows(source) {
 }
 
 describe('backend-only pending coverage', () => {
-  for (const [source, staleAfterMs, staleAtBoundary] of [
-    ['backend-ingest', 24 * 60 * 60 * 1000, false],
-    ['transcriber', 60 * 60 * 1000 + 30 * 1000, true],
+  for (const [source, staleAfterMs] of [
+    ['backend-ingest', 24 * 60 * 60 * 1000],
+    ['transcriber', 60 * 60 * 1000 + 30 * 1000],
   ]) {
     test(`${source} reports fresh counts without exposing snapshot rows`, async () => {
       const f = fixture();
@@ -780,14 +785,35 @@ describe('backend-only pending coverage', () => {
     });
 
 
-    test(`${source} reports stale counts at its threshold`, async () => {
+    test(`${source} reports unknown counts for a stale empty snapshot`, async () => {
       const f = fixture();
-      const age = staleAtBoundary ? staleAfterMs : staleAfterMs + 1;
-      const checkedAt = new Date(Date.now() - age).toISOString();
-      f.state.snapshots.set(pendingSnapshotKey(source), pendingSnapshot(source, checkedAt, pendingRows(source)));
-      const result = await invoke(f, 'find', { term: 'absent' });
-      expect(result.coverage.backendPending[source]).toEqual({ count: 2, unknown: 1, checked_at: checkedAt, freshness: 'stale' });
+      const now = Date.parse('2026-05-01T12:00:00.000Z');
+      await withFrozenDate(now, async () => {
+        const checkedAt = new Date(now - staleAfterMs - 1).toISOString();
+        f.state.snapshots.set(pendingSnapshotKey(source), pendingSnapshot(source, checkedAt, []));
+        const result = await invoke(f, 'find', { term: 'absent' });
+        expect(result.coverage.backendPending[source]).toEqual({ count: null, unknown: null, checked_at: checkedAt, freshness: 'stale' });
+      });
     });
+
+    for (const ageOffset of [-1, 0, 1]) {
+      test(`${source} freshness at threshold ${ageOffset >= 0 ? '+' : ''}${ageOffset} ms`, async () => {
+        const f = fixture();
+        const now = Date.parse('2026-05-01T12:00:00.000Z');
+        await withFrozenDate(now, async () => {
+          const checkedAt = new Date(now - staleAfterMs - ageOffset).toISOString();
+          f.state.snapshots.set(pendingSnapshotKey(source), pendingSnapshot(source, checkedAt, pendingRows(source)));
+          const result = await invoke(f, 'find', { term: 'absent' });
+          const stale = ageOffset > 0;
+          expect(result.coverage.backendPending[source]).toEqual({
+            count: stale ? null : 2,
+            unknown: stale ? null : 1,
+            checked_at: checkedAt,
+            freshness: stale ? 'stale' : 'fresh',
+          });
+        });
+      });
+    }
 
     for (const kind of ['missing', 'future', 'corrupt', 'unsupported-version']) {
       test(`${source} treats ${kind} snapshots as unknown, not zero`, async () => {
