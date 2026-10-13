@@ -1,4 +1,3 @@
-import { readableError } from "@/lib/readableError";
 // Where a saved voice note's on-device transcription stands, read from the
 // phone's own state: the note's committed mode (`options.transcriber`), the
 // native sidecar's `stt`, the live queue, and the plugin's progress events.
@@ -102,7 +101,7 @@ export function useOnDeviceNote(noteId: string): OnDeviceNoteView {
         },
         (caught: unknown) => {
           console.error("[Library] Could not read this note's on-device transcription", noteId, caught);
-          if (current()) setError(`Couldn't check this note's on-device transcription: ${readableError(caught)}`);
+          if (current()) setError("Couldn't check this note's on-device transcription.");
         },
       );
     };
@@ -125,7 +124,7 @@ export function useOnDeviceNote(noteId: string): OnDeviceNoteView {
     for (const sub of subs) {
       sub.catch((caught: unknown) => {
         console.error("[Library] Could not follow on-device transcription", noteId, caught);
-        if (alive) setWatchError(`Couldn't follow this note's on-device transcription: ${readableError(caught)}`);
+        if (alive) setWatchError("Couldn't follow this note's on-device transcription.");
       });
     }
     return () => {
@@ -214,7 +213,8 @@ function PrivateInstead(props: { onUse?: () => Promise<string | null> }) {
           setError(null);
           setSwitching(true);
           void props.onUse!().then((failure) => {
-            setError(failure);
+            if (failure) console.error("[Library] Could not switch transcription to Private", failure);
+            setError(failure ? "Couldn't switch to Private. Try again." : null);
             setSwitching(false);
           });
         }}
@@ -280,7 +280,7 @@ export function OnDeviceNoteStatusView(props: {
     case "failed":
       return (
         <div className="flex flex-col gap-2" data-testid="voice-note-on-device-failed">
-          <p role="alert" className="min-w-0 text-callout text-destructive">Couldn&apos;t transcribe on this phone: {note.reason}</p>
+          <p role="alert" className="min-w-0 text-callout text-destructive">Couldn&apos;t transcribe on this phone.</p>
           <TranscribeAction noteId={props.noteId} transcription={props.transcription} durationSecs={props.durationSecs ?? null} label="Try again" />
         </div>
       );

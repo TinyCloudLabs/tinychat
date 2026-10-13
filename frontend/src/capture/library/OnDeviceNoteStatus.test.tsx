@@ -182,13 +182,14 @@ describe("a saved note's on-device state, gated by the note's committed mode", (
     expect((await mount("n1")).latest().note).toEqual({ kind: "none" });
   });
 
-  test("a failed Local note names why; its Try again is the Transcribe action", async () => {
+  test("a failed Local note keeps the diagnostic out of the view; its Try again is the Transcribe action", async () => {
     await iosStt();
     fakeVoiceNotes({ recordings: () => [recording("n1", "on-device", stt("failed", "decoder_error"))] });
     const { latest } = await mount("n1");
     expect(latest().note).toEqual({ kind: "failed", reason: "decoder_error" });
     const html = view(latest().note);
-    expect(html).toContain("Couldn&#x27;t transcribe on this phone: decoder_error");
+    expect(html).toContain("Couldn&#x27;t transcribe on this phone.");
+    expect(html).not.toContain("decoder_error");
     expect(html).not.toContain("voice-note-on-device-retry");
   });
 });
@@ -232,11 +233,11 @@ describe("while this note's mode and state are not known yet", () => {
     fakeVoiceNotes({ recordings: () => { throw new Error("scan failed"); } });
     const { latest } = await mount("n1");
     expect(latest().note).toBeNull();
-    expect(latest().error).toBe("Couldn't check this note's on-device transcription: scan failed");
+    expect(latest().error).toBe("Couldn't check this note's on-device transcription.");
     expect(logged).toHaveBeenCalled();
     logged.mockRestore();
     const html = view(latest().note, latest().error);
-    expect(html).toContain("scan failed");
+    expect(html).not.toContain("scan failed");
     expect(html).toContain("Try again");
     expect(html).not.toContain("No transcript.");
   });
@@ -322,7 +323,7 @@ describe("an older queue snapshot against newer events", () => {
   describe("a failure against a queue that still holds the running note (the merged native shape)", () => {
     const running = { id: "n1", state: "running", percent: 40, error: null } as OnDeviceSttStatus["queue"][number];
 
-    test("the failure shows its reason and Retry although the cached queue entry still says running", async () => {
+    test("the failure shows Retry without its diagnostic although the cached queue entry still says running", async () => {
       const events = await iosStt([running]);
       let current = stt("running");
       fakeVoiceNotes({ recordings: () => [recording("n1", "on-device", current)] });
@@ -332,7 +333,8 @@ describe("an older queue snapshot against newer events", () => {
       await act(async () => events.emit("failed", { id: "n1", code: "decode_failed", message: "decoder stopped" }));
       expect(latest().note).toEqual({ kind: "failed", reason: "decode_failed" });
       const html = view(latest().note);
-      expect(html).toContain("decode_failed");
+      expect(html).toContain("Couldn&#x27;t transcribe on this phone.");
+      expect(html).not.toContain("decode_failed");
     });
 
     test("the event's reason stands before the sidecar rescan returns", async () => {
@@ -406,8 +408,8 @@ describe("a failed subscription to the native events", () => {
     __setOnDeviceSttForTests(plugin as typeof OnDeviceStt);
     fakeVoiceNotes({ recordings: () => [recording("n1", "on-device", stt("running"))] });
     const { latest } = await mount("n1");
-    expect(latest().error).toContain("bridge subscription failed");
-    expect(view(latest().note, latest().error)).toContain("bridge subscription failed");
+    expect(latest().error).toBe("Couldn't follow this note's on-device transcription.");
+    expect(view(latest().note, latest().error)).not.toContain("bridge subscription failed");
     broken = false;
     await act(async () => latest().reload());
     expect(latest().error).toBeNull();
@@ -448,7 +450,7 @@ describe("the native transcript outcome", () => {
     const logged = spyOn(console, "error").mockImplementation(() => {});
     fakeVoiceNotes({ recordings: () => [recording("n1", "on-device", stt("done"))], transcript: () => { throw new Error("sidecar unreadable"); } });
     const { latest } = await mount("n1");
-    expect(latest().error).toContain("sidecar unreadable");
+    expect(latest().error).toBe("Couldn't check this note's on-device transcription.");
     logged.mockRestore();
   });
 });
