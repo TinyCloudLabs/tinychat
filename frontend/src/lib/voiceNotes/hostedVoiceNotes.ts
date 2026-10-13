@@ -15,6 +15,33 @@ const CONSENT = "exo.voiceNotes.powerfulConsent";
 const PENDING = "exo.voiceNotes.powerfulJobs";
 const POLL_MS = 5000;
 type Stored = { uploadId?: string; handle?: string; saved?: boolean; recording?: VoiceNoteRecording };
+type Claim = { version: 1; status: "active" | "failed" | "submitted"; token: string; uploadId?: string; handle?: string };
+const claimKey = (id: string) => `exo/voiceNotes/hostedJobs/${encodeURIComponent(id)}`;
+const precondition = (error: { code?: string; message?: string }) => /PRECONDITION|412/i.test(`${error.code} ${error.message}`);
+
+async function readClaim(account: TinyCloudWeb, id: string): Promise<{ claim: Claim; etag: string } | null> {
+  const result = await account.kv.get(claimKey(id));
+  if (!result.ok) {
+    if (result.error.code === "KV_NOT_FOUND") return null;
+    throw new Error(`Could not read the Powerful job claim: ${result.error.message}`);
+  }
+  const response = result.data as { data?: unknown; headers?: { etag?: string } };
+  const raw = response?.data;
+  const claim = typeof raw === "string" ? JSON.parse(raw) as Claim : raw as Claim;
+  if (claim?.version !== 1 || !["active", "failed", "submitted"].includes(claim.status)
+    || typeof claim.token !== "string" || typeof response?.headers?.etag !== "string")
+    throw new Error("The Powerful job claim could not be verified.");
+  if (claim.status === "submitted" && !claim.handle) throw new Error("The Powerful job claim has no transcript handle.");
+  return { claim, etag: response.headers.etag };
+}
+
+async function writeClaim(account: TinyCloudWeb, id: string, claim: Claim, etag?: string): Promise<boolean> {
+  const result = await account.kv.put(claimKey(id), JSON.stringify(claim),
+    etag ? { ifMatch: etag, contentType: "application/json" } : { ifNoneMatch: "*", contentType: "application/json" });
+  if (result.ok) return true;
+  if (precondition(result.error)) return false;
+  throw new Error(`Could not save the Powerful job claim: ${result.error.message}`);
+}
 
 function storage(): Storage | undefined {
   try { return globalThis.localStorage; } catch { return undefined; }
@@ -103,63 +130,115 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         source = { mimeType: space.data.mimeType, size: bytes.length, readPart: async (offset, length) => bytes.slice(offset, offset + length) };
       }
       const handle = await withHostedUploadQueue(did, async () => {
-        let handle = stored.handle;
-        if (!handle) {
-          const caps = await client.capabilities();
-          if (!caps.hosted) throw new AssemblyAiError("failed", "Powerful isn't available right now. Try again later.");
-          if (source.size > caps.max_bytes) throw new AssemblyAiError("rejected", "This recording is too large for Powerful (120 MB maximum).");
-          const contentType = source.mimeType.split(";")[0].trim().toLowerCase();
-          if (!caps.content_types.includes(contentType)) throw new AssemblyAiError("rejected", "Powerful cannot read this recording's format.");
-          let uploadId = stored.uploadId;
-          let submitting = false;
-          if (uploadId) {
-            try {
-              const remote = await client.uploadState(uploadId);
-              if (remote.status === "submitted" && remote.id) handle = remote.id;
-              else if (remote.status === "submitting") submitting = true;
-              else if (remote.status === "failed") { uploadId = undefined; persist(id, null); }
-            } catch (error) {
-              if (!(error instanceof AssemblyAiError && (error.kind === "not-found" || error.uploadEnded))) throw error;
-              uploadId = undefined;
-              persist(id, null);
-            }
-          }
+        guard();
+        // Both the local resume entry and the space commit may have changed while
+        // this invocation waited for the account's upload lane.
+        const latest = readJobs(did)[id] ?? {};
+        const committed = await readCommit(account, id);
+        if (committed) {
+          transcriptSaved = true;
+          jobs.set(id, { kind: "done", outcome: committed.outcome }); notify();
+          return null;
+        }
+        let existing = await readClaim(account, id);
+        const token = crypto.randomUUID();
+        if (!existing) {
+          if (!await writeClaim(account, id, { version: 1, status: "active", token,
+            uploadId: latest.uploadId, handle: latest.handle })) existing = await readClaim(account, id);
+        } else if (existing.claim.status === "failed") {
+          if (await writeClaim(account, id, { ...existing.claim, status: "active", token }, existing.etag))
+            existing = { claim: { ...existing.claim, status: "active", token }, etag: existing.etag };
+          else existing = await readClaim(account, id);
+        }
+        // A live owner retains the claim until submission. A submitted handle is
+        // safe to poll from any instance; no caller may submit it a second time.
+        if (existing?.claim.status === "active" && existing.claim.token !== token) return null;
+        if (existing?.claim.status === "failed") return null;
+        let claim: Claim = existing?.claim ?? { version: 1, status: "active", token,
+          uploadId: latest.uploadId, handle: latest.handle };
+        let handle = claim.handle ?? latest.handle;
+        if (existing?.claim.status === "submitted") return handle ?? null;
+        const advance = async (patch: Partial<Claim>) => {
+          const current = await readClaim(account, id);
+          if (!current || current.claim.token !== token || !await writeClaim(account, id, { ...claim, ...patch }, current.etag))
+            throw new Error("The Powerful job claim changed. Retry after the other job finishes.");
+          claim = { ...claim, ...patch };
+        };
+        let createStarted = false;
+        try {
+          if (handle && claim.status !== "submitted") await advance({ handle, status: "submitted" });
           if (!handle) {
-            if (!uploadId) {
+            const caps = await client.capabilities();
+            if (!caps.hosted) throw new AssemblyAiError("failed", "Powerful isn't available right now. Try again later.");
+            if (source.size > caps.max_bytes) throw new AssemblyAiError("rejected", "This recording is too large for Powerful (120 MB maximum).");
+            const contentType = source.mimeType.split(";")[0].trim().toLowerCase();
+            if (!caps.content_types.includes(contentType)) throw new AssemblyAiError("rejected", "Powerful cannot read this recording's format.");
+            let uploadId = claim.uploadId ?? latest.uploadId;
+            let submitting = false;
+            if (uploadId) {
+              try {
+                const remote = await client.uploadState(uploadId);
+                if (remote.status === "submitted" && remote.id) {
+                  handle = remote.id;
+                  await advance({ handle, status: "submitted" });
+                }
+                else if (remote.status === "submitting") submitting = true;
+                else if (remote.status === "failed") { uploadId = undefined; persist(id, null); await advance({ uploadId: undefined }); }
+              } catch (error) {
+                if (!(error instanceof AssemblyAiError && (error.kind === "not-found" || error.uploadEnded))) throw error;
+                uploadId = undefined;
+                persist(id, null);
+                await advance({ uploadId: undefined });
+              }
+            }
+            if (!handle) {
+              if (!uploadId) {
+                guard();
+                const opId = crypto.randomUUID();
+                await native.beginRemoteOp({ id, did, opId, provider: "assemblyai", mode: "hosted", kind: "hosted_create",
+                  fingerprint: `${source.size}:${source.mimeType}`, startedAt: Date.now() });
+                createStarted = true;
+                const created = await client.createUpload(source.size, contentType);
+                uploadId = created.uploadId;
+                persist(id, { uploadId });
+                await advance({ uploadId });
+                await native.recordRemoteResult({ id, did, opId, result: { outcome: "created", uploadId } });
+              }
+              if (!submitting) {
+                state(id, { kind: "uploading", progress: 0 });
+                const partSize = Math.min(caps.part_size, 1024 * 1024);
+                for (let offset = 0, index = 0; offset < source.size; offset += partSize, index++) {
+                  guard();
+                  const bytes = await source.readPart(offset, Math.min(partSize, source.size - offset));
+                  await client.putPart(uploadId, index, bytes);
+                  state(id, { kind: "uploading", progress: Math.min(1, (offset + bytes.length) / source.size) });
+                }
+                logPipeline("transcription_audio_upload", id, "done", { engine: "assemblyai", bodyBytes: source.size });
+              }
               guard();
               const opId = crypto.randomUUID();
-              await native.beginRemoteOp({ id, did, opId, provider: "assemblyai", mode: "hosted", kind: "hosted_create",
+              await native.beginRemoteOp({ id, did, opId, provider: "assemblyai", mode: "hosted", kind: "hosted_submit",
                 fingerprint: `${source.size}:${source.mimeType}`, startedAt: Date.now() });
-              const created = await client.createUpload(source.size, contentType);
-              uploadId = created.uploadId;
-              persist(id, { uploadId });
-              await native.recordRemoteResult({ id, did, opId, result: { outcome: "created", uploadId } });
+              const submitted = await client.createTranscript(uploadId, { speakerLabels: recording.options?.identifySpeakers !== false,
+                multichannel: (recording as VoiceNoteRecording & { layout?: string }).layout === "stereo" });
+              handle = submitted.id;
+              persist(id, { handle });
+              await advance({ handle, status: "submitted" });
+              await native.recordRemoteResult({ id, did, opId, result: { outcome: "created", jobId: handle } });
             }
-            if (!submitting) {
-              state(id, { kind: "uploading", progress: 0 });
-              const partSize = Math.min(caps.part_size, 1024 * 1024);
-              for (let offset = 0, index = 0; offset < source.size; offset += partSize, index++) {
-                guard();
-                const bytes = await source.readPart(offset, Math.min(partSize, source.size - offset));
-                await client.putPart(uploadId, index, bytes);
-                state(id, { kind: "uploading", progress: Math.min(1, (offset + bytes.length) / source.size) });
-              }
-              logPipeline("transcription_audio_upload", id, "done", { engine: "assemblyai", bodyBytes: source.size });
-            }
-            guard();
-            const opId = crypto.randomUUID();
-            await native.beginRemoteOp({ id, did, opId, provider: "assemblyai", mode: "hosted", kind: "hosted_submit",
-              fingerprint: `${source.size}:${source.mimeType}`, startedAt: Date.now() });
-            const submitted = await client.createTranscript(uploadId, { speakerLabels: recording.options?.identifySpeakers !== false,
-              multichannel: (recording as VoiceNoteRecording & { layout?: string }).layout === "stereo" });
-            handle = submitted.id;
-            persist(id, { handle });
-            await native.recordRemoteResult({ id, did, opId, result: { outcome: "created", jobId: handle } });
           }
+          return handle;
+        } catch (error) {
+          // Keep a submitted handle immutable. A failed upload can be claimed
+          // again with a conditional write and resumed from its upload ID.
+          if (claim.status === "active" && (!createStarted || claim.uploadId)) {
+            try { await advance({ status: "failed" }); }
+            catch (claimError) { console.warn("[HostedVoiceNotes] Could not release failed job claim", claimError); }
+          }
+          throw error;
         }
-        return handle;
       });
-      if (!handle) throw new Error("Powerful did not return a transcript. Try again.");
+      if (!handle) return;
       persist(id, { handle });
       let transcript: AssemblyAiTranscript;
       for (;;) {
