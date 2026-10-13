@@ -1,5 +1,23 @@
 # @tinychat/backend
 
+## 0.5.1-beta.4
+
+### Patch Changes
+
+- 2ac09a6: Widen Calendar autojoin's late-join window, preserve truthful RSVP outcomes without hiding dispatch failures, skip unchanged RSVP writes, and record discovery and dispatch lag (TC-988).
+
+## 0.5.1-beta.3
+
+### Patch Changes
+
+- 4a1e442: Require a configured HMAC secret and valid signature for PTX transcription webhooks.
+
+## 0.5.1-beta.2
+
+### Patch Changes
+
+- 20faa03: Refresh saved transcriber transcripts when ptx publishes a newer version, keeping previous copies in an immutable archive and preserving edited meeting titles and start times (TC-989).
+
 ## 0.5.1-beta.1
 
 ### Patch Changes

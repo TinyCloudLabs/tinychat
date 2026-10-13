@@ -2,7 +2,7 @@
 // store shape (connector_meeting row + sentence body), and the explorer registration.
 import { describe, expect, spyOn, test } from "bun:test";
 import type { DelegatedAccess } from "@tinyboilerplate/server";
-import { ensureConnectorSchema, writeTranscriberMeeting } from "@tinyboilerplate/core";
+import { archiveKvKey, ensureConnectorSchema, writeTranscriberMeeting } from "@tinyboilerplate/core";
 import { delegatedConnectorPort } from "../../../backend/src/services/user-space-port";
 import { webConnectorPort } from "./connectors/connectorPort";
 
@@ -119,7 +119,11 @@ test("saving a transcript retains capture evidence and transcription provenance"
 
 import { Database } from "bun:sqlite";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { saveTranscriberMeeting, listSavedTranscriberMeetingIds } from "./transcriberSave";
+import { saveTranscriberMeeting, listSavedTranscriberMeetingIds, listSavedTranscriberVersions, refreshTranscriberMeeting as refreshWithUpstream } from "./transcriberSave";
+const refreshTranscriberMeeting = (
+  tcw: TinyCloudWeb, row: TranscriberMeeting, body: TranscriberTranscript,
+  fetchTranscript: () => Promise<TranscriberTranscript | null> = async () => null,
+) => refreshWithUpstream(tcw, row, body, fetchTranscript);
 import { transcriptKvKey } from "./connectors/connectorStore";
 import { syncTranscriberLibrary } from "../chat/useTranscriberLibrarySync";
 import type { TranscriberClient } from "./transcriberApi";
@@ -134,6 +138,9 @@ function libraryFixture() {
   const bodies = new Map<string, string>();
   let failWrite = true;
   let writes = 0;
+  let updates = 0;
+  let failUpdate = false;
+  let failVersions = false;
   const inserts: Array<{ sql: string; params: unknown[] }> = [];
   const wrap = <T,>(fn: () => T) => {
     try { return { ok: true, data: fn() }; }
@@ -143,10 +150,17 @@ function libraryFixture() {
     did: `did:test:${crypto.randomUUID()}`,
     sql: { db: () => ({
       execute: async (query: string, params: unknown[] = []) => wrap(() => {
+        if (/^\s*UPDATE connector_meeting\b/i.test(query)) {
+          updates++;
+          if (failUpdate) { failUpdate = false; throw new Error("update failed"); }
+        }
         if (/^\s*INSERT INTO connector_meeting\b/i.test(query)) inserts.push({ sql: query, params });
         return sql.query(query).run(...params as never[]);
       }),
-      query: async (query: string, params: unknown[] = []) => wrap(() => ({ rows: sql.query(query).values(...params as never[]) })),
+      query: async (query: string, params: unknown[] = []) => wrap(() => {
+        if (failVersions && query.includes("json_extract")) throw new Error("unsupported");
+        return { rows: sql.query(query).values(...params as never[]) };
+      }),
     }) },
     kv: {
       get: async (key: string) => bodies.has(key) ? { ok: true, data: { data: bodies.get(key) } }
@@ -161,7 +175,9 @@ function libraryFixture() {
       },
     },
   } as unknown as TinyCloudWeb;
-  return { tcw, sql, bodies, inserts, writes: () => writes, allowWrites: () => { failWrite = false; } };
+  return { tcw, sql, bodies, inserts, writes: () => writes, updates: () => updates,
+    allowWrites: () => { failWrite = false; }, failUpdateOnce: () => { failUpdate = true; },
+    failVersionReads: () => { failVersions = true; } };
 }
 
 test("ptx null speakers pass through both API clients and both storage writers without labels", async () => {
@@ -217,7 +233,7 @@ for (const empty of [false, true]) {
     const body = { ...transcript, segments: empty ? [] : transcript.segments };
     expect((await saveTranscriberMeeting(f.tcw, meeting, body)).ok).toBe(false);
     expect(f.sql.query("SELECT COUNT(*) AS n FROM connector_meeting").get()).toEqual({ n: 1 });
-    expect(await listSavedTranscriberMeetingIds(f.tcw)).toEqual({ ok: true, data: [] });
+    expect(await listSavedTranscriberMeetingIds(f.tcw)).toEqual({ ok: true, data: { saved: [], unknown: [meeting.id] } });
     // A new mount has no in-memory knowledge of the failed import. A complete
     // SQL row alone must not suppress this retry.
     const saved: Record<string, string> = {};
@@ -231,7 +247,7 @@ for (const empty of [false, true]) {
     expect(f.sql.query("SELECT COUNT(*) AS n FROM connector_meeting").get()).toEqual({ n: 1 });
     const key = transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, meeting.id);
     expect(JSON.parse(f.bodies.get(key)!)).toHaveLength(empty ? 0 : 2);
-    expect(await listSavedTranscriberMeetingIds(f.tcw)).toEqual({ ok: true, data: [meeting.id] });
+    expect(await listSavedTranscriberMeetingIds(f.tcw)).toEqual({ ok: true, data: { saved: [meeting.id], unknown: [] } });
     // Another return reads completeness, avoiding both fetches and body rewrites.
     await syncTranscriberLibrary({ tcw: f.tcw, client });
     expect(fetches).toBe(1);
@@ -410,7 +426,7 @@ test("notetaker sync refreshes for newly imported and newly observed remote meet
     transcript: async () => ({ status: "ok", value: { status: "ready", transcript } }),
   } as unknown as TranscriberClient;
   const saver = {
-    listSaved: async () => ({ ok: true, data: savedIds }),
+    listSaved: async () => ({ ok: true, data: { saved: savedIds, unknown: [] } }),
     save: async (_: TinyCloudWeb, row: TranscriberMeeting) => {
       if (row.id === "broken") return { ok: false };
       savedIds.push(row.id);
@@ -488,7 +504,7 @@ test("notetaker save finishing after sign-out does not refresh the next account"
     const run = syncTranscriberLibrary({
       tcw: f.tcw, client, isCurrent: () => current,
       saver: {
-        listSaved: async () => ({ ok: true, data: [] }),
+        listSaved: async () => ({ ok: true, data: { saved: [], unknown: [] } }),
         save: () => { started.resolve(); return pending.promise; },
       },
     });
@@ -531,7 +547,7 @@ test("each saved-meeting completeness read gets its own scheduled lane turn", as
     reads++;
     return read();
   });
-  expect(result).toEqual({ ok: true, data: [meeting.id] });
+  expect(result).toEqual({ ok: true, data: { saved: [meeting.id], unknown: [] } });
   // One SQL source-id query plus one KV body check for this saved meeting.
   expect(reads).toBe(2);
   f.sql.close();
@@ -556,7 +572,7 @@ test("slow listSaved is not subject to the per-call voice-note deadline", async 
   try {
     await new Promise((resolve) => setTimeout(resolve, 25));
     expect(settleKind).toBeNull();
-    release({ ok: true, data: [] });
+    release({ ok: true, data: { saved: [], unknown: [] } });
     await sync;
     expect(settleKind).toBe("resolved");
   } finally {
@@ -586,7 +602,7 @@ test("a queued completeness read skips after sign-out so a new-session save can 
       listSaved: async (_tcw, scheduleRead) => {
         announceReadQueued();
         await scheduleRead!(() => { oldAccountReads++; return Promise.resolve("old account read"); });
-        return { ok: true, data: [] };
+        return { ok: true, data: { saved: [], unknown: [] } };
       },
       save: async () => ({ ok: true }),
     },
@@ -617,7 +633,7 @@ test("a voice-note lane save runs while the meetings list request is pending", a
   const sync = syncTranscriberLibrary({
     tcw: {} as TinyCloudWeb,
     client,
-    saver: { listSaved: async () => ({ ok: true, data: [] }), save: async () => ({ ok: true }) },
+    saver: { listSaved: async () => ({ ok: true, data: { saved: [], unknown: [] } }), save: async () => ({ ok: true }) },
   });
   await listStarted;
 
@@ -657,7 +673,7 @@ test("transcriber space reads and writes use the lane, while transcript HTTP sta
     saver: {
       listSaved: async (_tcw, scheduleRead) => scheduleRead!(async () => {
         listSavedCalled = true;
-        return { ok: true, data: [] };
+        return { ok: true, data: { saved: [], unknown: [] } };
       }),
       save: async () => { saveCalled = true; return { ok: true }; },
     },
@@ -703,7 +719,7 @@ test("transcriber sync rechecks the account in the queued lane job before saving
     client,
     isCurrent: () => current,
     saver: {
-      listSaved: async () => ({ ok: true, data: [] }),
+      listSaved: async () => ({ ok: true, data: { saved: [], unknown: [] } }),
       save: async () => { writes++; return { ok: true }; },
     },
   });
@@ -736,7 +752,7 @@ test("an account switch while a fetched transcript waits for the lane prevents i
     client,
     isCurrent: () => current,
     saver: {
-      listSaved: async () => ({ ok: true, data: [] }),
+      listSaved: async () => ({ ok: true, data: { saved: [], unknown: [] } }),
       save: async () => { writes++; return { ok: true }; },
     },
   });
@@ -777,12 +793,410 @@ test("unreadable saved transcript bodies log only the incomplete meeting id and 
   };
   const debug = spyOn(console, "debug").mockImplementation(() => {});
   try {
-    expect(await listSavedTranscriberMeetingIds(f.tcw)).toEqual({ ok: true, data: [] });
+    const scan = await listSavedTranscriberMeetingIds(f.tcw);
+    expect(scan.ok).toBe(true);
+    if (!scan.ok) throw new Error("saved-ID scan failed");
+    expect(scan.data.saved).toEqual([]);
+    expect(scan.data.unknown.sort()).toEqual([meeting.id, thrownMeeting.id].sort());
     expect(debug).toHaveBeenCalledWith("[transcriberSave] incomplete meeting", meeting.id, "kv-read-failed");
     expect(debug).toHaveBeenCalledWith("[transcriberSave] incomplete meeting", thrownMeeting.id, "kv-read-threw");
     expect(debug.mock.calls.flat().join(" ")).not.toContain("private payload");
+    const attempts: string[] = [];
+    let unknownIds: string[] = [];
+    const client = {
+      list: async () => ({ status: "ok", value: { meetings: [meeting, thrownMeeting] } }),
+      transcript: async (id: string) => { attempts.push(id); return { status: "error" }; },
+    } as unknown as TranscriberClient;
+    await syncTranscriberLibrary({
+      tcw: f.tcw,
+      client,
+      deliveryActive: () => false,
+      onPendingSnapshot: (async (_rows: unknown, _saved: unknown, unknown: string[]) => { unknownIds = unknown; }) as never,
+    });
+    expect(attempts).toEqual([meeting.id, thrownMeeting.id]);
+    expect(unknownIds).toEqual([meeting.id, thrownMeeting.id]);
   } finally {
     debug.mockRestore();
     f.sql.close();
   }
+});
+
+// Publication refreshes use synthetic fixtures and expose only counts/versions on failure.
+const publication2: TranscriberTranscript = {
+  ...transcript, version: 2, duration_seconds: 200,
+  speakers: [{ id: "sp2", name: "Fixture participant" }],
+  segments: [{ id: "seg2", speaker_id: "sp2", speaker_name: "Fixture participant", start: 0, end: 200, text: "fixture-v2" }],
+  text: "fixture-v2",
+};
+const readSavedRow = (f: ReturnType<typeof libraryFixture>, sourceId = meeting.id) =>
+  f.sql.query("SELECT title, started_at, participants, duration_secs, metadata FROM connector_meeting WHERE source_id = ?")
+    .get(sourceId) as { title: string; started_at: string; participants: string; duration_secs: number; metadata: string };
+const savedVersion = (f: ReturnType<typeof libraryFixture>, sourceId = meeting.id) =>
+  JSON.parse(readSavedRow(f, sourceId).metadata).ptx_transcript_version;
+function refreshClient(rows: TranscriberMeeting[] = [{ ...meeting, transcript: { status: "completed", version: 2 } }], body = publication2) {
+  const fetches: string[] = [];
+  const client = {
+    list: async () => ({ status: "ok", value: { meetings: rows } }),
+    transcript: async (id: string) => { fetches.push(id); return { status: "ok", value: { status: "ready", transcript: { ...body, meeting_id: id } } }; },
+  } as unknown as TranscriberClient;
+  return { client, fetches };
+}
+async function savedFixture() {
+  const f = libraryFixture(); f.allowWrites();
+  expect((await saveTranscriberMeeting(f.tcw, meeting, transcript)).ok).toBe(true);
+  return f;
+}
+
+test("first saves record the upstream publication version, defaulting to 1", async () => {
+  for (const version of [undefined, 1, 2, 2.5]) {
+    const f = libraryFixture(); f.allowWrites();
+    try {
+      expect((await saveTranscriberMeeting(f.tcw, meeting, { ...transcript, version })).ok).toBe(true);
+      expect(savedVersion(f)).toBe(Number.isInteger(version) ? version : 1);
+    } finally { f.sql.close(); }
+  }
+});
+
+test("refresh archives the old row and body, updates publication fields and preserves title/start", async () => {
+  const f = await savedFixture();
+  f.sql.query("UPDATE connector_meeting SET title = ?, started_at = ?").run("fixture-custom", "2026-01-01T00:00:00Z");
+  const old = readSavedRow(f);
+  const key = transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, meeting.id);
+  const oldBody = f.bodies.get(key);
+  const changes: string[] = [];
+  const unsubscribe = captureEvents.on("library-changed", (detail) => changes.push(detail?.sourceId ?? ""));
+  try {
+    expect((await refreshTranscriberMeeting(f.tcw, meeting, publication2)).ok).toBe(true);
+    const archive = JSON.parse(f.bodies.get(archiveKvKey(meeting.id, 1))!);
+    expect(archive.version).toBe(1);
+    expect(Number.isFinite(Date.parse(archive.archived_at))).toBe(true);
+    expect(archive.body === oldBody).toBe(true);
+    for (const field of ["title", "participants", "duration_secs", "metadata"] as const) {
+      expect(archive.row[field] === old[field]).toBe(true);
+    }
+    const updated = readSavedRow(f);
+    expect(updated.title === old.title).toBe(true);
+    expect(updated.started_at === old.started_at).toBe(true);
+    expect(updated.duration_secs).toBe(200);
+    expect(updated.participants === JSON.stringify([{ name: "Fixture participant", email: null }])).toBe(true);
+    const normalized = await normalizeTranscriberTranscript(meeting, publication2);
+    expect(f.bodies.get(key) === normalized.body).toBe(true);
+    expect(JSON.parse(updated.metadata).transcript_text === publication2.text).toBe(true);
+    expect(savedVersion(f)).toBe(2);
+    expect(JSON.parse(updated.metadata).previous_transcript_versions).toEqual([1]);
+    expect(changes).toEqual([meeting.id]);
+  } finally { unsubscribe(); f.sql.close(); }
+});
+
+test("equal, lower, missing and non-integer publication versions do not write", async () => {
+  const f = await savedFixture();
+  try {
+    const writes = f.writes();
+    for (const version of [1, 0, undefined, 2.5, NaN]) {
+      expect((await refreshTranscriberMeeting(f.tcw, meeting, { ...publication2, version })).ok).toBe(true);
+      const { client, fetches } = refreshClient([{ ...meeting, transcript: { version } }]);
+      await syncTranscriberLibrary({ tcw: f.tcw, client });
+      expect(fetches).toHaveLength(0);
+    }
+    expect(f.writes()).toBe(writes);
+    expect(f.updates()).toBe(0);
+    expect(savedVersion(f)).toBe(1);
+  } finally { f.sql.close(); }
+});
+
+test("legacy metadata without a publication version counts as 1", async () => {
+  const f = await savedFixture();
+  try {
+    const metadata = JSON.parse(readSavedRow(f).metadata);
+    delete metadata.ptx_transcript_version;
+    f.sql.query("UPDATE connector_meeting SET metadata = ?").run(JSON.stringify(metadata));
+    const versions = await listSavedTranscriberVersions(f.tcw);
+    expect(versions.ok && versions.data.get(meeting.id)).toBe(1);
+    await syncTranscriberLibrary({ tcw: f.tcw, client: refreshClient().client });
+    expect(savedVersion(f)).toBe(2);
+    expect(f.bodies.has(archiveKvKey(meeting.id, 1))).toBe(true);
+  } finally { f.sql.close(); }
+});
+
+test("a failed row commit resumes next pass without replacing the original archive or duplicating events", async () => {
+  const f = await savedFixture();
+  const key = transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, meeting.id);
+  const oldBody = f.bodies.get(key);
+  const changes: string[] = [];
+  const unsubscribe = captureEvents.on("library-changed", (detail) => changes.push(detail?.sourceId ?? ""));
+  try {
+    f.failUpdateOnce();
+    const { client } = refreshClient();
+    await syncTranscriberLibrary({ tcw: f.tcw, client });
+    expect(savedVersion(f)).toBe(1);
+    const firstArchive = f.bodies.get(archiveKvKey(meeting.id, 1));
+    expect(JSON.parse(firstArchive!).body === oldBody).toBe(true);
+    expect(changes).toHaveLength(0);
+    await syncTranscriberLibrary({ tcw: f.tcw, client });
+    expect(f.bodies.get(archiveKvKey(meeting.id, 1)) === firstArchive).toBe(true);
+    expect(f.bodies.get(key) === (await normalizeTranscriberTranscript(meeting, publication2)).body).toBe(true);
+    expect(savedVersion(f)).toBe(2);
+    expect(JSON.parse(readSavedRow(f).metadata).previous_transcript_versions).toEqual([1]);
+    expect(changes).toEqual([meeting.id]);
+    const writes = f.writes();
+    const updates = f.updates();
+    await syncTranscriberLibrary({ tcw: f.tcw, client });
+    expect(f.writes()).toBe(writes);
+    expect(f.updates()).toBe(updates);
+    expect(changes).toHaveLength(1);
+  } finally { unsubscribe(); f.sql.close(); }
+});
+
+test("unsupported json_extract skips refreshes each pass but still imports first saves", async () => {
+  const f = await savedFixture();
+  f.failVersionReads();
+  try {
+    expect((await listSavedTranscriberVersions(f.tcw)).ok).toBe(false);
+    const { client, fetches } = refreshClient([
+      { ...meeting, transcript: { version: 2 } }, { ...meeting, id: "new-publication", transcript: { version: 2 } },
+    ]);
+    await syncTranscriberLibrary({ tcw: f.tcw, client });
+    await syncTranscriberLibrary({ tcw: f.tcw, client });
+    expect(fetches).toEqual(["new-publication"]);
+    expect(savedVersion(f)).toBe(1);
+    expect(savedVersion(f, "new-publication")).toBe(2);
+    expect(f.bodies.has(archiveKvKey(meeting.id, 1))).toBe(false);
+    expect(f.updates()).toBe(0);
+  } finally { f.sql.close(); }
+});
+
+test("a shared meeting refreshes from whitelisted transcript.version during delivery grace", async () => {
+  const f = await savedFixture();
+  const ended = Date.parse("2026-10-08T10:00:00Z");
+  try {
+    const { client, fetches } = refreshClient([{ ...meeting, ended_at: new Date(ended).toISOString(),
+      transcript: { status: "completed", version: 2 }, metadata: { shared: true } }]);
+    await syncTranscriberLibrary({ tcw: f.tcw, client, deliveryActive: () => true, now: () => ended + 60_000 });
+    expect(fetches).toEqual([meeting.id]);
+    expect(savedVersion(f)).toBe(2);
+  } finally { f.sql.close(); }
+});
+
+test("at most three refreshes run per pass; the next pass refreshes the rest", async () => {
+  const f = libraryFixture(); f.allowWrites();
+  try {
+    const rows = Array.from({ length: 5 }, (_, i) => ({ ...meeting, id: `publication-${i}`, transcript: { version: 2 } }));
+    for (const row of rows) expect((await saveTranscriberMeeting(f.tcw, row, transcript)).ok).toBe(true);
+    const { client, fetches } = refreshClient(rows);
+    await syncTranscriberLibrary({ tcw: f.tcw, client });
+    expect(fetches).toHaveLength(3);
+    expect(rows.map((row) => savedVersion(f, row.id))).toEqual([2, 2, 2, 1, 1]);
+    await syncTranscriberLibrary({ tcw: f.tcw, client });
+    expect(fetches).toHaveLength(5);
+    expect(rows.map((row) => savedVersion(f, row.id))).toEqual([2, 2, 2, 2, 2]);
+  } finally { f.sql.close(); }
+});
+
+
+test("a listed/fetched version mismatch and recent owned completion never refresh", async () => {
+  const f = await savedFixture();
+  try {
+    const mismatch = refreshClient(undefined, { ...publication2, version: 3 });
+    await syncTranscriberLibrary({ tcw: f.tcw, client: mismatch.client });
+    expect(mismatch.fetches).toHaveLength(1);
+    expect(savedVersion(f)).toBe(1);
+    const completed = Date.parse("2026-10-08T10:00:00Z");
+    const recent = refreshClient([{ ...meeting, completed_at: new Date(completed).toISOString(), transcript: { version: 2 } }]);
+    await syncTranscriberLibrary({ tcw: f.tcw, client: recent.client, now: () => completed + 60_000 });
+    expect(recent.fetches).toHaveLength(0);
+    expect(f.updates()).toBe(0);
+    await syncTranscriberLibrary({ tcw: f.tcw, client: recent.client, now: () => completed + 10 * 60_000 });
+    expect(recent.fetches).toHaveLength(1);
+    expect(savedVersion(f)).toBe(2);
+  } finally { f.sql.close(); }
+});
+
+test("refresh without a row uses the normal first-save path", async () => {
+  const f = libraryFixture(); f.allowWrites();
+  try {
+    expect((await ensureConnectorSchema(webConnectorPort(f.tcw))).ok).toBe(true);
+    expect((await refreshTranscriberMeeting(f.tcw, meeting, publication2)).ok).toBe(true);
+    expect(savedVersion(f)).toBe(2);
+    expect(f.updates()).toBe(0);
+    expect(f.bodies.has(archiveKvKey(meeting.id, 1))).toBe(false);
+  } finally { f.sql.close(); }
+});
+
+test("M8: archive failure leaves body and row intact and the next pass retries", async () => {
+  const f = await savedFixture();
+  const old = JSON.stringify(readSavedRow(f));
+  const key = transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, meeting.id);
+  const body = f.bodies.get(key);
+  const put = f.tcw.kv.put.bind(f.tcw.kv);
+  let fail = true;
+  f.tcw.kv.put = (async (...args: Parameters<typeof put>) => {
+    if (fail && args[0] === archiveKvKey(meeting.id, 1)) return { ok: false, error: { code: "KV_QUOTA_EXCEEDED" } };
+    return put(...args);
+  }) as typeof put;
+  const changes: string[] = [];
+  const unsubscribe = captureEvents.on("library-changed", () => changes.push("changed"));
+  try {
+    const { client } = refreshClient();
+    await syncTranscriberLibrary({ tcw: f.tcw, client });
+    expect(JSON.stringify(readSavedRow(f)) === old).toBe(true);
+    expect(f.bodies.get(key) === body).toBe(true);
+    expect(changes).toHaveLength(0);
+    fail = false;
+    await syncTranscriberLibrary({ tcw: f.tcw, client });
+    expect(savedVersion(f)).toBe(2);
+    expect(changes).toHaveLength(1);
+  } finally { unsubscribe(); f.sql.close(); }
+});
+
+test("M11: a throwing refresh does not stop other refreshes in the pass", async () => {
+  const f = libraryFixture(); f.allowWrites();
+  try {
+    const rows = ["failure", "healthy"].map((id) => ({ ...meeting, id, transcript: { version: 2 } }));
+    for (const row of rows) await saveTranscriberMeeting(f.tcw, row, transcript);
+    const put = f.tcw.kv.put.bind(f.tcw.kv);
+    f.tcw.kv.put = (async (...args: Parameters<typeof put>) => {
+      if (args[0] === archiveKvKey("failure", 1)) throw new Error("archive unavailable");
+      return put(...args);
+    }) as typeof put;
+    const { client, fetches } = refreshClient(rows);
+    await syncTranscriberLibrary({ tcw: f.tcw, client });
+    expect(fetches).toEqual(["failure", "healthy"]);
+    expect(savedVersion(f, "failure")).toBe(1);
+    expect(savedVersion(f, "healthy")).toBe(2);
+  } finally { f.sql.close(); }
+});
+
+test("M12: ptx rollback refreshes forward from v1 through v2 to v3", async () => {
+  const f = await savedFixture();
+  const key = transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, meeting.id);
+  const v1 = f.bodies.get(key);
+  const changes: string[] = [];
+  const unsubscribe = captureEvents.on("library-changed", () => changes.push("changed"));
+  try {
+    await syncTranscriberLibrary({ tcw: f.tcw, client: refreshClient().client });
+    const v2 = f.bodies.get(key);
+    await syncTranscriberLibrary({ tcw: f.tcw, client: refreshClient(
+      [{ ...meeting, transcript: { version: 3 } }], { ...transcript, version: 3 },
+    ).client });
+    expect(savedVersion(f)).toBe(3);
+    expect(f.bodies.get(key) === v1).toBe(true);
+    expect(JSON.parse(readSavedRow(f).metadata).previous_transcript_versions).toEqual([1, 2]);
+    expect(JSON.parse(f.bodies.get(archiveKvKey(meeting.id, 1))!).body === v1).toBe(true);
+    expect(JSON.parse(f.bodies.get(archiveKvKey(meeting.id, 2))!).body === v2).toBe(true);
+    expect(changes).toHaveLength(2);
+  } finally { unsubscribe(); f.sql.close(); }
+});
+
+test("backoff skips three failing rows so the next pass reaches a healthy row", async () => {
+  const f = libraryFixture(); f.allowWrites();
+  const refreshBackoff = new Map<string, { failures: number; retryAt: number }>();
+  const epoch = Date.parse("2026-10-13T00:00:00Z");
+  let now = epoch + 1_000;
+  try {
+    const rows = ["fail-1", "fail-2", "fail-3", "healthy"].map((id) => ({ ...meeting, id, transcript: { version: 2 } }));
+    for (const row of rows) await saveTranscriberMeeting(f.tcw, row, transcript);
+    const put = f.tcw.kv.put.bind(f.tcw.kv);
+    f.tcw.kv.put = (async (...args: Parameters<typeof put>) => {
+      if (rows.slice(0, 3).some((row) => args[0] === archiveKvKey(row.id, 1))) throw new Error("archive unavailable");
+      return put(...args);
+    }) as typeof put;
+    const { client, fetches } = refreshClient(rows);
+    const sync = () => syncTranscriberLibrary({ tcw: f.tcw, client, refreshBackoff, now: () => now });
+    await sync();
+    expect(fetches).toHaveLength(3);
+    expect(refreshBackoff.get("fail-1")).toEqual({ failures: 1, retryAt: epoch + 61_000 });
+    await sync();
+    expect(fetches).toEqual(["fail-1", "fail-2", "fail-3", "healthy"]);
+    expect(savedVersion(f, "healthy")).toBe(2);
+    now = epoch + 61_000;
+    await sync();
+    expect(refreshBackoff.get("fail-1")).toEqual({ failures: 2, retryAt: epoch + 181_000 });
+    now = epoch + 181_000;
+    f.tcw.kv.put = put;
+    await sync();
+    expect(refreshBackoff.size).toBe(0);
+  } finally { f.sql.close(); }
+});
+
+test("compare-and-set repairs a stale v2 body after v3 commits first", async () => {
+  const f = await savedFixture();
+  const key = transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, meeting.id);
+  const put = f.tcw.kv.put.bind(f.tcw.kv);
+  const blocked = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const v2 = await normalizeTranscriberTranscript(meeting, publication2);
+  const publication3 = { ...transcript, version: 3 };
+  const v3 = await normalizeTranscriberTranscript(meeting, publication3);
+  f.tcw.kv.put = (async (...args: Parameters<typeof put>) => {
+    if (args[0] === key && args[1] === v2.body) { blocked.resolve(); await release.promise; }
+    return put(...args);
+  }) as typeof put;
+  const changes: string[] = [];
+  const unsubscribe = captureEvents.on("library-changed", () => changes.push("changed"));
+  try {
+    const older = refreshTranscriberMeeting(f.tcw, meeting, publication2, async () => publication3);
+    await blocked.promise;
+    expect((await refreshTranscriberMeeting(f.tcw, meeting, publication3)).ok).toBe(true);
+    expect(savedVersion(f)).toBe(3);
+    release.resolve();
+    expect((await older).ok).toBe(true);
+    expect(savedVersion(f)).toBe(3);
+    expect(f.bodies.get(key) === v3.body).toBe(true);
+    expect([...f.bodies.keys()].filter((key) => key.includes("/archive/"))).toEqual([archiveKvKey(meeting.id, 1)]);
+    expect(changes).toHaveLength(1);
+  } finally { release.resolve(); unsubscribe(); f.sql.close(); }
+});
+
+test("C4: a lost compare-and-set leaves a mismatched upstream version for the next pass", async () => {
+  const f = await savedFixture();
+  const key = transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, meeting.id);
+  const put = f.tcw.kv.put.bind(f.tcw.kv);
+  const blocked = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const v2 = await normalizeTranscriberTranscript(meeting, publication2);
+  const publication3 = { ...transcript, version: 3 };
+  const publication4 = { ...publication2, version: 4, segments: [{ ...publication2.segments![0], text: "fixture-v4" }] };
+  const puts: string[] = [];
+  f.tcw.kv.put = (async (...args: Parameters<typeof put>) => {
+    if (args[0] === key && args[1] === v2.body) { blocked.resolve(); await release.promise; }
+    puts.push(args[0]);
+    return put(...args);
+  }) as typeof put;
+  const changes: string[] = [];
+  const unsubscribe = captureEvents.on("library-changed", () => changes.push("changed"));
+  let repairFetches = 0;
+  let writesBeforeRepair = 0;
+  let eventsBeforeRepair = 0;
+  let rowBeforeRepair = "";
+  let archivesBeforeRepair: Array<[string, string]> = [];
+  try {
+    const older = refreshTranscriberMeeting(f.tcw, meeting, publication2, async () => {
+      repairFetches++;
+      expect(savedVersion(f)).toBe(3); // vNow: the v2 compare-and-set missed.
+      expect(f.bodies.get(key)).toBe(v2.body);
+      writesBeforeRepair = puts.length;
+      eventsBeforeRepair = changes.length;
+      rowBeforeRepair = JSON.stringify(readSavedRow(f));
+      archivesBeforeRepair = [...f.bodies].filter(([key]) => key.includes("/archive/"));
+      return publication4; // Upstream has advanced beyond the committed row.
+    });
+    await blocked.promise;
+    expect((await refreshTranscriberMeeting(f.tcw, meeting, publication3)).ok).toBe(true);
+    release.resolve();
+    expect((await older).ok).toBe(true);
+    expect(repairFetches).toBe(1);
+    expect(f.bodies.get(key)).toBe(v2.body);
+    expect(puts.slice(writesBeforeRepair)).toEqual([]); // No repair body or archive put.
+    expect([...f.bodies].filter(([key]) => key.includes("/archive/"))).toEqual(archivesBeforeRepair);
+    expect(changes.slice(eventsBeforeRepair)).toEqual([]);
+    expect(JSON.stringify(readSavedRow(f))).toBe(rowBeforeRepair);
+    expect(savedVersion(f)).toBe(3);
+
+    await syncTranscriberLibrary({ tcw: f.tcw, client: refreshClient(
+      [{ ...meeting, transcript: { version: 4 } }], publication4,
+    ).client });
+    expect(savedVersion(f)).toBe(4);
+    expect(f.bodies.get(key)).toBe((await normalizeTranscriberTranscript(meeting, publication4)).body);
+    expect(changes).toHaveLength(eventsBeforeRepair + 1);
+  } finally { release.resolve(); unsubscribe(); f.sql.close(); }
 });

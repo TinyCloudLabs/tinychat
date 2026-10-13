@@ -60,15 +60,24 @@ describe("Google Calendar attendance and occurrence policy", () => {
     ] } }))?.meetingUrl).toBe("https://meet.google.com/xyz-abcd-efg");
   });
 
-  test("the send window excludes ended short events and the five-minute boundary", () => {
+  test("TC-988: the send window ends at fifteen minutes or one minute before the end", () => {
     const start = Date.parse("2026-09-25T12:00:00Z");
     const short = { start, end: start + 30_000 };
-    expect(dispatchCutoff(short)).toBe(short.end);
+    expect(dispatchCutoff(short)).toBe(short.end - 60_000);
     expect(inDispatchWindow(short, start - 60_001)).toBe(false);
     expect(inDispatchWindow(short, start - 60_000)).toBe(true);
-    expect(inDispatchWindow(short, short.end - 1)).toBe(true);
-    expect(inDispatchWindow(short, short.end)).toBe(false);
-    expect(inDispatchWindow({ start, end: start + 900_000 }, start + 300_000)).toBe(false);
+    expect(inDispatchWindow(short, short.end - 60_001)).toBe(true);
+    expect(inDispatchWindow(short, short.end - 60_000)).toBe(false);
+    const long = { start, end: start + 1_800_000 };
+    expect(dispatchCutoff(long)).toBe(start + 900_000);
+    expect(inDispatchWindow(long, start + 480_000)).toBe(true);
+    expect(inDispatchWindow(long, start + 899_999)).toBe(true);
+    expect(inDispatchWindow(long, start + 900_000)).toBe(false);
+    expect(inDispatchWindow(long, start + 960_000)).toBe(false);
+    const earlyEnd = { start, end: start + 600_000 };
+    expect(dispatchCutoff(earlyEnd)).toBe(start + 540_000);
+    expect(inDispatchWindow(earlyEnd, earlyEnd.end - 60_001)).toBe(true);
+    expect(inDispatchWindow(earlyEnd, earlyEnd.end - 60_000)).toBe(false);
     expect(eligibleCalendarEvent(event({ start: { dateTime: "2026-09-25T12:00:00" } }))).toBeNull();
   });
 });

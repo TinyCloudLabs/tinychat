@@ -2,18 +2,21 @@ import { logPipeline, logPipelineError } from "@/lib/debugLog";
 import { readableError } from "@/lib/readableError";
 // Voice notes in the owner's TinyCloud space: one indexed live
 // `connector_meeting` row, a `voice_note_transcript` commit record, and bodies
-// in KV under the granted `connectors/` prefix.
+// in KV under the granted `connectors/` prefix. See `mobile/docs/storage-identity.md`
+// for canonical identity (`source_id`) and transcript resolution contracts.
 //
-//   SQL  connector_meeting  source = "exo-voice-note", source_id = recording id
-//   KV   {APP_ID}/connectors/exo-voice-note/audio/{id}/p/000000  raw audio, part 0 (≤ 1 MiB)
-//   KV   {APP_ID}/connectors/exo-voice-note/audio/{id}/p/000001  part 1, ...
-//   KV   {APP_ID}/connectors/exo-voice-note/audio/{id}/manifest  JSON, written LAST
-//   KV   {APP_ID}/connectors/exo-voice-note/transcript/{id}      old-reader mirror
-//   KV   {APP_ID}/connectors/exo-voice-note/transcript-rev/{id}/{hash} immutable body
-//   KV   {APP_ID}/connectors/exo-voice-note/audio/{id}/note.md Markdown + frontmatter
+//   SQL  connector_meeting  source = "exo-voice-note", source_id = recording UUID;
+//        id is an opaque row id (`vn-<source_id>` for new rows; legacy ids persist)
+//   KV   {APP_ID}/connectors/exo-voice-note/audio/{source_id}/p/000000  raw audio, part 0 (≤ 1 MiB)
+//   KV   {APP_ID}/connectors/exo-voice-note/audio/{source_id}/p/000001  part 1, ...
+//   KV   {APP_ID}/connectors/exo-voice-note/audio/{source_id}/manifest  JSON, written LAST
+//   KV   {APP_ID}/connectors/exo-voice-note/transcript/{source_id}      non-authoritative, non-atomic legacy mirror
+//        initialized to []; overwritten with the winning body after each verified commit
+//   KV   {APP_ID}/connectors/exo-voice-note/transcript-rev/{source_id}/{hash} immutable committed body
+//   KV   {APP_ID}/connectors/exo-voice-note/audio/{source_id}/note.md Markdown + frontmatter
 //
 // Notes saved before TC-517 hold their audio as ONE value at
-// `{APP_ID}/connectors/exo-voice-note/audio/{id}` (JSON { mimeType, base64 });
+// `{APP_ID}/connectors/exo-voice-note/audio/{source_id}` (JSON { mimeType, base64 });
 // they are still read (manifest first, then that value) but never written.
 //
 // Why parts: the node itself accepts up to 1 GB per KV put, but the ingress in

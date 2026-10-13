@@ -113,8 +113,8 @@ function harness(secret?: string, blockLoads = false): Harness {
   return { index, loads, upstreamCalls, firstAdmission, secondAdmission, releaseLoads, worker, app };
 }
 
-async function withWebhook(fn: (h: Harness, base: string) => Promise<void>, secret?: string, blockLoads = false): Promise<void> {
-  const h = harness(secret, blockLoads);
+async function withWebhook(fn: (h: Harness, base: string) => Promise<void>, secret: string | null = SECRET, blockLoads = false): Promise<void> {
+  const h = harness(secret ?? undefined, blockLoads);
   const server = await new Promise<Server>((resolve) => {
     const instance = h.app.listen(0, "127.0.0.1", () => resolve(instance));
   });
@@ -145,17 +145,14 @@ describe("private transcription webhook", () => {
     }, SECRET);
   });
 
-  test("unsigned mode admits only the indexed address and id, with no ptx or node activation on receipt", async () => {
-    await withWebhook(async (h, base) => {
-      await h.index.add(ADDRESS, ID);
-      expect((await post(base, { body: event("meeting.completed", OTHER_ADDRESS) })).status).toBe(202);
-      expect((await post(base, { body: event("meeting.completed", MIXED_ADDRESS, "unknown") })).status).toBe(202);
-      expect(h.loads).toEqual([]);
-      expect((await post(base)).status).toBe(202);
-      await h.firstAdmission;
-      expect(h.loads).toEqual([ADDRESS]);
-      expect(h.upstreamCalls).toEqual([]);
-    });
+  test("an unset or empty webhook secret fails closed before any worker wake", async () => {
+    for (const secret of [null, ""]) {
+      await withWebhook(async (h, base) => {
+        expect((await post(base, { body: event() })).status).toBe(503);
+        expect(h.loads).toEqual([]);
+        expect(h.upstreamCalls).toEqual([]);
+      }, secret);
+    }
   });
 
   test("failed and malformed events cannot wake a worker, even with a valid signature", async () => {
@@ -190,14 +187,14 @@ describe("private transcription webhook", () => {
   test("burst duplicates occupy one pending worker slot while the first delivery is in flight", async () => {
     await withWebhook(async (h, base) => {
       await h.index.add(ADDRESS, ID);
-      expect((await post(base)).status).toBe(202);
+      expect((await post(base, { signature: signature(event()) })).status).toBe(202);
       await h.firstAdmission;
-      for (let i = 0; i < 20; i++) expect((await post(base)).status).toBe(202);
+      for (let i = 0; i < 20; i++) expect((await post(base, { signature: signature(event()) })).status).toBe(202);
       h.releaseLoads();
       await h.worker.stop();
       expect(h.loads).toEqual([ADDRESS]);
       expect(h.upstreamCalls).toEqual([]);
-    }, undefined, true);
+    }, SECRET, true);
   });
 
   test("a wake the worker cannot record (unreadable index, stopping worker) answers 503 with Retry-After", async () => {
@@ -205,14 +202,15 @@ describe("private transcription webhook", () => {
       await h.index.add(ADDRESS, ID);
       const entries = h.index.entries.bind(h.index);
       h.index.entries = async () => { throw new Error("transcriber_index_invalid"); };
-      const unreadable = await post(base);
+      const unreadable = await post(base, { signature: signature(event()) });
       expect(unreadable.status).toBe(503);
       expect(unreadable.headers.get("retry-after")).toBe("60");
       h.index.entries = entries;
       await h.worker.stop();
-      expect((await post(base)).status).toBe(503);
+      expect((await post(base, { signature: signature(event()) })).status).toBe(503);
       // A deliberately ignored wake is still 202 while stopping: nothing about the id leaks.
-      expect((await post(base, { body: event("meeting.completed", OTHER_ADDRESS) })).status).toBe(202);
+      const ignored = event("meeting.completed", OTHER_ADDRESS);
+      expect((await post(base, { body: ignored, signature: signature(ignored) })).status).toBe(202);
       expect(h.upstreamCalls).toEqual([]);
     });
   });
@@ -220,18 +218,18 @@ describe("private transcription webhook", () => {
   test("the public endpoint enforces 60/min/IP and 600/min across different IPs", async () => {
     await withWebhook(async (h, base) => {
       const failed = event("meeting.failed");
-      for (let i = 0; i < 60; i++) expect((await post(base, { body: failed })).status).toBe(202);
-      expect((await post(base, { body: failed })).status).toBe(429);
+      for (let i = 0; i < 60; i++) expect((await post(base, { body: failed, signature: signature(failed) })).status).toBe(202);
+      expect((await post(base, { body: failed, signature: signature(failed) })).status).toBe(429);
       expect(h.loads).toEqual([]);
     });
     await withWebhook(async (h, base) => {
       const failed = event("meeting.failed");
       for (let ip = 0; ip < 10; ip++) {
         for (let i = 0; i < 60; i++) {
-          expect((await post(base, { body: failed, ip: `198.51.100.${ip}` })).status).toBe(202);
+          expect((await post(base, { body: failed, signature: signature(failed), ip: `198.51.100.${ip}` })).status).toBe(202);
         }
       }
-      expect((await post(base, { body: failed, ip: "198.51.100.10" })).status).toBe(429);
+      expect((await post(base, { body: failed, signature: signature(failed), ip: "198.51.100.10" })).status).toBe(429);
       expect(h.loads).toEqual([]);
     });
   }, 30_000);

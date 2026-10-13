@@ -1,5 +1,35 @@
 # @tinychat/frontend
 
+## 0.7.0-beta.6
+
+### Minor Changes
+
+- 8ec1482: Existing browser sync passes persist a metadata-only snapshot of backend-ingested and completed transcriber meetings that are still unreconciled or unsaved. `changed_at` records projection changes; `checked_at` is the observation time of the last persisted source check. Backend-ingest updates on existing mount/unlock passes only. Transcriber unchanged projections refresh at most hourly on its existing 30-second active/unlocked pass, so its consumer freshness threshold must exceed 1 hour plus 30 seconds. The snapshot uses the retrieval pack's existing connector read grant. Pack consumption is intentionally deferred until TC-977 merges.
+
+## 0.7.0-beta.5
+
+### Patch Changes
+
+- 2ac09a6: Widen Calendar autojoin's late-join window, preserve truthful RSVP outcomes without hiding dispatch failures, skip unchanged RSVP writes, and record discovery and dispatch lag (TC-988).
+
+## 0.7.0-beta.4
+
+### Patch Changes
+
+- 3b92372: Handle Exo transcript omissions and channel speakers, honor voice-note commit and legacy-winner semantics from TC-978, and publish retrieval pack 0.1.1-onboarding.19.
+
+## 0.7.0-beta.3
+
+### Patch Changes
+
+- ddbadf9: fix(exo desktop): allow the system-audio consent commands so Mac recording can start
+
+## 0.7.0-beta.2
+
+### Minor Changes
+
+- 20faa03: Refresh saved transcriber transcripts when ptx publishes a newer version, keeping previous copies in an immutable archive and preserving edited meeting titles and start times (TC-989).
+
 ## 0.6.1-beta.1
 
 ### Patch Changes

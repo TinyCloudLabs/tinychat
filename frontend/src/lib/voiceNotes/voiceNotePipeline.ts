@@ -7,6 +7,8 @@ import { errorCode, isDiscarded, pendingStore, saveNoteForAccount, type PendingU
 import { ensureVoiceNoteIdentity } from "./voiceNoteRows";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { syncRecordingNote, VOICE_NOTE_SOURCE } from "./voiceNoteStore";
+import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
+import { appPlatform } from "@/lib/platform";
 import type { StoreAudioOptions } from "./voiceNoteStore";
 
 export interface VoiceNotePipeline {
@@ -46,12 +48,20 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     assertCurrent(ctx);
     if (tcw.did !== ctx.did || tcw.spaceId !== ctx.spaceId) throw new Error("Voice-note space changed");
   };
+  const syncDesktopAfterUpload = (ctx: AccountContext, note: VoiceNoteRecording | null) => {
+    if (!note || appPlatform() !== "tauri" || note.options?.transcriber !== "on-device") return;
+    // Upload owns no slot by this point. Whisper and upload may finish in either order.
+    void syncOnDeviceTranscript(tcw, { id: note.id, owner: note.owner,
+      ledger: { audio: { state: "saved" } }, stt: note.stt }, ctx)
+      .catch((error) => console.warn("[VoiceNotes] Desktop transcript sync is still pending", { id: note.id, error }));
+  };
   const processOne = async (ctx: AccountContext, id: string, epoch: number, trackPending = false,
     uploadTicket?: PendingUploadTicket): Promise<VoiceNoteRecording | null> => {
     if (uploadTicket && !uploadTicket.owns) return null;
     try {
     const check = checkFor(ctx, epoch);
     check();
+    if (uploadTicket) pendingStore.preparingUpload(uploadTicket);
     const gate = await withVoiceNoteSaveDeadline("voice-note space setup", () => ensureVoiceNoteIdentity(tcw, check));
     if (gate.status !== "established") throw Object.assign(new Error(gate.reason ?? gate.status), { code: gate.status, cause: gate.cause });
     check();
@@ -89,7 +99,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
       const epoch = cancellation;
       const uploadTicket = pendingStore.enqueueUpload(id);
       if (!uploadTicket.owns) return Promise.resolve("owned-by-another-run");
-      return run(async () => { await processOne(ctx, id, epoch, false, uploadTicket); });
+      return run(async () => { syncDesktopAfterUpload(ctx, await processOne(ctx, id, epoch, false, uploadTicket)); });
     },
     reconcileAll(ctx, _trigger = "reconcile", onSaved) {
       if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());
@@ -137,6 +147,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
             let saved: VoiceNoteRecording | null = null;
             try {
               saved = await processOne(ctx, note.id, epoch, true, uploadTickets.get(note.id));
+              syncDesktopAfterUpload(ctx, saved);
               check();
               if (saved) captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId: note.id });
             }

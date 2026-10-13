@@ -1,4 +1,5 @@
 import { once } from "node:events";
+import { createHmac } from "node:crypto";
 import type { Server } from "node:http";
 import express from "express";
 import { Database } from "bun:sqlite";
@@ -91,7 +92,7 @@ async function fixture(schema = true): Promise<Fixture> {
     async getTranscript(id) {
       counts.transcript++;
       return { pending: false, transcript: {
-        meeting_id: id, status: "completed", segments: [{ id: "seg", speaker_id: "sp", speaker_name: "Alice", start: 1, end: 3, text: "hello" }],
+        meeting_id: id, status: "completed", version: 1, segments: [{ id: "seg", speaker_id: "sp", speaker_name: "Alice", start: 1, end: 3, text: "hello" }],
       } };
     },
     async lookupMeetingByIdempotencyKey() { return null; },
@@ -305,11 +306,18 @@ describe("durable transcript delivery", () => {
     await wakeAndDrain(worker, f.grant.address, "m-1");
     expect(f.db.query("SELECT source_id FROM connector_meeting").all()).toEqual([{ source_id: "m-1" }]);
     expect(JSON.parse(f.bodies.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, "m-1"))!)).toHaveLength(1);
+    expect(f.db.query("SELECT json_extract(metadata, '$.ptx_transcript_version') AS version FROM connector_meeting").get()).toEqual({ version: 1 });
     expect(f.state().done["m-1"].how).toBe("written");
     expect(f.counts.activation).toBe(2);
     expect(f.counts.execute).toBe(1);
+    const originalBody = f.bodies.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, "m-1"));
+    f.meetings.get("m-1")!.transcript = { status: "completed", version: 2 };
     await wakeAndDrain(worker, f.grant.address, "m-1");
     expect(f.counts.meeting).toBe(1);
+    expect(f.counts.transcript).toBe(1);
+    expect(f.counts.execute).toBe(1);
+    expect(f.counts.put).toBe(1);
+    expect(f.bodies.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, "m-1")) === originalBody).toBe(true);
     await worker.stop();
   });
 
@@ -764,9 +772,10 @@ describe("durable transcript delivery", () => {
     };
     await admit(f, "blocker");
     for (let i = 0; i < 1000; i++) await admit(f, `filler-${i}`);
+    const secret = `whsec_${"a".repeat(48)}`;
     const worker = f.worker();
     const app = express();
-    app.use("/api/transcriber/webhooks/ptx", createTranscriberWebhookRouter(worker));
+    app.use("/api/transcriber/webhooks/ptx", createTranscriberWebhookRouter(worker, secret));
     // The drain is held inside one delivery while 1,000 more wakes fill the queue.
     expect(await worker.wake(f.grant.address, "blocker", "completed")).toBe("queued");
     await blocking.promise;
@@ -779,7 +788,12 @@ describe("durable transcript delivery", () => {
     };
     await withServer(app, async (base) => {
       const post = (body: string) => fetch(`${base}/api/transcriber/webhooks/ptx`, {
-        method: "POST", headers: { "content-type": "application/json" }, body,
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-webhook-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
+        },
+        body,
       });
       const refused = await post(completed("busy"));
       expect(refused.status).toBe(503);
