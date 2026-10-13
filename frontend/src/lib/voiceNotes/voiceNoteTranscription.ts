@@ -1564,7 +1564,6 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           jobs.set(sourceId, { kind: "failed", ...failure });
           // Incomplete coverage is retryable only by explicit tap; do not restart it on relaunch.
           if (!failure.retryable || code === "transcript_incomplete") {
-            if (code === "transcript_incomplete") chosenPrivate.delete(sourceId);
             settleChoice(sourceId);
           }
         }

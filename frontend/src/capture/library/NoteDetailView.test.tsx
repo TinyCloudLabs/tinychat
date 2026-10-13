@@ -188,7 +188,7 @@ describe("a voice note's transcription", () => {
         transcription: transcription({ maxSeconds: 7_200 }),
       });
       expect(html).toContain('data-testid="voice-note-transcription-failed"');
-      expect(html).toContain("An earlier version could not transcribe this recording. Try again.");
+      expect(html).toContain("Private cloud couldn&#x27;t accept this recording&#x27;s length or size. Try again.");
       expect(html).toContain("Try again");
       expect(html).toContain('data-testid="transcribe-button"');
     }

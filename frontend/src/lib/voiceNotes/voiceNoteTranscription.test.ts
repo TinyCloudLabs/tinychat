@@ -1892,7 +1892,10 @@ describe("an explicit move to private cloud survives a restart", () => {
       duration_seconds: 4_337,
       stats: { tinfoil_calls: 1, tinfoil_audio_seconds: 1_248 },
     } as unknown as PrivateCloudTranscript;
-    const first = harness({ pending, result: incomplete });
+    const first = harness({
+      pending,
+      result: incomplete,
+    });
     const transcriber = launch(first);
     await transcriber.check();
     transcriber.transcribePrivately("rec-1");
@@ -1912,10 +1915,40 @@ describe("an explicit move to private cloud survives a restart", () => {
     expect(retry.creates).toHaveLength(0);
     expect(retry.puts).toHaveLength(0);
 
+
     restarted.transcribePrivately("rec-1");
     await settle(restarted);
     expect(retry.creates).toHaveLength(1);
     expect(retry.puts).toHaveLength(1);
+  });
+
+  test("a same-session Recent Retry keeps Private mode after transcript_incomplete", async () => {
+    const space = await onDeviceNote();
+    const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
+    const incomplete = {
+      ...TRANSCRIPT,
+      duration_seconds: 4_337,
+      stats: { tinfoil_calls: 1, tinfoil_audio_seconds: 1_248 },
+    } as unknown as PrivateCloudTranscript;
+    const created = { id: ID, status: "awaiting_upload" as const, upload: { path: `/uploads/${ID}`, capability: CAP } };
+    const h = harness({ pending, result: incomplete, creates: [created, created] });
+    const transcriber = createVoiceNoteTranscriber({
+      cloud: h.cloud,
+      consent: { get: () => true, set: () => {} },
+      choices: localStorageVoiceNotePrivateChoiceStore(DID, memoryStorage()),
+      holds: memoryHoldStore(),
+      tcw: () => space.tcw,
+    });
+    await transcriber.check();
+    transcriber.transcribePrivately("rec-1");
+    await settle(transcriber);
+    expect(h.creates).toHaveLength(1);
+    expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "transcript_incomplete" });
+
+    transcriber.transcribe("rec-1");
+    await settle(transcriber);
+    expect(h.creates).toHaveLength(2);
+    expect(h.puts).toHaveLength(2);
   });
 
   test("turning private cloud off revokes the choice", async () => {
