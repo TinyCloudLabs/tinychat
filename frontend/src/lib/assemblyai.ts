@@ -423,7 +423,7 @@ export function assemblyAiSentences(t: AssemblyAiTranscript, sentences: Assembly
     }
     for (const index of bySpeaker.values()) {
       index.rows.sort((a, b) => a.start - b.start);
-      index.maxEnd = index.rows.map((row, i) => Math.max(row.end, index.maxEnd[i - 1] ?? -Infinity));
+      for (const row of index.rows) index.maxEnd.push(Math.max(row.end, index.maxEnd.at(-1) ?? -Infinity));
     }
   }
   const containingUtterance = (sentence: AssemblyAiSentence) => {

@@ -48,6 +48,39 @@ describe("assemblyAiSentences", () => {
     ]);
     expect(rows.map((row) => row.channel)).toEqual([0, 1]);
   });
+
+  test("a sentence after short overlapping turns inherits its long utterance's channel", () => {
+    const t: AssemblyAiTranscript = { id: "nested", status: "completed", audio_channels: 2,
+      utterances: [
+        { speaker: "A", text: "Long left", start: 0, end: 100_000, channel: 0 },
+        { speaker: "B", text: "First right", start: 1_000, end: 2_000, channel: 1 },
+        { speaker: "B", text: "Second right", start: 3_000, end: 4_000, channel: 1 },
+      ] };
+    const rows = assemblyAiSentences(t, [{ text: "Later left", start: 50_000, end: 60_000 }]);
+    expect(rows.map((row) => row.channel)).toEqual([0]);
+  });
+
+  test("a sentence spanning nested short turns inherits the outer utterance's channel", () => {
+    const t: AssemblyAiTranscript = { id: "nested-span", status: "completed", audio_channels: 2,
+      utterances: [
+        { speaker: "A", text: "Long left", start: 0, end: 100_000, channel: 0 },
+        { speaker: "B", text: "First right", start: 1_000, end: 2_000, channel: 1 },
+        { speaker: "B", text: "Second right", start: 3_000, end: 4_000, channel: 1 },
+      ] };
+    const rows = assemblyAiSentences(t, [{ text: "Across right turns", start: 1_500, end: 3_500 }]);
+    expect(rows.map((row) => row.channel)).toEqual([0]);
+  });
+
+  test("speaker-scoped lookup handles nested utterances supplied out of order", () => {
+    const t: AssemblyAiTranscript = { id: "nested-speaker", status: "completed", audio_channels: 2,
+      utterances: [
+        { speaker: "A", text: "Short right", start: 3_000, end: 4_000, channel: 1 },
+        { speaker: "A", text: "Long left", start: 0, end: 100_000, channel: 0 },
+        { speaker: "A", text: "Earlier right", start: 1_000, end: 2_000, channel: 1 },
+      ] };
+    const rows = assemblyAiSentences(t, [{ speaker: "A", text: "Later left", start: 50_000, end: 60_000 }]);
+    expect(rows.map((row) => row.channel)).toEqual([0]);
+  });
 });
 
 describe("pollAssemblyAiTranscript", () => {
