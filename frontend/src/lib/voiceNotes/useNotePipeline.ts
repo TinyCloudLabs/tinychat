@@ -138,9 +138,8 @@ export interface NotePipelineFacts {
  * Where this note's transcript comes from. What is transcribing it wins, because the note's Transcribe action can run a
  * provider other than the committed one: a live on-device job, then a private-cloud job, then an on-device attempt that
  * finished (its failure or cancel is what the note shows until a cloud job takes over). With none, the note's committed mode
- * (`options.transcriber` in the phone's ledger) decides. A note this phone has no ledger entry for (a Mac, a browser,
- * another phone's note) has no committed mode: a native on-device job says on-device, and anything else is "off" (nobody
- * is transcribing it from here, so the transcript step is skipped, never invented).
+ * (`options.transcriber` in the phone's ledger) decides. Desktop Whisper has its own queue and the space row records
+ * the committed choice; neither requires Capacitor's phone ledger.
  */
 // `waiting_for_model` is written for every committed mode at creation; only a real attempt writes these.
 const ATTEMPT_STATES: ReadonlySet<NoteSttState["state"]> = new Set(["queued", "running", "done", "failed", "cancelled"]);
@@ -157,6 +156,14 @@ export function pipelineRoute(native: NativeNote | null, hasCloudJob: boolean, q
     case "assemblyai": return "private-cloud";
     case null: return native?.stt != null ? "on-device" : "off";
   }
+}
+
+function desktopCommittedLocal(metadata: Record<string, unknown> | null): boolean {
+  const capture = metadata?.capture;
+  if (capture === null || typeof capture !== "object") return false;
+  const options = (capture as { options?: unknown }).options;
+  return options !== null && typeof options === "object" &&
+    (options as { transcriber?: unknown }).transcriber === "on-device";
 }
 
 // --- Decision (b): the model ----------------------------------------------------------------------------------
@@ -251,7 +258,9 @@ function onDeviceInput(facts: NotePipelineFacts): PipelineOnDevice | null {
 }
 
 export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineInput {
-  const route = pipelineRoute(facts.native, facts.cloudJob !== null, facts.onDeviceStatus === null ? null : onDeviceQueuePlace(facts.onDeviceStatus, facts.id));
+  const desktopLocal = facts.device === "mac" && (facts.desktopJob != null || desktopCommittedLocal(facts.rowMetadata));
+  const route = desktopLocal ? "on-device" : pipelineRoute(facts.native, facts.cloudJob !== null,
+    facts.onDeviceStatus === null ? null : onDeviceQueuePlace(facts.onDeviceStatus, facts.id));
   const rowOutcome = facts.rowMetadata === null ? "none" : voiceNoteTranscriptState(facts.rowMetadata).status;
   // The ledger's own record that the transcript reached the space is durable evidence too (a receipt has no library row read).
   const ledgerOutcome = facts.native?.transcriptSync?.state === "saved" ? facts.native.transcriptOutcome ?? "none" : "none";
@@ -388,8 +397,12 @@ export async function runPipelineAction(kind: PipelineActionKind, env: PipelineA
                 return null;
               case "sync":
                 if (env.tcw === null) return "Sign in to add the transcript to this note.";
+                // The desktop queue is separate from Capacitor's ledger. A committed space audio row is
+                // sufficient to retry its transcript write, as it is after the upload finishes.
+                if (env.input.device === "mac" && !env.input.space.saved) return "Audio must finish uploading before its transcript can be added. Try again afterward.";
                 await syncOnDeviceTranscript(env.tcw, { id: env.id, owner: env.tcw.did,
-                  ledger: env.native?.audio == null ? undefined : { audio: env.native.audio }, stt: { state: "done" } });
+                  ledger: env.input.device === "mac" ? { audio: { state: "saved" } }
+                    : env.native?.audio == null ? undefined : { audio: env.native.audio }, stt: { state: "done" } });
                 return null;
               case "model":
                 return await downloadOnDeviceModel();

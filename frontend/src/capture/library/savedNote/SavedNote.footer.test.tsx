@@ -1,15 +1,15 @@
 // The legacy "How this got here" footer on a saved note's sheet says the route the stepper already says: it stays out
 // while the stepper is up and comes back when the pipeline is done.
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 import { StaticRecorderProvider } from "@/capture/recorder/RecorderProvider";
-import { PlatformContext, type AppPlatform } from "@/lib/platform";
+import { PlatformContext, appPlatform, type AppPlatform } from "@/lib/platform";
 import { registerDesktopWhisperQueue, type DesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
 import { installDom } from "@/test/dom";
 import { createFakeOnDeviceStt } from "@/lib/voiceNotes/fakeOnDeviceStt";
-import { __setVoiceNotesForTests, VoiceNotes, type VoiceNoteRecording, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { __setVoiceNotesForTests, nativeVoiceNotesAvailable, VoiceNotes, type VoiceNoteRecording, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { __setOnDeviceSttForTests, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { __resetOnDeviceSttStoreForTests } from "@/lib/voiceNotes/onDeviceSttStore";
 import { __resetAutoNoteSyncForTests } from "@/lib/voiceNotes/useNotePipeline";
@@ -40,25 +40,19 @@ let recordings: VoiceNoteRecording[] = [];
 let errors: ReturnType<typeof spyOn>;
 let warnings: ReturnType<typeof spyOn>;
 
-beforeAll(async () => {
-  const fake = createFakeOnDeviceStt();
-  __setOnDeviceSttForTests(fake.plugin);
-});
 beforeEach(() => {
   cleanupDom = installDom();
   errors = spyOn(console, "error").mockImplementation(() => {});
   warnings = spyOn(console, "warn").mockImplementation(() => {});
   __resetOnDeviceSttStoreForTests();
   __resetAutoNoteSyncForTests();
-  __setVoiceNotesForTests(
-    { listPending: async () => ({ recordings }), listQuarantine: async () => ({ items: [] }) } as unknown as VoiceNotesPlugin,
-    { available: true },
-  );
 });
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = null;
   registerDesktopWhisperQueue(null);
+  __setVoiceNotesForTests(plugins.voiceNotes, { available: null });
+  __setOnDeviceSttForTests(plugins.onDeviceStt);
   errors.mockRestore(); warnings.mockRestore();
   cleanupDom?.();
 });
@@ -72,11 +66,19 @@ afterAll(() => {
 const present = (scope: ParentNode, selector: string): boolean => scope.querySelector(selector) !== null;
 
 async function mount(options: { metadata?: MeetingMetadataRead; layout?: "page" | "sheet"; onRetry?: () => void; platform?: AppPlatform } = {}) {
+  if (options.platform === "tauri") Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+  else {
+    __setOnDeviceSttForTests(createFakeOnDeviceStt().plugin);
+    __setVoiceNotesForTests(
+      { listPending: async () => ({ recordings }), listQuarantine: async () => ({ items: [] }) } as unknown as VoiceNotesPlugin,
+      { available: true },
+    );
+  }
   const container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
   await act(async () => root!.render(
-    <PlatformContext.Provider value={options.platform ?? "web"}><StaticRecorderProvider value={{ tcw: null, signIn: null, transcription: undefined }}>
+    <PlatformContext.Provider value={options.platform === "tauri" ? appPlatform() : options.platform ?? "web"}><StaticRecorderProvider value={{ tcw: null, signIn: null, transcription: undefined }}>
       <SavedNote
         item={ITEM}
         metadata={options.metadata ?? { status: "ok", metadata: {} }}
@@ -96,11 +98,11 @@ async function mount(options: { metadata?: MeetingMetadataRead; layout?: "page" 
 
 describe("the saved note's footer", () => {
   test("a failed Mac Whisper job keeps the transcript Retry action in the stepper", async () => {
-    recordings = [recording("on-device", { state: "failed", pack: null, engine: "whisper", segmentsDone: 0, windowsDone: 0, error: "decoder" })];
     const calls: string[] = [];
     registerDesktopWhisperQueue({ snapshot: () => new Map([["rec-1", { id: "rec-1", state: "failed", error: "decoder", progress: null }]]),
       subscribe: () => () => {}, retry: async (id: string) => { calls.push(id); } } as DesktopWhisperQueue);
     const container = await mount({ platform: "tauri", metadata: { status: "ok", metadata: { audio: { stored: true } } } });
+    expect(nativeVoiceNotesAvailable()).toBe(false);
     const retry = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Try again");
     expect(retry !== undefined).toBe(true);
     await act(async () => retry!.click());
