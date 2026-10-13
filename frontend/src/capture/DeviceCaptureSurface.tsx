@@ -7,7 +7,7 @@ import { SectionCard } from "@/components/ui/section-card";
 import { PageHeader } from "@/shell/PageHeader";
 import { PATHS, type Screen } from "@/shell/routes";
 import { useSizeClass } from "@/lib/sizeClass";
-import { PlatformContext } from "@/lib/platform";
+import { PlatformContext, deviceName } from "@/lib/platform";
 import { notePipeline, type NotePipelineInput, type PipelinePending } from "@/lib/voiceNotes/notePipeline";
 import { combinedModel, type NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import { onDeviceQueuePlace } from "@/lib/voiceNotes/onDeviceQueue";
@@ -101,7 +101,7 @@ export function DeviceCaptureSurface({ did, offline, error, onSignIn, onRetry, s
   const soft = compact;
   const activity = <ActivityPanel items={activityItems} views={activityViews} platform={platform} onOpenNote={(id) => navigate(PATHS.library + "/" + id)} />;
   const notice = <div className="rounded-xl border border-border bg-surface-2 px-4 py-3 text-callout">
-    <p>{offline ? "You're offline. Recordings stay on this phone until Exo reconnects." : did === null ? "Recordings stay on this phone until you sign in." : "Recordings stay on this phone while Exo checks your TinyCloud connection."}</p>
+    <p>{offline ? `You're offline. Recordings stay on ${deviceName(platform)} until Exo reconnects.` : did === null ? `Recordings stay on ${deviceName(platform)} until you sign in.` : `Recordings stay on ${deviceName(platform)} while Exo checks your TinyCloud connection.`}</p>
     {error && !offline && <p role="alert" className="mt-1 text-destructive">{did === null ? "Couldn't sign in. Try again." : "Couldn't check your TinyCloud connection. Try again."}</p>}
     <div className="mt-2 flex flex-wrap gap-2">
       {(offline || did !== null) && <Button size="sm" variant="outline" onClick={onRetry}>Try again</Button>}

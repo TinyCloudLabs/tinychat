@@ -99,10 +99,10 @@ describe("how long the receipt stays: an Open button counts as something to pres
 });
 
 describe("the source on the route", () => {
-  test("reads This phone until a transcript made there exists", () => {
+  test("reads This iPhone until a transcript made there exists", () => {
     const route = voiceNoteRoute("on-device");
-    expect(honestSourceRoute(route, false).map((node) => node.label)).toEqual(["This phone", "Your space"]);
-    expect(honestSourceRoute(route, true).map((node) => node.label)).toEqual(["This phone (transcribed here)", "Your space"]);
+    expect(honestSourceRoute(route, false).map((node) => node.label)).toEqual(["This iPhone", "Your space"]);
+    expect(honestSourceRoute(route, true).map((node) => node.label)).toEqual(["This iPhone (transcribed here)", "Your space"]);
   });
 
   test("other routes are untouched", () => {
@@ -116,14 +116,14 @@ describe("the receipt's wording", () => {
       route={voiceNoteRoute("on-device")} transcriber="on-device" onDone={noop} onSaveNow={noop} {...patch} />,
   );
 
-  test("Saved on this phone is said once, not as a heading and a label", () => {
+  test("the saved location is said once, not as a heading and a label", () => {
     const html = render();
     expect(html).not.toContain("<h3");
-    expect(html.match(/Saved on this phone/g) ?? []).toHaveLength(1);
-    expect(html).toContain('aria-label="Saved on this phone"');
+    expect(html.match(/Saved on this browser/g) ?? []).toHaveLength(1);
+    expect(html).toContain('aria-label="Saved on this browser"');
   });
 
-  test("a Local note with no transcript yet names its source This phone", () => {
+  test("a Local note with no transcript yet names its source This iPhone", () => {
     const html = render();
     expect(html).not.toContain("transcribed here");
   });

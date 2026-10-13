@@ -101,7 +101,7 @@ describe("transcription modes availability", () => {
     const expected = {
       skip: {
         phone: [
-          "Just the recording, kept on this phone.",
+          "Just the recording, kept on this browser.",
           "no transcript",
           "Only the audio is saved. Transcribe it later if you like.",
         ],
@@ -119,8 +119,8 @@ describe("transcription modes availability", () => {
       local: {
         phone: [
           "Nothing leaves it; a little slower.",
-          "on this phone",
-          "Your phone transcribes it after you stop. Nothing leaves your phone.",
+          "on this browser",
+          "This browser transcribes it after you stop. Nothing leaves it.",
         ],
         desktop: [
           "Whisper on this Mac, after you stop.",
@@ -285,7 +285,7 @@ describe("transcription modes availability", () => {
       ).toBe(false);
     });
 
-    test("the model must be the one this phone's pack uses", () => {
+    test("the model must be the one this browser's pack uses", () => {
       expect(
         local(
           withModels(

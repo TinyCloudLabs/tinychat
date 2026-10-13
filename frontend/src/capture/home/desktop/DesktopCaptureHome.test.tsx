@@ -202,7 +202,7 @@ describe("the unsaved-voice-notes card", () => {
         layout: "rail",
         props: { inProgress: voice(3) },
       });
-      expect(html).toContain("3 voice notes on this device");
+      expect(html).toContain(`${platform === "ios" ? "3 voice notes on this iPhone" : "3 voice notes on this Android phone"}`);
       expect(html).toContain('data-testid="voice-note-retry"');
       expect(html).not.toContain("this Mac");
       expect(html).not.toContain("on this phone");
@@ -217,7 +217,7 @@ describe("the unsaved-voice-notes card", () => {
         captureIssues: { saving: { kind: "finalization_timed_out" } },
       },
     });
-    expect(html).toContain("Saving… · kept on this device");
+    expect(html).toContain("Saving… · kept on this Android phone");
     expect(html).not.toContain("this Mac");
   });
 
@@ -225,7 +225,7 @@ describe("the unsaved-voice-notes card", () => {
     for (const [platform, where] of [
       ["tauri", "this Mac"],
       ["web", "this browser"],
-      ["android", "this device"],
+      ["android", "this Android phone"],
     ] as const) {
       const failed: InProgressRowsViewProps = {
         ...idle,

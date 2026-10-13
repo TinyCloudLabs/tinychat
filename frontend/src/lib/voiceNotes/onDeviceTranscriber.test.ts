@@ -231,7 +231,7 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toBeNull();
 
     await syncOnDeviceTranscript(tcw, { ...SAVED, stt: { state: "done" } });
-    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "this phone says it finished transcribing but has no transcript for the note" });
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "this browser says it finished transcribing but has no transcript for the note" });
   });
 
   test("attempts for one note run one after another: the second does not read or write until the first settles", async () => {
@@ -335,7 +335,7 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     resolveOld({ transcript });
     await Promise.all([old, latest]);
     expect(writes).toBe(1);
-    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't read the transcript on this phone." });
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't read the transcript on this browser." });
   });
 
   test("a native-read failure after an older write is the result, and does not undo the write", async () => {
@@ -350,7 +350,7 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     finish({ ok: true, data: {} });
     await Promise.all([old, latest]);
     expect(writes).toBe(1);
-    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't read the transcript on this phone." });
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't read the transcript on this browser." });
   });
 
   test("a later attempt with no local transcript publishes nothing, so an earlier result stands", async () => {
@@ -422,7 +422,7 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     const tcw = account();
     getTranscript = async () => { throw new Error("sidecar busy"); };
     await syncOnDeviceTranscript(tcw, SAVED);
-    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't read the transcript on this phone." });
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't read the transcript on this browser." });
     getTranscript = async () => ({ transcript });
     await syncOnDeviceTranscript(tcw, SAVED);
     expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "synced" });
@@ -509,7 +509,7 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     const tcw = account();
     getTranscript = async () => ({ transcript: null });
     await recordOnDeviceTranscript(tcw, "rec-1");
-    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "unrecorded", message: "this phone says it finished transcribing but has no transcript for the note" });
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "unrecorded", message: "this browser says it finished transcribing but has no transcript for the note" });
   });
 
   test("a recording whose transcription is done but has no transcript on the phone fails with that cause", async () => {
@@ -518,7 +518,7 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     await syncOnDeviceTranscript(tcw, { ...SAVED, stt: { state: "done" } });
     expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({
       state: "failed",
-      message: "this phone says it finished transcribing but has no transcript for the note",
+      message: "this browser says it finished transcribing but has no transcript for the note",
     });
   });
 

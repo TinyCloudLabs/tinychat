@@ -1,3 +1,5 @@
+import { deviceName } from "@/lib/platform";
+
 const RECOVERY_FAILED = "Couldn't recover this recording";
 const WRITE_FAILED = "Couldn't save all of this recording";
 const PARTIAL_AUDIO = "Part of this recording couldn't be written";
@@ -15,20 +17,20 @@ export const HOME_COPY = {
   retryRecent: "Try again",
   voiceNoteTitle: "Voice note",
   /** A note kept on this device with no row in the space yet; read as "On this phone" in a badge. */
-  onThisPhone: "on this phone",
+  onThisPhone: `on ${deviceName()}`,
   savingBadge: "Saving…",
   inProgressCount: (count: number) => `${count} in progress`,
-  onPhoneCount: (count: number) => `${count} on this phone`,
-  onPhoneOne: "1 voice note on this phone",
-  onPhoneMany: (count: number) => `${count} voice notes on this phone`,
+  onPhoneCount: (count: number) => `${count} on ${deviceName()}`,
+  onPhoneOne: `1 voice note on ${deviceName()}`,
+  onPhoneMany: (count: number) => `${count} voice notes on ${deviceName()}`,
   notInSpace: "Not in your space yet",
   savingToSpace: "Saving to your TinyCloud space…",
   saveNow: "Save now",
-  willFinish: "Kept on this phone. Exo will finish it automatically.",
+  willFinish: `Kept on ${deviceName()}. Exo will finish it automatically.`,
   willRetry: "Exo will retry when it next opens",
   /** Native has used up its automatic retries on a quarantined recording: no promise to try again. */
   quarantinedCard: "Couldn't recover · audio kept",
-  timedOutMeta: "Saving… · kept on this phone",
+  timedOutMeta: `Saving… · kept on ${deviceName()}`,
   recoveryFailedMeta: RECOVERY_FAILED,
   quarantinedMeta: `${RECOVERY_FAILED} · audio kept`,
   /** What the recorder's own error line says once native has reported the failure; replaces "Exo will finish it automatically". */
@@ -36,14 +38,14 @@ export const HOME_COPY = {
   writeFailedError: `${WRITE_FAILED}.`,
   timedOutSheet: {
     title: "Saving this recording",
-    body: "Kept on this phone. Exo will finish it automatically.",
+    body: `Kept on ${deviceName()}. Exo will finish it automatically.`,
   },
   writeFailedMeta: WRITE_FAILED,
   /** Shared with the desktop follow-ups: the informational line under a saved recording that is missing some audio. */
   partialAudioMeta: "Saved — part of this recording couldn't be written",
   partialAudioSheet: {
     title: PARTIAL_AUDIO,
-    body: "The recording was saved, but this phone couldn't write all of the audio. The part that couldn't be written is missing.",
+    body: `The recording was saved, but ${deviceName()} couldn't write all of the audio. The part that couldn't be written is missing.`,
   },
   partialAudioMissing: (formatted: string) => `About ${formatted} is missing`,
   partialAudioMissingBrief: "Less than a second is missing",
@@ -66,11 +68,11 @@ export const HOME_COPY = {
   delete: "Delete",
   deleting: "Deleting…",
   keep: "Keep",
-  tryAgainFailed: "Couldn't try again. The recording is still on this phone.",
-  deleteFailed: "Couldn't delete this recording. It is still on this phone.",
+  tryAgainFailed: `Couldn't try again. The recording is still on ${deviceName()}.`,
+  deleteFailed: `Couldn't delete this recording. It is still on ${deviceName()}.`,
   deleteConfirm: {
     title: "Delete this recording?",
-    body: "The audio will be deleted from this phone. This can't be undone.",
+    body: `The audio will be deleted from ${deviceName()}. This can't be undone.`,
   },
   quarantineFailure:
     "Exo couldn't check for recordings it kept. It will try again when it next opens.",
@@ -80,7 +82,7 @@ export const HOME_COPY = {
   },
   quarantinedSheet: {
     title: RECOVERY_FAILED,
-    body: "Exo tried several times and couldn't finish saving this recording. The audio is kept on this phone.",
+    body: `Exo tried several times and couldn't finish saving this recording. The audio is kept on ${deviceName()}.`,
   },
   unplayableSheet: {
     title: RECOVERY_FAILED,
@@ -88,6 +90,6 @@ export const HOME_COPY = {
   },
   writeFailedSheet: {
     title: WRITE_FAILED,
-    body: "This phone stopped saving the recording partway through. What was recorded up to that point is kept; the rest was not recorded.",
+    body: `Saving stopped on ${deviceName()} partway through. What was recorded up to that point is kept; the rest was not recorded.`,
   },
 } as const;

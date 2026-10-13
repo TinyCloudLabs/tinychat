@@ -22,7 +22,7 @@ describe("MeetingAudioPlayerView", () => {
     expect(player).not.toContain("src=");
   });
 
-  test("a note on this phone has its source set from the start, so the first tap can play it", () => {
+  test("a note on this browser has its source set from the start, so the first tap can play it", () => {
     const player = renderToStaticMarkup(<MeetingAudioPlayer url="capacitor://localhost/_capacitor_file_/a.m4a" durationSecs={42} />);
     expect(player).toContain('src="capacitor://localhost/_capacitor_file_/a.m4a"');
     expect(player).toContain("Play audio");
@@ -49,7 +49,7 @@ describe("MeetingAudioPlayerView", () => {
 
   test("a local URL that could not be resolved shows calm copy, with Try again, and no internal text", () => {
     const html = render({ phase: "failed", reason: PHONE_AUDIO_UNAVAILABLE });
-    expect(html).toContain("Couldn\u2019t open this note\u2019s audio on this phone.");
+    expect(html).toContain("Couldn\u2019t open this note\u2019s audio on this browser.");
     expect(html).toContain("Try again");
   });
 
@@ -60,9 +60,9 @@ describe("MeetingAudioPlayerView", () => {
     });
     const logged = spyOn(console, "error").mockImplementation(() => {});
     try {
-      const cause = new Error("Could not open this phone's audio: loadVoiceNoteAudio: Key not found: xyz/abc");
+      const cause = new Error("Could not open this browser's audio: loadVoiceNoteAudio: Key not found: xyz/abc");
       expect(await stateForResolvedUrl(async () => { throw cause; })).toEqual({ phase: "failed", reason: PHONE_AUDIO_UNAVAILABLE });
-      expect(logged).toHaveBeenCalledWith("[Audio] Could not resolve this phone's audio", cause);
+      expect(logged).toHaveBeenCalledWith("[Audio] Could not resolve local audio", cause);
     } finally {
       logged.mockRestore();
     }
@@ -211,7 +211,7 @@ describe("the player in a DOM", () => {
     }
   });
 
-  test("a note on this phone plays on the first tap with its source already set", async () => {
+  test("a note on this browser plays on the first tap with its source already set", async () => {
     const player = await mount({ url: "blob:note", durationSecs: 42 });
     expect(player.audio.getAttribute("src")).toBe("blob:note");
     let playsInClick: FakeMedia["plays"] = [];

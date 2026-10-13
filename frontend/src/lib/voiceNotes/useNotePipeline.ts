@@ -10,6 +10,7 @@ import { useSoftHome } from "@/capture/home/softHome";
 import { useRecorder } from "@/capture/recorder/RecorderProvider";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { PlatformContext, type AppPlatform } from "@/lib/platform";
+import { deviceName } from "./notePipelineCopy";
 import { localTranscriptionUnavailable } from "./captureEngine";
 import { getDesktopWhisperQueue, type DesktopWhisperJob } from "./desktop/desktopWhisper";
 import { resolveVoiceNoteRows, SpaceLaneQueueWaitTimeout, spaceLaneSnapshot, subscribeSpaceLane } from "./voiceNoteRows";
@@ -353,7 +354,7 @@ function messageOf(error: unknown): string {
   if (["unauthorized", "auth", "authentication_required"].includes(code))
     return "Your session ended. Sign in and try again.";
   if (["not_found", "tombstoned", "voice_note_not_found"].includes(code))
-    return "This note is no longer available on this phone.";
+    return `This note is no longer available on ${deviceName("phone")}.`;
   if (["quota", "quota_exceeded", "storage_quota"].includes(code)) return "Your space is full.";
   return "Couldn't complete this step. Try again.";
 }
@@ -387,7 +388,7 @@ export async function runPipelineAction(kind: PipelineActionKind, env: PipelineA
           case "space": {
             await env.saveNow();
             // Failures no single note owns (the account is not ready, the defaults could not be claimed) are reported to the store, not thrown.
-            return pendingStore.generalError() === null ? null : "Couldn't save this note. It is safe on this phone. Try again.";
+            return pendingStore.generalError() === null ? null : `Couldn't save this note. It is safe on ${deviceName(env.input.device)}. Try again.`;
           }
           case "notes":
             if (env.input.notes.state === "unreadable") {
@@ -407,7 +408,7 @@ export async function runPipelineAction(kind: PipelineActionKind, env: PipelineA
                 env.transcription.onTranscribe(env.id);
                 return null;
               case "record":
-                if (env.tcw === null) return "Sign in to record the transcript on this phone.";
+                if (env.tcw === null) return `Sign in to record the transcript on ${deviceName(env.input.device)}.`;
                 await recordOnDeviceTranscript(env.tcw, env.id);
                 return null;
               case "sync":
@@ -470,6 +471,8 @@ interface NativeRead {
  * phone having no entry for the note.
  */
 function useNativeNotes(ids: readonly string[], rowVersion: number): NativeRead {
+  const platform = useContext(PlatformContext);
+  const localDevice = deviceName(platform === "tauri" ? "mac" : platform === "ios" ? "iphone" : platform === "android" ? "android" : "browser");
   const key = ids.join("\n");
   const needed = ids.length > 0 && nativeVoiceNotesAvailable();
   const [attempt, setAttempt] = useState(0);
@@ -492,7 +495,7 @@ function useNativeNotes(ids: readonly string[], rowVersion: number): NativeRead 
         },
         (caught: unknown) => {
           logPipelineError("[NotePipeline] Could not read the phone's note ledger", caught);
-          if (alive) setRead((previous) => ({ key, notes: previous.key === key ? previous.notes : new Map(), error: `The phone's note list wouldn't open: ${messageOf(caught)}` }));
+          if (alive) setRead((previous) => ({ key, notes: previous.key === key ? previous.notes : new Map(), error: `The note list on ${localDevice} wouldn't open: ${messageOf(caught)}` }));
         },
       );
     };
@@ -504,7 +507,7 @@ function useNativeNotes(ids: readonly string[], rowVersion: number): NativeRead 
     for (const sub of subs) {
       sub.catch((caught: unknown) => {
         logPipelineError("[NotePipeline] Could not follow on-device transcription", caught);
-        if (alive) setListenError({ key, message: `Updates from the phone failed to start: ${messageOf(caught)}` });
+        if (alive) setListenError({ key, message: `Updates from ${localDevice} failed to start: ${messageOf(caught)}` });
       });
     }
     return () => {
@@ -512,7 +515,7 @@ function useNativeNotes(ids: readonly string[], rowVersion: number): NativeRead 
       for (const sub of subs) sub.then((handle) => handle.remove()).catch(() => {});
     };
     // `ids` is keyed by its content.
-  }, [key, needed, attempt, rowVersion]);
+  }, [key, needed, attempt, rowVersion, localDevice]);
   const reread = useCallback(() => setAttempt((count) => count + 1), []);
   const error = read.key === key ? read.error : null;
   return {
@@ -527,6 +530,8 @@ type LocalRead = { note: LocalNoteFacts | null } | { error: string };
 
 /** Each note's local Markdown, read again whenever a note sync finishes (an edit syncs after it is written) or on `reread`. A failed read is kept as its error, not as "no note". */
 function useLocalNotes(ids: readonly string[], reread: unknown): ReadonlyMap<string, LocalRead> {
+  const platform = useContext(PlatformContext);
+  const localDevice = deviceName(platform === "tauri" ? "mac" : platform === "ios" ? "iphone" : platform === "android" ? "android" : "browser");
   const [notes, setNotes] = useState<ReadonlyMap<string, LocalRead>>(new Map());
   const key = ids.join("\n");
   useEffect(() => {
@@ -538,12 +543,12 @@ function useLocalNotes(ids: readonly string[], reread: unknown): ReadonlyMap<str
           return [id, { note: note === null ? null : { editedAt: note.editedAt, hasContent: note.md.trim().length > 0 || note.moments.length > 0 } }];
         } catch (caught) {
           logPipelineError("[NotePipeline] Could not read the local note", caught);
-          return [id, { error: `The note's text wouldn't open on this phone: ${messageOf(caught)}` }];
+          return [id, { error: `The note's text wouldn't open on ${localDevice}: ${messageOf(caught)}` }];
         }
       }),
     ).then((entries) => { if (alive) setNotes(new Map(entries)); });
     return () => { alive = false; };
-  }, [key, reread]);
+  }, [key, reread, localDevice]);
   return notes;
 }
 
@@ -974,7 +979,7 @@ function useNotePipelinesWithLedger(entries: readonly { id: string; source: Note
     }).then((reason) => {
       if (!live.current) return;
       if (reason !== null) console.error("[notePipeline] Action failed", { id, kind, reason });
-      setFailures((before) => { const next = new Map(before); if (reason === null) next.delete(id); else next.set(id, "Couldn't complete that action. Try again."); return next; });
+      setFailures((before) => { const next = new Map(before); if (reason === null) next.delete(id); else next.set(id, reason === "Sign in to sync this note." ? reason : "Couldn't complete that action. Try again."); return next; });
     });
   }, []);
   const views = useMemo(() => new Map([...states].map(([id, state]): [string, NotePipelineView] => [id, {

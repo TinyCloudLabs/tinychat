@@ -106,7 +106,7 @@ describe("switchToPrivate", () => {
     expect(transcription.privately).toEqual(["n1"]);
   });
 
-  test("a note that failed on this phone is stopped, so private cloud may take it", async () => {
+  test("a note that failed on this browser is stopped, so private cloud may take it", async () => {
     withCancel();
     listing(() => note("failed"));
     const transcription = props();
@@ -119,7 +119,7 @@ describe("switchToPrivate", () => {
     withCancel(() => void order.push("cancel n1"));
     listing(() => note("done"));
     const transcription = props();
-    expect(await switchToPrivate(transcription, "n1", wait)).toBe("This note finished transcribing on this phone just now.");
+    expect(await switchToPrivate(transcription, "n1", wait)).toBe("This note finished transcribing on this browser just now.");
     expect(order).toEqual([]);
     expect(transcription.privately).toEqual([]);
   });
@@ -131,7 +131,7 @@ describe("switchToPrivate", () => {
     const transcription = props();
     const sleeps: number[] = [];
     expect(await switchToPrivate(transcription, "n1", { ...wait, sleep: async () => { state = "done"; sleeps.push(1); } }))
-      .toBe("This note finished transcribing on this phone just now.");
+      .toBe("This note finished transcribing on this browser just now.");
     expect(transcription.privately).toEqual([]);
   });
 
@@ -142,7 +142,7 @@ describe("switchToPrivate", () => {
     withCancel(() => { order.push("cancel n1"); state = "cancelled"; });
     listing(() => note(state), () => (state === "cancelled" ? transcript : null));
     const transcription = props();
-    expect(await switchToPrivate(transcription, "n1", wait)).toBe("This note finished transcribing on this phone just now.");
+    expect(await switchToPrivate(transcription, "n1", wait)).toBe("This note finished transcribing on this browser just now.");
     expect(order).toEqual(["cancel n1"]);
     expect(transcription.privately).toEqual([]);
   });
@@ -178,11 +178,11 @@ describe("switchToPrivate", () => {
     logged.mockRestore();
   });
 
-  test("when the note is not on this phone it does not start private cloud", async () => {
+  test("when the note is not on this browser it does not start private cloud", async () => {
     withCancel();
     listing(() => ({ recordings: [] }));
     const transcription = props();
-    expect(await switchToPrivate(transcription, "n1", wait)).toContain("the note was not found on this phone");
+    expect(await switchToPrivate(transcription, "n1", wait)).toContain("the note was not found on this browser");
     expect(transcription.privately).toEqual([]);
   });
 

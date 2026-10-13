@@ -1,4 +1,4 @@
-import type { AppPlatform } from "@/lib/platform";
+import { deviceName, type AppPlatform } from "@/lib/platform";
 import type { TranscriptionAvailability } from "@/lib/voiceNotes/voiceNoteTranscription";
 
 const MODE_NAMES = {
@@ -13,11 +13,11 @@ export const PRIVATE_CONSENT_ACTION = "Use Private transcription";
 export const POWERFUL_CONSENT_TITLE = "Use Powerful transcription?";
 export const POWERFUL_CONSENT_ACTION = "Use Powerful transcription";
 export const POWERFUL_CONSENT_BODY = "Powerful sends this note's audio through Exo's server to AssemblyAI, a third-party service, for the most accurate transcript with speaker labels. Exo deletes it from AssemblyAI as soon as the transcript is saved.";
-export function privateConsentDevice(platform: AppPlatform): "phone" | "Mac" | "browser" {
-  return platform === "tauri" ? "Mac" : platform === "web" ? "browser" : "phone";
+export function privateConsentDevice(platform: AppPlatform): string {
+  return deviceName(platform).slice("this ".length);
 }
 
-export function privateConsentBody(device: "phone" | "Mac" | "browser"): string {
+export function privateConsentBody(device: string): string {
   return `Private transcription sends this note's audio from this ${device} to TinyCloud Private Transcription, a sealed hardware enclave. It's deleted there once the transcript is ready. Exo never sees it.`;
 }
 
@@ -31,15 +31,14 @@ export const TRANSCRIBER_NAME = {
 
 /** The first stop of a route diagram: the device the audio starts on. */
 export function routeSourceName(platform: AppPlatform): string {
-  if (platform === "ios" || platform === "android") return "This phone";
-  return platform === "tauri" ? "This Mac" : "This browser";
+  return deviceName(platform).replace(/^t/, "T");
 }
 
 /** Why Private cannot be chosen right now, and whether checking again can change it. */
 export function privateNotOffered(availability: TranscriptionAvailability | undefined, errorCode?: string): { reason: string; canRecheck: boolean } {
   if (availability === "checking") return { reason: "Checking…", canRecheck: false };
   if (availability === "failed" && errorCode === "native_status_failed")
-    return { reason: "Couldn't check this phone's file upload", canRecheck: true };
+    return { reason: `Couldn't check ${deviceName()}'s file upload`, canRecheck: true };
   if (availability === "failed") return { reason: "Couldn't check right now", canRecheck: true };
   return { reason: "Not available right now", canRecheck: false };
 }
@@ -88,7 +87,7 @@ export const FINAL_COPY = {
   stopAndSaveRecorded: "Stop and save what's recorded.",
   stopAt: (text: string) => `Stops at ${text}`,
   needsApp: "needs the app",
-  onThisPhone: "on this phone",
+  onThisPhone: `on ${deviceName()}`,
   onThisMac: "on this Mac",
   sealedEnclave: "sealed enclave",
   identifySpeakers: "Identify speakers",
@@ -100,7 +99,7 @@ export const FINAL_COPY = {
   speechGet: "Get speech from iOS",
   speechGetting: "Getting speech from iOS…",
   speechFailed: "Couldn't get speech from iOS",
-  speechNotInstalled: "Speech from iOS isn't on this phone yet",
+  speechNotInstalled: "Speech from iOS isn't on this iPhone yet",
   speechUnsupported: "On-device transcription isn't available on this iPhone",
   speechLocaleUnsupported: "On-device transcription doesn't support this language yet",
   modes: {
@@ -110,7 +109,7 @@ export const FINAL_COPY = {
     powerfulName: MODE_NAMES.powerful,
     noTranscript: "no transcript",
     skipCaption: {
-      phone: "Just the recording, kept on this phone.",
+      phone: `Just the recording, kept on ${deviceName()}.`,
       desktop: "Just the recording, saved to your space.",
       web: "Just the recording, saved to your space.",
     },
@@ -119,7 +118,7 @@ export const FINAL_COPY = {
     localPhoneCaption: "Nothing leaves it; a little slower.",
     localDesktopCaption: "Whisper on this Mac, after you stop.",
     localPhoneExplanation:
-      "Your phone transcribes it after you stop. Nothing leaves your phone.",
+      `${deviceName().replace(/^t/, "T")} transcribes it after you stop. Nothing leaves it.`,
     localDesktopExplanation: (model: string) =>
       `Whisper ${model} transcribes on this Mac after you stop, and nothing leaves the machine. Change the model in ⚙︎ Settings.`,
     localWebExplanation:

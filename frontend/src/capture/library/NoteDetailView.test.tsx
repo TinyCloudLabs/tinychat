@@ -61,13 +61,13 @@ describe("NoteDetailView", () => {
     expect(html).toContain("Voice note ·");
     expect(html).toContain('data-testid="note-transcript-on-phone"');
     expect(html).toContain("No transcript yet. It shows here once this note is saved to your space.");
-    expect(html).not.toContain("Saving from your phone…");
+    expect(html).not.toContain("Saving from this browser…");
     expect(html).not.toContain("Transcribe");
     expect(html).not.toContain("How this got here");
   });
   test("an inserted voice-note row awaiting its audio explains its state", () => {
     expect(render({ item: VOICE, audio: null, metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" } }))
-      .toContain("Saving from your phone…");
+      .toContain("Saving from this browser…");
   });
   test("an over-limit note explains the advertised maximum before offering Transcribe", () => {
     const html = render({ item: { ...VOICE, durationSecs: 10_800 }, transcription: transcription({ maxSeconds: 7_200 }) });

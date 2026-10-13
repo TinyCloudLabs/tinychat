@@ -477,7 +477,7 @@ describe("useLibrary, mounted", () => {
   });
 });
 
-describe("useLibrary, notes still on this phone", () => {
+describe("useLibrary, notes still on this browser", () => {
   const phoneNote = (id: string, startedAt = "2026-10-06T10:00:00.000Z"): PendingNote => ({ id, startedAt: Date.parse(startedAt), durationMs: 14_000 });
   const props = (space: ReturnType<typeof fakeSpace>, seen: Library[], extra: Partial<Parameters<typeof Probe>[0]> = {}) =>
     ({ tcw: space.tcw, visible: true, noteId: null, now: () => 0, seen, ...extra });
@@ -541,7 +541,7 @@ describe("useLibrary, notes still on this phone", () => {
     expect(space.kinds).toEqual(["list"]);
   });
 
-  test("a row is titled by its first moment on this phone, else its transcript preview", async () => {
+  test("a row is titled by its first moment on this browser, else its transcript preview", async () => {
     await saveNote("rec-p1", "- **0:01**\n- **0:03** Call the landlord\n- **0:09** second");
     const space = fakeSpace({ previews: [["rec-a", "  The quarterly numbers look   good this time and we should send them to everyone before the end of the day tomorrow  "]] });
     const seen: Library[] = [];
@@ -707,7 +707,7 @@ describe("useLibrary, which audio a note on the phone plays", () => {
     try {
       const seen: Library[] = [];
       await render({ tcw: space.tcw, visible: true, now: () => 0, seen, onPhone: [phoneNote], noteId: "on-phone:rec-play" });
-      await expect(localUrlOf(seen.at(-1)!)).rejects.toThrow("Could not open this phone's audio: no such recording");
+      await expect(localUrlOf(seen.at(-1)!)).rejects.toThrow("Could not open audio on this browser: no such recording");
       expect(space.kinds).not.toContain("audio");
     } finally {
       __setVoiceNotesForTests(original, { available: null });

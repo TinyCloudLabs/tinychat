@@ -155,7 +155,7 @@ describe("route", () => {
     expect(pipelineRoute({ transcriber: "assemblyai", stt: null }, false)).toBe("private-cloud");
   });
 
-  test("a note this phone has no committed mode for: a cloud job or a native job says where, else nobody is transcribing it", () => {
+  test("a note this browser has no committed mode for: a cloud job or a native job says where, else nobody is transcribing it", () => {
     expect(pipelineRoute(null, true)).toBe("private-cloud");
     expect(pipelineRoute(null, false)).toBe("off");
     expect(pipelineRoute({ transcriber: null, stt: { state: "queued", error: null } }, false)).toBe("on-device");
@@ -274,7 +274,7 @@ describe("failed reads are never read as absent or ready", () => {
   test("a failed read of the note's own text is a failed notes step with its cause, never skipped", () => {
     const pipeline = run({ saved: true, native: { transcriber: "off", stt: null }, localNote: null, localNoteError: "EIO" });
     expect(stateOf(pipeline, "notes")).toBe("failed");
-    expect(pipeline.blocker?.cause).toBe("Couldn't read this note's text on this phone");
+    expect(pipeline.blocker?.cause).toBe("Couldn't read this note's text on this browser");
     expect(pipeline.done).toBe(false);
   });
 
@@ -411,7 +411,7 @@ describe("actions", () => {
     expect(await runPipelineAction("retry", env(async () => { throw new Error("the account is not ready"); }))).toBe("Couldn't complete this step. Try again.");
     pendingStore.reportError("Couldn't set up your space defaults");
     try {
-      expect(await runPipelineAction("retry", env(async () => { await Promise.resolve(); }))).toBe("Couldn't save this note. It is safe on this phone. Try again.");
+      expect(await runPipelineAction("retry", env(async () => { await Promise.resolve(); }))).toBe("Couldn't save this note. It is safe on this browser. Try again.");
     } finally {
       await pendingStore.refresh(null);
     }

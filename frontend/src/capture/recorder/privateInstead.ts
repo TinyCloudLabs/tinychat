@@ -1,4 +1,5 @@
 import { readableError } from "@/lib/readableError";
+import { deviceName } from "@/lib/platform";
 // "Use Private instead" for a note committed to Local: private cloud has to be on offer, and the
 // note short enough for it. The on-device job is stopped first, and Private starts only once the
 // phone's own record of the note says that job has ended, so the two never both transcribe it.
@@ -21,13 +22,13 @@ export interface StopWait {
 
 const DEFAULT_WAIT: StopWait = { intervalMs: 250, timeoutMs: 20_000, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
 
-const FINISHED = "This note finished transcribing on this phone just now.";
+const FINISHED = `This note finished transcribing on ${deviceName()} just now.`;
 
 async function readOnDeviceState(noteId: string): Promise<{ state: string | undefined } | { failure: string }> {
   try {
     const { recordings } = await VoiceNotes.listPending();
     const recording = recordings.find((candidate) => candidate.id === noteId);
-    if (!recording) return { failure: "Could not confirm the on-device transcription stopped: the note was not found on this phone." };
+    if (!recording) return { failure: `Could not confirm the on-device transcription stopped: the note was not found on ${deviceName()}.` };
     return { state: recording.stt?.state };
   } catch (caught) {
     console.error("[OnDeviceStt] reading the note around cancel failed", noteId, caught);

@@ -11,6 +11,7 @@ import {
   SPACE_COPY,
   TRANSCRIPT_COPY,
   STEP_LABEL,
+  deviceName,
   percentText,
 } from "./notePipelineCopy";
 
@@ -236,7 +237,7 @@ function spaceStep(input: NotePipelineInput): Result {
       case "timeout": return failed(SPACE_COPY.timeout(device), "retry");
       case "rejected": return failed("Couldn't sync to your TinyCloud space.", "retry");
       case "server": return failed(SPACE_COPY.server(failure.message, device), "retry");
-      case "source": return failed(`Couldn't read the recording on ${device === "mac" ? "this Mac" : device === "browser" ? "this browser" : device === "iphone" ? "this iPhone" : device === "android" ? "this Android phone" : "this phone"}.`);
+      case "source": return failed(`Couldn't read the recording on ${deviceName(device)}.`);
       case "other": return failed(`Couldn't sync to your TinyCloud space.`, "retry");
     }
   }
@@ -297,7 +298,7 @@ function onDeviceStep(input: NotePipelineInput, od: PipelineOnDevice): Result {
     case "done":
       if (!saved) return { state: "done", sublabel: LOCAL_COPY.readyOnDevice(input.device) };
       // Nothing is adding it (`sync` is null) and the space has no transcript: an attempt that never ran is a blocker, never "adding".
-      return input.transcript.spaceReading === true ? { state: "waiting", caption: checking(input.transcript) } : blocked(LOCAL_COPY.notAdded, "retry");
+      return input.transcript.spaceReading === true ? { state: "waiting", caption: checking(input.transcript) } : blocked(LOCAL_COPY.notAdded(input.device), "retry");
     case "failed": return failed(LOCAL_COPY.failed(undefined, input.device), "retry", true);
     case "cancelled": return blocked(LOCAL_COPY.cancelled(input.device), "retry", true);
     case "running": {
@@ -360,7 +361,7 @@ function transcriptStep(input: NotePipelineInput): Result {
 function notesStep(input: NotePipelineInput, transcript: StepState): Result {
   const sync = input.notes;
   if (sync.state === "synced") return { state: "done" };
-  if (sync.state === "unreadable") return failed(NOTES_COPY.unreadable(sync.cause), "retry");
+  if (sync.state === "unreadable") return failed(NOTES_COPY.unreadable(sync.cause, input.device), "retry");
   if (sync.state === "syncing") return { state: "active", caption: NOTES_COPY.syncing };
   if (sync.state === "failed") return failed(NOTES_COPY.failed, "retry");
   if (!input.space.saved) return { state: "upcoming" };
@@ -436,7 +437,7 @@ export function notePipeline(input: NotePipelineInput): NotePipeline {
   const notices = input.capture.issue === "partial_audio" ? [PHONE_COPY.partialAudio] : [];
   // The transcript is in the space but the phone could not record that: the step is done, the failure is not dropped, and it has its own repair.
   const od = input.transcript.onDevice;
-  const unrecorded = od?.sync?.state === "unrecorded" ? LOCAL_COPY.unrecorded() : null;
+  const unrecorded = od?.sync?.state === "unrecorded" ? LOCAL_COPY.unrecorded(input.device) : null;
   if (unrecorded !== null) {
     if (blocker === undefined) {
       blocker = block(unrecorded, "retry");

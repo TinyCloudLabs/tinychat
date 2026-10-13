@@ -18,7 +18,7 @@ export function pipelineTrackLabel(pipeline: NotePipeline): string {
   const space = pipeline.steps.find((step) => step.key === "space");
   const transcript = pipeline.steps.find((step) => step.key === "transcript");
   return [
-    phone && `Audio on this phone: ${detail(phone, "Saved")}`,
+    phone && `${phone.label}: ${detail(phone, "Saved")}`,
     space && space.state !== "skipped" && `Audio in your space: ${detail(space, "Saved")}`,
     transcript && transcript.state !== "skipped" && `Transcript: ${detail(transcript, "Saved")}`,
   ].filter(Boolean).join(". ");
@@ -29,7 +29,7 @@ export function PipelineTrackSummary(props: { pipeline: NotePipeline }) {
   const space = props.pipeline.steps.find((step) => step.key === "space");
   const transcript = props.pipeline.steps.find((step) => step.key === "transcript");
   const audio = [
-    phone && phone.state !== "done" && `on this phone · ${detail(phone, "Saved")}`,
+    phone && phone.state !== "done" && `${phone.label.replace(/^Audio /, "")} · ${detail(phone, "Saved")}`,
     space && space.state !== "skipped" && detail(space, "Saved"),
   ].filter(Boolean).join(" · ");
   return (

@@ -137,7 +137,7 @@ describe("freshness and backoff for automatic checks", () => {
       } });
       await s.transcriber.check();
       expect(s.transcriber.snapshot()).toMatchObject({ availability: "failed", checkErrorCode: "native_status_failed",
-        checkError: "Could not check this phone's file upload. Try again." });
+        checkError: "Could not check this browser's file upload. Try again." });
       await transcriptionProps(s.transcriber, s.transcriber.snapshot())!.onRecheck();
       expect(s.transcriber.snapshot().availability).toBe("available");
       expect(reads).toBe(2);

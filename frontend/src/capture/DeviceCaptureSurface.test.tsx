@@ -43,7 +43,7 @@ test("offline capture keeps recording and offers a connection retry", () => {
   const html = render(true);
   expect(html).toContain("Record");
   expect(html).toContain("Try again");
-  expect(html).toContain("Recordings stay on this phone");
+  expect(html).toContain("Recordings stay on this browser");
 });
 
 test("a signed-in session error offers a connection retry without claiming sign-out or exposing the raw error", () => {

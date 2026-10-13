@@ -5,6 +5,7 @@
 // model, queued, running, failed, silent, or done but not yet in the space.
 // While the note's mode and state are still being read, it says so.
 import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
+import { deviceName } from "@/lib/platform";
 import { useCallback, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Loader2Icon, RefreshCwIcon } from "lucide-react";
 
@@ -268,19 +269,19 @@ export function OnDeviceNoteStatusView(props: {
     case "queued":
       return (
         <p role="status" className="flex items-center gap-2 text-callout text-muted-foreground" data-testid="voice-note-on-device-queued">
-          <Loader2Icon className="size-4 shrink-0 motion-safe:animate-spin" aria-hidden /> Queued to transcribe on this phone…
+          <Loader2Icon className="size-4 shrink-0 motion-safe:animate-spin" aria-hidden /> Queued to transcribe on {deviceName()}…
         </p>
       );
     case "running":
       return (
         <p role="status" className="flex items-center gap-2 text-callout text-muted-foreground" data-testid="voice-note-on-device-running">
-          <Loader2Icon className="size-4 shrink-0 motion-safe:animate-spin" aria-hidden /> Transcribing on this phone{note.percent === null ? "…" : `… ${Math.round(note.percent)}%`}
+          <Loader2Icon className="size-4 shrink-0 motion-safe:animate-spin" aria-hidden /> Transcribing on {deviceName()}{note.percent === null ? "…" : `… ${Math.round(note.percent)}%`}
         </p>
       );
     case "failed":
       return (
         <div className="flex flex-col gap-2" data-testid="voice-note-on-device-failed">
-          <p role="alert" className="min-w-0 text-callout text-destructive">Couldn&apos;t transcribe on this phone.</p>
+          <p role="alert" className="min-w-0 text-callout text-destructive">Couldn&apos;t transcribe on {deviceName()}.</p>
           <TranscribeAction noteId={props.noteId} transcription={props.transcription} durationSecs={props.durationSecs ?? null} label="Try again" />
         </div>
       );
@@ -293,7 +294,7 @@ export function OnDeviceNoteStatusView(props: {
     case "done":
       return (
         <p role="status" className="text-callout text-muted-foreground" data-testid="voice-note-on-device-done">
-          Transcribed on this phone. It&apos;s being added to this note.
+          Transcribed on {deviceName()}. It&apos;s being added to this note.
         </p>
       );
   }

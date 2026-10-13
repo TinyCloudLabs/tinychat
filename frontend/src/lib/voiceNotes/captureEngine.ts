@@ -1,4 +1,5 @@
 import { Capacitor } from "@capacitor/core";
+import { deviceName } from "@/lib/platform";
 import { installVoiceNotesEngine, nativeVoiceNotesAvailable, VoiceNotes, MIN_ANDROID_SDK_FOR_FILE_UPLOAD, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 
 export type CaptureEngineKind = "native" | "web" | "tauri";
@@ -46,7 +47,7 @@ let androidFileUploadAvailable = false;
 export class NativeFileUploadStatusError extends Error {
   readonly code = "native_status_failed";
   constructor(cause: unknown) {
-    super("Could not check this phone's file upload. Try again.", { cause });
+    super(`Could not check ${deviceName()}'s file upload. Try again.`, { cause });
     this.name = "NativeFileUploadStatusError";
   }
 }

@@ -38,7 +38,7 @@ const note = (i: number, patch: Partial<LibraryItem> = {}): LibraryItem => ({
 });
 const pipeline = (caption = "Uploading audio to your TinyCloud space · 42%", patch: Partial<NotePipeline> = {}): NotePipeline => ({
   steps: [
-    { key: "phone", label: "On this phone", state: "done" },
+    { key: "phone", label: "On this browser", state: "done" },
     { key: "space", label: "In your space", state: "active", caption, progress: 0.42 },
     { key: "transcript", label: "Transcript", state: "upcoming" },
     { key: "notes", label: "Notes", state: "skipped" },
@@ -47,7 +47,7 @@ const pipeline = (caption = "Uploading audio to your TinyCloud space · 42%", pa
 const waitingPipeline = (patch: Partial<NotePipeline> = {}): NotePipeline => pipeline("Waiting for upload", {
   current: "space",
   steps: [
-    { key: "phone", label: "On this phone", state: "done" },
+    { key: "phone", label: "On this browser", state: "done" },
     { key: "space", label: "In your space", state: "waiting", caption: "Waiting for upload" },
     { key: "transcript", label: "Transcript", state: "upcoming" },
     { key: "notes", label: "Notes", state: "skipped" },
@@ -109,13 +109,13 @@ describe("Recent", () => {
     expect(html).toMatch(/aria-label="Voice note\. Today 1:49 AM · 1:05"/);
   });
 
-  test("a note still on this phone is a row of its own with its badge", () => {
+  test("a note still on this browser is a row of its own with its badge", () => {
     const onPhone = note(1, { id: "on-phone:rec-1", title: null, onPhone: true });
     const html = home({ recent: { status: "ready", items: [onPhone, note(2)] }, pipelines: new Map([["rec-1", pipeline()]]) });
     expect(html.match(/data-testid="recent-item"/g)).toHaveLength(2);
     expect(html).toContain('href="/chat/capture/library/on-phone%3Arec-1"');
     expect(html.match(/data-pipeline-track-summary=/g)).toHaveLength(1);
-    expect(html).toContain('aria-label="Voice note. Audio on this phone: Saved. Audio in your space: Uploading audio to your TinyCloud space · 42%. Transcript: Not started. Today 1:49 AM · 1:05"');
+    expect(html).toContain('aria-label="Voice note. On this browser: Saved. Audio in your space: Uploading audio to your TinyCloud space · 42%. Transcript: Not started. Today 1:49 AM · 1:05"');
   });
 
   test("shows the last five", () => {
@@ -141,7 +141,7 @@ describe("Recent", () => {
     const recent = withOnPhone([note(1)], [
       { id: "rec-1", startedAt: Date.parse("2026-10-09T01:49:00.000Z"), durationMs: 65_000, failed: { kind: "offline", message: "still offline" } },
     ]);
-    const failed = pipeline("", { current: "space", blocker: { cause: "Couldn't reach your space. This note is safe on this phone.", action: { kind: "retry", label: "Try again" } } });
+    const failed = pipeline("", { current: "space", blocker: { cause: "Couldn't reach your space. This note is safe on this browser.", action: { kind: "retry", label: "Try again" } } });
     const html = home({ inProgress: voice(1), recent: { status: "ready", items: recent }, pipelineNotes: recent, pipelines: new Map([["rec-1", failed]]) });
     expect(html).not.toContain(">Saving…<");
     expect(html).toContain('data-testid="voice-note-action"');
@@ -154,13 +154,13 @@ describe("the in-progress card", () => {
     const a = note(1, { id: "on-phone:rec-1", sourceId: "rec-1", title: null, onPhone: true });
     const b = note(2, { id: "on-phone:rec-2", sourceId: "rec-2", title: null, onPhone: true });
     const html = home({ inProgress: voice(2), recent: { status: "ready", items: [a, b] }, pipelineNotes: [a, b], pipelines: new Map([["rec-1", pipeline()], ["rec-2", pipeline("Waiting to upload", { steps: [
-      { key: "phone", label: "Audio on this phone", state: "done" }, { key: "space", label: "Audio in your space", state: "waiting", caption: "Waiting to upload" }, { key: "transcript", label: "Transcript", state: "done", sublabel: "Ready on this phone" }, { key: "notes", label: "Notes", state: "skipped" },
+      { key: "phone", label: "Audio on this browser", state: "done" }, { key: "space", label: "Audio in your space", state: "waiting", caption: "Waiting to upload" }, { key: "transcript", label: "Transcript", state: "done", sublabel: "Ready on this browser" }, { key: "notes", label: "Notes", state: "skipped" },
     ] })]]) });
     expect(html).toContain('data-testid="voice-note-summary">2 in progress</b>');
-    expect(html).toContain('data-testid="voice-note-on-phone">2 on this phone</span>');
+    expect(html).toContain('data-testid="voice-note-on-phone">2 on this browser</span>');
     expect(html).toContain('data-testid="voice-note-uploading">1 uploading</span>');
     expect(html).toContain("Waiting to upload");
-    expect(html).toContain("Transcript: Ready on this phone");
+    expect(html).toContain("Transcript: Ready on this browser");
     expect(html).not.toContain("Save now");
     expect(html).toContain("In progress");
   });
@@ -219,16 +219,16 @@ describe("capture-issue rows", () => {
   const failed = { kind: "recoveryFailed", detail: "ENOSPC" } as const;
   const writeFailed = { kind: "write_failed", detail: "EIO" } as const;
 
-  test("timed out: 'Saving… · kept on this phone' with a spinner, as one button that opens its sheet", () => {
+  test("timed out: 'Saving… · kept on this browser' with a spinner, as one button that opens its sheet", () => {
     const html = home({}, { "rec-9": timedOut });
-    expect(html).toContain("Saving… · kept on this phone");
+    expect(html).toContain("Saving… · kept on this browser");
     expect(html).toContain('data-testid="soft-row-spinner"');
     expect(html).toContain('data-issue="finalization_timed_out"');
     expect(html).toMatch(/<button[^>]*class="soft-row"/);
     expect(html).not.toContain('role="group"');
     expect(html).not.toContain("Needs attention");
     expect(html).toContain(
-      'aria-label="Voice note. Saving… · kept on this phone. Opens details"',
+      'aria-label="Voice note. Saving… · kept on this browser. Opens details"',
     );
   });
 

@@ -25,14 +25,15 @@ import { saveVoiceNote, type NoteSyncErrorCode, type VoiceNoteAudio, type VoiceN
 import { assertAccountContext, assertCurrent, captureAccountContext, type AccountContext } from "@/lib/voiceNotes/accountContext";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { deleteNote } from "@/lib/voiceNotes/recordingNotes";
-import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
+import { VoiceNoteSaveTimeout, saveSlowMessage, withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
 import { readableError } from "@/lib/readableError";
 import { logPipelineError } from "@/lib/debugLog";
+import { deviceName } from "@/lib/platform";
 
 export const TINYCLOUD_NETWORK_FAILURE_MESSAGE =
-  "Couldn't reach your TinyCloud space. This note is still on your phone — try again.";
+  `Couldn't reach your TinyCloud space. This note is safe on ${deviceName()} — try again.`;
 export const TINYCLOUD_UPLOAD_REJECTED_MESSAGE =
-  "The TinyCloud node rejected this upload. This note is still on your phone — try again after the node is fixed.";
+  `The TinyCloud node rejected this upload. This note is safe on ${deviceName()} — try again after the node is fixed.`;
 
 function rawErrorMessage(error: unknown): string {
   return readableError(error);
@@ -70,6 +71,14 @@ export function messageOf(error: unknown): string {
   }
   logPipelineError("voice note", error);
   return message;
+}
+
+/** A pending-save failure is one useful line, without stacking two recovery sentences. */
+export function pendingSaveMessage(error: unknown): string {
+  const message = messageOf(error);
+  if (error instanceof VoiceNoteSaveTimeout || /(?:timed out|timeout)/i.test(message)) return saveSlowMessage();
+  if (/^(?:This note|Saving to|Couldn't reach|The TinyCloud node)/.test(message)) return message;
+  return `Could not save notes kept on ${deviceName()}: ${message}`;
 }
 
 export function errorCode(error: unknown): string | null {
@@ -220,13 +229,13 @@ async function deleteDiscardedOnce(id: string): Promise<string | null> {
   try {
     await withVoiceNoteSaveDeadline(`native deleteAudio id=${id}`, () => VoiceNotes.deleteAudio({ id }));
   } catch (caught) {
-    return `Discarded, but this phone kept its copy: ${messageOf(caught)}`;
+    return `Discarded, but ${deviceName()} kept its copy: ${messageOf(caught)}`;
   }
   try {
     // Keep the discard marker until the local Markdown tombstone is durable.
     await deleteNote(id);
   } catch (caught) {
-    return `Discarded audio, but this phone kept its note text: ${messageOf(caught)}`;
+    return `Discarded audio, but ${deviceName()} kept its note text: ${messageOf(caught)}`;
   }
   clearDiscarded(id);
   // Saved to the space before it was discarded: the local copy is gone, so that mark goes too.
@@ -257,7 +266,7 @@ export type SaveOutcome =
 
 function failedOutcome(error: unknown): Extract<SaveOutcome, { kind: "failed" }> {
   if (errorCode(error) === "ROW_LEDGER_FAILED") {
-    return { kind: "failed", failure: "Couldn't save this note to your space. It's still on this phone — try again.", failureKind: "other", failureCause: error };
+    return { kind: "failed", failure: `Couldn't save this note to your space. It's safe on ${deviceName()} — try again.`, failureKind: "other", failureCause: error };
   }
   return { kind: "failed", failure: messageOf(error), failureKind: classifyNoteFailure(error), failureCause: error };
 }
@@ -297,7 +306,7 @@ async function recordRowId(
       fresh = current;
     }
   }
-  throw Object.assign(new Error("Could not record this phone's TinyCloud row"), { code: "ROW_LEDGER_FAILED" });
+  throw Object.assign(new Error(`Could not record ${deviceName()}'s TinyCloud row`), { code: "ROW_LEDGER_FAILED" });
 }
 
 /**
@@ -355,7 +364,7 @@ export async function saveRecording(
           return VoiceNotes.listPending();
         })).recordings.find((note) => note.id === recording.id);
         checkActive();
-        if (!fresh || isLegacyNote(fresh) || fresh.owner !== owner || fresh.rev === undefined) throw new Error("Could not reread this phone's note status");
+        if (!fresh || isLegacyNote(fresh) || fresh.owner !== owner || fresh.rev === undefined) throw new Error(`Could not reread ${deviceName()}'s note status`);
         const patch = { audio: { state: "saved" as const, rowId: saved.data.id, at: Date.now() } };
         try {
           await withVoiceNoteSaveDeadline(`native updateLedger id=${recording.id}`, () => {
@@ -377,7 +386,7 @@ export async function saveRecording(
         }
         savedThisSession.add(recording.id);
       } catch (caught) {
-        cleanupError = `Saved to your space, but this phone could not update its note status: ${messageOf(caught)}`;
+        cleanupError = `Saved to your space, but ${deviceName()} could not update its note status: ${messageOf(caught)}`;
       }
       void syncOnDeviceTranscript(tcw, { id: recording.id, ledger: { audio: { state: "saved" } } });
     }
@@ -466,7 +475,7 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
         fresh = current;
       }
     }
-    return failedOutcome(Object.assign(new Error("Could not update this phone's saved-note status"), { code: "STORE_ERROR" }));
+    return failedOutcome(Object.assign(new Error(`Could not update ${deviceName()}'s saved-note status`), { code: "STORE_ERROR" }));
   } catch (caught) {
     return isDiscarded(recording.id)
       ? { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) }
@@ -829,7 +838,7 @@ export const pendingStore = {
 };
 
 function listingFailure(caught: unknown): string {
-  return `Could not check this phone for unsaved notes: ${messageOf(caught)}`;
+  return `Could not check ${deviceName()} for unsaved notes: ${messageOf(caught)}`;
 }
 
 /** Re-list the phone and exclude retained copies already saved to the space. */

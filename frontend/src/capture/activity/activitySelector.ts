@@ -1,4 +1,5 @@
-import type { AppPlatform } from "@/lib/platform";
+import { deviceName, type AppPlatform } from "@/lib/platform";
+export { deviceName } from "@/lib/platform";
 import type { PipelineStep } from "@/lib/voiceNotes/notePipeline";
 import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import type { UploadState } from "@/lib/audioUpload";
@@ -18,8 +19,6 @@ export interface ActivityJob {
   diagnostics?: string;
 }
 
-export const deviceName = (platform: AppPlatform): string =>
-  platform === "tauri" ? "this Mac" : platform === "ios" ? "this iPhone" : platform === "android" ? "this Android phone" : "this browser";
 const percent = (value: number) => `${Math.round(value * 100)}%`;
 const stateOf = (step: PipelineStep): ActivityState => step.state === "failed" ? "needs-attention" : step.state === "active" ? "running" : "waiting";
 const retryFor = (view: NotePipelineView, step: PipelineStep): (() => void) | undefined => step.blocker?.action?.kind === "retry"

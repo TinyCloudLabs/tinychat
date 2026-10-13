@@ -110,7 +110,7 @@ describe("a saved note's on-device state, gated by the note's committed mode", (
     const { latest } = await mount("n1");
     expect(latest().note).toEqual({ kind: "waiting_for_model" });
     const html = view(latest().note);
-    expect(html).toContain("Transcribe on this phone");
+    expect(html).toContain("Transcribe on this browser");
     expect(html).toContain('data-testid="voice-note-model-download-action"');
     expect(html).not.toContain("No transcript.");
   });
@@ -120,7 +120,7 @@ describe("a saved note's on-device state, gated by the note's committed mode", (
     fakeVoiceNotes({ recordings: () => [recording("n1", "on-device", stt("waiting_for_model"))] });
     const { latest } = await mount("n1");
     const html = view(latest().note);
-    expect(html).toMatch(/Transcribe on this phone — needs (a \d+ MB download|the on-device model)/);
+    expect(html).toMatch(/Transcribe on this browser — needs (a \d+ MB download|the on-device model)/);
     expect(html).toContain("Get model");
     expect(html).toMatch(/<button[^>]*class="[^"]*w-full[^"]*"[^>]*data-testid="voice-note-model-download-action"|<button[^>]*data-testid="voice-note-model-download-action"[^>]*class="[^"]*w-full/);
     expect(html).not.toContain("animate-spin");
@@ -188,7 +188,7 @@ describe("a saved note's on-device state, gated by the note's committed mode", (
     const { latest } = await mount("n1");
     expect(latest().note).toEqual({ kind: "failed", reason: "decoder_error" });
     const html = view(latest().note);
-    expect(html).toContain("Couldn&#x27;t transcribe on this phone.");
+    expect(html).toContain("Couldn&#x27;t transcribe on this browser.");
     expect(html).not.toContain("decoder_error");
     expect(html).not.toContain("voice-note-on-device-retry");
   });
@@ -253,7 +253,7 @@ describe("following the real iOS events", () => {
     expect(latest().note).toEqual({ kind: "running", percent: null });
     await act(async () => events.emit("progress", { id: "n1", percent: 40 }));
     expect(latest().note).toEqual({ kind: "running", percent: 40 });
-    expect(view(latest().note)).toContain("Transcribing on this phone… 40%");
+    expect(view(latest().note)).toContain("Transcribing on this browser… 40%");
     await act(async () => events.emit("progress", { id: "n1", percent: 65 }));
     expect(latest().note).toEqual({ kind: "running", percent: 65 });
     await act(async () => events.emit("transcribed", { id: "n1", outcome: "transcribed" }));
@@ -333,7 +333,7 @@ describe("an older queue snapshot against newer events", () => {
       await act(async () => events.emit("failed", { id: "n1", code: "decode_failed", message: "decoder stopped" }));
       expect(latest().note).toEqual({ kind: "failed", reason: "decode_failed" });
       const html = view(latest().note);
-      expect(html).toContain("Couldn&#x27;t transcribe on this phone.");
+      expect(html).toContain("Couldn&#x27;t transcribe on this browser.");
       expect(html).not.toContain("decode_failed");
     });
 
@@ -476,9 +476,9 @@ describe("the state itself", () => {
   });
 
   test("queued, running with progress, and done each read as themselves", () => {
-    expect(view({ kind: "queued" })).toContain("Queued to transcribe on this phone");
-    expect(view({ kind: "running", percent: 42.4 })).toContain("Transcribing on this phone… 42%");
-    expect(view({ kind: "done" })).toContain("Transcribed on this phone");
+    expect(view({ kind: "queued" })).toContain("Queued to transcribe on this browser");
+    expect(view({ kind: "running", percent: 42.4 })).toContain("Transcribing on this browser… 42%");
+    expect(view({ kind: "done" })).toContain("Transcribed on this browser");
   });
 });
 

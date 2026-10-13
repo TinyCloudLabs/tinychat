@@ -48,7 +48,7 @@ const note = (i: number): LibraryItem => ({
 
 describe("issue copy", () => {
   test("each state has its own line, and `detail` is never in any of it", () => {
-    expect(issueMeta(timedOut)).toBe("Saving… · kept on this phone");
+    expect(issueMeta(timedOut)).toBe("Saving… · kept on this browser");
     expect(issueMeta(failed)).toBe("Couldn't recover this recording");
     expect(issueMeta(writeFailed)).toBe("Couldn't save all of this recording");
     const everything = JSON.stringify([
@@ -76,11 +76,11 @@ describe("issue copy", () => {
     ).not.toMatch(/Try again|Delete/);
   });
 
-  test("a timed-out recording's sheet explains it is kept on this phone and offers no action", () => {
+  test("a timed-out recording's sheet explains it is kept on this browser and offers no action", () => {
     const copy = issueSheetCopy(timedOut);
     expect(copy.title).toBe("Saving this recording");
     expect(copy.body).toBe(
-      "Kept on this phone. Exo will finish it automatically.",
+      "Kept on this browser. Exo will finish it automatically.",
     );
     expect(JSON.stringify(copy)).not.toMatch(/Try again|Delete/);
   });
@@ -111,7 +111,7 @@ describe("issue copy", () => {
   test("the partial-audio sheet: a title, one honest line, and what is missing only when known", () => {
     expect(issueSheetCopy(partial)).toEqual({
       title: "Part of this recording couldn't be written",
-      body: "The recording was saved, but this phone couldn't write all of the audio. The part that couldn't be written is missing.",
+      body: "The recording was saved, but this browser couldn't write all of the audio. The part that couldn't be written is missing.",
     });
     expect(partialAudioMissingLine({ kind: "partial_audio", missingMs: 12_000 })).toBe("About 0:12 is missing");
     expect(partialAudioMissingLine({ kind: "partial_audio", missingMs: 72_400 })).toBe("About 1:12 is missing");
@@ -214,7 +214,7 @@ describe("matching rows", () => {
 });
 
 describe("the on-this-phone card's note", () => {
-  const pending = "Kept on this phone. Exo will finish it automatically.";
+  const pending = "Kept on this browser. Exo will finish it automatically.";
   const retry = "Not in your space yet · Exo will retry when it next opens";
   const parkedNote = "Not in your space yet · Couldn't recover · audio kept";
   const kept = "Not in your space yet · Couldn't save all of this recording";

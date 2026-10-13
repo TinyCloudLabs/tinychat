@@ -12,7 +12,7 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { Button } from "@/components/ui/button";
-import { PlatformContext } from "@/lib/platform";
+import { PlatformContext, deviceName } from "@/lib/platform";
 import { getDesktopCaptureExtras, type DesktopCaptureExtras } from "@/lib/voiceNotes/desktopCaptureExtras";
 import { chooseSystemAudio, needsSystemAudioDisclosure, SYSTEM_AUDIO_BODY, SYSTEM_AUDIO_MIC_ONLY, SYSTEM_AUDIO_RECORD, SYSTEM_AUDIO_TITLE } from "@/capture/home/desktop/systemAudioDisclosure";
 import { SheetDialog } from "./final/SheetDialog";
@@ -173,7 +173,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   const platform = useContext(PlatformContext);
   const disclosureTitleId = useId();
   const disclosureDescriptionId = useId();
-  const device = platform === "tauri" ? "Mac" : "phone";
+  const device = deviceName(platform);
   const [configured, setConfigured] = useState<{ tcw: TinyCloudWeb; did: string | null } | null>(null);
   const [defaultsError, setDefaultsError] = useState<string | null>(null);
   const [defaultsAttempt, setDefaultsAttempt] = useState(0);
@@ -200,7 +200,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
         globalThis.localStorage?.setItem(key, String(written.transitionGen));
         if (active) { setDefaultsError(null); setConfigured({ tcw, did: tcw.did ?? null }); if (tcw.did) onAccountReady?.(tcw); }
       } catch (caught) {
-        if (active) setDefaultsError(`Could not set this phone's recording account: ${readableError(caught)}`);
+        if (active) setDefaultsError(`Could not set ${device}'s recording account: ${readableError(caught)}`);
       }
     })();
     return () => { active = false; };
@@ -242,7 +242,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       setAnnouncement(recorderStatusText(state.phase, state.mic, null));
     } else if (before.outcome !== state.outcome && state.outcome === "local") {
       hapticSaved();
-      setAnnouncement(`Saved on this ${device}`);
+      setAnnouncement(`Saved on ${device}`);
     } else if (before.outcome !== state.outcome && state.outcome === "failed") {
       hapticWarning();
       setAnnouncement(RECEIPT_KEPT);

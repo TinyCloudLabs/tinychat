@@ -224,7 +224,7 @@ describe("a read that fails is shown with its cause, never read as done", () => 
     const { seen } = await mountOne(SIGNED_OUT);
     const pipeline = seen.view!.pipeline;
     expect(stepOf(pipeline, "notes").state).toBe("failed");
-    expect(pipeline.blocker?.cause).toBe("Couldn't read this note's text on this phone");
+    expect(pipeline.blocker?.cause).toBe("Couldn't read this note's text on this browser");
     expect(pipeline.done).toBe(false);
   });
 
@@ -350,7 +350,7 @@ describe("actions", () => {
     expect(seen.view!.pipeline.blocker?.action?.kind).toBe("check-again");
     await act(async () => seen.view!.onAction("check-again"));
     await settle();
-    expect(seen.view!.actionError).toBe("Couldn't complete this step. Try again.");
+    expect(seen.view!.actionError).toBe("Couldn't complete that action. Try again.");
   });
 });
 
@@ -372,7 +372,7 @@ describe("the list hook", () => {
     expect(views.get(ID)!.pipeline.blocker?.action?.kind).toBe("check-again");
     await act(async () => views.get(ID)!.onAction("check-again"));
     await settle();
-    expect(views.get(ID)!.actionError).toBe("Couldn't complete this step. Try again.");
+    expect(views.get(ID)!.actionError).toBe("Couldn't complete that action. Try again.");
     expect(views.get(OTHER)!.actionError).toBeNull();
   });
 
@@ -874,7 +874,7 @@ describe("a transcript in the space that the phone's ledger never recorded (P6 r
     await settleUntil(() => seen.view !== null && seen.view.pipeline.blocker !== undefined);
     const pipeline = seen.view!.pipeline;
     expect(stepOf(pipeline, "transcript").state).toBe("done");
-    expect(pipeline.blocker?.cause).toBe("The transcript is in your space, but this phone couldn't record it.");
+    expect(pipeline.blocker?.cause).toBe("The transcript is in your space, but this browser couldn't record it.");
     expect(pipeline.blocker?.action?.kind).toBe("retry");
     expect(pipeline.done).toBe(false);
     expect(phone.ledgerWrites).toEqual([]);

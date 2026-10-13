@@ -1,8 +1,9 @@
 // Words for the note pipeline (notePipeline.ts). Short sentences, "·" between a state and its detail,
 // no em dashes. Every blocker line says what is wrong and, where it is true, that the note is safe.
 import type { PipelineActionKind, PipelineDevice, StepKey } from "./notePipeline";
+import { deviceName as platformDeviceName } from "@/lib/platform";
 
-export const deviceName = (device: PipelineDevice): string => device === "mac" ? "this Mac" : device === "iphone" ? "this iPhone" : device === "android" ? "this Android phone" : device === "browser" ? "this browser" : "this phone";
+export const deviceName = (device: PipelineDevice): string => platformDeviceName(device === "mac" ? "tauri" : device === "iphone" ? "ios" : device === "android" ? "android" : device === "browser" ? "web" : undefined);
 
 export const STEP_LABEL = {
   phone: (device: PipelineDevice) => `Audio on ${deviceName(device)}`,
@@ -92,12 +93,12 @@ export const LOCAL_COPY = {
   failed: (detail: string | null | undefined, device: PipelineDevice) => withDetail(`Couldn't transcribe on ${deviceName(device)}`, detail),
   cancelled: (device: PipelineDevice) => `Transcribing on ${deviceName(device)} was cancelled`,
   syncFailed: () => "Couldn't add the transcript to this note",
-  notAdded: "The transcript is ready on this phone but hasn't been added to this note",
-  missingTranscript: "this phone says it finished transcribing but has no transcript for the note",
-  transcriptReadFailed: "Couldn't read the transcript on this phone.",
-  transcriptCheckFailed: "Couldn't check this note on this phone.",
+  notAdded: (device: PipelineDevice) => `The transcript is ready on ${deviceName(device)} but hasn't been added to this note`,
+  missingTranscript: `${deviceName("phone")} says it finished transcribing but has no transcript for the note`,
+  transcriptReadFailed: `Couldn't read the transcript on ${deviceName("phone")}.`,
+  transcriptCheckFailed: `Couldn't check this note on ${deviceName("phone")}.`,
   transcriptSyncFailed: "Couldn't add the transcript to this note.",
-  unrecorded: () => "The transcript is in your space, but this phone couldn't record it.",
+  unrecorded: (device: PipelineDevice) => `The transcript is in your space, but ${deviceName(device)} couldn't record it.`,
   checkingSpace: "Checking your space…",
   checkingSpaceAfterUploads: "Checking your space · after uploads",
   notStarted: "Waiting to transcribe",
@@ -128,5 +129,5 @@ export const NOTES_COPY = {
   failed: "Couldn't sync your notes",
   waitingForRow: "Waiting for the note to reach your space",
   notSynced: "Your notes haven't reached your space yet",
-  unreadable: (detail: string | null | undefined) => withDetail("Couldn't read this note's text on this phone", detail),
+  unreadable: (detail: string | null | undefined, device: PipelineDevice) => withDetail(`Couldn't read this note's text on ${deviceName(device)}`, detail),
 };

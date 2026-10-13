@@ -4,6 +4,7 @@
 // `nativeVoiceNotesAvailable()` is the one gate every caller checks first.
 
 import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
+import { deviceName } from "@/lib/platform";
 
 import { base64ToBytes } from "./voiceNoteAudio";
 import { voiceNoteCallDeadlineMs, withVoiceNoteSaveDeadline } from "./saveDeadline";
@@ -331,7 +332,7 @@ export function nativeRecordingSource(
       const bytes = base64ToBytes(chunk.base64);
       if (bytes.byteLength !== length || chunk.size !== recording.sizeBytes) {
         throw Object.assign(new Error(
-          `The recording on this phone changed while it was being saved (read ${bytes.byteLength} of ${length} bytes at ${offset}; file ${chunk.size} bytes, expected ${recording.sizeBytes}).`,
+          `The recording on ${deviceName()} changed while it was being saved (read ${bytes.byteLength} of ${length} bytes at ${offset}; file ${chunk.size} bytes, expected ${recording.sizeBytes}).`,
         ), { code: "recording_changed" });
       }
       return bytes;

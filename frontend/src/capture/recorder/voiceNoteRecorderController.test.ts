@@ -1182,7 +1182,7 @@ describe("voice-note recorder controller", () => {
     await Promise.all([first, doubleTap]);
     expect(reconcileRuns).toBe(1);
     expect(pendingStore.snapshot()).toMatchObject({ running: false, listing: { state: "ok", count: 1 } });
-    expect(pendingStore.snapshot().lastError).toContain("Sync is taking longer than expected");
+    expect(pendingStore.snapshot().lastError).toContain("Saving to your TinyCloud space is slow");
     setVoiceNoteSaveDeadlineForTests(null);
     pendingStore.setAccount(null);
     detach();
@@ -1301,7 +1301,7 @@ describe("voice-note recorder controller", () => {
     outcomes.shift()!.reject(new Error("space timed out"));
     await saving;
     expect(pendingStore.snapshot()).toMatchObject({ accountDid: tcw.did,
-      lastError: "Could not save notes on this phone: space timed out" });
+      lastError: "Saving to your TinyCloud space is slow. The note is safe on this browser. Try again." });
     pendingStore.setAccount(null);
     detach();
   });
@@ -1600,7 +1600,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
     await recorder.discard();
     expect(onPhone.map((recording) => recording.id)).toEqual([id]);
     expect(isDiscarded(id)).toBe(false);
-    expect(recorder.getState().error).toContain("Already saved on this phone");
+    expect(recorder.getState().error).toContain("Already saved on this browser");
   });
 
   test("a failed Stop checks native status before showing a live recorder", async () => {
@@ -1632,7 +1632,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
     await recorder.record();
     await recorder.stop();
     expect(recorder.getState()).toMatchObject({
-      phase: "idle", error: "Kept on this phone. Exo will finish it automatically.",
+      phase: "idle", error: "Kept on this browser. Exo will finish it automatically.",
     });
     expect(recorder.getState().captureIssues[currentId ?? onPhone[0].id]).toEqual({ kind: "finalization_timed_out" });
     expect(onPhone).toHaveLength(1);
@@ -1822,7 +1822,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
       recording: null, error: "finalization_timed_out",
     });
     expect(recorder.getState()).toMatchObject({
-      phase: "idle", error: "Kept on this phone. Exo will finish it automatically.",
+      phase: "idle", error: "Kept on this browser. Exo will finish it automatically.",
     });
     expect(saves).toEqual([]);
   });
@@ -1904,7 +1904,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
     await recorder.record();
     await stopNatively();
     await recorder.discard();
-    expect(recorder.getState()).toMatchObject({ phase: "idle", outcome: null, error: "Discarded, but this phone kept its copy: the file is busy" });
+    expect(recorder.getState()).toMatchObject({ phase: "idle", outcome: null, error: "Discarded, but this browser kept its copy: the file is busy" });
     const kept = onPhone[0]!;
     expect(isDiscarded(kept.id)).toBe(true);
 
@@ -2256,7 +2256,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
       await tick();
       expect(await recorder.setTranscriber("private-cloud", { scope: "default" })).toBe("ok");
 
-      // The engine takes On this phone, then holds the reply while the sign-in default write arrives.
+      // The engine takes On this browser, then holds the reply while the sign-in default write arrives.
       let release!: () => void;
       const held = new Promise<void>((resolve) => { release = resolve; });
       __setVoiceNotesForTests({ ...plugin, async setCaptureDefaults(defaults) {
