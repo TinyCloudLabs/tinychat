@@ -1,13 +1,15 @@
 /**
  * Metadata-only pending-reconcile state stored in the user's connector KV,
  * with one key per source. `changed_at` records projection change time;
- * `checked_at` is the time that source was read. Backend-ingest refreshes only
- * on existing mount/unlock passes (no timer; it can age indefinitely while a
- * tab stays open); transcriber uses its existing 30-second retry pass while
- * active and unlocked. Either source can age indefinitely without its pass.
- * Consumers use source-specific `checked_at` freshness and treat missing,
- * stale, or future `checked_at` as unknown. Any stored-field addition requires
- * a version bump.
+ * `checked_at` is the observation time of the last persisted source check.
+ * Backend-ingest persists each newer completed pass on the existing mount and
+ * unlock triggers only (no timer; it can age indefinitely without a trigger).
+ * Transcriber uses its existing 30-second pass while active and unlocked; its
+ * `checked_at` can lag the latest read by up to one hour because unchanged
+ * projections are throttled. Its consumer freshness threshold must exceed
+ * one hour plus the 30-second pass interval. Transcriber can also age
+ * indefinitely without a pass. Consumers treat missing, stale, or future
+ * `checked_at` as unknown. Any stored-field addition requires a version bump.
  */
 
 import { CONNECTORS_KV_PREFIX } from "./connectorStore";
@@ -177,14 +179,14 @@ export async function writePendingReconcileSnapshot(
   const meetings = rows.map(metadataRow).filter((row): row is PendingReconcileMeeting => row !== null)
     .sort((a, b) => a.id.localeCompare(b.id));
   const sameProjection = previous !== undefined && JSON.stringify(previous.meetings) === JSON.stringify(meetings);
+  const observedMs = Date.parse(observedAt);
   if (previous) {
     const checkedMs = Date.parse(previous.checked_at);
-    const observedMs = Date.parse(observedAt);
     const future = Number.isFinite(checkedMs) && checkedMs > Date.now();
     if (!future && Number.isFinite(checkedMs) && Number.isFinite(observedMs) && checkedMs >= observedMs) {
       return { ok: true, changed: false };
     }
-    if (sameProjection && !future) {
+    if (source === "transcriber" && sameProjection && !future) {
       const checkedAge = observedMs - checkedMs;
       if (Number.isFinite(checkedAge) && checkedAge < SNAPSHOT_HEARTBEAT_MS) {
         return { ok: true, changed: false };
@@ -192,9 +194,17 @@ export async function writePendingReconcileSnapshot(
     }
   }
 
+  const previousChangedAt = previous?.changed_at;
+  const previousChangedMs = previousChangedAt === undefined ? NaN : Date.parse(previousChangedAt);
+  const changedAt = sameProjection
+    && Number.isFinite(previousChangedMs)
+    && Number.isFinite(observedMs)
+    && previousChangedMs <= observedMs
+    ? previousChangedAt!
+    : observedAt;
   const snapshot: PendingReconcileSnapshot = {
     version: 1,
-    changed_at: sameProjection ? previous!.changed_at : observedAt,
+    changed_at: changedAt,
     checked_at: observedAt,
     count: meetings.length,
     meetings,

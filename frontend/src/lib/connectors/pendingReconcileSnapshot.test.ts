@@ -102,7 +102,7 @@ describe("backend-only metadata snapshot", () => {
     ]);
   });
 
-  test("serializes only the allowlisted metadata and writes only when a source projection changes", async () => {
+  test("serializes only allowlisted metadata and persists every newer backend observation", async () => {
     const f = kvFixture();
     const rows = backendPendingRows("fireflies", [backendRow({ sourceId: "ff-1", title: "PRIVATE_TITLE" })]);
     const observedAt = "2026-10-13T09:00:00.000Z";
@@ -121,22 +121,102 @@ describe("backend-only metadata snapshot", () => {
     });
 
     const unchanged = await writePendingReconcileSnapshot(f.kv, "backend-ingest", rows, "2026-10-13T09:00:30.000Z");
-    expect(unchanged).toEqual({ ok: true, changed: false });
-    expect(f.writes).toHaveLength(1);
+    expect(unchanged).toEqual({ ok: true, changed: true });
+    expect(f.writes).toHaveLength(2);
+    const refreshed = JSON.parse(f.writes[1]?.value ?? "{}");
+    expect(refreshed.changed_at).toBe(observedAt);
+    expect(refreshed.checked_at).toBe("2026-10-13T09:00:30.000Z");
   });
-  test("refreshes checked_at hourly without changing changed_at", async () => {
+  test("refreshes the transcriber checked_at hourly without changing changed_at", async () => {
     const f = kvFixture();
-    const rows = backendPendingRows("fireflies", [backendRow({ sourceId: "ff-1" })]);
-    await writePendingReconcileSnapshot(f.kv, "backend-ingest", rows, "2026-10-13T09:00:00.000Z");
-    const withinHour = await writePendingReconcileSnapshot(f.kv, "backend-ingest", rows, "2026-10-13T09:30:00.000Z");
+    const rows = transcriberPendingRows([
+      { id: "ptx-1", status: "completed", created_at: "2026-10-03T00:00:00Z" },
+    ] as TranscriberListRow[], []);
+    await writePendingReconcileSnapshot(f.kv, "transcriber", rows, "2026-10-13T09:00:00.000Z");
+    const withinHour = await writePendingReconcileSnapshot(f.kv, "transcriber", rows, "2026-10-13T09:30:00.000Z");
     expect(withinHour).toEqual({ ok: true, changed: false });
     expect(f.writes).toHaveLength(1);
-    const afterHour = await writePendingReconcileSnapshot(f.kv, "backend-ingest", rows, "2026-10-13T10:00:00.001Z");
+    const afterHour = await writePendingReconcileSnapshot(f.kv, "transcriber", rows, "2026-10-13T10:00:00.001Z");
     expect(afterHour).toEqual({ ok: true, changed: true });
     expect(f.writes).toHaveLength(2);
     const source = JSON.parse(f.writes[1]?.value ?? "{}");
     expect(source.changed_at).toBe("2026-10-13T09:00:00.000Z");
     expect(source.checked_at).toBe("2026-10-13T10:00:00.001Z");
+  });
+  test("backend-ingest persists an unchanged 08:30 observation to fence an older 08:15 pass", async () => {
+    const f = kvFixture();
+    const key = `${PENDING_RECONCILE_SNAPSHOT_KEY}/backend-ingest`;
+    const empty: PendingReconcileMeeting[] = [];
+    f.seed(key, JSON.stringify({
+      version: 1,
+      changed_at: "2026-10-13T08:00:00.000Z",
+      checked_at: "2026-10-13T08:00:00.000Z",
+      count: 0,
+      meetings: empty,
+    }));
+    let reads = 0;
+    let releaseReads!: () => void;
+    const bothRead = new Promise<void>((resolve) => { releaseReads = resolve; });
+    let releaseOlder!: () => void;
+    const olderPut = new Promise<void>((resolve) => { releaseOlder = resolve; });
+    const kv = {
+      async get(readKey: string) {
+        const result = await f.kv.get(readKey);
+        if (++reads === 2) releaseReads();
+        await bothRead;
+        return result;
+      },
+      async put(writeKey: string, value: string, options?: { ifMatch?: string; ifNoneMatch?: "*" }) {
+        if (value.includes("ff-slow-0815")) await olderPut;
+        return f.kv.put(writeKey, value, options);
+      },
+    };
+    const slow = writePendingReconcileSnapshot(kv, "backend-ingest", backendPendingRows("fireflies", [
+      backendRow({ sourceId: "ff-slow-0815" }),
+    ]), "2026-10-13T08:15:00.000Z");
+    const newer = writePendingReconcileSnapshot(kv, "backend-ingest", empty, "2026-10-13T08:30:00.000Z");
+    await newer;
+    releaseOlder();
+    await slow;
+    const stored = JSON.parse(f.entries.get(key) ?? "{}");
+    expect(stored.checked_at).toBe("2026-10-13T08:30:00.000Z");
+    expect(stored.meetings).toEqual([]);
+  });
+
+  test("the next transcriber pass repairs a stale projection from a slower pass", async () => {
+    const f = kvFixture();
+    const key = `${PENDING_RECONCILE_SNAPSHOT_KEY}/transcriber`;
+    const empty: PendingReconcileMeeting[] = [];
+    const pending = transcriberPendingRows([
+      { id: "ptx-slow-0815", status: "completed", created_at: "2026-10-13T08:15:00.000Z" },
+    ] as TranscriberListRow[], []);
+    await writePendingReconcileSnapshot(f.kv, "transcriber", empty, "2026-10-13T08:00:00.000Z");
+    expect(await writePendingReconcileSnapshot(f.kv, "transcriber", empty, "2026-10-13T08:30:00.000Z"))
+      .toEqual({ ok: true, changed: false });
+    await writePendingReconcileSnapshot(f.kv, "transcriber", pending, "2026-10-13T08:15:00.000Z");
+    const repaired = await writePendingReconcileSnapshot(f.kv, "transcriber", empty, "2026-10-13T08:30:30.000Z");
+    expect(repaired).toEqual({ ok: true, changed: true });
+    const stored = JSON.parse(f.entries.get(key) ?? "{}");
+    expect(stored.checked_at).toBe("2026-10-13T08:30:30.000Z");
+    expect(stored.meetings).toEqual([]);
+  });
+
+  test("an invalid or future changed_at is reset to the current observation", async () => {
+    const observedAt = new Date().toISOString();
+    const checkedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    for (const changedAt of ["not-a-timestamp", new Date(Date.now() + 60 * 60 * 1000).toISOString()]) {
+      const f = kvFixture();
+      const key = `${PENDING_RECONCILE_SNAPSHOT_KEY}/transcriber`;
+      f.seed(key, JSON.stringify({
+        version: 1,
+        changed_at: changedAt,
+        checked_at: checkedAt,
+        count: 0,
+        meetings: [],
+      }));
+      await writePendingReconcileSnapshot(f.kv, "transcriber", [], observedAt);
+      expect(JSON.parse(f.entries.get(key) ?? "{}").changed_at).toBe(observedAt);
+    }
   });
   test("concurrent source writes keep independent state under separate keys", async () => {
     const entries = new Map<string, { value: string; etag: string }>();
