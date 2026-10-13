@@ -77,7 +77,7 @@ function setup(locked = false) {
   const savedIds = ["initial"];
   const rows = [row("initial")];
   const saver: TranscriberLibrarySaver = {
-    listSaved: async () => ({ ok: true, data: [...savedIds] }),
+    listSaved: async () => ({ ok: true, data: { saved: [...savedIds], unknown: [] } }),
     save: async () => ({ ok: true }),
   };
   const client = {
@@ -106,6 +106,28 @@ test("snapshot uses the already-fetched transcriber list and existing saved-id s
   });
   expect(listCalls).toBe(1);
   expect(snapshot).toEqual({ ids: ["initial", "pending-unsaved", "in-progress"], savedIds: ["initial"] });
+});
+test("captures the transcriber observation immediately before the existing list call", async () => {
+  const f = setup();
+  const events: string[] = [];
+  const observedAt = "2026-10-13T09:00:00.000Z";
+  let callbackAt: string | undefined;
+  f.client.list = async () => {
+    events.push("list");
+    return { status: "ok", value: { meetings: f.rows } } as never;
+  };
+  await syncTranscriberLibrary({
+    tcw: f.tcw,
+    client: f.client,
+    saver: f.saver,
+    observedAt: () => { events.push("observedAt"); return observedAt; },
+    onPendingSnapshot: (async (_rows: unknown, _saved: unknown, _unknown: unknown, at: string) => {
+      events.push("snapshot");
+      callbackAt = at;
+    }) as never,
+  });
+  expect(callbackAt).toBe(observedAt);
+  expect(events).toEqual(["observedAt", "list", "snapshot"]);
 });
 test("mounted sync stores only completed unsaved metadata from its existing list pass", async () => {
   const f = setup();
@@ -138,10 +160,12 @@ test("mounted sync stores only completed unsaved metadata from its existing list
     },
   });
   await mount(f);
-  const serialized = entries.get(PENDING_RECONCILE_SNAPSHOT_KEY) ?? "";
+  const serialized = entries.get(`${PENDING_RECONCILE_SNAPSHOT_KEY}/transcriber`) ?? "";
   expect(listCalls).toBe(1);
-  expect(writes).toEqual([PENDING_RECONCILE_SNAPSHOT_KEY]);
-  expect(JSON.parse(serialized).sources.transcriber).toEqual({
+  expect(writes).toEqual([`${PENDING_RECONCILE_SNAPSHOT_KEY}/transcriber`]);
+  const snapshot = JSON.parse(serialized);
+  expect(snapshot).toEqual({
+    version: 1,
     changed_at: expect.any(String),
     checked_at: expect.any(String),
     count: 1,
@@ -163,7 +187,7 @@ test("does not publish a listed row after the active account changes", async () 
   f.client.list = async () => ({ status: "ok", value: { meetings: [row("previous-account")] } }) as never;
   f.saver.listSaved = async () => {
     active = false;
-    return { ok: true, data: [] };
+    return { ok: true, data: { saved: [], unknown: [] } };
   };
   await syncTranscriberLibrary({
     tcw: f.tcw,

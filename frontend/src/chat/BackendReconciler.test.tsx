@@ -171,9 +171,10 @@ describe("BackendReconciler", () => {
       meetings: api,
       secrets: { isUnlocked: () => true },
     });
-    const serialized = values.get(PENDING_RECONCILE_SNAPSHOT_KEY) ?? "";
+    const serialized = values.get(`${PENDING_RECONCILE_SNAPSHOT_KEY}/backend-ingest`) ?? "";
     expect(api.calls.filter((call) => call === "list")).toHaveLength(1);
-    expect(JSON.parse(serialized).sources["backend-ingest"]).toEqual({
+    expect(JSON.parse(serialized)).toEqual({
+      version: 1,
       changed_at: expect.any(String),
       checked_at: expect.any(String),
       count: 1,

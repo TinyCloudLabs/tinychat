@@ -21,7 +21,7 @@ export interface TranscriberLibrarySaver {
     tcw: TinyCloudWeb,
     scheduleRead?: <T>(read: () => Promise<T>) => Promise<T | null>,
     isCurrent?: () => boolean,
-  ): Promise<{ ok: boolean; data?: string[] }>;
+): Promise<{ ok: boolean; data?: { saved: string[]; unknown: string[] } }>;
   listVersions?: typeof listSavedTranscriberVersions;
   refresh?: typeof refreshTranscriberMeeting;
   save(tcw: TinyCloudWeb, meeting: TranscriberMeeting, transcript: TranscriberTranscript): Promise<{ ok: boolean }>;
@@ -49,7 +49,13 @@ export async function syncTranscriberLibrary(input: {
   deliveryActive?: () => boolean;
   now?: () => number;
 refreshBackoff?: TranscriberRefreshBackoff;
-onPendingSnapshot?: (rows: readonly TranscriberListRow[], savedIds: readonly string[]) => Promise<void>;
+onPendingSnapshot?: (
+    rows: readonly TranscriberListRow[],
+    savedIds: readonly string[],
+    unknownIds: readonly string[],
+    observedAt: string,
+  ) => Promise<void>;
+  observedAt?: () => string;
 }): Promise<void> {
   const { tcw, client, saver = defaultSaver, isCurrent = () => true, onState = () => {}, observedSaved,
     deliveryActive = serverDeliveryActive, now = Date.now, refreshBackoff = new Map() } = input;
@@ -60,17 +66,18 @@ onPendingSnapshot?: (rows: readonly TranscriberListRow[], savedIds: readonly str
   if (!isCurrent()) return;
   // This API call can be slow or retry for tens of seconds; it does not touch
   // the user's space and must never occupy the serial space-write lane.
+  const observedAt = input.observedAt?.() ?? new Date().toISOString();
   const listed = await client.list();
   if (listed.status !== "ok" || !isCurrent()) return;
   // Each SQL/KV completeness read takes its own turn. A library with many
   // saved recordings therefore yields the lane between keys for voice notes.
   const complete = await saver.listSaved(tcw, readOnDrainLane(isCurrent), isCurrent);
   if (!complete?.ok || !isCurrent()) return;
-  const versions = saver.listVersions
+const versions = saver.listVersions
     ? await saver.listVersions(tcw, readOnDrainLane(isCurrent))
     : { ok: false as const };
   if (!isCurrent()) return;
-  const saved = new Set(complete.data ?? []);
+  const saved = new Set(complete.data?.saved ?? []);
   let refreshes = 0;
   if (observedSaved && !observedSaved.initialized) {
     for (const id of saved) observedSaved.ids.add(id);
@@ -157,7 +164,7 @@ onPendingSnapshot?: (rows: readonly TranscriberListRow[], savedIds: readonly str
       if (isCurrent()) onState(row.id, "error");
     }
   }
-  if (isCurrent()) await input.onPendingSnapshot?.(listed.value.meetings, [...saved]);
+  if (isCurrent()) await input.onPendingSnapshot?.(listed.value.meetings, [...saved], complete.data?.unknown ?? [], observedAt);
 }
 
 export function useTranscriberLibrarySync(input: {
@@ -191,7 +198,7 @@ export function useTranscriberLibrarySync(input: {
         if (!observedSaved.initialized && !unlocked()) {
           const baseline = await saver.listSaved(tcw, readOnDrainLane(accountCurrent), accountCurrent);
           if (baseline?.ok && accountCurrent()) {
-            for (const id of baseline.data ?? []) observedSaved.ids.add(id);
+            for (const id of baseline.data?.saved ?? []) observedSaved.ids.add(id);
             observedSaved.initialized = true;
           }
         }
@@ -201,10 +208,10 @@ export function useTranscriberLibrarySync(input: {
             tcw, client: api, saver, isCurrent, observedSaved, refreshBackoff, onState: (id, state) => {
               if (accountCurrent()) setSaved((old) => ({ ...old, [id]: state }));
             },
-            onPendingSnapshot: async (rows, savedIds) => {
+            onPendingSnapshot: async (rows, savedIds, unknownIds, observedAt) => {
               if (!accountCurrent()) return;
               await enqueueDrainWork(() => accountCurrent()
-                ? writePendingReconcileSnapshot(tcw.kv, "transcriber", transcriberPendingRows(rows, savedIds), undefined, accountCurrent)
+                ? writePendingReconcileSnapshot(tcw.kv, "transcriber", transcriberPendingRows(rows, savedIds, unknownIds), observedAt, accountCurrent)
                 : Promise.resolve({ ok: true, changed: false }));
             },
           });

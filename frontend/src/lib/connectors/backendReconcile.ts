@@ -148,9 +148,10 @@ export interface ReconcileBackendMeetingsOptions {
   maxMeetings?: number;
   pageSize?: number;
   signal?: AbortSignal;
-  /** Injectable clock — the copy stamp in the user-space record. */
   now?: () => string;
-  onPendingSnapshot?: (rows: readonly ConnectorMeetingMeta[]) => Promise<void>;
+  /** Timestamp captured immediately before each discovery-list request. */
+  observedAt?: () => string;
+  onPendingSnapshot?: (rows: readonly ConnectorMeetingMeta[], observedAt: string) => Promise<void>;
 }
 
 const defaultSecrets: BackendReconcileSecrets = { isUnlocked: isSecretsUnlocked };
@@ -253,6 +254,7 @@ export async function reconcileBackendMeetings(
   }
 
   const listedRows: ConnectorMeetingMeta[] = [];
+  let sourceObservedAt: string | undefined;
 
   // ── Page the discovery filter, sequentially ────────────────────────
   let cursor: string | undefined;
@@ -262,6 +264,10 @@ export async function reconcileBackendMeetings(
       break;
     }
 
+    const listObservedAt = opts.observedAt?.() ?? new Date().toISOString();
+    if (sourceObservedAt === undefined || Date.parse(listObservedAt) < Date.parse(sourceObservedAt)) {
+      sourceObservedAt = listObservedAt;
+    }
     const list = await meetings.list({
       source,
       limit: pageSize,
@@ -317,7 +323,7 @@ export async function reconcileBackendMeetings(
     ]);
     const pending = listedRows.filter((meta) => stillPending.has(meta.sourceId));
     try {
-      await opts.onPendingSnapshot?.(pending);
+      if (sourceObservedAt !== undefined) await opts.onPendingSnapshot?.(pending, sourceObservedAt);
     } catch {
       // Snapshot persistence is ancillary; the next existing pass retries.
     }

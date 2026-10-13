@@ -73,13 +73,13 @@ export async function runBackendReconcile(
         meetings,
         source: options.source ?? DEFAULT_MEETINGS_SOURCE,
         ...(options.secrets === undefined ? {} : { secrets: options.secrets }),
-        onPendingSnapshot: async (rows) => {
+        onPendingSnapshot: async (rows, observedAt) => {
           if (!currentAccount()) return;
           await writePendingReconcileSnapshot(
             tcw.kv,
             "backend-ingest",
             backendPendingRows(options.source ?? DEFAULT_MEETINGS_SOURCE, rows),
-            undefined,
+            observedAt,
             currentAccount,
           );
         },

@@ -298,19 +298,35 @@ describe("reconcileBackendMeetings — the user-space copy", () => {
       meta({ sourceId: "mtg-saved" }),
       ...pending,
     ])] }, tracker);
-    const snapshots: ConnectorMeetingMeta[][] = [];
+    let listStartedAt = 0;
+    const events: string[] = [];
+    const observedAt = "2026-10-13T09:00:00.000Z";
+    const list = api.list.bind(api);
+    api.list = async (options) => {
+      events.push("list");
+      listStartedAt = Date.now();
+      return list(options);
+    };
+    const snapshots: Array<{ rows: ConnectorMeetingMeta[]; observedAt: string }> = [];
 
     const result = await reconcileBackendMeetings({
       tcw,
       source: SOURCE,
       meetings: api,
       secrets: unlocked(),
-      onPendingSnapshot: async (rows) => { snapshots.push([...rows]); },
+      observedAt: () => { events.push("observedAt"); return observedAt; },
+      onPendingSnapshot: (async (rows: ConnectorMeetingMeta[], checkedAt: string) => {
+        events.push("snapshot");
+        snapshots.push({ rows: [...rows], observedAt: checkedAt });
+      }) as never,
     });
 
     expect(result.ok).toBe(true);
     expect(snapshots).toHaveLength(1);
-    expect(snapshots[0]?.map(({ sourceId }) => sourceId)).toEqual(["mtg-failed"]);
+    expect(snapshots[0]?.rows.map(({ sourceId }) => sourceId)).toEqual(["mtg-failed"]);
+    expect(snapshots[0]?.observedAt).toBe(observedAt);
+    expect(events).toEqual(["observedAt", "list", "snapshot"]);
+    expect(Date.parse(snapshots[0]!.observedAt)).toBeLessThanOrEqual(listStartedAt);
     expect(api.listArgs).toHaveLength(1);
   });
 
