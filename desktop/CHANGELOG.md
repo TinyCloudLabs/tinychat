@@ -1,5 +1,9 @@
 # exo-desktop
 
+## 0.7.0-beta.9
+
+No changes in this release.
+
 ## 0.7.0-beta.8
 
 ### Patch Changes

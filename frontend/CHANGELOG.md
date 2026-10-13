@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.7.0-beta.9
+
+### Patch Changes
+
+- 8946533: Keep retrieval latest queries compatible with sqlparser-rs using nested LTRIM/RTRIM.
+
 ## 0.7.0-beta.8
 
 ### Patch Changes
