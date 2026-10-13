@@ -1,5 +1,5 @@
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { chmod, mkdir, open, readdir, rm, stat } from "node:fs/promises";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { chmod, mkdir, open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
@@ -15,9 +15,9 @@ import { assertStrongSecret } from "./webhook-tokens.js";
  * AssemblyAI transcript id. Every later read or delete presents the handle, which binds the
  * transcript to the session address that created it.
  *
- * Nothing here is persisted: uploads, slots and the daily allowance live in this process, and a
- * restart forgets them (clients re-upload; the allowance resets). Spool files left by a previous
- * process are removed at start.
+ * Upload slots and the daily allowance live in this process. Exo note keys are journaled in the
+ * spool directory before paid submission, and must live on a persistent volume. A restart drops
+ * unsent spools; an interrupted paid submission remains uncertain rather than being submitted twice.
  */
 
 export const MAX_HOSTED_BYTES = 120_960_000;
@@ -162,7 +162,12 @@ export interface HostedUpload {
   /** Aborts the background submit (deadline, sweep, shutdown). Set while submitting. */
   abort: AbortController | null;
   submitDeadline: number;
+  /** Stable Exo note key; absent for legacy and non-note uploads. */
+  sourceId?: string;
 }
+
+type NoteJob = { address: string; sourceId: string; uploadId: string; state: "receiving" | "submitting" | "submitted" | "uncertain" | "deleted"; handle?: string; expiresAt?: number };
+export type NoteJobView = { status: "receiving" | "submitting" | "submitted" | "uncertain" | "deleted"; upload_id: string; id?: string };
 
 /** How a background submit ended. Codes are the router's public error codes. */
 export type SubmitOutcome =
@@ -208,10 +213,61 @@ export class HostedUploadStore {
   private readonly charged = new Map<string, number>();
   /** Background submits in flight. */
   private readonly inFlight = new Set<Promise<void>>();
+  private readonly noteJobs = new Map<string, NoteJob>();
 
   /** Serialize account mutations, including file IO, so a claim cannot overtake a part or cleanup. */
   private readonly mutations = new Map<string, Promise<void>>();
   private stopping = false;
+
+  private noteKey(address: string, sourceId: string): string {
+    return createHash("sha256").update(JSON.stringify([address, sourceId])).digest("hex");
+  }
+
+  private async saveNoteJob(key: string, job: NoteJob): Promise<void> {
+    const file = join(this.spoolDir, `note-${key}.json`);
+    const temporary = `${file}.${randomUUID()}.tmp`;
+    const handle = await open(temporary, "wx", 0o600);
+    try { await handle.writeFile(JSON.stringify(job)); await handle.sync(); }
+    finally { await handle.close(); }
+    try {
+      await rename(temporary, file);
+      const directory = await open(this.spoolDir, "r");
+      try { await directory.sync(); } finally { await directory.close(); }
+    } catch (error) { await rm(temporary, { force: true }); throw error; }
+    this.noteJobs.set(key, job);
+  }
+
+  private async removeNoteJob(key: string): Promise<void> {
+    await rm(join(this.spoolDir, `note-${key}.json`), { force: true });
+    this.noteJobs.delete(key);
+  }
+
+  noteJob(address: string, sourceId: string): NoteJobView | null {
+    const job = this.noteJobs.get(this.noteKey(address, sourceId));
+    return job ? { status: job.state, upload_id: job.uploadId, ...(job.handle ? { id: job.handle } : {}) } : null;
+  }
+
+  /** A transcript request crosses the paid boundary only after this marker is durable. */
+  async markNoteSubmitting(upload: HostedUpload): Promise<void> {
+    if (!upload.sourceId) return;
+    const key = this.noteKey(upload.owner, upload.sourceId);
+    const job = this.noteJobs.get(key);
+    if (job?.uploadId === upload.id && job.state === "receiving") await this.saveNoteJob(key, { ...job, state: "submitting" });
+  }
+
+  async settleNote(upload: HostedUpload, outcome: SubmitOutcome): Promise<void> {
+    if (!upload.sourceId) return;
+    const key = this.noteKey(upload.owner, upload.sourceId);
+    const job = this.noteJobs.get(key);
+    if (job?.uploadId === upload.id) await this.saveNoteJob(key, outcome.status === "submitted"
+      ? { ...job, state: "submitted", handle: outcome.handle, expiresAt: outcome.expiresAt } : { ...job, state: "uncertain" });
+  }
+
+  async deleteNoteHandle(address: string, handle: string): Promise<void> {
+    for (const [key, job] of this.noteJobs) {
+      if (job.address === address && job.handle === handle) await this.saveNoteJob(key, { ...job, state: "deleted" });
+    }
+  }
 
   private withAccount<T>(address: string, action: () => Promise<T>): Promise<T> {
     const result = (this.mutations.get(address) ?? Promise.resolve()).then(action);
@@ -242,6 +298,13 @@ export class HostedUploadStore {
     await chmod(this.spoolDir, 0o700);
     for (const name of await readdir(this.spoolDir)) {
       if (SPOOL_FILE_RE.test(name)) await rm(join(this.spoolDir, name), { force: true });
+      if (/^note-[0-9a-f]{64}\.json$/.test(name)) {
+        const key = name.slice(5, -5);
+        const job = JSON.parse(await readFile(join(this.spoolDir, name), "utf8")) as NoteJob;
+        if (job.state === "receiving") await this.removeNoteJob(key);
+        else if (job.state === "submitting") await this.saveNoteJob(key, { ...job, state: "uncertain" });
+        else this.noteJobs.set(key, job);
+      }
     }
   }
 
@@ -258,11 +321,21 @@ export class HostedUploadStore {
    * a failed part), is abandoned and refunded so a retry never waits out its hour; one that is
    * being sent to AssemblyAI right now still makes this `assemblyai_busy`.
    */
-  async create(address: string, byteSize: number, contentType: string, nowMs: number): Promise<CreateUploadResult> {
-    return this.withAccount(address, () => this.createLocked(address, byteSize, contentType, nowMs));
+  async create(address: string, byteSize: number, contentType: string, nowMs: number, sourceId?: string): Promise<CreateUploadResult> {
+    return this.withAccount(address, async () => {
+      if (sourceId && this.noteJob(address, sourceId)) {
+        const job = this.noteJob(address, sourceId)!;
+        const upload = this.uploads.get(job.upload_id);
+        if (upload && upload.owner === address && upload.state === "receiving" && upload.expiresAt <= nowMs)
+          await this.abandonLocked(upload);
+        else if (upload && upload.owner === address) return { ok: true, upload };
+        else return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
+      }
+      return this.createLocked(address, byteSize, contentType, nowMs, sourceId);
+    });
   }
 
-  private async createLocked(address: string, byteSize: number, contentType: string, nowMs: number): Promise<CreateUploadResult> {
+  private async createLocked(address: string, byteSize: number, contentType: string, nowMs: number, sourceId?: string): Promise<CreateUploadResult> {
     if (this.stopping) return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
     const mine = [...this.uploads.values()].find((u) => u.owner === address);
     if (mine?.state === "submitting") return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
@@ -299,6 +372,7 @@ export class HostedUploadStore {
       state: "receiving",
       abort: null,
       submitDeadline: 0,
+      sourceId,
     };
     // Reserve the slot and charge the allowance before the first await, so concurrent creates
     // cannot both pass the checks above.
@@ -307,9 +381,11 @@ export class HostedUploadStore {
     try {
       const handle = await open(path, "wx", 0o600);
       await handle.close();
+      if (sourceId) await this.saveNoteJob(this.noteKey(address, sourceId), { address, sourceId, uploadId: id, state: "receiving" });
     } catch (error) {
       this.uploads.delete(id);
       this.charged.set(dayKey, used);
+      await rm(path, { force: true });
       throw error;
     }
     return { ok: true, upload };
@@ -359,6 +435,7 @@ export class HostedUploadStore {
     return this.withAccount(upload.owner, async () => {
       if (!this.receiving(upload) || upload.expiresAt <= now()) return true;
       if (!(await this.complete(upload))) return false;
+      await this.markNoteSubmitting(upload);
       this.startSubmit(upload, now, submit);
       return true;
     });
@@ -383,14 +460,18 @@ export class HostedUploadStore {
       } catch {
         outcome = { status: "failed", code: "assemblyai_unavailable" };
       }
+      // An unpersisted result must remain uncertain rather than permit a second paid job.
+      await this.settleNote(upload, outcome).catch(() => {});
       // Publish the outcome before release removes the active entry; no lookup can see a gap
       // while the spool deletion is pending (or if deleting the file fails).
       const settledAt = now();
+      const expiresAt = outcome.status === "submitted" && outcome.expiresAt !== undefined
+        ? outcome.expiresAt : (Math.floor(settledAt / 1000) + HANDLE_TTL_SECONDS) * 1000;
       this.settled.set(upload.id, {
         owner: upload.owner,
-        until: settledAt + (outcome.status === "submitted" ? UNCLAIMED_SUBMITTED_TTL_MS : SETTLED_TTL_MS),
-        expiresAt: outcome.status === "submitted" && outcome.expiresAt !== undefined
-          ? outcome.expiresAt : (Math.floor(settledAt / 1000) + HANDLE_TTL_SECONDS) * 1000,
+        until: upload.sourceId && outcome.status === "submitted" ? expiresAt
+          : settledAt + (outcome.status === "submitted" ? UNCLAIMED_SUBMITTED_TTL_MS : SETTLED_TTL_MS),
+        expiresAt,
         claimed: false, outcome,
       });
       await this.release(upload).catch(() => {});
@@ -420,6 +501,10 @@ export class HostedUploadStore {
     const used = this.charged.get(upload.dayKey);
     if (used !== undefined) this.charged.set(upload.dayKey, Math.max(0, used - upload.byteSize));
     await this.release(upload);
+    if (upload.sourceId) {
+      const key = this.noteKey(upload.owner, upload.sourceId);
+      if (this.noteJobs.get(key)?.uploadId === upload.id) await this.removeNoteJob(key);
+    }
     return true;
   }
 
@@ -449,11 +534,13 @@ export class HostedUploadStore {
   private async expireOutcome(id: string, signal?: AbortSignal): Promise<void> {
     const settled = this.settled.get(id);
     if (!settled) return;
-    if (settled.outcome.status === "submitted" && !settled.claimed) {
+    const uploadJob = [...this.noteJobs.values()].find((job) => job.uploadId === id && job.address === settled.owner);
+    if (settled.outcome.status === "submitted" && (!settled.claimed || uploadJob)) {
       // Never advertise terminal cleanup until upstream deletion succeeds. A failed delete
       // keeps the handle for the next sweep (and uses the router's fixed, redacted logging).
       if (!this.expireDelete) throw new Error("Hosted expiry deletion is not configured");
       await this.expireDelete(settled.outcome.handle, settled.owner, signal);
+      if (uploadJob) await this.deleteNoteHandle(settled.owner, settled.outcome.handle);
     }
     this.tombstone(id, settled.owner, settled.expiresAt);
     this.settled.delete(id);
@@ -476,7 +563,8 @@ export class HostedUploadStore {
         if (settled.until <= nowMs) await this.expireOutcome(id);
         else if (!settled.claimed) {
           settled.claimed = true;
-          settled.until = Math.min(settled.until, nowMs + SETTLED_TTL_MS);
+          if (![...this.noteJobs.values()].some((job) => job.uploadId === id && job.address === address))
+            settled.until = Math.min(settled.until, nowMs + SETTLED_TTL_MS);
         }
       }
     });
@@ -507,6 +595,11 @@ export class HostedUploadStore {
     for (const [id, settled] of this.settled) {
       if (settled.until <= nowMs) await this.resolve(id, settled.owner, nowMs).catch(() => {});
     }
+    for (const job of [...this.noteJobs.values()]) {
+      if (job.state !== "submitted" || !job.handle || !job.expiresAt || job.expiresAt > nowMs) continue;
+      if (!this.expireDelete) throw new Error("Hosted expiry deletion is not configured");
+      await this.expireDelete(job.handle, job.address).then(() => this.deleteNoteHandle(job.address, job.handle!), () => {});
+    }
     const today = utcDay(nowMs);
     for (const key of this.charged.keys()) if (!key.startsWith(`${today}|`)) this.charged.delete(key);
     return removed;
@@ -526,7 +619,8 @@ export class HostedUploadStore {
       await Promise.allSettled([...this.uploads.values()]
         .filter((upload) => upload.state === "receiving").map((upload) => this.abandonLocked(upload)));
       await this.idle();
-      await Promise.allSettled([...this.settled].map(([id, entry]) => this.withAccount(entry.owner, async () => {
+      await Promise.allSettled([...this.settled].filter(([id, entry]) =>
+        ![...this.noteJobs.values()].some((job) => job.uploadId === id && job.address === entry.owner)).map(([id, entry]) => this.withAccount(entry.owner, async () => {
         if (!controller.signal.aborted) await this.expireOutcome(id, controller.signal);
       })));
     })();
@@ -534,7 +628,9 @@ export class HostedUploadStore {
     await Promise.race([Promise.allSettled([cleanup]), deadline]);
     clearTimeout(timer);
     for (const entry of this.settled.values()) {
-      if (entry.outcome.status === "submitted" && !entry.claimed) {
+      const handle = entry.outcome.status === "submitted" ? entry.outcome.handle : null;
+      if (handle && !entry.claimed &&
+        ![...this.noteJobs.values()].some((job) => job.handle === handle && job.address === entry.owner)) {
         console.error(`[assemblyai-hosted] route=shutdown status=502 code=assemblyai_cleanup_incomplete cid=${randomUUID()}`);
       }
     }

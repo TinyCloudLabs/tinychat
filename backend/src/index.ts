@@ -999,7 +999,7 @@ async function main() {
 
   // Hosted AssemblyAI (routes/assemblyai-hosted.ts): the same mount, always, so the frontend can
   // tell "off" (capabilities `hosted: false`) from "dark". Uploads live in this process only: the
-  // spool is emptied at start and a minute sweep drops uploads past their hour.
+  // unsent spools are emptied at start; keyed note submissions are journaled in the spool dir.
   let hostedUploads: HostedUploadStore | null = null;
   if (assemblyAiHosted.hosted) {
     hostedUploads = new HostedUploadStore(assemblyAiHosted.spoolDir, assemblyAiHosted.dailyBytes, DEFAULT_MAX_CONCURRENT_UPLOADS);

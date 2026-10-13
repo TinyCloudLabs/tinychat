@@ -118,8 +118,9 @@ async function hostedError(response: Response): Promise<AssemblyAiError> {
 }
 
 interface HostedSubmission {
-  status: "receiving" | "submitting" | "submitted" | "failed";
+  status: "missing" | "receiving" | "submitting" | "submitted" | "failed" | "uncertain" | "deleted";
   id?: string;
+  upload_id?: string;
   error?: { code?: string } | null;
 }
 
@@ -147,9 +148,11 @@ export function createHostedAssemblyAiClient(config: {
   sessionStore: Pick<SessionStore, "getToken" | "isExpired">;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
-}): AssemblyAiClient & {
+}): Omit<AssemblyAiClient, "createTranscript"> & {
+  createTranscript(uploadId: string, options: { speakerLabels: boolean; multichannel?: boolean; signal?: AbortSignal; sourceId?: string }): Promise<AssemblyAiTranscript>;
   capabilities(): Promise<HostedAssemblyAiCapabilities>;
-  createUpload(size: number, contentType: string): Promise<{ uploadId: string; partSize: number }>;
+  createUpload(size: number, contentType: string, sourceId?: string): Promise<{ uploadId: string; partSize: number; status?: HostedSubmission["status"]; id?: string }>;
+  lookupJob(sourceId: string): Promise<HostedSubmission>;
   putPart(uploadId: string, index: number, bytes: Uint8Array): Promise<void>;
   uploadState(uploadId: string): Promise<HostedSubmission>;
 } {
@@ -206,11 +209,17 @@ export function createHostedAssemblyAiClient(config: {
       return (await request("/capabilities").then((r) => r.json())) as HostedAssemblyAiCapabilities;
     },
 
-    async createUpload(size, contentType) {
-      const created = (await request("/hosted/uploads", { method: "POST", json: { byte_size: size, content_type: contentType } }).then((r) => r.json())) as { upload_id?: unknown; part_size?: unknown };
+    async createUpload(size, contentType, sourceId) {
+      const created = (await request("/hosted/uploads", { method: "POST", json: { byte_size: size, content_type: contentType, ...(sourceId ? { source_id: sourceId } : {}) } }).then((r) => r.json())) as { upload_id?: unknown; part_size?: unknown; status?: HostedSubmission["status"]; id?: string };
       if (typeof created.upload_id !== "string" || typeof created.part_size !== "number" || created.part_size <= 0)
         throw new AssemblyAiError("failed", "Exo's server returned an unexpected upload.");
-      return { uploadId: created.upload_id, partSize: created.part_size };
+      if (created.status === "uncertain" || created.status === "deleted")
+        throw new AssemblyAiError("failed", "This note's previous submission needs support to reconcile safely.");
+      return { uploadId: created.upload_id, partSize: created.part_size, status: created.status, id: created.id };
+    },
+
+    async lookupJob(sourceId) {
+      return submission(await request(`/hosted/jobs/${encodeURIComponent(sourceId)}`));
     },
 
     async putPart(uploadId, index, bytes) {
@@ -268,14 +277,14 @@ export function createHostedAssemblyAiClient(config: {
       return uploadId;
     },
 
-    async createTranscript(uploadId, { speakerLabels, multichannel = false, signal }) {
+    async createTranscript(uploadId, { speakerLabels, multichannel = false, signal, sourceId }: { speakerLabels: boolean; multichannel?: boolean; signal?: AbortSignal; sourceId?: string }) {
       // The backend sends the file on to AssemblyAI in the background: 202 with the submission's state,
       // then its state by upload id until it has the transcript's handle. A replay re-joins it.
       const path = `/hosted/uploads/${encodeURIComponent(uploadId)}`;
       let state: HostedSubmission;
       try {
         state = await submission(
-          await request("/hosted/transcripts", { method: "POST", json: { upload_id: uploadId, speaker_labels: speakerLabels, multichannel }, signal }),
+          await request("/hosted/transcripts", { method: "POST", json: { upload_id: uploadId, speaker_labels: speakerLabels, multichannel, ...(sourceId ? { source_id: sourceId } : {}) }, signal }),
         );
       } catch (err) {
         if (!(err instanceof AssemblyAiError) || (err.kind !== "not-found" && err.kind !== "failed")) throw err;

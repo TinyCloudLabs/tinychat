@@ -84,6 +84,7 @@ export const ASSEMBLYAI_HOSTED_ERRORS = {
   assemblyai_rate_limited: { status: 429, message: "AssemblyAI is rate limiting requests. Try again later." },
   assemblyai_unavailable: { status: 502, message: "AssemblyAI could not be reached." },
   assemblyai_hosted_unavailable: { status: 503, message: "TinyCloud's AssemblyAI account is not available." },
+  assemblyai_job_uncertain: { status: 409, message: "The previous submission could not be reconciled safely. Contact support before retrying this note." },
 } as const;
 
 export type AssemblyAiHostedErrorCode = keyof typeof ASSEMBLYAI_HOSTED_ERRORS;
@@ -314,11 +315,17 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
       if (!req.is("application/json") || typeof body !== "object" || body === null || Array.isArray(body)) {
         return fail(res, { code: "invalid_request" });
       }
-      const { byte_size, content_type } = body;
+      const { byte_size, content_type, source_id } = body;
+      if (source_id !== undefined && (typeof source_id !== "string" || source_id.length < 1 || source_id.length > 256)) return fail(res, { code: "invalid_request" });
       if (typeof byte_size !== "number" || !Number.isSafeInteger(byte_size) || byte_size < 1) return fail(res, { code: "invalid_request" });
       if (byte_size > MAX_HOSTED_BYTES) return fail(res, { code: "recording_too_large" });
       if (typeof content_type !== "string" || !HOSTED_CONTENT_TYPES.includes(content_type)) return fail(res, { code: "unsupported_audio" });
-      const created = await store!.create(locals(res).address, byte_size, content_type, now());
+      if (typeof source_id === "string") {
+        const existing = store!.noteJob(locals(res).address, source_id);
+        if (existing && (existing.status !== "receiving" || store!.lookup(existing.upload_id, locals(res).address, now()).kind !== "expired"))
+          return ok(res, 200, { ...existing, part_size: HOSTED_PART_SIZE });
+      }
+      const created = await store!.create(locals(res).address, byte_size, content_type, now(), source_id as string | undefined);
       if (!created.ok) return fail(res, { code: created.code, retryAfterSeconds: created.retryAfterSeconds });
       ok(
         res,
@@ -326,6 +333,15 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
         { upload_id: created.upload.id, part_size: HOSTED_PART_SIZE, expires_at: new Date(created.upload.expiresAt).toISOString() },
         ` bytes=${byte_size}`,
       );
+    }),
+  );
+
+  router.get(
+    "/hosted/jobs/:source_id",
+    handle("get_note_job", async (req, res) => {
+      const sourceId = req.params.source_id;
+      if (typeof sourceId !== "string" || sourceId.length < 1 || sourceId.length > 256) return fail(res, { code: "invalid_request" });
+      ok(res, 200, store!.noteJob(locals(res).address, sourceId) ?? { status: "missing" });
     }),
   );
 
@@ -474,6 +490,14 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
         return fail(res, { code: "invalid_request" });
       }
       const id = typeof body.upload_id === "string" ? body.upload_id : "";
+      const sourceId = body.source_id;
+      if (sourceId !== undefined && (typeof sourceId !== "string" || sourceId.length < 1 || sourceId.length > 256)) return fail(res, { code: "invalid_request" });
+      if (typeof sourceId === "string") {
+        const job = store!.noteJob(locals(res).address, sourceId);
+        if (!job || job.upload_id !== id) return fail(res, { code: "invalid_request" });
+        if (job.status === "uncertain" || job.status === "deleted") return fail(res, { code: "assemblyai_job_uncertain" });
+        if (job.status === "submitted") return ok(res, 202, { upload_id: id, status: "submitted", id: job.id });
+      }
       const found = await store!.resolve(id, locals(res).address, now());
       if (found.kind === "missing") return fail(res, { code: "assemblyai_upload_not_found" });
       if (found.kind === "expired") return fail(res, { code: "assemblyai_upload_expired" });
@@ -534,6 +558,7 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
       const id = await transcriptId(req, res);
       if (id === null) return;
       await deleteUpstream(id);
+      await store!.deleteNoteHandle(locals(res).address, req.params.handle as string);
       ok(res, 204);
     }),
   );
