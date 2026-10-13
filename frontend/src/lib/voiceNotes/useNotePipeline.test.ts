@@ -20,6 +20,7 @@ import {
   type PipelineActionEnv,
 } from "./useNotePipeline";
 import { pendingStore } from "./recorderSaves";
+import { registerDesktopWhisperQueue, type DesktopWhisperQueue } from "./desktop/desktopWhisper";
 import { voiceNoteMarkdownKvKey } from "./voiceNoteStore";
 
 const ID = "note-1";
@@ -50,6 +51,15 @@ const run = (patch: Partial<NotePipelineFacts>): NotePipeline => notePipeline(bu
 const stateOf = (pipeline: NotePipeline, key: "phone" | "space" | "transcript" | "notes") => pipeline.steps.find((step) => step.key === key)?.state;
 
 describe("the pipeline from composed stores", () => {
+  test("desktop Whisper and audio upload report independent progress", () => {
+    const pipeline = run({ device: "mac", saved: false,
+      native: { transcriber: "on-device", stt: { state: "running", error: null } },
+      desktopJob: { id: ID, state: "transcribing", progress: 63, error: null },
+      pending: { id: ID, startedAt: 0, durationMs: 1000, upload: { state: "uploading", bytes: 42, total: 100 } },
+    });
+    expect(pipeline.steps.find((step) => step.key === "space")).toMatchObject({ state: "active", caption: "Uploading audio to your TinyCloud space · 42%" });
+    expect(pipeline.steps.find((step) => step.key === "transcript")).toMatchObject({ state: "active", caption: "Transcribing on this Mac · 63%" });
+  });
   test("a private-cloud note still uploading: the space step is active and the note is not done", () => {
     const pipeline = run({
       saved: false,
@@ -442,6 +452,18 @@ describe("actions", () => {
     refuse = true;
     expect(await runPipelineAction("get-model", waiting)).toBe("Couldn't download the on-device model: no network");
     __resetOnDeviceSttStoreForTests();
+  });
+
+  test("a failed Mac transcription retries through Whisper", async () => {
+    const calls: string[] = [];
+    registerDesktopWhisperQueue({ retry: async (id) => { calls.push(id); } } as DesktopWhisperQueue);
+    try {
+      const env = envFor({ device: "mac", saved: true, native: { transcriber: "on-device", stt: { state: "failed", error: "decoder" } },
+        desktopJob: { id: ID, state: "failed", error: "decoder", progress: null } });
+      expect(env.pipeline.current).toBe("transcript");
+      expect(await runPipelineAction("retry", env)).toBeNull();
+      expect(calls).toEqual([ID]);
+    } finally { registerDesktopWhisperQueue(null); }
   });
 
   test("retry on the notes step with no account says so instead of doing nothing", async () => {

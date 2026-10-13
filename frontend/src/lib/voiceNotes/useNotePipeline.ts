@@ -9,8 +9,9 @@ import { recoveryFailedKey, withQuarantine, type HomeIssue } from "@/capture/hom
 import { useSoftHome } from "@/capture/home/softHome";
 import { useRecorder } from "@/capture/recorder/RecorderProvider";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
-import { PlatformContext } from "@/lib/platform";
+import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import { localTranscriptionUnavailable } from "./captureEngine";
+import { getDesktopWhisperQueue, type DesktopWhisperJob } from "./desktop/desktopWhisper";
 import { resolveVoiceNoteRows, SpaceLaneQueueWaitTimeout, spaceLaneSnapshot, subscribeSpaceLane } from "./voiceNoteRows";
 import { legacyTranscriptMetadata, readTranscriptCommits } from "./voiceNoteCommits";
 import {
@@ -114,6 +115,7 @@ export interface NotePipelineFacts {
   lane: ReturnType<typeof spaceLaneSnapshot>;
   /** Null when this build has no on-device speech. */
   onDeviceStatus: OnDeviceSttStatus | null;
+  desktopJob?: DesktopWhisperJob | null;
   transcriptSync: OnDeviceTranscriptSyncState | null;
   /** The space row (read by the hook, behind the write lane) has not answered yet: `rowMetadata` is null for want of an answer, not for want of a row. */
   spaceReading?: boolean;
@@ -136,9 +138,8 @@ export interface NotePipelineFacts {
  * Where this note's transcript comes from. What is transcribing it wins, because the note's Transcribe action can run a
  * provider other than the committed one: a live on-device job, then a private-cloud job, then an on-device attempt that
  * finished (its failure or cancel is what the note shows until a cloud job takes over). With none, the note's committed mode
- * (`options.transcriber` in the phone's ledger) decides. A note this phone has no ledger entry for (a Mac, a browser,
- * another phone's note) has no committed mode: a native on-device job says on-device, and anything else is "off" (nobody
- * is transcribing it from here, so the transcript step is skipped, never invented).
+ * (`options.transcriber` in the phone's ledger) decides. Desktop Whisper has its own queue and the space row records
+ * the committed choice; neither requires Capacitor's phone ledger.
  */
 // `waiting_for_model` is written for every committed mode at creation; only a real attempt writes these.
 const ATTEMPT_STATES: ReadonlySet<NoteSttState["state"]> = new Set(["queued", "running", "done", "failed", "cancelled"]);
@@ -155,6 +156,14 @@ export function pipelineRoute(native: NativeNote | null, hasCloudJob: boolean, q
     case "assemblyai": return "private-cloud";
     case null: return native?.stt != null ? "on-device" : "off";
   }
+}
+
+function desktopCommittedLocal(metadata: Record<string, unknown> | null): boolean {
+  const capture = metadata?.capture;
+  if (capture === null || typeof capture !== "object") return false;
+  const options = (capture as { options?: unknown }).options;
+  return options !== null && typeof options === "object" &&
+    (options as { transcriber?: unknown }).transcriber === "on-device";
 }
 
 // --- Decision (b): the model ----------------------------------------------------------------------------------
@@ -230,7 +239,11 @@ const CAPTURE_ISSUE: Record<HomeIssue["kind"], PipelineCaptureIssue> = {
 
 function onDeviceInput(facts: NotePipelineFacts): PipelineOnDevice | null {
   const status = facts.onDeviceStatus;
-  if (status === null) return null;
+  if (status === null) return facts.desktopJob ? {
+    stt: { state: facts.desktopJob.state === "transcribing" ? "running" : facts.desktopJob.state, error: facts.desktopJob.error },
+    queue: { position: facts.desktopJob.state === "queued" ? 1 : null, inLine: 1, percent: facts.desktopJob.progress },
+    model: null, download: "idle", sync: facts.transcriptSync,
+  } : null;
   const place = onDeviceQueuePlace(status, facts.id);
   // The live queue entry is the newest word on the job; the ledger read is what is left after a restart.
   const stt = place !== null ? { state: place.entry.state, error: place.entry.error } : facts.native?.stt != null ? { state: facts.native.stt.state, error: facts.native.stt.error } : null;
@@ -245,7 +258,9 @@ function onDeviceInput(facts: NotePipelineFacts): PipelineOnDevice | null {
 }
 
 export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineInput {
-  const route = pipelineRoute(facts.native, facts.cloudJob !== null, facts.onDeviceStatus === null ? null : onDeviceQueuePlace(facts.onDeviceStatus, facts.id));
+  const desktopLocal = facts.device === "mac" && (facts.desktopJob != null || desktopCommittedLocal(facts.rowMetadata));
+  const route = desktopLocal ? "on-device" : pipelineRoute(facts.native, facts.cloudJob !== null,
+    facts.onDeviceStatus === null ? null : onDeviceQueuePlace(facts.onDeviceStatus, facts.id));
   const rowOutcome = facts.rowMetadata === null ? "none" : voiceNoteTranscriptState(facts.rowMetadata).status;
   // The ledger's own record that the transcript reached the space is durable evidence too (a receipt has no library row read).
   const ledgerOutcome = facts.native?.transcriptSync?.state === "saved" ? facts.native.transcriptOutcome ?? "none" : "none";
@@ -382,12 +397,22 @@ export async function runPipelineAction(kind: PipelineActionKind, env: PipelineA
                 return null;
               case "sync":
                 if (env.tcw === null) return "Sign in to add the transcript to this note.";
+                // The desktop queue is separate from Capacitor's ledger. A committed space audio row is
+                // sufficient to retry its transcript write, as it is after the upload finishes.
+                if (env.input.device === "mac" && !env.input.space.saved) return "Audio must finish uploading before its transcript can be added. Try again afterward.";
                 await syncOnDeviceTranscript(env.tcw, { id: env.id, owner: env.tcw.did,
-                  ledger: env.native?.audio == null ? undefined : { audio: env.native.audio }, stt: { state: "done" } });
+                  ledger: env.input.device === "mac" ? { audio: { state: "saved" } }
+                    : env.native?.audio == null ? undefined : { audio: env.native.audio }, stt: { state: "done" } });
                 return null;
               case "model":
                 return await downloadOnDeviceModel();
               case "note":
+                if (env.input.device === "mac") {
+                  const queue = getDesktopWhisperQueue();
+                  if (!queue) return "Whisper is unavailable on this Mac. Try again after opening Capture settings.";
+                  await queue.retry(env.id);
+                  return null;
+                }
                 return await retryOnDeviceNote(env.id);
             }
           // falls through only if `current` is a step with no retry
@@ -688,6 +713,12 @@ export interface NotePipelineView {
 interface PipelineState { input: NotePipelineInput; pipeline: NotePipeline; native: NativeNote | null }
 
 /** Each note's input and pipeline, off one set of subscriptions. Notes the reads have not answered for are left out. */
+/** Desktop Whisper is a Tauri queue; Capacitor's native-plugin availability cannot gate it. */
+export function onDevicePipelineAvailable(platform: AppPlatform): boolean {
+  return platform === "tauri" ? getDesktopWhisperQueue() !== null
+    : !localTranscriptionUnavailable() && nativeVoiceNotesAvailable();
+}
+
 function usePipelineStates(entries: readonly { id: string; source: NotePipelineSource }[]): {
   states: ReadonlyMap<string, PipelineState>;
   natives: ReadonlyMap<string, NativeNote>;
@@ -702,6 +733,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
   const onDeviceStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const syncVersion = useStoreVersion(subscribeRecordingNoteSync);
   const transcriptSyncVersion = useStoreVersion(subscribeOnDeviceTranscriptSync);
+  const whisperVersion = useStoreVersion((listener) => getDesktopWhisperQueue()?.subscribe(listener) ?? (() => undefined));
   const nativeRead = useNativeNotes(ids, pending.rowVersion ?? 0);
   const natives = nativeRead.notes;
   const [localAttempt, setLocalAttempt] = useState(0);
@@ -762,7 +794,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
     setRowAttempt((count) => count + 1);
   }, [nativeRead.reread, refreshQuarantine]);
   const device: PipelineDevice = platform === "tauri" ? "mac" : "phone";
-  const hasOnDevice = !localTranscriptionUnavailable() && nativeVoiceNotesAvailable();
+  const hasOnDevice = onDevicePipelineAvailable(platform);
   const { states, autoSyncs, autoTranscriptSyncs } = useMemo(() => {
     const out = new Map<string, PipelineState>();
     const wantsSync: { tcw: TinyCloudWeb; id: string; key: string }[] = [];
@@ -799,7 +831,8 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
         capture: { finalizing: recorder.finalizationPendingId === id && issue === null, issue, readError: captureReadError },
         pending: pending.notes?.find((note) => note.id === id) ?? null,
         lane: { busy: laneBusy, depth: spaceLaneSnapshot().depth },
-        onDeviceStatus: hasOnDevice ? onDeviceStatus : null,
+        onDeviceStatus: device !== "mac" && hasOnDevice ? onDeviceStatus : null,
+        desktopJob: device === "mac" && hasOnDevice ? getDesktopWhisperQueue()?.snapshot().get(id) ?? null : null,
         transcriptSync: tcw === null ? null : onDeviceTranscriptSyncState(tcw, id),
         spaceReading,
         spaceAfterUploads: spaceReading && pending.notes?.some((note) => note.upload !== undefined) === true,
@@ -832,7 +865,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
     }
     return { states: out, autoSyncs: wantsSync, autoTranscriptSyncs: wantsTranscriptSync };
     // The store versions say the per-key getters read above have new answers.
-  }, [entries, locals, rows, natives, nativeRead.ready, nativeRead.error, captureReadError, pending, laneBusy, onDeviceStatus, issues, recorder.finalizationPendingId, recorder.transcription, device, hasOnDevice, syncVersion, transcriptSyncVersion, autoSyncVersion]);
+  }, [entries, locals, rows, natives, nativeRead.ready, nativeRead.error, captureReadError, pending, laneBusy, onDeviceStatus, issues, recorder.finalizationPendingId, recorder.transcription, device, hasOnDevice, syncVersion, transcriptSyncVersion, whisperVersion, autoSyncVersion]);
   useAutoNoteSync(autoSyncs);
   useAutoTranscriptSync(autoTranscriptSyncs);
   return { states, natives, nativeReady: nativeRead.ready, reread };

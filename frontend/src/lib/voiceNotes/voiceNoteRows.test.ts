@@ -600,6 +600,60 @@ test("failed recovery emits nothing, and a later successful retry emits once", a
   } finally { off(); __setVoiceNotesForTests(original, { available: null }); }
 });
 
+test("a local transcript finished before audio upload commits to the space afterward", async () => {
+  const original = VoiceNotes;
+  const originalWindow = globalThis.window;
+  globalThis.window = { ...originalWindow, __TAURI_INTERNALS__: {} } as Window & typeof globalThis;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false });
+    await fake.plugin.start();
+    const note = await fake.plugin.stop();
+    await fake.plugin.putTranscript({ id: note.id, transcript: {
+      version: 1, noteId: note.id, transcriber: "on-device", rev: 1, engine: "whispercpp",
+      model: "QuantizedTinyEn", language: "en", outcome: "transcribed", diarized: false,
+      segments: [{ start: 0, end: 1000, text: "Local words", speaker: null }], createdAt: "2026-10-13T10:00:00.000Z",
+    } });
+    const originalRead = fake.plugin.getTranscript.bind(fake.plugin);
+    const readGate = Promise.withResolvers<void>();
+    const readStarted = Promise.withResolvers<void>();
+    fake.plugin.getTranscript = async (args) => { readStarted.resolve(); await readGate.promise; return originalRead(args); };
+    const pipeline = createVoiceNotePipeline(tcw);
+    const saving = pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, note.id);
+    try {
+      expect(await Promise.race([saving.then(() => "uploaded"), Bun.sleep(500).then(() => "blocked")])).toBe("uploaded");
+      await readStarted.promise;
+    } finally { readGate.resolve(); }
+    let commit = await readTranscriptCommit(tcw, note.id);
+    for (let i = 0; i < 30 && !commit; i++) { await Bun.sleep(1); commit = await readTranscriptCommit(tcw, note.id); }
+    expect(commit).toMatchObject({ sourceId: note.id, rev: 1, outcome: "transcribed" });
+    expect((await tcw.kv.get(commit!.bodyKey)).ok).toBe(true);
+    expect((await tcw.kv.get(transcriptKvKey(VOICE_NOTE_SOURCE, note.id))).ok).toBe(true);
+  } finally { globalThis.window = originalWindow; __setVoiceNotesForTests(original, { available: null }); }
+});
+
+test("phone upload leaves transcript sync to recordRowId and the transcribed listener", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false });
+    await fake.plugin.start();
+    const note = await fake.plugin.stop();
+    let transcriptReads = 0;
+    const originalRead = fake.plugin.getTranscript.bind(fake.plugin);
+    fake.plugin.getTranscript = async (args) => { transcriptReads++; return originalRead(args); };
+    const pipeline = createVoiceNotePipeline(tcw);
+    await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, note.id);
+    expect(transcriptReads).toBe(0);
+  } finally { __setVoiceNotesForTests(original, { available: null }); }
+});
+
 for (const transition of ["late account change", "cancellation"] as const) {
 test(`recovery interrupted by ${transition} cannot emit into the next pass`, async () => {
   const original = VoiceNotes;

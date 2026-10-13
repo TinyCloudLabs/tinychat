@@ -621,7 +621,7 @@ export interface PendingNote {
   /** This note failed its latest save attempt, so its Recent row must not imply it's still saving. */
   failed?: { kind: "offline" | "rejected" | "timeout" | "quota" | "auth" | "server" | "source" | "other"; message: string };
   held?: "signed-out" | "other-account" | "legacy" | "unowned";
-  upload?: { state: "waiting" | "uploading" | "retrying"; bytes: number; total: number };
+  upload?: { state: "waiting" | "preparing" | "uploading" | "retrying"; bytes: number; total: number };
   waitingBehind?: number;
 }
 
@@ -778,6 +778,12 @@ export const pendingStore = {
     if (!ticket.owns || !state || state.owner !== ticket.owner) return;
     heldReasons.delete(recording.id);
     state.upload = { state: "waiting", bytes: 0, total: recording.sizeBytes };
+    publishUploadQueue();
+  },
+  preparingUpload(ticket: PendingUploadTicket): void {
+    const state = uploadStates.get(ticket.id);
+    if (!ticket.owns || !state || state.owner !== ticket.owner) return;
+    state.upload = { ...state.upload, state: "preparing" };
     publishUploadQueue();
   },
   publishUpload(id: string, owner: symbol, upload: UploadProgress): void {
