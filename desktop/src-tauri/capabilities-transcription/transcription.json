@@ -37,6 +37,8 @@
     "allow-recorder-models-progress",
     "allow-recorder-system-audio-get",
     "allow-recorder-system-audio-set",
+    "allow-recorder-system-audio-consent-get",
+    "allow-recorder-system-audio-consent-set",
     "allow-recorder-auto-save-to-space-get",
     "allow-recorder-auto-save-to-space-set",
     "core:event:deny-emit",
