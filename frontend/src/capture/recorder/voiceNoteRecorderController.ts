@@ -427,6 +427,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       privateStarted = true;
       void privateCheck?.then((ready) => { if (ready && accountCurrent()) transcriber.noteSaved(recording); });
     };
+    const completeSaved = (saved: VoiceNoteRecording) => {
+      if (!accountCurrent()) return;
+      send({ type: "SAVED", id: saved.id, durationMs: saved.durationMs, at: Date.now() });
+      if (privateStarted) onSaved?.(saved);
+      else landed(generation, saved);
+    };
     send({ type: "LOCAL_COMMITTED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
     void pendingStore.refresh();
     if (recording.options?.transcriber === "assemblyai" && transcriber && generation === currentAccountGeneration()) {
@@ -447,15 +453,13 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       try {
         const finish = pendingStore.beginAutomaticSave();
         try {
-          const result = await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id, "stop", startPrivate);
+          const result = await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id, "stop", startPrivate, completeSaved);
           if (result === "owned-by-another-run" || result === "retry-scheduled") {
             send({ type: "LOCAL_UPLOAD_IN_FLIGHT", id: recording.id });
             void pendingStore.refresh();
             return;
           }
-          send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
-          if (privateStarted) onSaved?.(recording);
-          else landed(generation, recording);
+          completeSaved(recording);
         } finally { finish(); }
       } catch (caught) {
         if (!pipeline.isAccepting() || saveDeferredForAccountTransition(caught)) {
@@ -528,7 +532,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       if (recording.owner === tcw.did && tcw.did && tcw.spaceId) {
         const finish = pendingStore.beginAutomaticSave();
         try {
-          const result = await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id, "background");
+          const result = await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id, "background", undefined,
+            (saved) => landed(generation, saved));
           if (result === "owned-by-another-run" || result === "retry-scheduled") {
             send({ type: "LOCAL_UPLOAD_IN_FLIGHT", id: recording.id });
             return;

@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { captureEvents } from "@/capture/captureEvents";
 
 import { memoryHoldStore } from "@/harness/memoryHoldStore";
 import { CONNECTORS_SQL_DB_NAME } from "../connectors/connectorStore";
@@ -14,6 +15,7 @@ import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __setVoiceNotesForTests, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { createVoiceNotePipeline } from "./voiceNotePipeline";
 import { pendingStore, whenVoiceNoteSavesIdle } from "./recorderSaves";
+import { VoiceNoteSaveTimeout } from "./saveDeadline";
 import { createVoiceNoteRecorderController } from "@/capture/recorder/voiceNoteRecorderController";
 import { createVoiceNoteCloud, createVoiceNoteTranscriber, transcribeSavedNote, type VoiceNoteCloud } from "./voiceNoteTranscription";
 
@@ -323,6 +325,45 @@ describe("the recorder's hand-off and reconcile's while the first availability c
     await tick();
     expect(d.runs).toEqual([note.id]);
   });
+});
+
+test("a timed-out Stop retry creates the row, refreshes the Library, and starts Private", async () => {
+  const s = await setup("private-cloud");
+  const note = await s.recordFor(s.tcw.did);
+  const db = s.tcw.sql.db(CONNECTORS_SQL_DB_NAME);
+  let firstRow = true;
+  const sql = s.tcw.sql as typeof s.tcw.sql & { db: typeof s.tcw.sql.db };
+  sql.db = () => ({ ...db, execute: async (statement: string, params: unknown[] = []) => {
+    if (firstRow && statement.includes("INSERT INTO connector_meeting")) {
+      firstRow = false;
+      throw new VoiceNoteSaveTimeout("first row insert", 1);
+    }
+    return db.execute(statement, params);
+  } }) as ReturnType<typeof s.tcw.sql.db>;
+  const pipeline = createVoiceNotePipeline(s.tcw, { retryDelaysMs: [], saveRetryDelaysMs: [60] });
+  let autoStopped: (event: unknown) => void = () => { throw new Error("autoStopped listener not installed"); };
+  const addListener = s.fake.plugin.addListener.bind(s.fake.plugin);
+  s.fake.plugin.addListener = ((event: string, callback: (event: unknown) => void) => {
+    if (event === "autoStopped") autoStopped = callback;
+    return (addListener as (event: string, callback: (event: unknown) => void) => unknown)(event, callback);
+  }) as typeof s.fake.plugin.addListener;
+  const events: string[] = [];
+  const off = captureEvents.on("library-changed", (event) => { if (event?.sourceId) events.push(event.sourceId); });
+  const recorder = createVoiceNoteRecorderController({ tcw: s.tcw, available: true, transcriber: s.transcriber,
+    pipeline, onDeviceReady: () => true });
+  const detach = recorder.attach();
+  try {
+    autoStopped({ reason: "max_duration", maxDurationMs: 60_000, at: Date.now(), recording: note });
+    for (let turn = 0; turn < 100 && !pendingStore.retryAt(note.id); turn++) await tick();
+    expect(firstRow).toBe(false);
+    expect(pendingStore.retryAt(note.id)).toBeGreaterThan(Date.now());
+    expect(events).toEqual([]);
+    expect(s.runs).toEqual([]);
+    for (let turn = 0; turn < 200 && (!events.includes(note.id) || !s.runs.includes(note.id)); turn++) await tick();
+    expect(events).toEqual([note.id]);
+    expect(s.runs).toEqual([note.id]);
+    expect((await s.fake.plugin.listPending()).recordings.find((entry) => entry.id === note.id)?.ledger?.audio.state).toBe("saved");
+  } finally { off(); detach(); pipeline.cancelAll(); }
 });
 
 test("a recorder stop queued behind reconcile waits for the owning save before hand-off", async () => {

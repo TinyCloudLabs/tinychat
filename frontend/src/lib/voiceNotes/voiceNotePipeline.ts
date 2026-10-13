@@ -13,7 +13,8 @@ import type { StoreAudioOptions } from "./voiceNoteStore";
 import { logPipeline } from "@/lib/debugLog";
 
 export interface VoiceNotePipeline {
-  process(ctx: AccountContext, id: string, trigger?: "stop" | "background", onRowCreated?: () => void): Promise<void | "owned-by-another-run" | "retry-scheduled">;
+  process(ctx: AccountContext, id: string, trigger?: "stop" | "background", onRowCreated?: () => void,
+    onSaved?: (note: VoiceNoteRecording) => void): Promise<void | "owned-by-another-run" | "retry-scheduled">;
   /** T19 calls setCaptureDefaults on ready before this association and upload pass. */
   reconcileAll(ctx: AccountContext, trigger?: "reconcile" | "manual", onSaved?: (note: VoiceNoteRecording) => void): Promise<void>;
   cancelAll(): void;
@@ -52,7 +53,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     if (tcw.did !== ctx.did || tcw.spaceId !== ctx.spaceId) throw new Error("Voice-note space changed");
   };
   const scheduleRetry = (ctx: AccountContext, id: string, epoch: number, at: number,
-    onSaved?: (note: VoiceNoteRecording) => void) => {
+    onRowCreated?: () => void, onSaved?: (note: VoiceNoteRecording) => void) => {
     if (retryTimers.has(id)) return;
     const timer = setTimeout(() => {
       retryTimers.delete(id);
@@ -61,9 +62,13 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
       if (!ticket.owns) return;
       void run(async () => {
         try {
-          const saved = await processOne(ctx, id, epoch, true, ticket, undefined, onSaved);
+          const saved = await processOne(ctx, id, epoch, true, ticket, onRowCreated, onSaved);
           syncDesktopAfterUpload(ctx, saved);
-          if (saved) onSaved?.(saved);
+          if (saved) {
+            checkFor(ctx, epoch)();
+            captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId: saved.id });
+            onSaved?.(saved);
+          }
         } catch (error) {
           if (!saveDeferredForAccountTransition(error)) pendingStore.reportNoteFailure(id, error);
         } finally { await pendingStore.refresh(); }
@@ -87,7 +92,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     check();
     const retryAt = pendingStore.retryAt(id);
     if (retryAt && retryAt > Date.now()) {
-      scheduleRetry(ctx, id, epoch, retryAt, onSaved);
+      scheduleRetry(ctx, id, epoch, retryAt, onRowCreated, onSaved);
       return null;
     }
     if (uploadTicket) pendingStore.preparingUpload(uploadTicket);
@@ -125,7 +130,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
         pendingStore.setRetrying(id, nextAttemptAt);
         if (uploadTicket) pendingStore.publishUpload(id, uploadTicket.owner, { state: "retrying", bytes: 0, total: note.sizeBytes });
         logPipeline("save", id, "retrying");
-        scheduleRetry(ctx, id, epoch, nextAttemptAt, onSaved);
+        scheduleRetry(ctx, id, epoch, nextAttemptAt, onRowCreated, onSaved);
         return null;
       }
       retryAttempts.delete(id);
@@ -142,13 +147,13 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     } finally { if (uploadTicket) pendingStore.settleUploadQueue(uploadTicket); }
   };
   return {
-    process(ctx, id, _trigger = "stop", onRowCreated) {
+    process(ctx, id, _trigger = "stop", onRowCreated, onSaved) {
       if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());
       const epoch = cancellation;
       const uploadTicket = pendingStore.enqueueUpload(id);
       if (!uploadTicket.owns) return Promise.resolve("owned-by-another-run");
       return run(async () => {
-        syncDesktopAfterUpload(ctx, await processOne(ctx, id, epoch, false, uploadTicket, onRowCreated));
+        syncDesktopAfterUpload(ctx, await processOne(ctx, id, epoch, false, uploadTicket, onRowCreated, onSaved));
         if ((pendingStore.retryAt(id) ?? 0) > Date.now()) return "retry-scheduled" as const;
       });
     },
