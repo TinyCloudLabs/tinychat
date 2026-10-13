@@ -327,6 +327,7 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
       }
       const created = await store!.create(locals(res).address, byte_size, content_type, now(), source_id as string | undefined);
       if (!created.ok) return fail(res, { code: created.code, retryAfterSeconds: created.retryAfterSeconds });
+      if ("job" in created) return ok(res, 200, { ...created.job, part_size: HOSTED_PART_SIZE });
       ok(
         res,
         201,

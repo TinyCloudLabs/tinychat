@@ -166,7 +166,7 @@ export interface HostedUpload {
   sourceId?: string;
 }
 
-type NoteJob = { address: string; sourceId: string; uploadId: string; state: "receiving" | "submitting" | "submitted" | "uncertain" | "deleted"; handle?: string; expiresAt?: number };
+type NoteJob = { address: string; sourceId: string; uploadId: string; state: "receiving" | "submitting" | "submitted" | "uncertain" | "deleted"; handle?: string; expiresAt?: number; ownerPid?: number };
 export type NoteJobView = { status: "receiving" | "submitting" | "submitted" | "uncertain" | "deleted"; upload_id: string; id?: string };
 
 /** How a background submit ended. Codes are the router's public error codes. */
@@ -176,6 +176,7 @@ export type SubmitOutcome =
 
 export type CreateUploadResult =
   | { ok: true; upload: HostedUpload }
+  | { ok: true; job: NoteJobView }
   | { ok: false; code: "assemblyai_quota_exceeded" | "assemblyai_busy"; retryAfterSeconds: number };
 
 export type LookupResult =
@@ -223,8 +224,40 @@ export class HostedUploadStore {
     return createHash("sha256").update(JSON.stringify([address, sourceId])).digest("hex");
   }
 
+  private noteFile(key: string): string { return join(this.spoolDir, `note-${key}.json`); }
+  private noteStateFile(key: string, uploadId: string): string { return join(this.spoolDir, `note-${key}-${uploadId}.json`); }
+
+  private async readNoteJob(key: string): Promise<NoteJob | null> {
+    let claim: NoteJob;
+    try { claim = JSON.parse(await readFile(this.noteFile(key), "utf8")) as NoteJob; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+    try { return JSON.parse(await readFile(this.noteStateFile(key, claim.uploadId), "utf8")) as NoteJob; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return claim;
+      throw error;
+    }
+  }
+
+  private async waitForNoteJob(key: string): Promise<NoteJob | null> {
+    // The exclusive file may be visible before its first JSON write completes.
+    for (let attempt = 0; attempt < 20; attempt++) {
+      try { return await this.readNoteJob(key); }
+      catch (error) { if (!(error instanceof SyntaxError)) throw error; }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return null;
+  }
+
+  private viewNoteJob(job: NoteJob): NoteJobView {
+    return { status: job.state, upload_id: job.uploadId, ...(job.handle ? { id: job.handle } : {}) };
+  }
+
   private async saveNoteJob(key: string, job: NoteJob): Promise<void> {
-    const file = join(this.spoolDir, `note-${key}.json`);
+    // State is scoped to the claimed upload. An old writer cannot replace a newer key's claim.
+    const file = this.noteStateFile(key, job.uploadId);
     const temporary = `${file}.${randomUUID()}.tmp`;
     const handle = await open(temporary, "wx", 0o600);
     try { await handle.writeFile(JSON.stringify(job)); await handle.sync(); }
@@ -238,13 +271,15 @@ export class HostedUploadStore {
   }
 
   private async removeNoteJob(key: string): Promise<void> {
-    await rm(join(this.spoolDir, `note-${key}.json`), { force: true });
+    const job = this.noteJobs.get(key);
+    if (job) await rm(this.noteStateFile(key, job.uploadId), { force: true });
+    await rm(this.noteFile(key), { force: true });
     this.noteJobs.delete(key);
   }
 
   noteJob(address: string, sourceId: string): NoteJobView | null {
     const job = this.noteJobs.get(this.noteKey(address, sourceId));
-    return job ? { status: job.state, upload_id: job.uploadId, ...(job.handle ? { id: job.handle } : {}) } : null;
+    return job ? this.viewNoteJob(job) : null;
   }
 
   /** A transcript request crosses the paid boundary only after this marker is durable. */
@@ -292,20 +327,34 @@ export class HostedUploadStore {
     private readonly outcomeLimits = { global: MAX_SETTLED_OUTCOMES, account: MAX_ACCOUNT_SETTLED_OUTCOMES },
   ) {}
 
-  /** Create the spool dir (0700) and remove whatever a previous process left in it. */
+  /** Create the spool dir (0700) and reconcile records left by a dead owner. */
   async init(): Promise<void> {
     await mkdir(this.spoolDir, { recursive: true, mode: 0o700 });
     await chmod(this.spoolDir, 0o700);
-    for (const name of await readdir(this.spoolDir)) {
-      if (SPOOL_FILE_RE.test(name)) await rm(join(this.spoolDir, name), { force: true });
+    const names = await readdir(this.spoolDir);
+    const liveSpools = new Set<string>();
+    let incompleteClaim = false;
+    for (const name of names) {
       if (/^note-[0-9a-f]{64}\.json$/.test(name)) {
         const key = name.slice(5, -5);
-        const job = JSON.parse(await readFile(join(this.spoolDir, name), "utf8")) as NoteJob;
-        if (job.state === "receiving") await this.removeNoteJob(key);
-        else if (job.state === "submitting") await this.saveNoteJob(key, { ...job, state: "uncertain" });
-        else this.noteJobs.set(key, job);
+        const job = await this.waitForNoteJob(key);
+        if (!job) { incompleteClaim = true; continue; }
+        if (job.state === "receiving" && job.ownerPid && job.ownerPid !== process.pid) {
+          let alive = true;
+          try { process.kill(job.ownerPid, 0); }
+          catch (error) { alive = (error as NodeJS.ErrnoException).code !== "ESRCH"; }
+          if (!alive) {
+            this.noteJobs.set(key, job);
+            await this.removeNoteJob(key);
+            continue;
+          }
+        }
+        // A running store may share this directory. Recovery must not erase its claim.
+        this.noteJobs.set(key, job.state === "submitting" ? { ...job, state: "uncertain" } : job);
+        if (job.state === "receiving") liveSpools.add(`${job.uploadId}.part`);
       }
     }
+    if (!incompleteClaim) for (const name of names) if (SPOOL_FILE_RE.test(name) && !liveSpools.has(name)) await rm(join(this.spoolDir, name), { force: true });
   }
 
   dailyBytesRemaining(address: string, nowMs: number): number {
@@ -323,13 +372,20 @@ export class HostedUploadStore {
    */
   async create(address: string, byteSize: number, contentType: string, nowMs: number, sourceId?: string): Promise<CreateUploadResult> {
     return this.withAccount(address, async () => {
+      if (sourceId) {
+        const key = this.noteKey(address, sourceId);
+        const persisted = await this.waitForNoteJob(key);
+        if (persisted) this.noteJobs.set(key, persisted);
+        else this.noteJobs.delete(key);
+      }
       if (sourceId && this.noteJob(address, sourceId)) {
         const job = this.noteJob(address, sourceId)!;
         const upload = this.uploads.get(job.upload_id);
         if (upload && upload.owner === address && upload.state === "receiving" && upload.expiresAt <= nowMs)
           await this.abandonLocked(upload);
         else if (upload && upload.owner === address) return { ok: true, upload };
-        else return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
+        else if (["uncertain", "submitting"].includes(this.noteJob(address, sourceId)!.status)) return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
+        else return { ok: true, job: this.noteJob(address, sourceId)! };
       }
       return this.createLocked(address, byteSize, contentType, nowMs, sourceId);
     });
@@ -381,7 +437,25 @@ export class HostedUploadStore {
     try {
       const handle = await open(path, "wx", 0o600);
       await handle.close();
-      if (sourceId) await this.saveNoteJob(this.noteKey(address, sourceId), { address, sourceId, uploadId: id, state: "receiving" });
+      if (sourceId) {
+        const key = this.noteKey(address, sourceId);
+        const job: NoteJob = { address, sourceId, uploadId: id, state: "receiving", ownerPid: process.pid };
+        let claim;
+        try { claim = await open(this.noteFile(key), "wx", 0o600); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+          const winner = await this.waitForNoteJob(key);
+          this.uploads.delete(id);
+          this.charged.set(dayKey, used);
+          await rm(path, { force: true });
+          if (!winner) return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 1 };
+          this.noteJobs.set(key, winner);
+          return { ok: true, job: this.viewNoteJob(winner) };
+        }
+        try { await claim.writeFile(JSON.stringify(job)); await claim.sync(); }
+        finally { await claim.close(); }
+        this.noteJobs.set(key, job);
+      }
     } catch (error) {
       this.uploads.delete(id);
       this.charged.set(dayKey, used);

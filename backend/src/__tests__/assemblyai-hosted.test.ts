@@ -198,6 +198,42 @@ function audio(bytes: number): Uint8Array {
 }
 
 describe("Exo note idempotency", () => {
+  test("two stores racing on one spool claim one upload and one paid submission", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinychat-assemblyai-race-"));
+    closers.push(() => rmSync(dir, { recursive: true, force: true }));
+    const first = new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4);
+    const second = new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await Promise.all([first.init(), second.init()]);
+    const results = await Promise.all([
+      first.create(ADDRESS_A, 3, "audio/mp4", T0, "race-note"),
+      second.create(ADDRESS_A, 3, "audio/mp4", T0, "race-note"),
+    ]);
+    const owners = results.filter((result): result is Extract<typeof result, { ok: true; upload: unknown }> => result.ok && "upload" in result);
+    const followers = results.filter((result): result is Extract<typeof result, { ok: true; job: unknown }> => result.ok && "job" in result);
+    expect(owners).toHaveLength(1);
+    expect(followers).toHaveLength(1);
+    expect(followers[0]!.job.upload_id).toBe(owners[0]!.upload.id);
+
+    const owner = results[0] === owners[0] ? first : second;
+    const upload = owners[0]!.upload;
+    const joining = new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await joining.init();
+    expect(statSync(upload.path).size).toBe(0);
+    await owner.writePart(upload, 0, audio(3));
+    let uploads = 0;
+    let submissions = 0;
+    await owner.submitIfComplete(upload, () => T0, async () => {
+      uploads++;
+      submissions++;
+      return { status: "submitted", handle: issueHandle(HANDLE_KEY, TRANSCRIPT_ID, ADDRESS_A, T0) };
+    });
+    await owner.idle();
+    expect([uploads, submissions]).toEqual([1, 1]);
+    const restarted = new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await restarted.init();
+    expect(restarted.noteJob(ADDRESS_A, "race-note")).toMatchObject({ status: "submitted", upload_id: upload.id });
+  });
+
   test("concurrent creates share one account-and-source upload; another account is separate", async () => {
     const h = await setup();
     const body = { byte_size: 3, content_type: "audio/mp4", source_id: "note-1" };
