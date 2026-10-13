@@ -14,6 +14,7 @@ import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
 import { PHONE_AUDIO_UNAVAILABLE } from "@/chat/audioPlayback";
 import { cn } from "@/lib/utils";
 import { activityForNote, noteStatus } from "@/capture/activity/activitySelector";
+import type { PipelineHeldReason } from "@/lib/voiceNotes/notePipeline";
 import { type NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import "./final/soft.css";
 import { VoiceNotes, type LocalTranscript, type NoteSttState, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -29,6 +30,8 @@ export interface SavedReceiptProps {
   device?: "phone" | "mac";
   outcome: "local" | "saved" | "failed";
   localUpload?: "uploading" | "held" | "in-flight" | null;
+  /** The actual hold on this recording, when localUpload is held. */
+  holdReason?: PipelineHeldReason | null;
   /** The saved note (absent after a failure). */
   saved?: { id: string; durationMs: number; at: number } | null;
   route: readonly RouteNode[];
@@ -285,7 +288,12 @@ export function SavedReceipt(props: SavedReceiptProps) {
       {stepperShown ? <ReceiptStepper view={pipelineView} /> : pipelineWaiting ? null : (
         <>
           {!pipelineView && <RouteLine nodes={route} landed={saved} />}
-          {props.outcome === "local" && !pipelineView && !pipelineWaiting && <p className="text-meta text-muted-foreground">{props.localUpload === "held" ? "Recorded on another account" : "Waiting to sync to your TinyCloud space"}</p>}
+          {props.outcome === "local" && !pipelineView && !pipelineWaiting && <p className="text-meta text-muted-foreground">{props.localUpload === "held"
+            ? props.holdReason === "other-account" ? "Recorded on another account"
+              : props.holdReason === "signed-out" ? "Sign in to sync to your TinyCloud space"
+                : props.holdReason === "legacy" || props.holdReason === "unowned" ? `Exo can't tell which account this note belongs to. It stays on this ${deviceName}.`
+                  : "Waiting to sync to your TinyCloud space"
+            : "Waiting to sync to your TinyCloud space"}</p>}
           {saved && <p className="text-meta text-muted-foreground">In your TinyCloud space</p>}
         </>
       )}

@@ -54,6 +54,7 @@ import { continuePausedUpload, pausedUpload } from "./upload/pausedUpload";
 import { UploadSheet } from "./upload/UploadSheet";
 import { useUploadDeps } from "./upload/useUploadDeps";
 import { ActivityPanel } from "./activity/ActivityPanel";
+import { sidebarActivityStore } from "./activity/sidebarActivityStore";
 import type { NotePipelineSource } from "@/lib/voiceNotes/useNotePipeline";
 
 export interface CaptureSurfaceProps {
@@ -207,9 +208,19 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
   };
   const empty = library.status === "ready" && library.items.length === 0 && !inProgressShown(inProgress);
   const sidebarActivity = platform === "tauri" && nav === "sidebar";
+  const activityOwner = useRef({});
+  const openActivityUpload = useCallback(() => { navigate(PATHS.capture); setSheet("upload"); }, [navigate]);
+  const continueActivityUpload = useCallback(() => continuePausedUpload(uploadDeps), [uploadDeps]);
+  const retryActivityUpload = useCallback(() => uploadRunner.retry(uploadDeps), [uploadDeps]);
+  useEffect(() => {
+    if (platform !== "tauri") { sidebarActivityStore.clear(activityOwner.current); return; }
+    sidebarActivityStore.publish(activityOwner.current, { items: library.items, views: activityViews, upload, paused,
+      onOpenNote: openActivityNote, onOpenUpload: openActivityUpload, onContinueUpload: continueActivityUpload, onRetryUpload: retryActivityUpload });
+  }, [platform, library.items, activityViews, upload, paused, openActivityNote, openActivityUpload, continueActivityUpload, retryActivityUpload]);
+  useEffect(() => () => sidebarActivityStore.clear(activityOwner.current), []);
   const activityControl = <ActivityPanel items={library.items} views={activityViews} platform={platform} onOpenNote={openActivityNote}
-    upload={upload} paused={paused} onOpenUpload={() => setSheet("upload")} onContinueUpload={() => continuePausedUpload(uploadDeps)}
-    onRetryUpload={() => uploadRunner.retry(uploadDeps)} active={active} placement={sidebarActivity ? "sidebar" : "inline"} />;
+    upload={upload} paused={paused} onOpenUpload={openActivityUpload} onContinueUpload={continueActivityUpload}
+    onRetryUpload={retryActivityUpload} active={active} />;
 
   return (
     <div
@@ -218,7 +229,6 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
       data-layout={wide ? "panes" : "stack"}
     >
       <PipelineBridge entries={pipelineEntries} onViews={setActivityViews} />
-      {sidebarActivity && activityControl}
       <div
         className={cn(
           homeOnly ? "relative h-full" : notePage ? "hidden" : wide ? `${SCROLLER} border-r border-border` : noteScreen && !noteSheet ? "hidden" : "relative h-full",

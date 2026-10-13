@@ -128,6 +128,15 @@ describe("the receipt's wording", () => {
     expect(html).not.toContain("transcribed here");
   });
 
+  test("a held local receipt names only its actual account cause", () => {
+    const held = (holdReason?: "signed-out" | "other-account" | "legacy" | "unowned") => render({ outcome: "local", localUpload: "held", holdReason });
+    expect(held("other-account")).toContain("Recorded on another account");
+    expect(held("signed-out")).toContain("Sign in to sync to your TinyCloud space");
+    expect(held("legacy")).toContain("Exo can&#x27;t tell which account this note belongs to");
+    expect(held("unowned")).toContain("Exo can&#x27;t tell which account this note belongs to");
+    expect(held()).not.toContain("Recorded on another account");
+  });
+
   test("a note private cloud has taken shows no on-device line", () => {
     const html = render({ movedToPrivate: true, transcribing: true });
     expect(html).toContain("Transcribing in private cloud…");

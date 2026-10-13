@@ -8,7 +8,7 @@ import { PageHeader } from "@/shell/PageHeader";
 import { PATHS, type Screen } from "@/shell/routes";
 import { useSizeClass } from "@/lib/sizeClass";
 import { PlatformContext } from "@/lib/platform";
-import { notePipeline, type NotePipelineInput } from "@/lib/voiceNotes/notePipeline";
+import { notePipeline, type NotePipelineInput, type PipelinePending } from "@/lib/voiceNotes/notePipeline";
 import { combinedModel, type NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import { onDeviceQueuePlace } from "@/lib/voiceNotes/onDeviceQueue";
 import { downloadOnDeviceModel, retryOnDeviceNote } from "@/lib/voiceNotes/onDeviceSttStore";
@@ -27,6 +27,15 @@ import { useRecorder } from "./recorder/RecorderProvider";
 import { SoftHomeProvider } from "./home/softHome";
 import { SystemAudioStart } from "./home/desktop/SystemAudioStart";
 import { ActivityPanel } from "./activity/ActivityPanel";
+
+/** A missing pending-store entry does not prove that a known account is signed out. */
+export function devicePendingForNote(pending: PipelinePending | undefined, ownerUnknown: boolean, did: string | null, offline: boolean, error: string | null): PipelinePending {
+  if (pending) return pending;
+  if (ownerUnknown) return { held: "unowned" };
+  if (did === null) return { held: "signed-out" };
+  if (!offline && error !== null) return { failed: { kind: "other", message: error } };
+  return {};
+}
 
 /** The regular Capture and Library visual language, backed by the phone while no space is available. */
 export function DeviceCaptureSurface({ did, offline, error, onSignIn, onRetry, screen }: {
@@ -66,6 +75,7 @@ export function DeviceCaptureSurface({ did, offline, error, onSignIn, onRetry, s
   const activityItems = useMemo(() => notes.map((note) => onPhoneItem(note)), [notes]);
   const activityViews = useMemo(() => new Map(notes.map((note): [string, NotePipelineView] => {
     const pending = recorder.pending.notes?.find((entry) => entry.id === note.id);
+    const sessionReadFailed = !pending && did !== null && !offline && error !== null;
     const queue = onDeviceQueuePlace(status, note.id);
     const route = note.options?.transcriber === "on-device" ? "on-device" : note.options?.transcriber === "off" ? "off" : "private-cloud";
     const input: NotePipelineInput = {
@@ -73,7 +83,7 @@ export function DeviceCaptureSurface({ did, offline, error, onSignIn, onRetry, s
       audioUploadIntent: (note.options as { uploadAudio?: boolean } | undefined)?.uploadAudio ?? true,
       hasNotesOrMoments: false, online: !offline,
       capture: { finalizing: recorder.finalizationPendingId === note.id, issue: null },
-      space: { saved: !note.ownerUnknown && note.ledger?.audio?.state === "saved", pending: pending ?? (note.ownerUnknown ? { held: "unowned" } : offline ? {} : { held: "signed-out" }), lane: { busy: false, depth: 0 } },
+      space: { saved: !note.ownerUnknown && note.ledger?.audio?.state === "saved", pending: devicePendingForNote(pending, note.ownerUnknown === true, did, offline, error), lane: { busy: false, depth: 0 } },
       transcript: { inSpace: null, cloud: route === "private-cloud" ? recorder.transcription?.jobs.get(note.id) ?? null : null,
         onDevice: route === "on-device" ? { stt: queue ? { state: queue.entry.state, error: queue.entry.error } : note.stt ? { state: note.stt.state, error: note.stt.error } : null,
           queue: queue ? { position: queue.position, inLine: queue.inLine, percent: queue.percent } : null, model: combinedModel(status), download: status.download.state, sync: null } : null },
@@ -81,9 +91,9 @@ export function DeviceCaptureSurface({ did, offline, error, onSignIn, onRetry, s
     };
     const pipeline = notePipeline(input);
     return [note.id, { input, pipeline, provider: route === "on-device" ? "local" : note.options?.transcriber === "assemblyai" ? "powerful" : "private",
-      onAction: (kind) => { if (kind === "sign-in") onSignIn(); else if (kind === "get-model") void downloadOnDeviceModel(); else if (kind === "retry") { if (pipeline.current === "transcript") void retryOnDeviceNote(note.id); else void recorder.retryPending(); } else if (kind === "check-again") void recorder.transcription?.onRecheck(); else if (kind === "review-consent") recorder.reviewPrivateConsent?.(); },
-      onRetryStep: (key) => { if (key === "transcript") void retryOnDeviceNote(note.id); else void recorder.retryPending(); }, actionError: null }];
-  })), [notes, recorder, status, platform, offline, onSignIn]);
+      onAction: (kind) => { if (kind === "sign-in") onSignIn(); else if (kind === "get-model") void downloadOnDeviceModel(); else if (kind === "retry") { if (pipeline.current === "transcript") void retryOnDeviceNote(note.id); else if (sessionReadFailed) onRetry(); else void recorder.retryPending(); } else if (kind === "check-again") void recorder.transcription?.onRecheck(); else if (kind === "review-consent") recorder.reviewPrivateConsent?.(); },
+      onRetryStep: (key) => { if (key === "transcript") void retryOnDeviceNote(note.id); else if (sessionReadFailed) onRetry(); else void recorder.retryPending(); }, actionError: null }];
+  })), [notes, recorder, status, platform, offline, onSignIn, onRetry, did, error]);
   const selected = notes.find((note) => onPhoneItem(note).id === screen.noteId);
   const noteItem = selected ? onPhoneItem(selected) : null;
   const library = screen.id === "library";
@@ -91,11 +101,11 @@ export function DeviceCaptureSurface({ did, offline, error, onSignIn, onRetry, s
   const soft = compact;
   const activity = <ActivityPanel items={activityItems} views={activityViews} platform={platform} onOpenNote={(id) => navigate(PATHS.library + "/" + id)} />;
   const notice = <div className="rounded-xl border border-border bg-surface-2 px-4 py-3 text-callout">
-    <p>{offline ? "You're offline. Recordings stay on this phone until Exo reconnects." : "Recordings stay on this phone until you sign in."}</p>
-    {error && !offline && <p role="alert" className="mt-1 text-destructive">{error}</p>}
+    <p>{offline ? "You're offline. Recordings stay on this phone until Exo reconnects." : did === null ? "Recordings stay on this phone until you sign in." : "Recordings stay on this phone while Exo checks your TinyCloud connection."}</p>
+    {error && !offline && <p role="alert" className="mt-1 text-destructive">{did === null ? "Couldn't sign in. Try again." : "Couldn't check your TinyCloud connection. Try again."}</p>}
     <div className="mt-2 flex flex-wrap gap-2">
-      {offline && <Button size="sm" variant="outline" onClick={onRetry}>Try again</Button>}
-      {!offline && <Button size="sm" onClick={onSignIn}>Sign in</Button>}
+      {(offline || did !== null) && <Button size="sm" variant="outline" onClick={onRetry}>Try again</Button>}
+      {!offline && did === null && <Button size="sm" onClick={onSignIn}>Sign in</Button>}
     </div>
   </div>;
   return <SoftHomeProvider enabled={soft} issues={recorder.captureIssues} onDismissIssue={recorder.dismissCaptureIssue}>

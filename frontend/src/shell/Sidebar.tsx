@@ -1,13 +1,15 @@
 // The sidebar, from 1024 px (TC-761): the three destinations as full rows on
 // the chrome surface, and Settings at the foot. The live recording card joins
 // the foot above Settings (PR4).
-import type { MouseEvent, ReactNode } from "react";
+import { useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { SettingsIcon, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { BuildInfoLine } from "@/components/BuildInfoLine";
 import { CaptureDot } from "@/capture/recorder/final/CaptureDot";
+import { ActivityPanel } from "@/capture/activity/ActivityPanel";
+import { sidebarActivityStore } from "@/capture/activity/sidebarActivityStore";
 import { NavBadge } from "./NavBadge";
 import { tabTarget } from "./navigation";
 import { PATHS } from "./routes";
@@ -31,6 +33,11 @@ const rowState = (active: boolean) =>
   active
     ? "bg-selected font-semibold text-foreground"
     : "font-medium text-muted-foreground hover:bg-surface-2 hover:text-foreground active:bg-surface-2";
+
+function SidebarActivity() {
+  const activity = useSyncExternalStore(sidebarActivityStore.subscribe, sidebarActivityStore.snapshot, sidebarActivityStore.snapshot);
+  return activity ? <ActivityPanel {...activity} platform="tauri" /> : null;
+}
 
 export function Sidebar({
   items,
@@ -78,7 +85,7 @@ export function Sidebar({
           );
         })}
       </ul>
-      <div className="mt-auto" data-activity-sidebar-slot="" />
+      <div className="mt-auto"><SidebarActivity /></div>
       <div>{live}</div>
       {settings && (
         <div className="mt-2 border-t border-border/70 pt-2">
