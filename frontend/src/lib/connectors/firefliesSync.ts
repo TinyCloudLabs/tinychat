@@ -642,13 +642,10 @@ async function runFirefliesSync(
                 && Number.isFinite(runAtMs)
                 && runAtMs - proofAtMs < FIREFLIES_SUSPECT_PROOF_INTERVAL_MS
                 && candidates.every((id) => suspectProofIds.has(id));
-              if (suspectIds.size > 0) {
-                for (const id of candidates) {
-                  suspectIds.add(id);
-                  suspectProofIds.add(id);
-                }
-                suspectProofAt ??= attemptAt;
-              } else if (!sameSetCoolingDown) {
+              // Keep generation membership fixed from its skip-zero start.
+              // A late not-found ID stays pending, then starts a fresh proof
+              // on a later retry instead of inheriting an already-passed prefix.
+              if (suspectIds.size === 0 && !sameSetCoolingDown) {
                 suspectIds = new Set(candidates);
                 suspectSeenIds.clear();
                 suspectProofIds = new Set(candidates);

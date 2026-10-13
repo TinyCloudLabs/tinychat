@@ -540,6 +540,116 @@ test("pending retries leave a non-complete reduced head listing partial after co
   expect(JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey()))).pending_ids.length).toBeGreaterThan(0);
   expect(arrivals.filter((item) => [...fake.sql.meetings.values()].some((row) => row.source_id === item.id))).toHaveLength(10);
 });
+test("pending not-found IDs wait for a zero-start proof generation", async () => {
+  const notFoundResponses = [
+    { name: "null", response: () => jsonResponse({ data: { transcript: null } }) },
+    { name: "HTTP 404", response: () => new Response("not found", { status: 404 }) },
+    {
+      name: "GraphQL object_not_found",
+      response: () => jsonResponse({ errors: [{ message: "unavailable", extensions: { code: "object_not_found" } }] }),
+    },
+  ];
+  const cases = [
+    ...notFoundResponses.map((item) => ({ ...item, backdate: true })),
+    { name: "in-range control", response: notFoundResponses[0]!.response, backdate: false },
+  ];
+
+  for (const scenario of cases) {
+    _resetConnectorSchemaMemoForTests();
+    const now = Date.parse("2026-10-13T12:00:00.000Z");
+    const items = buildSeed(1200) as SeedTranscript[];
+    items.forEach((item, index) => {
+      item.date = index < 20
+        ? now - 3 * 86_400_000 - index * 1_000
+        : now - 10 * 86_400_000 - (index - 20) * 1_000;
+    });
+    const fake = makeFakeTinyCloud({ did: `did:test:proof-generation-${scenario.name}` });
+    const provider = makeInMemoryFireflies(items);
+    let currentNow = now;
+    const expectedIds = () => items.map((item) => item.id);
+    const assertNoFalseOk = () => {
+      if (requiredSyncState(fake).last_sync_status !== "ok") return;
+      expect(missingIds(expectedIds(), new Set([...fake.sql.meetings.values()].map((row) => row.source_id)))).toEqual([]);
+      expect(missingIds(expectedIds(), transcriptBodyKeys(fake))).toEqual([]);
+    };
+    const run = async () => {
+      const result = await runEngine(provider.client, fake, { now: () => new Date(currentNow).toISOString() });
+      expect(result.ok).toBe(true);
+      assertNoFalseOk();
+    };
+
+    for (let attempt = 0; attempt < 40 && requiredSyncState(fake)?.last_sync_status !== "ok"; attempt++) {
+      await run();
+    }
+    expect(requiredSyncState(fake).last_sync_status).toBe("ok");
+
+    const x = buildSeed(1)[0] as SeedTranscript;
+    const y = buildSeed(1)[0] as SeedTranscript;
+    x.id = `proof-x-${scenario.name}`;
+    y.id = `proof-y-${scenario.name}`;
+    x.date = now + 20 * 60_000;
+    y.date = now + 10 * 60_000;
+    items.unshift(y, x);
+    provider.failNext(x.id, [jsonResponse({ errors: [{ message: "transient detail failure" }] })]);
+    provider.failNext(y.id, [jsonResponse({ errors: [{ message: "transient detail failure" }] })]);
+
+    currentNow += 30 * 60_000;
+    await run();
+    expect(JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey()))).pending_ids).toEqual(
+      expect.arrayContaining([x.id, y.id]),
+    );
+
+    provider.failNext(x.id, Array.from({ length: 12 }, () => jsonResponse({ data: { transcript: null } })));
+    provider.failNext(y.id, [jsonResponse({ errors: [{ message: "transient detail failure" }] })]);
+    currentNow += 2 * 60 * 60_000;
+    await run();
+    const firstGeneration = JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey())));
+    expect(firstGeneration.suspect_ids).toContain(x.id);
+    expect(firstGeneration.suspect_ids).not.toContain(y.id);
+    expect(firstGeneration.listing_skip).toBeGreaterThan(0);
+
+    if (scenario.backdate) {
+      y.date = now - 10 * 86_400_000 - 400 * 1_000;
+      items.sort((left, right) => right.date - left.date);
+    }
+    provider.failNext(y.id, Array.from({ length: 12 }, () => scenario.response()));
+    let firstGenerationCompleted = false;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      currentNow += 2 * 60 * 60_000;
+      await run();
+      const record = JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey())));
+      expect(record.pending_ids).toContain(y.id);
+      expect(record.suspect_ids).not.toContain(y.id);
+      expect(record.suspect_proof_ids).not.toContain(y.id);
+      if (!record.suspect_ids.includes(x.id)) {
+        firstGenerationCompleted = true;
+        break;
+      }
+    }
+    expect(firstGenerationCompleted).toBe(true);
+
+    provider.failNext(x.id, []);
+    provider.failNext(y.id, [scenario.response()]);
+    provider.calls.length = 0;
+    currentNow += 2 * 60 * 60_000;
+    await run();
+    const secondGeneration = JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey())));
+    expect(secondGeneration.suspect_ids).toContain(y.id);
+    expect(secondGeneration.suspect_proof_ids).toContain(y.id);
+    expect(secondGeneration.suspect_seen_ids).toContain(y.id);
+    expect(provider.calls.find((call) => call.operation === "list")?.skip).toBe(0);
+
+    provider.failNext(y.id, []);
+    for (let attempt = 0; attempt < 20 && requiredSyncState(fake).last_sync_status !== "ok"; attempt++) {
+      currentNow += 2 * 60 * 60_000;
+      await run();
+    }
+    expect(requiredSyncState(fake).last_sync_status).toBe("ok");
+    expect(missingIds(expectedIds(), new Set([...fake.sql.meetings.values()].map((row) => row.source_id)))).toEqual([]);
+    expect(missingIds(expectedIds(), transcriptBodyKeys(fake))).toEqual([]);
+  }
+});
+
 test("freshly listed null, 404, and unrelated 503 not-found text remain retryable", async () => {
   const cases = [
     {
