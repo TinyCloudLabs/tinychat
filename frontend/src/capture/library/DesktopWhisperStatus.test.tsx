@@ -32,7 +32,7 @@ function fakeQueue() {
 
 describe("DesktopWhisperStatusView", () => {
   const view = (j: DesktopWhisperJob, retryError = false) =>
-    renderToStaticMarkup(<DesktopWhisperStatusView job={j} retryError={retryError} onRetry={() => {}} />);
+    renderToStaticMarkup(<DesktopWhisperStatusView job={j} retryError={retryError} onRetry={() => {}} localRead="loading" />);
 
   test("queued, transcribing with progress, and done", () => {
     expect(view(job({ state: "queued" }))).toContain("Waiting to transcribe on this Mac");
@@ -40,7 +40,8 @@ describe("DesktopWhisperStatusView", () => {
     expect(html).toContain("Transcribing on this Mac · 42%");
     expect(html).toContain('role="status"');
     expect(view(job({ state: "transcribing", progress: null }))).toContain("Transcribing on this Mac…");
-    expect(view(job({ state: "done" }))).toContain("Transcript saved.");
+    expect(view(job({ state: "done" }))).toContain("Checking the transcript on this Mac");
+    expect(renderToStaticMarkup(<DesktopWhisperStatusView job={job({ state: "done" })} retryError={false} onRetry={() => {}} localRead="missing" onReadRetry={() => {}} />)).toContain("Try again");
   });
 
   test("failed shows generic copy and Retry, never the raw error", () => {

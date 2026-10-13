@@ -7,6 +7,7 @@ import { errorCode, isDiscarded, pendingStore, saveNoteForAccount, type PendingU
 import { ensureVoiceNoteIdentity } from "./voiceNoteRows";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { syncRecordingNote, VOICE_NOTE_SOURCE } from "./voiceNoteStore";
+import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
 import type { StoreAudioOptions } from "./voiceNoteStore";
 
 export interface VoiceNotePipeline {
@@ -52,6 +53,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     try {
     const check = checkFor(ctx, epoch);
     check();
+    if (uploadTicket) pendingStore.preparingUpload(uploadTicket);
     const gate = await withVoiceNoteSaveDeadline("voice-note space setup", () => ensureVoiceNoteIdentity(tcw, check));
     if (gate.status !== "established") throw Object.assign(new Error(gate.reason ?? gate.status), { code: gate.status, cause: gate.cause });
     check();
@@ -79,6 +81,11 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
       }
       if (result.kind === "discarded" && result.cleanupError) throw new Error(result.cleanupError);
       if (result.kind === "held") pendingStore.setHeld(id, result.reason);
+      if (result.kind === "saved" && note.options?.transcriber === "on-device") {
+        // Whisper and upload finish in either order. The done listener may have tried
+        // before the row existed; this second attempt makes the handoff durable.
+        await syncOnDeviceTranscript(tcw, { id, owner: note.owner, ledger: { audio: { state: "saved" } }, stt: note.stt }, ctx);
+      }
       return result.kind === "saved" ? note : null;
     } finally { finish(); }
     } finally { if (uploadTicket) pendingStore.settleUploadQueue(uploadTicket); }

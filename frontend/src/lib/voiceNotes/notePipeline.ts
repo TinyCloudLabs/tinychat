@@ -36,7 +36,7 @@ export type PipelineHeldReason = "signed-out" | "other-account" | "legacy" | "un
 
 /** The part of `PendingNote` (P1) the pipeline reads. A note with no pending entry and no space row yet has `pending: null`. */
 export interface PipelinePending {
-  upload?: { state: "waiting" | "uploading" | "retrying"; bytes: number; total: number };
+  upload?: { state: "waiting" | "preparing" | "uploading" | "retrying"; bytes: number; total: number };
   failed?: { kind: PipelineFailureKind; message: string };
   held?: PipelineHeldReason;
   /** Per note: how many notes are ahead of this one in the save queue (0 = next). This is the only queue position. */
@@ -237,12 +237,14 @@ function spaceStep(input: NotePipelineInput): Result {
   }
   if (!online) return { state: "waiting", caption: SPACE_COPY.offlineCaption };
   const upload = pending?.upload;
+  if (upload?.state === "preparing") return { state: "active", caption: SPACE_COPY.preparing };
   if (upload?.state === "uploading") {
     return withProgress("active", SPACE_COPY.uploading(fraction(upload.bytes, upload.total)), fraction(upload.bytes, upload.total));
   }
   if (upload?.state === "retrying") return withProgress("active", SPACE_COPY.retrying, fraction(upload.bytes, upload.total));
   const ahead = pending?.waitingBehind;
-  if (ahead !== undefined && (ahead > 0 || input.space.lane.busy)) return { state: "waiting", caption: SPACE_COPY.waitingInLine(ahead + 1) };
+  if (ahead !== undefined && ahead > 0) return { state: "waiting", caption: SPACE_COPY.waitingInLine(ahead + 1) };
+  if (input.space.lane.busy) return { state: "waiting", caption: SPACE_COPY.waitingForSpace };
   return { state: "waiting", caption: SPACE_COPY.waiting };
 }
 
@@ -295,7 +297,7 @@ function onDeviceStep(input: NotePipelineInput, od: PipelineOnDevice): Result {
     case "cancelled": return blocked(LOCAL_COPY.cancelled(input.device), "retry", true);
     case "running": {
       const progress = queue?.percent == null ? null : Math.min(1, Math.max(0, queue.percent / 100));
-      return withProgress("active", LOCAL_COPY.transcribing(progress), progress);
+      return withProgress("active", input.device === "mac" ? LOCAL_COPY.transcribingOnMac(progress) : LOCAL_COPY.transcribing(progress), progress);
     }
     case "queued": return { state: "waiting", caption: LOCAL_COPY.queued(queue?.position ?? null) };
     case "waiting_for_model": return modelStep(od, input.device) ?? { state: "waiting", caption: LOCAL_COPY.queued(queue?.position ?? null) };

@@ -6,7 +6,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { copyText } from "@/lib/copyText";
 import { transcriptCopyText } from "@/lib/connectors/meetingExplorer";
-import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
+import { captureCapabilities, captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
+import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
+import { VoiceNotes, type LocalTranscript } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
+import { appPlatform } from "@/lib/platform";
+import { localTranscriptToSave, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { NoteDetailView, type NoteDetailViewProps } from "./NoteDetailView";
 import type { Library } from "./useLibrary";
 
@@ -24,6 +29,26 @@ export function NoteDetail(props: {
   const { item, reads, audio } = library.note;
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [local, setLocal] = useState<{ id: string; transcript: LocalTranscript | null } | null>(null);
+  const [localAttempt, setLocalAttempt] = useState(0);
+  const localId = item?.source === VOICE_NOTE_SOURCE ? item.sourceId : null;
+  useEffect(() => {
+    if (!localId || !captureEngineAvailable()) return;
+    let active = true;
+    const read = () => { void VoiceNotes.getTranscript({ id: localId }).then(({ transcript }) => {
+      if (active) setLocal({ id: localId, transcript: transcript?.noteId === localId ? transcript : null });
+    }).catch(() => { if (active) setLocal({ id: localId, transcript: null }); }); };
+    read();
+    const stopWhisper = appPlatform() === "tauri"
+      ? getDesktopWhisperQueue()?.onDone((id) => { if (id === localId) read(); }) : undefined;
+    let stopPhone: (() => void) | undefined;
+    if (captureCapabilities().localTranscription) {
+      void OnDeviceStt.addListener("transcribed", ({ id }) => { if (id === localId) read(); })
+        .then((handle) => { if (active) stopPhone = () => { void handle.remove(); }; else void handle.remove(); })
+        .catch(() => undefined);
+    }
+    return () => { active = false; stopWhisper?.(); stopPhone?.(); };
+  }, [localId, localAttempt]);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -34,8 +59,13 @@ export function NoteDetail(props: {
   }, []);
 
   const text = useMemo(
-    () => (reads.transcript?.status === "ok" && reads.transcript.sentences.length > 0 ? transcriptCopyText(reads.transcript.sentences) : null),
-    [reads.transcript],
+    () => {
+      if (reads.transcript?.status === "ok" && reads.transcript.sentences.length > 0) return transcriptCopyText(reads.transcript.sentences);
+      if (reads.metadata?.status === "ok" && reads.metadata.metadata.transcription_outcome === "no_speech") return null;
+      const saved = local?.id === localId && local.transcript?.outcome === "transcribed" ? localTranscriptToSave(local.transcript) : null;
+      return saved && saved.sentences.length > 0 ? transcriptCopyText(saved.sentences) : null;
+    },
+    [reads.transcript, reads.metadata, local, localId],
   );
   const onCopy = useCallback(async () => {
     if (!text) return;
@@ -56,6 +86,8 @@ export function NoteDetail(props: {
       listStatus={item === null && library.listing ? "loading" : library.status}
       metadata={reads.metadata}
       transcript={reads.transcript}
+      localTranscript={local?.id === localId ? local.transcript : undefined}
+      onLocalTranscriptRetry={() => { setLocal(null); setLocalAttempt((attempt) => attempt + 1); }}
       audio={audio}
       // A note only on this phone is not in the space to transcribe from.
       transcription={item?.source === VOICE_NOTE_SOURCE && !item.onPhone ? props.transcription : undefined}

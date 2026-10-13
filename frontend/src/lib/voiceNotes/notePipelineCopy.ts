@@ -52,6 +52,8 @@ export const PHONE_COPY = {
 export const SPACE_COPY = {
   afterRecording: "After recording",
   waiting: "Waiting to upload",
+  preparing: "Preparing your space for audio upload…",
+  waitingForSpace: "Waiting for your space to finish another operation",
   waitingInLine: (position: number) => `Waiting to upload · ${place(position)} in line`,
   uploading: (fraction: number | null) => (fraction === null ? "Uploading audio to your TinyCloud space…" : `Uploading audio to your TinyCloud space · ${percentText(fraction)}`),
   retrying: "Retrying…",
@@ -90,6 +92,7 @@ export const LOCAL_COPY = {
   modelFailed: (detail: string | null | undefined) => withDetail("The on-device model couldn't download", detail),
   queued: (position: number | null) => (position === null ? "Queued" : `Queued · ${place(position)}`),
   transcribing: (fraction: number | null) => (fraction === null ? "Transcribing…" : `Transcribing · ${percentText(fraction)}`),
+  transcribingOnMac: (fraction: number | null) => (fraction === null ? "Transcribing on this Mac…" : `Transcribing on this Mac · ${percentText(fraction)}`),
   adding: "Adding to this note…",
   failed: (detail: string | null | undefined, device: PipelineDevice) => withDetail(`Couldn't transcribe on ${deviceName(device)}`, detail),
   cancelled: (device: PipelineDevice) => `Transcribing on ${deviceName(device)} was cancelled`,

@@ -146,7 +146,8 @@ export function createDesktopWhisperQueue(args: {
     const id = note.id;
     let stagedId: string | null = null;
     try {
-      if ((await store.getTranscript({ id })).transcript) {
+      const existing = (await store.getTranscript({ id })).transcript;
+      if (existing?.noteId === id && (existing.outcome === "no_speech" || existing.segments.some((segment) => segment.text.trim()))) {
         await mark(id, "done");
         emitDone(id);
         return;
@@ -194,7 +195,13 @@ export function createDesktopWhisperQueue(args: {
         })();
       });
       if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
-      await store.putTranscript({ id, transcript: whisperLocalTranscript(note, model, response) });
+      const transcript = whisperLocalTranscript(note, model, response);
+      await store.putTranscript({ id, transcript });
+      const persisted = (await store.getTranscript({ id })).transcript;
+      if (!persisted || persisted.noteId !== id || persisted.outcome !== transcript.outcome
+        || persisted.rev !== transcript.rev || (persisted.outcome === "transcribed" && !persisted.segments.some((segment) => segment.text.trim()))) {
+        throw new Error("The local transcript could not be verified after saving");
+      }
       await mark(id, "done");
       emitDone(id);
     } catch (error) {
@@ -249,7 +256,13 @@ export function createDesktopWhisperQueue(args: {
           try { await whisper.stopTranscription(note.id); } catch { /* No native task survived. */ }
           await mark(note.id, "queued");
         }
-        else publish(note.id, note.stt?.state === "done" ? "done" : note.stt?.state === "failed" ? "failed" : "queued",
+        else if (note.stt?.state === "done") {
+          const transcript = await store.getTranscript({ id: note.id }).then((result) => result.transcript, () => null);
+          if (transcript?.noteId === note.id && (transcript.outcome === "no_speech" || transcript.segments.some((segment) => segment.text.trim())))
+            publish(note.id, "done");
+          else await mark(note.id, "failed", "The local transcript is missing. Retry transcription.");
+        }
+        else publish(note.id, note.stt?.state === "failed" ? "failed" : "queued",
           note.stt?.error ?? null);
       }
       // Native tasks from the previous renderer are stopped above. Sweep any

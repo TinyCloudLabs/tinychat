@@ -20,8 +20,9 @@ import type { MeetingMetadataRead, TranscriptRead } from "@/lib/connectors/meeti
 import { UPLOAD_MEETING_SOURCE } from "@/lib/audioUpload";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
+import type { LocalTranscript } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { transcriptionStatusText } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { voiceNoteTitle, voiceNoteTranscriptState, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
+import { localTranscriptToSave, voiceNoteTitle, voiceNoteTranscriptState, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 import { detailWhen, formatSpokenDuration } from "./formatters";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -53,6 +54,9 @@ export interface NoteDetailViewProps {
   /** Undefined while it is read. */
   metadata: MeetingMetadataRead | undefined;
   transcript: TranscriptRead | undefined;
+  /** The device copy, keyed by source_id, while the space copy has not arrived. */
+  localTranscript?: LocalTranscript | null;
+  onLocalTranscriptRetry?: () => void;
   /** Where the note's audio comes from; null when it has none stored. */
   audio: NoteAudio | null;
   /** Private cloud transcription (voice notes in the phone app); absent elsewhere. */
@@ -228,8 +232,12 @@ function savedText(metadata: MeetingMetadataRead): string | null {
 
 export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
   const { item, transcript, metadata } = props;
-  const sentences = transcript?.status === "ok" ? transcript.sentences : [];
   const voiceNote = item.source === VOICE_NOTE_SOURCE;
+  const spaceNoSpeech = metadata?.status === "ok" && metadata.metadata.transcription_outcome === "no_speech";
+  const local = voiceNote && !spaceNoSpeech && props.localTranscript?.noteId === item.sourceId ? props.localTranscript : null;
+  const remoteSentences = transcript?.status === "ok" ? transcript.sentences : [];
+  const sentences = remoteSentences.length > 0 ? remoteSentences
+    : local?.outcome === "transcribed" ? localTranscriptToSave(local).sentences : [];
   return (
     <section aria-labelledby="note-transcript" data-testid="note-transcript" className="flex flex-col gap-3">
       <div className="flex min-h-11 flex-wrap items-center gap-x-3">
@@ -251,7 +259,18 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {props.copyState === "copied" ? "Transcript copied to clipboard" : ""}
       </span>
-      {transcript === undefined ? (
+      {sentences.length > 0 ? (
+        <div className="flex max-w-[68ch] flex-col gap-4 [-webkit-touch-callout:default] select-text">
+          {transcriptBlocks(sentences).map((block, index) => (
+            <div key={index}>
+              {block.speaker && <p className="text-meta font-semibold text-muted-foreground">{block.speaker}</p>}
+              <p className="whitespace-pre-wrap break-words text-body">{block.text}</p>
+            </div>
+          ))}
+        </div>
+      ) : local?.outcome === "no_speech" ? (
+        <p data-testid="voice-note-no-speech" className="text-callout text-muted-foreground">No speech was found in this note.</p>
+      ) : transcript === undefined ? (
         <div role="status">
           <span className="sr-only">Loading the transcript…</span>
           <Skeleton lines={4} />
@@ -262,15 +281,6 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
           <Button type="button" variant="outline" onClick={props.onRetry}>
             <RefreshCwIcon aria-hidden /> Try again
           </Button>
-        </div>
-      ) : sentences.length > 0 ? (
-        <div className="flex max-w-[68ch] flex-col gap-4 [-webkit-touch-callout:default] select-text">
-          {transcriptBlocks(sentences).map((block, index) => (
-            <div key={index}>
-              {block.speaker && <p className="text-meta font-semibold text-muted-foreground">{block.speaker}</p>}
-              <p className="whitespace-pre-wrap break-words text-body">{block.text}</p>
-            </div>
-          ))}
         </div>
       ) : voiceNote ? (
         metadata === undefined ? (
@@ -294,6 +304,8 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
           <DesktopWhisperStatus
             noteId={item.sourceId}
             enabled={props.desktopWhisper}
+            localRead={props.localTranscript === undefined ? "loading" : "missing"}
+            onReadRetry={props.onLocalTranscriptRetry}
             fallback={<NoTranscript item={item} metadata={metadata} transcription={props.transcription} />}
           />
         )
