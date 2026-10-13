@@ -30,6 +30,8 @@ export interface CalendarAutojoinConnectionOptions {
   now?: () => number;
   /** Lane budget for one whole status read (connection row plus occurrence listing). */
   statusBudgetMs?: number;
+  /** TC-1047: called once a tenant's disabled row is persisted (disable, disconnect, needs_reconnect, re-setup). */
+  onDisabled?: (tenant: string) => void;
 }
 
 /** One-account custody lifecycle. Tenant policy coordination is separate from the global KV lane. */
@@ -263,6 +265,7 @@ export class CalendarAutojoinConnection {
       state: "disabled", generation: (current?.generation ?? 0) + 1, nextScanAt: 0,
       credentialRef: undefined, setupId: undefined, setupExpiresAt: undefined, errorCode: undefined, scanComplete: false };
     await this.options.store.putConnection(disabled);
+    this.options.onDisabled?.(tenant);
     for (const [key, value] of this.transactions) if (value.tenant === tenant) this.transactions.delete(key);
     try {
       for (const row of await this.options.store.listOccurrences(tenant)) {

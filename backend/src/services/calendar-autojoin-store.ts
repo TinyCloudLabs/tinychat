@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { assertKvResult, isKvMissingKeyResult, withSessionRefresh } from "@tinyboilerplate/server";
-import { BackendStorageLane, BackendStorageLaneTimeout, type BackendStorageLaneRunOptions } from "./backend-storage-lane.js";
+import {
+  BackendStorageLane, BackendStorageLaneTimeout, REQUEST_LANE_WAIT_MS, type BackendStorageLaneRunOptions,
+} from "./backend-storage-lane.js";
 import { normalizeGoogleMeetUrl } from "./google-calendar.js";
 import type { CreateMeetingInput } from "./transcription-api.js";
 
@@ -231,4 +233,19 @@ export class KvCalendarAutojoinStore extends JsonCalendarAutojoinStore {
       },
     }, lane, laneOptions);
   }
+}
+
+/**
+ * Same lane, three priorities. Request handlers (status/enable/disable) queue ahead of the
+ * reconcile worker and give up before the client's 20 s abort; the worker's scans and listings
+ * yield to them. TC-1047: the dispatch path of one due occurrence (its reads, capture claims, the
+ * intent write and the post-send writes) queues with requests, under the same wait budget: a
+ * timeout before the intent write sends nothing, and the attempt is retried.
+ */
+export function kvCalendarAutojoinStores(node: TinyCloudNode, lane: BackendStorageLane) {
+  return {
+    request: new KvCalendarAutojoinStore(node, lane, { waitTimeoutMs: REQUEST_LANE_WAIT_MS }),
+    worker: new KvCalendarAutojoinStore(node, lane, { priority: "background" }),
+    dispatch: new KvCalendarAutojoinStore(node, lane, { priority: "foreground", waitTimeoutMs: REQUEST_LANE_WAIT_MS }),
+  };
 }
