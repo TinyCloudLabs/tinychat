@@ -17,6 +17,8 @@ afterEach(() => {
 function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noSpeech = false, spaceOnly = false,
   mimeType = "audio/mp4", readGate?: Promise<void>) {
   const data = new Map<string, string>();
+  const claims = new Map<string, { value: string; etag: string }>();
+  let revision = 0;
   Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
     getItem: (key: string) => data.get(key) ?? null,
     setItem: (key: string, value: string) => { data.set(key, value); },
@@ -79,7 +81,20 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
   const client = createHostedAssemblyAiClient({ backendUrl: "https://exo.test",
     sessionStore: { getToken: () => "session", isExpired: () => false }, fetchImpl: fetchImpl as typeof fetch,
     sleep: async () => {} });
-  const account = { did: "did:test:one" } as TinyCloudWeb;
+  const account = { did: "did:test:one", kv: {
+    get: async (key: string) => {
+      const entry = claims.get(key);
+      return entry ? { ok: true, data: { data: entry.value, headers: { etag: entry.etag } } }
+        : { ok: false, error: { code: "KV_NOT_FOUND", message: "missing" } };
+    },
+    put: async (key: string, value: string, options?: { ifNoneMatch?: string; ifMatch?: string }) => {
+      const entry = claims.get(key);
+      if ((options?.ifNoneMatch && entry) || (options?.ifMatch && options.ifMatch !== entry?.etag))
+        return { ok: false, error: { code: "KV_PRECONDITION_FAILED", message: "412" } };
+      claims.set(key, { value, etag: String(++revision) });
+      return { ok: true, data: {} };
+    },
+  } } as unknown as TinyCloudWeb;
   const track = () => createHostedVoiceNoteTrack(() => account, "https://exo.test", {} as SessionStore, account.did, {
     client, native, readCommit: async () => { await readGate; return commit; },
     createRow: async () => ({ inserted: true }) as Awaited<ReturnType<typeof import("./voiceNoteRows").createVoiceNoteRow>>,
@@ -153,6 +168,19 @@ test("noteSaved after Powerful completes does not create a second paid upload", 
   await lane.run(recording);
   // The text/audio save finishes later and calls the same hand-off again.
   await lane.run(recording);
+  expect(calls.filter((call) => call === "POST /hosted/uploads")).toHaveLength(1);
+  expect(calls.filter((call) => call === "POST /hosted/transcripts")).toHaveLength(1);
+});
+
+test("two instances racing on one note create one upload and one transcript", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", gate);
+  const first = track(); const second = track(); first.consent();
+  const runs = Promise.all([first.run(recording), second.run(recording)]);
+  await Bun.sleep(10);
+  release();
+  await runs;
   expect(calls.filter((call) => call === "POST /hosted/uploads")).toHaveLength(1);
   expect(calls.filter((call) => call === "POST /hosted/transcripts")).toHaveLength(1);
 });
