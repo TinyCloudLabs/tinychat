@@ -184,17 +184,20 @@ jobs:
       # republish 3001 on the Phala gateway (bypassing dstack-ingress), so refuse it here.
       - name: Refuse a compose that publishes the backend port (TC-1012)
         run: |
-          python3 - <<'PY'
-          import sys, yaml
-          with open("docker-compose.phala.yml") as f:
-              ports = yaml.safe_load(f)["services"]["tinychat-backend"].get("ports")
-          if ports:
-              print(f"::error title=TC-1012 compose publishes backend port::docker-compose.phala.yml at this ref publishes tinychat-backend ports {ports}, "
-                    "which the Phala gateway serves directly, bypassing dstack-ingress. Deploy a TC-1012-hardened compose: "
-                    "cherry-pick the tinychat-backend ports removal onto this release branch and deploy that.")
-              sys.exit(1)
-          print("tinychat-backend publishes no ports (TC-1012).")
-          PY
+          # mikefarah yq v4 is preinstalled on ubuntu-latest. Empty output = no tinychat-backend service.
+          if ! n=$(yq '.services["tinychat-backend"] | select(. != null) | (.ports // []) | length' docker-compose.phala.yml); then
+            echo "::error title=TC-1012 compose guard::yq could not parse docker-compose.phala.yml; refusing to deploy without verifying tinychat-backend publishes no ports"
+            exit 1
+          fi
+          if [ -z "$n" ]; then
+            echo "::error title=TC-1012 compose guard::docker-compose.phala.yml has no tinychat-backend service; refusing to deploy"
+            exit 1
+          fi
+          if [ "$n" != "0" ]; then
+            echo "::error title=TC-1012 compose publishes backend port::docker-compose.phala.yml at this ref publishes $n tinychat-backend port(s), which the Phala gateway serves directly, bypassing dstack-ingress. Deploy a TC-1012-hardened compose: cherry-pick the tinychat-backend ports removal onto this release branch and deploy that."
+            exit 1
+          fi
+          echo "tinychat-backend publishes no ports (TC-1012)."
 
       - name: Validate Phala access
         env:
