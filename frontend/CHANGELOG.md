@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.7.0-beta.5
+
+### Patch Changes
+
+- 2ac09a6: Widen Calendar autojoin's late-join window, preserve truthful RSVP outcomes without hiding dispatch failures, skip unchanged RSVP writes, and record discovery and dispatch lag (TC-988).
+
 ## 0.7.0-beta.4
 
 ### Patch Changes
