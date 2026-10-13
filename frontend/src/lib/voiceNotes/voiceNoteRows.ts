@@ -255,24 +255,31 @@ export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNote
     Math.round(recording.durationMs / 1000), JSON.stringify({ transcription_outcome: outcome }), now, now], checkpoint);
   const row = await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
   if (!row) throw new Error("The voice-note identity index was established but its row is missing");
-  await execute(tcw, `UPDATE connector_meeting SET metadata = json_set(COALESCE(metadata,'{}'), '$.transcription_outcome', ?)
-    WHERE id = ? AND source = 'exo-voice-note' AND json_extract(metadata, '$.transcription_outcome') IS NULL`,
-  [outcome, row.id], checkpoint);
-  const initialized = await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
-  if (!initialized) throw new Error("The voice-note identity index was established but its row is missing");
-  return { ...initialized, inserted: changes > 0 };
+  if (changes === 0) {
+    await execute(tcw, `UPDATE connector_meeting SET metadata = json_set(COALESCE(metadata,'{}'), '$.transcription_outcome', ?)
+      WHERE id = ? AND source = 'exo-voice-note' AND json_extract(metadata, '$.transcription_outcome') IS NULL
+        AND NOT (typeof(json_extract(metadata, '$.transcript_text')) = 'text'
+          AND length(trim(json_extract(metadata, '$.transcript_text'))) > 0)`,
+    [outcome, row.id], checkpoint);
+    const initialized = await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
+    if (!initialized) throw new Error("The voice-note identity index was established but its row is missing");
+    return { ...initialized, inserted: false };
+  }
+  return { ...row, inserted: true };
 }
 
 /** Persist retryable transcription failures without replacing a terminal result. */
 export async function patchVoiceNoteTranscriptionFailure(tcw: TinyCloudWeb, sourceId: string, errorCode: string,
   checkpoint: () => void = () => undefined): Promise<void> {
+  if (["audio_upload_pending", "transcription_off", "upload_outcome_unknown", "account_changed"].includes(errorCode)) return;
   const row = await resolveVoiceNoteRow(tcw, sourceId, checkpoint);
   if (!row) return;
   await execute(tcw, `UPDATE connector_meeting SET metadata = json_set(COALESCE(metadata,'{}'),
     '$.transcription_outcome', 'failed', '$.transcription_error_code', ?), updated_at = ?
     WHERE id = ? AND source = 'exo-voice-note'
-      AND COALESCE(json_extract(metadata, '$.transcription_outcome'), '') NOT IN ('transcribed','no_speech')`,
-  [errorCode, new Date().toISOString(), row.id], checkpoint);
+      AND COALESCE(json_extract(metadata, '$.transcription_outcome'), '') NOT IN ('transcribed','no_speech')
+      AND NOT EXISTS (SELECT 1 FROM voice_note_transcript t WHERE t.source_id = ? AND t.outcome IN ('transcribed','no_speech'))`,
+  [errorCode, new Date().toISOString(), row.id, sourceId], checkpoint);
 }
 export async function patchVoiceNoteAudio(tcw: TinyCloudWeb, recording: VoiceNoteRecording, platform: string,
   audio: { base: string; mimeType: string; size: number; parts: number }, checkpoint: () => void = () => undefined): Promise<VoiceNoteRow> {
@@ -358,7 +365,8 @@ export async function commitVoiceNoteTranscript(
   checkpoint();
   const committed = await verifyVoiceNoteTranscript(tcw, sourceId, input.rev, hash, checkpoint);
   const mirror = { ...legacyGroup(input.metadata ?? {}), transcript_text: input.outcome === "transcribed" ? input.text : null,
-    transcription_outcome: input.outcome, speaker_labels: input.metadata?.speaker_labels ?? input.speakerLabels ?? null,
+    transcription_outcome: input.outcome, transcription_error_code: null,
+    speaker_labels: input.metadata?.speaker_labels ?? input.speakerLabels ?? null,
     transcribed_at: input.transcribedAt ?? new Date().toISOString(), transcription_engine: input.engine ?? null,
     transcript_provider: input.provider ?? null, model: input.model ?? null, language: input.language ?? null };
   if (committed.rev === input.rev && committed.hash === hash) {

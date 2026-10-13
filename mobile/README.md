@@ -75,8 +75,9 @@ Voice notes use the shared Private job flow
     `inference_provider`, `model`, `language`, `transcript_text` and
     `transcription_outcome`.
   - The job is forgotten, then deleted at PTX (a failed delete is left to
-    PTX's 24 h schedule; it never causes a second upload). A note whose row
-    already records an outcome is never transcribed again.
+    PTX's 24 h schedule; it never causes a second upload). Only a terminal
+    outcome (`transcribed` / `no_speech`) stops transcription; `pending`,
+    `failed` and `skipped` can still be transcribed by the user's action.
   - A job in flight is remembered per note and account (localStorage), so a
     relaunch or Retry re-joins it. A job that can no longer be used is
     cancelled, so it doesn't hold the account's one active slot.

@@ -51,10 +51,11 @@ export interface DesktopWhisperQueue {
   snapshot(): ReadonlyMap<string, DesktopWhisperJob>;
   subscribe(listener: () => void): () => void;
   onDone(listener: (id: string) => void): () => void;
-  resume(): Promise<void>;
+  onFailed(listener: (id: string) => void): () => void;
   noteCommitted(recording: VoiceNoteRecording): Promise<void>;
   retry(id: string): Promise<void>;
   modelAvailable(): Promise<void>;
+  resume(): Promise<void>;
   beforeCapture(): Promise<void>;
   captureEnded(): void;
   dispose(): void;
@@ -107,6 +108,12 @@ export function createDesktopWhisperQueue(args: {
   const jobs = new Map<string, DesktopWhisperJob>();
   const listeners = new Set<() => void>();
   const doneListeners = new Set<(id: string) => void>();
+  const failedListeners = new Set<(id: string) => void>();
+  const emitFailed = (id: string) => {
+    for (const listener of failedListeners) {
+      try { listener(id); } catch (error) { console.error("[desktopWhisper] Failure listener failed", error); }
+    }
+  };
   let active: string | null = null;
   let activeRun: Promise<void> | null = null;
   let transcribing = false;
@@ -213,7 +220,7 @@ export function createDesktopWhisperQueue(args: {
       if (disposed) return;
       const message = whisperFailure(error);
       if (stopping || captureLive() || message.includes("capture_has_priority")) await mark(id, "queued");
-      else await mark(id, "failed", message);
+      else { await mark(id, "failed", message); emitFailed(id); }
     } finally {
       transcribing = false;
       serverLease?.release();
@@ -250,6 +257,17 @@ export function createDesktopWhisperQueue(args: {
         }
       });
       return () => { doneListeners.delete(listener); };
+    },
+    onFailed(listener) {
+      failedListeners.add(listener);
+      queueMicrotask(() => {
+        if (failedListeners.has(listener)) for (const job of jobs.values()) {
+          if (job.state === "failed" && !job.error?.startsWith("unavailable:")) {
+            try { listener(job.id); } catch (error) { console.error("[desktopWhisper] Failure listener failed", error); }
+          }
+        }
+      });
+      return () => { failedListeners.delete(listener); };
     },
     async resume() {
       const notes = (await store.listPending()).recordings;
@@ -324,7 +342,7 @@ export function createDesktopWhisperQueue(args: {
       if (active && transcribing) {
         try { void whisper.stopTranscription(active).catch(() => {}); } catch { /* WebView teardown continues. */ }
       }
-      listeners.clear(); doneListeners.clear();
+      listeners.clear(); doneListeners.clear(); failedListeners.clear();
     },
   };
 }

@@ -55,7 +55,22 @@ The test signs in throwaway keys with this repo's `manifest.json`. It observes t
 
 Round-3 result at `a10b235` (`tinycloud-node-server` 1.19.2): `2 pass, 0 fail, 41 expect() calls` in `/tmp/exo-t18-r3-v-node.log`. The stale-keeper attempt changed zero rows, leaving `race-c` live until the second session archived it. The SDK emitted non-fatal account-registry 404 warnings during throwaway sign-ins; both SQL/KV test cases passed.
 
-The transcript commit table is authoritative. The fixed transcript key and `connector_meeting` transcript metadata are legacy mirrors, and writes from two devices can leave a mirror on an older revision. Readers follow the committed body key. The identity layer classifies a full-space growth rejection as `storage_full` (unit tested); the recording stays on the phone for retry after space is freed.
+The `voice_note_transcript` commit table is authoritative: it identifies the committed body and outcome. `connector_meeting.metadata.transcription_outcome` is a compatibility mirror/hint; concurrent devices can leave it behind the committed revision. Readers must prefer the commit record and its body key.
+
+### `transcription_outcome` contract
+
+Allowed values are `pending`, `failed`, `skipped`, `transcribed`, and `no_speech`. Legacy rows with a missing or invalid value are read as `pending`.
+
+Allowed transitions:
+
+- `NULL → pending | skipped` at row creation (`skipped` when capture selected transcription `off`).
+- `pending | skipped | failed | NULL → failed` when a real transcription attempt fails.
+- Any outcome → `transcribed | no_speech` only through the transcript commit mirror.
+- `transcribed` and `no_speech` are terminal and never move back to a non-terminal outcome.
+
+`transcription_error_code` is meaningful only while `transcription_outcome` is `failed`; ignore a leftover code for any other outcome. It is an error identifier, never an exception message or transcript. Its vocabulary is open for private-cloud/server and audio errors (`PrivateCloudError.code` / `VoiceNoteAudioError.code`; locally defined identifiers include `connection_lost`, `upload_interrupted`, `transcript_save_failed`, and `audio_read_failed`), the hosted `AssemblyAiErrorKind` values (`invalid-key`, `network`, `rate-limited`, `rejected`, `failed`, `not-found`), and fixed on-device identifiers (`on_device_transcription_failed`, `on_device_transcript_missing`, `transcript_read_failed`, `transcript_save_failed`). Deferrals `audio_upload_pending`, `transcription_off`, `upload_outcome_unknown`, and `account_changed` are not persisted as `failed`.
+
+Older builds treat unknown `transcription_outcome` values as `none` and continue to offer Transcribe; they do not clear `transcription_error_code`. A stale error code can therefore remain after an older build commits a result. It has no meaning unless the current outcome is `failed`. The fixed transcript key and row metadata remain legacy mirrors; transcript readers follow the commit table.
 
 T22 hand-off: after a private-cloud commit, write its committed `(rev, hash)` back to the native `transcriptSync` ledger. This keeps a later on-device transcript in the same revision sequence.
 

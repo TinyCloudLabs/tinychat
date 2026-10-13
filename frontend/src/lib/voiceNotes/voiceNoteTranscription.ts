@@ -35,7 +35,7 @@ import {
   type PtxPutResponse,
 } from "../privateCloud";
 import { captureCapabilities, captureEngineKind, NativeFileUploadStatusError, resolveNativeFileUploadCapability } from "./captureEngine";
-import { currentAccountGeneration, subscribeAccountGeneration } from "./accountContext";
+import { currentAccountGeneration, isAccountContextCurrent, isAccountWorkAllowed, StaleAccountContext, subscribeAccountGeneration } from "./accountContext";
 import { nativeRecordingSource, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { whenVoiceNoteSavesIdle } from "./recorderSaves";
@@ -1111,8 +1111,21 @@ export async function transcribeVoiceNote(args: {
     args.report(status);
   };
   const account = args.account ?? { generation: currentAccountGeneration() };
-  const transcribedAt = () => (args.now?.() ?? new Date()).toISOString();
-  const stillCurrent = () => args.allowed?.("account") ?? true;
+  const accountContext = { did: account.did ?? tcw.did, spaceId: tcw.spaceId ?? "", generation: account.generation };
+  const stillCurrent = () => args.allowed
+    ? args.allowed("account") && isAccountContextCurrent(accountContext, tcw) && isAccountWorkAllowed(tcw)
+    : isAccountContextCurrent(accountContext, tcw) && isAccountWorkAllowed(tcw);
+  const accountCheckpoint = () => {
+    if (!stillCurrent()) throw new StaleAccountContext();
+  };
+  const persistFailure = async (error: unknown) => {
+    const code = voiceNoteErrorCode(error);
+    const current = stillCurrent();
+    if (["audio_upload_pending", "transcription_off", "upload_outcome_unknown", "account_changed"].includes(code)
+      || !current) return;
+    try { await patchVoiceNoteTranscriptionFailure(tcw, sourceId, code, accountCheckpoint); }
+    catch (persistError) { logPipelineError("[VoiceNotes] Could not persist the transcription failure", persistError); }
+  };
   /** The job is done with: forget it, then delete it at PTX (best-effort: PTX deletes it within 24 h). */
   const finish = async (transcriptionId?: string | null) => {
     // Not for an account that left: the delete would go out with the new account's token, and the
@@ -1221,10 +1234,12 @@ export async function transcribeVoiceNote(args: {
     }
     return loadSpaceAudio();
   };
+  const transcribedAt = () => (args.now ?? (() => new Date()))().toISOString();
   const save = async (prepared: VoiceNoteTranscriptSave) => {
     if (!stillCurrent()) throw accountChangedError();
     report({ kind: "saving" });
-    const saved = await saveVoiceNoteTranscript(tcw, sourceId, prepared, account);
+    if (!stillCurrent()) throw accountChangedError();
+    const saved = await saveVoiceNoteTranscript(tcw, sourceId, prepared, account, accountCheckpoint);
     if (!saved.ok) {
       if (saved.error.code === "VOICE_NOTE_NOT_FOUND") throw new PrivateCloudError("voice_note_not_found", saved.error.message);
       throw new PrivateCloudError("transcript_save_failed", saved.error.message);
@@ -1243,14 +1258,16 @@ export async function transcribeVoiceNote(args: {
     ));
   } catch (err) {
     if (voiceNoteErrorCode(err) !== "no_speech") {
-      if (stillCurrent()) {
-        try { await patchVoiceNoteTranscriptionFailure(tcw, sourceId, voiceNoteErrorCode(err)); }
-        catch (persistError) { logPipelineError("[VoiceNotes] Could not persist the transcription failure", persistError); }
-      }
+      await persistFailure(err);
       throw err;
     }
     // Silence is an outcome, not a failure: recorded so the note is not offered again.
-    await save(noSpeechTranscript(transcribedAt(), rev));
+    try {
+      await save(noSpeechTranscript(transcribedAt(), rev));
+    } catch (saveError) {
+      await persistFailure(saveError);
+      throw saveError;
+    }
     await finish(err instanceof PrivateCloudError ? err.transcriptionId : null);
     logPipeline("transcription", sourceId, "done", { engine: "private-cloud" });
     return "no_speech";
@@ -1260,10 +1277,7 @@ export async function transcribeVoiceNote(args: {
     await save(prepared);
   } catch (err) {
     if (err instanceof PrivateCloudError && err.code === "voice_note_not_found") await finish(transcriptionId);
-    if (stillCurrent()) {
-      try { await patchVoiceNoteTranscriptionFailure(tcw, sourceId, voiceNoteErrorCode(err)); }
-      catch (persistError) { logPipelineError("[VoiceNotes] Could not persist the transcript-save failure", persistError); }
-    }
+    await persistFailure(err);
     // Otherwise the job keeps its transcript: Retry re-joins it and saves again.
     throw err;
   }

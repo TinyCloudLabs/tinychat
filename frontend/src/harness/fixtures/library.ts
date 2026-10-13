@@ -145,9 +145,12 @@ export function libraryTcw(options: { rows?: readonly FixtureRow[]; hang?: boole
       return { ok: true, data: { rows: newestFirst.map((r) => [r.id, r.source, r.sourceId, r.title, r.startedAt, r.durationSecs]) } };
     }
     if (sql.includes("FROM connector_meeting g") && sql.includes("transcription_outcome")) {
-      const row = rows.find(
-        (r) => r.sourceId === params[0] && r.source === "exo-voice-note" && r.metadata.transcription_outcome !== undefined,
-      );
+      const row = rows.find((r) => {
+        if (r.sourceId !== params[0] || r.source !== "exo-voice-note") return false;
+        const outcome = r.metadata.transcription_outcome;
+        return outcome === "transcribed" || outcome === "no_speech"
+          || (outcome == null && typeof r.metadata.transcript_text === "string" && r.metadata.transcript_text.trim().length > 0);
+      });
       return { ok: true, data: { rows: row ? [[row.id, JSON.stringify(row.metadata)]] : [] } };
     }
     if (sql.includes("SELECT metadata FROM connector_meeting WHERE id = ?")) {

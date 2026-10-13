@@ -359,7 +359,6 @@ export function voiceNoteTranscriptState(metadata: unknown, commit?: TranscriptC
       : null };
   }
   if (m.transcription_outcome === "failed") return { status: "failed", preview: null };
-  if (m.transcription_outcome === "skipped") return { status: "skipped", preview: null };
   if (typeof m.transcript_text === "string" && m.transcript_text.trim().length > 0) {
     const text = m.transcript_text.trim();
     return {
@@ -367,14 +366,20 @@ export function voiceNoteTranscriptState(metadata: unknown, commit?: TranscriptC
       preview: text.length > TRANSCRIPT_PREVIEW_CHARS ? `${text.slice(0, TRANSCRIPT_PREVIEW_CHARS).trimEnd()}…` : text,
     };
   }
+  if (m.transcription_outcome === "skipped") return { status: "skipped", preview: null };
   return { status: "pending", preview: null };
 }
 
 export async function readVoiceNoteTranscriptState(tcw: TinyCloudWeb, sourceId: string): Promise<VoiceNoteTranscriptState> {
   const commit = await readTranscriptCommit(tcw, sourceId);
   if (commit) return voiceNoteTranscriptState(null, commit);
+  const row = await resolveVoiceNoteRow(tcw, sourceId);
+  const ownOutcome = row?.metadata.transcription_outcome;
+  const ownState = voiceNoteTranscriptState(row?.metadata);
+  if (["pending", "failed", "skipped"].includes(String(ownOutcome)) || ownState.status === "transcribed")
+    return ownState;
   const legacy = await readLegacyTranscriptWinner(tcw, sourceId);
-  return voiceNoteTranscriptState(legacyTranscriptMetadata(legacy));
+  return legacy ? voiceNoteTranscriptState(legacyTranscriptMetadata(legacy)) : ownState;
 }
 
 /**

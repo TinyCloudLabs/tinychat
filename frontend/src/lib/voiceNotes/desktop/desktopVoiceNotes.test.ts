@@ -453,11 +453,16 @@ describe("desktop recorder adapter", () => {
     const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now,
       storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
     const id = (await engine.plugin.start()).id;
+    const failures: string[] = [];
+    const unsubscribeFailed = engine.whisper!.onFailed((failedId) => failures.push(failedId));
     bridge.files.set(id, Uint8Array.of(1, 2, 3));
     bridge.elapsed = 1000;
     await engine.plugin.stop();
     await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "failed");
+    await waitFor(() => failures.length === 1);
+    expect(failures).toEqual([id]);
     expect((await engine.plugin.listPending()).recordings.find((note) => note.id === id)?.stt?.error).toContain("fixture failed");
+    unsubscribeFailed();
     whisper.fail = false;
     await engine.whisper!.retry(id);
     await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");

@@ -560,10 +560,14 @@ async function readSpaceRows(tcw: TinyCloudWeb, ids: readonly string[]): Promise
     withVoiceNoteReadDeadline(`read the transcript commits of ${ids.length} notes`, () => readTranscriptCommits(tcw, ids)),
   ]);
   return new Map(ids.map((id): [string, RowRead] => {
-    const row = rows.get(id)?.row ?? null;
+    const resolved = rows.get(id);
+    const row = resolved?.row ?? null;
+    const legacy = resolved?.legacy ?? null;
     const commit = commits.get(id) ?? null;
-    const transcript = commit ? voiceNoteTranscriptState(null, commit) : voiceNoteTranscriptState(legacyTranscriptMetadata(rows.get(id)?.legacy ?? null));
-    return [id, { metadata: row === null ? null : transcript.status === "none" ? row.metadata : { ...row.metadata, transcription_outcome: transcript.status } }];
+    const transcript = commit ? voiceNoteTranscriptState(null, commit) : voiceNoteTranscriptState(legacyTranscriptMetadata(legacy));
+    const committed = commit !== null || legacy !== null;
+    return [id, { metadata: row === null ? null : committed
+      ? { ...row.metadata, transcription_outcome: transcript.status } : row.metadata }];
   }));
 }
 

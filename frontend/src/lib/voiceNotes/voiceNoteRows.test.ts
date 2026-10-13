@@ -7,6 +7,7 @@ import { PendingVoiceNotesSaver, schedulePendingVoiceNotesRecovery } from "@/cha
 import { OnDeviceStt, __setOnDeviceSttForTests, type OnDeviceSttPlugin } from "./onDeviceStt";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connectors/connectorStore";
+import { readVoiceNoteTranscriptState } from "./voiceNoteStore";
 import { SQL_MEETING_METADATA_QUERY } from "../meetingChat/corpus";
 import { legacyTranscriptWinner, readTranscriptCommit, voiceNoteTranscriptLocator } from "./voiceNoteCommits";
 import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio,
@@ -197,6 +198,32 @@ describe("voice-note identity and transcript authority", () => {
     expect(row.id).toBe("old-random-id");
     expect(sqlite.query("SELECT id FROM connector_meeting WHERE source_id = 'rec'").all()).toHaveLength(1);
   });
+  test("fresh rows skip the legacy outcome backfill and re-resolve", async () => {
+    const { tcw } = space();
+    await ensureSchema(tcw);
+    await ensureVoiceNoteIdentity(tcw);
+    const baseDb = tcw.sql.db.bind(tcw.sql);
+    let backfills = 0;
+    let resolves = 0;
+    tcw.sql.db = ((name: string) => {
+      const db = baseDb(name);
+      return {
+        ...db,
+        query: async (sql: string, params?: unknown[], options?: unknown) => {
+          if (sql.includes("SELECT id, source_id, metadata, created_at FROM connector_meeting WHERE source = 'exo-voice-note'"))
+            resolves++;
+          return db.query(sql, params as never, options as never);
+        },
+        execute: async (sql: string, params?: unknown[], options?: unknown) => {
+          if (sql.includes("$.transcription_outcome")) backfills++;
+          return db.execute(sql, params as never, options as never);
+        },
+      };
+    }) as typeof tcw.sql.db;
+    await createVoiceNoteRow(tcw, { id: "fresh", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Fresh");
+    expect({ backfills, resolves }).toEqual({ backfills: 0, resolves: 1 });
+  });
   test("new rows start pending and an off capture is recorded as skipped", async () => {
     const { tcw, sqlite } = space();
     await ensureSchema(tcw);
@@ -210,6 +237,20 @@ describe("voice-note identity and transcript authority", () => {
     expect(sqlite.query("SELECT COUNT(*) AS count FROM connector_meeting WHERE source='exo-voice-note'").get())
       .toEqual({ count: 2 });
   });
+
+  test("legacy text without an outcome stays transcribed when an off-mode save reuses the row", async () => {
+    const { tcw, sqlite } = space();
+    await ensureSchema(tcw);
+    insert(sqlite, "legacy-text", "legacy-text", { transcript_text: "Earlier words" });
+    await ensureVoiceNoteIdentity(tcw);
+    const saved = await createVoiceNoteRow(tcw, { id: "legacy-text", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+      options: { transcriber: "off", identifySpeakers: false } }, "Existing note");
+    expect(saved.metadata.transcription_outcome).toBeUndefined();
+    expect(await readVoiceNoteTranscriptState(tcw, "legacy-text")).toEqual({
+      status: "transcribed", preview: "Earlier words",
+    });
+  });
   test("failed transcription is stored with its error code", async () => {
     const { tcw } = space();
     await ensureSchema(tcw);
@@ -220,6 +261,41 @@ describe("voice-note identity and transcript authority", () => {
       transcription_outcome: "failed",
       transcription_error_code: "recording_too_large",
     });
+  });
+
+  test("a failed attempt after an authoritative rev-2 commit cannot write a failed mirror", async () => {
+    const { tcw, sqlite } = space();
+    await ensureSchema(tcw);
+    await createVoiceNoteRow(tcw, { id: "late-failure", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Late failure");
+    await commitVoiceNoteTranscript(tcw, "late-failure", { rev: 2, outcome: "transcribed",
+      text: "Newer committed words", sentences: sentence("Newer committed words") });
+    sqlite.prepare(`UPDATE connector_meeting SET metadata = json_set(metadata,
+      '$.transcription_outcome', 'pending', '$.transcription_error_code', NULL) WHERE source_id = ?`).run("late-failure");
+    await patchVoiceNoteTranscriptionFailure(tcw, "late-failure", "service_busy");
+    expect((await resolveVoiceNoteRow(tcw, "late-failure"))?.metadata.transcription_outcome).toBe("pending");
+  });
+
+  test("a successful commit removes an earlier failure code from its mirror", async () => {
+    const { tcw } = space();
+    await ensureSchema(tcw);
+    await createVoiceNoteRow(tcw, { id: "recover", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Recovered");
+    await patchVoiceNoteTranscriptionFailure(tcw, "recover", "service_busy");
+    await commitVoiceNoteTranscript(tcw, "recover", { rev: 1, outcome: "transcribed",
+      text: "Recovered words", sentences: sentence("Recovered words") });
+    expect((await resolveVoiceNoteRow(tcw, "recover"))?.metadata).not.toHaveProperty("transcription_error_code");
+  });
+
+  test("deferral codes do not persist failed outcomes", async () => {
+    for (const code of ["audio_upload_pending", "transcription_off", "upload_outcome_unknown", "account_changed"]) {
+      const { tcw } = space();
+      await ensureSchema(tcw);
+      await createVoiceNoteRow(tcw, { id: code, startedAt: 0, durationMs: 1000,
+        mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Deferred");
+      await patchVoiceNoteTranscriptionFailure(tcw, code, code);
+      expect((await resolveVoiceNoteRow(tcw, code))?.metadata.transcription_outcome, code).toBe("pending");
+    }
   });
 
   test("authorization is sign-in-again, while persistent constraints block after three rounds", async () => {
@@ -403,7 +479,8 @@ test("a full space leaves the note local with a specific identity state", async 
     const fixture = ["a", "b", "c"].map((id) => ({ id, metadata: row(sqlite, id).metadata }));
     const ts = legacyTranscriptWinner(fixture)?.id;
     const sqlWinner = sqlite.query(`SELECT g.id FROM connector_meeting g WHERE g.source_id = 'rec'
-      AND g.source IN ('exo-voice-note', 'exo-voice-note-dup') AND json_extract(g.metadata, '$.transcription_outcome') IS NOT NULL
+      AND g.source IN ('exo-voice-note', 'exo-voice-note-dup')
+      AND json_extract(g.metadata, '$.transcription_outcome') IN ('transcribed', 'no_speech')
       ORDER BY COALESCE(json_extract(g.metadata, '$.transcribed_at'), '') DESC, g.id ASC LIMIT 1`).get() as { id: string };
     expect(ts).toBe(sqlWinner.id);
     expect((sqlite.query(SQL_MEETING_METADATA_QUERY).all() as { source_id: string }[]).some((r) => r.source_id === "rec")).toBe(true);
@@ -722,8 +799,19 @@ test("the mounted pending saver runs the real pipeline on sign-in and forced-swa
   const previousAct = Reflect.get(globalThis, "IS_REACT_ACT_ENVIRONMENT");
   const fake = createFakeVoiceNotes();
   const { tcw } = space();
+  let failedEventId: string | null = null;
+  const nativeListPending = fake.plugin.listPending.bind(fake.plugin);
+  fake.plugin.listPending = async () => {
+    const listed = await nativeListPending();
+    return failedEventId ? { ...listed, recordings: listed.recordings.map((recording) => recording.id === failedEventId
+      ? { ...recording, stt: { state: "failed" as const } } : recording) } : listed;
+  };
   __setVoiceNotesForTests(fake.plugin, { available: true });
-  __setOnDeviceSttForTests({ addListener: async () => ({ remove: async () => {} }) } as OnDeviceSttPlugin);
+  const sttListeners = new Map<string, (event: { id: string }) => void>();
+  __setOnDeviceSttForTests({ addListener: async (event: string, listener: (event: { id: string }) => void) => {
+    sttListeners.set(event, listener);
+    return { remove: async () => { sttListeners.delete(event); } };
+  } } as unknown as OnDeviceSttPlugin);
   const documentStub = { nodeType: 9, activeElement: null, addEventListener() {}, removeEventListener() {},
     createElement: () => hostNode(), createTextNode: () => hostNode() };
   function hostNode(): unknown {
@@ -755,6 +843,16 @@ test("the mounted pending saver runs the real pipeline on sign-in and forced-swa
     await act(async () => landed.promise);
     expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: initial.id }]);
 
+    fake.plugin.getTranscript = async () => ({ transcript: null });
+    failedEventId = initial.id;
+    landed = Promise.withResolvers<void>();
+    sttListeners.get("failed")?.({ id: initial.id });
+    await landed.promise;
+    expect((await resolveVoiceNoteRow(tcw, initial.id))?.metadata.transcription_outcome).toBe("failed");
+    failedEventId = null;
+    expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: initial.id },
+      { source: VOICE_NOTE_SOURCE, sourceId: initial.id }]);
+
     fake.plugin.getTranscript = async () => ({ transcript: {
       version: 1, noteId: initial.id, transcriber: "on-device", rev: 1,
       engine: "apple-speech", model: null, language: "en", outcome: "transcribed",
@@ -764,6 +862,7 @@ test("the mounted pending saver runs the real pipeline on sign-in and forced-swa
     await syncOnDeviceTranscript(tcw, { id: initial.id, ledger: { audio: { state: "saved" } } });
     expect(await readTranscriptCommit(tcw, initial.id)).toMatchObject({ rev: 1 });
     expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: initial.id },
+      { source: VOICE_NOTE_SOURCE, sourceId: initial.id },
       { source: VOICE_NOTE_SOURCE, sourceId: initial.id }]);
     fake.plugin.getTranscript = async () => ({ transcript: null });
 
@@ -774,6 +873,7 @@ test("the mounted pending saver runs the real pipeline on sign-in and forced-swa
     schedulePendingVoiceNotesRecovery();
     await act(async () => landed.promise);
     expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: initial.id },
+      { source: VOICE_NOTE_SOURCE, sourceId: initial.id },
       { source: VOICE_NOTE_SOURCE, sourceId: initial.id },
       { source: VOICE_NOTE_SOURCE, sourceId: swapped.id }]);
     expect((await fake.plugin.listPending()).recordings.filter((note) => note.ledger?.audio.state === "saved"))
@@ -789,7 +889,7 @@ test("the mounted pending saver runs the real pipeline on sign-in and forced-swa
     // The saver's unmount paused the account's work: the late sync is abandoned (the next launch's catch-up saves it) and silent.
     await syncOnDeviceTranscript(tcw, { id: initial.id, ledger: { audio: { state: "saved" } } });
     expect(await readTranscriptCommit(tcw, initial.id)).toMatchObject({ rev: 1 });
-    expect(events).toHaveLength(3);
+    expect(events).toHaveLength(4);
   } finally {
     if (mounted) await act(async () => root.unmount());
     off();
