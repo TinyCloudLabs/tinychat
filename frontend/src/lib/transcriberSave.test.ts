@@ -1061,3 +1061,57 @@ test("compare-and-set repairs a stale v2 body after v3 commits first", async () 
     expect(changes).toHaveLength(1);
   } finally { release.resolve(); unsubscribe(); f.sql.close(); }
 });
+
+test("C4: a lost compare-and-set leaves a mismatched upstream version for the next pass", async () => {
+  const f = await savedFixture();
+  const key = transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, meeting.id);
+  const put = f.tcw.kv.put.bind(f.tcw.kv);
+  const blocked = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const v2 = await normalizeTranscriberTranscript(meeting, publication2);
+  const publication3 = { ...transcript, version: 3 };
+  const publication4 = { ...publication2, version: 4, segments: [{ ...publication2.segments![0], text: "fixture-v4" }] };
+  const puts: string[] = [];
+  f.tcw.kv.put = (async (...args: Parameters<typeof put>) => {
+    if (args[0] === key && args[1] === v2.body) { blocked.resolve(); await release.promise; }
+    puts.push(args[0]);
+    return put(...args);
+  }) as typeof put;
+  const changes: string[] = [];
+  const unsubscribe = captureEvents.on("library-changed", () => changes.push("changed"));
+  let repairFetches = 0;
+  let writesBeforeRepair = 0;
+  let eventsBeforeRepair = 0;
+  let rowBeforeRepair = "";
+  let archivesBeforeRepair: Array<[string, string]> = [];
+  try {
+    const older = refreshTranscriberMeeting(f.tcw, meeting, publication2, async () => {
+      repairFetches++;
+      expect(savedVersion(f)).toBe(3); // vNow: the v2 compare-and-set missed.
+      expect(f.bodies.get(key)).toBe(v2.body);
+      writesBeforeRepair = puts.length;
+      eventsBeforeRepair = changes.length;
+      rowBeforeRepair = JSON.stringify(readSavedRow(f));
+      archivesBeforeRepair = [...f.bodies].filter(([key]) => key.includes("/archive/"));
+      return publication4; // Upstream has advanced beyond the committed row.
+    });
+    await blocked.promise;
+    expect((await refreshTranscriberMeeting(f.tcw, meeting, publication3)).ok).toBe(true);
+    release.resolve();
+    expect((await older).ok).toBe(true);
+    expect(repairFetches).toBe(1);
+    expect(f.bodies.get(key)).toBe(v2.body);
+    expect(puts.slice(writesBeforeRepair)).toEqual([]); // No repair body or archive put.
+    expect([...f.bodies].filter(([key]) => key.includes("/archive/"))).toEqual(archivesBeforeRepair);
+    expect(changes.slice(eventsBeforeRepair)).toEqual([]);
+    expect(JSON.stringify(readSavedRow(f))).toBe(rowBeforeRepair);
+    expect(savedVersion(f)).toBe(3);
+
+    await syncTranscriberLibrary({ tcw: f.tcw, client: refreshClient(
+      [{ ...meeting, transcript: { version: 4 } }], publication4,
+    ).client });
+    expect(savedVersion(f)).toBe(4);
+    expect(f.bodies.get(key)).toBe((await normalizeTranscriberTranscript(meeting, publication4)).body);
+    expect(changes).toHaveLength(eventsBeforeRepair + 1);
+  } finally { release.resolve(); unsubscribe(); f.sql.close(); }
+});
