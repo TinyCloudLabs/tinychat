@@ -171,7 +171,7 @@ export interface HostedUpload {
   sourceId?: string;
 }
 
-type NoteJob = { address: string; sourceId: string; uploadId: string; bootId: string; state: "receiving" | "submitting" | "submitted" | "uncertain" | "deleted"; handle?: string; expiresAt?: number };
+type NoteJob = { address: string; sourceId: string; uploadId: string; bootId: string; state: "receiving" | "submitting" | "submitted" | "uncertain" | "deleted"; handle?: string; expiresAt?: number; byteSize?: number; contentType?: string };
 export type NoteJobView = { status: "receiving" | "submitting" | "submitted" | "uncertain" | "deleted"; upload_id: string; id?: string };
 
 /** How a background submit ended. Codes are the router's public error codes. */
@@ -366,10 +366,26 @@ export class HostedUploadStore {
             job = state;
           } catch { this.quarantinedKeys.add(key); await this.quarantine(legacy); await this.quarantine(name); continue; }
         }
-        // A previous boot's receiving spool cannot prove which parts were durable. It is safe
-        // to restart the upload, but never to infer that a paid transcript POST was absent.
-        if (job.bootId !== this.bootId && (job.state === "receiving" || job.state === "submitting"))
-          job = { ...job, state: "uncertain" };
+        // Receiving has not crossed the paid boundary. Recreate an empty spool under the same
+        // upload ID: the client resends every part. Older records lack size/type and fail closed.
+        if (job.bootId !== this.bootId && job.state === "receiving") {
+          if (job.byteSize && job.contentType) {
+            const now = Date.now();
+            const path = join(this.spoolDir, `${job.uploadId}.part`);
+            await rm(path, { force: true });
+            const spool = await open(path, "wx", 0o600);
+            await spool.close();
+            const dayKey = `${utcDay(now)}|${job.address}`;
+            this.uploads.set(job.uploadId, { id: job.uploadId, owner: job.address, byteSize: job.byteSize,
+              contentType: job.contentType, partCount: Math.ceil(job.byteSize / HOSTED_PART_SIZE),
+              received: [], path, expiresAt: now + UPLOAD_TTL_MS, dayKey, state: "receiving",
+              abort: null, submitDeadline: 0, sourceId: job.sourceId });
+            this.charged.set(dayKey, (this.charged.get(dayKey) ?? 0) + job.byteSize);
+          } else job = { ...job, state: "uncertain" };
+        }
+        // A transcript POST may have succeeded even if its response was lost. Without a stored
+        // handle/provider identity there is no safe retry, so client lookup sees uncertainty.
+        if (job.bootId !== this.bootId && job.state === "submitting") job = { ...job, state: "uncertain" };
         job = { ...job, bootId: this.bootId };
         await this.saveNoteJob(key, job);
         if (names.includes(legacy)) await rm(join(this.spoolDir, legacy), { force: true });
@@ -389,7 +405,8 @@ export class HostedUploadStore {
         await this.quarantine(name);
       }
     }
-    for (const name of names) if (SPOOL_FILE_RE.test(name)) await rm(join(this.spoolDir, name), { force: true });
+    for (const name of names) if (SPOOL_FILE_RE.test(name) && !this.uploads.has(name.slice(0, -5)))
+      await rm(join(this.spoolDir, name), { force: true });
   }
 
   private validNoteJob(key: string, value: unknown): value is NoteJob {
@@ -400,7 +417,9 @@ export class HostedUploadStore {
       && this.noteKey(job.address, job.sourceId) === key
       && typeof job.uploadId === "string" && UPLOAD_ID_RE.test(job.uploadId)
       && ["receiving", "submitting", "submitted", "uncertain", "deleted"].includes(job.state ?? "")
-      && (job.handle === undefined || typeof job.handle === "string");
+      && (job.handle === undefined || typeof job.handle === "string")
+      && (job.byteSize === undefined || (Number.isSafeInteger(job.byteSize) && job.byteSize > 0 && job.byteSize <= MAX_HOSTED_BYTES))
+      && (job.contentType === undefined || HOSTED_CONTENT_TYPES.includes(job.contentType));
   }
 
   private async quarantine(name: string): Promise<void> {
@@ -486,7 +505,7 @@ export class HostedUploadStore {
       await handle.close();
       if (sourceId) {
         const key = this.noteKey(address, sourceId);
-        const job: NoteJob = { address, sourceId, uploadId: id, state: "receiving", bootId: this.bootId };
+        const job: NoteJob = { address, sourceId, uploadId: id, state: "receiving", bootId: this.bootId, byteSize, contentType };
         await this.saveNoteJob(key, job);
       }
     } catch (error) {
