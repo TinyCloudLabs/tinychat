@@ -42,6 +42,7 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
         });
 
     @Override public void onCreate(Bundle savedInstanceState) {
+        if (BuildConfig.DEBUG) registerPlugin(ExoDevLogPlugin.class);
         registerPlugin(VoiceNotesPlugin.class);
         registerPlugin(ThemeBarsPlugin.class);
         registerPlugin(OnDeviceSttPlugin.class);

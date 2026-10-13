@@ -239,6 +239,7 @@ pub async fn ptx_upload_audio(
     let url = upload_url(&origin, &url)?;
     let root = recorder::files::root(&app).map_err(|_| "audio_read_failed")?;
     let file = sealed_audio(&root, &id)?;
+    tracing::info!(target: "exo_dev::uploader", kind = "pipeline", source_id = %id, operation = "uploader", phase = "start", body_bytes = content_length);
     let length = file.metadata().map_err(|_| "audio_read_failed")?.len();
     if length == 0 || length != content_length {
         return Err("audio_size_mismatch".into());
@@ -257,6 +258,7 @@ pub async fn ptx_upload_audio(
     }
     let last_event = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(1)));
     let event_id = upload_id.clone();
+    let log_id = id.clone();
     let result = send_file(
         file,
         url,
@@ -269,6 +271,8 @@ pub async fn ptx_upload_audio(
             if let Ok(mut last) = last_event.lock() {
                 if last.elapsed() >= Duration::from_millis(250) {
                     *last = Instant::now();
+                    tracing::info!(target: "exo_dev::uploader", kind = "pipeline", source_id = %log_id,
+                        operation = "uploader", phase = "progress", body_bytes = loaded, total_bytes = length);
                     let _ = app.emit(
                         "audioUploadProgress",
                         Progress {
@@ -286,6 +290,8 @@ pub async fn ptx_upload_audio(
         .lock()
         .map_err(|_| "upload_registry_failed")?
         .remove(&upload_id);
+    tracing::info!(target: "exo_dev::uploader", kind = "pipeline", source_id = %id, operation = "uploader",
+        phase = if result.is_ok() { "done" } else { "failed" });
     result
 }
 

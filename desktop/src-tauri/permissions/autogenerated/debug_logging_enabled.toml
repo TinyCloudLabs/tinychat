@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-debug-logging-enabled"
+description = "Enables the debug_logging_enabled command without any pre-configured scope."
+commands.allow = ["debug_logging_enabled"]
+
+[[permission]]
+identifier = "deny-debug-logging-enabled"
+description = "Denies the debug_logging_enabled command without any pre-configured scope."
+commands.deny = ["debug_logging_enabled"]

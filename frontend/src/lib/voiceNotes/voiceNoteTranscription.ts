@@ -1,4 +1,4 @@
-import { logPipelineError } from "@/lib/debugLog";
+import { logPipeline, logPipelineError } from "@/lib/debugLog";
 import { readableError } from "@/lib/readableError";
 // Private transcription for Exo voice notes. The backend creates and tracks
 // jobs; this device uploads a local file directly to PTX when it has one.
@@ -902,7 +902,9 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
               onProgress: (loaded, total) => report({ kind: "uploading", progress: total > 0 ? loaded / total : 0 }) } : {}), correlationId }),
           correlationId,
         );
+        logPipeline("transcription_audio_upload", sourceId, "done", { engine: "private-cloud", bodyBytes: audio.byteSize });
       } catch (err) {
+        logPipelineError("transcription_audio_upload", err, sourceId);
         if (!(err instanceof PrivateCloudError)) throw err;
         guard();
         // Only the job's status says whether the bytes landed.
@@ -1098,7 +1100,15 @@ export async function transcribeVoiceNote(args: {
   now?: () => Date;
   account?: VoiceNoteTranscriptAccount;
 }): Promise<"transcribed" | "no_speech"> {
-  const { tcw, cloud, sourceId, report } = args;
+  const { tcw, cloud, sourceId } = args;
+  logPipeline("transcription", sourceId, "start", { engine: "private-cloud" });
+  const report = (status: VoiceNoteTranscriptionStatus) => {
+    logPipeline(status.kind === "uploading" ? "transcription_audio_upload" : "transcription",
+      sourceId, status.kind === "uploading" && status.progress != null ? "progress" : status.kind,
+      { engine: "private-cloud", ...(status.kind === "uploading" && status.progress != null
+        ? { progressPct: Math.round(status.progress * 100) } : {}) });
+    args.report(status);
+  };
   const account = args.account ?? { generation: currentAccountGeneration() };
   const transcribedAt = () => (args.now?.() ?? new Date()).toISOString();
   const stillCurrent = () => args.allowed?.("account") ?? true;
@@ -1235,6 +1245,7 @@ export async function transcribeVoiceNote(args: {
     // Silence is an outcome, not a failure: recorded so the note is not offered again.
     await save(noSpeechTranscript(transcribedAt(), rev));
     await finish(err instanceof PrivateCloudError ? err.transcriptionId : null);
+    logPipeline("transcription", sourceId, "done", { engine: "private-cloud" });
     return "no_speech";
   }
   const prepared = prepareVoiceNoteTranscript(transcript, transcribedAt(), rev);
@@ -1246,6 +1257,7 @@ export async function transcribeVoiceNote(args: {
     throw err;
   }
   await finish(transcriptionId);
+  logPipeline("transcription", sourceId, "done", { engine: "private-cloud" });
   return prepared.sentences.length > 0 ? "transcribed" : "no_speech";
 }
 
@@ -1534,8 +1546,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           jobs.delete(sourceId);
           settleChoice(sourceId);
         } else {
-          if (voiceNoteErrorCode(err) === "transcription_error")
-            logPipelineError("[VoiceNotes] Private transcription failed with an unexpected error", err);
+          logPipelineError("transcription", err, sourceId);
           const failure = voiceNoteTranscriptionFailure(err);
           jobs.set(sourceId, { kind: "failed", ...failure });
           // A failure Retry can fix keeps the choice, so a relaunch does not turn it back into Local.

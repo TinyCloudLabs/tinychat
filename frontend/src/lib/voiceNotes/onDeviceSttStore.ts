@@ -1,4 +1,5 @@
 import { readableError } from "@/lib/readableError";
+import { logPipeline } from "@/lib/debugLog";
 // A subscribable snapshot of `OnDeviceStt.status()` (useSyncExternalStore-friendly), the same
 // pattern as `pendingStore` in recorderSaves.ts. Used by the recorder's transcription route
 // control and by the Settings "Voice notes" card, so both show the same model state live.
@@ -36,6 +37,14 @@ function notifyListeners(): void {
 }
 
 function publish(status: OnDeviceSttStatus): void {
+  for (const job of status.queue) {
+    const before = snapshot.queue.find((item) => item.id === job.id);
+    if (!before || before.state !== job.state || before.percent !== job.percent) {
+      logPipeline("transcription", job.id,
+        job.state === "running" && job.percent != null ? "progress" : job.state,
+        { engine: status.engine });
+    }
+  }
   snapshot = status;
   notifyListeners();
   if (isOnDeviceReady(status)) modelWanted = false;

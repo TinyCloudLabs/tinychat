@@ -8,6 +8,8 @@
     "local-stt:allow-start-server",
     "local-stt:allow-stop-server",
     "allow-append-audio-chunk",
+    "allow-append-dev-log",
+    "allow-debug-logging-enabled",
     "allow-ptx-audio-metadata",
     "allow-ptx-upload-audio",
     "allow-ptx-cancel-audio-upload",

@@ -1,4 +1,5 @@
 import type { NativeSession, OpenKeyNative } from "@openkey/sdk-capacitor";
+import { logSession } from "./debugLog";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { SessionStore } from "@tinyboilerplate/client";
 import { voiceNoteSaveBusy, whenVoiceNoteSavesIdle } from "./voiceNotes/recorderSaves";
@@ -157,6 +158,7 @@ export class NativeRenewal {
         try { nonce = await this.deps.requestNonce(this.session.delegation.address!); }
         catch { /* A backend outage must not block OpenKey renewal. */ }
         if (!active()) return;
+        logSession("renew", "start");
         this.pendingInstall = await this.deps.openkey.renew(nonce ? { siweNonce: nonce } : {});
         if (!active()) return;
       }
@@ -186,11 +188,13 @@ export class NativeRenewal {
       this.retryNotBefore = 0;
       if (!active()) return;
       const nextAt = this.nextRenewAt();
+      logSession("renew", "done");
       console.info("[OpenKey native] renewal", { code: "OK", expiresAt: next.delegation.expiresAt, nextSchedule: new Date(nextAt).toISOString() });
       this.schedule(nextAt);
     } catch (error) {
       if (!active()) return;
       if (terminalRenewalError(error)) {
+        logSession("renew", "failed", error);
         console.warn("[OpenKey native] renewal", { code: nativeCode(error), expiresAt: this.session.delegation.expiresAt, nextSchedule: null });
         this.stop();
         this.deps.onTerminal(NATIVE_SESSION_ENDED_MESSAGE);

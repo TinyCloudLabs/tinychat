@@ -275,6 +275,7 @@ pub async fn recorder_start(
     if !files::valid_recording_id(&id) {
         return Err("invalid_recording_id".into());
     }
+    tracing::info!(target: "exo_dev::recorder", kind = "pipeline", source_id = %id, operation = "recorder", phase = "start");
     if journal::load(&app)?.is_some() {
         return Err("recovery_pending".into());
     }
@@ -353,6 +354,9 @@ pub async fn recorder_start(
     };
     reset_meter(&app);
     emit_status(&app);
+    if let Some(id) = status.id.as_deref() {
+        tracing::info!(target: "exo_dev::recorder", kind = "pipeline", source_id = %id, operation = "recorder", phase = "done");
+    }
     Ok(status)
 }
 
@@ -660,6 +664,9 @@ pub async fn recorder_stop(app: tauri::AppHandle) -> Result<CaptureStatus, Strin
     super::ensure(&app);
     if app.state::<Engine>().0.lock().id.is_none() {
         return Err("no_recording".into());
+    }
+    if let Some(id) = app.state::<Engine>().0.lock().id.as_deref() {
+        tracing::info!(target: "exo_dev::recorder", kind = "pipeline", source_id = %id, operation = "recorder", phase = "stop");
     }
     let active = app.state::<Engine>().0.lock().segment_id.is_some();
     if active {
