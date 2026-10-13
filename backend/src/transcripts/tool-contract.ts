@@ -1,8 +1,8 @@
 /**
- * Meeting sources the agent may filter on. Keep in step with the frontend's
- * SUPPORTED_MEETING_SOURCES and eliza-service's source parsers.
+ * Meeting sources the agent may filter on. The retrieval source-list agreement test keeps this
+ * registry aligned with the frontend explorer and the standalone retrieval pack.
  */
-export const MEETING_SOURCES = ["fireflies", "google-meet", "tinycloud-transcriber", "exo-local"] as const;
+export const MEETING_SOURCES = ["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-voice-note", "exo-upload"] as const;
 
 const SOURCE_SCHEMA = {
   type: "string",

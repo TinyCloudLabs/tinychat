@@ -15,11 +15,19 @@ function fixture(options = {}) {
   expect(typeof lib.createRetrieval).toBe('function');
   const db = new Database(':memory:'); open.push(db);
   db.exec('CREATE TABLE connector_meeting(id TEXT PRIMARY KEY, source TEXT, source_id TEXT, title TEXT, started_at TEXT, organizer_email TEXT, participants TEXT, summary_overview TEXT, summary_action_items TEXT, metadata TEXT, updated_at TEXT)');
+  db.exec('CREATE TABLE voice_note_transcript(source_id TEXT PRIMARY KEY, body_key TEXT NOT NULL)');
   const bodies = new Map(); const calls = [];
   const state = { owner, authenticated: true, fail: null, kvFail: null, transferredBytes: 0, cliVersion: "0.10.0" };
   const add = (id, { title = id, date = '2026-09-18T12:00:00Z', source = 'fireflies', sourceId = id, metadata = {}, body = [{ text: 'Hello', speaker_name: 'A', start_time: 1 }] } = {}) => {
     db.query('INSERT INTO connector_meeting VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(id, source, sourceId, title, date, 'a@example.test', '[{"name":"A"}]', 'Stored summary', null, JSON.stringify(metadata), '2026-09-18T13:00:00Z');
-    bodies.set(sourceId, JSON.stringify(body));
+    const rawBody = JSON.stringify(body);
+    bodies.set(sourceId, rawBody);
+    bodies.set(`xyz.tinycloud.tinychat/connectors/${source}/transcript/${sourceId}`, rawBody);
+    if (source === 'exo-voice-note') {
+      const key = `xyz.tinycloud.tinychat/connectors/exo-voice-note/transcript-rev/${sourceId}/${'a'.repeat(32)}`;
+      bodies.set(key, rawBody);
+      db.query('INSERT INTO voice_note_transcript VALUES(?,?)').run(sourceId, key);
+    }
   };
   const runTc = async args => {
     calls.push(args);
@@ -28,13 +36,15 @@ function fixture(options = {}) {
     if (state.fail) throw state.fail;
     if (args.includes('query')) {
       const stmt = db.query(args[args.indexOf('query') + 1]);
-      const rows = stmt.values(...JSON.parse(args[args.indexOf('--params') + 1]));
+      const params = args.includes('--params') ? JSON.parse(args[args.indexOf('--params') + 1]) : [];
+      const rows = stmt.values(...params);
       return JSON.stringify({ columns: stmt.columnNames, rows, rowCount: rows.length });
     }
     if (args.includes('get')) {
       if (state.kvFail) throw state.kvFail;
       const key = args[args.indexOf('get') + 1];
-      const raw = bodies.get(key.split('/').at(-1));
+      const sourceId = key.includes('/transcript-rev/') ? key.split('/').at(-2) : key.split('/').at(-1);
+      const raw = bodies.get(sourceId);
       if (raw === undefined) throw Object.assign(new Error('PRIVATE'), { code: 4, stderr: '{"error":{"code":"NOT_FOUND","message":"PRIVATE"}}' });
       await writeFile(args[args.indexOf('--output') + 1], raw);
       state.transferredBytes += Buffer.byteLength(raw);
@@ -240,7 +250,7 @@ describe('bounded latest intent', () => {
     expect(r.coverage).toMatchObject({ corpusComplete: false, moreCatalogRecords: true, completeWithinScope: false });
     expect(r.continuation).toBeNull();
     const queries = f.calls.filter(args => args.includes('query')); expect(queries).toHaveLength(1);
-    expect(JSON.parse(queries[0][queries[0].indexOf('--params') + 1]).at(-1)).toBe(2);
+    expect(JSON.parse(queries[0][queries[0].indexOf('--params') + 1]).at(-1)).toBe(51);
     const browse = await invoke(f, 'find', { limit: 5, source: 'fireflies' }); expect(browse.records).toHaveLength(5); expect(browse.continuation).toBeTruthy();
   });
   test('ties use deterministic IDs and filters constrain latest intent', async () => {
@@ -330,7 +340,7 @@ describe('operation-local verified acquisition', () => {
 test('diagnostics probes supported-source body access independently of unsupported catalog rows', async () => {
   const f = fixture(); f.add('supported', { date: '2026-09-18T00:00:00Z' }); f.add('unsupported', { source: 'future-source', date: '2026-09-20T00:00:00Z' });
   const result = await invoke(f, 'diagnostics'); expect(result.ok).toBe(true); expect(result.access.bodyRead).toBe(true);
-  expect(result.coverage.supportedSources).toEqual(['fireflies', 'google-meet', 'tinycloud-transcriber']);
+  expect(result.coverage.supportedSources).toEqual(['fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload']);
   expect(f.calls.filter(args => args.includes('get'))[0].find(arg => arg.endsWith('/supported'))).toBeTruthy();
 });
 
@@ -358,4 +368,54 @@ test('local historical continuation is bound to saved acquisition time after del
   await new Promise(resolve => setTimeout(resolve, 15));
   const next = await invoke(f, 'read', { cursor: first.continuation }); expect(next.ok).toBe(true); expect(next.acquisition.acquiredAt).toBe(first.acquisition.acquiredAt); expect(f.calls.length).toBe(calls);
   const fresh = await lib.createRetrieval({ ...context, ...await acquisition(), runTc: f.runTc }).invoke('read', { ref: first.record.ref }); expect(fresh.error.code).toBe('AUTH_REQUIRED');
+});
+test('mixed-source catalog pages report consistent coverage for find, latest and search', async () => {
+  const f = fixture();
+  f.add('fireflies', { source: 'fireflies', date: '2026-09-21T00:00:00Z' });
+  f.add('local', { source: 'exo-local', date: '2026-09-20T00:00:00Z', sourceId: 'local:session' });
+  f.add('voice', { source: 'exo-voice-note', date: '2026-09-19T00:00:00Z', sourceId: 'voice-recording' });
+  f.add('upload', { source: 'exo-upload', date: '2026-09-18T00:00:00Z' });
+  f.add('unknown', { source: 'future-source', date: '2026-09-17T00:00:00Z' });
+  const expectedSupported = ['fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload'];
+  for (const [command, input] of [['find', { limit: 10 }], ['latest', {}], ['search', { term: 'Hello', scanLimit: 10 }]]) {
+    const result = await invoke(f, command, input);
+    expect(result.ok, `${command} should succeed on mixed-source catalog`).toBe(true);
+    expect(result.coverage.supportedSources).toEqual(expectedSupported);
+    expect(result.coverage.unsupportedSources).toEqual(['future-source']);
+    expect(result.coverage.omissions).toEqual([{ id: 'unknown', source: 'future-source', started_at: '2026-09-17T00:00:00Z' }]);
+    expect(result.coverage.catalogRecordsExamined).toBe(5);
+  }
+});
+test('voice-note bodies prefer the current committed body_key and local speakers are channel labels', async () => {
+  const f = fixture();
+  f.add('voice', { source: 'exo-voice-note', sourceId: 'recording-voice' });
+  f.add('local', { source: 'exo-local', sourceId: 'local:session', body: [{ text: 'Local transcript', speaker_name: 'You' }] });
+  const voice = await invoke(f, 'read', { ref: await ref(f, 'voice') });
+  expect(voice.ok).toBe(true);
+  expect(voice.provenance.sourceLocation.kvKey).toContain('/transcript-rev/recording-voice/');
+  const local = await invoke(f, 'read', { ref: await ref(f, 'local') });
+  expect(local.ok).toBe(true);
+  expect(local.spans[0]).toMatchObject({ speaker: 'You', speakerKind: 'channel' });
+
+  f.db.query('DELETE FROM voice_note_transcript').run();
+  const legacyVoice = await invoke(f, 'read', { ref: await ref(f, 'voice') });
+  expect(legacyVoice.ok).toBe(true);
+  expect(legacyVoice.provenance.sourceLocation.kvKey).toBe('xyz.tinycloud.tinychat/connectors/exo-voice-note/transcript/recording-voice');
+});
+
+test('pack, explorer and backend meeting source registries agree', async () => {
+  const expected = ['fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload'];
+  const [pack, explorer, backend] = await Promise.all([
+    readFile(join(process.cwd(), 'agent-skills/tinychat-retrieval/lib/retrieval.mjs'), 'utf8'),
+    readFile(join(process.cwd(), 'frontend/src/lib/connectors/meetingExplorer.ts'), 'utf8'),
+    readFile(join(process.cwd(), 'backend/src/transcripts/tool-contract.ts'), 'utf8'),
+  ]);
+  const packList = pack.match(/const SOURCES = \[([^\]]+)\]/)?.[1].match(/'[^']+'/g).map(value => value.slice(1, -1));
+  const backendList = backend.match(/MEETING_SOURCES = \[([^\]]+)\]/)?.[1].match(/"[^"]+"/g).map(value => value.slice(1, -1));
+  const explorerBlock = explorer.match(/EXPLORER_MEETING_SOURCES:[\s\S]*?= \[([\s\S]*?)\]/)?.[1];
+  const aliases = { GMEET_MEETING_SOURCE: 'google-meet', TRANSCRIBER_MEETING_SOURCE: 'tinycloud-transcriber', LOCAL_MEETING_SOURCE: 'exo-local', VOICE_NOTE_SOURCE: 'exo-voice-note', UPLOAD_MEETING_SOURCE: 'exo-upload' };
+  const explorerList = explorerBlock.match(/"[^"]+"|[A-Z_]+/g).map(value => value.startsWith('"') ? value.slice(1, -1) : aliases[value]);
+  expect(packList).toEqual(expected);
+  expect(backendList).toEqual(expected);
+  expect(explorerList).toEqual(expected);
 });

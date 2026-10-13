@@ -32,7 +32,7 @@ export function compareSemver(left, right) {
   return Math.sign(a.prerelease.length - b.prerelease.length);
 }
 export const DATABASE = 'xyz.tinycloud.tinychat/connectors';
-const SOURCES = ['fireflies', 'google-meet', 'tinycloud-transcriber'];
+const SOURCES = ['fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload'];
 const COLUMNS = ['id', 'source', 'source_id', 'title', 'started_at', 'organizer_email', 'participants', 'summary_overview', 'summary_action_items', 'metadata', 'updated_at', 'sort_time'];
 // Limit display-only fields at the query boundary; identity and classification fields stay exact.
 const PROJECTION = COLUMNS.map(c => ['title', 'organizer_email', 'participants', 'summary_overview', 'summary_action_items'].includes(c) ? `substr(${c},1,600) AS ${c}` : c === 'sort_time' ? 'julianday(started_at) AS sort_time' : c).join(', ');
@@ -65,9 +65,9 @@ const MESSAGES = {
   CLI_ERROR: 'The CLI read failed. Inspect local diagnostics; raw CLI errors are not returned.',
 };
 export class RetrievalError extends Error {
-  constructor(code) { super(MESSAGES[code] ?? MESSAGES.CLI_ERROR); this.code = code; }
+  constructor(code, detail) { super(detail === undefined ? MESSAGES[code] ?? MESSAGES.CLI_ERROR : `${MESSAGES[code] ?? MESSAGES.CLI_ERROR} Source: ${detail}.`); this.code = code; }
 }
-const fail = code => { throw new RetrievalError(code); };
+const fail = (code, detail) => { throw new RetrievalError(code, detail); };
 const bytes = value => Buffer.byteLength(typeof value === 'string' ? value : JSON.stringify(value), 'utf8');
 const digest = value => createHash('sha256').update(value).digest('hex');
 const integer = (v, low, high) => Number.isSafeInteger(v) && v >= low && v <= high;
@@ -145,8 +145,8 @@ function rows(raw) {
 }
 function metadata(row) {
   if (!safeId(row.id) || !safeSegment(row.source_id)) fail('INVALID_METADATA');
-  if (!SOURCES.includes(row.source)) fail('UNSUPPORTED_SOURCE');
-  for (const c of COLUMNS.slice(3, -1)) if (row[c] !== null && typeof row[c] !== 'string') fail('INVALID_METADATA');
+  if (!safeId(row.source)) fail('INVALID_METADATA');
+  if (!SOURCES.includes(row.source)) fail('UNSUPPORTED_SOURCE', row.source);
   let extra; try { extra = row.metadata === null ? {} : JSON.parse(row.metadata); } catch { fail('INVALID_METADATA'); }
   if (!object(extra)) fail('INVALID_METADATA');
   validateAfter({ id: row.id, time: row.sort_time });
@@ -187,7 +187,7 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
   }
   const base = () => ['--profile', context.profile, '--host', context.host, '--json'];
   const run = (args, options = {}) => runTc([...base(), ...args], { signal, ...options });
-  const coverage = extra => ({ catalog: 'connector_meeting SQL rows with legacy KV bodies', excludedCatalogs: ['user-kv-only', 'backend-only'], corpusComplete: false, scope: 'observed', ...extra });
+  const coverage = extra => ({ catalog: 'connector_meeting SQL rows with legacy KV bodies', excludedCatalogs: ['user-kv-only', 'backend-only'], corpusComplete: false, scope: 'observed', supportedSources: SOURCES, unsupportedSources: [], omissions: [], ...extra });
   const envelope = (command, extra = {}) => ({ envelopeVersion: 1, packVersion: PACK_VERSION, ok: true, command, context, cliVersion, transfers, coverage: coverage({}), continuation: null, ...extra });
   const token = (type, data) => Buffer.from(JSON.stringify({ v: 1, type, context: contextHash, ...data })).toString('base64url');
   function untoken(value, type) {
@@ -239,13 +239,30 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
     createdAcquisition = true;
     await privateDirectory(acquisitionDir);
   }
-  function decoded(data, row) {
+  function decoded(data, row, kvKey) {
     let raw; try { raw = new TextDecoder('utf-8', { fatal: true }).decode(data); } catch { fail('UNSUPPORTED_FORMAT'); }
-    const spans = decodeBody(raw);
-    return { spans, provenance: { contentKind: row.contentKind, sourceLocation: { database: DATABASE, table: 'connector_meeting', id: row.id, kvKey: `${DATABASE}/${row.source}/transcript/${row.source_id}` }, revision: null, metadataUpdatedAt: row.updated_at, bodySha256: digest(data), hashMeaning: 'SHA-256 of this fetched legacy body only', atomicSnapshot: false, captureComplete: null, originalBytes: data.length, originalRecords: spans.length, offsetUnit: 'UTF-16 within original record text' } };
+    const spans = decodeBody(raw).map(span => row.source === 'exo-local' ? { ...span, speakerKind: span.speaker === undefined ? undefined : 'channel' } : span);
+    return { spans, provenance: { contentKind: row.contentKind, sourceLocation: { database: DATABASE, table: 'connector_meeting', id: row.id, kvKey }, revision: null, metadataUpdatedAt: row.updated_at, bodySha256: digest(data), hashMeaning: 'SHA-256 of this fetched legacy body only', atomicSnapshot: false, captureComplete: null, originalBytes: data.length, originalRecords: spans.length, offsetUnit: 'UTF-16 within original record text' } };
+  }
+  async function voiceNoteBodyKey(row) {
+    const schema = parse(await run(['sql', 'query', "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'voice_note_transcript'", '--db', DATABASE, '--space', context.space]));
+    if (!Array.isArray(schema?.columns) || schema.columns.join(',') !== 'name' || !Array.isArray(schema.rows)) fail('INVALID_RESPONSE');
+    if (!schema.rows.length) return `${DATABASE}/${row.source}/transcript/${row.source_id}`;
+    const committed = parse(await run(['sql', 'query', 'SELECT body_key FROM voice_note_transcript WHERE source_id = ? LIMIT 1', '--db', DATABASE, '--space', context.space, '--params', JSON.stringify([row.source_id])]));
+    if (!Array.isArray(committed?.columns) || committed.columns.join(',') !== 'body_key' || !Array.isArray(committed.rows) || committed.rows.some(r => !Array.isArray(r) || r.length !== 1)) fail('INVALID_RESPONSE');
+    const key = committed.rows[0]?.[0];
+    if (key == null) return `${DATABASE}/${row.source}/transcript/${row.source_id}`;
+    const prefix = `${DATABASE}/${row.source}/transcript-rev/${row.source_id}/`;
+    if (typeof key !== 'string' || !key.startsWith(prefix) || !/^[a-f0-9]{32}$/.test(key.slice(prefix.length))) fail('INVALID_METADATA');
+    return key;
+  }
+  async function bodyKey(row) {
+    return row.source === 'exo-voice-note'
+      ? voiceNoteBodyKey(row)
+      : `${DATABASE}/${row.source}/transcript/${row.source_id}`;
   }
   async function body(row, expectedHash, retained = false) {
-    const key = `${DATABASE}/${row.source}/transcript/${row.source_id}`;
+    const key = await bodyKey(row);
     const directory = retained ? acquisitionDir : await mkdtemp(join(tmpdir(), 'tinychat-read-'));
     const file = join(directory, 'body');
     let attempted = false;
@@ -257,7 +274,7 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
       if ((await stat(file)).size > bodyBytes) fail('OUTPUT_LIMIT');
       const data = retained ? await privateFile(file, bodyBytes) : await readFile(file);
       if (expectedHash !== undefined && digest(data) !== expectedHash) fail('REVISION_CHANGED');
-      return decoded(data, row);
+      return decoded(data, row, key);
     } finally {
       if (attempted) transfers.remoteBodyBytes += await lstat(file).then(info => info.isFile() ? info.size : 0).catch(() => 0);
       if (!retained) await rm(directory, { recursive: true, force: true });
@@ -267,7 +284,7 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
     const row = await exact(ref); readAccess.sqlRead = true;
     const data = await body(row, undefined, true); readAccess.bodyRead = true; readAccess.currentAuthorityVerified = true; readAccess.currentBodyRevisionVerified = true;
     const acquiredAt = new Date().toISOString();
-    const manifest = { v: 1, context, contextHash, binding: acquisitionBinding, ref, row, acquiredAt, bodySha256: data.provenance.bodySha256 };
+    const manifest = { v: 1, context, contextHash, binding: acquisitionBinding, ref, row, acquiredAt, kvKey: data.provenance.sourceLocation.kvKey, bodySha256: data.provenance.bodySha256 };
     const raw = JSON.stringify(manifest);
     if (bytes(raw) > 128 * 1024) fail('OUTPUT_LIMIT');
     await writeFile(join(acquisitionDir, 'manifest.json'), raw, { flag: 'wx', mode: 0o600 });
@@ -284,7 +301,11 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
     if (reference(row) !== state.ref) fail('ACQUISITION_INVALID');
     const rawBody = await privateFile(join(acquisitionDir, 'body'), bodyBytes);
     if (digest(rawBody) !== manifest.bodySha256) fail('ACQUISITION_INVALID');
-    return { row, data: decoded(rawBody, row), acquisition: { mode: 'local-historical', binding: acquisitionBinding, acquiredAt: manifest.acquiredAt, manifestSha256: state.acquisition.manifestSha256 } };
+    const legacyKey = `${DATABASE}/${row.source}/transcript/${row.source_id}`;
+    const kvKey = manifest.kvKey ?? legacyKey;
+    const revisionPrefix = `${DATABASE}/exo-voice-note/transcript-rev/${row.source_id}/`;
+    if (kvKey !== legacyKey && (row.source !== 'exo-voice-note' || typeof kvKey !== 'string' || !kvKey.startsWith(revisionPrefix) || !/^[a-f0-9]{32}$/.test(kvKey.slice(revisionPrefix.length)))) fail('ACQUISITION_INVALID');
+    return { row, data: decoded(rawBody, row, kvKey), acquisition: { mode: 'local-historical', binding: acquisitionBinding, acquiredAt: manifest.acquiredAt, manifestSha256: state.acquisition.manifestSha256 } };
   }
   function finish(result) { if (bytes(result) > envelopeBytes) fail('OUTPUT_LIMIT'); return result; }
   async function find(input) {
@@ -292,30 +313,58 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
     let scope, after = null, examined = 0;
     if (input.cursor) { if (Object.keys(input).length !== 1) fail('INVALID_INPUT'); const state = untoken(input.cursor, 'find'); scope = filters(state.scope); after = state.after; examined = state.examined; validateAfter(after); if (!integer(examined, 0, 100000000)) fail('INVALID_INPUT'); }
     else scope = filters(input);
-    const all = await page(scope, after, scope.limit + 1);
-    const result = envelope('find', { records: [], coverage: coverage({ searchScope: 'metadata', examinedRecords: examined, completeWithinScope: false, unexaminedRecords: 'unknown', discoveryConsistency: 'keyset over observed catalog; concurrent updates may change scope' }) });
-    for (let i = 0; i < Math.min(scope.limit, all.length); i++) {
-      const row = metadata(all[i]);
+    const all = await page(scope, after, 51);
+    const result = envelope('find', { records: [], coverage: coverage({ searchScope: 'metadata', examinedRecords: examined, catalogRecordsExamined: examined, completeWithinScope: false, unexaminedRecords: 'unknown', discoveryConsistency: 'keyset over observed catalog; concurrent updates may change scope' }) });
+    const unsupported = new Set();
+    let consumed = 0, nextAfter = after, lastIndex = -1;
+    for (let i = 0; i < all.length && result.records.length < scope.limit; i++) {
+      const raw = all[i];
+      let row;
+      try { row = metadata(raw); }
+      catch (error) {
+        if (classified(error).code !== 'UNSUPPORTED_SOURCE') throw error;
+        unsupported.add(raw.source);
+        result.coverage.omissions.push({ id: raw.id, source: raw.source, started_at: raw.started_at });
+        consumed++; nextAfter = position(raw); lastIndex = i;
+        continue;
+      }
+      const next = position(row);
+      const candidate = { ...result, records: [...result.records, display(row)], continuation: token('find', { scope, after: next, examined: examined + consumed + 1 }) };
+      if (bytes(candidate) > envelopeBytes - 250) { if (!result.records.length) fail('OUTPUT_LIMIT'); break; }
       result.records.push(display(row));
-      const next = position(row), more = i + 1 < all.length;
-      const candidate = { ...result, continuation: more ? token('find', { scope, after: next, examined: examined + i + 1 }) : null };
-      if (bytes(candidate) > envelopeBytes - 250) { result.records.pop(); if (!result.records.length) fail('OUTPUT_LIMIT'); break; }
-      result.continuation = candidate.continuation; result.coverage.examinedRecords = examined + i + 1;
+      consumed++; nextAfter = next; lastIndex = i;
     }
-    const complete = result.continuation === null;
-    result.coverage.completeWithinScope = complete; result.coverage.unexaminedRecords = complete ? 0 : 'unknown';
+    result.coverage.unsupportedSources = [...unsupported];
+    result.coverage.examinedRecords = result.coverage.catalogRecordsExamined = examined + consumed;
+    const more = lastIndex >= 0 && (lastIndex < all.length - 1 || all.length === 51);
+    result.continuation = more ? token('find', { scope, after: nextAfter, examined: examined + consumed }) : null;
+    result.coverage.completeWithinScope = !more;
+    result.coverage.unexaminedRecords = more ? 'unknown' : 0;
     return finish(result);
   }
   async function latest(input) {
     keys(input, ['source', 'from', 'to']);
-    const scope = filters(input), all = await page(scope, null, 2, false, true);
-    const row = all.length ? metadata(all[0]) : null;
+    const scope = filters(input), all = await page(scope, null, 51);
+    const unsupported = new Set(), omissions = [];
+    let row = null, secondSupported = null, examined = 0;
+    for (const raw of all) {
+      examined++;
+      try {
+        const candidate = metadata(raw);
+        if (row === null) row = candidate;
+        else if (secondSupported === null) secondSupported = candidate;
+      } catch (error) {
+        if (classified(error).code !== 'UNSUPPORTED_SOURCE') throw error;
+        unsupported.add(raw.source);
+        omissions.push({ id: raw.id, source: raw.source, started_at: raw.started_at });
+      }
+    }
     const selected = row !== null && row.sort_time !== null;
     const status = !row ? 'empty' : selected ? 'selected' : 'no-dated-meeting';
     return finish(envelope('latest', {
       records: selected ? [display(row)] : [],
-      selection: { intent: 'latest', resolved: selected, status, reason: selected ? 'Newest supported dated catalog record selected. Read this reference; older catalog pages are unnecessary.' : row ? 'No supported meeting has a usable start date; latest cannot be established.' : 'No supported meeting exists within these filters.', ordering: 'startedAt instant descending; undated last; id ascending', tieBreak: 'id-ascending', tiedAtNewest: selected && all.length > 1 && all[1].sort_time === row.sort_time, nextAction: selected ? 'read' : null },
-      coverage: coverage({ searchScope: 'metadata', supportedSources: SOURCES, examinedRecords: all.length, moreCatalogRecords: all.length > 1, completeWithinScope: all.length < 2, unexaminedRecords: all.length > 1 ? 'unknown' : 0, discoveryConsistency: 'bounded observation of catalog order; concurrent changes may alter latest' }),
+      selection: { intent: 'latest', resolved: selected, status, reason: selected ? 'Newest supported dated catalog record selected. Read this reference; older catalog pages are unnecessary.' : row ? 'No supported meeting has a usable start date; latest cannot be established.' : 'No supported meeting exists within these filters.', ordering: 'startedAt instant descending; undated last; id ascending', tieBreak: 'id-ascending', tiedAtNewest: selected && secondSupported?.sort_time === row.sort_time, nextAction: selected ? 'read' : null },
+      coverage: coverage({ searchScope: 'metadata', unsupportedSources: [...unsupported], omissions, examinedRecords: examined, catalogRecordsExamined: examined, moreCatalogRecords: all.length === 51, completeWithinScope: examined === all.length && all.length < 51, unexaminedRecords: examined < all.length || all.length === 51 ? 'unknown' : 0, discoveryConsistency: 'bounded observation of catalog order; concurrent changes may alter latest' }),
     }));
   }
   async function read(input) {
@@ -364,16 +413,17 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
     keys(input, ['term', 'source', 'from', 'to', 'limit', 'scanLimit', 'cursor']);
     let state;
     if (input.cursor) { if (Object.keys(input).length !== 1) fail('INVALID_INPUT'); state = untoken(input.cursor, 'search'); }
-    else state = { scope: filters(input, true), after: null, catalogRecordsExamined: 0, failedBodies: 0, excludedBodies: 0, matchesReturned: 0, pending: null };
+    else state = { scope: filters(input, true), after: null, catalogRecordsExamined: 0, failedBodies: 0, excludedBodies: 0, matchesReturned: 0, pending: null, unsupportedSources: [] };
     state.scope = filters(state.scope, true); validateAfter(state.after);
+    if (!Array.isArray(state.unsupportedSources) || state.unsupportedSources.some(source => !safeId(source))) fail('INVALID_INPUT');
     for (const k of ['catalogRecordsExamined', 'failedBodies', 'excludedBodies', 'matchesReturned']) if (!integer(state[k], 0, 100000000)) fail('INVALID_INPUT');
     if (state.pending !== null && (!object(state.pending) || !integer(state.pending.recordIndex, 0, 10000000) || !integer(state.pending.offset, 0, 64000000) || !/^[a-f0-9]{64}$/.test(state.pending.hash))) fail('INVALID_INPUT');
     if (state.failedBodies + state.excludedBodies > state.catalogRecordsExamined) fail('INVALID_INPUT');
     const counts = () => ({ catalogRecordsExamined: state.catalogRecordsExamined, bodiesExamined: state.catalogRecordsExamined - state.failedBodies - state.excludedBodies, failedBodies: state.failedBodies, excludedBodies: state.excludedBodies });
-    const result = envelope('search', { matches: [], omissions: [], coverage: coverage({ searchScope: 'transcript-content', contentKinds: ['transcript'], matching: 'literal case-insensitive passages', ...counts(), matchingPassagesReturned: state.matchesReturned, unexaminedBodies: 'unknown', completeWithinScope: false }) });
+    const result = envelope('search', { matches: [], omissions: [], coverage: coverage({ searchScope: 'transcript-content', contentKinds: ['transcript'], matching: 'literal case-insensitive passages', ...counts(), matchingPassagesReturned: state.matchesReturned, unexaminedBodies: 'unknown', completeWithinScope: false, unsupportedSources: [...state.unsupportedSources] }) });
     let scanned = 0, exhausted = false;
     const pattern = new RegExp(state.scope.term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'giu');
-    const continuation = () => token('search', { scope: state.scope, after: state.after, catalogRecordsExamined: state.catalogRecordsExamined, failedBodies: state.failedBodies, excludedBodies: state.excludedBodies, matchesReturned: state.matchesReturned, pending: state.pending });
+    const continuation = () => token('search', { scope: state.scope, after: state.after, catalogRecordsExamined: state.catalogRecordsExamined, failedBodies: state.failedBodies, excludedBodies: state.excludedBodies, matchesReturned: state.matchesReturned, pending: state.pending, unsupportedSources: state.unsupportedSources });
     const addOmission = omission => {
       if (bytes({ ...result, omissions: [...result.omissions, omission], continuation: continuation() }) <= envelopeBytes - 500) result.omissions.push(omission);
       else result.omissionDetailsLimited = true;
@@ -390,10 +440,13 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
       let row;
       try { row = metadata(next[0]); }
       catch (error) {
-        // Keep the raw keyset position even when a source's body format is unsupported.
+        const e = classified(error);
         try { validateAfter(position(next[0])); } catch { addOmission({ code: 'INVALID_METADATA', stage: 'catalog' }); break; }
         state.after = position(next[0]); state.pending = null; state.failedBodies++; state.catalogRecordsExamined++; scanned++;
-        addOmission({ code: classified(error).code, stage: 'metadata' });
+        if (e.code === 'UNSUPPORTED_SOURCE') {
+          if (!state.unsupportedSources.includes(next[0].source)) state.unsupportedSources.push(next[0].source);
+          addOmission({ code: e.code, stage: 'metadata', id: next[0].id, source: next[0].source, started_at: next[0].started_at });
+        } else addOmission({ code: e.code, stage: 'metadata' });
         continue;
       }
       const rowRef = reference(row);
@@ -439,7 +492,7 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
       state.after = position(row); state.pending = null; state.catalogRecordsExamined++; scanned++;
     }
     result.continuation = exhausted ? null : continuation();
-    Object.assign(result.coverage, { ...counts(), matchingPassagesReturned: state.matchesReturned, unexaminedBodies: exhausted ? state.failedBodies : 'unknown', pendingBody: state.pending !== null, completeWithinScope: exhausted && state.failedBodies === 0 });
+    Object.assign(result.coverage, { ...counts(), matchingPassagesReturned: state.matchesReturned, unexaminedBodies: exhausted ? state.failedBodies : 'unknown', pendingBody: state.pending !== null, completeWithinScope: exhausted && state.failedBodies === 0, unsupportedSources: [...state.unsupportedSources], omissions: result.omissions.filter(item => item.id && item.source).map(({ id, source, started_at }) => ({ id, source, started_at })) });
     return finish(result);
   }
   async function checkVersion() {
