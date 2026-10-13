@@ -410,8 +410,8 @@ algorithm for Connect, Sync now, the background catch-up, and Meeting sources:
    `${APP_ID}/connectors/fireflies/sync-attempt`, version `v: 1`, with
    `listing_skip`, `listing_started_at`, `listing_anchor`,
    `listing_anchor_date`, `listing_previous_neighbor`, `pending_ids`,
-   `suspect_ids`, `suspect_seen_ids`, `suspect_proof_ids`, and
-   `suspect_proof_at`. Attempt writes are best-effort and written only by the
+   `suspect_ids`, `suspect_seen_ids`, `suspect_proof_ids`, `suspect_proof_at`,
+   and `suspect_proof_at_by_id`. Attempt writes are best-effort and written only by the
    sync engine. Their failure does not change sync or ingest outcomes and cannot
    make an unpersisted cursor resumable. Connect's stale-record clear is also
    best-effort. Keep-data Disconnect has a separate, explicit continuation-clear
@@ -431,11 +431,14 @@ algorithm for Connect, Sync now, the background catch-up, and Meeting sources:
    from its summaries and restarts the listing at zero while retaining
    `listing_started_at`. Suspects seen during a completed proof are demoted to
    plain pending and their seen state is cleared; they can start a fresh proof if
-   a later retry is not-found. `suspect_proof_ids` and `suspect_proof_at` retain
-   the last proof generation, so the same suspect set is re-proven at most once
-   per 24 hours; a changed set can start its own generation. These arrays are
-   capped at 50. The SQL watermark never advances while `pending_ids` is
-   non-empty.
+   a later retry is not-found. `suspect_proof_at_by_id` stores the completion time
+   of the last proof that observed each pending ID, with at most 50 entries. A
+   new proof may include only IDs without a proof in the preceding 24 hours.
+   Completing a proof updates only the IDs in that fixed generation; it does not
+   reset other IDs' cooldowns. Every attempt write prunes the map to current
+   `pending_ids`. Invalid map data drops the continuation cursor but preserves
+   pending IDs. These additive `v: 1` fields allow older records to remain
+   readable. The SQL watermark never advances while `pending_ids` is non-empty.
    `listing_started_at` is recorded at skip zero and becomes `last_synced_at` only
    after the whole ordinary chain reaches the date boundary or true end of history
    without item errors, abort, budget exhaustion, or pending IDs.
@@ -445,8 +448,8 @@ algorithm for Connect, Sync now, the background catch-up, and Meeting sources:
    position. Missing, duplicate, or mismatched evidence restarts from zero. If the
    KV record is lost, the next run restarts at the newest page and remains bounded.
    Connect over a missing/disconnected row and keep-data Disconnect clear the
-   continuation. SQL `last_synced_at` remains authoritative; the KV record is
-   advisory only.
+   continuation and per-ID proof history; purge deletes `sync-attempt`. SQL
+   `last_synced_at` remains authoritative; the KV record is advisory only.
 7. Same-tab single-flight does not prevent cross-tab Sync now overlap. Cross-tab
    deduplication is out of scope: TinyCloud user SQL does not support a unique
    index, so this build does not claim cross-tab serialization. Cross-tab purge

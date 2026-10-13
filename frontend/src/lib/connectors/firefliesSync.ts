@@ -81,6 +81,7 @@ export interface SyncStore {
     suspectSeenIds?: string[];
     suspectProofIds?: string[];
     suspectProofAt?: string | null;
+    suspectProofAtById?: Record<string, string>;
   } | null>>;
   recordFirefliesAttempt?(
     tcw: TinyCloudWeb,
@@ -98,6 +99,7 @@ export interface SyncStore {
       suspectSeenIds?: string[];
       suspectProofIds?: string[];
       suspectProofAt?: string | null;
+      suspectProofAtById?: Record<string, string>;
     },
   ): Promise<StoreResult<void>>;
   countMeetings(tcw: TinyCloudWeb, source: string): Promise<StoreResult<number>>;
@@ -255,6 +257,7 @@ async function recordAttemptBestEffort(
     suspectSeenIds?: string[];
     suspectProofIds?: string[];
     suspectProofAt?: string | null;
+    suspectProofAtById?: Record<string, string>;
   },
   current: () => boolean,
 ): Promise<boolean> {
@@ -299,6 +302,10 @@ async function runFirefliesSync(
   let suspectSeenIds = new Set<string>();
   let suspectProofIds = new Set<string>();
   let suspectProofAt: string | null = null;
+  const suspectProofAtById = new Map<string, string>();
+  const proofTimesForPending = () => Object.fromEntries(
+    [...suspectProofAtById].filter(([id]) => pendingIds.has(id)),
+  );
   const pendingNotFoundRetries = new Set<string>();
   let cursorBlocked = false;
   let forceRestartAfterListing = false;
@@ -408,6 +415,17 @@ async function runFirefliesSync(
               && Number.isFinite(Date.parse(attempt.suspectProofAt))
               ? attempt.suspectProofAt
               : null;
+            if (attempt?.suspectProofAtById !== undefined) {
+              for (const [id, proofAt] of Object.entries(attempt.suspectProofAtById)) {
+                if (pendingIds.has(id)) suspectProofAtById.set(id, proofAt);
+              }
+            } else if (suspectIds.size === 0 && suspectProofAt) {
+              // Legacy generations persisted their start, not completion time;
+              // use the latest attempt as a conservative cooldown boundary.
+              for (const id of suspectProofIds) {
+                if (pendingIds.has(id)) suspectProofAtById.set(id, attemptAt);
+              }
+            }
             if (suspectIds.size > 0 && (suspectProofIds.size === 0 || !suspectProofAt)) {
               suspectProofIds = new Set(suspectIds);
               suspectProofAt = attemptAt;
@@ -436,6 +454,7 @@ async function runFirefliesSync(
           suspectSeenIds: [...suspectSeenIds],
           suspectProofIds: [...suspectProofIds],
           suspectProofAt,
+          suspectProofAtById: proofTimesForPending(),
         }, current);
         if (!runningAttemptWritten) {
           resumeSkip = 0;
@@ -634,18 +653,17 @@ async function runFirefliesSync(
               }
             }
             if (!pendingRetryStopped && pendingNotFoundRetries.size > 0) {
-              const candidates = [...pendingNotFoundRetries];
-              const proofAtMs = suspectProofAt ? Date.parse(suspectProofAt) : Number.NaN;
               const runAtMs = Date.parse(attemptAt);
-              const sameSetCoolingDown = suspectIds.size === 0
-                && Number.isFinite(proofAtMs)
-                && Number.isFinite(runAtMs)
-                && runAtMs - proofAtMs < FIREFLIES_SUSPECT_PROOF_INTERVAL_MS
-                && candidates.every((id) => suspectProofIds.has(id));
-              // Keep generation membership fixed from its skip-zero start.
-              // A late not-found ID stays pending, then starts a fresh proof
-              // on a later retry instead of inheriting an already-passed prefix.
-              if (suspectIds.size === 0 && !sameSetCoolingDown) {
+              const candidates = [...pendingNotFoundRetries].filter((id) => {
+                const proofAt = suspectProofAtById.get(id);
+                return !proofAt || !Number.isFinite(runAtMs)
+                  || !Number.isFinite(Date.parse(proofAt))
+                  || runAtMs - Date.parse(proofAt) >= FIREFLIES_SUSPECT_PROOF_INTERVAL_MS;
+              });
+              // Keep generation membership fixed from its skip-zero start. A
+              // late not-found ID waits until this proof completes, then starts
+              // its own zero-start proof if its per-ID cooldown allows it.
+              if (suspectIds.size === 0 && candidates.length > 0) {
                 suspectIds = new Set(candidates);
                 suspectSeenIds.clear();
                 suspectProofIds = new Set(candidates);
@@ -653,7 +671,6 @@ async function runFirefliesSync(
                 restartListingAtTop();
               }
             }
-
             if (!pendingRetryStopped && !terminal && !cursorBlocked
               && detailsUsed < maxDetails && current() && !signal.aborted) {
               const knownIds = new Set([...knownRes.data, ...pendingIds]);
@@ -699,6 +716,7 @@ async function runFirefliesSync(
                     suspectIds.delete(id);
                     suspectSeenIds.delete(id);
                     suspectProofIds.delete(id);
+                    suspectProofAtById.delete(id);
                   }
                   if (absentSuspects.length > 0) {
                     // Absence is proof only after the full-history chain reaches EOF.
@@ -706,9 +724,12 @@ async function runFirefliesSync(
                     forceRestartAfterListing = true;
                     restartListingAtTop();
                   }
-                  // Seen evidence belongs only to this completed generation. Keep
-                  // the bounded proof set/time to pace the next re-proof.
+                  // Record completion per observed pending ID. A later proof
+                  // for another cohort must not reset this ID's 24-hour pace.
                   for (const id of suspectIds) {
+                    if (suspectSeenIds.has(id) && pendingIds.has(id)) {
+                      suspectProofAtById.set(id, attemptAt);
+                    }
                     suspectIds.delete(id);
                     suspectSeenIds.delete(id);
                   }
@@ -795,6 +816,7 @@ async function runFirefliesSync(
     if (attemptStatus === "ok") {
       suspectProofIds.clear();
       suspectProofAt = null;
+      suspectProofAtById.clear();
     }
     await recordAttemptBestEffort(store, tcw, {
       v: 1,
@@ -810,10 +832,10 @@ async function runFirefliesSync(
       suspectSeenIds: [...suspectSeenIds],
       suspectProofIds: [...suspectProofIds],
       suspectProofAt,
+      suspectProofAtById: proofTimesForPending(),
     }, current);
-    if (terminal) return { ok: false, error: terminal };
     setComplete(finalStatus === "ok");
-    return { ok: true, data: result };
+    return terminal ? { ok: false, error: terminal } : { ok: true, data: result };
   } catch (err) {
     terminal = { kind: "storage", message: errorMessage(err) };
     if (!current()) return { ok: true, data: result };
@@ -831,6 +853,7 @@ async function runFirefliesSync(
       suspectSeenIds: [...suspectSeenIds],
       suspectProofIds: [...suspectProofIds],
       suspectProofAt,
+      suspectProofAtById: proofTimesForPending(),
     }, current);
     return { ok: false, error: terminal };
   }

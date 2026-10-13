@@ -671,6 +671,11 @@ describe("connectorStore.purgeConnector", () => {
     await f.kv.put(meetingKvKey("fireflies", "kv-only"), "reconciled record");
     await f.kv.put(transcriptKvKey("fireflies", "kv-only"), "reconciled transcript");
     await f.kv.put(driveCursorKvKey("fireflies"), "drive-cursor");
+    await f.kv.put(firefliesAttemptKvKey(), JSON.stringify({
+      v: 1,
+      pending_ids: ["stale"],
+      suspect_proof_at_by_id: { stale: "2026-07-01T00:00:00.000Z" },
+    }));
     await updateSyncState(f.tcw, {
       connectorId: "fireflies",
       status: "connected",
@@ -1415,9 +1420,10 @@ describe("connectorStore.updateSyncState / getConnection", () => {
       listing_anchor_date: 1700000000000,
       listing_previous_neighbor: "mock-tx-250",
       pending_ids: ["failed-transcript"],
+      suspect_proof_at_by_id: { "failed-transcript": "2026-10-12T12:00:00.000Z" },
     };
-    await recordFirefliesAttempt(f.tcw, {
-      v: 1,
+    const writeAttempt = {
+      v: 1 as const,
       lastAttemptAt: value.last_attempt_at,
       lastAttemptStatus: value.last_attempt_status,
       listingSkip: value.listing_skip,
@@ -1426,7 +1432,12 @@ describe("connectorStore.updateSyncState / getConnection", () => {
       listingAnchor: value.listing_anchor,
       listingAnchorDate: value.listing_anchor_date,
       listingPreviousNeighbor: value.listing_previous_neighbor,
-    });
+      suspectProofAtById: {
+        "failed-transcript": "2026-10-12T12:00:00.000Z",
+        "no-longer-pending": "2026-10-12T12:00:00.000Z",
+      },
+    } as Parameters<typeof recordFirefliesAttempt>[1] & { suspectProofAtById: Record<string, string> };
+    await recordFirefliesAttempt(f.tcw, writeAttempt);
     expect(f.kv.putValues.at(-1)).toBe(JSON.stringify(value));
 
     for (const data of [JSON.stringify(value), value]) {
@@ -1444,6 +1455,7 @@ describe("connectorStore.updateSyncState / getConnection", () => {
           listingAnchorDate: value.listing_anchor_date,
           listingPreviousNeighbor: value.listing_previous_neighbor,
           pendingIds: ["failed-transcript"],
+          suspectProofAtById: { "failed-transcript": "2026-10-12T12:00:00.000Z" },
         },
       });
     }
@@ -1461,6 +1473,41 @@ describe("connectorStore.updateSyncState / getConnection", () => {
         lastAttemptStatus: value.last_attempt_status,
       },
     });
+  });
+  test("invalid per-ID proof map drops continuation but keeps pending work", async () => {
+    const f = makeFake();
+    const base = {
+      v: 1,
+      last_attempt_at: "2026-10-13T12:00:00.000Z",
+      last_attempt_status: "partial",
+      listing_skip: 100,
+      listing_started_at: "2026-10-10T00:00:00.000Z",
+      listing_anchor: "anchor-99",
+      listing_anchor_date: 1700000000000,
+      listing_previous_neighbor: "anchor-98",
+      pending_ids: ["pending"],
+    };
+    const invalidMaps: unknown[] = [
+      null,
+      [],
+      42,
+      { pending: 42 },
+      { pending: "not-a-date" },
+      Object.fromEntries(Array.from({ length: 51 }, (_, index) => [`id-${index}`, "2026-10-12T12:00:00.000Z"])),
+    ];
+    for (const suspect_proof_at_by_id of invalidMaps) {
+      f.kv.get = async () => ({
+        ok: true,
+        data: { data: JSON.stringify({ ...base, suspect_proof_at_by_id }), headers: {} },
+      });
+      const result = await getFirefliesAttempt(f.tcw);
+      expect(result.ok).toBe(true);
+      if (!result.ok) continue;
+      expect(result.data?.listingSkip).toBeNull();
+      expect(result.data?.listingStartedAt).toBeNull();
+      expect(result.data?.pendingIds).toEqual(["pending"]);
+      expect((result.data as unknown as { suspectProofAtById?: Record<string, string> })?.suspectProofAtById).toEqual({});
+    }
   });
   test("pending attempt IDs are bounded to fifty entries", async () => {
     const f = makeFake();

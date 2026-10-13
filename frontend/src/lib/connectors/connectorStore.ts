@@ -72,6 +72,8 @@ export interface FirefliesAttempt {
   suspectProofIds?: string[];
   /** Start time of the most recent suspect proof generation. */
   suspectProofAt?: string | null;
+  /** Last completed proof time per still-pending ID. */
+  suspectProofAtById?: Record<string, string>;
 }
 export async function getFirefliesAttempt(
   tcw: TinyCloudWeb,
@@ -132,10 +134,22 @@ export async function getFirefliesAttempt(
   const rawProofAt = row.suspect_proof_at;
   const proofAtValid = rawProofAt === undefined || rawProofAt === null
     || (typeof rawProofAt === "string" && Number.isFinite(Date.parse(rawProofAt)));
+  const rawProofAtById = row.suspect_proof_at_by_id;
+  const proofAtByIdPresent = Object.hasOwn(row, "suspect_proof_at_by_id");
+  const proofAtByIdRecord = rawProofAtById && typeof rawProofAtById === "object"
+    && !Array.isArray(rawProofAtById)
+    ? rawProofAtById as Record<string, unknown>
+    : null;
+  const proofAtByIdEntries = proofAtByIdRecord ? Object.entries(proofAtByIdRecord) : [];
+  const proofAtByIdInvalid = proofAtByIdPresent && (!proofAtByIdRecord
+    || proofAtByIdEntries.length > FIREFLIES_MAX_PENDING_IDS
+    || proofAtByIdEntries.some(([id, at]) => !id
+      || typeof at !== "string"
+      || !Number.isFinite(Date.parse(at))));
   const validAnchorDate = anchorDate === null
     || (typeof anchorDate === "number" && Number.isFinite(anchorDate))
     || (typeof anchorDate === "string" && Number.isFinite(Date.parse(anchorDate)));
-  const cursorValid = !pendingInvalid && !suspectInvalid && !proofIdsInvalid && proofAtValid
+  const cursorValid = !pendingInvalid && !suspectInvalid && !proofIdsInvalid && !proofAtByIdInvalid && proofAtValid
     && Number.isSafeInteger(skip)
     && (skip as number) >= 0
     && typeof startedAt === "string"
@@ -153,6 +167,11 @@ export async function getFirefliesAttempt(
     ? [...new Set(pendingArray.filter((id): id is string => typeof id === "string" && id.length > 0))]
         .slice(0, FIREFLIES_MAX_PENDING_IDS)
     : [];
+  const pendingIdSet = new Set(pendingIds);
+  const suspectProofAtById = proofAtByIdInvalid
+    ? {}
+    : Object.fromEntries(proofAtByIdEntries.filter(([id]) => pendingIdSet.has(id))
+      .map(([id, at]) => [id, at as string]));
   const suspectIds = !suspectInvalid && suspectArray
     ? [...new Set(suspectArray as string[])]
     : [];
@@ -190,6 +209,7 @@ export async function getFirefliesAttempt(
       ...(pendingIds.length > 0 ? { pendingIds } : {}),
       ...(includeSuspects ? { suspectIds, suspectSeenIds } : {}),
       ...(includeProofIds ? { suspectProofIds } : {}),
+      ...(proofAtByIdPresent ? { suspectProofAtById } : {}),
       ...(proofAtValid && typeof rawProofAt === "string" ? { suspectProofAt: rawProofAt } : {}),
     },
   };
@@ -211,13 +231,33 @@ export async function recordFirefliesAttempt(
   const dedupedProofIds = attempt.suspectProofIds === undefined
     ? undefined
     : [...new Set(attempt.suspectProofIds.filter((id) => typeof id === "string" && id.length > 0))];
+  const pendingIdsForRecord = dedupedPending?.slice(0, FIREFLIES_MAX_PENDING_IDS);
+  const pendingIdSet = new Set(pendingIdsForRecord ?? []);
+  const rawProofAtById = attempt.suspectProofAtById;
+  const proofAtByIdRecord = rawProofAtById && typeof rawProofAtById === "object"
+    && !Array.isArray(rawProofAtById)
+    ? rawProofAtById as Record<string, unknown>
+    : null;
+  const proofAtByIdEntries = proofAtByIdRecord ? Object.entries(proofAtByIdRecord) : [];
+  const proofAtByIdInvalid = rawProofAtById !== undefined && (!proofAtByIdRecord
+    || proofAtByIdEntries.length > FIREFLIES_MAX_PENDING_IDS
+    || proofAtByIdEntries.some(([id, at]) => !id
+      || typeof at !== "string"
+      || !Number.isFinite(Date.parse(at))));
+  const proofAtByIdForRecord = rawProofAtById === undefined
+    ? undefined
+    : proofAtByIdInvalid
+      ? {}
+      : Object.fromEntries(proofAtByIdEntries.filter(([id]) => pendingIdSet.has(id))
+        .map(([id, at]) => [id, at as string]));
   const hasCursor = attempt.listingSkip !== undefined
     || attempt.listingStartedAt !== undefined
     || attempt.listingAnchor !== undefined;
   const cursorOverflow = ((dedupedPending?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS
     || (dedupedSuspects?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS
     || (dedupedSeen?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS
-    || (dedupedProofIds?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS) && hasCursor;
+    || (dedupedProofIds?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS
+    || proofAtByIdInvalid) && hasCursor;
   const listingSkip = cursorOverflow ? null : attempt.listingSkip;
   const listingStartedAt = cursorOverflow ? null : attempt.listingStartedAt;
   const listingAnchor = cursorOverflow ? null : attempt.listingAnchor;
@@ -234,9 +274,9 @@ export async function recordFirefliesAttempt(
     ...(listingPreviousNeighbor === undefined
       ? {}
       : { listing_previous_neighbor: listingPreviousNeighbor }),
-    ...(dedupedPending === undefined
+    ...(pendingIdsForRecord === undefined
       ? {}
-      : { pending_ids: dedupedPending.slice(0, FIREFLIES_MAX_PENDING_IDS) }),
+      : { pending_ids: pendingIdsForRecord }),
     ...(dedupedSuspects === undefined
       ? {}
       : { suspect_ids: dedupedSuspects.slice(0, FIREFLIES_MAX_PENDING_IDS) }),
@@ -249,6 +289,9 @@ export async function recordFirefliesAttempt(
     ...(attempt.suspectProofAt === undefined
       ? {}
       : { suspect_proof_at: attempt.suspectProofAt }),
+    ...(proofAtByIdForRecord === undefined
+      ? {}
+      : { suspect_proof_at_by_id: proofAtByIdForRecord }),
   }));
   if (!res.ok) return fail(res.error, "recordFirefliesAttempt");
   return { ok: true, data: undefined };
