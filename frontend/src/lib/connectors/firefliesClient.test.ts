@@ -199,7 +199,10 @@ describe("FirefliesClient.listNewTranscriptIds — bounded reconciliation", () =
     });
     const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
     const result = await client.listNewTranscriptIds({ knownIds: [], batchSize: 2 });
-    expect(result.ok && result.data).toEqual({ ids: ["a", "b"], complete: true, nextSkip: 2, nextAnchor: "b" });
+    expect(result.ok && result.data).toEqual({
+      ids: ["a", "b"], complete: true, nextSkip: 2, nextAnchor: "b",
+      nextAnchorDate: 1700000000000, nextPreviousNeighbor: "a",
+    });
     expect(calls).toHaveLength(2);
   });
 
@@ -219,7 +222,10 @@ describe("FirefliesClient.listNewTranscriptIds — bounded reconciliation", () =
       detailCap: 10,
       pageBudget: 2,
     });
-    expect(result.ok && result.data).toEqual({ ids: ["new-1", "new-2"], complete: true, nextSkip: 3, nextAnchor: "new-2" });
+    expect(result.ok && result.data).toEqual({
+      ids: ["new-1", "new-2"], complete: true, nextSkip: 3, nextAnchor: "new-2",
+      nextAnchorDate: 1700000000000, nextPreviousNeighbor: "known",
+    });
     expect(calls).toHaveLength(2);
   });
 
@@ -242,7 +248,10 @@ describe("FirefliesClient.listNewTranscriptIds — bounded reconciliation", () =
     const result = await client.listNewTranscriptIds({
       knownIds: [], batchSize: 25, detailCap: 2,
     });
-    expect(result.ok && result.data).toEqual({ ids: ["a", "b"], complete: false, nextSkip: 2, nextAnchor: "b" });
+    expect(result.ok && result.data).toEqual({
+      ids: ["a", "b"], complete: false, nextSkip: 2, nextAnchor: "b",
+      nextAnchorDate: 1700000000000, nextPreviousNeighbor: "a",
+    });
     expect(calls[0].body.variables).toEqual({ limit: 2, skip: 0 });
   });
 
@@ -256,7 +265,10 @@ describe("FirefliesClient.listNewTranscriptIds — bounded reconciliation", () =
     const result = await client.listNewTranscriptIds({
       knownIds: ["known-0", "known-1"], batchSize: 2, pageBudget: 1,
     });
-    expect(result.ok && result.data).toEqual({ ids: [], complete: false, nextSkip: 2, nextAnchor: "known-1" });
+    expect(result.ok && result.data).toEqual({
+      ids: [], complete: false, nextSkip: 2, nextAnchor: "known-1",
+      nextAnchorDate: 1700000000000, nextPreviousNeighbor: "known-0",
+    });
     expect(calls).toHaveLength(1);
   });
 
@@ -273,7 +285,10 @@ describe("FirefliesClient.listNewTranscriptIds — bounded reconciliation", () =
       knownIds: [],
       stopBeforeDate: "2026-10-07T00:00:00.000Z",
     });
-    expect(result.ok && result.data).toEqual({ ids: ["inside", "boundary"], complete: true, nextSkip: 2, nextAnchor: "boundary" });
+    expect(result.ok && result.data).toEqual({
+      ids: ["inside", "boundary"], complete: true, nextSkip: 2, nextAnchor: "boundary",
+      nextAnchorDate: "2026-10-07T00:00:00.000Z", nextPreviousNeighbor: "inside",
+    });
   });
 
   test("onProgress reports each consumed page", async () => {
@@ -331,7 +346,7 @@ describe("FirefliesClient.listNewTranscriptIds — bounded reconciliation", () =
     });
     expect(first.ok && first.data.nextSkip).toBe(10);
     expect(first.ok && first.data.nextAnchor).toBe("tx-9");
-    expect(first.ok && first.data.complete).toBe(false);
+    expect(first.ok && first.data.nextAnchorDate).toBe(1700000000000);
     if (!first.ok) throw new Error("unreachable");
 
     const storedIds = summaries.slice(0, 10).map((item) => item.id);
@@ -339,6 +354,8 @@ describe("FirefliesClient.listNewTranscriptIds — bounded reconciliation", () =
       knownIds: storedIds, batchSize: 11, detailCap: 50, pageBudget: 5,
       startSkip: first.data.nextSkip,
       startAnchor: first.data.nextAnchor,
+      startAnchorDate: first.data.nextAnchorDate,
+      startPreviousNeighbor: first.data.nextPreviousNeighbor,
     });
     expect(second.ok && second.data.ids).toEqual(summaries.slice(10).map((item) => item.id));
     expect(second.ok && second.data.nextSkip).toBe(30);
@@ -352,6 +369,36 @@ describe("FirefliesClient.listNewTranscriptIds — bounded reconciliation", () =
       { limit: 11, skip: 10 },
       { limit: 11, skip: 21 },
     ]);
+  });
+  test("a null listed date remains valid cursor evidence", async () => {
+    const summaries = ["a", "b", "c"].map((id) => transcriptSummary(id, { date: null }));
+    const { fetchImpl } = mockFetch({
+      responses: [async (call) => {
+        const { limit = 25, skip = 0 } = call.body.variables as { limit?: number; skip?: number };
+        return jsonResponse({ data: { transcripts: summaries.slice(skip, skip + limit) } });
+      }],
+    });
+    const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
+    const first = await client.listNewTranscriptIds({
+      knownIds: [], batchSize: 1, detailCap: 1, pageBudget: 1,
+    });
+    if (!first.ok) throw new Error("unreachable");
+    expect(first.data.nextAnchorDate).toBeNull();
+    expect(first.data.nextPreviousNeighbor).toBeNull();
+
+    const resumed = await client.listNewTranscriptIds({
+      knownIds: ["a"],
+      batchSize: 1,
+      detailCap: 10,
+      pageBudget: 10,
+      startSkip: first.data.nextSkip,
+      startAnchor: first.data.nextAnchor,
+      startAnchorDate: first.data.nextAnchorDate,
+      startPreviousNeighbor: first.data.nextPreviousNeighbor,
+    });
+    expect(resumed.ok && resumed.data.complete).toBe(true);
+    expect(resumed.ok && resumed.data.nextSkip).toBe(3);
+    expect(resumed.ok && resumed.data.ids).toEqual(["b", "c"]);
   });
 
 });

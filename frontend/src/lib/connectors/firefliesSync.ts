@@ -74,7 +74,11 @@ export interface SyncStore {
     listingSkip?: number | null;
     listingStartedAt?: string | null;
     listingAnchor?: string | null;
+    listingAnchorDate?: number | string | null;
+    listingPreviousNeighbor?: string | null;
     pendingIds?: string[];
+    suspectIds?: string[];
+    suspectSeenIds?: string[];
   } | null>>;
   recordFirefliesAttempt?(
     tcw: TinyCloudWeb,
@@ -85,7 +89,11 @@ export interface SyncStore {
       listingSkip?: number | null;
       listingStartedAt?: string | null;
       listingAnchor?: string | null;
+      listingAnchorDate?: number | string | null;
+      listingPreviousNeighbor?: string | null;
       pendingIds?: string[];
+      suspectIds?: string[];
+      suspectSeenIds?: string[];
     },
   ): Promise<StoreResult<void>>;
   countMeetings(tcw: TinyCloudWeb, source: string): Promise<StoreResult<number>>;
@@ -208,10 +216,6 @@ export function isTerminal(err: FirefliesError): boolean {
   return err.kind === "invalid-key" || err.kind === "rate-limited";
 }
 
-function isDeletedTranscriptError(err: FirefliesError): boolean {
-  return (err.kind === "graphql-error" || err.kind === "network-error")
-    && /\b(?:not found|deleted|404)\b/i.test(err.message);
-}
 
 function firefliesSyncIsCurrent(opts: SyncFirefliesOptions, sequence: number): boolean {
   if (flightSequence !== sequence) return false;
@@ -239,7 +243,11 @@ async function recordAttemptBestEffort(
     listingSkip?: number | null;
     listingStartedAt?: string | null;
     listingAnchor?: string | null;
+    listingAnchorDate?: number | string | null;
+    listingPreviousNeighbor?: string | null;
     pendingIds?: string[];
+    suspectIds?: string[];
+    suspectSeenIds?: string[];
   },
   current: () => boolean,
 ): Promise<boolean> {
@@ -276,9 +284,14 @@ async function runFirefliesSync(
   let resumeSkip = 0;
   let resumeStartedAt = attemptAt;
   let resumeAnchor: string | null = null;
+  let resumeAnchorDate: number | string | null = null;
+  let resumePreviousNeighbor: string | null = null;
   let terminal: SyncError | null = null;
   let pendingIds = new Set<string>();
+  let suspectIds = new Set<string>();
+  let suspectSeenIds = new Set<string>();
   let cursorBlocked = false;
+  let forceRestartAfterListing = false;
   const rememberPending = (id: string): boolean => {
     if (pendingIds.has(id)) return true;
     if (pendingIds.size >= FIREFLIES_MAX_PENDING_IDS) return false;
@@ -289,6 +302,8 @@ async function runFirefliesSync(
   let listingSkip: number | null = 0;
   let listingStartedAt: string | null = attemptAt;
   let listingAnchor: string | null = null;
+  let listingAnchorDate: number | string | null = null;
+  let listingPreviousNeighbor: string | null = null;
   if (!current()) return { ok: true, data: result };
 
   try {
@@ -325,6 +340,8 @@ async function runFirefliesSync(
         resumeSkip = 0;
         resumeStartedAt = attemptAt;
         resumeAnchor = null;
+        resumeAnchorDate = null;
+        resumePreviousNeighbor = null;
         if (!connectAuthorizes && store.getFirefliesAttempt) {
           try {
             const attemptRes = await inSpace("Fireflies read attempt metadata", async () =>
@@ -334,16 +351,36 @@ async function runFirefliesSync(
             const skip = attempt?.listingSkip;
             const startedAt = attempt?.listingStartedAt;
             const anchor = attempt?.listingAnchor;
-            if (Number.isSafeInteger(skip)
+            const anchorDate = attempt?.listingAnchorDate;
+            const previousNeighbor = attempt?.listingPreviousNeighbor;
+            const validDate = anchorDate === null
+              || (typeof anchorDate === "number" && Number.isFinite(anchorDate))
+              || (typeof anchorDate === "string" && Number.isFinite(Date.parse(anchorDate)));
+            const validCursor = Number.isSafeInteger(skip)
               && (skip ?? -1) >= 0
               && typeof startedAt === "string"
               && Number.isFinite(Date.parse(startedAt))
-              && ((skip ?? 0) === 0 ? anchor == null : typeof anchor === "string" && anchor.length > 0)) {
+              && ((skip ?? 0) === 0
+                ? anchor == null && anchorDate == null && previousNeighbor == null
+                : typeof anchor === "string" && anchor.length > 0
+                  && anchorDate !== undefined && validDate
+                  && ((skip ?? 0) === 1
+                    ? previousNeighbor === null
+                    : typeof previousNeighbor === "string" && previousNeighbor.length > 0));
+            if (validCursor) {
               resumeSkip = skip!;
               resumeStartedAt = startedAt;
               resumeAnchor = typeof anchor === "string" ? anchor : null;
+              resumeAnchorDate = anchorDate ?? null;
+              resumePreviousNeighbor = typeof previousNeighbor === "string" ? previousNeighbor : null;
             }
             for (const id of attempt?.pendingIds ?? []) rememberPending(id);
+            for (const id of attempt?.suspectIds ?? []) {
+              if (pendingIds.has(id)) suspectIds.add(id);
+            }
+            for (const id of attempt?.suspectSeenIds ?? []) {
+              if (suspectIds.has(id)) suspectSeenIds.add(id);
+            }
           } catch {
             // Lost or unreadable continuation restarts from the newest page.
           }
@@ -351,6 +388,8 @@ async function runFirefliesSync(
         listingSkip = resumeSkip;
         listingStartedAt = resumeStartedAt;
         listingAnchor = resumeAnchor;
+        listingAnchorDate = resumeAnchorDate;
+        listingPreviousNeighbor = resumePreviousNeighbor;
         const runningAttemptWritten = await recordAttemptBestEffort(store, tcw, {
           v: 1,
           lastAttemptAt: attemptAt,
@@ -358,15 +397,23 @@ async function runFirefliesSync(
           listingSkip,
           listingStartedAt,
           listingAnchor,
+          listingAnchorDate,
+          listingPreviousNeighbor,
           pendingIds: [...pendingIds],
+          suspectIds: [...suspectIds],
+          suspectSeenIds: [...suspectSeenIds],
         }, current);
         if (!runningAttemptWritten) {
           resumeSkip = 0;
           resumeStartedAt = attemptAt;
           resumeAnchor = null;
+          resumeAnchorDate = null;
+          resumePreviousNeighbor = null;
           listingSkip = 0;
           listingStartedAt = attemptAt;
           listingAnchor = null;
+          listingAnchorDate = null;
+          listingPreviousNeighbor = null;
         }
 
         const knownRes = await inSpace("Fireflies read known meetings", async () =>
@@ -391,7 +438,9 @@ async function runFirefliesSync(
             const maxDetails = Number.isFinite(opts.detailCap)
               ? Math.min(FIREFLIES_MAX_DETAIL_CAP, Math.max(0, Math.floor(opts.detailCap!)))
               : FIREFLIES_MAX_DETAIL_CAP;
-            const pendingRetryCap = Math.min(25, Math.floor(maxDetails / 2));
+            const pendingRetryCap = maxDetails > 0
+              ? Math.max(1, Math.min(25, Math.floor(maxDetails / 2)))
+              : 0;
             let detailsUsed = 0;
             let storedPrefix = true;
             let pendingRetryStopped = false;
@@ -399,6 +448,7 @@ async function runFirefliesSync(
               id: string,
               done: number,
               total: number,
+              fromPendingRetry = false,
             ): Promise<boolean> => {
               if (!current() || signal.aborted) {
                 storedPrefix = false;
@@ -428,18 +478,25 @@ async function runFirefliesSync(
                   cursorBlocked = true;
                   return false;
                 }
-                if (isDeletedTranscriptError(txRes.error)) {
-                  pendingIds.delete(id);
-                  resumeSkip = 0;
-                  resumeAnchor = null;
-                  listingSkip = 0;
-                  listingAnchor = null;
-                  return true;
-                }
                 result.errors.push(`${id}: ${txRes.error.message}`);
                 if (!rememberPending(id)) {
                   storedPrefix = false;
                   cursorBlocked = true;
+                }
+                if (fromPendingRetry && txRes.error.notFound === true) {
+                  if (!suspectIds.has(id)) {
+                    suspectIds.add(id);
+                    suspectSeenIds.delete(id);
+                    resumeSkip = 0;
+                    resumeAnchor = null;
+                    resumeAnchorDate = null;
+                    resumePreviousNeighbor = null;
+                    listingSkip = 0;
+                    listingAnchor = null;
+                    listingAnchorDate = null;
+                    listingPreviousNeighbor = null;
+                  }
+                  return true;
                 }
                 if (txRes.error.kind === "rate-limited"
                   && (txRes.error.retryAfterMs ?? 0) > FIREFLIES_MAX_RETRY_AFTER_MS) {
@@ -519,9 +576,11 @@ async function runFirefliesSync(
                   }
                   return true;
                 }
-                pendingIds.delete(id);
                 if (itemWrite.insert.data) result.added += 1;
                 else result.skipped += 1;
+                pendingIds.delete(id);
+                suspectIds.delete(id);
+                suspectSeenIds.delete(id);
                 bodyIds.add(id);
                 onProgress?.({ phase: "storing", done, total });
                 return true;
@@ -538,7 +597,7 @@ async function runFirefliesSync(
             const pendingToRetry = [...pendingIds].slice(0, pendingRetryCap);
             for (let i = 0; i < pendingToRetry.length && detailsUsed < maxDetails; i++) {
               const id = pendingToRetry[i]!;
-              if (!await processTranscript(id, i + 1, pendingToRetry.length)) {
+              if (!await processTranscript(id, i + 1, pendingToRetry.length, true)) {
                 pendingRetryStopped = true;
               }
               if (terminal || cursorBlocked || signal.aborted || !current()) {
@@ -561,9 +620,14 @@ async function runFirefliesSync(
                 pageBudget: opts.pageBudget,
                 startSkip: resumeSkip,
                 startAnchor: resumeAnchor,
+                startAnchorDate: resumeAnchorDate,
+                startPreviousNeighbor: resumePreviousNeighbor,
                 stopBeforeDate,
                 signal,
                 onProgress,
+                onSummary: (summary) => {
+                  if (suspectIds.has(summary.id)) suspectSeenIds.add(summary.id);
+                },
                 isKnownComplete: (id) => pendingIds.has(id) || bodyIds.has(id),
               });
               if (!current()) return { ok: true, data: result };
@@ -584,6 +648,25 @@ async function runFirefliesSync(
                 }
                 const cursorResetDuringListing = resumeSkip !== listStartSkip;
                 if (cursorResetDuringListing) listingComplete = false;
+                if (listingComplete) {
+                  const absentSuspects = [...suspectIds].filter((id) => !suspectSeenIds.has(id));
+                  if (absentSuspects.length > 0) {
+                    for (const id of absentSuspects) {
+                      pendingIds.delete(id);
+                      suspectIds.delete(id);
+                      suspectSeenIds.delete(id);
+                    }
+                    // Listing absence is the delete proof; force a clean pass,
+                    // even when this proof pass itself resumed from a cursor.
+                    listingComplete = false;
+                    forceRestartAfterListing = true;
+                    resumeSkip = 0;
+                    resumeAnchor = null;
+                    resumeAnchorDate = null;
+                    resumePreviousNeighbor = null;
+                  }
+                }
+                if (forceRestartAfterListing) listingComplete = false;
                 const prefixCommitted = storedPrefix
                   && current()
                   && !signal.aborted
@@ -592,10 +675,17 @@ async function runFirefliesSync(
                 if (prefixCommitted) {
                   const clearCursor = listingComplete && pendingIds.size === 0;
                   listingSkip = clearCursor ? null
-                    : cursorResetDuringListing ? 0 : listRes.data.nextSkip;
+                    : forceRestartAfterListing ? 0
+                      : cursorResetDuringListing ? 0 : listRes.data.nextSkip;
                   listingStartedAt = clearCursor ? null : resumeStartedAt;
                   listingAnchor = clearCursor ? null
-                    : cursorResetDuringListing ? null : listRes.data.nextAnchor;
+                    : forceRestartAfterListing || cursorResetDuringListing ? null : listRes.data.nextAnchor;
+                  listingAnchorDate = clearCursor ? null
+                    : forceRestartAfterListing || cursorResetDuringListing
+                      ? null : listRes.data.nextAnchorDate;
+                  listingPreviousNeighbor = clearCursor ? null
+                    : forceRestartAfterListing || cursorResetDuringListing
+                      ? null : listRes.data.nextPreviousNeighbor;
                 }
               }
             }
@@ -616,7 +706,7 @@ async function runFirefliesSync(
     if (!countRes.ok) terminal ??= fromStore(countRes.error, "countMeetings");
     else itemCount = countRes.data;
 
-    const reconciled = listingComplete && pendingIds.size === 0
+    const reconciled = listingComplete && pendingIds.size === 0 && suspectIds.size === 0
       && !signal.aborted && !terminal && result.errors.length === 0;
     const finalStatus: "ok" | "partial" | "error" =
       terminal ? "error" : reconciled ? "ok" : "partial";
@@ -648,9 +738,12 @@ async function runFirefliesSync(
       listingSkip = resumeSkip;
       listingStartedAt = resumeStartedAt;
       listingAnchor = resumeAnchor;
+      listingAnchorDate = resumeAnchorDate;
+      listingPreviousNeighbor = resumePreviousNeighbor;
     }
     const attemptStatus = terminal ? "error"
-      : listingComplete && pendingIds.size === 0 && !signal.aborted && result.errors.length === 0 ? "ok" : "partial";
+      : listingComplete && pendingIds.size === 0 && suspectIds.size === 0
+        && !signal.aborted && result.errors.length === 0 ? "ok" : "partial";
     await recordAttemptBestEffort(store, tcw, {
       v: 1,
       lastAttemptAt: attemptAt,
@@ -658,7 +751,11 @@ async function runFirefliesSync(
       listingSkip: attemptStatus === "ok" ? null : listingSkip,
       listingStartedAt: attemptStatus === "ok" ? null : listingStartedAt,
       listingAnchor: attemptStatus === "ok" ? null : listingAnchor,
+      listingAnchorDate: attemptStatus === "ok" ? null : listingAnchorDate,
+      listingPreviousNeighbor: attemptStatus === "ok" ? null : listingPreviousNeighbor,
       pendingIds: [...pendingIds],
+      suspectIds: [...suspectIds],
+      suspectSeenIds: [...suspectSeenIds],
     }, current);
     if (terminal) return { ok: false, error: terminal };
     setComplete(finalStatus === "ok");
@@ -673,7 +770,11 @@ async function runFirefliesSync(
       listingSkip,
       listingStartedAt,
       listingAnchor,
+      listingAnchorDate,
+      listingPreviousNeighbor,
       pendingIds: [...pendingIds],
+      suspectIds: [...suspectIds],
+      suspectSeenIds: [...suspectSeenIds],
     }, current);
     return { ok: false, error: terminal };
   }

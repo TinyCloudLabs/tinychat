@@ -71,6 +71,7 @@ function makeInMemoryFireflies(seed: SeedTranscript[]) {
   const failures = new Map<string, Response[]>();
   const permanentlyFailing = new Set<string>();
   const deleted = new Set<string>();
+  const permanentlyNull = new Set<string>();
   let listingOverride: SeedTranscript[] | null = null;
   const calls: { operation: "list" | "detail"; id?: string; skip?: number }[] = [];
   const fetchImpl = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -94,6 +95,11 @@ function makeInMemoryFireflies(seed: SeedTranscript[]) {
         headers: { "content-type": "application/json" },
       });
     }
+    if (permanentlyNull.has(id)) {
+      return new Response(JSON.stringify({ data: { transcript: null } }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
     const queued = failures.get(id);
     if (queued?.length) return queued.shift()!;
     const transcript = deleted.has(id) ? null : seed.find((item) => item.id === id) ?? null;
@@ -112,6 +118,7 @@ function makeInMemoryFireflies(seed: SeedTranscript[]) {
     calls,
     failAlways(id: string) { permanentlyFailing.add(id); },
     recover(id: string) { permanentlyFailing.delete(id); },
+    failNullAlways(id: string) { permanentlyNull.add(id); },
     failNext(id: string, responses: Response[]) { failures.set(id, responses); },
     deleteFromProvider(id: string) {
       deleted.add(id);
@@ -477,6 +484,8 @@ test("resumed head page does not complete after the detail cap before a date cut
     listingSkip: 5,
     listingStartedAt: new Date(watermark).toISOString(),
     listingAnchor: items[4]!.id,
+    listingAnchorDate: items[4]!.date,
+    listingPreviousNeighbor: items[3]!.id,
     pendingIds: [],
   })).ok).toBe(true);
 
@@ -531,6 +540,121 @@ test("pending retries leave a non-complete reduced head listing partial after co
   expect(JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey()))).pending_ids.length).toBeGreaterThan(0);
   expect(arrivals.filter((item) => [...fake.sql.meetings.values()].some((row) => row.source_id === item.id))).toHaveLength(10);
 });
+test("freshly listed null, 404, and unrelated 503 not-found text remain retryable", async () => {
+  const cases = [
+    {
+      name: "null transcript",
+      response: () => jsonResponse({ data: { transcript: null } }),
+    },
+    {
+      name: "http 404",
+      response: () => new Response("transcript not found", { status: 404 }),
+    },
+    {
+      name: "unrelated 503 body",
+      response: () => new Response("upstream route not found", { status: 503 }),
+    },
+  ];
+  for (const scenario of cases) {
+    _resetConnectorSchemaMemoForTests();
+    const items = buildSeed(20) as SeedTranscript[];
+    const now = Date.parse("2026-10-13T12:00:00.000Z");
+    items.forEach((item, index) => { item.date = now - 3 * 86_400_000 - index * 60_000; });
+    const watermark = new Date(now - 5 * 86_400_000).toISOString();
+    const fake = makeFakeTinyCloud({ did: `did:test:fresh-not-found-${scenario.name}` });
+    expect((await connectorStore.updateSyncState(fake.tcw, {
+      connectorId: "fireflies",
+      status: "connected",
+      lastSyncedAt: watermark,
+      lastSyncStatus: "ok",
+      lastSyncError: null,
+      itemCount: 0,
+    })).ok).toBe(true);
+    const provider = makeInMemoryFireflies(items);
+    provider.failNext(items[10]!.id, [scenario.response()]);
+
+    expect((await runEngine(provider.client, fake, { now: () => new Date(now).toISOString() })).ok).toBe(true);
+
+    expect(requiredSyncState(fake).last_sync_status).toBe("partial");
+    expect(requiredSyncState(fake).last_synced_at).toBe(watermark);
+    expect(JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey()))).pending_ids).toContain(items[10]!.id);
+    expect(requiredSyncState(fake).last_sync_error).toContain("1 transcript(s) failed");
+    for (let run = 0; run < 3 && requiredSyncState(fake).last_sync_status !== "ok"; run++) {
+      expect((await runEngine(provider.client, fake, { now: () => new Date(now).toISOString() })).ok).toBe(true);
+    }
+
+    expect(requiredSyncState(fake).last_sync_status).toBe("ok");
+    expect(missingIds(items.map((item) => item.id), new Set([...fake.sql.meetings.values()].map((row) => row.source_id)))).toEqual([]);
+    expect(missingIds(items.map((item) => item.id), transcriptBodyKeys(fake))).toEqual([]);
+  }
+});
+test("skip-zero catch-up cannot complete while a listed null transcript is pending", async () => {
+  _resetConnectorSchemaMemoForTests();
+  const items = buildSeed(20) as SeedTranscript[];
+  const now = Date.parse("2026-10-13T12:00:00.000Z");
+  items.forEach((item, index) => { item.date = now - 3 * 86_400_000 - index * 60_000; });
+  const watermark = new Date(now - 5 * 86_400_000).toISOString();
+  const fake = makeFakeTinyCloud({ did: "did:test:skip-zero-listed-null" });
+  expect((await connectorStore.updateSyncState(fake.tcw, {
+    connectorId: "fireflies",
+    status: "connected",
+    lastSyncedAt: watermark,
+    lastSyncStatus: "ok",
+    lastSyncError: null,
+    itemCount: 0,
+  })).ok).toBe(true);
+  const provider = makeInMemoryFireflies(items);
+  provider.failNext(items[5]!.id, [jsonResponse({ data: { transcript: null } })]);
+
+  expect((await runEngine(provider.client, fake, { now: () => new Date(now).toISOString() })).ok).toBe(true);
+  expect(requiredSyncState(fake).last_sync_status).toBe("partial");
+  expect(requiredSyncState(fake).last_synced_at).toBe(watermark);
+  expect(JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey()))).pending_ids).toContain(items[5]!.id);
+
+  for (let run = 0; run < 3 && requiredSyncState(fake).last_sync_status !== "ok"; run++) {
+    expect((await runEngine(provider.client, fake, { now: () => new Date(now).toISOString() })).ok).toBe(true);
+  }
+
+  expect(requiredSyncState(fake).last_sync_status).toBe("ok");
+  expect(missingIds(items.map((item) => item.id), new Set([...fake.sql.meetings.values()].map((row) => row.source_id)))).toEqual([]);
+  expect(missingIds(items.map((item) => item.id), transcriptBodyKeys(fake))).toEqual([]);
+});
+test("permanently null listed item stays pending while all 1199 other details progress", async () => {
+  _resetConnectorSchemaMemoForTests();
+  const items = buildSeed(1200) as SeedTranscript[];
+  const now = Date.parse("2026-10-13T12:00:00.000Z");
+  items.forEach((item, index) => { item.date = now - 3 * 86_400_000 - index * 1_000; });
+  const watermark = new Date(now - 5 * 86_400_000).toISOString();
+  const fake = makeFakeTinyCloud({ did: "did:test:permanent-listed-null" });
+  expect((await connectorStore.updateSyncState(fake.tcw, {
+    connectorId: "fireflies",
+    status: "connected",
+    lastSyncedAt: watermark,
+    lastSyncStatus: "ok",
+    lastSyncError: null,
+    itemCount: 0,
+  })).ok).toBe(true);
+  const failedId = items[10]!.id;
+  const provider = makeInMemoryFireflies(items);
+  provider.failNullAlways(failedId);
+  let previousSkip = 0;
+
+  for (let run = 0; run < 50 && fake.sql.meetings.size < 1199; run++) {
+    expect((await runEngine(provider.client, fake, { now: () => new Date(now).toISOString() })).ok).toBe(true);
+    const attempt = JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey())));
+    const skip = attempt.listing_skip as number;
+    expect(skip).toBeGreaterThanOrEqual(previousSkip);
+    previousSkip = skip;
+  }
+
+  expect(fake.sql.meetings.size).toBe(1199);
+  expect(missingIds(items.filter((item) => item.id !== failedId).map((item) => item.id), new Set([...fake.sql.meetings.values()].map((row) => row.source_id)))).toEqual([]);
+  expect(missingIds(items.filter((item) => item.id !== failedId).map((item) => item.id), transcriptBodyKeys(fake))).toEqual([]);
+  expect(requiredSyncState(fake).last_sync_status).toBe("partial");
+  expect(requiredSyncState(fake).last_synced_at).toBe(watermark);
+  expect(requiredSyncState(fake).last_sync_error).toContain("1 transcript(s) failed");
+  expect(JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey()))).pending_ids).toContain(failedId);
+});
 test("terminal and cooldown failures on a pending retry stop all listing and fresh details", async () => {
   const pendingFailures = [
     {
@@ -573,7 +697,25 @@ test("terminal and cooldown failures on a pending retry stop all listing and fre
     expect(requiredSyncState(fake).last_sync_status).toBe(scenario.status);
   }
 });
-test("deleted pending transcript restarts from zero while preserving the chain start", async () => {
+test("detailCap one still retries one pending transcript", async () => {
+  _resetConnectorSchemaMemoForTests();
+  const items = buildSeed(4) as SeedTranscript[];
+  const fake = makeFakeTinyCloud({ did: "did:test:detail-cap-one-pending" });
+  const provider = makeInMemoryFireflies(items);
+  const pendingId = items[0]!.id;
+  provider.failNext(pendingId, [jsonResponse({ errors: [{ message: "temporary" }] })]);
+  expect((await runEngine(provider.client, fake, { detailCap: 1 })).ok).toBe(true);
+  expect(JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey()))).pending_ids).toContain(pendingId);
+  const detailCount = provider.calls.filter((call) => call.operation === "detail").length;
+
+  expect((await runEngine(provider.client, fake, { detailCap: 1 })).ok).toBe(true);
+
+  const detailCalls = provider.calls.filter((call) => call.operation === "detail");
+  expect(detailCalls.slice(detailCount).map((call) => call.id)).toEqual([pendingId]);
+  expect(JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey()))).pending_ids ?? []).not.toContain(pendingId);
+  expect(fake.kv.entries.has(transcriptKvKey("fireflies", pendingId))).toBe(true);
+});
+test("deleted pending transcript is dropped only after a complete listing proves absence", async () => {
   _resetConnectorSchemaMemoForTests();
   const items = buildSeed(120) as SeedTranscript[];
   const fake = makeFakeTinyCloud({ did: "did:test:deleted-pending-rescan" });
@@ -581,43 +723,50 @@ test("deleted pending transcript restarts from zero while preserving the chain s
   const deletedId = items[0]!.id;
   provider.failNext(deletedId, [jsonResponse({ errors: [{ message: "temporary" }] })]);
   expect((await runEngine(provider.client, fake)).ok).toBe(true);
-  const chainStart = JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey()))).listing_started_at;
-  expect(JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey()))).pending_ids).toContain(deletedId);
+  const initialAttempt = JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey())));
+  const chainStart = initialAttempt.listing_started_at;
+  expect(initialAttempt.pending_ids).toContain(deletedId);
   provider.deleteFromProvider(deletedId);
   provider.calls.length = 0;
 
   expect((await runEngine(provider.client, fake)).ok).toBe(true);
+  const verifyingAttempt = JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey())));
+  expect(provider.calls.filter((call) => call.operation === "list").some((call) => call.skip === 0)).toBe(true);
+  expect(verifyingAttempt.pending_ids).toContain(deletedId);
+  expect(verifyingAttempt.listing_started_at).toBe(chainStart);
 
-  const rescanOffsets = provider.calls.filter((call) => call.operation === "list").map((call) => call.skip);
-  expect(rescanOffsets.slice(0, 2)).toEqual([0, 25]);
-  const attempt = JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey())));
-  expect(attempt.pending_ids ?? []).not.toContain(deletedId);
-  expect(attempt.listing_started_at).toBe(chainStart);
-  for (let run = 0; run < 5 && requiredSyncState(fake).last_sync_status !== "ok"; run++) {
+  for (let run = 0; run < 10 && requiredSyncState(fake).last_sync_status !== "ok"; run++) {
     expect((await runEngine(provider.client, fake)).ok).toBe(true);
   }
+
   const liveIds = items.map((item) => item.id);
+  const finalAttempt = JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey())));
   expect(requiredSyncState(fake).last_sync_status).toBe("ok");
+  expect(finalAttempt.pending_ids ?? []).not.toContain(deletedId);
   expect(missingIds(liveIds, new Set([...fake.sql.meetings.values()].map((row) => row.source_id)))).toEqual([]);
   expect(missingIds(liveIds, transcriptBodyKeys(fake))).toEqual([]);
 });
-test("ambiguous duplicate anchor restarts listing at zero and recovers all rows", async () => {
+test("anchor rebasing validates date and previous neighbor across a shifted duplicate", async () => {
   _resetConnectorSchemaMemoForTests();
-  const items = buildSeed(120) as SeedTranscript[];
-  const fake = makeFakeTinyCloud({ did: "did:test:ambiguous-anchor" });
+  const items = buildSeed(180) as SeedTranscript[];
+  const sharedDate = Date.parse("2026-10-13T12:00:00.000Z");
+  items.forEach((item) => { item.date = sharedDate; });
+  const fake = makeFakeTinyCloud({ did: "did:test:anchor-neighbor-boundary" });
   const provider = makeInMemoryFireflies(items);
   expect((await runEngine(provider.client, fake)).ok).toBe(true);
   expect((await runEngine(provider.client, fake)).ok).toBe(true);
   const attempt = JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey())));
-  const anchorIndex = items.findIndex((item) => item.id === attempt.listing_anchor);
-  expect(anchorIndex).toBe(99);
-  const duplicate = { ...items[anchorIndex]! };
-  const summaries = [...items];
-  summaries.splice(105, 0, duplicate);
-  provider.setListingOverride(summaries);
+  expect(attempt.listing_skip).toBe(100);
+  expect(attempt.listing_anchor).toBe(items[99]!.id);
+  expect(attempt.listing_anchor_date).toBe(sharedDate);
+  expect(attempt.listing_previous_neighbor).toBe(items[98]!.id);
+
+  const duplicate = { ...items[99]! };
+  items.splice(0, 60);
+  items.splice(80, 0, duplicate);
   provider.calls.length = 0;
 
-  for (let run = 0; run < 5 && requiredSyncState(fake).last_sync_status !== "ok"; run++) {
+  for (let run = 0; run < 10 && requiredSyncState(fake).last_sync_status !== "ok"; run++) {
     expect((await runEngine(provider.client, fake)).ok).toBe(true);
   }
 

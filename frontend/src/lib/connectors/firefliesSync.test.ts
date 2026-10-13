@@ -619,16 +619,20 @@ describe("syncFireflies — per-item error skip", () => {
     expect(store.state?.lastSyncStatus).toBe("partial");
     expect(store.state?.preserveLastSyncedAt).toBe(true);
   });
-  test("real FirefliesClient treats a confirmed missing transcript as deleted", async () => {
+  test("real FirefliesClient keeps a freshly listed not-found transcript pending", async () => {
     const store = new FakeStore();
     const { client, fetches } = makeRealClient(["good", "missing"], { missing: ["missing"] });
 
     const result = await syncFireflies({ client, store, tcw: fakeTcw() });
 
     expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
     expect(fetches).toEqual(["missing", "good"]);
-    expect(store.state?.lastSyncStatus).toBe("ok");
-    expect(store.state?.preserveLastSyncedAt).toBe(false);
+    expect(result.data.errors).toHaveLength(1);
+    expect(result.data.errors[0]).toContain("missing");
+    expect(store.meetings.map((meeting) => meeting.sourceId)).toEqual(["good"]);
+    expect(store.state?.lastSyncStatus).toBe("partial");
+    expect(store.state?.preserveLastSyncedAt).toBe(true);
   });
 
   test("insertMeeting throw is recorded and the loop continues", async () => {

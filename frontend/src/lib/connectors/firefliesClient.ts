@@ -87,6 +87,8 @@ export interface FirefliesError {
   message: string;
   /** Only present when kind === "rate-limited". */
   retryAfterMs?: number;
+  /** Structured provider evidence; never inferred from arbitrary message text. */
+  notFound?: true;
 }
 
 export type FirefliesResult<T> =
@@ -156,6 +158,10 @@ export interface FirefliesListing {
   nextSkip: number;
   /** ID at nextSkip - 1, retained when a complete listing has pending details. */
   nextAnchor: string | null;
+  /** Listed date of nextAnchor. */
+  nextAnchorDate: number | string | null;
+  /** ID immediately before nextAnchor. */
+  nextPreviousNeighbor: string | null;
 }
 
 export interface ListNewTranscriptIdsOptions {
@@ -167,12 +173,17 @@ export interface ListNewTranscriptIdsOptions {
   pageBudget?: number;
   /** Resume a persisted bounded listing at this provider offset. */
   startSkip?: number;
-  /** Summary ID at startSkip - 1; a mismatch searches a bounded window before restarting. */
+  /** ID and listed date at startSkip - 1. */
   startAnchor?: string | null;
+  startAnchorDate?: number | string | null;
+  /** ID immediately before startAnchor, required for unambiguous rebasing. */
+  startPreviousNeighbor?: string | null;
   /** Exclusive date cutoff; older summaries complete the listing. */
   stopBeforeDate?: string | null;
   /** A known SQL row without a stored body is not complete and must be repaired. */
   isKnownComplete?: (id: string) => boolean | Promise<boolean>;
+  /** Observe summaries included in this listing range. */
+  onSummary?: (summary: FirefliesTranscriptSummary) => void;
   signal?: AbortSignal;
   onProgress?: (progress: SyncProgress) => void;
 }
@@ -318,7 +329,7 @@ export class FirefliesClient {
     if (!res.data.transcript) {
       return {
         ok: false,
-        error: { kind: "graphql-error", message: `Transcript ${id} not found` },
+        error: { kind: "graphql-error", message: `Transcript ${id} not found`, notFound: true },
       };
     }
     return { ok: true, data: res.data.transcript };
@@ -347,9 +358,11 @@ export class FirefliesClient {
       ? opts.startSkip!
       : 0;
     const startSkip = skip;
+    let pages = 0;
     const startAnchor = skip > 0 ? opts.startAnchor ?? null : null;
     let nextAnchor = startAnchor;
-    let pages = 0;
+    let nextAnchorDate = skip > 0 ? opts.startAnchorDate ?? null : null;
+    let nextPreviousNeighbor = skip > 0 ? opts.startPreviousNeighbor ?? null : null;
     let complete = false;
     let resumeResolved = skip === 0;
 
@@ -363,10 +376,15 @@ export class FirefliesClient {
         opts.signal,
       );
     };
+    const observedSummaryIds = new Set<string>();
     const collectCandidate = async (summary: FirefliesTranscriptSummary): Promise<boolean> => {
       if (Number.isFinite(cutoff)) {
         const date = firefliesDateMs(summary.date);
         if (date !== null && date < cutoff) return false;
+      }
+      if (typeof summary.id === "string" && !observedSummaryIds.has(summary.id)) {
+        observedSummaryIds.add(summary.id);
+        opts.onSummary?.(summary);
       }
       if (typeof summary.id !== "string" || seenIds.has(summary.id)) return true;
       seenIds.add(summary.id);
@@ -378,6 +396,8 @@ export class FirefliesClient {
     const restartAtNewest = () => {
       skip = 0;
       nextAnchor = null;
+      nextAnchorDate = null;
+      nextPreviousNeighbor = null;
       ids.length = 0;
       seenIds.clear();
       resumeResolved = true;
@@ -385,13 +405,22 @@ export class FirefliesClient {
     };
 
     if (skip > 0) {
-      if (!startAnchor) {
+      const anchorDate = firefliesDateMs(opts.startAnchorDate ?? null);
+      const hasAnchorDateEvidence = Object.hasOwn(opts, "startAnchorDate")
+        && (opts.startAnchorDate === null || anchorDate !== null);
+      const hasResumeEvidence = Boolean(startAnchor)
+        && hasAnchorDateEvidence
+        && (startSkip === 1 ? opts.startPreviousNeighbor === null : Boolean(opts.startPreviousNeighbor));
+      if (!hasResumeEvidence) {
         restartAtNewest();
       } else {
         // Inspect the newest page for prepends, but never claim completion after
         // the detail cap stopped this page before its date boundary.
         const head = await fetchPage(0, batchSize);
-        const anchorOffsets = new Set<number>();
+        const anchorCandidates = new Map<number, {
+          date: number | string | null;
+          previousNeighbor: string | null;
+        }>();
         let ambiguousAnchor = false;
         let headCapReached = false;
         if (head && !head.ok) {
@@ -401,10 +430,11 @@ export class FirefliesClient {
           if (summaries.length === 0) complete = true;
           for (let index = 0; index < summaries.length; index++) {
             const summary = summaries[index]!;
-            if (summary.id === startAnchor) anchorOffsets.add(index);
-            if (anchorOffsets.size > 1) {
-              ambiguousAnchor = true;
-              break;
+            if (summary.id === startAnchor) {
+              anchorCandidates.set(index, {
+                date: summary.date,
+                previousNeighbor: index > 0 ? summaries[index - 1]!.id : null,
+              });
             }
             if (!await collectCandidate(summary)) {
               complete = true;
@@ -424,9 +454,9 @@ export class FirefliesClient {
           const expected = startSkip - 1;
           const windowStart = Math.max(0, expected - batchSize);
           const windowEnd = expected + batchSize + 1;
-          let anchorOffset: number | null = null;
           let searchedWindow = true;
           let searchCapReached = false;
+          let previousSearchId: string | null = null;
           for (let pageStart = windowStart; pageStart < windowEnd; pageStart += batchSize) {
             const limit = Math.min(batchSize, windowEnd - pageStart);
             const response = await fetchPage(pageStart, limit);
@@ -445,24 +475,25 @@ export class FirefliesClient {
               const summary = summaries[index]!;
               if (summary.id === startAnchor) {
                 const offset = pageStart + index;
-                anchorOffsets.add(offset);
-                if (anchorOffsets.size > 1) {
-                  ambiguousAnchor = true;
-                  break;
-                }
-                anchorOffset = offset;
+                anchorCandidates.set(offset, {
+                  date: summary.date,
+                  previousNeighbor: index > 0 ? summaries[index - 1]!.id : previousSearchId,
+                });
               }
               if (!await collectCandidate(summary)) continue;
+              if (index >= 0 && typeof summary.id === "string") previousSearchId = summary.id;
               if (ids.length >= detailCap) {
                 searchCapReached = true;
                 break;
               }
             }
-            if (ambiguousAnchor) break;
             if (searchCapReached) {
               searchedWindow = false;
               break;
             }
+          }
+          if (anchorCandidates.size > 1) {
+            ambiguousAnchor = true;
           }
           if (ambiguousAnchor) {
             restartAtNewest();
@@ -470,10 +501,19 @@ export class FirefliesClient {
             // The original cursor is safer than rebasing before the anchor was
             // uniquely found; known IDs will make this bounded window cheaper next run.
             resumeResolved = false;
-          } else if (anchorOffset !== null) {
-            skip = anchorOffset + 1;
-            nextAnchor = startAnchor;
-            resumeResolved = true;
+          } else if (anchorCandidates.size === 1) {
+            const [anchorOffset, evidence] = [...anchorCandidates.entries()][0]!;
+            const matchesEvidence = firefliesDateMs(evidence.date) === anchorDate
+              && evidence.previousNeighbor === opts.startPreviousNeighbor;
+            if (matchesEvidence) {
+              skip = anchorOffset + 1;
+              nextAnchor = startAnchor;
+              nextAnchorDate = opts.startAnchorDate ?? null;
+              nextPreviousNeighbor = opts.startPreviousNeighbor ?? null;
+              resumeResolved = true;
+            } else {
+              restartAtNewest();
+            }
           } else if (searchedWindow) {
             // Missing or ambiguous provider positions restart at zero.
             restartAtNewest();
@@ -508,7 +548,11 @@ export class FirefliesClient {
           }
         }
         consumed++;
-        if (typeof summary.id === "string") nextAnchor = summary.id;
+        if (typeof summary.id === "string") {
+          nextPreviousNeighbor = nextAnchor;
+          nextAnchor = summary.id;
+          nextAnchorDate = summary.date;
+        }
         await collectCandidate(summary);
         if (ids.length >= detailCap) break;
       }
@@ -524,7 +568,10 @@ export class FirefliesClient {
       }
       if (ids.length >= detailCap || consumed < summaries.length) break;
     }
-    return { ok: true, data: { ids, complete, nextSkip: skip, nextAnchor } };
+    return {
+      ok: true,
+      data: { ids, complete, nextSkip: skip, nextAnchor, nextAnchorDate, nextPreviousNeighbor },
+    };
   }
 
   private async request<T>(
@@ -595,6 +642,7 @@ export class FirefliesClient {
           error: {
             kind: "network-error",
             message: `Fireflies HTTP ${response.status}${text ? `: ${text}` : ""}`,
+            ...(response.status === 404 ? { notFound: true as const } : {}),
           },
         };
       }

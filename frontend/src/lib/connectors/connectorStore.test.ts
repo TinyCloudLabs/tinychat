@@ -1412,6 +1412,8 @@ describe("connectorStore.updateSyncState / getConnection", () => {
       listing_skip: 500,
       listing_started_at: "2026-10-10T00:00:00.000Z",
       listing_anchor: "mock-tx-251",
+      listing_anchor_date: 1700000000000,
+      listing_previous_neighbor: "mock-tx-250",
       pending_ids: ["failed-transcript"],
     };
     await recordFirefliesAttempt(f.tcw, {
@@ -1422,8 +1424,9 @@ describe("connectorStore.updateSyncState / getConnection", () => {
       listingStartedAt: value.listing_started_at,
       pendingIds: value.pending_ids,
       listingAnchor: value.listing_anchor,
+      listingAnchorDate: value.listing_anchor_date,
+      listingPreviousNeighbor: value.listing_previous_neighbor,
     });
-    expect(f.kv.entries.get(firefliesAttemptKvKey())).toBe(JSON.stringify(value));
     expect(f.kv.putValues.at(-1)).toBe(JSON.stringify(value));
 
     for (const data of [JSON.stringify(value), value]) {
@@ -1438,6 +1441,8 @@ describe("connectorStore.updateSyncState / getConnection", () => {
           listingSkip: 500,
           listingStartedAt: value.listing_started_at,
           listingAnchor: value.listing_anchor,
+          listingAnchorDate: value.listing_anchor_date,
+          listingPreviousNeighbor: value.listing_previous_neighbor,
           pendingIds: ["failed-transcript"],
         },
       });
@@ -1482,6 +1487,8 @@ describe("connectorStore.updateSyncState / getConnection", () => {
       listing_skip: 100,
       listing_started_at: "2026-10-10T00:00:00.000Z",
       listing_anchor: "anchor-99",
+      listing_anchor_date: 1700000000000,
+      listing_previous_neighbor: "anchor-98",
     };
     const invalidPending = [
       "corrupt",
@@ -1501,6 +1508,8 @@ describe("connectorStore.updateSyncState / getConnection", () => {
           listingSkip: null,
           listingStartedAt: null,
           listingAnchor: null,
+          listingAnchorDate: null,
+          listingPreviousNeighbor: null,
           ...(Array.isArray(pending_ids)
             ? { pendingIds: pending_ids.filter((id): id is string => typeof id === "string").slice(0, 50) }
             : {}),
@@ -1548,6 +1557,8 @@ describe("connectorStore.updateSyncState / getConnection", () => {
         listingSkip: null,
         listingStartedAt: null,
         listingAnchor: null,
+        listingAnchorDate: null,
+        listingPreviousNeighbor: null,
       },
     });
   });

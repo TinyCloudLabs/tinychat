@@ -60,8 +60,14 @@ export interface FirefliesAttempt {
   listingStartedAt?: string | null;
   /** Summary ID at listingSkip - 1, binding the offset to provider history. */
   listingAnchor?: string | null;
+  listingAnchorDate?: number | string | null;
+  listingPreviousNeighbor?: string | null;
   /** Failed IDs are retried on every run; capped to keep the record small. */
   pendingIds?: string[];
+  /** Pending not-found retries; absence must be proven by a complete listing. */
+  suspectIds?: string[];
+  /** Suspect IDs observed during their complete-listing proof chain. */
+  suspectSeenIds?: string[];
 }
 export async function getFirefliesAttempt(
   tcw: TinyCloudWeb,
@@ -90,25 +96,57 @@ export async function getFirefliesAttempt(
   const skip = row.listing_skip;
   const startedAt = row.listing_started_at;
   const anchor = row.listing_anchor;
-  const hasCursor = skip !== undefined || startedAt !== undefined || anchor !== undefined;
+  const anchorDate = row.listing_anchor_date;
+  const previousNeighbor = row.listing_previous_neighbor;
+  const hasAnchorDate = Object.hasOwn(row, "listing_anchor_date");
+  const hasPreviousNeighbor = Object.hasOwn(row, "listing_previous_neighbor");
+  const hasCursor = skip !== undefined || startedAt !== undefined || anchor !== undefined
+    || hasAnchorDate || hasPreviousNeighbor;
   const rawPending = row.pending_ids;
   const pendingPresent = Object.hasOwn(row, "pending_ids");
   const pendingArray = Array.isArray(rawPending) ? rawPending : null;
   const pendingInvalid = pendingPresent && (!pendingArray
     || pendingArray.length > FIREFLIES_MAX_PENDING_IDS
     || !pendingArray.every((id) => typeof id === "string" && id.length > 0));
-  const cursorValid = !pendingInvalid
+  const rawSuspects = row.suspect_ids;
+  const rawSeen = row.suspect_seen_ids;
+  const suspectPresent = Object.hasOwn(row, "suspect_ids") || Object.hasOwn(row, "suspect_seen_ids");
+  const suspectArray = Array.isArray(rawSuspects) ? rawSuspects : null;
+  const seenArray = Array.isArray(rawSeen) ? rawSeen : null;
+  const suspectInvalid = suspectPresent && (!suspectArray || !seenArray
+    || suspectArray.length > FIREFLIES_MAX_PENDING_IDS
+    || seenArray.length > FIREFLIES_MAX_PENDING_IDS
+    || !suspectArray.every((id) => typeof id === "string" && id.length > 0)
+    || !seenArray.every((id) => typeof id === "string" && id.length > 0)
+    || seenArray.some((id) => !suspectArray.includes(id)));
+  const validAnchorDate = anchorDate === null
+    || (typeof anchorDate === "number" && Number.isFinite(anchorDate))
+    || (typeof anchorDate === "string" && Number.isFinite(Date.parse(anchorDate)));
+  const cursorValid = !pendingInvalid && !suspectInvalid
     && Number.isSafeInteger(skip)
     && (skip as number) >= 0
     && typeof startedAt === "string"
     && Number.isFinite(Date.parse(startedAt))
     && ((skip as number) === 0
-      ? anchor === undefined || anchor === null
-      : typeof anchor === "string" && anchor.length > 0);
+      ? anchor == null && (anchorDate === undefined || anchorDate === null)
+        && (previousNeighbor === undefined || previousNeighbor === null)
+      : typeof anchor === "string" && anchor.length > 0
+        && hasAnchorDate && validAnchorDate
+        && hasPreviousNeighbor
+        && ((skip as number) === 1
+          ? previousNeighbor === null
+          : typeof previousNeighbor === "string" && previousNeighbor.length > 0));
   const pendingIds = pendingArray
     ? [...new Set(pendingArray.filter((id): id is string => typeof id === "string" && id.length > 0))]
         .slice(0, FIREFLIES_MAX_PENDING_IDS)
     : [];
+  const suspectIds = !suspectInvalid && suspectArray
+    ? [...new Set(suspectArray as string[])]
+    : [];
+  const suspectSeenIds = !suspectInvalid && seenArray
+    ? [...new Set(seenArray as string[])]
+    : [];
+  const includeSuspects = !suspectInvalid && suspectPresent;
   return {
     ok: true,
     data: {
@@ -121,10 +159,19 @@ export async function getFirefliesAttempt(
               listingSkip: skip as number,
               listingStartedAt: startedAt as string,
               listingAnchor: typeof anchor === "string" ? anchor : null,
+              listingAnchorDate: anchorDate as number | string | null,
+              listingPreviousNeighbor: typeof previousNeighbor === "string" ? previousNeighbor : null,
             }
-          : { listingSkip: null, listingStartedAt: null, listingAnchor: null }
+          : {
+              listingSkip: null,
+              listingStartedAt: null,
+              listingAnchor: null,
+              listingAnchorDate: null,
+              listingPreviousNeighbor: null,
+            }
         : {}),
       ...(pendingIds.length > 0 ? { pendingIds } : {}),
+      ...(includeSuspects ? { suspectIds, suspectSeenIds } : {}),
     },
   };
 }
@@ -136,13 +183,23 @@ export async function recordFirefliesAttempt(
   const dedupedPending = attempt.pendingIds === undefined
     ? undefined
     : [...new Set(attempt.pendingIds.filter((id) => typeof id === "string" && id.length > 0))];
-  const cursorOverflowsPending = (dedupedPending?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS
-    && (attempt.listingSkip !== undefined
-      || attempt.listingStartedAt !== undefined
-      || attempt.listingAnchor !== undefined);
-  const listingSkip = cursorOverflowsPending ? null : attempt.listingSkip;
-  const listingStartedAt = cursorOverflowsPending ? null : attempt.listingStartedAt;
-  const listingAnchor = cursorOverflowsPending ? null : attempt.listingAnchor;
+  const dedupedSuspects = attempt.suspectIds === undefined
+    ? undefined
+    : [...new Set(attempt.suspectIds.filter((id) => typeof id === "string" && id.length > 0))];
+  const dedupedSeen = attempt.suspectSeenIds === undefined
+    ? undefined
+    : [...new Set(attempt.suspectSeenIds.filter((id) => typeof id === "string" && id.length > 0))];
+  const hasCursor = attempt.listingSkip !== undefined
+    || attempt.listingStartedAt !== undefined
+    || attempt.listingAnchor !== undefined;
+  const cursorOverflow = ((dedupedPending?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS
+    || (dedupedSuspects?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS
+    || (dedupedSeen?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS) && hasCursor;
+  const listingSkip = cursorOverflow ? null : attempt.listingSkip;
+  const listingStartedAt = cursorOverflow ? null : attempt.listingStartedAt;
+  const listingAnchor = cursorOverflow ? null : attempt.listingAnchor;
+  const listingAnchorDate = cursorOverflow ? null : attempt.listingAnchorDate;
+  const listingPreviousNeighbor = cursorOverflow ? null : attempt.listingPreviousNeighbor;
   const res = await tcw.kv.put(firefliesAttemptKvKey(), JSON.stringify({
     v: 1,
     last_attempt_at: attempt.lastAttemptAt,
@@ -150,9 +207,19 @@ export async function recordFirefliesAttempt(
     ...(listingSkip === undefined ? {} : { listing_skip: listingSkip }),
     ...(listingStartedAt === undefined ? {} : { listing_started_at: listingStartedAt }),
     ...(listingAnchor === undefined ? {} : { listing_anchor: listingAnchor }),
+    ...(listingAnchorDate === undefined ? {} : { listing_anchor_date: listingAnchorDate }),
+    ...(listingPreviousNeighbor === undefined
+      ? {}
+      : { listing_previous_neighbor: listingPreviousNeighbor }),
     ...(dedupedPending === undefined
       ? {}
       : { pending_ids: dedupedPending.slice(0, FIREFLIES_MAX_PENDING_IDS) }),
+    ...(dedupedSuspects === undefined
+      ? {}
+      : { suspect_ids: dedupedSuspects.slice(0, FIREFLIES_MAX_PENDING_IDS) }),
+    ...(dedupedSeen === undefined
+      ? {}
+      : { suspect_seen_ids: dedupedSeen.slice(0, FIREFLIES_MAX_PENDING_IDS) }),
   }));
   if (!res.ok) return fail(res.error, "recordFirefliesAttempt");
   return { ok: true, data: undefined };
