@@ -1,4 +1,4 @@
-import { logPipelineError } from "@/lib/debugLog";
+import { logPipeline, logPipelineError } from "@/lib/debugLog";
 import { readableError } from "@/lib/readableError";
 // Voice notes in the owner's TinyCloud space: one indexed live
 // `connector_meeting` row, a `voice_note_transcript` commit record, and bodies
@@ -378,12 +378,17 @@ export async function saveVoiceNote(
   platform: string,
   opts: StoreAudioOptions = {},
 ): Promise<StoreResult<UpsertMeetingOutcome & { noteSyncError?: NoteSyncErrorCode }>> {
+  logPipeline("save", recording.id, "start");
   try {
     opts.checkpoint?.();
     const before = await withVoiceNoteSaveDeadline("voice-note space setup", () => ensureVoiceNoteIdentity(tcw, opts.checkpoint));
-    if (before.status !== "established") return { ok: false, error: { code: before.status, message: before.reason ?? before.status, cause: before.cause } };
+    if (before.status !== "established") {
+      logPipelineError("space_setup", before.cause ?? before.reason ?? before.status, recording.id);
+      return { ok: false, error: { code: before.status, message: before.reason ?? before.status, cause: before.cause } };
+    }
     opts.checkpoint?.();
     const row = await createVoiceNoteRow(tcw, recording, voiceNoteTitle(recording.startedAt), opts.checkpoint);
+    logPipeline("space_write", recording.id, "done", { destination: "connector_meeting" });
     opts.checkpoint?.();
     await opts.onRowCreated?.(row.id);
     opts.checkpoint?.();
@@ -394,29 +399,47 @@ export async function saveVoiceNote(
     const emptyKey = transcriptKvKey(VOICE_NOTE_SOURCE, recording.id);
     const empty = await runOnSpaceLane((signal) => { opts.checkpoint?.(); return tcw.kv.put(emptyKey, "[]",
       { ifNoneMatch: "*", contentType: "application/json", signal }); }, { operation: `KV put ${emptyKey}` });
-    if (!empty.ok && !/PRECONDITION|412/i.test(`${empty.error.code} ${empty.error.message}`))
+    if (!empty.ok && !/PRECONDITION|412/i.test(`${empty.error.code} ${empty.error.message}`)) {
+      logPipelineError("space_write", empty.error, recording.id);
       return { ok: false, error: { code: empty.error.code ?? "STORE_ERROR", message: empty.error.message, cause: empty.error } };
+    }
+    logPipeline("space_write", recording.id, "done", { destination: "legacy_transcript_key", bodyBytes: 2 });
     opts.checkpoint?.();
+    logPipeline("audio_upload", recording.id, "start");
     const audio = await putVoiceNoteAudio(tcw, recording.id, source, { ...opts, schedule: (job, operation, timeoutMs, payloadBytes) =>
       (opts.schedule ?? ((call, label, limit, size) => runOnSpaceLane(call, {
         operation: label ?? "voice-note audio KV call", timeoutMs: limit, payloadBytes: size,
-      })))((signal) => { opts.checkpoint?.(); return job(signal); }, operation, timeoutMs, payloadBytes) });
-    if (!audio.ok) return audio;
+      })))((signal) => { opts.checkpoint?.(); return job(signal); }, operation, timeoutMs, payloadBytes),
+      onProgress: (stored, total) => {
+        logPipeline("audio_upload", recording.id, "progress", { bodyBytes: stored, totalBytes: total });
+        opts.onProgress?.(stored, total);
+      } });
+    if (!audio.ok) {
+      logPipelineError("audio_upload", audio.error, recording.id);
+      return audio;
+    }
+    logPipeline("audio_upload", recording.id, "done", { bodyBytes: audio.data.size });
     const base = voiceNoteAudioKvKey(recording.id);
     opts.checkpoint?.();
     await patchVoiceNoteAudio(tcw, recording, platform, { base, mimeType: audio.data.mimeType,
       size: audio.data.size, parts: audio.data.parts.length }, opts.checkpoint);
+    logPipeline("space_write", recording.id, "done", { destination: "connector_meeting_audio" });
     // Audio has landed. A Markdown failure is separate; the row's absent/stale
     // note_edited_at keeps it eligible for the next reconciliation or edit.
     let noteSyncError: NoteSyncErrorCode | undefined;
-    try { await syncRecordingNote(tcw, recording.id, opts.checkpoint); }
+    try {
+      await syncRecordingNote(tcw, recording.id, opts.checkpoint);
+      logPipeline("space_write", recording.id, "done", { destination: "note_markdown" });
+    }
     catch (caught) {
       opts.checkpoint?.(); // Cancellation and discard still stop this save.
       noteSyncError = "sync_failed";
-      logPipelineError("[VoiceNotes] Audio saved, but its Markdown did not sync", caught);
+      logPipelineError("markdown_space_write", caught, recording.id);
     }
+    logPipeline("save", recording.id, "done");
     return { ok: true, data: { id: row.id, inserted: row.inserted, createdAt: row.createdAt, noteSyncError } };
   } catch (caught) {
+    logPipelineError("save", caught, recording.id);
     return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
       message: readableError(caught), cause: caught } };
   }
@@ -531,6 +554,7 @@ export async function saveVoiceNoteTranscript(
   account?: VoiceNoteTranscriptAccount,
   checkpoint: () => void = () => undefined,
 ): Promise<StoreResult<UpsertMeetingOutcome>> {
+  logPipeline("transcript_persist", sourceId, "start", { destination: "voice_note_transcript SQL + immutable KV" });
   const accountGeneration = account?.generation ?? currentAccountGeneration();
   checkpoint();
   if (!Number.isSafeInteger(transcript.rev) || transcript.rev < 1)
@@ -552,6 +576,7 @@ export async function saveVoiceNoteTranscript(
     checkpoint();
   } catch (caught) {
     if (caught instanceof StaleAccountContext) throw caught;
+    logPipelineError("transcript_persist", caught, sourceId);
     return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
       message: readableError(caught) } };
   }
@@ -577,6 +602,10 @@ export async function saveVoiceNoteTranscript(
       participants: transcript.speakers,
       transcribedAt: typeof m.transcribed_at === "string" ? m.transcribed_at : null, metadata: m,
     }, checkpoint);
+    logPipeline("transcript_persist", sourceId, "done", {
+      destination: "voice_note_transcript SQL + immutable KV",
+      bodyBytes: new TextEncoder().encode(JSON.stringify(transcript.sentences)).byteLength,
+    });
     checkpoint();
     if (accountGeneration === currentAccountGeneration() && (!account?.did || isVoiceNoteAccountMounted(account.did))) {
       captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId });
@@ -585,6 +614,7 @@ export async function saveVoiceNoteTranscript(
       createdAt: new Date().toISOString() } };
   } catch (caught) {
     if (caught instanceof StaleAccountContext) throw caught;
+    logPipelineError("transcript_persist", caught, sourceId);
     return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
       message: readableError(caught) } };
   }

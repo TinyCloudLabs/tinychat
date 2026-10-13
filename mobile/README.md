@@ -165,10 +165,13 @@ bun run build:frontend
 # Frontend dev server against production services:
 bun run --cwd frontend dev -- --mode production --port 5391 --strictPort
 # Build and install a live-reload shell; the WebView loads http://localhost:5186:
-cd mobile && EXO_DEV_SERVER_URL=http://localhost:5186 bunx cap sync android
+cd mobile && EXO_DEV_BUILD=true EXO_DEV_SERVER_URL=http://localhost:5186 bunx cap sync android
 cd android && ./gradlew assembleDebug && adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb reverse tcp:5186 tcp:5391   # device :5186 → host dev server
 ```
+
+Android Debug installs as `xyz.tinycloud.exo.dev`; Release keeps
+`xyz.tinycloud.exo`.
 
 The WebView origin must be exactly `http://localhost:5186`, one of the
 backend's allowed CORS origins. `adb reverse` lets the host server run on any

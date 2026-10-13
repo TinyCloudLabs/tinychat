@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "sync": "cap sync",
-    "android": "cap run android",
+    "android": "EXO_DEV_BUILD=true cap run android",
     "open:android": "cap open android",
     "build:web": "bun run --cwd ../frontend build",
     "build:android": "bun run build:web && cap sync android && cd android && ./gradlew assembleDebug"

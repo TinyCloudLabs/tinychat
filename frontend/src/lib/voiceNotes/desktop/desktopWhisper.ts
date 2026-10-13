@@ -1,4 +1,5 @@
 import type { BatchResponse, TranscriptionEvent } from "@/lib/anarlog/transcription.gen";
+import { logPipeline, logPipelineError } from "@/lib/debugLog";
 import type { WhisperModel } from "@/lib/localTranscriber";
 import { leaseWhisperServer, SHARED_WHISPER_SERVER_SCOPE, type WhisperServerLease } from "@/lib/whisperServerLease";
 import type { NoteSttState, VoiceNoteRecording } from "../nativeVoiceNotes";
@@ -152,6 +153,7 @@ export function createDesktopWhisperQueue(args: {
         return;
       }
       const model = await selectedModel();
+      logPipeline("transcription", id, "start", { engine: "whisper" });
       await mark(id, "running");
       stagedId = await stageId(id);
       await stageAudio(id, stagedId);
@@ -174,6 +176,7 @@ export function createDesktopWhisperQueue(args: {
           if (event.type === "progress") {
             if (event.event.type === "progress") {
               const progress = Math.round(event.event.percentage * 100);
+              logPipeline("transcription", id, "progress", { engine: "whisper" });
               progressUpdates = progressUpdates.then(() => mark(id, "running", null, progress));
             }
             return;
@@ -195,9 +198,11 @@ export function createDesktopWhisperQueue(args: {
       });
       if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
       await store.putTranscript({ id, transcript: whisperLocalTranscript(note, model, response) });
+      logPipeline("transcription", id, "done", { engine: "whisper" });
       await mark(id, "done");
       emitDone(id);
     } catch (error) {
+      logPipelineError("transcription", error, id);
       if (disposed) return;
       const message = whisperFailure(error);
       if (stopping || captureLive() || message.includes("capture_has_priority")) await mark(id, "queued");

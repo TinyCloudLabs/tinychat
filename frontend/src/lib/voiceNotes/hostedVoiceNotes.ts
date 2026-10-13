@@ -1,4 +1,5 @@
 import type { SessionStore } from "@tinyboilerplate/client";
+import { logPipeline, logPipelineError } from "@/lib/debugLog";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { AssemblyAiError, assemblyAiSentences, createHostedAssemblyAiClient, type AssemblyAiTranscript } from "../assemblyai";
 import { base64ToBytes } from "./voiceNoteAudio";
@@ -49,7 +50,13 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
   const active = new Set<string>();
   const notify = () => { for (const listener of listeners) listener(); };
   const consented = () => storage()?.getItem(`${CONSENT}:${did}`) === "1";
-  const state = (id: string, status: VoiceNoteTranscriptionStatus) => { jobs.set(id, { kind: "active", status }); notify(); };
+  const state = (id: string, status: VoiceNoteTranscriptionStatus) => {
+    logPipeline(status.kind === "uploading" ? "transcription_audio_upload" : "transcription",
+      id, status.kind === "uploading" && status.progress != null ? "progress" : status.kind,
+      { engine: "assemblyai", ...(status.kind === "uploading" && status.progress != null
+        ? { progressPct: Math.round(status.progress * 100) } : {}) });
+    jobs.set(id, { kind: "active", status }); notify();
+  };
   const persist = (id: string, patch: Stored | null) => {
     const all = readJobs(did);
     if (patch === null) delete all[id];
@@ -64,6 +71,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
     const id = recording.id;
     if (active.has(id) || !consented() || (recording.owner && recording.owner !== did) || recording.source !== "in_app" || recording.options?.transcriber !== "assemblyai") return;
     active.add(id);
+    logPipeline("transcription", id, "start", { engine: "assemblyai" });
     const generation = currentAccountGeneration();
     const guard = () => {
       if (currentAccountGeneration() !== generation || tcw().did !== did) throw new Error("The recording account changed. Retry after signing in.");
@@ -130,6 +138,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
                 await client.putPart(uploadId, index, bytes);
                 state(id, { kind: "uploading", progress: Math.min(1, (offset + bytes.length) / source.size) });
               }
+              logPipeline("transcription_audio_upload", id, "done", { engine: "assemblyai", bodyBytes: source.size });
             }
             guard();
             const opId = crypto.randomUUID();
@@ -184,8 +193,10 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       await client.deleteTranscript(handle);
       persist(id, null);
       jobs.set(id, { kind: "done", outcome });
+      logPipeline("transcription", id, "done", { engine: "assemblyai" });
       notify();
     } catch (error) {
+      logPipelineError("transcription", error, id);
       const message = error instanceof AssemblyAiError ? error.message
         : error instanceof Error && error.message.startsWith("The transcript is ready") ? error.message
         : "Powerful couldn't finish this transcript. Try again.";

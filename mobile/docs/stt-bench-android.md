@@ -10,8 +10,8 @@ On an emulator or the Moto (when available), use an explicit serial `S`:
 
 ```sh
 adb -s "$S" push "$HOME/.cache/exo-stt-fixtures/." /data/local/tmp/stt-bench/
-adb -s "$S" shell run-as xyz.tinycloud.exo mkdir -p files/stt-bench
-adb -s "$S" shell run-as xyz.tinycloud.exo cp -r /data/local/tmp/stt-bench/. files/stt-bench/
+adb -s "$S" shell run-as xyz.tinycloud.exo.dev mkdir -p files/stt-bench
+adb -s "$S" shell run-as xyz.tinycloud.exo.dev cp -r /data/local/tmp/stt-bench/. files/stt-bench/
 ```
 
 From the app bridge in `chrome://inspect`, call `OnDeviceStt.benchmark({dir: "files/stt-bench", threads: [2, 4], blankPenalty: 1.0, padSeconds: 0, clusterThreshold: 0.8})`. The options are explicit diagnostics: `blankPenalty` accepts 0–2, leading and trailing `padSeconds` accepts 0–1, and clustering accepts 0.5–1.5. `only` optionally selects one of `ls-1089-10m`, `ami-es2004a-10m`, or `ls-alt-2spk-10m`. `asrOnly: true` skips diarization for a focused sweep; it cannot produce a DER gate result. A dedicated serial benchmark thread keeps other plugin calls responsive. Calls are queued on that thread. Each call returns a `runId` and `output` path and writes each fixture's `.hyp.txt`, `.words.json`, `.rttm`, and `.metrics.json` under `files/stt-bench/results/android/<runId>/`. Calls never overwrite previous results. Four-thread files use the fixture basename; two-thread files have a `-t2` suffix.
@@ -19,7 +19,7 @@ From the app bridge in `chrome://inspect`, call `OnDeviceStt.benchmark({dir: "fi
 For the extra-RSS gate, start a fresh app process and make the **first** benchmark call `OnDeviceStt.benchmark({dir: "files/stt-bench", threads: [4], only: "ami-es2004a-10m"})`. This measures diarization after only the AMI recognizer lifetime. Check that its metrics say `coldLoad: true`; `coldLoadSeconds` is populated only for the first successful recognizer construction in a process. Later `loadSeconds` values are warm and cannot satisfy the cold-load gate. Use a separate fresh process for other cold settings.
 
 ```sh
-adb -s "$S" exec-out run-as xyz.tinycloud.exo tar c files/stt-bench/results | tar x -C /tmp
+adb -s "$S" exec-out run-as xyz.tinycloud.exo.dev tar c files/stt-bench/results | tar x -C /tmp
 RUN_ID='<runId returned by the call>'
 RESULTS="/tmp/files/stt-bench/results/android/$RUN_ID"
 python3 mobile/scripts/stt-fixtures/wer.py "$HOME/.cache/exo-stt-fixtures/ls-1089-10m.ref.txt" "$RESULTS/ls-1089-10m.hyp.txt"

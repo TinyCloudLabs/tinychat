@@ -49,11 +49,11 @@ adb -s emulator-5574 install -r mobile/android/app/build/outputs/apk/debug/app-d
 adb -s emulator-5574 install -r -t mobile/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 
 for test in shortcutFirstUsePermissionGrantStartsRecording shortcutDeniedPermissionClearsCommandWithoutReprompting; do
-  adb -s emulator-5574 shell pm revoke xyz.tinycloud.exo android.permission.RECORD_AUDIO
-  adb -s emulator-5574 shell pm clear-permission-flags xyz.tinycloud.exo android.permission.RECORD_AUDIO user-set user-fixed
+  adb -s emulator-5574 shell pm revoke xyz.tinycloud.exo.dev android.permission.RECORD_AUDIO
+  adb -s emulator-5574 shell pm clear-permission-flags xyz.tinycloud.exo.dev android.permission.RECORD_AUDIO user-set user-fixed
   adb -s emulator-5574 shell am instrument -w -r \
     -e class "xyz.tinycloud.exo.capture.CaptureInstrumentedTest#$test" \
-    xyz.tinycloud.exo.test/androidx.test.runner.AndroidJUnitRunner
+    xyz.tinycloud.exo.dev.test/androidx.test.runner.AndroidJUnitRunner
 done
 ```
 
