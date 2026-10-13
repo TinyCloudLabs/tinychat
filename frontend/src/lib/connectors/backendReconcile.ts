@@ -150,6 +150,7 @@ export interface ReconcileBackendMeetingsOptions {
   signal?: AbortSignal;
   /** Injectable clock — the copy stamp in the user-space record. */
   now?: () => string;
+  onPendingSnapshot?: (rows: readonly ConnectorMeetingMeta[]) => Promise<void>;
 }
 
 const defaultSecrets: BackendReconcileSecrets = { isUnlocked: isSecretsUnlocked };
@@ -251,9 +252,10 @@ export async function reconcileBackendMeetings(
     return { ok: true, data: { ...outcome, blocked: "vault-locked" } };
   }
 
-  let cursor: string | undefined;
+  const listedRows: ConnectorMeetingMeta[] = [];
 
   // ── Page the discovery filter, sequentially ────────────────────────
+  let cursor: string | undefined;
   for (;;) {
     if (opts.signal?.aborted) {
       outcome.truncated = true;
@@ -285,6 +287,7 @@ export async function reconcileBackendMeetings(
     }
 
     for (const meta of list.value.meetings) {
+      listedRows.push(meta);
       if (opts.signal?.aborted) {
         outcome.truncated = true;
         break;
@@ -307,6 +310,18 @@ export async function reconcileBackendMeetings(
     cursor = next;
   }
 
+  if (!outcome.truncated && opts.signal?.aborted !== true && outcome.blocked === null) {
+    const stillPending = new Set([
+      ...outcome.failures.map(({ sourceId }) => sourceId),
+      ...outcome.unacknowledged,
+    ]);
+    const pending = listedRows.filter((meta) => stillPending.has(meta.sourceId));
+    try {
+      await opts.onPendingSnapshot?.(pending);
+    } catch {
+      // Snapshot persistence is ancillary; the next existing pass retries.
+    }
+  }
   return { ok: true, data: outcome };
 }
 

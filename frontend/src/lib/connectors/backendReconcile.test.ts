@@ -290,6 +290,30 @@ describe("reconcileBackendMeetings — the user-space copy", () => {
     expect(res.data.reconciled).toBe(1);
   });
 
+  test("snapshots only unresolved rows from the existing complete discovery pass", async () => {
+    const { tcw, kv } = makeTcw(tracker);
+    const pending = [meta({ sourceId: "mtg-failed", title: "PRIVATE_TITLE" })];
+    kv.failKeys.add(meetingKvKey(SOURCE, "mtg-failed"));
+    const api = client({ lists: [okList([
+      meta({ sourceId: "mtg-saved" }),
+      ...pending,
+    ])] }, tracker);
+    const snapshots: ConnectorMeetingMeta[][] = [];
+
+    const result = await reconcileBackendMeetings({
+      tcw,
+      source: SOURCE,
+      meetings: api,
+      secrets: unlocked(),
+      onPendingSnapshot: async (rows) => { snapshots.push([...rows]); },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]?.map(({ sourceId }) => sourceId)).toEqual(["mtg-failed"]);
+    expect(api.listArgs).toHaveLength(1);
+  });
+
   test("[delta-06] a stored-but-unacked meeting is reported, never counted as reconciled", async () => {
     const { tcw, kv } = makeTcw(tracker);
     const api = client(

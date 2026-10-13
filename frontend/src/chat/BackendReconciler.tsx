@@ -35,8 +35,9 @@ import {
   type BackendReconcileSecrets,
 } from "@/lib/connectors/backendReconcile";
 import { onSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
-import { createConnectorMeetingsClient } from "@/lib/connectors/meetingsApi";
 import { DEFAULT_MEETINGS_SOURCE } from "@/lib/connectors/meetingsView";
+import { createConnectorMeetingsClient } from "@/lib/connectors/meetingsApi";
+import { backendPendingRows, writePendingReconcileSnapshot } from "@/lib/connectors/pendingReconcileSnapshot";
 import { enqueueDrainWork } from "./useBackgroundDrain";
 
 export interface BackendReconcileMountOptions {
@@ -63,6 +64,8 @@ export async function runBackendReconcile(
   const meetings =
     options.meetings ??
     createConnectorMeetingsClient(backendUrl, { sessionStore });
+  const ownerAddress = sessionStore.getAddress();
+  const currentAccount = () => ownerAddress === sessionStore.getAddress() && !!sessionStore.getToken() && !sessionStore.isExpired();
   try {
     await enqueueDrainWork(() =>
       reconcileBackendMeetings({
@@ -70,6 +73,16 @@ export async function runBackendReconcile(
         meetings,
         source: options.source ?? DEFAULT_MEETINGS_SOURCE,
         ...(options.secrets === undefined ? {} : { secrets: options.secrets }),
+        onPendingSnapshot: async (rows) => {
+          if (!currentAccount()) return;
+          await writePendingReconcileSnapshot(
+            tcw.kv,
+            "backend-ingest",
+            backendPendingRows(options.source ?? DEFAULT_MEETINGS_SOURCE, rows),
+            undefined,
+            currentAccount,
+          );
+        },
       }),
     );
   } catch {

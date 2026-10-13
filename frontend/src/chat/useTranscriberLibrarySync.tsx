@@ -1,13 +1,14 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { createTranscriberClient, type TranscriberClient, type TranscriberMeeting, type TranscriberTranscript } from "@/lib/transcriberApi";
+import { createTranscriberClient, type TranscriberClient, type TranscriberListRow, type TranscriberMeeting, type TranscriberTranscript } from "@/lib/transcriberApi";
 import { listSavedTranscriberMeetingIds, listSavedTranscriberVersions, refreshTranscriberMeeting, saveTranscriberMeeting, TRANSCRIBER_MEETING_SOURCE } from "@/lib/transcriberSave";
 import { isSecretsUnlocked, onSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
 import { secretsAvailable } from "@/lib/openkeyNative";
 import { captureEvents } from "@/capture/captureEvents";
 import { enqueueDrainWork } from "./useBackgroundDrain";
 import { serverDeliveryActive } from "@/lib/transcriptDeliveryState";
+import { transcriberPendingRows, writePendingReconcileSnapshot } from "@/lib/connectors/pendingReconcileSnapshot";
 
 export type TranscriberSaveState = "saving" | "saved" | "error";
 export const TRANSCRIBER_LIBRARY_RETRY_MS = 30_000;
@@ -47,7 +48,8 @@ export async function syncTranscriberLibrary(input: {
   onState?: (id: string, state: TranscriberSaveState) => void;
   deliveryActive?: () => boolean;
   now?: () => number;
-  refreshBackoff?: TranscriberRefreshBackoff;
+refreshBackoff?: TranscriberRefreshBackoff;
+onPendingSnapshot?: (rows: readonly TranscriberListRow[], savedIds: readonly string[]) => Promise<void>;
 }): Promise<void> {
   const { tcw, client, saver = defaultSaver, isCurrent = () => true, onState = () => {}, observedSaved,
     deliveryActive = serverDeliveryActive, now = Date.now, refreshBackoff = new Map() } = input;
@@ -145,8 +147,9 @@ export async function syncTranscriberLibrary(input: {
       }
       if (!isCurrent()) return;
       if (ok) {
-        captureEvents.emit("library-changed", { source: TRANSCRIBER_MEETING_SOURCE, sourceId: row.id });
+        saved.add(row.id);
         observedSaved?.ids.add(row.id);
+        captureEvents.emit("library-changed", { source: TRANSCRIBER_MEETING_SOURCE, sourceId: row.id });
       }
       onState(row.id, ok ? "saved" : "error");
     } catch {
@@ -154,6 +157,7 @@ export async function syncTranscriberLibrary(input: {
       if (isCurrent()) onState(row.id, "error");
     }
   }
+  if (isCurrent()) await input.onPendingSnapshot?.(listed.value.meetings, [...saved]);
 }
 
 export function useTranscriberLibrarySync(input: {
@@ -196,6 +200,12 @@ export function useTranscriberLibrarySync(input: {
           await syncTranscriberLibrary({
             tcw, client: api, saver, isCurrent, observedSaved, refreshBackoff, onState: (id, state) => {
               if (accountCurrent()) setSaved((old) => ({ ...old, [id]: state }));
+            },
+            onPendingSnapshot: async (rows, savedIds) => {
+              if (!accountCurrent()) return;
+              await enqueueDrainWork(() => accountCurrent()
+                ? writePendingReconcileSnapshot(tcw.kv, "transcriber", transcriberPendingRows(rows, savedIds), undefined, accountCurrent)
+                : Promise.resolve({ ok: true, changed: false }));
             },
           });
         }
