@@ -44,7 +44,7 @@ describe("localModelGuide", () => {
 
   test("a failed model says why and offers the download again", () => {
     const guide = localModelGuide(status({}, { state: "failed", error: "disk full" }), download().download);
-    expect(guide.reason).toBe("Couldn't download the on-device model: disk full");
+    expect(guide.reason).toBe("Couldn't download the on-device model");
     expect(guide.action?.label).toBe("Try again");
   });
 
@@ -56,7 +56,7 @@ describe("localModelGuide", () => {
 
   test("a download that could not start shows that reason, with Try again", () => {
     const guide = localModelGuide(status(), download("Could not start the download: no network plugin").download);
-    expect(guide.reason).toBe("Could not start the download: no network plugin");
+    expect(guide.reason).toBe("Couldn't download the on-device model");
     expect(guide.action?.label).toBe("Try again");
   });
 
@@ -93,7 +93,7 @@ describe("the waiting-for-model copy", () => {
     const running = status({ download: { policy: "wifi", state: "running" } }, { state: "downloading", bytes: 301 * MB });
     expect(waitingForModelSentence(running, localModelGuide(running, download().download))).toBe("Downloading on-device model · 50%");
     const failed = localModelGuide(status(), download("No space left").download);
-    expect(waitingForModelSentence(status(), failed)).toBe("No space left");
+    expect(waitingForModelSentence(status(), failed)).toBe("Couldn't download the on-device model");
     expect(modelActionLabel(failed.action!)).toBe("Try again");
     const checking = status({}, { state: "checking" });
     expect(waitingForModelSentence(checking, localModelGuide(checking, download().download))).toBe("Checking the on-device model…");

@@ -1,4 +1,4 @@
-import { useContext, useMemo, useRef, type ReactNode } from "react";
+import { memo, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { PlatformContext } from "@/lib/platform";
 import { voiceNoteTitle } from "@/lib/voiceNotes/voiceNoteStore";
@@ -6,7 +6,8 @@ import { useResolvedTheme } from "@/lib/theme";
 import { useRecorder } from "../../recorder/RecorderProvider";
 import { NotePipelineContext } from "../../pipeline/NotePipelineContext";
 import { activityForNote, noteStatus } from "../../activity/activitySelector";
-import { rowHasCommittedAudio, useNotePipeline, type NotePipelineSource } from "@/lib/voiceNotes/useNotePipeline";
+import { TranscribeAction } from "../TranscribeAction";
+import { rowHasCommittedAudio, useNotePipeline, type NotePipelineSource, type NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import type { MeetingMetadataRead } from "@/lib/connectors/meetingExplorer";
 import type { NoteAudio } from "../NoteDetailView";
 import type { LibraryItem } from "../LibraryRow";
@@ -31,10 +32,11 @@ export interface SavedNoteProps {
   onBack: () => void;
   transcript: ReactNode;
   footer?: ReactNode;
+  activityControl?: ReactNode;
 }
 
 /** A saved voice note's note and its audio, as a page or a sheet. */
-export default function SavedNote({
+function SavedNoteContent({
   item,
   metadata,
   audio,
@@ -44,7 +46,9 @@ export default function SavedNote({
   onBack,
   transcript,
   footer,
-}: SavedNoteProps) {
+  activityControl,
+  pipeline,
+}: SavedNoteProps & { pipeline: NotePipelineView | null }) {
   const recorder = useRecorder();
   const platform = useContext(PlatformContext);
   const theme = useResolvedTheme() === "dark" ? "night" : "day";
@@ -54,16 +58,11 @@ export default function SavedNote({
   const space = useMemo(() => store ?? savedNoteStoreFor(tcw, () => hasSpaceRow.current), [store, tcw]);
   const screen = useSavedNoteScreen(item.sourceId, space);
   const rowMetadata = metadata?.status === "ok" ? metadata.metadata : null;
-  const pipelineMetadata = metadata?.status === "ok" ? metadata.metadata : undefined;
-  const pipelineSource = useMemo<NotePipelineSource>(
-    () => ({ tcw, rowExists: item.onPhone !== true, audioSaved: item.onPhone !== true && rowHasCommittedAudio(pipelineMetadata), metadata: pipelineMetadata }),
-    [tcw, item.onPhone, pipelineMetadata],
-  );
-  const pipeline = useNotePipeline(item.sourceId, pipelineSource);
   const stepperShown = pipeline !== null && !pipeline.pipeline.done;
   const jobs = activityForNote(pipeline ?? undefined, platform);
   const status = noteStatus(jobs);
-  const retry = jobs.find((job) => job.retry)?.retry;
+  const actions = jobs.flatMap((job) => job.action ? [job.action] : job.retry ? [{ label: "Try again", run: job.retry }] : []);
+  const cloudFailedWithoutRetry = pipeline?.input?.route === "private-cloud" && pipeline.pipeline.steps.some((step) => step.key === "transcript" && step.state === "failed" && !step.blocker?.action);
   const view = {
     screen,
     layout,
@@ -73,12 +72,13 @@ export default function SavedNote({
     durationSecs: item.durationSecs,
     title: item.title ?? voiceNoteTitle(Date.parse(item.startedAt ?? "") || Date.now()),
     meta: savedNoteMeta(item, rowMetadata, platform, pipeline?.pipeline.done === true),
-    stepper: status ? <div className="flex flex-wrap items-center gap-3" data-testid="note-detail-status"><p className="sn-hint">{status}</p>{retry && <button type="button" className="min-h-11 text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={retry}>Try again</button>}</div> : null,
+    stepper: status ? <div className="flex flex-wrap items-center gap-3" data-testid="note-detail-status"><p className={status.startsWith("Needs attention") ? "sn-hint text-amber-700 dark:text-amber-300" : "sn-hint"}>{status}</p>{actions.map((action, index) => <button key={`${action.label}:${index}`} type="button" className="min-h-11 text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={action.run}>{action.label}</button>)}{cloudFailedWithoutRetry && <TranscribeAction noteId={item.sourceId} transcription={recorder.transcription} durationSecs={item.durationSecs} label="Try again" />}{pipeline?.actionError && <p role="alert" className="text-callout text-destructive">{pipeline.actionError}</p>}</div> : null,
     audio,
     transcript,
     // The stepper is the route while the note is still getting here; the legacy route line would say it twice. A failed
     // metadata read is not a route: the footer's "Try again" is the only way to read it again, so it stays.
     footer: stepperShown && metadata?.status !== "failed" ? null : footer,
+    activityControl,
     partialAudio:
       recorder.captureIssues[item.sourceId]?.kind === "partial_audio",
     onBack,
@@ -92,4 +92,25 @@ export default function SavedNote({
       )}
     </NotePipelineContext.Provider>
   );
+}
+
+const MemoSavedNoteContent = memo(SavedNoteContent);
+
+export default function SavedNote(props: SavedNoteProps) {
+  const pipelineMetadata = props.metadata?.status === "ok" ? props.metadata.metadata : undefined;
+  const pipelineSource = useMemo<NotePipelineSource>(
+    () => ({ tcw: props.tcw, rowExists: props.item.onPhone !== true, audioSaved: props.item.onPhone !== true && rowHasCommittedAudio(pipelineMetadata), metadata: pipelineMetadata }),
+    [props.tcw, props.item.onPhone, pipelineMetadata],
+  );
+  const live = useNotePipeline(props.item.sourceId, pipelineSource);
+  const [visible, setVisible] = useState<NotePipelineView | null>(live);
+  const latest = useRef(live);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    latest.current = live;
+    if (live !== null) setVisible((current) => current === null ? live : current);
+    if (timer.current === null) timer.current = setTimeout(() => { timer.current = null; setVisible(latest.current); }, 250);
+  }, [live]);
+  useEffect(() => () => { if (timer.current !== null) clearTimeout(timer.current); }, []);
+  return <MemoSavedNoteContent {...props} pipeline={visible} />;
 }

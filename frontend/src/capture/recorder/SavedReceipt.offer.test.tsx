@@ -38,8 +38,8 @@ describe("the needs-the-model block", () => {
     expect(html).toContain("Use Private instead");
   });
 
-  test("a failed attempt to switch or download shows its reason", () => {
-    expect(renderToStaticMarkup(<NeedsOnDeviceModel guide={guideWithAction} error="Could not stop it" />)).toContain("Could not stop it");
+  test("a failed attempt to switch or download shows safe copy", () => {
+    expect(renderToStaticMarkup(<NeedsOnDeviceModel guide={guideWithAction} error="Could not stop it" />)).toContain("Couldn&#x27;t switch to Private. Try again.");
   });
 });
 
@@ -138,19 +138,19 @@ describe("the receipt's wording", () => {
     const html = render({ transcriber: "private-cloud", route: voiceNoteRoute("private-cloud"), privateOutcome: "transcribed" });
     expect(html).toContain("Transcribed in private cloud");
     expect(html).not.toContain("Transcribing in private cloud");
-    expect(render({ transcriber: "private-cloud", privateOutcome: "no_speech" })).toContain("No speech was found in this note.");
+    expect(render({ transcriber: "private-cloud", privateOutcome: "no_speech" })).toContain("No speech found");
   });
 
   test("a Powerful note names Powerful while running and when it finishes or fails", () => {
     const powerful = { transcriber: "assemblyai" as const, route: voiceNoteRoute("assemblyai") };
     expect(render({ ...powerful, transcribing: true })).toContain("Transcribing with Powerful…");
     expect(render({ ...powerful, privateOutcome: "transcribed" })).toContain("Transcribed with Powerful");
-    expect(render({ ...powerful, privateOutcome: "no_speech" })).toContain("No speech was found in this note.");
-    expect(render({ ...powerful, privateFailure: "Today's Powerful allowance is used." })).toContain("Powerful couldn&#x27;t finish: Today&#x27;s Powerful allowance is used.");
+    expect(render({ ...powerful, privateOutcome: "no_speech" })).toContain("No speech found");
+    expect(render({ ...powerful, privateFailure: "Today's Powerful allowance is used." })).toContain("Powerful transcription didn&#x27;t finish.");
   });
 
   test("a failure of a note committed to Private is shown too, not only after a switch", () => {
-    expect(render({ transcriber: "private-cloud", privateFailure: "service busy" })).toContain("Couldn&#x27;t transcribe in private cloud: service busy");
+    expect(render({ transcriber: "private-cloud", privateFailure: "service busy" })).toContain("Private transcription didn&#x27;t finish.");
   });
 
   test("an Audio only note says nothing about transcribing", () => {
@@ -159,7 +159,7 @@ describe("the receipt's wording", () => {
   });
 
   test("a private-cloud failure after the switch is shown, not silent", () => {
-    expect(render({ movedToPrivate: true, privateFailure: "service busy" })).toContain("Couldn&#x27;t transcribe in private cloud: service busy");
+    expect(render({ movedToPrivate: true, privateFailure: "service busy" })).toContain("Private transcription didn&#x27;t finish.");
   });
 });
 
@@ -174,7 +174,7 @@ describe("the receipt's pipeline stepper", () => {
   test("an uploading note shows the stepper in place of the route line and the saving line", () => {
     const html = render(uploading(40), { localUpload: "in-flight" });
     expect(html).toContain('data-testid="voice-note-receipt-pipeline"');
-    expect(html).toContain('aria-label="Where this note is"');
+    expect(html).toContain("Uploading audio to your TinyCloud space");
     expect(html).not.toContain("Saving to your TinyCloud space…");
     expect(html).not.toContain("Another save is finishing");
   });
@@ -189,7 +189,7 @@ describe("the receipt's pipeline stepper", () => {
 
   test("a note waiting for the model offers the download from the stepper, once", () => {
     const html = render(waitingForModel(), { outcome: "saved", transcriber: "on-device", route: voiceNoteRoute("on-device") });
-    expect(html.match(/Get the model/g) ?? []).toHaveLength(1);
+    expect(html.match(/Get model/g) ?? []).toHaveLength(1);
     expect(html).not.toContain("Needs the on-device model");
   });
 
@@ -200,7 +200,7 @@ describe("the receipt's pipeline stepper", () => {
   test("done shows no stepper and the landed state", () => {
     const html = render(allDone(), { outcome: "saved" });
     expect(html).not.toContain("voice-note-receipt-pipeline");
-    expect(html).toContain("Saved to your TinyCloud space");
+    expect(html).toContain("In your TinyCloud space");
   });
 
   test("while the pipeline is still being read, neither the stepper nor the old saving line flashes", () => {

@@ -167,6 +167,15 @@ function desktopCommittedLocal(metadata: Record<string, unknown> | null): boolea
     (options as { transcriber?: unknown }).transcriber === "on-device";
 }
 
+function providerFromMetadata(metadata: Record<string, unknown> | null): "private" | "powerful" | "unknown" {
+  const capture = metadata?.capture;
+  const options = capture && typeof capture === "object" ? (capture as { options?: unknown }).options : null;
+  const committed = options && typeof options === "object" ? (options as { transcriber?: unknown }).transcriber : null;
+  if (committed === "assemblyai" || metadata?.transcription_engine === "assemblyai") return "powerful";
+  if (committed === "private-cloud" || metadata?.transcription_engine === "private-cloud") return "private";
+  return "unknown";
+}
+
 // --- Decision (b): the model ----------------------------------------------------------------------------------
 
 const MODEL_PROGRESS: readonly PipelineModelState[] = ["absent", "queued", "downloading", "verifying", "checking", "ready"];
@@ -242,7 +251,7 @@ function onDeviceInput(facts: NotePipelineFacts): PipelineOnDevice | null {
   const status = facts.onDeviceStatus;
   if (status === null) return facts.desktopJob ? {
     stt: { state: facts.desktopJob.state === "transcribing" ? "running" : facts.desktopJob.state, error: facts.desktopJob.error },
-    queue: { position: facts.desktopJob.state === "queued" ? 1 : null, inLine: 1, percent: facts.desktopJob.progress },
+    queue: { position: facts.desktopJob.position ?? null, inLine: facts.desktopJob.inLine ?? 0, percent: facts.desktopJob.progress },
     model: null, download: "idle", sync: facts.transcriptSync,
   } : null;
   const place = onDeviceQueuePlace(status, facts.id);
@@ -269,11 +278,14 @@ export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineIn
   const outcome = rowOutcome !== "none" ? rowOutcome : ledgerOutcome;
   const localNoteError = facts.localNoteError ?? null;
   const hasNotesOrMoments = localNoteError !== null || facts.localNote?.hasContent === true || typeof facts.rowMetadata?.note_kv_key === "string";
+  const transcriptProvider = facts.native?.transcriber === "assemblyai" ? "powerful" : facts.native?.transcriber === "private-cloud" ? "private" : providerFromMetadata(facts.rowMetadata);
   return {
     device: facts.device,
     route,
+    transcriptProvider,
     hasNotesOrMoments,
     online: facts.online,
+    audioUploadIntent: (facts.native?.recording?.options as { uploadAudio?: boolean } | undefined)?.uploadAudio ?? true,
     capture: {
       finalizing: facts.capture.finalizing,
       issue: facts.capture.issue === null ? null : CAPTURE_ISSUE[facts.capture.issue.kind],
@@ -285,6 +297,7 @@ export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineIn
         ...(facts.pending.upload ? { upload: facts.pending.upload } : {}),
         ...(facts.pending.failed ? { failed: facts.pending.failed } : {}),
         ...(facts.pending.held ? { held: facts.pending.held } : {}),
+        ...("retryAt" in facts.pending && typeof facts.pending.retryAt === "number" ? { retryAt: facts.pending.retryAt } : {}),
         ...(facts.pending.waitingBehind !== undefined ? { waitingBehind: facts.pending.waitingBehind } : {}),
       },
       lane: facts.lane,
@@ -710,7 +723,7 @@ export interface NotePipelineSource {
 export interface NotePipelineView {
   pipeline: NotePipeline;
   input?: NotePipelineInput;
-  provider?: "local" | "private" | "powerful" | "off";
+  provider?: "local" | "private" | "powerful" | "off" | "unknown";
   /** Where the transcript is made, for the parts of a note that show a transcribe offer of their own. */
   route?: NotePipelineInput["route"];
   /** Runs the blocker's action; its failure shows as `actionError`. */
@@ -787,7 +800,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
     return [{ id, tcw, signal }];
   });
   const rows = useSpaceRows(wantedRows);
-  timedOutRows.current = [...rows.values()].some((entry) => "error" in entry.read && entry.read.timeout === true);
+  useEffect(() => { timedOutRows.current = [...rows.values()].some((entry) => "error" in entry.read && entry.read.timeout === true); }, [rows]);
   // A read that ran out of time is tried once more when the write lane is idle (the uploads that held it up are done); Try again stays.
   const autoRetried = useRef(new Set<string>());
   useEffect(() => {
@@ -960,13 +973,14 @@ function useNotePipelinesWithLedger(entries: readonly { id: string; source: Note
       reread: () => latest.current.reread(),
     }).then((reason) => {
       if (!live.current) return;
-      setFailures((before) => { const next = new Map(before); if (reason === null) next.delete(id); else next.set(id, reason); return next; });
+      if (reason !== null) console.error("[notePipeline] Action failed", { id, kind, reason });
+      setFailures((before) => { const next = new Map(before); if (reason === null) next.delete(id); else next.set(id, "Couldn't complete that action. Try again."); return next; });
     });
   }, []);
   const views = useMemo(() => new Map([...states].map(([id, state]): [string, NotePipelineView] => [id, {
     pipeline: state.pipeline,
     input: state.input,
-    provider: state.input.route === "on-device" ? "local" : state.input.route === "off" ? "off" : state.native?.transcriber === "assemblyai" ? "powerful" : "private",
+    provider: state.input.route === "on-device" ? "local" : state.input.route === "off" ? "off" : state.input.transcriptProvider ?? "unknown",
     route: state.input.route,
     onAction: (kind) => run(id, state, kind),
     onRetryStep: (key) => run(id, state, "retry", key),

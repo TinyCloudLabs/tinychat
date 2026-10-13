@@ -1,7 +1,7 @@
 // The open note (TC-761): NoteDetailView over the Library's reads, with the
 // transcript's Copy. Remounted per note (keyed by its id), so a copy's tick
 // never carries over to the next note.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { copyText } from "@/lib/copyText";
@@ -40,6 +40,7 @@ export function NoteDetail(props: {
   activityView?: NotePipelineView;
   platform?: AppPlatform;
   savedNote?: NoteDetailViewProps["savedNote"];
+  activityControl?: ReactNode;
 }) {
   const { library } = props;
   const { item, reads, audio } = library.note;
@@ -116,6 +117,7 @@ export function NoteDetail(props: {
       pushed={props.pushed}
       onBack={props.onBack}
       savedNote={props.savedNote}
+      activityControl={props.activityControl}
     />
   );
 }

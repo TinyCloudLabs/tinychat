@@ -46,10 +46,10 @@ export function libraryRowMeta(item: LibraryItem, now: Date, grouped: boolean): 
   return parts.filter((part): part is string => !!part).join(" · ");
 }
 
-/** What a note not yet settled in the space says beside its line: "On this phone" or "Saving…"; null once it is. */
+/** A local note names its device; pending work is described by the shared Activity selector. */
 export function libraryRowBadge(item: LibraryItem, where: string = HOME_COPY.onThisPhone): string | null {
   if (item.onPhone) return where.charAt(0).toUpperCase() + where.slice(1);
-  return item.saving ? HOME_COPY.savingBadge : null;
+  return null;
 }
 
 /** The length on the row's right: a voice note's is in its line, unless something replaced the line. */
@@ -59,12 +59,12 @@ export function libraryRowAsideDuration(item: LibraryItem, lineReplaced: boolean
 
 export interface LibraryRowProps { item: LibraryItem; now: Date; grouped: boolean; selected?: boolean; testId?: string; onRecentOpen?: (id: string) => void; pipeline?: NotePipeline; activityView?: NotePipelineView; platform?: AppPlatform }
 
-function LibraryRowContent(props: LibraryRowProps) {
+function LibraryRowContent(props: LibraryRowProps & { activityStatus: string | null }) {
   const { item } = props;
   const Icon = KIND_ICON[libraryKind(item.source)];
   const voiceNote = libraryKind(item.source) === "note";
   const soft = useSoftHome();
-  const status = props.activityView && props.platform ? noteStatus(activityForNote(props.activityView, props.platform)) : null;
+  const status = props.activityStatus;
   const badge = status ? null : libraryRowBadge(item);
   if (soft) {
     const issue = issueForItem(item, soft.issues);
@@ -105,7 +105,7 @@ function LibraryRowContent(props: LibraryRowProps) {
       }
       aside={
         <span className="flex shrink-0 items-center gap-1 text-meta text-muted-foreground">
-          {status && <span className="max-w-40 text-right [overflow-wrap:anywhere]" data-testid="library-note-status">{status}</span>}
+          {status && <span className={status.startsWith("Needs attention") ? "max-w-40 text-right text-amber-700 [overflow-wrap:anywhere] dark:text-amber-300" : "max-w-40 text-right [overflow-wrap:anywhere]"} data-testid="library-note-status">{status}</span>}
           {item.durationSecs !== null && !isVoiceNote(item) && <span className="tnum">{formatClockDuration(item.durationSecs)}</span>}
           <ChevronRightIcon aria-hidden="true" className="size-4" />
         </span>
@@ -116,10 +116,13 @@ function LibraryRowContent(props: LibraryRowProps) {
   );
 }
 
-export const LibraryRow = memo(LibraryRowContent, (before, after) => before.item === after.item &&
+const MemoLibraryRowContent = memo(LibraryRowContent, (before, after) => before.item === after.item &&
   Math.floor(before.now.getTime() / 60_000) === Math.floor(after.now.getTime() / 60_000) &&
   before.grouped === after.grouped && before.selected === after.selected && before.testId === after.testId &&
-  before.onRecentOpen === after.onRecentOpen && before.platform === after.platform &&
-  (before.activityView || after.activityView
-    ? noteStatus(activityForNote(before.activityView, before.platform ?? "web")) === noteStatus(activityForNote(after.activityView, after.platform ?? "web"))
-    : before.pipeline === after.pipeline));
+  before.onRecentOpen === after.onRecentOpen && before.platform === after.platform && before.activityStatus === after.activityStatus &&
+  (before.activityStatus !== null || after.activityStatus !== null || before.pipeline === after.pipeline));
+
+export function LibraryRow(props: LibraryRowProps) {
+  const activityStatus = props.activityView && props.platform ? noteStatus(activityForNote(props.activityView, props.platform)) : null;
+  return <MemoLibraryRowContent {...props} activityStatus={activityStatus} />;
+}

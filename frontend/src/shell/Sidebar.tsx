@@ -78,7 +78,8 @@ export function Sidebar({
           );
         })}
       </ul>
-      <div className="mt-auto">{live}</div>
+      <div className="mt-auto" data-activity-sidebar-slot="" />
+      <div>{live}</div>
       {settings && (
         <div className="mt-2 border-t border-border/70 pt-2">
           <Link

@@ -155,7 +155,7 @@ describe("PipelineStepper", () => {
     const cases: [NotePipeline, PipelineActionKind, string][] = [
       [pipelineOf({ space: { saved: false, pending: { failed: { kind: "timeout", message: "x" } } } }), "retry", "Try again"],
       [pipelineOf({ space: { saved: true, pending: null }, transcript: { inSpace: null, onDevice: null, cloud: { kind: "blocked", reason: "unavailable" } } }), "check-again", "Check again"],
-      [pipelineOf({ route: "on-device", space: { saved: true, pending: null }, transcript: { inSpace: null, cloud: null, onDevice: { stt: { state: "waiting_for_model", error: null }, queue: null, model: { state: "absent", bytes: 0, totalBytes: 640, error: null }, download: "idle", sync: null } } }), "get-model", "Get the model"],
+      [pipelineOf({ route: "on-device", space: { saved: true, pending: null }, transcript: { inSpace: null, cloud: null, onDevice: { stt: { state: "waiting_for_model", error: null }, queue: null, model: { state: "absent", bytes: 0, totalBytes: 640, error: null }, download: "idle", sync: null } } }), "get-model", "Get model"],
     ];
     for (const [pipeline, kind, label] of cases) {
       const host = document.createElement("div");

@@ -44,7 +44,7 @@ export async function loadDesktopWhisperBridge(): Promise<DesktopWhisperBridge> 
 }
 
 export type DesktopWhisperJob = { id: string; state: "queued" | "transcribing" | "done" | "failed";
-  error: string | null; progress: number | null };
+  error: string | null; progress: number | null; position?: number | null; inLine?: number };
 
 /** D7b can subscribe to per-note status and call retry(id) after a failure. */
 export interface DesktopWhisperQueue {
@@ -250,7 +250,10 @@ export function createDesktopWhisperQueue(args: {
     });
   };
   return {
-    snapshot: () => new Map(jobs),
+    snapshot: () => {
+      const line = [...jobs.values()].filter((job) => job.state === "queued" || job.state === "transcribing");
+      return new Map([...jobs].map(([id, job]) => [id, { ...job, position: line.findIndex((candidate) => candidate.id === id) + 1 || null, inLine: line.length }]));
+    },
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     onDone(listener) {
       doneListeners.add(listener);

@@ -251,7 +251,7 @@ export function OnDeviceNoteStatusView(props: {
     );
   }
   if (props.stepperShown) {
-    return note?.kind === "waiting_for_model" ? <PrivateInstead onUse={props.onUsePrivate} /> : null;
+    return note?.kind === "waiting_for_model" || note?.kind === "failed" ? <PrivateInstead onUse={props.onUsePrivate} /> : null;
   }
   if (note === null) {
     return (
@@ -287,7 +287,7 @@ export function OnDeviceNoteStatusView(props: {
     case "no_speech":
       return (
         <p role="status" className="text-callout text-muted-foreground" data-testid="voice-note-on-device-no-speech">
-          No speech was found in this note.
+          No speech found
         </p>
       );
     case "done":

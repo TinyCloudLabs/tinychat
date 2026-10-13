@@ -14,7 +14,7 @@ import {
   VideoIcon,
   type LucideIcon,
 } from "lucide-react";
-import { useContext, useId, useState } from "react";
+import { useContext, useId, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { Skeleton } from "@/components/ui/skeleton";
@@ -99,6 +99,7 @@ export interface DesktopCaptureHomeProps {
   /** Absent while the notetaker is not available. */
   onMeeting?: () => void;
   now: Date;
+  activityControl?: ReactNode;
 }
 
 function IdleHero(props: { theme: "night" | "day" }) {
@@ -678,6 +679,7 @@ export function DesktopCaptureHome(props: DesktopCaptureHomeProps) {
           className={PAGE_COLUMN}
           trailing={(
             <div className="dch-head-actions">
+              {props.activityControl}
               <Link
                 to={PATHS.library}
                 className="soft-header-link"

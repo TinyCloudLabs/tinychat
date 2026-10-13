@@ -83,10 +83,10 @@ const ROWS: Row[] = [
   // 2. In your space
   { name: "space: waiting to upload", patch: {}, states: { phone: "done", space: "waiting" }, current: "space", caption: "Waiting to upload" },
   { name: "space: another operation is using the lane", patch: { space: { pending: { upload: { state: "waiting", bytes: 0, total: 100 }, waitingBehind: 0 }, lane: { busy: true, depth: 3 } } }, current: "space", caption: "Waiting to start" },
-  { name: "space: setup before upload", patch: { space: { pending: { upload: { state: "preparing", bytes: 0, total: 100 } } } }, states: { space: "active" }, current: "space", caption: "Preparing your space for audio upload…" },
+  { name: "space: setup before upload", patch: { space: { pending: { upload: { state: "preparing", bytes: 0, total: 100 } } } }, states: { space: "active" }, current: "space", caption: "Preparing audio upload…" },
   { name: "space: nothing ahead and an idle lane is just waiting", patch: { space: { pending: { waitingBehind: 0 }, lane: { busy: false, depth: 0 } } }, current: "space", caption: "Waiting to upload" },
-  { name: "space: 2nd in line is one note ahead", patch: { space: { pending: { waitingBehind: 1 }, lane: { busy: true, depth: 2 } } }, current: "space", caption: "Waiting to upload · 2nd in line" },
-  { name: "space: 12th in line is eleven notes ahead", patch: { space: { pending: { waitingBehind: 11 }, lane: { busy: true, depth: 12 } } }, current: "space", caption: "Waiting to upload · 12th in line" },
+  { name: "space: one save ahead stays a plain wait", patch: { space: { pending: { waitingBehind: 1 }, lane: { busy: true, depth: 2 } } }, current: "space", caption: "Waiting to start" },
+  { name: "space: many saves ahead stay a plain wait", patch: { space: { pending: { waitingBehind: 11 }, lane: { busy: true, depth: 12 } } }, current: "space", caption: "Waiting to start" },
   { name: "space: a busy lane with no per-note position never invents one", patch: { space: { pending: {}, lane: { busy: true, depth: 5 } } }, current: "space", caption: "Waiting to start" },
   { name: "space: uploading 42%", patch: { space: { pending: { upload: { state: "uploading", bytes: 42, total: 100 } } } }, states: { space: "active" }, current: "space", caption: "Uploading audio to your TinyCloud space · 42%" },
   { name: "space: retrying", patch: { space: { pending: { upload: { state: "retrying", bytes: 42, total: 100 } } } }, states: { space: "active" }, current: "space", caption: "Retrying…" },
@@ -96,7 +96,7 @@ const ROWS: Row[] = [
   { name: "space: legacy note, account unknown (no action)", patch: { space: { pending: { held: "legacy" } } }, states: { space: "blocked" }, current: "space", cause: /which account/ },
   { name: "space: unowned note, account unknown (no action)", patch: { space: { pending: { held: "unowned" } } }, states: { space: "blocked" }, current: "space", cause: /which account/ },
   { name: "space: offline waits for a connection (no button)", patch: { online: false, space: { pending: {} } }, states: { space: "waiting" }, current: "space", caption: "Offline · Resumes automatically" },
-  { name: "space: an offline failure while offline keeps waiting", patch: { online: false, space: { pending: { failed: { kind: "offline", message: "fetch failed" } } } }, states: { space: "waiting" }, current: "space", caption: "Offline · Resumes automatically" },
+  { name: "space: an offline failure remains visible while offline", patch: { online: false, space: { pending: { failed: { kind: "offline", message: "fetch failed" } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't reach your space. This note is safe on this phone.", action: "retry" },
   { name: "space: an offline failure while online is Try again", patch: { space: { pending: { failed: { kind: "offline", message: "fetch failed" } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't reach your space. This note is safe on this phone.", action: "retry" },
   { name: "space: a node-rejected upload has calm copy", patch: { space: { pending: { failed: { kind: "rejected", message: "The TinyCloud node rejected this upload." } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't sync to your TinyCloud space.", action: "retry" },
   { name: "space: timeout is Try again", patch: { space: { pending: { failed: { kind: "timeout", message: "deadline" } } } }, states: { space: "failed" }, current: "space", cause: "Saving timed out. This note is safe on this phone.", action: "retry" },
@@ -105,8 +105,8 @@ const ROWS: Row[] = [
   { name: "space: an expired session is Sign in", patch: { space: { pending: { failed: { kind: "auth", message: "401" } } } }, states: { space: "blocked" }, current: "space", cause: "Your session ended. This note is safe on this phone.", action: "sign-in" },
   { name: "space: a source failure has calm copy and no action", patch: { space: { pending: { failed: { kind: "source", message: "Audio file is too large to read" } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't read the recording on this phone." },
   { name: "space: a source failure with no message has the same copy", patch: { space: { pending: { failed: { kind: "source", message: " " } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't read the recording on this phone." },
-  { name: "space: an unknown error has calm copy and stays retryable", patch: { space: { pending: { failed: { kind: "other", message: "Mount point is read only" } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't save this note. It is safe on this phone. Try again.", action: "retry" },
-  { name: "space: an unknown error with no message has the same copy", patch: { space: { pending: { failed: { kind: "other", message: "  " } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't save this note. It is safe on this phone. Try again.", action: "retry" },
+  { name: "space: an unknown error has calm copy and stays retryable", patch: { space: { pending: { failed: { kind: "other", message: "Mount point is read only" } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't sync to your TinyCloud space.", action: "retry" },
+  { name: "space: an unknown error with no message has the same copy", patch: { space: { pending: { failed: { kind: "other", message: "  " } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't sync to your TinyCloud space.", action: "retry" },
 
   // 3. Transcript, Local
   { name: "local: before the note is in the space, nothing has started", patch: local({}), states: { space: "waiting", transcript: "upcoming" }, current: "space" },
@@ -157,8 +157,8 @@ const ROWS: Row[] = [
   { name: "private: preparing", patch: cloud({ kind: "active", status: { kind: "preparing" } }), states: { transcript: "active" }, current: "transcript", caption: "Preparing…" },
   { name: "private: sending to private cloud", patch: cloud({ kind: "active", status: { kind: "uploading" } }), states: { transcript: "active" }, current: "transcript", caption: "Sending audio to Private transcription" },
   { name: "private: sending 42% names its destination", patch: cloud({ kind: "active", status: { kind: "uploading", progress: 0.42 } }), states: { transcript: "active" }, current: "transcript", caption: "Sending audio to Private transcription · 42%" },
-  { name: "private: in the queue #3", patch: cloud({ kind: "active", status: { kind: "queued", position: 3 } }), states: { transcript: "waiting" }, current: "transcript", caption: "In the queue · #3" },
-  { name: "private: in the queue, place unknown", patch: cloud({ kind: "active", status: { kind: "queued", position: null } }), current: "transcript", caption: "In the queue" },
+  { name: "private: queued with a position", patch: cloud({ kind: "active", status: { kind: "queued", position: 3 } }), states: { transcript: "waiting" }, current: "transcript", caption: "Waiting for your other Private transcription to finish" },
+  { name: "private: queued without a position", patch: cloud({ kind: "active", status: { kind: "queued", position: null } }), current: "transcript", caption: "Waiting for your other Private transcription to finish" },
   { name: "private: transcribing 4 of 9", patch: cloud({ kind: "active", status: { kind: "processing", completed: 4, total: 9 } }), states: { transcript: "active" }, current: "transcript", caption: "Transcribing · 4 of 9" },
   { name: "private: saving transcript", patch: cloud({ kind: "active", status: { kind: "saving" } }), states: { transcript: "active" }, current: "transcript", caption: "Saving transcript" },
   { name: "private: unavailable is Check again", patch: cloud({ kind: "blocked", reason: "unavailable" }), states: { transcript: "blocked" }, current: "transcript", cause: "Private transcription isn't available right now", action: "check-again" },
@@ -243,7 +243,7 @@ describe("notePipeline: shape", () => {
     const localResult = notePipeline(input(local({ inSpace: "transcribed" }, { space: SAVED })));
     expect(localResult.steps.find((s) => s.key === "transcript")).toMatchObject({ state: "done", sublabel: "Saved in your space" });
     const privateResult = notePipeline(input({ ...cloud({ kind: "done", outcome: "no_speech" }), space: SAVED }));
-    expect(privateResult.steps.find((s) => s.key === "transcript")).toMatchObject({ state: "done", sublabel: "No speech found in your space" });
+    expect(privateResult.steps.find((s) => s.key === "transcript")).toMatchObject({ state: "done", sublabel: "No speech found" });
   });
 
   test("progress is carried as 0..1 for uploads, model downloads, local and private transcription", () => {
@@ -373,7 +373,7 @@ describe("stuck-state contract", () => {
   test("an unknown error maps to calm copy", () => {
     const message = "Mount point /Volumes/odd is read only";
     const pipeline = notePipeline(input({ space: { pending: { failed: { kind: "other", message } } } }));
-    expect(pipeline.blocker?.cause).toBe("Couldn't save this note. It is safe on this phone. Try again.");
+    expect(pipeline.blocker?.cause).toBe("Couldn't sync to your TinyCloud space.");
     const transcript = notePipeline(input(local({ onDevice: od({ stt: stt("failed", message) }) }, { space: SAVED })));
     expect(transcript.blocker?.cause).toBe("Couldn't transcribe on this phone");
   });

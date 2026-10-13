@@ -78,12 +78,6 @@ function partialFromSidecar(recording: VoiceNoteRecording): Extract<RecorderCapt
 const micFromStatus = (status: CaptureStatus | MicStateEvent): RecorderMic =>
   ({ state: status.state, reason: status.reason, input: status.input ?? null });
 
-function saveFailureCopy(message: string): string {
-  return message === TINYCLOUD_NETWORK_FAILURE_MESSAGE
-    ? "Waiting for a connection · syncs by itself"
-    : "Couldn't sync to your TinyCloud space. Retry from Activity.";
-}
-
 export interface VoiceNoteRecorderControllerOptions {
   tcw: TinyCloudWeb | null;
   pipeline?: VoiceNotePipeline | null;
@@ -449,7 +443,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           return;
         }
         const failure = messageOf(caught);
-        send({ type: "SAVE_FAILED", error: saveFailureCopy(failure),
+        send({ type: "SAVE_FAILED", error: failure === TINYCLOUD_NETWORK_FAILURE_MESSAGE ? "Waiting for a connection · syncs by itself" : "Couldn't sync to your TinyCloud space.",
           recording: { id: recording.id, durationMs: recording.durationMs } });
         pendingStore.reportNoteFailure(recording.id, caught);
         void pendingStore.refresh();
@@ -473,7 +467,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         // The committed audio stays on the device and is playable.
         send({
           type: "SAVE_FAILED",
-          error: saveFailureCopy(outcome.failure),
+          error: outcome.failure === TINYCLOUD_NETWORK_FAILURE_MESSAGE ? "Waiting for a connection · syncs by itself" : "Couldn't sync to your TinyCloud space.",
           recording: { id: recording.id, durationMs: recording.durationMs },
         });
         pendingStore.reportNoteFailure(recording.id, { message: outcome.failure, failureKind: outcome.failureKind, cause: outcome.failureCause });

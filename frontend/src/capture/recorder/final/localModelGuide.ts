@@ -43,7 +43,7 @@ export function localModelGuide(
   if (!model || !download) return { reason: FINAL_COPY.modelUnavailable };
   const get = (label: string): StopAction => ({ label, run: download.start });
   if (download.error) {
-    return { reason: download.error, action: get(FINAL_COPY.modelTryAgain) };
+    return { reason: "Couldn't download the on-device model", action: get(FINAL_COPY.modelTryAgain) };
   }
   if (isAppleSpeech(model)) return appleSpeechGuide(model, download.start);
   const needed = [primaryOnDeviceModel(model), model.models.find((m) => m.id === "silero-vad")].filter(
@@ -51,9 +51,8 @@ export function localModelGuide(
   );
   const failed = needed.find((entry) => entry.state === "failed");
   if (failed || model.download.state === "failed") {
-    const why = failed?.error ?? null;
     return {
-      reason: why ? `Couldn't download the on-device model: ${why}` : "Couldn't download the on-device model",
+      reason: "Couldn't download the on-device model",
       action: get(FINAL_COPY.modelTryAgain),
     };
   }

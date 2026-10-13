@@ -54,6 +54,7 @@ import { continuePausedUpload, pausedUpload } from "./upload/pausedUpload";
 import { UploadSheet } from "./upload/UploadSheet";
 import { useUploadDeps } from "./upload/useUploadDeps";
 import { ActivityPanel } from "./activity/ActivityPanel";
+import type { NotePipelineSource } from "@/lib/voiceNotes/useNotePipeline";
 
 export interface CaptureSurfaceProps {
   tcw: TinyCloudWeb;
@@ -72,6 +73,19 @@ const SCROLLER = "relative h-full overflow-y-auto";
 const LIST_COLUMN = "w-full px-4";
 
 type Sheet = "upload" | "meeting";
+
+/** Keep progress subscriptions below the surface so capture chrome updates at most four times a second. */
+function PipelineBridge({ entries, onViews }: { entries: readonly { id: string; source: NotePipelineSource }[]; onViews: (views: ReadonlyMap<string, NotePipelineView>) => void }) {
+  const views = useNotePipelines(entries);
+  const latest = useRef(views);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    latest.current = views;
+    if (timer.current === null) timer.current = setTimeout(() => { timer.current = null; onViews(latest.current); }, 250);
+  }, [views, onViews]);
+  useEffect(() => () => { if (timer.current !== null) clearTimeout(timer.current); }, []);
+  return null;
+}
 
 export function CaptureSurface(props: CaptureSurfaceProps) {
   // A compact width has the Soft home (TC-862); medium and up has the desktop home.
@@ -142,30 +156,19 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
     onPhone: pendingVisible ? (recorder.pending.notes ?? null) : null,
   });
   const pipelineEntries = useMemo(() => listPipelineEntries(library.items, tcw), [library.items, tcw]);
-  const pipelineViews = useNotePipelines(pipelineEntries);
-  const [activityViews, setActivityViews] = useState(pipelineViews);
-  const activityLatest = useRef(pipelineViews);
-  const activityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    activityLatest.current = pipelineViews;
-    if (activityTimer.current === null) activityTimer.current = setTimeout(() => {
-      activityTimer.current = null;
-      setActivityViews(activityLatest.current);
-    }, 250);
-  }, [pipelineViews]);
-  useEffect(() => () => { if (activityTimer.current !== null) clearTimeout(activityTimer.current); }, []);
-  const pipelines = useMemo(() => new Map([...pipelineViews].map(([id, view]) => [id, view.pipeline])), [pipelineViews]);
+  const [activityViews, setActivityViews] = useState<ReadonlyMap<string, NotePipelineView>>(() => new Map());
+  const pipelines = useMemo(() => new Map([...activityViews].map(([id, view]) => [id, view.pipeline])), [activityViews]);
   const actionTarget = useMemo(() => {
     let selected: { id: string; view: NotePipelineView; priority: number } | null = null;
     for (const entry of pipelineEntries) {
-      const view = pipelineViews.get(entry.id);
+      const view = activityViews.get(entry.id);
       const pipeline = view?.pipeline;
       const kind = pipeline?.blocker?.action?.kind;
       const priority = pipelineActionPriority(kind);
       if (view && kind && (!selected || priority > selected.priority)) selected = { id: entry.id, view, priority };
     }
     return selected;
-  }, [pipelineEntries, pipelineViews]);
+  }, [pipelineEntries, activityViews]);
   const modelStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const model = combinedModel(modelStatus);
   const modelProgress = model === null ? null : { bytes: model.bytes, totalBytes: model.totalBytes };
@@ -203,6 +206,10 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
     onEnd: bot.actions.stop,
   };
   const empty = library.status === "ready" && library.items.length === 0 && !inProgressShown(inProgress);
+  const sidebarActivity = platform === "tauri" && nav === "sidebar";
+  const activityControl = <ActivityPanel items={library.items} views={activityViews} platform={platform} onOpenNote={openActivityNote}
+    upload={upload} paused={paused} onOpenUpload={() => setSheet("upload")} onContinueUpload={() => continuePausedUpload(uploadDeps)}
+    onRetryUpload={() => uploadRunner.retry(uploadDeps)} active={active} placement={sidebarActivity ? "sidebar" : "inline"} />;
 
   return (
     <div
@@ -210,7 +217,8 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
       data-testid="capture-surface"
       data-layout={wide ? "panes" : "stack"}
     >
-      <ActivityPanel items={library.items} views={activityViews} platform={platform} onOpenNote={openActivityNote} />
+      <PipelineBridge entries={pipelineEntries} onViews={setActivityViews} />
+      {sidebarActivity && activityControl}
       <div
         className={cn(
           homeOnly ? "relative h-full" : notePage ? "hidden" : wide ? `${SCROLLER} border-r border-border` : noteScreen && !noteSheet ? "hidden" : "relative h-full",
@@ -237,6 +245,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
               onUpload={() => setSheet("upload")}
               {...(bot.listStatus === "dark" ? {} : { onMeeting: () => setSheet("meeting") })}
               now={now}
+              activityControl={sidebarActivity ? undefined : activityControl}
             />
           ) : (
             <>
@@ -244,9 +253,9 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
             title="Capture"
             className={column}
             trailing={
-              <Link to={PATHS.library} className="soft-header-link">
+              <div className="flex flex-wrap items-center gap-2">{!sidebarActivity && activityControl}<Link to={PATHS.library} className="soft-header-link">
                 {HOME_COPY.library}
-              </Link>
+              </Link></div>
             }
           />
           <div className={cn(column, "flex flex-1 flex-col gap-6 pt-2 pb-4")}>
@@ -260,7 +269,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
               pipelineNotes={library.items}
               modelProgress={modelProgress}
               pipelineActionError={actionTarget?.view.actionError}
-              onPipelineAction={(kind: PipelineActionKind, id: string) => pipelineViews.get(id)?.onAction(kind)}
+              onPipelineAction={(kind: PipelineActionKind, id: string) => activityViews.get(id)?.onAction(kind)}
               onOpenLibrary={() => navigate(PATHS.library)}
               now={now}
             />
@@ -293,6 +302,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
             pipelines={pipelines}
             activityViews={activityViews}
             platform={platform}
+            activityControl={!sidebarActivity && libraryScreen ? activityControl : undefined}
           />
         </div>
       </div>
@@ -313,6 +323,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
             transcription={recorder.transcription}
             activityView={openNote ? activityViews.get(openNote.sourceId) : undefined}
             platform={platform}
+            activityControl={!sidebarActivity && noteScreen ? activityControl : undefined}
             savedNote={notePage || noteSheet ? { tcw, layout: notePage ? "page" : "sheet" } : undefined}
           />
         ) : wide ? (

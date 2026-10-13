@@ -425,7 +425,7 @@ describe("the native transcript outcome", () => {
     const { latest } = await mount("n1");
     expect(latest().note).toEqual({ kind: "no_speech" });
     const html = view(latest().note);
-    expect(html).toContain("No speech was found in this note.");
+    expect(html).toContain("No speech found");
     expect(html).not.toContain("No transcript.");
   });
 
@@ -497,6 +497,12 @@ describe("with the pipeline stepper on screen", () => {
     expect(out).toContain("Transcribe with Private instead");
     expect(out).not.toContain("Get the on-device model");
     expect(withStepper({ kind: "waiting_for_model" } as OnDeviceNote)).toBe("");
+  });
+
+  test("a failed Local run keeps Use Private instead beside the shared status", () => {
+    const out = withStepper({ kind: "failed", reason: "decoder_error" } as OnDeviceNote, async () => null);
+    expect(out).toContain("Transcribe with Private instead");
+    expect(out).not.toContain("decoder_error");
   });
 
   test("a failed read of the state still says so, with Try again", () => {

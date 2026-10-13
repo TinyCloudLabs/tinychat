@@ -221,7 +221,7 @@ describe("the pipeline under the meta line", () => {
   const cases: [string, NotePipeline, string][] = [
     ["uploading", uploading(40), "Uploading"],
     ["signed out", signedOut(), "Sign in"],
-    ["waiting for the model", waitingForModel(), "Get the model"],
+    ["waiting for the model", waitingForModel(), "Get model"],
   ];
 
   for (const [name, pipeline, text] of cases) {

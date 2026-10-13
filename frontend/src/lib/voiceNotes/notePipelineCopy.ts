@@ -14,9 +14,9 @@ export const STEP_LABEL = {
 export const ACTION_LABEL: Record<PipelineActionKind, string> = {
   "sign-in": "Sign in",
   retry: "Try again",
-  "get-model": "Get the model",
+  "get-model": "Get model",
   "check-again": "Check again",
-  "review-consent": "Review",
+  "review-consent": "Review consent",
   reread: "Try again",
 };
 
@@ -51,11 +51,9 @@ export const PHONE_COPY = {
 export const SPACE_COPY = {
   afterRecording: "After recording",
   waiting: "Waiting to upload",
-  preparing: "Preparing your space for audio upload…",
-  waitingForSpace: "Waiting to start",
-  waitingInLine: (position: number) => `Waiting to upload · ${place(position)} in line`,
   uploading: (fraction: number | null) => (fraction === null ? "Uploading audio to your TinyCloud space…" : `Uploading audio to your TinyCloud space · ${percentText(fraction)}`),
   retrying: "Retrying…",
+  retryIn: (ms: number) => `Your TinyCloud space is slow to answer · trying again in ${Math.max(1, Math.ceil(ms / 1_000))} s`,
   offline: "Waiting for a connection",
   offlineCaption: "Offline · Resumes automatically",
   signedOut: (device: PipelineDevice) => `You're signed out. This note is safe on ${deviceName(device)}.`,
@@ -67,13 +65,11 @@ export const SPACE_COPY = {
   server: (_detail: string | null | undefined, device: PipelineDevice) =>
     `Your space couldn't take this note. It is safe on ${deviceName(device)}. Try again.`,
   unreachable: (device: PipelineDevice) => `Couldn't reach your space. This note is safe on ${deviceName(device)}.`,
-  source: (_message: string | null | undefined, device: PipelineDevice = "phone") => `Couldn't read the recording on ${deviceName(device)}.`,
-  unknown: (_message: string | null | undefined, device: PipelineDevice = "phone") => `Couldn't save this note. It is safe on ${deviceName(device)}. Try again.`,
 };
 
 export const TRANSCRIPT_COPY = {
   savedInSpace: "Saved in your space",
-  noSpeechInSpace: "No speech found in your space",
+  noSpeechInSpace: "No speech found",
 };
 
 export const LOCAL_COPY = {
@@ -114,7 +110,6 @@ export const PRIVATE_COPY = {
   waiting: (position: number) => `Waiting · ${place(position)}`,
   preparing: "Preparing…",
   sending: "Sending audio to Private transcription",
-  inQueue: (position: number | null) => (position === null ? "In the queue" : `In the queue · #${position}`),
   transcribing: (completed: number | null, total: number | null) =>
     completed === null || total === null ? "Transcribing…" : `Transcribing · ${completed} of ${total}`,
   saving: "Saving transcript",
@@ -125,7 +120,7 @@ export const PRIVATE_COPY = {
   checkFailed: "Couldn't check whether private transcription is available",
   checking: "Checking private transcription…",
   noConsent: "Waiting for your OK to use Private",
-  failed: (code: string) => code === "recording_too_long" ? "This recording is too long to transcribe." : "Private transcription didn't finish.",
+  failed: (code: string, provider: "private" | "powerful" | "unknown" = "private") => code === "recording_too_long" ? "This recording is too long to transcribe." : provider === "powerful" ? "Powerful transcription didn't finish." : provider === "unknown" ? "Transcription didn't finish." : "Private transcription didn't finish.",
 };
 
 export const NOTES_COPY = {

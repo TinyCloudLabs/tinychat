@@ -46,9 +46,10 @@ export function LibraryScreen(props: {
   pipelines?: ReadonlyMap<string, NotePipeline>;
   activityViews?: ReadonlyMap<string, NotePipelineView>;
   platform?: AppPlatform;
+  activityControl?: ReactNode;
 }) {
   const { library } = props;
-  const refresh = <RefreshButton onClick={library.refresh} busy={library.listing} />;
+  const refresh = <div className="flex flex-wrap items-center gap-1">{props.activityControl}<RefreshButton onClick={library.refresh} busy={library.listing} /></div>;
   return (
     <>
       {props.pushed ? (

@@ -112,7 +112,7 @@ export function SoftRow(props: SoftRowProps) {
           {props.badge && <RowBadge>{props.badge}</RowBadge>}
           {stateLine(issue, props.meta)}
         </span>
-        {props.activityStatus && <span className="soft-row-meta" data-testid="library-note-status">{props.activityStatus}</span>}
+        {props.activityStatus && <span className={props.activityStatus.startsWith("Needs attention") ? "soft-row-meta text-amber-700 dark:text-amber-300" : "soft-row-meta"} data-testid="library-note-status">{props.activityStatus}</span>}
         {!props.activityStatus && props.pipeline && !props.pipeline.done && <PipelineTrackSummary pipeline={props.pipeline} />}
       </span>
       {(props.durationSecs != null ||

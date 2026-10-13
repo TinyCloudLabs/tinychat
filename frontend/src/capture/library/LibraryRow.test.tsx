@@ -69,11 +69,11 @@ describe("a voice note's row", () => {
 });
 
 describe("a note not yet settled in the space", () => {
-  test("says where it is: On this phone, or Saving…, as a badge in the row's name too", () => {
+  test("says where a local note is without a stale Saving badge", () => {
     expect(libraryRowBadge(voice({ onPhone: true }))).toBe("On this phone");
     expect(libraryRowBadge(voice({ onPhone: true }), "on this Mac")).toBe("On this Mac");
     expect(libraryRowBadge(voice({ onPhone: true }), "in this browser")).toBe("In this browser");
-    expect(libraryRowBadge(voice({ saving: true }))).toBe("Saving…");
+    expect(libraryRowBadge(voice({ saving: true }))).toBeNull();
     expect(libraryRowBadge(voice())).toBeNull();
     expect(libraryRowBadge(meeting)).toBeNull();
   });

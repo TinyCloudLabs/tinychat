@@ -178,24 +178,25 @@ describe("a voice note's transcription", () => {
 
   test("no speech, progress, just saved, and a failure with Retry only when it can help", () => {
     const silent = render({ metadata: { status: "ok", metadata: { transcription_outcome: "no_speech" } }, transcription: transcription() });
-    expect(silent).toContain("No speech was found in this note.");
+    expect(silent).toContain("No speech found");
     expect(silent).not.toContain('data-testid="transcribe-button"');
     const job = (state: NoteTranscriptionState) => transcription({ jobs: new Map([["rec-1", state]]) });
     expect(render({ transcription: job({ kind: "active", status: { kind: "processing", completed: 1, total: 3 } }) })).toContain(
-      "Transcribing in private cloud… 1/3",
+      "Transcribing in the transcription service… 1/3",
     );
     expect(render({ transcription: job({ kind: "done", outcome: "transcribed" }) })).toContain("Saving the transcript to your TinyCloud space…");
     const failed = (retryable: boolean) =>
       job({ kind: "failed", code: "upload_interrupted", message: "The upload did not complete.", retryable, reference: "cid-7" });
     const retry = render({ transcription: failed(true) });
-    expect(retry).not.toContain("Reference: cid-7");
-    expect(retry).toContain("Private transcription didn&#x27;t finish.");
+    expect(retry).toContain("Reference: cid-7");
+    expect(retry).toContain("Copy details");
+    expect(retry).toContain("Transcription didn&#x27;t finish.");
     expect(retry).toContain('data-testid="transcribe-button"');
     expect(retry).toContain("Try again");
-    expect(render({ transcription: failed(false) })).not.toContain('data-testid="transcribe-button"');
+    expect(render({ transcription: failed(false) })).toContain('data-testid="transcribe-button"');
     // Private cloud unavailable right now: the failure is told, but Retry can't help.
     const unavailable = render({ transcription: transcription({ jobs: new Map([["rec-1", { kind: "failed", code: "upload_interrupted", message: "The upload did not complete.", retryable: true, reference: "cid-7" }]]), availability: "failed" }) });
-    expect(unavailable).toContain("Private transcription didn&#x27;t finish.");
+    expect(unavailable).toContain("Transcription didn&#x27;t finish.");
     expect(unavailable).not.toContain('data-testid="transcribe-button"');
     expect(unavailable).toContain('data-testid="transcribe-private-recheck"');
   });
@@ -268,13 +269,13 @@ describe("a voice note with an after-stop Whisper job on the Mac", () => {
 
   test("an empty durable local result says no speech", () => {
     const html = withJob({ state: "done" }, { localTranscript: { ...localTranscript, outcome: "no_speech", segments: [] } });
-    expect(html).toContain("No speech was found in this note.");
+    expect(html).toContain("No speech found");
     expect(html).not.toContain("Transcript saved.");
   });
 
   test("the space's no-speech outcome wins without a local read error", () => {
     const html = withJob({ state: "done" }, { metadata: { status: "ok", metadata: { transcription_outcome: "no_speech" } }, localTranscript: null });
-    expect(html).toContain("No speech was found in this note.");
+    expect(html).toContain("No speech found");
     expect(html).not.toContain("Couldn’t read the transcript saved on this Mac.");
   });
 
@@ -285,7 +286,7 @@ describe("a voice note with an after-stop Whisper job on the Mac", () => {
     expect(html).toContain("Try again");
     const silent = withJob({ state: "done" }, { localTranscript: { ...localTranscript, outcome: "no_speech", segments: [] },
       transcript: { status: "failed", message: "offline" } });
-    expect(silent).toContain("No speech was found in this note.");
+    expect(silent).toContain("No speech found");
     expect(silent).toContain("On this device · Couldn’t check your space.");
   });
 

@@ -13,8 +13,7 @@ import { Button } from "@/components/ui/button";
 import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
 import { PHONE_AUDIO_UNAVAILABLE } from "@/chat/audioPlayback";
 import { cn } from "@/lib/utils";
-import { useResolvedTheme } from "@/lib/theme";
-import { PipelineStepper } from "@/capture/pipeline/PipelineStepper";
+import { activityForNote, noteStatus } from "@/capture/activity/activitySelector";
 import { type NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import "./final/soft.css";
 import { VoiceNotes, type LocalTranscript, type NoteSttState, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -175,7 +174,7 @@ export function NeedsOnDeviceModel(props: { guide: ReturnType<typeof localModelG
         <Button type="button" variant="outline" disabled={props.switching} onClick={props.onUsePrivate} data-testid="voice-note-use-private">
           {props.switching ? `Switching to ${TRANSCRIBER_NAME["private-cloud"]}…` : `Use ${TRANSCRIBER_NAME["private-cloud"]} instead`}
         </Button>
-        {props.error && <p role="alert" className="text-callout text-destructive">{props.error}</p>}
+        {props.error && <p role="alert" className="text-callout text-destructive">Couldn't switch to Private. Try again.</p>}
       </div>
     );
   }
@@ -196,17 +195,21 @@ export function NeedsOnDeviceModel(props: { guide: ReturnType<typeof localModelG
           )}
         </div>
       )}
-      {props.error && <p role="alert" className="text-callout text-destructive">{props.error}</p>}
+      {props.error && <p role="alert" className="text-callout text-destructive">Couldn't switch to Private. Try again.</p>}
     </div>
   );
 }
 
 /** The stepper on the Soft skin's tokens, which the receipt's own page does not carry. */
 function ReceiptStepper(props: { view: NotePipelineView }) {
-  const theme = useResolvedTheme() === "dark" ? "night" : "day";
+  const jobs = activityForNote(props.view, props.view.input?.device === "mac" ? "tauri" : props.view.input?.device === "browser" ? "web" : props.view.input?.device === "android" ? "android" : "ios");
+  const status = noteStatus(jobs);
+  const actions = jobs.flatMap((job) => job.action ? [job.action] : job.retry ? [{ label: "Try again", run: job.retry }] : []);
   return (
-    <div className={`soft-skin soft-${theme}`} data-layout="phone" style={{ background: "transparent" }} data-testid="voice-note-receipt-pipeline">
-      <PipelineStepper pipeline={props.view.pipeline} onAction={props.view.onAction} actionError={props.view.actionError} />
+    <div className="flex flex-wrap items-center gap-3 text-callout" data-testid="voice-note-receipt-pipeline">
+      {status && <p role="status" className="text-muted-foreground">{status}</p>}
+      {actions.map((action, index) => <button key={`${action.label}:${index}`} type="button" className="min-h-11 text-primary" onClick={action.run}>{action.label}</button>)}
+      {props.view.actionError && <p role="alert" className="text-destructive">{props.view.actionError}</p>}
     </div>
   );
 }
@@ -281,24 +284,20 @@ export function SavedReceipt(props: SavedReceiptProps) {
       {!localUrl && !localError && props.saved && <p role="status" className="text-meta text-muted-foreground">Getting this {deviceName}&apos;s audio…</p>}
       {stepperShown ? <ReceiptStepper view={pipelineView} /> : pipelineWaiting ? null : (
         <>
-          <RouteLine nodes={route} landed={saved} />
-          {props.outcome === "local" && <p className="text-meta text-muted-foreground">{
-            props.localUpload === "held" ? "This note needs an ownership check before it can sync."
-              : props.localUpload === "in-flight" ? "Waiting to start syncing to your TinyCloud space…"
-              : "Saving to your TinyCloud space…"
-          }</p>}
-          {saved && <p className="text-meta text-muted-foreground">Saved to your TinyCloud space</p>}
+          {!pipelineView && <RouteLine nodes={route} landed={saved} />}
+          {props.outcome === "local" && !pipelineView && !pipelineWaiting && <p className="text-meta text-muted-foreground">{props.localUpload === "held" ? "Recorded on another account" : "Waiting to sync to your TinyCloud space"}</p>}
+          {saved && <p className="text-meta text-muted-foreground">In your TinyCloud space</p>}
         </>
       )}
-      {saved && !stepperShown && props.transcribing && <p className="text-meta text-muted-foreground">{props.transcriber === "assemblyai" ? "Transcribing with Powerful…" : "Transcribing in private cloud…"}</p>}
-      {saved && props.held && <p role="status" className="text-meta text-muted-foreground" data-testid="voice-note-held">{props.held}</p>}
-      {saved && props.privateOutcome && (
+      {saved && !pipelineView && !pipelineWaiting && props.transcribing && <p className="text-meta text-muted-foreground">{props.transcriber === "assemblyai" ? "Transcribing with Powerful…" : "Transcribing in private cloud…"}</p>}
+      {saved && !pipelineView && !pipelineWaiting && props.held && <p role="status" className="text-meta text-muted-foreground" data-testid="voice-note-held">{props.held}</p>}
+      {saved && !pipelineView && !pipelineWaiting && props.privateOutcome && (
         <p className="text-meta text-muted-foreground" data-testid="voice-note-private-done">
-          {props.privateOutcome === "no_speech" ? "No speech was found in this note." : props.transcriber === "assemblyai" ? "Transcribed with Powerful" : "Transcribed in private cloud"}
+          {props.privateOutcome === "no_speech" ? "No speech found" : props.transcriber === "assemblyai" ? "Transcribed with Powerful" : "Transcribed in private cloud"}
         </p>
       )}
-      {props.privateFailure && !stepperShown && (
-        <p role="alert" className="text-callout text-destructive" data-testid="voice-note-private-failed">{props.transcriber === "assemblyai" ? "Powerful couldn't finish: " : "Couldn't transcribe in private cloud: "}{props.privateFailure}</p>
+      {props.privateFailure && !pipelineView && !pipelineWaiting && (
+        <p role="alert" className="text-callout text-destructive" data-testid="voice-note-private-failed">{props.transcriber === "assemblyai" ? "Powerful transcription didn't finish." : "Private transcription didn't finish."}</p>
       )}
       {needsModel && (
         <NeedsOnDeviceModel
@@ -310,7 +309,8 @@ export function SavedReceipt(props: SavedReceiptProps) {
             setModelError(null);
             setSwitching(true);
             void usePrivate().then((failure) => {
-              setModelError(failure);
+              if (failure) console.error("[Receipt] Could not switch transcription to Private", failure);
+              setModelError(failure ? "Couldn't switch to Private. Try again." : null);
               setSwitching(false);
             });
           })}
@@ -324,7 +324,7 @@ export function SavedReceipt(props: SavedReceiptProps) {
       )}
       {onDevice.kind === "transcribed" && (
         onDevice.transcript.outcome === "no_speech" ? (
-          <p className="text-meta text-muted-foreground" data-testid="voice-note-on-device-no-speech">No speech was found in this note.</p>
+          <p className="text-meta text-muted-foreground" data-testid="voice-note-on-device-no-speech">No speech found</p>
         ) : (
           <div className="flex flex-col gap-1" data-testid="voice-note-on-device-transcript">
             <p className="text-meta text-muted-foreground">Transcribed on this phone</p>
