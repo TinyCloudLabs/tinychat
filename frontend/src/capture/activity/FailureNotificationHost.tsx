@@ -6,7 +6,7 @@ import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import type { LibraryItem } from "../library/LibraryRow";
 import { FailureNotificationDedupe, failureNotifications, type FailureNotification } from "./failureNotifications";
 
-const STORAGE_VERSION = "exo-failure-notifications-v1";
+const STORAGE_VERSION = "exo-failure-notifications-v2";
 const TOAST_MS = 8000;
 
 function readKeys(key: string): string[] {

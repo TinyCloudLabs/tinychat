@@ -13,20 +13,13 @@ export interface FailureNotification {
   path: string;
 }
 
-// Keep diagnostics out of localStorage while allowing a changed failure to alert once.
-function fingerprint(value: string): string {
-  let hash = 2166136261;
-  for (let i = 0; i < value.length; i++) hash = Math.imul(hash ^ value.charCodeAt(i), 16777619);
-  return (hash >>> 0).toString(36);
-}
-
 export function failureNotifications(items: readonly LibraryItem[], views: ReadonlyMap<string, NotePipelineView>, platform: AppPlatform): FailureNotification[] {
   return items.flatMap((item) => {
     const jobs = activityForNote(views.get(item.sourceId), platform);
     return jobs.filter((job) => job.state === "needs-attention" && !(job.kind === "sync" && jobs.some((other) =>
       other.kind === "upload-audio" && other.state === "needs-attention" && other.diagnostics === job.diagnostics)))
     .map((job) => ({
-      key: `${item.sourceId}:${job.kind}:${fingerprint(`${job.detail}\0${job.diagnostics ?? ""}`)}`,
+      key: JSON.stringify([item.sourceId, job.kind, job.failureCode ?? "failed"]),
       noteId: item.id,
       track: job.kind,
       title: item.snippet ?? item.title ?? "Voice note",
@@ -48,5 +41,5 @@ export class FailureNotificationDedupe {
     }
     return newFailures;
   }
-  keys(): string[] { return [...this.seen].slice(-500); }
+  keys(): string[] { return [...this.seen]; }
 }

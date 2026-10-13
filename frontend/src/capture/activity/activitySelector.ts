@@ -16,6 +16,8 @@ export interface ActivityJob {
   retry?: () => void;
   action?: { label: string; run: () => void };
   diagnostics?: string;
+  /** Stable failure class for notification dedupe; never include request references or messages. */
+  failureCode?: string;
 }
 
 export const deviceName = (platform: AppPlatform): string =>
@@ -42,7 +44,7 @@ export function activityForNote(view: NotePipelineView | undefined, platform: Ap
     .map((step): ActivityJob => ({ kind: step.key === "phone" ? "finish" : step.key === "transcript" ? "transcribe" : "sync",
       state: stateOf(step), label: step.key === "phone" ? "Finish" : step.key === "transcript" ? "Transcribe" : "Sync",
       destination: step.key === "phone" ? deviceName(platform) : "your TinyCloud space",
-      detail: step.blocker?.cause ?? step.caption ?? "Waiting to start", progress: step.progress, retry: retryFor(view, step), action: actionFor(view, step) }));
+      detail: step.blocker?.cause ?? step.caption ?? "Waiting to start", progress: step.progress, retry: retryFor(view, step), action: actionFor(view, step), failureCode: step.state === "failed" ? "failed" : undefined }));
   const { input } = view;
   const steps = new Map(view.pipeline.steps.map((step) => [step.key, step]));
   const jobs: ActivityJob[] = [];
@@ -54,6 +56,7 @@ export function activityForNote(view: NotePipelineView | undefined, platform: Ap
       : finish.blocker?.cause ?? (finish.state === "active" ? "Finishing the recording…" : "Waiting to finish the recording"),
     action: actionFor(view, finish), retry: retryFor(view, finish),
     diagnostics: input.capture.issue ?? input.capture.readError ?? undefined,
+    failureCode: input.capture.issue ?? (input.capture.readError ? "read-error" : undefined),
   });
   const transcribe = steps.get("transcript");
   const provider = view.provider ?? (input.route === "on-device" ? "local" : "unknown");
@@ -81,7 +84,8 @@ export function activityForNote(view: NotePipelineView | undefined, platform: Ap
       else detail = provider === "powerful" ? "Transcribing with Powerful…" : provider === "private" ? "Transcribing privately…" : "Transcribing…";
       const diagnostics = cloud?.kind === "failed" ? `${cloud.code}: ${cloud.message}${cloud.reference ? ` · ${cloud.reference}` : ""}` : od?.stt?.error ?? undefined;
       jobs.push({ kind: "transcribe", state: stateOf(transcribe), label: "Transcribe", destination, detail,
-        progress: transcribe.progress, retry: retryFor(view, transcribe), action: actionFor(view, transcribe), diagnostics });
+        progress: transcribe.progress, retry: retryFor(view, transcribe), action: actionFor(view, transcribe), diagnostics,
+        failureCode: cloud?.kind === "failed" ? cloud.code : od?.stt?.state === "failed" ? "on-device-stt" : undefined });
     }
   }
   const space = steps.get("space");
@@ -95,7 +99,8 @@ export function activityForNote(view: NotePipelineView | undefined, platform: Ap
     jobs.push({ kind: "sync", state: retryAt && retryAt > now ? "retrying" : upload && state === "running" ? "waiting" : state, label: "Sync", destination: "your TinyCloud space",
       detail: state === "running" && !upload ? "Syncing to your TinyCloud space…" : reason,
       retry: retryFor(view, space), action: retryAt && retryAt > now ? { label: "Try now", run: () => view.onRetryStep ? view.onRetryStep("space") : view.onAction("retry") } : actionFor(view, space),
-      diagnostics: input.space.pending?.failed ? `${input.space.pending.failed.kind}: ${input.space.pending.failed.message}` : undefined });
+      diagnostics: input.space.pending?.failed ? `${input.space.pending.failed.kind}: ${input.space.pending.failed.message}` : undefined,
+      failureCode: input.space.pending?.failed?.kind });
     if (upload && input.audioUploadIntent !== false) {
       const progress = upload.total > 0 ? Math.min(1, upload.bytes / upload.total) : undefined;
       const uploadFailure = input.space.pending?.failed && input.space.pending.failed.kind !== "offline" ? input.space.pending.failed : null;
@@ -104,22 +109,24 @@ export function activityForNote(view: NotePipelineView | undefined, platform: Ap
         detail: uploadFailure ? `Couldn't upload the audio. It's safe on ${device}.` : !input.online ? "Waiting for a connection · syncs by itself" : upload.state === "preparing" ? "Preparing audio upload…"
           : upload.state === "uploading" ? `Uploading audio to your TinyCloud space${progress === undefined ? "…" : ` · ${percent(progress)}`}` : upload.state === "retrying" ? "Retrying audio upload…" : "Waiting to upload audio",
         progress, retry: uploadFailure ? retryFor(view, space) : undefined, action: uploadFailure ? actionFor(view, space) : undefined,
-        diagnostics: uploadFailure ? `${uploadFailure.kind}: ${uploadFailure.message}` : undefined });
+        diagnostics: uploadFailure ? `${uploadFailure.kind}: ${uploadFailure.message}` : undefined, failureCode: uploadFailure?.kind });
     }
   }
   const notes = steps.get("notes");
   if (notes && (notes.state === "active" || notes.state === "failed" || notes.state === "blocked") && !jobs.some((job) => job.kind === "sync")) {
     jobs.push({ kind: "sync", state: stateOf(notes), label: "Sync", destination: "your TinyCloud space",
-      detail: notes.blocker?.cause ?? "Syncing to your TinyCloud space…", retry: retryFor(view, notes), action: actionFor(view, notes), diagnostics: input.notes.state === "unreadable" ? input.notes.cause : undefined });
+      detail: notes.blocker?.cause ?? "Syncing to your TinyCloud space…", retry: retryFor(view, notes), action: actionFor(view, notes), diagnostics: input.notes.state === "unreadable" ? input.notes.cause : undefined,
+      failureCode: notes.state === "failed" ? input.notes.state : undefined });
   }
   const transcriptSync = input.transcript.onDevice?.sync;
   const existingSync = jobs.findIndex((job) => job.kind === "sync");
-  if (transcriptSync?.state === "unrecorded" && existingSync >= 0) jobs[existingSync] = { ...jobs[existingSync]!, state: "needs-attention", detail: "The transcript is in your space, but this device couldn't record that.", diagnostics: transcriptSync.message, action: view.pipeline.blocker?.action ? { label: view.pipeline.blocker.action.label, run: () => view.onAction(view.pipeline.blocker!.action!.kind) } : undefined };
+  if (transcriptSync?.state === "unrecorded" && existingSync >= 0) jobs[existingSync] = { ...jobs[existingSync]!, state: "needs-attention", detail: "The transcript is in your space, but this device couldn't record that.", diagnostics: transcriptSync.message, failureCode: "transcript-unrecorded", action: view.pipeline.blocker?.action ? { label: view.pipeline.blocker.action.label, run: () => view.onAction(view.pipeline.blocker!.action!.kind) } : undefined };
   if (transcriptSync && (transcriptSync.state === "syncing" || transcriptSync.state === "failed" || transcriptSync.state === "unrecorded") && !jobs.some((job) => job.kind === "sync")) {
     jobs.push({ kind: "sync", state: transcriptSync.state === "failed" || transcriptSync.state === "unrecorded" ? "needs-attention" : "running", label: "Sync", destination: "your TinyCloud space",
       detail: transcriptSync.state === "unrecorded" ? "The transcript is in your space, but this device couldn't record that." : transcriptSync.state === "failed" ? "Couldn't sync to your TinyCloud space." : "Syncing to your TinyCloud space…",
       retry: transcribe ? retryFor(view, transcribe) : undefined, action: transcriptSync.state === "unrecorded" && view.pipeline.blocker?.action ? { label: view.pipeline.blocker.action.label, run: () => view.onAction(view.pipeline.blocker!.action!.kind) } : transcribe ? actionFor(view, transcribe) : undefined,
-      diagnostics: transcriptSync.state === "unrecorded" || transcriptSync.state === "failed" ? transcriptSync.message : undefined });
+      diagnostics: transcriptSync.state === "unrecorded" || transcriptSync.state === "failed" ? transcriptSync.message : undefined,
+      failureCode: transcriptSync.state === "unrecorded" ? "transcript-unrecorded" : transcriptSync.state === "failed" ? "transcript-sync-failed" : undefined });
   }
   return jobs;
 }
