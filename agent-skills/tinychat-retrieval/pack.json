@@ -1,6 +1,6 @@
 {
   "name": "tinychat-retrieval",
-  "version": "0.1.1-onboarding.19",
+  "version": "0.1.1-onboarding.20",
   "description": "Read existing TinyChat meeting metadata and transcript passages through TinyCloud CLI.",
   "envelopeVersion": 1,
   "runtime": {
