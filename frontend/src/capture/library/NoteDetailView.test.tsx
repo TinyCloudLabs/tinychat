@@ -176,6 +176,21 @@ describe("a voice note's transcription", () => {
     expect(html).toContain('data-testid="transcribe-button"');
   });
 
+  test("a persisted non-retryable failure shows its reason without a Retry action", () => {
+    const html = render({
+      metadata: { status: "ok", metadata: {
+        transcription_outcome: "failed",
+        transcription_error_code: "recording_too_large",
+      } },
+      transcript: { status: "absent" },
+      transcription: transcription(),
+    });
+    expect(html).toContain('data-testid="voice-note-transcription-failed"');
+    expect(html).toContain("Private cloud can&#x27;t transcribe a recording this long or large.");
+    expect(html).not.toContain("Try again");
+    expect(html).not.toContain('data-testid="transcribe-button"');
+  });
+
   test("no speech, progress, just saved, and a failure with Retry only when it can help", () => {
     const silent = render({ metadata: { status: "ok", metadata: { transcription_outcome: "no_speech" } }, transcription: transcription() });
     expect(silent).toContain("No speech was found in this note.");

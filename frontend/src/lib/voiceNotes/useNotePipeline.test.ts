@@ -115,6 +115,18 @@ describe("the pipeline from composed stores", () => {
     expect(stateOf(pipeline, "transcript")).toBe("failed");
     expect(pipeline.blocker?.action?.kind).toBe("retry");
   });
+  test("persisted row outcomes reach Recent when the live route is idle", () => {
+    for (const outcome of ["pending", "failed", "skipped"] as const) {
+      const pipeline = run({ saved: true, rowMetadata: {
+        transcription_outcome: outcome,
+        ...(outcome === "failed" ? { transcription_error_code: "recording_too_large" } : {}),
+      } });
+      expect(pipeline.transcriptionState).toBe(outcome);
+      expect(stateOf(pipeline, "transcript")).toBe("skipped");
+      if (outcome === "failed") expect(pipeline.transcriptionErrorCode).toBe("recording_too_large");
+    }
+  });
+
 
   test("a note with written notes that never synced offers to sync them (idle), then synced on the row's own evidence", () => {
     const local = { editedAt: EDITED, hasContent: true };

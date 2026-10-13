@@ -142,6 +142,11 @@ export interface PreparedTranscriptionAudio {
  * accepted, otherwise decoded and written as 16 kHz mono WAV. Refuses a
  * recording over the current PTX duration or byte capability before upload.
  */
+export function bareMimeType(value: string): string {
+  return value.split(";", 1)[0].trim().toLowerCase();
+}
+
+
 export async function prepareTranscriptionAudio(
   audio: { mimeType: string; base64: string },
   options: {
@@ -154,10 +159,11 @@ export async function prepareTranscriptionAudio(
   const maxSeconds = options.maxSeconds ?? Number.POSITIVE_INFINITY;
   const tooLarge = () => new VoiceNoteAudioError("recording_too_large", "The recording is larger than the private cloud limit.");
   const recorded = base64ToBytes(audio.base64);
-  if (options.acceptedContentTypes.includes(audio.mimeType)) {
+  const contentType = bareMimeType(audio.mimeType);
+  if (options.acceptedContentTypes.some((type) => bareMimeType(type) === contentType)) {
     if (recorded.byteLength > options.maxBytes) throw tooLarge();
     return {
-      contentType: audio.mimeType,
+      contentType,
       base64: audio.base64,
       byteSize: recorded.byteLength,
       sha256: await sha256Hex(recorded),

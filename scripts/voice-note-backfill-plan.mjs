@@ -89,11 +89,15 @@ export function planVoiceNoteBackfill(rows, audioIndex, { maxSeconds = 7200, max
   });
 }
 
+function bareMimeType(mimeType) {
+  return mimeType.split(';', 1)[0].trim().toLowerCase();
+}
+
 function estimatedPtxBytes(audio, duration) {
   const mimeType = typeof audio.mimeType === 'string' ? audio.mimeType : null;
   if (mimeType === null) return null;
-  // Match prepareTranscriptionAudio's current exact MIME comparison. Parameter stripping there is a follow-up.
-  if (PTX_RAW_MIME_TYPES.has(mimeType)) return typeof audio.size === 'number' ? audio.size : null;
+  // PTX validates bare content types; prepareTranscriptionAudio strips MIME parameters before sending.
+  if (PTX_RAW_MIME_TYPES.has(bareMimeType(mimeType))) return typeof audio.size === 'number' ? audio.size : null;
   return duration === null ? null : WAV_HEADER_BYTES + WAV_BYTES_PER_SECOND * duration;
 }
 

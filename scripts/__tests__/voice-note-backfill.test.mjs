@@ -135,10 +135,10 @@ test('capture duration fallback is inclusive at the cap', () => {
   ]);
 });
 
-test('current exact MIME matching and WAV expansion size preflight the PTX byte cap', () => {
+test('parameterized audio MIME is matched by its bare PTX raw type', () => {
   const localAudio = new Map([
     ['webm-over', { present: true, partCount: 4, mimeType: 'audio/webm;codecs=opus', size: 40_000_000 }],
-    ['webm-under', { present: true, partCount: 1, mimeType: 'audio/webm;codecs=opus', size: 20_000_000 }],
+    ['webm-under', { present: true, partCount: 1, mimeType: 'audio/webm; codecs=opus', size: 20_000_000 }],
     ['webm-raw', { present: true, partCount: 1, mimeType: 'audio/webm', size: 80_000_000 }],
     ['raw-over', { present: true, partCount: 1, mimeType: 'audio/mp4', size: 120_960_001 }],
   ]);
@@ -149,10 +149,10 @@ test('current exact MIME matching and WAV expansion size preflight the PTX byte 
     row('raw-over', { duration_secs: 30 }),
   ], localAudio);
   assert.deepEqual(results.map(({ classification }) => classification), [
-    'over-ptx-bytes', 'eligible', 'eligible', 'over-ptx-bytes',
+    'eligible', 'eligible', 'eligible', 'over-ptx-bytes',
   ]);
-  assert.equal(results[0].estimatedPtxBytes, 138_912_044);
-  assert.equal(results[1].estimatedPtxBytes, 96_000_044);
+  assert.equal(results[0].estimatedPtxBytes, 40_000_000);
+  assert.equal(results[1].estimatedPtxBytes, 20_000_000);
 });
 
 test('non-retryable failures and unusable audio are listed outside eligibility', () => {

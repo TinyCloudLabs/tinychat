@@ -68,6 +68,7 @@ import {
   localStorageVoiceNotePrivateChoiceStore,
   maxTranscriptionSeconds,
   privateCloudAccepts,
+  acceptedContentTypes,
   prepareVoiceNoteTranscript,
   transcribeVoiceNote,
   transcriptionStatusText,
@@ -93,6 +94,10 @@ const CAPS: PrivateCloudCapabilities = {
   diarization: true,
 };
 const AUDIO = { mimeType: "audio/mp4", base64: bytesToBase64(new Uint8Array([1, 2, 3, 4])) };
+test("accepted PTX content types drop parameters and normalize case", () => {
+  expect(acceptedContentTypes({ ...CAPS, content_types: ["Audio/WebM;codecs=opus"] }))
+    .toEqual(["audio/webm"]);
+});
 const originalVoiceNotes = VoiceNotes;
 test("native PTX upload passes the file descriptor and progress across the JS boundary", async () => {
   const fake = createFakeVoiceNotes();

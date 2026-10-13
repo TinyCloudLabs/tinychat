@@ -262,6 +262,10 @@ export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineIn
   const route = desktopLocal ? "on-device" : pipelineRoute(facts.native, facts.cloudJob !== null,
     facts.onDeviceStatus === null ? null : onDeviceQueuePlace(facts.onDeviceStatus, facts.id));
   const rowState = facts.rowMetadata === null ? "none" : voiceNoteTranscriptState(facts.rowMetadata).status;
+  const persistedState = facts.saved && (rowState === "pending" || rowState === "failed" || rowState === "skipped") ? rowState : undefined;
+  const errorCode = rowState === "failed" && typeof facts.rowMetadata?.transcription_error_code === "string"
+    ? facts.rowMetadata.transcription_error_code
+    : undefined;
   const rowOutcome = rowState === "transcribed" || rowState === "no_speech" ? rowState : "none";
   // The ledger's own record that the transcript reached the space is durable evidence too (a receipt has no library row read).
   const ledgerOutcome = facts.native?.transcriptSync?.state === "saved" ? facts.native.transcriptOutcome ?? "none" : "none";
@@ -290,6 +294,8 @@ export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineIn
     },
     transcript: {
       inSpace: outcome === "none" ? null : outcome,
+      ...(persistedState === undefined ? {} : { persistedState }),
+      ...(errorCode === undefined ? {} : { errorCode }),
       onDevice: route === "on-device" ? onDeviceInput(facts) : null,
       cloud: route === "private-cloud" ? facts.cloudJob : null,
       // Jobs are written the moment a saved note is handed over, after the check: no job and no check pending is no hand-over.

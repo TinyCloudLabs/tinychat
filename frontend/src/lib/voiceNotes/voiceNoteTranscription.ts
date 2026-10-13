@@ -39,7 +39,12 @@ import { currentAccountGeneration, isAccountContextCurrent, isAccountWorkAllowed
 import { nativeRecordingSource, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { whenVoiceNoteSavesIdle } from "./recorderSaves";
+import { transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "./transcriptionErrors";
+import type { VoiceNoteTranscriptionFailure } from "./transcriptionErrors";
+export type { VoiceNoteTranscriptionFailure } from "./transcriptionErrors";
+
 import {
+  bareMimeType,
   base64ToBytes,
   bytesToBase64,
   prepareTranscriptionAudio,
@@ -538,24 +543,6 @@ const RELEASE_CODES: ReadonlySet<string> = new Set([
   "transcription_off",
 ]);
 
-/** Failures Retry cannot fix for this note. */
-const NOT_RETRYABLE_CODES: ReadonlySet<string> = new Set([
-  "recording_too_large",
-  "recording_too_long",
-  "recording_too_long_for_phone",
-  "unsupported_recording",
-  "invalid_audio",
-  "no_speech",
-  "decode_failed",
-  "decode_unavailable",
-  "feature_unavailable",
-  "service_misconfigured",
-  "audio_size_mismatch",
-  "VOICE_NOTE_AUDIO_CORRUPT",
-  "invalid_argument",
-  "voice_note_not_found",
-  "transcription_off",
-]);
 
 export function voiceNoteErrorCode(err: unknown): string {
   return err instanceof PrivateCloudError || err instanceof VoiceNoteAudioError ? err.code : "transcription_error";
@@ -587,7 +574,7 @@ export function accountChangedError(): PrivateCloudError {
 export function acceptedContentTypes(capabilities: PrivateCloudCapabilities): string[] {
   const listed = capabilities.content_types;
   return Array.isArray(listed) && listed.every((t) => typeof t === "string")
-    ? (listed as string[])
+    ? (listed as string[]).map(bareMimeType)
     : ["audio/mpeg", "audio/wav", "audio/ogg"];
 }
 
@@ -1005,76 +992,15 @@ export function createVoiceNoteCloudForBuild(
 
 // ── One note, end to end ───────────────────────────────────────────────
 
-/** A failure as the card shows it. */
-export interface VoiceNoteTranscriptionFailure {
-  code: string;
-  message: string;
-  retryable: boolean;
-  /** Correlation id, shown as a reference. */
-  reference: string | null;
-}
-
 export function voiceNoteTranscriptionFailure(err: unknown): VoiceNoteTranscriptionFailure {
   const code = voiceNoteErrorCode(err);
-  const reference = err instanceof PrivateCloudError ? err.correlationId : null;
-  let message: string;
-  switch (code) {
-    case "recording_too_long_for_phone":
-    case "recording_too_long":
-    case "recording_too_large":
-      message = "Private cloud can't transcribe a recording this long or large.";
-      break;
-    case "decode_failed":
-    case "decode_unavailable":
-      message = "This phone could not read the recording to transcribe it.";
-      break;
-    case "no_speech":
-      message = "No speech was found in this note.";
-      break;
-    case "active_transcription_exists":
-      message =
-        "Another private cloud transcription for your account hasn't finished (an unfinished upload expires within 2 hours). Try again later.";
-      break;
-    case "connection_lost":
-      message = "Lost contact with private cloud transcription. The job may still be running; Retry checks on it.";
-      break;
-    case "feature_unavailable":
-      message = "Private transcription is unavailable on this device. Try again.";
-      break;
-    case "voice_note_not_found":
-      message = "This voice note no longer exists.";
-      break;
-    case "transcript_save_failed":
-      message = "The transcript could not be saved to your space. Retry saves it again.";
-      break;
-    case "note_unreadable":
-      message = "Could not read this note from your space just now. Retry tries again.";
-      break;
-    case "audio_read_failed":
-      message = "Could not read this note's audio from this device or your space. Retry tries again.";
-      break;
-    case "audio_not_ready":
-      message = "This recording is still being saved on this device. Try again when it finishes.";
-      break;
-    case "audio_size_mismatch":
-      message = "The recording changed on disk after it stopped, so it was not uploaded.";
-      break;
-    case "audio_upload_pending":
-      message = "This note's audio is still being saved to your space. Try again when the upload finishes.";
-      break;
-    case "VOICE_NOTE_AUDIO_CORRUPT":
-      message = "This note's audio is damaged and can't be transcribed.";
-      break;
-    case "transcription_off":
-      message = "Transcription was turned off.";
-      break;
-    default:
-      message =
-        err instanceof PrivateCloudError
-          ? privateCloudMessage(err)
-          : "Transcription failed. Try again.";
-  }
-  return { code, message, retryable: !NOT_RETRYABLE_CODES.has(code), reference };
+  const failure = voiceNoteTranscriptionFailureForCode(code);
+  return {
+    ...failure,
+    message: transcriptionErrorCopy(code)
+      ?? (err instanceof PrivateCloudError ? privateCloudMessage(err) : failure.message),
+    reference: err instanceof PrivateCloudError ? err.correlationId : null,
+  };
 }
 
 /**
