@@ -147,7 +147,7 @@ async function ownsNativeNote(tcw: TinyCloudWeb, key: string, id: string, ctx: A
       return VoiceNotes.listPending();
     }));
     checkpoint(tcw, ctx)();
-  } catch {
+  } catch (err) {
     if (!isCurrent(tcw, ctx)) return null;
     console.warn("[OnDeviceStt] Could not verify local note ownership", err);
     publish(key, { state: failureState, message: LOCAL_COPY.transcriptCheckFailed });
@@ -173,7 +173,7 @@ async function recordAndPublish(tcw: TinyCloudWeb, key: string, id: string, tran
     checkpoint(tcw, ctx)();
     publish(key, { state: "synced" });
     return false;
-  } catch {
+  } catch (err) {
     if (!isCurrent(tcw, ctx)) return true;
     console.warn("[OnDeviceStt] The transcript is in the space but this phone's ledger was not updated", err);
     publish(key, { state: "unrecorded", message: LOCAL_COPY.transcriptSyncFailed });
@@ -193,7 +193,7 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
       return VoiceNotes.getTranscript({ id });
     }));
     checkpoint(tcw, ctx)();
-  } catch {
+  } catch (err) {
     if (!isCurrent(tcw, ctx)) return true;
     console.warn("[OnDeviceStt] Could not read the local transcript", err);
     publish(key, { state: "failed", message: LOCAL_COPY.transcriptReadFailed });
@@ -226,7 +226,7 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
       }
       published.delete(resultKey);
     }
-  } catch {
+  } catch (err) {
     if (!isCurrent(tcw, ctx)) return true;
     publish(key, { state: "failed", message: LOCAL_COPY.transcriptCheckFailed });
     return false;
@@ -246,7 +246,7 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
     publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed });
     await persistOnDeviceFailure(tcw, id, "transcript_save_failed", ctx);
     return false;
-  } catch {
+  } catch (err) {
     if (!isCurrent(tcw, ctx) || err instanceof StaleAccountContext) return true;
     console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", err);
     publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed });
