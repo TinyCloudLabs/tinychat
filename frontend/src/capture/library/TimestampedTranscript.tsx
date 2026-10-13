@@ -6,7 +6,7 @@ import { sentenceTime } from "./transcriptSegments";
 
 /** Only the rows crossing the active boundary need a new render on a clock tick. */
 class ActiveRowStore {
-  active = -1;
+  active = new Set<number>();
   private listeners = new Map<number, Set<() => void>>();
 
   subscribe(index: number, listener: () => void) {
@@ -19,12 +19,15 @@ class ActiveRowStore {
     };
   }
 
-  setActive(index: number) {
-    if (index === this.active) return;
+  setActive(indices: Set<number>) {
     const previous = this.active;
-    this.active = index;
-    this.listeners.get(previous)?.forEach((listener) => listener());
-    this.listeners.get(index)?.forEach((listener) => listener());
+    this.active = indices;
+    for (const index of previous) {
+      if (!indices.has(index)) this.listeners.get(index)?.forEach((listener) => listener());
+    }
+    for (const index of indices) {
+      if (!previous.has(index)) this.listeners.get(index)?.forEach((listener) => listener());
+    }
   }
 }
 
@@ -37,16 +40,24 @@ function timedIndex(sentences: readonly FirefliesSentence[]) {
   return entries.map((entry) => ({ ...entry, maxEnd: maxEnd = Math.max(maxEnd, entry.end) }));
 }
 
-/** Find the first segment covering elapsed time, including an earlier overlapping channel. */
-function activeRowAt(index: ReturnType<typeof timedIndex>, elapsed: number): number {
+/** Find every covering segment and the latest-starting one for follow-scroll. */
+function activeRowsAt(index: ReturnType<typeof timedIndex>, elapsed: number) {
   let low = 0;
   let high = index.length;
   while (low < high) {
     const middle = (low + high) >>> 1;
-    if (index[middle]!.maxEnd > elapsed) high = middle;
-    else low = middle + 1;
+    if (index[middle]!.start <= elapsed) low = middle + 1;
+    else high = middle;
   }
-  return low < index.length && index[low]!.start <= elapsed ? index[low]!.index : -1;
+  const active = new Set<number>();
+  let followRow = -1;
+  for (let position = low - 1; position >= 0 && index[position]!.maxEnd > elapsed; position--) {
+    const entry = index[position]!;
+    if (entry.end <= elapsed) continue;
+    active.add(entry.index);
+    if (followRow < 0) followRow = entry.index;
+  }
+  return { active, followRow };
 }
 
 const TranscriptRow = memo(function TranscriptRow({ sentence, index, speaker, start, hasAudio, store, onSeek, registerRow, onRowRender }: {
@@ -55,7 +66,7 @@ const TranscriptRow = memo(function TranscriptRow({ sentence, index, speaker, st
   onRowRender?: (index: number) => void;
 }) {
   const subscribe = useCallback((listener: () => void) => store.subscribe(index, listener), [store, index]);
-  const selected = useSyncExternalStore(subscribe, () => store.active === index, () => false);
+  const selected = useSyncExternalStore(subscribe, () => store.active.has(index), () => false);
   onRowRender?.(index);
   return <div ref={(element) => registerRow(index, element)}
     data-testid="transcript-segment" data-active={selected || undefined} aria-current={selected ? "true" : undefined}
@@ -84,7 +95,7 @@ export function TimestampedTranscript({ sentences, hasAudio, onRowRender }: { se
   const rows = useRef<(HTMLDivElement | null)[]>([]);
   const index = useMemo(() => timedIndex(sentences), [sentences]);
   const store = useMemo(() => new ActiveRowStore(), [sentences]);
-  const firstActive = playback?.playing ? activeRowAt(index, playback.elapsed) : -1;
+  const { active, followRow } = playback?.playing ? activeRowsAt(index, playback.elapsed) : { active: new Set<number>(), followRow: -1 };
   const onSeek = useCallback((seconds: number) => { setFollowing(true); playFrom.current?.(seconds); }, []);
   const registerRow = useCallback((rowIndex: number, element: HTMLDivElement | null) => { rows.current[rowIndex] = element; }, []);
   const rowElements = useMemo(() => {
@@ -96,7 +107,7 @@ export function TimestampedTranscript({ sentences, hasAudio, onRowRender }: { se
     });
   }, [sentences, hasAudio, store, onSeek, registerRow, onRowRender]);
 
-  useEffect(() => { store.setActive(firstActive); }, [store, firstActive]);
+  useEffect(() => { store.setActive(active); }, [store, active]);
 
   useEffect(() => {
     const stopFollowing = () => setFollowing(false);
@@ -114,8 +125,8 @@ export function TimestampedTranscript({ sentences, hasAudio, onRowRender }: { se
   }, []);
 
   useEffect(() => {
-    if (!following || firstActive < 0) return;
-    const row = rows.current[firstActive];
+    if (!following || followRow < 0) return;
+    const row = rows.current[followRow];
     if (!row) return;
     const rect = row.getBoundingClientRect();
     const upper = window.innerHeight / 3;
@@ -123,7 +134,7 @@ export function TimestampedTranscript({ sentences, hasAudio, onRowRender }: { se
     if (rect.top < upper || rect.bottom > lower) {
       row.scrollIntoView({ block: "center", behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
     }
-  }, [firstActive, following]);
+  }, [followRow, following]);
 
   return (
     <div className="relative max-w-[68ch] select-text" onPointerDownCapture={(event) => {

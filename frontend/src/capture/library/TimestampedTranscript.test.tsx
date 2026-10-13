@@ -87,6 +87,50 @@ test("timestamp seeks, playback highlights, manual scroll suspends follow, and t
   expect(scrolls).toBe(2);
 });
 
+test("nested overlap highlights both speakers and follows the latest start through a seek", async () => {
+  cleanup = installDom();
+  const host = document.createElement("div");
+  document.body.append(host);
+  root = createRoot(host);
+  const overlapping = [
+    { index: 0, speaker_name: "Me", text: "Long turn.", start_time: 0, end_time: 20 },
+    { index: 1, speaker_name: "Them", text: "Short turn.", start_time: 5, end_time: 10 },
+  ];
+  const renders = new Map<number, number>();
+  const onRowRender = (index: number) => renders.set(index, (renders.get(index) ?? 0) + 1);
+  const scrolled: string[] = [];
+  let playedFrom = -1;
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 900 });
+  Element.prototype.getBoundingClientRect = () => ({ top: 700, bottom: 730 } as DOMRect);
+  Element.prototype.scrollIntoView = function () { scrolled.push(this.textContent ?? ""); };
+  const render = (elapsed: number) => act(async () => root!.render(
+    <NotePlaybackContext.Provider value={{ seek: null, elapsed, playing: true, playFrom: (seconds) => { playedFrom = seconds; }, onClock: () => {} }}>
+      <TimestampedTranscript sentences={overlapping} hasAudio onRowRender={onRowRender} />
+    </NotePlaybackContext.Provider>,
+  ));
+  const activeText = () => Array.from(host.querySelectorAll('[data-active="true"]'), (row) => row.textContent);
+
+  await render(0);
+  expect(activeText()).toEqual([expect.stringContaining("Long turn.")]);
+  const meRenders = renders.get(0);
+  await render(5);
+  expect(activeText()).toEqual([expect.stringContaining("Long turn."), expect.stringContaining("Short turn.")]);
+  expect(renders.get(0)).toBe(meRenders);
+  expect(scrolled.at(-1)).toContain("Short turn.");
+  const overlapRenders = new Map(renders);
+  await render(7);
+  expect(activeText()).toHaveLength(2);
+  expect(renders).toEqual(overlapRenders);
+  expect(scrolled).toHaveLength(2);
+  await render(10);
+  expect(activeText()).toEqual([expect.stringContaining("Long turn.")]);
+  await act(async () => { (host.querySelector('[aria-label="Play from 0:05"]') as HTMLButtonElement).click(); });
+  expect(playedFrom).toBe(5);
+  await render(5);
+  expect(activeText()).toEqual([expect.stringContaining("Long turn."), expect.stringContaining("Short turn.")]);
+  expect(scrolled.at(-1)).toContain("Short turn.");
+});
+
 test("repeated clock ticks render no unchanged rows in a 2,000-segment note", async () => {
   cleanup = installDom();
   const host = document.createElement("div");
