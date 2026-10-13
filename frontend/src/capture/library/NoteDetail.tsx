@@ -14,6 +14,7 @@ import { appPlatform } from "@/lib/platform";
 import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
 import { localTranscriptToSave, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { NoteDetailView, type NoteDetailViewProps } from "./NoteDetailView";
+import { hasSegmentTimes, transcriptWithTimestamps } from "./transcriptSegments";
 import type { Library } from "./useLibrary";
 
 /** Matches markdown-text's copy button: the tick reverts on its own. */
@@ -70,16 +71,18 @@ export function NoteDetail(props: {
     };
   }, []);
 
-  const text = useMemo(
+  const sentences = useMemo(
     () => {
-      if (reads.transcript?.status === "ok" && reads.transcript.sentences.length > 0) return transcriptCopyText(reads.transcript.sentences);
+      if (reads.transcript?.status === "ok" && reads.transcript.sentences.length > 0) return reads.transcript.sentences;
       if (reads.metadata?.status === "ok" && reads.metadata.metadata.transcription_outcome === "no_speech") return null;
       const saved = local?.id === localId && local.transcript?.outcome === "transcribed" ? localTranscriptToSave(local.transcript) : null;
-      return saved && saved.sentences.length > 0 ? transcriptCopyText(saved.sentences) : null;
+      return saved && saved.sentences.length > 0 ? saved.sentences : null;
     },
     [reads.transcript, reads.metadata, local, localId],
   );
-  const onCopy = useCallback(async () => {
+  const onCopy = useCallback(async (withTimestamps = false) => {
+    const text = sentences && (withTimestamps && hasSegmentTimes(sentences)
+      ? transcriptWithTimestamps(sentences) : transcriptCopyText(sentences));
     if (!text) return;
     const ok = await copyText(text);
     if (!mounted.current) return;
@@ -89,7 +92,7 @@ export function NoteDetail(props: {
       timer.current = null;
       setCopyState("idle");
     }, COPIED_DURATION);
-  }, [text]);
+  }, [sentences]);
 
   return (
     <NoteDetailView
@@ -106,6 +109,7 @@ export function NoteDetail(props: {
       transcription={item?.source === VOICE_NOTE_SOURCE && !item.onPhone ? props.transcription : undefined}
       copyState={copyState}
       onCopy={() => void onCopy()}
+      onCopyWithTimestamps={() => void onCopy(true)}
       onRetry={library.retry}
       pushed={props.pushed}
       onBack={props.onBack}
