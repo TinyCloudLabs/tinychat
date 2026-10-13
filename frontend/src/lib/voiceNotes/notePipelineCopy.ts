@@ -57,6 +57,7 @@ export const SPACE_COPY = {
   waitingInLine: (position: number) => `Waiting to upload · ${place(position)} in line`,
   uploading: (fraction: number | null) => (fraction === null ? "Uploading audio to your TinyCloud space…" : `Uploading audio to your TinyCloud space · ${percentText(fraction)}`),
   retrying: "Retrying…",
+  retryIn: (ms: number) => `Couldn't sync · Trying again in ${ms < 60_000 ? `${Math.ceil(ms / 1_000)}s` : `${Math.ceil(ms / 60_000)}m`}`,
   offline: "Waiting for a connection",
   offlineCaption: "Offline · Resumes automatically",
   signedOut: (device: PipelineDevice) => `You're signed out. This note is safe on ${deviceName(device)}.`,

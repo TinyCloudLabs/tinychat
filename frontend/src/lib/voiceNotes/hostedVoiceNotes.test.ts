@@ -14,7 +14,8 @@ afterEach(() => {
   else Reflect.deleteProperty(globalThis, "localStorage");
 });
 
-function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noSpeech = false, spaceOnly = false, mimeType = "audio/mp4") {
+function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noSpeech = false, spaceOnly = false,
+  mimeType = "audio/mp4", readGate?: Promise<void>) {
   const data = new Map<string, string>();
   Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
     getItem: (key: string) => data.get(key) ?? null,
@@ -80,7 +81,8 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
     sleep: async () => {} });
   const account = { did: "did:test:one" } as TinyCloudWeb;
   const track = () => createHostedVoiceNoteTrack(() => account, "https://exo.test", {} as SessionStore, account.did, {
-    client, native, readCommit: async () => commit, createRow: async () => ({ inserted: true }) as Awaited<ReturnType<typeof import("./voiceNoteRows").createVoiceNoteRow>>,
+    client, native, readCommit: async () => { await readGate; return commit; },
+    createRow: async () => ({ inserted: true }) as Awaited<ReturnType<typeof import("./voiceNoteRows").createVoiceNoteRow>>,
     readNote: async () => ({ ok: true, data: { captureTranscriber: "assemblyai", durationSeconds: 1 } }) as Awaited<ReturnType<typeof import("./voiceNoteStore").readVoiceNoteForTranscription>>,
     loadAudio: async () => ({ ok: true, data: { mimeType: "audio/mp4", base64: bytesToBase64(audio) } }) as Awaited<ReturnType<typeof import("./voiceNoteStore").loadVoiceNoteAudio>>,
     save: async (_account, _id, transcript) => {
@@ -127,6 +129,32 @@ test("Powerful accepts webm with codec parameters and sends the base MIME type",
   const lane = track(); lane.consent();
   await lane.run(recording);
   expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
+});
+
+test("Powerful checks the space commit before sending audio to the provider", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", gate);
+  const lane = track(); lane.consent();
+  const running = lane.run(recording);
+  try {
+    await Bun.sleep(10);
+    expect(calls).not.toContain("POST /hosted/uploads");
+    expect(calls).not.toContain("POST /hosted/transcripts");
+    expect(calls).not.toContain("space:save");
+  } finally { release(); }
+  await running;
+  expect(lane.jobs.get(recording.id)?.kind).toBe("done");
+});
+
+test("noteSaved after Powerful completes does not create a second paid upload", async () => {
+  const { calls, recording, track } = harness();
+  const lane = track(); lane.consent();
+  await lane.run(recording);
+  // The text/audio save finishes later and calls the same hand-off again.
+  await lane.run(recording);
+  expect(calls.filter((call) => call === "POST /hosted/uploads")).toHaveLength(1);
+  expect(calls.filter((call) => call === "POST /hosted/transcripts")).toHaveLength(1);
 });
 
 test("Powerful waits for the account's Upload audio submission before creating an upload", async () => {

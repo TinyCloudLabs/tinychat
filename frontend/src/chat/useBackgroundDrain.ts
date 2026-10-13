@@ -175,7 +175,7 @@ let storeGeneration = 0;
  * than corrupting — this makes it not happen.)
  */
 export function enqueueDrainWork<T>(work: () => Promise<T>): Promise<T> {
-  return runOnSpaceLane(work);
+  return runOnSpaceLane(work, undefined, "background");
 }
 
 /** The clock, seam-first. Read exactly once per decision, so a tick can never
