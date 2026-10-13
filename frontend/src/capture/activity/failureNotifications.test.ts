@@ -1,5 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { notePipeline, type NotePipelineInput } from "@/lib/voiceNotes/notePipeline";
+import { activityForNote } from "./activitySelector";
 import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import type { LibraryItem } from "../library/LibraryRow";
 import { nativeFailurePayload } from "./FailureNotificationHost";
@@ -102,7 +103,7 @@ test("a changing code in one continuous failure episode stays consumed", () => {
   const first = failureNotifications([item], new Map([[item.sourceId, cloudFailure("ref-1", "server_error")]]), "tauri");
   const secondView = new Map([[item.sourceId, cloudFailure("ref-2", "provider_unavailable")]]);
   expect(dedupe.take(first, null)).toHaveLength(1);
-  dedupe.reconcile(secondView, "tauri");
+  dedupe.reconcile(secondView);
   expect(dedupe.take(failureNotifications([item], secondView, "tauri"), null)).toEqual([]);
   expect(dedupe.keys()).toHaveLength(1);
 });
@@ -111,9 +112,42 @@ test("fail, success, fail on one track notifies twice", () => {
   const dedupe = new FailureNotificationDedupe();
   const failed = failureNotifications([item], new Map([[item.sourceId, view(true)]]), "tauri");
   expect(dedupe.take(failed, null)).toHaveLength(1);
-  dedupe.reconcile(new Map([[item.sourceId, view(false)]]), "tauri");
+  dedupe.reconcile(new Map([[item.sourceId, view(false)]]));
   expect(dedupe.keys()).toEqual([]);
   expect(dedupe.take(failed, null)).toHaveLength(1);
+});
+
+test("a failed sync stays consumed through retrying and a repeat failure", () => {
+  const dedupe = new FailureNotificationDedupe();
+  const failed = new Map([[item.sourceId, view(true)]]);
+  expect(dedupe.take(failureNotifications([item], failed, "tauri"), null)).toHaveLength(1);
+  const input: NotePipelineInput = { ...view(true).input!, space: {
+    saved: false, pending: { retryAt: Date.now() + 60_000 }, lane: { busy: false, depth: 0 },
+  } };
+  const retrying = new Map([[item.sourceId, { ...view(true), input, pipeline: notePipeline(input) }]]);
+  expect(activityForNote(retrying.get(item.sourceId), "tauri").find((job) => job.kind === "sync")?.state).toBe("retrying");
+  dedupe.reconcile(retrying);
+  expect(dedupe.keys()).toHaveLength(1);
+  const waitingInput: NotePipelineInput = { ...input, space: { ...input.space, pending: null } };
+  const waiting = new Map([[item.sourceId, { ...view(true), input: waitingInput, pipeline: notePipeline(waitingInput) }]]);
+  expect(activityForNote(waiting.get(item.sourceId), "tauri").find((job) => job.kind === "sync")?.state).toBe("waiting");
+  dedupe.reconcile(waiting);
+  expect(dedupe.keys()).toHaveLength(1);
+  dedupe.reconcile(failed);
+  expect(dedupe.take(failureNotifications([item], failed, "tauri"), null)).toEqual([]);
+});
+
+test("an active transcription retry does not rearm its earlier failure", () => {
+  const dedupe = new FailureNotificationDedupe();
+  const failed = new Map([[item.sourceId, cloudFailure("ref-1")]]);
+  expect(dedupe.take(failureNotifications([item], failed, "tauri"), null)).toHaveLength(1);
+  const input: NotePipelineInput = { ...cloudFailure("ref-1").input!, transcript: {
+    inSpace: null, onDevice: null, cloud: { kind: "active", status: { kind: "processing", completed: null, total: null } },
+  } };
+  const processing = new Map([[item.sourceId, { ...cloudFailure("ref-1"), input, pipeline: notePipeline(input) }]]);
+  dedupe.reconcile(processing);
+  expect(dedupe.keys()).toHaveLength(1);
+  expect(dedupe.take(failureNotifications([item], failed, "tauri"), null)).toEqual([]);
 });
 
 test("a partial Library page keeps consumed keys; confirmed deletion prunes them", () => {
@@ -124,7 +158,7 @@ test("a partial Library page keeps consumed keys; confirmed deletion prunes them
     const failed = failureNotifications([item], new Map([[item.sourceId, view(true)]]), "tauri");
     dedupe.take(failed, null);
     writeFailureNotificationKeys(storageKey, dedupe.keys());
-    dedupe.reconcile(new Map(), "tauri"); // The partial page has no view for this note.
+    dedupe.reconcile(new Map()); // The partial page has no view for this note.
     expect(dedupe.keys()).toHaveLength(1);
     expect(readFailureNotificationKeys(storageKey)).toHaveLength(1);
     pruneDeletedFailureNotification(account, item.sourceId);

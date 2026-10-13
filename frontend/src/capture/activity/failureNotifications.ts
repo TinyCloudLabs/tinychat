@@ -68,14 +68,20 @@ export class FailureNotificationDedupe {
       }
     }
   }
-  /** A note × track is consumed for one failure episode. A known success or cleared failure rearms it; an absent Library row says nothing. */
-  reconcile(views: ReadonlyMap<string, NotePipelineView>, platform: AppPlatform): void {
+  /** A note × track stays consumed through retries and waiting; only confirmed completion rearms it. */
+  reconcile(views: ReadonlyMap<string, NotePipelineView>): void {
     for (const [sourceId, view] of views) {
       if (!view?.input) continue;
-      const failing = new Set(activityForNote(view, platform).filter((job) => job.state === "needs-attention").map((job) => job.kind));
+      const steps = new Map(view.pipeline.steps.map((step) => [step.key, step.state]));
       for (const [trackKey, key] of this.seen) {
         const parts = keyParts(key);
-        if (parts?.[0] === sourceId && !failing.has(parts[1])) this.seen.delete(trackKey);
+        if (parts?.[0] !== sourceId) continue;
+        const done = (step: "phone" | "transcript" | "space") => steps.get(step) === "done";
+        const completed = parts[1] === "finish" ? done("phone")
+          : parts[1] === "transcribe" ? done("transcript")
+          : parts[1] === "upload-audio" ? done("space")
+          : done("space") && (!steps.has("notes") || steps.get("notes") === "done" || steps.get("notes") === "skipped");
+        if (completed) this.seen.delete(trackKey);
       }
     }
   }

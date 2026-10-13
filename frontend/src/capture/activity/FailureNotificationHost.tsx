@@ -9,6 +9,10 @@ import { captureEvents } from "../captureEvents";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 
 const TOAST_MS = 8000;
+const sameKeys = (left: readonly string[], right: readonly string[]): boolean => {
+  const current = new Set(right);
+  return left.length === right.length && new Set(left).size === current.size && left.every((key) => current.has(key));
+};
 
 function nativeAvailable(): boolean {
   return typeof Notification !== "undefined";
@@ -48,15 +52,15 @@ export function FailureNotificationHost(props: {
 
   useEffect(() => {
     const stored = readFailureNotificationKeys(storageKey);
-    if (JSON.stringify(stored) !== JSON.stringify(dedupe.keys())) writeFailureNotificationKeys(storageKey, dedupe.keys());
+    if (!sameKeys(stored, dedupe.keys())) writeFailureNotificationKeys(storageKey, dedupe.keys());
   }, [dedupe, storageKey]);
 
   useEffect(() => {
-    const before = dedupe.keys().length;
-    dedupe.reconcile(props.views, props.platform);
+    const before = dedupe.keys();
+    dedupe.reconcile(props.views);
     const failures = failureNotifications(props.items, props.views, props.platform);
     const fresh = dedupe.take(failures, props.visibleNoteId);
-    if (dedupe.keys().length !== before) writeFailureNotificationKeys(storageKey, dedupe.keys());
+    if (!sameKeys(dedupe.keys(), before)) writeFailureNotificationKeys(storageKey, dedupe.keys());
     if (!fresh.length) {
       // A failure first seen in the note is still consumed, so leaving it cannot alert later.
       return;
