@@ -1,6 +1,6 @@
 {
   "name": "tinychat-retrieval",
-  "version": "0.1.1-onboarding.20",
+  "version": "0.1.1-onboarding.21",
   "description": "Read existing TinyChat meeting metadata and transcript passages through TinyCloud CLI.",
   "envelopeVersion": 1,
   "runtime": {
@@ -23,8 +23,7 @@
       "connector_meeting-sql"
     ],
     "excluded": [
-      "user-kv-only",
-      "backend-only"
+      "user-kv-only"
     ]
   },
   "limits": {

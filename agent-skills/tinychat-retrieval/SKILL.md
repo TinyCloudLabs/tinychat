@@ -2,7 +2,7 @@
 name: tinychat-retrieval
 description: Find and read existing TinyChat meetings and search literal transcript passages through TinyCloud CLI. Use for meeting recaps, exact meeting follow-ups, and topic searches in the user's connected TinyChat data.
 metadata:
-  version: "0.1.1-onboarding.20"
+  version: "0.1.1-onboarding.21"
 ---
 
 # TinyChat retrieval
@@ -40,4 +40,4 @@ For “export this session so the next agent can see how it went,” call **tiny
 
 A `generated-notes` result or stored summary is not a verbatim transcript. Full artifact decoding does not prove the original meeting capture was complete. A full-meeting claim needs complete body evidence; partial reads/searches retain their coverage limits. Keep those limits visible when answering. Read [references/meetings.md](references/meetings.md) for formats, provenance, scope exclusions and error handling.
 
-This release reads SQL-indexed legacy meetings. User-space KV-only records and backend-only meetings are explicitly outside its catalog; it does not claim every meeting visible in TinyChat is included. The helper does not modify remote data. Its read manifest does not remove authority already present in a reused profile, and agent execution permissions remain separate from TinyCloud grants.
+This release reads SQL-indexed legacy meetings. User-space KV-only records remain excluded from discovery and are listed in `coverage.excludedCatalogs`. `coverage.backendPending` separately reports metadata-only counts for backend-ingest and transcriber snapshots in the user's space, with each source's unknown count, `checked_at`, and freshness. Backend-ingest is stale after 24 hours; transcriber is stale at 1 hour 30 seconds or more. Missing, future, corrupt, or unsupported snapshots are `unknown`, never zero. This is a bounded snapshot, not a complete live backend catalog; that block returns no pending IDs or titles. The helper does not modify remote data. Its read manifest does not remove authority already present in a reused profile, and agent execution permissions remain separate from TinyCloud grants.
