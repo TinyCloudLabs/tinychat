@@ -607,8 +607,12 @@ test('latest SQL trim character set matches String.prototype.trim', async () => 
   await invoke(f, 'latest');
   const queryArgs = f.calls.find(args => args.includes('query') && args[args.indexOf('query') + 1].includes('trim(json_extract'));
   const query = queryArgs?.[queryArgs.indexOf('query') + 1];
-  const sqlCharacters = query?.match(/trim\(json_extract\(g\.metadata, '\$\.transcript_text'\), char\(([^)]*)\)\)/)?.[1];
-  expect(sqlCharacters).toBeTruthy();
+  // The hosted node uses sqlparser-rs, which rejects SQLite's two-argument trim form.
+  const nestedTrim = query?.match(/rtrim\(ltrim\(json_extract\(g\.metadata, '\$\.transcript_text'\), char\(([^)]*)\)\), char\(([^)]*)\)\)/);
+  expect(nestedTrim).toBeTruthy();
+  expect(nestedTrim[2]).toBe(nestedTrim[1]);
+  expect(query).not.toContain('AND trim(json_extract');
+  const sqlCharacters = nestedTrim[1];
   const sqlCodePoints = sqlCharacters.split(',').map(Number);
   const ecmaTrimCodePoints = [];
   for (let codePoint = 0; codePoint <= 0x10ffff; codePoint++) {
