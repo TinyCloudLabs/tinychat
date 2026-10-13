@@ -7,14 +7,8 @@ export interface VoiceNoteTranscriptionFailure {
 }
 
 const NON_RETRYABLE_CODES: ReadonlySet<string> = new Set([
-  "recording_too_large",
-  "recording_too_long",
-  "recording_too_long_for_phone",
-  "unsupported_recording",
   "invalid_audio",
   "no_speech",
-  "decode_failed",
-  "decode_unavailable",
   "feature_unavailable",
   "service_misconfigured",
   "audio_size_mismatch",
@@ -47,6 +41,7 @@ const TRANSCRIPTION_ERROR_COPY: Readonly<Record<string, string>> = {
   VOICE_NOTE_AUDIO_CORRUPT: "This note's audio is damaged and can't be transcribed.",
   invalid_argument: "This note cannot be transcribed with the supplied audio.",
   transcription_off: "Transcription was turned off.",
+  transcript_incomplete: "Private Transcription returned a transcript that may be incomplete. Try again later.",
 };
 
 export function transcriptionErrorCopy(code: string): string | undefined {

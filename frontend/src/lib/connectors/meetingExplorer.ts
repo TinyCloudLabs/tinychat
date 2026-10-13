@@ -23,11 +23,8 @@
 //    the one place a new connector must be registered to be browsable.
 //
 //  - SEQUENTIAL storage calls only. TinyCloud drops concurrent responses on one
-//    space, so these never Promise.all over sql/kv calls.
-//
-//  - Paths come from connectorStore (CONNECTORS_SQL_DB_NAME, transcriptKvKey).
-//    The session is authorized against the full `${APP_ID}/connectors` string;
-//    a hand-built db name or key fails AUTH_UNAUTHORIZED.
+//    space. Voice-note lists first check whether the optional commit table exists,
+//    then read the projected list; no transcript bodies are fetched.
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
@@ -151,12 +148,39 @@ export async function listMeetingsRead(
 ): Promise<MeetingListRead> {
   if (sources.length === 0) return { status: "ok", meetings: [] };
   const placeholders = sources.map(() => "?").join(", ");
+  let hasCommitTable = false;
+  if (sources.includes(VOICE_NOTE_SOURCE)) {
+    const schema = await tolerate(() => tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
+      "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'voice_note_transcript'",
+      [],
+    ));
+    if (!schema) return { status: "failed" };
+    if (!schema.ok) return notStoredYet(schema) ? { status: "ok", meetings: [] } : { status: "failed" };
+    hasCommitTable = Array.isArray(schema.data?.rows) && schema.data.rows.length > 0;
+  }
+  const commitOutcome = hasCommitTable
+    ? "(SELECT t.outcome FROM voice_note_transcript t WHERE t.source_id = connector_meeting.source_id LIMIT 1)"
+    : "NULL";
   const res = await tolerate(() =>
     tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
       `SELECT id, source, source_id, title, started_at, duration_secs,
-              CASE WHEN source = 'exo-voice-note' AND metadata IS NOT NULL THEN
-                CASE WHEN json_valid(metadata) THEN json_object(
+              CASE WHEN source = 'exo-voice-note' THEN
+                CASE WHEN json_valid(COALESCE(metadata, '{}')) THEN json_object(
                   'transcription_outcome', json_extract(metadata, '$.transcription_outcome'),
+                  'transcription_error_code', json_extract(metadata, '$.transcription_error_code'),
+                  'legacy_transcript_outcome',
+                    (SELECT CASE WHEN json_extract(g.metadata, '$.transcription_outcome') IN ('transcribed','no_speech')
+                                 THEN json_extract(g.metadata, '$.transcription_outcome') ELSE 'transcribed' END
+                     FROM connector_meeting g
+                     WHERE g.source_id = connector_meeting.source_id
+                       AND g.source IN ('exo-voice-note','exo-voice-note-dup')
+                       AND json_valid(g.metadata)
+                       AND (json_extract(g.metadata, '$.transcription_outcome') IN ('transcribed','no_speech')
+                         OR (json_extract(g.metadata, '$.transcription_outcome') IS NULL
+                           AND typeof(json_extract(g.metadata, '$.transcript_text')) = 'text'
+                           AND length(trim(json_extract(g.metadata, '$.transcript_text'))) > 0))
+                     ORDER BY COALESCE(json_extract(g.metadata, '$.transcribed_at'), '') DESC, g.id ASC LIMIT 1),
+                  'transcript_commit_outcome', ${commitOutcome},
                   'note_kv_key',           json_extract(metadata, '$.note_kv_key'),
                   'note_edited_at',        json_extract(metadata, '$.note_edited_at'),
                   'audio_kv_key',          json_extract(metadata, '$.audio_kv_key'),

@@ -2883,6 +2883,16 @@ components:
               type: integer
             tinfoil_audio_seconds:
               type: number
+            voiced_seconds:
+              type: number
+            dropped_above_floor_pct:
+              type: number
+              minimum: 0
+              maximum: 100
+              nullable: true
+            vad_fallback:
+              type: boolean
+              nullable: true
     PrivateCloudOutcome:
       type: object
       required: [id, status, error]

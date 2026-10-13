@@ -74,6 +74,10 @@ The `voice_note_transcript` commit table is authoritative whenever it exists; `c
 
 Older builds read unrecognized outcome values as `none` and continue to offer Transcribe; they do not clear `transcription_error_code`. They safely ignore the new non-terminal values, and may leave a stale code after committing a result. The code has no meaning unless the current outcome is `failed`. The fixed transcript key and row metadata remain compatibility mirrors; new readers follow the commit table.
 
+Private transcription may add optional diagnostic metadata: `transcription_audio_seconds`, `transcription_duration_seconds`, `transcription_voiced_seconds`, `transcription_vad_dropped_above_floor_pct`, and `transcription_vad_fallback`. These are mirrors, not transcript outcomes; null or missing PTX stats remain absent, and older builds ignore the unknown JSON keys. When the duration/audio pair is available, the current conservative stopgap records it on success and on a `transcript_incomplete` failure; it rejects only durations of at least 600 seconds with audio coverage below 0.35. The VAD-drop threshold remains disabled pending ptx #93 deployment and Miller's confirmation.
+
+ptx #93 defines `transcription_vad_dropped_above_floor_pct` as the percentage of non-silent audio (frames at or above −50 dBFS) that was not sent; long silences are excluded from its denominator. Completed post-deploy jobs are expected to report at most 10. `transcription_voiced_seconds` sums across channels, so a separate-stereo job may report more voiced seconds than `transcription_duration_seconds`. The 600-second / 0.35 coverage-ratio backstop remains conservative here because summing over channels only raises the ratio; it does not use `voiced_seconds / duration_seconds`.
+
 T22 hand-off: after a private-cloud commit, write its committed `(rev, hash)` back to the native `transcriptSync` ledger. This keeps a later on-device transcript in the same revision sequence.
 
 ## Device gate G2 (pending release of the Moto)

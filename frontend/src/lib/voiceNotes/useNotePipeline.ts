@@ -59,6 +59,7 @@ import {
   voiceNoteMarkdownKvKey,
   voiceNoteTranscriptState,
   type NoteSyncSkipReason,
+  type VoiceNoteTranscriptState,
 } from "./voiceNoteStore";
 import type { NoteTranscriptionState } from "./voiceNoteTranscription";
 
@@ -257,12 +258,28 @@ function onDeviceInput(facts: NotePipelineFacts): PipelineOnDevice | null {
   };
 }
 
+function projectedTranscriptState(metadata: Record<string, unknown>): VoiceNoteTranscriptState["status"] {
+  const terminal = (value: unknown): "transcribed" | "no_speech" | null =>
+    value === "transcribed" || value === "no_speech" ? value : null;
+  const committed = terminal(metadata.transcript_commit_outcome);
+  if (committed !== null) return committed;
+  const legacy = terminal(metadata.legacy_transcript_outcome);
+  if (legacy !== null) return legacy;
+  if (typeof metadata.transcript_text === "string" && metadata.transcript_text.trim().length > 0) return "transcribed";
+  return voiceNoteTranscriptState(metadata).status;
+}
+
 export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineInput {
   const desktopLocal = facts.device === "mac" && (facts.desktopJob != null || desktopCommittedLocal(facts.rowMetadata));
-  const route = desktopLocal ? "on-device" : pipelineRoute(facts.native, facts.cloudJob !== null,
-    facts.onDeviceStatus === null ? null : onDeviceQueuePlace(facts.onDeviceStatus, facts.id));
-  const rowState = facts.rowMetadata === null ? "none" : voiceNoteTranscriptState(facts.rowMetadata).status;
-  const persistedState = facts.saved && (rowState === "pending" || rowState === "failed" || rowState === "skipped") ? rowState : undefined;
+  const queue = facts.onDeviceStatus === null ? null : onDeviceQueuePlace(facts.onDeviceStatus, facts.id);
+  const route = desktopLocal ? "on-device" : pipelineRoute(facts.native, facts.cloudJob !== null, queue);
+  const liveTranscriptWork = facts.cloudJob?.kind === "active"
+    || (queue !== null && queue.position !== null)
+    || facts.native?.stt?.state === "queued"
+    || facts.native?.stt?.state === "running";
+  const rowState = facts.rowMetadata === null ? "none" : projectedTranscriptState(facts.rowMetadata);
+  const persistedState = facts.saved && !liveTranscriptWork
+    && (rowState === "pending" || rowState === "failed" || rowState === "skipped") ? rowState : undefined;
   const errorCode = rowState === "failed" && typeof facts.rowMetadata?.transcription_error_code === "string"
     ? facts.rowMetadata.transcription_error_code
     : undefined;

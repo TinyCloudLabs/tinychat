@@ -126,6 +126,10 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
   return Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+export function bareMimeType(value: string): string {
+  return value.split(";", 1)[0].trim().toLowerCase();
+}
+
 /** What is uploaded to PTX for one note. */
 export interface PreparedTranscriptionAudio {
   contentType: string;
@@ -142,11 +146,6 @@ export interface PreparedTranscriptionAudio {
  * accepted, otherwise decoded and written as 16 kHz mono WAV. Refuses a
  * recording over the current PTX duration or byte capability before upload.
  */
-export function bareMimeType(value: string): string {
-  return value.split(";", 1)[0].trim().toLowerCase();
-}
-
-
 export async function prepareTranscriptionAudio(
   audio: { mimeType: string; base64: string },
   options: {

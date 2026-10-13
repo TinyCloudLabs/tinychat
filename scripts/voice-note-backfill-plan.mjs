@@ -1,8 +1,7 @@
 const TERMINAL_OUTCOMES = new Set(['transcribed', 'no_speech', 'skipped']);
 const LEGACY_WINNER_OUTCOMES = new Set(['transcribed', 'no_speech']);
 const NON_RETRYABLE_CODES = new Set([
-  'recording_too_large', 'recording_too_long', 'recording_too_long_for_phone', 'unsupported_recording',
-  'invalid_audio', 'no_speech', 'decode_failed', 'decode_unavailable', 'feature_unavailable',
+  'invalid_audio', 'no_speech', 'feature_unavailable',
   'service_misconfigured', 'audio_size_mismatch', 'VOICE_NOTE_AUDIO_CORRUPT', 'invalid_argument',
   'voice_note_not_found', 'transcription_off',
 ]);

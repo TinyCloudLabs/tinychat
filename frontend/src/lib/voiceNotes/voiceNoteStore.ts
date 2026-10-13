@@ -58,6 +58,7 @@ import type { LocalTranscript } from "./nativeVoiceNotes";
 import { readLegacyTranscriptWinner, readTranscriptCommit, legacyTranscriptMetadata, type TranscriptCommit } from "./voiceNoteCommits";
 import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio,
   patchVoiceNoteMarkdown, patchVoiceNoteTranscriptionFailure as patchTranscriptionFailureRow, resolveVoiceNoteRow } from "./voiceNoteRows";
+import type { VoiceNoteTranscriptionStatsMetadata } from "./voiceNoteRows";
 import { runOnSpaceLane } from "../spaceWriteLane";
 import { withVoiceNoteReadDeadline, withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { currentAccountGeneration, isVoiceNoteAccountMounted, StaleAccountContext } from "./accountContext";
@@ -70,8 +71,8 @@ export const VOICE_NOTE_SOURCE = "exo-voice-note";
 /** Human label for the Library chip. */
 export const VOICE_NOTE_SOURCE_LABEL = "Voice note";
 export async function patchVoiceNoteTranscriptionFailure(tcw: TinyCloudWeb, sourceId: string, errorCode: string,
-  checkpoint: () => void = () => undefined): Promise<void> {
-  await patchTranscriptionFailureRow(tcw, sourceId, errorCode, checkpoint);
+  checkpoint: () => void = () => undefined, statsMetadata: VoiceNoteTranscriptionStatsMetadata = {}): Promise<void> {
+  await patchTranscriptionFailureRow(tcw, sourceId, errorCode, checkpoint, statsMetadata);
   captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId });
 }
 
@@ -516,6 +517,7 @@ export async function readVoiceNoteForTranscription(
   }
   const row = res.data.rows[0];
   if (!row) return { ok: true, data: null };
+  // Raw PTX uploads are not decoded just to measure duration; capture metadata is the fallback, and with neither value PTX decides.
   let durationSeconds: number | null = typeof row[0] === "number" ? row[0] : null;
   let captureVersion: number | null = null;
   let captureTranscriber: string | null = null;
