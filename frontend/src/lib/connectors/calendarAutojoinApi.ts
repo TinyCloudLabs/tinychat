@@ -8,6 +8,7 @@ export interface CalendarAutojoinStatus {
   state: "off" | "on" | "needs_reconnect" | "error";
   enabled: boolean;
   lastScanAt: number | null;
+  lastDispatchLag?: { sentAt: number; seconds: number; discovered: number } | null;
   errorCode: string | null;
   outcomes: CalendarAutojoinOutcome[];
 }
@@ -35,6 +36,7 @@ export function createCalendarAutojoinClient(backendUrl: string, sessionStore: S
 
 export function calendarOutcomeLabel(reason: string): string {
   switch (reason) {
+    case "not_accepted": return "Accept the invite to have the notetaker join";
     case "missed": case "missed_window": case "expired": case "window_expired": return "The joining window passed before a bot could be sent.";
     case "cancelled": case "event_cancelled": return "The Calendar event was cancelled.";
     case "ineligible": case "event_ineligible": case "attendance_changed": return "The event no longer meets the attendance or meeting requirements for autojoin.";
