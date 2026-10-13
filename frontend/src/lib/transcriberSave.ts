@@ -56,9 +56,10 @@ export async function listSavedTranscriberMeetingIds(
       const body = await scheduleRead(() => tcw.kv.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, id)));
       if (body === null || !isCurrent()) break;
       if (body.ok) complete.push(id);
+      else console.debug("[transcriberSave] incomplete meeting", id, "kv-read-failed");
       // Unknown reads remain incomplete. Save rechecks this key before writing,
       // so one unavailable body cannot block the other records or be overwritten.
-    } catch { /* This recording is retried independently by the sync pass. */ }
+    } catch { console.debug("[transcriberSave] incomplete meeting", id, "kv-read-threw"); }
   }
   return { ok: true, data: complete };
 }

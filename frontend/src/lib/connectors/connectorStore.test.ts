@@ -1516,6 +1516,20 @@ describe("connectorStore.upsertMeeting — update path (the meeting.summarized c
     const key = transcriptKvKey("fireflies", "mtg-1");
     expect(JSON.parse(f.kv.entries.get(key) ?? "[]")).toHaveLength(2);
   });
+  test("identical input leaves updated_at unchanged, while content changes bump it", async () => {
+    const f = makeFake();
+    const original = meetingFixture({ id: "row-stable" });
+    expect((await upsertMeeting(f.tcw, original, [S("a")])).ok).toBe(true);
+    const unchangedUpdatedAt = "2026-10-12T00:00:00.000Z";
+    f.sql.meetings.get("row-stable")!.updated_at = unchangedUpdatedAt;
+
+    expect((await upsertMeeting(f.tcw, { ...original, id: "throwaway" }, [S("a")])).ok).toBe(true);
+    expect(f.sql.meetings.get("row-stable")?.updated_at).toBe(unchangedUpdatedAt);
+    expect((await upsertMeeting(f.tcw, { ...original, id: "throwaway", title: "Changed" }, [S("a")])).ok).toBe(true);
+    expect(f.sql.meetings.get("row-stable")?.updated_at).not.toBe(unchangedUpdatedAt);
+  });
+
+
 
   test("a later null field does NOT erase an already-stored value (summaries lag transcripts)", async () => {
     const f = makeFake();
