@@ -12,7 +12,7 @@ import { appPlatform } from "@/lib/platform";
 import type { StoreAudioOptions } from "./voiceNoteStore";
 
 export interface VoiceNotePipeline {
-  process(ctx: AccountContext, id: string, trigger?: "stop" | "background"): Promise<void | "owned-by-another-run">;
+  process(ctx: AccountContext, id: string, trigger?: "stop" | "background", onRowCreated?: () => void): Promise<void | "owned-by-another-run">;
   /** T19 calls setCaptureDefaults on ready before this association and upload pass. */
   reconcileAll(ctx: AccountContext, trigger?: "reconcile" | "manual", onSaved?: (note: VoiceNoteRecording) => void): Promise<void>;
   cancelAll(): void;
@@ -56,7 +56,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
       .catch((error) => console.warn("[VoiceNotes] Desktop transcript sync is still pending", { id: note.id, error }));
   };
   const processOne = async (ctx: AccountContext, id: string, epoch: number, trackPending = false,
-    uploadTicket?: PendingUploadTicket): Promise<VoiceNoteRecording | null> => {
+    uploadTicket?: PendingUploadTicket, onRowCreated?: () => void): Promise<VoiceNoteRecording | null> => {
     if (uploadTicket && !uploadTicket.owns) return null;
     try {
     const check = checkFor(ctx, epoch);
@@ -80,6 +80,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
       const result = await saveNoteForAccount(tcw, ctx, note, check, {
         ...testOptions,
         uploadTicket,
+        onRowCreated,
       });
       if (result.kind === "failed") {
         check();
@@ -94,12 +95,12 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     } finally { if (uploadTicket) pendingStore.settleUploadQueue(uploadTicket); }
   };
   return {
-    process(ctx, id, _trigger = "stop") {
+    process(ctx, id, _trigger = "stop", onRowCreated) {
       if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());
       const epoch = cancellation;
       const uploadTicket = pendingStore.enqueueUpload(id);
       if (!uploadTicket.owns) return Promise.resolve("owned-by-another-run");
-      return run(async () => { syncDesktopAfterUpload(ctx, await processOne(ctx, id, epoch, false, uploadTicket)); });
+      return run(async () => { syncDesktopAfterUpload(ctx, await processOne(ctx, id, epoch, false, uploadTicket, onRowCreated)); });
     },
     reconcileAll(ctx, _trigger = "reconcile", onSaved) {
       if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());

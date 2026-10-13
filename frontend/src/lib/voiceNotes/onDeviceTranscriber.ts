@@ -24,6 +24,8 @@ export type OnDeviceTranscriptSyncState =
 const syncStates = new Map<string, OnDeviceTranscriptSyncState>();
 /** The tail of each note's sync chain: attempts for one note run one after another. */
 const chains = new Map<string, Promise<void>>();
+/** Successful remote publications whose native acknowledgement may still need retry. */
+const published = new Set<string>();
 const syncListeners = new Set<() => void>();
 const syncKey = (tcw: TinyCloudWeb, id: string) => JSON.stringify([tcw.spaceId, tcw.did, id]);
 const isCurrent = (tcw: TinyCloudWeb, ctx: AccountContext) => isAccountContextCurrent(ctx, tcw) && isAccountWorkAllowed(tcw);
@@ -58,8 +60,8 @@ function publish(key: string, next: OnDeviceTranscriptSyncState | null): void {
  * "done"`) is expected to have a local transcript: without one the attempt fails with that cause, never silently. Once the
  * space has the transcript, the phone's ledger records it (`transcriptSync` saved, `transcript.outcome`), so the next
  * launch knows without asking the space. Syncs of one note can overlap (save recovery and the
- * native `transcribed` event), so they run one after another per note, each doing its own native
- * read and write: the published state is the last attempt's, which is the newest. Every await in
+ * native `transcribed` event), so they run one after another per note. A saved
+ * source/revision is skipped before network publication. Every await in
  * an attempt has a deadline, so a hung native read or space call fails that attempt (a late
  * completion is ignored) and the chain moves on instead of blocking later syncs forever.
  */
@@ -204,11 +206,33 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
     return false;
   }
   if (!isCurrent(tcw, ctx)) return true;
+  const resultKey = JSON.stringify([ctx.spaceId, ctx.did, id, transcript.rev]);
+  if (published.has(resultKey)) return recordAndPublish(tcw, key, id, transcript, ctx);
+  // The row-created callback, native STT event and post-upload reconcile can
+  // all request this same result. Check the durable ledger after reading the
+  // current local revision, before commitVoiceNoteTranscript does any KV/SQL.
+  try {
+    checkpoint(tcw, ctx)();
+    const pending = await withVoiceNoteSaveDeadline(`native listPending transcript rev id=${id}`, () => VoiceNotes.listPending());
+    checkpoint(tcw, ctx)();
+    const current = pending.recordings.find((note) => note.id === id);
+    if (current?.owner === ctx.did && current.ledger?.transcriptSync.state === "saved"
+      && current.ledger.transcriptSync.rev >= transcript.rev
+      && current.ledger.transcript.outcome === transcript.outcome) {
+      publish(key, { state: "synced" });
+      return false;
+    }
+  } catch (err) {
+    if (!isCurrent(tcw, ctx)) return true;
+    publish(key, { state: "failed", message: LOCAL_COPY.transcriptCheckFailed });
+    return false;
+  }
   publish(key, { state: "syncing" });
   try {
     checkpoint(tcw, ctx)();
     const result = await saveVoiceNoteTranscript(tcw, id, localTranscriptToSave(transcript),
       { generation: ctx.generation, did: ctx.did }, checkpoint(tcw, ctx));
+    if (result.ok) published.add(resultKey);
     if (!isCurrent(tcw, ctx)) return true;
     if (result.ok) {
       return await recordAndPublish(tcw, key, id, transcript, ctx);

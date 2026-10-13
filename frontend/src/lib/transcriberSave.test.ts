@@ -586,7 +586,7 @@ test("a queued completeness read skips after sign-out so a new-session save can 
   let enteredLane!: () => void;
   const laneGate = new Promise<void>((resolve) => { releaseLane = resolve; });
   const laneEntered = new Promise<void>((resolve) => { enteredLane = resolve; });
-  const occupying = runOnSpaceLane(async () => { enteredLane(); await laneGate; });
+  const occupying = runOnSpaceLane(async () => { enteredLane(); await laneGate; }, undefined, "background");
   await laneEntered;
 
   let current = true;
@@ -651,7 +651,7 @@ test("transcriber space reads and writes use the lane, while transcript HTTP sta
   let enteredLane!: () => void;
   const laneGate = new Promise<void>((resolve) => { releaseLane = resolve; });
   const laneEntered = new Promise<void>((resolve) => { enteredLane = resolve; });
-  const occupying = runOnSpaceLane(async () => { enteredLane(); await laneGate; });
+  const occupying = runOnSpaceLane(async () => { enteredLane(); await laneGate; }, undefined, "background");
   await laneEntered;
   let listCalled = false;
   let listSavedCalled = false;
@@ -689,7 +689,7 @@ test("transcriber space reads and writes use the lane, while transcript HTTP sta
     let enteredWriteLane!: () => void;
     const writeGate = new Promise<void>((resolve) => { releaseWriteLane = resolve; });
     const writeLaneEntered = new Promise<void>((resolve) => { enteredWriteLane = resolve; });
-    const otherWrite = runOnSpaceLane(async () => { enteredWriteLane(); await writeGate; });
+    const otherWrite = runOnSpaceLane(async () => { enteredWriteLane(); await writeGate; }, undefined, "background");
     await writeLaneEntered;
     releaseTranscript({ status: "ok", value: { status: "ready", transcript } });
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -732,7 +732,7 @@ test("an account switch while a fetched transcript waits for the lane prevents i
   let enteredRead!: () => void;
   const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
   const readEntered = new Promise<void>((resolve) => { enteredRead = resolve; });
-  const blockingRead = runOnSpaceLane(async () => { enteredRead(); await readGate; });
+  const blockingRead = runOnSpaceLane(async () => { enteredRead(); await readGate; }, undefined, "background");
   await readEntered;
 
   let current = true;
@@ -765,7 +765,7 @@ test("an account switch while a fetched transcript waits for the lane prevents i
     let enterOtherWrite!: () => void;
     const otherWriteStarted = new Promise<void>((resolve) => { enterOtherWrite = resolve; });
     const otherWriteGate = new Promise<void>((resolve) => { releaseOtherWrite = resolve; });
-    const otherWrite = runOnSpaceLane(async () => { enterOtherWrite(); await otherWriteGate; });
+    const otherWrite = runOnSpaceLane(async () => { enterOtherWrite(); await otherWriteGate; }, undefined, "background");
     await otherWriteStarted;
     releaseTranscript({ status: "ok", value: { status: "ready", transcript } });
     await new Promise((resolve) => setTimeout(resolve, 0));

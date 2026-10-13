@@ -7,7 +7,7 @@ import { PendingVoiceNotesSaver, schedulePendingVoiceNotesRecovery } from "@/cha
 import { OnDeviceStt, __setOnDeviceSttForTests, type OnDeviceSttPlugin } from "./onDeviceStt";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connectors/connectorStore";
-import { readVoiceNoteTranscriptState } from "./voiceNoteStore";
+import { readVoiceNoteTranscriptState, saveVoiceNote } from "./voiceNoteStore";
 import { SQL_MEETING_METADATA_QUERY } from "../meetingChat/corpus";
 import { legacyTranscriptWinner, readTranscriptCommit, voiceNoteTranscriptLocator } from "./voiceNoteCommits";
 import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio,
@@ -42,6 +42,19 @@ test("a healthy long drain does not consume the next save's call deadline", asyn
   } finally { releaseDrain(); }
 });
 
+test("a stalled background drain cannot delay a voice-note row request", async () => {
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const drain = runOnSpaceLane(async () => { entered(); await gate; }, undefined, "background");
+  await started;
+  try {
+    await expect(runOnSpaceLane(async () => "row saved", { operation: "voice-note row", timeoutMs: 20 }))
+      .resolves.toBe("row saved");
+  } finally { release(); await drain; }
+});
+
 test("a lane job that rejects without a reason rejects its caller", async () => {
   const result = await Promise.allSettled([runOnSpaceLane(() => Promise.reject(undefined))]);
   expect(result).toEqual([{ status: "rejected", reason: undefined }]);
@@ -63,6 +76,88 @@ test("space lane snapshot reports busy state and queued depth", async () => {
   expect(spaceLaneSnapshot()).toEqual({ busy: false, depth: 0 });
   expect(notifications).toBeGreaterThan(0);
   unsubscribe();
+});
+
+test("one save publishes note text while an audio part is stalled", async () => {
+  const { tcw, values } = space();
+  await ensureVoiceNoteIdentity(tcw);
+  const id = `short-sync-${++count}`;
+  await saveNote(id, "Text must arrive before audio");
+  let calls = 0;
+  const db = tcw.sql.db.bind(tcw.sql);
+  tcw.sql.db = ((name: string) => {
+    const handle = db(name);
+    return { ...handle,
+      query: async (...args: Parameters<typeof handle.query>) => { calls++; return handle.query(...args); },
+      execute: async (...args: Parameters<typeof handle.execute>) => { calls++; return handle.execute(...args); },
+    };
+  }) as typeof tcw.sql.db;
+  const put = tcw.kv.put.bind(tcw.kv);
+  const get = tcw.kv.get.bind(tcw.kv);
+  const list = tcw.kv.list.bind(tcw.kv);
+  let releaseAudio!: () => void;
+  let audioStarted!: () => void;
+  const audioGate = new Promise<void>((resolve) => { releaseAudio = resolve; });
+  const started = new Promise<void>((resolve) => { audioStarted = resolve; });
+  tcw.kv.put = (async (...args: Parameters<typeof put>) => {
+    calls++;
+    if (args[0].includes("/p/")) { audioStarted(); await audioGate; }
+    return put(...args);
+  }) as typeof tcw.kv.put;
+  tcw.kv.get = (async (...args: Parameters<typeof get>) => { calls++; return get(...args); }) as typeof tcw.kv.get;
+  tcw.kv.list = (async (...args: Parameters<typeof list>) => { calls++; return list(...args); }) as typeof tcw.kv.list;
+  const recording = { id, startedAt: Date.now(), durationMs: 52_000, mimeType: "audio/mp4", sizeBytes: 4,
+    silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 2 as const,
+    source: "in_app" as const, options: { transcriber: "private-cloud" as const, identifySpeakers: false } };
+  const saving = saveVoiceNote(tcw, recording, { mimeType: "audio/mp4", size: 4,
+    readPart: async () => new Uint8Array([1, 2, 3, 4]) }, "tauri");
+  try {
+    await started;
+    for (let i = 0; i < 100 && !values.has(voiceNoteMarkdownKvKey(id)); i++) await Bun.sleep(1);
+    expect(values.get(voiceNoteMarkdownKvKey(id))).toContain("Text must arrive before audio");
+    expect(values.has(`${voiceNoteAudioKvKey(id)}/manifest`)).toBe(false);
+    expect((await resolveVoiceNoteRow(tcw, id))?.metadata).toMatchObject({
+      capture: { platform: "tauri", options: { transcriber: "private-cloud" } },
+      note_kv_key: voiceNoteMarkdownKvKey(id),
+    });
+  } finally { releaseAudio(); }
+  expect((await saving).ok).toBe(true);
+  // Ten save requests plus the assertion's row read above. The old path
+  // performed 12+ sequential requests in Sam's log.
+  expect(calls).toBe(11);
+});
+
+test("one save overlaps short text and audio requests at fixed fixture latency", async () => {
+  const { tcw } = space();
+  await ensureVoiceNoteIdentity(tcw);
+  const id = `timed-sync-${++count}`;
+  await saveNote(id, "Timed fixture");
+  const delay = () => Bun.sleep(20);
+  let calls = 0;
+  const db = tcw.sql.db.bind(tcw.sql);
+  tcw.sql.db = ((name: string) => {
+    const handle = db(name);
+    return { ...handle,
+      query: async (...args: Parameters<typeof handle.query>) => { calls++; await delay(); return handle.query(...args); },
+      execute: async (...args: Parameters<typeof handle.execute>) => { calls++; await delay(); return handle.execute(...args); },
+    };
+  }) as typeof tcw.sql.db;
+  const put = tcw.kv.put.bind(tcw.kv);
+  const get = tcw.kv.get.bind(tcw.kv);
+  const list = tcw.kv.list.bind(tcw.kv);
+  tcw.kv.put = (async (...args: Parameters<typeof put>) => { calls++; await delay(); return put(...args); }) as typeof tcw.kv.put;
+  tcw.kv.get = (async (...args: Parameters<typeof get>) => { calls++; await delay(); return get(...args); }) as typeof tcw.kv.get;
+  tcw.kv.list = (async (...args: Parameters<typeof list>) => { calls++; await delay(); return list(...args); }) as typeof tcw.kv.list;
+  const recording = { id, startedAt: Date.now(), durationMs: 52_000, mimeType: "audio/mp4", sizeBytes: 4,
+    silencedMs: 0, silencedEvents: 0, noSignalMs: 0 };
+  const start = performance.now();
+  const saved = await saveVoiceNote(tcw, recording, { mimeType: "audio/mp4", size: 4,
+    readPart: async () => new Uint8Array([1, 2, 3, 4]) }, "tauri");
+  const elapsed = performance.now() - start;
+  expect(saved.ok).toBe(true);
+  expect(calls).toBe(10);
+  // A serial ten-call save costs at least 200 ms in this fixture.
+  expect(elapsed).toBeLessThan(185);
 });
 import { pendingStore, saveNoteForAccount } from "./recorderSaves";
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";

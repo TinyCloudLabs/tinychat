@@ -27,7 +27,7 @@ import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { deleteNote } from "@/lib/voiceNotes/recordingNotes";
 import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
 import { readableError } from "@/lib/readableError";
-import { logPipelineError } from "@/lib/debugLog";
+import { logPipeline, logPipelineError } from "@/lib/debugLog";
 
 export const TINYCLOUD_NETWORK_FAILURE_MESSAGE =
   "Couldn't reach your TinyCloud space. This note is still on your phone — try again.";
@@ -311,6 +311,7 @@ export async function saveRecording(
   tcw: TinyCloudWeb,
   recording: VoiceNoteRecording,
   onProgress?: (storedBytes: number, totalBytes: number) => void,
+  onRowCreated?: () => void,
 ): Promise<SaveOutcome> {
   if (savesInFlight.has(recording.id)) return { kind: "in-flight" };
   // Discarded (a pending run, the limit's "autoStopped" or a relaunch met it): deleted, never
@@ -335,7 +336,7 @@ export async function saveRecording(
   try {
     const native = nativeRecordingSource(recording);
     const saved = await saveVoiceNote(tcw, recording, native, nativePlatform(), { onProgress,
-      onRowCreated: (rowId) => recordRowId(tcw, recording, ctx, rowId, checkActive),
+      onRowCreated: async (rowId) => { await recordRowId(tcw, recording, ctx, rowId, checkActive); onRowCreated?.(); },
       checkpoint: checkActive });
     if (!saved.ok) return isDiscarded(recording.id)
       ? { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) }
@@ -401,7 +402,7 @@ export async function saveRecording(
 export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
   recording: VoiceNoteRecording, checkpoint: () => void = () => undefined,
   audioOptions: Pick<StoreAudioOptions, "retryDelaysMs" | "onProgress" | "onRetry" | "onUploadStart"> &
-    { uploadTicket?: PendingUploadTicket } = {}): Promise<SaveOutcome> {
+    { uploadTicket?: PendingUploadTicket; onRowCreated?: () => void } = {}): Promise<SaveOutcome> {
   const check = () => { assertCurrent(ctx); checkpoint(); };
   const checkActive = () => { check(); if (isDiscarded(recording.id)) throw new Error("Recording was discarded"); };
   check();
@@ -429,7 +430,7 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
     } };
     const saved = await saveVoiceNote(tcw, recording, checkedSource, nativePlatform(), {
       ...audioOptions,
-      onRowCreated: (rowId) => recordRowId(tcw, recording, ctx, rowId, checkActive),
+      onRowCreated: async (rowId) => { await recordRowId(tcw, recording, ctx, rowId, checkActive); audioOptions.onRowCreated?.(); },
       onUploadStart: (total) => {
         pendingStore.publishUpload(recording.id, uploadOwner, { state: "uploading", bytes: 0, total });
         audioOptions.onUploadStart?.(total);
@@ -439,6 +440,7 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
         audioOptions.onProgress?.(bytes, total);
       },
       onRetry: (attempt, code) => {
+        logPipeline("audio_upload", recording.id, "retry");
         const current = uploadStates.get(recording.id)?.upload;
         pendingStore.publishUpload(recording.id, uploadOwner, { state: "retrying", bytes: current?.bytes ?? 0, total: current?.total ?? recording.sizeBytes });
         audioOptions.onRetry?.(attempt, code);

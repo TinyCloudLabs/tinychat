@@ -412,6 +412,21 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   /** A native commit is enough for the receipt; cloud work follows independently. */
   const saveStopped = async (recording: VoiceNoteRecording) => {
     const generation = currentAccountGeneration();
+    const accountCurrent = () => generation === currentAccountGeneration();
+    // Admission can run as soon as the local file is committed. The row
+    // callback below supplies the cloud identity before the PTX job starts.
+    const privateCheck = recording.options?.transcriber === "private-cloud" && transcriber && tcw
+      ? Promise.resolve().then(() => transcriber.check({ automatic: true, current: accountCurrent }))
+        .then(() => true, (error: unknown) => {
+          console.warn("[VoiceNotes] Private transcription admission failed", error);
+          return false;
+        }) : null;
+    let privateStarted = false;
+    const startPrivate = () => {
+      if (privateStarted || recording.options?.transcriber !== "private-cloud" || !transcriber) return;
+      privateStarted = true;
+      void privateCheck?.then((ready) => { if (ready && accountCurrent()) transcriber.noteSaved(recording); });
+    };
     send({ type: "LOCAL_COMMITTED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
     void pendingStore.refresh();
     if (recording.options?.transcriber === "assemblyai" && transcriber && generation === currentAccountGeneration()) {
@@ -432,14 +447,15 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       try {
         const finish = pendingStore.beginAutomaticSave();
         try {
-          const result = await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id);
+          const result = await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id, "stop", startPrivate);
           if (result === "owned-by-another-run") {
             send({ type: "LOCAL_UPLOAD_IN_FLIGHT", id: recording.id });
             void pendingStore.refresh();
             return;
           }
           send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
-          landed(generation, recording);
+          if (privateStarted) onSaved?.(recording);
+          else landed(generation, recording);
         } finally { finish(); }
       } catch (caught) {
         if (!pipeline.isAccepting() || saveDeferredForAccountTransition(caught)) {
@@ -461,12 +477,13 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     send({ type: "SAVE_PROGRESS", percent: null });
     const outcome = await saveRecording(tcw, recording, (stored, total) => {
       if (total > 0) send({ type: "SAVE_PROGRESS", percent: Math.floor((stored / total) * 100) });
-    });
+    }, startPrivate);
     switch (outcome.kind) {
       case "saved":
         reportSavedNoteSyncError(recording.id, outcome.noteSyncError);
         send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
-        landed(generation, recording, outcome.audio ?? undefined);
+        if (privateStarted) onSaved?.(recording);
+        else landed(generation, recording, outcome.audio ?? undefined);
         void pendingStore.refresh(outcome.cleanupError);
         return;
       case "failed":
