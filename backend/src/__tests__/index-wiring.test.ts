@@ -840,12 +840,15 @@ describe("backend entry-point HTTP and lifecycle guards", () => {
     expect((await post(disabled.url!, path, "{}")).status).toBe(404);
   });
 
-  test("PTX webhook is dark by default and accepts a valid unauthenticated event only when armed", async () => {
+  test("PTX webhook is dark by default and fails closed when armed without its receiver secret", async () => {
     const off = await bootIndex();
     const event = JSON.stringify({ type: "meeting.completed", data: { meeting_id: "meeting_1", metadata: { tinychat_address: "0x" + "a".repeat(40) } } });
-    expect((await post(off.url!, "/api/transcriber/webhooks/ptx", event)).status).toBe(404);
-    const on = await bootIndex({ TRANSCRIPT_SERVER_DELIVERY_ENABLED: "true", TRANSCRIPTION_API_URL: "https://ptx.invalid", TRANSCRIPTION_API_KEY: "test-api-key" });
-    expect((await post(on.url!, "/api/transcriber/webhooks/ptx", event)).status).toBe(202);
+    const path = "/api/transcriber/webhooks/ptx";
+    expect((await post(off.url!, path, event)).status).toBe(404);
+    const unset = await bootIndex({ TRANSCRIPT_SERVER_DELIVERY_ENABLED: "true", TRANSCRIPTION_API_URL: "https://ptx.invalid", TRANSCRIPTION_API_KEY: "test-api-key" });
+    expect((await post(unset.url!, path, event)).status).toBe(503);
+    const empty = await bootIndex({ TRANSCRIPT_SERVER_DELIVERY_ENABLED: "true", TRANSCRIPTION_API_URL: "https://ptx.invalid", TRANSCRIPTION_API_KEY: "test-api-key", TRANSCRIPTION_WEBHOOK_SECRET: "" });
+    expect((await post(empty.url!, path, event)).status).toBe(503);
   });
 
   test("signed PTX delivery verifies the exact bytes without session or CSRF", async () => {
@@ -862,9 +865,12 @@ describe("backend entry-point HTTP and lifecycle guards", () => {
     });
     const signature = `sha256=${createHmac("sha256", secret).update(event).digest("hex")}`;
     const path = "/api/transcriber/webhooks/ptx";
+    expect((await post(boot.url!, path, event)).status).toBe(401);
+    expect((await post(boot.url!, path, event, { "x-webhook-signature": "sha256=" + "0".repeat(64) })).status).toBe(401);
     expect((await post(boot.url!, path, event, { "x-webhook-signature": signature })).status).toBe(202);
     expect((await post(boot.url!, path, event + " ", { "x-webhook-signature": signature })).status).toBe(401);
   });
+
 
   test("Google OAuth is dark unless armed; only start and callback bypass session authentication", async () => {
     const off = await bootIndex();

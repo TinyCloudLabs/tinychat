@@ -112,8 +112,8 @@ services:
       TRANSCRIPTION_API_KEY: ${TRANSCRIPTION_API_KEY:-}
       TRANSCRIPTION_BOT_NAME: ${TRANSCRIPTION_BOT_NAME:-}
       # TC-641 server transcript writer. Keep OFF until TC-825 fixes node SQL
-      # exact-database scoping. Set a canary cohort before enabling; webhook
-      # signature is optional in unsigned-wake mode until ptx provisions whsec_.
+      # exact-database scoping. Before enabling, configure the webhook secret
+      # on both PTX and tinychat; unsigned webhook calls receive 503.
       TRANSCRIPT_SERVER_DELIVERY_ENABLED: ${TRANSCRIPT_SERVER_DELIVERY_ENABLED:-false}
       TRANSCRIPT_SERVER_DELIVERY_ADDRESSES: ${TRANSCRIPT_SERVER_DELIVERY_ADDRESSES:-}
       TRANSCRIPTION_WEBHOOK_URL: ${TRANSCRIPTION_WEBHOOK_URL:-}
