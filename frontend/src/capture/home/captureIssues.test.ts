@@ -1,6 +1,8 @@
 // What the recorder's capture issues become on Capture home (TC-871).
-import { describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 
+import { createFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
+import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { RecorderCaptureIssue } from "../recorder/recorderReducer";
 import type { LibraryItem } from "../library/LibraryRow";
 import { FINALIZATION_PENDING } from "../recorder/recorderCopy";
@@ -24,6 +26,9 @@ import {
   recentEntries,
 } from "./captureIssues";
 import { HOME_COPY } from "./homeCopy";
+
+beforeEach(() => __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: false }));
+afterEach(() => __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: null }));
 
 const timedOut: RecorderCaptureIssue = { kind: "finalization_timed_out" };
 const failed: RecorderCaptureIssue = {

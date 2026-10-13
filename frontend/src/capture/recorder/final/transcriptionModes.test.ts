@@ -1,4 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
+import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { isOnDeviceReady, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import {
   availableStops,
@@ -10,6 +12,9 @@ import {
   scaleStops,
   type ModeShell,
 } from "./transcriptionModes";
+
+beforeEach(() => __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: false }));
+afterEach(() => __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: null }));
 
 function model(
   state: OnDeviceSttStatus["models"][number]["state"],

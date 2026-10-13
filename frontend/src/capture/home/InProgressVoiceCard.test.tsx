@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 
+import { createFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
+import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { NotePipeline, PipelineActionKind } from "@/lib/voiceNotes/notePipeline";
 import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import { installDom } from "@/test/dom";
@@ -26,11 +28,13 @@ const html = (rows: readonly InProgressNoteRow[], patch: Partial<Parameters<type
 
 let cleanupDom: (() => void) | undefined;
 let root: Root | null = null;
+beforeEach(() => __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: false }));
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = null;
   cleanupDom?.();
   cleanupDom = undefined;
+  __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: null });
 });
 
 describe("InProgressVoiceCard", () => {
