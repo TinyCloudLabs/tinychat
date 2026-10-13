@@ -10,6 +10,11 @@ export function transcriptKvKey(source: string, sourceId: string): string {
   return `${CONNECTORS_KV_PREFIX}/${source}/transcript/${sourceId}`;
 }
 
+/** Immutable snapshot of a previously saved transcriber publication. */
+export function archiveKvKey(sourceId: string, version: number): string {
+  return `${CONNECTORS_KV_PREFIX}/${TRANSCRIBER_MEETING_SOURCE}/archive/${sourceId}/v${version}`;
+}
+
 /** These are manifest-relative paths; the session already grants both resources. */
 export const TRANSCRIPT_WRITER_POLICY: NonEmptyServerInfoPermissions = [
   { service: "tinycloud.sql", path: "connectors", actions: ["read", "write"] },
@@ -98,6 +103,7 @@ export interface TranscriberMeetingJson {
 }
 
 export interface TranscriberTranscriptJson {
+  version?: number;
   language?: string;
   duration_seconds?: number;
   capture?: unknown;
@@ -185,6 +191,7 @@ export async function normalizeTranscriberTranscript(
         meeting_url: meeting.meeting_url,
         platform: meeting.platform,
         language: transcript.language ?? null,
+        ptx_transcript_version: Number.isInteger(transcript.version) ? transcript.version : 1,
         transcript_text: transcript.text ?? null,
         capture: transcript.capture ?? meeting.capture ?? null,
         transcript_provider: transcript.provider ?? meeting.transcript_provider ?? null,

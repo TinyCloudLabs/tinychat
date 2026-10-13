@@ -1,6 +1,9 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import {
+  archiveKvKey,
+  connectorMeetingId,
+  CONNECTORS_SQL_DB_NAME,
   normalizeTranscriberTranscript,
   transcriberMeetingTitle,
   TRANSCRIBER_MEETING_SOURCE,
@@ -12,6 +15,7 @@ import { listKnownSourceIds } from "./connectors/connectorStore";
 import type { StoreResult } from "./connectors/connectorStore";
 import { webConnectorPort } from "./connectors/connectorPort";
 import { reportStorageError, reportStorageWriteSucceeded, storageSaveMessage } from "./storageStatus";
+import { captureEvents } from "../capture/captureEvents";
 import type { TranscriberMeeting, TranscriberTranscript } from "./transcriberApi";
 export { normalizeTranscriberTranscript, transcriberMeetingTitle, TRANSCRIBER_MEETING_SOURCE };
 
@@ -62,4 +66,109 @@ export async function listSavedTranscriberMeetingIds(
     } catch { console.debug("[transcriberSave] incomplete meeting", id, "kv-read-threw"); }
   }
   return { ok: true, data: complete };
+}
+
+/** Read only publication numbers: full metadata also contains transcript text. */
+export async function listSavedTranscriberVersions(
+  tcw: TinyCloudWeb,
+  scheduleRead: TranscriberSpaceReadScheduler = (read) => read(),
+): Promise<StoreResult<Map<string, number>>> {
+  try {
+    const result = await scheduleRead(() => tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
+      "SELECT source_id, json_extract(metadata, '$.ptx_transcript_version') FROM connector_meeting WHERE source = ?",
+      [TRANSCRIBER_MEETING_SOURCE],
+    ));
+    if (result === null) return { ok: true, data: new Map() };
+    if (!result.ok) return storageFailure(result.error);
+    const rows = result.data.rows as unknown[][];
+    return { ok: true, data: new Map(rows.map((row) => [String(row[0]), row[1] == null ? 1 : Number(row[1])])) };
+  } catch { return storageFailure({ code: "SQL_ERROR" }); }
+}
+
+function storageFailure(error: { code?: string }): StoreResult<never> {
+  reportStorageError(error);
+  return { ok: false, error: { code: error.code ?? "STORE_ERROR", message: "Transcriber storage operation failed" } };
+}
+
+interface TranscriberArchive {
+  version: number;
+  archived_at: string;
+  row: { title: string | null; participants: string | null; duration_secs: number | null; metadata: string };
+  body: string;
+}
+
+/** The row's publication number commits the refresh; the archive survives retries unchanged. */
+export async function refreshTranscriberMeeting(
+  tcw: TinyCloudWeb,
+  row: TranscriberMeeting,
+  transcript: TranscriberTranscript,
+): Promise<StoreResult<void>> {
+  // An old ptx image (or malformed publication number) must never replace a saved copy.
+  if (!Number.isInteger(transcript.version)) return { ok: true, data: undefined };
+  try {
+    const id = await connectorMeetingId(TRANSCRIBER_MEETING_SOURCE, row.id);
+    const db = tcw.sql.db(CONNECTORS_SQL_DB_NAME);
+    const current = await db.query(
+      "SELECT id, title, participants, duration_secs, metadata FROM connector_meeting WHERE id = ?", [id],
+    );
+    if (!current.ok) return storageFailure(current.error);
+    const old = (current.data.rows as unknown[][])[0];
+    if (!old) {
+      const saved = await saveTranscriberMeeting(tcw, row, transcript);
+      return saved.ok ? { ok: true, data: undefined } : saved;
+    }
+    const metadata = JSON.parse(old[4] as string || "{}") as Record<string, unknown>;
+    const oldVersion = Number.isInteger(metadata.ptx_transcript_version) ? metadata.ptx_transcript_version as number : 1;
+    if (transcript.version! <= oldVersion) return { ok: true, data: undefined };
+    const oldBody = await tcw.kv.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, row.id));
+    if (!oldBody.ok) return storageFailure(oldBody.error);
+    const archive: TranscriberArchive = {
+      version: oldVersion, archived_at: new Date().toISOString(),
+      row: { title: old[1] as string | null, participants: old[2] as string | null,
+        duration_secs: old[3] as number | null, metadata: old[4] as string },
+      body: oldBody.data.data as string,
+    };
+    const archived = await tcw.kv.put(archiveKvKey(row.id, oldVersion), JSON.stringify(archive), { ifNoneMatch: "*" });
+    if (!archived.ok && archived.error.code !== "KV_PRECONDITION_FAILED") return storageFailure(archived.error);
+    const normalized = await normalizeTranscriberTranscript(row, transcript);
+    const body = await tcw.kv.put(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, row.id), normalized.body);
+    if (!body.ok) return storageFailure(body.error);
+    const updated = await db.execute(
+      "UPDATE connector_meeting SET participants = ?, duration_secs = ?, metadata = ?, updated_at = ? WHERE id = ?",
+      [JSON.stringify(normalized.meeting.participants), normalized.meeting.durationSecs, JSON.stringify({
+        ...normalized.meeting.metadata,
+        ptx_transcript_version: transcript.version,
+        previous_transcript_versions: [...(metadata.previous_transcript_versions as number[] ?? []), oldVersion],
+      }), new Date().toISOString(), id],
+    );
+    if (!updated.ok) return storageFailure(updated.error);
+    reportStorageWriteSucceeded();
+    captureEvents.emit("library-changed", { source: TRANSCRIBER_MEETING_SOURCE, sourceId: row.id });
+    return { ok: true, data: undefined };
+  } catch { return storageFailure({ code: "STORE_ERROR" }); }
+}
+
+/** Developer recovery helper; deliberately has no UI and deletes nothing. */
+export async function restoreTranscriberArchive(
+  tcw: TinyCloudWeb,
+  sourceId: string,
+  version: number,
+): Promise<StoreResult<void>> {
+  try {
+    const result = await tcw.kv.get(archiveKvKey(sourceId, version));
+    if (!result.ok) return storageFailure(result.error);
+    const archive = JSON.parse(result.data.data as string) as TranscriberArchive;
+    const body = await tcw.kv.put(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, sourceId), archive.body);
+    if (!body.ok) return storageFailure(body.error);
+    const restored = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).execute(
+      "UPDATE connector_meeting SET title = ?, participants = ?, duration_secs = ?, metadata = ?, updated_at = ? WHERE id = ?",
+      [archive.row.title, archive.row.participants, archive.row.duration_secs,
+        JSON.stringify({ ...JSON.parse(archive.row.metadata || "{}"), ptx_transcript_version: archive.version }),
+        new Date().toISOString(), await connectorMeetingId(TRANSCRIBER_MEETING_SOURCE, sourceId)],
+    );
+    if (!restored.ok) return storageFailure(restored.error);
+    reportStorageWriteSucceeded();
+    captureEvents.emit("library-changed", { source: TRANSCRIBER_MEETING_SOURCE, sourceId });
+    return { ok: true, data: undefined };
+  } catch { return storageFailure({ code: "STORE_ERROR" }); }
 }

@@ -50,7 +50,7 @@ export interface TranscriberMeeting {
   platform: string;
   meeting_url: string;
   bot?: { name?: string; joined_at?: string | null };
-  transcript?: { status?: string };
+  transcript?: { status?: string; version?: number };
   created_at: string;
   started_at?: string | null;
   ended_at?: string | null;
@@ -89,6 +89,7 @@ export interface TranscriberSegment {
 }
 
 export interface TranscriberTranscript {
+  version?: number;
   meeting_id: string;
   status: TranscriberMeetingStatus;
   language?: string;

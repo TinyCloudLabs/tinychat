@@ -73,7 +73,10 @@ export function sharedMeetingView(meeting: TranscriptionMeeting, provenance: Sha
     created_at: meeting.created_at,
     ...(meeting.started_at === undefined ? {} : { started_at: meeting.started_at }),
     ...(meeting.ended_at === undefined ? {} : { ended_at: meeting.ended_at }),
-    ...(meeting.transcript === undefined ? {} : { transcript: meeting.transcript }),
+    ...(meeting.transcript === undefined ? {} : { transcript: {
+      ...(meeting.transcript.status === undefined ? {} : { status: meeting.transcript.status }),
+      ...(meeting.transcript.version === undefined ? {} : { version: meeting.transcript.version }),
+    } }),
     ...(meeting.error === undefined ? {} : { error: meeting.error }),
     metadata: {
       source: "google-calendar-autojoin",

@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { createTranscriberClient, type TranscriberClient, type TranscriberMeeting, type TranscriberTranscript } from "@/lib/transcriberApi";
-import { listSavedTranscriberMeetingIds, saveTranscriberMeeting, TRANSCRIBER_MEETING_SOURCE } from "@/lib/transcriberSave";
+import { listSavedTranscriberMeetingIds, listSavedTranscriberVersions, refreshTranscriberMeeting, saveTranscriberMeeting, TRANSCRIBER_MEETING_SOURCE } from "@/lib/transcriberSave";
 import { isSecretsUnlocked, onSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
 import { secretsAvailable } from "@/lib/openkeyNative";
 import { captureEvents } from "@/capture/captureEvents";
@@ -21,9 +21,14 @@ export interface TranscriberLibrarySaver {
     scheduleRead?: <T>(read: () => Promise<T>) => Promise<T | null>,
     isCurrent?: () => boolean,
   ): Promise<{ ok: boolean; data?: string[] }>;
+  listVersions?: typeof listSavedTranscriberVersions;
+  refresh?: typeof refreshTranscriberMeeting;
   save(tcw: TinyCloudWeb, meeting: TranscriberMeeting, transcript: TranscriberTranscript): Promise<{ ok: boolean }>;
 }
-const defaultSaver: TranscriberLibrarySaver = { listSaved: listSavedTranscriberMeetingIds, save: saveTranscriberMeeting };
+const defaultSaver: TranscriberLibrarySaver = {
+  listSaved: listSavedTranscriberMeetingIds, listVersions: listSavedTranscriberVersions,
+  save: saveTranscriberMeeting, refresh: refreshTranscriberMeeting,
+};
 
 /** Each completeness read takes its own turn on the drain lane, and is dropped once the pass is stale. */
 const readOnDrainLane = (isCurrent: () => boolean) => <T,>(read: () => Promise<T>): Promise<T | null> =>
@@ -52,7 +57,12 @@ export async function syncTranscriberLibrary(input: {
   // saved recordings therefore yields the lane between keys for voice notes.
   const complete = await saver.listSaved(tcw, readOnDrainLane(isCurrent), isCurrent);
   if (!complete?.ok || !isCurrent()) return;
+  const versions = saver.listVersions
+    ? await saver.listVersions(tcw, readOnDrainLane(isCurrent))
+    : { ok: false as const };
+  if (!isCurrent()) return;
   const saved = new Set(complete.data ?? []);
+  let refreshes = 0;
   if (observedSaved && !observedSaved.initialized) {
     for (const id of saved) observedSaved.ids.add(id);
     observedSaved.initialized = true;
@@ -61,6 +71,33 @@ export async function syncTranscriberLibrary(input: {
     if (!isCurrent()) return;
     if ("unavailable" in row || row.status !== "completed") continue;
     if (saved.has(row.id)) {
+      const version = row.transcript?.version;
+      const completedAt = Date.parse(row.completed_at ?? row.ended_at ?? "");
+      const inGrace = row.metadata?.shared !== true && Number.isFinite(completedAt)
+        && now() - completedAt < SERVER_DELIVERY_GRACE_MS;
+      if (versions.ok && Number.isInteger(version) && version! > (versions.data.get(row.id) ?? 1)
+        && refreshes < 3 && !inGrace) {
+        refreshes++;
+        onState(row.id, "saving");
+        try {
+          const fetched = await client.transcript(row.id);
+          if (!isCurrent()) return;
+          if (fetched.status === "ok" && fetched.value.status === "ready"
+            && fetched.value.transcript.version === version) {
+            const fetchedTranscript = fetched.value.transcript;
+            const result = await enqueueDrainWork(() => isCurrent()
+              ? (saver.refresh ?? refreshTranscriberMeeting)(tcw, row, fetchedTranscript)
+              : Promise.resolve(null));
+            if (!isCurrent()) return;
+            onState(row.id, result?.ok ? "saved" : "error");
+            if (result?.ok) observedSaved?.ids.add(row.id);
+            continue;
+          }
+        } catch {
+          if (isCurrent()) onState(row.id, "error");
+          continue;
+        }
+      }
       if (observedSaved && !observedSaved.ids.has(row.id)) {
         captureEvents.emit("library-changed", { source: TRANSCRIBER_MEETING_SOURCE, sourceId: row.id });
         observedSaved.ids.add(row.id);
