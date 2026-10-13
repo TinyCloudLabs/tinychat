@@ -13,6 +13,7 @@ import { createElement, act } from "react";
 import { createRoot } from "react-dom/client";
 
 import { captureEvents } from "@/capture/captureEvents";
+import { failureNotificationStorageKey, readFailureNotificationKeys, writeFailureNotificationKeys } from "@/capture/activity/failureNotifications";
 import { registerPlayback } from "@/lib/audio/playback";
 import { installDom } from "@/test/dom";
 import { RecorderProvider, useRecorder, type RecorderValue } from "./RecorderProvider";
@@ -399,11 +400,14 @@ describe("voice-note recorder controller", () => {
     const { recorder, detach } = await attached();
     await recorder.record();
     const id = currentId!;
+    const notificationKey = failureNotificationStorageKey(tcw.did);
+    writeFailureNotificationKeys(notificationKey, [JSON.stringify([id, "finish", "storage"])]);
     await tick();
     await recorder.setNoteText("To discard");
     await recorder.discard();
     expect(await loadNote(id)).toBeNull();
     expect(recorder.getNote()).toBeNull();
+    expect(readFailureNotificationKeys(notificationKey)).toEqual([]);
     detach();
   });
 

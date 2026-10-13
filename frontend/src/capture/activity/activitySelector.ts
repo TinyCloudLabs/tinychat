@@ -16,7 +16,7 @@ export interface ActivityJob {
   retry?: () => void;
   action?: { label: string; run: () => void };
   diagnostics?: string;
-  /** Stable failure class for notification dedupe; never include request references or messages. */
+  /** Failure code for classification by notifications; never persist this raw provider value. */
   failureCode?: string;
 }
 

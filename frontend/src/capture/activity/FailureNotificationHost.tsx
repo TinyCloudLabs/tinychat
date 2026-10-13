@@ -4,17 +4,11 @@ import type { AppPlatform } from "@/lib/platform";
 import { logPipeline } from "@/lib/debugLog";
 import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import type { LibraryItem } from "../library/LibraryRow";
-import { FailureNotificationDedupe, failureNotifications, type FailureNotification } from "./failureNotifications";
+import { FailureNotificationDedupe, failureNotifications, failureNotificationStorageKey, readFailureNotificationKeys, writeFailureNotificationKeys, type FailureNotification } from "./failureNotifications";
+import { captureEvents } from "../captureEvents";
+import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 
-const STORAGE_VERSION = "exo-failure-notifications-v2";
 const TOAST_MS = 8000;
-
-function readKeys(key: string): string[] {
-  try {
-    const value: unknown = JSON.parse(localStorage.getItem(key) ?? "[]");
-    return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
-  } catch { return []; }
-}
 
 function nativeAvailable(): boolean {
   return typeof Notification !== "undefined";
@@ -45,22 +39,28 @@ export function FailureNotificationHost(props: {
   visibleNoteId: string | null;
   onOpenPath: (path: string) => void;
 }) {
-  const storageKey = `${STORAGE_VERSION}:${props.accountDid}`;
-  const dedupe = useMemo(() => new FailureNotificationDedupe(readKeys(storageKey)), [storageKey]);
+  const storageKey = failureNotificationStorageKey(props.accountDid);
+  const dedupe = useMemo(() => new FailureNotificationDedupe(readFailureNotificationKeys(storageKey)), [storageKey]);
   const [toasts, setToasts] = useState<FailureNotification[]>([]);
   const [askPermission, setAskPermission] = useState(false);
   const [requesting, setRequesting] = useState(false);
   const [permissionError, setPermissionError] = useState(false);
 
   useEffect(() => {
+    const stored = readFailureNotificationKeys(storageKey);
+    if (JSON.stringify(stored) !== JSON.stringify(dedupe.keys())) writeFailureNotificationKeys(storageKey, dedupe.keys());
+  }, [dedupe, storageKey]);
+
+  useEffect(() => {
+    const before = dedupe.keys().length;
+    dedupe.reconcile(props.views, props.platform);
     const failures = failureNotifications(props.items, props.views, props.platform);
     const fresh = dedupe.take(failures, props.visibleNoteId);
+    if (dedupe.keys().length !== before) writeFailureNotificationKeys(storageKey, dedupe.keys());
     if (!fresh.length) {
       // A failure first seen in the note is still consumed, so leaving it cannot alert later.
-      if (failures.length) try { localStorage.setItem(storageKey, JSON.stringify(dedupe.keys())); } catch { /* Storage can be unavailable. */ }
       return;
     }
-    try { localStorage.setItem(storageKey, JSON.stringify(dedupe.keys())); } catch { /* Session dedupe still applies. */ }
     const inApp: FailureNotification[] = [];
     for (const failure of fresh) {
       logPipeline("failure_notification", failure.noteId, "shown", { engine: failure.track, destination: props.platform });
@@ -73,6 +73,12 @@ export function FailureNotificationHost(props: {
       } catch { setAskPermission(true); }
     }
   }, [dedupe, props.items, props.views, props.platform, props.visibleNoteId, props.onOpenPath, storageKey]);
+
+  useEffect(() => captureEvents.on("note-deleted", (detail) => {
+    if (detail?.source !== VOICE_NOTE_SOURCE) return;
+    dedupe.pruneDeleted(detail.sourceId);
+    writeFailureNotificationKeys(storageKey, dedupe.keys());
+  }), [dedupe, storageKey]);
 
   useEffect(() => {
     if (!toasts.length) return;
