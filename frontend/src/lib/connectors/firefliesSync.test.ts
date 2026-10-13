@@ -62,12 +62,12 @@ class FakeStore implements SyncStore {
   async listKnownSourceIds(_: TinyCloudWeb, source: string): Promise<StoreResult<string[]>> {
     return ok(this.meetings.filter((meeting) => meeting.source === source).map((meeting) => meeting.sourceId));
   }
-  async hasTranscriptBody(
-    _: TinyCloudWeb,
-    source: string,
-    sourceId: string,
-  ): Promise<StoreResult<boolean>> {
-    return ok(this.bodies.has(`${source}/${sourceId}`));
+  async listTranscriptBodyIds(_: TinyCloudWeb, source: string): Promise<StoreResult<Set<string>>> {
+    return ok(new Set(
+      [...this.bodies.keys()]
+        .filter((key) => key.startsWith(`${source}/`))
+        .map((key) => key.slice(source.length + 1)),
+    ));
   }
 
   async insertMeeting(_: TinyCloudWeb, meeting: NormalizedMeeting): Promise<StoreResult<boolean>> {
@@ -132,7 +132,13 @@ class FakeStore implements SyncStore {
 
   async recordFirefliesAttempt(
     _tcw: TinyCloudWeb,
-    input: { lastAttemptAt: string; lastAttemptStatus: "running" | "ok" | "partial" | "error" },
+    input: {
+      lastAttemptAt: string;
+      lastAttemptStatus: "running" | "ok" | "partial" | "error";
+      listingSkip?: number | null;
+      listingStartedAt?: string | null;
+      listingAnchor?: string | null;
+    },
   ): Promise<StoreResult<void>> {
     void input;
     return this.rejectAttempt
@@ -157,7 +163,7 @@ interface MockClientOptions {
   /** IDs returned newest-first, as Fireflies listings provide them. */
   newIds: string[];
   getTranscript: (id: string) => FirefliesResult<FirefliesTranscript>;
-  listError?: FirefliesResult<{ ids: string[]; complete: boolean; nextSkip: number | null }>;
+  listError?: FirefliesResult<{ ids: string[]; complete: boolean; nextSkip: number | null; nextAnchor: string | null }>;
   delayMs?: number;
 }
 
@@ -174,6 +180,7 @@ function makeClient(opts: MockClientOptions): { client: SyncClient; fetches: str
           ids: opts.newIds.slice(0, cap),
           complete: opts.newIds.length <= cap,
           nextSkip: opts.newIds.length <= cap ? null : cap,
+          nextAnchor: opts.newIds.length <= cap ? null : opts.newIds[cap - 1] ?? null,
         },
       };
     },
@@ -871,6 +878,7 @@ describe("Fireflies disconnect cancels a running client engine", () => {
           store.connectionStatus = null;
           return ok(undefined);
         },
+        clearFirefliesAttempt: async () => ok(undefined),
         getConnection: () => store.getConnection(),
         countMeetings: () => store.countMeetings(tcw, "fireflies"),
         updateSyncState: (_tcw, input) => store.updateSyncState(tcw, input),

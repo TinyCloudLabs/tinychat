@@ -268,11 +268,12 @@ For Fireflies, `connector_state.last_synced_at` is the authoritative last-succes
 watermark; UI staleness is derived from it at read time (24 hours). Failed, partial,
 aborted, truncated, and targeted webhook-ingest runs never advance it. Attempt metadata
 is advisory KV at `${APP_ID}/connectors/fireflies/sync-attempt`, written only by the
-Fireflies sync engine as a JSON string:
-`{"v":1,"last_attempt_at":"2026-10-13T12:00:00.000Z","last_attempt_status":"running|ok|partial|error"}`.
-Readers accept JSON strings and SDK-decoded objects. A `running` attempt older than
-15 minutes is abandoned and no longer paces catch-up; this KV record never replaces
-the SQL success watermark. Existing SQL rows need no migration.
+Fireflies sync engine as a JSON string, for example:
+`{"v":1,"last_attempt_at":"2026-10-13T12:00:00.000Z","last_attempt_status":"partial","listing_skip":50,"listing_started_at":"2026-10-13T10:00:00.000Z","listing_anchor":"transcript-49"}`.
+Readers accept JSON strings and SDK-decoded objects. A `running` record older than
+15 minutes is abandoned and no longer paces catch-up. SQL `last_synced_at` remains
+authoritative; this KV record is only advisory pacing and bounded-list continuation.
+Existing SQL rows need no migration.
 
 The Connectors UI shows “Stale since <date>” when the SQL watermark is older than
 24 hours. A stale Fireflies connector gets a bounded full-listing reconcile (at most
@@ -403,14 +404,20 @@ algorithm for Connect, Sync now, the background catch-up, and Meeting sources:
    purge.
 6. The per-space KV attempt record is
    `${APP_ID}/connectors/fireflies/sync-attempt`, JSON with `v: 1`,
-   `last_attempt_at`, `last_attempt_status`, and optional `listing_skip`. It is
-   best-effort and written only by the sync engine; its failure never changes
-   sync, ingest, or disconnect outcomes. A `running` record older than 15 minutes
-   is abandoned. `listing_skip` is the provider listing offset for a bounded
-   incomplete reconcile; it advances across runs and is cleared only when a
-   listing completes. If the KV record is lost, the next run restarts at the
-   newest page and remains bounded. SQL `last_synced_at` remains authoritative;
-   the KV record is advisory pacing/continuation only.
+   `last_attempt_at`, `last_attempt_status`, and optional `listing_skip`,
+   `listing_started_at`, and `listing_anchor`. It is best-effort and written only
+   by the sync engine; its failure never changes sync, ingest, or disconnect
+   outcomes and never makes an unpersisted cursor resumable. A `running` record
+   older than 15 minutes is abandoned. A bounded incomplete chain advances
+   `listing_skip` only over a prefix whose SQL rows and KV bodies were all stored.
+   Any item error, body-write failure, terminal error, or abort preserves the
+   previous cursor. `listing_started_at` is recorded at skip zero and becomes
+   `last_synced_at` only after the whole chain reaches the date boundary or true
+   end of history. `listing_anchor` is the provider ID at `listing_skip - 1`;
+   resume verifies it and restarts from zero on a mismatch. If the KV record is
+   lost, the next run restarts at the newest page and remains bounded. Connect
+   over a missing/disconnected row and keep-data Disconnect clear the continuation.
+   SQL `last_synced_at` remains authoritative; the KV record is advisory only.
 7. Same-tab single-flight does not prevent cross-tab Sync now overlap. Cross-tab
    deduplication is out of scope: TinyCloud user SQL does not support a unique
    index, so this build does not claim cross-tab serialization. Cross-tab purge
@@ -429,8 +436,11 @@ algorithm for Connect, Sync now, the background catch-up, and Meeting sources:
    are never reconciled, and transcripts appearing later with dates older than
    the boundary are skipped permanently. Reconnecting a kept row under a
    different Fireflies account reuses its prior watermark; use Disconnect with
-   delete-data before switching accounts. A persistently failing transcript
-   keeps the run partial and the connector stale until it can be stored.
+   delete-data before switching accounts. Keep-data Disconnect retains rows,
+   transcript bodies, and the SQL success watermark, but clears the continuation
+   so reconnect starts a bounded reconcile from the current listing top. A
+   persistently failing transcript keeps the run partial and the connector stale
+   until it can be stored.
 
 ## 9. UI
 

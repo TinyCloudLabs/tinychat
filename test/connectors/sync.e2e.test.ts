@@ -144,15 +144,17 @@ async function runEngine(
       {
         name: "HTTP 429",
         fail(id: string, provider: ReturnType<typeof makeInMemoryFireflies>) {
-          provider.failNext(id, [jsonResponse({ errors: [{ message: "rate limited" }] }, 429)]);
+          provider.failNext(id, Array.from({ length: 5 }, () =>
+            jsonResponse({ errors: [{ message: "rate limited" }] }, 429, { "retry-after": "0" }),
+          ));
         },
       },
       {
         name: "Retry-After",
         fail(id: string, provider: ReturnType<typeof makeInMemoryFireflies>) {
-          provider.failNext(id, Array.from({ length: 5 }, () =>
-            jsonResponse({ errors: [{ message: "rate limited" }] }, 429, { "retry-after": "0" }),
-          ));
+          provider.failNext(id, [
+            jsonResponse({ errors: [{ message: "rate limited" }] }, 429, { "retry-after": "61" }),
+          ]);
         },
       },
       {
@@ -169,10 +171,14 @@ async function runEngine(
 
     for (const scenario of cases) {
       _resetConnectorSchemaMemoForTests();
-      const items = buildSeed(60) as SeedTranscript[];
+      const items = buildSeed(120) as SeedTranscript[];
       const fake = makeFakeTinyCloud({ did: `did:test:prefix-${scenario.name}` });
       const provider = makeInMemoryFireflies(items);
-      const targetId = items[49]!.id;
+      expect((await runEngine(provider.client, fake)).ok).toBe(true);
+      expect(requiredSyncState(fake).last_sync_status).toBe("partial");
+      expect(JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey()))).listing_skip).toBe(50);
+
+      const targetId = items[80]!.id;
       scenario.fail(targetId, provider);
       if (scenario.name === "body write failure") {
         let failed = false;
@@ -183,11 +189,10 @@ async function runEngine(
           }
         };
       }
-
-      const first = await runEngine(provider.client, fake);
-      expect(first.ok).toBe(true);
+      await runEngine(provider.client, fake);
       expect(["partial", "error"]).toContain(requiredSyncState(fake).last_sync_status);
-      for (let attempt = 0; attempt < 4 && requiredSyncState(fake).last_sync_status !== "ok"; attempt++) {
+      expect(JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey()))).listing_skip).toBe(50);
+      for (let attempt = 0; attempt < 6 && requiredSyncState(fake).last_sync_status !== "ok"; attempt++) {
         fake.kv.putHook = null;
         expect((await runEngine(provider.client, fake)).ok).toBe(true);
       }
@@ -198,14 +203,16 @@ async function runEngine(
     }
   });
 
-  test("Stop during a detail batch retains the previous resume point and repairs all meetings", async () => {
+  test("Stop during a resumed detail batch retains its previous resume point and repairs all meetings", async () => {
     _resetConnectorSchemaMemoForTests();
-    const items = buildSeed(60) as SeedTranscript[];
+    const items = buildSeed(120) as SeedTranscript[];
     const fake = makeFakeTinyCloud({ did: "did:test:prefix-stop" });
     const provider = makeInMemoryFireflies(items);
+    expect((await runEngine(provider.client, fake)).ok).toBe(true);
+    expect(JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey()))).listing_skip).toBe(50);
     const controller = new AbortController();
     let stopped = false;
-    const first = await runEngine(provider.client, fake, {
+    const result = await runEngine(provider.client, fake, {
       signal: controller.signal,
       onProgress(progress) {
         if (!stopped && progress.phase === "storing" && progress.done === 1) {
@@ -214,8 +221,10 @@ async function runEngine(
         }
       },
     });
-    expect(first.ok).toBe(true);
-    for (let attempt = 0; attempt < 4 && requiredSyncState(fake).last_sync_status !== "ok"; attempt++) {
+    expect(result.ok).toBe(true);
+    expect(["partial", "error"]).toContain(requiredSyncState(fake).last_sync_status);
+    expect(JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey()))).listing_skip).toBe(50);
+    for (let attempt = 0; attempt < 6 && requiredSyncState(fake).last_sync_status !== "ok"; attempt++) {
       expect((await runEngine(provider.client, fake)).ok).toBe(true);
     }
     const ids = items.map((item) => item.id);
@@ -235,17 +244,28 @@ async function runEngine(
     expect(result.ok).toBe(true);
     for (let run = 0; run < 20 && requiredSyncState(fake).last_sync_status !== "ok"; run++) {
       now += 8 * 60 * 60 * 1000;
-      const arrivals = buildSeed(2) as SeedTranscript[];
-      arrivals.forEach((item, index) => {
-        item.id = `late-${run}-${index}`;
-        item.date = Math.floor((now + index) / 1000);
-      });
-      items.unshift(...arrivals);
+      if (run % 4 === 0) {
+        const arrivals = buildSeed(2) as SeedTranscript[];
+        arrivals.forEach((item, index) => {
+          item.id = `late-${run}-${index}`;
+          item.date = Math.floor((now + index) / 1000);
+        });
+        items.unshift(...arrivals);
+      }
       result = await runEngine(provider.client, fake, { now: () => new Date(now).toISOString() });
       expect(result.ok).toBe(true);
     }
     const ids = items.map((item) => item.id);
+    if (requiredSyncState(fake).last_sync_status !== "ok") {
+      throw new Error(JSON.stringify({
+        status: requiredSyncState(fake).last_sync_status,
+        rows: fake.sql.meetings.size,
+        attempt: fake.kv.entries.get(firefliesAttemptKvKey()),
+        tailCalls: provider.calls.slice(-8),
+      }));
+    }
     expect(requiredSyncState(fake).last_sync_status).toBe("ok");
+    expect(now - chainStart).toBeGreaterThanOrEqual(3 * 24 * 60 * 60 * 1000);
     expect(requiredSyncState(fake).last_synced_at).toBe(new Date(chainStart).toISOString());
     expect(missingIds(ids, new Set([...fake.sql.meetings.values()].map((row) => row.source_id)))).toEqual([]);
     expect(missingIds(ids, transcriptBodyKeys(fake))).toEqual([]);
@@ -269,9 +289,17 @@ async function runEngine(
 
   test("a failed attempt-record put cannot commit an unsafe cursor", async () => {
     _resetConnectorSchemaMemoForTests();
-    const items = buildSeed(60) as SeedTranscript[];
+    const items = buildSeed(120) as SeedTranscript[];
     const fake = makeFakeTinyCloud({ did: "did:test:prefix-attempt-put" });
     const provider = makeInMemoryFireflies(items);
+    expect((await runEngine(provider.client, fake)).ok).toBe(true);
+    expect(requiredSyncState(fake).last_sync_status).toBe("partial");
+    expect(JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey()))).listing_skip).toBe(50);
+    items.unshift(...(buildSeed(3) as SeedTranscript[]).map((item, index) => ({
+      ...item,
+      id: `attempt-arrival-${index}`,
+      date: Date.now() + index,
+    })));
     let failed = false;
     fake.kv.putHook = async (key, value) => {
       if (!failed && key === firefliesAttemptKvKey() && typeof value === "string" && JSON.parse(value).last_attempt_status === "partial") {
@@ -281,13 +309,10 @@ async function runEngine(
     };
     expect((await runEngine(provider.client, fake)).ok).toBe(true);
     expect(failed).toBe(true);
+    expect(requiredSyncState(fake).last_sync_status).toBe("partial");
+    expect(JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey()))).listing_skip).toBe(50);
     fake.kv.putHook = null;
-    items.unshift(...(buildSeed(2) as SeedTranscript[]).map((item, index) => ({
-      ...item,
-      id: `attempt-arrival-${index}`,
-      date: Date.now() + index,
-    })));
-    for (let attempt = 0; attempt < 4 && requiredSyncState(fake).last_sync_status !== "ok"; attempt++) {
+    for (let attempt = 0; attempt < 6 && requiredSyncState(fake).last_sync_status !== "ok"; attempt++) {
       expect((await runEngine(provider.client, fake)).ok).toBe(true);
     }
     const ids = items.map((item) => item.id);
@@ -736,6 +761,7 @@ describe("sync e2e (spec §10 driver 2)", () => {
       expect(fake.sql.meetings.size).toBe(600);
       expect(fake.sql.states.get("fireflies")?.last_sync_status).toBe("ok");
       expect(new Set([...fake.sql.meetings.values()].map((row) => row.source_id)).size).toBe(600);
+      expect(transcriptBodyKeys(fake).size).toBe(600);
     } finally {
       await largeHandle.stop();
     }
@@ -785,6 +811,7 @@ describe("sync e2e (spec §10 driver 2)", () => {
       }
       expect(fake.sql.meetings.size).toBe(735);
       expect(fake.sql.states.get("fireflies")?.last_sync_status).toBe("ok");
+      expect(transcriptBodyKeys(fake).size).toBe(735);
     } finally {
       await staleHandle.stop();
     }

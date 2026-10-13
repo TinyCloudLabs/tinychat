@@ -52,8 +52,12 @@ export interface FirefliesAttempt {
   v: 1;
   lastAttemptAt: string;
   lastAttemptStatus: "running" | "ok" | "partial" | "error";
-  /** Provider listing offset to resume when the prior run exhausted its budget. */
+  /** Provider listing offset to resume after every consumed row is stored. */
   listingSkip?: number | null;
+  /** Timestamp at skip zero; the SQL watermark commits this chain start. */
+  listingStartedAt?: string | null;
+  /** Summary ID at listingSkip - 1, binding the offset to provider history. */
+  listingAnchor?: string | null;
 }
 export async function getFirefliesAttempt(
   tcw: TinyCloudWeb,
@@ -73,21 +77,38 @@ export async function getFirefliesAttempt(
     return { ok: true, data: null };
   }
   const row = value as Record<string, unknown>;
-  const skip = row.listing_skip;
   if (row.v !== 1
     || typeof row.last_attempt_at !== "string"
     || (row.last_attempt_status !== "running" && row.last_attempt_status !== "ok"
-      && row.last_attempt_status !== "partial" && row.last_attempt_status !== "error")
-    || (skip !== undefined && skip !== null && (!Number.isSafeInteger(skip) || (skip as number) < 0))) {
+      && row.last_attempt_status !== "partial" && row.last_attempt_status !== "error")) {
     return { ok: true, data: null };
   }
+  const skip = row.listing_skip;
+  const startedAt = row.listing_started_at;
+  const anchor = row.listing_anchor;
+  const hasCursor = skip !== undefined || startedAt !== undefined || anchor !== undefined;
+  const cursorValid = Number.isSafeInteger(skip)
+    && (skip as number) >= 0
+    && typeof startedAt === "string"
+    && Number.isFinite(Date.parse(startedAt))
+    && ((skip as number) === 0
+      ? anchor === undefined || anchor === null
+      : typeof anchor === "string" && anchor.length > 0);
   return {
     ok: true,
     data: {
       v: 1,
       lastAttemptAt: row.last_attempt_at,
       lastAttemptStatus: row.last_attempt_status,
-      ...(typeof skip === "number" ? { listingSkip: skip } : skip === null ? { listingSkip: null } : {}),
+      ...(hasCursor
+        ? cursorValid
+          ? {
+              listingSkip: skip as number,
+              listingStartedAt: startedAt as string,
+              listingAnchor: typeof anchor === "string" ? anchor : null,
+            }
+          : { listingSkip: null, listingStartedAt: null, listingAnchor: null }
+        : {}),
     },
   };
 }
@@ -101,6 +122,8 @@ export async function recordFirefliesAttempt(
     last_attempt_at: attempt.lastAttemptAt,
     last_attempt_status: attempt.lastAttemptStatus,
     ...(attempt.listingSkip === undefined ? {} : { listing_skip: attempt.listingSkip }),
+    ...(attempt.listingStartedAt === undefined ? {} : { listing_started_at: attempt.listingStartedAt }),
+    ...(attempt.listingAnchor === undefined ? {} : { listing_anchor: attempt.listingAnchor }),
   }));
   if (!res.ok) return fail(res.error, "recordFirefliesAttempt");
   return { ok: true, data: undefined };
@@ -665,15 +688,53 @@ async function putMissingTranscriptBody(
   if (!/NOT_FOUND/i.test(existing.error.code ?? "")) return fail(existing.error, "putMissingTranscriptBody");
   return putTranscriptBody(tcw, source, sourceId, sentences);
 }
-export async function hasTranscriptBody(
+export async function listTranscriptBodyIds(
   tcw: TinyCloudWeb,
   source: string,
-  sourceId: string,
-): Promise<StoreResult<boolean>> {
-  const existing = await tcw.kv.head(transcriptKvKey(source, sourceId));
-  if (existing.ok) return { ok: true, data: true };
-  if (/NOT_FOUND/i.test(existing.error.code ?? "")) return { ok: true, data: false };
-  return fail(existing.error, "hasTranscriptBody");
+): Promise<StoreResult<Set<string>>> {
+  const prefix = `${CONNECTORS_KV_PREFIX}/${source}/transcript/`;
+  const ids = new Set<string>();
+  const cursors = new Set<string>();
+  let cursor: string | undefined;
+  try {
+    for (;;) {
+      const page = await tcw.kv.list({ path: prefix, ...(cursor === undefined ? {} : { cursor }) });
+      if (!page.ok) return fail(page.error, "listTranscriptBodyIds");
+      if (!page.data || !Array.isArray(page.data.keys)) {
+        return fail({ code: "KV_LIST_MALFORMED", message: "invalid transcript listing" }, "listTranscriptBodyIds");
+      }
+      for (const key of page.data.keys) {
+        if (typeof key !== "string" || !key.startsWith(prefix)) {
+          return fail({ code: "KV_LIST_MALFORMED", message: "unexpected transcript key" }, "listTranscriptBodyIds");
+        }
+        ids.add(key.slice(prefix.length));
+      }
+      const metadata = page.data as typeof page.data & {
+        cursor?: unknown;
+        nextCursor?: unknown;
+        truncated?: unknown;
+      };
+      const next = metadata.nextCursor ?? metadata.cursor;
+      const more = metadata.truncated === true || typeof next === "string";
+      if (!more) return { ok: true, data: ids };
+      if (typeof next !== "string" || next.length === 0 || cursors.has(next)) {
+        return fail({ code: "KV_LIST_MALFORMED", message: "invalid transcript listing cursor" }, "listTranscriptBodyIds");
+      }
+      cursors.add(next);
+      cursor = next;
+    }
+  } catch {
+    return fail({ code: "KV_LIST_TRANSPORT", message: "listing rejected" }, "listTranscriptBodyIds");
+  }
+}
+
+/** Clear advisory continuation metadata without writing an attempt from disconnect. */
+export async function clearFirefliesAttempt(tcw: TinyCloudWeb): Promise<StoreResult<void>> {
+  const res = await tcw.kv.delete(firefliesAttemptKvKey());
+  if (!res.ok && !/NOT_FOUND/i.test(res.error.code ?? "")) {
+    return fail(res.error, "clearFirefliesAttempt");
+  }
+  return { ok: true, data: undefined };
 }
 
 export async function putTranscriptBody(

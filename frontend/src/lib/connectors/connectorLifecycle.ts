@@ -73,11 +73,13 @@ export type DisconnectStep =
   | "delete-key"
   /** Delete the local rows and transcript bodies. */
   | "purge-local"
+  /** Clear Fireflies-only bounded-listing metadata before a kept row reconnects. */
+  | "clear-sync-continuation"
   /** Flip the connector row to `disconnected`, keeping the data. */
   | "mark-disconnected";
 
 export const DISCONNECT_PLANS: Record<DisconnectMode, readonly DisconnectStep[]> = {
-  "keep-data": ["disable-webhooks", "delete-key", "mark-disconnected"],
+  "keep-data": ["disable-webhooks", "delete-key", "clear-sync-continuation", "mark-disconnected"],
   "delete-data": [
     "collect-ids",
     "record-purge",
@@ -161,6 +163,7 @@ const RUNNING_LABEL: Record<DisconnectStep, string> = {
   "disable-webhooks": "Turning off background notifications…",
   "delete-key": "Removing your API key…",
   "purge-local": "Deleting meetings from your space…",
+  "clear-sync-continuation": "Clearing the Fireflies listing continuation…",
   "mark-disconnected": "Updating the connector…",
 };
 
@@ -186,6 +189,7 @@ export interface DisconnectSecrets {
 export interface DisconnectStore {
   listKnownSourceIds(): Promise<StoreResult<string[]>>;
   purgeConnector(): Promise<StoreResult<void>>;
+  clearFirefliesAttempt(): Promise<StoreResult<void>>;
   getConnection(): Promise<StoreResult<ConnectorConnection | null>>;
   countMeetings(): Promise<StoreResult<number>>;
   updateSyncState(input: UpdateSyncStateInput): Promise<StoreResult<void>>;
@@ -333,10 +337,12 @@ async function runStep(
       return deleteKey(deps);
     case "purge-local":
       return purgeLocal(deps);
+    case "clear-sync-continuation":
+      return clearSyncContinuation(deps);
     case "mark-disconnected":
       return markDisconnected(deps);
-  }
 }
+  }
 
 async function collectIds(deps: DisconnectDeps): Promise<StepOutcome> {
   // A scoped purge names its own ids, so the whole-space read is skipped.
@@ -433,6 +439,18 @@ async function purgeLocal(deps: DisconnectDeps): Promise<StepOutcome> {
   return {};
 }
 
+async function clearSyncContinuation(deps: DisconnectDeps): Promise<StepOutcome> {
+  if (deps.connectorId !== "fireflies") return {};
+  const result = await deps.store.clearFirefliesAttempt();
+  if (result.ok) return {};
+  return {
+    failure: {
+      step: "clear-sync-continuation",
+      message: `Couldn't clear the Fireflies listing continuation: ${result.error.message}.`,
+      retryable: true,
+    },
+  };
+}
 /**
  * Keep-data's last step. `lastSyncedAt` is preserved deliberately: the meetings
  * are still there, and blanking it would read as "never synced". The count is

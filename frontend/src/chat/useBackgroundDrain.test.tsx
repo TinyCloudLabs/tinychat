@@ -797,9 +797,7 @@ describe("Fireflies catch-up reconciles holes after webhook drain", () => {
     } = {
       async ensureSchema() { return { ok: true, data: undefined }; },
       async listKnownSourceIds() { return { ok: true, data: meetings.map((m) => m.sourceId) }; },
-      async hasTranscriptBody(_tcw, _source, sourceId) {
-        return { ok: true, data: bodies.has(sourceId) };
-      },
+      async listTranscriptBodyIds() { return { ok: true, data: new Set(bodies) }; },
       async insertMeeting(_tcw, meeting) {
         if (meetings.some((m) => m.sourceId === meeting.sourceId)) return { ok: true, data: false };
         meetings.push(meeting);
@@ -933,9 +931,7 @@ function realCatchUpHarness(
   const store: SyncStore = {
     async ensureSchema() { return { ok: true, data: undefined }; },
     async listKnownSourceIds() { return { ok: true, data: meetings.map((m) => m.sourceId) }; },
-    async hasTranscriptBody(_tcw, _source, sourceId) {
-      return { ok: true, data: bodies.has(sourceId) };
-    },
+    async listTranscriptBodyIds() { return { ok: true, data: new Set(bodies) }; },
     async insertMeeting(_tcw, meeting) {
       if (meetings.some((m) => m.sourceId === meeting.sourceId)) return { ok: true, data: false };
       meetings.push(meeting);

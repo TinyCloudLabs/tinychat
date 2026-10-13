@@ -1749,6 +1749,10 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
           connectorStore.listKnownSourceIds(tcw, descriptor.source),
         // Wipes meetings + KV bodies + state row.
         purgeConnector: () => connectorStore.purgeConnector(tcw, descriptor.source),
+        clearFirefliesAttempt: () =>
+          descriptor.id === "fireflies"
+            ? connectorStore.clearFirefliesAttempt(tcw)
+            : Promise.resolve({ ok: true, data: undefined }),
         getConnection: () => connectorStore.getConnection(tcw, descriptor.id),
         countMeetings: () => connectorStore.countMeetings(tcw, descriptor.source),
         updateSyncState: (input) => connectorStore.updateSyncState(tcw, input),

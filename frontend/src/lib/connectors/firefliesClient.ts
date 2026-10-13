@@ -154,6 +154,8 @@ export interface FirefliesListing {
   complete: boolean;
   /** Offset for the next bounded run; null once history is complete. */
   nextSkip: number | null;
+  /** Summary ID at nextSkip - 1, or null once complete. */
+  nextAnchor: string | null;
 }
 
 export interface ListNewTranscriptIdsOptions {
@@ -165,6 +167,8 @@ export interface ListNewTranscriptIdsOptions {
   pageBudget?: number;
   /** Resume a persisted bounded listing at this provider offset. */
   startSkip?: number;
+  /** Summary ID at startSkip - 1; a mismatch restarts listing at zero. */
+  startAnchor?: string | null;
   /** Exclusive date cutoff; older summaries complete the listing. */
   stopBeforeDate?: string | null;
   /** A known SQL row without a stored body is not complete and must be repaired. */
@@ -341,17 +345,26 @@ export class FirefliesClient {
     let skip = Number.isSafeInteger(opts.startSkip) && (opts.startSkip ?? 0) >= 0
       ? opts.startSkip!
       : 0;
+    let anchorToVerify = skip > 0 ? opts.startAnchor ?? null : null;
+    let verifyAnchor = skip > 0;
+    if (verifyAnchor && !anchorToVerify) {
+      skip = 0;
+      verifyAnchor = false;
+    }
+    let nextAnchor = skip > 0 ? anchorToVerify : null;
     let pages = 0;
     let complete = false;
+    let restarted = false;
 
     while (pages < pageBudget && ids.length < detailCap) {
       if (opts.signal?.aborted) break;
       if (pages > 0 && !await defaultSleep(this.delayMs, opts.signal)) break;
 
-      const requestedLimit = Math.min(batchSize, detailCap - ids.length);
+      const requestedLimit = Math.min(batchSize, detailCap - ids.length + (verifyAnchor ? 1 : 0));
+      const requestSkip = verifyAnchor ? skip - 1 : skip;
       const res = await this.request<{ transcripts: FirefliesTranscriptSummary[] | null }>(
         LIST_TRANSCRIPTS_QUERY,
-        { limit: requestedLimit, skip },
+        { limit: requestedLimit, skip: requestSkip },
         opts.signal,
       );
       if (!res.ok) {
@@ -360,8 +373,25 @@ export class FirefliesClient {
       }
 
       pages++;
-      const page = res.data.transcripts ?? [];
-      if (page.length === 0) {
+      const received = res.data.transcripts ?? [];
+      let page = received;
+      if (verifyAnchor) {
+        if (page[0]?.id !== anchorToVerify) {
+          if (!restarted) {
+            restarted = true;
+            skip = 0;
+            nextAnchor = null;
+            anchorToVerify = null;
+            verifyAnchor = false;
+            ids.length = 0;
+            continue;
+          }
+          break;
+        }
+        page = page.slice(1);
+        verifyAnchor = false;
+      }
+      if (page.length === 0 && received.length === 0) {
         complete = true;
         break;
       }
@@ -377,7 +407,11 @@ export class FirefliesClient {
           }
         }
         consumed++;
-        if (typeof summary.id !== "string") continue;
+        if (typeof summary.id !== "string") {
+          nextAnchor = null;
+          continue;
+        }
+        nextAnchor = summary.id;
         if (known.has(summary.id) && (await opts.isKnownComplete?.(summary.id) ?? true)) continue;
         ids.push(summary.id);
         if (ids.length >= detailCap) break;
@@ -389,14 +423,21 @@ export class FirefliesClient {
         complete = true;
         break;
       }
-      if (page.length < requestedLimit) {
+      if (received.length < requestedLimit) {
         complete = true;
         break;
       }
       if (consumed < page.length) break;
-
     }
-    return { ok: true, data: { ids, complete, nextSkip: complete ? null : skip } };
+    return {
+      ok: true,
+      data: {
+        ids,
+        complete,
+        nextSkip: complete ? null : skip,
+        nextAnchor: complete ? null : nextAnchor,
+      },
+    };
   }
 
   private async request<T>(
