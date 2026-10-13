@@ -197,8 +197,10 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, onPlay
       urlRef.current = objectUrl;
       playWhenSourceSet.current = true;
       setState({ phase: "ready", url: objectUrl });
-    } catch {
-      if (!controller.signal.aborted) setState({ phase: "failed" });
+    } catch (error) {
+      if (!controller.signal.aborted) setState({ phase: "failed",
+        reason: error instanceof Error && error.message === "This audio changed; reconnect to play the latest version"
+          ? error.message : undefined });
     }
   };
 

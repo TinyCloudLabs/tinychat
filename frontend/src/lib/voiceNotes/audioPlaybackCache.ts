@@ -2,7 +2,8 @@ import { logPipeline, logPipelineError } from "@/lib/debugLog";
 import { Capacitor } from "@capacitor/core";
 import { VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 
-type CacheRow = { key: string; blob?: Blob; size: number; playedAt: number };
+type CacheRow = { key: string; blob?: Blob; size: number; playedAt: number; identity?: string;
+  receipt?: { sha256: string; size: number } | null };
 const DB_NAME = "exo-audio-playback-cache";
 const STORE = "audio";
 const MB = 1024 * 1024;
@@ -43,6 +44,23 @@ const remoteKey = (spaceId: string, did: string, source: string, id: string, ide
 const remoteStem = (spaceId: string, did: string, source: string, id: string) =>
   `${JSON.stringify(["space", spaceId, did, source, id]).slice(0, -1)},`;
 const localKey = (id: string) => JSON.stringify(["local", id]);
+const identityKey = (spaceId: string, did: string, source: string, id: string) =>
+  JSON.stringify(["identity", spaceId, did, source, id]);
+
+/** Keep observations independently of cached bytes, including failed downloads and restarts. */
+export async function observeSpaceAudioIdentity(
+  spaceId: string, did: string, source: string, id: string, identity: string,
+  receipt?: { sha256: string; size: number } | null,
+): Promise<void> {
+  const key = identityKey(spaceId, did, source, id);
+  const previous = await read(key);
+  await write({ key, identity, receipt: receipt === undefined && previous?.identity === identity ? previous.receipt : receipt ?? null,
+    size: 0, playedAt: Date.now() });
+}
+
+export async function latestSpaceAudioIdentity(spaceId: string, did: string, source: string, id: string) {
+  return read(identityKey(spaceId, did, source, id));
+}
 
 async function savedRecordings(): Promise<VoiceNoteRecording[]> {
   const notes = (await VoiceNotes.listPending()).recordings.filter((note) => {
@@ -88,6 +106,7 @@ export async function cachedSpaceAudio(
   identity: string, load: () => Promise<Blob | null>, signal?: AbortSignal,
   isCurrent?: () => Promise<boolean>,
 ): Promise<Blob | null> {
+  await observeSpaceAudioIdentity(spaceId, did, source, id, identity);
   const key = remoteKey(spaceId, did, source, id, identity);
   const existing = await read(key).catch((error: unknown) => {
     logPipelineError("audio cache read", error, id);
@@ -126,7 +145,9 @@ export async function cachedSpaceAudio(
 export async function cachedSpaceAudioOffline(
   spaceId: string, did: string, source: string, id: string,
 ): Promise<Blob | null> {
-  const matching = (await rows()).filter((row) => row.blob && row.key.startsWith(remoteStem(spaceId, did, source, id)))
+  const latestIdentity = await latestSpaceAudioIdentity(spaceId, did, source, id);
+  const matching = (await rows()).filter((row) => row.blob && row.key.startsWith(remoteStem(spaceId, did, source, id))
+    && (!latestIdentity?.identity || row.key === remoteKey(spaceId, did, source, id, latestIdentity.identity)))
     .sort((a, b) => b.playedAt - a.playedAt);
   const latest = matching[0];
   if (!latest?.blob) return null;

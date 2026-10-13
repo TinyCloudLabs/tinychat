@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { IDBFactory } from "fake-indexeddb";
 import { VoiceNotes, __setVoiceNotesForTests, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
-import { cachedAudioSize, cachedSpaceAudio, clearCachedAudio, trimCachedAudio } from "./audioPlaybackCache";
+import { cachedAudioSize, cachedSpaceAudio, cachedSpaceAudioOffline, clearCachedAudio,
+  latestSpaceAudioIdentity, trimCachedAudio } from "./audioPlaybackCache";
 
 const original = VoiceNotes;
 const originalIdb = globalThis.indexedDB;
@@ -83,6 +84,16 @@ test("a replacement with a new manifest identity plays its new bytes", async () 
   expect(await second!.text()).toBe("new");
   expect(reads).toBe(2);
   expect((await cachedAudioSize()).bytes).toBe(3);
+});
+
+test("a failed replacement download persists its identity and cannot replay the old cache", async () => {
+  const scope = ["space", "did", "exo-voice-note", "same"] as const;
+  await cachedSpaceAudio(...scope, "rev-1", async () => new Blob(["old"]));
+  await expect(cachedSpaceAudio(...scope, "rev-2", async () => { throw new Error("download failed"); }))
+    .rejects.toThrow("download failed");
+  expect((await latestSpaceAudioIdentity(...scope))?.identity).toBe("rev-2");
+  expect(await cachedSpaceAudioOffline(...scope)).toBeNull();
+  expect((await cachedAudioSize()).bytes).toBe(3); // The old bytes remain stored.
 });
 
 test("an explicitly uploaded note joins the bounded cache after verification", async () => {

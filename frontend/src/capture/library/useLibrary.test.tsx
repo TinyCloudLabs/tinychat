@@ -642,7 +642,9 @@ describe("useLibrary, notes still on this phone", () => {
 
 describe("useLibrary, which audio a note on the phone plays", () => {
   const phoneNote: PendingNote = { id: "rec-play", startedAt: Date.parse("2026-10-06T10:00:00.000Z"), durationMs: 14_000 };
-  async function withLocalAudio(run: (counts: { local: () => number; remote: () => number; fetches: () => number; replace: () => void; offline: () => void }, space: ReturnType<typeof fakeSpace>) => Promise<void>, savedIdentity = false) {
+  async function withLocalAudio(run: (counts: { local: () => number; remote: () => number; fetches: () => number; replace: () => void; failDownload: () => void; offline: () => void }, space: ReturnType<typeof fakeSpace>) => Promise<void>, savedIdentity = false) {
+    const previousIdb = globalThis.indexedDB;
+    globalThis.indexedDB = new IDBFactory() as unknown as IDBFactory;
     const space = fakeSpace();
     let remoteReads = 0;
     let localReads = 0;
@@ -652,6 +654,7 @@ describe("useLibrary, which audio a note on the phone plays", () => {
     globalThis.fetch = (async () => { fetches++; return new Response(null, { status: 0 as never }); }) as unknown as typeof fetch;
     let remoteBytes = new TextEncoder().encode("local bytes");
     let offline = false;
+    let failDownload = false;
     const originalHash = bytesToHex(sha256(remoteBytes));
     space.tcw.kv.get = (async (key: string) => {
       remoteReads++;
@@ -662,7 +665,9 @@ describe("useLibrary, which audio a note on the phone plays", () => {
           partSize: remoteBytes.length, parts: [{ size: remoteBytes.length, sha256: bytesToHex(sha256(remoteBytes)), etag: null }],
           sha256: bytesToHex(sha256(remoteBytes)), createdAt: "2026-10-06T10:00:00Z",
         } } };
-        if (key.endsWith("/p/000000")) return { ok: true, data: { data: remoteBytes } };
+        if (key.endsWith("/p/000000")) return failDownload
+          ? { ok: false, error: { code: "KV_ERROR", message: "download failed" } }
+          : { ok: true, data: { data: remoteBytes } };
       }
       return { ok: false, error: { code: "KV_NOT_FOUND", message: "Upload is not finished" } };
     }) as typeof space.tcw.kv.get;
@@ -677,8 +682,10 @@ describe("useLibrary, which audio a note on the phone plays", () => {
     } as VoiceNotesPlugin, { available: true });
     try {
       await run({ local: () => localReads, remote: () => remoteReads, fetches: () => fetches,
-        replace: () => { remoteBytes = new TextEncoder().encode("newer bytes"); }, offline: () => { offline = true; } }, space);
+        replace: () => { remoteBytes = new TextEncoder().encode("newer bytes"); },
+        failDownload: () => { failDownload = true; }, offline: () => { offline = true; } }, space);
     } finally {
+      globalThis.indexedDB = previousIdb;
       globalThis.fetch = realFetch;
       __setVoiceNotesForTests(original, { available: null });
       URL.revokeObjectURL(localUrl);
@@ -775,6 +782,41 @@ describe("useLibrary, which audio a note on the phone plays", () => {
       counts.offline();
       expect(await playFromSpace(seen.at(-1)!)).toMatch(/^blob:/);
       expect(counts.local()).toBe(1);
+    }, true);
+  });
+
+  test("after seeing a replacement, offline playback refuses the old local file across a new player", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      const base = { tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play", onPhone: [] };
+      await render(base);
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      counts.replace();
+      expect(await (await playFromSpace(seen.at(-1)!))?.text()).toBe("newer bytes");
+      await act(async () => root!.unmount());
+      root = null;
+      await render(base); // Simulate a fresh hook/player while IndexedDB remains.
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      counts.offline();
+      expect(await (await playFromSpace(seen.at(-1)!))?.text()).toBe("newer bytes");
+      expect(counts.local()).toBe(0);
+    }, true);
+  });
+
+  test("a failed replacement download leaves the old local bytes intact but refuses them offline", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play", onPhone: [] });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      counts.replace();
+      counts.failDownload();
+      await expect(playFromSpace(seen.at(-1)!)).rejects.toThrow();
+      counts.offline();
+      await expect(playFromSpace(seen.at(-1)!)).rejects.toThrow("This audio changed; reconnect to play the latest version");
+      expect(counts.local()).toBe(0);
     }, true);
   });
 

@@ -234,6 +234,13 @@ describe("the player in a DOM", () => {
     expect(logged).toHaveBeenCalledWith("[Audio] Could not play", refused);
   });
 
+  test("an outdated offline copy tells the listener to reconnect", async () => {
+    const message = "This audio changed; reconnect to play the latest version";
+    const player = await mount({ load: async () => { throw new Error(message); } });
+    await act(async () => player.q("[data-testid=note-audio-play]").click());
+    expect(player.host.textContent).toContain(message);
+  });
+
   test("a play that a pause or a new source supersedes is not an error", async () => {
     logged = spyOn(console, "error").mockImplementation(() => {});
     const player = await mount({ url: "blob:note", durationSecs: 42 });

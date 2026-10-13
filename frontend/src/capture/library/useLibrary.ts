@@ -44,7 +44,8 @@ import { scheduledSpace } from "@/lib/spaceQueue";
 import { loadNote } from "@/lib/voiceNotes/recordingNotes";
 import { wasDiscarded, type PendingNote } from "@/lib/voiceNotes/recorderSaves";
 import { loadVoiceNoteAudioBlob, voiceNoteAudioKvKey, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
-import { cachedSpaceAudio, cachedSpaceAudioOffline, localPlaybackUrl } from "@/lib/voiceNotes/audioPlaybackCache";
+import { cachedSpaceAudio, cachedSpaceAudioOffline, latestSpaceAudioIdentity, localPlaybackUrl,
+  observeSpaceAudioIdentity } from "@/lib/voiceNotes/audioPlaybackCache";
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { readTranscriptPreviews, voiceNoteTranscriptLocator } from "@/lib/voiceNotes/voiceNoteCommits";
 import { captureEvents } from "../captureEvents";
@@ -448,17 +449,22 @@ export function useLibrary(
             manifest = await getAudioManifest(space.kv, voiceNoteAudioKvKey(voiceSourceId), { signal, retryDelaysMs: [250] });
           } catch (error) {
             if (!isOfflineRead(error) || signal.aborted) throw error;
+            const latest = await latestSpaceAudioIdentity(String(space.spaceId), String(space.did), VOICE_NOTE_SOURCE, voiceSourceId);
             const receipt = localNote?.ledger?.audio.verifiedInSpace;
             if (localNote?.owner === space.did && localNote.ledger?.audio.state === "saved"
-              && receipt && /^[0-9a-f]{64}$/.test(receipt.sha256) && receipt.size > 0) {
+              && receipt && /^[0-9a-f]{64}$/.test(receipt.sha256) && receipt.size > 0
+              && (!latest?.identity || (latest.receipt?.sha256 === receipt.sha256 && latest.receipt.size === receipt.size))) {
               const local = await localPlaybackUrl(voiceSourceId);
               if (local) return local;
             }
             const cached = await cachedSpaceAudioOffline(String(space.spaceId), String(space.did), VOICE_NOTE_SOURCE, voiceSourceId);
             if (cached) return cached;
+            if (latest?.identity) throw new Error("This audio changed; reconnect to play the latest version");
             throw error;
           }
           const identityReceipt = manifest && await manifestReceipt(manifest);
+          if (manifest) await observeSpaceAudioIdentity(String(space.spaceId), String(space.did), VOICE_NOTE_SOURCE,
+            voiceSourceId, manifestIdentity(manifest), identityReceipt);
           if (identityReceipt) {
             const receipt = localNote?.ledger?.audio.verifiedInSpace;
             if (localNote?.owner === space.did && localNote.ledger?.audio.state === "saved"
