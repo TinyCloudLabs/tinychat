@@ -5,19 +5,16 @@ export function splitLongTimedSegment<T extends { start: number; end: number; te
   segment: T, maxDuration: number,
 ): T[] {
   if (segment.end - segment.start <= maxDuration) return [segment];
-  const words = segment.text.trim().split(/\s+/);
-  const count = Math.ceil((segment.end - segment.start) / maxDuration);
-  const byCharacter = words.length < count;
-  const tokens = byCharacter ? Array.from(segment.text) : words;
+  const boundaries = [...segment.text.matchAll(/\s+/g)].map((match) => match.index + match[0].length);
+  const count = Math.min(Math.ceil((segment.end - segment.start) / maxDuration), boundaries.length + 1);
   const pieces: T[] = [];
   for (let i = 0; i < count; i++) {
-    const from = Math.floor(i * tokens.length / count);
-    const to = Math.floor((i + 1) * tokens.length / count);
-    if (from === to) continue;
+    const from = i === 0 ? 0 : boundaries[Math.floor(i * (boundaries.length + 1) / count) - 1]!;
+    const to = i === count - 1 ? segment.text.length : boundaries[Math.floor((i + 1) * (boundaries.length + 1) / count) - 1]!;
     pieces.push({ ...segment,
       start: segment.start + (segment.end - segment.start) * i / count,
       end: segment.start + (segment.end - segment.start) * (i + 1) / count,
-      text: tokens.slice(from, to).join(byCharacter ? "" : " "), timing: "coarse" });
+      text: segment.text.slice(from, to), timing: "coarse" });
   }
   return pieces;
 }

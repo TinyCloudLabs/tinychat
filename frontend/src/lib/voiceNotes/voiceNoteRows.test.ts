@@ -434,6 +434,25 @@ test("a full space leaves the note local with a specific identity state", async 
     expect(silent.preview).toBeNull();
     expect((await voiceNoteTranscriptLocator(tcw, "rec")).outcome).toBe("no_speech");
   });
+  test("upgrade, downgrade, upgrade restores richer same-revision transcript", async () => {
+    const { tcw, sqlite, values } = space();
+    await ensureSchema(tcw); insert(sqlite, "vn-rec", "rec");
+    const rich = [{ index: 0, speaker_name: null, text: "hello", start_time: 0, end_time: 65,
+      channel: 0 as const, speaker_id: "speaker_0", timing: "coarse" as const }];
+    const poor = [{ index: 0, speaker_name: "You", text: "hello", start_time: 0, end_time: 65 }];
+    const upgraded = await commitVoiceNoteTranscript(tcw, "rec", { rev: 1, outcome: "transcribed", text: "hello", sentences: rich });
+    const oldHash = await transcriptHash(poor);
+    const oldKey = transcriptRevKvKey("exo-voice-note", "rec", oldHash);
+    values.set(oldKey, JSON.stringify(poor));
+    // 0.7.1 can still overwrite the SQL pointer with its hash-only same-revision CAS.
+    sqlite.prepare("UPDATE voice_note_transcript SET hash = ?, body_key = ? WHERE source_id = 'rec'").run(oldHash, oldKey);
+    expect((await readTranscriptCommit(tcw, "rec"))?.hash).toBe(oldHash);
+    await commitVoiceNoteTranscript(tcw, "rec", { rev: 1, outcome: "transcribed", text: "hello", sentences: rich });
+    expect((await readTranscriptCommit(tcw, "rec"))?.hash).toBe(upgraded.hash);
+    await commitVoiceNoteTranscript(tcw, "rec", { rev: 1, outcome: "transcribed", text: "hello", sentences: poor });
+    expect((await readTranscriptCommit(tcw, "rec"))?.hash).toBe(upgraded.hash);
+    expect(values.get((await voiceNoteTranscriptLocator(tcw, "rec")).bodyKey)).toContain('"speaker_id":"speaker_0"');
+  });
   test("a delayed old body PUT and a later audio patch cannot change a newer transcript", async () => {
     const { tcw, sqlite, values } = space();
     await ensureSchema(tcw); insert(sqlite, "vn-rec", "rec");

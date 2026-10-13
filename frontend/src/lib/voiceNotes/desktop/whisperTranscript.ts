@@ -21,8 +21,7 @@ export function whisperLocalTranscript(
       timing: "engine" as const,
       ...(note.channels === 2 && (chunk.channel_index[0] === 0 || chunk.channel_index[0] === 1)
         ? { channel: chunk.channel_index[0] as 0 | 1 } : {}) }))
-    .filter((chunk) => chunk.text && chunk.end >= chunk.start)
-    .sort((a, b) => a.start - b.start);
+    .filter((chunk) => chunk.text && chunk.end >= chunk.start);
   const stereoFallback: LocalTranscript["segments"] = note.channels === 2 ? localTranscriptSentences(response)
     .flatMap((sentence) => splitLongTimedSegment({ start: Math.round(sentence.start_time * 1000),
       end: Math.round(sentence.end_time * 1000), text: sentence.text,
@@ -34,6 +33,7 @@ export function whisperLocalTranscript(
     : stereoFallback.length ? stereoFallback : text ? splitLongTimedSegment({ start: words.length ? Math.max(0, Math.round(words[0]!.start * 1000)) : 0,
       end: words.length ? Math.max(0, Math.round(words.at(-1)!.end * 1000)) : note.durationMs,
       text, speaker: null, timing: "coarse" as const }, 30_000) : [];
+  segments.sort((a, b) => a.start - b.start || (a.channel ?? -1) - (b.channel ?? -1) || a.end - b.end);
   if (detail && segments[0]) {
     segments[0].words = words.length ? words.map((word) => ({
       text: word.punctuated_word ?? word.word, start: word.start, end: word.end,

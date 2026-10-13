@@ -36,6 +36,7 @@ import {
   UPLOAD_TTL_MS,
   assemblyAiHostedConfigFromEnv,
   issueHandle,
+  rebuildTranscript,
   rebuildSentences,
   type AssemblyAiHostedConfig,
 } from "../services/assemblyai-hosted.js";
@@ -50,11 +51,20 @@ const TRANSCRIPT_ID = "6ca36708-a9e5-4195-b97c-2dbd098babbf";
 const UPLOAD_URL = "https://cdn.assemblyai.com/upload/synthetic-upload-ref";
 const UPSTREAM_DETAIL = "UPSTREAM-DETAIL account and audio info";
 
-test("sentence reconstruction keeps grounded words and numeric stereo channel", () => {
-  expect(rebuildSentences({ sentences: [{ start: 0, end: 40_000, text: "One. Two.", speaker: "A", channel: 1,
-    words: [{ start: 0, end: 10_000, text: "One." }, { start: 31_000, end: 40_000, text: "Two." }] }] }))
-    .toEqual({ sentences: [{ start: 0, end: 40_000, text: "One. Two.", speaker: "A", channel: 1,
-      words: [{ start: 0, end: 10_000, text: "One." }, { start: 31_000, end: 40_000, text: "Two." }] }] });
+test("provider string channels normalize to zero-based Exo channels", () => {
+  expect(rebuildTranscript({ status: "completed", utterances: [
+    { start: 0, end: 1, text: "Me", speaker: null, channel: "1", confidence: 0.9, words: [] },
+    { start: 0, end: 1, text: "Them", speaker: null, channel: "2", confidence: 0.9, words: [] },
+  ] }, "handle")?.utterances?.map((u) => u.channel)).toEqual([0, 1]);
+  expect(rebuildSentences({ sentences: [
+    { start: 0, end: 40_000, text: "One. Two.", speaker: "A", channel: "1", confidence: 0.9,
+      words: [{ start: 0, end: 10_000, text: "One." }, { start: 31_000, end: 40_000, text: "Two." }] },
+    { start: 10_000, end: 11_000, text: "Yes.", speaker: "B", channel: "2", confidence: 0.9, words: [] },
+  ] })).toEqual({ sentences: [
+    { start: 0, end: 40_000, text: "One. Two.", speaker: "A", channel: 0,
+      words: [{ start: 0, end: 10_000, text: "One." }, { start: 31_000, end: 40_000, text: "Two." }] },
+    { start: 10_000, end: 11_000, text: "Yes.", speaker: "B", channel: 1 },
+  ] });
 });
 const T0 = Date.parse("2026-10-04T12:00:00Z");
 

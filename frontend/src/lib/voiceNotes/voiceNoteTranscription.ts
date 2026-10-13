@@ -392,8 +392,8 @@ export function voiceNoteSentences(transcript: Pick<PrivateCloudTranscript, "seg
           ? `Speaker ${Number(seg.speaker_id.slice(8)) + 1}` : seg.speaker_id)
         : transcript.channels === 2 ? seg.channel === 0 ? "Me" : "Them" : null }))
     .filter((seg) => seg.text.length > 0 && Number.isFinite(seg.start) && Number.isFinite(seg.end))
-    .sort((a, b) => a.start - b.start || a.end - b.end)
-    .flatMap((seg) => splitLongTimedSegment({ ...seg, timing: "engine" as const }, 30));
+    .flatMap((seg) => splitLongTimedSegment({ ...seg, timing: "engine" as const }, 30))
+    .sort((a, b) => a.start - b.start || (a.channel ?? -1) - (b.channel ?? -1) || a.end - b.end);
   return segments.map((turn, index) => ({
     index,
     speaker_name: turn.speaker,

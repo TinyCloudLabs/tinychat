@@ -39,6 +39,18 @@ final class SpeechTranscriptTests: XCTestCase {
         }
     }
 
+    func testSparsePhraseAndLongSilenceDoNotSplitWords() {
+        let one = SpeechTranscript.segments([SpeechPhrase(text: "hello", startSeconds: 0, endSeconds: 65)])
+        XCTAssertEqual(one.count, 1)
+        XCTAssertEqual(one[0]["text"] as? String, "hello")
+        XCTAssertEqual(one[0]["end"] as? Int, 65000)
+        XCTAssertEqual(one[0]["timing"] as? String, "coarse")
+
+        let sparse = SpeechTranscript.segments([SpeechPhrase(text: "hello  world", startSeconds: 0, endSeconds: 65)])
+        XCTAssertEqual(sparse.map { $0["text"] as! String }.joined(), "hello  world")
+        XCTAssertTrue(sparse.allSatisfy { $0["timing"] as? String == "coarse" })
+    }
+
     func testAnEndBeforeItsStartCollapsesToZeroLength() {
         let segments = SpeechTranscript.segments([SpeechPhrase(text: "Hi", startSeconds: 2, endSeconds: 1)])
         XCTAssertEqual(segments[0]["start"] as? Int, 2000)

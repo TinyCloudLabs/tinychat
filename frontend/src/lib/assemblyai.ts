@@ -418,8 +418,8 @@ export function assemblyAiSentences(t: AssemblyAiTranscript, sentences: Assembly
   };
   const rows: AssemblyAiSentence[] = sentences?.length ? sentences.map((s) => ({ ...s,
     speaker: s.speaker ?? null,
-    channel: s.channel ?? t.utterances?.find((u) => u.start <= s.start && u.end >= s.end
-      && (s.speaker == null || u.speaker === s.speaker))?.channel ?? channelOf(s.speaker) }))
+    channel: s.channel ?? (stereo ? t.utterances?.find((u) => u.start <= s.start && u.end >= s.end
+      && (s.speaker == null || u.speaker === s.speaker))?.channel : undefined) ?? channelOf(s.speaker) }))
     : (t.utterances ?? []).map((u) => ({ text: u.text, start: u.start, end: u.end,
       speaker: u.speaker, channel: u.channel ?? channelOf(u.speaker) }));
   const out: FirefliesSentence[] = rows

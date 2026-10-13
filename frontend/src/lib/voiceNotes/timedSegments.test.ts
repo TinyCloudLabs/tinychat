@@ -6,6 +6,7 @@ import type { LocalTranscript } from "./nativeVoiceNotes";
 import { transcriptHash } from "./voiceNoteRows";
 import { localTranscriptToSave } from "./voiceNoteStore";
 import { voiceNoteSentences } from "./voiceNoteTranscription";
+import { splitLongTimedSegment } from "./timedSegments";
 
 function bounded(rows: { start: number; end: number }[], max: number) {
   expect(rows.length).toBeGreaterThan(0);
@@ -18,6 +19,31 @@ function bounded(rows: { start: number; end: number }[], max: number) {
 }
 
 describe("timed engine fixtures", () => {
+  test("sparse speech and long silence keep words intact with coarse timing", () => {
+    const one = splitLongTimedSegment({ start: 0, end: 65, text: "hello", timing: "engine" as const }, 30);
+    expect(one).toMatchObject([{ start: 0, end: 65, text: "hello", timing: "coarse" }]);
+    const sparse = splitLongTimedSegment({ start: 0, end: 65, text: "hello  world", timing: "engine" as const }, 30);
+    expect(sparse.map((s) => s.text).join("")).toBe("hello  world");
+    expect(sparse.map((s) => s.timing)).toEqual(["coarse", "coarse"]);
+  });
+
+  test("overlapping long channels are ordered after splitting", () => {
+    const text = "one two three four five six";
+    const ptx = voiceNoteSentences({ channels: 2, segments: [
+      { start: 0, end: 65, text, channel: 0 }, { start: 10, end: 12, text: "yes", channel: 1 },
+    ] });
+    expect(ptx.map((s) => [s.start_time, s.channel, s.index])).toEqual([
+      [0, 0, 0], [10, 1, 1], [21.666666666666668, 0, 2], [43.333333333333336, 0, 3],
+    ]);
+    const response = { metadata: null, results: { channels: [{ alternatives: [{ transcript: text }] }] } } as BatchResponse;
+    const chunks = [
+      { type: "Results", is_final: true, start: 0, duration: 65, channel_index: [0], channel: { alternatives: [{ transcript: text }] } },
+      { type: "Results", is_final: true, start: 10, duration: 2, channel_index: [1], channel: { alternatives: [{ transcript: "yes" }] } },
+    ] as StreamResponse[];
+    const whisper = whisperLocalTranscript({ id: "n", durationMs: 65_000, channels: 2 }, "QuantizedTinyEn", response, { chunks }).segments;
+    expect(whisper.map((s) => s.channel)).toEqual([0, 1, 0, 0]);
+    expect(whisper.map((s) => s.start)).toEqual([...whisper.map((s) => s.start)].sort((a, b) => a - b));
+  });
   test("Mac Whisper uses VAD chunk bounds for mono and keeps overlapping stereo channels", () => {
     const response = { metadata: null, results: { channels: [{ alternatives: [{ transcript: "Hello. Yes.", confidence: 1 }] }] } } as BatchResponse;
     const chunks = [

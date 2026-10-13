@@ -19,17 +19,19 @@ enum SpeechTranscript {
             let end = max(start, Int((phrase.endSeconds * 1000).rounded()))
             let words = text.split(whereSeparator: \.isWhitespace)
             let needed = max(1, Int(ceil(Double(end - start) / 30_000)))
-            let byCharacter = words.count < needed
-            let tokens = byCharacter ? text.map(String.init) : words.map(String.init)
-            let count = min(tokens.count, needed)
+            let count = min(words.count, needed)
+            let nsText = text as NSString
+            let whitespace = try! NSRegularExpression(pattern: "\\s+")
+            let boundaries = whitespace.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+                .map { NSMaxRange($0.range) }
             return (0..<count).map { index in
-                let from = index * tokens.count / count
-                let to = (index + 1) * tokens.count / count
+                let from = index == 0 ? 0 : boundaries[index * words.count / count - 1]
+                let to = index == count - 1 ? nsText.length : boundaries[(index + 1) * words.count / count - 1]
                 let pieceStart = start + (end - start) * index / count
                 let pieceEnd = start + (end - start) * (index + 1) / count
                 return ["start": pieceStart, "end": pieceEnd,
-                        "text": tokens[from..<to].joined(separator: byCharacter ? "" : " "), "speaker": NSNull(),
-                        "timing": count == 1 ? "engine" : "coarse"]
+                        "text": nsText.substring(with: NSRange(location: from, length: to - from)), "speaker": NSNull(),
+                        "timing": needed == 1 ? "engine" : "coarse"]
             }
         }
     }
