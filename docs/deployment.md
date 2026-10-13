@@ -541,6 +541,10 @@ nothing below may be reported as done on its behalf.
 - **Port:** the container listens on `3001` in production (`PORT=3001` is set in
   the compose/env), matching Listen and the ingress `TARGET_ENDPOINT`. Local dev
   still defaults to `3014`.
+- **No published port (TC-1012):** `docker-compose.phala.yml` does not publish
+  `3001`; only `dstack-ingress` reaches it over the compose network. The deploy
+  workflow fails if `https://<app_id>-3001.<gateway>/health` returns any HTTP
+  status.
 - **CORS:** the backend allows `FRONTEND_URL`, Exo's fixed Tauri origins, the
   TinyChat Cloudflare Pages project (`*.tinychat-4jq.pages.dev`), and the exact
   documented local origins on port `5186`. Production must still set

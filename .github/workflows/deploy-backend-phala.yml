@@ -610,7 +610,7 @@ jobs:
                 echo "- Status: \`running\`"
                 echo "- Last update: \`$UPDATED_AT\`"
                 if [ -n "${RAW_API_URL:-}" ]; then
-                  echo "- Raw gateway API: ${RAW_API_URL}"
+                  echo "- Raw gateway API (must be unreachable, TC-1012): ${RAW_API_URL}"
                 fi
               } >> "$GITHUB_STEP_SUMMARY"
               exit 0
@@ -678,21 +678,21 @@ jobs:
 
           HEALTH_URL="${PRODUCTION_API_URL%/}/health"
           INFO_URL="${PRODUCTION_API_URL%/}/api/server-info"
-          if ! probe_url "health" "$HEALTH_URL"; then
-            if [ -n "${PHALA_RAW_API_URL:-}" ]; then
-              echo "::notice title=Raw Phala gateway diagnostic::Custom domain failed; probing ${PHALA_RAW_API_URL}/health"
-              probe_url "raw gateway health" "${PHALA_RAW_API_URL%/}/health" || true
-            fi
-            exit 1
-          fi
+          probe_url "health" "$HEALTH_URL" || exit 1
+          probe_url "server-info" "$INFO_URL" || exit 1
 
-          if ! probe_url "server-info" "$INFO_URL"; then
-            if [ -n "${PHALA_RAW_API_URL:-}" ]; then
-              echo "::notice title=Raw Phala gateway diagnostic::Custom domain failed; probing ${PHALA_RAW_API_URL}/api/server-info"
-              probe_url "raw gateway server-info" "${PHALA_RAW_API_URL%/}/api/server-info" || true
-            fi
+          # TC-1012: the backend port must be reachable only through dstack-ingress.
+          # Any HTTP status from <app_id>-3001.<gateway> means 3001 is published again.
+          if [ -z "${PHALA_RAW_API_URL:-}" ]; then
+            echo "::error title=TC-1012 raw port check::app_id/gateway domain not resolved; cannot verify port 3001 is unpublished"
             exit 1
           fi
+          RAW_STATUS="$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 "${PHALA_RAW_API_URL%/}/health" 2>/dev/null || true)"
+          if [ "$RAW_STATUS" != "000" ]; then
+            echo "::error title=TC-1012 raw port exposed::${PHALA_RAW_API_URL}/health returned HTTP $RAW_STATUS; backend port 3001 bypasses dstack-ingress"
+            exit 1
+          fi
+          echo "TC-1012: ${PHALA_RAW_API_URL}/health gave no HTTP response (port 3001 not published)."
 
           # /api/agent mounts only when AGENT_DID / ELIZA_SERVICE_URL /
           # ELIZA_SERVICE_SECRET all reach the backend. Mounted → 401

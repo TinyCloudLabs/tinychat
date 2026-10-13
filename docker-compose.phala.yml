@@ -5,8 +5,9 @@ services:
     # Autojoin requires stop-and-drain replacement: never run two backend writers.
     # The HTTP server and scheduler drain together before process exit.
     stop_grace_period: 130s
-    ports:
-      - "3001:3001"
+    # TC-1012: no host `ports:`. Publishing 3001 let the Phala gateway serve the
+    # backend at <app_id>-3001.<gateway>, bypassing dstack-ingress. The ingress
+    # reaches it over the compose network (TARGET_ENDPOINT below).
     environment:
       NODE_ENV: production
       PORT: "3001"
