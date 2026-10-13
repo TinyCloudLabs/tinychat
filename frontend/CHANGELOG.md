@@ -1,5 +1,31 @@
 # @tinychat/frontend
 
+## 0.7.1
+
+### Patch Changes
+
+- 79a072f: Voice notes now persist transcription outcomes and keep unsent or failed notes retryable in the Library.
+- 1c5e68b: Publish TinyChat retrieval pack 0.1.1-onboarding.21 with metadata-only backend-pending coverage.
+- 1d60115: Update the TinyCloud SDK family to 3.2.1 for the sign-in wait and repeat-login re-bootstrap fixes (TC-998, TC-999).
+
+## 0.7.1-beta.2
+
+### Patch Changes
+
+- 1c5e68b: Publish TinyChat retrieval pack 0.1.1-onboarding.21 with metadata-only backend-pending coverage.
+
+## 0.7.1-beta.1
+
+### Patch Changes
+
+- 1d60115: Update the TinyCloud SDK family to 3.2.1 for the sign-in wait and repeat-login re-bootstrap fixes (TC-998, TC-999).
+
+## 0.7.1-beta.0
+
+### Patch Changes
+
+- 79a072f: Voice notes now persist transcription outcomes and keep unsent or failed notes retryable in the Library.
+
 ## 0.7.0
 
 ### Minor Changes

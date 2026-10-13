@@ -203,6 +203,29 @@ describe("useLibrary, mounted", () => {
     expect(space.most()).toBe(1);
   });
 
+  async function expectRowOutcome(outcome: "failed" | "skipped") {
+    const space = fakeSpace();
+    const seen: Library[] = [];
+    await render({ tcw: space.tcw, visible: true, noteId: "a", now: () => 0, seen });
+    await space.answer("list", listedVoice("a"));
+    await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({
+      transcription_outcome: outcome,
+      ...(outcome === "failed" ? { transcription_error_code: "service_busy" } : {}),
+    })]] } });
+    expect(seen.at(-1)!.note.reads.metadata).toMatchObject({
+      status: "ok",
+      metadata: { transcription_outcome: outcome },
+    });
+  }
+
+  test("the Library retains the row's failed outcome when no transcript commit exists", async () => {
+    await expectRowOutcome("failed");
+  });
+
+  test("the Library retains the row's skipped outcome when no transcript commit exists", async () => {
+    await expectRowOutcome("skipped");
+  });
+
   test("a matching save during an in-flight note read rechecks it after a failed list read", async () => {
     const space = fakeSpace();
     const seen: Library[] = [];

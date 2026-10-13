@@ -85,6 +85,6 @@ else if(args.includes('get')) { fs.writeFileSync(args[args.indexOf('--output')+1
     } while (true);
     expect(output).toBe(JSON.parse(rawBody)); expect(pages).toBeGreaterThan(1); expect(remoteBytes).toBe(Buffer.byteLength(rawBody));
     const calls = (await readFile(receipt, 'utf8')).trim().split('\n').map(line => JSON.parse(line).args);
-    expect(calls.filter(args => args.includes('get'))).toHaveLength(2); expect(calls.filter(args => args.includes('status'))).toHaveLength(3);
+    expect(calls.filter(args => args.includes('get') && !args[args.indexOf('get') + 1].includes('/pending-reconcile-snapshot/'))).toHaveLength(2); expect(calls.filter(args => args.includes('status'))).toHaveLength(3);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

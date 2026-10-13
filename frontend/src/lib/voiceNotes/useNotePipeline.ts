@@ -261,7 +261,8 @@ export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineIn
   const desktopLocal = facts.device === "mac" && (facts.desktopJob != null || desktopCommittedLocal(facts.rowMetadata));
   const route = desktopLocal ? "on-device" : pipelineRoute(facts.native, facts.cloudJob !== null,
     facts.onDeviceStatus === null ? null : onDeviceQueuePlace(facts.onDeviceStatus, facts.id));
-  const rowOutcome = facts.rowMetadata === null ? "none" : voiceNoteTranscriptState(facts.rowMetadata).status;
+  const rowState = facts.rowMetadata === null ? "none" : voiceNoteTranscriptState(facts.rowMetadata).status;
+  const rowOutcome = rowState === "transcribed" || rowState === "no_speech" ? rowState : "none";
   // The ledger's own record that the transcript reached the space is durable evidence too (a receipt has no library row read).
   const ledgerOutcome = facts.native?.transcriptSync?.state === "saved" ? facts.native.transcriptOutcome ?? "none" : "none";
   const outcome = rowOutcome !== "none" ? rowOutcome : ledgerOutcome;
@@ -559,10 +560,14 @@ async function readSpaceRows(tcw: TinyCloudWeb, ids: readonly string[]): Promise
     withVoiceNoteReadDeadline(`read the transcript commits of ${ids.length} notes`, () => readTranscriptCommits(tcw, ids)),
   ]);
   return new Map(ids.map((id): [string, RowRead] => {
-    const row = rows.get(id)?.row ?? null;
+    const resolved = rows.get(id);
+    const row = resolved?.row ?? null;
+    const legacy = resolved?.legacy ?? null;
     const commit = commits.get(id) ?? null;
-    const transcript = commit ? voiceNoteTranscriptState(null, commit) : voiceNoteTranscriptState(legacyTranscriptMetadata(rows.get(id)?.legacy ?? null));
-    return [id, { metadata: row === null ? null : transcript.status === "none" ? row.metadata : { ...row.metadata, transcription_outcome: transcript.status } }];
+    const transcript = commit ? voiceNoteTranscriptState(null, commit) : voiceNoteTranscriptState(legacyTranscriptMetadata(legacy));
+    const committed = commit !== null || legacy !== null;
+    return [id, { metadata: row === null ? null : committed
+      ? { ...row.metadata, transcription_outcome: transcript.status } : row.metadata }];
   }));
 }
 

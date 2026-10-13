@@ -43,10 +43,11 @@ export function schedulePendingVoiceNotesRecovery(): void {
 function installOnDeviceTranscriptSync(tcw: TinyCloudWeb, pipeline: VoiceNotePipeline): () => void {
   let disposed = false;
   const accountWorkAllowed = () => pipeline.isAccepting?.() ?? true;
-  const handle = OnDeviceStt.addListener("transcribed", ({ id }) => {
+  const sync = (event: { id: string }, eventType: "transcribed" | "failed") => {
+    const { id } = event;
     if (disposed) return;
     if (!accountWorkAllowed()) {
-      console.info(`[OnDeviceStt] Dropped transcribed event id=${id}: account work paused`);
+      console.info(`[OnDeviceStt] Dropped ${eventType} event id=${id}: account work paused`);
       return;
     }
     const account = captureAccountContext(tcw);
@@ -54,17 +55,20 @@ function installOnDeviceTranscriptSync(tcw: TinyCloudWeb, pipeline: VoiceNotePip
       .then(({ recordings }) => {
         if (disposed) return;
         if (!accountWorkAllowed() || !isAccountContextCurrent(account, tcw)) {
-          console.info(`[OnDeviceStt] Dropped transcribed event id=${id}: account changed or work paused during phone read`);
+          console.info(`[OnDeviceStt] Dropped ${eventType} event id=${id}: account changed or work paused during phone read`);
           return;
         }
         const recording = recordings.find((note) => note.id === id);
         if (recording) return syncOnDeviceTranscript(tcw, recording, account);
       })
       .catch((err: unknown) => console.warn("[OnDeviceStt] Could not sync a finished transcription", err));
-  });
+  };
+  const transcribed = OnDeviceStt.addListener("transcribed", (event) => sync(event, "transcribed"));
+  const failed = OnDeviceStt.addListener("failed", (event) => sync(event, "failed"));
   return () => {
     disposed = true;
-    void handle.then((h) => h.remove());
+    void transcribed.then((handle) => handle.remove());
+    void failed.then((handle) => handle.remove());
   };
 }
 
@@ -107,7 +111,8 @@ export function PendingVoiceNotesSaver({
       }).catch((error: unknown) => console.warn("[desktopWhisper] Could not sync transcript", error));
     };
     const unsubscribe = queue.onDone(sync);
-    return () => { disposed = true; unsubscribe(); };
+    const unsubscribeFailed = queue.onFailed(sync);
+    return () => { disposed = true; unsubscribe(); unsubscribeFailed(); };
   }, [pipeline, tcw]);
 
   useEffect(() => {

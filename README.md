@@ -117,6 +117,18 @@ if the browser shows a TLS warning page; WebAuthn is not supported on sites
 with TLS certificate errors. Do not commit `.auth/`, browser traces,
 screenshots, videos, or reports from real-auth runs.
 
+## Voice-note backfill dry run
+
+Run `node scripts/voice-note-backfill-dry-run.mjs --help` for the read-only CLI
+options. Defaults are 7,200 seconds and 120,960,000 bytes; no apply mode exists.
+
+The planner assumes PTX accepts these six audio MIME types raw: `audio/mpeg`,
+`audio/wav`, `audio/ogg`, `audio/mp4`, `audio/webm`, and `audio/flac`. It does
+not query PTX's runtime `content_types`. If PTX advertises fewer types, the app
+may decode a type the planner estimates as raw into 16 kHz mono WAV. The
+planner's estimate can then understate the upload size (32,000 bytes/second ×
+duration + 44 bytes) and miss the PTX byte cap.
+
 ## Releases
 
 Versions and changelogs are managed with [Changesets](https://changesets.dev)

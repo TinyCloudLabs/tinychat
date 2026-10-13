@@ -9,10 +9,14 @@ import { resetSpaceLaneForTests, runOnSpaceLane } from "../spaceWriteLane";
 
 type SaveResult = { ok: true; data: unknown } | { ok: false; error: { code: string; message: string } };
 let save: (saved: { rev: number }, checkpoint?: () => void) => Promise<SaveResult> = async () => ({ ok: true, data: {} });
+let failures: string[] = [];
 const realStore = { ...(await import("./voiceNoteStore")) };
 mock.module("./voiceNoteStore", () => ({ ...realStore,
-  saveVoiceNoteTranscript: (_tcw: unknown, _id: string, saved: { rev: number }, _account?: unknown, checkpoint?: () => void) => save(saved, checkpoint) }));
-afterAll(() => mock.module("./voiceNoteStore", () => realStore));
+  saveVoiceNoteTranscript: (_tcw: unknown, _id: string, saved: { rev: number }, _account?: unknown, checkpoint?: () => void) => save(saved, checkpoint),
+  patchVoiceNoteTranscriptionFailure: async (_tcw: unknown, _id: string, code: string, checkpoint?: () => void) => {
+    checkpoint?.();
+    failures.push(code);
+  } }));
 const { onDeviceTranscriptSyncState, recordOnDeviceTranscript, subscribeOnDeviceTranscriptSync, syncOnDeviceTranscript } = await import("./onDeviceTranscriber");
 
 const SAVED = { id: "rec-1", ledger: { audio: { state: "saved" } } };
@@ -34,6 +38,7 @@ const warn = console.warn;
 const realPlugin = VoiceNotes;
 
 beforeEach(() => {
+  failures = [];
   save = async () => ({ ok: true, data: {} });
   pendingOwner = undefined;
   getTranscript = async () => ({ transcript });
@@ -56,6 +61,10 @@ afterEach(() => {
   console.warn = warn;
   __setVoiceNotesForTests(realPlugin, { available: null });
 });
+afterAll(() => {
+  mock.restore();
+  mock.module("./voiceNoteStore", () => realStore);
+});
 
 describe("syncOnDeviceTranscript publishes the result", () => {
   test("writes as soon as the row exists, while its audio manifest is still pending", async () => {
@@ -70,6 +79,27 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     expect(phone.ledger.audio).toEqual({ state: "pending", rowId: "vn-rec-1" });
   });
 
+  test("syncs a local transcript before persisting a failed native event", async () => {
+    const tcw = account();
+    let saves = 0;
+    save = async () => { saves++; return { ok: true, data: {} }; };
+    await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "failed" } });
+    expect(saves).toBe(1);
+    expect(failures).toEqual([]);
+    expect(ledgerWrites[0]?.patch).toHaveProperty("transcriptSync.state", "saved");
+  });
+
+  test("persists done-without-transcript, read, and save failures", async () => {
+    const tcw = account();
+    getTranscript = async () => ({ transcript: null });
+    await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
+    getTranscript = async () => { throw new Error("offline"); };
+    await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
+    getTranscript = async () => ({ transcript });
+    save = async () => ({ ok: false, error: { code: "SQL", message: "offline" } });
+    await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
+    expect(failures).toEqual(["on_device_transcript_missing", "transcript_read_failed", "transcript_save_failed"]);
+  });
   test("audio-first and transcript-first completion retain both ledger results", async () => {
     for (const audioFirst of [false, true]) {
       const tcw = account();

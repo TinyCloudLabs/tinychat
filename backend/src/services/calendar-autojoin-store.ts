@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { assertKvResult, isKvMissingKeyResult, withSessionRefresh } from "@tinyboilerplate/server";
-import { BackendStorageLane } from "./backend-storage-lane.js";
+import { BackendStorageLane, BackendStorageLaneTimeout, type BackendStorageLaneRunOptions } from "./backend-storage-lane.js";
 import { normalizeGoogleMeetUrl } from "./google-calendar.js";
 import type { CreateMeetingInput } from "./transcription-api.js";
 
@@ -81,15 +81,16 @@ export interface CalendarSentMarker {
   disposition: string;
 }
 type Update<T> = (current: T | null) => T | null;
+/** Reads that take `deadline` (epoch ms) reject once it passes instead of queueing further. */
 export interface CalendarAutojoinStore {
-  getConnection(tenant: string): Promise<CalendarConnection | null>;
+  getConnection(tenant: string, deadline?: number): Promise<CalendarConnection | null>;
   putConnection(row: CalendarConnection): Promise<void>;
   updateConnection(tenant: string, update: Update<CalendarConnection>): Promise<CalendarConnection | null>;
   listConnections(): Promise<CalendarConnection[]>;
   getOccurrence(tenant: string, id: string): Promise<CalendarOccurrence | null>;
   putOccurrence(row: CalendarOccurrence): Promise<void>;
   updateOccurrence(tenant: string, id: string, update: Update<CalendarOccurrence>): Promise<CalendarOccurrence | null>;
-  listOccurrences(tenant: string): Promise<CalendarOccurrence[]>;
+  listOccurrences(tenant: string, deadline?: number): Promise<CalendarOccurrence[]>;
   deleteOccurrence(tenant: string, id: string): Promise<void>;
   getMarker(tenant: string, id: string): Promise<CalendarSentMarker | null>;
   putMarker(row: CalendarSentMarker): Promise<void>;
@@ -128,20 +129,24 @@ const captureKey = (meetingUrl: string) =>
 const CLAIM_RETENTION_MS = 86_400_000;
 
 class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
-  constructor(private readonly json: JsonStore, private readonly lane: BackendStorageLane) {}
-  getConnection(tenant: string) { return this.lane.run(() => this.json.get<CalendarConnection>(connectionKey(tenant))); }
-  putConnection(row: CalendarConnection) { return this.lane.run(() => this.json.put(connectionKey(row.tenant), row)); }
+  constructor(
+    private readonly json: JsonStore,
+    private readonly lane: BackendStorageLane,
+    private readonly laneOptions: BackendStorageLaneRunOptions = {},
+  ) {}
+  getConnection(tenant: string, deadline?: number) { return this.run(() => this.json.get<CalendarConnection>(connectionKey(tenant)), deadline); }
+  putConnection(row: CalendarConnection) { return this.run(() => this.json.put(connectionKey(row.tenant), row)); }
   updateConnection(tenant: string, fn: Update<CalendarConnection>) { return this.update(connectionKey(tenant), fn); }
   listConnections() { return this.list<CalendarConnection>(`${PREFIX}connections/`); }
-  getOccurrence(tenant: string, id: string) { return this.lane.run(() => this.json.get<CalendarOccurrence>(occurrencePrefix(tenant) + id)); }
-  putOccurrence(row: CalendarOccurrence) { return this.lane.run(() => this.json.put(occurrencePrefix(row.tenant) + row.id, row)); }
+  getOccurrence(tenant: string, id: string) { return this.run(() => this.json.get<CalendarOccurrence>(occurrencePrefix(tenant) + id)); }
+  putOccurrence(row: CalendarOccurrence) { return this.run(() => this.json.put(occurrencePrefix(row.tenant) + row.id, row)); }
   updateOccurrence(tenant: string, id: string, fn: Update<CalendarOccurrence>) { return this.update(occurrencePrefix(tenant) + id, fn); }
-  listOccurrences(tenant: string) { return this.list<CalendarOccurrence>(occurrencePrefix(tenant)); }
-  deleteOccurrence(tenant: string, id: string) { return this.lane.run(() => this.json.remove(occurrencePrefix(tenant) + id)); }
-  getMarker(tenant: string, id: string) { return this.lane.run(() => this.json.get<CalendarSentMarker>(markerKey(tenant, id))); }
-  putMarker(row: CalendarSentMarker) { return this.lane.run(() => this.json.put(markerKey(row.tenant, row.id), row)); }
+  listOccurrences(tenant: string, deadline?: number) { return this.list<CalendarOccurrence>(occurrencePrefix(tenant), deadline); }
+  deleteOccurrence(tenant: string, id: string) { return this.run(() => this.json.remove(occurrencePrefix(tenant) + id)); }
+  getMarker(tenant: string, id: string) { return this.run(() => this.json.get<CalendarSentMarker>(markerKey(tenant, id))); }
+  putMarker(row: CalendarSentMarker) { return this.run(() => this.json.put(markerKey(row.tenant, row.id), row)); }
   async getCaptureClaims(meetingUrl: string) {
-    return (await this.lane.run(() => this.json.get<{ claims?: CaptureClaim[] }>(captureKey(meetingUrl))))?.claims ?? [];
+    return (await this.run(() => this.json.get<{ claims?: CaptureClaim[] }>(captureKey(meetingUrl))))?.claims ?? [];
   }
   async updateCaptureClaims(meetingUrl: string, fn: (claims: CaptureClaim[]) => CaptureClaim[], now = Date.now()) {
     const doc = await this.update<{ claims: CaptureClaim[] }>(captureKey(meetingUrl), current => ({
@@ -149,22 +154,37 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
     }));
     return doc!.claims;
   }
+  /** With a deadline, or the store's wait budget, a read only waits for the time remaining. */
+  private run<T>(fn: () => Promise<T>, deadline = this.defaultDeadline()): Promise<T> {
+    if (deadline === undefined) return this.lane.run(fn, this.laneOptions);
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return Promise.reject(new BackendStorageLaneTimeout("request deadline passed before the next lane read"));
+    return this.lane.run(fn, { ...this.laneOptions, waitTimeoutMs: remaining });
+  }
+  private defaultDeadline(): number | undefined {
+    const budget = this.laneOptions.waitTimeoutMs;
+    return budget === undefined ? undefined : Date.now() + budget;
+  }
   private update<T>(key: string, fn: Update<T>): Promise<T | null> {
-    return this.lane.run(async () => {
+    return this.run(async () => {
       const next = fn(await this.json.get<T>(key));
       if (next !== null) await this.json.put(key, next);
       return next;
     });
   }
-  private list<T>(prefix: string): Promise<T[]> {
-    return this.lane.run(async () => {
-      const rows: T[] = [];
-      for (const key of await this.json.keys(prefix)) {
-        const row = await this.json.get<T>(key);
-        if (row) rows.push(row);
-      }
-      return rows;
-    });
+  /** One lane slot per key, so other lane users interleave with a long listing. A key removed
+   * between the listing and its read is skipped. An explicit deadline covers the whole listing
+   * (getStatus). Without one, each slot gets the store's wait budget on its own, like any single
+   * read: write flows that list inside them (disableLocked) must not fail partway on a tenant with
+   * many rows. */
+  private async list<T>(prefix: string, deadline?: number): Promise<T[]> {
+    const keys = await this.run(() => this.json.keys(prefix), deadline);
+    const rows: T[] = [];
+    for (const key of keys) {
+      const row = await this.run(() => this.json.get<T>(key), deadline);
+      if (row) rows.push(row);
+    }
+    return rows;
   }
 }
 
@@ -181,7 +201,7 @@ export class MemoryCalendarAutojoinStore extends JsonCalendarAutojoinStore {
 }
 
 export class KvCalendarAutojoinStore extends JsonCalendarAutojoinStore {
-  constructor(node: TinyCloudNode, lane: BackendStorageLane) {
+  constructor(node: TinyCloudNode, lane: BackendStorageLane, laneOptions: BackendStorageLaneRunOptions = {}) {
     super({
       async get<T>(key: string) {
         const result = await withSessionRefresh(node, async () => {
@@ -209,6 +229,6 @@ export class KvCalendarAutojoinStore extends JsonCalendarAutojoinStore {
         }
         return data.keys.map(key => key.startsWith(prefix) ? key : `${prefix}${key}`);
       },
-    }, lane);
+    }, lane, laneOptions);
   }
 }

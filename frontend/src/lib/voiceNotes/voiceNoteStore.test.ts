@@ -597,7 +597,7 @@ describe("listVoiceNotes", () => {
         title: "Voice note",
         startedAt: "2026-09-29T05:40:00.000Z",
         durationSecs: 12,
-        transcript: { status: "none", preview: null },
+        transcript: { status: "pending", preview: null },
       }],
     });
     const list = calls.find((c) => c.kind === "sql.query" && String(c.params[0]).includes("SELECT id, source_id"));
@@ -610,14 +610,16 @@ describe("listVoiceNotes", () => {
       const res = await listVoiceNotes(fakeSpace({ rows: [row(metadata)] }).tcw);
       return res.ok ? res.data[0]!.transcript : null;
     };
-    expect(await state(JSON.stringify({ audio_kv_key: "k" }))).toEqual({ status: "none", preview: null });
+    expect(await state(JSON.stringify({ audio_kv_key: "k" }))).toEqual({ status: "pending", preview: null });
     expect(await state(JSON.stringify({ transcription_outcome: "transcribed", transcript_text: "Book the venue.\nSend the budget." }))).toEqual({
       status: "transcribed",
       preview: "Book the venue.\nSend the budget.",
     });
     expect(await state(JSON.stringify({ transcription_outcome: "no_speech", transcript_text: null }))).toEqual({ status: "no_speech", preview: null });
-    expect(await state("not json")).toEqual({ status: "none", preview: null });
-    expect(await state(null)).toEqual({ status: "none", preview: null });
+    expect(await state(JSON.stringify({ transcription_outcome: "failed", transcription_error_code: "recording_too_large" }))).toEqual({ status: "failed", preview: null });
+    expect(await state(JSON.stringify({ transcription_outcome: "skipped" }))).toEqual({ status: "skipped", preview: null });
+    expect(await state("not json")).toEqual({ status: "pending", preview: null });
+    expect(await state(null)).toEqual({ status: "pending", preview: null });
     const long = await state(JSON.stringify({ transcription_outcome: "transcribed", transcript_text: "word ".repeat(200) }));
     expect(long!.status).toBe("transcribed");
     expect(long!.preview!.length).toBeLessThanOrEqual(281);
