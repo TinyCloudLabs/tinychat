@@ -3,15 +3,21 @@ import { bytesToHex } from "@noble/hashes/utils";
 
 type Operation = "start" | "update" | "finish" | "digest";
 let worker: Worker | null = null;
+let workerUnavailable = false;
 let nextId = 0;
 const pending = new Map<number, { resolve: (hash: string | undefined) => void; reject: (error: Error) => void }>();
 
 function hashWorker(): Worker | null {
-  // Bun runs storage tests without a DOM. Production webviews always use the worker.
+  // Some webviews expose a DOM but cannot construct or start module workers.
   if (typeof window === "undefined" || typeof document === "undefined"
-    || "Bun" in globalThis) return null;
+    || "Bun" in globalThis || typeof Worker === "undefined" || workerUnavailable) return null;
   if (!worker) {
-    worker = new Worker(new URL("./audioHash.worker.ts", import.meta.url), { type: "module" });
+    try {
+      worker = new Worker(new URL("./audioHash.worker.ts", import.meta.url), { type: "module" });
+    } catch {
+      workerUnavailable = true;
+      return null;
+    }
     worker.onmessage = (event: MessageEvent<{ request: number; hash?: string; error?: string }>) => {
       const job = pending.get(event.data.request);
       if (!job) return;
@@ -20,7 +26,8 @@ function hashWorker(): Worker | null {
       else job.resolve(event.data.hash);
     };
     worker.onerror = (event) => {
-      for (const job of pending.values()) job.reject(new Error(event.message));
+      workerUnavailable = true;
+      for (const job of pending.values()) job.reject(new Error(event.message || "Audio hash worker failed to start"));
       pending.clear();
       worker?.terminate();
       worker = null;
@@ -35,22 +42,32 @@ function send(op: Operation, stream: number, bytes?: Uint8Array): Promise<string
   const request = ++nextId;
   return new Promise((resolve, reject) => {
     pending.set(request, { resolve, reject });
-    target.postMessage({ request, stream, op, bytes });
+    try { target.postMessage({ request, stream, op, bytes }); }
+    catch (error) {
+      for (const job of pending.values()) job.reject(error instanceof Error ? error : new Error(String(error)));
+      pending.clear();
+      target.terminate();
+      worker = null;
+      workerUnavailable = true;
+    }
   });
 }
 
 export async function hashAudioBytes(bytes: Uint8Array): Promise<string> {
   if (!hashWorker()) return bytesToHex(sha256(bytes));
-  return (await send("digest", 0, bytes))!;
+  try { return (await send("digest", 0, bytes))!; }
+  catch { return bytesToHex(sha256(bytes)); }
 }
 
 export async function audioHasher(): Promise<{ update(bytes: Uint8Array): Promise<void>; digest(): Promise<string> }> {
-  if (!hashWorker()) {
+  const mainThreadHasher = () => {
     const hash = sha256.create();
-    return { update: async (bytes) => { hash.update(bytes); }, digest: async () => bytesToHex(hash.digest()) };
-  }
+    return { update: async (bytes: Uint8Array) => { hash.update(bytes); }, digest: async () => bytesToHex(hash.digest()) };
+  };
+  if (!hashWorker()) return mainThreadHasher();
   const stream = ++nextId;
-  await send("start", stream);
+  try { await send("start", stream); }
+  catch { return mainThreadHasher(); }
   return {
     update: async (bytes) => { await send("update", stream, bytes); },
     digest: async () => (await send("finish", stream))!,

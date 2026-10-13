@@ -642,7 +642,7 @@ describe("useLibrary, notes still on this phone", () => {
 
 describe("useLibrary, which audio a note on the phone plays", () => {
   const phoneNote: PendingNote = { id: "rec-play", startedAt: Date.parse("2026-10-06T10:00:00.000Z"), durationMs: 14_000 };
-  async function withLocalAudio(run: (counts: { local: () => number; remote: () => number; fetches: () => number; replace: () => void }, space: ReturnType<typeof fakeSpace>) => Promise<void>, savedIdentity = false) {
+  async function withLocalAudio(run: (counts: { local: () => number; remote: () => number; fetches: () => number; replace: () => void; offline: () => void }, space: ReturnType<typeof fakeSpace>) => Promise<void>, savedIdentity = false) {
     const space = fakeSpace();
     let remoteReads = 0;
     let localReads = 0;
@@ -651,9 +651,11 @@ describe("useLibrary, which audio a note on the phone plays", () => {
     // The WKWebView scheme handler answers a fetch of a local file with status 0; nothing here may fetch it.
     globalThis.fetch = (async () => { fetches++; return new Response(null, { status: 0 as never }); }) as unknown as typeof fetch;
     let remoteBytes = new TextEncoder().encode("local bytes");
+    let offline = false;
     const originalHash = bytesToHex(sha256(remoteBytes));
     space.tcw.kv.get = (async (key: string) => {
       remoteReads++;
+      if (offline) return { ok: false, error: { code: "NETWORK_ERROR", message: "offline" } };
       if (savedIdentity) {
         if (key.endsWith("/manifest")) return { ok: true, data: { data: {
           v: 1, mimeType: "audio/mp4", fileName: "audio.mp4", size: remoteBytes.length,
@@ -675,7 +677,7 @@ describe("useLibrary, which audio a note on the phone plays", () => {
     } as VoiceNotesPlugin, { available: true });
     try {
       await run({ local: () => localReads, remote: () => remoteReads, fetches: () => fetches,
-        replace: () => { remoteBytes = new TextEncoder().encode("newer bytes"); } }, space);
+        replace: () => { remoteBytes = new TextEncoder().encode("newer bytes"); }, offline: () => { offline = true; } }, space);
     } finally {
       globalThis.fetch = realFetch;
       __setVoiceNotesForTests(original, { available: null });
@@ -764,6 +766,18 @@ describe("useLibrary, which audio a note on the phone plays", () => {
     }, true);
   });
 
+  test("offline saved note plays its last verified local copy", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play", onPhone: [] });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      counts.offline();
+      expect(await playFromSpace(seen.at(-1)!)).toMatch(/^blob:/);
+      expect(counts.local()).toBe(1);
+    }, true);
+  });
+
   test("an old row without device audio reads its space copy", async () => {
     const previousIdb = globalThis.indexedDB;
     globalThis.indexedDB = new IDBFactory() as unknown as IDBFactory;
@@ -794,7 +808,9 @@ describe("useLibrary, which audio a note on the phone plays", () => {
     const space = fakeSpace();
     let audioReads = 0;
     let revision = 1;
+    let offline = false;
     space.tcw.kv.get = (async (key: string) => {
+      if (offline) return { ok: false, error: { code: "TIMEOUT", message: "timed out" } };
       if (key.endsWith("/manifest")) {
         audioReads++;
         return { ok: true, data: { data: JSON.stringify({ v: 1, mimeType: "audio/mp4", fileName: "note.m4a",
@@ -814,6 +830,9 @@ describe("useLibrary, which audio a note on the phone plays", () => {
       expect((await playFromSpace(seen.at(-1)!))?.size).toBe(4);
       expect((await playFromSpace(seen.at(-1)!))?.size).toBe(4);
       expect(audioReads).toBe(5); // manifest checked before and after download; bytes downloaded once
+      offline = true;
+      expect((await playFromSpace(seen.at(-1)!))?.size).toBe(4);
+      offline = false;
       revision = 2;
       const replaced = await playFromSpace(seen.at(-1)!);
       expect(replaced instanceof Blob ? [...new Uint8Array(await replaced.arrayBuffer())] : null).toEqual([2, 2, 3, 4]);

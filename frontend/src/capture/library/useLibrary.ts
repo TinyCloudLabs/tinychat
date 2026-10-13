@@ -44,7 +44,7 @@ import { scheduledSpace } from "@/lib/spaceQueue";
 import { loadNote } from "@/lib/voiceNotes/recordingNotes";
 import { wasDiscarded, type PendingNote } from "@/lib/voiceNotes/recorderSaves";
 import { loadVoiceNoteAudioBlob, voiceNoteAudioKvKey, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
-import { cachedSpaceAudio, localPlaybackUrl } from "@/lib/voiceNotes/audioPlaybackCache";
+import { cachedSpaceAudio, cachedSpaceAudioOffline, localPlaybackUrl } from "@/lib/voiceNotes/audioPlaybackCache";
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { readTranscriptPreviews, voiceNoteTranscriptLocator } from "@/lib/voiceNotes/voiceNoteCommits";
 import { captureEvents } from "../captureEvents";
@@ -63,6 +63,12 @@ const manifestIdentity = (manifest: StoredAudioManifest) => JSON.stringify([
   manifest.sha256, manifest.createdAt, manifest.size,
   manifest.parts.map((part) => [part.size, part.sha256]),
 ]);
+
+const isOfflineRead = (error: unknown) => {
+  const code = (error as { code?: string })?.code ?? "";
+  return /(?:NETWORK|OFFLINE|TIMEOUT|TIMED_OUT|FETCH_FAILED)/i.test(code)
+    || (error instanceof TypeError && /fetch|network/i.test(error.message));
+};
 
 export interface Library {
   status: LibraryStatus;
@@ -437,7 +443,21 @@ export function useLibrary(
             const local = await localPlaybackUrl(voiceSourceId);
             if (local) return local;
           }
-          const manifest = await getAudioManifest(space.kv, voiceNoteAudioKvKey(voiceSourceId), { signal });
+          let manifest: StoredAudioManifest | null;
+          try {
+            manifest = await getAudioManifest(space.kv, voiceNoteAudioKvKey(voiceSourceId), { signal, retryDelaysMs: [250] });
+          } catch (error) {
+            if (!isOfflineRead(error) || signal.aborted) throw error;
+            const receipt = localNote?.ledger?.audio.verifiedInSpace;
+            if (localNote?.owner === space.did && localNote.ledger?.audio.state === "saved"
+              && receipt && /^[0-9a-f]{64}$/.test(receipt.sha256) && receipt.size > 0) {
+              const local = await localPlaybackUrl(voiceSourceId);
+              if (local) return local;
+            }
+            const cached = await cachedSpaceAudioOffline(String(space.spaceId), String(space.did), VOICE_NOTE_SOURCE, voiceSourceId);
+            if (cached) return cached;
+            throw error;
+          }
           const identityReceipt = manifest && await manifestReceipt(manifest);
           if (identityReceipt) {
             const receipt = localNote?.ledger?.audio.verifiedInSpace;

@@ -8,7 +8,24 @@ import { trimCachedAudio } from "./audioPlaybackCache";
 
 let account: TinyCloudWeb | null = null;
 const running = new WeakMap<TinyCloudWeb, Promise<void>>();
+const completed = new Map<string, number>();
+const PASS_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 const accountListeners = new Set<() => void>();
+
+function passKey(tcw: TinyCloudWeb): string {
+  return `exo-audio-receipt-pass:${tcw.did}:${tcw.spaceId}`;
+}
+
+function lastCompleted(key: string): number {
+  if (completed.has(key)) return completed.get(key)!;
+  try { return Number(localStorage.getItem(key)) || 0; } catch { return 0; }
+}
+
+function markCompleted(key: string): void {
+  const now = Date.now();
+  completed.set(key, now);
+  try { localStorage.setItem(key, String(now)); } catch { /* Storage can be disabled in a webview. */ }
+}
 
 export function setAudioCacheAccount(tcw: TinyCloudWeb | null): void {
   if (account === tcw) return;
@@ -64,10 +81,12 @@ export async function upgradeSavedAudioReceipt(tcw: TinyCloudWeb, note: VoiceNot
 }
 
 /** Shared boot and Settings pass. Sequential space reads and a yield every few files keep it quiet. */
-export function reconcileAudioCache(tcw: TinyCloudWeb | null = account): Promise<void> {
+export function reconcileAudioCache(tcw: TinyCloudWeb | null = account, force = false): Promise<void> {
   if (!tcw) return Promise.resolve();
   const existing = running.get(tcw);
   if (existing) return existing;
+  const key = passKey(tcw);
+  if (!force && Date.now() - lastCompleted(key) < PASS_COOLDOWN_MS) return Promise.resolve();
   const context = captureAccountContext(tcw);
   const work = (async () => {
     const notes = (await VoiceNotes.listPending()).recordings.filter((note) =>
@@ -82,6 +101,7 @@ export function reconcileAudioCache(tcw: TinyCloudWeb | null = account): Promise
     if (account !== tcw) return;
     assertAccountContext(context, tcw);
     await trimCachedAudio();
+    markCompleted(key);
   })();
   const settled = work.finally(() => running.delete(tcw));
   running.set(tcw, settled);

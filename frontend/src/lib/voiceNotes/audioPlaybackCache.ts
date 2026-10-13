@@ -122,6 +122,20 @@ export async function cachedSpaceAudio(
   return blob;
 }
 
+/** Use the most recently played verified revision when the space cannot be reached. */
+export async function cachedSpaceAudioOffline(
+  spaceId: string, did: string, source: string, id: string,
+): Promise<Blob | null> {
+  const matching = (await rows()).filter((row) => row.blob && row.key.startsWith(remoteStem(spaceId, did, source, id)))
+    .sort((a, b) => b.playedAt - a.playedAt);
+  const latest = matching[0];
+  if (!latest?.blob) return null;
+  await write({ ...latest, playedAt: Date.now() })
+    .catch((error: unknown) => logPipelineError("audio cache access", error, id));
+  logPipeline("audio playback", id, "offline_cache_hit", { destination: "device", bodyBytes: latest.size });
+  return latest.blob;
+}
+
 export async function cachedAudioSize(): Promise<{ bytes: number; limit: number }> {
   const [entries, notes] = await Promise.all([rows(), savedRecordings()]);
   const remoteBytes = entries.filter((row) => row.blob).reduce((sum, row) => sum + row.size, 0);

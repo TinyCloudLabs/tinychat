@@ -25,6 +25,7 @@ afterEach(async () => {
 
 class SpaceKv {
   entries = new Map<string, Uint8Array>();
+  gets: string[] = [];
   async put(key: string, value: unknown) {
     const bytes = value instanceof Blob ? new Uint8Array(await value.arrayBuffer())
       : value instanceof Uint8Array ? value : new TextEncoder().encode(String(value));
@@ -32,6 +33,7 @@ class SpaceKv {
     return { ok: true as const, data: { data: undefined, headers: {} } };
   }
   async get(key: string, options?: { binary?: boolean; maxResponseBytes?: number }) {
+    this.gets.push(key);
     const bytes = this.entries.get(key);
     if (!bytes) return { ok: false as const, error: { code: "KV_NOT_FOUND", message: key, service: "kv" } };
     if (options?.maxResponseBytes && bytes.length > options.maxResponseBytes)
@@ -89,16 +91,26 @@ async function fixture(mismatch = false) {
   for (let attempt = 0; attempt < 20 && !container.textContent?.includes("used"); attempt++) {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
   }
-  return { note, kv, container, size: () => size, evictions: () => evictions };
+  return { note, kv, tcw, container, size: () => size, evictions: () => evictions };
 }
 
-test("real authenticated boot upgrades a pre-receipt saved file before Settings counts and trimming evicts it", async () => {
-  const { note, container, evictions } = await fixture();
+test("real authenticated boot upgrades a pre-receipt saved file in one remote part read before eviction", async () => {
+  const { note, kv, container, evictions } = await fixture();
   expect(note.ledger?.audio.verifiedInSpace).toMatchObject({ size: 1024 * 1024 });
+  expect(kv.gets.filter((key) => key.endsWith("/p/000000"))).toHaveLength(1);
   expect(container.textContent).toContain("1 MB");
   expect((await cachedAudioSize()).bytes).toBe(1024 * 1024);
   await trimCachedAudio(0);
   expect(evictions()).toBe(1);
+});
+
+test("completed reconciliation is cooled down until Settings explicitly requests another pass", async () => {
+  const { kv, tcw } = await fixture(true);
+  const before = kv.gets.length;
+  await reconcileAudioCache(tcw);
+  expect(kv.gets.length).toBe(before);
+  await reconcileAudioCache(tcw, true);
+  expect(kv.gets.length).toBeGreaterThan(before);
 });
 
 test("real authenticated boot keeps unverifiable pre-receipt audio protected", async () => {

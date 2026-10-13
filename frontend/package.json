@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "bun test"
+    "test": "bun test",
+    "test:audio-hash-dom": "node --test src/lib/audio/audioHash.node.mjs"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.14.13",

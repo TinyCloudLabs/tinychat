@@ -17,7 +17,7 @@ export function AudioCacheSettings() {
     let revision = 0;
     const refresh = () => {
       const current = ++revision;
-      void installCaptureEngine().then(() => reconcileAudioCache()).then(cachedAudioSize)
+      void installCaptureEngine().then(() => reconcileAudioCache(undefined, true)).then(cachedAudioSize)
         .then((value) => { if (active && current === revision) setSize(value); },
           (caught: unknown) => { if (active && current === revision) setError(readableError(caught)); });
     };

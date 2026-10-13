@@ -308,11 +308,13 @@ export async function putVoiceNoteAudio(
 
 /** Recheck a pre-receipt saved recording without changing any remote part. */
 export function reconcileSavedVoiceNoteAudio(tcw: TinyCloudWeb, id: string, source: VoiceNoteAudioSource): Promise<VerifiedAudioReceipt | null> {
+  let bytesRead = 0;
   return reconcileAudioReceipt(tcw.kv, voiceNoteAudioKvKey(id), source, {
     retryDelaysMs: [500],
+    onBytesRead: (bytes) => { bytesRead += bytes; },
     schedule: (job, operation, timeoutMs, payloadBytes) => runOnSpaceLane(job,
       { operation: operation ?? "reconcile saved audio", timeoutMs, payloadBytes }),
-  });
+  }).finally(() => logPipeline("audio receipt upgrade", id, "read", { destination: "space", bodyBytes: bytesRead }));
 }
 
 export function voiceNoteTitle(startedAt: number): string {

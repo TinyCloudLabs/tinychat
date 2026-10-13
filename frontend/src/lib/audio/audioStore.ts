@@ -117,6 +117,7 @@ export async function reconcileAudioReceipt(
       throw kvError(`reconcile part ${index}`, result.error);
     }
     const remote = result.data.data;
+    if (remote instanceof Uint8Array) opts.onBytesRead?.(remote.byteLength);
     const partHash = await digest(localBytes);
     if (!(remote instanceof Uint8Array) || remote.byteLength !== entry.size
       || await digest(remote) !== partHash || (entry.sha256 && entry.sha256 !== partHash)) return null;
@@ -133,7 +134,10 @@ export async function reconcileAudioReceipt(
       { contentType: "application/json", signal: signal ?? opts.signal }), opts, `KV put ${audioManifestKey(base)}`);
     if (!written.ok) throw kvError("upgrade manifest", written.error);
   }
-  return verifiedManifestReceipt(kv, base, upgraded, opts);
+  // The loop above has already read every remote part, checked it against the
+  // local bytes and the manifest, and built the complete file hash. A second
+  // verification pass would download the whole recording again.
+  return { sha256: hash, size: source.size };
 }
 
 /**
@@ -181,6 +185,7 @@ export class AudioStoreQuotaError extends AudioStoreError {
 
 interface RetryOptions {
   signal?: AbortSignal;
+  onBytesRead?: (bytes: number) => void;
   schedule?: <T>(call: (signal?: AbortSignal) => Promise<T>, operation?: string, timeoutMs?: number,
     payloadBytes?: number) => Promise<T>;
   /** Waits before each retry of a transient failure; its length bounds the retries. Tests pass zeros. */
