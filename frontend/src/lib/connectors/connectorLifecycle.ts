@@ -56,6 +56,7 @@ import type {
 } from "./webhooksApi";
 import type { StoreResult, UpdateSyncStateInput } from "./connectorStore";
 import type { ConnectorConnection, ConnectorId } from "./types";
+import { beginFirefliesDisconnect } from "./firefliesSync";
 
 // ── The plans ────────────────────────────────────────────────────────
 
@@ -244,6 +245,21 @@ export type DisconnectEmit = (
  * every other outcome carries a `failure` and a {@link disconnectRetry}.
  */
 export async function runDisconnect(
+  deps: DisconnectDeps,
+  emit: DisconnectEmit,
+  from?: DisconnectProgress,
+): Promise<DisconnectProgress> {
+  const release = deps.connectorId === "fireflies"
+    ? await beginFirefliesDisconnect()
+    : () => undefined;
+  try {
+    return await runDisconnectSteps(deps, emit, from);
+  } finally {
+    release();
+  }
+}
+
+async function runDisconnectSteps(
   deps: DisconnectDeps,
   emit: DisconnectEmit,
   from?: DisconnectProgress,

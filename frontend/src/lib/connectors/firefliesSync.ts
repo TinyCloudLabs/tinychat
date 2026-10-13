@@ -31,8 +31,8 @@ import {
   type UpdateSyncStateInput,
 } from "./connectorStore";
 import { isStorageFullError } from "../storageStatus";
+import { runOnSpaceLane } from "../spaceWriteLane";
 import type { SyncProgress, SyncResult } from "./types";
-
 const SOURCE = "fireflies" as const;
 
 /** Structural surface of FirefliesClient used by the engine — narrow enough
@@ -40,7 +40,7 @@ const SOURCE = "fireflies" as const;
 export interface SyncClient {
   readonly delayMs: number;
   listNewTranscriptIds(opts: ListNewTranscriptIdsOptions): Promise<FirefliesResult<string[]>>;
-  getTranscript(id: string): Promise<FirefliesResult<FirefliesTranscript>>;
+  getTranscript(id: string, signal?: AbortSignal): Promise<FirefliesResult<FirefliesTranscript>>;
 }
 
 /** Structural surface of connectorStore used by the engine. `import * as store
@@ -58,9 +58,16 @@ export interface SyncStore {
     sentences: FirefliesSentence[],
   ): Promise<StoreResult<void>>;
   updateSyncState(tcw: TinyCloudWeb, input: UpdateSyncStateInput): Promise<StoreResult<void>>;
+  getConnection(tcw: TinyCloudWeb, connectorId: "fireflies"): Promise<StoreResult<{
+    status: "connected" | "disconnected";
+  } | null>>;
   recordFirefliesAttempt?(
     tcw: TinyCloudWeb,
-    attempt: { lastAttemptAt: string; lastAttemptStatus: "running" | "ok" | "partial" | "error" },
+    attempt: {
+      v: 1;
+      lastAttemptAt: string;
+      lastAttemptStatus: "running" | "ok" | "partial" | "error";
+    },
   ): Promise<StoreResult<void>>;
   countMeetings(tcw: TinyCloudWeb, source: string): Promise<StoreResult<number>>;
 }
@@ -78,6 +85,8 @@ export type SyncFirefliesResult =
   | { ok: true; data: SyncResult }
   | { ok: false; error: SyncError };
 
+export const FIREFLIES_CATCH_UP_LAG_BUFFER_MS = 24 * 60 * 60 * 1000;
+
 export interface SyncFirefliesOptions {
   client: SyncClient;
   store: SyncStore;
@@ -86,9 +95,50 @@ export interface SyncFirefliesOptions {
   signal?: AbortSignal;
   /** Maximum number of unseen transcript IDs for bounded background catch-up. */
   maxNewTranscripts?: number;
+  /** A full-listing reconciliation catch-up; targeted webhook ingest is not one. */
+  catchUpWatermark?: string | null;
+  /** False after account/session generation changes. */
+  isCurrent?: () => boolean;
+  /** Connect may create connector_state for the first time in this engine run. */
+  allowMissingConnection?: boolean;
   /** Override the between-detail-fetch sleep. Defaults to setTimeout;
    *  tests pass `() => Promise.resolve()` to keep runs synchronous. */
   sleepImpl?: (ms: number) => Promise<void>;
+}
+
+let flightSequence = 0;
+let activeFlight: {
+  sequence: number;
+  controller: AbortController;
+  promise: Promise<SyncFirefliesResult>;
+} | null = null;
+
+export function isFirefliesSyncInFlight(): boolean {
+  return activeFlight !== null;
+}
+
+export async function abortFirefliesSync(): Promise<void> {
+  const flight = activeFlight;
+  if (!flight) return;
+  flightSequence++;
+  flight.controller.abort();
+  try {
+    await flight.promise;
+  } catch {
+    // The sync caller owns errors; disconnect only needs the write barrier.
+  }
+}
+let disconnectCount = 0;
+
+export async function beginFirefliesDisconnect(): Promise<() => void> {
+  disconnectCount += 1;
+  await abortFirefliesSync();
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    disconnectCount = Math.max(0, disconnectCount - 1);
+  };
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -105,8 +155,7 @@ function fromStore(err: StoreError, context: string): SyncError {
 }
 
 /** Map a FirefliesError from client calls into a SyncError. Exported so the
- *  targeted queued-id ingest (targetedSync.ts) classifies client failures
- *  IDENTICALLY — two copies of this mapping would drift. */
+ * targeted queued-id ingest classifies client failures identically. */
 export function fromFireflies(err: FirefliesError): SyncError {
   switch (err.kind) {
     case "invalid-key":
@@ -120,173 +169,229 @@ export function fromFireflies(err: FirefliesError): SyncError {
   }
 }
 
-/** True when the error should abort the whole run rather than being skipped
- *  and recorded. Auth and rate-limit errors are terminal — a bad key won't
- *  suddenly become good, and continuing after a rate-limit just burns budget. */
 export function isTerminal(err: FirefliesError): boolean {
   return err.kind === "invalid-key" || err.kind === "rate-limited";
 }
 
-/**
- * Drive one Fireflies sync run against an injected store and client.
- *
- * Flow (spec §8):
- *  1. ensureSchema, then read the ids already in the DB.
- *  2. Ask the client for new ids (newest-first, early-exit).
- *  3. Fetch OLDEST-first: getTranscript → normalize → insertMeeting +
- *     putTranscriptBody → sleep. Between-item abort check is graceful —
- *     everything stored so far stays; state records the partial sync.
- *  4. Both ok and error paths call updateSyncState at the end (unless
- *     ensureSchema itself failed, in which case there's no DB to write to).
- *  5. Per-item errors are recorded in `errors[]` and the loop continues.
- *     Auth and rate-limit errors from the client abort the whole run and
- *     surface as typed `SyncError`s so the UI can distinguish them.
- */
-export async function syncFireflies(
+function firefliesSyncIsCurrent(opts: SyncFirefliesOptions, sequence: number): boolean {
+  if (flightSequence !== sequence) return false;
+  try {
+    return opts.isCurrent?.() !== false;
+  } catch {
+    return false;
+  }
+}
+
+async function recordAttemptBestEffort(
+  store: SyncStore,
+  tcw: TinyCloudWeb,
+  attempt: { v: 1; lastAttemptAt: string; lastAttemptStatus: "running" | "ok" | "partial" | "error" },
+  current: () => boolean,
+): Promise<void> {
+  const record = store.recordFirefliesAttempt;
+  if (!record || !current()) return;
+  try {
+    await inSpace("Fireflies attempt metadata", () => record.call(store, tcw, attempt));
+  } catch {
+    // Attempt metadata is advisory; it never changes sync, ingest, or disconnect outcomes.
+  }
+}
+
+function inSpace<T>(operation: string, run: () => Promise<T>): Promise<T> {
+  return runOnSpaceLane(run, { operation });
+}
+
+async function runFirefliesSync(
   opts: SyncFirefliesOptions,
+  signal: AbortSignal,
+  sequence: number,
 ): Promise<SyncFirefliesResult> {
-  const { client, store, tcw, onProgress, signal } = opts;
+  const { client, store, tcw, onProgress } = opts;
   const sleep = opts.sleepImpl ?? defaultSleep;
   const delayMs = client.delayMs ?? 0;
-
+  const current = () => firefliesSyncIsCurrent(opts, sequence);
   const result: SyncResult = { added: 0, skipped: 0, errors: [] };
   const maxNewTranscripts = Number.isFinite(opts.maxNewTranscripts)
     ? Math.max(0, Math.floor(opts.maxNewTranscripts!))
     : undefined;
-  let truncated = false;
+  const isCatchUp = opts.catchUpWatermark !== undefined;
+  const watermarkMs = opts.catchUpWatermark ? Date.parse(opts.catchUpWatermark) : Number.NaN;
+  const stopBeforeDate = Number.isFinite(watermarkMs)
+    ? new Date(watermarkMs - FIREFLIES_CATCH_UP_LAG_BUFFER_MS).toISOString()
+    : null;
   const attemptAt = new Date().toISOString();
-  if (store.recordFirefliesAttempt) {
-    const attempt = await store.recordFirefliesAttempt(tcw, {
-      lastAttemptAt: attemptAt,
-      lastAttemptStatus: "running",
-    });
-    if (!attempt.ok) return { ok: false, error: fromStore(attempt.error, "recordFirefliesAttempt") };
-  }
-
-  const schemaRes = await store.ensureSchema(tcw);
-  if (!schemaRes.ok) {
-    await store.recordFirefliesAttempt?.(tcw, {
-      lastAttemptAt: attemptAt,
-      lastAttemptStatus: "error",
-    });
-    return { ok: false, error: fromStore(schemaRes.error, "ensureSchema") };
-  }
+  if (!current()) return { ok: true, data: result };
+  await recordAttemptBestEffort(store, tcw, {
+    v: 1,
+    lastAttemptAt: attemptAt,
+    lastAttemptStatus: "running",
+  }, current);
 
   let terminal: SyncError | null = null;
-
+  let truncated = false;
   try {
-    const knownRes = await store.listKnownSourceIds(tcw, SOURCE);
-    if (!knownRes.ok) {
-      terminal = fromStore(knownRes.error, "listKnownSourceIds");
+    if (!current()) return { ok: true, data: result };
+    const schemaRes = await inSpace("Fireflies ensure schema", () => store.ensureSchema(tcw));
+    if (!current()) return { ok: true, data: result };
+    if (!schemaRes.ok) {
+      terminal = fromStore(schemaRes.error, "ensureSchema");
     } else {
-      const knownIds = knownRes.data;
-
-      const listRes = await client.listNewTranscriptIds({
-        knownIds,
-        maxResults: maxNewTranscripts === undefined ? undefined : maxNewTranscripts + 1,
-        retainLast: maxNewTranscripts !== undefined,
-        onProgress,
-      });
-      if (!listRes.ok) {
-        terminal = fromFireflies(listRes.error);
+      const knownRes = await inSpace("Fireflies read known meetings", () =>
+        store.listKnownSourceIds(tcw, SOURCE));
+      if (!current()) return { ok: true, data: result };
+      if (!knownRes.ok) {
+        terminal = fromStore(knownRes.error, "listKnownSourceIds");
       } else {
-        // A cap+1 rolling tail reveals whether older unseen IDs remain.
-        const maxNewIds = maxNewTranscripts ?? Number.POSITIVE_INFINITY;
-        truncated = listRes.data.length > maxNewIds;
-        const limitedIds = truncated
-          ? listRes.data.slice(Math.max(0, listRes.data.length - maxNewIds))
-          : listRes.data;
-        // Newest-first from the client → reverse to oldest-first so a mid-run
-        // abort preserves a contiguous history tail.
-        const idsOldestFirst = [...limitedIds].reverse();
-        const total = idsOldestFirst.length;
-        onProgress?.({ phase: "fetching", done: 0, total });
+        const listRes = await client.listNewTranscriptIds({
+          knownIds: knownRes.data,
+          maxResults: maxNewTranscripts === undefined ? undefined : maxNewTranscripts + 1,
+          retainLast: maxNewTranscripts !== undefined && !isCatchUp,
+          scanPastKnown: isCatchUp,
+          stopBeforeDate,
+          signal,
+          onProgress,
+        });
+        if (!current()) return { ok: true, data: result };
+        if (!listRes.ok) {
+          terminal = fromFireflies(listRes.error);
+        } else {
+          const maxNewIds = maxNewTranscripts ?? Number.POSITIVE_INFINITY;
+          truncated = listRes.data.length > maxNewIds;
+          const limitedIds = truncated
+            ? (isCatchUp
+              ? listRes.data.slice(0, maxNewIds)
+              : listRes.data.slice(Math.max(0, listRes.data.length - maxNewIds)))
+            : listRes.data;
+          const idsOldestFirst = [...limitedIds].reverse();
+          const total = idsOldestFirst.length;
+          onProgress?.({ phase: "fetching", done: 0, total });
 
-        for (let i = 0; i < idsOldestFirst.length; i++) {
-          if (signal?.aborted) break;
-
-          const id = idsOldestFirst[i];
-          const txRes = await client.getTranscript(id);
-          if (!txRes.ok) {
-            if (isTerminal(txRes.error)) {
-              terminal = fromFireflies(txRes.error);
-              break;
-            }
-            result.errors.push(`${id}: ${txRes.error.message}`);
-            continue;
-          }
-
-          try {
-            const { meeting, sentences } = normalizeFirefliesTranscript(txRes.data);
-            const insertRes = await store.insertMeeting(tcw, meeting);
-            if (!insertRes.ok) {
-              result.errors.push(`${id}: ${insertRes.error.message}`);
-              if (isStorageFullError(insertRes.error)) {
-                terminal = fromStore(insertRes.error, "insertMeeting");
+          for (let i = 0; i < idsOldestFirst.length; i++) {
+            if (!current() || signal.aborted) break;
+            const id = idsOldestFirst[i];
+            const txRes = await client.getTranscript(id, signal);
+            if (!current()) break;
+            if (!txRes.ok) {
+              if (isTerminal(txRes.error)) {
+                terminal = fromFireflies(txRes.error);
                 break;
               }
+              result.errors.push(`${id}: ${txRes.error.message}`);
               continue;
             }
-            const putRes = await store.putTranscriptBody(tcw, SOURCE, meeting.sourceId, sentences);
-            if (!putRes.ok) {
-              result.errors.push(`${id}: ${putRes.error.message}`);
-              if (isStorageFullError(putRes.error)) {
-                terminal = fromStore(putRes.error, "putTranscriptBody");
-                break;
-              }
-              continue;
-            }
-            if (insertRes.data) result.added += 1;
-            else result.skipped += 1;
-            onProgress?.({ phase: "storing", done: i + 1, total });
-          } catch (err) {
-            // normalizeFirefliesTranscript still runs synchronously — a raw
-            // throw from it (bad payload) is per-item, not terminal.
-            result.errors.push(`${id}: ${errorMessage(err)}`);
-            continue;
-          }
 
-          // Sleep BETWEEN detail fetches (listen bug we're defending against —
-          // it only slept in the LIST loop). Skip after the last item and skip
-          // if the caller has since aborted, so aborts return promptly.
-          if (i < idsOldestFirst.length - 1 && !signal?.aborted) {
-            await sleep(delayMs);
+            try {
+              const { meeting, sentences } = normalizeFirefliesTranscript(txRes.data);
+              if (!current()) break;
+              const insertRes = await inSpace("Fireflies insert meeting", () =>
+                store.insertMeeting(tcw, meeting));
+              if (!current()) break;
+              if (!insertRes.ok) {
+                result.errors.push(`${id}: ${insertRes.error.message}`);
+                if (isStorageFullError(insertRes.error)) {
+                  terminal = fromStore(insertRes.error, "insertMeeting");
+                  break;
+                }
+                continue;
+              }
+              const putRes = await inSpace("Fireflies store transcript", () =>
+                store.putTranscriptBody(tcw, SOURCE, meeting.sourceId, sentences));
+              if (!current()) break;
+              if (!putRes.ok) {
+                result.errors.push(`${id}: ${putRes.error.message}`);
+                if (isStorageFullError(putRes.error)) {
+                  terminal = fromStore(putRes.error, "putTranscriptBody");
+                  break;
+                }
+                continue;
+              }
+              if (insertRes.data) result.added += 1;
+              else result.skipped += 1;
+              onProgress?.({ phase: "storing", done: i + 1, total });
+            } catch (err) {
+              result.errors.push(`${id}: ${errorMessage(err)}`);
+            }
+
+            if (i < idsOldestFirst.length - 1 && current() && !signal.aborted) await sleep(delayMs);
           }
         }
       }
     }
   } catch (err) {
-    // Unexpected mid-loop throw (e.g. abort-signal listener) — surface as storage.
-    terminal = { kind: "storage", message: errorMessage(err) };
+    if (current()) terminal = { kind: "storage", message: errorMessage(err) };
   }
+  if (!current()) return { ok: true, data: result };
   if (terminal?.kind === "storage") {
-    await store.recordFirefliesAttempt?.(tcw, {
+    await recordAttemptBestEffort(store, tcw, {
+      v: 1,
       lastAttemptAt: attemptAt,
       lastAttemptStatus: "error",
-    });
+    }, current);
     return { ok: false, error: terminal };
   }
 
-  // Final state update — both ok and error paths reach here. countMeetings is
-  // best-effort so a broken read doesn't mask the real terminal error.
-  const countRes = await store.countMeetings(tcw, SOURCE);
-  const itemCount = countRes.ok ? countRes.data : 0;
-
+  if (!current()) return { ok: true, data: result };
+  const aborted = signal.aborted;
   const finalStatus: "ok" | "partial" | "error" =
-    terminal ? "error" : truncated ? "partial" : "ok";
-  const updateRes = await store.updateSyncState(tcw, {
-    connectorId: SOURCE,
-    status: "connected",
-    lastSyncedAt: new Date().toISOString(),
-    lastSyncStatus: finalStatus,
-    lastSyncError: terminal?.message ?? null,
-    itemCount,
-    preserveLastSyncedAt: finalStatus !== "ok",
-  });
-  if (!updateRes.ok && !terminal) {
-    terminal = fromStore(updateRes.error, "updateSyncState");
+    terminal ? "error" : aborted || truncated || result.errors.length > 0 ? "partial" : "ok";
+  const countRes = await inSpace("Fireflies count meetings", () =>
+    store.countMeetings(tcw, SOURCE));
+  if (!current()) return { ok: true, data: result };
+  const itemCount = countRes.ok ? countRes.data : 0;
+  const connectionRes = await inSpace("Fireflies re-read connection", () =>
+    store.getConnection(tcw, SOURCE));
+  if (!current()) return { ok: true, data: result };
+  if (!connectionRes.ok) terminal ??= fromStore(connectionRes.error, "getConnection");
+  const connection = connectionRes.ok ? connectionRes.data : null;
+  const mayWriteConnected = connection?.status === "connected"
+    || (connection === null && opts.allowMissingConnection === true);
+  if (mayWriteConnected && current()) {
+    const updateRes = await inSpace("Fireflies update sync state", () =>
+      store.updateSyncState(tcw, {
+        connectorId: SOURCE,
+        status: "connected",
+        lastSyncedAt: finalStatus === "ok" ? new Date().toISOString() : null,
+        lastSyncStatus: finalStatus,
+        lastSyncError: terminal?.message ?? (result.errors.length > 0
+          ? `${result.errors.length} transcript(s) failed`
+          : null),
+        itemCount,
+        preserveLastSyncedAt: finalStatus !== "ok",
+      }));
+    if (!current()) return { ok: true, data: result };
+    if (!updateRes.ok) terminal ??= fromStore(updateRes.error, "updateSyncState");
   }
-
+  await recordAttemptBestEffort(store, tcw, {
+    v: 1,
+    lastAttemptAt: attemptAt,
+    lastAttemptStatus: terminal ? "error" : finalStatus,
+  }, current);
   if (terminal) return { ok: false, error: terminal };
   return { ok: true, data: result };
+}
+
+export async function syncFireflies(
+  opts: SyncFirefliesOptions,
+): Promise<SyncFirefliesResult> {
+  if (disconnectCount > 0) {
+    return {
+      ok: false,
+      error: { kind: "network", message: "Fireflies disconnect is in progress" },
+    };
+  }
+  if (activeFlight) return activeFlight.promise;
+  const sequence = ++flightSequence;
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort();
+  if (opts.signal?.aborted) controller.abort();
+  else opts.signal?.addEventListener("abort", abortFromCaller, { once: true });
+  const promise = runFirefliesSync(opts, controller.signal, sequence);
+  const flight = { sequence, controller, promise };
+  activeFlight = flight;
+  try {
+    return await promise;
+  } finally {
+    opts.signal?.removeEventListener("abort", abortFromCaller);
+    if (activeFlight === flight) activeFlight = null;
+  }
 }

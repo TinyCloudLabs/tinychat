@@ -49,6 +49,7 @@ export function firefliesAttemptKvKey(): string {
 }
 
 export interface FirefliesAttempt {
+  v: 1;
   lastAttemptAt: string;
   lastAttemptStatus: "running" | "ok" | "partial" | "error";
 }
@@ -59,38 +60,43 @@ export async function getFirefliesAttempt(
   const res = await tcw.kv.get(firefliesAttemptKvKey());
   if (!res.ok) return fail(res.error, "getFirefliesAttempt");
   const raw = res.data.data;
-  if (typeof raw !== "string") return { ok: true, data: null };
-  try {
-    const value: unknown = JSON.parse(raw);
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
+  let value: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      value = JSON.parse(raw);
+    } catch {
       return { ok: true, data: null };
     }
-    const row = value as Record<string, unknown>;
-    if (typeof row.last_attempt_at !== "string"
-      || (row.last_attempt_status !== "running" && row.last_attempt_status !== "ok"
-        && row.last_attempt_status !== "partial" && row.last_attempt_status !== "error")) {
-      return { ok: true, data: null };
-    }
-    return {
-      ok: true,
-      data: {
-        lastAttemptAt: row.last_attempt_at,
-        lastAttemptStatus: row.last_attempt_status,
-      },
-    };
-  } catch {
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { ok: true, data: null };
   }
+  const row = value as Record<string, unknown>;
+  if (row.v !== 1
+    || typeof row.last_attempt_at !== "string"
+    || (row.last_attempt_status !== "running" && row.last_attempt_status !== "ok"
+      && row.last_attempt_status !== "partial" && row.last_attempt_status !== "error")) {
+    return { ok: true, data: null };
+  }
+  return {
+    ok: true,
+    data: {
+      v: 1,
+      lastAttemptAt: row.last_attempt_at,
+      lastAttemptStatus: row.last_attempt_status,
+    },
+  };
 }
 
 export async function recordFirefliesAttempt(
   tcw: TinyCloudWeb,
   attempt: FirefliesAttempt,
 ): Promise<StoreResult<void>> {
-  const res = await tcw.kv.put(firefliesAttemptKvKey(), {
+  const res = await tcw.kv.put(firefliesAttemptKvKey(), JSON.stringify({
+    v: 1,
     last_attempt_at: attempt.lastAttemptAt,
     last_attempt_status: attempt.lastAttemptStatus,
-  });
+  }));
   if (!res.ok) return fail(res.error, "recordFirefliesAttempt");
   return { ok: true, data: undefined };
 }
@@ -282,6 +288,7 @@ export async function updateSyncState(
   const schema = await ensureSchema(tcw);
   if (!schema.ok) return schema;
   const now = new Date().toISOString();
+  const preserve = input.connectorId === "fireflies" && input.preserveLastSyncedAt === true;
   const res = await store(tcw).execute(
     `INSERT INTO connector_state
       (connector_id, status, last_synced_at, last_sync_status, last_sync_error, item_count, updated_at)
@@ -296,22 +303,15 @@ export async function updateSyncState(
     [
       input.connectorId,
       input.status,
-      input.lastSyncedAt,
+      preserve ? null : input.lastSyncedAt,
       input.lastSyncStatus,
       input.lastSyncError,
       input.itemCount,
       now,
-      input.connectorId === "fireflies" && input.preserveLastSyncedAt === true ? 1 : 0,
+      preserve ? 1 : 0,
     ],
   );
   if (!res.ok) return fail(res.error, "updateSyncState");
-  if (input.connectorId === "fireflies" && input.lastSyncStatus !== null) {
-    const attempt = await recordFirefliesAttempt(tcw, {
-      lastAttemptAt: now,
-      lastAttemptStatus: input.lastSyncStatus,
-    });
-    if (!attempt.ok) return attempt;
-  }
   return { ok: true, data: undefined };
 }
 

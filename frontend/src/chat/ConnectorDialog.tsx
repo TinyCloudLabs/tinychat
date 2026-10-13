@@ -131,7 +131,10 @@ import type {
   SyncProgress,
   SyncResult,
 } from "@/lib/connectors/types";
-import { removeBackgroundDrainConnectorRecord } from "./useBackgroundDrain";
+import {
+  readBackgroundDrainGeneration,
+  removeBackgroundDrainConnectorRecord,
+} from "./useBackgroundDrain";
 import {
   GMEET_CONNECTOR_ID,
   mintGmeetAccessToken,
@@ -300,6 +303,7 @@ const ApiKeyConnectDialog: FC<ConnectorConnectDialogProps> = ({
   }, [apiKey]);
 
   const handleSaveAndSync = useCallback(async () => {
+    const generation = readBackgroundDrainGeneration();
     setError(null);
     setPhase("saving");
     if (!isSecretsUnlocked(tcw)) {
@@ -336,6 +340,8 @@ const ApiKeyConnectDialog: FC<ConnectorConnectDialogProps> = ({
       tcw,
       onProgress: setProgress,
       signal: ac.signal,
+      isCurrent: () => generation === readBackgroundDrainGeneration(),
+      allowMissingConnection: true,
     });
     abortRef.current = null;
     // Refresh the parent's row state whether or not sync succeeded — the

@@ -30,6 +30,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
   BackgroundDrainer,
   buildHeadlessDrainDeps,
+  clearBackgroundDrainRecord,
   enqueueDrainWork,
   maybeStartBackgroundDrain,
   readBackgroundDrainRecord,
@@ -55,10 +56,10 @@ import type {
   TargetedIngestResult,
   TargetedQueueItem,
 } from "@/lib/connectors/targetedSync";
-import type {
-  ConnectorConnection,
-  ConnectorDescriptor,
-} from "@/lib/connectors/types";
+import { FirefliesClient, LIST_TRANSCRIPTS_QUERY, type FirefliesSentence } from "@/lib/connectors/firefliesClient";
+import { syncFireflies, type SyncStore } from "@/lib/connectors/firefliesSync";
+import type { NormalizedMeeting, StoreResult, UpdateSyncStateInput, UpsertMeetingOutcome } from "@/lib/connectors/connectorStore";
+import { ingestQueuedMeetings } from "@/lib/connectors/targetedSync";
 
 // ── Fixtures ─────────────────────────────────────────────────────────
 
@@ -771,5 +772,426 @@ describe("google-meet is skipped at the supports gate", () => {
     const record = readBackgroundDrainRecord();
     expect(record?.connectors.map((e) => e.source)).toEqual(["fireflies"]);
     expect(record?.connectors[0]?.pendingCount).toBe(2);
+  });
+});
+describe("Fireflies catch-up reconciles holes after webhook drain", () => {
+  test("the real client and sync engine fetch older unseen IDs below a webhook-known newest ID", async () => {
+    const watermark = "2026-10-09T02:49:00.000Z";
+    const summaries = [
+      { id: "webhook-new", date: "2026-10-13T12:00:00.000Z" },
+      { id: "gap-new", date: "2026-10-12T12:00:00.000Z" },
+      { id: "gap-old", date: "2026-10-10T12:00:00.000Z" },
+      { id: "below-watermark", date: "2026-10-07T12:00:00.000Z" },
+    ];
+    const calls: string[] = [];
+    const meetings: NormalizedMeeting[] = [];
+    const bodies = new Set<string>();
+    const stateWrites: UpdateSyncStateInput[] = [];
+    let syncState: UpdateSyncStateInput | null = null;
+    const store: SyncStore & {
+      upsertMeeting(
+        tcw: TinyCloudWeb,
+        meeting: NormalizedMeeting,
+        sentences: FirefliesSentence[],
+      ): Promise<StoreResult<UpsertMeetingOutcome>>;
+    } = {
+      async ensureSchema() { return { ok: true, data: undefined }; },
+      async listKnownSourceIds() { return { ok: true, data: meetings.map((m) => m.sourceId) }; },
+      async insertMeeting(_tcw, meeting) {
+        if (meetings.some((m) => m.sourceId === meeting.sourceId)) return { ok: true, data: false };
+        meetings.push(meeting);
+        return { ok: true, data: true };
+      },
+      async upsertMeeting(_tcw, meeting, sentences) {
+        const inserted = !(meetings.some((m) => m.sourceId === meeting.sourceId));
+        if (inserted) meetings.push(meeting);
+        bodies.add(meeting.sourceId);
+        return {
+          ok: true,
+          data: { id: meeting.id, inserted, createdAt: "2026-10-13T12:00:00.000Z" },
+        };
+      },
+      async putTranscriptBody(_tcw, _source, sourceId) {
+        bodies.add(sourceId);
+        return { ok: true, data: undefined };
+      },
+      async updateSyncState(_tcw, input) {
+        syncState = input;
+        stateWrites.push(input);
+        return { ok: true, data: undefined };
+      },
+      async getConnection() { return { ok: true, data: { status: "connected" as const } }; },
+      async countMeetings() { return { ok: true, data: meetings.length }; },
+    };
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as { query: string; variables?: { id?: string } };
+      calls.push(request.query === LIST_TRANSCRIPTS_QUERY ? "list" : `get:${request.variables?.id}`);
+      const data = request.query === LIST_TRANSCRIPTS_QUERY
+        ? { transcripts: summaries.map((summary) => ({
+            ...summary, title: null, duration: 5, organizer_email: null,
+          })) }
+        : { transcript: {
+            id: request.variables?.id,
+            title: null,
+            date: "2026-10-13T12:00:00.000Z",
+            duration: 5,
+            organizer_email: null,
+            speakers: [],
+            meeting_attendees: [],
+            sentences: [{ index: 0, speaker_name: "A", text: "x", start_time: 0, end_time: 1 }],
+            summary: null,
+          } };
+      return new Response(JSON.stringify({ data }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    const client = new FirefliesClient({ apiKey: "test-key", fetchImpl, delayMs: 0 });
+    const b = backend({ pending: [item("webhook-new")] });
+    const { promise } = start(b, {
+      connection: connection({ lastSyncedAt: watermark }),
+      now: () => Date.parse("2026-10-13T12:00:00.000Z"),
+      ingest: (descriptor, items) => ingestQueuedMeetings({
+        tcw: explodingVaultTcw(true),
+        descriptor,
+        items,
+        webhooks: b.webhooks,
+        store,
+        secrets: {
+          isUnlocked: () => true,
+          getKey: async () => ({ ok: true, data: "test-key" }),
+        },
+        createClient: () => client,
+        sleepImpl: async () => {},
+      }),
+      catchUpFireflies: async (tcw, _descriptor, maxNewTranscripts) => {
+        const syncOptions = Object.assign(
+          { client, store, tcw, maxNewTranscripts },
+          { catchUpWatermark: watermark },
+        );
+        await syncFireflies(syncOptions);
+      },
+    });
+
+    await promise;
+
+    expect(b.queue()).toEqual([]);
+    expect(meetings.map((meeting) => meeting.sourceId).sort()).toEqual([
+      "gap-new",
+      "gap-old",
+      "webhook-new",
+    ]);
+    expect(calls).toContain("get:gap-new");
+    expect(calls).toContain("get:gap-old");
+    expect(calls).not.toContain("get:below-watermark");
+    expect(stateWrites[0]?.preserveLastSyncedAt).toBe(true);
+    expect(syncState?.lastSyncedAt).not.toBe(watermark);
+  });
+});
+function realCatchUpHarness(
+  ids = ["meeting-1"],
+  options: { onList?: () => Promise<void>; attempt?: () => void } = {},
+) {
+  const calls: string[] = [];
+  const meetings: NormalizedMeeting[] = [];
+  let state: UpdateSyncStateInput | null = null;
+  let attempt: {
+    v: 1;
+    last_attempt_at: string;
+    last_attempt_status: "running" | "ok" | "partial" | "error";
+  } = { v: 1, last_attempt_at: "", last_attempt_status: "running" };
+  const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const request = JSON.parse(String(init?.body)) as { query: string; variables?: { id?: string } };
+    if (request.query === LIST_TRANSCRIPTS_QUERY) {
+      calls.push("list");
+      await options.onList?.();
+      return new Response(JSON.stringify({
+        data: { transcripts: ids.map((id) => ({
+          id, title: `T${id}`, date: "2026-10-12T12:00:00.000Z",
+          duration: 5, organizer_email: null,
+        })) },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    const id = request.variables?.id ?? "";
+    calls.push(`get:${id}`);
+    return new Response(JSON.stringify({
+      data: { transcript: {
+        id, title: `T${id}`, date: "2026-10-12T12:00:00.000Z",
+        duration: 5, organizer_email: null, speakers: [], meeting_attendees: [],
+        sentences: [{ index: 0, speaker_name: "A", text: "x", start_time: 0, end_time: 1 }],
+        summary: null,
+      } },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  const client = new FirefliesClient({ apiKey: "test-key", fetchImpl, delayMs: 0 });
+  const store: SyncStore = {
+    async ensureSchema() { return { ok: true, data: undefined }; },
+    async listKnownSourceIds() { return { ok: true, data: meetings.map((m) => m.sourceId) }; },
+    async insertMeeting(_tcw, meeting) {
+      if (meetings.some((m) => m.sourceId === meeting.sourceId)) return { ok: true, data: false };
+      meetings.push(meeting);
+      return { ok: true, data: true };
+    },
+    async putTranscriptBody() { return { ok: true, data: undefined }; },
+    async updateSyncState(_tcw, input) {
+      state = input;
+      return { ok: true, data: undefined };
+    },
+    async countMeetings() { return { ok: true, data: meetings.length }; },
+    async getConnection() {
+      return { ok: true, data: { status: "connected" as const } };
+    },
+    async recordFirefliesAttempt(_tcw, input) {
+      attempt = {
+        v: 1,
+        last_attempt_at: input.lastAttemptAt,
+        last_attempt_status: input.lastAttemptStatus,
+      };
+      options.attempt?.();
+      return { ok: true, data: undefined };
+    },
+  };
+  return {
+    calls,
+    client,
+    meetings,
+    store,
+    state: () => state,
+    attempt: () => attempt,
+  };
+}
+
+describe("Fireflies catch-up ignores the dark webhook route", () => {
+  test("unlock after a feature-dark mount still runs the real Fireflies client and engine", async () => {
+    const harness = realCatchUpHarness();
+    const b = backend({ config: { status: "feature-dark" } });
+    const vault = { isUnlocked: false };
+    const tcw = {
+      secrets: vault,
+      kv: {
+        get: async () => ({ ok: true, data: { data: null } }),
+      },
+    } as unknown as TinyCloudWeb;
+    const options = {
+      tcw,
+      sessionStore: SESSION,
+      backendUrl: BACKEND,
+      hooks: {
+        webhooks: b.webhooks,
+        getConnection: async () => ({
+          ok: true as const,
+          data: connection({ lastSyncedAt: "2026-10-09T02:49:00.000Z" }),
+        }),
+        catchUpFireflies: async (space: TinyCloudWeb, _descriptor: ConnectorDescriptor, max: number) => {
+          await syncFireflies({ client: harness.client, store: harness.store, tcw: space, maxNewTranscripts: max });
+        },
+        now: () => Date.parse("2026-10-13T12:00:00.000Z"),
+      },
+    };
+
+    await maybeStartBackgroundDrain(options);
+    expect(readBackgroundDrainRecord()?.featureDark).toBe(true);
+    expect(harness.calls).toEqual([]);
+
+    vault.isUnlocked = true;
+    await resumeBackgroundDrain(options, "unlock");
+
+    expect(harness.calls).toContain("list");
+    expect(harness.meetings.map((meeting) => meeting.sourceId)).toEqual(["meeting-1"]);
+  });
+});
+describe("Fireflies catch-up pacing and generation", () => {
+  test("an attempt recorded less than 15 minutes ago skips real provider listing", async () => {
+    const harness = realCatchUpHarness();
+    const now = Date.parse("2026-10-13T12:00:00.000Z");
+    const tcw = {
+      secrets: { isUnlocked: true },
+      kv: {
+        get: async () => ({
+          ok: true,
+          data: { data: JSON.stringify({
+            v: 1,
+            last_attempt_at: new Date(now - 14 * 60_000).toISOString(),
+            last_attempt_status: "running",
+          }) },
+        }),
+      },
+    } as unknown as TinyCloudWeb;
+    const b = backend();
+    await resumeBackgroundDrain({
+      tcw,
+      sessionStore: SESSION,
+      backendUrl: BACKEND,
+      hooks: {
+        webhooks: b.webhooks,
+        getConnection: async () => ({
+          ok: true as const,
+          data: connection({ lastSyncedAt: "2026-10-09T02:49:00.000Z" }),
+        }),
+        catchUpFireflies: async (space, _descriptor, max) => {
+          await syncFireflies({ client: harness.client, store: harness.store, tcw: space, maxNewTranscripts: max });
+        },
+        now: () => now,
+      },
+    }, "unlock");
+
+    expect(harness.calls).toEqual([]);
+  });
+
+  test("simultaneous unlock triggers share one real provider/engine run", async () => {
+    const listing = deferred();
+    const harness = realCatchUpHarness(["meeting-1"], { onList: () => listing.promise });
+    const tcw = {
+      secrets: { isUnlocked: true },
+      kv: {
+        get: async () => ({
+          ok: true,
+          data: { data: JSON.stringify(harness.attempt()) },
+        }),
+      },
+    } as unknown as TinyCloudWeb;
+    const b = backend();
+    const options = {
+      tcw,
+      sessionStore: SESSION,
+      backendUrl: BACKEND,
+      hooks: {
+        webhooks: b.webhooks,
+        getConnection: async () => ({
+          ok: true as const,
+          data: connection({ lastSyncedAt: "2026-10-09T02:49:00.000Z" }),
+        }),
+        catchUpFireflies: async (space: TinyCloudWeb, _descriptor: ConnectorDescriptor, max: number) => {
+          await syncFireflies({ client: harness.client, store: harness.store, tcw: space, maxNewTranscripts: max });
+        },
+        now: () => Date.parse("2026-10-13T12:00:00.000Z"),
+      },
+    };
+    const first = resumeBackgroundDrain(options, "unlock");
+    for (let i = 0; i < 10 && harness.calls.length === 0; i++) await tick();
+    expect(harness.calls).toEqual(["list"]);
+    const second = resumeBackgroundDrain(options, "unlock");
+    await tick();
+    listing.resolve();
+    await Promise.all([first, second]);
+
+    expect(harness.calls.filter((call) => call === "list")).toHaveLength(1);
+    expect(harness.meetings.map((meeting) => meeting.sourceId)).toEqual(["meeting-1"]);
+  });
+
+  test("clearing a queued generation prevents real Fireflies work from starting", async () => {
+    const laneRelease = deferred();
+    const laneHold = enqueueDrainWork(() => laneRelease.promise);
+    await tick();
+    const harness = realCatchUpHarness();
+    const b = backend();
+    const tcw = {
+      secrets: { isUnlocked: true },
+      kv: { get: async () => ({ ok: true, data: { data: null } }) },
+    } as unknown as TinyCloudWeb;
+    const pending = resumeBackgroundDrain({
+      tcw,
+      sessionStore: SESSION,
+      backendUrl: BACKEND,
+      hooks: {
+        webhooks: b.webhooks,
+        getConnection: async () => ({
+          ok: true as const,
+          data: connection({ lastSyncedAt: "2026-10-09T02:49:00.000Z" }),
+        }),
+        catchUpFireflies: async (space: TinyCloudWeb, _descriptor: ConnectorDescriptor, max: number) => {
+          await syncFireflies({ client: harness.client, store: harness.store, tcw: space, maxNewTranscripts: max });
+        },
+        now: () => Date.parse("2026-10-13T12:00:00.000Z"),
+      },
+    }, "unlock");
+    clearBackgroundDrainRecord();
+    laneRelease.resolve();
+    await Promise.all([laneHold, pending]);
+
+    expect(harness.calls).toEqual([]);
+  });
+});
+describe("Fireflies catch-up cancellation and lane boundaries", () => {
+  test("generation invalidation while listing is awaited prevents detail fetch and state write", async () => {
+    const listing = deferred();
+    const harness = realCatchUpHarness(["meeting-1"], { onList: () => listing.promise });
+    const b = backend();
+    const tcw = {
+      secrets: { isUnlocked: true },
+      kv: { get: async () => ({ ok: true, data: { data: null } }) },
+    } as unknown as TinyCloudWeb;
+    const pending = resumeBackgroundDrain({
+      tcw,
+      sessionStore: SESSION,
+      backendUrl: BACKEND,
+      hooks: {
+        webhooks: b.webhooks,
+        getConnection: async () => ({
+          ok: true as const,
+          data: connection({ lastSyncedAt: "2026-10-09T02:49:00.000Z" }),
+        }),
+        catchUpFireflies: async (
+          space: TinyCloudWeb,
+          _descriptor: ConnectorDescriptor,
+          max: number,
+          options?: { signal: AbortSignal },
+        ) => {
+          await syncFireflies({
+            client: harness.client,
+            store: harness.store,
+            tcw: space,
+            maxNewTranscripts: max,
+            signal: options?.signal,
+          });
+        },
+        now: () => Date.parse("2026-10-13T12:00:00.000Z"),
+      },
+    }, "unlock");
+    for (let i = 0; i < 10 && !harness.calls.includes("list"); i++) await tick();
+    expect(harness.calls).toEqual(["list"]);
+    clearBackgroundDrainRecord();
+    listing.resolve();
+    await pending;
+
+    expect(harness.calls).toEqual(["list"]);
+    expect(harness.meetings).toEqual([]);
+    expect(harness.state()).toBeNull();
+  });
+
+  test("provider listing does not hold the shared space write lane", async () => {
+    const listing = deferred();
+    const harness = realCatchUpHarness(["meeting-1"], { onList: () => listing.promise });
+    const b = backend();
+    const tcw = {
+      secrets: { isUnlocked: true },
+      kv: { get: async () => ({ ok: true, data: { data: null } }) },
+    } as unknown as TinyCloudWeb;
+    const options = {
+      tcw,
+      sessionStore: SESSION,
+      backendUrl: BACKEND,
+      hooks: {
+        webhooks: b.webhooks,
+        getConnection: async () => ({
+          ok: true as const,
+          data: connection({ lastSyncedAt: "2026-10-09T02:49:00.000Z" }),
+        }),
+        catchUpFireflies: async (space: TinyCloudWeb, _descriptor: ConnectorDescriptor, max: number) => {
+          await syncFireflies({ client: harness.client, store: harness.store, tcw: space, maxNewTranscripts: max });
+        },
+        now: () => Date.parse("2026-10-13T12:00:00.000Z"),
+      },
+    };
+    const syncing = resumeBackgroundDrain(options, "unlock");
+    for (let i = 0; i < 10 && !harness.calls.includes("list"); i++) await tick();
+    expect(harness.calls).toContain("list");
+    let laneWriteFinished = false;
+    const laneWrite = enqueueDrainWork(async () => { laneWriteFinished = true; });
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+
+    expect(laneWriteFinished).toBe(true);
+    listing.resolve();
+    await Promise.all([syncing, laneWrite]);
   });
 });

@@ -1,17 +1,25 @@
 import { describe, expect, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import type {
-  FirefliesResult,
-  FirefliesSentence,
-  FirefliesTranscript,
-  ListNewTranscriptIdsOptions,
+import {
+  FirefliesClient,
+  LIST_TRANSCRIPTS_QUERY,
+  type FirefliesResult,
+  type FirefliesSentence,
+  type FirefliesTranscript,
+  type ListNewTranscriptIdsOptions,
 } from "./firefliesClient";
 import type {
+  ConnectorConnection,
   NormalizedMeeting,
   StoreResult,
   UpdateSyncStateInput,
 } from "./connectorStore";
+import {
+  initialDisconnectProgress,
+  runDisconnect,
+  type DisconnectDeps,
+} from "./connectorLifecycle";
 import { syncFireflies, type SyncClient, type SyncStore } from "./firefliesSync";
 
 const ok = <T>(data: T): StoreResult<T> => ({ ok: true, data });
@@ -29,12 +37,14 @@ class FakeStore implements SyncStore {
   meetings: StoredMeeting[] = [];
   bodies = new Map<string, FirefliesSentence[]>();
   state: UpdateSyncStateInput | null = null;
+  connectionStatus: "connected" | "disconnected" | null = "connected";
   schemaEnsured = 0;
   rejectInsertFor: string | null = null;
   rejectBodyFor: string | null = null;
   countCalls = 0;
   updateCalls = 0;
   ensureSchemaError: Error | null = null;
+  rejectAttempt = false;
   /** Optional hook so a test can throw at insertMeeting boundary (per-item error). */
   insertHook: ((m: NormalizedMeeting) => void) | null = null;
 
@@ -84,6 +94,7 @@ class FakeStore implements SyncStore {
   async updateSyncState(_: TinyCloudWeb, input: UpdateSyncStateInput): Promise<StoreResult<void>> {
     this.updateCalls++;
     this.state = input;
+    this.connectionStatus = input.status;
     return ok(undefined);
   }
 
@@ -91,6 +102,33 @@ class FakeStore implements SyncStore {
     this.countCalls++;
     return ok(this.meetings.filter((m) => m.source === source).length);
   }
+  async getConnection(): Promise<StoreResult<ConnectorConnection | null>> {
+    return ok(this.connectionStatus === null
+      ? null
+      : {
+          connectorId: "fireflies",
+          status: this.connectionStatus,
+          lastSyncedAt: this.state?.lastSyncedAt ?? null,
+          lastSyncStatus: this.state?.lastSyncStatus ?? null,
+          lastSyncError: this.state?.lastSyncError ?? null,
+          itemCount: this.state?.itemCount ?? this.meetings.length,
+        });
+  }
+
+  async recordFirefliesAttempt(
+    _tcw: TinyCloudWeb,
+    input: { lastAttemptAt: string; lastAttemptStatus: "running" | "ok" | "partial" | "error" },
+  ): Promise<StoreResult<void>> {
+    void input;
+    return this.rejectAttempt
+      ? { ok: false, error: { code: "KV", message: "attempt write unavailable" } }
+      : ok(undefined);
+  }
+}
+
+function deferred<T = void>() {
+  const { promise, resolve } = Promise.withResolvers<T>();
+  return { promise, resolve };
 }
 
 // ── Mock client ─────────────────────────────────────────────────────────
@@ -140,6 +178,60 @@ function transcript(id: string, extra: Partial<FirefliesTranscript> = {}): Firef
     ],
     summary: { keywords: [], action_items: null, overview: null, meeting_type: null },
     ...extra,
+  };
+}
+function makeRealClient(
+  idsNewestFirst: string[],
+  options: {
+    missing?: string[];
+    onGet?: (id: string) => void;
+    onList?: () => Promise<void>;
+    holdGet?: Promise<void>;
+  } = {},
+): { client: FirefliesClient; fetches: string[]; listCalls: () => number } {
+  const fetches: string[] = [];
+  let listCalls = 0;
+  const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const request = JSON.parse(String(init?.body)) as { query: string; variables?: { id?: string } };
+    if (request.query === LIST_TRANSCRIPTS_QUERY) {
+      listCalls++;
+      await options.onList?.();
+      return new Response(JSON.stringify({
+        data: {
+          transcripts: idsNewestFirst.map((id) => ({
+            id, title: `T${id}`, date: "2026-10-12T12:00:00.000Z",
+            duration: 5, organizer_email: null,
+          })),
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    const id = request.variables?.id ?? "";
+    fetches.push(id);
+    options.onGet?.(id);
+    if (options.holdGet) {
+      const signal = init?.signal;
+      if (!signal) {
+        await options.holdGet;
+      } else {
+        const aborted = Promise.withResolvers<never>();
+        const onAbort = () => aborted.reject(new DOMException("The operation was aborted.", "AbortError"));
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+        try {
+          await Promise.race([options.holdGet, aborted.promise]);
+        } finally {
+          signal.removeEventListener("abort", onAbort);
+        }
+      }
+    }
+    return new Response(JSON.stringify({
+      data: { transcript: options.missing?.includes(id) ? null : transcript(id) },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  return {
+    client: new FirefliesClient({ apiKey: "test-key", fetchImpl, delayMs: 0 }),
+    fetches,
+    listCalls: () => listCalls,
   };
 }
 
@@ -285,7 +377,19 @@ describe("syncFireflies — per-item error skip", () => {
     expect(fetches).toEqual(["a", "b", "c"]);
     // Stored meetings are the two that succeeded, in oldest-first order.
     expect(store.meetings.map((m) => m.sourceId)).toEqual(["a", "c"]);
-    expect(store.state?.lastSyncStatus).toBe("ok");
+    expect(store.state?.lastSyncStatus).toBe("partial");
+    expect(store.state?.preserveLastSyncedAt).toBe(true);
+  });
+  test("real FirefliesClient not-found detail error marks incomplete run partial", async () => {
+    const store = new FakeStore();
+    const { client, fetches } = makeRealClient(["good", "missing"], { missing: ["missing"] });
+
+    const result = await syncFireflies({ client, store, tcw: fakeTcw() });
+
+    expect(result.ok).toBe(true);
+    expect(fetches).toEqual(["missing", "good"]);
+    expect(store.state?.lastSyncStatus).toBe("partial");
+    expect(store.state?.preserveLastSyncedAt).toBe(true);
   });
 
   test("insertMeeting throw is recorded and the loop continues", async () => {
@@ -304,7 +408,8 @@ describe("syncFireflies — per-item error skip", () => {
     if (!res.ok) throw new Error("unreachable");
     expect(res.data.added).toBe(2);
     expect(res.data.errors.some((e) => e.includes("sql exploded"))).toBe(true);
-    expect(store.state?.lastSyncStatus).toBe("ok");
+    expect(store.state?.lastSyncStatus).toBe("partial");
+    expect(store.state?.preserveLastSyncedAt).toBe(true);
   });
 });
 
@@ -348,16 +453,11 @@ describe("syncFireflies — storage rejection abort", () => {
 });
 
 describe("syncFireflies — abort mid-run (graceful)", () => {
-  test("aborting between items stops the loop; stored items stay; state records partial", async () => {
+  test("real client abort between items stops the loop and preserves last success as partial", async () => {
     const store = new FakeStore();
     const controller = new AbortController();
-    const { client, fetches } = makeClient({
-      newIds: ["c", "b", "a"], // oldest-first: a, b, c
-      getTranscript: (id) => {
-        // Trigger abort *after* the first fetch completes, before the next iteration.
-        if (id === "a") controller.abort();
-        return { ok: true, data: transcript(id) };
-      },
+    const { client, fetches } = makeRealClient(["c", "b", "a"], {
+      onGet: (id) => { if (id === "a") controller.abort(); },
     });
 
     const res = await syncFireflies({
@@ -368,14 +468,11 @@ describe("syncFireflies — abort mid-run (graceful)", () => {
     });
 
     expect(res.ok).toBe(true);
-    if (!res.ok) throw new Error("unreachable");
-    // Only "a" was fetched — the pre-item abort check prevented b and c.
     expect(fetches).toEqual(["a"]);
-    expect(store.meetings.length).toBe(1);
-    expect(store.meetings[0].sourceId).toBe("a");
-    // State reflects the partial run — status stays "ok" (aborted, not errored).
+    expect(store.meetings.map((meeting) => meeting.sourceId)).toEqual(["a"]);
     expect(store.state?.itemCount).toBe(1);
-    expect(store.state?.lastSyncStatus).toBe("ok");
+    expect(store.state?.lastSyncStatus).toBe("partial");
+    expect(store.state?.preserveLastSyncedAt).toBe(true);
   });
 });
 
@@ -450,5 +547,126 @@ describe("syncFireflies — rate-limit abort (typed)", () => {
     expect(res.error.kind).toBe("auth");
     expect(store.state?.lastSyncStatus).toBe("error");
     expect(store.state?.lastSyncError).toBe("key rotated");
+  });
+});
+describe("Fireflies engine single-flight and attempt metadata", () => {
+  test("Sync now joining a real catch-up client run leaves one meeting row", async () => {
+    const listing = deferred();
+    const listStarted = deferred();
+    const store = new FakeStore();
+    store.insertMeeting = async (_tcw, meeting) => {
+      const existed = store.meetings.some(
+        (row) => row.source === meeting.source && row.sourceId === meeting.sourceId,
+      );
+      await Promise.resolve();
+      if (existed) return ok(false);
+      store.meetings.push(meeting);
+      return ok(true);
+    };
+    const { client, listCalls } = makeRealClient(["same-meeting"], {
+      onList: () => { listStarted.resolve(); return listing.promise; },
+    });
+    const catchUp = syncFireflies({
+      client, store, tcw: fakeTcw(), maxNewTranscripts: 50,
+    });
+    await listStarted.promise;
+    const syncNow = syncFireflies({ client, store, tcw: fakeTcw() });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    listing.resolve();
+    await Promise.all([catchUp, syncNow]);
+
+    expect(listCalls()).toBe(1);
+    expect(store.meetings.map((meeting) => meeting.sourceId)).toEqual(["same-meeting"]);
+  });
+
+  test("a failed KV attempt write never changes a real-engine sync outcome", async () => {
+    const store = new FakeStore();
+    store.rejectAttempt = true;
+    const { client, fetches } = makeRealClient(["meeting"]);
+
+    const result = await syncFireflies({ client, store, tcw: fakeTcw() });
+
+    expect(fetches).toEqual(["meeting"]);
+    expect(result.ok).toBe(true);
+    expect(store.state?.lastSyncStatus).toBe("ok");
+    expect(store.meetings.map((meeting) => meeting.sourceId)).toEqual(["meeting"]);
+  });
+});
+describe("Fireflies disconnect cancels a running client engine", () => {
+  test("Disconnect during catch-up leaves no meetings or connected state after purge", async () => {
+    const providerRelease = deferred();
+    const providerStarted = deferred();
+    const store = new FakeStore();
+    const { client } = makeRealClient(["meeting"], {
+      onGet: () => providerStarted.resolve(),
+      holdGet: providerRelease.promise,
+    });
+    const tcw = fakeTcw();
+    const sync = syncFireflies({ client, store, tcw, maxNewTranscripts: 50 });
+    await providerStarted.promise;
+
+    const deps: DisconnectDeps = {
+      connectorId: "fireflies",
+      source: "fireflies",
+      mode: "delete-data",
+      webhooks: {
+        recordPurge: async () => ({ status: "ok", value: null }),
+        disable: async () => ({ status: "ok", value: { status: "disabled", queueDropped: 0 } }),
+        clearPurgeLedger: async () => ({ status: "ok", value: null }),
+      },
+      secrets: {
+        isUnlocked: () => true,
+        unlock: async () => ({ ok: true }),
+        deleteKey: async () => ({ ok: true }),
+      },
+      store: {
+        listKnownSourceIds: () => store.listKnownSourceIds(tcw, "fireflies"),
+        purgeConnector: async () => {
+          store.meetings = [];
+          store.bodies.clear();
+          store.state = null;
+          store.connectionStatus = null;
+          return ok(undefined);
+        },
+        getConnection: () => store.getConnection(),
+        countMeetings: () => store.countMeetings(tcw, "fireflies"),
+        updateSyncState: (_tcw, input) => store.updateSyncState(tcw, input),
+      },
+    };
+
+    const disconnected = await runDisconnect(
+      deps,
+      () => {},
+      initialDisconnectProgress("delete-data"),
+    );
+    providerRelease.resolve();
+    await sync;
+
+    expect(disconnected.done).toBe(true);
+    expect(store.meetings).toEqual([]);
+    expect(store.state).toBeNull();
+    expect(store.connectionStatus).toBeNull();
+  });
+});
+describe("Fireflies final state guard", () => {
+  test("final state re-read does not overwrite a disconnected SQL row", async () => {
+    const store = new FakeStore();
+    const { client } = makeRealClient(["meeting"], {
+      onGet: () => {
+        store.connectionStatus = "disconnected";
+        store.state = {
+          connectorId: "fireflies",
+          status: "disconnected",
+          lastSyncedAt: "2026-10-09T02:49:00.000Z",
+          lastSyncStatus: "ok",
+          lastSyncError: null,
+          itemCount: 1,
+        };
+      },
+    });
+
+    await syncFireflies({ client, store, tcw: fakeTcw() });
+
+    expect(store.state?.status).toBe("disconnected");
   });
 });

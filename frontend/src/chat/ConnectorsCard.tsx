@@ -27,7 +27,8 @@ import {
   defaultFirefliesClientOptions,
   FirefliesClient,
 } from "@/lib/connectors/firefliesClient";
-import { syncFireflies } from "@/lib/connectors/firefliesSync";
+import { isFirefliesSyncInFlight, syncFireflies } from "@/lib/connectors/firefliesSync";
+import { readBackgroundDrainGeneration } from "./useBackgroundDrain";
 import { isFirefliesStale } from "@/lib/connectors/firefliesFreshness";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
 import {
@@ -154,6 +155,7 @@ export async function runFirefliesSyncNow(opts: {
   apiKey: string;
   signal: AbortSignal;
   onProgress: (p: SyncProgress) => void;
+  isCurrent?: () => boolean;
 }): Promise<RowSyncOutcome> {
   const client = new FirefliesClient({
     apiKey: opts.apiKey,
@@ -165,6 +167,7 @@ export async function runFirefliesSyncNow(opts: {
     tcw: opts.tcw,
     onProgress: opts.onProgress,
     signal: opts.signal,
+    isCurrent: opts.isCurrent,
   });
   if (res.ok) return { ok: true };
   return { ok: false, message: res.error.message, retryAfterMs: res.error.retryAfterMs ?? null };
@@ -327,6 +330,7 @@ export function ConnectorsCard({
 
   const handleSyncNow = useCallback(
     async (d: ConnectorDescriptor, driveMode: "auto" | "snapshot" = "auto") => {
+      const generation = readBackgroundDrainGeneration();
       // ENGINE DISPATCH — by registry id, and exhaustively. There is no shared
       // default here on purpose: a descriptor moving coming-soon → available
       // WITHOUT its own entry below would otherwise be fetched with the
@@ -403,6 +407,9 @@ export function ConnectorsCard({
       if (engine === "gmeet" && isGmeetSyncInFlight()) {
         patchRow(d.id, { joinedBackgroundSync: true });
       }
+      if (engine === "fireflies" && isFirefliesSyncInFlight()) {
+        patchRow(d.id, { joinedBackgroundSync: true });
+      }
       const onProgress = (p: SyncProgress) => patchRow(d.id, { progress: p });
       const syncRes =
         engine === "gmeet"
@@ -422,6 +429,7 @@ export function ConnectorsCard({
               apiKey: keyRes.data,
               signal: ac.signal,
               onProgress,
+              isCurrent: () => generation === readBackgroundDrainGeneration(),
             });
       if (syncAbortRefs.current[d.id] === ac) {
         delete syncAbortRefs.current[d.id];

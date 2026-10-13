@@ -20,13 +20,11 @@
 //    timers in this module, by design. Each attempt is still one pass with no
 //    client-side retries — the backend paces drains (~2 s floor, per-address
 //    singleton) and the next trigger is the retry.
-//  - NO DOUBLE DRAIN. Every drain-capable entry — this drainer, the Connectors
-//    mount load, and the user-initiated sync — runs on ONE serialized lane
-//    (`enqueueDrainWork`), so an overlapping mount cannot re-surface ids the
-//    other path is still ingesting. Storage stays sequential end to end.
-//  - DARK LATCHES. A route-disabled 404 is the default deployment today: it
-//    costs one probe, is remembered for the whole session, and stops the
-//    connector loop.
+//  - NO DOUBLE INGEST. Queue drains serialize on `enqueueDrainWork`; the
+//    Fireflies listing/detail phase runs outside that lane and each space call
+//    re-enters it. A Fireflies single-flight joins catch-up, Connect and Sync now.
+//  - DARK LATCHES. A route-disabled 404 is remembered for the session. It stops
+//    webhook probing but never gates an eligible stale Fireflies catch-up.
 //  - FAILURES STAY QUIET. Nothing here throws, rejects unhandled, or renders.
 //    The Connectors surface remains the only place detail lives; this module
 //    records counts (`readBackgroundDrainRecord`) and says nothing.
@@ -54,7 +52,10 @@ import {
   defaultFirefliesClientOptions,
   FirefliesClient,
 } from "@/lib/connectors/firefliesClient";
-import { syncFireflies } from "@/lib/connectors/firefliesSync";
+import {
+  abortFirefliesSync,
+  syncFireflies,
+} from "@/lib/connectors/firefliesSync";
 import { isFirefliesStale } from "@/lib/connectors/firefliesFreshness";
 import {
   getConnectorKey,
@@ -106,6 +107,11 @@ export interface BackgroundDrainHooks {
     tcw: TinyCloudWeb,
     descriptor: ConnectorDescriptor,
     maxNewTranscripts: number,
+    options: {
+      watermark: string | null;
+      signal: AbortSignal;
+      isCurrent: () => boolean;
+    },
   ) => Promise<void>;
   /** The clock the pacing window is measured against. Production passes none
    *  (`Date.now`); a test crosses the window by RETURNING a bigger number,
@@ -160,6 +166,7 @@ export interface BackgroundDrainRecord {
  */
 export const FOCUS_DEBOUNCE_MS = 45 * 60 * 1000;
 export const FIREFLIES_CATCH_UP_MAX_TRANSCRIPTS = 50;
+export const FIREFLIES_CATCH_UP_PACING_MS = 15 * 60 * 1000;
 
 /** When the last real attempt STARTED. 0 = never — the mount latch reads this
  *  as "no attempt yet", and it is the only thing the mount path asks. */
@@ -175,15 +182,17 @@ const recordListeners = new Set<() => void>();
  *  never repopulate the record after the next account arrived. An integer that
  *  never enters the record itself: the record stays counts-only. */
 let storeGeneration = 0;
+const activeCatchUps = new Set<{
+  tcw: TinyCloudWeb;
+  controller: AbortController;
+  promise: Promise<void>;
+}>();
 
 /**
- * The shared serialization lane for everything that may drain and ingest.
+ * The shared space-write lane for queue work and individual storage calls.
  *
- * The headless run and the Connectors surface both enter through here, so their
- * work is strictly ordered: whichever starts second sees the queue AFTER the
- * first's acknowledgements landed, and a surfaced id can never be fetched by
- * both. (The backend's dedup and `alreadySettled` make an overlap safe rather
- * than corrupting — this makes it not happen.)
+ * Provider I/O for a stale Fireflies reconciliation stays outside the lane;
+ * only its SQL/KV calls enter here through the sync engine.
  */
 export function enqueueDrainWork<T>(work: () => Promise<T>): Promise<T> {
   return runOnSpaceLane(work);
@@ -200,9 +209,7 @@ function readClock(options: BackgroundDrainOptions): number {
  *
  * Safe to call from every app-shell render: the latch is consumed only when a
  * real attempt begins (a signed-out call is free), and the returned promise
- * never rejects. The check is `!== 0` — PERMANENT, never time-based: any prior
- * attempt, from any trigger, closes the mount path for the rest of the page
- * load. Only the focus trigger consults the pacing window.
+ * never rejects. Connector catch-up has its own persisted per-account pacing.
  */
 export function maybeStartBackgroundDrain(
   options: BackgroundDrainOptions,
@@ -214,33 +221,23 @@ export function maybeStartBackgroundDrain(
   // Captured at commit time, not when the lane later runs the work: a sign-out
   // in between strands this run's end-of-run commit on the old generation.
   const generation = storeGeneration;
-  return enqueueDrainWork(() =>
-    drainConnectedConnectors(tcw, options, generation, "mount"),
-  ).catch(() => {
+  return drainConnectedConnectors(tcw, options, generation, "mount").catch(() => {
     // Quiet by contract: the record (when written) is the only trace.
   });
 }
 
 /**
- * The shared re-arm entry — I2's unlock and I3's focus tick.
+ * The shared re-arm entry — unlock and focus.
  *
- * `"unlock"` is the strong signal that the counted backlog just became
- * ingestable, so it does NOT consult the pacing window: it just re-enters the
- * same drain the mount would run. `"focus"` is the weak one — a user came back
- * to a tab — so it runs only when at least `FOCUS_DEBOUNCE_MS` has passed since
- * the last attempt STARTED. Either way the work goes through `enqueueDrainWork`,
- * which serializes it behind whatever else is on the lane (the flow that
- * triggered the unlock, a Connectors sync, an earlier tick) — the redundant run a
- * Connectors sync produces sees an empty queue and the lane makes it safe.
+ * Unlock re-enters without focus debounce; focus is the weak signal and runs
+ * only after `FOCUS_DEBOUNCE_MS`. Queue processing uses the space lane;
+ * stale Fireflies catch-up is independent of webhook darkness and has its own
+ * cross-tab attempt pacing.
  *
- * The window is BURNED HERE, synchronously at the moment an attempt is
- * committed, not when the lane later runs the work: two ticks inside one window
- * can then never both pass the check. Conversely a tick that attempts nothing —
- * signed out, or dark — burns nothing, because it did not use its turn.
- *
- * Signed out, dark, and a caller-thrown client are all free no-ops: nothing
- * about a re-arm should be able to burn attempts or poison the lane. The
- * returned promise never rejects.
+ * The focus window is burned synchronously when an attempt is committed.
+ * Signed-out calls and dark focus ticks burn nothing; unlock still permits
+ * Fireflies reconciliation in a dark-route deployment. The returned promise
+ * never rejects.
  */
 export function resumeBackgroundDrain(
   options: BackgroundDrainOptions,
@@ -250,25 +247,15 @@ export function resumeBackgroundDrain(
   // Signed out: no listener should exist in production, but a stray call here
   // must still be free (no burn, no enqueue).
   if (!tcw) return Promise.resolve();
-  // Dark survives every re-arm. A route-disabled 404 is one probe per page
-  // load, never one per unlock and never one per focus — the mount already paid
-  // it, and only a reload re-probes.
-  if (featureDark) return Promise.resolve();
+  if (featureDark && trigger !== "unlock") return Promise.resolve();
   const now = readClock(options);
-  // 0 (never attempted) is trivially eligible — the arithmetic says so without
-  // a special case.
   if (trigger === "focus" && now - lastAttemptStartedAt < FOCUS_DEBOUNCE_MS) {
     return Promise.resolve();
   }
   lastAttemptStartedAt = now;
-  // Same capture rule as the mount path: the run belongs to the account that
-  // committed it, however long the lane holds it.
   const generation = storeGeneration;
-  return enqueueDrainWork(() =>
-    drainConnectedConnectors(tcw, options, generation, trigger),
-  ).catch(() => {
-    // Quiet by contract: the record carries a "we don't know" entry, and the
-    // lane is intact for the next attempt.
+  return drainConnectedConnectors(tcw, options, generation, trigger).catch(() => {
+    // Quiet by contract: the record carries a "we don't know" entry.
   });
 }
 
@@ -392,10 +379,9 @@ function commitConnectorRecords(
  * the session latches are about this page load, not about who is signed in.
  */
 export function clearBackgroundDrainRecord(): void {
-  // Advance the generation FIRST, and unconditionally: in-flight work that
-  // started before this clear must be stranded even when the record it would
-  // have repopulated was still empty.
   storeGeneration += 1;
+  for (const catchUp of activeCatchUps) catchUp.controller.abort();
+  void abortFirefliesSync();
   if (record === null) return;
   record = null;
   notifyRecordListeners();
@@ -416,6 +402,10 @@ export function removeBackgroundDrainConnectorRecord(source: string): void {
   // in-flight run that started before the disconnect is stranded, so its
   // late replace-commit cannot resurrect the entry this just removed.
   storeGeneration += 1;
+  if (source === "fireflies") {
+    for (const catchUp of activeCatchUps) catchUp.controller.abort();
+    void abortFirefliesSync();
+  }
   if (record === null) return;
   const next = record.connectors.filter((entry) => entry.source !== source);
   if (next.length === record.connectors.length) return;
@@ -537,6 +527,9 @@ export function badgePillLabel(count: number): string {
 export function resetBackgroundDrainForTests(): void {
   lastAttemptStartedAt = 0;
   featureDark = false;
+  for (const catchUp of activeCatchUps) catchUp.controller.abort();
+  activeCatchUps.clear();
+  void abortFirefliesSync();
   resetSpaceLaneForTests();
   record = null;
   recordListeners.clear();
@@ -548,8 +541,6 @@ export function resetBackgroundDrainForTests(): void {
 async function drainConnectedConnectors(
   tcw: TinyCloudWeb,
   options: BackgroundDrainOptions,
-  /** The store generation captured when this run's attempt was committed —
-   *  the run publishes as the account it started under, or not at all. */
   generation: number,
   trigger: "mount" | "unlock" | "focus",
 ): Promise<void> {
@@ -557,56 +548,97 @@ async function drainConnectedConnectors(
   const hooks = options.hooks ?? {};
   const connectors = hooks.connectors ?? CONNECTORS;
   const readConnection = hooks.getConnection ?? connectorStore.getConnection;
-  // The same typed client the card builds; constructing it performs no I/O.
-  const webhooks =
-    hooks.webhooks ?? createConnectorWebhooksClient(backendUrl, { sessionStore });
-
+  const webhooks = featureDark
+    ? null
+    : hooks.webhooks ?? createConnectorWebhooksClient(backendUrl, { sessionStore });
   const results: BackgroundDrainConnectorRecord[] = [];
-  for (const descriptor of connectors) {
-    // A dark route is dark for every connector — stop asking entirely.
-    if (featureDark) break;
-    if (descriptor.status !== "available") continue;
-    try {
-      // Connected-connector discovery is the card's own SQL read — it never
-      // touches the vault. Not connected (or unreadable) → silently skip:
-      // draining a queue this browser holds no key for would only burn the
-      // deliveries' attempts.
-      const connectionResult = await readConnection(tcw, descriptor.id);
-      const connection = connectionResult.ok ? connectionResult.data : null;
-      if (!supportsBackgroundNotifications(descriptor, connection)) continue;
+  let darkDiscoveredThisRun = false;
 
-      // The decision layer, verbatim: poll config; process automatically when
-      // the vault is ALREADY open, otherwise only count. The emitted states go
-      // into a local variable nobody renders.
+  for (const descriptor of connectors) {
+    if (darkDiscoveredThisRun) break;
+    if (generation !== storeGeneration) return;
+    if (descriptor.status !== "available") continue;
+    if (featureDark && descriptor.id !== "fireflies") continue;
+    try {
+      const connectionResult = await enqueueDrainWork(() => readConnection(tcw, descriptor.id));
+      if (generation !== storeGeneration) return;
+      const connection = connectionResult.ok ? connectionResult.data : null;
       let state = initialBackgroundSyncState();
       const emit: BackgroundSyncEmit = (updater) => {
         state = updater(state);
       };
-      await loadOnMount(buildHeadlessDrainDeps(tcw, descriptor, webhooks, hooks.ingest), emit);
+
+      const supportsWebhooks = supportsBackgroundNotifications(descriptor, connection);
+      if (!supportsWebhooks) continue;
+      if (!featureDark && webhooks && supportsWebhooks) {
+        await enqueueDrainWork(() =>
+          loadOnMount(buildHeadlessDrainDeps(tcw, descriptor, webhooks, hooks.ingest), emit),
+        );
+        if (state.phase === "dark") {
+          featureDark = true;
+          darkDiscoveredThisRun = true;
+        }
+      } else if (featureDark) {
+        state = { ...state, phase: "dark" };
+      }
+
       if (
-        trigger !== "focus"
+        (trigger === "mount" || trigger === "unlock")
         && descriptor.id === "fireflies"
         && connection?.status === "connected"
         && isSecretsUnlocked(tcw)
         && isFirefliesStale(connection.lastSyncedAt, readClock(options))
+        && generation === storeGeneration
       ) {
-        const catchUp = hooks.catchUpFireflies ?? runFirefliesCatchUp;
-        await catchUp(tcw, descriptor, FIREFLIES_CATCH_UP_MAX_TRANSCRIPTS);
+        let recentAttempt = false;
+        try {
+          const attempt = await enqueueDrainWork(() => connectorStore.getFirefliesAttempt(tcw));
+          if (generation !== storeGeneration) return;
+          const attemptedAt = attempt.ok && attempt.data
+            ? Date.parse(attempt.data.lastAttemptAt)
+            : Number.NaN;
+          recentAttempt = Number.isFinite(attemptedAt)
+            && readClock(options) - attemptedAt < FIREFLIES_CATCH_UP_PACING_MS;
+        } catch {
+          // Missing advisory metadata must not block stale reconciliation.
+        }
+        if (generation !== storeGeneration) return;
+        if (!recentAttempt) {
+          const existing = [...activeCatchUps].find((entry) => entry.tcw === tcw);
+          if (existing) {
+            await existing.promise;
+          } else {
+            const catchUp = hooks.catchUpFireflies ?? runFirefliesCatchUp;
+            const controller = new AbortController();
+            const entry = { tcw, controller, promise: Promise.resolve() };
+            const isCurrent = () =>
+              generation === storeGeneration
+              && !controller.signal.aborted
+              && isSecretsUnlocked(tcw);
+            activeCatchUps.add(entry);
+            try {
+              entry.promise = catchUp(tcw, descriptor, FIREFLIES_CATCH_UP_MAX_TRANSCRIPTS, {
+                watermark: connection.lastSyncedAt,
+                signal: controller.signal,
+                isCurrent,
+              });
+              await entry.promise;
+            } finally {
+              activeCatchUps.delete(entry);
+            }
+          }
+          if (generation !== storeGeneration) return;
+        }
       }
 
-      if (state.phase === "dark") featureDark = true;
       results.push(
         deriveDrainConnectorRecord(
           descriptor.source,
           state,
-          // The same property read the headless deps use — never a prompt.
           !isSecretsUnlocked(tcw),
         ),
       );
     } catch {
-      // The typed client resolves rather than throws, so this is defence in
-      // depth: an unexpected failure is recorded as "we don't know" and the
-      // app never hears about it.
       results.push({
         source: descriptor.source,
         phase: "unavailable",
@@ -617,10 +649,6 @@ async function drainConnectedConnectors(
       });
     }
   }
-  // ONE batch commit per run — and the run's only notification point. The run
-  // enumerated every connector, so this REPLACES the entry set: whatever it
-  // skipped (disconnected, no longer available) drops out rather than living
-  // on as a stale count.
   commitConnectorRecords(results, generation, "replace");
 }
 
@@ -660,11 +688,19 @@ async function runFirefliesCatchUp(
   tcw: TinyCloudWeb,
   descriptor: ConnectorDescriptor,
   maxNewTranscripts: number,
+  options: {
+    watermark: string | null;
+    signal: AbortSignal;
+    isCurrent: () => boolean;
+  },
 ): Promise<void> {
+  const isCurrent = () =>
+    options.isCurrent() && !options.signal.aborted && isSecretsUnlocked(tcw);
   try {
-    if (!isSecretsUnlocked(tcw)) return;
+    if (!isCurrent()) return;
     const key = await getConnectorKey<unknown>(tcw, descriptor);
-    if (!key.ok || !key.data) return;
+    if (!isCurrent() || !key.ok || !key.data) return;
+
     const client = new FirefliesClient({
       apiKey: key.data,
       ...defaultFirefliesClientOptions(),
@@ -674,10 +710,15 @@ async function runFirefliesCatchUp(
       store: connectorStore,
       tcw,
       maxNewTranscripts,
+      catchUpWatermark: options.watermark,
+      signal: options.signal,
+      isCurrent,
     });
-    window.dispatchEvent(new CustomEvent("tinychat:connector-state-updated", {
-      detail: { connectorId: descriptor.id },
-    }));
+    if (isCurrent()) {
+      window.dispatchEvent(new CustomEvent("tinychat:connector-state-updated", {
+        detail: { connectorId: descriptor.id },
+      }));
+    }
   } catch {
     // Catch-up is opportunistic; it must not suppress queue-drain state.
   }
@@ -696,9 +737,9 @@ async function runFirefliesCatchUp(
  *     symmetric cleanup, all gating pushed into the callee, event-driven with
  *     nothing left polling.
  *
- *  Both fire a re-armed run through the shared lane. Registration is
+ *  Re-arms trigger the drain entry point. Queue work uses the shared lane;
+ *  Fireflies provider listing and detail fetches do not. Registration is
  *  effect-time (never module-load — that would leak across test files) so an
- *  unmount / sign-out cleanly unhooks it, and every listener carries the
  *  latest options via the effect's closure. The listeners exist only while the
  *  drainer is mounted, which the app shell gates on being signed in — so the
  *  effect's existence IS the signed-in check and its cleanup IS the sign-out

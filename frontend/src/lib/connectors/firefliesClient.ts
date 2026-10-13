@@ -149,8 +149,13 @@ export interface ListNewTranscriptIdsOptions {
   knownIds: Iterable<string>;
   batchSize?: number;
   maxResults?: number;
-  /** Keep the oldest unseen IDs while scanning through the known boundary. */
+  /** Keep the oldest unseen IDs while scanning the bounded provider window. */
   retainLast?: boolean;
+  /** Catch-up mode keeps scanning past known IDs instead of treating them as a boundary. */
+  scanPastKnown?: boolean;
+  /** Exclusive date cutoff; older summaries end the catch-up scan. */
+  stopBeforeDate?: string | null;
+  signal?: AbortSignal;
   onProgress?: (progress: SyncProgress) => void;
 }
 
@@ -166,6 +171,16 @@ interface GraphQLResponse<T> {
   errors?: GraphQLErrorShape[];
 }
 
+function firefliesDateMs(value: number | string | null): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.abs(value) < 100_000_000_000 ? value * 1000 : value;
+  }
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
 /** Sleep — replaceable in tests via delayMs: 0 (Promise.resolve()). */
 function defaultSleep(ms: number): Promise<void> {
   if (ms <= 0) return Promise.resolve();
@@ -260,10 +275,14 @@ export class FirefliesClient {
     return { ok: true, data: res.data.user };
   }
 
-  async getTranscript(id: string): Promise<FirefliesResult<FirefliesTranscript>> {
+  async getTranscript(
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<FirefliesResult<FirefliesTranscript>> {
     const res = await this.request<{ transcript: FirefliesTranscript | null }>(
       GET_TRANSCRIPT_QUERY,
       { id },
+      signal,
     );
     if (!res.ok) return res;
     if (!res.data.transcript) {
@@ -291,12 +310,14 @@ export class FirefliesClient {
       Number.isFinite(opts.maxResults) && (opts.maxResults ?? 0) >= 0
         ? Math.floor(opts.maxResults!)
         : Number.POSITIVE_INFINITY;
+    const cutoff = opts.stopBeforeDate ? Date.parse(opts.stopBeforeDate) : Number.NaN;
     let skip = 0;
     let firstPage = true;
 
     const retainLast = opts.retainLast === true && Number.isFinite(maxResults);
     while (retainLast || newIds.length < maxResults) {
       if (!firstPage) {
+        if (opts.signal?.aborted) break;
         await defaultSleep(this.delayMs);
       }
       firstPage = false;
@@ -304,6 +325,7 @@ export class FirefliesClient {
       const res = await this.request<{ transcripts: FirefliesTranscriptSummary[] | null }>(
         LIST_TRANSCRIPTS_QUERY,
         { limit: retainLast ? batchSize : Math.min(batchSize, maxResults - newIds.length), skip },
+        opts.signal,
       );
       if (!res.ok) return res;
 
@@ -311,9 +333,18 @@ export class FirefliesClient {
       if (page.length === 0) break;
 
       let hitKnown = false;
+      let hitDateBoundary = false;
       for (const t of page) {
+        if (Number.isFinite(cutoff)) {
+          const date = firefliesDateMs(t.date);
+          if (date !== null && date < cutoff) {
+            hitDateBoundary = true;
+            break;
+          }
+        }
         if (typeof t.id !== "string") continue;
         if (known.has(t.id)) {
+          if (opts.scanPastKnown) continue;
           hitKnown = true;
           break;
         }
@@ -324,7 +355,12 @@ export class FirefliesClient {
 
       opts.onProgress?.({ phase: "listing", done: newIds.length, total: null });
 
-      if (hitKnown || (!retainLast && newIds.length >= maxResults) || page.length < batchSize) break;
+      if (
+        hitDateBoundary
+        || hitKnown
+        || (!retainLast && newIds.length >= maxResults)
+        || page.length < batchSize
+      ) break;
       skip += batchSize;
     }
 
@@ -334,6 +370,7 @@ export class FirefliesClient {
   private async request<T>(
     query: string,
     variables?: Json,
+    signal?: AbortSignal,
   ): Promise<FirefliesResult<T>> {
     const body = JSON.stringify(variables ? { query, variables } : { query });
 
@@ -349,6 +386,7 @@ export class FirefliesClient {
             Authorization: `Bearer ${this.apiKey}`,
           },
           body,
+          ...(signal ? { signal } : {}),
         });
       } catch (err) {
         return {

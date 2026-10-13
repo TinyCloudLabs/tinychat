@@ -265,15 +265,24 @@ CREATE TABLE IF NOT EXISTS connector_meeting (
 );
 ```
 
-For Fireflies, `connector_state.last_synced_at` is the last successful sync timestamp;
-failed or capped attempts update status without advancing it. Attempt time/status are
-stored without a SQL migration in KV at
-`${APP_ID}/connectors/fireflies/sync-attempt` as `last_attempt_at` and
-`last_attempt_status`. Existing rows retain their prior `last_synced_at` value and are
-read without migration. The Connectors UI marks a success older than 24 hours stale;
-an already-unlocked tab fetches at most 50 unseen transcripts on mount or unlock.
-When the cap detects remaining backlog, the attempt remains partial and stale so a
-later mount or unlock continues from the next oldest unseen transcripts.
+For Fireflies, `connector_state.last_synced_at` is the authoritative last-success
+watermark; UI staleness is derived from it at read time (24 hours). Failed, partial,
+aborted, truncated, and targeted webhook-ingest runs never advance it. Attempt metadata
+is advisory KV at `${APP_ID}/connectors/fireflies/sync-attempt`, written only by the
+Fireflies sync engine as a JSON string:
+`{"v":1,"last_attempt_at":"2026-10-13T12:00:00.000Z","last_attempt_status":"running|ok|partial|error"}`.
+Readers accept JSON strings and SDK-decoded objects. A `running` attempt older than
+15 minutes is abandoned and no longer paces catch-up; this KV record never replaces
+the SQL success watermark. Existing SQL rows need no migration.
+
+The Connectors UI shows “Stale since <date>” when the SQL watermark is older than
+24 hours. A stale Fireflies connector gets a bounded full-listing reconcile (at most
+50 unseen transcript details) on mount or successful unlock, including when the
+webhook route is dark. It is paced at one attempt per 15 minutes per account and
+does not run on focus. Catch-up skips known IDs but continues paging past them until
+it reaches the watermark minus a 24-hour lag buffer, subject to the 50-item cap.
+Webhook-targeted ingest preserves `last_synced_at`; only a complete full-listing
+reconcile advances it.
 
 Transcript bodies (sentences array) go to KV, **not** SQL:
 `tcw.kv` key `xyz.tinycloud.tinychat/connectors/fireflies/transcript/<source_id>` → JSON
@@ -372,18 +381,23 @@ do not work around it in product code.
 `syncFireflies({ client, store, tcw, onProgress, signal })` → `Promise<Result<SyncResult>>`:
 
 1. `store.ensureSchema(tcw)`; `knownIds = store.listKnownSourceIds("fireflies")`.
-2. `client.listNewTranscriptIds({ knownIds, onProgress })` (newest-first early-exit).
-3. For each new id (oldest-first so a mid-sync abort leaves a contiguous history tail):
-   `client.getTranscript(id)` → normalize → `store.insertMeeting` +
-   `store.putTranscriptBody` → sleep `delayMs`. Check `signal?.aborted` between items;
-   abort is graceful (everything stored so far stays; state records partial sync).
-4. `store.updateSyncState` with `ok`/`error`, `itemCount = countMeetings`, timestamp.
-5. Per-item errors: skip the item, record in `SyncResult.errors`, continue the run
-   (one bad transcript must not kill the sync); auth/rate-limit errors abort the run
-   with the typed error.
-
-The engine imports nothing from React and touches no globals — everything injected, so
-e2e drivers run it under bun against the mock upstream + fake tcw.
+2. A normal sync lists newest-first and stops at a known ID. Catch-up mode skips
+   known IDs, pages to the exclusive watermark-minus-lag date boundary, and stops
+   after the bounded cap.
+3. For each selected ID (oldest-first): provider detail fetch → normalize →
+   `store.insertMeeting` + `store.putTranscriptBody` → sleep `delayMs`. Provider
+   listing/detail requests run outside the shared space lane; each space operation
+   is serialized individually inside it.
+4. One Fireflies single-flight is shared by Connect, Sync now, and catch-up.
+   Disconnect aborts and waits for it before purge/teardown; the engine rechecks
+   connector status and account generation before final state writes.
+5. Only a complete full-listing reconcile with no errors, abort, or truncation is
+   `ok` and advances `last_synced_at`. Per-item errors, aborts, and capped backlog
+   are `partial`; terminal failures are `error`. These preserve the previous
+   success timestamp, including the first-run insert path (NULL).
+6. Attempt KV writes are engine-only and best-effort. Their failures do not change
+   sync/ingest/disconnect outcomes. The engine imports nothing from React and
+   touches no UI globals; e2e drivers run it against the mock upstream + fake tcw.
 
 ## 9. UI
 
@@ -396,11 +410,10 @@ e2e drivers run it under bun against the mock upstream + fake tcw.
 - One row/card per registry entry: icon, name, description.
   - `coming-soon` → greyed, "Coming soon" badge, non-interactive.
   - `available` + disconnected → "Connect" button → opens `ConnectorDialog`.
-  - connected → status line ("Last synced 5 min ago · 42 meetings" — relative time,
-    absolute on hover), `Sync now` button (spinner + inline progress "Syncing 3/12…"
-    while running, driven by `onProgress`), overflow/secondary action "Disconnect".
-  - last sync error → subdued error line with the typed message (rate-limit shows
-    retry-in time).
+  - connected → status line ("Last synced 5 min ago · 42 meetings" or
+    "Stale since <date> · 42 meetings"), `Sync now` button (spinner + inline
+    progress "Syncing 3/12…" while running, driven by `onProgress`), overflow/
+    secondary action "Disconnect".
 - Connection state loaded from `connectorStore.getConnection` on mount (no secrets
   unlock needed just to render — never trigger a wallet popup on page load).
 

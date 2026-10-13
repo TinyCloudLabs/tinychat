@@ -25,6 +25,7 @@ import {
   putDriveCursor,
   purgeConnector,
   putTranscriptBody,
+  recordFirefliesAttempt,
   removeGmeetNotes,
   transcriptKvKey,
   updateSyncState,
@@ -434,6 +435,7 @@ interface KvErr {
 class FakeKv {
   entries = new Map<string, string>();
   putKeys: string[] = [];
+  putValues: unknown[] = [];
   tracker = new OpTracker();
   listCalls: { path: string; cursor?: string }[] = [];
   /** Split each matching prefix listing into deterministic pages when set. */
@@ -464,6 +466,7 @@ class FakeKv {
       const stored = typeof value === "string" ? value : JSON.stringify(value);
       this.entries.set(key, stored);
       this.putKeys.push(key);
+      this.putValues.push(value);
       return { ok: true, data: { data: undefined as unknown as void, headers: {} } } as const;
     });
   }
@@ -1294,7 +1297,7 @@ describe("connectorStore.updateSyncState / getConnection", () => {
       expect(c2.data?.lastSyncedAt).toBe("2026-07-02T00:00:00.000Z");
     }
   });
-  test("failed Fireflies attempt preserves last successful synced_at", async () => {
+  test("generic Fireflies state update preserves success without writing attempt metadata", async () => {
     const f = makeFake();
     const lastSuccess = "2026-10-09T02:49:58.000Z";
     await updateSyncState(f.tcw, {
@@ -1314,18 +1317,85 @@ describe("connectorStore.updateSyncState / getConnection", () => {
       lastSyncError: "provider unavailable",
       itemCount: 4,
       preserveLastSyncedAt: true,
-    } as Parameters<typeof updateSyncState>[1]);
+    });
 
     const result = await getConnection(f.tcw, "fireflies");
     expect(result.ok && result.data?.lastSyncedAt).toBe(lastSuccess);
     expect(result.ok && result.data?.lastSyncStatus).toBe("error");
-    const attempt = await getFirefliesAttempt(f.tcw);
-    expect(attempt.ok && attempt.data?.lastAttemptStatus).toBe("error");
-    expect(attempt.ok && Date.parse(attempt.data?.lastAttemptAt ?? "")).toBeGreaterThan(0);
-    expect(JSON.parse(f.kv.entries.get(firefliesAttemptKvKey()) ?? "{}")).toMatchObject({
-      last_attempt_at: expect.any(String),
-      last_attempt_status: "error",
+    expect(f.kv.entries.has(firefliesAttemptKvKey())).toBe(false);
+  });
+  test("first partial Fireflies attempt keeps last_synced_at null", async () => {
+    const f = makeFake();
+    await updateSyncState(f.tcw, {
+      connectorId: "fireflies",
+      status: "connected",
+      lastSyncedAt: "2026-10-13T12:00:00.000Z",
+      lastSyncStatus: "partial",
+      lastSyncError: null,
+      itemCount: 0,
+      preserveLastSyncedAt: true,
     });
+
+    const result = await getConnection(f.tcw, "fireflies");
+    expect(result.ok && result.data?.lastSyncedAt).toBeNull();
+    expect(result.ok && result.data?.lastSyncStatus).toBe("partial");
+  });
+  test("first failed Fireflies attempt also keeps last_synced_at null", async () => {
+    const f = makeFake();
+    await updateSyncState(f.tcw, {
+      connectorId: "fireflies",
+      status: "connected",
+      lastSyncedAt: "2026-10-13T12:00:00.000Z",
+      lastSyncStatus: "error",
+      lastSyncError: "provider unavailable",
+      itemCount: 0,
+      preserveLastSyncedAt: true,
+    });
+
+    const result = await getConnection(f.tcw, "fireflies");
+    expect(result.ok && result.data?.lastSyncedAt).toBeNull();
+    expect(result.ok && result.data?.lastSyncStatus).toBe("error");
+  });
+  test("generic disconnected state writes never create attempt metadata", async () => {
+    const f = makeFake();
+    await updateSyncState(f.tcw, {
+      connectorId: "fireflies",
+      status: "disconnected",
+      lastSyncedAt: null,
+      lastSyncStatus: "error",
+      lastSyncError: null,
+      itemCount: 0,
+    });
+    expect(f.kv.entries.has(firefliesAttemptKvKey())).toBe(false);
+  });
+
+  test("versioned attempt record reads JSON strings and decoded objects", async () => {
+    const f = makeFake();
+    const value = {
+      v: 1,
+      last_attempt_at: "2026-10-13T12:00:00.000Z",
+      last_attempt_status: "partial",
+    };
+    await recordFirefliesAttempt(f.tcw, {
+      v: 1,
+      lastAttemptAt: value.last_attempt_at,
+      lastAttemptStatus: value.last_attempt_status,
+    } as Parameters<typeof recordFirefliesAttempt>[1]);
+    expect(f.kv.entries.get(firefliesAttemptKvKey())).toBe(JSON.stringify(value));
+    expect(f.kv.putValues.at(-1)).toBe(JSON.stringify(value));
+
+    for (const data of [JSON.stringify(value), value]) {
+      f.kv.get = async () => ({ ok: true, data: { data, headers: {} } });
+      const result = await getFirefliesAttempt(f.tcw);
+      expect(result).toEqual({
+        ok: true,
+        data: {
+          v: 1,
+          lastAttemptAt: value.last_attempt_at,
+          lastAttemptStatus: value.last_attempt_status,
+        },
+      });
+    }
   });
 });
 
