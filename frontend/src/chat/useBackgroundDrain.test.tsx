@@ -803,7 +803,7 @@ describe("Fireflies catch-up reconciles holes after webhook drain", () => {
         meetings.push(meeting);
         return { ok: true, data: true };
       },
-      async upsertMeeting(_tcw, meeting, sentences) {
+      async upsertMeeting(_tcw, meeting) {
         const inserted = !(meetings.some((m) => m.sourceId === meeting.sourceId));
         if (inserted) meetings.push(meeting);
         bodies.add(meeting.sourceId);

@@ -297,9 +297,9 @@ async function runFirefliesSync(
   let resumeAnchorDate: number | string | null = null;
   let resumePreviousNeighbor: string | null = null;
   let terminal: SyncError | null = null;
-  let pendingIds = new Set<string>();
+  const pendingIds = new Set<string>();
   let suspectIds = new Set<string>();
-  let suspectSeenIds = new Set<string>();
+  const suspectSeenIds = new Set<string>();
   let suspectProofIds = new Set<string>();
   let suspectProofAt: string | null = null;
   const suspectProofAtById = new Map<string, string>();

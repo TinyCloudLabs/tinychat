@@ -3,7 +3,6 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import {
   FirefliesClient,
-  FIREFLIES_MAX_RETRY_AFTER_MS,
   LIST_TRANSCRIPTS_QUERY,
   type FirefliesResult,
   type FirefliesSentence,

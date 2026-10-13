@@ -1351,7 +1351,6 @@ test("rotating pending retries preserve listing budget for new arrivals", async 
   expect(JSON.parse(String(fake.kv.entries.get(firefliesAttemptKvKey()))).pending_ids).toHaveLength(50);
   let now = Date.parse("2026-10-13T12:00:00.000Z");
   const arrivals: SeedTranscript[] = [];
-  const firstRetryDetails = provider.calls.filter((call) => call.operation === "detail").length;
 
   for (let run = 0; run < 8; run++) {
     const arrival = { ...(buildSeed(1)[0] as SeedTranscript), id: `rotating-arrival-${run}` };

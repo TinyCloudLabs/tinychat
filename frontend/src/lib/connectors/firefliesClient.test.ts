@@ -8,7 +8,6 @@ import {
   FirefliesClient,
   GET_TRANSCRIPT_QUERY,
   GET_USER_QUERY,
-  LIST_TRANSCRIPTS_QUERY,
   resolveFirefliesClientDefaults,
 } from "./firefliesClient";
 
