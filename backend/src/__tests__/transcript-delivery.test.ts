@@ -1,4 +1,5 @@
 import { once } from "node:events";
+import { createHmac } from "node:crypto";
 import type { Server } from "node:http";
 import express from "express";
 import { Database } from "bun:sqlite";
@@ -771,9 +772,10 @@ describe("durable transcript delivery", () => {
     };
     await admit(f, "blocker");
     for (let i = 0; i < 1000; i++) await admit(f, `filler-${i}`);
+    const secret = `whsec_${"a".repeat(48)}`;
     const worker = f.worker();
     const app = express();
-    app.use("/api/transcriber/webhooks/ptx", createTranscriberWebhookRouter(worker));
+    app.use("/api/transcriber/webhooks/ptx", createTranscriberWebhookRouter(worker, secret));
     // The drain is held inside one delivery while 1,000 more wakes fill the queue.
     expect(await worker.wake(f.grant.address, "blocker", "completed")).toBe("queued");
     await blocking.promise;
@@ -786,7 +788,12 @@ describe("durable transcript delivery", () => {
     };
     await withServer(app, async (base) => {
       const post = (body: string) => fetch(`${base}/api/transcriber/webhooks/ptx`, {
-        method: "POST", headers: { "content-type": "application/json" }, body,
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-webhook-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
+        },
+        body,
       });
       const refused = await post(completed("busy"));
       expect(refused.status).toBe(503);
