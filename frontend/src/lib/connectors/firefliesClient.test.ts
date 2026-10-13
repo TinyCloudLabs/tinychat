@@ -255,6 +255,49 @@ describe("FirefliesClient.listNewTranscriptIds — pagination + early-exit", () 
     await client.listNewTranscriptIds({ knownIds: [], batchSize: 500 });
     expect(calls[0].body.variables).toEqual({ limit: 50, skip: 0 });
   });
+  test("maxResults bounds one catch-up listing", async () => {
+    const { fetchImpl, calls } = mockFetch({
+      responses: [() => jsonResponse({ data: { transcripts: [
+        transcriptSummary("a"),
+        transcriptSummary("b"),
+        transcriptSummary("c"),
+      ] } })],
+    });
+    const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
+    const result = await client.listNewTranscriptIds({
+      knownIds: [],
+      batchSize: 25,
+      maxResults: 2,
+    });
+    expect(result.ok && result.data).toEqual(["a", "b"]);
+    expect(calls[0].body.variables).toEqual({ limit: 2, skip: 0 });
+  });
+  test("retainLast scans unseen pages and keeps the oldest bounded tail", async () => {
+    const { fetchImpl, calls } = mockFetch({
+      responses: [
+        () => jsonResponse({ data: { transcripts: [
+          transcriptSummary("newest-1"),
+          transcriptSummary("newest-2"),
+          transcriptSummary("newest-3"),
+        ] } }),
+        () => jsonResponse({ data: { transcripts: [
+          transcriptSummary("oldest-1"),
+          transcriptSummary("oldest-2"),
+          transcriptSummary("oldest-3"),
+        ] } }),
+        () => jsonResponse({ data: { transcripts: [] } }),
+      ],
+    });
+    const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
+    const result = await client.listNewTranscriptIds({
+      knownIds: [],
+      batchSize: 3,
+      maxResults: 2,
+      retainLast: true,
+    });
+    expect(result.ok && result.data).toEqual(["oldest-2", "oldest-3"]);
+    expect(calls).toHaveLength(3);
+  });
 
   test("onProgress fires after each page with phase=listing", async () => {
     const page1 = [transcriptSummary("a"), transcriptSummary("b")];

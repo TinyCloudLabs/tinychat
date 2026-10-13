@@ -14,6 +14,8 @@ import {
   ensureSchema,
   findGmeetNotesAssociation,
   getConnection,
+  getFirefliesAttempt,
+  firefliesAttemptKvKey,
   getMeetingDatetimeStats,
   meetingKvKey,
   getDriveCursor,
@@ -308,11 +310,13 @@ class FakeSqlDb {
         last_sync_error,
         item_count,
         updated_at,
-      ] = params as [string, string, string | null, string | null, string | null, number, string];
+        preserveLastSyncedAt,
+      ] = params as [string, string, string | null, string | null, string | null, number, string, number];
+      const existing = this.states.get(connector_id);
       this.states.set(connector_id, {
         connector_id,
         status,
-        last_synced_at,
+        last_synced_at: preserveLastSyncedAt === 1 && existing ? existing.last_synced_at : last_synced_at,
         last_sync_status,
         last_sync_error,
         item_count,
@@ -1289,6 +1293,39 @@ describe("connectorStore.updateSyncState / getConnection", () => {
       expect(c2.data?.lastSyncError).toBe("boom");
       expect(c2.data?.lastSyncedAt).toBe("2026-07-02T00:00:00.000Z");
     }
+  });
+  test("failed Fireflies attempt preserves last successful synced_at", async () => {
+    const f = makeFake();
+    const lastSuccess = "2026-10-09T02:49:58.000Z";
+    await updateSyncState(f.tcw, {
+      connectorId: "fireflies",
+      status: "connected",
+      lastSyncedAt: lastSuccess,
+      lastSyncStatus: "ok",
+      lastSyncError: null,
+      itemCount: 4,
+    });
+
+    await updateSyncState(f.tcw, {
+      connectorId: "fireflies",
+      status: "connected",
+      lastSyncedAt: "2026-10-13T12:00:00.000Z",
+      lastSyncStatus: "error",
+      lastSyncError: "provider unavailable",
+      itemCount: 4,
+      preserveLastSyncedAt: true,
+    } as Parameters<typeof updateSyncState>[1]);
+
+    const result = await getConnection(f.tcw, "fireflies");
+    expect(result.ok && result.data?.lastSyncedAt).toBe(lastSuccess);
+    expect(result.ok && result.data?.lastSyncStatus).toBe("error");
+    const attempt = await getFirefliesAttempt(f.tcw);
+    expect(attempt.ok && attempt.data?.lastAttemptStatus).toBe("error");
+    expect(attempt.ok && Date.parse(attempt.data?.lastAttemptAt ?? "")).toBeGreaterThan(0);
+    expect(JSON.parse(f.kv.entries.get(firefliesAttemptKvKey()) ?? "{}")).toMatchObject({
+      last_attempt_at: expect.any(String),
+      last_attempt_status: "error",
+    });
   });
 });
 

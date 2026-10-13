@@ -376,6 +376,7 @@ export async function ingestQueuedMeetings(
         ? `${failures.length} queued item(s) failed`
         : null,
     itemCount,
+    preserveLastSyncedAt: failed,
   });
   if (!updateRes.ok && !terminal) {
     terminal = fromStore(updateRes.error, "updateSyncState");

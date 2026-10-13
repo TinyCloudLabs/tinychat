@@ -180,6 +180,27 @@ describe("syncFireflies — fresh sync", () => {
   });
 });
 
+describe("syncFireflies — bounded catch-up", () => {
+  test("keeps the oldest capped slice and marks remaining backlog partial", async () => {
+    const store = new FakeStore();
+    const { client, fetches } = makeClient({
+      newIds: ["newest", "middle", "oldest"],
+      getTranscript: (id) => ({ ok: true, data: transcript(id) }),
+    });
+    const result = await syncFireflies({
+      client,
+      store,
+      tcw: fakeTcw(),
+      maxNewTranscripts: 2,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(fetches).toEqual(["oldest", "middle"]);
+    expect(store.state?.lastSyncStatus).toBe("partial");
+    expect(store.meetings.map((meeting) => meeting.sourceId)).toEqual(["oldest", "middle"]);
+  });
+});
+
 describe("syncFireflies — incremental no-op", () => {
   test("empty new-ids list → 0 added, no fetches, state still updated", async () => {
     const store = new FakeStore();

@@ -48,11 +48,16 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { CONNECTORS } from "@/lib/connectors/registry";
+import * as connectorStore from "@/lib/connectors/connectorStore";
+import type { StoreResult } from "@/lib/connectors/connectorStore";
 import {
-  getConnection as storeGetConnection,
-  type StoreResult,
-} from "@/lib/connectors/connectorStore";
+  defaultFirefliesClientOptions,
+  FirefliesClient,
+} from "@/lib/connectors/firefliesClient";
+import { syncFireflies } from "@/lib/connectors/firefliesSync";
+import { isFirefliesStale } from "@/lib/connectors/firefliesFreshness";
 import {
+  getConnectorKey,
   isSecretsUnlocked,
   onSecretsUnlocked,
 } from "@/lib/connectors/connectorSecrets";
@@ -97,6 +102,11 @@ export interface BackgroundDrainHooks {
     descriptor: ConnectorDescriptor,
     items: readonly TargetedQueueItem[],
   ) => Promise<TargetedIngestResult>;
+  catchUpFireflies?: (
+    tcw: TinyCloudWeb,
+    descriptor: ConnectorDescriptor,
+    maxNewTranscripts: number,
+  ) => Promise<void>;
   /** The clock the pacing window is measured against. Production passes none
    *  (`Date.now`); a test crosses the window by RETURNING a bigger number,
    *  which is the whole reason the window is a comparison and not a wakeup. */
@@ -149,6 +159,7 @@ export interface BackgroundDrainRecord {
  * while a user alt-tabbing all morning still costs one attempt.
  */
 export const FOCUS_DEBOUNCE_MS = 45 * 60 * 1000;
+export const FIREFLIES_CATCH_UP_MAX_TRANSCRIPTS = 50;
 
 /** When the last real attempt STARTED. 0 = never — the mount latch reads this
  *  as "no attempt yet", and it is the only thing the mount path asks. */
@@ -204,7 +215,7 @@ export function maybeStartBackgroundDrain(
   // in between strands this run's end-of-run commit on the old generation.
   const generation = storeGeneration;
   return enqueueDrainWork(() =>
-    drainConnectedConnectors(tcw, options, generation),
+    drainConnectedConnectors(tcw, options, generation, "mount"),
   ).catch(() => {
     // Quiet by contract: the record (when written) is the only trace.
   });
@@ -254,7 +265,7 @@ export function resumeBackgroundDrain(
   // committed it, however long the lane holds it.
   const generation = storeGeneration;
   return enqueueDrainWork(() =>
-    drainConnectedConnectors(tcw, options, generation),
+    drainConnectedConnectors(tcw, options, generation, trigger),
   ).catch(() => {
     // Quiet by contract: the record carries a "we don't know" entry, and the
     // lane is intact for the next attempt.
@@ -540,11 +551,12 @@ async function drainConnectedConnectors(
   /** The store generation captured when this run's attempt was committed —
    *  the run publishes as the account it started under, or not at all. */
   generation: number,
+  trigger: "mount" | "unlock" | "focus",
 ): Promise<void> {
   const { backendUrl, sessionStore } = options;
   const hooks = options.hooks ?? {};
   const connectors = hooks.connectors ?? CONNECTORS;
-  const readConnection = hooks.getConnection ?? storeGetConnection;
+  const readConnection = hooks.getConnection ?? connectorStore.getConnection;
   // The same typed client the card builds; constructing it performs no I/O.
   const webhooks =
     hooks.webhooks ?? createConnectorWebhooksClient(backendUrl, { sessionStore });
@@ -571,6 +583,16 @@ async function drainConnectedConnectors(
         state = updater(state);
       };
       await loadOnMount(buildHeadlessDrainDeps(tcw, descriptor, webhooks, hooks.ingest), emit);
+      if (
+        trigger !== "focus"
+        && descriptor.id === "fireflies"
+        && connection?.status === "connected"
+        && isSecretsUnlocked(tcw)
+        && isFirefliesStale(connection.lastSyncedAt, readClock(options))
+      ) {
+        const catchUp = hooks.catchUpFireflies ?? runFirefliesCatchUp;
+        await catchUp(tcw, descriptor, FIREFLIES_CATCH_UP_MAX_TRANSCRIPTS);
+      }
 
       if (state.phase === "dark") featureDark = true;
       results.push(
@@ -632,6 +654,33 @@ export function buildHeadlessDrainDeps(
         ? ingest(descriptor, items)
         : ingestQueuedMeetings({ tcw, descriptor, items, webhooks }),
   };
+}
+
+async function runFirefliesCatchUp(
+  tcw: TinyCloudWeb,
+  descriptor: ConnectorDescriptor,
+  maxNewTranscripts: number,
+): Promise<void> {
+  try {
+    if (!isSecretsUnlocked(tcw)) return;
+    const key = await getConnectorKey<unknown>(tcw, descriptor);
+    if (!key.ok || !key.data) return;
+    const client = new FirefliesClient({
+      apiKey: key.data,
+      ...defaultFirefliesClientOptions(),
+    });
+    await syncFireflies({
+      client,
+      store: connectorStore,
+      tcw,
+      maxNewTranscripts,
+    });
+    window.dispatchEvent(new CustomEvent("tinychat:connector-state-updated", {
+      detail: { connectorId: descriptor.id },
+    }));
+  } catch {
+    // Catch-up is opportunistic; it must not suppress queue-drain state.
+  }
 }
 
 // ── React glue ───────────────────────────────────────────────────────

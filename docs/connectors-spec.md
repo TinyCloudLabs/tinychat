@@ -245,6 +245,7 @@ CREATE TABLE IF NOT EXISTS connector_state (
   item_count INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL
 );
+
 CREATE TABLE IF NOT EXISTS connector_meeting (
   id TEXT PRIMARY KEY,             -- crypto.randomUUID(); Fireflies id lives in source_id
   source TEXT NOT NULL,            -- 'fireflies'
@@ -263,6 +264,16 @@ CREATE TABLE IF NOT EXISTS connector_meeting (
   updated_at TEXT NOT NULL
 );
 ```
+
+For Fireflies, `connector_state.last_synced_at` is the last successful sync timestamp;
+failed or capped attempts update status without advancing it. Attempt time/status are
+stored without a SQL migration in KV at
+`${APP_ID}/connectors/fireflies/sync-attempt` as `last_attempt_at` and
+`last_attempt_status`. Existing rows retain their prior `last_synced_at` value and are
+read without migration. The Connectors UI marks a success older than 24 hours stale;
+an already-unlocked tab fetches at most 50 unseen transcripts on mount or unlock.
+When the cap detects remaining backlog, the attempt remains partial and stale so a
+later mount or unlock continues from the next oldest unseen transcripts.
 
 Transcript bodies (sentences array) go to KV, **not** SQL:
 `tcw.kv` key `xyz.tinycloud.tinychat/connectors/fireflies/transcript/<source_id>` → JSON

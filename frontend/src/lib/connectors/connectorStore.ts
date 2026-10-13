@@ -43,6 +43,58 @@ import type {
 import type { ConnectorConnection, ConnectorId } from "./types";
 
 
+/** Fireflies attempt metadata; SQL `last_synced_at` remains the success clock. */
+export function firefliesAttemptKvKey(): string {
+  return `${CONNECTORS_KV_PREFIX}/fireflies/sync-attempt`;
+}
+
+export interface FirefliesAttempt {
+  lastAttemptAt: string;
+  lastAttemptStatus: "running" | "ok" | "partial" | "error";
+}
+
+export async function getFirefliesAttempt(
+  tcw: TinyCloudWeb,
+): Promise<StoreResult<FirefliesAttempt | null>> {
+  const res = await tcw.kv.get(firefliesAttemptKvKey());
+  if (!res.ok) return fail(res.error, "getFirefliesAttempt");
+  const raw = res.data.data;
+  if (typeof raw !== "string") return { ok: true, data: null };
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { ok: true, data: null };
+    }
+    const row = value as Record<string, unknown>;
+    if (typeof row.last_attempt_at !== "string"
+      || (row.last_attempt_status !== "running" && row.last_attempt_status !== "ok"
+        && row.last_attempt_status !== "partial" && row.last_attempt_status !== "error")) {
+      return { ok: true, data: null };
+    }
+    return {
+      ok: true,
+      data: {
+        lastAttemptAt: row.last_attempt_at,
+        lastAttemptStatus: row.last_attempt_status,
+      },
+    };
+  } catch {
+    return { ok: true, data: null };
+  }
+}
+
+export async function recordFirefliesAttempt(
+  tcw: TinyCloudWeb,
+  attempt: FirefliesAttempt,
+): Promise<StoreResult<void>> {
+  const res = await tcw.kv.put(firefliesAttemptKvKey(), {
+    last_attempt_at: attempt.lastAttemptAt,
+    last_attempt_status: attempt.lastAttemptStatus,
+  });
+  if (!res.ok) return fail(res.error, "recordFirefliesAttempt");
+  return { ok: true, data: undefined };
+}
+
 /** Connector-scoped Drive Changes cursor; it is not the UI sync timestamp. */
 export function driveCursorKvKey(source: string): string {
   return `${CONNECTORS_KV_PREFIX}/${source}/drive-page-token`;
@@ -220,8 +272,9 @@ export interface UpdateSyncStateInput {
   lastSyncStatus: "ok" | "partial" | "error" | null;
   lastSyncError: string | null;
   itemCount: number;
+  /** Fireflies failures update status but must not move its last-success clock. */
+  preserveLastSyncedAt?: boolean;
 }
-
 export async function updateSyncState(
   tcw: TinyCloudWeb,
   input: UpdateSyncStateInput,
@@ -235,7 +288,7 @@ export async function updateSyncState(
      VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(connector_id) DO UPDATE SET
        status = excluded.status,
-       last_synced_at = excluded.last_synced_at,
+       last_synced_at = CASE WHEN ? = 1 THEN connector_state.last_synced_at ELSE excluded.last_synced_at END,
        last_sync_status = excluded.last_sync_status,
        last_sync_error = excluded.last_sync_error,
        item_count = excluded.item_count,
@@ -248,9 +301,17 @@ export async function updateSyncState(
       input.lastSyncError,
       input.itemCount,
       now,
+      input.connectorId === "fireflies" && input.preserveLastSyncedAt === true ? 1 : 0,
     ],
   );
   if (!res.ok) return fail(res.error, "updateSyncState");
+  if (input.connectorId === "fireflies" && input.lastSyncStatus !== null) {
+    const attempt = await recordFirefliesAttempt(tcw, {
+      lastAttemptAt: now,
+      lastAttemptStatus: input.lastSyncStatus,
+    });
+    if (!attempt.ok) return attempt;
+  }
   return { ok: true, data: undefined };
 }
 
@@ -837,6 +898,12 @@ export async function purgeConnector(
   }
   const cursor = await tcw.kv.delete(driveCursorKvKey(source));
   if (!cursor.ok && cursor.error?.code !== "KV_NOT_FOUND") return fail(cursor.error, "purgeConnector(cursor)");
+  if (source === "fireflies") {
+    const attempt = await tcw.kv.delete(firefliesAttemptKvKey());
+    if (!attempt.ok && attempt.error?.code !== "KV_NOT_FOUND") {
+      return fail(attempt.error, "purgeConnector(firefliesAttempt)");
+    }
+  }
   const res = await store(tcw).batch([
     { sql: "DELETE FROM connector_meeting WHERE source = ?", params: [source] },
     { sql: "DELETE FROM connector_state WHERE connector_id = ?", params: [source] },

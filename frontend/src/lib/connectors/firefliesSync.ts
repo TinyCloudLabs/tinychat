@@ -58,6 +58,10 @@ export interface SyncStore {
     sentences: FirefliesSentence[],
   ): Promise<StoreResult<void>>;
   updateSyncState(tcw: TinyCloudWeb, input: UpdateSyncStateInput): Promise<StoreResult<void>>;
+  recordFirefliesAttempt?(
+    tcw: TinyCloudWeb,
+    attempt: { lastAttemptAt: string; lastAttemptStatus: "running" | "ok" | "partial" | "error" },
+  ): Promise<StoreResult<void>>;
   countMeetings(tcw: TinyCloudWeb, source: string): Promise<StoreResult<number>>;
 }
 
@@ -80,6 +84,8 @@ export interface SyncFirefliesOptions {
   tcw: TinyCloudWeb;
   onProgress?: (progress: SyncProgress) => void;
   signal?: AbortSignal;
+  /** Maximum number of unseen transcript IDs for bounded background catch-up. */
+  maxNewTranscripts?: number;
   /** Override the between-detail-fetch sleep. Defaults to setTimeout;
    *  tests pass `() => Promise.resolve()` to keep runs synchronous. */
   sleepImpl?: (ms: number) => Promise<void>;
@@ -144,10 +150,25 @@ export async function syncFireflies(
   const delayMs = client.delayMs ?? 0;
 
   const result: SyncResult = { added: 0, skipped: 0, errors: [] };
+  const maxNewTranscripts = Number.isFinite(opts.maxNewTranscripts)
+    ? Math.max(0, Math.floor(opts.maxNewTranscripts!))
+    : undefined;
+  let truncated = false;
+  const attemptAt = new Date().toISOString();
+  if (store.recordFirefliesAttempt) {
+    const attempt = await store.recordFirefliesAttempt(tcw, {
+      lastAttemptAt: attemptAt,
+      lastAttemptStatus: "running",
+    });
+    if (!attempt.ok) return { ok: false, error: fromStore(attempt.error, "recordFirefliesAttempt") };
+  }
 
   const schemaRes = await store.ensureSchema(tcw);
   if (!schemaRes.ok) {
-    // Schema failure — nothing to write to, so we can't updateSyncState.
+    await store.recordFirefliesAttempt?.(tcw, {
+      lastAttemptAt: attemptAt,
+      lastAttemptStatus: "error",
+    });
     return { ok: false, error: fromStore(schemaRes.error, "ensureSchema") };
   }
 
@@ -160,13 +181,24 @@ export async function syncFireflies(
     } else {
       const knownIds = knownRes.data;
 
-      const listRes = await client.listNewTranscriptIds({ knownIds, onProgress });
+      const listRes = await client.listNewTranscriptIds({
+        knownIds,
+        maxResults: maxNewTranscripts === undefined ? undefined : maxNewTranscripts + 1,
+        retainLast: maxNewTranscripts !== undefined,
+        onProgress,
+      });
       if (!listRes.ok) {
         terminal = fromFireflies(listRes.error);
       } else {
-        // Newest-first from the client → reverse to oldest-first so an abort
-        // preserves a contiguous history tail.
-        const idsOldestFirst = [...listRes.data].reverse();
+        // A cap+1 rolling tail reveals whether older unseen IDs remain.
+        const maxNewIds = maxNewTranscripts ?? Number.POSITIVE_INFINITY;
+        truncated = listRes.data.length > maxNewIds;
+        const limitedIds = truncated
+          ? listRes.data.slice(Math.max(0, listRes.data.length - maxNewIds))
+          : listRes.data;
+        // Newest-first from the client → reverse to oldest-first so a mid-run
+        // abort preserves a contiguous history tail.
+        const idsOldestFirst = [...limitedIds].reverse();
         const total = idsOldestFirst.length;
         onProgress?.({ phase: "fetching", done: 0, total });
 
@@ -227,14 +259,21 @@ export async function syncFireflies(
     // Unexpected mid-loop throw (e.g. abort-signal listener) — surface as storage.
     terminal = { kind: "storage", message: errorMessage(err) };
   }
-  if (terminal?.kind === "storage") return { ok: false, error: terminal };
+  if (terminal?.kind === "storage") {
+    await store.recordFirefliesAttempt?.(tcw, {
+      lastAttemptAt: attemptAt,
+      lastAttemptStatus: "error",
+    });
+    return { ok: false, error: terminal };
+  }
 
   // Final state update — both ok and error paths reach here. countMeetings is
   // best-effort so a broken read doesn't mask the real terminal error.
   const countRes = await store.countMeetings(tcw, SOURCE);
   const itemCount = countRes.ok ? countRes.data : 0;
 
-  const finalStatus: "ok" | "error" = terminal ? "error" : "ok";
+  const finalStatus: "ok" | "partial" | "error" =
+    terminal ? "error" : truncated ? "partial" : "ok";
   const updateRes = await store.updateSyncState(tcw, {
     connectorId: SOURCE,
     status: "connected",
@@ -242,6 +281,7 @@ export async function syncFireflies(
     lastSyncStatus: finalStatus,
     lastSyncError: terminal?.message ?? null,
     itemCount,
+    preserveLastSyncedAt: finalStatus !== "ok",
   });
   if (!updateRes.ok && !terminal) {
     terminal = fromStore(updateRes.error, "updateSyncState");

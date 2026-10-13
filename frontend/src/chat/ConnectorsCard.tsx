@@ -28,6 +28,7 @@ import {
   FirefliesClient,
 } from "@/lib/connectors/firefliesClient";
 import { syncFireflies } from "@/lib/connectors/firefliesSync";
+import { isFirefliesStale } from "@/lib/connectors/firefliesFreshness";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
 import {
   isGmeetSyncInFlight,
@@ -313,6 +314,16 @@ export function ConnectorsCard({
       cancelled = true;
     };
   }, [tcw, patchRow]);
+  useEffect(() => {
+    const onConnectorStateUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ connectorId?: ConnectorId }>).detail;
+      if (detail?.connectorId === "fireflies") void refreshRow("fireflies");
+    };
+    window.addEventListener("tinychat:connector-state-updated", onConnectorStateUpdated);
+    return () => {
+      window.removeEventListener("tinychat:connector-state-updated", onConnectorStateUpdated);
+    };
+  }, [refreshRow]);
 
   const handleSyncNow = useCallback(
     async (d: ConnectorDescriptor, driveMode: "auto" | "snapshot" = "auto") => {
@@ -577,7 +588,7 @@ const ConnectorRow: FC<{
   // A coming-soon row dims only its icon and its status dot; its text keeps
   // full contrast (a dimmed row put muted text under 4.5:1).
   const containerCls = "flex flex-col gap-2 py-3";
-  const status = rowStatus(comingSoon, state);
+  const status = rowStatus(comingSoon, state, d.id);
   // role="group" + aria-label carries the "coming soon" status to screen
   // readers; aria-disabled on a plain <div> has no semantic effect.
   const groupProps = comingSoon
@@ -686,7 +697,10 @@ const ConnectorRow: FC<{
         )}
       </div>
       {!comingSoon && connected && state.connection && (
-        <ConnectedStatusLine connection={state.connection} />
+        <ConnectedStatusLine
+          connection={state.connection}
+          stale={d.id === "fireflies" && isFirefliesStale(state.connection.lastSyncedAt)}
+        />
       )}
       {!comingSoon && state.syncing && state.joinedBackgroundSync && (
         <p className="text-xs text-muted-foreground">
@@ -721,8 +735,9 @@ const ConnectorRow: FC<{
   );
 };
 
-const ConnectedStatusLine: FC<{ connection: ConnectorConnection }> = ({
+const ConnectedStatusLine: FC<{ connection: ConnectorConnection; stale: boolean }> = ({
   connection,
+  stale,
 }) => {
   const count = connection.itemCount;
   const meetings = `${count} meeting${count === 1 ? "" : "s"}`;
@@ -736,7 +751,7 @@ const ConnectedStatusLine: FC<{ connection: ConnectorConnection }> = ({
   const { relative, absolute } = formatRelativeTime(connection.lastSyncedAt);
   return (
     <p className="text-xs text-muted-foreground" title={absolute}>
-      Last synced {relative} · {meetings}
+      {stale ? `Stale since ${absolute}` : `Last synced ${relative}`} · {meetings}
     </p>
   );
 };
@@ -747,12 +762,16 @@ const ConnectedStatusLine: FC<{ connection: ConnectorConnection }> = ({
  * The row's status, as a dot plus text. Nothing until the persisted connection
  * has loaded (the action area shows a placeholder then).
  */
-function rowStatus(comingSoon: boolean, state: RowState): { tone: StatusTone; label: string } | null {
+function rowStatus(comingSoon: boolean, state: RowState, connectorId: ConnectorId): { tone: StatusTone; label: string } | null {
   if (comingSoon) return { tone: "neutral", label: "Coming soon" };
   if (!state.loaded) return null;
   if (state.connection?.status !== "connected") return { tone: "neutral", label: "Not connected" };
   if (state.connection.lastSyncStatus === "error") return { tone: "destructive", label: "Last sync failed" };
   if (state.connection.lastSyncStatus === "partial") return { tone: "warning", label: "Last sync incomplete" };
+  if (connectorId === "fireflies" && state.connection.lastSyncedAt
+    && isFirefliesStale(state.connection.lastSyncedAt)) {
+    return { tone: "warning", label: "Stale" };
+  }
   return { tone: "primary", label: "Connected" };
 }
 

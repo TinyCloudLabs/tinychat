@@ -31,6 +31,7 @@ export interface ConnectorConnection {
   lastSyncStatus: "ok" | "partial" | "error" | null;
   lastSyncError: string | null;
   itemCount: number;
+
 }
 
 export interface SyncProgress {

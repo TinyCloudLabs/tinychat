@@ -33,6 +33,7 @@ import {
   enqueueDrainWork,
   maybeStartBackgroundDrain,
   readBackgroundDrainRecord,
+  resumeBackgroundDrain,
   resetBackgroundDrainForTests,
   type BackgroundDrainHooks,
 } from "./useBackgroundDrain";
@@ -296,6 +297,8 @@ interface StartOverrides {
     items: readonly TargetedQueueItem[],
   ) => Promise<TargetedIngestResult>;
   webhooks?: ConnectorWebhooksClient;
+  catchUpFireflies?: NonNullable<BackgroundDrainHooks["catchUpFireflies"]>;
+  now?: () => number;
 }
 
 function start(b: FakeBackend, over: StartOverrides = {}) {
@@ -311,6 +314,8 @@ function start(b: FakeBackend, over: StartOverrides = {}) {
       getConnection: conn.getConnection,
       connectors: over.connectors ?? [fireflies],
       ingest: over.ingest ?? (() => neverIngest()),
+      catchUpFireflies: over.catchUpFireflies,
+      now: over.now,
     },
   });
   return { promise, connectionReads: conn.reads };
@@ -427,6 +432,46 @@ describe("unlocked vault", () => {
       "ingest:end",
       "pending",
     ]);
+  });
+});
+
+describe("stale Fireflies catch-up", () => {
+  test("mount runs bounded full sync only when the vault is already unlocked", async () => {
+    const b = backend();
+    const limits: number[] = [];
+    const now = Date.parse("2026-10-13T12:00:00.000Z");
+    const { promise } = start(b, {
+      connection: connection({ lastSyncedAt: "2026-10-11T11:59:59.000Z" }),
+      now: () => now,
+      catchUpFireflies: async (_tcw, descriptor, maxNewTranscripts) => {
+        expect(descriptor.id).toBe("fireflies");
+        limits.push(maxNewTranscripts);
+      },
+    });
+    await promise;
+    expect(limits).toEqual([50]);
+  });
+  test("unlock rechecks and catches up stale Fireflies through the same bound", async () => {
+    const b = backend();
+    const conn = countingConnection(connection({ lastSyncedAt: "2026-10-11T11:59:59.000Z" }));
+    const limits: number[] = [];
+    const now = Date.parse("2026-10-13T12:00:00.000Z");
+    await resumeBackgroundDrain({
+      tcw: explodingVaultTcw(true),
+      sessionStore: SESSION,
+      backendUrl: BACKEND,
+      hooks: {
+        webhooks: b.webhooks,
+        getConnection: conn.getConnection,
+        connectors: [fireflies],
+        ingest: async () => neverIngest(),
+        catchUpFireflies: async (_tcw, _descriptor, maxNewTranscripts) => {
+          limits.push(maxNewTranscripts);
+        },
+        now: () => now,
+      },
+    }, "unlock");
+    expect(limits).toEqual([50]);
   });
 });
 

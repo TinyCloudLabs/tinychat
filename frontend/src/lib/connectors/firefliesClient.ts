@@ -148,6 +148,9 @@ export interface FirefliesClientOptions {
 export interface ListNewTranscriptIdsOptions {
   knownIds: Iterable<string>;
   batchSize?: number;
+  maxResults?: number;
+  /** Keep the oldest unseen IDs while scanning through the known boundary. */
+  retainLast?: boolean;
   onProgress?: (progress: SyncProgress) => void;
 }
 
@@ -284,10 +287,15 @@ export class FirefliesClient {
       : new Set<string>(opts.knownIds);
 
     const newIds: string[] = [];
+    const maxResults =
+      Number.isFinite(opts.maxResults) && (opts.maxResults ?? 0) >= 0
+        ? Math.floor(opts.maxResults!)
+        : Number.POSITIVE_INFINITY;
     let skip = 0;
     let firstPage = true;
 
-    while (true) {
+    const retainLast = opts.retainLast === true && Number.isFinite(maxResults);
+    while (retainLast || newIds.length < maxResults) {
       if (!firstPage) {
         await defaultSleep(this.delayMs);
       }
@@ -295,7 +303,7 @@ export class FirefliesClient {
 
       const res = await this.request<{ transcripts: FirefliesTranscriptSummary[] | null }>(
         LIST_TRANSCRIPTS_QUERY,
-        { limit: batchSize, skip },
+        { limit: retainLast ? batchSize : Math.min(batchSize, maxResults - newIds.length), skip },
       );
       if (!res.ok) return res;
 
@@ -310,12 +318,13 @@ export class FirefliesClient {
           break;
         }
         newIds.push(t.id);
+        if (retainLast && newIds.length > maxResults) newIds.shift();
+        if (!retainLast && newIds.length >= maxResults) break;
       }
 
       opts.onProgress?.({ phase: "listing", done: newIds.length, total: null });
 
-      if (hitKnown) break;
-      if (page.length < batchSize) break;
+      if (hitKnown || (!retainLast && newIds.length >= maxResults) || page.length < batchSize) break;
       skip += batchSize;
     }
 
