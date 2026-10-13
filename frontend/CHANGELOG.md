@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.7.2-beta.3
+
+### Patch Changes
+
+- e844f56: Normalize PTX MIME types and surface durable transcription outcomes in the Library.
+
 ## 0.7.2-beta.2
 
 ### Patch Changes
