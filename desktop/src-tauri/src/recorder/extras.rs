@@ -573,9 +573,7 @@ pub async fn recorder_system_audio_get(app: tauri::AppHandle) -> Result<bool, St
 pub async fn recorder_system_audio_set(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     super::ensure(&app);
     // The live stream cannot change source mid-capture; this applies on next start/resume.
-    let prefs = save_preferences(&app, |prefs| prefs.system_audio = enabled).await?;
-    app.state::<Arc<AtomicBool>>()
-        .store(effective_system_audio(&prefs), Ordering::SeqCst);
+    save_preferences(&app, |prefs| prefs.system_audio = enabled).await?;
     Ok(())
 }
 
@@ -591,9 +589,7 @@ pub async fn recorder_system_audio_consent_set(
     consented: bool,
 ) -> Result<(), String> {
     super::ensure(&app);
-    let prefs = save_preferences(&app, |prefs| prefs.system_audio_consent = consented).await?;
-    app.state::<Arc<AtomicBool>>()
-        .store(effective_system_audio(&prefs), Ordering::SeqCst);
+    save_preferences(&app, |prefs| prefs.system_audio_consent = consented).await?;
     Ok(())
 }
 

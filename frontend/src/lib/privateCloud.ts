@@ -362,7 +362,8 @@ export function createPrivateCloudApi(
 // `channel_labels`, which every client sets at create, so they tell the
 // clients apart without new state anywhere:
 //   - Earlier desktop jobs: separate, ["Speaker 1", "Speaker 2"];
-//   - Voice notes on every platform (lib/voiceNotes): mixed, ["Exo voice note"];
+//   - Mono voice notes: mixed, ["Exo voice note"];
+//   - Stereo Mac notes: separate, ["Me", "Them"];
 //   - Upload audio (lib/audioUpload.ts, every platform): mixed, ["Exo upload"],
 //     with or without diarization (PTX records the labels either way).
 // A job that matches neither (or a relay that does not relay them) is
@@ -370,6 +371,7 @@ export function createPrivateCloudApi(
 
 export const DESKTOP_CHANNEL_LABELS: readonly string[] = ["Speaker 1", "Speaker 2"];
 export const VOICE_NOTE_CHANNEL_LABELS: readonly string[] = ["Exo voice note"];
+export const ME_THEM_CHANNEL_LABELS: readonly string[] = ["Me", "Them"];
 export const UPLOAD_CHANNEL_LABELS: readonly string[] = ["Exo upload"];
 
 export type PrivateCloudJobClient = "exo-desktop" | "exo-voice-note" | "exo-upload" | "unknown";
@@ -380,6 +382,7 @@ const sameLabels = (actual: readonly string[] | null | undefined, expected: read
 export function privateCloudJobClient(job: Pick<PrivateCloudJob, "channel_mode" | "channel_labels">): PrivateCloudJobClient {
   if (job.channel_mode === "separate" && sameLabels(job.channel_labels, DESKTOP_CHANNEL_LABELS)) return "exo-desktop";
   if (job.channel_mode === "mixed" && sameLabels(job.channel_labels, VOICE_NOTE_CHANNEL_LABELS)) return "exo-voice-note";
+  if (job.channel_mode === "separate" && sameLabels(job.channel_labels, ME_THEM_CHANNEL_LABELS)) return "exo-voice-note";
   if (job.channel_mode === "mixed" && sameLabels(job.channel_labels, UPLOAD_CHANNEL_LABELS)) return "exo-upload";
   return "unknown";
 }

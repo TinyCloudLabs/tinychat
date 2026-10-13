@@ -26,6 +26,7 @@ pub struct Engine(pub Mutex<EngineState>);
 #[derive(Default)]
 pub struct EngineState {
     id: Option<String>,
+    layout: journal::Layout,
     started_at: Option<u64>,
     segment_id: Option<String>,
     segment_started: Option<Instant>,
@@ -126,6 +127,7 @@ pub struct CaptureStatus {
     state: &'static str,
     reason: Option<&'static str>,
     id: Option<String>,
+    channels: u8,
     started_at: Option<u64>,
     elapsed_ms: u64,
     audio_ms: u64,
@@ -171,6 +173,7 @@ impl EngineState {
                 self.last_stop_reason
             }),
             id: self.id.clone(),
+            channels: self.layout.channels(),
             started_at: self.started_at,
             elapsed_ms: elapsed,
             audio_ms: elapsed,
@@ -239,6 +242,10 @@ fn capture_params(
     })
 }
 
+fn segment_system_audio(layout: journal::Layout, requested: bool) -> bool {
+    layout == journal::Layout::Stereo && requested
+}
+
 fn begin(state: &mut EngineState, input: String) -> Result<(String, Option<String>), String> {
     if state.busy {
         return Err("recorder_busy".into());
@@ -288,6 +295,12 @@ pub async fn recorder_start(
         begin(&mut state, input)?
     };
     let started_at = now_ms();
+    let system_audio = app.state::<Arc<AtomicBool>>().load(Ordering::SeqCst);
+    let layout = if system_audio {
+        journal::Layout::Stereo
+    } else {
+        journal::Layout::Mono
+    };
     let saved = journal::save(
         &app,
         &journal::Journal {
@@ -299,7 +312,8 @@ pub async fn recorder_start(
             max_duration_ms: max_duration_ms
                 .unwrap_or(MAX_DURATION_MS)
                 .clamp(MIN_DURATION_MS, MAX_DURATION_MS),
-            system_audio: app.state::<Arc<AtomicBool>>().load(Ordering::SeqCst),
+            system_audio,
+            layout,
             spans: Vec::new(),
         },
     );
@@ -307,6 +321,7 @@ pub async fn recorder_start(
         clear_busy(&app);
     }
     saved?;
+    app.state::<Engine>().0.lock().layout = layout;
     let result = start_segment(&app, &segment_id, input).await;
     let cleanup = if result.is_err() {
         journal::clear(&app)
@@ -324,6 +339,7 @@ pub async fn recorder_start(
         let engine = app.state::<Engine>();
         let mut state = engine.0.lock();
         state.busy = false;
+        state.layout = journal::Layout::Mono;
         state.blocked_reason = Some(reason);
         drop(state);
         emit_status(&app);
@@ -391,6 +407,7 @@ fn import_finished_segment(
     segment_id: &str,
     id: &str,
     system_audio: bool,
+    layout: journal::Layout,
 ) -> Result<(), String> {
     if files::segment_imported(app, id, segment_id)? {
         files::remove_source_session(&files::sessions_root(app)?, segment_id)?;
@@ -402,7 +419,14 @@ fn import_finished_segment(
         .join(segment_id);
     let failed = journal::failed_source(app, segment_id)?;
     let session = if ordinary.exists() { ordinary } else { failed };
-    files::import_segment(app, id, segment_id, &source_mp3(&session)?, system_audio)?;
+    files::import_segment(
+        app,
+        id,
+        segment_id,
+        &source_mp3(&session)?,
+        system_audio,
+        layout,
+    )?;
     journal::remove_failed_source(app, segment_id)
 }
 
@@ -487,7 +511,8 @@ pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, Stri
     };
     let mut skipped_empty = false;
     let result = stopped.and_then(|_| {
-        match import_finished_segment(&app, &segment_id, &id, current.system_audio) {
+        match import_finished_segment(&app, &segment_id, &id, current.system_audio, current.layout)
+        {
             Err(error) if empty_capture(&error) => {
                 skipped_empty = true;
                 files::remove_source_session(&files::sessions_root(&app)?, &segment_id)
@@ -599,11 +624,18 @@ pub async fn recorder_resume(app: tauri::AppHandle) -> Result<CaptureStatus, Str
         clear_busy(&app);
     }
     let previous = previous_result?;
+    app.state::<Engine>().0.lock().layout = previous.layout;
+    let segment_enabled = segment_system_audio(
+        previous.layout,
+        app.state::<Arc<AtomicBool>>().load(Ordering::SeqCst),
+    );
+    app.state::<Arc<AtomicBool>>()
+        .store(segment_enabled, Ordering::SeqCst);
     let saved = journal::save(
         &app,
         &journal::Journal {
             segment_id: Some(segment_id.clone()),
-            system_audio: app.state::<Arc<AtomicBool>>().load(Ordering::SeqCst),
+            system_audio: segment_enabled,
             ..previous.clone()
         },
     );
@@ -686,6 +718,7 @@ pub async fn recorder_stop(app: tauri::AppHandle) -> Result<CaptureStatus, Strin
             None
         };
         state.id = None;
+        state.layout = journal::Layout::Mono;
         state.started_at = None;
         state.recorded_ms = 0;
         state.spans.clear();
@@ -727,8 +760,13 @@ pub fn recorder_recover(app: tauri::AppHandle) -> Result<RecoveryReport, String>
                 .iter()
                 .any(|failed| failed.segment_id == segment_id)
             {
-                match import_finished_segment(&app, &segment_id, &current.id, current.system_audio)
-                {
+                match import_finished_segment(
+                    &app,
+                    &segment_id,
+                    &current.id,
+                    current.system_audio,
+                    current.layout,
+                ) {
                     Err(error) if empty_capture(&error) => {
                         files::remove_source_session(&files::sessions_root(&app)?, &segment_id)?;
                     }
@@ -786,7 +824,13 @@ pub fn recorder_failed_retry(
         .into_iter()
         .filter(|item| item.id == id)
     {
-        match import_finished_segment(&app, &failed.segment_id, &id, failed.journal.system_audio) {
+        match import_finished_segment(
+            &app,
+            &failed.segment_id,
+            &id,
+            failed.journal.system_audio,
+            failed.journal.layout,
+        ) {
             Ok(()) => journal::remove_failed(&app, &failed.segment_id)?,
             Err(error) if empty_capture(&error) => {
                 files::remove_source_session(&files::sessions_root(&app)?, &failed.segment_id)?;
@@ -957,6 +1001,13 @@ pub async fn recorder_select_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn layout_stays_fixed_across_both_system_audio_toggle_directions() {
+        assert!(!segment_system_audio(journal::Layout::Stereo, false));
+        assert!(segment_system_audio(journal::Layout::Stereo, true));
+        assert!(!segment_system_audio(journal::Layout::Mono, true));
+        assert!(!segment_system_audio(journal::Layout::Mono, false));
+    }
     #[test]
     fn selected_input_and_missing_fallback_use_fake_devices() {
         let devices = vec!["MacBook Pro Microphone".into(), "BlackHole 2ch".into()];

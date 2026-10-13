@@ -80,6 +80,7 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, onPlay
   const onPlayingChangeRef = useRef(onPlayingChange);
   onPlayingChangeRef.current = onPlayingChange;
   const audioRef = useRef<HTMLAudioElement>(null);
+  const downmixRef = useRef<AudioContext | null>(null);
   const queuedSeek = useRef<number | null>(null);
   const playWhenSourceSet = useRef(false);
 
@@ -105,6 +106,7 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, onPlay
     () => () => {
       controllerRef.current?.abort();
       if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+      void downmixRef.current?.close();
       onPlayingChangeRef.current?.(false);
     },
     [],
@@ -152,6 +154,26 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, onPlay
   const begin = () => {
     const audio = audioRef.current;
     if (!audio || playbackBlocked() || !playbackVisible(audio)) return;
+    // Create and resume the graph in the same gesture that unlocks the media
+    // element on iOS. Both captured channels are summed into one playback channel.
+    if (!downmixRef.current && typeof AudioContext !== "undefined") {
+      const context = new AudioContext();
+      const source = context.createMediaElementSource(audio);
+      const splitter = context.createChannelSplitter(2);
+      const left = context.createGain();
+      const right = context.createGain();
+      const mono = context.createChannelMerger(1);
+      left.gain.value = 0.5;
+      right.gain.value = 0.5;
+      source.connect(splitter);
+      splitter.connect(left, 0);
+      splitter.connect(right, 1);
+      left.connect(mono, 0, 0);
+      right.connect(mono, 0, 0);
+      mono.connect(context.destination);
+      downmixRef.current = context;
+    }
+    if (downmixRef.current?.state === "suspended") void downmixRef.current.resume();
     patchMedia({ loading: true });
     if (url) {
       if (audio.error) audio.load();

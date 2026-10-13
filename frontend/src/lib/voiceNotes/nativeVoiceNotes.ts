@@ -162,6 +162,8 @@ export interface RecoveryCompletedEvent {
 
 export interface VoiceNoteRecording {
   id: string;
+  /** Mac: the note's fixed channel layout. Older recordings default to one channel. */
+  channels?: 1 | 2;
   startedAt: number;
   durationMs: number;
   mimeType: string;
@@ -182,6 +184,7 @@ export interface VoiceNoteRecording {
 
 export interface CaptureStatus {
   state: MicState; reason: MicStateReason; id: string | null;
+  channels?: 1 | 2;
   detail?: string;
   intent: "recording" | "paused" | "stopped"; availability: "available" | "interrupted" | "blocked";
   startedAt: number | null; elapsedMs: number; audioMs: number; pausedMs: number; maxDurationMs: number;

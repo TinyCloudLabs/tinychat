@@ -24,6 +24,7 @@ class FakeBridge implements DesktopBridge {
   elapsed = 0;
   paused = 0;
   current: string | null = null;
+  channels: 1 | 2 = 1;
   state: "idle" | "recording" | "paused" = "idle";
   selectedId: string | null = null;
   selectedModel: string | null = null;
@@ -38,7 +39,7 @@ class FakeBridge implements DesktopBridge {
   }
   status() {
     return { state: this.state, reason: this.state === "paused" ? "user" : null, id: this.current,
-      startedAt: this.current ? this.now : null, elapsedMs: this.elapsed, audioMs: this.elapsed,
+      startedAt: this.current ? this.now : null, elapsedMs: this.elapsed, audioMs: this.elapsed, channels: this.channels,
       pausedMs: this.paused, maxDurationMs: 10_000, intent: this.state === "idle" ? "stopped" : this.state,
       availability: "available", at: this.now, elapsedAt: this.now, spans: this.spans };
   }
@@ -693,6 +694,7 @@ describe("desktop recorder adapter", () => {
 
   test("start, pause and resume keep elapsed time and committed bytes", async () => {
     const bridge = new FakeBridge();
+    bridge.channels = 2;
     const engine = await rig(bridge);
     const seen: string[] = [];
     const levels: { level: number; peak?: number }[] = [];
@@ -717,6 +719,7 @@ describe("desktop recorder adapter", () => {
     expect(recording.durationMs).toBe(1800);
     expect(recording.pausedMs).toBe(5000);
     expect(recording.sizeBytes).toBe(4);
+    expect(recording.channels).toBe(2);
     expect((await engine.plugin.listPending()).recordings).toHaveLength(1);
     expect(base64ToBytes((await engine.plugin.readAudioChunk({ id: started.id, offset: 1, length: 2 })).base64))
       .toEqual(Uint8Array.of(20, 30));

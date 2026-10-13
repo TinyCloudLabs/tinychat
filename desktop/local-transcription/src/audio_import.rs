@@ -4,6 +4,75 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use rustix::fs::{Mode, OFlags};
+use symphonia::core::audio::SampleBuffer;
+use symphonia::core::codecs::DecoderOptions;
+use symphonia::core::formats::FormatOptions;
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::meta::MetadataOptions;
+use symphonia::core::probe::Hint;
+
+/** 100 ms RMS bins for two channels. Mono recordings have a zero right channel. */
+pub fn channel_envelope(file: File) -> Result<Vec<[f32; 2]>, String> {
+    let stream = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut format = symphonia::default::get_probe()
+        .format(
+            &Hint::new(),
+            stream,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(|e| e.to_string())?
+        .format;
+    let track = format.default_track().ok_or("audio_track_missing")?;
+    let track_id = track.id;
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions::default())
+        .map_err(|e| e.to_string())?;
+    let mut bins = Vec::new();
+    let mut sums = [0.0_f64; 2];
+    let mut count = 0usize;
+    loop {
+        let packet = match format.next_packet() {
+            Ok(packet) => packet,
+            Err(symphonia::core::errors::Error::IoError(e))
+                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                break
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+        if packet.track_id() != track_id {
+            continue;
+        }
+        let decoded = decoder.decode(&packet).map_err(|e| e.to_string())?;
+        let spec = *decoded.spec();
+        let channels = spec.channels.count();
+        let bin_len = (spec.rate as usize / 10).max(1);
+        let mut pcm = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
+        pcm.copy_interleaved_ref(decoded);
+        for frame in pcm.samples().chunks_exact(channels) {
+            for channel in 0..channels.min(2) {
+                sums[channel] += f64::from(frame[channel]) * f64::from(frame[channel]);
+            }
+            count += 1;
+            if count == bin_len {
+                bins.push([
+                    (sums[0] / count as f64).sqrt() as f32,
+                    (sums[1] / count as f64).sqrt() as f32,
+                ]);
+                sums = [0.0; 2];
+                count = 0;
+            }
+        }
+    }
+    if count > 0 {
+        bins.push([
+            (sums[0] / count as f64).sqrt() as f32,
+            (sums[1] / count as f64).sqrt() as f32,
+        ]);
+    }
+    Ok(bins)
+}
 
 pub fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
@@ -16,6 +85,7 @@ pub fn normalize_and_import_at(
     segment_id: &str,
     source: &Path,
     system_audio: bool,
+    channels: u8,
 ) -> Result<(), String> {
     if !valid_id(segment_id) || !segment_id.starts_with("rec-") {
         return Err("invalid_segment_id".into());
@@ -25,8 +95,12 @@ pub fn normalize_and_import_at(
         let normalized = source
             .parent()
             .ok_or("missing_capture_session")?
-            .join("audio.mono.mp3");
-        normalize_mp3(source, &normalized, system_audio)?;
+            .join(if channels == 2 {
+                "audio.stereo.mp3"
+            } else {
+                "audio.mono.mp3"
+            });
+        normalize_mp3(source, &normalized, system_audio, channels)?;
         import_at(root, id, segment_id, &normalized)?;
     }
     // The marker and audio file are synced by import_at. A crash before this
@@ -34,18 +108,28 @@ pub fn normalize_and_import_at(
     remove_source_session(sessions, segment_id)
 }
 
-fn normalize_mp3(source: &Path, output: &Path, system_audio: bool) -> Result<(), String> {
+fn normalize_mp3(
+    source: &Path,
+    output: &Path,
+    system_audio: bool,
+    channels: u8,
+) -> Result<(), String> {
     if output.exists() {
         return Ok(());
     }
     let decoded = output.with_extension("decoded.wav");
     anlg_mp3::decode_to_wav(source, &decoded).map_err(|e| format!("decode_failed: {e}"))?;
-    let result = encode_mono_wav(&decoded, output, system_audio);
+    let result = encode_wav_layout(&decoded, output, system_audio, channels);
     let _ = fs::remove_file(decoded);
     result
 }
 
-fn encode_mono_wav(wav: &Path, output: &Path, system_audio: bool) -> Result<(), String> {
+fn encode_wav_layout(
+    wav: &Path,
+    output: &Path,
+    system_audio: bool,
+    channels: u8,
+) -> Result<(), String> {
     let mut reader = hound::WavReader::open(wav).map_err(|e| e.to_string())?;
     let spec = reader.spec();
     if !matches!(spec.channels, 1 | 2)
@@ -54,52 +138,105 @@ fn encode_mono_wav(wav: &Path, output: &Path, system_audio: bool) -> Result<(), 
     {
         return Err("unsupported_capture_pcm".into());
     }
-    let mut encoder =
-        anlg_mp3::MonoStreamEncoder::new(spec.sample_rate).map_err(|e| e.to_string())?;
+    if !matches!(channels, 1 | 2) {
+        return Err("invalid_note_layout".into());
+    }
+    let mut mono_encoder = if channels == 1 {
+        Some(anlg_mp3::MonoStreamEncoder::new(spec.sample_rate).map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
+    let mut stereo_encoder = if channels == 2 {
+        let mut builder = mp3lame_encoder::Builder::new().ok_or("mp3_encoder_init_failed")?;
+        builder.set_num_channels(2).map_err(|e| format!("{e:?}"))?;
+        builder
+            .set_sample_rate(spec.sample_rate)
+            .map_err(|e| format!("{e:?}"))?;
+        builder
+            .set_brate(mp3lame_encoder::Bitrate::Kbps64)
+            .map_err(|e| format!("{e:?}"))?;
+        builder
+            .set_quality(mp3lame_encoder::Quality::NearBest)
+            .map_err(|e| format!("{e:?}"))?;
+        Some(builder.build().map_err(|e| format!("{e:?}"))?)
+    } else {
+        None
+    };
     let temp = output.with_extension("mp3.tmp");
     let mut target = File::create(&temp).map_err(|e| e.to_string())?;
     let mut samples = reader.samples::<f32>();
     let mut mono = Vec::with_capacity(4096);
+    let mut right_channel = Vec::with_capacity(4096);
     let mut encoded = Vec::new();
     loop {
         mono.clear();
+        right_channel.clear();
         for _ in 0..4096 {
             let Some(left) = samples.next() else {
                 break;
             };
             let left = left.map_err(|e| e.to_string())?;
-            let value = if spec.channels == 2 {
+            let (value, right) = if spec.channels == 2 {
                 let right = samples
                     .next()
                     .ok_or("incomplete_stereo_frame")?
                     .map_err(|e| e.to_string())?;
-                if system_audio {
-                    ((left + right) * 0.5).clamp(-1.0, 1.0)
-                } else {
-                    left
-                }
+                (
+                    if channels == 1 && system_audio {
+                        ((left + right) * 0.5).clamp(-1.0, 1.0)
+                    } else {
+                        left
+                    },
+                    if system_audio { right } else { 0.0 },
+                )
             } else {
-                left
+                (left, 0.0)
             };
             mono.push(value);
+            right_channel.push(right);
         }
         if mono.is_empty() {
             break;
         }
         encoded.clear();
-        encoder
-            .encode_f32(&mono, &mut encoded)
-            .map_err(|e| e.to_string())?;
+        if let Some(encoder) = mono_encoder.as_mut() {
+            encoder
+                .encode_f32(&mono, &mut encoded)
+                .map_err(|e| e.to_string())?;
+        } else if let Some(encoder) = stereo_encoder.as_mut() {
+            let left: Vec<i16> = mono.iter().copied().map(f32_to_i16).collect();
+            let right: Vec<i16> = right_channel.iter().copied().map(f32_to_i16).collect();
+            encoded.reserve(mp3lame_encoder::max_required_buffer_size(left.len()));
+            encoder
+                .encode_to_vec(
+                    mp3lame_encoder::DualPcm {
+                        left: &left,
+                        right: &right,
+                    },
+                    &mut encoded,
+                )
+                .map_err(|e| format!("{e:?}"))?;
+        }
         target.write_all(&encoded).map_err(|e| e.to_string())?;
     }
     encoded.clear();
-    encoder.flush(&mut encoded).map_err(|e| e.to_string())?;
+    if let Some(encoder) = mono_encoder.as_mut() {
+        encoder.flush(&mut encoded).map_err(|e| e.to_string())?;
+    } else if let Some(encoder) = stereo_encoder.as_mut() {
+        encoder
+            .flush_to_vec::<mp3lame_encoder::FlushNoGap>(&mut encoded)
+            .map_err(|e| format!("{e:?}"))?;
+    }
     target.write_all(&encoded).map_err(|e| e.to_string())?;
     target.sync_all().map_err(|e| e.to_string())?;
     fs::rename(temp, output).map_err(|e| e.to_string())?;
     File::open(output.parent().ok_or("missing_capture_session")?)
         .and_then(|dir| dir.sync_all())
         .map_err(|e| e.to_string())
+}
+
+fn f32_to_i16(value: f32) -> i16 {
+    (value.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16
 }
 
 pub fn remove_source_session(sessions: &Path, segment_id: &str) -> Result<(), String> {
@@ -233,8 +370,8 @@ mod tests {
     }
 
     #[test]
-    fn actual_import_pipeline_produces_mono_64k_for_both_capture_modes() {
-        for system_audio in [false, true] {
+    fn actual_import_pipeline_preserves_note_layout_at_64k() {
+        for (system_audio, channels) in [(false, 1), (true, 2), (false, 2)] {
             let base = std::env::temp_dir().join(format!("exo-mono-test-{}", uuid::Uuid::new_v4()));
             let root = base.join("audio");
             let sessions = base.join("sessions");
@@ -267,6 +404,7 @@ mod tests {
                 "rec-fixture",
                 &upstream,
                 system_audio,
+                channels,
             )
             .unwrap();
             assert!(!source.exists());
@@ -278,15 +416,32 @@ mod tests {
                 .samples::<f32>()
                 .map(Result::unwrap)
                 .collect();
-            let mean =
-                samples.iter().map(|sample| sample.abs()).sum::<f32>() / samples.len() as f32;
-            if system_audio {
-                assert!(mean < 0.03, "system mix was not mono: {mean}");
-            } else {
-                assert!(mean > 0.10, "mic channel was lost: {mean}");
+            let left_mean = samples
+                .iter()
+                .step_by(channels as usize)
+                .map(|sample| sample.abs())
+                .sum::<f32>()
+                / (samples.len() / channels as usize) as f32;
+            assert!(left_mean > 0.10, "mic channel was lost: {left_mean}");
+            if channels == 2 {
+                let right_mean = samples
+                    .iter()
+                    .skip(1)
+                    .step_by(2)
+                    .map(|sample| sample.abs())
+                    .sum::<f32>()
+                    / (samples.len() / 2) as f32;
+                if system_audio {
+                    assert!(right_mean > 0.10);
+                } else {
+                    assert!(
+                        right_mean < 0.03,
+                        "mic-only segment leaked into Them: {right_mean}"
+                    );
+                }
             }
             let spec = hound::WavReader::open(&decoded).unwrap().spec();
-            assert_eq!(spec.channels, 1);
+            assert_eq!(spec.channels, channels as u16);
             assert_eq!(spec.sample_rate, 16_000);
             // MPEG-2 Layer III at 16 kHz uses bitrate index 8 for 64 kb/s.
             // Inspect the produced frame instead of requiring ffprobe on CI.
@@ -310,7 +465,12 @@ mod tests {
             assert_eq!((header >> 17) & 0b11, 0b01, "expected Layer III");
             assert_eq!((header >> 12) & 0b1111, 8, "expected 64 kb/s");
             assert_eq!((header >> 10) & 0b11, 2, "expected 16 kHz");
-            assert_eq!((header >> 6) & 0b11, 3, "expected mono");
+            assert_eq!((header >> 6) & 0b11 == 3, channels == 1);
+            let envelope = channel_envelope(File::open(&note).unwrap()).unwrap();
+            assert!(!envelope.is_empty());
+            if channels == 2 && !system_audio {
+                assert!(envelope.iter().all(|bin| bin[1] < 0.03));
+            }
             fs::remove_dir_all(base).unwrap();
         }
     }

@@ -22,6 +22,7 @@ function harness(failAt?: "part" | "submit" | "result" | "space", noSpeech = fal
     removeItem: (key: string) => { data.delete(key); },
   } });
   const calls: string[] = [];
+  const submits: unknown[] = [];
   const audio = new Uint8Array([1, 2, 3, 4]);
   let failed = false;
   let local: LocalTranscript | null = null;
@@ -60,13 +61,14 @@ function harness(failAt?: "part" | "submit" | "result" | "space", noSpeech = fal
       return json({ ok: true });
     }
     if (path === "/hosted/transcripts" && method === "POST") {
+      submits.push(JSON.parse(String(init?.body)));
       if (failAt === "submit" && !failed) { failed = true; throw new Error("offline"); }
       submitted = true;
       return json({ status: "submitted", id: "handle-1" });
     }
     if (path === "/hosted/transcripts/handle-1" && method === "GET") {
       if (failAt === "result" && !failed) { failed = true; throw new Error("offline"); }
-      return json({ id: "handle-1", status: "completed", utterances: noSpeech ? [] : [{ start: 0, end: 1000, text: "Hello", speaker: "A" }] });
+      return json({ id: "handle-1", status: "completed", utterances: noSpeech ? [] : [{ start: 0, end: 1000, text: "Hello", speaker: recording.channels === 2 ? "1" : "A" }] });
     }
     if (path === "/hosted/transcripts/handle-1/sentences" && method === "GET") return json({ sentences: [] });
     if (path === "/hosted/transcripts/handle-1" && method === "DELETE") return json({ ok: true });
@@ -87,8 +89,18 @@ function harness(failAt?: "part" | "submit" | "result" | "space", noSpeech = fal
       return { ok: true } as Awaited<ReturnType<typeof import("./voiceNoteStore").saveVoiceNoteTranscript>>;
     }, sleep: async () => {},
   });
-  return { calls, recording, track, getLocal: () => local };
+  return { calls, submits, recording, track, getLocal: () => local };
 }
+
+test("Powerful requests multichannel and labels stereo turns Me and Them", async () => {
+  const h = harness();
+  h.recording.channels = 2;
+  const lane = h.track();
+  lane.consent();
+  await lane.run(h.recording);
+  expect(h.submits[0]).toMatchObject({ multichannel: true });
+  expect(h.getLocal()?.segments[0]?.speaker).toBe("Me");
+});
 
 test("a space-only note uses its space audio and can resume without a native recording", async () => {
   const { calls, track } = harness("result", false, true);

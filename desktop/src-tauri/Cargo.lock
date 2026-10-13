@@ -2924,9 +2924,11 @@ version = "0.1.0"
 dependencies = [
  "hound",
  "mp3",
+ "mp3lame-encoder",
  "rustix 1.1.4",
  "serde",
  "serde_json",
+ "symphonia",
 ]
 
 [[package]]

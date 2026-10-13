@@ -223,6 +223,45 @@ describe("the player in a DOM", () => {
     expect(player.q("[data-testid=note-audio-toggle]")).not.toBeNull();
   });
 
+  test("the first gesture routes both channels into one playback channel", async () => {
+    const previous = globalThis.AudioContext;
+    const links: string[] = [];
+    let gains = 0;
+    const gainNodes: { gain: { value: number } }[] = [];
+    const node = (name: string) => ({ connect: (target: { name: string }, output = 0, input = 0) => {
+      links.push(`${name}:${output}->${target.name}:${input}`);
+    }, name });
+    class FakeAudioContext {
+      state = "suspended";
+      destination = node("speakers");
+      createMediaElementSource() { return node("source"); }
+      createChannelSplitter() { return node("splitter"); }
+      createGain() {
+        const gain = Object.assign(node(gains++ === 0 ? "left" : "right"), { gain: { value: 1 } });
+        gainNodes.push(gain);
+        return gain;
+      }
+      createChannelMerger(count: number) { expect(count).toBe(1); return node("mono"); }
+      resume() { links.push("resume"); return Promise.resolve(); }
+      close() { return Promise.resolve(); }
+    }
+    Object.defineProperty(globalThis, "AudioContext", { configurable: true, value: FakeAudioContext });
+    try {
+      const player = await mount({ url: "blob:stereo" });
+      act(() => player.q("[data-testid=note-audio-play]").click());
+      expect(links).toContain("splitter:0->left:0");
+      expect(links).toContain("splitter:1->right:0");
+      expect(links).toContain("left:0->mono:0");
+      expect(links).toContain("right:0->mono:0");
+      expect(links).toContain("mono:0->speakers:0");
+      expect(gainNodes.map((gain) => gain.gain.value)).toEqual([0.5, 0.5]);
+      expect(links).toContain("resume");
+      expect(player.fake.plays).toHaveLength(1);
+    } finally {
+      Object.defineProperty(globalThis, "AudioContext", { configurable: true, value: previous });
+    }
+  });
+
   test("a play the browser refuses ends in Try again, with the cause in the console", async () => {
     logged = spyOn(console, "error").mockImplementation(() => {});
     const player = await mount({ url: "blob:note", durationSecs: 42 });

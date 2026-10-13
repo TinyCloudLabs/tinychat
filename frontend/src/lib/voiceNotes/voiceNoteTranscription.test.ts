@@ -299,6 +299,9 @@ test("Private asks PTX to identify speakers only when enabled, mono, and support
     await h.cloud.transcribe({ sourceId: `rec-${identifySpeakers}-${channelCount}-${diarization}`, capabilities: { ...CAPS, diarization },
       loadAudio: async () => AUDIO, identifySpeakers, channelCount }, () => {});
     expect(h.creates[0]?.body.diarize).toBe(identifySpeakers && channelCount === 1 && diarization ? true : undefined);
+    expect(h.creates[0]?.body).toMatchObject(channelCount === 2
+      ? { channel_mode: "separate", channel_labels: ["Me", "Them"] }
+      : { channel_mode: "mixed", channel_labels: ["Exo voice note"] });
   }
 });
 
@@ -735,6 +738,13 @@ describe("per device capability and per account storage", () => {
 });
 
 describe("transcript normalization", () => {
+  test("stereo Private segments retain Me and Them through the saved transcript", () => {
+    const transcript: PrivateCloudTranscript = { ...TRANSCRIPT, channels: 2, diarized: false,
+      segments: [{ channel: 1, start: 2, end: 3, text: "Reply" }, { channel: 0, start: 0, end: 1, text: "Question" }] };
+    const saved = prepareVoiceNoteTranscript(transcript, "2026-10-13T00:00:00Z", 1);
+    expect(saved.sentences.map((sentence) => [sentence.speaker_name, sentence.text])).toEqual([["Me", "Question"], ["Them", "Reply"]]);
+    expect(saved.metadata.speaker_labels).toBe("channels");
+  });
   test("diarized Private turns retain their speaker labels", () => {
     const transcript: PrivateCloudTranscript = {
       ...TRANSCRIPT, diarized: true,

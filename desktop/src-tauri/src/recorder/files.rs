@@ -29,6 +29,7 @@ pub fn import_segment(
     segment_id: &str,
     path: &Path,
     system_audio: bool,
+    layout: super::journal::Layout,
 ) -> Result<(), String> {
     normalize_and_import_at(
         &root(app)?,
@@ -37,6 +38,7 @@ pub fn import_segment(
         segment_id,
         path,
         system_audio,
+        layout.channels(),
     )
 }
 
@@ -237,6 +239,21 @@ pub async fn recorder_whisper_stage_audio(
     tauri::async_runtime::spawn_blocking(move || stage_whisper_at(&dir, &sessions, &id, &stage_id))
         .await
         .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn recorder_audio_envelope(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<Vec<[f32; 2]>, String> {
+    super::ensure(&app);
+    let dir = root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let file = open_read(&dir, &id)?;
+        exo_local_transcription::audio_import::channel_envelope(file)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn whisper_stage_id(id: &str) -> Result<String, String> {

@@ -8,7 +8,7 @@
 //   - consecutive same-speaker segments merge into one turn, and no turn
 //     (continuous speech included) spans more than MAX_TURN_SECONDS;
 //   - a mic chunk whose every word repeats system audio from the same moment
-//     is dropped whole (kept as Others), tolerating plurals and words Whisper
+//     is dropped whole (kept as Them), tolerating plurals and words Whisper
 //     dropped, once the recording shows a stable small echo lag;
 //   - part of a mic chunk is never dropped: echo mixed with the user's own
 //     words in one chunk, in either order, keeps the whole chunk, including a
@@ -89,16 +89,25 @@ function micWordsBetween(words: Iterable<LocalWord>, from: number, to: number): 
 }
 
 describe("localChannelLabel", () => {
-  test("mic is You, system audio is Others, other channels are numbered", () => {
-    expect(localChannelLabel(MIC)).toBe("You");
-    expect(localChannelLabel(SYS)).toBe("Others");
+  test("mic is Me, system audio is Them, other channels are numbered", () => {
+    expect(localChannelLabel(MIC)).toBe("Me");
+    expect(localChannelLabel(SYS)).toBe("Them");
     expect(localChannelLabel(2)).toBe("Speaker 3");
     expect(localChannelLabel(undefined)).toBeNull();
   });
 });
 
 describe("localTranscriptTurns: echo", () => {
-  test("mic echo of system audio is dropped and the words stay with Others (no word-by-word interleave)", () => {
+  test("overlapping duplicate words keep the louder channel", () => {
+    const first = "Ship the release on Thursday.";
+    const second = "Blue kites fly over the harbor.";
+    const mic = [...chunk(MIC, 0.2, 3.1, first), ...chunk(MIC, 8.2, 11.1, second)]
+      .map((word) => ({ ...word, loudness: 0.4 }));
+    const system = [...chunk(SYS, 0, 3, first), ...chunk(SYS, 8, 11, second)]
+      .map((word) => ({ ...word, loudness: 0.1 }));
+    expect(lines(recording(mic, system))).toEqual([`Me: ${first} ${second}`]);
+  });
+  test("mic echo of system audio is dropped and the words stay with Them (no word-by-word interleave)", () => {
     const first = "Ship the release on Thursday. Blue kites fly over the harbor.";
     const second = "Deploy the canary build tonight.";
     const words = recording(
@@ -108,7 +117,7 @@ describe("localTranscriptTurns: echo", () => {
       chunk(MIC, 8.2, 11.1, second),
     );
 
-    expect(lines(words)).toEqual([`Others: ${first} ${second}`]);
+    expect(lines(words)).toEqual([`Them: ${first} ${second}`]);
     expect(findMicEcho(words).size).toBe(16);
   });
 
@@ -121,7 +130,7 @@ describe("localTranscriptTurns: echo", () => {
       chunk(MIC, 5.2, 8.1, "Purple elephant dance Tuesday."),
     );
 
-    expect(lines(words)).toEqual(["Others: Ship the release on Thursday. Purple elephants dance on Tuesday."]);
+    expect(lines(words)).toEqual(["Them: Ship the release on Thursday. Purple elephants dance on Tuesday."]);
   });
 
   test("a mic chunk with any word the system audio does not explain is kept whole", () => {
@@ -134,8 +143,8 @@ describe("localTranscriptTurns: echo", () => {
 
     expect(findMicEcho(words).size).toBe(11);
     expect(lines(words)).toEqual([
-      "Others: Ship the release on Thursday. Blue kites fly over the harbor. Purple elephants dance on Tuesday.",
-      "You: Purple elephants dance on the Tuesday.",
+      "Them: Ship the release on Thursday. Blue kites fly over the harbor. Purple elephants dance on Tuesday.",
+      "Me: Purple elephants dance on the Tuesday.",
     ]);
   });
 
@@ -152,8 +161,8 @@ describe("localTranscriptTurns: echo", () => {
 
         expect(micWordsBetween(findMicEcho(words), 0, 10)).toHaveLength(0);
         expect(micWordsBetween(findMicEcho(words), 100, 110)).toHaveLength(11);
-        expect(lines(words)[0]).toBe(`Others: ${echoed}`);
-        expect(lines(words)).toContain(`You: ${micText}`);
+        expect(lines(words)[0]).toBe(`Them: ${echoed}`);
+        expect(lines(words)).toContain(`Me: ${micText}`);
       }
     }
   });
@@ -168,8 +177,8 @@ describe("localTranscriptTurns: echo", () => {
 
     expect(findMicEcho(words).size).toBe(11);
     expect(lines(words)).toEqual([
-      "Others: Ship the release on Thursday. Blue kites fly over the harbor. Purple elephants dance on Tuesday.",
-      "You: Purple elephants prance on Tuesday.",
+      "Them: Ship the release on Thursday. Blue kites fly over the harbor. Purple elephants dance on Tuesday.",
+      "Me: Purple elephants prance on Tuesday.",
     ]);
   });
 
@@ -180,8 +189,8 @@ describe("localTranscriptTurns: echo", () => {
     );
 
     expect(lines(words)).toEqual([
-      "Others: Purple elephants dance on Tuesday.",
-      "You: Perfect. I look for the dance on.",
+      "Them: Purple elephants dance on Tuesday.",
+      "Me: Perfect. I look for the dance on.",
     ]);
   });
 
@@ -196,10 +205,10 @@ describe("localTranscriptTurns: echo", () => {
     );
 
     expect(lines(words)).toEqual([
-      "You: Good morning everyone.",
-      "Others: Ship the release on Thursday.",
-      "You: Let us begin with the demo.",
-      "Others: Blue kites fly over the harbor.",
+      "Me: Good morning everyone.",
+      "Them: Ship the release on Thursday.",
+      "Me: Let us begin with the demo.",
+      "Them: Blue kites fly over the harbor.",
     ]);
   });
 
@@ -222,12 +231,12 @@ describe("localTranscriptTurns: echo", () => {
       expect(micWordsBetween(findMicEcho(words), 100, 110)).toHaveLength(11);
     }
     expect(lines(echoThenUser).slice(0, 2)).toEqual([
-      "Others: Deploy the canary build tonight.",
-      "You: Deploy the canary build tonight. I will check.",
+      "Them: Deploy the canary build tonight.",
+      "Me: Deploy the canary build tonight. I will check.",
     ]);
     expect(lines(userThenEcho).slice(0, 2)).toEqual([
-      "You: I will check. Deploy the canary build tonight.",
-      "Others: Deploy the canary build tonight.",
+      "Me: I will check. Deploy the canary build tonight.",
+      "Them: Deploy the canary build tonight.",
     ]);
   });
 
@@ -242,8 +251,8 @@ describe("localTranscriptTurns: echo", () => {
     );
 
     expect(lines(words)).toEqual([
-      "You: I can hear you now. Deploy the canary build tonight.",
-      "Others: Deploy the canary build tonight. Ship the release on Thursday. Blue kites fly over the harbor.",
+      "Me: I can hear you now. Deploy the canary build tonight.",
+      "Them: Deploy the canary build tonight. Ship the release on Thursday. Blue kites fly over the harbor.",
     ]);
   });
 });
@@ -256,8 +265,8 @@ describe("localTranscriptTurns: distinct speech is never dropped", () => {
     );
 
     expect(lines(words)).toEqual([
-      "You: Can you send me the deck after this call?",
-      "Others: Sure, I will send the deck right after lunch.",
+      "Me: Can you send me the deck after this call?",
+      "Them: Sure, I will send the deck right after lunch.",
     ]);
   });
 
@@ -269,8 +278,8 @@ describe("localTranscriptTurns: distinct speech is never dropped", () => {
 
     expect(findMicEcho(words).size).toBe(0);
     expect(lines(words)).toEqual([
-      "Others: Okay, sounds good to me.",
-      "You: Yeah, okay, sounds good to me.",
+      "Them: Okay, sounds good to me.",
+      "Me: Yeah, okay, sounds good to me.",
     ]);
   });
 
@@ -294,8 +303,8 @@ describe("localTranscriptTurns: distinct speech is never dropped", () => {
     );
 
     expect(lines(words)).toEqual([
-      "Others: Ship the release on Thursday. Blue kites fly over the harbor. Monday or Friday?",
-      "You: Friday.",
+      "Them: Ship the release on Thursday. Blue kites fly over the harbor. Monday or Friday?",
+      "Me: Friday.",
     ]);
   });
 
@@ -316,10 +325,10 @@ describe("localTranscriptTurns: distinct speech is never dropped", () => {
     expect(2 / 17).toBeLessThan(ECHO_MIN_SHARE);
     expect(findMicEcho(words).size).toBe(0);
     expect(lines(words).slice(0, 4)).toEqual([
-      "Others: Friday at noon?",
-      "You: Friday at noon.",
-      "Others: Meet on the third floor?",
-      "You: Third floor.",
+      "Them: Friday at noon?",
+      "Me: Friday at noon.",
+      "Them: Meet on the third floor?",
+      "Me: Third floor.",
     ]);
   });
 
@@ -335,8 +344,8 @@ describe("localTranscriptTurns: distinct speech is never dropped", () => {
 
     expect(micWordsBetween(findMicEcho(words), 0, 20)).toHaveLength(0);
     expect(lines(words).slice(0, 2)).toEqual([
-      "You: I will check. Friday at noon.",
-      "Others: Friday at noon?",
+      "Me: I will check. Friday at noon.",
+      "Them: Friday at noon?",
     ]);
   });
 
@@ -356,12 +365,12 @@ describe("localTranscriptTurns: distinct speech is never dropped", () => {
     );
 
     expect(lines(words)).toEqual([
-      "Others: Ship the release on Thursday. Blue kites fly over the harbor. Friday at noon?",
-      "You: Friday at noon.",
-      "Others: Meet on the third floor?",
-      "You: Third floor.",
-      "Others: Send the budget draft tonight.",
-      "You: Send the budget draft tonight.",
+      "Them: Ship the release on Thursday. Blue kites fly over the harbor. Friday at noon?",
+      "Me: Friday at noon.",
+      "Them: Meet on the third floor?",
+      "Me: Third floor.",
+      "Them: Send the budget draft tonight.",
+      "Me: Send the budget draft tonight.",
     ]);
   });
 
@@ -394,7 +403,7 @@ describe("localTranscriptTurns: distinct speech is never dropped", () => {
     const words = recording(chunk(SYS, 0, 3, text), chunk(MIC, 0.2, 3.1, text));
 
     expect(findMicEcho(words).size).toBe(0);
-    expect(lines(words)).toEqual([`Others: ${text}`, `You: ${text}`]);
+    expect(lines(words)).toEqual([`Them: ${text}`, `Me: ${text}`]);
   });
 
   test("a repeat after the echo was matched is kept: each system word explains one mic phrase", () => {
@@ -407,8 +416,8 @@ describe("localTranscriptTurns: distinct speech is never dropped", () => {
     );
 
     expect(lines(words)).toEqual([
-      "Others: Ship the release on Thursday. Deploy the canary tonight.",
-      "You: Deploy the canary tonight?",
+      "Them: Ship the release on Thursday. Deploy the canary tonight.",
+      "Me: Deploy the canary tonight?",
     ]);
   });
 
@@ -419,8 +428,8 @@ describe("localTranscriptTurns: distinct speech is never dropped", () => {
     );
 
     expect(lines(words)).toEqual([
-      "Others: Blue kites fly over the harbor.",
-      "You: Blue kites fly over the harbor.",
+      "Them: Blue kites fly over the harbor.",
+      "Me: Blue kites fly over the harbor.",
     ]);
   });
 
@@ -428,7 +437,7 @@ describe("localTranscriptTurns: distinct speech is never dropped", () => {
     const words = recording(...cleanEchoes(0));
     const turns = localTranscriptTurns(words);
 
-    expect(turns.map((s) => s.speaker_name)).toEqual(["Others"]);
+    expect(turns.map((s) => s.speaker_name)).toEqual(["Them"]);
     for (const w of findMicEcho(words)) expect(w.channel).toBe(MIC);
   });
 });
@@ -445,9 +454,9 @@ describe("localTranscriptTurns: turns", () => {
 
     const turns = localTranscriptTurns(words);
     expect(turns.map((s) => `${s.speaker_name}: ${s.text}`)).toEqual([
-      "You: First point. Second point.",
-      "Others: Got it, thanks.",
-      "You: Third point.",
+      "Me: First point. Second point.",
+      "Them: Got it, thanks.",
+      "Me: Third point.",
     ]);
     expect(turns.map((s) => s.index)).toEqual([0, 1, 2]);
     expect(turns[0]).toMatchObject({ start_time: 0, end_time: 7.9 });
@@ -459,7 +468,7 @@ describe("localTranscriptTurns: turns", () => {
 
     expect(turns.length).toBeGreaterThan(1);
     for (const t of turns) {
-      expect(t.speaker_name).toBe("You");
+      expect(t.speaker_name).toBe("Me");
       expect(t.end_time - t.start_time).toBeLessThanOrEqual(MAX_TURN_SECONDS);
     }
     expect(turns.map((t) => t.text).join(" ")).toBe(
@@ -474,20 +483,20 @@ describe("localTranscriptTurns: turns", () => {
 
     expect(turns.length).toBeGreaterThanOrEqual(2);
     for (const t of turns) {
-      expect(t.speaker_name).toBe("Others");
+      expect(t.speaker_name).toBe("Them");
       expect(t.end_time - t.start_time).toBeLessThanOrEqual(MAX_TURN_SECONDS);
     }
     expect(turns.map((t) => t.text).join(" ")).toBe(texts.join(" "));
   });
 
-  test("a mic-only recording is all You, merged into one turn", () => {
+  test("a mic-only recording is all Me, merged into one turn", () => {
     const words = recording(chunk(MIC, 0, 3, "Testing one two."), chunk(MIC, 6, 9, "Still testing."));
-    expect(lines(words)).toEqual(["You: Testing one two. Still testing."]);
+    expect(lines(words)).toEqual(["Me: Testing one two. Still testing."]);
   });
 
-  test("a system-audio-only recording is all Others", () => {
+  test("a system-audio-only recording is all Them", () => {
     const words = recording(chunk(SYS, 0, 3, "Welcome to the webinar."), chunk(SYS, 4, 6, "Let us start."));
-    expect(lines(words)).toEqual(["Others: Welcome to the webinar. Let us start."]);
+    expect(lines(words)).toEqual(["Them: Welcome to the webinar. Let us start."]);
   });
 
   test("words without a channel keep a null speaker and are never matched as echo", () => {
@@ -497,7 +506,7 @@ describe("localTranscriptTurns: turns", () => {
     expect(findMicEcho(words).size).toBe(0);
     expect(localTranscriptTurns(words).map((s) => [s.speaker_name, s.text])).toEqual([
       [null, text],
-      ["Others", text],
+      ["Them", text],
     ]);
   });
 
@@ -505,7 +514,7 @@ describe("localTranscriptTurns: turns", () => {
     const text = "Ship the release on Thursday.";
     const words = recording(chunk(2, 0, 3, text), chunk(SYS, 0.1, 3.1, text));
 
-    expect(lines(words)).toEqual([`Speaker 3: ${text}`, `Others: ${text}`]);
+    expect(lines(words)).toEqual([`Speaker 3: ${text}`, `Them: ${text}`]);
   });
 
   test("no words yield no turns", () => {
@@ -538,7 +547,7 @@ describe("localTranscriptTurns: scale", () => {
     const turns = localTranscriptTurns(words);
     const elapsed = performance.now() - started;
 
-    expect(turns.every((t) => t.speaker_name === "Others")).toBe(true);
+    expect(turns.every((t) => t.speaker_name === "Them")).toBe(true);
     expect(turns.every((t) => t.end_time - t.start_time <= MAX_TURN_SECONDS)).toBe(true);
     expect(turns.length).toBeGreaterThanOrEqual(8 * 60);
     expect(elapsed).toBeLessThan(3_000);

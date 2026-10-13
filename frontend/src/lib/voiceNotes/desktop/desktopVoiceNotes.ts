@@ -23,7 +23,7 @@ type NativeStatus = Omit<CaptureStatus, "spans" | "openSpan" | "transitionGen"> 
 type NativeAutoStop = { id: string; reason: "max_duration"; maxDurationMs: number; at: number; elapsedMs: number; pausedMs: number;
   spans?: MissingAudioSpan[] };
 type NativeJournal = { id: string; startedAt: number; recordedMs: number; pausedMs: number; maxDurationMs: number;
-  spans?: MissingAudioSpan[] };
+  spans?: MissingAudioSpan[]; layout?: "mono" | "stereo" };
 type NativeFailed = { id: string; segmentId: string; reason: string; error: string; journal: NativeJournal };
 type NativeRecoveryReport = { journal: NativeJournal | null; quarantined: NativeFailed[] };
 
@@ -153,6 +153,10 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
           owner: null, transitionGen: defaults.transitionGen,
           options: { transcriber: capabilities.desktopWhisper ? "on-device" : "off", identifySpeakers: false }, mimeType: "audio/mpeg",
           input: null, maxDurationMs: native.maxDurationMs });
+        if (native.channels) {
+          await store.updateSession(session.id, { channels: native.channels });
+          session.channels = native.channels;
+        }
       }
       const spans = mergeSpans(session.spans, native.spans);
       if (spans.length !== session.spans.length) {
@@ -224,6 +228,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     const firstAudioAt = bytes > 0 ? current.session.firstAudioAt ?? native.startedAt ?? now() : null;
     const patch: Partial<SessionRecord> = {
       bytes, audioMs: native.audioMs, pausedMs: native.pausedMs, firstAudioAt,
+      channels: native.channels ?? current.session.channels,
       lastHeartbeatAt: now(), spans: mergeSpans(current.session.spans, native.spans),
     };
     await store.updateSession(current.session.id, patch);
@@ -363,14 +368,15 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       const defaults = await store.getCaptureDefaults();
       await store.beginSession({ id: imported.id, startedAt: imported.startedAt, source: "in_app", owner: null,
         transitionGen: defaults.transitionGen, options: { transcriber: capabilities.desktopWhisper ? "on-device" : "off", identifySpeakers: false },
-        mimeType: "audio/mpeg", input: null, maxDurationMs: imported.maxDurationMs });
+        mimeType: "audio/mpeg", input: null, maxDurationMs: imported.maxDurationMs,
+        channels: imported.layout === "stereo" ? 2 : 1 });
     }
     if (imported) {
       const session = await store.getSession(imported.id);
       const size = await store.audio.size(imported.id);
       if (session) {
         const spans = mergeSpans(session.spans, imported.spans);
-        if (spans.length !== session.spans.length) await store.updateSession(imported.id, { spans });
+        await store.updateSession(imported.id, { spans, channels: imported.layout === "stereo" ? 2 : 1 });
       }
       if (session && size > session.bytes) {
         const pausedThrough = session.pauseStartedAt === null ? session.pausedMs

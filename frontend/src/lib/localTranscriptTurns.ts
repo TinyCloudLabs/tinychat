@@ -97,14 +97,15 @@ export interface LocalWord {
   start: number;
   end: number;
   channel: number | undefined;
+  loudness?: number;
 }
 
-/** "You" for the mic, "Others" for system audio, numbered for any other
+/** "Me" for the mic, "Them" for system audio, numbered for any other
  *  channel, and no speaker when the word carries no channel. */
 export function localChannelLabel(channel: number | undefined): string | null {
   if (channel === undefined) return null;
-  if (channel === MIC_CHANNEL) return "You";
-  if (channel === SYSTEM_CHANNEL) return "Others";
+  if (channel === MIC_CHANNEL) return "Me";
+  if (channel === SYSTEM_CHANNEL) return "Them";
   return `Speaker ${channel + 1}`;
 }
 
@@ -216,6 +217,7 @@ function median(values: readonly number[]): number {
 
 interface EchoMatch {
   unit: LocalWord[];
+  systemWords: LocalWord[];
   /** Median mic-minus-system start time over the aligned word pairs. */
   lag: number;
 }
@@ -285,6 +287,7 @@ function matchEchoUnits(
 
     matches.push({
       unit,
+      systemWords: pairs.map(([, c]) => system[candidates[c]!]!),
       lag: median(pairs.map(([t, c]) => unit[t]!.start - system[candidates[c]!]!.start)),
     });
     for (const [, c] of pairs) used[candidates[c]!] = true;
@@ -316,7 +319,7 @@ function matchEchoUnits(
  * ECHO_MAX_CANDIDATES system-audio words. `words` must be sorted by start
  * time. Recordings without both channels have no echo.
  */
-export function findMicEcho(words: readonly LocalWord[]): Set<LocalWord> {
+function findEchoWords(words: readonly LocalWord[], preferLouder: boolean): Set<LocalWord> {
   const echo = new Set<LocalWord>();
   const mic = words.filter((w) => w.channel === MIC_CHANNEL);
   const system = words.filter((w) => w.channel === SYSTEM_CHANNEL);
@@ -337,8 +340,16 @@ export function findMicEcho(words: readonly LocalWord[]): Set<LocalWord> {
   );
   const echoable = unitsOf(system).filter((unit) => contentWords(unit) >= ECHO_MIN_CONTENT_MATCHES).length;
   if (confirmed.length < ECHO_MIN_UNITS || confirmed.length < ECHO_MIN_SHARE * echoable) return echo;
-  for (const { unit } of confirmed) for (const w of unit) echo.add(w);
+  for (const { unit, systemWords } of confirmed) {
+    const micPower = unit.reduce((sum, word) => sum + (word.loudness ?? 0), 0) / unit.length;
+    const systemPower = systemWords.reduce((sum, word) => sum + (word.loudness ?? 0), 0) / systemWords.length;
+    for (const word of preferLouder && micPower > systemPower ? systemWords : unit) echo.add(word);
+  }
   return echo;
+}
+
+export function findMicEcho(words: readonly LocalWord[]): Set<LocalWord> {
+  return findEchoWords(words, false);
 }
 
 interface Turn {
@@ -358,7 +369,7 @@ export function localTranscriptTurns(
   words: readonly LocalWord[], options: { echo?: "off"; detail?: boolean } = {},
 ): FirefliesSentence[] {
   if (options.echo !== undefined && options.echo !== "off") throw new Error("B0 echo policy has not landed");
-  const echo = options.echo === "off" ? new Set<LocalWord>() : findMicEcho(words);
+  const echo = options.echo === "off" ? new Set<LocalWord>() : findEchoWords(words, true);
 
   // Segments are created in order of their first word, i.e. by start time.
   const segments: Turn[] = [];
@@ -414,10 +425,10 @@ export function localTranscriptTurns(
 
 /** Extract the existing per-channel normalization and its no-timing fallback. */
 export function localTranscriptSentences(
-  response: BatchResponse, options: { detail?: boolean; echo?: "off" } = {},
+  response: BatchResponse, options: { detail?: boolean; echo?: "off"; loudness?: (channel: number, start: number, end: number) => number } = {},
 ): FirefliesSentence[] {
   const words: LocalWord[] = [];
-  for (const channel of response.results?.channels ?? []) {
+  for (const [channelIndex, channel] of (response.results?.channels ?? []).entries()) {
     const alt = channel.alternatives?.[0];
     for (const w of alt?.words ?? []) {
       const text = (w.punctuated_word ?? w.word ?? "").trim();
@@ -425,7 +436,9 @@ export function localTranscriptSentences(
       const start = Number.isFinite(w.start) ? w.start : null;
       const end = Number.isFinite(w.end) ? w.end : null;
       if (start === null || end === null) continue;
-      words.push({ text, start, end, channel: w.channel });
+      const index = w.channel ?? channelIndex;
+      words.push({ text, start, end, channel: index,
+        ...(options.loudness ? { loudness: options.loudness(index, start, end) } : {}) });
     }
   }
   const sentences = localTranscriptTurns(words.sort((a, b) => a.start - b.start), options);
