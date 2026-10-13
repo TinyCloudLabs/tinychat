@@ -1,5 +1,13 @@
 # exo-desktop
 
+## 0.6.0-beta.43
+
+### Patch Changes
+
+- 73cc903: Show Android Private upload status errors with a retry without delaying the app's first paint, and classify missing desktop audio by its IO error kind.
+- d6c97cd: Disclose Private transcription and Mac system audio capture before use, and require existing Private consents to be confirmed again.
+- 14daf66: Honor the saved Local transcription mode and enable speaker identification for Private voice notes.
+
 ## 0.6.0-beta.42
 
 ### Patch Changes
