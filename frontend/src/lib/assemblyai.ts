@@ -3,7 +3,7 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { FirefliesSentence } from "./connectors/firefliesClient";
 import { REAL_CLOCK, type CloudClock } from "./privateCloud";
 
-export type AssemblyAiErrorKind = "invalid-key" | "network" | "rate-limited" | "rejected" | "failed" | "not-found";
+export type AssemblyAiErrorKind = "invalid-key" | "network" | "rate-limited" | "rejected" | "failed" | "not-found" | "needs-reconciliation";
 
 export class AssemblyAiError extends Error {
   readonly kind: AssemblyAiErrorKind;
@@ -95,6 +95,7 @@ async function hostedError(response: Response): Promise<AssemblyAiError> {
   const code = await hostedErrorCode(response);
   if (response.status === 401) return new AssemblyAiError("rejected", "Your session expired. Sign in again, then retry.");
   if (response.status === 404) return new AssemblyAiError("not-found", "AssemblyAI no longer has this transcript.");
+  if (code === "assemblyai_needs_reconciliation") return new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI.");
   if (code === "assemblyai_quota_exceeded") {
     const reset = response.headers.get("Retry-After");
     const hours = reset && Number.isFinite(Number(reset)) ? Math.max(1, Math.ceil(Number(reset) / 3600)) : null;
@@ -118,7 +119,7 @@ async function hostedError(response: Response): Promise<AssemblyAiError> {
 }
 
 interface HostedSubmission {
-  status: "missing" | "receiving" | "submitting" | "submitted" | "failed" | "uncertain" | "deleted";
+  status: "missing" | "receiving" | "submitting" | "submitted" | "failed" | "needs_reconciliation" | "deleted";
   id?: string;
   upload_id?: string;
   error?: { code?: string } | null;
@@ -213,8 +214,8 @@ export function createHostedAssemblyAiClient(config: {
       const created = (await request("/hosted/uploads", { method: "POST", json: { byte_size: size, content_type: contentType, ...(sourceId ? { source_id: sourceId } : {}) } }).then((r) => r.json())) as { upload_id?: unknown; part_size?: unknown; status?: HostedSubmission["status"]; id?: string };
       if (typeof created.upload_id !== "string" || typeof created.part_size !== "number" || created.part_size <= 0)
         throw new AssemblyAiError("failed", "Exo's server returned an unexpected upload.");
-      if (created.status === "uncertain" || created.status === "deleted")
-        throw new AssemblyAiError("failed", "This note's previous submission needs support to reconcile safely.");
+      if (created.status === "needs_reconciliation")
+        throw new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI.");
       return { uploadId: created.upload_id, partSize: created.part_size, status: created.status, id: created.id };
     },
 

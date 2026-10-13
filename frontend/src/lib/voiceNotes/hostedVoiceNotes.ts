@@ -76,7 +76,27 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
   const jobs = new Map<string, NoteTranscriptionState>();
   const listeners = new Set<() => void>();
   const active = new Set<string>();
+  const reconciliationChecks = new Map<string, ReturnType<typeof setTimeout>>();
   const notify = () => { for (const listener of listeners) listener(); };
+  const watchReconciliation = (id: string, generation: number) => {
+    if (reconciliationChecks.has(id)) return;
+    const check = async () => {
+      reconciliationChecks.delete(id);
+      if (currentAccountGeneration() !== generation || tcw().did !== did) return;
+      try {
+        const job = await client.lookupJob(id);
+        if (job.status !== "needs_reconciliation") {
+          jobs.set(id, { kind: "failed", message: "Exo reconciled the earlier attempt. Try again.", retryable: true, reference: null, code: "reconciled" });
+          notify();
+          return;
+        }
+      } catch { /* A read failure does not authorize another paid submission. */ }
+      watchReconciliation(id, generation);
+    };
+    const timer = setTimeout(() => { void check(); }, 30_000);
+    (timer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
+    reconciliationChecks.set(id, timer);
+  };
   const consented = () => storage()?.getItem(`${CONSENT}:${did}`) === "1";
   const state = (id: string, status: VoiceNoteTranscriptionStatus) => {
     logPipeline(status.kind === "uploading" ? "transcription_audio_upload" : "transcription",
@@ -98,6 +118,8 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
   const run = async (recording: Pick<VoiceNoteRecording, "id" | "owner" | "source" | "options" | "startedAt" | "sizeBytes" | "mimeType" | "durationMs">) => {
     const id = recording.id;
     if (active.has(id) || jobs.get(id)?.kind === "done" || !consented() || (recording.owner && recording.owner !== did) || recording.source !== "in_app" || recording.options?.transcriber !== "assemblyai") return;
+    const pendingCheck = reconciliationChecks.get(id);
+    if (pendingCheck) { clearTimeout(pendingCheck); reconciliationChecks.delete(id); }
     active.add(id);
     logPipeline("transcription", id, "start", { engine: "assemblyai" });
     const generation = currentAccountGeneration();
@@ -146,8 +168,10 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         let reconciled: Awaited<ReturnType<typeof client.lookupJob>> | null = null;
         const reconcile = async () => {
           const job = await client.lookupJob(id);
-          if (job.status === "uncertain" || job.status === "deleted")
-            throw new AssemblyAiError("failed", "This note's previous submission needs support to reconcile safely.");
+          if (job.status === "needs_reconciliation")
+            throw new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI.");
+          if (job.status === "deleted")
+            throw new AssemblyAiError("rejected", "This note's earlier transcript was deleted. Contact support before retrying.");
           reconciled = job;
           return job;
         };
@@ -329,9 +353,10 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       const message = error instanceof AssemblyAiError ? error.message
         : error instanceof Error && error.message.startsWith("The transcript is ready") ? error.message
         : "Powerful couldn't finish this transcript. Try again.";
-      jobs.set(id, { kind: "failed", message, retryable: true, reference: null,
+      jobs.set(id, { kind: "failed", message, retryable: !(error instanceof AssemblyAiError && error.kind === "needs-reconciliation"), reference: null,
         code: error instanceof AssemblyAiError ? error.kind : "transcription_error" });
       notify();
+      if (error instanceof AssemblyAiError && error.kind === "needs-reconciliation") watchReconciliation(id, generation);
     } finally { active.delete(id); }
   };
   return {

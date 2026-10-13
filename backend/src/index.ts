@@ -52,7 +52,7 @@ import { createConnectorMeetingsRouter } from "./routes/connector-meetings.js";
 import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oauth.js";
 import { createTranscriberRouter } from "./routes/transcriber.js";
 import { createTranscriberWebhookRouter } from "./routes/transcriber-webhook.js";
-import { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter } from "./routes/assemblyai-hosted.js";
+import { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, reconcileHostedJobs } from "./routes/assemblyai-hosted.js";
 import {
   DEFAULT_MAX_CONCURRENT_UPLOADS,
   HostedUploadStore,
@@ -1004,6 +1004,7 @@ async function main() {
   if (assemblyAiHosted.hosted) {
     hostedUploads = new HostedUploadStore(assemblyAiHosted.spoolDir, assemblyAiHosted.dailyBytes, DEFAULT_MAX_CONCURRENT_UPLOADS);
     await hostedUploads.init();
+    await reconcileHostedJobs(assemblyAiHosted, hostedUploads);
     const sweeper = hostedUploads;
     setInterval(() => {
       sweeper.sweep(Date.now()).catch(() => console.error("[assemblyai-hosted] sweep failed alert=true"));

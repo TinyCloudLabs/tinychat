@@ -139,6 +139,16 @@ test("a space-only note uses its space audio and can resume without a native rec
   expect(calls.indexOf("space:save")).toBeLessThan(calls.indexOf("DELETE /hosted/transcripts/handle-1"));
 });
 
+test("a paid outcome needing reconciliation blocks the note without another upload or automatic retry", async () => {
+  const h = harness();
+  h.setServerJob({ status: "needs_reconciliation", upload_id: "upload-1" });
+  const lane = h.track(); lane.consent();
+  await lane.run(h.recording);
+  expect(lane.jobs.get("note-1")).toMatchObject({ kind: "failed", retryable: false,
+    message: "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI." });
+  expect(h.calls.some((call) => call === "POST /hosted/uploads" || call === "POST /hosted/transcripts")).toBe(false);
+});
+
 test("Powerful keeps a no-speech result before deleting the server copy", async () => {
   const { calls, recording, track, getLocal } = harness(undefined, true);
   const lane = track(); lane.consent();

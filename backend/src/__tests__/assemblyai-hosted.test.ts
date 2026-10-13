@@ -27,7 +27,7 @@ import { createUploadRunner, type PendingUpload, type UploadDeps } from "../../.
 import { localValidationFromEnv } from "../local-validation.js";
 import { createAuthMiddleware } from "../middleware/auth.js";
 import { ASSEMBLYAI_HOSTED_UPLOAD_LIMIT, TRANSCRIBER_LIMIT, applyRateLimiters } from "../rate-limits.js";
-import { ASSEMBLYAI_HOSTED_ERRORS, ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, isHostedPartPath } from "../routes/assemblyai-hosted.js";
+import { ASSEMBLYAI_HOSTED_ERRORS, ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, isHostedPartPath, reconcileHostedJobs } from "../routes/assemblyai-hosted.js";
 import {
   DEFAULT_DAILY_BYTES,
   HOSTED_PART_SIZE,
@@ -152,8 +152,8 @@ async function setup(options: { answer?: Answer; config?: AssemblyAiHostedConfig
     return tokens.get(address)!;
   };
 
-  async function req(method: string, path: string, opts: { as?: string; body?: unknown; raw?: Uint8Array; contentType?: string } = {}) {
-    const headers: Record<string, string> = { Authorization: `Bearer ${await tokenFor(opts.as ?? ADDRESS_A)}`, "X-Requested-With": "XMLHttpRequest" };
+  async function req(method: string, path: string, opts: { as?: string; body?: unknown; raw?: Uint8Array; contentType?: string; headers?: Record<string, string> } = {}) {
+    const headers: Record<string, string> = { Authorization: `Bearer ${await tokenFor(opts.as ?? ADDRESS_A)}`, "X-Requested-With": "XMLHttpRequest", ...opts.headers };
     let body: BodyInit | undefined;
     if (opts.raw) {
       headers["Content-Type"] = opts.contentType ?? "application/octet-stream";
@@ -192,7 +192,7 @@ async function setup(options: { answer?: Answer; config?: AssemblyAiHostedConfig
   }
 
   return { base, tokenFor, req, createUpload, upload, submit, calls, logs, clock, store, spoolDir,
-    spoolFiles: () => readdirSync(spoolDir).filter((name) => name !== ".hosted-writer.lock" && name !== ".hosted-boot-id") };
+    spoolFiles: () => readdirSync(spoolDir).filter((name) => name !== ".hosted-writer.lock" && name !== ".hosted-boot-id" && name !== "spool.json") };
 }
 
 function audio(bytes: number): Uint8Array {
@@ -238,15 +238,76 @@ describe("Exo note idempotency", () => {
     closers.push(() => rmSync(dir, { recursive: true, force: true }));
     const sourceId = "partial-note";
     const key = createHash("sha256").update(JSON.stringify([ADDRESS_A, sourceId])).digest("hex");
+    writeFileSync(join(dir, "spool.json"), JSON.stringify({ installId: "test-install", createdAt: new Date().toISOString() }));
     writeFileSync(join(dir, `note-${key}.json`), '{"address":');
     const first = new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4);
     await first.init();
     expect(readdirSync(dir).some((name) => name.startsWith(`note-${key}.json.`) && name.endsWith(".quarantine"))).toBe(true);
-    expect(await first.create(ADDRESS_A, 3, "audio/mp4", T0, sourceId)).toMatchObject({ ok: false, code: "assemblyai_busy" });
+    expect(await first.create(ADDRESS_A, 3, "audio/mp4", T0, sourceId)).toMatchObject({ ok: false, code: "assemblyai_needs_reconciliation" });
     await first.close();
     const restarted = new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4);
     await restarted.init();
-    expect(await restarted.create(ADDRESS_A, 3, "audio/mp4", T0, sourceId)).toMatchObject({ ok: false, code: "assemblyai_busy" });
+    expect(await restarted.create(ADDRESS_A, 3, "audio/mp4", T0, sourceId)).toMatchObject({ ok: false, code: "assemblyai_needs_reconciliation" });
+    await restarted.close();
+  });
+
+  test("a corrupt legacy sidecar is quarantined once even though recovery uses an original names snapshot", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinychat-assemblyai-sidecar-"));
+    closers.push(() => rmSync(dir, { recursive: true, force: true }));
+    const sourceId = "sidecar-note";
+    const key = createHash("sha256").update(JSON.stringify([ADDRESS_A, sourceId])).digest("hex");
+    const uploadId = `aau_${"a".repeat(32)}`;
+    writeFileSync(join(dir, "spool.json"), JSON.stringify({ installId: "test-install", createdAt: new Date().toISOString() }));
+    writeFileSync(join(dir, `note-${key}.json`), JSON.stringify({ address: ADDRESS_A, sourceId, uploadId, bootId: "old", state: "submitting" }));
+    writeFileSync(join(dir, `note-${key}-${uploadId}.json`), "{broken");
+    const store = new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await store.init();
+    expect(readdirSync(dir).filter((name) => name.startsWith(`note-${key}-${uploadId}.json.`) && name.endsWith(".quarantine"))).toHaveLength(1);
+    expect(await store.create(ADDRESS_A, 3, "audio/mp4", T0, sourceId)).toMatchObject({ ok: false, code: "assemblyai_needs_reconciliation" });
+    await store.close();
+  });
+
+  test("spool identity is durable and a markerless directory with prior state refuses startup", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinychat-assemblyai-identity-"));
+    closers.push(() => rmSync(dir, { recursive: true, force: true }));
+    const first = new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await first.init();
+    const identity = readFileSync(join(dir, "spool.json"), "utf8");
+    expect(JSON.parse(identity).installId).toEqual(expect.any(String));
+    await first.close();
+    const second = new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await second.init();
+    expect(readFileSync(join(dir, "spool.json"), "utf8")).toBe(identity);
+    await second.close();
+    rmSync(join(dir, "spool.json"));
+    await expect(new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4).init()).rejects.toThrow("identity missing with prior files");
+  });
+
+  test("startup reconciliation recovers a provider match and keeps unknown paid outcomes blocked", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinychat-assemblyai-reconcile-"));
+    closers.push(() => rmSync(dir, { recursive: true, force: true }));
+    const first = new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await first.init();
+    for (const sourceId of ["found", "unknown"]) {
+      const address = sourceId === "found" ? ADDRESS_A : ADDRESS_B;
+      const result = await first.create(address, 3, "audio/mp4", T0, sourceId);
+      if (!result.ok || !("upload" in result)) throw new Error("create failed");
+      await first.markNoteSubmitting(result.upload);
+      await first.noteProviderReference(result.upload, { uploadUrl: sourceId === "found" ? UPLOAD_URL : "https://cdn.assemblyai.com/upload/other" });
+    }
+    await first.close();
+    const restarted = new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await restarted.init();
+    const calls: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      calls.push(url);
+      return json(200, { transcripts: [{ id: TRANSCRIPT_ID, audio_url: UPLOAD_URL }], page_details: {} });
+    }) as typeof fetch;
+    expect(await reconcileHostedJobs(hostedConfig(dir), restarted, fetchImpl)).toEqual({ checked: 2, recovered: 1 });
+    expect(restarted.noteJob(ADDRESS_A, "found")).toMatchObject({ status: "submitted", id: expect.any(String) });
+    expect(restarted.noteJob(ADDRESS_B, "unknown")?.status).toBe("needs_reconciliation");
+    expect(await restarted.create(ADDRESS_B, 3, "audio/mp4", T0, "unknown")).toMatchObject({ ok: false, code: "assemblyai_needs_reconciliation" });
+    expect(calls).toHaveLength(2);
     await restarted.close();
   });
 
@@ -306,20 +367,57 @@ describe("Exo note idempotency", () => {
     await h.store!.close();
     const restarted = new HostedUploadStore(h.spoolDir, DEFAULT_DAILY_BYTES, 4);
     await restarted.init();
-    expect(restarted.noteJob(ADDRESS_A, "note-1")?.status).toBe("uncertain");
+    expect(restarted.noteJob(ADDRESS_A, "note-1")?.status).toBe("needs_reconciliation");
     expect((await restarted.create(ADDRESS_A, 3, "audio/mp4", T0, "note-1")).ok).toBe(false);
     await restarted.close();
+  });
+
+  test("a blocked note returns a typed 409 on create and a terminal lookup", async () => {
+    const h = await setup();
+    const result = await h.store!.create(ADDRESS_A, 3, "audio/mp4", T0, "blocked-note");
+    if (!result.ok || !("upload" in result)) throw new Error("create failed");
+    await h.store!.markNoteSubmitting(result.upload);
+    await h.store!.settleNote(result.upload, { status: "failed", code: "assemblyai_unavailable" });
+    const lookup = await h.req("GET", "/hosted/jobs/blocked-note");
+    expect(lookup.json.status).toBe("needs_reconciliation");
+    const created = await h.req("POST", "/hosted/uploads", { body: { byte_size: 3, content_type: "audio/mp4", source_id: "blocked-note" } });
+    expect(created.status).toBe(409);
+    expect(created.json.error).toBe("assemblyai_needs_reconciliation");
+    expect(created.headers.get("retry-after")).toBeNull();
+  });
+
+  test("operator reconciliation endpoint requires its separate secret and checks provider evidence", async () => {
+    const previous = process.env.ASSEMBLYAI_HOSTED_ADMIN_KEY;
+    process.env.ASSEMBLYAI_HOSTED_ADMIN_KEY = "test-only-operator-secret";
+    try {
+      const h = await setup({ answer: (call) => call.method === "GET" && call.url.includes("/v2/transcript?limit=")
+        ? json(200, { transcripts: [{ id: TRANSCRIPT_ID, audio_url: UPLOAD_URL }], page_details: {} }) : assemblyAi(call) });
+      const result = await h.store!.create(ADDRESS_A, 3, "audio/mp4", T0, "operator-note");
+      if (!result.ok || !("upload" in result)) throw new Error("create failed");
+      await h.store!.markNoteSubmitting(result.upload);
+      await h.store!.noteProviderReference(result.upload, { uploadUrl: UPLOAD_URL });
+      await h.store!.settleNote(result.upload, { status: "failed", code: "assemblyai_unavailable" });
+      expect((await h.req("POST", "/hosted/admin/reconcile", { headers: { "X-AssemblyAI-Admin-Key": "wrong" } })).status).toBe(404);
+      expect(h.calls).toHaveLength(0);
+      const reconciled = await h.req("POST", "/hosted/admin/reconcile", { headers: { "X-AssemblyAI-Admin-Key": "test-only-operator-secret" } });
+      expect(reconciled.json).toEqual({ checked: 1, recovered: 1 });
+      expect((await h.req("GET", "/hosted/jobs/operator-note")).json.status).toBe("submitted");
+    } finally {
+      if (previous === undefined) delete process.env.ASSEMBLYAI_HOSTED_ADMIN_KEY;
+      else process.env.ASSEMBLYAI_HOSTED_ADMIN_KEY = previous;
+    }
   });
 });
 
 // ── Config ──────────────────────────────────────────────────────────
 
 describe("config", () => {
-  const good = { ASSEMBLYAI_API_KEY: API_KEY, ASSEMBLYAI_HOSTED_HANDLE_KEY: HANDLE_KEY };
+  const good = { ASSEMBLYAI_API_KEY: API_KEY, ASSEMBLYAI_HOSTED_HANDLE_KEY: HANDLE_KEY, ASSEMBLYAI_HOSTED_SPOOL_DIR: "/persistent/assemblyai" };
 
-  test("both keys set is hosted with the documented defaults; either unset is off", () => {
+  test("both keys and an explicit spool are required for hosted mode; either key unset is off", () => {
     const on = assemblyAiHostedConfigFromEnv(good);
-    expect(on).toMatchObject({ hosted: true, dailyBytes: 362_880_000, spoolDir: join(tmpdir(), "tinychat-assemblyai") });
+    expect(on).toMatchObject({ hosted: true, dailyBytes: 362_880_000, spoolDir: "/persistent/assemblyai" });
+    expect(() => assemblyAiHostedConfigFromEnv({ ...good, ASSEMBLYAI_HOSTED_SPOOL_DIR: "" })).toThrow("ASSEMBLYAI_HOSTED_SPOOL_DIR");
     expect(assemblyAiHostedConfigFromEnv({})).toEqual({ hosted: false, reason: "both_unset" });
     expect(assemblyAiHostedConfigFromEnv({ ASSEMBLYAI_API_KEY: API_KEY })).toEqual({ hosted: false, reason: "handle_key_unset" });
     expect(assemblyAiHostedConfigFromEnv({ ASSEMBLYAI_HOSTED_HANDLE_KEY: HANDLE_KEY })).toEqual({ hosted: false, reason: "api_key_unset" });
