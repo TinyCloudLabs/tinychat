@@ -1,7 +1,7 @@
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { assertKvResult, isKvMissingKeyResult, withSessionRefresh } from "@tinyboilerplate/server";
 import type { BackendStorageLane } from "./backend-storage-lane.js";
-import { BackendStorageLane as StorageLane } from "./backend-storage-lane.js";
+import { BackendStorageLane as StorageLane, REQUEST_LANE_WAIT_MS } from "./backend-storage-lane.js";
 import { TranscriptionApiError, type IdempotencyLookup, type TranscriptionApiClient } from "./transcription-api.js";
 
 export const TRANSCRIBER_INDEX_KEY_PREFIX = "transcriber/index/";
@@ -190,17 +190,35 @@ export class JsonTranscriberIndexStore implements TranscriberIndexStore {
     if (this.cache.size > CACHE_LIMIT) this.cache.delete(this.cache.keys().next().value!);
   }
 
-  private async read(key: string): Promise<IndexRecord> {
+  private fresh(key: string): IndexRecord | undefined {
     const cached = this.cache.get(key);
-    if (cached && cached.until > Date.now()) {
-      this.cache.delete(key);
-      this.cache.set(key, cached);
-      return cached.row;
-    }
-    if (cached) this.cache.delete(key);
+    if (!cached) return undefined;
+    this.cache.delete(key);
+    if (cached.until <= Date.now()) return undefined;
+    this.cache.set(key, cached);
+    return cached.row;
+  }
+
+  private async read(key: string): Promise<IndexRecord> {
+    const cached = this.fresh(key);
+    if (cached) return cached;
     const row = parseRecord(await this.json.get<IndexRecord>(key));
     this.remember(key, row);
     return row;
+  }
+
+  /**
+   * Request-path reads (TC-1006). A fresh cached document is answered without queueing on the
+   * shared storage lane: the cache is only filled and replaced inside lane jobs after a committed
+   * read or write, so a hit is what a queued read would have returned for every write this caller
+   * has awaited. A miss waits at most REQUEST_LANE_WAIT_MS to start, then rejects (the routes
+   * answer 503) instead of outwaiting the client.
+   */
+  private view<T>(address: string, project: (row: IndexRecord) => T): Promise<T> {
+    const key = indexKey(address);
+    const cached = this.fresh(key);
+    if (cached) return Promise.resolve(project(cached));
+    return this.lane.run(async () => project(await this.read(key)), { waitTimeoutMs: REQUEST_LANE_WAIT_MS });
   }
 
   private async update(address: string, change: (current: IndexRecord) => IndexRecord): Promise<void> {
@@ -213,22 +231,19 @@ export class JsonTranscriberIndexStore implements TranscriberIndexStore {
   }
 
   list(address: string): Promise<string[]> {
-    return this.lane.run(async () => [...(await this.read(indexKey(address))).ids]);
+    return this.view(address, row => [...row.ids]);
   }
 
   listPending(address: string): Promise<PendingTranscriberCreate[]> {
-    return this.lane.run(async () => (await this.read(indexKey(address))).pending?.map(intent => ({ ...intent })) ?? []);
+    return this.view(address, row => row.pending?.map(intent => ({ ...intent })) ?? []);
   }
 
   shares(address: string): Promise<Record<string, ShareProvenance>> {
-    return this.lane.run(async () => structuredClone((await this.read(indexKey(address))).shared ?? {}));
+    return this.view(address, row => structuredClone(row.shared ?? {}));
   }
 
   entries(address: string): Promise<{ ids: string[]; shared: Record<string, ShareProvenance> }> {
-    return this.lane.run(async () => {
-      const row = await this.read(indexKey(address));
-      return structuredClone({ ids: row.ids, shared: row.shared ?? {} });
-    });
+    return this.view(address, row => structuredClone({ ids: row.ids, shared: row.shared ?? {} }));
   }
 
   async listAddresses(): Promise<string[]> {

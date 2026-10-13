@@ -78,7 +78,7 @@ import {
   privateCloudTranscriptionConfigFromEnv,
   type PrivateCloudTranscriptionConfig,
 } from "./services/private-cloud-transcription.js";
-import { BackendStorageLane } from "./services/backend-storage-lane.js";
+import { BackendStorageLane, REQUEST_LANE_WAIT_MS } from "./services/backend-storage-lane.js";
 import { runInWriteLane } from "./services/write-lane.js";
 import { ConnectorQueue } from "./services/connector-queue.js";
 import { ConnectorTeardownService } from "./services/connector-teardown.js";
@@ -837,13 +837,18 @@ async function main() {
         if (secret.kind === "oauth") await google.revoke(secret.refreshToken ?? secret.accessToken);
       },
     });
-    const store = new KvCalendarAutojoinStore(node, transcriberStorageLane);
+    // Same lane, two priorities: request handlers (status/enable/disable) queue ahead of the
+    // reconcile worker and give up before the client's 20 s abort; the worker yields to them.
+    // The worker shares the one connection service (it single-flights token refreshes), so its
+    // few calls through it (cleanupEnabling, accessToken) run foreground under the request budget.
+    const store = new KvCalendarAutojoinStore(node, transcriberStorageLane, { waitTimeoutMs: REQUEST_LANE_WAIT_MS });
+    const workerStore = new KvCalendarAutojoinStore(node, transcriberStorageLane, { priority: "background" });
     // Fail boot rather than claiming unattended recovery on a KV without prefix listing.
-    await store.listConnections();
+    await workerStore.listConnections();
     const coordinator = new TenantCoordinator();
     calendarAutojoin = new CalendarAutojoinConnection({ store, credentials, oauth: google, coordinator, calendar });
     calendarAutojoinWorker = new CalendarAutojoinWorker({
-      store, coordinator, calendar, connection: calendarAutojoin, api: transcriberApi,
+      store: workerStore, coordinator, calendar, connection: calendarAutojoin, api: transcriberApi,
       index: transcriberIndex, limiter, botName: process.env.TRANSCRIPTION_BOT_NAME || undefined,
       // TC-581: one capture per Meet across tenants. The flag gates only sharing the transcript.
       meetingCoordinator: new TenantCoordinator(),
