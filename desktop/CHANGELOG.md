@@ -1,5 +1,11 @@
 # exo-desktop
 
+## 0.7.1
+
+### Patch Changes
+
+- 1d60115: Update the TinyCloud SDK family to 3.2.1 for the sign-in wait and repeat-login re-bootstrap fixes (TC-998, TC-999).
+
 ## 0.7.1-beta.2
 
 No changes in this release.
