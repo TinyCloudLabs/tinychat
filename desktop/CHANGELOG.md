@@ -1,5 +1,11 @@
 # exo-desktop
 
+## 0.7.0-beta.3
+
+### Patch Changes
+
+- ddbadf9: fix(exo desktop): allow the system-audio consent commands so Mac recording can start
+
 ## 0.7.0-beta.2
 
 No changes in this release.
