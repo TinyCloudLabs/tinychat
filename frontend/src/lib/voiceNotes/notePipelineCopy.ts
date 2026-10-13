@@ -37,8 +37,7 @@ export const percentText = (fraction: number): string => `${Math.round(Math.min(
 /** "next" for the first place, "2nd" after. */
 const place = (position: number): string => (position <= 1 ? "next" : ordinal(position));
 
-const hasText = (text: string | null | undefined): text is string => typeof text === "string" && text.trim().length > 0;
-const withDetail = (lead: string, detail: string | null | undefined): string => (hasText(detail) ? `${lead} · ${detail.trim()}` : lead);
+const withDetail = (lead: string, _detail: string | null | undefined): string => lead;
 
 export const PHONE_COPY = {
   finishing: "Finishing the recording…",
@@ -126,10 +125,7 @@ export const PRIVATE_COPY = {
   checkFailed: "Couldn't check whether private transcription is available",
   checking: "Checking private transcription…",
   noConsent: "Waiting for your OK to use Private",
-  failed: (message: string | null | undefined, reference: string | null) => {
-    const copy = hasText(message) ? message.trim() : "Private transcription couldn't finish.";
-    return hasText(reference) ? `${copy} · Reference ${reference.trim()}` : copy;
-  },
+  failed: (code: string) => code === "recording_too_long" ? "This recording is too long to transcribe." : "Private transcription didn't finish.",
 };
 
 export const NOTES_COPY = {

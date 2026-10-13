@@ -98,7 +98,7 @@ const ROWS: Row[] = [
   { name: "space: offline waits for a connection (no button)", patch: { online: false, space: { pending: {} } }, states: { space: "waiting" }, current: "space", caption: "Offline · Resumes automatically" },
   { name: "space: an offline failure while offline keeps waiting", patch: { online: false, space: { pending: { failed: { kind: "offline", message: "fetch failed" } } } }, states: { space: "waiting" }, current: "space", caption: "Offline · Resumes automatically" },
   { name: "space: an offline failure while online is Try again", patch: { space: { pending: { failed: { kind: "offline", message: "fetch failed" } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't reach your space. This note is safe on this phone.", action: "retry" },
-  { name: "space: a node-rejected upload keeps its specific cause", patch: { space: { pending: { failed: { kind: "rejected", message: "The TinyCloud node rejected this upload." } } } }, states: { space: "failed" }, current: "space", cause: "The TinyCloud node rejected this upload.", action: "retry" },
+  { name: "space: a node-rejected upload has calm copy", patch: { space: { pending: { failed: { kind: "rejected", message: "The TinyCloud node rejected this upload." } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't sync to your TinyCloud space.", action: "retry" },
   { name: "space: timeout is Try again", patch: { space: { pending: { failed: { kind: "timeout", message: "deadline" } } } }, states: { space: "failed" }, current: "space", cause: "Saving timed out. This note is safe on this phone.", action: "retry" },
   { name: "space: server error is calm Try again copy", patch: { space: { pending: { failed: { kind: "server", message: "503 from kv" } } } }, states: { space: "failed" }, current: "space", cause: "Your space couldn't take this note. It is safe on this phone. Try again.", action: "retry" },
   { name: "space: quota is full (no action)", patch: { space: { pending: { failed: { kind: "quota", message: "quota" } } } }, states: { space: "blocked" }, current: "space", cause: "Your space is full" },
@@ -113,7 +113,7 @@ const ROWS: Row[] = [
   { name: "local: model absent is Get the model", patch: local({ onDevice: od({ stt: stt("waiting_for_model"), model: { state: "absent", bytes: 0, totalBytes: 640, error: null } }) }, { space: SAVED }), states: { transcript: "blocked" }, current: "transcript", cause: "Transcripts on this phone need the on-device model.", action: "get-model" },
   { name: "local: model downloading shows percent", patch: local({ onDevice: od({ stt: stt("waiting_for_model"), model: { state: "downloading", bytes: 268, totalBytes: 640, error: null }, download: "running" }) }, { space: SAVED }), states: { transcript: "active" }, current: "transcript", caption: "Waiting for the on-device model · 42%" },
   { name: "local: model verifying", patch: local({ onDevice: od({ stt: stt("waiting_for_model"), model: { state: "verifying", bytes: 640, totalBytes: 640, error: null }, download: "running" }) }, { space: SAVED }), states: { transcript: "active" }, current: "transcript", caption: "Checking the on-device model…" },
-  { name: "local: model failed is Try again with its error", patch: local({ onDevice: od({ stt: stt("waiting_for_model"), model: { state: "failed", bytes: 0, totalBytes: 640, error: "checksum mismatch" } }) }, { space: SAVED }), states: { transcript: "failed" }, current: "transcript", cause: "The on-device model couldn't download · checksum mismatch", action: "retry" },
+  { name: "local: model failed is Try again without the raw error", patch: local({ onDevice: od({ stt: stt("waiting_for_model"), model: { state: "failed", bytes: 0, totalBytes: 640, error: "checksum mismatch" } }) }, { space: SAVED }), states: { transcript: "failed" }, current: "transcript", cause: "The on-device model couldn't download", action: "retry" },
   { name: "local: download failed is Try again", patch: local({ onDevice: od({ stt: stt("waiting_for_model"), download: "failed", model: { state: "queued", bytes: 0, totalBytes: 640, error: null } }) }, { space: SAVED }), states: { transcript: "failed" }, current: "transcript", cause: "The on-device model couldn't download", action: "retry" },
   { name: "local: waiting for Wi-Fi", patch: local({ onDevice: od({ stt: stt("waiting_for_model"), download: "waiting_for_network", model: { state: "queued", bytes: 0, totalBytes: 640, error: null } }) }, { space: SAVED }), states: { transcript: "waiting" }, current: "transcript", caption: "Waiting for Wi-Fi" },
   { name: "local: Low Data Mode", patch: local({ onDevice: od({ stt: stt("waiting_for_model"), download: "low_data_mode", model: { state: "queued", bytes: 0, totalBytes: 640, error: null } }) }, { space: SAVED }), states: { transcript: "waiting" }, current: "transcript", caption: "Waiting for Wi-Fi · Low Data Mode is on" },
@@ -166,8 +166,8 @@ const ROWS: Row[] = [
   { name: "private: still checking just waits", patch: cloud({ kind: "blocked", reason: "checking" }), states: { transcript: "waiting" }, current: "transcript", caption: "Checking private transcription…" },
   { name: "private: no consent offers Review", patch: cloud({ kind: "blocked", reason: "no-consent" }), states: { transcript: "blocked" }, current: "transcript", cause: "Waiting for your OK to use Private", action: "review-consent" },
   { name: "private: held note shows its message (no action)", patch: cloud({ kind: "held", message: "This note began outside Exo. Transcribe it when you want." }), states: { transcript: "blocked" }, current: "transcript", cause: "This note began outside Exo. Transcribe it when you want." },
-  { name: "private: retryable failure keeps its mapped copy", patch: cloud({ kind: "failed", code: "server_error", message: "Transcription hit a snag.", retryable: true, reference: "ref-1" }), states: { transcript: "failed" }, current: "transcript", cause: "Transcription hit a snag.", action: "retry" },
-  { name: "private: non-retryable failure keeps its mapped copy and reference without retry action", patch: cloud({ kind: "failed", code: "recording_too_long", message: "This recording is too long to transcribe.", retryable: false, reference: "ref-9" }), states: { transcript: "failed" }, current: "transcript", cause: "This recording is too long to transcribe. · Reference ref-9" },
+  { name: "private: retryable failure uses calm copy", patch: cloud({ kind: "failed", code: "server_error", message: "Transcription hit a snag.", retryable: true, reference: "ref-1" }), states: { transcript: "failed" }, current: "transcript", cause: "Private transcription didn't finish.", action: "retry" },
+  { name: "private: non-retryable length failure has useful copy without a raw reference", patch: cloud({ kind: "failed", code: "recording_too_long", message: "This recording is too long to transcribe.", retryable: false, reference: "ref-9" }), states: { transcript: "failed" }, current: "transcript", cause: "This recording is too long to transcribe." },
   { name: "private: no speech found is done", patch: cloud({ kind: "done", outcome: "no_speech" }), states: { transcript: "done" }, current: null },
   { name: "private: saved but no job yet", patch: { route: "private-cloud", space: SAVED }, states: { transcript: "waiting" }, current: "transcript", caption: "Waiting for private transcription" },
   { name: "private: a transcript in the space is not done before the note is saved", patch: { route: "private-cloud", transcript: { inSpace: "transcribed" } }, states: { space: "waiting", transcript: "waiting" }, current: "space" },
@@ -184,8 +184,8 @@ const ROWS: Row[] = [
   { name: "notes: nothing on this device to sync skips the step", patch: { hasNotesOrMoments: true, space: SAVED, notes: { state: "skipped", reason: "no-note" } }, states: { notes: "skipped" }, current: null },
   { name: "notes: not synced and nothing running is a blocker with Try again", patch: { route: "off", hasNotesOrMoments: true, space: SAVED, notes: { state: "idle" } }, states: { notes: "blocked" }, current: "notes", cause: "Your notes haven't reached your space yet", action: "retry" },
   { name: "notes: not synced, behind a transcript still running, is not its turn", patch: { route: "private-cloud", hasNotesOrMoments: true, space: SAVED, transcript: { inSpace: null, onDevice: null, cloud: { kind: "active", status: { kind: "processing", completed: 1, total: 3 } } }, notes: { state: "idle" } }, states: { transcript: "active", notes: "upcoming" }, current: "transcript" },
-  { name: "notes: the local text could not be read is Try again with its cause", patch: { hasNotesOrMoments: true, space: SAVED, notes: { state: "unreadable", cause: "disk went away" } }, states: { notes: "failed" }, current: "notes", cause: "Couldn't read this note's text on this phone · disk went away", action: "retry" },
-  { name: "transcript: a failed read is Try again with its cause, never ready", patch: { route: "private-cloud", space: SAVED, transcript: { inSpace: null, onDevice: null, cloud: null, readError: "The phone's note list wouldn't open: busy" } }, states: { transcript: "failed" }, current: "transcript", cause: "Couldn't check this note's transcript · The phone's note list wouldn't open: busy", action: "retry" },
+  { name: "notes: the local text could not be read is Try again without its raw cause", patch: { hasNotesOrMoments: true, space: SAVED, notes: { state: "unreadable", cause: "disk went away" } }, states: { notes: "failed" }, current: "notes", cause: "Couldn't read this note's text on this phone", action: "retry" },
+  { name: "transcript: a failed read is Try again, never ready", patch: { route: "private-cloud", space: SAVED, transcript: { inSpace: null, onDevice: null, cloud: null, readError: "The phone's note list wouldn't open: busy" } }, states: { transcript: "failed" }, current: "transcript", cause: "Couldn't check this note's transcript", action: "retry" },
   { name: "capture: a parked recording is Couldn't recover, with no upload progress", patch: { capture: { finalizing: false, issue: "quarantined" }, space: { saved: false, pending: null, lane: { busy: false, depth: 0 } } }, states: { phone: "failed" }, current: "phone", cause: "Couldn't recover · audio kept" },
   { name: "notes: synced", patch: { hasNotesOrMoments: true, space: SAVED, notes: { state: "synced" } }, states: { notes: "done" }, current: null },
 
@@ -393,18 +393,18 @@ describe("a failed read that other evidence outranks", () => {
   test("a transcript in the space with a failed ledger read: the transcript is done, the failure is a blocker with its own action, and the note is not done", () => {
     const pipeline = notePipeline(input({ space: SAVED, transcript: { inSpace: "transcribed", readError: "The phone's note list wouldn't open: busy" } }));
     expect(pipeline.steps.find((step) => step.key === "transcript")?.state).toBe("done");
-    expect(pipeline.blocker).toEqual({ cause: "Some details about this note couldn't be read · The phone's note list wouldn't open: busy", action: { kind: "reread", label: "Try again" } });
+    expect(pipeline.blocker).toEqual({ cause: "Some details about this note couldn't be read", action: { kind: "reread", label: "Try again" } });
     expect(pipeline.done).toBe(false);
   });
 
   test("a failed read of the parked-recordings list is shown with its cause, with or without other blockers", () => {
     const alone = notePipeline(input({ space: SAVED, capture: { readError: "EIO" } }));
-    expect(alone.blocker?.cause).toBe("Couldn't check for recordings that failed to save · EIO");
+    expect(alone.blocker?.cause).toBe("Couldn't check for recordings that failed to save");
     expect(alone.blocker?.action?.kind).toBe("reread");
     expect(alone.done).toBe(false);
     const beside = notePipeline(input({ route: "private-cloud", space: SAVED, transcript: { cloud: { kind: "blocked", reason: "check-failed" } }, capture: { readError: "EIO" } }));
     expect(beside.blocker?.action?.kind).toBe("check-again");
-    expect(beside.notice).toBe("Couldn't check for recordings that failed to save · EIO");
+    expect(beside.notice).toBe("Couldn't check for recordings that failed to save");
   });
 
   test("a read error with no detail still says that the read failed", () => {

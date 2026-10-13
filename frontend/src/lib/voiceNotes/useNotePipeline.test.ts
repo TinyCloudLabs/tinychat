@@ -266,7 +266,7 @@ describe("failed reads are never read as absent or ready", () => {
   test("a failed ledger read shows its cause on the transcript step, and the note is not done", () => {
     const pipeline = run({ saved: true, native: null, readError: "The phone's note list wouldn't open: busy" });
     expect(stateOf(pipeline, "transcript")).toBe("failed");
-    expect(pipeline.blocker?.cause).toBe("Couldn't check this note's transcript · The phone's note list wouldn't open: busy");
+    expect(pipeline.blocker?.cause).toBe("Couldn't check this note's transcript");
     expect(pipeline.blocker?.action?.kind).toBe("retry");
     expect(pipeline.done).toBe(false);
   });
@@ -274,7 +274,7 @@ describe("failed reads are never read as absent or ready", () => {
   test("a failed read of the note's own text is a failed notes step with its cause, never skipped", () => {
     const pipeline = run({ saved: true, native: { transcriber: "off", stt: null }, localNote: null, localNoteError: "EIO" });
     expect(stateOf(pipeline, "notes")).toBe("failed");
-    expect(pipeline.blocker?.cause).toBe("Couldn't read this note's text on this phone · EIO");
+    expect(pipeline.blocker?.cause).toBe("Couldn't read this note's text on this phone");
     expect(pipeline.done).toBe(false);
   });
 
@@ -428,7 +428,7 @@ describe("actions", () => {
   test("a failed parked-recordings read reaches the pipeline, and its action rereads", async () => {
     let rereads = 0;
     const env = envFor({ saved: true, native: null, capture: { finalizing: false, issue: null, readError: "EIO" } }, { reread: () => { rereads += 1; } });
-    expect(env.pipeline.blocker?.cause).toBe("Couldn't check for recordings that failed to save · EIO");
+    expect(env.pipeline.blocker?.cause).toBe("Couldn't check for recordings that failed to save");
     expect(env.pipeline.blocker?.action?.kind).toBe("reread");
     expect(env.pipeline.done).toBe(false);
     expect(await runPipelineAction("reread", env)).toBeNull();

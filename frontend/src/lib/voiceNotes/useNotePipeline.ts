@@ -425,7 +425,7 @@ export async function runPipelineAction(kind: PipelineActionKind, env: PipelineA
     }
   } catch (caught) {
     logPipelineError("[NotePipeline] action failed", caught);
-    return messageOf(caught);
+    return "Couldn't complete this step. Try again.";
   }
 }
 

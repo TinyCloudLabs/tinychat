@@ -229,7 +229,7 @@ function spaceStep(input: NotePipelineInput): Result {
         if (!online) return { state: "waiting", caption: SPACE_COPY.offlineCaption };
         return failed(SPACE_COPY.unreachable(device), "retry");
       case "timeout": return failed(SPACE_COPY.timeout(device), "retry");
-      case "rejected": return failed(failure.message, "retry");
+      case "rejected": return failed("Couldn't sync to your TinyCloud space.", "retry");
       case "server": return failed(SPACE_COPY.server(failure.message, device), "retry");
       case "source": return failed(SPACE_COPY.source(failure.message, device));
       case "other": return failed(SPACE_COPY.unknown(failure.message, device), "retry");
@@ -320,7 +320,7 @@ function cloudStep(cloud: PipelineCloud | null, spaceSaved: boolean, checkingCap
     case "done": return { state: "done", sublabel: cloud.outcome === "no_speech" ? TRANSCRIPT_COPY.noSpeechInSpace : TRANSCRIPT_COPY.savedInSpace };
     case "held": return blocked(cloud.message.trim() || PRIVATE_COPY.notStarted);
     case "failed":
-      return failed(PRIVATE_COPY.failed(cloud.message, cloud.retryable ? null : cloud.reference), cloud.retryable ? "retry" : undefined, cloud.retryable);
+      return failed(PRIVATE_COPY.failed(cloud.code), cloud.retryable ? "retry" : undefined, cloud.retryable);
     case "blocked": return cloudBlockedStep(cloud.reason);
     case "active": {
       const status = cloud.status;
