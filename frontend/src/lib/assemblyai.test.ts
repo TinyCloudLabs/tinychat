@@ -36,6 +36,18 @@ describe("assemblyAiSentences", () => {
     ]);
     expect(assemblyAiSentences(t, [])).toEqual([{ index: 0, speaker_name: null, text: "One. Two.", start_time: 0, end_time: 4, timing: "coarse" }]);
   });
+  test("stereo sentences without channel fields inherit the containing utterance channel", () => {
+    const t: AssemblyAiTranscript = { id: "stereo", status: "completed", audio_channels: 2,
+      utterances: [
+        { speaker: "A", text: "Left", start: 0, end: 1000, channel: 0 },
+        { speaker: "B", text: "Right", start: 0, end: 1000, channel: 1 },
+      ] };
+    const rows = assemblyAiSentences(t, [
+      { speaker: "A", text: "Left", start: 100, end: 900 },
+      { speaker: "B", text: "Right", start: 100, end: 900 },
+    ]);
+    expect(rows.map((row) => row.channel)).toEqual([0, 1]);
+  });
 });
 
 describe("pollAssemblyAiTranscript", () => {

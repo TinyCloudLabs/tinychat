@@ -341,6 +341,19 @@ function transcriptDetail(sentences: FirefliesSentence[]): number {
     + (sentence.timing === undefined ? 0 : 4)
     + (sentence.speaker_name === "You" ? 0 : 2), 0);
 }
+function decodeSentences(raw: unknown): FirefliesSentence[] {
+  const parsed: unknown = typeof raw === "string" ? JSON.parse(raw) : raw;
+  if (!Array.isArray(parsed)) throw new Error("Stored transcript body is not a sentence array");
+  return parsed as FirefliesSentence[];
+}
+async function prefersCandidate(tcw: TinyCloudWeb, previous: TranscriptCommit, sentences: FirefliesSentence[],
+  hash: string, checkpoint: () => void): Promise<boolean> {
+  const stored = await runOnSpaceLane((signal) => { checkpoint(); return tcw.kv.get(previous.bodyKey, { signal }); },
+    { operation: `KV get ${previous.bodyKey}` });
+  if (!stored.ok) throw errorOf(stored);
+  const detail = transcriptDetail(sentences) - transcriptDetail(decodeSentences(stored.data.data));
+  return detail > 0 || (detail === 0 && hash > previous.hash);
+}
 export interface TranscriptToCommit { rev: number; sentences: FirefliesSentence[]; outcome: "transcribed" | "no_speech";
   text: string | null; engine?: string | null; provider?: string | null; model?: string | null; language?: string | null;
   speakerLabels?: boolean | null; participants?: string[]; transcribedAt?: string | null; metadata?: Record<string, unknown> }
@@ -358,16 +371,6 @@ export async function commitVoiceNoteTranscript(
   if (!row) throw new Error("Voice note row is missing");
   const hash = await transcriptHash(input.sentences);
   checkpoint();
-  const previous = await readTranscriptCommitOnLane(tcw, sourceId, checkpoint);
-  let preferSameRev = !previous;
-  if (previous?.rev === input.rev && previous.hash !== hash) {
-    const stored = await runOnSpaceLane((signal) => { checkpoint(); return tcw.kv.get(previous.bodyKey, { signal }); },
-      { operation: `KV get ${previous.bodyKey}` });
-    if (!stored.ok) throw errorOf(stored);
-    const priorSentences = JSON.parse(String(stored.data.data)) as FirefliesSentence[];
-    const detail = transcriptDetail(input.sentences) - transcriptDetail(priorSentences);
-    preferSameRev = detail > 0 || (detail === 0 && hash > previous.hash);
-  }
   const bodyKey = transcriptRevKvKey("exo-voice-note", sourceId, hash);
   const body = canonical(input.sentences);
   const put = await runOnSpaceLane((signal) => { checkpoint(); return tcw.kv.put(bodyKey, body,
@@ -376,7 +379,15 @@ export async function commitVoiceNoteTranscript(
   if (!put.ok && !/PRECONDITION|412/i.test(`${put.error.code} ${put.error.message}`)) throw errorOf(put);
   checkpoint();
   const preview = input.outcome === "transcribed" ? (input.text ?? "").slice(0, 280) : null;
-  await execute(tcw, `INSERT INTO voice_note_transcript
+  let committed: TranscriptCommit | null = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    checkpoint();
+    const previous = await readTranscriptCommitOnLane(tcw, sourceId, checkpoint);
+    const previousWins = previous && (previous.rev > input.rev || (previous.rev === input.rev && previous.hash !== hash
+      && !await prefersCandidate(tcw, previous, input.sentences, hash, checkpoint)));
+    if (!previousWins) {
+      const preferSameRev = !previous || previous.rev === input.rev;
+      await execute(tcw, `INSERT INTO voice_note_transcript
     (source_id, rev, hash, body_key, outcome, preview, engine, provider, model, language, speaker_labels,
      participants, transcribed_at, committed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(source_id) DO UPDATE SET rev = excluded.rev, hash = excluded.hash, body_key = excluded.body_key,
@@ -385,12 +396,20 @@ export async function commitVoiceNoteTranscript(
       participants = excluded.participants, transcribed_at = excluded.transcribed_at, committed_at = excluded.committed_at
     WHERE excluded.rev > voice_note_transcript.rev
        OR (excluded.rev = voice_note_transcript.rev AND voice_note_transcript.hash = ? AND ? = 1)`,
-  [sourceId, input.rev, hash, bodyKey, input.outcome, preview, input.engine ?? null, input.provider ?? null,
+    [sourceId, input.rev, hash, bodyKey, input.outcome, preview, input.engine ?? null, input.provider ?? null,
     input.model ?? null, input.language ?? null, input.speakerLabels == null ? null : Number(input.speakerLabels),
     JSON.stringify((input.participants ?? []).map((name) => ({ name, email: null }))),
-    input.transcribedAt ?? new Date().toISOString(), new Date().toISOString(), previous?.hash ?? "", Number(preferSameRev)], checkpoint);
-  checkpoint();
-  const committed = await verifyVoiceNoteTranscript(tcw, sourceId, input.rev, checkpoint);
+        input.transcribedAt ?? new Date().toISOString(), new Date().toISOString(), previous?.hash ?? "", Number(preferSameRev)], checkpoint);
+    }
+    checkpoint();
+    const winner = await verifyVoiceNoteTranscript(tcw, sourceId, input.rev, checkpoint);
+    if (winner.rev > input.rev || winner.hash === hash || !await prefersCandidate(tcw, winner, input.sentences, hash, checkpoint)) {
+      committed = winner;
+      break;
+    }
+  }
+  if (!committed) throw Object.assign(new Error("Transcript commit changed during conditional write"),
+    { code: "TRANSCRIPT_COMMIT_CONFLICT", retryable: true });
   const mirror = { ...legacyGroup(input.metadata ?? {}), transcript_text: input.outcome === "transcribed" ? input.text : null,
     transcription_outcome: input.outcome, transcription_error_code: null,
     speaker_labels: input.metadata?.speaker_labels ?? input.speakerLabels ?? null,

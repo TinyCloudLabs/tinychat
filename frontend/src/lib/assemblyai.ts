@@ -411,6 +411,33 @@ export function assemblyAiSpeakerName(label: string): string {
 export function assemblyAiSentences(t: AssemblyAiTranscript, sentences: AssemblyAiSentence[] | null,
   options: { stereo?: boolean } = {}): FirefliesSentence[] {
   const stereo = options.stereo ?? t.audio_channels === 2;
+  const utterances = t.utterances ?? [];
+  const bySpeaker = new Map<string, { rows: typeof utterances; maxEnd: number[] }>();
+  if (stereo && sentences?.length) {
+    for (const utterance of utterances) {
+      for (const key of ["*", ...(utterance.speaker == null ? [] : [utterance.speaker])]) {
+        const index = bySpeaker.get(key) ?? { rows: [], maxEnd: [] };
+        index.rows.push(utterance);
+        bySpeaker.set(key, index);
+      }
+    }
+    for (const index of bySpeaker.values()) {
+      index.rows.sort((a, b) => a.start - b.start);
+      index.maxEnd = index.rows.map((row, i) => Math.max(row.end, index.maxEnd[i - 1] ?? -Infinity));
+    }
+  }
+  const containingUtterance = (sentence: AssemblyAiSentence) => {
+    const index = bySpeaker.get(sentence.speaker == null ? "*" : sentence.speaker);
+    if (!index) return undefined;
+    let lo = 0; let hi = index.rows.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (index.maxEnd[mid]! >= sentence.end) hi = mid;
+      else lo = mid + 1;
+    }
+    const row = index.rows[lo];
+    return row && row.start <= sentence.start ? row : undefined;
+  };
   const channelOf = (label: string | null | undefined): 0 | 1 | undefined => {
     if (!stereo || !label) return undefined;
     const match = /^([12])(?:[A-Z])?$/.exec(label);
@@ -418,9 +445,8 @@ export function assemblyAiSentences(t: AssemblyAiTranscript, sentences: Assembly
   };
   const rows: AssemblyAiSentence[] = sentences?.length ? sentences.map((s) => ({ ...s,
     speaker: s.speaker ?? null,
-    channel: s.channel ?? (stereo ? t.utterances?.find((u) => u.start <= s.start && u.end >= s.end
-      && (s.speaker == null || u.speaker === s.speaker))?.channel : undefined) ?? channelOf(s.speaker) }))
-    : (t.utterances ?? []).map((u) => ({ text: u.text, start: u.start, end: u.end,
+    channel: s.channel ?? (stereo ? containingUtterance(s)?.channel : undefined) ?? channelOf(s.speaker) }))
+    : utterances.map((u) => ({ text: u.text, start: u.start, end: u.end,
       speaker: u.speaker, channel: u.channel ?? channelOf(u.speaker) }));
   const out: FirefliesSentence[] = rows
     .map((r) => ({ ...r, text: r.text.trim() }))
