@@ -15,7 +15,7 @@ afterEach(() => {
 });
 
 function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noSpeech = false, spaceOnly = false,
-  mimeType = "audio/mp4", readGate?: Promise<void>, createFailure?: "existing" | "missing") {
+  mimeType = "audio/mp4", readGate?: Promise<void>, createFailure?: "existing" | "missing", reconciliationDelayMs?: number) {
   const data = new Map<string, string>();
   const claims = new Map<string, { value: string; etag: string }>();
   let revision = 0;
@@ -119,7 +119,7 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
       if (failAt === "space" && !failed) { failed = true; return { ok: false, error: new Error("offline") } as Awaited<ReturnType<typeof import("./voiceNoteStore").saveVoiceNoteTranscript>>; }
       commit = { rev: transcript.rev, outcome: noSpeech ? "no_speech" : "transcribed" } as TranscriptCommit;
       return { ok: true } as Awaited<ReturnType<typeof import("./voiceNoteStore").saveVoiceNoteTranscript>>;
-    }, sleep: async () => {},
+    }, sleep: async () => {}, reconciliationDelayMs,
   });
   return { calls, recording, track, getLocal: () => local,
     setClaim: (claim: object) => claims.set("exo/voiceNotes/hostedJobs/note-1", { value: JSON.stringify(claim), etag: String(++revision) }),
@@ -147,6 +147,21 @@ test("a paid outcome needing reconciliation blocks the note without another uplo
   expect(lane.jobs.get("note-1")).toMatchObject({ kind: "failed", retryable: false,
     message: "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI." });
   expect(h.calls.some((call) => call === "POST /hosted/uploads" || call === "POST /hosted/transcripts")).toBe(false);
+});
+
+test("a quarantined or missing lookup never enables Retry; provider-confirmed submission does", async () => {
+  const h = harness(undefined, false, false, "audio/mp4", undefined, undefined, 5);
+  h.setServerJob({ status: "unresolved" });
+  const lane = h.track(); lane.consent();
+  await lane.run(h.recording);
+  expect(lane.jobs.get("note-1")).toMatchObject({ kind: "failed", retryable: false });
+  h.setServerJob({ status: "missing" });
+  await Bun.sleep(20);
+  expect(lane.jobs.get("note-1")).toMatchObject({ kind: "failed", retryable: false });
+  expect(h.calls.some((call) => call === "POST /hosted/uploads" || call === "POST /hosted/transcripts")).toBe(false);
+  h.setServerJob({ status: "submitted", id: "handle-1", upload_id: "upload-1" });
+  await Bun.sleep(20);
+  expect(lane.jobs.get("note-1")).toMatchObject({ kind: "failed", retryable: true, code: "reconciled" });
 });
 
 test("Powerful keeps a no-speech result before deleting the server copy", async () => {
