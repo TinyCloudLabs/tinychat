@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.5.1-beta.3
+
+### Patch Changes
+
+- 4a1e442: Require a configured HMAC secret and valid signature for PTX transcription webhooks.
+
 ## 0.5.1-beta.2
 
 ### Patch Changes
