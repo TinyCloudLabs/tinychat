@@ -61,12 +61,13 @@ function fakeSpace(options: { voiceCommit?: boolean; previews?: [string, string]
     spaceId: `library-${spaces}`,
     sql: { db: () => ({ query: (sql: string) => {
       if (sql.includes("sqlite_schema")) return Promise.resolve({ ok: true, data: { rows: options.voiceCommit || previews.length > 0 ? [[1]] : [] } });
+      if (sql.includes("WHERE source IN")) return call("list");
       if (sql.includes("SELECT source_id, preview FROM voice_note_transcript")) return Promise.resolve({ ok: true, data: { rows: previews } });
       if (sql.includes("FROM voice_note_transcript")) return Promise.resolve({ ok: true, data: { rows: [
         ["rec-a", 1, "hash", "committed/transcript", "transcribed", "Preview", null, null, null, null, null, null, null],
       ] } });
       if (sql.includes("FROM connector_meeting g")) return Promise.resolve({ ok: true, data: { rows: [] } });
-      return call(sql.includes("WHERE source IN") ? "list" : "metadata");
+      return call("metadata");
     } }) },
     kv: { get: (key: string) => {
       transcriptKeys.push(key);
