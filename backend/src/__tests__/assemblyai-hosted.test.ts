@@ -197,6 +197,50 @@ function audio(bytes: number): Uint8Array {
   return out;
 }
 
+describe("Exo note idempotency", () => {
+  test("concurrent creates share one account-and-source upload; another account is separate", async () => {
+    const h = await setup();
+    const body = { byte_size: 3, content_type: "audio/mp4", source_id: "note-1" };
+    const [first, second] = await Promise.all([
+      h.req("POST", "/hosted/uploads", { body }), h.req("POST", "/hosted/uploads", { body }),
+    ]);
+    expect(first.json.upload_id).toBe(second.json.upload_id);
+    expect(h.store!.activeCount).toBe(1);
+    const other = await h.req("POST", "/hosted/uploads", { as: ADDRESS_B, body });
+    expect(other.json.upload_id).not.toBe(first.json.upload_id);
+    expect((await h.req("GET", "/hosted/jobs/note-1")).json).toMatchObject({ status: "receiving", upload_id: first.json.upload_id });
+    expect((await h.req("GET", "/hosted/jobs/note-1", { as: ADDRESS_C })).json).toEqual({ status: "missing" });
+  });
+
+  test("a repeated keyed submission returns the same handle and survives a store restart", async () => {
+    const h = await setup();
+    const created = await h.req("POST", "/hosted/uploads", { body: { byte_size: 3, content_type: "audio/mp4", source_id: "note-1" } });
+    const id = created.json.upload_id as string;
+    expect((await h.req("PUT", `/hosted/uploads/${id}/parts/0`, { raw: audio(3) })).status).toBe(204);
+    const body = { upload_id: id, source_id: "note-1", speaker_labels: true };
+    await Promise.all([h.req("POST", "/hosted/transcripts", { body }), h.req("POST", "/hosted/transcripts", { body })]);
+    await h.store!.idle();
+    const handle = (await h.req("GET", "/hosted/jobs/note-1")).json.id;
+    expect(typeof handle).toBe("string");
+    expect((await h.req("POST", "/hosted/transcripts", { body })).json.id).toBe(handle);
+    expect(h.calls.filter((call) => call.url.endsWith("/v2/transcript") && call.method === "POST")).toHaveLength(1);
+    const restarted = new HostedUploadStore(h.spoolDir, DEFAULT_DAILY_BYTES, 4);
+    await restarted.init();
+    expect(restarted.noteJob(ADDRESS_A, "note-1")).toMatchObject({ status: "submitted", upload_id: id, id: handle });
+  });
+
+  test("a restart with a paid submission in flight retains an uncertain key", async () => {
+    const h = await setup();
+    const result = await h.store!.create(ADDRESS_A, 3, "audio/mp4", T0, "note-1");
+    if (!result.ok) throw new Error("create failed");
+    await h.store!.markNoteSubmitting(result.upload);
+    const restarted = new HostedUploadStore(h.spoolDir, DEFAULT_DAILY_BYTES, 4);
+    await restarted.init();
+    expect(restarted.noteJob(ADDRESS_A, "note-1")?.status).toBe("uncertain");
+    expect((await restarted.create(ADDRESS_A, 3, "audio/mp4", T0, "note-1")).ok).toBe(false);
+  });
+});
+
 // ── Config ──────────────────────────────────────────────────────────
 
 describe("config", () => {
