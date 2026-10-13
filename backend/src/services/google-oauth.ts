@@ -64,6 +64,23 @@ export interface GoogleOAuthConfig {
   revokeEndpoint: string;
 }
 
+/** Google Desktop OAuth client IDs accept ephemeral 127.0.0.1 ports. Web clients do not. */
+export function googleDesktopClientId(env: NodeJS.ProcessEnv = process.env): string {
+  return (env.GOOGLE_OAUTH_DESKTOP_CLIENT_ID ?? "").trim();
+}
+
+export function validDesktopRedirectUri(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" && url.hostname === "127.0.0.1" &&
+      url.port !== "" && Number(url.port) > 0 &&
+      url.pathname === "/oauth/google" && url.search === "" && url.hash === "" &&
+      url.username === "" && url.password === "" &&
+      value === `http://127.0.0.1:${url.port}/oauth/google`;
+  } catch { return false; }
+}
+
 const DISABLED_CONFIG: GoogleOAuthConfig = {
   enabled: false,
   clientId: "",
@@ -279,9 +296,9 @@ export class GoogleOAuthClient implements GoogleOAuthPort {
       code: input.code,
       code_verifier: input.verifier,
       client_id: this.config.clientId,
-      client_secret: this.config.clientSecret,
       redirect_uri: this.config.redirectUri,
     });
+    if (this.config.clientSecret) body.set("client_secret", this.config.clientSecret);
     const payload = await this.post("exchange", this.config.tokenEndpoint, body, [
       input.code,
       input.verifier,
@@ -317,8 +334,8 @@ export class GoogleOAuthClient implements GoogleOAuthPort {
       grant_type: "refresh_token",
       refresh_token: refreshToken,
       client_id: this.config.clientId,
-      client_secret: this.config.clientSecret,
     });
+    if (this.config.clientSecret) body.set("client_secret", this.config.clientSecret);
     const payload = await this.post("refresh", this.config.tokenEndpoint, body, [
       refreshToken,
       this.config.clientSecret,

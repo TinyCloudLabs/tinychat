@@ -16,6 +16,7 @@ import { formatClockDuration, rowWhen } from "./formatters";
 import { RowBadge } from "./RowBadge";
 import { KIND_ICON, libraryKind, librarySourceLabel } from "./libraryKinds";
 import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
+import { pipelineTranscriptStatus } from "../pipeline/PipelineTrackSummary";
 
 export type LibraryItem = MeetingListItem & {
   /** A voice note on this device with no row in the space yet. */
@@ -59,6 +60,7 @@ export function LibraryRow(props: { item: LibraryItem; now: Date; grouped: boole
   const voiceNote = libraryKind(item.source) === "note";
   const soft = useSoftHome();
   const badge = libraryRowBadge(item);
+  const transcriptStatus = props.pipeline ? pipelineTranscriptStatus(props.pipeline) : null;
   if (soft) {
     const issue = issueForItem(item, soft.issues);
     const lineReplaced = issue !== undefined && !issueIsInformational(issue);
@@ -86,13 +88,14 @@ export function LibraryRow(props: { item: LibraryItem; now: Date; grouped: boole
   return (
     <ListRow
       href={notePath(item.id)}
-      selected={props.selected}
       leading={<Icon />}
       title={libraryRowTitle(item)}
+      selected={props.selected}
       meta={
         <>
           {badge && <RowBadge>{badge}</RowBadge>}
           {libraryRowMeta(item, props.now, props.grouped)}
+          {transcriptStatus && ` · ${transcriptStatus}`}
         </>
       }
       aside={

@@ -61,6 +61,20 @@ test('failed outcome with an error code remains eligible and is separately marke
   assert.match(result.reason, /failed/i);
 });
 
+test('recomputable audio and size failures remain eligible when the current recording fits', () => {
+  const codes = [
+    'recording_too_large', 'recording_too_long', 'recording_too_long_for_phone',
+    'unsupported_recording', 'decode_failed', 'decode_unavailable',
+  ];
+  const rows = codes.map(code => row(code, {
+    metadata: { transcription_outcome: 'failed', transcription_error_code: code },
+  }));
+  const results = plan(rows, audioFor(rows));
+  assert.deepEqual(results.map(({ classification }) => classification), codes.map(() => 'eligible'));
+  assert.deepEqual(results.map(({ errorCode }) => errorCode), codes);
+  assert.ok(results.every(({ failedWithCode }) => failedWithCode));
+});
+
 test('replanning after a terminal outcome or transcript body is committed drops the note', () => {
   const initial = plan([row('eligible')]);
   assert.equal(initial[0].classification, 'eligible');
@@ -135,10 +149,10 @@ test('capture duration fallback is inclusive at the cap', () => {
   ]);
 });
 
-test('current exact MIME matching and WAV expansion size preflight the PTX byte cap', () => {
+test('parameterized audio MIME is matched by its bare PTX raw type', () => {
   const localAudio = new Map([
     ['webm-over', { present: true, partCount: 4, mimeType: 'audio/webm;codecs=opus', size: 40_000_000 }],
-    ['webm-under', { present: true, partCount: 1, mimeType: 'audio/webm;codecs=opus', size: 20_000_000 }],
+    ['webm-under', { present: true, partCount: 1, mimeType: 'audio/webm; codecs=opus', size: 20_000_000 }],
     ['webm-raw', { present: true, partCount: 1, mimeType: 'audio/webm', size: 80_000_000 }],
     ['raw-over', { present: true, partCount: 1, mimeType: 'audio/mp4', size: 120_960_001 }],
   ]);
@@ -149,10 +163,27 @@ test('current exact MIME matching and WAV expansion size preflight the PTX byte 
     row('raw-over', { duration_secs: 30 }),
   ], localAudio);
   assert.deepEqual(results.map(({ classification }) => classification), [
-    'over-ptx-bytes', 'eligible', 'eligible', 'over-ptx-bytes',
+    'eligible', 'eligible', 'eligible', 'over-ptx-bytes',
   ]);
-  assert.equal(results[0].estimatedPtxBytes, 138_912_044);
-  assert.equal(results[1].estimatedPtxBytes, 96_000_044);
+  assert.equal(results[0].estimatedPtxBytes, 40_000_000);
+  assert.equal(results[1].estimatedPtxBytes, 20_000_000);
+});
+test('a failed 72-minute Chrome WebM size error can be retried as raw PTX audio', () => {
+  const result = byId(plan([
+    row('failed-72m-webm', {
+      duration_secs: 4_320,
+      metadata: {
+        transcription_outcome: 'failed',
+        transcription_error_code: 'recording_too_large',
+      },
+    }),
+  ], new Map([
+    ['failed-72m-webm', {
+      present: true, partCount: 34, mimeType: 'audio/webm;codecs=opus', size: 69_000_000,
+    }],
+  ])), 'failed-72m-webm');
+  assert.equal(result.classification, 'eligible');
+  assert.equal(result.estimatedPtxBytes, 69_000_000);
 });
 
 test('non-retryable failures and unusable audio are listed outside eligibility', () => {
@@ -162,13 +193,13 @@ test('non-retryable failures and unusable audio are listed outside eligibility',
     ['huge-legacy', { present: false, classification: 'audio-too-large-to-check', partCount: 0 }],
   ]);
   const results = plan([
-    row('too-large', { metadata: { transcription_outcome: 'failed', transcription_error_code: 'recording_too_large' } }),
+    row('invalid-audio', { metadata: { transcription_outcome: 'failed', transcription_error_code: 'invalid_audio' } }),
     row('busy', { metadata: { transcription_outcome: 'failed', transcription_error_code: 'service_busy' } }),
     row('bad-manifest'),
     row('huge-legacy'),
   ], localAudio);
   assert.deepEqual(results.map(({ classification, errorCode }) => [classification, errorCode]), [
-    ['skip-non-retryable', 'recording_too_large'],
+    ['skip-non-retryable', 'invalid_audio'],
     ['eligible', 'service_busy'],
     ['audio-corrupt', null],
     ['audio-too-large-to-check', null],
@@ -218,7 +249,7 @@ test('read-only snapshot resolves evidence, dedupes live rows, and redacts text'
     { id: 'v1-null', source: 'exo-voice-note', source_id: 'v1-null', duration_secs: null,
       metadata: { platform: 'android', capture: { version: 1, source: 'in_app', duration_ms: 120_000 } } },
     { id: 'nonretryable', source: 'exo-voice-note', source_id: 'nonretryable', duration_secs: 10,
-      metadata: { transcription_outcome: 'failed', transcription_error_code: 'recording_too_large' } },
+      metadata: { transcription_outcome: 'failed', transcription_error_code: 'invalid_audio' } },
     { id: 'v2-top-level', source: 'exo-voice-note', source_id: 'v2-top-level', duration_secs: 60,
       metadata: { transcriber: 'private-cloud', capture: { version: 2 } } },
   ];
@@ -265,7 +296,7 @@ test('read-only snapshot resolves evidence, dedupes live rows, and redacts text'
   assert.equal(report.eligible[0].part_count, 1);
   assert.equal(report.eligible[0].plain_body_bytes, 0);
   assert.equal(report.eligible[0].manifest_size_bytes, 2);
-  assert.equal(report.notes.find(note => note.source_id === 'nonretryable').error_code, 'recording_too_large');
+  assert.equal(report.notes.find(note => note.source_id === 'nonretryable').error_code, 'invalid_audio');
   const topLevelTranscriber = report.notes.find(note => note.source_id === 'v2-top-level');
   assert.equal(topLevelTranscriber.transcriber_option, null);
   assert.equal(topLevelTranscriber.classification, 'needs-original-phone');

@@ -7,9 +7,12 @@ import type { SyncProgress } from "./types";
 export const FIREFLIES_API_URL = "https://api.fireflies.ai/graphql";
 export const FIREFLIES_DEFAULT_BATCH_SIZE = 25;
 export const FIREFLIES_MAX_BATCH_SIZE = 50;
+export const FIREFLIES_DEFAULT_PAGE_BUDGET = 20;
+export const FIREFLIES_MAX_DETAIL_CAP = 50;
 export const FIREFLIES_DEFAULT_DELAY_MS = 800;
 export const FIREFLIES_MAX_RATE_LIMIT_RETRIES = 3;
-const RATE_LIMIT_FALLBACK_MS = 60_000;
+export const FIREFLIES_MAX_RETRY_AFTER_MS = 60_000;
+const RATE_LIMIT_FALLBACK_MS = FIREFLIES_MAX_RETRY_AFTER_MS;
 
 /** Vite env keys the browser-e2e lane sets to retarget the client at its mock. */
 export interface FirefliesEnvOverrides {
@@ -84,6 +87,8 @@ export interface FirefliesError {
   message: string;
   /** Only present when kind === "rate-limited". */
   retryAfterMs?: number;
+  /** Structured provider evidence; never inferred from arbitrary message text. */
+  notFound?: true;
 }
 
 export type FirefliesResult<T> =
@@ -145,9 +150,41 @@ export interface FirefliesClientOptions {
   delayMs?: number;
 }
 
+export interface FirefliesListing {
+  ids: string[];
+  /** True only after the date cutoff or the true end of history is reached. */
+  complete: boolean;
+  /** Provider offset after the last consumed summary, including at EOF/boundary. */
+  nextSkip: number;
+  /** ID at nextSkip - 1, retained when a complete listing has pending details. */
+  nextAnchor: string | null;
+  /** Listed date of nextAnchor. */
+  nextAnchorDate: number | string | null;
+  /** ID immediately before nextAnchor. */
+  nextPreviousNeighbor: string | null;
+}
+
 export interface ListNewTranscriptIdsOptions {
   knownIds: Iterable<string>;
   batchSize?: number;
+  /** Maximum detail IDs per run. */
+  detailCap?: number;
+  /** Maximum provider listing pages per run. */
+  pageBudget?: number;
+  /** Resume a persisted bounded listing at this provider offset. */
+  startSkip?: number;
+  /** ID and listed date at startSkip - 1. */
+  startAnchor?: string | null;
+  startAnchorDate?: number | string | null;
+  /** ID immediately before startAnchor, required for unambiguous rebasing. */
+  startPreviousNeighbor?: string | null;
+  /** Exclusive date cutoff; older summaries complete the listing. */
+  stopBeforeDate?: string | null;
+  /** A known SQL row without a stored body is not complete and must be repaired. */
+  isKnownComplete?: (id: string) => boolean | Promise<boolean>;
+  /** Observe summaries included in this listing range. */
+  onSummary?: (summary: FirefliesTranscriptSummary) => void;
+  signal?: AbortSignal;
   onProgress?: (progress: SyncProgress) => void;
 }
 
@@ -163,10 +200,32 @@ interface GraphQLResponse<T> {
   errors?: GraphQLErrorShape[];
 }
 
-/** Sleep — replaceable in tests via delayMs: 0 (Promise.resolve()). */
-function defaultSleep(ms: number): Promise<void> {
-  if (ms <= 0) return Promise.resolve();
-  return new Promise((r) => setTimeout(r, ms));
+function firefliesDateMs(value: number | string | null): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.abs(value) < 100_000_000_000 ? value * 1000 : value;
+  }
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+/** Resolve false when an AbortSignal cancels the wait. */
+function defaultSleep(ms: number, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(false);
+  if (ms <= 0) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve(true);
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve(false);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /** Parse a `Retry-After` HTTP header. Supports delta-seconds and HTTP-date. */
@@ -190,16 +249,16 @@ function parseRetryAfterFromMessage(message: string): number | null {
   if (!message) return null;
   const m = message.match(/retry\s+after\s+([^;\s]+)/i);
   if (!m) return null;
-  // Preserve the full token (millis + timezone) but strip trailing sentence
-  // punctuation — Date.parse won't tolerate "…Z." otherwise.
   const candidate = m[1].trim().replace(/[.,;]+$/, "");
-  const asDate = Date.parse(candidate);
-  if (Number.isFinite(asDate)) {
-    return Math.max(0, asDate - Date.now());
-  }
+  // Retry-After integer tokens are seconds; parse them before Date.parse,
+  // which accepts some numeric strings as calendar dates.
   const asInt = Number.parseInt(candidate, 10);
   if (Number.isFinite(asInt) && /^\d+$/.test(candidate)) {
     return Math.max(0, asInt * 1000);
+  }
+  const asDate = Date.parse(candidate);
+  if (Number.isFinite(asDate)) {
+    return Math.max(0, asDate - Date.now());
   }
   return null;
 }
@@ -257,16 +316,20 @@ export class FirefliesClient {
     return { ok: true, data: res.data.user };
   }
 
-  async getTranscript(id: string): Promise<FirefliesResult<FirefliesTranscript>> {
+  async getTranscript(
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<FirefliesResult<FirefliesTranscript>> {
     const res = await this.request<{ transcript: FirefliesTranscript | null }>(
       GET_TRANSCRIPT_QUERY,
       { id },
+      signal,
     );
     if (!res.ok) return res;
     if (!res.data.transcript) {
       return {
         ok: false,
-        error: { kind: "graphql-error", message: `Transcript ${id} not found` },
+        error: { kind: "graphql-error", message: `Transcript ${id} not found`, notFound: true },
       };
     }
     return { ok: true, data: res.data.transcript };
@@ -274,63 +337,256 @@ export class FirefliesClient {
 
   async listNewTranscriptIds(
     opts: ListNewTranscriptIdsOptions,
-  ): Promise<FirefliesResult<string[]>> {
+  ): Promise<FirefliesResult<FirefliesListing>> {
     const batchSize = Math.min(
       Math.max(1, opts.batchSize ?? FIREFLIES_DEFAULT_BATCH_SIZE),
       FIREFLIES_MAX_BATCH_SIZE,
     );
+    const detailCap = Number.isFinite(opts.detailCap)
+      ? Math.min(FIREFLIES_MAX_DETAIL_CAP, Math.max(0, Math.floor(opts.detailCap!)))
+      : FIREFLIES_MAX_DETAIL_CAP;
+    const pageBudget = Number.isFinite(opts.pageBudget)
+      ? Math.max(0, Math.floor(opts.pageBudget!))
+      : FIREFLIES_DEFAULT_PAGE_BUDGET;
     const known = opts.knownIds instanceof Set
-      ? (opts.knownIds as Set<string>)
+      ? opts.knownIds as Set<string>
       : new Set<string>(opts.knownIds);
+    const ids: string[] = [];
+    const seenIds = new Set<string>();
+    const cutoff = opts.stopBeforeDate ? Date.parse(opts.stopBeforeDate) : Number.NaN;
+    let skip = Number.isSafeInteger(opts.startSkip) && (opts.startSkip ?? 0) >= 0
+      ? opts.startSkip!
+      : 0;
+    const startSkip = skip;
+    let pages = 0;
+    const startAnchor = skip > 0 ? opts.startAnchor ?? null : null;
+    let nextAnchor = startAnchor;
+    let nextAnchorDate = skip > 0 ? opts.startAnchorDate ?? null : null;
+    let nextPreviousNeighbor = skip > 0 ? opts.startPreviousNeighbor ?? null : null;
+    let complete = false;
+    let resumeResolved = skip === 0;
 
-    const newIds: string[] = [];
-    let skip = 0;
-    let firstPage = true;
-
-    while (true) {
-      if (!firstPage) {
-        await defaultSleep(this.delayMs);
-      }
-      firstPage = false;
-
-      const res = await this.request<{ transcripts: FirefliesTranscriptSummary[] | null }>(
+    const fetchPage = async (requestSkip: number, limit: number) => {
+      if (pages >= pageBudget || opts.signal?.aborted) return null;
+      if (pages > 0 && !await defaultSleep(this.delayMs, opts.signal)) return null;
+      pages++;
+      return this.request<{ transcripts: FirefliesTranscriptSummary[] | null }>(
         LIST_TRANSCRIPTS_QUERY,
-        { limit: batchSize, skip },
+        { limit, skip: requestSkip },
+        opts.signal,
       );
-      if (!res.ok) return res;
-
-      const page = res.data.transcripts ?? [];
-      if (page.length === 0) break;
-
-      let hitKnown = false;
-      for (const t of page) {
-        if (typeof t.id !== "string") continue;
-        if (known.has(t.id)) {
-          hitKnown = true;
-          break;
-        }
-        newIds.push(t.id);
+    };
+    const observedSummaryIds = new Set<string>();
+    const collectCandidate = async (summary: FirefliesTranscriptSummary): Promise<boolean> => {
+      if (Number.isFinite(cutoff)) {
+        const date = firefliesDateMs(summary.date);
+        if (date !== null && date < cutoff) return false;
       }
+      if (typeof summary.id === "string" && !observedSummaryIds.has(summary.id)) {
+        observedSummaryIds.add(summary.id);
+        opts.onSummary?.(summary);
+      }
+      if (typeof summary.id !== "string" || seenIds.has(summary.id)) return true;
+      seenIds.add(summary.id);
+      const knownComplete = known.has(summary.id)
+        && (await opts.isKnownComplete?.(summary.id) ?? true);
+      if (!knownComplete && ids.length < detailCap) ids.push(summary.id);
+      return true;
+    };
+    const restartAtNewest = () => {
+      skip = 0;
+      nextAnchor = null;
+      nextAnchorDate = null;
+      nextPreviousNeighbor = null;
+      ids.length = 0;
+      seenIds.clear();
+      resumeResolved = true;
+      complete = false;
+    };
 
-      opts.onProgress?.({ phase: "listing", done: newIds.length, total: null });
+    if (skip > 0) {
+      const anchorDate = firefliesDateMs(opts.startAnchorDate ?? null);
+      const hasAnchorDateEvidence = Object.hasOwn(opts, "startAnchorDate")
+        && (opts.startAnchorDate === null || anchorDate !== null);
+      const hasResumeEvidence = Boolean(startAnchor)
+        && hasAnchorDateEvidence
+        && (startSkip === 1 ? opts.startPreviousNeighbor === null : Boolean(opts.startPreviousNeighbor));
+      if (!hasResumeEvidence) {
+        restartAtNewest();
+      } else {
+        // Inspect the newest page for prepends, but never claim completion after
+        // the detail cap stopped this page before its date boundary.
+        const head = await fetchPage(0, batchSize);
+        const anchorCandidates = new Map<number, {
+          date: number | string | null;
+          previousNeighbor: string | null;
+        }>();
+        let ambiguousAnchor = false;
+        let headCapReached = false;
+        if (head && !head.ok) {
+          if (!opts.signal?.aborted) return head;
+        } else if (head?.ok) {
+          const summaries = head.data.transcripts ?? [];
+          if (summaries.length === 0) complete = true;
+          for (let index = 0; index < summaries.length; index++) {
+            const summary = summaries[index]!;
+            if (summary.id === startAnchor) {
+              anchorCandidates.set(index, {
+                date: summary.date,
+                previousNeighbor: index > 0 ? summaries[index - 1]!.id : null,
+              });
+            }
+            if (!await collectCandidate(summary)) {
+              complete = true;
+              break;
+            }
+            if (ids.length >= detailCap) {
+              headCapReached = true;
+              break;
+            }
+          }
+        }
 
-      if (hitKnown) break;
-      if (page.length < batchSize) break;
-      skip += batchSize;
+        if (ambiguousAnchor) {
+          restartAtNewest();
+        } else if (!complete && !headCapReached
+          && pages < pageBudget && ids.length < detailCap && !opts.signal?.aborted) {
+          const expected = startSkip - 1;
+          const windowStart = Math.max(0, expected - batchSize);
+          const windowEnd = expected + batchSize + 1;
+          let searchedWindow = true;
+          let searchCapReached = false;
+          let previousSearchId: string | null = null;
+          for (let pageStart = windowStart; pageStart < windowEnd; pageStart += batchSize) {
+            const limit = Math.min(batchSize, windowEnd - pageStart);
+            const response = await fetchPage(pageStart, limit);
+            if (!response) {
+              searchedWindow = false;
+              break;
+            }
+            if (!response.ok) {
+              if (!opts.signal?.aborted) return response;
+              searchedWindow = false;
+              break;
+            }
+            const summaries = response.data.transcripts ?? [];
+            if (summaries.length === 0) break;
+            for (let index = 0; index < summaries.length; index++) {
+              const summary = summaries[index]!;
+              if (summary.id === startAnchor) {
+                const offset = pageStart + index;
+                anchorCandidates.set(offset, {
+                  date: summary.date,
+                  previousNeighbor: index > 0 ? summaries[index - 1]!.id : previousSearchId,
+                });
+              }
+              if (!await collectCandidate(summary)) continue;
+              if (index >= 0 && typeof summary.id === "string") previousSearchId = summary.id;
+              if (ids.length >= detailCap) {
+                searchCapReached = true;
+                break;
+              }
+            }
+            if (searchCapReached) {
+              searchedWindow = false;
+              break;
+            }
+          }
+          if (anchorCandidates.size > 1) {
+            ambiguousAnchor = true;
+          }
+          if (ambiguousAnchor) {
+            restartAtNewest();
+          } else if (searchCapReached) {
+            // The original cursor is safer than rebasing before the anchor was
+            // uniquely found; known IDs will make this bounded window cheaper next run.
+            resumeResolved = false;
+          } else if (anchorCandidates.size === 1) {
+            const [anchorOffset, evidence] = [...anchorCandidates.entries()][0]!;
+            const matchesEvidence = firefliesDateMs(evidence.date) === anchorDate
+              && evidence.previousNeighbor === opts.startPreviousNeighbor;
+            if (matchesEvidence) {
+              skip = anchorOffset + 1;
+              nextAnchor = startAnchor;
+              nextAnchorDate = opts.startAnchorDate ?? null;
+              nextPreviousNeighbor = opts.startPreviousNeighbor ?? null;
+              resumeResolved = true;
+            } else {
+              restartAtNewest();
+            }
+          } else if (searchedWindow) {
+            // Missing or ambiguous provider positions restart at zero.
+            restartAtNewest();
+          }
+        }
+      }
     }
 
-    return { ok: true, data: newIds };
+    while (resumeResolved && !complete && pages < pageBudget && ids.length < detailCap) {
+      if (opts.signal?.aborted) break;
+      const requestedLimit = Math.min(batchSize, detailCap - ids.length);
+      const response = await fetchPage(skip, requestedLimit);
+      if (!response) break;
+      if (!response.ok) {
+        if (opts.signal?.aborted) break;
+        return response;
+      }
+
+      const summaries = response.data.transcripts ?? [];
+      if (summaries.length === 0) {
+        complete = true;
+        break;
+      }
+      let hitDateBoundary = false;
+      let consumed = 0;
+      for (const summary of summaries) {
+        if (Number.isFinite(cutoff)) {
+          const date = firefliesDateMs(summary.date);
+          if (date !== null && date < cutoff) {
+            hitDateBoundary = true;
+            break;
+          }
+        }
+        consumed++;
+        if (typeof summary.id === "string") {
+          nextPreviousNeighbor = nextAnchor;
+          nextAnchor = summary.id;
+          nextAnchorDate = summary.date;
+        }
+        await collectCandidate(summary);
+        if (ids.length >= detailCap) break;
+      }
+      opts.onProgress?.({ phase: "listing", done: ids.length, total: null });
+      skip += consumed;
+      if (hitDateBoundary) {
+        complete = true;
+        break;
+      }
+      if (summaries.length < requestedLimit) {
+        complete = true;
+        break;
+      }
+      if (ids.length >= detailCap || consumed < summaries.length) break;
+    }
+    return {
+      ok: true,
+      data: { ids, complete, nextSkip: skip, nextAnchor, nextAnchorDate, nextPreviousNeighbor },
+    };
   }
 
   private async request<T>(
     query: string,
     variables?: Json,
+    signal?: AbortSignal,
   ): Promise<FirefliesResult<T>> {
     const body = JSON.stringify(variables ? { query, variables } : { query });
 
     let attempt = 0;
 
     while (true) {
+      if (signal?.aborted) {
+        return { ok: false, error: { kind: "network-error", message: "Fireflies request aborted" } };
+      }
       let response: Response;
       try {
         response = await this.fetchImpl(this.apiUrl, {
@@ -340,6 +596,7 @@ export class FirefliesClient {
             Authorization: `Bearer ${this.apiKey}`,
           },
           body,
+          ...(signal ? { signal } : {}),
         });
       } catch (err) {
         return {
@@ -354,14 +611,16 @@ export class FirefliesClient {
       if (response.status === 429) {
         const retryAfterMs =
           parseRetryAfterHeader(response.headers.get("retry-after")) ?? RATE_LIMIT_FALLBACK_MS;
-        if (attempt >= FIREFLIES_MAX_RATE_LIMIT_RETRIES) {
+        if (retryAfterMs > FIREFLIES_MAX_RETRY_AFTER_MS
+          || attempt >= FIREFLIES_MAX_RATE_LIMIT_RETRIES) {
           return {
             ok: false,
             error: { kind: "rate-limited", message: "Fireflies HTTP 429 rate limit", retryAfterMs },
           };
         }
-        // In production wait the retry-after window; tests pass delayMs:0 so waits collapse.
-        await defaultSleep(this.delayMs > 0 ? retryAfterMs : 0);
+        if (!await defaultSleep(this.delayMs > 0 ? retryAfterMs : 0, signal)) {
+          return { ok: false, error: { kind: "network-error", message: "Fireflies request aborted" } };
+        }
         attempt++;
         continue;
       }
@@ -383,6 +642,7 @@ export class FirefliesClient {
           error: {
             kind: "network-error",
             message: `Fireflies HTTP ${response.status}${text ? `: ${text}` : ""}`,
+            ...(response.status === 404 ? { notFound: true as const } : {}),
           },
         };
       }
@@ -402,18 +662,23 @@ export class FirefliesClient {
 
       const errors = Array.isArray(payload.errors) ? payload.errors : null;
       if (errors && errors.length > 0) {
+        const notFound = errors.some((error) =>
+          error?.extensions?.code === "object_not_found" || error?.extensions?.status === 404);
         const rl = errors.find(isRateLimitError);
         if (rl) {
           const parsed = typeof rl.message === "string" ? parseRetryAfterFromMessage(rl.message) : null;
           const retryAfterMs = parsed ?? RATE_LIMIT_FALLBACK_MS;
           const message = rl.message ?? "Fireflies GraphQL rate limit";
-          if (attempt >= FIREFLIES_MAX_RATE_LIMIT_RETRIES) {
+          if (retryAfterMs > FIREFLIES_MAX_RETRY_AFTER_MS
+            || attempt >= FIREFLIES_MAX_RATE_LIMIT_RETRIES) {
             return {
               ok: false,
               error: { kind: "rate-limited", message, retryAfterMs },
             };
           }
-          await defaultSleep(this.delayMs > 0 ? retryAfterMs : 0);
+          if (!await defaultSleep(this.delayMs > 0 ? retryAfterMs : 0, signal)) {
+            return { ok: false, error: { kind: "network-error", message: "Fireflies request aborted" } };
+          }
           attempt++;
           continue;
         }
@@ -432,6 +697,7 @@ export class FirefliesClient {
           error: {
             kind: "graphql-error",
             message: first?.message ?? "Fireflies returned an unknown GraphQL error",
+            ...(notFound ? { notFound: true as const } : {}),
           },
         };
       }

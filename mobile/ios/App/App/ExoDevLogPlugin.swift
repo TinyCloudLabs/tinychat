@@ -6,7 +6,7 @@ import os
 public final class ExoDevLogPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "ExoDevLogPlugin"
     public let jsName = "ExoDevLog"
-    public let pluginMethods = [CAPPluginMethod(name: "append", returnType: CAPPluginReturnPromise)]
+    public let pluginMethods: [CAPPluginMethod] = [CAPPluginMethod(name: "append", returnType: CAPPluginReturnPromise)]
 
     private static let queue = DispatchQueue(label: "xyz.tinycloud.exo.dev.log")
     private static let logger = Logger(subsystem: "xyz.tinycloud.exo.dev", category: "app")

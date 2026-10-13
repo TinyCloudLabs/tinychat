@@ -360,7 +360,7 @@ describe("backend index middleware wiring", () => {
     expect(mount).toBeGreaterThan(limiterIndex);
   });
 
-  test("GET /start and /callback mount WITHOUT authMiddleware; the three POSTs are behind it", () => {
+  test("the exact Google OAuth route set has the intended authentication boundary", () => {
     // `/callback` is a top-level navigation from Google and carries no Bearer — middleware/auth.ts
     // would 401 it before the popup could hand `{code, state}` back. CSRF exempts GET, and the
     // anti-forgery control on the pair is the `state` param the SPA mints and re-checks.
@@ -369,7 +369,7 @@ describe("backend index middleware wiring", () => {
       /app\.use\(\s*\n?\s*"\/api\/connectors\/google\/oauth",\s*\n?\s*authMiddleware/,
     );
     // …it is reached through an ALLOWLIST gate: exactly the two GETs skip it, everything else
-    // (the three POSTs, and any route added later) goes through it. Default-deny, so the
+    // (desktop start, the three POSTs, and any route added later) goes through it. Default-deny, so the
     // accident falls toward authentication rather than away from it.
     expect(INDEX).toContain(
       'export const GOOGLE_OAUTH_PUBLIC_PATHS: ReadonlySet<string> = new Set([\n  "/start",\n  "/callback",\n]);',
@@ -379,23 +379,25 @@ describe("backend index middleware wiring", () => {
     );
     expect(INDEX).toMatch(/void authMiddleware\(req, res, next\);/);
 
-    // And the router really does register those five and only those five, split the way the
-    // gate assumes: the unauthenticated names are GETs, the authenticated ones are POSTs.
+    // Pin every method, path and auth requirement. A new route cannot silently inherit
+    // the public boundary or make this test pass through a count-only assertion.
     const ROUTES = readFileSync(resolve(import.meta.dir, "../routes/google-oauth.ts"), "utf8");
     const registered = [...ROUTES.matchAll(/router\.(get|post|delete|put|patch)\(\s*"([^"]+)"/g)]
-      .map((m) => ({ method: m[1]!, path: m[2]! }));
-    expect(registered).toEqual([
-      { method: "get", path: "/start" },
-      { method: "get", path: "/callback" },
-      { method: "post", path: "/exchange" },
-      { method: "post", path: "/refresh" },
-      { method: "post", path: "/revoke" },
-    ]);
-    // Nothing that reaches Google's token endpoint may be in the public set.
-    for (const route of registered) {
-      const isPublic = ['"/start"', '"/callback"'].includes(`"${route.path}"`);
-      expect(isPublic).toBe(route.method === "get");
-    }
+      .map((m) => ({ method: m[1]!.toUpperCase(), path: m[2]! }));
+    const publicPaths = new Set(
+      [...INDEX.matchAll(/export const GOOGLE_OAUTH_PUBLIC_PATHS:[\s\S]*?new Set\(\[([\s\S]*?)\]\)/g)]
+        .flatMap((match) => [...match[1]!.matchAll(/"([^"]+)"/g)].map((path) => path[1]!)),
+    );
+    expect([...publicPaths]).toEqual(["/start", "/callback"]);
+    expect(registered.map(({ method, path }) => ({ method, path, auth: !(method === "GET" && publicPaths.has(path)) })))
+      .toEqual([
+        { method: "GET", path: "/start", auth: false },
+        { method: "GET", path: "/desktop/start", auth: true },
+        { method: "GET", path: "/callback", auth: false },
+        { method: "POST", path: "/exchange", auth: true },
+        { method: "POST", path: "/refresh", auth: true },
+        { method: "POST", path: "/revoke", auth: true },
+      ]);
   });
 
   test("the google oauth prefix carries its own rate-limit bucket, never the global one", () => {
@@ -883,6 +885,7 @@ describe("backend entry-point HTTP and lifecycle guards", () => {
     for (const path of ["/start", "/callback"]) {
       expect((await fetch(on.url! + prefix + path)).status).toBe(400);
     }
+    expect((await fetch(on.url! + prefix + "/desktop/start")).status).toBe(401);
     for (const path of ["/exchange", "/refresh", "/revoke"]) {
       expect((await post(on.url!, prefix + path, "{}")).status).toBe(401);
     }
