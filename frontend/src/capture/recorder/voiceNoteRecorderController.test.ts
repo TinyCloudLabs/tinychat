@@ -189,6 +189,27 @@ async function attached() {
 }
 
 describe("voice-note recorder controller", () => {
+  test("Record stays disabled until a native Stop drain completes", async () => {
+    const base = plugin;
+    let starts = 0;
+    let release!: () => void;
+    const drain = new Promise<void>((resolve) => { release = resolve; });
+    __setVoiceNotesForTests({ ...base,
+      async start(options) { starts++; return base.start(options); },
+      async stop() { await drain; return base.stop(); },
+    }, { available: true });
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    const stopping = recorder.stop();
+    expect(recorder.getState().phase).toBe("stopping");
+    await recorder.record();
+    expect(starts).toBe(1);
+    expect(recorder.getState().error).toBeNull();
+    release();
+    await stopping;
+    detach();
+  });
+
   test("starting and resuming silence a playing note before native capture", async () => {
     const cleanupDom = installDom();
     const { recorder, detach } = await attached();

@@ -161,6 +161,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     return () => clearTimeout(timer);
   } }: VoiceNoteRecorderControllerOptions): VoiceNoteRecorderController {
   let state = initialRecorderState;
+  let nativeStopPending = false;
   let preference = readTranscriberPreference();
   let nativeOptions: CaptureOptions | null = null;
   const signedIn = tcw?.did != null;
@@ -861,7 +862,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     },
     async record() {
       // Never before the recorder is reconciled, over a recording, or over a receipt still being shown.
-      if (!available || !state.ready || state.phase !== "idle" || state.outcome !== null) return;
+      if (!available || !state.ready || nativeStopPending || state.phase !== "idle" || state.outcome !== null) return;
       stopAllPlayback();
       send({ type: "START_REQUESTED" });
       if (choice.id === "on-device") ensureLocalModel(true);
@@ -912,6 +913,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         return;
       }
       if (state.phase !== "recording") return;
+      nativeStopPending = true;
       send({ type: "STOP_REQUESTED", at: Date.now() });
       let recording: VoiceNoteRecording;
       try {
@@ -926,6 +928,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           : code === "finalization_timed_out" ? FINALIZATION_PENDING
           : `Could not stop: ${messageOf(caught)}`, code === "finalization_timed_out" ? state.recordingId : null);
         return;
+      } finally {
+        nativeStopPending = false;
       }
       captureCommitted(recording.id, recording);
       void saveStopped(recording).catch((caught: unknown) =>
