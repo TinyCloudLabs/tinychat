@@ -8,10 +8,13 @@ import { PipelineStepper } from "@/capture/pipeline/PipelineStepper";
 import { PlatformContext, appPlatform } from "@/lib/platform";
 import { installDom } from "@/test/dom";
 import { getDesktopWhisperQueue, registerDesktopWhisperQueue, type DesktopWhisperJob, type DesktopWhisperQueue } from "./desktop/desktopWhisper";
-import { nativeVoiceNotesAvailable } from "./nativeVoiceNotes";
+import { openDesktopVoiceNotes, type DesktopBridge } from "./desktop/desktopVoiceNotes";
+import { nativeVoiceNotesAvailable, installVoiceNotesEngine, VoiceNotes } from "./nativeVoiceNotes";
 import { onDeviceTranscriptSyncState, syncOnDeviceTranscript } from "./onDeviceTranscriber";
 import { pendingStore } from "./recorderSaves";
 import { useNotePipelineWithLedger, type NativeNote, type NotePipelineSource, type NotePipelineView } from "./useNotePipeline";
+import { newIdbEnv } from "./web/testing/idb";
+import { memoryLocks } from "./web/webStore";
 
 const ID = "mac-note-1";
 const SPACE = { did: "did:test:mac-pipeline", spaceId: "space-mac-pipeline" } as TinyCloudWeb;
@@ -112,18 +115,34 @@ test("a Mac row keeps its committed Local route when the queue has no job", asyn
 test("real Tauri hook retries transcript sync from committed space audio without a native ledger", async () => {
   job = { id: ID, state: "done", progress: null, error: null };
   expect(nativeVoiceNotesAvailable()).toBe(false);
-  await syncOnDeviceTranscript(SPACE, { id: ID, owner: SPACE.did, ledger: { audio: { state: "saved" } }, stt: { state: "done" } });
-  expect(onDeviceTranscriptSyncState(SPACE, ID)?.state).toBe("failed");
-  const mounted = await mount(syncSource);
-  expect(mounted.ledger).toBeNull();
-  expect(mounted.view?.route).toBe("on-device");
-  expect(mounted.view?.pipeline.current).toBe("transcript");
-  const warnings = spyOn(console, "warn").mockImplementation(() => undefined);
+  // Install the actual desktop store adapter. Its empty store has no phone ledger entry,
+  // and this test does not depend on whichever VoiceNotes plugin another file left installed.
+  const bridge = {
+    invoke: async (command: string) => {
+      if (command === "recorder_models_get") return null;
+      if (command === "recorder_status") return { state: "idle", reason: null, id: null, startedAt: null,
+        elapsedMs: 0, audioMs: 0, pausedMs: 0, maxDurationMs: 10_000, intent: "stopped", availability: "available", at: 0, elapsedAt: 0, spans: [] };
+      throw new Error(`Unexpected desktop command ${command}`);
+    },
+    listen: async () => () => undefined,
+  } as unknown as DesktopBridge;
+  const engine = await openDesktopVoiceNotes({ bridge, storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(),
+    locks: memoryLocks(), decodeCheck: null } });
+  const previous = VoiceNotes;
+  installVoiceNotesEngine(engine.plugin);
+  const list = spyOn(engine.plugin, "listPending");
   try {
+    await syncOnDeviceTranscript(SPACE, { id: ID, owner: SPACE.did, ledger: { audio: { state: "saved" } }, stt: { state: "done" } });
+    expect(onDeviceTranscriptSyncState(SPACE, ID)?.state).toBe("failed");
+    list.mockClear();
+    const mounted = await mount(syncSource);
+    expect(mounted.ledger).toBeNull();
+    expect(mounted.view?.route).toBe("on-device");
+    expect(mounted.view?.pipeline.current).toBe("transcript");
     const retry = [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Try again");
     expect(retry).toBeDefined();
     await act(async () => retry!.click());
-    for (let i = 0; i < 10 && warnings.mock.calls.length === 0; i++) await act(async () => { await Bun.sleep(1); });
-    expect(warnings.mock.calls.some(([message]) => message === "[OnDeviceStt] Could not verify local note ownership")).toBe(true);
-  } finally { warnings.mockRestore(); }
+    for (let i = 0; i < 10 && list.mock.calls.length === 0; i++) await act(async () => { await Bun.sleep(1); });
+    expect(list).toHaveBeenCalledTimes(1);
+  } finally { list.mockRestore(); installVoiceNotesEngine(previous); engine.dispose(); }
 });
