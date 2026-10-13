@@ -8,7 +8,7 @@ import type { CapacitorConfig } from "@capacitor/cli";
 const devServerUrl = process.env.EXO_DEV_SERVER_URL;
 
 const config: CapacitorConfig = {
-  appId: process.env.EXO_DEV_BUILD === "true" ? "xyz.tinycloud.exo.dev" : "xyz.tinycloud.exo",
+  appId: "xyz.tinycloud.exo",
   appName: "Exo",
   webDir: "../frontend/dist",
   // Capacitor logs raw bridge arguments/results, including OpenKey session

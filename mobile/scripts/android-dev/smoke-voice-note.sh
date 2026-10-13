@@ -15,8 +15,8 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 json() { python3 -c 'import json,sys; v=json.loads(sys.stdin.read()); v=json.loads(v) if isinstance(v,str) and v[:1] in "{[" else v; print(v'"$1"')'; }
 clip=${1:-$EXO_STATE/speech.wav}
 [ -f "$clip" ] || "$here/speech-sample.sh" "$clip"
-$ADB shell pm grant xyz.tinycloud.exo.dev android.permission.RECORD_AUDIO
-$ADB shell pm grant xyz.tinycloud.exo.dev android.permission.POST_NOTIFICATIONS 2>/dev/null || true
+$ADB shell pm grant xyz.tinycloud.exo android.permission.RECORD_AUDIO
+$ADB shell pm grant xyz.tinycloud.exo android.permission.POST_NOTIFICATIONS 2>/dev/null || true
 
 # Open Capture and wait for the Library's list to load (it stays mounted beside the home, so its
 # voice-note rows are counted from there, newest first).

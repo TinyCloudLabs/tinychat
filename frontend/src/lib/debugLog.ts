@@ -40,19 +40,22 @@ export function redactDebugText(value: unknown): string | undefined {
   if (/\bdelegation(?:Body|Payload)?\b|privateJwk|sessionPayload|\bSIWE\b/i.test(value))
     return "<redacted session data>";
   return value.replace(/https?:\/\/\S+/gi, "<url>")
+    // Header values may contain spaces and use any auth scheme. Consume the
+    // complete quoted value or the rest of the header line.
+    .replace(/\b((?:proxy-authorization|authorization|set-cookie|cookie)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[^\r\n]*)/gi, "$1<redacted>")
     .replace(/\b(bearer\s+)[^\s,;]+/gi, "$1<redacted>")
-    .replace(/\b(d|token|access[_-]?token|id[_-]?token|refresh[_-]?token|client[_-]?secret|secret|password|authorization|api[_-]?key|siwe|signature|private[_-]?key)(["']?\s*[:=]\s*["']?)[^\s"'&,;}]+/gi, "$1$2<redacted>")
-    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "<redacted token>")
+    .replace(/\b(d|jwt|session[_-]?key|(?:private[_-]?)?jwk|nonce|ucan|cacao|signature|delegation(?:Body|Payload)?|(?:access|id|refresh)[_-]?token|token|(?:client[_-]?)?secret|password|api[_-]?key|siwe|private[_-]?key)(["']?\s*[:=]\s*["']?)[^\s"'&,;}]+/gi, "$1$2<redacted>")
+    .replace(/\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]*)?/g, "<redacted token>")
     .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, "<redacted key>")
     .replace(/\b(?:0x)?[a-fA-F0-9]{32,}\b/g, "<redacted hex>")
-    .replace(/\b[A-Za-z0-9+/]{64,}={0,2}\b/g, "<redacted bytes>")
+    .replace(/(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{64,}={0,2}(?![A-Za-z0-9+/_-])/g, "<redacted bytes>")
     .slice(0, 500);
 }
 
 export function debugErrorChain(error: unknown): NonNullable<DebugEvent["chain"]> {
   const chain: NonNullable<DebugEvent["chain"]> = [];
   const seen = new Set<unknown>();
-  for (let current = error; current != null && !seen.has(current);) {
+  for (let current = error; current != null && chain.length < 12 && !seen.has(current);) {
     seen.add(current);
     const value = typeof current === "object" ? current as Record<string, unknown> : null;
     const status = value?.status ?? (value?.meta as { status?: unknown } | undefined)?.status;

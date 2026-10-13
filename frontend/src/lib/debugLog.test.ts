@@ -35,3 +35,27 @@ test("redactor removes JWT, private key, SIWE and authorization patterns", () =>
     expect(redacted).not.toContain("key-secret");
   }
 });
+
+test("redactor removes complete auth headers, base64url, truncated JWTs and session keys", () => {
+  const base64url = "Ab-_".repeat(25);
+  const samples: [string, string][] = [
+    ["Authorization: Basic dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNzd29yZA=="],
+    ['{"authorization":"TinyCloud uAiJ…"}', "uAiJ"],
+    ["Cookie: session=private-cookie; other=value", "private-cookie"],
+    [`"cookie":"session=private-cookie"`, "private-cookie"],
+    [base64url, base64url],
+    ["jwt=eyJhbGci….eyJpc3Mi…", "eyJhbGci"],
+    ["eyJhbGci.eyJpc3Mi", "eyJhbGci"],
+    ["eyJhbGci.", "eyJhbGci"],
+    ['{"sessionKey":"k_live_123456"}', "k_live_123456"],
+  ];
+  for (const [sample, secret] of samples) {
+    expect(redactDebugText(sample)).not.toContain(secret);
+  }
+});
+
+test("debug error chains stop after 12 causes", () => {
+  let error: Error = new Error("root");
+  for (let i = 0; i < 20; i++) error = new Error(`cause ${i}`, { cause: error });
+  expect(debugErrorChain(error)).toHaveLength(12);
+});
