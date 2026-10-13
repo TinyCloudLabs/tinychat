@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { notePipeline, type NotePipelineInput } from "@/lib/voiceNotes/notePipeline";
+import { notePipeline, type NotePipelineInput, type PipelineTranscriptSync } from "@/lib/voiceNotes/notePipeline";
 import { activityForNote } from "./activitySelector";
 import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import type { LibraryItem } from "../library/LibraryRow";
@@ -35,6 +35,15 @@ function cloudFailure(reference: string, code = "server_error"): NotePipelineVie
     transcript: { inSpace: null, cloud: { kind: "failed", code, message: `request ${reference} failed`, retryable: true, reference }, onDevice: null },
     notes: { state: "idle" } };
   return { input, pipeline: notePipeline(input), provider: "private", onAction: () => {}, actionError: null };
+}
+
+function localTranscriptSync(sync: PipelineTranscriptSync): NotePipelineView {
+  const input: NotePipelineInput = { device: "mac", route: "on-device", hasNotesOrMoments: false, online: true,
+    capture: { finalizing: false, issue: null },
+    space: { saved: true, pending: null, lane: { busy: false, depth: 0 } },
+    transcript: { inSpace: null, cloud: null, onDevice: { stt: { state: "done", error: null }, queue: null, model: null, download: "idle", sync } },
+    notes: { state: "idle" } };
+  return { input, pipeline: notePipeline(input), provider: "local", onAction: () => {}, actionError: null };
 }
 
 test("success never creates a notification", () => {
@@ -135,6 +144,56 @@ test("a failed sync stays consumed through retrying and a repeat failure", () =>
   expect(dedupe.keys()).toHaveLength(1);
   dedupe.reconcile(failed);
   expect(dedupe.take(failureNotifications([item], failed, "tauri"), null)).toEqual([]);
+});
+
+test("a failed on-device transcript sync notifies once across three reconcile passes", () => {
+  const dedupe = new FailureNotificationDedupe();
+  const failed = new Map([[item.sourceId, localTranscriptSync({ state: "failed", message: "write timed out" })]]);
+  expect(failed.get(item.sourceId)?.pipeline.steps.map(({ key, state }) => [key, state])).toEqual([
+    ["phone", "done"], ["space", "done"], ["transcript", "failed"], ["notes", "skipped"],
+  ]);
+  const failures = failureNotifications([item], failed, "tauri");
+  expect(failures).toHaveLength(1);
+  expect(failures[0]?.track).toBe("sync");
+  const notified = [1, 2, 3].map(() => {
+    dedupe.reconcile(failed);
+    return dedupe.take(failures, null).length;
+  });
+  expect(notified).toEqual([1, 0, 0]);
+  expect(dedupe.keys()).toHaveLength(1);
+});
+
+test("a failed on-device transcript sync stays consumed through syncing and a repeat failure", () => {
+  const dedupe = new FailureNotificationDedupe();
+  const failed = new Map([[item.sourceId, localTranscriptSync({ state: "failed", message: "write timed out" })]]);
+  const syncing = new Map([[item.sourceId, localTranscriptSync({ state: "syncing" })]]);
+  expect(dedupe.take(failureNotifications([item], failed, "tauri"), null)).toHaveLength(1);
+  dedupe.reconcile(syncing);
+  expect(dedupe.keys()).toHaveLength(1);
+  dedupe.reconcile(failed);
+  expect(dedupe.take(failureNotifications([item], failed, "tauri"), null)).toEqual([]);
+});
+
+test("an unrecorded on-device transcript sync does not rearm", () => {
+  const dedupe = new FailureNotificationDedupe();
+  const unrecorded = new Map([[item.sourceId, localTranscriptSync({ state: "unrecorded", message: "ledger write failed" })]]);
+  const failures = failureNotifications([item], unrecorded, "tauri");
+  expect(failures).toHaveLength(1);
+  expect(unrecorded.get(item.sourceId)?.pipeline.steps.find((step) => step.key === "transcript")?.state).toBe("done");
+  expect(dedupe.take(failures, null)).toHaveLength(1);
+  dedupe.reconcile(unrecorded);
+  expect(dedupe.take(failures, null)).toEqual([]);
+});
+
+test("a synced on-device transcript rearms its sync track", () => {
+  const dedupe = new FailureNotificationDedupe();
+  const failed = new Map([[item.sourceId, localTranscriptSync({ state: "failed", message: "write timed out" })]]);
+  const synced = new Map([[item.sourceId, localTranscriptSync({ state: "synced" })]]);
+  const failures = failureNotifications([item], failed, "tauri");
+  expect(dedupe.take(failures, null)).toHaveLength(1);
+  dedupe.reconcile(synced);
+  expect(dedupe.keys()).toEqual([]);
+  expect(dedupe.take(failures, null)).toHaveLength(1);
 });
 
 test("an active transcription retry does not rearm its earlier failure", () => {

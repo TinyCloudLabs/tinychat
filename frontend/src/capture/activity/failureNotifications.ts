@@ -77,10 +77,12 @@ export class FailureNotificationDedupe {
         const parts = keyParts(key);
         if (parts?.[0] !== sourceId) continue;
         const done = (step: "phone" | "transcript" | "space") => steps.get(step) === "done";
+        const transcriptSync = view.input.transcript.onDevice?.sync;
+        const transcriptSyncComplete = transcriptSync == null || transcriptSync.state === "synced";
         const completed = parts[1] === "finish" ? done("phone")
           : parts[1] === "transcribe" ? done("transcript")
           : parts[1] === "upload-audio" ? done("space")
-          : done("space") && (!steps.has("notes") || steps.get("notes") === "done" || steps.get("notes") === "skipped");
+          : done("space") && (!steps.has("notes") || steps.get("notes") === "done" || steps.get("notes") === "skipped") && transcriptSyncComplete;
         if (completed) this.seen.delete(trackKey);
       }
     }
