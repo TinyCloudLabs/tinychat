@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-google-oauth-listen"
+description = "Enables the google_oauth_listen command without any pre-configured scope."
+commands.allow = ["google_oauth_listen"]
+
+[[permission]]
+identifier = "deny-google-oauth-listen"
+description = "Denies the google_oauth_listen command without any pre-configured scope."
+commands.deny = ["google_oauth_listen"]

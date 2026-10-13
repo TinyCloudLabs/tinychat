@@ -881,8 +881,8 @@ async function main() {
   //    and re-checks. Neither reads a session, a store or a credential — `/callback` renders one
   //    nonce'd page that postMessages `{code, state}` to the pinned app origin and nothing else
   //    (or, for the Exo app's `native.` states, 302s them to one constant deep link).
-  //  - Everything else — the three POSTs that actually reach Google's token endpoint — goes
-  //    through `authMiddleware`, with global CSRF already covering the unsafe methods.
+  //  - Everything else — desktop start and the three POSTs that reach Google's token endpoint
+  //    or revoke a token — goes through `authMiddleware`. Global CSRF covers unsafe methods.
   if (googleMeetOAuthEnabled()) {
     app.use(
       "/api/connectors/google/oauth",
