@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.7.2-beta.2
+
+### Patch Changes
+
+- f7a1fa8: Route explicit Private transcription requests through the committed-mode override.
+
 ## 0.7.2-beta.1
 
 ### Patch Changes

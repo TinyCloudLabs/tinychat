@@ -4,6 +4,7 @@ import {
   maxTranscriptionSeconds,
   type NoteTranscriptionState,
   type TranscriptionAvailability,
+  type TranscriptionAdmissionRefusal,
   type VoiceNoteTranscriber,
   type VoiceNoteTranscriberSnapshot,
 } from "@/lib/voiceNotes/voiceNoteTranscription";
@@ -28,7 +29,7 @@ export interface VoiceNoteTranscriptionProps {
   jobs: ReadonlyMap<string, NoteTranscriptionState>;
   onTranscribe: (sourceId: string) => void;
   /** Private cloud for a note committed to another mode (Local); see `VoiceNoteTranscriber.transcribePrivately`. */
-  onTranscribePrivately: (sourceId: string) => void;
+  onTranscribePrivately: (sourceId: string) => TranscriptionAdmissionRefusal | null | void;
   onConsent: () => void;
   onTurnOff: () => void;
   /** Asks again; resolves once the check has answered. */
