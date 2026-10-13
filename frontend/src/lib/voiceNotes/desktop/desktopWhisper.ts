@@ -257,7 +257,14 @@ export function createDesktopWhisperQueue(args: {
           await mark(note.id, "queued");
         }
         else if (note.stt?.state === "done") {
-          const transcript = await store.getTranscript({ id: note.id }).then((result) => result.transcript, () => null);
+          let transcript;
+          try { transcript = (await store.getTranscript({ id: note.id })).transcript; }
+          catch {
+            // A transient IndexedDB read failure cannot prove the durable write is absent.
+            // The next resume checks it again without destroying the completed job.
+            publish(note.id, "done");
+            continue;
+          }
           if (transcript?.noteId === note.id && (transcript.outcome === "no_speech" || transcript.segments.some((segment) => segment.text.trim())))
             publish(note.id, "done");
           else await mark(note.id, "failed", "The local transcript is missing. Retry transcription.");

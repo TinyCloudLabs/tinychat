@@ -170,8 +170,10 @@ describe("desktop recorder adapter", () => {
     const whisper = new FakeWhisper();
     const env = newIdbEnv();
     const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+      audio: () => createFileAudioBlobStore(bridge) });
     const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now,
-      storeOptions: { env, dbName, locks: memoryLocks(), decodeCheck: null } });
+      store });
     const id = (await engine.plugin.start()).id;
     bridge.files.set(id, Uint8Array.of(1, 2, 3));
     bridge.elapsed = 1000;
@@ -190,6 +192,11 @@ describe("desktop recorder adapter", () => {
     await waitFor(() => completed.length === 1);
     expect(completed).toEqual([id]);
     stopDone();
+    const readTranscript = store.getTranscript.bind(store);
+    store.getTranscript = async () => { throw new Error("temporary IndexedDB read failure"); };
+    await engine.whisper!.resume();
+    expect(engine.whisper!.snapshot().get(id)).toMatchObject({ state: "done" });
+    store.getTranscript = readTranscript;
     await engine.whisper!.resume();
     expect(whisper.calls).toHaveLength(1);
     const db = await new Promise<IDBDatabase>((resolve, reject) => {

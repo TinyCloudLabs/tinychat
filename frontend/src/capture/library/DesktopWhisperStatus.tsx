@@ -15,6 +15,8 @@ export const WHISPER_JOB_COPY = {
   retryFailed: "Couldn’t start the retry. Try again.",
   checking: "Checking the transcript on this Mac…",
   missing: "Couldn’t read the transcript saved on this Mac.",
+  timeout: "Checking the transcript on this Mac took too long.",
+  readFailed: "Couldn’t check the transcript on this Mac.",
   recentFailed: "Couldn’t transcribe on this Mac",
 } as const;
 
@@ -32,7 +34,7 @@ export function DesktopWhisperStatusView(props: {
   job: DesktopWhisperJob;
   retryError: boolean;
   onRetry: () => void;
-  localRead: "loading" | "missing";
+  localRead: "loading" | "missing" | "timeout" | "failed";
   onReadRetry?: () => void;
 }) {
   const { job } = props;
@@ -40,7 +42,7 @@ export function DesktopWhisperStatusView(props: {
     return props.localRead === "loading"
       ? <p role="status" data-testid="whisper-job-checking" className="text-callout text-muted-foreground">{WHISPER_JOB_COPY.checking}</p>
       : <div className="flex flex-wrap items-center gap-x-3 gap-y-2" data-testid="whisper-job-missing">
-          <p role="alert" className="text-callout text-destructive">{WHISPER_JOB_COPY.missing}</p>
+          <p role="alert" className="text-callout text-destructive">{props.localRead === "timeout" ? WHISPER_JOB_COPY.timeout : props.localRead === "failed" ? WHISPER_JOB_COPY.readFailed : WHISPER_JOB_COPY.missing}</p>
           {props.onReadRetry && <Button type="button" variant="outline" onClick={props.onReadRetry}>Try again</Button>}
         </div>;
   }
@@ -91,7 +93,7 @@ export function desktopWhisperEnabled(): boolean {
   return appPlatform() === "tauri";
 }
 
-function DesktopWhisperJobStatus(props: { noteId: string; fallback: ReactNode; localRead: "loading" | "missing"; onReadRetry?: () => void }) {
+function DesktopWhisperJobStatus(props: { noteId: string; fallback: ReactNode; localRead: "loading" | "missing" | "timeout" | "failed"; onReadRetry?: () => void }) {
   const job = useDesktopWhisperJob(props.noteId);
   const [retryError, setRetryError] = useState(false);
   useLogWhisperFailure(props.noteId, job);
@@ -104,7 +106,7 @@ function DesktopWhisperJobStatus(props: { noteId: string; fallback: ReactNode; l
 }
 
 /** Shows the note's Whisper job when it has one; otherwise `fallback`. Disabled, it is `fallback` and never touches the queue. */
-export function DesktopWhisperStatus(props: { noteId: string; fallback: ReactNode; enabled?: boolean; localRead?: "loading" | "missing"; onReadRetry?: () => void }) {
+export function DesktopWhisperStatus(props: { noteId: string; fallback: ReactNode; enabled?: boolean; localRead?: "loading" | "missing" | "timeout" | "failed"; onReadRetry?: () => void }) {
   const enabled = props.enabled ?? desktopWhisperEnabled();
   if (!enabled) return <>{props.fallback}</>;
   return <DesktopWhisperJobStatus noteId={props.noteId} fallback={props.fallback} localRead={props.localRead ?? "loading"} onReadRetry={props.onReadRetry} />;

@@ -261,6 +261,29 @@ describe("a voice note with an after-stop Whisper job on the Mac", () => {
     expect(html).not.toContain("Transcript saved.");
   });
 
+  test("the space's no-speech outcome wins without a local read error", () => {
+    const html = withJob({ state: "done" }, { metadata: { status: "ok", metadata: { transcription_outcome: "no_speech" } }, localTranscript: null });
+    expect(html).toContain("No speech was found in this note.");
+    expect(html).not.toContain("Couldn’t read the transcript saved on this Mac.");
+  });
+
+  test("an older device copy names a failed space read and offers retry", () => {
+    const html = withJob({ state: "done" }, { localTranscript, transcript: { status: "failed", message: "offline" } });
+    expect(html).toContain("Saved on this Mac");
+    expect(html).toContain("On this device · Couldn’t check your space.");
+    expect(html).toContain("Try again");
+    const silent = withJob({ state: "done" }, { localTranscript: { ...localTranscript, outcome: "no_speech", segments: [] },
+      transcript: { status: "failed", message: "offline" } });
+    expect(silent).toContain("No speech was found in this note.");
+    expect(silent).toContain("On this device · Couldn’t check your space.");
+  });
+
+  test("a timed-out local read has a typed message and retry", () => {
+    const html = withJob({ state: "done" }, { localTranscript: null, localTranscriptRead: "timeout", onLocalTranscriptRetry: noop });
+    expect(html).toContain("Checking the transcript on this Mac took too long.");
+    expect(html).toContain("Try again");
+  });
+
   test("signed out (no private-cloud props): queued, progress and failure with Retry show on the page", () => {
     const before = __desktopWhisperQueueReadsForTests();
     expect(withJob({ state: "queued" })).toContain("Waiting to transcribe on this Mac");

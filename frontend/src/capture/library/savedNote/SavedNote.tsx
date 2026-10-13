@@ -76,7 +76,8 @@ export default function SavedNote({
         pipeline={pipeline.pipeline}
         onAction={pipeline.onAction}
         actionError={pipeline.actionError}
-        transcribeAction={platform === "tauri" ? undefined : <TranscribeAction noteId={item.sourceId} transcription={recorder.transcription} durationSecs={item.durationSecs} label="Try again" />}
+        transcribeAction={platform === "tauri" ? undefined
+          : <TranscribeAction noteId={item.sourceId} transcription={recorder.transcription} durationSecs={item.durationSecs} label="Try again" />}
       />
     ) : null,
     audio,

@@ -9,7 +9,7 @@ import { recoveryFailedKey, withQuarantine, type HomeIssue } from "@/capture/hom
 import { useSoftHome } from "@/capture/home/softHome";
 import { useRecorder } from "@/capture/recorder/RecorderProvider";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
-import { PlatformContext } from "@/lib/platform";
+import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import { localTranscriptionUnavailable } from "./captureEngine";
 import { getDesktopWhisperQueue, type DesktopWhisperJob } from "./desktop/desktopWhisper";
 import { resolveVoiceNoteRows, SpaceLaneQueueWaitTimeout, spaceLaneSnapshot, subscribeSpaceLane } from "./voiceNoteRows";
@@ -700,6 +700,12 @@ export interface NotePipelineView {
 interface PipelineState { input: NotePipelineInput; pipeline: NotePipeline; native: NativeNote | null }
 
 /** Each note's input and pipeline, off one set of subscriptions. Notes the reads have not answered for are left out. */
+/** Desktop Whisper is a Tauri queue; Capacitor's native-plugin availability cannot gate it. */
+export function onDevicePipelineAvailable(platform: AppPlatform): boolean {
+  return platform === "tauri" ? getDesktopWhisperQueue() !== null
+    : !localTranscriptionUnavailable() && nativeVoiceNotesAvailable();
+}
+
 function usePipelineStates(entries: readonly { id: string; source: NotePipelineSource }[]): {
   states: ReadonlyMap<string, PipelineState>;
   natives: ReadonlyMap<string, NativeNote>;
@@ -775,7 +781,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
     setRowAttempt((count) => count + 1);
   }, [nativeRead.reread, refreshQuarantine]);
   const device: PipelineDevice = platform === "tauri" ? "mac" : "phone";
-  const hasOnDevice = (device === "mac" || !localTranscriptionUnavailable()) && nativeVoiceNotesAvailable();
+  const hasOnDevice = onDevicePipelineAvailable(platform);
   const { states, autoSyncs, autoTranscriptSyncs } = useMemo(() => {
     const out = new Map<string, PipelineState>();
     const wantsSync: { tcw: TinyCloudWeb; id: string; key: string }[] = [];

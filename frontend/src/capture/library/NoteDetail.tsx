@@ -11,12 +11,24 @@ import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper"
 import { VoiceNotes, type LocalTranscript } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { appPlatform } from "@/lib/platform";
+import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
 import { localTranscriptToSave, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { NoteDetailView, type NoteDetailViewProps } from "./NoteDetailView";
 import type { Library } from "./useLibrary";
 
 /** Matches markdown-text's copy button: the tick reverts on its own. */
 const COPIED_DURATION = 1500;
+
+export async function readLocalTranscript(id: string, read: (id: string) => Promise<{ transcript: LocalTranscript | null }> =
+  (noteId) => VoiceNotes.getTranscript({ id: noteId })):
+  Promise<{ transcript: LocalTranscript | null; readError: "timeout" | "failed" | null }> {
+  try {
+    const { transcript } = await withVoiceNoteSaveDeadline(`local transcript read id=${id}`, () => read(id));
+    return { transcript: transcript?.noteId === id ? transcript : null, readError: null };
+  } catch (error) {
+    return { transcript: null, readError: error instanceof VoiceNoteSaveTimeout ? "timeout" : "failed" };
+  }
+}
 
 export function NoteDetail(props: {
   library: Library;
@@ -29,15 +41,15 @@ export function NoteDetail(props: {
   const { item, reads, audio } = library.note;
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [local, setLocal] = useState<{ id: string; transcript: LocalTranscript | null } | null>(null);
+  const [local, setLocal] = useState<{ id: string; transcript: LocalTranscript | null; readError: "timeout" | "failed" | null } | null>(null);
   const [localAttempt, setLocalAttempt] = useState(0);
   const localId = item?.source === VOICE_NOTE_SOURCE ? item.sourceId : null;
   useEffect(() => {
     if (!localId || !captureEngineAvailable()) return;
     let active = true;
-    const read = () => { void VoiceNotes.getTranscript({ id: localId }).then(({ transcript }) => {
-      if (active) setLocal({ id: localId, transcript: transcript?.noteId === localId ? transcript : null });
-    }).catch(() => { if (active) setLocal({ id: localId, transcript: null }); }); };
+    const read = () => { void readLocalTranscript(localId).then((result) => {
+      if (active) setLocal({ id: localId, ...result });
+    }); };
     read();
     const stopWhisper = appPlatform() === "tauri"
       ? getDesktopWhisperQueue()?.onDone((id) => { if (id === localId) read(); }) : undefined;
@@ -87,6 +99,7 @@ export function NoteDetail(props: {
       metadata={reads.metadata}
       transcript={reads.transcript}
       localTranscript={local?.id === localId ? local.transcript : undefined}
+      localTranscriptRead={local?.id === localId ? local.readError : null}
       onLocalTranscriptRetry={() => { setLocal(null); setLocalAttempt((attempt) => attempt + 1); }}
       audio={audio}
       // A note only on this phone is not in the space to transcribe from.

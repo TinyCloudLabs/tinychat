@@ -56,6 +56,7 @@ export interface NoteDetailViewProps {
   transcript: TranscriptRead | undefined;
   /** The device copy, keyed by source_id, while the space copy has not arrived. */
   localTranscript?: LocalTranscript | null;
+  localTranscriptRead?: "timeout" | "failed" | null;
   onLocalTranscriptRetry?: () => void;
   /** Where the note's audio comes from; null when it has none stored. */
   audio: NoteAudio | null;
@@ -236,6 +237,8 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
   const spaceNoSpeech = metadata?.status === "ok" && metadata.metadata.transcription_outcome === "no_speech";
   const local = voiceNote && !spaceNoSpeech && props.localTranscript?.noteId === item.sourceId ? props.localTranscript : null;
   const remoteSentences = transcript?.status === "ok" ? transcript.sentences : [];
+  const spaceReadFailed = remoteSentences.length === 0 && local !== null &&
+    (transcript?.status === "failed" || metadata?.status === "failed");
   const sentences = remoteSentences.length > 0 ? remoteSentences
     : local?.outcome === "transcribed" ? localTranscriptToSave(local).sentences : [];
   return (
@@ -261,6 +264,10 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
       </span>
       {sentences.length > 0 ? (
         <div className="flex max-w-[68ch] flex-col gap-4 [-webkit-touch-callout:default] select-text">
+          {spaceReadFailed && <div className="flex flex-wrap items-center gap-2" data-testid="note-transcript-local-space-error">
+            <p className="text-callout text-muted-foreground">On this device · Couldn’t check your space.</p>
+            <Button type="button" variant="outline" onClick={props.onRetry}>Try again</Button>
+          </div>}
           {transcriptBlocks(sentences).map((block, index) => (
             <div key={index}>
               {block.speaker && <p className="text-meta font-semibold text-muted-foreground">{block.speaker}</p>}
@@ -268,8 +275,14 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
             </div>
           ))}
         </div>
-      ) : local?.outcome === "no_speech" ? (
-        <p data-testid="voice-note-no-speech" className="text-callout text-muted-foreground">No speech was found in this note.</p>
+      ) : spaceNoSpeech || local?.outcome === "no_speech" ? (
+        <div className="flex flex-col gap-2">
+          {spaceReadFailed && <div className="flex flex-wrap items-center gap-2" data-testid="note-transcript-local-space-error">
+            <p className="text-callout text-muted-foreground">On this device · Couldn’t check your space.</p>
+            <Button type="button" variant="outline" onClick={props.onRetry}>Try again</Button>
+          </div>}
+          <p data-testid="voice-note-no-speech" className="text-callout text-muted-foreground">No speech was found in this note.</p>
+        </div>
       ) : transcript === undefined ? (
         <div role="status">
           <span className="sr-only">Loading the transcript…</span>
@@ -304,7 +317,7 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
           <DesktopWhisperStatus
             noteId={item.sourceId}
             enabled={props.desktopWhisper}
-            localRead={props.localTranscript === undefined ? "loading" : "missing"}
+            localRead={props.localTranscript === undefined ? "loading" : props.localTranscriptRead ?? "missing"}
             onReadRetry={props.onLocalTranscriptRetry}
             fallback={<NoTranscript item={item} metadata={metadata} transcription={props.transcription} />}
           />

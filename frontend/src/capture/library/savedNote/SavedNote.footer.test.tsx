@@ -5,6 +5,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 import { StaticRecorderProvider } from "@/capture/recorder/RecorderProvider";
+import { PlatformContext, type AppPlatform } from "@/lib/platform";
+import { registerDesktopWhisperQueue, type DesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
 import { installDom } from "@/test/dom";
 import { createFakeOnDeviceStt } from "@/lib/voiceNotes/fakeOnDeviceStt";
 import { __setVoiceNotesForTests, VoiceNotes, type VoiceNoteRecording, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -56,6 +58,7 @@ beforeEach(() => {
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = null;
+  registerDesktopWhisperQueue(null);
   errors.mockRestore(); warnings.mockRestore();
   cleanupDom?.();
 });
@@ -68,12 +71,12 @@ afterAll(() => {
 // Bun prints a failed matcher's DOM operand, and a React-attached element is cyclic: compare plain booleans only.
 const present = (scope: ParentNode, selector: string): boolean => scope.querySelector(selector) !== null;
 
-async function mount(options: { metadata?: MeetingMetadataRead; layout?: "page" | "sheet"; onRetry?: () => void } = {}) {
+async function mount(options: { metadata?: MeetingMetadataRead; layout?: "page" | "sheet"; onRetry?: () => void; platform?: AppPlatform } = {}) {
   const container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
   await act(async () => root!.render(
-    <StaticRecorderProvider value={{ tcw: null, signIn: null, transcription: undefined }}>
+    <PlatformContext.Provider value={options.platform ?? "web"}><StaticRecorderProvider value={{ tcw: null, signIn: null, transcription: undefined }}>
       <SavedNote
         item={ITEM}
         metadata={options.metadata ?? { status: "ok", metadata: {} }}
@@ -85,13 +88,24 @@ async function mount(options: { metadata?: MeetingMetadataRead; layout?: "page" 
         transcript={<p>transcript</p>}
         footer={<HowThisGotHere source="exo-voice-note" read={options.metadata ?? { status: "ok", metadata: {} }} onRetry={options.onRetry ?? (() => {})} />}
       />
-    </StaticRecorderProvider>,
+    </StaticRecorderProvider></PlatformContext.Provider>,
   ));
   for (let turn = 0; turn < 10; turn++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   return container;
 }
 
 describe("the saved note's footer", () => {
+  test("a failed Mac Whisper job keeps the transcript Retry action in the stepper", async () => {
+    recordings = [recording("on-device", { state: "failed", pack: null, engine: "whisper", segmentsDone: 0, windowsDone: 0, error: "decoder" })];
+    const calls: string[] = [];
+    registerDesktopWhisperQueue({ snapshot: () => new Map([["rec-1", { id: "rec-1", state: "failed", error: "decoder", progress: null }]]),
+      subscribe: () => () => {}, retry: async (id: string) => { calls.push(id); } } as DesktopWhisperQueue);
+    const container = await mount({ platform: "tauri", metadata: { status: "ok", metadata: { audio: { stored: true } } } });
+    const retry = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Try again");
+    expect(retry !== undefined).toBe(true);
+    await act(async () => retry!.click());
+    expect(calls).toEqual(["rec-1"]);
+  });
   test("while the stepper shows, the legacy route line is not drawn", async () => {
     recordings = [recording("on-device", { state: "queued", pack: null, engine: null, segmentsDone: 0, windowsDone: 0, error: null })];
     const container = await mount();
