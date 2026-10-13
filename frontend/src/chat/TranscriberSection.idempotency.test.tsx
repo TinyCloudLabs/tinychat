@@ -84,17 +84,18 @@ describe("TC-1016 send recovery", () => {
       .some(value => value?.includes(creates[0]!.key!))).toBe(true);
   });
 
-  test("an unreadable owned row keeps ambiguous checking disabled", async () => {
+  test("an unrelated unreadable row does not spin and a retry keeps the same key", async () => {
     cleanupDom = installDom();
     const host = document.createElement("div");
     document.body.append(host);
     let lists = 0;
+    const keys: Array<string | undefined> = [];
     const client: TranscriberClient = {
       list: async () => {
         lists++;
         return { status: "ok", value: { meetings: [{ id: "mtg_unreadable", unavailable: true }] } };
       },
-      create: async () => ({ status: "offline" }),
+      create: async (_input, options) => { keys.push(options?.idempotencyKey); return { status: "offline" }; },
       get: async () => ({ status: "not-found" }),
       stop: async () => ({ status: "not-found" }),
       transcript: async () => ({ status: "not-found" }),
@@ -116,8 +117,11 @@ describe("TC-1016 send recovery", () => {
     await act(async () => bot.actions.setUrl("https://meet.jit.si/unreadable"));
     await act(async () => { bot.actions.submit(); await Bun.sleep(0); });
     expect(lists).toBe(1);
-    expect(bot.form.checking).toBe(true);
-    expect(host.querySelector("button")!.disabled).toBe(true);
+    expect(bot.form.checking).toBe(false);
+    expect(host.querySelector("button")!.disabled).toBe(false);
+    await act(async () => { bot.actions.submit(); await Bun.sleep(0); });
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(keys[0]);
   });
 
   test("a retry after reload reuses both the key and original body fields", async () => {
@@ -214,5 +218,269 @@ describe("TC-1016 send recovery", () => {
     await act(async () => { bot.actions.submit(); await Bun.sleep(0); });
     expect(creates).toHaveLength(2);
     expect(creates[1]!.key).not.toBe(firstKey);
+  });
+
+  test("an old terminal row on a recurring URL does not rotate an ambiguous retry", async () => {
+    cleanupDom = installDom();
+    const url = "https://meet.jit.si/recurring";
+    const old = { ...activeMeeting(url), id: "mtg_old", status: "completed" as const,
+      created_at: "2026-01-01T00:00:00.000Z" };
+    const older = { ...old, id: "mtg_older", created_at: "2025-01-01T00:00:00.000Z" };
+    const keys: Array<string | undefined> = [];
+    let creates = 0;
+    const client: TranscriberClient = {
+      list: async () => ({ status: "ok", value: { meetings: [old, older] } }),
+      create: async (_input, options) => {
+        keys.push(options?.idempotencyKey);
+        return ++creates === 1 ? { status: "ok", value: old } : { status: "offline" };
+      },
+      get: async () => ({ status: "not-found" }), stop: async () => ({ status: "not-found" }),
+      transcript: async () => ({ status: "not-found" }), remove: async () => ({ status: "not-found" }),
+    };
+    let bot!: MeetingBot;
+    function Probe() {
+      bot = useMeetingBot({ backendUrl: "https://backend.example",
+        sessionStore: { getAddress: () => "0xaaa", getToken: () => "token", isExpired: () => false } as SessionStore,
+        client, calendar: { status: async () => ({ enabled: false, outcomes: [] }) }, active: false });
+      return null;
+    }
+    const host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => root!.render(<Probe />));
+    await act(async () => bot.actions.setUrl(url));
+    await act(async () => { bot.actions.submit(); await Bun.sleep(0); });
+    await act(async () => bot.actions.setUrl(url));
+    await act(async () => { bot.actions.submit(); await Bun.sleep(0); });
+    expect(bot.form.checking).toBe(false);
+    await act(async () => { bot.actions.submit(); await Bun.sleep(0); });
+    expect(keys).toHaveLength(3);
+    expect(keys[2]).toBe(keys[1]);
+  });
+
+  test("a terminal POST result clears the persisted intent before reload", async () => {
+    cleanupDom = installDom();
+    const url = "https://meet.jit.si/terminal-post";
+    const keys: Array<string | undefined> = [];
+    let terminal = true;
+    const client: TranscriberClient = {
+      list: async () => ({ status: "ok", value: { meetings: [] } }),
+      create: async (input, options) => {
+        keys.push(options?.idempotencyKey);
+        if (terminal) return { status: "ok", value: { ...activeMeeting(input.meeting_url), status: "failed" } };
+        return { status: "offline" };
+      },
+      get: async () => ({ status: "not-found" }), stop: async () => ({ status: "not-found" }),
+      transcript: async () => ({ status: "not-found" }), remove: async () => ({ status: "not-found" }),
+    };
+    let bot!: MeetingBot;
+    const sessionStore = { getAddress: () => "0xaaa", getToken: () => "token", isExpired: () => false } as SessionStore;
+    const Probe = () => { bot = useMeetingBot({ backendUrl: "https://backend.example", sessionStore, client,
+      calendar: { status: async () => ({ enabled: false, outcomes: [] }) }, active: false }); return null; };
+    let host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => root!.render(<Probe />));
+    await act(async () => bot.actions.setUrl(url));
+    await act(async () => { bot.actions.submit(); await Bun.sleep(0); });
+    await act(async () => root!.unmount());
+    terminal = false;
+    host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => root!.render(<Probe />));
+    await act(async () => bot.actions.setUrl(url));
+    await act(async () => { bot.actions.submit(); await Bun.sleep(0); });
+    expect(keys[1]).not.toBe(keys[0]);
+  });
+
+  test("a newly terminal check result clears the persisted intent before reload", async () => {
+    cleanupDom = installDom();
+    const url = "https://meet.jit.si/terminal-check";
+    const keys: Array<string | undefined> = [];
+    let terminalCheck = true;
+    const client: TranscriberClient = {
+      list: async () => ({ status: "ok", value: { meetings: terminalCheck ? [{ ...activeMeeting(url), id: "mtg_new",
+        status: "failed", created_at: new Date(Date.now() + 1_000).toISOString() }] : [] } }),
+      create: async (_input, options) => { keys.push(options?.idempotencyKey); return { status: "offline" }; },
+      get: async () => ({ status: "not-found" }), stop: async () => ({ status: "not-found" }),
+      transcript: async () => ({ status: "not-found" }), remove: async () => ({ status: "not-found" }),
+    };
+    let bot!: MeetingBot;
+    const sessionStore = { getAddress: () => "0xaaa", getToken: () => "token", isExpired: () => false } as SessionStore;
+    const Probe = () => { bot = useMeetingBot({ backendUrl: "https://backend.example", sessionStore, client,
+      calendar: { status: async () => ({ enabled: false, outcomes: [] }) }, active: false }); return null; };
+    let host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+    await act(async () => root!.render(<Probe />));
+    await act(async () => bot.actions.setUrl(url));
+    await act(async () => { bot.actions.submit(); await Bun.sleep(0); });
+    await act(async () => root!.unmount());
+    terminalCheck = false;
+    host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+    await act(async () => root!.render(<Probe />));
+    await act(async () => bot.actions.setUrl(url));
+    await act(async () => { bot.actions.submit(); await Bun.sleep(0); });
+    expect(keys[1]).not.toBe(keys[0]);
+  });
+
+  test("a conflict clears its key and shows a non-ambiguous retry error", async () => {
+    cleanupDom = installDom();
+    const keys: Array<string | undefined> = [];
+    const client: TranscriberClient = {
+      list: async () => ({ status: "ok", value: { meetings: [] } }),
+      create: async (_input, options) => {
+        keys.push(options?.idempotencyKey);
+        return keys.length === 1
+          ? { status: "rejected", httpStatus: 409, code: "idempotency_conflict", message: null }
+          : { status: "offline" };
+      },
+      get: async () => ({ status: "not-found" }), stop: async () => ({ status: "not-found" }),
+      transcript: async () => ({ status: "not-found" }), remove: async () => ({ status: "not-found" }),
+    };
+    let bot!: MeetingBot;
+    function Probe() { bot = useMeetingBot({ backendUrl: "https://backend.example",
+      sessionStore: { getAddress: () => "0xaaa", getToken: () => "token", isExpired: () => false } as SessionStore,
+      client, calendar: { status: async () => ({ enabled: false, outcomes: [] }) }, active: false }); return null; }
+    const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+    await act(async () => root!.render(<Probe />));
+    await act(async () => bot.actions.setUrl("https://meet.jit.si/conflict"));
+    await act(async () => { bot.actions.submit(); await Bun.sleep(0); });
+    expect(bot.form.checking).toBe(false);
+    expect(bot.form.error).toContain("could not be retried safely");
+    await act(async () => { bot.actions.submit(); await Bun.sleep(0); });
+    expect(keys[1]).not.toBe(keys[0]);
+  });
+
+  test("unavailable checks stop after four reads and retry with the same key", async () => {
+    cleanupDom = installDom();
+    const timers: Array<() => void> = [];
+    window.setTimeout = ((callback: TimerHandler) => { timers.push(callback as () => void); return timers.length; }) as typeof window.setTimeout;
+    const keys: Array<string | undefined> = [];
+    let lists = 0;
+    const client: TranscriberClient = {
+      list: async () => { lists++; return { status: "retryable", httpStatus: 503, code: "transcriber_unavailable" }; },
+      create: async (_input, options) => { keys.push(options?.idempotencyKey); return { status: "offline" }; },
+      get: async () => ({ status: "not-found" }), stop: async () => ({ status: "not-found" }),
+      transcript: async () => ({ status: "not-found" }), remove: async () => ({ status: "not-found" }),
+    };
+    let bot!: MeetingBot;
+    function Probe() { bot = useMeetingBot({ backendUrl: "https://backend.example",
+      sessionStore: { getAddress: () => "0xaaa", getToken: () => "token", isExpired: () => false } as SessionStore,
+      client, calendar: { status: async () => ({ enabled: false, outcomes: [] }) }, active: false }); return null; }
+    const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+    await act(async () => root!.render(<Probe />));
+    await act(async () => bot.actions.setUrl("https://meet.jit.si/bounded-check"));
+    await act(async () => { bot.actions.submit(); await Bun.sleep(0); });
+    for (let i = 0; i < 4; i++) {
+      await act(async () => { timers.shift()?.(); await Bun.sleep(0); });
+    }
+    expect(lists).toBe(4);
+    expect(bot.form.checking).toBe(false);
+    await act(async () => { bot.actions.submit(); await Bun.sleep(0); });
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  test("checking one URL leaves the inputs and a different URL available", async () => {
+    cleanupDom = installDom();
+    type ListResult = Awaited<ReturnType<TranscriberClient["list"]>>;
+    let release!: (value: ListResult) => void;
+    const held = new Promise<ListResult>(resolve => { release = resolve; });
+    const urls: string[] = [];
+    const client: TranscriberClient = {
+      list: () => held,
+      create: async (input) => { urls.push(input.meeting_url); return urls.length === 1
+        ? { status: "offline" }
+        : { status: "ok", value: activeMeeting(input.meeting_url) }; },
+      get: async () => ({ status: "not-found" }), stop: async () => ({ status: "not-found" }),
+      transcript: async () => ({ status: "not-found" }), remove: async () => ({ status: "not-found" }),
+    };
+    let bot!: MeetingBot;
+    function Probe() { bot = useMeetingBot({ backendUrl: "https://backend.example",
+      sessionStore: { getAddress: () => "0xaaa", getToken: () => "token", isExpired: () => false } as SessionStore,
+      client, calendar: { status: async () => ({ enabled: false, outcomes: [] }) }, active: false });
+      return <SendNotetakerButton form={bot.form} listStatus={bot.listStatus} />; }
+    const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+    await act(async () => root!.render(<Probe />));
+    await act(async () => bot.actions.setUrl("https://meet.jit.si/one"));
+    await act(async () => { bot.actions.submit(); await Bun.sleep(0); });
+    expect(bot.form.checking).toBe(true);
+    await act(async () => bot.actions.setUrl("https://meet.jit.si/two"));
+    expect(bot.form.checking).toBe(false);
+    expect(host.querySelector("button")!.disabled).toBe(false);
+    await act(async () => { bot.actions.submit(); await Bun.sleep(0); });
+    expect(urls).toEqual(["https://meet.jit.si/one", "https://meet.jit.si/two"]);
+    await act(async () => {
+      release({ status: "ok", value: { meetings: [] } });
+      await Bun.sleep(0);
+    });
+  });
+
+  test("a superseded check cannot confirm or clear the current intent", async () => {
+    cleanupDom = installDom();
+    type ListResult = Awaited<ReturnType<TranscriberClient["list"]>>;
+    const releases: Array<(value: ListResult) => void> = [];
+    const keys: Array<string | undefined> = [];
+    const client: TranscriberClient = {
+      list: () => new Promise<ListResult>(resolve => { releases.push(resolve); }),
+      create: async (_input, options) => { keys.push(options?.idempotencyKey); return { status: "offline" }; },
+      get: async () => ({ status: "not-found" }), stop: async () => ({ status: "not-found" }),
+      transcript: async () => ({ status: "not-found" }), remove: async () => ({ status: "not-found" }),
+    };
+    let bot!: MeetingBot;
+    function Probe() { bot = useMeetingBot({ backendUrl: "https://backend.example",
+      sessionStore: { getAddress: () => "0xaaa", getToken: () => "token", isExpired: () => false } as SessionStore,
+      client, calendar: { status: async () => ({ enabled: false, outcomes: [] }) }, active: false }); return null; }
+    const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+    await act(async () => root!.render(<Probe />));
+    await act(async () => bot.actions.setUrl("https://meet.jit.si/first"));
+    await act(async () => { bot.actions.submit(); await Bun.sleep(0); });
+    await act(async () => bot.actions.setUrl("https://meet.jit.si/second"));
+    await act(async () => { bot.actions.submit(); await Bun.sleep(0); });
+    expect(releases).toHaveLength(2);
+    await act(async () => {
+      releases[0]!({ status: "ok", value: { meetings: [activeMeeting("https://meet.jit.si/first")] } });
+      await Bun.sleep(0);
+    });
+    expect(bot.form.checking).toBe(true);
+    await act(async () => {
+      releases[1]!({ status: "ok", value: { meetings: [] } });
+      await Bun.sleep(0);
+    });
+    await act(async () => { bot.actions.submit(); await Bun.sleep(0); });
+    expect(keys[2]).toBe(keys[1]);
+  });
+
+  test("an account switch drops the old account's check and send key", async () => {
+    cleanupDom = installDom();
+    type ListResult = Awaited<ReturnType<TranscriberClient["list"]>>;
+    let release!: (value: ListResult) => void;
+    const held = new Promise<ListResult>(resolve => { release = resolve; });
+    const keys: Array<string | undefined> = [];
+    let address = "0xaaa";
+    let lists = 0;
+    const client: TranscriberClient = {
+      list: () => ++lists === 1 ? held : Promise.resolve({ status: "ok", value: { meetings: [] } }),
+      create: async (_input, options) => { keys.push(options?.idempotencyKey); return { status: "offline" }; },
+      get: async () => ({ status: "not-found" }), stop: async () => ({ status: "not-found" }),
+      transcript: async () => ({ status: "not-found" }), remove: async () => ({ status: "not-found" }),
+    };
+    let bot!: MeetingBot;
+    const sessionStore = { getAddress: () => address, getToken: () => "token", isExpired: () => false } as SessionStore;
+    function Probe() { bot = useMeetingBot({ backendUrl: "https://backend.example", sessionStore, client,
+      calendar: { status: async () => ({ enabled: false, outcomes: [] }) }, active: false }); return null; }
+    const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+    await act(async () => root!.render(<Probe />));
+    await act(async () => bot.actions.setUrl("https://meet.jit.si/account-switch"));
+    await act(async () => { bot.actions.submit(); await Bun.sleep(0); });
+    address = "0xbbb";
+    await act(async () => { root!.render(<Probe />); await Bun.sleep(0); });
+    expect(bot.form.checking).toBe(false);
+    expect(bot.form.error).toBeNull();
+    await act(async () => {
+      release({ status: "ok", value: { meetings: [activeMeeting("https://meet.jit.si/account-switch")] } });
+      await Bun.sleep(0);
+    });
+    await act(async () => { bot.actions.submit(); await Bun.sleep(0); });
+    expect(keys[1]).not.toBe(keys[0]);
   });
 });

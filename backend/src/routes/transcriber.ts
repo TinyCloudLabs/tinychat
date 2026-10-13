@@ -10,6 +10,7 @@ import {
   type TranscriptionMeeting,
 } from "../services/transcription-api.js";
 import {
+  DuplicateCreateIntentError,
   resolvePendingCreates,
   TooManyPendingCreatesError,
   type ShareProvenance,
@@ -53,6 +54,7 @@ export const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const MAX_URL_LENGTH = 2048;
 const MAX_BOT_NAME_LENGTH = 64;
 const LIST_CONCURRENCY = 8;
+const CREATE_DEDUP_CANDIDATES = 32;
 
 export function isValidMeetingUrl(raw: unknown): raw is string {
   if (typeof raw !== "string" || raw.length === 0 || raw.length > MAX_URL_LENGTH) return false;
@@ -104,31 +106,11 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
   const { api, index } = options;
   const defaultBotName = options.defaultBotName ?? "TinyCloud Private Notetaker";
   const router = Router();
-  // Process-local protection complements ptx's durable Idempotency-Key guarantee. Normal list/get
-  // traffic refreshes active rows; concurrent sends share the existing create path and add no lane read.
-  const activeByOwnerUrl = new Map<string, Map<string, TranscriptionMeeting>>();
+  // Process-local protection complements ptx's durable Idempotency-Key guarantee. Concurrent
+  // sends share the existing create path and add no lane read.
   const inFlightByOwnerUrl = new Map<string, Promise<{ meeting: TranscriptionMeeting; created: boolean }>>();
 
   const ownerUrlKey = (address: string, meetingUrl: string) => `${address}\n${meetingUrl}`;
-  const remember = (address: string, meeting: TranscriptionMeeting): void => {
-    const key = ownerUrlKey(address, normalizeMeetingUrl(meeting.meeting_url));
-    const active = activeByOwnerUrl.get(key);
-    if (TERMINAL_MEETING_STATUSES.has(meeting.status)) {
-      active?.delete(meeting.id);
-      if (active?.size === 0) activeByOwnerUrl.delete(key);
-      return;
-    }
-    const next = active ?? new Map<string, TranscriptionMeeting>();
-    next.set(meeting.id, meeting);
-    activeByOwnerUrl.set(key, next);
-  };
-  const forget = (address: string, meetingId: string): void => {
-    for (const [key, meetings] of activeByOwnerUrl) {
-      if (!key.startsWith(`${address}\n`)) continue;
-      meetings.delete(meetingId);
-      if (meetings.size === 0) activeByOwnerUrl.delete(key);
-    }
-  };
 
   function addressOf(req: Request, res: Response): string | null {
     const address = req.user?.address;
@@ -146,6 +128,13 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
     if (error instanceof TranscriptionApiError) {
       if (error.status === 404) {
         res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (error.status === 409 && error.code === "idempotency_conflict") {
+        res.status(409).json({
+          error: "idempotency_conflict",
+          message: "This send key belongs to a different request. Please send again.",
+        });
         return;
       }
       if (error.status === 400 || error.status === 422) {
@@ -237,7 +226,6 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
           const found = await api.getMeeting(id);
           const shared = Object.hasOwn(shares, id);
           meetings[i] = shared ? sharedMeetingView(found, shares[id]!) : found;
-          if (!shared) remember(owner, found);
           // A trusted observation: our own upstream read says completed, for this session's owner.
           // A meeting shared into this list (TC-581) is never this session's to deliver.
           const recordedOwner = found.metadata?.tinychat_address;
@@ -304,34 +292,30 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
       create = (async () => {
         const intent = { key, hash: computeCreateRequestHash(createBody), createdAt: Date.now() };
         const entries = await index.beginCreate(address, intent);
-        const cachedIds = [...(activeByOwnerUrl.get(ownerMeetingKey)?.keys() ?? [])];
-        const ownedIds = entries.ids.filter(id => !Object.hasOwn(entries.shared, id));
-        const candidates = [...new Set([...cachedIds, ...ownedIds])];
-        try {
-          for (const id of candidates) {
-            let current: TranscriptionMeeting;
+        const candidates = entries.ids
+          .filter(id => !Object.hasOwn(entries.shared, id))
+          .slice(0, CREATE_DEDUP_CANDIDATES);
+        let cursor = 0;
+        let existing: TranscriptionMeeting | null = null;
+        async function scan(): Promise<void> {
+          while (existing === null && cursor < candidates.length) {
+            const id = candidates[cursor++]!;
             try {
-              current = await api.getMeeting(id);
-            } catch (error) {
-              if (error instanceof TranscriptionApiError && error.status === 404) {
-                forget(address, id);
-                continue;
-              }
-              throw error;
-            }
-            const owner = current.metadata?.tinychat_address;
-            const sameOwner = typeof owner === "string" && owner.toLowerCase() === address;
-            if (sameOwner) remember(address, current);
-            if (sameOwner && !TERMINAL_MEETING_STATUSES.has(current.status)
-              && normalizeMeetingUrl(current.meeting_url) === meetingUrl) {
-              await index.abandonCreate(address, key);
-              return { meeting: current, created: false };
+              const current = await api.getMeeting(id);
+              const owner = current.metadata?.tinychat_address;
+              if (typeof owner === "string" && owner.toLowerCase() === address
+                && !TERMINAL_MEETING_STATUSES.has(current.status)
+                && normalizeMeetingUrl(current.meeting_url) === meetingUrl) existing = current;
+            } catch {
+              // Historical rows may be gone or temporarily unreadable. Neither should block a
+              // fresh send; the stable key and in-flight map remain the primary duplicate guards.
             }
           }
-        } catch (error) {
-          // No ptx create has started, so this intent cannot own a late commit.
-          try { await index.abandonCreate(address, key); } catch { /* Best effort. */ }
-          throw error;
+        }
+        await Promise.all(Array.from({ length: Math.min(LIST_CONCURRENCY, candidates.length) }, scan));
+        if (existing !== null) {
+          await index.abandonCreate(address, key);
+          return { meeting: existing, created: false };
         }
         let meeting: TranscriptionMeeting;
         let attempts = 0;
@@ -362,7 +346,6 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
           } catch { /* Retain the durable intent when deletion fails. */ }
           throw error;
         }
-        remember(address, meeting);
         return { meeting, created: true };
       })();
       inFlightByOwnerUrl.set(ownerMeetingKey, create);
@@ -376,6 +359,13 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
     } catch (error) {
       if (error instanceof TooManyPendingCreatesError) {
         res.status(429).json({ error: "too_many_pending_creates" });
+        return;
+      }
+      if (error instanceof DuplicateCreateIntentError) {
+        res.status(409).json({
+          error: "idempotency_conflict",
+          message: "This send key belongs to a different request. Please send again.",
+        });
         return;
       }
       if (error instanceof InvalidCreateResponseError) {
@@ -392,7 +382,6 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
     if (own === null) return;
     try {
       const found = await api.getMeeting(own.id);
-      if (!own.shared) remember(own.address, found);
       res.json(own.shared ? sharedMeetingView(found, own.shared) : found);
     } catch (error) {
       upstreamFailure(res, error, "get");
@@ -408,11 +397,7 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
         res.status(403).json({ error: "shared_meeting" });
         return;
       }
-      const stopped = await api.stopMeeting(own.id);
-      const cached = [...activeByOwnerUrl.values()].flatMap(meetings => [...meetings.values()])
-        .find(meeting => meeting.id === own.id);
-      if (cached) remember(own.address, { ...cached, status: stopped.status });
-      res.json(stopped);
+      res.json(await api.stopMeeting(own.id));
     } catch (error) {
       upstreamFailure(res, error, "stop");
     }
@@ -451,7 +436,6 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
     }
     try {
       await index.remove(own.address, own.id);
-      forget(own.address, own.id);
     } catch (error) {
       console.warn(`[transcriber] index remove failed err=${redactedErrorMessage(error)}`);
       res.status(503).json({ error: "transcriber_unavailable" });

@@ -1079,6 +1079,12 @@ paths:
                 $ref: "#/components/schemas/GoogleOAuthError"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "409":
+          description: The Idempotency-Key was already used for a different create request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriberError"
         "429":
           $ref: "#/components/responses/GoogleOAuthRateLimited"
         "500":

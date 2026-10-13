@@ -74,6 +74,13 @@ export class TooManyPendingCreatesError extends Error {
   }
 }
 
+export class DuplicateCreateIntentError extends Error {
+  constructor() {
+    super("duplicate_create_intent");
+    this.name = "DuplicateCreateIntentError";
+  }
+}
+
 export interface JsonKv {
   get<T>(key: string): Promise<T | null>;
   put(key: string, value: unknown): Promise<void>;
@@ -275,7 +282,7 @@ export class JsonTranscriberIndexStore implements TranscriberIndexStore {
     return this.lane.run(async () => {
       const row = await this.read(key);
       const existing = row.pending?.find(candidate => candidate.key === intent.key);
-      if (existing && existing.hash !== intent.hash) throw new Error("duplicate_create_intent");
+      if (existing && existing.hash !== intent.hash) throw new DuplicateCreateIntentError();
       if (!existing && (row.pending?.length ?? 0) >= MAX_PENDING) throw new TooManyPendingCreatesError();
       const next = existing ? row : { ...row, pending: [...(row.pending ?? []), { ...intent }] };
       if (!existing) {

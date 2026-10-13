@@ -18,6 +18,7 @@ import { MemoryRouter } from "react-router-dom";
 import {
   TranscriberView,
   clearSendIntentKey,
+  clearSendIntentsForOwner,
   describeFailure,
   getOrCreateSendIntent,
   meetingTitle,
@@ -74,6 +75,7 @@ describe("TranscriberView", () => {
       checking: true, error: null } });
     expect(checking).toContain("Checking whether the notetaker joined…");
     expect(checking).toMatch(/<button[^>]*disabled=""[^>]*aria-label="Send notetaker to meeting"/);
+    expect(checking).not.toMatch(/id="transcriber-meeting-url"[^>]*disabled=""/);
     const active = render({ form: { url: "https://meet.jit.si/room", botName: "", submitting: false,
       active: true, error: null } });
     expect(active).toContain("already joining this meeting");
@@ -104,8 +106,53 @@ describe("TranscriberView", () => {
       removeItem: () => { throw new Error("blocked"); },
     };
     const intent = getOrCreateSendIntent("https://meet.jit.si/room", { meeting_url: "https://meet.jit.si/room" }, undefined, storage);
+    const retry = getOrCreateSendIntent("https://meet.jit.si/room", { meeting_url: "https://meet.jit.si/room" }, undefined, storage);
     expect(intent.key).toMatch(/^manual-v1-[0-9a-f-]{36}$/);
+    expect(retry.key).toBe(intent.key);
     expect(() => clearSendIntentKey("https://meet.jit.si/room", storage)).not.toThrow();
+  });
+
+  test("a tampered stored send intent is replaced instead of replayed as a bad key", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    };
+    const url = "https://meet.jit.si/tampered";
+    const owner = "0xtamper";
+    const minted = getOrCreateSendIntent(url, { meeting_url: url }, undefined, storage, owner);
+    const storageKey = [...values.keys()][0]!;
+    for (const tampered of ['{"key":"not-a-send-key","input":{"meeting_url":"https://meet.jit.si/tampered"}}',
+      '{"key":"manual-v1-11111111-1111-4111-8111-111111111111","input":{"meeting_url":""}}',
+      "manual-v1-11111111-1111-4111-8111-111111111111", "{not json"]) {
+      // Only storage holds the tampered row: a live component would have no memory entry either.
+      clearSendIntentKey(url, storage, owner);
+      values.set(storageKey, tampered);
+      const replacement = getOrCreateSendIntent(url, { meeting_url: url }, undefined, storage, owner);
+      expect(replacement.key).toMatch(/^manual-v1-[0-9a-f-]{36}$/);
+      expect(replacement.key).not.toBe(minted.key);
+      expect(replacement.input.meeting_url).toBe(url);
+      expect(JSON.parse(values.get(storageKey)!)).toMatchObject({ key: replacement.key });
+    }
+  });
+
+  test("send intents are account-scoped and sign-out clears only that account", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      get length() { return values.size; },
+      key: (index: number) => [...values.keys()][index] ?? null,
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    } as Storage;
+    const url = "https://meet.jit.si/account-room";
+    const a = getOrCreateSendIntent(url, { meeting_url: url }, undefined, storage, "0xAAA");
+    const b = getOrCreateSendIntent(url, { meeting_url: url }, undefined, storage, "0xBBB");
+    expect(a.key).not.toBe(b.key);
+    clearSendIntentsForOwner("0xAAA", storage);
+    expect(getOrCreateSendIntent(url, { meeting_url: url }, undefined, storage, "0xAAA").key).not.toBe(a.key);
+    expect(getOrCreateSendIntent(url, { meeting_url: url }, undefined, storage, "0xBBB").key).toBe(b.key);
   });
 
   test("TC-988: not_accepted shows the invite acceptance copy in calendar outcomes", () => {
