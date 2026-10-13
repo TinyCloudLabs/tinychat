@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { CredentialStore, OAuthCredentialSecret } from "./credential-store.js";
 import type { CalendarAutojoinStore, CalendarConnection, TenantCoordinator } from "./calendar-autojoin-store.js";
+import { REQUEST_LANE_WAIT_MS } from "./backend-storage-lane.js";
 import { GOOGLE_CALENDAR_SCOPE, GoogleOAuthError, type GoogleOAuthPort, type GoogleTokenPayload } from "./google-oauth.js";
 
 export const GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE = "google-calendar";
@@ -27,6 +28,8 @@ export interface CalendarAutojoinConnectionOptions {
   coordinator: TenantCoordinator;
   calendar: { probePrimary(accessToken: string): Promise<void> };
   now?: () => number;
+  /** Lane budget for one whole status read (connection row plus occurrence listing). */
+  statusBudgetMs?: number;
 }
 
 /** One-account custody lifecycle. Tenant policy coordination is separate from the global KV lane. */
@@ -40,13 +43,15 @@ export class CalendarAutojoinConnection {
   }
 
   async getStatus(tenant: string) {
-    const connection = await this.options.store.getConnection(tenant);
+    // One wall-clock deadline for every lane read below (lane timers run on real time).
+    const deadline = Date.now() + (this.options.statusBudgetMs ?? REQUEST_LANE_WAIT_MS);
+    const connection = await this.options.store.getConnection(tenant, deadline);
     // Occurrences are only scheduled for a tenant with a connection row, and connection rows are
     // never deleted (disable/disconnect rewrite them as "disabled"). A never-connected tenant has
     // no outcomes, so skip the prefix listing: on the shared serialized storage lane it pushed this
     // read past the client's 20s abort, showing a never-connected account an error.
     if (!connection) return { state: "off" as const, enabled: false, lastScanAt: null, lastDispatchLag: null, errorCode: null, outcomes: [] };
-    const outcomes = (await this.options.store.listOccurrences(tenant))
+    const outcomes = (await this.options.store.listOccurrences(tenant, deadline))
       .filter(row => !!row.errorCode || ["missed", "missed_window", "not_accepted", "failed", "event_ineligible", "event_changed", "already_recorded", "unverified_capture", "capacity_exhausted"].includes(row.disposition ?? ""))
       // RSVP hints fill only spare slots; future unanswered invites must not hide real failures.
       .sort((a, b) => Number((a.errorCode ?? a.disposition) === "not_accepted")
