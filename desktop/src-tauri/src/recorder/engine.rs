@@ -44,6 +44,19 @@ pub struct EngineState {
 pub struct Level {
     level: f32,
     peak: f32,
+    sources: LevelSources,
+}
+
+#[derive(Serialize, Clone, Copy)]
+pub struct LevelSources {
+    mic: SourceLevel,
+    system: Option<SourceLevel>,
+}
+
+#[derive(Serialize, Clone, Copy)]
+pub struct SourceLevel {
+    level: f32,
+    peak: f32,
 }
 
 #[derive(Serialize, Clone)]
@@ -72,10 +85,20 @@ pub fn install(app: &tauri::AppHandle) {
                     (None, None)
                 } else {
                     let meter = handle.state::<Arc<StdMutex<Meter>>>();
-                    let (sample_level, sample_peak) = meter.lock().unwrap().take();
+                    let (sample_level, sample_peak, mic, system) = meter.lock().unwrap().take();
                     let level = Level {
                         level: sample_level,
                         peak: sample_peak,
+                        sources: LevelSources {
+                            mic: SourceLevel {
+                                level: mic.0,
+                                peak: mic.1,
+                            },
+                            system: system.map(|reading| SourceLevel {
+                                level: reading.0,
+                                peak: reading.1,
+                            }),
+                        },
                     };
                     let auto_stop = if !state.busy
                         && !state.auto_stop_requested

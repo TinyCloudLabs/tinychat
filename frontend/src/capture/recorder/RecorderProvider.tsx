@@ -28,7 +28,7 @@ import type { PendingSnapshot } from "@/lib/voiceNotes/recorderSaves";
 import { DISCARDED, micWarning, recorderStatusText, RECEIPT_KEPT } from "./recorderCopy";
 import type { RecorderCaptureIssue, RecorderMic, RecorderPhase, RecorderState } from "./recorderReducer";
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
-import type { RecorderTranscriberChoice, TranscriberChoiceResult, TranscriberChoiceScope } from "./voiceNoteRecorderController";
+import type { RecorderTranscriberChoice, TranscriberChoiceResult, TranscriberChoiceScope, VoiceNoteRecorderController } from "./voiceNoteRecorderController";
 import type { RecorderNote, RecorderNoteStatus } from "./voiceNoteRecorderController";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
@@ -127,6 +127,7 @@ export interface RecorderValue {
    * display clock, so it can never close the sheet before there is anything to show. */
   setReceiptReady(): void;
   subscribeLevel(listener: (level: number) => void): () => void;
+  subscribeLevels: VoiceNoteRecorderController["subscribeLevels"];
 }
 
 const RecorderContext = createContext<RecorderValue | null>(null);
@@ -206,7 +207,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     return () => { active = false; };
   }, [enabled, tcw, defaultsAttempt, onAccountReady]);
   const recorder = useVoiceNoteRecorder({ tcw, enabled: enabled !== false && defaultsReady, backendUrl, sessionStore, onSaved, pipeline });
-  const { state, dismissOutcome, subscribeLevel, record: startRecording } = recorder;
+  const { state, dismissOutcome, subscribeLevel, subscribeLevels, record: startRecording } = recorder;
   const [sheetOpen, setSheetOpen] = useState(false);
   const [receiptPlaying, setReceiptPlaying] = useState(false);
   const [receiptActionable, setReceiptActionable] = useState(false);
@@ -434,6 +435,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       setReceiptActionable,
       setReceiptReady,
       subscribeLevel,
+      subscribeLevels,
     }),
     [
       dismiss,
@@ -467,6 +469,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       sheetOpen,
       state,
       subscribeLevel,
+      subscribeLevels,
       tcw?.did,
     ],
   );
@@ -581,6 +584,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
         for (const level of levels ?? []) listener(level);
         return noop;
       },
+      subscribeLevels: () => noop,
       ...patch,
     }),
     [levels, patch],

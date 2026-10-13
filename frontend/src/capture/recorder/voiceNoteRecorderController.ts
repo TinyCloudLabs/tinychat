@@ -23,6 +23,7 @@ import {
   type VoiceNoteRecording,
   type CaptureStatus,
   type MicStateEvent,
+  type LevelEvent,
   type CaptureOptions,
   type TranscriberId,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -148,6 +149,8 @@ export interface VoiceNoteRecorderController {
   dismissCaptureIssue(id: string): boolean;
   /** Input levels (0..1), fanned out without React state. */
   subscribeLevel(listener: (level: number) => void): () => void;
+  /** Source-aware levels for the Mac's separate Them trace. */
+  subscribeLevels(listener: (levels: LevelEvent) => void): () => void;
 }
 
 export function createVoiceNoteRecorderController({ tcw, available, transcriber, pipeline, onDeviceReady,
@@ -204,6 +207,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   };
   const listeners = new Set<() => void>();
   const levelListeners = new Set<(level: number) => void>();
+  const levelsListeners = new Set<(levels: LevelEvent) => void>();
   // Resolve only after mount. An invalid SDK identity is logged, while the
   // recorder remains usable and never writes notices into another account.
   let issueScope: string | null | undefined;
@@ -716,7 +720,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         VoiceNotes.addListener("level", (event) => {
           // Every capture engine emits linear RMS. Convert once at the boundary to the
           // perceptual 0..1 level shared by the halo, bars, trace, and activity gate.
-          for (const listener of levelListeners) listener(levelFromAmplitude(event.level));
+          for (const listener of levelListeners) listener(levelFromAmplitude(event.sources?.mic.level ?? event.level));
+          for (const listener of levelsListeners) listener(event);
         }),
         // Retained by the shell until heard, so a reload mid-recording still saves the note.
         VoiceNotes.addListener("autoStopped", onAutoStopped),
@@ -1094,6 +1099,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       return () => {
         levelListeners.delete(listener);
       };
+    },
+    subscribeLevels(listener) {
+      levelsListeners.add(listener);
+      return () => { levelsListeners.delete(listener); };
     },
   };
 }

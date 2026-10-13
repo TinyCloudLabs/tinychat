@@ -133,6 +133,13 @@ export interface MicStateEvent {
   openSpan?: MissingAudioSpan | null;
 }
 
+export interface LevelEvent {
+  level: number;
+  peak?: number;
+  /** Mac capture reports each source; phones and older engines omit this. */
+  sources?: { mic: { level: number; peak: number }; system: { level: number; peak: number } | null };
+}
+
 /** iOS emits this retained alert after a successful media-services restart. */
 export interface CaptureAlertEvent {
   id: string;
@@ -276,7 +283,7 @@ export interface VoiceNotesPlugin {
   addListener(event: "writeFailure", listener: (event: WriteFailureEvent) => void): Promise<PluginListenerHandle>;
   addListener(event: "recovered" | "committed", listener: (event: RecoveryCompletedEvent) => void): Promise<PluginListenerHandle>;
   openSettings(): Promise<void>;
-  addListener(event: "level", listener: (event: { level: number; peak?: number }) => void): Promise<PluginListenerHandle>;
+  addListener(event: "level", listener: (event: LevelEvent) => void): Promise<PluginListenerHandle>;
   addListener(event: "autoStopped", listener: (event: VoiceNoteAutoStopEvent) => void): Promise<PluginListenerHandle>;
   addListener(event: "presentRecorder", listener: (event: { id: string | null; reason?: "permission_denied" | "permission_granted" | string }) => void): Promise<PluginListenerHandle>;
   addListener(event: "inputs", listener: (event: { inputs: AudioInput[]; selectedId: string | null; activeId: string | null }) => void): Promise<PluginListenerHandle>;

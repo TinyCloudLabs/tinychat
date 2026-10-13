@@ -1,7 +1,7 @@
 import { readableError } from "@/lib/readableError";
 import type { PluginListenerHandle } from "@capacitor/core";
 import type {
-  AudioInput, CaptureOptions, CaptureStatus, MicStateEvent, MissingAudioSpan, VoiceNoteRecording, VoiceNotesPlugin,
+  AudioInput, CaptureOptions, CaptureStatus, LevelEvent, MicStateEvent, MissingAudioSpan, VoiceNoteRecording, VoiceNotesPlugin,
 } from "../nativeVoiceNotes";
 import { VOICE_NOTE_MAX_DURATION_MS, VOICE_NOTE_MIN_DURATION_LIMIT_MS } from "../nativeVoiceNotes";
 import { notifyCaptureCapabilitiesChanged, registerCaptureEngine, type CaptureCapabilities, type CaptureEngine } from "../captureEngine";
@@ -291,7 +291,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     unlisten.push(await bridge.listen<NativeStatus>("exo://recorder-mic-state", emitMic));
     unlisten.push(await bridge.listen<{ inputs: AudioInput[]; selectedId: string | null; activeId: string | null; selectedMissing: string | null }>(
       "exo://recorder-inputs", (snapshot) => emit("inputs", snapshot)));
-    unlisten.push(await bridge.listen<{ level: number; peak: number }>("exo://recorder-level", (event) => emit("level", event)));
+    unlisten.push(await bridge.listen<LevelEvent>("exo://recorder-level", (event) => emit("level", event)));
     unlisten.push(await bridge.listen<NativeAutoStop>("exo://recorder-auto-stopped", handleAutoStop));
     unlisten.push(await bridge.listen<string>("exo://recorder-model-selection", () => {
       void refreshWhisperCapability().then(() => {
