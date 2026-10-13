@@ -16,7 +16,7 @@
 // shows, each its own scroller, so each keeps its scroll. From medium up the
 // list pane (home above the Library) sits beside the detail pane. A resize
 // never re-parents anything: the cohort archive keeps its place.
-import { useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -88,6 +88,7 @@ export function CaptureSurface(props: CaptureSurfaceProps) {
 
 function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, meetingsSlot, soft, desktopHome }: CaptureSurfaceProps & { soft: boolean; desktopHome: boolean }) {
   const navigate = useNavigate();
+  const openActivityNote = useCallback((id: string) => navigate(PATHS.library + "/" + id), [navigate]);
   const location = useLocation();
   const nav = useNavKind();
   const softTheme = useSoftTheme();
@@ -209,7 +210,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
       data-testid="capture-surface"
       data-layout={wide ? "panes" : "stack"}
     >
-      <ActivityPanel items={library.items} views={activityViews} platform={platform} onOpenNote={(id) => navigate(PATHS.library + "/" + id)} />
+      <ActivityPanel items={library.items} views={activityViews} platform={platform} onOpenNote={openActivityNote} />
       <div
         className={cn(
           homeOnly ? "relative h-full" : notePage ? "hidden" : wide ? `${SCROLLER} border-r border-border` : noteScreen && !noteSheet ? "hidden" : "relative h-full",

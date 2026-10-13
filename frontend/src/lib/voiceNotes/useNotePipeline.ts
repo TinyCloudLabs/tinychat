@@ -938,10 +938,11 @@ function useNotePipelinesWithLedger(entries: readonly { id: string; source: Note
     live.current = true;
     return () => { live.current = false; };
   }, []);
-  const latest = useRef({ entries, recorder, reread });
-  latest.current = { entries, recorder, reread };
+  const latest = useRef({ entries, recorder, reread, states });
+  latest.current = { entries, recorder, reread, states };
   const run = useCallback((id: string, state: PipelineState, kind: PipelineActionKind, step?: StepKey) => {
-    const { entries: current, recorder: rec } = latest.current;
+    const { entries: current, recorder: rec, states: currentStates } = latest.current;
+    state = currentStates.get(id) ?? state;
     const source = current.find((entry) => entry.id === id)?.source;
     if (source === undefined) return;
     setFailures((before) => { const next = new Map(before); next.delete(id); return next; });

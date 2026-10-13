@@ -3,6 +3,7 @@
 // A voice note is titled by its own words ("Voice note" when it has none) and its line is "7:16 PM · 0:14",
 // so notes recorded minutes apart tell apart. It keeps the smoke script's `voice-note-item` and `data-source-id`.
 import { ChevronRightIcon } from "lucide-react";
+import { memo } from "react";
 
 import { ListRow } from "@/components/ui/list-row";
 import type { MeetingListItem } from "@/lib/connectors/meetingExplorer";
@@ -56,7 +57,9 @@ export function libraryRowAsideDuration(item: LibraryItem, lineReplaced: boolean
   return isVoiceNote(item) && !lineReplaced ? null : item.durationSecs;
 }
 
-export function LibraryRow(props: { item: LibraryItem; now: Date; grouped: boolean; selected?: boolean; testId?: string; onRecentOpen?: (id: string) => void; pipeline?: NotePipeline; activityView?: NotePipelineView; platform?: AppPlatform }) {
+export interface LibraryRowProps { item: LibraryItem; now: Date; grouped: boolean; selected?: boolean; testId?: string; onRecentOpen?: (id: string) => void; pipeline?: NotePipeline; activityView?: NotePipelineView; platform?: AppPlatform }
+
+function LibraryRowContent(props: LibraryRowProps) {
   const { item } = props;
   const Icon = KIND_ICON[libraryKind(item.source)];
   const voiceNote = libraryKind(item.source) === "note";
@@ -112,3 +115,11 @@ export function LibraryRow(props: { item: LibraryItem; now: Date; grouped: boole
     />
   );
 }
+
+export const LibraryRow = memo(LibraryRowContent, (before, after) => before.item === after.item &&
+  Math.floor(before.now.getTime() / 60_000) === Math.floor(after.now.getTime() / 60_000) &&
+  before.grouped === after.grouped && before.selected === after.selected && before.testId === after.testId &&
+  before.onRecentOpen === after.onRecentOpen && before.platform === after.platform &&
+  (before.activityView || after.activityView
+    ? noteStatus(activityForNote(before.activityView, before.platform ?? "web")) === noteStatus(activityForNote(after.activityView, after.platform ?? "web"))
+    : before.pipeline === after.pipeline));

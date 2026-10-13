@@ -1,6 +1,6 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { ActivityIcon, XIcon } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { AppPlatform } from "@/lib/platform";
 import { logPipeline } from "@/lib/debugLog";
@@ -14,8 +14,32 @@ export function activityNotes(items: readonly LibraryItem[], views: ReadonlyMap<
   return items.map((item) => ({ item, jobs: activityForNote(views.get(item.sourceId), platform) })).filter((note) => note.jobs.length > 0);
 }
 
+function sameJobs(a: readonly ActivityJob[], b: readonly ActivityJob[]): boolean {
+  return a.length === b.length && a.every((job, index) => {
+    const next = b[index];
+    return next && job.kind === next.kind && job.state === next.state && job.label === next.label &&
+      job.destination === next.destination && job.detail === next.detail && job.progress === next.progress &&
+      job.diagnostics === next.diagnostics && Boolean(job.retry) === Boolean(next.retry);
+  });
+}
+
+export const ActivityNoteSection = memo(function ActivityNoteSection(props: ActivityNote & { onOpenNote: (id: string) => void; onClose: () => void; onRendered?: (id: string) => void }) {
+  const { item, jobs } = props;
+  props.onRendered?.(item.sourceId);
+  return <section className="border-b border-border py-4 first:pt-1" aria-label={item.snippet ?? item.title ?? "Voice note"} data-activity-note={item.sourceId}>
+    <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h3 className="font-medium">{item.snippet ?? item.title ?? "Voice note"}</h3><button type="button" className="min-h-11 text-callout text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => { props.onClose(); props.onOpenNote(item.id); }}>Open note</button></div>
+    <ul className="space-y-3">{jobs.map((job) => <li key={job.kind} className="text-callout" data-state={job.state} data-track={job.kind}>
+      <div className="flex flex-wrap items-center justify-between gap-x-2"><span className="font-medium">{job.label} · {job.destination}</span><span className={job.state === "needs-attention" ? "text-destructive" : "text-muted-foreground"}>{job.state === "needs-attention" ? "Needs attention" : job.state === "running" ? "In progress" : "Waiting"}</span></div>
+      <p className="mt-1 text-muted-foreground">{job.detail}</p>
+      {job.progress !== undefined && <progress className="mt-2 h-1 w-full accent-primary" max={1} value={job.progress} aria-label={`${job.label} progress`} />}
+      {(job.retry || job.diagnostics) && <div className="mt-1 flex flex-wrap gap-3">{job.retry && <button type="button" className="min-h-11 text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={job.retry}>Retry</button>}{job.diagnostics && <button type="button" className="min-h-11 text-muted-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => { void navigator.clipboard?.writeText(`${item.sourceId} · ${job.kind} · ${job.diagnostics}`); }}>Copy details</button>}</div>}
+    </li>)}</ul>
+  </section>;
+}, (before, after) => before.item === after.item && before.onOpenNote === after.onOpenNote && before.onClose === after.onClose && sameJobs(before.jobs, after.jobs));
+
 export function ActivityPanel(props: { items: readonly LibraryItem[]; views: ReadonlyMap<string, NotePipelineView>; platform: AppPlatform; onOpenNote: (id: string) => void; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(props.defaultOpen ?? false);
+  const close = useMemo(() => () => setOpen(false), []);
   const notes = useMemo(() => activityNotes(props.items, props.views, props.platform), [props.items, props.views, props.platform]);
   const previous = useRef(new Map<string, string>());
   useEffect(() => {
@@ -47,17 +71,7 @@ export function ActivityPanel(props: { items: readonly LibraryItem[]; views: Rea
             <Dialog.Close className="flex size-11 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Close Activity"><XIcon aria-hidden="true" className="size-5" /></Dialog.Close>
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-            {notes.length === 0 ? <p className="py-8 text-callout text-muted-foreground">Nothing in progress. Everything is saved.</p> : notes.map(({ item, jobs }) => (
-              <section key={item.sourceId} className="border-b border-border py-4 first:pt-1" aria-label={item.snippet ?? item.title ?? "Voice note"}>
-                <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h3 className="font-medium">{item.snippet ?? item.title ?? "Voice note"}</h3><button type="button" className="min-h-11 text-callout text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => { setOpen(false); props.onOpenNote(item.id); }}>Open note</button></div>
-                <ul className="space-y-3">{jobs.map((job) => <li key={job.kind} className="text-callout" data-state={job.state} data-track={job.kind}>
-                  <div className="flex flex-wrap items-center justify-between gap-x-2"><span className="font-medium">{job.label} · {job.destination}</span><span className={job.state === "needs-attention" ? "text-destructive" : "text-muted-foreground"}>{job.state === "needs-attention" ? "Needs attention" : job.state === "running" ? "In progress" : "Waiting"}</span></div>
-                  <p className="mt-1 text-muted-foreground">{job.detail}</p>
-                  {job.progress !== undefined && <progress className="mt-2 h-1 w-full accent-primary" max={1} value={job.progress} aria-label={`${job.label} progress`} />}
-                  {(job.retry || job.diagnostics) && <div className="mt-1 flex flex-wrap gap-3">{job.retry && <button type="button" className="min-h-11 text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={job.retry}>Retry</button>}{job.diagnostics && <button type="button" className="min-h-11 text-muted-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => { void navigator.clipboard?.writeText(`${item.sourceId} · ${job.kind} · ${job.diagnostics}`); }}>Copy details</button>}</div>}
-                </li>)}</ul>
-              </section>
-            ))}
+            {notes.length === 0 ? <p className="py-8 text-callout text-muted-foreground">Nothing in progress. Everything is saved.</p> : notes.map(({ item, jobs }) => <ActivityNoteSection key={item.sourceId} item={item} jobs={jobs} onOpenNote={props.onOpenNote} onClose={close} />)}
           </div>
           {(props.platform === "ios" || props.platform === "android") && <p className="border-t border-border px-4 py-3 text-callout text-muted-foreground">Uploads continue while Exo is open.</p>}
         </Dialog.Content>
