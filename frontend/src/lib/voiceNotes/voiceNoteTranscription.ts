@@ -1305,6 +1305,7 @@ export type NoteTranscriptionState =
 
 /** Why private cloud was not on when a note was offered to it. */
 export type TranscriptionBlockedReason = "checking" | "unavailable" | "check-failed" | "no-consent";
+export type TranscriptionAdmissionRefusal = TranscriptionBlockedReason | "account-changed";
 
 export type TranscriptionAvailability = "checking" | "available" | "failed";
 
@@ -1351,7 +1352,7 @@ export interface VoiceNoteTranscriber {
    * The user's "Use Private instead" for a note committed to another mode (its on-device job is
    * cancelled by the caller first). Runs like `transcribe`, and its Retry keeps the choice.
    */
-  transcribePrivately(sourceId: string): void;
+  transcribePrivately(sourceId: string): TranscriptionAdmissionRefusal | null;
   /**
    * Use the committed native options. A note that did not begin in the app (a shortcut, intent or widget start, or a
    * source this app does not know) is never sent from here, whatever the defaults say: it is held, and only
@@ -1506,17 +1507,18 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   };
 
   /** Every job, new or resumed, starts here. Only `explicit` (the user's Transcribe on this note) may pass a held note. */
-  const enqueue = (sourceId: string, audio: VoiceNoteAudio | undefined, explicit: boolean) => {
+  const enqueue = (sourceId: string, audio: VoiceNoteAudio | undefined, explicit: boolean): TranscriptionAdmissionRefusal | null => {
     if (!on() || cloud === null) {
+      const reason = identityCurrent() ? blockedReason() : "account-changed";
       if (explicit || !isHeld(sourceId)) block(sourceId);
-      return;
+      return reason;
     }
-    if (!explicit && isHeld(sourceId)) return;
+    if (!explicit && isHeld(sourceId)) return null;
     // Queued, running, or just saved (the list may not show it yet): never a second job.
     const current = jobs.get(sourceId);
-    if (current?.kind === "active" || current?.kind === "done") return;
+    if (current?.kind === "active" || current?.kind === "done") return null;
     // A failure waits for the user's Retry; no automatic hand-off or resume restarts it.
-    if (!explicit && current?.kind === "failed") return;
+    if (!explicit && current?.kind === "failed") return null;
     const account = { generation: currentAccountGeneration(), did: deps.tcw().did };
     waiting.add(sourceId);
     jobs.set(sourceId, { kind: "active", status: { kind: "waiting", position: waiting.size } });
@@ -1581,6 +1583,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         emit();
       }
     });
+    return null;
   };
 
   /** Notes a previous run left in flight, first (one active job per account). Once per transcriber. */
@@ -1690,11 +1693,15 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
 
     transcribePrivately(sourceId) {
       chosenPrivate.add(sourceId);
+      const refusal = enqueue(sourceId, undefined, true);
+      if (refusal !== null) {
+        chosenPrivate.delete(sourceId);
+        return refusal;
+      }
       choices.add(sourceId);
-      enqueue(sourceId, undefined, true);
       release(sourceId);
+      return null;
     },
-
     noteSaved(recording, audio) {
       if (recording.options && recording.options.transcriber !== "private-cloud") return;
       if (recording.source !== "in_app") {
