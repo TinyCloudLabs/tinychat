@@ -851,6 +851,18 @@ const RECORDING = {
 describe("transcribeVoiceNote (one note end to end)", () => {
   beforeEach(() => _resetConnectorSchemaMemoForTests());
 
+  test("a stereo space copy sends Private separate mode after local cleanup", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, { ...RECORDING, channels: 2 }, AUDIO, "tauri")).ok).toBe(true);
+    const fake = createFakeVoiceNotes();
+    fake.plugin.listPending = async () => ({ recordings: [] });
+    __setVoiceNotesForTests(fake.plugin, { available: true });
+    const h = harness({ decode: silentDecoder() });
+    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS,
+      overrideCommitted: true, explicit: true, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+    expect(h.creates[0]?.body).toMatchObject({ channel_mode: "separate", channel_labels: ["Me", "Them"] });
+  });
+
   for (const platform of ["ios", "android", "tauri"] as const) {
     test(`${platform} native file upload uses metadata and never reads audio over the JS bridge`, async () => {
       const space = sqliteSpace();

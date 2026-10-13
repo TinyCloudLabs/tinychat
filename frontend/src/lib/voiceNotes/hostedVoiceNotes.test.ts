@@ -14,7 +14,7 @@ afterEach(() => {
   else Reflect.deleteProperty(globalThis, "localStorage");
 });
 
-function harness(failAt?: "part" | "submit" | "result" | "space", noSpeech = false, spaceOnly = false, mimeType = "audio/mp4") {
+function harness(failAt?: "part" | "submit" | "result" | "space", noSpeech = false, spaceOnly = false, mimeType = "audio/mp4", committedChannels: 1 | 2 = 1) {
   const data = new Map<string, string>();
   Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
     getItem: (key: string) => data.get(key) ?? null,
@@ -80,7 +80,7 @@ function harness(failAt?: "part" | "submit" | "result" | "space", noSpeech = fal
   const account = { did: "did:test:one" } as TinyCloudWeb;
   const track = () => createHostedVoiceNoteTrack(() => account, "https://exo.test", {} as SessionStore, account.did, {
     client, native, readCommit: async () => commit, createRow: async () => ({ inserted: true }) as Awaited<ReturnType<typeof import("./voiceNoteRows").createVoiceNoteRow>>,
-    readNote: async () => ({ ok: true, data: { captureTranscriber: "assemblyai", durationSeconds: 1 } }) as Awaited<ReturnType<typeof import("./voiceNoteStore").readVoiceNoteForTranscription>>,
+    readNote: async () => ({ ok: true, data: { captureTranscriber: "assemblyai", durationSeconds: 1, channels: committedChannels } }) as Awaited<ReturnType<typeof import("./voiceNoteStore").readVoiceNoteForTranscription>>,
     loadAudio: async () => ({ ok: true, data: { mimeType: "audio/mp4", base64: bytesToBase64(audio) } }) as Awaited<ReturnType<typeof import("./voiceNoteStore").loadVoiceNoteAudio>>,
     save: async (_account, _id, transcript) => {
       calls.push("space:save");
@@ -100,6 +100,14 @@ test("Powerful requests multichannel and labels stereo turns Me and Them", async
   await lane.run(h.recording);
   expect(h.submits[0]).toMatchObject({ multichannel: true });
   expect(h.getLocal()?.segments[0]?.speaker).toBe("Me");
+});
+
+test("a space-only stereo note uses the committed channels for Powerful", async () => {
+  const h = harness(undefined, false, true, "audio/mp4", 2);
+  const lane = h.track(); lane.consent();
+  expect(await lane.runSpaceOnly("note-1")).toBe(true);
+  expect(h.submits[0]).toMatchObject({ multichannel: true });
+  expect(h.getLocal()).toBeNull();
 });
 
 test("a space-only note uses its space audio and can resume without a native recording", async () => {

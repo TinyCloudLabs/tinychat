@@ -3,9 +3,9 @@ import { createFakeDesktopCaptureExtras } from "@/lib/voiceNotes/fakeDesktopCapt
 import { chooseSystemAudio, needsSystemAudioDisclosure, SYSTEM_AUDIO_BODY, SYSTEM_AUDIO_MIC_ONLY, SYSTEM_AUDIO_RECORD, SYSTEM_AUDIO_TITLE } from "./systemAudioDisclosure";
 
 describe("Mac system audio disclosure", () => {
-  test("exact Build 1 copy describes mixed audio and the start or resume rule", () => {
+  test("exact copy describes separate channels and the start or resume rule", () => {
     expect(SYSTEM_AUDIO_TITLE).toBe("Also record this Mac's audio?");
-    expect(SYSTEM_AUDIO_BODY).toBe("Exo can record everything this Mac plays, such as the other side of calls, videos and notifications, as Them alongside your mic as Me. A note's channel layout is set when it starts; changes during a note apply to its next recording segment.");
+    expect(SYSTEM_AUDIO_BODY).toBe("Exo can record everything this Mac plays, such as the other side of calls, videos and notifications, as Them alongside your mic as Me. Turning it off applies when you resume. Turning it on applies to your next recording.");
     expect([SYSTEM_AUDIO_RECORD, SYSTEM_AUDIO_MIC_ONLY]).toEqual(["Record this Mac's audio", "Mic only"]);
   });
 

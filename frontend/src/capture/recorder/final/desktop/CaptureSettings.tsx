@@ -417,7 +417,7 @@ export function SettingsPanel({
           </h3>
           <Switch
             label="Also record this Mac's audio"
-            description="Records everything this Mac plays as Them, with your mic as Me. A note's channel layout is set when it starts; changes during a note apply to its next recording segment. macOS asks for permission once."
+            description="Records everything this Mac plays as Them, with your mic as Me. Turning it off applies when you resume. Turning it on applies to your next recording. macOS asks for permission once."
             checked={load.data.systemAudio}
             pending={switches.systemAudio.pending}
             error={switches.systemAudio.error}

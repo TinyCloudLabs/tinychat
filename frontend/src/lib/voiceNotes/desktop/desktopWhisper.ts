@@ -194,12 +194,7 @@ export function createDesktopWhisperQueue(args: {
         })();
       });
       if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
-      let envelope: [number, number][] | undefined;
-      if (note.channels === 2) {
-        try { envelope = await files.invoke<[number, number][]>("recorder_audio_envelope", { id }); }
-        catch (error) { console.warn("[desktopWhisper] Could not read channel levels for echo dedupe", error); }
-      }
-      await store.putTranscript({ id, transcript: whisperLocalTranscript(note, model, response, { envelope }) });
+      await store.putTranscript({ id, transcript: whisperLocalTranscript(note, model, response) });
       await mark(id, "done");
       emitDone(id);
     } catch (error) {

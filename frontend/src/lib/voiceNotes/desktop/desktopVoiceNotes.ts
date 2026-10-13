@@ -21,7 +21,7 @@ type Listener = (event: never) => void;
 type NativeStatus = Omit<CaptureStatus, "spans" | "openSpan" | "transitionGen"> & {
   at: number; elapsedAt: number; spans?: MissingAudioSpan[] };
 type NativeAutoStop = { id: string; reason: "max_duration"; maxDurationMs: number; at: number; elapsedMs: number; pausedMs: number;
-  spans?: MissingAudioSpan[] };
+  channels: 1 | 2; spans?: MissingAudioSpan[] };
 type NativeJournal = { id: string; startedAt: number; recordedMs: number; pausedMs: number; maxDurationMs: number;
   spans?: MissingAudioSpan[]; layout?: "mono" | "stereo" };
 type NativeFailed = { id: string; segmentId: string; reason: string; error: string; journal: NativeJournal };
@@ -228,7 +228,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     const firstAudioAt = bytes > 0 ? current.session.firstAudioAt ?? native.startedAt ?? now() : null;
     const patch: Partial<SessionRecord> = {
       bytes, audioMs: native.audioMs, pausedMs: native.pausedMs, firstAudioAt,
-      channels: native.channels ?? current.session.channels,
+      channels: current.session.channels ?? native.channels,
       lastHeartbeatAt: now(), spans: mergeSpans(current.session.spans, native.spans),
     };
     await store.updateSession(current.session.id, patch);
@@ -271,6 +271,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
         const native = await bridge.invoke<NativeStatus>("recorder_status");
         const stopped = { ...native, id: event.id, state: "idle" as const, reason: event.reason,
           audioMs: event.elapsedMs, elapsedMs: event.elapsedMs, pausedMs: event.pausedMs,
+          channels: event.channels,
           spans: event.spans ?? native.spans };
         const failed = await nativeFailures(event.id);
         if (failed.length) {
@@ -323,11 +324,14 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       // A relaunch must neither overwrite captured metadata nor repeat a
       // failure notification for an already quarantined note.
       if (existing.has(item.id) || committed.has(item.id)) continue;
+      const channels = item.journal.layout === "stereo" ? 2 : 1;
       if (!await store.getSession(item.id)) {
         const defaults = await store.getCaptureDefaults();
         await store.beginSession({ id: item.id, startedAt: item.journal.startedAt, source: "in_app", owner: null,
           transitionGen: defaults.transitionGen, options: { transcriber: capabilities.desktopWhisper ? "on-device" : "off", identifySpeakers: false },
-          mimeType: "audio/mpeg", input: null, maxDurationMs: item.journal.maxDurationMs });
+          mimeType: "audio/mpeg", input: null, maxDurationMs: item.journal.maxDurationMs, channels });
+      } else {
+        await store.updateSession(item.id, { channels });
       }
       await store.quarantineInterrupted(item.id, item.reason, item.error);
       const event = { id: item.id, reason: item.reason, error: item.error };
@@ -438,7 +442,8 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
           const native = await bridge.invoke<NativeStatus>("recorder_start", { id, maxDurationMs });
           nativeStarted = true;
           session.startedAt = native.startedAt ?? session.startedAt;
-          await store.updateSession(id, { startedAt: session.startedAt });
+          session.channels = native.channels;
+          await store.updateSession(id, { startedAt: session.startedAt, channels: native.channels });
           live = { session, release: releases };
           emitMic(native);
           return { id, startedAt: session.startedAt, maxDurationMs };

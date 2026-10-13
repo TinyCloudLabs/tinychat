@@ -69,6 +69,7 @@ export default function SavedNote({
     id: item.id,
     recordingId: item.sourceId,
     durationSecs: item.durationSecs,
+    channels: (rowMetadata?.capture as { channels?: number } | undefined)?.channels === 2 || audio?.channels === 2 ? 2 : 1,
     title: item.title ?? voiceNoteTitle(Date.parse(item.startedAt ?? "") || Date.now()),
     meta: savedNoteMeta(item, rowMetadata, platform, pipeline?.pipeline.done === true),
     stepper: stepperShown ? (

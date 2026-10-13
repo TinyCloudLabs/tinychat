@@ -1,7 +1,7 @@
 import type { DesktopCaptureExtras } from "@/lib/voiceNotes/desktopCaptureExtras";
 
 export const SYSTEM_AUDIO_TITLE = "Also record this Mac's audio?";
-export const SYSTEM_AUDIO_BODY = "Exo can record everything this Mac plays, such as the other side of calls, videos and notifications, as Them alongside your mic as Me. A note's channel layout is set when it starts; changes during a note apply to its next recording segment.";
+export const SYSTEM_AUDIO_BODY = "Exo can record everything this Mac plays, such as the other side of calls, videos and notifications, as Them alongside your mic as Me. Turning it off applies when you resume. Turning it on applies to your next recording.";
 export const SYSTEM_AUDIO_RECORD = "Record this Mac's audio";
 export const SYSTEM_AUDIO_MIC_ONLY = "Mic only";
 

@@ -1227,7 +1227,7 @@ export async function transcribeVoiceNote(args: {
     ({ transcriptionId, transcript } = await cloud.transcribe(
       { sourceId, capabilities: args.capabilities, loadAudio, durationSeconds: note.data.durationSeconds,
         identifySpeakers: nativeNote?.options?.identifySpeakers === true,
-        channelCount: nativeNote?.channels === 2 ? 2 : 1,
+        channelCount: note.data.channels === 2 ? 2 : nativeNote?.channels === 2 ? 2 : 1,
         allowed: args.allowed },
       report,
     ));

@@ -25,6 +25,8 @@ interface MeetingAudioPlayerProps {
   resolveUrl?: () => Promise<string>;
   /** How long the recording is, in seconds, when it is known before the audio loads. */
   durationSecs?: number | null;
+  /** Committed capture layout. Only stereo notes need a Web Audio downmix. */
+  channels?: 1 | 2;
   onPlayingChange?: (playing: boolean) => void;
   /** Plays from `seconds` in: loads the audio first if it is not loaded yet. A new `nonce` is a new request. */
   seek?: { seconds: number; nonce: number } | null;
@@ -71,7 +73,7 @@ const NO_MEDIA: PlayerMedia = { playing: false, loading: true, elapsed: 0, media
  * source; so the tap calls `play()` on the mounted element at once (which unlocks it), and plays
  * again once the source is set.
  */
-export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, onPlayingChange, seek }: MeetingAudioPlayerProps) {
+export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, channels, onPlayingChange, seek }: MeetingAudioPlayerProps) {
   const [state, setState] = useState<PlayerState>({ phase: "idle" });
   const [media, setMedia] = useState<PlayerMedia>(NO_MEDIA);
   const [pendingSeek, setPendingSeek] = useState<number | null>(null);
@@ -154,22 +156,16 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, onPlay
   const begin = () => {
     const audio = audioRef.current;
     if (!audio || playbackBlocked() || !playbackVisible(audio)) return;
-    // Create and resume the graph in the same gesture that unlocks the media
-    // element on iOS. Both captured channels are summed into one playback channel.
-    if (!downmixRef.current && typeof AudioContext !== "undefined") {
+    // A stereo note needs one speaker-interpreted mono input. The browser
+    // averages L and R; a discrete splitter would halve a mono signal too.
+    if (channels === 2 && !downmixRef.current && typeof AudioContext !== "undefined") {
       const context = new AudioContext();
       const source = context.createMediaElementSource(audio);
-      const splitter = context.createChannelSplitter(2);
-      const left = context.createGain();
-      const right = context.createGain();
-      const mono = context.createChannelMerger(1);
-      left.gain.value = 0.5;
-      right.gain.value = 0.5;
-      source.connect(splitter);
-      splitter.connect(left, 0);
-      splitter.connect(right, 1);
-      left.connect(mono, 0, 0);
-      right.connect(mono, 0, 0);
+      const mono = context.createGain();
+      mono.channelCount = 1;
+      mono.channelCountMode = "explicit";
+      mono.channelInterpretation = "speakers";
+      source.connect(mono);
       mono.connect(context.destination);
       downmixRef.current = context;
     }

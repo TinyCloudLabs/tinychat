@@ -184,7 +184,7 @@ test("system audio setting explains the capture scope and timing", () => {
   const out = html({});
   expect(out).toContain("Also record this Mac&#x27;s audio");
   expect(out).toContain("Records everything this Mac plays as Them, with your mic as Me.");
-  expect(out).toContain("changes during a note apply to its next recording segment.");
+  expect(out).toContain("Turning it off applies when you resume. Turning it on applies to your next recording.");
 });
 
 describe("SettingsPanel, web", () => {

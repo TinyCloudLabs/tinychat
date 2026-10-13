@@ -223,40 +223,48 @@ describe("the player in a DOM", () => {
     expect(player.q("[data-testid=note-audio-toggle]")).not.toBeNull();
   });
 
-  test("the first gesture routes both channels into one playback channel", async () => {
+  test("stereo downmix averages channel level, while mono stays on the full-level media path", async () => {
     const previous = globalThis.AudioContext;
     const links: string[] = [];
-    let gains = 0;
-    const gainNodes: { gain: { value: number } }[] = [];
+    let created = 0;
+    const gainNodes: { channelCount: number; channelCountMode: string; channelInterpretation: string; gain: { value: number } }[] = [];
     const node = (name: string) => ({ connect: (target: { name: string }, output = 0, input = 0) => {
       links.push(`${name}:${output}->${target.name}:${input}`);
     }, name });
     class FakeAudioContext {
+      constructor() { created++; }
       state = "suspended";
       destination = node("speakers");
       createMediaElementSource() { return node("source"); }
-      createChannelSplitter() { return node("splitter"); }
       createGain() {
-        const gain = Object.assign(node(gains++ === 0 ? "left" : "right"), { gain: { value: 1 } });
+        const gain = Object.assign(node("mono"), { channelCount: 2, channelCountMode: "max", channelInterpretation: "discrete", gain: { value: 1 } });
         gainNodes.push(gain);
         return gain;
       }
-      createChannelMerger(count: number) { expect(count).toBe(1); return node("mono"); }
       resume() { links.push("resume"); return Promise.resolve(); }
       close() { return Promise.resolve(); }
     }
     Object.defineProperty(globalThis, "AudioContext", { configurable: true, value: FakeAudioContext });
     try {
-      const player = await mount({ url: "blob:stereo" });
+      const player = await mount({ url: "blob:stereo", channels: 2 });
       act(() => player.q("[data-testid=note-audio-play]").click());
-      expect(links).toContain("splitter:0->left:0");
-      expect(links).toContain("splitter:1->right:0");
-      expect(links).toContain("left:0->mono:0");
-      expect(links).toContain("right:0->mono:0");
+      expect(links).toContain("source:0->mono:0");
       expect(links).toContain("mono:0->speakers:0");
-      expect(gainNodes.map((gain) => gain.gain.value)).toEqual([0.5, 0.5]);
+      expect(gainNodes).toMatchObject([{ channelCount: 1, channelCountMode: "explicit", channelInterpretation: "speakers", gain: { value: 1 } }]);
+      // A 0.8 L and 0.2 R fixture reaches the speaker at 0.5. The old
+      // discrete splitter would send a mono 0.8 fixture at 0.4 (-6 dB).
+      const level = (channels: number[]) => gainNodes[0]!.gain.value *
+        (gainNodes[0]!.channelCountMode === "explicit" && gainNodes[0]!.channelInterpretation === "speakers"
+          ? channels.reduce((sum, sample) => sum + sample, 0) / channels.length : channels[0]!);
+      expect(level([0.8, 0.2])).toBeCloseTo(0.5);
       expect(links).toContain("resume");
       expect(player.fake.plays).toHaveLength(1);
+      await act(async () => root!.unmount());
+      root = null;
+      const mono = await mount({ url: "blob:mono", channels: 1 });
+      act(() => mono.q("[data-testid=note-audio-play]").click());
+      expect(created).toBe(1);
+      expect(mono.fake.plays).toHaveLength(1);
     } finally {
       Object.defineProperty(globalThis, "AudioContext", { configurable: true, value: previous });
     }

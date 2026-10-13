@@ -81,8 +81,9 @@ export const RELIST_AFTER_MS = 2 * 60 * 1000;
  * audio element as a URL. It is never fetched: the WKWebView scheme handler answers a fetch of it
  * with status 0 although the audio element loads it.
  */
-function localAudio(recordingId: string): NoteAudio {
+function localAudio(recordingId: string, channels?: 1 | 2): NoteAudio {
   return {
+    channels,
     localUrl: async () => {
       try {
         const { url } = await VoiceNotes.localAudioUrl({ id: recordingId });
@@ -419,7 +420,8 @@ export function useLibrary(
   // call; the player's signal stops it when the note closes.
   const noteAudio = useMemo<NoteAudio | null>(() => {
     // The phone's own copy, until the space has the audio.
-    if (voiceSourceId !== null && onThisPhone) return localAudio(voiceSourceId);
+    if (voiceSourceId !== null && onThisPhone) return localAudio(voiceSourceId,
+      onPhoneNotes?.find((note) => note.id === voiceSourceId)?.channels);
     if (voiceSourceId !== null && !pendingAudioRow) {
       return {
         load: async (signal, onProgress) => {
@@ -431,7 +433,7 @@ export function useLibrary(
     }
     if (audioBase !== null) return { load: (signal, onProgress) => getAudio(space.kv, audioBase, { signal, onProgress }) };
     return null;
-  }, [audioBase, onThisPhone, pendingAudioRow, space, voiceSourceId]);
+  }, [audioBase, onThisPhone, onPhoneNotes, pendingAudioRow, space, voiceSourceId]);
 
   const retry = useCallback(() => {
     if (list.status === "failed") refresh();

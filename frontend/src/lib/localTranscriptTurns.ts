@@ -97,7 +97,6 @@ export interface LocalWord {
   start: number;
   end: number;
   channel: number | undefined;
-  loudness?: number;
 }
 
 /** "Me" for the mic, "Them" for system audio, numbered for any other
@@ -319,7 +318,7 @@ function matchEchoUnits(
  * ECHO_MAX_CANDIDATES system-audio words. `words` must be sorted by start
  * time. Recordings without both channels have no echo.
  */
-function findEchoWords(words: readonly LocalWord[], preferLouder: boolean): Set<LocalWord> {
+function findEchoWords(words: readonly LocalWord[]): Set<LocalWord> {
   const echo = new Set<LocalWord>();
   const mic = words.filter((w) => w.channel === MIC_CHANNEL);
   const system = words.filter((w) => w.channel === SYSTEM_CHANNEL);
@@ -340,16 +339,14 @@ function findEchoWords(words: readonly LocalWord[], preferLouder: boolean): Set<
   );
   const echoable = unitsOf(system).filter((unit) => contentWords(unit) >= ECHO_MIN_CONTENT_MATCHES).length;
   if (confirmed.length < ECHO_MIN_UNITS || confirmed.length < ECHO_MIN_SHARE * echoable) return echo;
-  for (const { unit, systemWords } of confirmed) {
-    const micPower = unit.reduce((sum, word) => sum + (word.loudness ?? 0), 0) / unit.length;
-    const systemPower = systemWords.reduce((sum, word) => sum + (word.loudness ?? 0), 0) / systemWords.length;
-    for (const word of preferLouder && micPower > systemPower ? systemWords : unit) echo.add(word);
+  for (const { unit } of confirmed) {
+    for (const word of unit) echo.add(word);
   }
   return echo;
 }
 
 export function findMicEcho(words: readonly LocalWord[]): Set<LocalWord> {
-  return findEchoWords(words, false);
+  return findEchoWords(words);
 }
 
 interface Turn {
@@ -369,7 +366,7 @@ export function localTranscriptTurns(
   words: readonly LocalWord[], options: { echo?: "off"; detail?: boolean } = {},
 ): FirefliesSentence[] {
   if (options.echo !== undefined && options.echo !== "off") throw new Error("B0 echo policy has not landed");
-  const echo = options.echo === "off" ? new Set<LocalWord>() : findEchoWords(words, true);
+  const echo = options.echo === "off" ? new Set<LocalWord>() : findEchoWords(words);
 
   // Segments are created in order of their first word, i.e. by start time.
   const segments: Turn[] = [];
@@ -425,7 +422,7 @@ export function localTranscriptTurns(
 
 /** Extract the existing per-channel normalization and its no-timing fallback. */
 export function localTranscriptSentences(
-  response: BatchResponse, options: { detail?: boolean; echo?: "off"; loudness?: (channel: number, start: number, end: number) => number } = {},
+  response: BatchResponse, options: { detail?: boolean; echo?: "off" } = {},
 ): FirefliesSentence[] {
   const words: LocalWord[] = [];
   for (const [channelIndex, channel] of (response.results?.channels ?? []).entries()) {
@@ -437,8 +434,7 @@ export function localTranscriptSentences(
       const end = Number.isFinite(w.end) ? w.end : null;
       if (start === null || end === null) continue;
       const index = w.channel ?? channelIndex;
-      words.push({ text, start, end, channel: index,
-        ...(options.loudness ? { loudness: options.loudness(index, start, end) } : {}) });
+      words.push({ text, start, end, channel: index });
     }
   }
   const sentences = localTranscriptTurns(words.sort((a, b) => a.start - b.start), options);

@@ -19,7 +19,7 @@ class FakeBridge implements DesktopBridge {
   stageCalls: Record<string, unknown>[] = [];
   listeners = new Map<string, Set<Callback>>();
   recover: { id: string; startedAt: number; recordedMs: number; pausedMs: number; maxDurationMs: number;
-    spans?: MissingAudioSpan[] } | null = null;
+    spans?: MissingAudioSpan[]; layout?: "mono" | "stereo" } | null = null;
   failed: { id: string; segmentId: string; reason: string; error: string; journal: NonNullable<FakeBridge["recover"]> }[] = [];
   elapsed = 0;
   paused = 0;
@@ -69,7 +69,7 @@ class FakeBridge implements DesktopBridge {
       case "recorder_resume": this.state = "recording"; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
       case "recorder_stop": if (this.stopError) throw this.stopError;
         result = { ...this.status(), state: "idle", intent: "stopped" };
-        this.state = "idle"; this.current = null; this.elapsed = 0; this.paused = 0;
+        this.state = "idle"; this.current = null; this.elapsed = 0; this.paused = 0; this.channels = 1;
         this.emit("exo://recorder-mic-state", this.status()); break;
       case "recorder_status": result = this.status(); break;
       case "recorder_list_inputs": result = { inputs: [{ id: "mic-1", name: "Fixture microphone", kind: "built_in" }],
@@ -528,6 +528,21 @@ describe("desktop recorder adapter", () => {
     engine.dispose();
   });
 
+  test("a first stereo segment keeps its journal layout through quarantine and retry", async () => {
+    const bridge = new FakeBridge();
+    bridge.channels = 2;
+    const engine = await rig(bridge);
+    await engine.plugin.start();
+    const journal = { id: "note-1", startedAt: bridge.now, recordedMs: 1_000, pausedMs: 0,
+      maxDurationMs: 10_000, layout: "stereo" as const };
+    bridge.failed = [{ id: "note-1", segmentId: "rec-broken", reason: "write_failed", error: "bad MP3", journal }];
+    await expect(engine.plugin.stop()).rejects.toThrow("bad MP3");
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
+    await engine.plugin.retryRecovery({ id: "note-1" });
+    expect((await engine.plugin.listPending()).recordings[0]?.channels).toBe(2);
+    engine.dispose();
+  });
+
   test("discard writes its tombstone before native stop can fail", async () => {
     const bridge = new FakeBridge();
     const env = newIdbEnv();
@@ -748,6 +763,7 @@ describe("desktop recorder adapter", () => {
 
   test("native auto-stop commits once with the terminal elapsed time", async () => {
     const bridge = new FakeBridge();
+    bridge.channels = 2;
     const engine = await rig(bridge);
     const committed: unknown[] = [];
     const auto: unknown[] = [];
@@ -758,13 +774,13 @@ describe("desktop recorder adapter", () => {
     bridge.elapsed = 1500;
     await bridge.invoke("recorder_stop");
     bridge.emit("exo://recorder-auto-stopped", { id: "note-1", reason: "max_duration", maxDurationMs: 1500,
-      at: bridge.now, elapsedMs: 1500, pausedMs: 0 });
+      at: bridge.now, elapsedMs: 1500, pausedMs: 0, channels: 2 });
     await engine.plugin.status();
     // Let the serialized native event finish its async commit.
     for (let n = 0; n < 20 && auto.length === 0; n++) await new Promise((resolve) => setTimeout(resolve, 1));
     expect(committed).toHaveLength(1);
     expect(auto).toHaveLength(1);
-    expect((auto[0] as { recording: { durationMs: number } }).recording.durationMs).toBe(1500);
+    expect((auto[0] as { recording: { durationMs: number; channels: number } }).recording).toMatchObject({ durationMs: 1500, channels: 2 });
     engine.dispose();
   });
 

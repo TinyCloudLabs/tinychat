@@ -31,7 +31,7 @@ export interface SavedReceiptProps {
   outcome: "local" | "saved" | "failed";
   localUpload?: "uploading" | "held" | "in-flight" | null;
   /** The saved note (absent after a failure). */
-  saved?: { id: string; durationMs: number; at: number } | null;
+  saved?: { id: string; durationMs: number; at: number; channels?: 1 | 2 } | null;
   route: readonly RouteNode[];
   /** The note's live pipeline; the stepper replaces the route line and the saving lines until it is done. Absent where the caller shows none. */
   pipeline?: NotePipelineView | null;
@@ -276,7 +276,8 @@ export function SavedReceipt(props: SavedReceiptProps) {
           </p>
         )}
       </div>
-      {localUrl && <MeetingAudioPlayer url={localUrl} durationSecs={props.saved ? props.saved.durationMs / 1000 : null} onPlayingChange={props.onPlayingChange} />}
+      {localUrl && <MeetingAudioPlayer url={localUrl} durationSecs={props.saved ? props.saved.durationMs / 1000 : null}
+        channels={props.saved?.channels} onPlayingChange={props.onPlayingChange} />}
       {localError && <p role="alert" className="text-callout text-destructive">{localError}</p>}
       {!localUrl && !localError && props.saved && <p role="status" className="text-meta text-muted-foreground">Getting this {deviceName}&apos;s audio…</p>}
       {stepperShown ? <ReceiptStepper view={pipelineView} /> : pipelineWaiting ? null : (

@@ -6,21 +6,10 @@ import { localTranscriptSentences } from "@/lib/localTranscriptTurns";
 /** Convert the desktop Whisper response without changing the persisted mono transcript. */
 export function whisperLocalTranscript(
   note: { id: string; durationMs: number; channels?: 1 | 2 }, model: WhisperModel, response: BatchResponse,
-  { detail = false, envelope }: { detail?: boolean; envelope?: readonly (readonly [number, number])[] } = {},
+  { detail = false }: { detail?: boolean } = {},
 ): LocalTranscript {
   if (note.channels === 2) {
-    const loudness = envelope ? (channel: number, start: number, end: number) => {
-      const first = Math.max(0, Math.floor(start * 10));
-      const last = Math.max(first + 1, Math.ceil(end * 10));
-      let sum = 0;
-      let count = 0;
-      for (let bin = first; bin < last && bin < envelope.length; bin++) {
-        sum += envelope[bin]?.[channel] ?? 0;
-        count++;
-      }
-      return count ? sum / count : 0;
-    } : undefined;
-    const turns = localTranscriptSentences(response, { detail, loudness });
+    const turns = localTranscriptSentences(response, { detail });
     const segments: LocalTranscript["segments"] = turns.map((turn) => ({
       start: Math.max(0, Math.round(turn.start_time * 1000)),
       end: Math.max(0, Math.round(turn.end_time * 1000)),

@@ -56,6 +56,7 @@ struct AutoStopped {
     at: u64,
     elapsed_ms: u64,
     paused_ms: u64,
+    channels: u8,
     spans: Vec<journal::MissingAudioSpan>,
 }
 
@@ -108,6 +109,7 @@ pub fn install(app: &tauri::AppHandle) {
                                 at: now_ms(),
                                 elapsed_ms: result.elapsed_ms,
                                 paused_ms: result.paused_ms,
+                                channels: result.channels,
                                 spans: result.spans,
                             },
                         );

@@ -40,10 +40,10 @@ import type { SavedNoteStore } from "./savedNote/savedNoteStore";
 export type AudioLoad = (signal: AbortSignal, onProgress: (loadedBytes: number, totalBytes: number) => void) => Promise<Blob | null>;
 
 /** A note's audio: fetched from the space as a blob, or a file still on this phone, played from its URL. */
-export type NoteAudio = { load: AudioLoad } | { localUrl: () => Promise<string> };
+export type NoteAudio = { load: AudioLoad; channels?: 1 | 2 } | { localUrl: () => Promise<string>; channels?: 1 | 2 };
 
-export function noteAudioPlayerProps(audio: NoteAudio): { load: AudioLoad } | { resolveUrl: () => Promise<string> } {
-  return "load" in audio ? { load: audio.load } : { resolveUrl: audio.localUrl };
+export function noteAudioPlayerProps(audio: NoteAudio): { load: AudioLoad; channels?: 1 | 2 } | { resolveUrl: () => Promise<string>; channels?: 1 | 2 } {
+  return "load" in audio ? { load: audio.load, channels: audio.channels } : { resolveUrl: audio.localUrl, channels: audio.channels };
 }
 
 export interface NoteDetailViewProps {
@@ -363,7 +363,8 @@ export function NoteDetailView(props: NoteDetailViewProps) {
         <p className="tnum text-meta text-muted-foreground">{noteMeta(item)}</p>
       </header>
       {props.audio ? (
-        <MeetingAudioPlayer key={`${item.source}:${item.sourceId}`} {...noteAudioPlayerProps(props.audio)} durationSecs={item.durationSecs} />
+        <MeetingAudioPlayer key={`${item.source}:${item.sourceId}`} {...noteAudioPlayerProps(props.audio)} durationSecs={item.durationSecs}
+          channels={(meta?.capture as { channels?: number } | undefined)?.channels === 2 || props.audio.channels === 2 ? 2 : 1} />
       ) : item.source === VOICE_NOTE_SOURCE && meta && Object.keys(meta).length === 0 ? (
         <p role="status" className="text-callout text-muted-foreground" data-testid="voice-note-saving-from-phone">
           Saving from your phone…

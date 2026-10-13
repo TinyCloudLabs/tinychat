@@ -616,6 +616,7 @@ export type PendingListing = { state: "unknown" } | { state: "ok"; count: number
 /** One recording still on the device, as the Library lists it until its space row lands. */
 export interface PendingNote {
   id: string;
+  channels?: 1 | 2;
   startedAt: number;
   durationMs: number;
   /** This note failed its latest save attempt, so its Recent row must not imply it's still saving. */
@@ -840,7 +841,7 @@ async function relistPending(lastError?: string | null): Promise<void> {
     for (const id of noteFailures.keys()) if (!pendingIds.has(id)) noteFailures.delete(id);
     const notes = pending
       .filter((recording) => !isDiscarded(recording.id))
-      .map((recording) => ({ id: recording.id, startedAt: recording.startedAt, durationMs: recording.durationMs,
+      .map((recording) => ({ id: recording.id, channels: recording.channels, startedAt: recording.startedAt, durationMs: recording.durationMs,
         ...(noteFailures.has(recording.id) ? { failed: noteFailures.get(recording.id)! } : {}),
         ...(uploadStates.has(recording.id) ? { upload: uploadStates.get(recording.id)!.upload,
           waitingBehind: uploadStates.get(recording.id)!.waitingBehind } : {}),
