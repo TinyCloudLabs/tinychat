@@ -597,6 +597,14 @@ const RELEASE_CODES: ReadonlySet<string> = new Set([
   "transcription_off",
 ]);
 
+const NOTE_INTRINSIC_FAILURE_CODES: ReadonlySet<string> = new Set([
+  "transcript_incomplete",
+  "recording_too_long",
+  "recording_too_large",
+  "unsupported_recording",
+  "invalid_audio",
+]);
+
 export function voiceNoteErrorCode(err: unknown): string {
   return err instanceof PrivateCloudError || err instanceof VoiceNoteAudioError ? err.code : "transcription_error";
 }
@@ -1148,10 +1156,7 @@ export async function transcribeVoiceNote(args: {
   };
   const persistFailure = async (error: unknown, statsMetadata: VoiceNoteTranscriptionStatsMetadata = {}) => {
     const code = voiceNoteErrorCode(error);
-    const current = stillCurrent();
-    if (["audio_upload_pending", "transcription_off", "upload_outcome_unknown", "account_changed",
-      "active_transcription_exists"].includes(code)
-      || !current) return;
+    if (!NOTE_INTRINSIC_FAILURE_CODES.has(code) || !stillCurrent()) return;
     try { await patchVoiceNoteTranscriptionFailure(tcw, sourceId, code, accountCheckpoint, statsMetadata); }
     catch (persistError) { logPipelineError("[VoiceNotes] Could not persist the transcription failure", persistError); }
   };
@@ -1173,37 +1178,34 @@ export async function transcribeVoiceNote(args: {
     await finish();
     throw new PrivateCloudError("voice_note_not_found", "The voice note no longer exists");
   }
-  if (!args.overrideCommitted && note.data.captureVersion === 2 && note.data.captureTranscriber !== "private-cloud") {
-    await finish();
-    throw new PrivateCloudError("transcription_off", "This note was not recorded for private-cloud transcription");
-  }
-  if (note.data.transcript.status === "transcribed" || note.data.transcript.status === "no_speech") {
-    await finish();
-    return note.data.transcript.status;
-  }
   const nativeNote = (await VoiceNotes.listPending()).recordings.find((recording) => recording.id === sourceId);
-  // A manual Retry must obey the committed choice too. V1 notes have no options and retain
-  // their historical, consent-gated private-cloud behaviour.
-  if (!args.overrideCommitted && nativeNote?.options && nativeNote.options.transcriber !== "private-cloud") {
-    await finish();
-    throw new PrivateCloudError("transcription_off", "This note was not recorded for private-cloud transcription");
-  }
   if (nativeNote?.owner && nativeNote.owner !== tcw.did)
-    throw new PrivateCloudError("transcript_save_failed", "This voice note is not owned by the current account");
+    throw new PrivateCloudError("voice_note_account_mismatch", "This voice note is not owned by the current account");
   const local = nativeNote ? (await VoiceNotes.getTranscript({ id: sourceId })).transcript : null;
   const commit = await readTranscriptCommit(tcw, sourceId);
   const ledgerRev = nativeNote?.ledger?.transcriptSync.rev ?? 0;
   const localRev = local?.rev ?? 0;
   if (![commit?.rev ?? 0, ledgerRev, localRev].every((value) => Number.isSafeInteger(value) && value >= 0))
     throw new PrivateCloudError("transcript_save_failed", "The voice note has an invalid transcript revision");
+  if ((note.data.transcript.status === "transcribed" || note.data.transcript.status === "no_speech")
+    && commit !== null && commit.rev >= Math.max(ledgerRev, localRev)) {
+    await finish();
+    return note.data.transcript.status;
+  }
+  const modeOff = !args.overrideCommitted && (
+    note.data.captureVersion === 2 && note.data.captureTranscriber !== "private-cloud"
+    || nativeNote?.options !== undefined && nativeNote.options.transcriber !== "private-cloud"
+  );
+  const hasPendingJob = cloud.pendingSourceIds().includes(sourceId);
+  if (modeOff && !hasPendingJob)
+    throw new PrivateCloudError("transcription_off", "This note was not recorded for private-cloud transcription");
   const rev = Math.max(commit?.rev ?? 0, ledgerRev, localRev) + 1;
   if (!Number.isSafeInteger(rev))
     throw new PrivateCloudError("transcript_save_failed", "The voice note has no remaining transcript revisions");
   // T22 writes the committed rev and hash back to native transcriptSync after this cloud save.
 
-  // Cleanups above only delete; from here a job is created or resumed, so a note that did not begin in the app
-  // (or whose source the row does not say) waits for the user's own Transcribe.
-  if (!args.explicit && note.data.captureSource !== "in_app")
+  // Without a pending job, a note that did not begin in the app waits for the user's own Transcribe.
+  if (!args.explicit && !args.overrideCommitted && !modeOff && note.data.captureSource !== "in_app")
     throw new PrivateCloudError("note_held", "This note did not begin in the app, so it waits for the user to transcribe it");
 
   let localAudioRecording: VoiceNoteRecording | undefined = nativeNote;
@@ -1290,17 +1292,27 @@ export async function transcribeVoiceNote(args: {
       throw new PrivateCloudError("transcript_save_failed", saved.error.message);
     }
   };
+  const verifyCommit = async (prepared: VoiceNoteTranscriptSave) => {
+    const committed = await readTranscriptCommit(tcw, sourceId);
+    if (committed === null || committed.rev < prepared.rev)
+      throw new PrivateCloudError("transcript_save_failed", "The transcript commit could not be verified");
+  };
 
   let transcriptionId: string;
   let transcript: PrivateCloudTranscript;
   try {
-    ({ transcriptionId, transcript } = await cloud.transcribe(
-      { sourceId, capabilities: args.capabilities, loadAudio, durationSeconds: note.data.durationSeconds,
-        identifySpeakers: nativeNote?.options?.identifySpeakers === true,
-        channelCount: note.data.channels === 2 ? 2 : nativeNote?.channels === 2 ? 2 : 1,
-        allowed: args.allowed },
-      report,
-    ));
+    const input: VoiceNoteTranscribeInput = {
+      sourceId,
+      capabilities: args.capabilities,
+      loadAudio: modeOff
+        ? async () => { throw new PrivateCloudError("transcription_off", "This note was not recorded for private-cloud transcription"); }
+        : loadAudio,
+      durationSeconds: note.data.durationSeconds,
+      identifySpeakers: nativeNote?.options?.identifySpeakers === true,
+      channelCount: note.data.channels === 2 ? 2 : nativeNote?.channels === 2 ? 2 : 1,
+      allowed: args.allowed,
+    };
+    ({ transcriptionId, transcript } = await cloud.transcribe(input, report));
   } catch (err) {
     if (voiceNoteErrorCode(err) !== "no_speech") {
       await persistFailure(err);
@@ -1310,6 +1322,7 @@ export async function transcribeVoiceNote(args: {
     const prepared = noSpeechTranscript(transcribedAt(), rev, { transcription_stats_missing: true });
     try {
       await save(prepared);
+      await verifyCommit(prepared);
     } catch (saveError) {
       await persistFailure(saveError);
       throw saveError;
@@ -1338,6 +1351,7 @@ export async function transcribeVoiceNote(args: {
   const prepared = prepareVoiceNoteTranscript(transcript, transcribedAt(), rev, commitStatsMetadata);
   try {
     await save(prepared);
+    await verifyCommit(prepared);
   } catch (err) {
     if (err instanceof PrivateCloudError && err.code === "voice_note_not_found") await finish(transcriptionId);
     await persistFailure(err, statsMetadata);
