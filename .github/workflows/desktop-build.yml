@@ -146,6 +146,7 @@ jobs:
     outputs:
       version: ${{ steps.bundle.outputs.version }}
       short-version: ${{ steps.bundle.outputs.short-version }}
+      bundle-version: ${{ steps.bundle.outputs.bundle-version }}
       product-name: ${{ steps.bundle.outputs.product-name }}
       app-sha256: ${{ steps.package.outputs.sha256 }}
     steps:
@@ -238,6 +239,7 @@ jobs:
       # Every build is ad-hoc sealed here (signingIdentity "-"); the sign job applies the Developer ID. The workflow
       # commit's script reads the version from the built tree (--root).
       - name: Bundle versions
+        id: bundle
         env:
           SMOKE: ${{ inputs.smoke }}
         run: |

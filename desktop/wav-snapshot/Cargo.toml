@@ -1,0 +1,11 @@
+[package]
+name = "wav-snapshot"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Bounded snapshots of open WAV writer output"
+
+[dependencies]
+
+[dev-dependencies]
+hound = "=3.5.1"

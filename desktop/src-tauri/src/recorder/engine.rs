@@ -1,6 +1,6 @@
 //! Capture lifecycle over anarlog's recorder. Pause/Stop report session-finalization
 //! state from the listener snapshot; that does not prove macOS released the input.
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -312,8 +312,7 @@ mod core_audio_inputs {
         if status != 0 {
             return None;
         }
-        devices.retain(|device_id| device_name(*device_id).as_deref() == Some(name));
-        (!devices.is_empty()).then_some(devices)
+        resolve_named_device_ids(name, &devices, device_name)
     }
 
     pub fn running_somewhere(device_id: u32) -> Option<bool> {
@@ -332,6 +331,24 @@ mod core_audio_inputs {
         };
         (status == 0).then_some(running != 0)
     }
+}
+
+fn resolve_named_device_ids(
+    selected_name: &str,
+    device_ids: &[u32],
+    mut resolve_name: impl FnMut(u32) -> Option<String>,
+) -> Option<Vec<u32>> {
+    let mut selected = None;
+    for device_id in device_ids {
+        let name = resolve_name(*device_id)?;
+        if name == selected_name {
+            if selected.is_some() {
+                return None;
+            }
+            selected = Some(*device_id);
+        }
+    }
+    selected.map(|device_id| vec![device_id])
 }
 
 #[cfg(target_os = "macos")]
@@ -740,8 +757,8 @@ fn retain_stopped_source(session: &std::path::Path) -> Result<bool, String> {
 }
 
 /// Seal a bounded copy of the WAV bytes already flushed by the live writer.
-/// Hound leaves RIFF/data lengths unfinished until finalize, so patch the copied
-/// header to describe only complete interleaved frames in the captured prefix.
+/// Hound keeps RIFF/data lengths unfinished until finalize; wav-snapshot parses
+/// the actual chunk layout and emits a normalized header for complete frames.
 fn snapshot_live_source(session: &std::path::Path) -> Result<bool, String> {
     let retained = session.join("audio.exo-source.wav");
     if retained.exists() {
@@ -750,38 +767,6 @@ fn snapshot_live_source(session: &std::path::Path) -> Result<bool, String> {
     }
     let source = session.join("audio.wav");
     let mut input = std::fs::File::open(&source).map_err(|error| error.to_string())?;
-    let source_len = input.metadata().map_err(|error| error.to_string())?.len();
-    if source_len < 44 {
-        return Ok(false);
-    }
-    let mut header = [0u8; 44];
-    input.read_exact(&mut header).map_err(|error| error.to_string())?;
-    if &header[..4] != b"RIFF"
-        || &header[8..12] != b"WAVE"
-        || &header[12..16] != b"fmt "
-        || u32::from_le_bytes(header[16..20].try_into().unwrap()) != 16
-        || u16::from_le_bytes(header[20..22].try_into().unwrap()) != 3
-        || !matches!(u16::from_le_bytes(header[22..24].try_into().unwrap()), 1 | 2)
-        || u32::from_le_bytes(header[24..28].try_into().unwrap()) != 48_000
-        || u16::from_le_bytes(header[34..36].try_into().unwrap()) != 32
-        || &header[36..40] != b"data"
-    {
-        return Err("capture_wav_header_unrecognized".into());
-    }
-    let channels = u16::from_le_bytes(header[22..24].try_into().unwrap());
-    let block_align = u16::from_le_bytes(header[32..34].try_into().unwrap()) as u64;
-    if block_align != u64::from(channels) * 4 {
-        return Err("capture_wav_block_alignment_unrecognized".into());
-    }
-    let frame_bytes = (source_len - 44) / block_align * block_align;
-    if frame_bytes == 0 {
-        return Ok(false);
-    }
-    let data_len = u32::try_from(frame_bytes).map_err(|_| "capture_wav_too_large")?;
-    let riff_len = data_len.checked_add(36).ok_or("capture_wav_too_large")?;
-    header[4..8].copy_from_slice(&riff_len.to_le_bytes());
-    header[40..44].copy_from_slice(&data_len.to_le_bytes());
-
     let temp = session.join("audio.exo-source.wav.tmp");
     let result = (|| {
         let mut output = std::fs::OpenOptions::new()
@@ -789,13 +774,11 @@ fn snapshot_live_source(session: &std::path::Path) -> Result<bool, String> {
             .create_new(true)
             .open(&temp)
             .map_err(|error| error.to_string())?;
-        output.write_all(&header).map_err(|error| error.to_string())?;
-        input.seek(SeekFrom::Start(44)).map_err(|error| error.to_string())?;
-        let copied = std::io::copy(&mut input.take(frame_bytes), &mut output)
-            .map_err(|error| error.to_string())?;
-        if copied != frame_bytes {
-            return Err("capture_snapshot_short_read".into());
-        }
+        let Some(_) = wav_snapshot::snapshot(&mut input, &mut output)
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(false);
+        };
         output.sync_all().map_err(|error| error.to_string())?;
         std::fs::rename(&temp, &retained).map_err(|error| error.to_string())?;
         std::fs::File::open(session)
@@ -803,7 +786,7 @@ fn snapshot_live_source(session: &std::path::Path) -> Result<bool, String> {
             .map_err(|error| error.to_string())?;
         Ok(true)
     })();
-    if result.is_err() {
+    if !matches!(&result, Ok(true)) {
         let _ = std::fs::remove_file(&temp);
     }
     result
@@ -1527,7 +1510,7 @@ pub async fn recorder_finish(app: tauri::AppHandle, id: String) -> Result<u64, S
 mod durable_stop_tests {
     use super::{
         capture_source_release_observed, combine_device_running_states, empty_segment_span,
-        recorded_after_segment, retain_stopped_source, snapshot_live_source, source_mp3,
+        recorded_after_segment, resolve_named_device_ids, retain_stopped_source, source_mp3,
     };
     use std::io::Write;
     use std::time::{Duration, Instant};
@@ -1546,6 +1529,31 @@ mod durable_stop_tests {
             true,
             combine_device_running_states([Some(false), None])
         ));
+    }
+
+    #[test]
+    fn selected_input_mapping_is_unknown_if_any_device_name_lookup_fails() {
+        assert_eq!(
+            resolve_named_device_ids("USB Mic", &[1, 2], |device_id| match device_id {
+                1 => Some("USB Mic".to_owned()),
+                _ => None,
+            }),
+            None,
+        );
+    }
+
+    #[test]
+    fn selected_input_mapping_is_unknown_when_device_names_are_ambiguous() {
+        assert_eq!(
+            resolve_named_device_ids("USB Mic", &[1, 2], |_| Some("USB Mic".to_owned())),
+            None,
+        );
+        assert_eq!(
+            resolve_named_device_ids("USB Mic", &[1, 2], |device_id| {
+                Some(if device_id == 1 { "USB Mic" } else { "Internal Mic" }.to_owned())
+            }),
+            Some(vec![1]),
+        );
     }
     fn sparse_wav(path: &std::path::Path, minutes: u64, finalized: bool) {
         let data_bytes = minutes * 60 * 48_000 * 8;
@@ -1573,33 +1581,6 @@ mod durable_stop_tests {
         file.set_len(data_bytes + 44).unwrap();
     }
 
-    #[test]
-    fn unconfirmed_stop_seals_only_the_flushed_wav_prefix() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("audio.wav");
-        sparse_wav(&source, 1, false);
-        std::fs::File::options()
-            .write(true)
-            .open(&source)
-            .unwrap()
-            .set_len(60)
-            .unwrap();
-
-        assert!(snapshot_live_source(dir.path()).unwrap());
-        let retained = dir.path().join("audio.exo-source.wav");
-        let reader = hound::WavReader::open(&retained).unwrap();
-        assert_eq!(reader.spec().channels, 2);
-        assert_eq!(reader.duration(), 2);
-        assert_eq!(std::fs::metadata(&retained).unwrap().len(), 60);
-
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(&source)
-            .unwrap()
-            .write_all(&[0; 8])
-            .unwrap();
-        assert_eq!(std::fs::metadata(&retained).unwrap().len(), 60);
-    }
 
     #[test]
     fn source_receipt_waits_for_closed_header_and_retains_audio_after_upstream_unlink() {

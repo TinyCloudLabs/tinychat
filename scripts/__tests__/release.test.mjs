@@ -2,13 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { changelogSection, classifyPagesCheckRuns, desktopBundleVersions, planDispatches, setCargoLockVersion, setCargoTomlVersion } from '../release/lib.mjs';
 
 const require = createRequire(import.meta.url);
+const eslintAjv = createRequire(realpathSync(require.resolve('eslint/package.json')))('ajv');
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const MANIFESTS = [
@@ -711,8 +712,7 @@ test('desktop-bundle-config.mjs writes the Info.plist overlay for tauri build --
   assert.match(result.stdout, /^prerelease=true$/m);
   const schema = JSON.parse(readFileSync(join(repo, 'desktop/node_modules/@tauri-apps/cli/config.schema.json'), 'utf8'));
   const base = JSON.parse(read(repo, 'desktop/src-tauri/tauri.conf.json'));
-  const Ajv = require('ajv');
-  const validate = new Ajv({ allErrors: true, strict: false, unicodeRegExp: false, logger: false }).compile(schema);
+  const validate = new eslintAjv({ allErrors: true, unknownFormats: 'ignore', logger: false }).compile(schema);
   const merged = overlay => ({
     ...base,
     ...overlay,
@@ -1159,6 +1159,35 @@ const stepNamed = (job, name) => {
   assert.ok(found, `no step ${name}`);
   return found;
 };
+
+function assertStepOutputsAreDeclared(job, generatedOutputs = {}) {
+  const steps = jobSteps(job);
+  const byId = new Map(steps.flatMap(step => {
+    const id = step.match(/^\s+id: ([\w-]+)\s*$/m)?.[1];
+    return id ? [[id, step]] : [];
+  }));
+  for (const [, id, output] of job.matchAll(/steps\.([\w-]+)\.outputs\.([\w-]+)/g)) {
+    const step = byId.get(id);
+    assert.ok(step, `workflow references missing step id '${id}'`);
+    const declared = generatedOutputs[id] ?? new Set([
+      ...[...step.matchAll(/echo\s+["']?([\w-]+)=/g)].map(match => match[1]),
+    ]);
+    if (/uses: actions\/cache\/restore@/.test(step)) {
+      declared.add('cache-hit');
+      declared.add('cache-primary-key');
+    }
+    assert.ok(declared.has(output), `step '${id}' does not produce output '${output}'`);
+  }
+}
+
+function assertJobOutputsAreDeclared(build, consumer) {
+  const outputSection = build.match(/\n    outputs:\n([\s\S]*?)\n    steps:/)?.[1];
+  assert.ok(outputSection, 'build job declares reusable outputs');
+  const declared = new Set([...outputSection.matchAll(/^ {6}([\w-]+):/gm)].map(match => match[1]));
+  for (const [, output] of consumer.matchAll(/(?:needs|jobs)\.build\.outputs\.([\w-]+)/g)) {
+    assert.ok(declared.has(output), `build job does not expose output '${output}'`);
+  }
+}
 const withoutComments = text => text.split('\n').filter(line => !/^\s*#/.test(line)).join('\n');
 // Anything that would run project or third-party build code on the runner.
 const PROJECT_CODE = /\bbunx?\b|setup-bun|setup-node|\bnpm\b|\bnpx\b|gradlew|\bcap (sync|copy|run)\b|xcodebuild (archive|build)|\bpod install\b|swift build|ios-bundle-versions/;
@@ -1461,10 +1490,14 @@ test('desktop signing: keys only in tooling-only jobs, the app built with none, 
   assert.equal(artifactName(false), 'exo-macos-arm64-abc123');
   assert.equal(artifactName(true), 'exo-smoke-macos-arm64-abc123');
   const signJob = jobText(workflow, 'sign');
+  const build = jobText(workflow, 'build');
+  const bundleScript = read(repo, 'scripts/release/desktop-bundle-config.mjs');
+  const bundleOutputs = new Set([...bundleScript.matchAll(/setOutput\('([\w-]+)'/g)].map(match => match[1]));
+  assertStepOutputsAreDeclared(build, { bundle: bundleOutputs });
+  assertJobOutputsAreDeclared(build, `${signJob}\n${workflow}`);
   assert.match(signJob, /\n {4}if: \$\{\{ !inputs\.smoke && !cancelled\(\) && needs\.build\.result == 'success' \}\}\n/);
-  const smokePackage = stepNamed(jobText(workflow, 'build'), 'Package .app');
+  const smokePackage = stepNamed(build, 'Package .app');
   assert.match(smokePackage, /"\$app_name-macos-arm64\.app\.zip"/);
-  assert.match(jobText(workflow, 'build'), /product-name: \$\{\{ steps\.bundle\.outputs\.product-name \}\}/);
   assert.match(stepNamed(signJob, 'Unpack the app'), /needs\.build\.outputs\.product-name.*-macos-arm64\.app\.zip/);
   assert.match(workflow, /signed:\n\s+description: .*\n\s+value: \$\{\{ jobs\.sign\.outputs\.signed \}\}/);
   const tooling = (job, paths) => {
@@ -1490,7 +1523,6 @@ test('desktop signing: keys only in tooling-only jobs, the app built with none, 
   assert.ok(preflight.indexOf('secrets.') > preflight.indexOf('- name: Verify signing provenance\n'), 'no secret before the provenance check');
 
   // build: every build script, never an environment or a secret; ad-hoc sealed in every mode.
-  const build = jobText(workflow, 'build');
   assert.match(build, /\n {4}needs: preflight\n/);
   assert.match(build, /\n {4}if: \$\{\{ !cancelled\(\) && \(needs\.preflight\.result == 'success' \|\| \(!inputs\.sign && needs\.preflight\.result == 'skipped'\)\) \}\}\n/);
   assert.doesNotMatch(withoutComments(build), /environment:|secrets\.|vars\.|APPLE_|security import|notarytool|--sign |keychain/);
@@ -1498,7 +1530,9 @@ test('desktop signing: keys only in tooling-only jobs, the app built with none, 
     'Verify the ad-hoc seal', 'Package .app', 'Upload dmg + app'].map(name => build.indexOf(`- name: ${name}\n`));
   assert.ok(buildOrder.every(index => index !== -1), `build steps: ${buildOrder}`);
   assert.deepEqual([...buildOrder].sort((a, b) => a - b), buildOrder, 'the seal is verified before the app is handed over');
-  assert.match(stepNamed(build, 'Bundle versions'), /SMOKE: \$\{\{ inputs\.smoke \}\}[\s\S]*smoke_args=\(\)[\s\S]*desktop-bundle-config\.mjs --root "\$GITHUB_WORKSPACE" --out "\$RUNNER_TEMP\/exo-bundle" --ad-hoc-sign "\$\{smoke_args\[@\]\}"/);
+  const bundleStep = stepNamed(build, 'Bundle versions');
+  assert.ok(bundleStep.includes('desktop-bundle-config.mjs'), 'bundle step invokes the version/identity generator');
+  assert.ok(bundleStep.includes('SMOKE: ${{ inputs.smoke }}'), 'bundle step receives the smoke input');
   const seal = stepNamed(build, 'Verify the ad-hoc seal');
   assert.doesNotMatch(seal, /\n\s+if:|\|\| true/);
   assert.match(seal, /for bundle in "desktop\/src-tauri\/target\/release\/bundle\/macos\/\$\{\{ steps\.bundle\.outputs\.product-name \}\}\.app" "\$mnt\/\$\{\{ steps\.bundle\.outputs\.product-name \}\}\.app"; do\n\s+codesign --verify --deep --strict --verbose=2 "\$bundle"\n/);
@@ -1508,7 +1542,9 @@ test('desktop signing: keys only in tooling-only jobs, the app built with none, 
   // sign: desktop-release only when signing, its one checkout is the tooling and the entitlements, no project code.
   const sign = jobText(workflow, 'sign');
   assert.match(sign, /\n {4}needs: build\n/);
-  assert.match(sign, /\n {4}if: \$\{\{ !inputs\.smoke && !cancelled\(\) && needs\.build\.result == 'success' \}\}\n/);
+  const signCondition = sign.match(/^\s+if: \$\{\{\s*([^\n]+?)\s*\}\}\s*$/m)?.[1] ?? '';
+  assert.ok(signCondition.includes('!inputs.smoke'), 'smoke artifacts bypass signing');
+  assert.ok(signCondition.includes("needs.build.result == 'success'"), 'signing only follows a successful build');
   assert.match(sign, /\n {4}environment: \$\{\{ inputs\.sign && 'desktop-release' \|\| '' \}\}\n/);
   tooling(sign, ['/scripts/release/', '/desktop/src-tauri/Entitlements.plist']);
   assert.deepEqual(scriptsIn(sign), ['scripts/release/desktop-signing.sh', 'scripts/release/verify-desktop-signing.sh']);

@@ -161,7 +161,7 @@ beforeEach(() => {
     stop: stopNatively,
     async status() {
       const status = await fake.plugin.status();
-      return { ...status, state: paused ? "paused" as const : status.state, id: status.id === null ? null : currentId,
+      return { ...status, state: paused ? "paused" as const : status.state, reason: paused ? "user" as const : status.reason, id: status.id === null ? null : currentId,
         audioMs: 42_000, micDeniedPresentation: micDenied, shortcutRecordPending: shortcutPending,
         microphonePermissionGranted: microphoneGranted };
     },

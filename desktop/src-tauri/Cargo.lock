@@ -2921,6 +2921,7 @@ dependencies = [
  "transcription-core",
  "url",
  "uuid",
+ "wav-snapshot",
 ]
 
 [[package]]
@@ -11803,6 +11804,10 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
 ]
+[[package]]
+name = "wav-snapshot"
+version = "0.1.0"
+
 
 [[package]]
 name = "wayland-backend"
