@@ -630,12 +630,21 @@ pub async fn delete_audio_file(app: tauri::AppHandle, id: String) -> Result<(), 
             let sessions = sessions_root(&app)?;
             let note_cleanup = delete_note_at(&root, &sessions, &id);
             let segment_cleanup = (|| {
+                if let Some(stopped) = super::journal::load_stopped(&app, &id)? {
+                    if let Some(segment_id) = stopped.segment_id {
+                        remove_source_session(&sessions, &segment_id)?;
+                        super::journal::remove_failed_source(&app, &segment_id)?;
+                    }
+                    super::journal::clear_stopped(&app, &id)?;
+                    super::refresh_finishing_quit(&app)?;
+                }
                 if let Some(pending) = super::journal::load(&app)? {
                     if pending.id == id {
                         if let Some(segment_id) = pending.segment_id {
                             remove_source_session(&sessions, &segment_id)?;
                             super::journal::remove_failed_source(&app, &segment_id)?;
                         }
+                        super::journal::clear(&app)?;
                     }
                 }
                 super::journal::delete_failed_for_note(&app, &id)
@@ -1058,11 +1067,13 @@ mod tests {
         assert!(delete_note_at(&root, &sessions, "../outside").is_err());
         assert_eq!(fs::read(&outside).unwrap(), b"sentinel");
         fs::remove_file(root.join("note.mp3")).unwrap();
-        assert!(std::process::Command::new("mkfifo")
-            .arg(root.join("note.mp3"))
-            .status()
-            .unwrap()
-            .success());
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(root.join("note.mp3"))
+                .status()
+                .unwrap()
+                .success()
+        );
         assert!(read(&root, "note", 0, 8).is_err());
         assert!(append(&root, "note", b"tamper").is_err());
         fs::remove_dir_all(base).unwrap();
