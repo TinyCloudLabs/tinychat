@@ -26,6 +26,8 @@ interface MeetingAudioPlayerProps {
   resolveUrl?: () => Promise<string>;
   /** How long the recording is, in seconds, when it is known before the audio loads. */
   durationSecs?: number | null;
+  /** Committed capture layout. Only stereo notes need a Web Audio downmix. */
+  channels?: 1 | 2;
   onPlayingChange?: (playing: boolean) => void;
   /** Plays from `seconds` in: loads the audio first if it is not loaded yet. A new `nonce` is a new request. */
   seek?: { seconds: number; nonce: number } | null;
@@ -72,7 +74,7 @@ const NO_MEDIA: PlayerMedia = { playing: false, loading: true, elapsed: 0, media
  * source; so the tap calls `play()` on the mounted element at once (which unlocks it), and plays
  * again once the source is set.
  */
-export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, onPlayingChange, seek }: MeetingAudioPlayerProps) {
+export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, channels, onPlayingChange, seek }: MeetingAudioPlayerProps) {
   const notePlayback = useContext(NotePlaybackContext);
   const notePlaybackRef = useRef(notePlayback);
   notePlaybackRef.current = notePlayback;
@@ -84,6 +86,7 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, onPlay
   const onPlayingChangeRef = useRef(onPlayingChange);
   onPlayingChangeRef.current = onPlayingChange;
   const audioRef = useRef<HTMLAudioElement>(null);
+  const downmixRef = useRef<AudioContext | null>(null);
   const queuedSeek = useRef<number | null>(null);
   const playWhenSourceSet = useRef(false);
 
@@ -109,6 +112,7 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, onPlay
     () => () => {
       controllerRef.current?.abort();
       if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+      void downmixRef.current?.close();
       onPlayingChangeRef.current?.(false);
     },
     [],
@@ -160,6 +164,20 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, onPlay
   const begin = () => {
     const audio = audioRef.current;
     if (!audio || playbackBlocked() || !playbackVisible(audio)) return;
+    // A stereo note needs one speaker-interpreted mono input. The browser
+    // averages L and R; a discrete splitter would halve a mono signal too.
+    if (channels === 2 && !downmixRef.current && typeof AudioContext !== "undefined") {
+      const context = new AudioContext();
+      const source = context.createMediaElementSource(audio);
+      const mono = context.createGain();
+      mono.channelCount = 1;
+      mono.channelCountMode = "explicit";
+      mono.channelInterpretation = "speakers";
+      source.connect(mono);
+      mono.connect(context.destination);
+      downmixRef.current = context;
+    }
+    if (downmixRef.current?.state === "suspended") void downmixRef.current.resume();
     patchMedia({ loading: true });
     if (url) {
       if (audio.error) audio.load();

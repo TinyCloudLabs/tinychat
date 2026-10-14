@@ -29,6 +29,7 @@ import {
   PrivateCloudError,
   privateCloudMessage,
   VOICE_NOTE_CHANNEL_LABELS,
+  ME_THEM_CHANNEL_LABELS,
   type CloudPolling,
   type PrivateCloudApi,
   type PrivateCloudCapabilities,
@@ -400,10 +401,11 @@ export function voiceNoteSentences(transcript: Pick<PrivateCloudTranscript, "seg
     .map((seg) => ({ start: seg.start, end: seg.end, text: typeof seg.text === "string" ? seg.text.trim() : "",
       channel: seg.channel === 0 || seg.channel === 1 ? seg.channel as 0 | 1 : undefined,
       speakerId: transcript.diarized ? seg.speaker_id ?? null : null,
-      speaker: transcript.diarized && seg.speaker_id
+      speaker: transcript.channels === 2 ? (seg.channel === 0 ? "Me" : "Them")
+        : transcript.diarized && seg.speaker_id
         ? speakerNames.get(seg.speaker_id) ?? (seg.speaker_id.match(/^speaker_(\d+)$/)
           ? `Speaker ${Number(seg.speaker_id.slice(8)) + 1}` : seg.speaker_id)
-        : transcript.channels === 2 ? seg.channel === 0 ? "Me" : "Them" : null }))
+        : null }))
     .filter((seg) => seg.text.length > 0 && Number.isFinite(seg.start) && Number.isFinite(seg.end))
     .flatMap((seg) => splitLongTimedSegment({ ...seg, timing: "engine" as const }, 30))
     .sort((a, b) => a.start - b.start || (a.channel ?? -1) - (b.channel ?? -1) || a.end - b.end);
@@ -963,9 +965,8 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       byte_size: audio.byteSize,
       sha256: audio.sha256,
       language,
-      // Mono, and labelled so no other client on this account adopts the job (privateCloudJobClient).
-      channel_mode: "mixed",
-      channel_labels: [...VOICE_NOTE_CHANNEL_LABELS],
+      channel_mode: channelCount === 2 ? "separate" : "mixed",
+      channel_labels: [...(channelCount === 2 ? ME_THEM_CHANNEL_LABELS : VOICE_NOTE_CHANNEL_LABELS)],
       ...(identifySpeakers && channelCount === 1 && capabilities.diarization === true ? { diarize: true } : {}),
     };
     const createdJob = await createJob(sourceId, job, body, guard);
@@ -1296,7 +1297,7 @@ export async function transcribeVoiceNote(args: {
     ({ transcriptionId, transcript } = await cloud.transcribe(
       { sourceId, capabilities: args.capabilities, loadAudio, durationSeconds: note.data.durationSeconds,
         identifySpeakers: nativeNote?.options?.identifySpeakers === true,
-        channelCount: (nativeNote as VoiceNoteRecording & { layout?: "mono" | "stereo" } | undefined)?.layout === "stereo" ? 2 : 1,
+        channelCount: note.data.channels === 2 ? 2 : nativeNote?.channels === 2 ? 2 : 1,
         allowed: args.allowed },
       report,
     ));

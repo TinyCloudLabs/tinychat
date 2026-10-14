@@ -146,6 +146,11 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         jobs.set(id, { kind: "done", outcome: prior.outcome }); notify(); return;
       }
       if (!prior) await createRow(account, recording as VoiceNoteRecording, voiceNoteTitle(recording.startedAt));
+      // The committed row's layout wins for space-only audio; a local recording knows its own.
+      const noteRow = await readNote(account, id);
+      const rowChannels = noteRow.ok && noteRow.data && (noteRow.data.channels === 1 || noteRow.data.channels === 2)
+        ? noteRow.data.channels : undefined;
+      const channels = recording.sizeBytes > 0 ? recording.channels ?? rowChannels ?? 1 : rowChannels ?? recording.channels ?? 1;
       if (!stored.recording) persist(id, { recording: recording as VoiceNoteRecording });
       let source = nativeRecordingSource(recording, native);
       if (!recording.sizeBytes) {
@@ -274,8 +279,8 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
                 const opId = crypto.randomUUID();
                 await native.beginRemoteOp({ id, did, opId, provider: "assemblyai", mode: "hosted", kind: "hosted_submit",
                   fingerprint: `${source.size}:${source.mimeType}`, startedAt: Date.now() });
-                const submitted = await client.createTranscript(uploadId, { speakerLabels: recording.channels === 2 || recording.options?.identifySpeakers !== false,
-                  multichannel: recording.channels === 2, sourceId: id });
+                const submitted = await client.createTranscript(uploadId, { speakerLabels: channels === 2 || recording.options?.identifySpeakers !== false,
+                  multichannel: channels === 2, sourceId: id });
                 handle = submitted.id;
                 persist(id, { handle });
                 await advance({ handle, status: "submitted" });
@@ -308,7 +313,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         },
       });
       guard();
-      const stereo = recording.channels === 2;
+      const stereo = channels === 2;
       const sentences = assemblyAiSentences(transcript, await client.getSentences(handle), { stereo })
         .map((sentence) => stereo && sentence.channel !== undefined ? { ...sentence,
           speaker_name: sentence.channel === 0 ? "Me" : "Them" } : sentence);
@@ -379,7 +384,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       if (!note.ok || !note.data || note.data.captureTranscriber !== "assemblyai") return false;
       const recording = { id, owner: did, source: "in_app", startedAt: Date.now(), sizeBytes: 0,
         mimeType: "audio/mp4", durationMs: Math.round((note.data.durationSeconds ?? 0) * 1000),
-        options: { transcriber: "assemblyai", identifySpeakers: true } } as VoiceNoteRecording;
+        channels: note.data.channels, options: { transcriber: "assemblyai", identifySpeakers: true } } as VoiceNoteRecording;
       await run(recording);
       return true;
     },
