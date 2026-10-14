@@ -207,10 +207,10 @@ describe("TC-1100 verified connector identity", () => {
     expect(await client.exchangeCode({ code: "code", verifier: VERIFIER })).toEqual({ access_token: "synthetic-access" });
   });
 
-  test("an unverifiable connector ID token fails the exchange", async () => {
+  test("an unverifiable connector ID token succeeds with an unknown subject", async () => {
     const upstream = recordingFetch(() => jsonResponse(200, { access_token: "synthetic-access", id_token: "synthetic-id-token" }));
     const client = new GoogleOAuthClient(TEST_CONFIG, { fetchImpl: upstream.impl, verifyIdToken: async () => { throw new Error("Synthetic verification failure"); } });
-    await expect(client.exchangeCode({ code: "code", verifier: VERIFIER })).rejects.toMatchObject({ error: "invalid_identity" });
+    expect(await client.exchangeCode({ code: "code", verifier: VERIFIER })).toEqual({ access_token: "synthetic-access" });
   });
 });
 

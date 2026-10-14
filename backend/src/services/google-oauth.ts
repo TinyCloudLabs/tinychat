@@ -218,7 +218,7 @@ export interface GoogleOAuthClientOptions {
   verifyIdToken?: (idToken: string, audience: string) => Promise<VerifiedIdentity>;
 }
 
-interface VerifiedIdentity { sub?: string; nonce?: string; email?: string; email_verified?: boolean }
+interface VerifiedIdentity { sub?: unknown; azp?: unknown; nonce?: unknown; email?: unknown; email_verified?: unknown }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -308,16 +308,32 @@ export class GoogleOAuthClient implements GoogleOAuthPort {
     const tokens = toTokenPayload(payload, "exchange");
     const idToken = (payload as Record<string, unknown>).id_token;
     if (input.nonce !== undefined || idToken !== undefined) {
+      let reason = "verification_failed";
       try {
-        if (typeof idToken !== "string") throw new Error("missing identity");
+        if (typeof idToken !== "string") { reason = "id_token_invalid"; throw new Error("invalid identity"); }
         const identity = await this.verifyIdToken(idToken, this.config.clientId);
-        if (!identity?.sub || (input.nonce !== undefined && identity.nonce !== input.nonce)) throw new Error("invalid identity");
+        if (typeof identity?.sub !== "string" || identity.sub.length === 0) {
+          reason = "subject_invalid"; throw new Error("invalid identity");
+        }
+        // google-auth-library verifies aud but does not validate the authorized presenter.
+        // The factory config is the web client for web/native, and the desktop client for desktop.
+        if (identity.azp !== undefined && identity.azp !== this.config.clientId) {
+          reason = "presenter_mismatch"; throw new Error("invalid identity");
+        }
+        if (input.nonce !== undefined && identity.nonce !== input.nonce) {
+          reason = "nonce_mismatch"; throw new Error("invalid identity");
+        }
         tokens.subject = identity.sub;
         if (identity.email_verified === true && typeof identity.email === "string" && identity.email.length > 0) {
           tokens.email = identity.email;
         }
       } catch {
-        throw new GoogleOAuthError({ status: 400, error: "invalid_identity", operation: "exchange" });
+        // Ordinary connector identity is optional: the one-time code has already been exchanged.
+        // Verification outages or invalid claims must not break that connect or authorize teardown.
+        console.warn(`[google-oauth] op=exchange identity=unverified reason=${reason}`);
+        if (input.nonce !== undefined) {
+          throw new GoogleOAuthError({ status: 400, error: "invalid_identity", operation: "exchange" });
+        }
       }
     }
     return tokens;
