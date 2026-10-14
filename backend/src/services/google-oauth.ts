@@ -216,11 +216,16 @@ export interface GoogleOAuthClientOptions {
   timeoutMs?: number;
   /** Tests can substitute verification; production uses Google's signature/issuer/audience/expiry validator. */
   verifyIdToken?: (idToken: string, audience: string) => Promise<VerifiedIdentity>;
+  /** Overall optional-identity budget, including certificate retrieval and retries. */
+  identityVerificationBudgetMs?: number;
 }
 
 interface VerifiedIdentity { sub?: unknown; azp?: unknown; nonce?: unknown; email?: unknown; email_verified?: unknown }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+/** Leave optional certificate work four seconds, rather than a 30s transport cap per attempt. */
+export const CONNECTOR_IDENTITY_BUDGET_MS = 4_000;
+class IdentityVerificationTimeout extends Error {}
 
 /** The port the router talks to — the seam tests substitute. */
 export interface GoogleOAuthPort {
@@ -238,6 +243,7 @@ export class GoogleOAuthClient implements GoogleOAuthPort {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
   private readonly verifyIdToken: NonNullable<GoogleOAuthClientOptions["verifyIdToken"]>;
+  private readonly identityVerificationBudgetMs: number;
 
   constructor(
     private readonly config: GoogleOAuthConfig,
@@ -245,6 +251,7 @@ export class GoogleOAuthClient implements GoogleOAuthPort {
   ) {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.identityVerificationBudgetMs = options.identityVerificationBudgetMs ?? CONNECTOR_IDENTITY_BUDGET_MS;
     const verifier = new OAuth2Client({ clientId: config.clientId,
       transporterOptions: { fetchImplementation: this.fetchImpl, timeout: this.timeoutMs },
     });
@@ -311,7 +318,8 @@ export class GoogleOAuthClient implements GoogleOAuthPort {
       let reason = "verification_failed";
       try {
         if (typeof idToken !== "string") { reason = "id_token_invalid"; throw new Error("invalid identity"); }
-        const identity = await this.verifyIdToken(idToken, this.config.clientId);
+        const identity = input.nonce === undefined ? await this.verifyOptionalIdentity(idToken)
+          : await this.verifyIdToken(idToken, this.config.clientId);
         if (typeof identity?.sub !== "string" || identity.sub.length === 0) {
           reason = "subject_invalid"; throw new Error("invalid identity");
         }
@@ -324,12 +332,13 @@ export class GoogleOAuthClient implements GoogleOAuthPort {
           reason = "nonce_mismatch"; throw new Error("invalid identity");
         }
         tokens.subject = identity.sub;
-        if (identity.email_verified === true && typeof identity.email === "string" && identity.email.length > 0) {
+        if (input.nonce !== undefined && identity.email_verified === true && typeof identity.email === "string" && identity.email.length > 0) {
           tokens.email = identity.email;
         }
-      } catch {
+      } catch (error) {
         // Ordinary connector identity is optional: the one-time code has already been exchanged.
         // Verification outages or invalid claims must not break that connect or authorize teardown.
+        if (error instanceof IdentityVerificationTimeout) reason = "timeout";
         console.warn(`[google-oauth] op=exchange identity=unverified reason=${reason}`);
         if (input.nonce !== undefined) {
           throw new GoogleOAuthError({ status: 400, error: "invalid_identity", operation: "exchange" });
@@ -337,6 +346,20 @@ export class GoogleOAuthClient implements GoogleOAuthPort {
       }
     }
     return tokens;
+  }
+
+  private async verifyOptionalIdentity(idToken: string): Promise<VerifiedIdentity> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      // The losing promise is still handled by race. A late verification result cannot promote
+      // claims: exchangeCode only consumes this bounded result, and transport keeps its own cap.
+      return await Promise.race([
+        this.verifyIdToken(idToken, this.config.clientId),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new IdentityVerificationTimeout()), this.identityVerificationBudgetMs);
+        }),
+      ]);
+    } finally { clearTimeout(timer); }
   }
 
   /**
