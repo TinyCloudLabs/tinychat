@@ -45,7 +45,7 @@ import { scheduledSpace } from "@/lib/spaceQueue";
 import { Capacitor } from "@capacitor/core";
 import { loadNote } from "@/lib/voiceNotes/recordingNotes";
 import { wasDiscarded, type PendingNote } from "@/lib/voiceNotes/recorderSaves";
-import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { nativeVoiceNotesAvailable, VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { loadVoiceNoteAudioBlob, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { readTranscriptPreviews, voiceNoteTranscriptLocator, type TranscriptProvenance } from "@/lib/voiceNotes/voiceNoteCommits";
 import { captureEvents } from "../captureEvents";
@@ -306,6 +306,10 @@ export function useLibrary(
   const openRecordingId = item?.source === VOICE_NOTE_SOURCE ? item.sourceId : null;
   useEffect(() => {
     if (!options.visible) return;
+    if (!nativeVoiceNotesAvailable()) {
+      setLocalAudioIds(new Set());
+      return;
+    }
     let live = true;
     void VoiceNotes.listPending().then(({ recordings }) => {
       if (live) setLocalAudioIds(new Set(recordings.filter((note) => note.owner === tcw.did).map((note) => note.id)));

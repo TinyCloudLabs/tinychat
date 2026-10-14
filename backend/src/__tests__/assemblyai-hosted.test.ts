@@ -26,7 +26,7 @@ import { createUploadRunner, type PendingUpload, type UploadDeps } from "../../.
 
 import { localValidationFromEnv } from "../local-validation.js";
 import { createAuthMiddleware } from "../middleware/auth.js";
-import { ASSEMBLYAI_HOSTED_UPLOAD_LIMIT, TRANSCRIBER_LIMIT, applyRateLimiters } from "../rate-limits.js";
+import { ASSEMBLYAI_HOSTED_UPLOAD_LIMIT, SESSION_LIMITS, TRANSCRIBER_LIMIT, applyRateLimiters } from "../rate-limits.js";
 import { ASSEMBLYAI_HOSTED_ERRORS, ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, isHostedPartPath, reconcileHostedJobs } from "../routes/assemblyai-hosted.js";
 import {
   DEFAULT_DAILY_BYTES,
@@ -1450,6 +1450,7 @@ describe("TC-592 expiry safety", () => {
     closers.push(() => rmSync(dir, { recursive: true, force: true }));
     const store = makeStore(dir, DEFAULT_DAILY_BYTES, 4, undefined, { global: 3, account: 2 });
     await store.init();
+    closers.push(() => store.close());
     async function tombstone(owner: string) {
       const created = await store.create(owner, 1, "audio/wav", T0);
       if (!created.ok) throw new Error("create failed");

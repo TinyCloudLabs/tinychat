@@ -114,7 +114,7 @@ test("one save publishes note text while an audio part is stalled", async () => 
   tcw.kv.list = (async (...args: Parameters<typeof list>) => { calls++; return list(...args); }) as typeof tcw.kv.list;
   const recording = { id, startedAt: Date.now(), durationMs: 52_000, mimeType: "audio/mp4", sizeBytes: 4,
     silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 2 as const,
-    source: "in_app" as const, options: { transcriber: "private-cloud" as const, identifySpeakers: false } };
+    source: "in_app" as const, options: { transcriber: "private-cloud" as const, identifySpeakers: false, uploadAudio: true } };
   const saving = saveVoiceNote(tcw, recording, { mimeType: "audio/mp4", size: 4,
     readPart: async () => new Uint8Array([1, 2, 3, 4]) }, "tauri");
   try {
@@ -160,7 +160,7 @@ test("one save overlaps short text and audio requests at fixed fixture latency",
   tcw.kv.get = (async (...args: Parameters<typeof get>) => { calls++; await delay(); return get(...args); }) as typeof tcw.kv.get;
   tcw.kv.list = (async (...args: Parameters<typeof list>) => { calls++; await delay(); return list(...args); }) as typeof tcw.kv.list;
   const recording = { id, startedAt: Date.now(), durationMs: 52_000, mimeType: "audio/mp4", sizeBytes: 4,
-    silencedMs: 0, silencedEvents: 0, noSignalMs: 0 };
+    silencedMs: 0, silencedEvents: 0, noSignalMs: 0, options: { uploadAudio: true } };
   const start = performance.now();
   const saved = await saveVoiceNote(tcw, recording, { mimeType: "audio/mp4", size: 4,
     readPart: async () => new Uint8Array([1, 2, 3, 4]) }, "tauri");
@@ -926,7 +926,7 @@ test("cancelAll stops an upload at its next KV checkpoint and quiescent waits", 
   __setVoiceNotesForTests(fake.plugin, { available: true });
   try {
     await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
-      transcriber: "on-device", identifySpeakers: false });
+      transcriber: "on-device", identifySpeakers: false, uploadAudio: true });
     const { id } = await fake.plugin.start();
     await fake.plugin.stop();
     const pipeline = createVoiceNotePipeline(tcw);
@@ -1031,7 +1031,7 @@ test("failed recovery emits nothing, and a later successful retry emits once", a
   const off = captureEvents.on("library-changed", (event) => events.push(event));
   try {
     await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
-      transcriber: "on-device", identifySpeakers: false });
+      transcriber: "on-device", identifySpeakers: false, uploadAudio: true });
     await fake.plugin.start();
     const note = await fake.plugin.stop();
     const put = tcw.kv.put.bind(tcw.kv);
@@ -1121,7 +1121,7 @@ test(`recovery interrupted by ${transition} cannot emit into the next pass`, asy
   let release = () => {};
   try {
     await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
-      transcriber: "on-device", identifySpeakers: false });
+      transcriber: "on-device", identifySpeakers: false, uploadAudio: true });
     await fake.plugin.start();
     const note = await fake.plugin.stop();
     const reachedPart = Promise.withResolvers<void>();
@@ -1338,7 +1338,7 @@ test("reconcile refreshes the pending count after each note save", async () => {
   const secondStarted = new Promise<void>((resolve) => { enteredSecond = resolve; });
   try {
     await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
-      transcriber: "off", identifySpeakers: false });
+      transcriber: "off", identifySpeakers: false, uploadAudio: true });
     await fake.plugin.start();
     const first = await fake.plugin.stop();
     now++;
@@ -1391,7 +1391,8 @@ test("reconcile publishes the full upload queue and decrements notes ahead as th
   const firstStarted = new Promise<void>((resolve) => { enterFirst = resolve; });
   const secondStarted = new Promise<void>((resolve) => { enterSecond = resolve; });
   try {
-    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "off", identifySpeakers: false, uploadAudio: true });
     for (let index = 0; index < 3; index++) {
       await fake.plugin.start();
       recordings.push(await fake.plugin.stop());
@@ -1434,7 +1435,7 @@ async function pipelineFailureMessage(failure: "kv-403" | "sql-500"): Promise<st
   __setVoiceNotesForTests(fake.plugin, { available: true });
   try {
     await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
-      transcriber: "off", identifySpeakers: false });
+      transcriber: "off", identifySpeakers: false, uploadAudio: true });
     await fake.plugin.start();
     await fake.plugin.stop();
     if (failure === "kv-403") {
@@ -1486,7 +1487,7 @@ test("a wrapped CORS-hidden upload refusal shows node rejection copy without lea
   const originalWarn = console.warn;
   try {
     await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
-      transcriber: "off", identifySpeakers: false });
+      transcriber: "off", identifySpeakers: false, uploadAudio: true });
     const { id } = await fake.plugin.start();
     await fake.plugin.stop();
     tcw.kv.put = (async (key, value, options) => key.includes("/audio/")
@@ -1522,7 +1523,8 @@ test("a real source-read failure is reported as non-retryable source with its me
   const fake = createFakeVoiceNotes();
   __setVoiceNotesForTests(fake.plugin, { available: true });
   try {
-    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off",
+      identifySpeakers: false, uploadAudio: true });
     const { id } = await fake.plugin.start();
     await fake.plugin.stop();
     const readAudioChunk = fake.plugin.readAudioChunk.bind(fake.plugin);
@@ -1555,7 +1557,8 @@ test("upload state starts before the first part completes and survives relist an
   const partGate = new Promise<void>((resolve) => { releasePart = resolve; });
   const partStarted = new Promise<void>((resolve) => { enteredPart = resolve; });
   try {
-    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off",
+      identifySpeakers: false, uploadAudio: true });
     await fake.plugin.start();
     const recording = await fake.plugin.stop();
     pendingStore.setAccount(tcw.did);
@@ -1601,7 +1604,7 @@ test("reconcile publishes per-note upload progress and retrying state", async ()
   });
   try {
     await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
-      transcriber: "off", identifySpeakers: false });
+      transcriber: "off", identifySpeakers: false, uploadAudio: true });
     const { id } = await fake.plugin.start();
     await fake.plugin.stop();
     pendingStore.setAccount(tcw.did);
@@ -1733,7 +1736,8 @@ test("a never-settling audio KV put reports a visible timeout and clears Saving 
   const started = new Promise<void>((resolve) => { putStarted = resolve; });
   try {
     setVoiceNoteSaveDeadlineForTests(25);
-    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off",
+      identifySpeakers: false, uploadAudio: true });
     await fake.plugin.start();
     const recording = await fake.plugin.stop();
     tcw.kv.put = ((_key, _value, options) => {
@@ -1762,7 +1766,8 @@ test("a lane timeout is retrying before its final failed attempt", async () => {
   __setVoiceNotesForTests(fake.plugin, { available: true });
   try {
     await ensureVoiceNoteIdentity(tcw);
-    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off",
+      identifySpeakers: false, uploadAudio: true });
     const started = await fake.plugin.start();
     await fake.plugin.stop();
     const next = await fake.plugin.start();
@@ -1801,7 +1806,8 @@ test("a real audio KV failure with meta.status 500 is reported as server", async
   __setVoiceNotesForTests(fake.plugin, { available: true });
   const put = tcw.kv.put.bind(tcw.kv);
   try {
-    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off",
+      identifySpeakers: false, uploadAudio: true });
     await fake.plugin.start();
     const recording = await fake.plugin.stop();
     tcw.kv.put = (async (key, value, options) => key.includes("/audio/")
@@ -1832,7 +1838,8 @@ test("a late part put settles before retry writes and retry commits one complete
   let rowId = "";
   try {
     setVoiceNoteSaveDeadlineForTests(25);
-    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off",
+      identifySpeakers: false, uploadAudio: true });
     const recording = await fake.plugin.start();
     rowId = recording.id;
     await fake.plugin.stop();

@@ -34,7 +34,14 @@ let retryCalls: string[] = [];
 
 beforeEach(() => {
   cleanDom = installDom();
-  Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+  Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {
+    metadata: { currentWindow: { label: "main" } },
+    transformCallback: () => 1,
+    invoke: async () => 1,
+  } });
+  Object.defineProperty(window, "__TAURI_EVENT_PLUGIN_INTERNALS__", { configurable: true, value: {
+    unregisterListener: () => undefined,
+  } });
   host = document.createElement("div");
   document.body.append(host);
   job = { id: ID, state: "transcribing", progress: 37, error: null };

@@ -57,7 +57,7 @@ export function libraryRowBadge(item: LibraryItem, where: string = HOME_COPY.onT
     if (item.hasLocalAudio || item.saving) return `Audio stays on this ${platform === "tauri" || platform === "mac" ? "Mac" : platform === "web" ? "browser" : "phone"}`;
     return `Audio is on your ${platform === "ios" ? "iPhone" : platform === "tauri" || platform === "mac" ? "Mac" : platform === "android" ? "phone" : "browser"}`;
   }
-  return item.saving ? HOME_COPY.savingBadge : null;
+  return null;
 }
 
 /** The length on the row's right: a voice note's is in its line, unless something replaced the line. */
