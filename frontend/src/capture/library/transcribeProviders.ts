@@ -1,6 +1,6 @@
 // Which providers a note without a transcript can be transcribed with, and what running one does. Local is the phone's
 // own engine and needs the recording on this phone; Private needs private cloud on offer (the recorder's availability).
-import { switchToPrivate } from "@/capture/recorder/privateInstead";
+import { privateRefusalCopy, switchToPrivate } from "@/capture/recorder/privateInstead";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -51,14 +51,13 @@ export async function transcribeWith(
 ): Promise<string | null> {
   if (provider === "on-device") return (await retryOnDeviceNote(noteId)) === null ? null : LOCAL_START_FAILED;
   if (!transcription) return "Private transcription isn’t available here.";
-  // A note committed to another mode (Local, Audio only) is moved to private cloud explicitly; `transcribe` would refuse it.
+  // A Local job on the phone (committed, or chosen here earlier) stops first, so the two never both transcribe it.
   if (phone?.committed != null && phone.committed !== "private-cloud") {
-    // A Local job on the phone (committed, or chosen here earlier) stops first, so the two never both transcribe it.
     const local = (phone.committed === "on-device" && phone.hasLocalState) || onDeviceQueuePlace(onDeviceSttStore.snapshot(), noteId)?.position != null;
     if (local) return switchToPrivate(transcription, noteId);
-    transcription.onTranscribePrivately(noteId);
-    return null;
   }
-  transcription.onTranscribe(noteId);
-  return null;
+  // A user's Private tap is explicit even on web, where there is no phone recording to inspect.
+  // Refusals reach the action's alert in both the direct and Local-to-Private paths.
+  const refusal = transcription.onTranscribePrivately(noteId);
+  return typeof refusal === "string" ? privateRefusalCopy(refusal) : null;
 }

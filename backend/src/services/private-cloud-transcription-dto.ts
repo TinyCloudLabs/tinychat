@@ -106,6 +106,12 @@ function bool(value: unknown): boolean {
   return value as boolean;
 }
 
+function percentage(value: unknown): number {
+  const result = num(value);
+  check(result <= 100);
+  return result;
+}
+
 function oneOf<T extends string>(value: unknown, allowed: readonly T[]): T {
   check(typeof value === "string" && (allowed as readonly string[]).includes(value));
   return value as T;
@@ -360,7 +366,13 @@ export function parseResult(body: unknown, expectedId: string) {
       speakers,
       segments,
       text: text(o.text, 4_000_000),
-      stats: { tinfoil_calls: int(stats.tinfoil_calls, 0), tinfoil_audio_seconds: num(stats.tinfoil_audio_seconds) },
+      stats: {
+        tinfoil_calls: int(stats.tinfoil_calls, 0),
+        tinfoil_audio_seconds: num(stats.tinfoil_audio_seconds),
+        ...(stats.voiced_seconds == null ? {} : { voiced_seconds: num(stats.voiced_seconds) }),
+        ...(stats.dropped_above_floor_pct == null ? {} : { dropped_above_floor_pct: percentage(stats.dropped_above_floor_pct) }),
+        ...(stats.vad_fallback == null ? {} : { vad_fallback: bool(stats.vad_fallback) }),
+      },
     };
   });
 }

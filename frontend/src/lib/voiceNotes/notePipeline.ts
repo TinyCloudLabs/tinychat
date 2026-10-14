@@ -102,6 +102,8 @@ export type PipelineNotesSync =
   /** The note's local text could not be read, so nothing is known about its sync. `cause` is the read's own error. */
   | { state: "unreadable"; cause: string };
 
+export type PersistedTranscriptState = "pending" | "failed" | "skipped";
+
 export interface NotePipelineInput {
   device: PipelineDevice;
   route: PipelineRoute;
@@ -114,6 +116,10 @@ export interface NotePipelineInput {
   transcript: {
     /** The space row already has a transcript outcome. */
     inSpace: "transcribed" | "no_speech" | null;
+    /** A durable non-terminal transcript state from the Library row. */
+    persistedState?: PersistedTranscriptState;
+    /** The row's persisted failure code, when one is present. */
+    errorCode?: string | null;
     onDevice: PipelineOnDevice | null;
     cloud: PipelineCloud | null;
     /**
@@ -162,6 +168,9 @@ export interface NotePipeline {
   /** The step to show a caption and blocker for; null when everything is done. */
   current: StepKey | null;
   done: boolean;
+  /** Durable row state to show when the live transcript step is otherwise skipped. */
+  transcriptionState?: PersistedTranscriptState;
+  transcriptionErrorCode?: string | null;
   /** The one blocker to show: the blocker of `current`, chosen by action priority across all stuck steps. */
   blocker?: PipelineBlocker;
   /** Information that is not a problem and not a step ("part of this recording couldn't be written"). */
@@ -440,7 +449,13 @@ export function notePipeline(input: NotePipelineInput): NotePipeline {
   if (unread && blocker === undefined) blocker = block(failedReads.join(" "), "reread");
   else if (unread) notices.push(...failedReads);
 
-  const pipeline: NotePipeline = { steps, current, done: done && !unread && unrecorded === null };
+  const pipeline: NotePipeline = {
+    steps, current, done: done && !unread && unrecorded === null,
+    ...(input.transcript.persistedState === undefined ? {} : {
+      transcriptionState: input.transcript.persistedState,
+      ...(input.transcript.errorCode === undefined ? {} : { transcriptionErrorCode: input.transcript.errorCode }),
+    }),
+  };
   if (blocker !== undefined) pipeline.blocker = blocker;
   if (notices.length > 0) pipeline.notice = notices.join(" ");
   return pipeline;

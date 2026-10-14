@@ -120,7 +120,8 @@ describe("TC-988 late joins, RSVP outcomes, and discovery timing", () => {
       await f.worker().tick();
       expect(f.posts).toHaveLength(1);
       expect(await f.row()).toMatchObject({ phase: "sent", firstSeenAt: START + 480_000 });
-      expect(log.mock.calls).toEqual([["[calendar-autojoin] code=dispatch_lag seconds=480 discovered=480"]]);
+      expect(log.mock.calls).toEqual([["[calendar-autojoin] code=dispatch_lag seconds=480 discovered=480"],
+        ["[calendar-autojoin] code=tick_done ms=120000 tenants=1 rows=1 scans=1 timers=0"]]);
       const logged = JSON.stringify(log.mock.calls);
       for (const privateValue of ["Calendar title", "private@example.test", TENANT, SUBJECT, f.id,
         f.current.events[0]!.id, f.current.events[0]!.hangoutLink!]) expect(logged).not.toContain(privateValue);
