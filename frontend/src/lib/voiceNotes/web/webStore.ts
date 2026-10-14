@@ -625,6 +625,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
           const size = (await request(tx.objectStore(STORES.audioMeta).get(id)) as { size?: number } | undefined)?.size;
           const content = await audio.transactional!.hashIn(tx, id);
           if (note.ledger?.audio.state !== "saved" || !receipt || !/^[0-9a-f]{64}$/.test(receipt.sha256)
+            || (note.ledger.localAudio !== undefined && note.ledger.localAudio.state !== "ready")
             || receipt.size !== size || content.size !== size || receipt.sha256 !== content.sha256)
             throw failure("audio_not_space_backed");
           audio.transactional!.deleteIn(tx, id);
@@ -636,7 +637,8 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
         try {
           const note = await transact(db, [STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
           const receipt = note.ledger?.audio.verifiedInSpace;
-          if (note.ledger?.audio.state !== "saved" || !receipt || !/^[0-9a-f]{64}$/.test(receipt.sha256))
+          if (note.ledger?.audio.state !== "saved" || !receipt || !/^[0-9a-f]{64}$/.test(receipt.sha256)
+            || (note.ledger.localAudio !== undefined && note.ledger.localAudio.state !== "ready"))
             throw failure("audio_not_space_backed");
           const size = await audio.size(id);
           const hash = sha256.create();

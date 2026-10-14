@@ -73,21 +73,40 @@ export async function latestSpaceAudioIdentity(spaceId: string, did: string, sou
   }
 }
 
+/** The one receipt check: a 64-hex sha256 and a positive safe-integer size. */
+export function isVerifiedSpaceReceipt(receipt: { sha256: string; size: number } | null | undefined): receipt is { sha256: string; size: number } {
+  return !!receipt && /^[0-9a-f]{64}$/.test(receipt.sha256) && Number.isSafeInteger(receipt.size) && receipt.size > 0;
+}
+
+/** Saved, with a verified receipt: the only copy the space is known to hold. Anything else is the phone's own audio. */
+export function hasVerifiedSpaceCopy(note: VoiceNoteRecording): boolean {
+  return note.ledger?.audio.state === "saved" && isVerifiedSpaceReceipt(note.ledger.audio.verifiedInSpace);
+}
+
+/**
+ * Eviction removes this device's bytes. Keep them while local work still reads them: audio not yet ready or
+ * failed on import, a transcript that is running or retrying, or a hosted job whose remote op is unfinished.
+ * Those paths read local bytes with no space fallback.
+ */
+function hasLocalWorkInProgress(note: VoiceNoteRecording): boolean {
+  const ledger = note.ledger!;
+  return (ledger.localAudio !== undefined && ledger.localAudio.state !== "ready")
+    || ledger.transcript?.state === "running" || ledger.transcript?.state === "retrying"
+    || (ledger.remote?.some((op) => op.mode === "hosted" && op.stage !== "done") ?? false);
+}
+
 async function savedRecordings(): Promise<VoiceNoteRecording[]> {
-  const notes = (await VoiceNotes.listPending()).recordings.filter((note) => {
-    const receipt = note.ledger?.audio.verifiedInSpace;
-    return note.ledger?.audio.state === "saved" && !!receipt
-      && /^[0-9a-f]{64}$/.test(receipt.sha256) && Number.isSafeInteger(receipt.size) && receipt.size > 0;
-  });
+  const notes = (await VoiceNotes.listPending()).recordings.filter((note) => hasVerifiedSpaceCopy(note) && !hasLocalWorkInProgress(note));
   const sizes = await Promise.all(notes.map((note) => VoiceNotes.localAudioSize({ id: note.id })));
   return notes.flatMap((note, index) => sizes[index]!.size === note.ledger!.audio.verifiedInSpace!.size
     ? [{ ...note, sizeBytes: sizes[index]!.size }] : []);
 }
 
-/** A missing local copy is a normal cache miss. Other read errors remain visible. */
+/** A missing or still-importing local copy is a normal cache miss. Other read errors remain visible. */
 export function isMissingLocalAudio(error: unknown): boolean {
   const value = error as { code?: string; message?: string } | null;
   return value?.code === "not_found" || value?.code === "tombstoned"
+    || value?.code === "audio_preparing" || value?.code === "audio_preparation_failed"
     || /^(?:not_found|audio_not_found)$/i.test(value?.message ?? "");
 }
 

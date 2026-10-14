@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { IDBFactory } from "fake-indexeddb";
 import { VoiceNotes, __setVoiceNotesForTests, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 import { cachedAudioSize, cachedSpaceAudio, cachedSpaceAudioOffline, clearCachedAudio,
-  latestSpaceAudioIdentity, observeSpaceAudioIdentity, trimCachedAudio } from "./audioPlaybackCache";
+  latestSpaceAudioIdentity, localPlaybackUrl, observeSpaceAudioIdentity, trimCachedAudio } from "./audioPlaybackCache";
 
 const original = VoiceNotes;
 const originalIdb = globalThis.indexedDB;
@@ -70,6 +70,32 @@ test("eviction and Clear cached audio touch only confirmed space copies", async 
   expect((await cachedAudioSize()).bytes).toBe(0);
   expect(sizes.get("local-only")).toBe(40);
   expect(sizes.get("pending")).toBe(40);
+});
+
+test("trim keeps notes whose local audio, running transcript, or hosted job still reads this device's bytes", async () => {
+  const withLedger = (id: string, patch: Record<string, unknown>): VoiceNoteRecording => {
+    const note = saved(id, "saved");
+    return { ...note, ledger: { ...note.ledger!, ...patch } } as VoiceNoteRecording;
+  };
+  notes = [
+    withLedger("importing", { localAudio: { state: "preparing", error: null } }),
+    withLedger("transcribing", { transcript: { state: "running" } }),
+    withLedger("hosted", { remote: [{ opId: "op", provider: "assemblyai", mode: "hosted", stage: "submitted", cleanup: "none" }] }),
+    withLedger("finished", { remote: [{ opId: "op", provider: "assemblyai", mode: "hosted", stage: "done", cleanup: "done" }] }),
+    saved("uploaded", "saved"),
+  ];
+  for (const note of notes) sizes.set(note.id, 40);
+  await trimCachedAudio(0);
+  expect(evicted).toEqual(["finished", "uploaded"]);
+});
+
+test("a note whose local audio is still importing or failed to import is a cache miss", async () => {
+  for (const code of ["audio_preparing", "audio_preparation_failed"]) {
+    __setVoiceNotesForTests({
+      localAudioUrl: async () => { throw Object.assign(new Error(code), { code }); },
+    } as VoiceNotesPlugin, { available: true });
+    expect(await localPlaybackUrl("importing")).toBeNull();
+  }
 });
 
 test("a replacement with a new manifest identity plays its new bytes", async () => {

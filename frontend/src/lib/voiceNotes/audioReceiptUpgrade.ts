@@ -4,7 +4,7 @@ import { logPipelineError } from "@/lib/debugLog";
 import { assertAccountContext, captureAccountContext } from "./accountContext";
 import { nativeRecordingSource, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { reconcileSavedVoiceNoteAudio } from "./voiceNoteStore";
-import { trimCachedAudio } from "./audioPlaybackCache";
+import { isVerifiedSpaceReceipt, trimCachedAudio } from "./audioPlaybackCache";
 
 let account: TinyCloudWeb | null = null;
 const running = new WeakMap<TinyCloudWeb, Promise<void>>();
@@ -47,16 +47,14 @@ export function useAudioCacheBoot(tcw: TinyCloudWeb | null): void {
   }, [tcw]);
 }
 
-const hasReceipt = (note: VoiceNoteRecording) => {
-  const receipt = note.ledger?.audio.verifiedInSpace;
-  return !!receipt && /^[0-9a-f]{64}$/.test(receipt.sha256)
-    && Number.isSafeInteger(receipt.size) && receipt.size > 0;
-};
+const hasReceipt = (note: VoiceNoteRecording) => isVerifiedSpaceReceipt(note.ledger?.audio.verifiedInSpace);
 
 /** Reads the manifest and every part before giving a pre-upgrade file eviction authority. */
 export async function upgradeSavedAudioReceipt(tcw: TinyCloudWeb, note: VoiceNoteRecording): Promise<void> {
-  // A local-only note has no space copy to verify; probing it would cost a manifest read every pass.
-  // Notes from before the upload setting carry no option and did upload, so only an explicit false skips.
+  // Only an explicit uploadAudio === false skips. Every new recording writes the option (false when local-only),
+  // so a missing option is a note from before that setting, and those did upload. Probing a local-only note costs
+  // at most one manifest GET per pass (6h cooldown), and a receipt is granted only after the manifest and every part
+  // are read back, so a probe of a note that never uploaded cannot grant eviction.
   if (note.options?.uploadAudio === false) return;
   if (note.owner !== tcw.did || note.ledger?.audio.state !== "saved" || hasReceipt(note)) return;
   const context = captureAccountContext(tcw);

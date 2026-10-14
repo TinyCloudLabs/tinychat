@@ -46,7 +46,7 @@ import { loadNote } from "@/lib/voiceNotes/recordingNotes";
 import { wasDiscarded, type PendingNote } from "@/lib/voiceNotes/recorderSaves";
 import { nativeVoiceNotesAvailable, VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { loadVoiceNoteAudioBlob, voiceNoteAudioKvKey, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
-import { cachedSpaceAudio, cachedSpaceAudioOffline, latestSpaceAudioIdentity, localPlaybackUrl,
+import { cachedSpaceAudio, cachedSpaceAudioOffline, hasVerifiedSpaceCopy, isVerifiedSpaceReceipt, latestSpaceAudioIdentity, localPlaybackUrl,
   observeSpaceAudioIdentity } from "@/lib/voiceNotes/audioPlaybackCache";
 import { readTranscriptPreviews, voiceNoteTranscriptLocator, type TranscriptProvenance } from "@/lib/voiceNotes/voiceNoteCommits";
 import { captureEvents } from "../captureEvents";
@@ -160,6 +160,8 @@ export function useLibrary(
   });
   const [listing, setListing] = useState(false);
   const [localAudioIds, setLocalAudioIds] = useState<ReadonlySet<string>>(new Set());
+  // The subset whose space copy is not verified: the phone's copy is the only audio to play.
+  const [phoneOnlyAudioIds, setPhoneOnlyAudioIds] = useState<ReadonlySet<string>>(new Set());
   const [filter, setFilter] = useState<LibraryFilter>("all");
   const reads = useRef(new Map<string, NoteReads>());
   const reading = useRef(new Set<string>());
@@ -320,12 +322,16 @@ export function useLibrary(
     if (!options.visible) return;
     if (!nativeVoiceNotesAvailable()) {
       setLocalAudioIds(new Set());
+      setPhoneOnlyAudioIds(new Set());
       return;
     }
     let live = true;
-    void VoiceNotes.listPending().then(({ recordings }) => {
-      if (live) setLocalAudioIds(new Set(recordings.filter((note) => note.owner === tcw.did).map((note) => note.id)));
-    }, () => { if (live) setLocalAudioIds(new Set()); });
+    void Promise.resolve().then(() => VoiceNotes.listPending()).then(({ recordings }) => {
+      if (!live) return;
+      const own = recordings.filter((note) => note.owner === tcw.did);
+      setLocalAudioIds(new Set(own.map((note) => note.id)));
+      setPhoneOnlyAudioIds(new Set(own.filter((note) => !hasVerifiedSpaceCopy(note)).map((note) => note.id)));
+    }, () => { if (live) { setLocalAudioIds(new Set()); setPhoneOnlyAudioIds(new Set()); } });
     return () => { live = false; };
   }, [options.visible, tcw.did, invalidationRevision, onPhoneNotes]);
   const lastOpened = useRef<string | null>(null);
@@ -456,8 +462,9 @@ export function useLibrary(
   const voiceSourceId = item?.source === VOICE_NOTE_SOURCE ? item.sourceId : null;
   const pendingAudioRow = voiceSourceId !== null && meta !== null && Object.keys(meta).length === 0;
   const metadataLoaded = meta !== null;
-  // The row is made before the audio is uploaded: while the phone still lists the note, its own copy is the audio.
-  const onThisPhone = voiceSourceId !== null && (item?.onPhone === true || localAudioIds.has(voiceSourceId));
+  // While the space does not verifiably hold the audio (the row is made before upload, and a local-only
+  // note never uploads), the phone's own copy is the audio. A verified saved copy is read from the space.
+  const onThisPhone = voiceSourceId !== null && (item?.onPhone === true || phoneOnlyAudioIds.has(voiceSourceId));
   const localOnlyAudio = (meta?.audio as { stored?: unknown } | undefined)?.stored === false;
   // The stored file is read only when the player asks, one part per queued
   // call; the player's signal stops it when the note closes.
@@ -482,7 +489,7 @@ export function useLibrary(
             const latest = await latestSpaceAudioIdentity(String(space.spaceId), String(space.did), VOICE_NOTE_SOURCE, voiceSourceId);
             const receipt = localNote?.ledger?.audio.verifiedInSpace;
             if (localNote?.owner === space.did && localNote.ledger?.audio.state === "saved"
-              && receipt && /^[0-9a-f]{64}$/.test(receipt.sha256) && receipt.size > 0
+              && isVerifiedSpaceReceipt(receipt)
               && (!latest?.identity || (latest.receipt?.sha256 === receipt.sha256 && latest.receipt.size === receipt.size))) {
               const local = await localPlaybackUrl(voiceSourceId);
               if (local) return local;
