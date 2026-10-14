@@ -114,7 +114,7 @@ test("one save publishes note text while an audio part is stalled", async () => 
   tcw.kv.list = (async (...args: Parameters<typeof list>) => { calls++; return list(...args); }) as typeof tcw.kv.list;
   const recording = { id, startedAt: Date.now(), durationMs: 52_000, mimeType: "audio/mp4", sizeBytes: 4,
     silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 2 as const,
-    source: "in_app" as const, options: { transcriber: "private-cloud" as const, identifySpeakers: false } };
+    source: "in_app" as const, options: { transcriber: "private-cloud" as const, identifySpeakers: false, uploadAudio: true } };
   const saving = saveVoiceNote(tcw, recording, { mimeType: "audio/mp4", size: 4,
     readPart: async () => new Uint8Array([1, 2, 3, 4]) }, "tauri");
   try {
@@ -160,7 +160,8 @@ test("one save overlaps short text and audio requests at fixed fixture latency",
   tcw.kv.get = (async (...args: Parameters<typeof get>) => { calls++; await delay(); return get(...args); }) as typeof tcw.kv.get;
   tcw.kv.list = (async (...args: Parameters<typeof list>) => { calls++; await delay(); return list(...args); }) as typeof tcw.kv.list;
   const recording = { id, startedAt: Date.now(), durationMs: 52_000, mimeType: "audio/mp4", sizeBytes: 4,
-    silencedMs: 0, silencedEvents: 0, noSignalMs: 0 };
+    silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 2 as const,
+    source: "in_app" as const, options: { transcriber: "private-cloud" as const, identifySpeakers: false, uploadAudio: true } };
   const start = performance.now();
   const saved = await saveVoiceNote(tcw, recording, { mimeType: "audio/mp4", size: 4,
     readPart: async () => new Uint8Array([1, 2, 3, 4]) }, "tauri");

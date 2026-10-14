@@ -357,7 +357,8 @@ export async function saveRecording(
     void syncOnDeviceTranscript(tcw, recording);
     return { kind: "already-saved", cleanupError: null };
   }
-  if (recording.options?.uploadAudio !== true) return { kind: "held", reason: "audio-upload-disabled" };
+  if (recording.options?.uploadAudio !== true && recording.options?.transcriber !== "private-cloud")
+    return { kind: "held", reason: "audio-upload-disabled" };
   // Old localStorage markers are never authority: a lost marker must be safe,
   // and a stale marker must not suppress a note whose native ledger is pending.
   if (savedThisSession.has(recording.id)) return { kind: "already-saved", cleanupError: null };
@@ -441,7 +442,8 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
   if (!recording.owner) return { kind: "held", reason: "unowned" };
   if (recording.owner !== ctx.did) return { kind: "held", reason: "other-account" };
   if (recording.ledger?.audio.state === "saved") return { kind: "already-saved", cleanupError: null };
-  if (recording.options?.uploadAudio !== true) return { kind: "held", reason: "audio-upload-disabled" };
+  if (recording.options?.uploadAudio !== true && recording.options?.transcriber !== "private-cloud")
+    return { kind: "held", reason: "audio-upload-disabled" };
   if (audioOptions.uploadTicket && !audioOptions.uploadTicket.owns) return { kind: "in-flight" };
   if (savesInFlight.has(recording.id)) return { kind: "in-flight" };
   savesInFlight.add(recording.id);

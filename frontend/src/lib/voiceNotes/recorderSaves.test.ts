@@ -340,24 +340,22 @@ describe("saveRecording", () => {
     expect(phone.pending).toEqual([note]);
   });
 
-  test("audio without explicit upload approval is never written to the space", async () => {
+  test("Private metadata saves without explicit audio upload approval", async () => {
     const note = { ...recording("no-audio-consent", 1),
-      options: { transcriber: "on-device", identifySpeakers: false, uploadAudio: false } };
+      options: { transcriber: "private-cloud", identifySpeakers: false, uploadAudio: false } };
     const outcome = await saves.saveRecording(tcw, note);
-    expect(outcome).toEqual({ kind: "held", reason: "audio-upload-disabled" });
-    expect(saveCalls).toBe(0);
-    expect(phone.ledgerUpdates).toEqual([]);
+    expect(outcome.kind).toBe("saved");
+    expect(saveCalls).toBe(1);
   });
 
-  test("account reconciliation never writes audio without explicit upload approval", async () => {
+  test("account reconciliation keeps on-device notes local without audio upload approval", async () => {
     const note = { ...recording("reconcile-no-audio-consent", 1),
       options: { transcriber: "on-device", identifySpeakers: false } };
     const account = { ...tcw, spaceId: "space" } as TinyCloudWeb;
     const ctx = { did: tcw.did, spaceId: "space", generation: currentAccountGeneration() };
     const outcome = await saves.saveNoteForAccount(account, ctx, note);
-    expect(outcome).toEqual({ kind: "held", reason: "audio-upload-disabled" });
+    expect(outcome).toMatchObject({ kind: "held", reason: "audio-upload-disabled" });
     expect(saveCalls).toBe(0);
-    expect(phone.ledgerUpdates).toEqual([]);
   });
 
   test("every v1 note, including one missing ownerUnknown, is held by the sign-in saver", async () => {

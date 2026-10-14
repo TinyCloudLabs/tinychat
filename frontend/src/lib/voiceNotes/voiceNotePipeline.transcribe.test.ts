@@ -58,7 +58,7 @@ function space() {
       return { ok: true, data: { keys: [...values.keys()].filter((key) => key.startsWith(path)), truncated: false } };
     },
   };
-  return { tcw: { did, spaceId: did, sql, kv } as unknown as TinyCloudWeb };
+  return { tcw: { did, spaceId: did, sql, kv } as unknown as TinyCloudWeb, values };
 }
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -88,7 +88,7 @@ function transcriberWithRuns() {
 async function setup(transcriberOption: "off" | "on-device" | "private-cloud") {
   const fake = createFakeVoiceNotes();
   __setVoiceNotesForTests(fake.plugin, { available: true });
-  const { tcw } = space();
+  const { tcw, values } = space();
   const pipeline = createVoiceNotePipeline(tcw, { retryDelaysMs: [] });
   const ctx = () => ({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
   let transitionGen = 0;
@@ -103,7 +103,7 @@ async function setup(transcriberOption: "off" | "on-device" | "private-cloud") {
   await t.transcriber.check();
   const handOver = (generation = currentAccountGeneration()) => (note: VoiceNoteRecording) =>
     transcribeSavedNote(t.transcriber, note, () => generation === currentAccountGeneration());
-  return { fake, tcw, pipeline, ctx, recordFor, signInAs, handOver, ...t };
+  return { fake, tcw, values, pipeline, ctx, recordFor, signInAs, handOver, ...t };
 }
 
 describe("a note saved by reconcileAll is handed to the transcriber", () => {
@@ -118,6 +118,7 @@ describe("a note saved by reconcileAll is handed to the transcriber", () => {
     const row = await s.tcw.sql.db(CONNECTORS_SQL_DB_NAME).query("SELECT metadata FROM connector_meeting WHERE source_id = ?", [note.id]);
     expect(row.ok).toBe(true);
     if (row.ok) expect(JSON.parse(String(row.data.rows[0]?.[0])).audio.stored).toBe(false);
+    expect([...s.values.keys()].some((key) => key.includes("/audio/"))).toBe(false);
   });
   test("a Private note left on the phone and saved after sign-in gets one Private job, and relaunching does not send it again", async () => {
     const s = await setup("private-cloud");

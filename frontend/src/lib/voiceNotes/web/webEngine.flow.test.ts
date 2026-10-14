@@ -138,7 +138,7 @@ async function bootWeb(source: Rig) {
 }
 
 async function signIn(did: string, transitionGen: number) {
-  await VoiceNotes.setCaptureDefaults({ accountDid: did, transitionGen, transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true });
+  await VoiceNotes.setCaptureDefaults({ accountDid: did, transitionGen, transcriber: "private-cloud", identifySpeakers: false });
 }
 
 describe("registration", () => {
