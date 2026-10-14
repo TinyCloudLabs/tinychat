@@ -1,7 +1,12 @@
 import type { SessionStore } from "@tinyboilerplate/client";
 import { logPipeline, logPipelineError } from "@/lib/debugLog";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { AssemblyAiError, assemblyAiSentences, createHostedAssemblyAiClient, type AssemblyAiTranscript } from "../assemblyai";
+import {
+  AssemblyAiError,
+  assemblyAiSentences,
+  createHostedAssemblyAiClient,
+  pollAssemblyAiTranscript,
+} from "../assemblyai";
 import { base64ToBytes } from "./voiceNoteAudio";
 import { currentAccountGeneration, isAccountWorkAllowed } from "./accountContext";
 import { nativeRecordingSource, VoiceNotes, type LocalTranscript, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
@@ -10,10 +15,10 @@ import { createVoiceNoteRow } from "./voiceNoteRows";
 import { loadVoiceNoteAudio, patchVoiceNoteTranscriptionFailure, readVoiceNoteForTranscription, saveVoiceNoteTranscript, voiceNoteTitle } from "./voiceNoteStore";
 import type { VoiceNoteTranscriptionStatus, NoteTranscriptionState } from "./voiceNoteTranscription";
 import { withHostedUploadQueue } from "../hostedUploadQueue";
+import type { CloudClock } from "../privateCloud";
 
 const CONSENT = "exo.voiceNotes.powerfulConsent";
 const PENDING = "exo.voiceNotes.powerfulJobs";
-const POLL_MS = 5000;
 const CLAIM_TAKEOVER_MS = 5 * 60_000;
 type Stored = { uploadId?: string; handle?: string; saved?: boolean; recording?: VoiceNoteRecording };
 type Claim = { version: 1; status: "active" | "failed" | "submitted"; token: string; claimedAt?: number; uploadId?: string; handle?: string };
@@ -57,14 +62,12 @@ function readJobs(did: string): Record<string, Stored> {
 function writeJobs(did: string, jobs: Record<string, Stored>): void {
   storage()?.setItem(`${PENDING}:${did}`, JSON.stringify(jobs));
 }
-function pause(ms: number) { return new Promise<void>((resolve) => setTimeout(resolve, ms)); }
-
 /** One account's resumable Powerful lane. Audio parts always come from the local recording when it exists. */
 export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: string, sessionStore: SessionStore, did: string,
-  services: { client?: ReturnType<typeof createHostedAssemblyAiClient>; native?: VoiceNotesPlugin;
+  services: { client?: ReturnType<typeof createHostedAssemblyAiClient>; native?: VoiceNotesPlugin; clock?: CloudClock;
     readCommit?: typeof readTranscriptCommit; createRow?: typeof createVoiceNoteRow;
     save?: typeof saveVoiceNoteTranscript; readNote?: typeof readVoiceNoteForTranscription;
-    loadAudio?: typeof loadVoiceNoteAudio; sleep?: typeof pause; reconciliationDelayMs?: number } = {}) {
+    loadAudio?: typeof loadVoiceNoteAudio; reconciliationDelayMs?: number } = {}) {
   const client = services.client ?? createHostedAssemblyAiClient({ backendUrl, sessionStore });
   const native = services.native ?? VoiceNotes;
   const readCommit = services.readCommit ?? readTranscriptCommit;
@@ -72,7 +75,6 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
   const save = services.save ?? saveVoiceNoteTranscript;
   const readNote = services.readNote ?? readVoiceNoteForTranscription;
   const loadAudio = services.loadAudio ?? loadVoiceNoteAudio;
-  const sleep = services.sleep ?? pause;
   const jobs = new Map<string, NoteTranscriptionState>();
   const listeners = new Set<() => void>();
   const active = new Set<string>();
@@ -296,15 +298,15 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       });
       if (!handle) return;
       persist(id, { handle });
-      let transcript: AssemblyAiTranscript;
-      for (;;) {
-        guard();
-        transcript = await client.getTranscript(handle);
-        if (transcript.status === "completed") break;
-        if (transcript.status === "error") throw new AssemblyAiError("failed", "AssemblyAI couldn't finish this transcript. Try again.");
-        state(id, { kind: transcript.status === "queued" ? "queued" : "processing", ...(transcript.status === "queued" ? { position: null } : { completed: null, total: null }) } as VoiceNoteTranscriptionStatus);
-        await sleep(POLL_MS);
-      }
+      const transcript = await pollAssemblyAiTranscript(client, handle, {
+        clock: services.clock,
+        durationSeconds: recording.durationMs / 1000,
+        guard,
+        onStatus: (status) => {
+          if (status === "queued") state(id, { kind: "queued", position: null });
+          else if (status === "processing") state(id, { kind: "processing", completed: null, total: null });
+        },
+      });
       guard();
       const stereo = recording.channels === 2;
       const sentences = assemblyAiSentences(transcript, await client.getSentences(handle), { stereo })

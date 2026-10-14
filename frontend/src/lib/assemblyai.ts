@@ -2,13 +2,26 @@
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { FirefliesSentence } from "./connectors/firefliesClient";
 import { splitLongTimedSegment } from "./voiceNotes/timedSegments";
-import { REAL_CLOCK, type CloudClock } from "./privateCloud";
+import {
+  cloudStatusIntervalMs,
+  jitteredCloudIntervalMs,
+  DEFAULT_CLOUD_POLLING,
+  jitteredRateLimitWaitMs,
+  parseRateLimitWaitSeconds,
+  REAL_CLOCK,
+  type CloudClock,
+} from "./privateCloud";
 
 export type AssemblyAiErrorKind = "invalid-key" | "network" | "rate-limited" | "rejected" | "failed" | "not-found" | "needs-reconciliation";
 
 export class AssemblyAiError extends Error {
   readonly kind: AssemblyAiErrorKind;
-  constructor(kind: AssemblyAiErrorKind, message: string, readonly uploadEnded = false) {
+  constructor(
+    kind: AssemblyAiErrorKind,
+    message: string,
+    readonly uploadEnded = false,
+    readonly retryAfterMs: number | null = null,
+  ) {
     super(message);
     this.name = "AssemblyAiError";
     this.kind = kind;
@@ -59,7 +72,7 @@ export interface AssemblyAiClient {
    * reference after a reload: TinyCloud's account re-joins its submission instead of starting another.
    */
   createTranscript(uploadRef: string, options: { speakerLabels: boolean; multichannel?: boolean; signal?: AbortSignal }): Promise<AssemblyAiTranscript>;
-  getTranscript(id: string): Promise<AssemblyAiTranscript>;
+  getTranscript(id: string, signal?: AbortSignal): Promise<AssemblyAiTranscript>;
   getSentences(id: string): Promise<AssemblyAiSentence[]>;
   /** Deletes the transcript and its uploaded audio. A transcript already gone counts as deleted. */
   deleteTranscript(id: string): Promise<void>;
@@ -98,16 +111,22 @@ async function hostedErrorCode(response: Response): Promise<string | null> {
 /** A non-2xx answer from the hosted routes as the kinds the runner already handles. */
 async function hostedError(response: Response): Promise<AssemblyAiError> {
   const code = await hostedErrorCode(response);
+  const retryAfterSeconds = parseRateLimitWaitSeconds(response.headers);
+  const retryAfterMs = retryAfterSeconds === null ? null : retryAfterSeconds * 1000;
   if (response.status === 401) return new AssemblyAiError("rejected", "Your session expired. Sign in again, then retry.");
   if (response.status === 404) return new AssemblyAiError("not-found", "AssemblyAI no longer has this transcript.");
   if (code === "assemblyai_needs_reconciliation") return new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI.");
   if (code === "assemblyai_quota_exceeded") {
-    const reset = response.headers.get("Retry-After");
-    const hours = reset && Number.isFinite(Number(reset)) ? Math.max(1, Math.ceil(Number(reset) / 3600)) : null;
-    return new AssemblyAiError("rate-limited", `Today's Powerful allowance is used. Try again ${hours ? `in about ${hours} hours` : "tomorrow"}.`);
+    const hours = retryAfterSeconds === null ? null : Math.max(1, Math.ceil(retryAfterSeconds / 3600));
+    return new AssemblyAiError(
+      "rate-limited",
+      `Today's Powerful allowance is used. Try again ${hours ? `in about ${hours} hours` : "tomorrow"}.`,
+      false,
+      retryAfterMs,
+    );
   }
   if (code === "assemblyai_busy" || response.status === 429) {
-    return new AssemblyAiError("rate-limited", "Powerful is busy right now. Try again in a few minutes.");
+    return new AssemblyAiError("rate-limited", "Powerful is busy right now. Try again in a few minutes.", false, retryAfterMs);
   }
   if (response.status === 413 || code === "recording_too_large") {
     return new AssemblyAiError("rejected", "This recording is too large for Powerful (120 MB maximum).");
@@ -352,8 +371,8 @@ export function createHostedAssemblyAiClient(config: {
       }
     },
 
-    async getTranscript(id) {
-      return transcript(await request(`/hosted/transcripts/${encodeURIComponent(id)}`));
+    async getTranscript(id, signal) {
+      return transcript(await request(`/hosted/transcripts/${encodeURIComponent(id)}`, { signal }));
     },
 
     async getSentences(id) {
@@ -376,39 +395,103 @@ export function createHostedAssemblyAiClient(config: {
 }
 
 /**
- * Polls a transcript to `completed`: 3 s, growing by half up to 15 s.
- * Network failures, rate limits and 5xx are ridden out for a bounded period;
- * an `error` transcript or a rejected key ends it, and so does an aborted `signal`.
+ * Poll a hosted transcript with the same cadence and bounded failure policy as PTX.
+ * A caller's signal cancels only this ordinary request/wait loop.
  */
 export async function pollAssemblyAiTranscript(
   client: Pick<AssemblyAiClient, "getTranscript">,
   id: string,
-  options: { clock?: CloudClock; onStatus?: (status: AssemblyAiTranscript["status"]) => void; signal?: AbortSignal } = {},
+  options: {
+    clock?: CloudClock;
+    onStatus?: (status: AssemblyAiTranscript["status"]) => void;
+    signal?: AbortSignal;
+    guard?: () => void;
+    durationSeconds?: number | null;
+  } = {},
 ): Promise<AssemblyAiTranscript> {
   const clock = options.clock ?? REAL_CLOCK;
-  let delayMs = 3_000;
+  const polling = DEFAULT_CLOUD_POLLING;
+  const startedAt = clock.now();
+  let durationSeconds = options.durationSeconds ?? null;
   let failingSince: number | null = null;
-  for (;;) {
-    if (options.signal?.aborted) throw new AssemblyAiError("failed", "Stopped waiting for AssemblyAI.");
+  let throttledMs = 0;
+  let throttledAtFailure = 0;
+  const cancelled = () => new AssemblyAiError("failed", "Stopped waiting for AssemblyAI.");
+  const sleepWithSignal = async (ms: number): Promise<void> => {
+    const signal = options.signal;
+    if (signal === undefined) {
+      await clock.sleep(ms);
+      return;
+    }
+    if (signal.aborted) throw cancelled();
+    let removeAbort = (): void => {};
     try {
-      const t = await client.getTranscript(id);
-      if (options.signal?.aborted) throw new AssemblyAiError("failed", "Stopped waiting for AssemblyAI.");
+      await Promise.race([
+        clock.sleep(ms),
+        new Promise<never>((_, reject) => {
+          const onAbort = (): void => reject(cancelled());
+          signal.addEventListener("abort", onAbort, { once: true });
+          removeAbort = () => signal.removeEventListener("abort", onAbort);
+          if (signal.aborted) onAbort();
+        }),
+      ]);
+    } finally {
+      removeAbort();
+    }
+  };
+  const waitThrottled = async (ms: number): Promise<void> => {
+    const before = clock.now();
+    try {
+      await sleepWithSignal(ms);
+    } finally {
+      throttledMs += Math.max(0, clock.now() - before);
+    }
+  };
+
+  for (;;) {
+    if (options.signal?.aborted) throw cancelled();
+    options.guard?.();
+    try {
+      const t = await client.getTranscript(id, options.signal);
+      if (options.signal?.aborted) throw cancelled();
+      options.guard?.();
       failingSince = null;
+      throttledAtFailure = throttledMs;
+      if (typeof t.audio_duration === "number" && Number.isFinite(t.audio_duration) && t.audio_duration > 0) {
+        durationSeconds = t.audio_duration;
+      }
       if (t.status === "completed") return t;
       if (t.status === "error") {
         throw new AssemblyAiError("failed", t.error ? `AssemblyAI could not transcribe this file: ${t.error}` : "AssemblyAI could not transcribe this file.");
       }
       options.onStatus?.(t.status);
     } catch (err) {
-      const transient = err instanceof AssemblyAiError && (err.kind === "network" || err.kind === "rate-limited");
-      if (!transient) throw err;
-      failingSince ??= clock.now();
-      if (clock.now() - failingSince >= 10 * 60_000) {
+      if (options.signal?.aborted) throw cancelled();
+      if (err instanceof AssemblyAiError && err.kind === "rate-limited") {
+        await waitThrottled(jitteredRateLimitWaitMs(
+          err.retryAfterMs === null ? null : err.retryAfterMs / 1000,
+          polling.slowIntervalMs,
+          clock.random,
+        ));
+        continue;
+      }
+      if (!(err instanceof AssemblyAiError) || err.kind !== "network") throw err;
+      const now = clock.now();
+      if (failingSince === null) {
+        failingSince = now;
+        throttledAtFailure = throttledMs;
+      }
+      const failingFor = Math.max(0, now - failingSince - (throttledMs - throttledAtFailure));
+      if (failingFor >= polling.giveUpAfterMs) {
         throw new AssemblyAiError("network", "Lost contact with AssemblyAI. The transcript may still be running; Retry keeps waiting.");
       }
+      const retryInterval = failingFor >= polling.slowAfterMs ? polling.slowIntervalMs : polling.intervalMs;
+      await sleepWithSignal(Math.round(retryInterval * (0.8 + 0.4 * clock.random())));
+      continue;
     }
-    await clock.sleep(delayMs);
-    delayMs = Math.min(15_000, Math.round(delayMs * 1.5));
+    const elapsed = clock.now() - startedAt;
+    const interval = cloudStatusIntervalMs(durationSeconds, elapsed, polling);
+    await sleepWithSignal(elapsed < polling.fastPhaseMs ? interval : jitteredCloudIntervalMs(interval, clock.random));
   }
 }
 

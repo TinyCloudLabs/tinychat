@@ -322,3 +322,12 @@ for (const interruption of [undefined, "part", "submit", "result", "space"] as c
     expect(track().jobs.size).toBe(0);
   });
 }
+test("hosted voice-note polling scales its slow cadence from the saved recording duration", async () => {
+  const processing = Array.from({ length: 7 }, () => ({ id: "handle-1", status: "processing" }));
+  const completed = { id: "handle-1", status: "completed", utterances: [{ start: 0, end: 1000, text: "Hello", speaker: "A" }] };
+  const { recording, track, sleeps } = harness(undefined, false, false, "audio/mp4", 72 * 60_000, [...processing, completed]);
+  const lane = track();
+  lane.consent();
+  await lane.run(recording);
+  expect(sleeps[6]).toBeGreaterThanOrEqual(60_000);
+});
