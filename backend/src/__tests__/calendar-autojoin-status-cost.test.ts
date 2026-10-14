@@ -261,7 +261,9 @@ describe("TC-1086 status cost", () => {
       try {
         await f.worker.tick();
         const tickJobs = run.mock.calls.length;
-        expect(tickJobs).toBe(2 * n + 11 + (n === 0 ? 0 : 1));
+        // The first tick also re-reads one connection for the restart grant backfill.
+        // This fixture holds credentials in memory, so no credential lane job is added.
+        expect(tickJobs).toBe(2 * n + 12 + (n === 0 ? 0 : 1));
         run.mockClear();
         await withStatus(f, async request => {
           const response = await request();

@@ -26,8 +26,8 @@ export function calendarAutojoinOffLabel(status: CalendarAutojoinStatus | null):
     case "user_disabled": return "You turned calendar autojoin off.";
     case "google_account_changed": return "Google account changed. Turn on calendar autojoin for this account.";
     case "disconnected": return "Google was disconnected. Reconnect to turn calendar autojoin on.";
-    case "needs_reconnect": return "Google access needs to be renewed. Reconnect to resume calendar autojoin.";
-    case "invalid_grant": return "Google access was revoked elsewhere or expired. Reconnect Google to resume calendar autojoin.";
+    case "needs_reconnect": return "Google access needs to be renewed. It may have been revoked from another TinyChat account or your Google settings. Reconnect to resume calendar autojoin.";
+    case "invalid_grant": return "Google access was revoked elsewhere, such as from another TinyChat account or your Google settings, or expired. Reconnect Google to resume calendar autojoin.";
     case "setup_expired": return "Google setup expired. Turn on calendar autojoin to try again.";
     case "setup_pending": return "Finish Google setup to turn calendar autojoin on.";
     case "never_enabled": return "Calendar autojoin has not been turned on yet.";
