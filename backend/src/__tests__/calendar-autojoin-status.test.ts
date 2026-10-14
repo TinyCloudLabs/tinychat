@@ -13,6 +13,7 @@ import type { GoogleCalendarPort } from "../services/google-calendar.js";
 import { GoogleOAuthError, type GoogleOAuthPort } from "../services/google-oauth.js";
 import type { TranscriptionApiClient } from "../services/transcription-api.js";
 import { MemoryTranscriberIndexStore } from "../services/transcriber-index.js";
+import { calendarAutojoinOutcomes } from "../services/calendar-autojoin-status-summary.js";
 
 const TENANT = "tenant-a";
 const OTHER = "tenant-b";
@@ -32,7 +33,9 @@ function fixture() {
   const options: CalendarAutojoinConnectionOptions = { store, credentials, oauth: {} as GoogleOAuthPort,
     calendar: { async probePrimary() {} }, coordinator: new TenantCoordinator() };
   const connection = new CalendarAutojoinConnection(options);
-  return { store, cache, connection, options, now: () => now, advance(ms: number) { now += ms; } };
+  return { store, cache, connection, options, now: () => now, advance(ms: number) { now += ms; },
+    async publishOutcomes() { await store.putStatusSummary(TENANT, { version: 1, outcomes: calendarAutojoinOutcomes(await store.listOccurrences(TENANT)) }); },
+  };
 }
 
 async function withRoute(f: ReturnType<typeof fixture>, run: (request: (tenant?: string, query?: string) => Promise<Response>, lines: string[]) => Promise<void>) {
@@ -78,11 +81,12 @@ describe("TC-1086 status fallback and metadata", () => {
     const f = fixture();
     await f.store.putConnection(connectionRow());
     await f.store.putOccurrence(occurrenceRow());
+    await f.publishOutcomes();
     await withRoute(f, async (request, lines) => {
       const fresh = await request(TENANT.toUpperCase());
       const body = await fresh.json();
       expect(body.stale).toBeUndefined();
-      timing(fresh, "ok", 3, lines[0]);
+      timing(fresh, "ok", 2, lines[0]);
       f.advance(5_000);
       f.options.statusBudgetMs = 0;
       const stale = await request(TENANT);
@@ -144,26 +148,25 @@ describe("TC-1086 status fallback and metadata", () => {
     });
   });
 
-  test("a failure partway through the N+2 reads reports attempts and keeps the complete cached body", async () => {
+  test("a summary-read failure reports two attempts and keeps the complete cached body", async () => {
     const f = fixture();
     await f.store.putConnection(connectionRow());
     await f.store.putOccurrence(occurrenceRow());
     await f.store.putOccurrence({ ...occurrenceRow(), id: "second-occurrence", start: AT + 1_000 });
+    await f.publishOutcomes();
     await withRoute(f, async (request, lines) => {
       const fresh = await request(TENANT);
       const body = await fresh.json();
       expect(body.outcomes).toHaveLength(2);
-      timing(fresh, "ok", 4, lines[0]);
+      timing(fresh, "ok", 2, lines[0]);
       const lane = spyOn(BackendStorageLane.prototype, "run")
         .mockImplementationOnce(fn => fn()) // connection
-        .mockImplementationOnce(fn => fn()) // keys
-        .mockImplementationOnce(fn => fn()) // first occurrence
-        .mockRejectedValueOnce(new Error("synthetic row read failure"));
+        .mockRejectedValueOnce(new Error("synthetic summary read failure"));
       try {
         const response = await request(TENANT);
         expect(response.status).toBe(200);
         expect(await response.json()).toEqual({ ...body, stale: true, asOf: new Date(AT).toISOString() });
-        timing(response, "stale", 4, lines[1]);
+        timing(response, "stale", 2, lines[1]);
         expect(f.connection.getLastGoodStatus(TENANT)!.body).toEqual(body);
       } finally { lane.mockRestore(); }
     });

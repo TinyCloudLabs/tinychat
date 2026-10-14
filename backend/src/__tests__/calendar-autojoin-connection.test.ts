@@ -8,6 +8,7 @@ import { CredentialStore, InMemoryCredentialRowStore } from "../services/credent
 import { GOOGLE_AUTOJOIN_SCOPES, GoogleOAuthError, type GoogleOAuthPort, type GoogleTokenPayload } from "../services/google-oauth.js";
 import { createGoogleOAuthRouter } from "../routes/google-oauth.js";
 import { createCalendarAutojoinRouter } from "../routes/calendar-autojoin.js";
+import { calendarAutojoinOutcomes } from "../services/calendar-autojoin-status-summary.js";
 
 const TENANT = "0x7d033300000000000000000000000000000073f2";
 const OTHER = "0xb1b1b10000000000000000000000000000001111";
@@ -37,6 +38,7 @@ function fixture() {
   const options: CalendarAutojoinConnectionOptions = { store, credentials, oauth, coordinator: new TenantCoordinator(), calendar, now: () => now };
   const connection = new CalendarAutojoinConnection(options);
   return { store, rows, credentials, oauth, probes, revokes, connection, calendar, options,
+    async publishOutcomes() { await store.putStatusSummary(TENANT, { version: 1, outcomes: calendarAutojoinOutcomes(await store.listOccurrences(TENANT)) }); },
     setTokens(tokens: Partial<GoogleTokenPayload>) { tokenResponse = { ...tokenResponse, ...tokens }; },
     get exchangeCount() { return exchangeCount; },
     advance(ms: number) { now += ms; },
@@ -62,6 +64,17 @@ function attempt(): CalendarOccurrence {
 }
 
 describe("Calendar OAuth custody lifecycle", () => {
+  test("TC-1086: exchange and enable immediately reflect policy while retaining summarized history", async () => {
+    const f = fixture(); await f.enable();
+    await f.store.putOccurrence({ ...attempt(), phase: "terminal", disposition: "missed_window" });
+    await f.publishOutcomes();
+    const setup = await f.exchange();
+    expect(await f.connection.getStatus(TENANT)).toMatchObject({ state: "off", enabled: false,
+      outcomes: [{ id: "old-attempt", reason: "missed_window" }] });
+    expect(await f.connection.enable(TENANT, setup.setupId)).toMatchObject({ state: "on", enabled: true,
+      outcomes: [{ id: "old-attempt", reason: "missed_window" }] });
+  });
+
   for (const operation of ["exchange", "enable", "disable", "disconnect", "browserReconnect"] as const) {
     test(`TC-1086: user ${operation} invalidates even if the policy fields stay the same`, async () => {
       const f = fixture(); await f.enable();
@@ -242,6 +255,7 @@ describe("Calendar OAuth custody lifecycle", () => {
     await f.store.putOccurrence({ ...attempt(), id: "attached", idempotencyKey: undefined, phase: "pending", errorCode: "shared_capture_pending",
       sharedCapture: { ownerTenant: OTHER, ownerOccurrenceId: "owner-occurrence", attachedAt: 0 } });
     await f.store.putOccurrence({ ...attempt(), id: "shared", idempotencyKey: undefined, phase: "terminal", disposition: "shared" });
+    await f.publishOutcomes();
     const status = await f.connection.getStatus(TENANT);
     expect(status.outcomes.map(outcome => outcome.reason).sort()).toEqual(["already_recorded", "shared_capture_pending"]);
     expect(status.outcomes.every(outcome => !("meetingId" in outcome))).toBe(true);
@@ -314,6 +328,7 @@ describe("Calendar OAuth custody lifecycle", () => {
     await f.enable();
     await f.store.putOccurrence({ ...attempt(), phase: "terminal", disposition: "missed_window" });
     await f.store.putOccurrence({ ...attempt(), id: "uncertain", errorCode: "lookup_identity_mismatch" });
+    await f.publishOutcomes();
     const status = await f.connection.getStatus(TENANT);
     expect(status.outcomes.map(outcome => outcome.reason).sort()).toEqual(["lookup_identity_mismatch", "missed_window"]);
   });
@@ -330,6 +345,7 @@ describe("Calendar OAuth custody lifecycle", () => {
       await f.store.putOccurrence({ ...attempt(), id: disposition, phase: "terminal", disposition });
     }
     await f.store.putOccurrence({ ...attempt(), id: "uncertain", disposition: "not_accepted", errorCode: "lookup_identity_mismatch" });
+    await f.publishOutcomes();
     const status = await f.connection.getStatus(TENANT);
     expect(status.outcomes).toHaveLength(30);
     expect(status.outcomes.slice(0, 4).map(row => row.reason).sort())
@@ -340,6 +356,7 @@ describe("Calendar OAuth custody lifecycle", () => {
       await f.store.putOccurrence({ ...attempt(), id: `failure-${i}`, phase: "terminal", disposition: "failed",
         start: attempt().start - (i + 1) * 60_000 });
     }
+    await f.publishOutcomes();
     const full = await f.connection.getStatus(TENANT);
     expect(full.outcomes).toHaveLength(30);
     expect(full.outcomes.every(row => row.reason !== "not_accepted")).toBe(true);
@@ -360,8 +377,8 @@ describe("Calendar OAuth custody lifecycle", () => {
     await expect(f.connection.getStatus(TENANT)).rejects.toThrow("kv_unavailable");
     f.store.getConnection = getConnection;
     await f.enable();
-    f.store.listOccurrences = async () => { throw new Error("kv_list_unavailable"); };
-    await expect(f.connection.getStatus(TENANT)).rejects.toThrow("kv_list_unavailable");
+    f.store.getStatusSummary = async () => { throw new Error("kv_summary_unavailable"); };
+    await expect(f.connection.getStatus(TENANT)).rejects.toThrow("kv_summary_unavailable");
   });
 
   test("a disabled tenant keeps its outcome history", async () => {

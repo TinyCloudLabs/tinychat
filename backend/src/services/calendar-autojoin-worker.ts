@@ -1,4 +1,5 @@
 import { onInvite, shareDecision, windowsOverlap, type ShareDecision } from "./calendar-autojoin-share.js";
+import { calendarAutojoinOutcomes } from "./calendar-autojoin-status-summary.js";
 import {
   type CalendarAutojoinStore, type CalendarConnection, type CalendarOccurrence, type SharedCapture, TenantCoordinator,
 } from "./calendar-autojoin-store.js";
@@ -89,6 +90,8 @@ export class CalendarAutojoinWorker {
   private readonly inFlight = new Set<string>();
   private readonly refire = new Map<string, CalendarOccurrence>();
   private readonly timerRuns = new Set<Promise<void>>();
+  /** Changes during a tick's existing listing/reconciliation, including concurrent timer dispatch. */
+  private readonly summaryChanges = new Map<string, Map<string, CalendarOccurrence | null>>();
   /** Tenants whose connection the tick last read as enabled; only their rows get timers. */
   private readonly armable = new Set<string>();
   private tickStartedAt?: number;
@@ -172,19 +175,42 @@ export class CalendarAutojoinWorker {
     connection = await store.getConnection(tenant);
     if (!connection) return;
     this.trackTenant(connection);
-    const occurrences = await store.listOccurrences(tenant);
-    counts.rows += occurrences.length;
-    occurrences.sort((a, b) => a.nextAttemptAt - b.nextAttemptAt);
-    for (const row of occurrences) {
-      if (this.stopping) return;
-      if (row.phase === "terminal") {
-        // Unsent outcomes are visible for a month; sent dedupe markers have no expiry.
-        if (row.updatedAt < this.now() - 30 * 86_400_000) await store.deleteOccurrence(tenant, row.id);
-        continue;
+    const key = tenant.toLowerCase();
+    const changes = new Map<string, CalendarOccurrence | null>();
+    this.summaryChanges.set(key, changes);
+    try {
+      const occurrences = await store.listOccurrences(tenant);
+      // Preserve listing order for equal-start outcomes before the dispatch-order sort below.
+      const snapshot = new Map(occurrences.map(row => [row.id, row]));
+      counts.rows += occurrences.length;
+      try {
+        occurrences.sort((a, b) => a.nextAttemptAt - b.nextAttemptAt);
+        for (const row of occurrences) {
+          if (this.stopping) return;
+          if (row.phase === "terminal") {
+            // Unsent outcomes are visible for a month; sent dedupe markers have no expiry.
+            if (row.updatedAt < this.now() - 30 * 86_400_000) await store.deleteOccurrence(tenant, row.id);
+            continue;
+          }
+          if (row.nextAttemptAt > this.now()) { this.arm(row); continue; }
+          await this.runRow(row);
+        }
+      } finally {
+        for (const [id, row] of changes) {
+          if (row) snapshot.set(id, row); else snapshot.delete(id);
+        }
+        await this.publishStatusSummary(tenant, [...snapshot.values()]);
       }
-      if (row.nextAttemptAt > this.now()) { this.arm(row); continue; }
-      await this.runRow(row);
-    }
+    } finally { this.summaryChanges.delete(key); }
+  }
+  private async publishStatusSummary(tenant: string, occurrences: CalendarOccurrence[]): Promise<void> {
+    const outcomes = calendarAutojoinOutcomes(occurrences);
+    // At most one background write after reconciliation, deduplicated across all store writers.
+    await this.options.store.putStatusSummary(tenant, { version: 1, outcomes });
+  }
+  private recordSummaryChange(tenant: string, id: string, row: CalendarOccurrence | null): void {
+    const changes = this.summaryChanges.get(tenant.toLowerCase());
+    if (changes) changes.set(id, row ? structuredClone(row) : null);
   }
   /** Only an enabled tenant's rows get timers; the row loop's arm() cancels the rest. */
   private trackTenant(connection: CalendarConnection): void {
@@ -244,12 +270,13 @@ export class CalendarAutojoinWorker {
    */
   private tracked(store: CalendarAutojoinStore): CalendarAutojoinStore {
     return Object.assign(Object.create(store) as CalendarAutojoinStore, {
-      putOccurrence: async (row: CalendarOccurrence) => { await store.putOccurrence(row); this.arm(row); },
+      putOccurrence: async (row: CalendarOccurrence) => { await store.putOccurrence(row); this.recordSummaryChange(row.tenant, row.id, row); this.arm(row); },
       updateOccurrence: async (tenant: string, id: string, update: Parameters<CalendarAutojoinStore["updateOccurrence"]>[2]) => {
         const row = await store.updateOccurrence(tenant, id, update);
-        if (row) this.arm(row);
+        if (row) { this.recordSummaryChange(tenant, id, row); this.arm(row); }
         return row;
       },
+      deleteOccurrence: async (tenant: string, id: string) => { await store.deleteOccurrence(tenant, id); this.recordSummaryChange(tenant, id, null); },
     });
   }
   private async google<T>(connection: CalendarConnection, fn: (token: string) => Promise<T>): Promise<T> {

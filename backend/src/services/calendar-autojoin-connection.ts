@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { CredentialStore, OAuthCredentialSecret } from "./credential-store.js";
 import type { CalendarAutojoinStore, CalendarAutojoinReadMetrics, CalendarConnection, TenantCoordinator } from "./calendar-autojoin-store.js";
 import type { CalendarAutojoinStatus } from "./calendar-autojoin-status-cache.js";
+import { calendarAutojoinOutcomes } from "./calendar-autojoin-status-summary.js";
 import { REQUEST_LANE_WAIT_MS } from "./backend-storage-lane.js";
 import { GOOGLE_CALENDAR_SCOPE, GoogleOAuthError, type GoogleOAuthPort, type GoogleTokenPayload } from "./google-oauth.js";
 
@@ -57,7 +58,7 @@ export class CalendarAutojoinConnection {
   }
 
   private async readStatus(tenant: string, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarAutojoinStatus> {
-    // One wall-clock deadline for every lane read below (lane timers run on real time).
+    // One wall-clock deadline for the two bounded lane reads (lane timers run on real time).
     const deadline = Date.now() + (this.options.statusBudgetMs ?? REQUEST_LANE_WAIT_MS);
     const connection = await this.options.store.getConnection(tenant, deadline, metrics);
     // Occurrences are only scheduled for a tenant with a connection row, and connection rows are
@@ -65,13 +66,10 @@ export class CalendarAutojoinConnection {
     // no outcomes, so skip the prefix listing: on the shared serialized storage lane it pushed this
     // read past the client's 20s abort, showing a never-connected account an error.
     if (!connection) return { state: "off" as const, enabled: false, lastScanAt: null, lastDispatchLag: null, errorCode: null, outcomes: [] };
-    const outcomes = (await this.options.store.listOccurrences(tenant, deadline, metrics))
-      .filter(row => !!row.errorCode || ["missed", "missed_window", "not_accepted", "failed", "event_ineligible", "event_changed", "already_recorded", "unverified_capture", "capacity_exhausted"].includes(row.disposition ?? ""))
-      // RSVP hints fill only spare slots; future unanswered invites must not hide real failures.
-      .sort((a, b) => Number((a.errorCode ?? a.disposition) === "not_accepted")
-        - Number((b.errorCode ?? b.disposition) === "not_accepted") || b.start - a.start).slice(0, 30)
-      .map(row => ({ id: row.id, title: row.title, start: row.start,
-        reason: row.errorCode ?? row.disposition ?? "failed", ...(row.meetingId ? { meetingId: row.meetingId } : {}) }));
+    const summary = await this.options.store.getStatusSummary(tenant, deadline, metrics);
+    // Legacy rows are populated by the next tick, never by an N-row foreground fallback.
+    if (!summary) throw new Error("calendar_status_summary_missing");
+    const outcomes = summary.outcomes;
     return {
       state: connection?.state === "needs_reconnect" ? "needs_reconnect" as const
         : connection?.errorCode ? "error" as const
@@ -162,6 +160,12 @@ export class CalendarAutojoinConnection {
       await this.options.store.putConnection({ ...latest!, state: "enabled", setupId: undefined,
         setupExpiresAt: undefined, nextScanAt: this.now(), errorCode: undefined, scanComplete: false });
     });
+    // A setup persisted by the previous backend can survive an upgrade without a summary.
+    // Backfill only on this user action, outside tenant coordination; /status never scans rows.
+    if (!await this.options.store.getStatusSummary(tenant)) {
+      const occurrences = await this.options.store.listOccurrences(tenant);
+      await this.options.store.putStatusSummary(tenant, { version: 1, outcomes: calendarAutojoinOutcomes(occurrences) });
+    }
     return this.getStatus(tenant);
   }
 
@@ -280,11 +284,15 @@ export class CalendarAutojoinConnection {
     this.options.onDisabled?.(tenant);
     for (const [key, value] of this.transactions) if (value.tenant === tenant) this.transactions.delete(key);
     try {
-      for (const row of await this.options.store.listOccurrences(tenant)) {
+      const occurrences = await this.options.store.listOccurrences(tenant);
+      for (const row of occurrences) {
         if (row.phase === "terminal" || (!row.createBody && !row.meetingId && !row.idempotencyKey)) continue;
         await this.options.store.updateOccurrence(tenant, row.id, latest => latest && latest.phase !== "terminal"
           ? { ...latest, stopRequested: true, nextAttemptAt: this.now(), updatedAt: this.now() } : latest);
       }
+      // User writes must be immediately visible, including legacy tenants awaiting their first tick.
+      // Teardown already lists these rows; stopRequested does not change the outcome projection.
+      await this.options.store.putStatusSummary(tenant, { version: 1, outcomes: calendarAutojoinOutcomes(occurrences) });
     } finally {
       await this.options.credentials.delete(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant);
     }
