@@ -122,7 +122,7 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
     createRow: async () => ({ inserted: true }) as Awaited<ReturnType<typeof import("./voiceNoteRows").createVoiceNoteRow>>,
     clock: { now: () => now, sleep: async (ms) => { sleeps.push(ms); now += ms; }, random: () => 0.5 },
     readNote: async () => ({ ok: true, data: { captureTranscriber: "assemblyai", durationSeconds: 1 } }) as Awaited<ReturnType<typeof import("./voiceNoteStore").readVoiceNoteForTranscription>>,
-    loadAudio: async () => ({ ok: true, data: { mimeType: "audio/mp4", base64: bytesToBase64(audio) } }) as Awaited<ReturnType<typeof import("./voiceNoteStore").loadVoiceNoteAudio>>,
+    loadAudio: async () => { calls.push("space:audio"); return { ok: true, data: { mimeType: "audio/mp4", base64: bytesToBase64(audio) } } as Awaited<ReturnType<typeof import("./voiceNoteStore").loadVoiceNoteAudio>>; },
     save: async (_account, _id, transcript) => {
       calls.push("space:save");
       savedMetadata = transcript.metadata;
@@ -190,6 +190,17 @@ test("Powerful keeps a saved outcome when remote transcript deletion fails", asy
   expect(calls).toContain("space:save");
   expect(getLocal()?.outcome).toBe("transcribed");
   expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
+});
+
+test("Powerful transcribes local-only audio and deletes the server copy", async () => {
+  const { calls, recording, track } = harness();
+  recording.options!.uploadAudio = false;
+  const lane = track(); lane.consent();
+  await lane.run(recording);
+  expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
+  expect(calls).not.toContain("space:audio");
+  expect(calls).toContain("space:save");
+  expect(calls).toContain("DELETE /hosted/transcripts/handle-1");
 });
 
 test("Powerful accepts webm with codec parameters and sends the base MIME type", async () => {

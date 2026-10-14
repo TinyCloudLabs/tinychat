@@ -2,10 +2,10 @@
 // no em dashes. Every blocker line says what is wrong and, where it is true, that the note is safe.
 import type { PipelineActionKind, PipelineDevice, StepKey } from "./notePipeline";
 
-export const deviceName = (device: PipelineDevice): string => (device === "mac" ? "this Mac" : "this phone");
+export const deviceName = (device: PipelineDevice): string => (device === "mac" ? "this Mac" : device === "browser" ? "this browser" : "this phone");
 
 export const STEP_LABEL = {
-  phone: (device: PipelineDevice) => (device === "mac" ? "Audio on this Mac" : "Audio on this phone"),
+  phone: (device: PipelineDevice) => (device === "mac" ? "Audio on this Mac" : device === "browser" ? "Audio in this browser" : "Audio on this phone"),
   space: "Audio in your space",
   transcript: "Transcript",
   notes: "Notes",

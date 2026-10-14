@@ -16,7 +16,6 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import {
   VoiceNotes,
-  nativePlatform,
   nativeRecordingSource,
   type VoiceNoteRecording,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -29,6 +28,8 @@ import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNote
 import { readableError } from "@/lib/readableError";
 import { logPipeline, logPipelineError } from "@/lib/debugLog";
 import { putPendingSaveState, readPendingSaveStates } from "./pendingSaveState";
+import { captureEvents } from "@/capture/captureEvents";
+import { appPlatform } from "@/lib/platform";
 
 export const TINYCLOUD_NETWORK_FAILURE_MESSAGE =
   "Couldn't reach your TinyCloud space. This note is still on your phone — try again.";
@@ -71,6 +72,22 @@ export function messageOf(error: unknown): string {
   }
   logPipelineError("voice note", error);
   return message;
+}
+
+/** Explicitly put an older local-only recording in the space; changing the device default does not call this. */
+export async function uploadLocalVoiceNote(tcw: TinyCloudWeb, id: string): Promise<void> {
+  if (savesInFlight.has(id)) throw new Error("This note is already being saved");
+  const recording = (await VoiceNotes.listPending()).recordings.find((note) => note.id === id);
+  if (!recording || recording.owner !== tcw.did) throw new Error("Audio is not on this device");
+  savesInFlight.add(id);
+  try {
+    const result = await saveVoiceNote(tcw, recording, nativeRecordingSource(recording), appPlatform(), {}, true);
+    if (!result.ok) throw new Error(result.error.message);
+    captureEvents.emit("library-changed", { source: "exo-voice-note", sourceId: id });
+  } finally {
+    savesInFlight.delete(id);
+    publishSaveIdle();
+  }
 }
 
 export function errorCode(error: unknown): string | null {
@@ -336,7 +353,7 @@ export async function saveRecording(
   savesInFlight.add(recording.id);
   try {
     const native = nativeRecordingSource(recording);
-    const saved = await saveVoiceNote(tcw, recording, native, nativePlatform(), { onProgress,
+    const saved = await saveVoiceNote(tcw, recording, native, appPlatform(), { onProgress,
       onRowCreated: async (rowId) => { await recordRowId(tcw, recording, ctx, rowId, checkActive); onRowCreated?.(); },
       checkpoint: checkActive });
     if (!saved.ok) return isDiscarded(recording.id)
@@ -429,7 +446,7 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
       checkActive();
       return source.readPart(offset, length);
     } };
-    const saved = await saveVoiceNote(tcw, recording, checkedSource, nativePlatform(), {
+    const saved = await saveVoiceNote(tcw, recording, checkedSource, appPlatform(), {
       ...audioOptions,
       onRowCreated: async (rowId) => { await recordRowId(tcw, recording, ctx, rowId, checkActive); audioOptions.onRowCreated?.(); },
       onUploadStart: (total) => {

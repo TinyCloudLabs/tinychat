@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
 import { LibraryListView } from "../library/LibraryListView";
-import { LibraryRow, type LibraryItem } from "../library/LibraryRow";
+import { LibraryRow, libraryRowBadge, type LibraryItem } from "../library/LibraryRow";
 import { withOnPhone } from "../library/onPhone";
 import type { InProgressRowsViewProps } from "../InProgressRows";
 import type { RecorderCaptureIssue } from "../recorder/recorderReducer";
@@ -348,6 +348,15 @@ describe("the scan failure", () => {
 });
 
 describe("LibraryRow", () => {
+  test("a local-only row names the recording device", () => {
+    expect(libraryRowBadge(note(1, { metadata: { audio_stored: 0, audio_device_platform: "ios" } }))).toBe("Audio is on your iPhone");
+    expect(libraryRowBadge(note(1, { metadata: { audio_stored: 0, audio_device_platform: "ios" }, hasLocalAudio: true })))
+      .toBe("Audio stays on this phone");
+    expect(libraryRowBadge(note(1, { metadata: { audio_stored: 0, audio_device_platform: "tauri" }, hasLocalAudio: true })))
+      .toBe("Audio stays on this Mac");
+    expect(libraryRowBadge(note(1, { metadata: { audio_stored: 0, audio_device_platform: "web" }, hasLocalAudio: true })))
+      .toBe("Audio stays on this browser");
+  });
   const row = (provider: boolean) =>
     renderToStaticMarkup(
       <MemoryRouter>

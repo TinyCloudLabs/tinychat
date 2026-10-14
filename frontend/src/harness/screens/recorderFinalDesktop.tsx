@@ -222,7 +222,6 @@ function macWhisper(model: "ready" | "none", systemAudio = false): HarnessScreen
       },
       systemAudio: { get: async () => systemAudio, set: async () => {} },
       systemAudioConsent: { get: async () => true, set: async () => {} },
-      autoSaveToSpace: { get: async () => true, set: async () => {} },
     } as unknown as DesktopCaptureExtras);
     return null;
   };

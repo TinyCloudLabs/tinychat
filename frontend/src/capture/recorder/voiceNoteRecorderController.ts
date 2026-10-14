@@ -33,7 +33,7 @@ import { isOnDeviceReady } from "@/lib/voiceNotes/onDeviceStt";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { setQuarantineAccount } from "@/lib/voiceNotes/quarantine";
 import { ensureAppleSpeechAssets, ensureOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
-import { effectiveCaptureOptions, readTranscriberPreference,
+import { effectiveCaptureOptions, readTranscriberPreference, readUploadAudioPreference,
   setDefaultIdentifySpeakers, setDefaultTranscriber, settleDefaults, subscribeTranscriberPreference, writeAccountDefaults,
   } from "@/lib/voiceNotes/transcriberPreference";
 import {
@@ -891,7 +891,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       try {
         // The recording starts from the engine's default: wait for any default write in flight, and refuse to start on one that could not be put right.
         await settleDefaults();
+        if (captureEngineKind() === "web" && typeof navigator !== "undefined")
+          void navigator.storage?.persist?.().catch(() => undefined);
         const started = await VoiceNotes.start({ maxDurationMs: requested,
+          uploadAudio: readUploadAudioPreference(),
           ...(!privateDiarization() ? { identifySpeakers: false } : {}) });
         const elapsedAt = Date.now();
         nativeOptions = null;

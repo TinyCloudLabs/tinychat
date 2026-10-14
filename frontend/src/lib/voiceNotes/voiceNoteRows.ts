@@ -309,7 +309,22 @@ export async function patchVoiceNoteAudio(tcw: TinyCloudWeb, recording: VoiceNot
   checkpoint();
   await execute(tcw, `UPDATE connector_meeting SET metadata = json_patch(COALESCE(metadata,'{}'), ?), updated_at = ?
     WHERE id = ? AND source = 'exo-voice-note'`, [JSON.stringify({ audio_kv_key: audio.base, audio_format: "parts-v1",
-    audio_mime_type: audio.mimeType, audio_bytes: audio.size, audio_parts: audio.parts, audio: { stored: true, base: audio.base },
+    audio_mime_type: audio.mimeType, audio_bytes: audio.size, audio_parts: audio.parts,
+    audio: { stored: true, base: audio.base, reason: null, device: null },
+    capture: captureMetadata(recording, platform),
+  }), new Date().toISOString(), row.id], checkpoint);
+  return row;
+}
+
+/** Publish capture facts without putting a byte of the recording in the space. */
+export async function patchVoiceNoteLocalOnly(tcw: TinyCloudWeb, recording: VoiceNoteRecording, platform: string,
+  checkpoint: () => void = () => undefined): Promise<VoiceNoteRow> {
+  const row = await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
+  if (!row) throw new Error("Voice note row is missing");
+  checkpoint();
+  await execute(tcw, `UPDATE connector_meeting SET metadata = json_patch(COALESCE(metadata,'{}'), ?), updated_at = ?
+    WHERE id = ? AND source = 'exo-voice-note'`, [JSON.stringify({
+    audio: { stored: false, reason: "local_only", device: { platform } },
     capture: captureMetadata(recording, platform),
   }), new Date().toISOString(), row.id], checkpoint);
   return row;

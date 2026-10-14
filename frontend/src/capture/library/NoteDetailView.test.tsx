@@ -55,6 +55,14 @@ function render(patch: Partial<NoteDetailViewProps> = {}) {
 }
 
 describe("NoteDetailView", () => {
+  test("another device names the holding device and offers no broken player or Transcribe button", () => {
+    const html = render({ audio: null, transcript: { status: "absent" }, transcription: transcription(),
+      metadata: { status: "ok", metadata: { capture: { platform: "ios" }, audio: { stored: false, reason: "local_only", device: { platform: "ios" } } } } });
+    expect(html).toContain("Audio is on your iPhone");
+    expect(html).toContain("Transcribe on your iPhone");
+    expect(html).not.toContain('data-testid="transcribe-button"');
+    expect(html).not.toContain("meeting-audio-player");
+  });
   test("a note only on this phone opens from its own audio, titled by its time, with nothing to transcribe or explain", () => {
     const onPhone: LibraryItem = { ...VOICE, id: "on-phone:rec-1", title: null, onPhone: true };
     const html = render({ item: onPhone, metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" }, transcription: undefined });

@@ -7,6 +7,9 @@ public enum SidecarFactory {
                           lastHeartbeatAt: Int64?, noSignalMs: Int64 = 0,
                           firstAudioAt: Int64? = nil, captureStoppedAt: Int64? = nil) -> [String: Any] {
         let silenced = spans.filter { $0.kind == "silenced" }
+        var captureOptions: [String: Any] = ["transcriber": session.options.transcriber,
+                                             "identifySpeakers": session.options.identifySpeakers]
+        if let uploadAudio = session.options.uploadAudio { captureOptions["uploadAudio"] = uploadAudio }
         return [
             "id": session.id, "startedAt": session.startedAt, "durationMs": durationMs,
             "mimeType": "audio/mp4", "sizeBytes": 0, "silencedMs": silenced.reduce(0) { $0 + $1.audioMs },
@@ -24,8 +27,7 @@ public enum SidecarFactory {
             "legacyImport": false, "ownerUnknown": false,
             "source": session.source, "owner": session.owner as Any? ?? NSNull(),
             "transitionGen": session.transitionGen,
-            "options": ["transcriber": session.options.transcriber,
-                        "identifySpeakers": session.options.identifySpeakers],
+            "options": captureOptions,
             "input": input as Any? ?? NSNull(), "sampleRate": session.rate, "bitrate": session.bitrate,
             "ledger": [
                 "spaceId": NSNull(),

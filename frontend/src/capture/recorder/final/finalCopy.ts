@@ -110,9 +110,9 @@ export const FINAL_COPY = {
     powerfulName: MODE_NAMES.powerful,
     noTranscript: "no transcript",
     skipCaption: {
-      phone: "Just the recording, kept on this phone.",
-      desktop: "Just the recording, saved to your space.",
-      web: "Just the recording, saved to your space.",
+      phone: "Just the recording. Audio follows your Upload audio to TinyCloud setting.",
+      desktop: "Just the recording. Audio follows your Upload audio to TinyCloud setting.",
+      web: "Just the recording. Audio follows your Upload audio to TinyCloud setting.",
     },
     skipExplanation:
       "Only the audio is saved. Transcribe it later if you like.",

@@ -14,7 +14,7 @@ import {
   percentText,
 } from "./notePipelineCopy";
 
-export type PipelineDevice = "phone" | "mac";
+export type PipelineDevice = "phone" | "mac" | "browser";
 export type PipelineRoute = "off" | "on-device" | "private-cloud";
 export type StepKey = "phone" | "space" | "transcript" | "notes";
 export type StepState = "done" | "active" | "waiting" | "blocked" | "failed" | "upcoming" | "skipped";
@@ -113,7 +113,7 @@ export interface NotePipelineInput {
   online: boolean;
   /** `readError`: the list of recordings that failed to save could not be read (the read's own error); a quarantined session could be missing. */
   capture: { finalizing: boolean; issue: PipelineCaptureIssue | null; readError?: string | null };
-  space: { saved: boolean; pending: PipelinePending | null; lane: PipelineSpaceLane };
+  space: { saved: boolean; localOnly?: boolean; pending: PipelinePending | null; lane: PipelineSpaceLane };
   transcript: {
     /** The space row already has a transcript outcome. */
     inSpace: "transcribed" | "no_speech" | null;
@@ -219,7 +219,7 @@ function phoneStep(input: NotePipelineInput): Result {
 }
 
 function spaceStep(input: NotePipelineInput): Result {
-  if (input.space.saved) return { state: "done" };
+  if (input.space.saved) return input.space.localOnly ? { state: "done", caption: input.device === "browser" ? "Audio stays in this browser" : `Audio stays on this ${input.device === "mac" ? "Mac" : input.device}` } : { state: "done" };
   const { device, online } = input;
   const pending = input.space.pending;
   if (pending?.held !== undefined) {
@@ -401,7 +401,7 @@ export function notePipeline(input: NotePipelineInput): NotePipeline {
 
   const results: [StepKey, string, Result][] = [
     ["phone", STEP_LABEL.phone(input.device), phone],
-    ["space", STEP_LABEL.space, space],
+    ["space", input.space.localOnly ? "Record in your TinyCloud space" : STEP_LABEL.space, space],
     ["transcript", STEP_LABEL.transcript, transcript],
     ["notes", STEP_LABEL.notes, notes],
   ];

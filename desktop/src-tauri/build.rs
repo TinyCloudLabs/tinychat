@@ -75,8 +75,6 @@ fn main() {
             "recorder_system_audio_set",
             "recorder_system_audio_consent_get",
             "recorder_system_audio_consent_set",
-            "recorder_auto_save_to_space_get",
-            "recorder_auto_save_to_space_set",
         ]),
     ))
     .expect("failed to run tauri-build");

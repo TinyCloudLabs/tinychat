@@ -153,7 +153,8 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
         const defaults = await store.getCaptureDefaults();
         session = await store.beginSession({ id: native.id, startedAt: native.startedAt ?? now(), source: "in_app",
           owner: null, transitionGen: defaults.transitionGen,
-          options: { transcriber: capabilities.desktopWhisper ? "on-device" : "off", identifySpeakers: false }, mimeType: "audio/mpeg",
+          options: { transcriber: capabilities.desktopWhisper ? "on-device" : "off", identifySpeakers: false,
+            uploadAudio: defaults.uploadAudio ?? false }, mimeType: "audio/mpeg",
           input: null, maxDurationMs: native.maxDurationMs });
       }
       const spans = mergeSpans(session.spans, native.spans);
@@ -484,6 +485,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
             transcriber,
             identifySpeakers: signedIn && (transcriber === "private-cloud" || transcriber === "assemblyai")
               && (startOptions?.identifySpeakers ?? defaults.identifySpeakers),
+            uploadAudio: startOptions?.uploadAudio ?? false,
           };
           id = newId();
           const releaseSession = await store.locks.hold(sessionLock(id));

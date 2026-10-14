@@ -56,7 +56,7 @@ import {
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
 import type { LocalTranscript } from "./nativeVoiceNotes";
 import { readLegacyTranscriptWinner, readTranscriptCommit, legacyTranscriptMetadata, type TranscriptCommit } from "./voiceNoteCommits";
-import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio,
+import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio, patchVoiceNoteLocalOnly,
   patchVoiceNoteMarkdown, patchVoiceNoteTranscriptionFailure as patchTranscriptionFailureRow, resolveVoiceNoteRow } from "./voiceNoteRows";
 import type { VoiceNoteRow, VoiceNoteTranscriptionStatsMetadata } from "./voiceNoteRows";
 import { runOnSpaceLane } from "../spaceWriteLane";
@@ -391,6 +391,7 @@ export async function saveVoiceNote(
   source: VoiceNoteAudioSource,
   platform: string,
   opts: StoreAudioOptions = {},
+  uploadAudio = recording.options?.uploadAudio !== false,
 ): Promise<StoreResult<UpsertMeetingOutcome & { noteSyncError?: NoteSyncErrorCode }>> {
   logPipeline("save", recording.id, "start");
   try {
@@ -410,15 +411,30 @@ export async function saveVoiceNote(
     // deterministic id with ON CONFLICT DO NOTHING; parts use deterministic
     // per-note keys and the manifest is written last. A retry therefore adopts
     // complete existing parts and cannot publish a partial file as complete.
-    // These text writes depend on the row, but neither depends on the audio
-    // manifest. Start them before the bulk transfer and collect their result.
+    // PRIVACY INVARIANT: local-only early return MUST precede any audio upload.
+    // When uploadAudio is false, no audio parts or manifest reach TinyCloud KV.
+    const emptyKey = transcriptKvKey(VOICE_NOTE_SOURCE, recording.id);
+    const empty = await runOnSpaceLane((signal) => { opts.checkpoint?.(); return tcw.kv.put(emptyKey, "[]",
+      { ifNoneMatch: "*", contentType: "application/json", signal }); }, { operation: `KV put ${emptyKey}` });
+    if (!empty.ok && !/PRECONDITION|412/i.test(`${empty.error.code} ${empty.error.message}`))
+      return { ok: false, error: { code: empty.error.code ?? "STORE_ERROR", message: empty.error.message, cause: empty.error } };
+    logPipeline("space_write", recording.id, "done", { destination: "legacy_transcript_key", bodyBytes: 2 });
+    opts.checkpoint?.();
+    if (!uploadAudio) {
+      await patchVoiceNoteLocalOnly(tcw, recording, platform, opts.checkpoint);
+      let noteSyncError: NoteSyncErrorCode | undefined;
+      try {
+        await syncRecordingNote(tcw, recording.id, opts.checkpoint, row);
+        logPipeline("space_write", recording.id, "done", { destination: "note_markdown" });
+      } catch (caught) {
+        opts.checkpoint?.();
+        noteSyncError = "sync_failed";
+        logPipelineError("[VoiceNotes] Local-only note's Markdown did not sync", caught);
+      }
+      return { ok: true, data: { id: row.id, inserted: row.inserted, createdAt: row.createdAt, noteSyncError } };
+    }
+    // With uploadAudio=true, run text writes (note sync) in parallel with audio upload.
     const text = (async () => {
-      const emptyKey = transcriptKvKey(VOICE_NOTE_SOURCE, recording.id);
-      const empty = await runOnSpaceLane((signal) => { opts.checkpoint?.(); return tcw.kv.put(emptyKey, "[]",
-        { ifNoneMatch: "*", contentType: "application/json", signal }); }, { operation: `KV put ${emptyKey}` });
-      if (!empty.ok && !/PRECONDITION|412/i.test(`${empty.error.code} ${empty.error.message}`))
-        throw Object.assign(new Error(empty.error.message), { code: empty.error.code, cause: empty.error });
-      logPipeline("space_write", recording.id, "done", { destination: "legacy_transcript_key", bodyBytes: 2 });
       let noteSyncError: NoteSyncErrorCode | undefined;
       try {
         await syncRecordingNote(tcw, recording.id, opts.checkpoint, row);

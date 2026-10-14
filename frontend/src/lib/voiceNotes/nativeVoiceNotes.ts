@@ -28,7 +28,7 @@ export type MicStateReason = "os_silenced" | "no_signal" | "input_muted" | "call
 
 export type TranscriberId = "off" | "on-device" | "private-cloud" | "assemblyai";
 export type CaptureSource = "in_app" | "quick_action" | "app_shortcut" | "intent" | "control" | "tile" | "widget" | "notification";
-export interface CaptureOptions { transcriber: TranscriberId; identifySpeakers: boolean }
+export interface CaptureOptions { transcriber: TranscriberId; identifySpeakers: boolean; uploadAudio?: boolean }
 export interface CaptureDefaults extends CaptureOptions { accountDid: string | null; transitionGen: number }
 export type AccountStatus = "signed_in" | "transitioning" | "signed_out";
 export interface RemoteOpReceipt {

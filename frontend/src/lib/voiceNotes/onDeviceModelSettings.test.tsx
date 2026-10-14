@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { localModelGuide } from "@/capture/recorder/final/localModelGuide";
 import { StaticRecorderProvider } from "@/capture/recorder/RecorderProvider";
 import { VoiceNotesTranscriberSettings } from "@/chat/VoiceNotesTranscriberSettings";
+import { PlatformContext } from "@/lib/platform";
 import { installDom } from "@/test/dom";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __setVoiceNotesForTests } from "./nativeVoiceNotes";
@@ -63,6 +64,21 @@ const renderSettings = () => act(async () => {
   root!.render(<StaticRecorderProvider value={{ signedIn: true }}><VoiceNotesTranscriberSettings /></StaticRecorderProvider>);
   await tick();
   await tick();
+});
+
+test("web shows the upload switch, card explanation, browser warning and InfoTip without native voice notes", async () => {
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: false });
+  await act(async () => {
+    root!.render(<PlatformContext.Provider value="web"><StaticRecorderProvider value={{ signedIn: true }}>
+      <VoiceNotesTranscriberSettings />
+    </StaticRecorderProvider></PlatformContext.Provider>);
+    await tick();
+  });
+  expect(host.querySelector<HTMLInputElement>("#upload-audio-to-tinycloud")?.checked).toBe(false);
+  expect(host.textContent).toContain("Audio stays on this browser. Transcripts and notes still sync to your TinyCloud space.");
+  expect(host.textContent).toContain("Browsers can delete it. Turn on Upload audio to keep a copy in TinyCloud.");
+  expect(host.querySelector('button[aria-label="About audio storage"]')).not.toBeNull();
 });
 
 describe("Voice notes settings start the download only from a Local choice", () => {
