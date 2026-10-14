@@ -666,7 +666,9 @@ describe("aggregate ceilings over per-session buckets", () => {
         }
       }
       expect((await realFetch(url, { method: "POST", headers: { authorization: await session(999) } })).status).toBe(429);
-      expect((await realFetch(url, { method: "POST" })).status).toBe(429);
+      // A tokenless request is in neither: only its own anonymous bucket counts it (production
+      // then 401s it in authMiddleware), so it neither spends nor is stopped by the aggregate.
+      expect((await realFetch(url, { method: "POST" })).status).toBe(201);
     });
   });
 

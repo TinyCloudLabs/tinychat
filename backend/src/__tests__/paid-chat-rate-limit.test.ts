@@ -14,6 +14,7 @@ import { _resetUsage } from "../billing/usage.js";
 import { createApiBodyParser } from "../body-parsing.js";
 import { issueSessionToken } from "@tinyboilerplate/server";
 import { applyRateLimiters, GLOBAL_LIMIT, PAID_CHAT_LIMIT, SESSION_LIMITS } from "../rate-limits.js";
+import { createAuthMiddleware } from "../middleware/auth.js";
 import { createChatRouter } from "../routes/chat.js";
 
 const SESSION_KEY = "synthetic-session-signing-key";
@@ -89,6 +90,23 @@ function productionApp() {
   const unknown = Router();
   unknown.post("/", paidChatLimiter, (_req, res) => res.json({ ok: true }));
   app.use("/api/chat-alias", unknown);
+  return app;
+}
+
+/** `productionApp` with index.ts's real `authMiddleware`, so tokenless sends are 401s. */
+function productionAppWithAuth() {
+  const app = express();
+  app.use(createApiBodyParser());
+  const { paidChatLimiter } = applyRateLimiters(app, { sessionKey: SESSION_KEY });
+  const auth = createAuthMiddleware(SESSION_KEY);
+  app.use("/api/chat", auth, createChatRouter({ paidLimiter: paidChatLimiter }));
+  const agent = Router();
+  agent.use(auth);
+  agent.post("/chat", paidChatLimiter, (_req, res) => {
+    upstreamCalls++;
+    res.json({ ok: true });
+  });
+  app.use("/api/agent", agent);
   return app;
 }
 
@@ -210,6 +228,21 @@ describe("paid chat bucket at the production mounts", () => {
         expect([path, (await post(base, path, fresh)).status]).toEqual([path, 429]);
       }
       expect(upstreamCalls).toBe(PAID_CHAT_LIMIT);
+    });
+  });
+
+  test("tokenless sends never reach upstream and do not spend the aggregate", async () => {
+    await withServer(productionAppWithAuth(), async (base) => {
+      for (let i = 0; i < PAID_CHAT_LIMIT; i++) {
+        expect((await post(base, i % 2 === 0 ? "/api/chat" : "/api/agent//chat")).status).toBe(401);
+      }
+      expect(upstreamCalls).toBe(0);
+      // The anonymous bucket is spent; the aggregate every signed-in user shares is not.
+      expect((await post(base, "/api/chat")).status).toBe(429);
+      const fresh = `Bearer ${(await issueSessionToken("0x00000000000000000000000000000000000f2e50", SESSION_KEY)).token}`;
+      const r = await post(base, "/api/chat", fresh);
+      expect(r.status).toBe(200);
+      expect(upstreamCalls).toBe(1);
     });
   });
 });

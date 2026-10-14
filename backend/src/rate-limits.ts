@@ -152,8 +152,9 @@ export const PAID_CHAT_PATHS = ["/api/chat", "/api/agent/chat"] as const;
  * Session minting (`/api/auth`: `GET /nonce`, `POST /verify`; the only routes that issue a
  * session). ALWAYS one shared bucket, whatever bearer the request carries: a signed-in caller
  * signing in a different wallet would otherwise mint sessions out of its own per-session bucket,
- * so every new key would cost nothing shared. A sign-in is a nonce plus a verify, so this bounds
- * new sessions to 600 per window across the service, far above 20-30 concurrent sign-ins.
+ * so every new key would cost nothing shared. 1200 auth requests per window across the service:
+ * about 600 complete nonce+verify sign-ins within one window (nonces live 5 minutes, so a
+ * sign-in can straddle a reset), far above 20-30 concurrent sign-ins.
  */
 export const AUTH_LIMIT = 1200;
 export const AUTH_PATHS = ["/api/auth"] as const;
@@ -361,7 +362,10 @@ export const SESSION_LIMITS: Record<Exclude<Bucket, "none" | "auth">, number> = 
  * TOP of the per-session one. Any fresh wallet can sign in (SIWE, no allowlist) and the paywall
  * defaults off, so per-session buckets alone would scale with the number of addresses. Each
  * request is charged to its own key first and then to this one constant key, so a session
- * already over its own limit is denied without spending the aggregate.
+ * already over its own limit is denied without spending the aggregate. Requests without a
+ * verified session never count here: all three routes sit behind `authMiddleware`, so they can
+ * never reach a cost, and a tokenless flood must not drain the ceiling every signed-in user
+ * shares. Draining it takes real sessions (about five at the per-session limits).
  */
 export const AGGREGATE_LIMITS: Partial<Record<Exclude<Bucket, "none" | "auth">, number>> = {
   paidChat: PAID_CHAT_LIMIT,
@@ -425,7 +429,7 @@ export function applyRateLimiters(app: Express, { sessionKey }: RateLimitOptions
       keyGenerator: () => AGGREGATE_KEY,
       standardHeaders: false,
       legacyHeaders: false,
-      ...(skip ? { skip } : {}),
+      skip: async (req) => (skip?.(req) ?? false) || !(await sessionAddress(req, sessionKey)),
     });
   const globalRoutes = new GlobalBucketRouteCounter();
   app.use((req, _res, next) => {
