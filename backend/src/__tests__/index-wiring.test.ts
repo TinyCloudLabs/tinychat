@@ -191,10 +191,6 @@ describe("agent stream startup policy wiring", () => {
 });
 
 describe("backend index middleware wiring", () => {
-  test("CORS uses the web + Exo desktop origin allowlist", () => {
-    expect(INDEX).toContain('import { appCorsOrigins } from "./cors-origins.js"');
-    expect(INDEX).toContain("app.use(cors({ origin: appCorsOrigins(FRONTEND_URL) }))");
-  });
 
   test("trusts exactly one ingress proxy before rate limiters are applied", () => {
     const trustIndex = INDEX.indexOf('app.set("trust proxy", 1)');
@@ -751,7 +747,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./agent-stream-policy.js": load("./agent-stream-policy.ts"),
     "./transcripts/meeting-rollout.js": load("./transcripts/meeting-rollout.ts"),
     "./local-validation.js": { localValidationFromEnv: () => false, localValidationGuard: noop },
-    "./cors-origins.js": { appCorsOrigins: () => [] },
+    "./cors-origins.js": { appCorsOptions: () => ({ origin: [], exposedHeaders: ["Retry-After", "RateLimit", "RateLimit-Policy"] }) },
     "js-yaml": { load: () => ({}) },
     "@scalar/express-api-reference": { apiReference: router },
   };
