@@ -137,7 +137,7 @@ describe("a note saved by reconcileAll is handed to the transcriber", () => {
 
   test("a Local note stays private without upload approval; a consented Local note is not sent to the cloud", async () => {
     const s = await setup("private-cloud");
-    await s.fake.plugin.start();
+    await s.fake.plugin.start({ uploadAudio: false });
     const signedOut = await s.fake.plugin.stop();
     expect(signedOut.owner).toBeNull();
     const cloud = await s.recordFor(s.tcw.did);

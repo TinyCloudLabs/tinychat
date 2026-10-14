@@ -1408,7 +1408,8 @@ test("a user-choice claimed legacy note uploads once and keeps its owner", async
   __setVoiceNotesForTests(fake.plugin, { available: true });
   try {
     const legacy = { id: "chosen-legacy", startedAt: 1, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4,
-      silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 1 as const, legacyImport: true };
+      silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 1 as const, legacyImport: true,
+      options: { transcriber: "on-device" as const, identifySpeakers: false, uploadAudio: true } };
     fake.controls.commitLegacy(legacy);
     await fake.plugin.claim({ id: legacy.id, did: tcw.did, evidence: "user_choice" });
     const owned = (await fake.plugin.listPending()).recordings[0]!;

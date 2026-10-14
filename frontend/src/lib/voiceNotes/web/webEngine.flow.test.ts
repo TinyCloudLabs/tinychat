@@ -138,7 +138,7 @@ async function bootWeb(source: Rig) {
 }
 
 async function signIn(did: string, transitionGen: number) {
-  await VoiceNotes.setCaptureDefaults({ accountDid: did, transitionGen, transcriber: "private-cloud", identifySpeakers: false });
+  await VoiceNotes.setCaptureDefaults({ accountDid: did, transitionGen, transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true });
 }
 
 describe("registration", () => {
@@ -276,7 +276,7 @@ const undecodable = async (): Promise<{ durationMs: number }> => { throw new Dec
 describe("boot recovery", () => {
   test("a recording whose tab died is committed before the engine is handed back, and drains through T18", async () => {
     const first = await createRig();
-    await first.engine.plugin.setCaptureDefaults({ accountDid: A, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false });
+    await first.engine.plugin.setCaptureDefaults({ accountDid: A, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true });
     const { id } = await first.engine.plugin.start();
     await first.chunk([9, 8, 7]);
     // The tab reloads mid-recording: nothing was stopped.
@@ -298,7 +298,7 @@ describe("boot recovery", () => {
 
   test("a recording A made is never drained under B; it uploads when A is back", async () => {
     const first = await createRig();
-    await first.engine.plugin.setCaptureDefaults({ accountDid: A, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false });
+    await first.engine.plugin.setCaptureDefaults({ accountDid: A, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true });
     const { id } = await first.engine.plugin.start();
     await first.chunk([1, 2, 3]);
     rig = await first.reopen();
@@ -323,7 +323,7 @@ describe("boot recovery", () => {
 
   test("an account switch while recovery runs: recovery still completes and the note stays with its owner", async () => {
     const first = await createRig();
-    await first.engine.plugin.setCaptureDefaults({ accountDid: A, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false });
+    await first.engine.plugin.setCaptureDefaults({ accountDid: A, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true });
     const { id } = await first.engine.plugin.start();
     await first.chunk([5, 5, 5]);
     rig = await first.reopen();
@@ -344,7 +344,7 @@ describe("boot recovery", () => {
 
   test("a recording already in quarantine from an earlier run reaches the controller's recoveryFailed once", async () => {
     const first = await createRig();
-    await first.engine.plugin.setCaptureDefaults({ accountDid: A, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false });
+    await first.engine.plugin.setCaptureDefaults({ accountDid: A, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true });
     const { id } = await first.engine.plugin.start();
     await first.chunk([1, 2, 3]);
     rig = await first.reopen({ decodeCheck: undecodable });
@@ -384,7 +384,7 @@ describe("the controller receives boot recovery", () => {
   /** A recording of `owner` (null: recorded signed out) whose tab died and that this boot cannot decode. */
   async function bootWithParked(owner: string | null) {
     const first = await createRig();
-    if (owner) await first.engine.plugin.setCaptureDefaults({ accountDid: owner, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false });
+    if (owner) await first.engine.plugin.setCaptureDefaults({ accountDid: owner, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true });
     const { id } = await first.engine.plugin.start();
     await first.chunk([1, 2, 3]);
     rig = await first.reopen({ decodeCheck: undecodable });
@@ -467,7 +467,7 @@ describe("the controller receives boot recovery", () => {
 
   test("a decoder_unavailable recording that is not quarantined is announced to a later controller too", async () => {
     const first = await createRig();
-    await first.engine.plugin.setCaptureDefaults({ accountDid: A, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false });
+    await first.engine.plugin.setCaptureDefaults({ accountDid: A, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true });
     const { id } = await first.engine.plugin.start();
     await first.chunk([1, 2, 3]);
     rig = await first.reopen({ decodeCheck: async () => { throw new DecodeCheckError("resource", "no decoder"); } });
