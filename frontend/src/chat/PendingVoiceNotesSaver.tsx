@@ -170,14 +170,16 @@ export function PendingVoiceNotesSaver({
       void run();
     };
     const onOffline = () => pendingStore.setOnline(false);
-    window.addEventListener("online", onOnline);
-    window.addEventListener("offline", onOffline);
+    const windowTarget = typeof window !== "undefined" && typeof window.addEventListener === "function" ? window : undefined;
+    const documentTarget = typeof document !== "undefined" && typeof document.addEventListener === "function" ? document : undefined;
+    windowTarget?.addEventListener("online", onOnline);
+    windowTarget?.addEventListener("offline", onOffline);
     const onVisible = () => {
-      if (document.visibilityState !== "visible") return;
+      if (documentTarget?.visibilityState !== "visible") return;
       void transcriber?.check({ current: isAccountCurrent });
       void run();
     };
-    document.addEventListener("visibilitychange", onVisible);
+    documentTarget?.addEventListener("visibilitychange", onVisible);
     if (Capacitor.isNativePlatform()) {
       void import("@capacitor/app").then(({ App }) => App.addListener("appStateChange", ({ isActive }) => {
         if (isActive) {
@@ -191,9 +193,9 @@ export function PendingVoiceNotesSaver({
     }
     return () => {
       disposed = true;
-      window.removeEventListener("online", onOnline);
-      window.removeEventListener("offline", onOffline);
-      document.removeEventListener("visibilitychange", onVisible);
+      windowTarget?.removeEventListener("online", onOnline);
+      windowTarget?.removeEventListener("offline", onOffline);
+      documentTarget?.removeEventListener("visibilitychange", onVisible);
       if (appStateHandle) void appStateHandle.remove();
       unregister(); unmountAccount(); pipeline.cancelAll(); pendingStore.setAccount(null);
     };

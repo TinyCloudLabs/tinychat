@@ -1643,14 +1643,23 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     return null;
   };
 
-  /** Re-read local candidates before re-offering them; the space row reader includes the commit. */
-  const stillPendingInSpace = async (sourceId: string, requirePrivateCommit = false): Promise<boolean> => {
+  /** Re-read opted-in recovery candidates before re-offering them, including their transcript commit. */
+  const stillPendingInSpace = async (sourceId: string, requirePrivateCommit = false): Promise<boolean | null> => {
     if (!identityCurrent()) return false;
     try {
-      const result = await readVoiceNoteForTranscription(deps.tcw(), sourceId);
-      if (!identityCurrent() || !result.ok || result.data === null) return false;
+      const tcw = deps.tcw();
+      const result = await readVoiceNoteForTranscription(tcw, sourceId);
+      if (!identityCurrent()) return false;
+      if (!result.ok) return null;
+      if (result.data === null) return false;
       const note = result.data;
       if (note.transcript.status !== "pending") {
+        choices.remove(sourceId);
+        return false;
+      }
+      const commit = await readTranscriptCommit(tcw, sourceId);
+      if (!identityCurrent()) return false;
+      if (commit !== null) {
         choices.remove(sourceId);
         return false;
       }
@@ -1665,7 +1674,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       return !requirePrivateCommit || (note.captureSource === "in_app" && note.captureTranscriber === "private-cloud");
     } catch (err) {
       logPipelineError("[VoiceNotes] Could not re-check a saved Private note before recovery", err, sourceId);
-      return false;
+      return null;
     }
   };
 
@@ -1681,13 +1690,15 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           if (!identityCurrent() || !on()) return;
           const current = jobs.get(sourceId);
           if (current?.kind === "active" || current?.kind === "done" || current?.kind === "failed" || isHeld(sourceId)) continue;
-          if (!await stillPendingInSpace(sourceId)) {
+          const pendingInSpace = await stillPendingInSpace(sourceId);
+          if (pendingInSpace === false) {
             if (cloudPending.has(sourceId) && identityCurrent()) {
               try { await cloud.finish(sourceId); }
               catch (err) { logPipelineError("Cleaning up a stale private cloud job failed", err, sourceId); }
             }
             continue;
           }
+          if (pendingInSpace === null && !cloudPending.has(sourceId)) continue;
           enqueue(sourceId, undefined, false);
         }
       })();
@@ -1710,7 +1721,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         const current = jobs.get(recording.id);
         if (isHeld(recording.id) || current?.kind === "active" || current?.kind === "done" || current?.kind === "failed"
           || cloud.pendingSourceIds().includes(recording.id) || choices.has(recording.id)) continue;
-        if (!await stillPendingInSpace(recording.id, true)) continue;
+        if (await stillPendingInSpace(recording.id, true) !== true) continue;
         enqueue(recording.id, undefined, false);
       }
     })().finally(() => { strandedRecovery = null; });
