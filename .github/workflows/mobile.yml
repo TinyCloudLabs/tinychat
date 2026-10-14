@@ -122,6 +122,12 @@ jobs:
           cd mobile/ios/Packages/ExoCapture
           xcodebuild -scheme ExoCapture -destination "platform=iOS Simulator,id=$simulator_id" \
             -derivedDataPath "$RUNNER_TEMP/capture-tests" CODE_SIGNING_ALLOWED=NO test
+      - name: Test ExoStt
+        run: |
+          simulator_id=$(awk '{print $2}' "$RUNNER_TEMP/ios-smoke/device.txt")
+          cd mobile/ios/Packages/ExoStt
+          xcodebuild -scheme ExoStt -destination "platform=iOS Simulator,id=$simulator_id" \
+            -derivedDataPath "$RUNNER_TEMP/exostt-tests" CODE_SIGNING_ALLOWED=NO test
 
       - name: Install JS deps
         run: bun install --frozen-lockfile
