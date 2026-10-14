@@ -227,6 +227,7 @@ function harness(script: {
   removeFails?: boolean;
   uploadSupported?: () => Promise<boolean>;
   decode?: AudioDecoder;
+  capabilities?: () => PrivateCloudCapabilities;
   nativeTransport?: boolean;
 }) {
   const calls: string[] = [];
@@ -244,7 +245,7 @@ function harness(script: {
     bearer: () => "tok",
     capabilities: async () => {
       calls.push("capabilities");
-      return CAPS;
+      return script.capabilities?.() ?? CAPS;
     },
     // The phone never lists the account's jobs: it re-joins only the ones it remembers.
     list: async () => {
@@ -2813,3 +2814,156 @@ test("Library Transcribe uses local audio while the space upload is pending", as
     client.kv.get = originalGet;
   }
 }, 15000);
+
+describe("admission at a nonstandard advertised ceiling (real cloud, transcriber, SQLite and stores)", () => {
+  beforeEach(() => _resetConnectorSchemaMemoForTests());
+  // Waits on the transcriber's own change event, never a clock: every admission step emits one.
+  const nextChange = (t: { subscribe(listener: () => void): () => void }) => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const off = t.subscribe(() => { off(); resolve(); });
+    return promise;
+  };
+  // Until no note is active (waiting, preparing, uploading or processing).
+  const settle = async (t: ReturnType<typeof createVoiceNoteTranscriber>) => {
+    while ([...t.snapshot().jobs.values()].some((job) => job.kind === "active")) await nextChange(t);
+  };
+  // Until the note has finished: transcribed, or failed.
+  const untilFinished = async (t: ReturnType<typeof createVoiceNoteTranscriber>, id: string) => {
+    while (!["done", "failed"].includes(t.snapshot().jobs.get(id)?.kind ?? "")) await nextChange(t);
+  };
+  const untouched = (h: { creates: unknown[]; puts: unknown[] }) => {
+    expect(h.creates).toHaveLength(0);
+    expect(h.puts).toHaveLength(0);
+  };
+  // The ceiling is a fixture carried by the advertised caps; every expectation derives from it, never from a product number.
+  const ACCEPTED = 4_321.5;
+  const LOWER_ACCEPTED = 4_000.2;
+  const ADVERTISED: PrivateCloudCapabilities = { ...CAPS, accepted_max_duration_seconds: ACCEPTED, content_types: ["audio/mp4"] };
+  // Precise duration plus the client margin: the first millisecond past the ceiling, and exactly on it.
+  const OVER_MS = Math.round((ACCEPTED - PRIVATE_DURATION_MARGIN_SECONDS) * 1000) + 1;
+  const EDGE_MS = OVER_MS - 1;
+
+  /** Saved private-cloud notes on real SQLite, with the consent, choice and hold stores that a relaunch reads back. */
+  async function build(notes: [string, number][], script: Parameters<typeof harness>[0] = {}) {
+    const space = sqliteSpace();
+    for (const [id, durationMs] of notes) {
+      expect((await saveVoiceNote(space.tcw, { ...RECORDING, id, durationMs }, AUDIO, "ios")).ok).toBe(true);
+      space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata, '$.capture.version', 2,
+        '$.capture.options.transcriber', 'private-cloud', '$.capture.source', 'in_app') WHERE source_id = ?`).run(id);
+    }
+    VoiceNotes.listPending = async () => ({ recordings: [] });
+    const storage = memoryStorage();
+    const h = harness(script);
+    localStorageVoiceNoteConsentStore(DID, storage).set(true);
+    const launch = () => createVoiceNoteTranscriber({
+      cloud: h.cloud, consent: localStorageVoiceNoteConsentStore(DID, storage), tcw: () => space.tcw,
+      holds: localStorageVoiceNoteHoldStore(DID, storage), choices: localStorageVoiceNotePrivateChoiceStore(DID, storage),
+    });
+    return { h, launch, choices: localStorageVoiceNotePrivateChoiceStore(DID, storage) };
+  }
+
+  test("auto: a save past the ceiling less the margin is refused before any PTX job, and no choice is kept for it", async () => {
+    const { h, launch, choices } = await build([["rec-1", OVER_MS]], { capabilities: () => ADVERTISED });
+    const t = launch();
+    await t.check();
+    t.noteSaved({ id: "rec-1", durationMs: OVER_MS, source: "in_app", options: { transcriber: "private-cloud" } });
+    await settle(t);
+    expect(privateCloudRefusal(OVER_MS / 1000, null, privateCloudLimits(ADVERTISED)))
+      .toEqual({ kind: "duration", limitSeconds: ACCEPTED, durationSeconds: OVER_MS / 1000 });
+    untouched(h);
+    expect(t.snapshot().jobs.has("rec-1")).toBe(false);
+    expect(choices.ids()).toEqual([]);
+  });
+
+  test("auto: a note exactly at the ceiling less the margin is admitted and transcribed once", async () => {
+    const { h, launch } = await build([["rec-1", EDGE_MS]], { capabilities: () => ADVERTISED });
+    const t = launch();
+    await t.check();
+    t.noteSaved({ id: "rec-1", durationMs: EDGE_MS, source: "in_app", options: { transcriber: "private-cloud" } });
+    await untilFinished(t, "rec-1");
+    expect(h.creates).toHaveLength(1);
+    expect(t.snapshot().jobs.get("rec-1")).toEqual({ kind: "done", outcome: "transcribed" });
+  });
+
+  test("explicit (Use Private): refused at queue start with no PTX job, and the choice is kept", async () => {
+    const { h, launch, choices } = await build([["rec-1", OVER_MS]], { capabilities: () => ADVERTISED });
+    const t = launch();
+    await t.check();
+    t.transcribePrivately("rec-1");
+    await settle(t);
+    untouched(h);
+    expect(t.snapshot().jobs.has("rec-1")).toBe(false);
+    expect(choices.ids()).toEqual(["rec-1"]);
+  });
+
+  test("queue: a refused note ahead in line is dropped without blocking the next, which transcribes once", async () => {
+    const { h, launch, choices } = await build([["rec-1", OVER_MS], ["rec-2", EDGE_MS]], { capabilities: () => ADVERTISED });
+    const t = launch();
+    await t.check();
+    t.transcribePrivately("rec-1");
+    t.transcribePrivately("rec-2");
+    await untilFinished(t, "rec-2");
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+    expect(t.snapshot().jobs.has("rec-1")).toBe(false);
+    expect(t.snapshot().jobs.get("rec-2")).toEqual({ kind: "done", outcome: "transcribed" });
+    expect(choices.ids()).toEqual(["rec-1"]);
+  });
+
+  test("a fresh transcriber (relaunch) re-offers a refused choice, refuses it again, and starts no PTX job", async () => {
+    const { h, launch, choices } = await build([["rec-1", OVER_MS]], { capabilities: () => ADVERTISED });
+    const first = launch();
+    await first.check();
+    first.transcribePrivately("rec-1");
+    await settle(first);
+    expect(choices.ids()).toEqual(["rec-1"]);
+    const relaunched = launch();
+    await relaunched.check();
+    await settle(relaunched);
+    untouched(h);
+    expect(relaunched.snapshot().jobs.has("rec-1")).toBe(false);
+    expect(choices.ids()).toEqual(["rec-1"]);
+  });
+
+  test("a ceiling lowered while a note is in audio preparation is applied before create or upload; the intent is kept", async () => {
+    const released = Promise.withResolvers<void>();
+    const gate = released.promise;
+    const decode: AudioDecoder = async (bytes, sampleRate) => {
+      await gate;
+      return silentDecoder()(bytes, sampleRate);
+    };
+    let caps: PrivateCloudCapabilities = ADVERTISED;
+    const { h, launch, choices } = await build([["rec-1", 4_000_100]], { capabilities: () => caps, decode });
+    const t = launch();
+    await t.check();
+    t.transcribePrivately("rec-1");
+    // Parked in the decoder until released below.
+    expect(h.creates).toHaveLength(0);
+    caps = { ...ADVERTISED, accepted_max_duration_seconds: LOWER_ACCEPTED };
+    await t.check();
+    released.resolve();
+    await settle(t);
+    untouched(h);
+    expect(t.snapshot().jobs.has("rec-1")).toBe(false);
+    expect(choices.ids()).toEqual(["rec-1"]);
+  });
+
+  test("unknown limits block a saved note with no PTX job; once a ceiling is advertised, admission re-runs by itself and transcribes it once", async () => {
+    let caps: PrivateCloudCapabilities = { ...CAPS, max_duration_seconds: undefined };
+    const { h, launch, choices } = await build([["rec-1", EDGE_MS]], { capabilities: () => caps });
+    const t = launch();
+    await t.check();
+    t.noteSaved({ id: "rec-1", durationMs: EDGE_MS, source: "in_app", options: { transcriber: "private-cloud" } });
+    await settle(t);
+    untouched(h);
+    expect(t.snapshot().jobs.get("rec-1")).toEqual({ kind: "blocked", reason: "limits-unknown" });
+    expect(choices.ids()).toEqual(["rec-1"]);
+    caps = ADVERTISED;
+    await t.check();
+    await untilFinished(t, "rec-1");
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+    expect(t.snapshot().jobs.get("rec-1")).toEqual({ kind: "done", outcome: "transcribed" });
+    expect(choices.ids()).toEqual([]);
+  });
+});
