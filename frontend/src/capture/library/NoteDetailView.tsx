@@ -100,7 +100,7 @@ export function noteMeta(item: LibraryItem): string {
   return [
     detailWhen(item.startedAt),
     item.durationSecs !== null ? formatSpokenDuration(item.durationSecs) : null,
-    librarySourceLabel(item.source),
+    item.metadata?.capture === "pasted" ? "Pasted transcript" : librarySourceLabel(item.source),
   ]
     .filter((part): part is string => !!part)
     .join(" · ");
@@ -273,6 +273,8 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
     && hasPrivateCloudTimingProvenance(metadata?.status === "ok" ? metadata.metadata : null, props.transcriptProvenance);
   const sentences = remoteSentences.length > 0 ? remoteSentences
     : local?.outcome === "transcribed" ? localTranscriptToSave(local).sentences : [];
+  const pastedText = item.metadata?.capture === "pasted" && metadata?.status === "ok"
+    && typeof metadata.metadata.transcript_text === "string" ? metadata.metadata.transcript_text : null;
   const savedGaps = metadata?.status === "ok" ? metadata.metadata.gaps : null;
   const gaps = Array.isArray(savedGaps) ? savedGaps.filter((gap): gap is TranscriptGap =>
     gap !== null && typeof gap === "object" && Number.isFinite(gap.start) && Number.isFinite(gap.end)
@@ -330,7 +332,8 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {props.copyState === "copied" ? "Transcript copied to clipboard" : ""}
       </span>
-      {sentences.length > 0 || gaps.length > 0 ? (
+      {pastedText !== null ? <p className="max-w-[68ch] whitespace-pre-wrap break-words text-body select-text">{pastedText}</p>
+      : sentences.length > 0 || gaps.length > 0 ? (
         <div className="flex max-w-[68ch] flex-col gap-4 [-webkit-touch-callout:default] select-text">
           {spaceReadFailed && <div className="flex flex-wrap items-center gap-2" data-testid="note-transcript-local-space-error">
             <p className="text-callout text-muted-foreground">On this device · Couldn’t check your space.</p>
@@ -442,7 +445,7 @@ function NoteDetailViewContent(props: NoteDetailViewProps) {
     );
   }
 
-  if (props.savedNote && item.source === VOICE_NOTE_SOURCE) {
+  if (props.savedNote && item.source === VOICE_NOTE_SOURCE && item.metadata?.capture !== "pasted") {
     return (
       <LazySavedNote
         // The recording, so the sheet stays open when its stand-in becomes the space's row.

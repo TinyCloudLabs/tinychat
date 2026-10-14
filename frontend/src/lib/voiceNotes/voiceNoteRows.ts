@@ -269,6 +269,23 @@ export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNote
   return { ...row, inserted: true };
 }
 
+/** A transcript-only note uses the same source_id, row, and commit index as a recorded note. */
+export async function createPastedTranscriptRow(tcw: TinyCloudWeb, sourceId: string, title: string, startedAt: string): Promise<void> {
+  const identity = await ensureVoiceNoteIdentity(tcw);
+  if (identity.status !== "established") throw Object.assign(new Error(identity.reason ?? identity.status), { code: identity.status, cause: identity.cause });
+  const now = new Date().toISOString();
+  await execute(tcw, `INSERT INTO connector_meeting
+    (id, source, source_id, title, started_at, duration_secs, organizer_email, participants, summary_overview,
+     summary_action_items, keywords, meeting_type, metadata, created_at, updated_at)
+    VALUES (?, 'exo-voice-note', ?, ?, ?, NULL, NULL, '[]', NULL, NULL, NULL, NULL, ?, ?, ?)`,
+  [`vn-${sourceId}`, sourceId, title, startedAt,
+    JSON.stringify({ source: "pasted", capture: "pasted", transcription_outcome: "pending" }), now, now]);
+  const key = transcriptKvKey("exo-voice-note", sourceId);
+  const empty = await runOnSpaceLane((signal) => tcw.kv.put(key, "[]", { contentType: "application/json", signal }),
+    { operation: `KV put ${key}`, payloadBytes: 2 });
+  if (!empty.ok) throw errorOf(empty);
+}
+
 export interface VoiceNoteTranscriptionStatsMetadata {
   transcription_audio_seconds?: number;
   transcription_voiced_seconds?: number;

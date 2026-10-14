@@ -271,7 +271,7 @@ export function useLibrary(
 
   // A voice note's first moment titles its row, ahead of its transcript.
   const voiceSourceIds = useMemo(
-    () => list.items.filter((entry) => entry.source === VOICE_NOTE_SOURCE).map((entry) => entry.sourceId)
+    () => list.items.filter((entry) => entry.source === VOICE_NOTE_SOURCE && entry.metadata?.capture !== "pasted").map((entry) => entry.sourceId)
       .concat((onPhoneNotes ?? []).map((note) => note.id)),
     [list.items, onPhoneNotes],
   );
@@ -282,7 +282,7 @@ export function useLibrary(
       [...currentHandoff.lingering.values()].map((entry) => entry.note).filter((note) => !wasDiscarded(note.id)),
     );
     return merged.map((entry) => {
-      if (entry.source !== VOICE_NOTE_SOURCE) return entry;
+      if (entry.source !== VOICE_NOTE_SOURCE || entry.metadata?.capture === "pasted") return entry;
       const snippet = moments.get(entry.sourceId) ?? noteSnippet(list.previews.get(entry.sourceId));
       return snippet === null ? entry : { ...entry, snippet };
     });
