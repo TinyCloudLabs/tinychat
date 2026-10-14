@@ -405,3 +405,73 @@ test("a PTX 429 without a readable wait uses the slow polling interval", async (
   await poller.pollTranscript(ID, () => {});
   expect(sleeps[0]).toBeGreaterThanOrEqual(30_000);
 });
+test("malformed PTX throttle headers use the slow floor on every status retry", async () => {
+  const cases = [
+    { "Retry-After": "" },
+    { "Retry-After": "-1" },
+    { "Retry-After": "12garbage" },
+    { "Retry-After": new Date(0).toUTCString() },
+    { RateLimit: "limit=600, remaining=0, reset=12garbage" },
+    { RateLimit: "limit=600, remaining=0, reset=-1" },
+  ];
+  for (const headers of cases) {
+    let now = 0;
+    let reads = 0;
+    const requestTimes: number[] = [];
+    const sleeps: number[] = [];
+    const { client } = api((url) => {
+      if (url.endsWith("/result")) return json(200, { status: "completed", segments: [], text: "" });
+      requestTimes.push(now);
+      return ++reads <= 100
+        ? json(429, { error: { code: "service_busy" } }, headers)
+        : json(200, { id: ID, status: "completed" });
+    });
+    const poller = createCloudJobPoller(client, {
+      clock: {
+        now: () => now,
+        sleep: async (ms) => { sleeps.push(ms); now += ms; },
+        random: () => 0,
+      },
+      connectionLost: () => new Error("connection lost"),
+    });
+    await poller.pollTranscript(ID, () => {});
+    expect(requestTimes).toHaveLength(101);
+    expect(requestTimes.slice(1).every((at, index) => at - requestTimes[index]! >= 30_000)).toBe(true);
+    expect(sleeps).toHaveLength(100);
+  }
+});
+
+test("abort during status or result 503 backoff settles promptly without another request", async () => {
+  for (const failingOperation of ["status", "result"] as const) {
+    const controller = new AbortController();
+    let requests = 0;
+    let releaseSleep: (() => void) | undefined;
+    const poller = createCloudJobPoller({
+      async get(id: string) {
+        requests++;
+        if (failingOperation === "status") throw new PrivateCloudError("service_unavailable", "503");
+        return { id, status: "completed" };
+      },
+      async result() {
+        requests++;
+        throw new PrivateCloudError("service_unavailable", "503");
+      },
+    } as never, {
+      clock: { now: () => 0, sleep: async () => await new Promise<void>((resolve) => { releaseSleep = resolve; }), random: () => 0.5 },
+      connectionLost: () => new Error("connection lost"),
+    });
+    const pending = poller.pollTranscript(ID, () => {}, controller.signal).catch((error) => error);
+    for (let i = 0; i < 5 && releaseSleep === undefined; i++) await Promise.resolve();
+    expect(releaseSleep).toBeDefined();
+    controller.abort();
+    const outcome = await Promise.race([
+      pending.then(() => "settled"),
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 20)),
+    ]);
+    releaseSleep?.();
+    const error = await pending as PrivateCloudError;
+    expect(outcome).toBe("settled");
+    expect(error.code).toBe("cancelled");
+    expect(requests).toBe(failingOperation === "status" ? 1 : 2);
+  }
+});

@@ -25,6 +25,7 @@ import {
   buildPtxUploadOrigin,
   interpretUploadResponse,
   parsePtxUploadOrigin,
+  parseRateLimitWaitSeconds,
   PrivateCloudError,
   privateCloudJobClient,
   ptxUploadUrl,
@@ -686,6 +687,32 @@ describe("createVoiceNoteCloud.transcribe", () => {
         }));
         expect(maxRequests(requests)).toBeLessThanOrEqual(80);
       }
+    }
+  });
+
+  test("malformed PTX status throttle values keep each voice-note retry on the slow floor", async () => {
+    for (const headers of [
+      { "Retry-After": "" },
+      { "Retry-After": "-1" },
+      { "Retry-After": "12garbage" },
+      { "Retry-After": new Date(0).toUTCString() },
+      { RateLimit: "limit=600, remaining=0, reset=12garbage" },
+    ]) {
+      let now = 0;
+      const requests: number[] = [];
+      const waitSeconds = parseRateLimitWaitSeconds(new Headers(headers));
+      const limited = Object.assign(new PrivateCloudError("service_busy", "429", {
+        retryAfterSeconds: waitSeconds,
+        statusCode: 429,
+      }), { statusCode: 429 });
+      const h = harness({
+        clock: { now: () => now, sleep: async (ms) => { now += ms; }, random: () => 0 },
+        jobs: [...Array.from({ length: 100 }, () => limited), job("completed")],
+        onStatusRequest: (at) => requests.push(at),
+      });
+      await run(h);
+      expect(requests).toHaveLength(101);
+      expect(requests.slice(1).every((at, index) => at - requests[index]! >= 30_000)).toBe(true);
     }
   });
 

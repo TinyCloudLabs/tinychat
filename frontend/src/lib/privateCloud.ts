@@ -241,23 +241,30 @@ export interface PrivateCloudApi {
 const REQUEST_HEADER_NAME = "X-Requested-With";
 const REQUEST_HEADER_VALUE = "XMLHttpRequest";
 
-/** Parse `Retry-After` (seconds or HTTP date) and the draft-7 reset parameter. */
+const HTTP_DATE_FORMATS = [
+  /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/,
+  /^(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), \d{2}-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{2} \d{2}:\d{2}:\d{2} GMT$/,
+  /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) {1,2}\d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/,
+] as const;
+
+/** Parse only complete Retry-After values and complete draft-7 reset tokens. */
 export function parseRateLimitWaitSeconds(headers: Headers, now = Date.now()): number | null {
   const waits: number[] = [];
   const retryAfter = headers.get("Retry-After");
   if (retryAfter !== null) {
-    const seconds = Number(retryAfter);
-    if (Number.isFinite(seconds) && seconds >= 0) waits.push(seconds);
-    else {
+    if (/^\d+$/.test(retryAfter)) {
+      const seconds = Number(retryAfter);
+      if (Number.isFinite(seconds)) waits.push(seconds);
+    } else if (HTTP_DATE_FORMATS.some((format) => format.test(retryAfter))) {
       const date = Date.parse(retryAfter);
-      if (Number.isFinite(date)) waits.push(Math.max(0, (date - now) / 1000));
+      if (Number.isFinite(date) && date > now) waits.push((date - now) / 1000);
     }
   }
   const rateLimit = headers.get("RateLimit");
-  const reset = rateLimit?.match(/(?:^|[,;\s])(?:reset|t)\s*=\s*"?(\d+(?:\.\d+)?)"?/i);
+  const reset = rateLimit?.match(/(?:^|[,;\s])(?:reset|t)\s*=\s*"?(\d+)"?(?=$|[,;\s])/i);
   if (reset !== undefined && reset !== null) {
     const seconds = Number(reset[1]);
-    if (Number.isFinite(seconds) && seconds >= 0) waits.push(seconds);
+    if (Number.isFinite(seconds)) waits.push(seconds);
   }
   return waits.length === 0 ? null : Math.max(...waits);
 }
@@ -814,7 +821,10 @@ export function createCloudJobPoller(
   const polling: CloudPolling = { ...DEFAULT_CLOUD_POLLING, ...options.polling };
   const sleep = (baseMs: number) => clock.sleep(Math.round(baseMs * (0.8 + 0.4 * clock.random())));
 
-  const transientTolerance = (throttledTime: () => number = () => 0) => {
+  const transientTolerance = (
+    throttledTime: () => number = () => 0,
+    waitFor: (ms: number) => Promise<void> = (ms) => sleep(ms),
+  ) => {
     let failingSince: number | null = null;
     let throttledAtFailure = 0;
     return {
@@ -836,7 +846,7 @@ export function createCloudJobPoller(
         }
         const failingFor = Math.max(0, now - failingSince - (throttledTime() - throttledAtFailure));
         if (failingFor >= polling.giveUpAfterMs) throw options.connectionLost();
-        await sleep(failingFor >= polling.slowAfterMs ? polling.slowIntervalMs : polling.intervalMs);
+        await waitFor(failingFor >= polling.slowAfterMs ? polling.slowIntervalMs : polling.intervalMs);
       },
     };
   };
@@ -883,6 +893,8 @@ export function createCloudJobPoller(
           removeAbort();
         }
       };
+      const waitWithSignal = (baseMs: number) =>
+        sleepWithSignal(Math.round(baseMs * (0.8 + 0.4 * clock.random())));
       const startedAt = clock.now();
       let durationSeconds = options.durationSeconds ?? null;
       let throttledMs = 0;
@@ -895,8 +907,8 @@ export function createCloudJobPoller(
           throttledMs += Math.max(0, clock.now() - before);
         }
       };
-      const statusTolerance = transientTolerance(throttledTime);
-      const resultTolerance = transientTolerance(throttledTime);
+      const statusTolerance = transientTolerance(throttledTime, waitWithSignal);
+      const resultTolerance = transientTolerance(throttledTime, waitWithSignal);
       for (;;) {
         if (signal?.aborted) throw cancelled();
         let job: PrivateCloudJob;

@@ -164,6 +164,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       persist(id, { handle });
       const transcript = await pollAssemblyAiTranscript(client, handle, {
         clock: services.clock,
+        durationSeconds: recording.durationMs / 1000,
         guard,
         onStatus: (status) => {
           if (status === "queued") state(id, { kind: "queued", position: null });

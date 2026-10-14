@@ -311,6 +311,35 @@ test("hosted 429 without a readable rate-limit header falls back to the slow int
   });
   expect(sleeps[0]).toBeGreaterThanOrEqual(30_000);
 });
+test("malformed hosted throttle headers keep each transcript retry on the slow floor", async () => {
+  const cases = [
+    { "Retry-After": "" },
+    { "Retry-After": "-1" },
+    { "Retry-After": "12garbage" },
+    { "Retry-After": new Date(0).toUTCString() },
+    { RateLimit: "limit=600, remaining=0, reset=12garbage" },
+  ];
+  for (const headers of cases) {
+    let now = 0;
+    let reads = 0;
+    const requestTimes: number[] = [];
+    const client = createHostedAssemblyAiClient({
+      backendUrl: "https://api.example",
+      sessionStore: { getToken: () => "tok", isExpired: () => false },
+      fetchImpl: (async () => {
+        requestTimes.push(now);
+        return ++reads <= 100
+          ? new Response(JSON.stringify({ error: "assemblyai_busy" }), { status: 429, headers })
+          : json(200, { id: "h1", status: "completed" });
+      }) as typeof fetch,
+    });
+    await pollAssemblyAiTranscript(client, "h1", {
+      clock: { now: () => now, sleep: async (ms) => { now += ms; }, random: () => 0 },
+    });
+    expect(requestTimes).toHaveLength(101);
+    expect(requestTimes.slice(1).every((at, index) => at - requestTimes[index]! >= 30_000)).toBe(true);
+  }
+});
 
 test("more than ten minutes of hosted 429s do not become a connection failure", async () => {
   let now = 0;
