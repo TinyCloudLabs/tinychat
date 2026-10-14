@@ -795,7 +795,11 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
         const key = `${receipt.id}:${receipt.opId}`;
         const existing = await get<ReceiptRow>(tx, STORES.receipts, key);
         if (existing && !sameReceipt(existing.receipt, receipt)) throw failure("receipt_conflict");
-        await put(tx, STORES.receipts, { key, receipt: clone(receipt), result: existing?.result ?? null } satisfies ReceiptRow);
+        // Re-beginning a receipt keeps its retirement marker. A retired own_upload is never read again, so re-beginning
+        // it must not re-enqueue its lookup or pin the note with a ledger entry.
+        await put(tx, STORES.receipts, { key, receipt: clone(receipt), result: existing?.result ?? null,
+          ...(existing?.retired ? { retired: true as const } : {}) } satisfies ReceiptRow);
+        if (existing?.retired) return;
         const row = await capture(tx);
         const note = await get<VoiceNoteRecording>(tx, STORES.notes, receipt.id);
         const tombstoned = await get(tx, STORES.tombstones, receipt.id);
@@ -825,6 +829,10 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
         const tombstoned = !!(await get(tx, STORES.tombstones, id));
         const handle = result.handle ?? result.jobId ?? result.uploadId ?? result.uploadUrl ?? null;
         const previous = row.result;
+        // Only the first created result of an own_create retires the own_uploads that exist then. An expiry rewrite
+        // of that same create keeps outcome "created" and must not retire receipts begun after it.
+        const completesOwnCreate = receipt.kind === "own_create" && result.outcome === "created"
+          && previous?.outcome !== "created";
         if (previous?.outcome === result.outcome && previous.handle === handle &&
             previous.handleExpiresAt === (result.handleExpiresAt ?? null)) {
           return { destination: (tombstoned ? "outbox" : previous.destination) as "ledger" | "outbox" };
@@ -835,7 +843,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
           // A retired own_upload's late result must not enqueue a lookup for an upload nothing will read again.
           const entry = row.retired ? null : outboxEntryFor(receipt, result, old);
           if (entry) await enqueueOutbox(tx, entry); else await del(tx, STORES.outbox, key);
-          if (receipt.kind === "own_create" && result.outcome === "created") {
+          if (completesOwnCreate) {
             await retireOwnUploadOutbox(tx, id);
             await retireOwnUploadReceipts(tx, id);
           }
@@ -857,7 +865,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
             entry.handleExpiresAt = result.handleExpiresAt ?? entry.handleExpiresAt ?? null;
           }
         }
-        if (receipt.kind === "own_create" && result.outcome === "created") {
+        if (completesOwnCreate) {
           note.ledger.remote = note.ledger.remote.filter((remote) => remote.kind !== "own_upload");
           await retireOwnUploadOutbox(tx, id);
           await retireOwnUploadReceipts(tx, id);

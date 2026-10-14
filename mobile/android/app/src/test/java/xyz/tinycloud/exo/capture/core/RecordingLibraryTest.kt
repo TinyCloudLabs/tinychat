@@ -341,6 +341,77 @@ class RecordingLibraryTest {
         assertTrue(outbox().none { it.getString("handle") == "https://u/upload" })
         assertEquals(2, outbox().size)
     }
+    /** Writes an outbox row as it existed before receiptKind: the outbox kind only, no receiptKind field. */
+    private fun writeLegacyOutboxRow(lib: RecordingLibrary, id: String, opId: String, provider: String, kind: String) {
+        lib.outbox.mkdirs()
+        val row = JSONObject().put("entryId", "$id:$opId").put("did", "did:a").put("provider", provider)
+            .put("mode", "own").put("kind", kind).put("handle", JSONObject.NULL).put("handleExpiresAt", JSONObject.NULL)
+            .put("state", "unknown").put("createdAt", 100).put("attempts", 0)
+        File(lib.outbox, "$id:$opId.json").writeText(row.toString())
+    }
+    private fun legacyRow(lib: RecordingLibrary, id: String, opId: String): JSONObject =
+        lib.listOutbox("did:a").let { a -> (0 until a.length()).map { a.getJSONObject(it) } }
+            .single { it.getString("entryId") == "$id:$opId" }
+    @Test fun legacyUnknownAssemblyAIJobIsRecordedAsTranscriptNotPtx() {
+        val lib = library(); val id = id()
+        writeLegacyOutboxRow(lib, id, "legacy", "assemblyai", "unknown")
+        assertEquals("outbox", lib.recordRemoteResult(id, "did:a", "legacy",
+            JSONObject().put("outcome", "created").put("jobId", "job-9")))
+        val row = legacyRow(lib, id, "legacy")
+        assertEquals("transcript", row.getString("kind"))
+        assertEquals("job-9", row.getString("handle"))
+        assertTrue(row.isNull("receiptKind"))
+    }
+    @Test fun legacyPtxJobKindFromAssemblyAIIsTranscriptNotPtx() {
+        val lib = library(); val id = id()
+        writeLegacyOutboxRow(lib, id, "legacy", "assemblyai", "ptx_job")
+        lib.recordRemoteResult(id, "did:a", "legacy", JSONObject().put("outcome", "created").put("jobId", "job-4"))
+        val row = legacyRow(lib, id, "legacy")
+        assertEquals("transcript", row.getString("kind"))
+        assertEquals("job-4", row.getString("handle"))
+    }
+    @Test fun legacyUnknownAssemblyAIUploadURLRoutesToLookupWithURLHandle() {
+        val lib = library(); val id = id()
+        writeLegacyOutboxRow(lib, id, "legacy", "assemblyai", "unknown")
+        lib.recordRemoteResult(id, "did:a", "legacy",
+            JSONObject().put("outcome", "unknown").put("uploadUrl", "https://example.test/late"))
+        val row = legacyRow(lib, id, "legacy")
+        assertEquals("own_upload_lookup", row.getString("kind"))
+        assertEquals("https://example.test/late", row.getString("handle"))
+        assertTrue(row.isNull("receiptKind"))
+    }
+    @Test fun legacyJobFirstThenLateURLKeepsJobAndNeverBecomesPtx() {
+        val lib = library(); val id = id()
+        writeLegacyOutboxRow(lib, id, "legacy", "assemblyai", "unknown")
+        lib.recordRemoteResult(id, "did:a", "legacy", JSONObject().put("outcome", "created").put("jobId", "job-9"))
+        lib.recordRemoteResult(id, "did:a", "legacy",
+            JSONObject().put("outcome", "unknown").put("uploadUrl", "https://example.test/late"))
+        val row = legacyRow(lib, id, "legacy")
+        assertEquals("transcript", row.getString("kind"))
+        assertEquals("job-9", row.getString("handle"))
+    }
+    @Test fun legacyUnknownRowWithoutProvableKindStaysInert() {
+        val lib = library(); val id = id()
+        writeLegacyOutboxRow(lib, id, "other", "unrecognised", "unknown")
+        writeLegacyOutboxRow(lib, id, "ptxurl", "ptx", "unknown")
+        lib.recordRemoteResult(id, "did:a", "other", JSONObject().put("outcome", "created").put("jobId", "job-7"))
+        lib.recordRemoteResult(id, "did:a", "ptxurl",
+            JSONObject().put("outcome", "unknown").put("uploadUrl", "https://example.test/nope"))
+        for (opId in listOf("other", "ptxurl")) {
+            val row = legacyRow(lib, id, opId)
+            assertEquals("unknown", row.getString("kind"))
+            assertTrue(row.isNull("handle"))
+            assertTrue(row.isNull("receiptKind"))
+        }
+    }
+    @Test fun legacyPtxJobRoutesAsPtxCreate() {
+        val lib = library(); val id = id()
+        writeLegacyOutboxRow(lib, id, "legacy", "ptx", "unknown")
+        lib.recordRemoteResult(id, "did:a", "legacy", JSONObject().put("outcome", "created").put("jobId", "ptx-3"))
+        val row = legacyRow(lib, id, "legacy")
+        assertEquals("ptx_job", row.getString("kind"))
+        assertEquals("ptx-3", row.getString("handle"))
+    }
     @Test fun receiptFailpointsAndInterruptedOutboxTransferKeepAnAuthority() {
         val ops = FileOps(); val dir = temp.newFolder(); val lib = RecordingLibrary(dir, ops)
         val note = id(); begin(lib, note); commit(lib, note)

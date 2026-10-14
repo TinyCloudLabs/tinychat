@@ -529,7 +529,8 @@ public final class RecordingLibrary {
             let outboxKind = receipt["kind"] as? String
             // Rows written before receiptKind existed name a receipt kind only when the outbox kind is unambiguous.
             // Ambiguous rows keep receiptKind nil and are never retired as own_upload.
-            let receiptKind = (receipt["receiptKind"] as? String) ?? Self.legacyReceiptKind(outboxKind)
+            let receiptKind = (receipt["receiptKind"] as? String) ??
+                Self.legacyReceiptKind(outboxKind, provider: receipt["provider"] as? String)
             if let original = receiptKind {
                 open["kind"] = original
                 if let handle = receipt["handle"] as? String {
@@ -541,15 +542,21 @@ public final class RecordingLibrary {
                     }
                 }
             } else {
-                switch outboxKind {
-                case "own_upload_lookup":
+                // Legacy row: route from what this result proves, with the known own_create priority (a job beats a
+                // URL, and a URL never replaces a job). Provider gates ptx. A row with no provable kind stays inert.
+                let provider = receipt["provider"] as? String
+                let resultJob = result["jobId"] as? String
+                if provider == "ptx", let job = resultJob {
+                    open["kind"] = "ptx_create"; open["jobId"] = job
+                } else if provider == "assemblyai", let job = resultJob {
+                    open["kind"] = "hosted_submit"; open["jobId"] = job
+                } else if provider == "assemblyai", let url = result["uploadUrl"] as? String, outboxKind != "transcript" {
+                    open["kind"] = "own_upload"; open["uploadUrl"] = url
+                } else if outboxKind == "own_upload_lookup" {
                     open["kind"] = "own_upload"
                     if let handle = receipt["handle"] as? String { open["uploadUrl"] = handle }
-                case "transcript":
+                } else if outboxKind == "transcript" {
                     open["kind"] = "hosted_submit"
-                    if let handle = receipt["handle"] as? String { open["jobId"] = handle }
-                default:
-                    open["kind"] = "ptx_create"
                     if let handle = receipt["handle"] as? String { open["jobId"] = handle }
                 }
             }
@@ -593,12 +600,13 @@ public final class RecordingLibrary {
     }
 
     /// Rows written before receiptKind existed. Only these outbox kinds name exactly one receipt kind;
-    /// own_upload_lookup and transcript are ambiguous and stay nil.
-    private static func legacyReceiptKind(_ outboxKind: String?) -> String? {
+    /// own_upload_lookup and transcript are ambiguous and stay nil. ptx_job also came from the old writer default for
+    /// unknown receipts, so it names ptx_create only when the provider is ptx.
+    private static func legacyReceiptKind(_ outboxKind: String?, provider: String?) -> String? {
         switch outboxKind {
         case "hosted_upload": return "hosted_create"
         case "hosted_submit": return "hosted_submit"
-        case "ptx_job": return "ptx_create"
+        case "ptx_job": return provider == "ptx" ? "ptx_create" : nil
         default: return nil
         }
     }
@@ -647,10 +655,12 @@ public final class RecordingLibrary {
             } else if let url = uploadURL as? String {
                 outboxKind = "own_upload_lookup"; handle = url; state = "lookup"
             } else { outboxKind = "unknown"; handle = nil; state = "unknown" }
-        default:
+        case "ptx_create":
             outboxKind = "ptx_job"
             handle = job ?? direct
             state = handle is String ? "pending" : "unknown"
+        default:
+            outboxKind = "unknown"; handle = nil; state = "unknown"
         }
         var entry: [String: Any] = existing ?? ["entryId": "\(id):\(opId)", "did": receipt["did"] ?? "",
             "provider": receipt["provider"] ?? "", "mode": mode,

@@ -430,7 +430,8 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
                 url != null -> Triple("own_upload_lookup", url, "lookup")
                 else -> Triple("unknown", null, "unknown")
             }
-            else -> Triple("ptx_job", job ?: direct, if (job != null || direct != null) "pending" else "unknown")
+            "ptx_create" -> Triple("ptx_job", job ?: direct, if (job != null || direct != null) "pending" else "unknown")
+            else -> Triple("unknown", null, "unknown")
         }
         return JSONObject().put("entryId", receiptEntry(id, receipt.getString("opId"))).put("did", did)
             .put("provider", receipt.getString("provider")).put("mode", receipt.opt("mode") ?: JSONObject.NULL)
@@ -443,13 +444,28 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
     /** Stored receiptKind, or null. optString would return the string "null" for a JSON null, so read it with opt. */
     private fun storedReceiptKind(row: JSONObject): String? = (row.opt("receiptKind") as? String)?.takeIf { it.isNotEmpty() }
 
-    /** Outbox rows written before receiptKind existed. Returns the receipt kind only when the outbox kind names exactly
-     *  one: own_upload_lookup also comes from own_create with a URL, and transcript from hosted_submit or own_create. */
+    /** Outbox rows written before receiptKind existed. Only these outbox kinds name exactly one receipt kind;
+     *  own_upload_lookup and transcript are ambiguous and stay null. ptx_job also came from the old writer default for
+     *  unknown receipts, so it names ptx_create only when the provider is ptx. */
     private fun legacyReceiptKind(previous: JSONObject): String? = when (previous.optString("kind")) {
         "hosted_upload" -> "hosted_create"
         "hosted_submit" -> "hosted_submit"
-        "ptx_job" -> "ptx_create"
+        "ptx_job" -> if (previous.optString("provider") == "ptx") "ptx_create" else null
         else -> null
+    }
+    /** Legacy row with no receiptKind: route from what the result proves. Job beats URL, and provider gates ptx. */
+    private fun legacyResultKind(previous: JSONObject, result: JSONObject): String? {
+        val outKind = previous.optString("kind")
+        val provider = previous.optString("provider")
+        val job = stringValue(result, "jobId") != null
+        return when {
+            provider == "ptx" && job -> "ptx_create"
+            provider == "assemblyai" && job -> "hosted_submit"
+            provider == "assemblyai" && stringValue(result, "uploadUrl") != null && outKind != "transcript" -> "own_upload"
+            outKind == "own_upload_lookup" -> "own_upload"
+            outKind == "transcript" -> "hosted_submit"
+            else -> null
+        }
     }
     private fun saveOutbox(entry: JSONObject, point: String) {
         val file = File(outbox, "${entry.getString("entryId")}.json")
@@ -538,14 +554,11 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
                 ops.unlink(file, "receipt.result"); ops.syncDir(outbox)
                 return@withLock "outbox"
             }
-            // Rows written before receiptKind existed carry only the outbox kind. That kind names one receipt kind only
-            // sometimes, so the other cases keep receiptKind null: such a row is never retired as an own_upload.
+            // Rows written before receiptKind existed carry only the outbox kind. Route them from what the result proves.
+            // A row with no provable kind keeps its raw outbox kind, which outboxReceipt maps to unknown (inert). Such a
+            // row keeps receiptKind null and is never retired as an own_upload.
             val receiptKind = storedReceiptKind(previous) ?: legacyReceiptKind(previous)
-            val rebuildKind = receiptKind ?: when (previous.optString("kind")) {
-                "own_upload_lookup" -> "own_upload"
-                "transcript" -> "hosted_submit"
-                else -> "ptx_create"
-            }
+            val rebuildKind = receiptKind ?: legacyResultKind(previous, result) ?: previous.optString("kind")
             val receipt = JSONObject().put("opId", opId).put("provider", previous.getString("provider"))
                 .put("mode", previous.opt("mode") ?: JSONObject.NULL).put("kind", rebuildKind)
                 .put("startedAt", previous.optLong("createdAt"))

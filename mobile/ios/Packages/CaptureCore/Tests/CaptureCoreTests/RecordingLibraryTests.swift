@@ -1033,4 +1033,93 @@ final class RecordingLibraryTests: XCTestCase {
         XCTAssertEqual(backfilled["receiptKind"] as? String, "own_upload")
         XCTAssertEqual(backfilled["handle"] as? String, "https://example.test/old")
     }
+
+    private func writeLegacyOutboxRow(_ library: RecordingLibrary, id: String, opId: String,
+                                      provider: String, kind: String) throws {
+        try FileManager.default.createDirectory(at: library.url("outbox"), withIntermediateDirectories: true)
+        let row: [String: Any] = ["entryId": "\(id):\(opId)", "did": "did:test", "provider": provider,
+            "mode": "own", "kind": kind, "handle": NSNull(), "handleExpiresAt": NSNull(),
+            "state": "unknown", "createdAt": 100, "attempts": 0]
+        try JSONSerialization.data(withJSONObject: row).write(to: library.url("outbox/\(id):\(opId).json"))
+    }
+
+    private func legacyRow(_ library: RecordingLibrary, _ id: String, _ opId: String) throws -> [String: Any] {
+        try XCTUnwrap(library.listOutbox(did: "did:test").first { $0["entryId"] as? String == "\(id):\(opId)" })
+    }
+
+    func testLegacyUnknownAssemblyAIJobIsRecordedAsTranscriptNotPtx() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try writeLegacyOutboxRow(library, id: id, opId: "legacy", provider: "assemblyai", kind: "unknown")
+        XCTAssertEqual(try library.recordRemoteResult(id: id, did: "did:test", opId: "legacy",
+            result: ["outcome": "created", "jobId": "job-9"]), "outbox")
+        let row = try legacyRow(library, id, "legacy")
+        XCTAssertEqual(row["kind"] as? String, "transcript")
+        XCTAssertEqual(row["handle"] as? String, "job-9")
+        XCTAssertNil(row["receiptKind"] as? String)
+    }
+
+    func testLegacyUnknownAssemblyAIUploadURLRoutesToLookupWithURLHandle() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try writeLegacyOutboxRow(library, id: id, opId: "legacy", provider: "assemblyai", kind: "unknown")
+        _ = try library.recordRemoteResult(id: id, did: "did:test", opId: "legacy",
+            result: ["outcome": "unknown", "uploadUrl": "https://example.test/late"])
+        let row = try legacyRow(library, id, "legacy")
+        XCTAssertEqual(row["kind"] as? String, "own_upload_lookup")
+        XCTAssertEqual(row["handle"] as? String, "https://example.test/late")
+        XCTAssertNil(row["receiptKind"] as? String)
+    }
+
+    func testLegacyJobFirstThenLateURLKeepsJobAndNeverBecomesPtx() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try writeLegacyOutboxRow(library, id: id, opId: "legacy", provider: "assemblyai", kind: "unknown")
+        _ = try library.recordRemoteResult(id: id, did: "did:test", opId: "legacy",
+            result: ["outcome": "created", "jobId": "job-9"])
+        _ = try library.recordRemoteResult(id: id, did: "did:test", opId: "legacy",
+            result: ["outcome": "unknown", "uploadUrl": "https://example.test/late"])
+        let row = try legacyRow(library, id, "legacy")
+        XCTAssertEqual(row["kind"] as? String, "transcript")
+        XCTAssertEqual(row["handle"] as? String, "job-9")
+    }
+
+    func testLegacyUnknownRowWithoutProvableKindStaysInert() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try writeLegacyOutboxRow(library, id: id, opId: "other", provider: "unrecognised", kind: "unknown")
+        try writeLegacyOutboxRow(library, id: id, opId: "ptxurl", provider: "ptx", kind: "unknown")
+        _ = try library.recordRemoteResult(id: id, did: "did:test", opId: "other",
+            result: ["outcome": "created", "jobId": "job-7"])
+        _ = try library.recordRemoteResult(id: id, did: "did:test", opId: "ptxurl",
+            result: ["outcome": "unknown", "uploadUrl": "https://example.test/nope"])
+        for opId in ["other", "ptxurl"] {
+            let row = try legacyRow(library, id, opId)
+            XCTAssertEqual(row["kind"] as? String, "unknown")
+            XCTAssertNil(row["handle"] as? String)
+            XCTAssertNil(row["receiptKind"] as? String)
+        }
+    }
+
+    func testLegacyPtxJobRoutesAsPtxCreate() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try writeLegacyOutboxRow(library, id: id, opId: "legacy", provider: "ptx", kind: "unknown")
+        _ = try library.recordRemoteResult(id: id, did: "did:test", opId: "legacy",
+            result: ["outcome": "created", "jobId": "ptx-3"])
+        let row = try legacyRow(library, id, "legacy")
+        XCTAssertEqual(row["kind"] as? String, "ptx_job")
+        XCTAssertEqual(row["handle"] as? String, "ptx-3")
+    }
+
+    func testLegacyPtxJobKindFromAssemblyAIIsTranscriptNotPtx() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try writeLegacyOutboxRow(library, id: id, opId: "legacy", provider: "assemblyai", kind: "ptx_job")
+        _ = try library.recordRemoteResult(id: id, did: "did:test", opId: "legacy",
+            result: ["outcome": "created", "jobId": "job-4"])
+        let row = try legacyRow(library, id, "legacy")
+        XCTAssertEqual(row["kind"] as? String, "transcript")
+        XCTAssertEqual(row["handle"] as? String, "job-4")
+    }
 }
