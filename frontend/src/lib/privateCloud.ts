@@ -261,9 +261,9 @@ export function parseRateLimitWaitSeconds(headers: Headers, now = Date.now()): n
     }
   }
   const rateLimit = headers.get("RateLimit");
-  const reset = rateLimit?.match(/(?:^|[,;\s])(?:reset|t)\s*=\s*"?(\d+)"?(?=$|[,;\s])/i);
+  const reset = rateLimit?.match(/(?:^|[,;\s])(?:reset|t)\s*=\s*(?:"(\d+)"|(\d+))(?=$|[,;\s])/i);
   if (reset !== undefined && reset !== null) {
-    const seconds = Number(reset[1]);
+    const seconds = Number(reset[1] ?? reset[2]);
     if (Number.isFinite(seconds)) waits.push(seconds);
   }
   return waits.length === 0 ? null : Math.max(...waits);

@@ -407,14 +407,17 @@ test("a PTX 429 without a readable wait uses the slow polling interval", async (
 });
 test("malformed PTX throttle headers use the slow floor on every status retry", async () => {
   const cases = [
-    { "Retry-After": "" },
-    { "Retry-After": "-1" },
-    { "Retry-After": "12garbage" },
-    { "Retry-After": new Date(0).toUTCString() },
-    { RateLimit: "limit=600, remaining=0, reset=12garbage" },
-    { RateLimit: "limit=600, remaining=0, reset=-1" },
+    { headers: { "Retry-After": "" }, minGapMs: 30_000 },
+    { headers: { "Retry-After": "-1" }, minGapMs: 30_000 },
+    { headers: { "Retry-After": "12garbage" }, minGapMs: 30_000 },
+    { headers: { "Retry-After": new Date(0).toUTCString() }, minGapMs: 30_000 },
+    { headers: { RateLimit: "limit=600, remaining=0, reset=12garbage" }, minGapMs: 30_000 },
+    { headers: { RateLimit: "limit=600, remaining=0, reset=-1" }, minGapMs: 30_000 },
+    { headers: { RateLimit: 'limit=600, remaining=0, reset="0' }, minGapMs: 30_000 },
+    { headers: { RateLimit: 'limit=600, remaining=0, reset=0"' }, minGapMs: 30_000 },
+    { headers: { RateLimit: 'limit=600, remaining=0, reset="90"' }, minGapMs: 90_000 },
   ];
-  for (const headers of cases) {
+  for (const { headers, minGapMs } of cases) {
     let now = 0;
     let reads = 0;
     const requestTimes: number[] = [];
@@ -436,7 +439,7 @@ test("malformed PTX throttle headers use the slow floor on every status retry", 
     });
     await poller.pollTranscript(ID, () => {});
     expect(requestTimes).toHaveLength(101);
-    expect(requestTimes.slice(1).every((at, index) => at - requestTimes[index]! >= 30_000)).toBe(true);
+    expect(requestTimes.slice(1).every((at, index) => at - requestTimes[index]! >= minGapMs)).toBe(true);
     expect(sleeps).toHaveLength(100);
   }
 });

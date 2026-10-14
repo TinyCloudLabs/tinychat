@@ -691,12 +691,15 @@ describe("createVoiceNoteCloud.transcribe", () => {
   });
 
   test("malformed PTX status throttle values keep each voice-note retry on the slow floor", async () => {
-    for (const headers of [
-      { "Retry-After": "" },
-      { "Retry-After": "-1" },
-      { "Retry-After": "12garbage" },
-      { "Retry-After": new Date(0).toUTCString() },
-      { RateLimit: "limit=600, remaining=0, reset=12garbage" },
+    for (const { headers, minGapMs } of [
+      { headers: { "Retry-After": "" }, minGapMs: 30_000 },
+      { headers: { "Retry-After": "-1" }, minGapMs: 30_000 },
+      { headers: { "Retry-After": "12garbage" }, minGapMs: 30_000 },
+      { headers: { "Retry-After": new Date(0).toUTCString() }, minGapMs: 30_000 },
+      { headers: { RateLimit: "limit=600, remaining=0, reset=12garbage" }, minGapMs: 30_000 },
+      { headers: { RateLimit: 'limit=600, remaining=0, reset="0' }, minGapMs: 30_000 },
+      { headers: { RateLimit: 'limit=600, remaining=0, reset=0"' }, minGapMs: 30_000 },
+      { headers: { RateLimit: 'limit=600, remaining=0, reset="90"' }, minGapMs: 90_000 },
     ]) {
       let now = 0;
       const requests: number[] = [];
@@ -712,7 +715,7 @@ describe("createVoiceNoteCloud.transcribe", () => {
       });
       await run(h);
       expect(requests).toHaveLength(101);
-      expect(requests.slice(1).every((at, index) => at - requests[index]! >= 30_000)).toBe(true);
+      expect(requests.slice(1).every((at, index) => at - requests[index]! >= minGapMs)).toBe(true);
     }
   });
 
