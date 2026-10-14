@@ -480,6 +480,7 @@ describe("saveVoiceNote", () => {
     expect(metadata.capture).toEqual({
       platform: "android",
       duration_ms: 12_400,
+      channels: 1,
       silenced_ms: 1_500,
       silenced_events: 1,
       no_signal_ms: 0,
