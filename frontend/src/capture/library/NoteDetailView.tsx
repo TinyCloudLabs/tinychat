@@ -50,10 +50,10 @@ import type { SavedNoteStore } from "./savedNote/savedNoteStore";
 export type AudioLoad = (signal: AbortSignal, onProgress: (loadedBytes: number, totalBytes: number) => void) => Promise<Blob | null>;
 
 /** A note's audio: fetched from the space as a blob, or a file still on this phone, played from its URL. */
-export type NoteAudio = { load: AudioLoad } | { localUrl: () => Promise<string> };
+export type NoteAudio = { load: AudioLoad; channels?: 1 | 2 } | { localUrl: () => Promise<string>; channels?: 1 | 2 };
 
-export function noteAudioPlayerProps(audio: NoteAudio): { load: AudioLoad } | { resolveUrl: () => Promise<string> } {
-  return "load" in audio ? { load: audio.load } : { resolveUrl: audio.localUrl };
+export function noteAudioPlayerProps(audio: NoteAudio): { load: AudioLoad; channels?: 1 | 2 } | { resolveUrl: () => Promise<string>; channels?: 1 | 2 } {
+  return "load" in audio ? { load: audio.load, channels: audio.channels } : { resolveUrl: audio.localUrl, channels: audio.channels };
 }
 
 export interface NoteDetailViewProps {
@@ -521,7 +521,8 @@ function NoteDetailViewContent(props: NoteDetailViewProps) {
         {activityStatus && <div className="flex flex-wrap items-center gap-3" data-testid="note-detail-status"><p className={activityStatus.startsWith("Needs attention") ? "text-callout text-amber-700 dark:text-amber-300" : "text-callout text-muted-foreground"}>{activityStatus}</p>{activityJobs.flatMap((job) => job.action ? [job.action] : []).map((action, index) => <button key={`${action.label}:${index}`} type="button" className="min-h-11 text-callout text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={action.run}>{action.label}</button>)}{!activityJobs.some((job) => job.action) && activityRetry && <button type="button" className="min-h-11 text-callout text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={activityRetry}>Try again</button>}</div>}
       </header>
       {props.audio ? (
-        <MeetingAudioPlayer key={`${item.source}:${item.sourceId}`} {...noteAudioPlayerProps(props.audio)} durationSecs={item.durationSecs} />
+        <MeetingAudioPlayer key={`${item.source}:${item.sourceId}`} {...noteAudioPlayerProps(props.audio)} durationSecs={item.durationSecs}
+          channels={(meta?.capture as { channels?: number } | undefined)?.channels === 2 || props.audio.channels === 2 ? 2 : 1} />
       ) : item.source === VOICE_NOTE_SOURCE && meta && Object.keys(meta).length === 0 ? (
         <p role="status" className="text-callout text-muted-foreground" data-testid="voice-note-saving-from-phone">
           Saving from {deviceName(props.platform)}…

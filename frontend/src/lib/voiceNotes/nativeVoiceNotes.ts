@@ -195,6 +195,7 @@ export interface VoiceNoteRecording {
 
 export interface CaptureStatus {
   state: MicState; reason: MicStateReason; id: string | null;
+  channels?: 1 | 2;
   detail?: string;
   intent: "recording" | "paused" | "stopped"; availability: "available" | "interrupted" | "blocked";
   startedAt: number | null; elapsedMs: number; audioMs: number; pausedMs: number; maxDurationMs: number;

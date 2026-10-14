@@ -226,6 +226,56 @@ describe("the player in a DOM", () => {
     expect(player.q("[data-testid=note-audio-toggle]")).not.toBeNull();
   });
 
+  test("stereo downmix averages channel level, while mono stays on the full-level media path", async () => {
+    const previous = globalThis.AudioContext;
+    const links: string[] = [];
+    let created = 0;
+    const gainNodes: { channelCount: number; channelCountMode: string; channelInterpretation: string; gain: { value: number } }[] = [];
+    const node = (name: string) => ({ connect: (target: { name: string }, output = 0, input = 0) => {
+      links.push(`${name}:${output}->${target.name}:${input}`);
+    }, name });
+    class FakeAudioContext {
+      constructor() { created++; }
+      state = "suspended";
+      destination = node("speakers");
+      createMediaElementSource() { return node("source"); }
+      createGain() {
+        const gain = Object.assign(node("mono"), { channelCount: 2, channelCountMode: "max", channelInterpretation: "discrete", gain: { value: 1 } });
+        gainNodes.push(gain);
+        return gain;
+      }
+      resume() { links.push("resume"); return Promise.resolve(); }
+      close() { return Promise.resolve(); }
+    }
+    Object.defineProperty(globalThis, "AudioContext", { configurable: true, value: FakeAudioContext });
+    try {
+      const player = await mount({ url: "blob:stereo", channels: 2 });
+      act(() => player.q("[data-testid=note-audio-play]").click());
+      expect(links).toContain("source:0->mono:0");
+      expect(links).toContain("mono:0->speakers:0");
+      expect(gainNodes).toMatchObject([{ channelCount: 1, channelCountMode: "explicit", channelInterpretation: "speakers", gain: { value: 1 } }]);
+      // A 0.8 L and 0.2 R fixture reaches the speaker at 0.5. The old
+      // discrete splitter would send a mono 0.8 fixture at 0.4 (-6 dB).
+      const level = (channels: number[]) => gainNodes[0]!.gain.value *
+        (gainNodes[0]!.channelCountMode === "explicit" && gainNodes[0]!.channelInterpretation === "speakers"
+          ? channels.reduce((sum, sample) => sum + sample, 0) / channels.length : channels[0]!);
+      expect(level([0.8, 0.2])).toBeCloseTo(0.5);
+      expect(links).toContain("resume");
+      expect(player.fake.plays).toHaveLength(1);
+      await act(async () => root!.unmount());
+      root = null;
+      // mount() installs a fresh DOM; restore this one first or its globals outlive the test.
+      cleanupDom?.();
+      cleanupDom = undefined;
+      const mono = await mount({ url: "blob:mono", channels: 1 });
+      act(() => mono.q("[data-testid=note-audio-play]").click());
+      expect(created).toBe(1);
+      expect(mono.fake.plays).toHaveLength(1);
+    } finally {
+      Object.defineProperty(globalThis, "AudioContext", { configurable: true, value: previous });
+    }
+  });
+
   test("a play the browser refuses ends in Try again, with the cause in the console", async () => {
     logged = spyOn(console, "error").mockImplementation(() => {});
     const player = await mount({ url: "blob:note", durationSecs: 42 });

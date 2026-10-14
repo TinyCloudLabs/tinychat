@@ -339,7 +339,7 @@ export async function patchVoiceNoteLocalOnly(tcw: TinyCloudWeb, recording: Voic
 }
 
 function captureMetadata(recording: VoiceNoteRecording, platform: string) {
-  return { platform, duration_ms: recording.durationMs, silenced_ms: recording.silencedMs,
+  return { platform, duration_ms: recording.durationMs, channels: recording.channels ?? 1, silenced_ms: recording.silencedMs,
     silenced_events: recording.silencedEvents, no_signal_ms: recording.noSignalMs,
     ...(recording.version === 2 ? { version: 2, wall_ms: recording.wallMs, paused_ms: recording.pausedMs,
       spans: recording.spans ?? [], source: recording.source, options: recording.options, input: recording.input } : {}) };
