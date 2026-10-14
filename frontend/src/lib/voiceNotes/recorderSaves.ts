@@ -114,9 +114,25 @@ export function voiceNoteSaveBusy(): boolean {
 }
 
 /** Resolve after the recording and the pending-run single-flight guard settle. */
-export function whenVoiceNoteSavesIdle(): Promise<void> {
+export function whenVoiceNoteSavesIdle(signal?: AbortSignal): Promise<void> {
   if (!voiceNoteSaveBusy()) return Promise.resolve();
-  return new Promise((resolve) => saveIdleListeners.add(resolve));
+  return new Promise((resolve, reject) => {
+    const onIdle = () => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    };
+    const onAbort = () => {
+      saveIdleListeners.delete(onIdle);
+      signal?.removeEventListener("abort", onAbort);
+      reject(signal?.reason ?? new DOMException("The wait was cancelled.", "AbortError"));
+    };
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    saveIdleListeners.add(onIdle);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function publishSaveIdle(): void {

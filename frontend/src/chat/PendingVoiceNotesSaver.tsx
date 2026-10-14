@@ -124,11 +124,14 @@ export function PendingVoiceNotesSaver({
     pendingStore.setAccount(did);
     pendingStore.setOnline(typeof navigator === "undefined" ? true : navigator.onLine !== false);
     const unmountAccount = mountVoiceNoteAccount(did);
+    const accountGeneration = currentAccountGeneration();
+    const isAccountCurrent = () => accountGeneration === currentAccountGeneration();
     pipeline.resume();
     const transcriber = voiceNoteTranscriberFor(tcw, backendUrl, sessionStore);
     let runInFlight: Promise<void> | null = null;
     let dirty = false;
     let disposed = false;
+    let appStateHandle: { remove(): Promise<void> } | undefined;
     const run = (): Promise<void> => {
       if (runInFlight) {
         dirty = true;
@@ -159,15 +162,28 @@ export function PendingVoiceNotesSaver({
       return runInFlight;
     };
     const unregister = registerPendingVoiceNotesRecovery(run);
+    void transcriber?.check({ current: isAccountCurrent });
     void run();
-    const onOnline = () => { pendingStore.setOnline(true); void run(); };
+    const onOnline = () => {
+      pendingStore.setOnline(true);
+      void transcriber?.check({ current: isAccountCurrent });
+      void run();
+    };
     const onOffline = () => pendingStore.setOnline(false);
     window.addEventListener("online", onOnline);
     window.addEventListener("offline", onOffline);
-    let appStateHandle: { remove(): Promise<void> } | null = null;
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      void transcriber?.check({ current: isAccountCurrent });
+      void run();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     if (Capacitor.isNativePlatform()) {
       void import("@capacitor/app").then(({ App }) => App.addListener("appStateChange", ({ isActive }) => {
-        if (isActive) void run();
+        if (isActive) {
+          void transcriber?.check({ current: isAccountCurrent });
+          void run();
+        }
       })).then((handle) => {
         if (disposed) void handle.remove();
         else appStateHandle = handle;
@@ -177,6 +193,7 @@ export function PendingVoiceNotesSaver({
       disposed = true;
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
+      document.removeEventListener("visibilitychange", onVisible);
       if (appStateHandle) void appStateHandle.remove();
       unregister(); unmountAccount(); pipeline.cancelAll(); pendingStore.setAccount(null);
     };

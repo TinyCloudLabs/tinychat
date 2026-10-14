@@ -246,6 +246,16 @@ describe("a voice note's transcription", () => {
     expect(render()).toContain("No transcript.");
   });
 
+  test("a pending Private note without a live job always has an action or recovery explanation", () => {
+    const pending = { status: "ok" as const, metadata: { capture: { options: { transcriber: "private-cloud" } }, transcription_outcome: "pending" } };
+    const available = render({ metadata: pending, transcription: transcription() });
+    expect(available).toContain('data-testid="transcribe-button"');
+
+    const unavailable = render({ metadata: pending, transcription: transcription({ availability: "failed" }) });
+    expect(unavailable).toContain('data-testid="voice-note-private-unavailable"');
+    expect(unavailable).toContain("Private cloud isn’t reachable");
+  });
+
   test("available but not yet consented: Transcribe with Private, which asks for consent when pressed", () => {
     const html = render({ transcription: transcription({ consented: false }) });
     expect(html).toContain('data-testid="transcribe-button"');
