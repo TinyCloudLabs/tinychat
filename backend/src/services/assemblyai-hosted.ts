@@ -1,9 +1,13 @@
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { chmod, mkdir, open, readdir, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { chmod, mkdir, open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+// Bun exposes libc flock through FFI; the backend's Node typecheck has no Bun declarations.
+// @ts-expect-error runtime-provided module
+import { dlopen, FFIType } from "bun:ffi";
+import type { FileHandle } from "node:fs/promises";
 
 import { assertStrongSecret } from "./webhook-tokens.js";
+import type { JsonKv } from "./transcriber-index.js";
 
 /**
  * AssemblyAI under TinyCloud's account for Exo uploads ("hosted" mode, contract C10).
@@ -15,9 +19,10 @@ import { assertStrongSecret } from "./webhook-tokens.js";
  * AssemblyAI transcript id. Every later read or delete presents the handle, which binds the
  * transcript to the session address that created it.
  *
- * Nothing here is persisted: uploads, slots and the daily allowance live in this process, and a
- * restart forgets them (clients re-upload; the allowance resets). Spool files left by a previous
- * process are removed at start.
+ * Upload slots and the daily allowance live in this process. Exo note keys are journaled in the
+ * spool directory before paid submission, and must live on a persistent volume. One process owns
+ * the directory under flock. Startup discards unsent spools, reconciles the note journal once,
+ * and leaves interrupted paid submissions uncertain rather than submitting them twice.
  */
 
 export const MAX_HOSTED_BYTES = 120_960_000;
@@ -75,12 +80,11 @@ export function assemblyAiHostedConfigFromEnv(env: Record<string, string | undef
     if (!/^\d{1,15}$/.test(rawDaily) || Number(rawDaily) < 1) fail("ASSEMBLYAI_HOSTED_DAILY_BYTES must be a positive integer");
     dailyBytes = Number(rawDaily);
   }
-  const spoolDir = env.ASSEMBLYAI_HOSTED_SPOOL_DIR?.trim() || join(tmpdir(), "tinychat-assemblyai");
-  if (!isAbsolute(spoolDir)) fail("ASSEMBLYAI_HOSTED_SPOOL_DIR must be an absolute path");
-
   if (!apiKey || !handleKey) {
     return { hosted: false, reason: !apiKey && !handleKey ? "both_unset" : !apiKey ? "api_key_unset" : "handle_key_unset" };
   }
+  const spoolDir = env.ASSEMBLYAI_HOSTED_SPOOL_DIR?.trim();
+  if (!spoolDir || !isAbsolute(spoolDir)) fail("ASSEMBLYAI_HOSTED_SPOOL_DIR must be explicitly set to an absolute persistent path; refusing hosted routes");
   return { hosted: true, apiKey, handleKey, dailyBytes, spoolDir };
 }
 
@@ -162,7 +166,15 @@ export interface HostedUpload {
   /** Aborts the background submit (deadline, sweep, shutdown). Set while submitting. */
   abort: AbortController | null;
   submitDeadline: number;
+  /** Stable Exo note key; absent for legacy and non-note uploads. */
+  sourceId?: string;
 }
+
+type NoteJob = { address: string; sourceId: string; uploadId: string; bootId: string; state: "receiving" | "submitting" | "submitted" | "needs_reconciliation" | "uncertain" | "deleted"; handle?: string; expiresAt?: number; byteSize?: number; contentType?: string; uploadUrl?: string; transcriptId?: string };
+export type NoteJobView = { status: "receiving" | "submitting" | "submitted" | "needs_reconciliation" | "deleted"; upload_id: string; id?: string }
+  | { status: "unresolved" };
+export const HOSTED_IDENTITY_KEY = "assemblyai/hosted/spool-identity";
+type SpoolIdentity = { installId: string; createdAt: string };
 
 /** How a background submit ended. Codes are the router's public error codes. */
 export type SubmitOutcome =
@@ -171,7 +183,9 @@ export type SubmitOutcome =
 
 export type CreateUploadResult =
   | { ok: true; upload: HostedUpload }
-  | { ok: false; code: "assemblyai_quota_exceeded" | "assemblyai_busy"; retryAfterSeconds: number };
+  | { ok: true; job: NoteJobView }
+  | { ok: false; code: "assemblyai_quota_exceeded" | "assemblyai_busy"; retryAfterSeconds: number }
+  | { ok: false; code: "assemblyai_needs_reconciliation" };
 
 export type LookupResult =
   | { kind: "active"; upload: HostedUpload }
@@ -208,10 +222,93 @@ export class HostedUploadStore {
   private readonly charged = new Map<string, number>();
   /** Background submits in flight. */
   private readonly inFlight = new Set<Promise<void>>();
+  private readonly noteJobs = new Map<string, NoteJob>();
+  private readonly quarantinedKeys = new Set<string>();
+  private readonly bootId = randomUUID();
+  private spoolLock: FileHandle | null = null;
 
   /** Serialize account mutations, including file IO, so a claim cannot overtake a part or cleanup. */
   private readonly mutations = new Map<string, Promise<void>>();
   private stopping = false;
+
+  private noteKey(address: string, sourceId: string): string {
+    return createHash("sha256").update(JSON.stringify([address, sourceId])).digest("hex");
+  }
+
+  private noteFile(key: string): string { return join(this.spoolDir, `note-${key}.json`); }
+
+  private viewNoteJob(job: NoteJob): NoteJobView {
+    return { status: job.state === "uncertain" ? "needs_reconciliation" : job.state, upload_id: job.uploadId, ...(job.handle ? { id: job.handle } : {}) };
+  }
+
+  private async saveNoteJob(key: string, job: NoteJob): Promise<void> {
+    const file = this.noteFile(key);
+    const temporary = `${file}.${randomUUID()}.tmp`;
+    const handle = await open(temporary, "wx", 0o600);
+    try { await handle.writeFile(JSON.stringify(job)); await handle.sync(); }
+    finally { await handle.close(); }
+    try {
+      await rename(temporary, file);
+      const directory = await open(this.spoolDir, "r");
+      try { await directory.sync(); } finally { await directory.close(); }
+    } catch (error) { await rm(temporary, { force: true }); throw error; }
+    this.noteJobs.set(key, job);
+  }
+
+  private async removeNoteJob(key: string): Promise<void> {
+    await rm(this.noteFile(key), { force: true });
+    this.noteJobs.delete(key);
+  }
+
+  noteJob(address: string, sourceId: string): NoteJobView | null {
+    const key = this.noteKey(address, sourceId);
+    if (this.quarantinedKeys.has(key)) return { status: "unresolved" };
+    const job = this.noteJobs.get(key);
+    return job ? this.viewNoteJob(job) : null;
+  }
+
+  /** A transcript request crosses the paid boundary only after this marker is durable. */
+  async markNoteSubmitting(upload: HostedUpload): Promise<void> {
+    if (!upload.sourceId) return;
+    const key = this.noteKey(upload.owner, upload.sourceId);
+    const job = this.noteJobs.get(key);
+    if (job?.uploadId === upload.id && job.state === "receiving") await this.saveNoteJob(key, { ...job, state: "submitting" });
+  }
+
+  /** Save provider references before crossing the transcript POST boundary. */
+  async noteProviderReference(upload: HostedUpload, reference: { uploadUrl?: string; transcriptId?: string }): Promise<void> {
+    if (!upload.sourceId) return;
+    const key = this.noteKey(upload.owner, upload.sourceId);
+    const job = this.noteJobs.get(key);
+    if (job?.uploadId === upload.id) await this.saveNoteJob(key, { ...job, ...reference });
+  }
+
+  reconciliationJobs(): { key: string; job: NoteJob | null }[] {
+    const jobs: { key: string; job: NoteJob | null }[] = [...this.noteJobs].filter(([key, job]) => !this.quarantinedKeys.has(key) && (job.state === "needs_reconciliation" || job.state === "uncertain"))
+      .map(([key, job]) => ({ key, job }));
+    for (const key of this.quarantinedKeys) jobs.push({ key, job: null });
+    return jobs;
+  }
+
+  async reconcileFound(key: string, transcriptId: string, handleKey: string, nowMs: number): Promise<void> {
+    const job = this.noteJobs.get(key);
+    if (!job || !["needs_reconciliation", "uncertain"].includes(job.state)) return;
+    await this.saveNoteJob(key, { ...job, transcriptId, state: "submitted", handle: issueHandle(handleKey, transcriptId, job.address, nowMs), expiresAt: nowMs + HANDLE_TTL_SECONDS * 1000 });
+  }
+
+  async settleNote(upload: HostedUpload, outcome: SubmitOutcome): Promise<void> {
+    if (!upload.sourceId) return;
+    const key = this.noteKey(upload.owner, upload.sourceId);
+    const job = this.noteJobs.get(key);
+    if (job?.uploadId === upload.id) await this.saveNoteJob(key, outcome.status === "submitted"
+      ? { ...job, state: "submitted", handle: outcome.handle, expiresAt: outcome.expiresAt } : { ...job, state: "needs_reconciliation" });
+  }
+
+  async deleteNoteHandle(address: string, handle: string): Promise<void> {
+    for (const [key, job] of this.noteJobs) {
+      if (job.address === address && job.handle === handle) await this.saveNoteJob(key, { ...job, state: "deleted" });
+    }
+  }
 
   private withAccount<T>(address: string, action: () => Promise<T>): Promise<T> {
     const result = (this.mutations.get(address) ?? Promise.resolve()).then(action);
@@ -234,15 +331,165 @@ export class HostedUploadStore {
     private readonly removeSpool: typeof rm = rm,
     private readonly tombstoneLimits = { global: MAX_UPLOAD_TOMBSTONES, account: MAX_ACCOUNT_UPLOAD_TOMBSTONES },
     private readonly outcomeLimits = { global: MAX_SETTLED_OUTCOMES, account: MAX_ACCOUNT_SETTLED_OUTCOMES },
+    private readonly identityStore?: Pick<JsonKv, "get"> & { putIfAbsent(key: string, value: unknown): Promise<boolean> },
+    private readonly freshInstallId = process.env.ASSEMBLYAI_HOSTED_FRESH_INSTALL,
   ) {}
 
-  /** Create the spool dir (0700) and remove whatever a previous process left in it. */
+  /** Take the process-wide writer lock before reading or changing any spool state. */
   async init(): Promise<void> {
+    if (this.spoolLock) throw new Error("[assemblyai-hosted] spool already initialized");
     await mkdir(this.spoolDir, { recursive: true, mode: 0o700 });
     await chmod(this.spoolDir, 0o700);
-    for (const name of await readdir(this.spoolDir)) {
-      if (SPOOL_FILE_RE.test(name)) await rm(join(this.spoolDir, name), { force: true });
+    const lock = await open(join(this.spoolDir, ".hosted-writer.lock"), "a+", 0o600);
+    const libc = dlopen(process.platform === "darwin" ? "/usr/lib/libSystem.B.dylib" : "libc.so.6", {
+      flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+    });
+    // LOCK_EX | LOCK_NB. The open descriptor retains the kernel lock until close or process exit.
+    if (libc.symbols.flock(lock.fd, 2 | 4) !== 0) {
+      await lock.close();
+      libc.close();
+      throw new Error(`[startup] FATAL: hosted spool writer lock is held: ${this.spoolDir}; refusing hosted routes`);
     }
+    this.spoolLock = lock;
+    libc.close();
+    try {
+      const initialNames = await readdir(this.spoolDir);
+      const identityFile = join(this.spoolDir, "spool.json");
+      if (!this.identityStore) throw new Error("[startup] FATAL: hosted off-volume identity store unavailable; refusing hosted routes");
+      const expected = await this.identityStore.get<SpoolIdentity>(HOSTED_IDENTITY_KEY);
+      if (expected !== null && (!expected || typeof expected.installId !== "string" || !expected.installId))
+        throw new Error("[startup] FATAL: hosted off-volume spool identity invalid; refusing hosted routes");
+      if (!initialNames.includes("spool.json")) {
+        if (expected) throw new Error("[startup] FATAL: hosted spool missing but off-volume identity exists; restore the original persistent volume; refusing hosted routes");
+        if (initialNames.some((name) => name !== ".hosted-writer.lock"))
+          throw new Error("[startup] FATAL: hosted spool identity missing with prior files; refusing hosted routes");
+        if (!this.freshInstallId || !/^[A-Za-z0-9_-]{8,128}$/.test(this.freshInstallId))
+          throw new Error("[startup] FATAL: fresh hosted spool requires ASSEMBLYAI_HOSTED_FRESH_INSTALL=<expected-new-id>; refusing hosted routes");
+        console.error(`[assemblyai-hosted] initializing fresh hosted spool at ${this.spoolDir}; verify persistent volume before accepting paid jobs alert=true`);
+        const newIdentity = { installId: this.freshInstallId, createdAt: new Date().toISOString() };
+        if (!await this.identityStore.putIfAbsent(HOSTED_IDENTITY_KEY, newIdentity))
+          throw new Error("[startup] FATAL: hosted off-volume identity was enrolled by another writer; refusing hosted routes");
+        const identity = await open(identityFile, "wx", 0o600);
+        try { await identity.writeFile(JSON.stringify(newIdentity)); await identity.sync(); }
+        finally { await identity.close(); }
+        const directory = await open(this.spoolDir, "r");
+        try { await directory.sync(); } finally { await directory.close(); }
+      } else {
+        let identity: unknown;
+        try { identity = JSON.parse(await readFile(identityFile, "utf8")); } catch { /* rejected below */ }
+        if (!identity || typeof identity !== "object" || typeof (identity as Record<string, unknown>).installId !== "string" ||
+          typeof (identity as Record<string, unknown>).createdAt !== "string")
+          throw new Error("[startup] FATAL: hosted spool identity invalid; refusing hosted routes");
+        if (expected && expected.installId !== (identity as SpoolIdentity).installId)
+          throw new Error("[startup] FATAL: hosted spool identity differs from off-volume identity; refusing hosted routes");
+        // Migrate an existing persistent spool before recovery or any hosted route can run.
+        if (!expected && !await this.identityStore.putIfAbsent(HOSTED_IDENTITY_KEY, identity))
+          throw new Error("[startup] FATAL: hosted off-volume identity was enrolled by another writer; refusing hosted routes");
+      }
+      const marker = await open(join(this.spoolDir, ".hosted-boot-id"), "w", 0o600);
+      try { await marker.writeFile(this.bootId); await marker.sync(); }
+      finally { await marker.close(); }
+      const directory = await open(this.spoolDir, "r");
+      try { await directory.sync(); } finally { await directory.close(); }
+      await this.recover();
+    }
+    catch (error) { await this.close(); throw error; }
+  }
+
+  async close(): Promise<void> {
+    if (this.spoolLock) {
+      await this.spoolLock.close();
+      this.spoolLock = null;
+    }
+  }
+
+  /** Run once at boot, under the writer lock. Never retry an interrupted paid submission. */
+  private async recover(): Promise<void> {
+    const names = await readdir(this.spoolDir);
+    const consumed = new Set<string>();
+    for (const name of names) {
+      const quarantined = /^note-([0-9a-f]{64})(?:-[^.]+)?\.json(?:\..+)?\.quarantine$/.exec(name);
+      if (quarantined) this.quarantinedKeys.add(quarantined[1]!);
+    }
+    // Legacy two-file records are read once and folded into the canonical single-file journal.
+    for (const name of names) {
+      if (/^note-[0-9a-f]{64}\.json$/.test(name)) {
+        const key = name.slice(5, -5);
+        let raw: unknown;
+        try { raw = JSON.parse(await readFile(this.noteFile(key), "utf8")); }
+        catch { this.quarantinedKeys.add(key); await this.quarantine(name); continue; }
+        if (!this.validNoteJob(key, raw)) { this.quarantinedKeys.add(key); await this.quarantine(name); continue; }
+        let job = raw;
+        const legacy = `note-${key}-${job.uploadId}.json`;
+        if (names.includes(legacy)) {
+          try {
+            const state: unknown = JSON.parse(await readFile(join(this.spoolDir, legacy), "utf8"));
+            if (!this.validNoteJob(key, state) || state.uploadId !== job.uploadId) throw new Error("invalid state");
+            job = state;
+          } catch { this.quarantinedKeys.add(key); await this.quarantine(legacy); consumed.add(legacy); await this.quarantine(name); continue; }
+        }
+        // Receiving has not crossed the paid boundary. Recreate an empty spool under the same
+        // upload ID: the client resends every part. Older records lack size/type and fail closed.
+        if (job.bootId !== this.bootId && job.state === "receiving") {
+          if (job.byteSize && job.contentType) {
+            const now = Date.now();
+            const path = join(this.spoolDir, `${job.uploadId}.part`);
+            await rm(path, { force: true });
+            const spool = await open(path, "wx", 0o600);
+            await spool.close();
+            const dayKey = `${utcDay(now)}|${job.address}`;
+            this.uploads.set(job.uploadId, { id: job.uploadId, owner: job.address, byteSize: job.byteSize,
+              contentType: job.contentType, partCount: Math.ceil(job.byteSize / HOSTED_PART_SIZE),
+              received: [], path, expiresAt: now + UPLOAD_TTL_MS, dayKey, state: "receiving",
+              abort: null, submitDeadline: 0, sourceId: job.sourceId });
+            this.charged.set(dayKey, (this.charged.get(dayKey) ?? 0) + job.byteSize);
+          } else job = { ...job, state: "needs_reconciliation" };
+        }
+        // A transcript POST may have succeeded even if its response was lost. Without a stored
+        // handle/provider identity there is no safe retry, so client lookup sees uncertainty.
+        if (job.bootId !== this.bootId && job.state === "submitting") job = { ...job, state: "needs_reconciliation" };
+        if (job.state === "uncertain") job = { ...job, state: "needs_reconciliation" };
+        job = { ...job, bootId: this.bootId };
+        await this.saveNoteJob(key, job);
+        if (names.includes(legacy)) await rm(join(this.spoolDir, legacy), { force: true });
+      }
+    }
+    for (const name of names) {
+      const match = /^note-([0-9a-f]{64})-.+\.json$/.exec(name);
+      if (match && !consumed.has(name) && !this.noteJobs.has(match[1]!)) {
+        this.quarantinedKeys.add(match[1]!);
+        await this.quarantine(name);
+      }
+    }
+    for (const name of names) {
+      const partial = /^note-([0-9a-f]{64})\.json\..+\.tmp$/.exec(name);
+      if (partial) {
+        this.quarantinedKeys.add(partial[1]!);
+        await this.quarantine(name);
+      }
+    }
+    for (const name of names) if (SPOOL_FILE_RE.test(name) && !this.uploads.has(name.slice(0, -5)))
+      await rm(join(this.spoolDir, name), { force: true });
+  }
+
+  private validNoteJob(key: string, value: unknown): value is NoteJob {
+    if (!value || typeof value !== "object") return false;
+    const job = value as Partial<NoteJob>;
+    return typeof job.address === "string" && ADDRESS_RE.test(job.address)
+      && typeof job.sourceId === "string" && job.sourceId.length > 0 && job.sourceId.length <= 256
+      && this.noteKey(job.address, job.sourceId) === key
+      && typeof job.uploadId === "string" && UPLOAD_ID_RE.test(job.uploadId)
+      && ["receiving", "submitting", "submitted", "needs_reconciliation", "uncertain", "deleted"].includes(job.state ?? "")
+      && (job.handle === undefined || typeof job.handle === "string")
+      && (job.byteSize === undefined || (Number.isSafeInteger(job.byteSize) && job.byteSize > 0 && job.byteSize <= MAX_HOSTED_BYTES))
+      && (job.contentType === undefined || HOSTED_CONTENT_TYPES.includes(job.contentType))
+      && (job.uploadUrl === undefined || (typeof job.uploadUrl === "string" && job.uploadUrl.startsWith("https://")))
+      && (job.transcriptId === undefined || (typeof job.transcriptId === "string" && ASSEMBLYAI_TRANSCRIPT_ID_RE.test(job.transcriptId)));
+  }
+
+  private async quarantine(name: string): Promise<void> {
+    await rename(join(this.spoolDir, name), join(this.spoolDir, `${name}.${randomUUID()}.quarantine`));
+    console.error(`[assemblyai-hosted] quarantined invalid spool record ${name} alert=true`);
   }
 
   dailyBytesRemaining(address: string, nowMs: number): number {
@@ -258,11 +505,26 @@ export class HostedUploadStore {
    * a failed part), is abandoned and refunded so a retry never waits out its hour; one that is
    * being sent to AssemblyAI right now still makes this `assemblyai_busy`.
    */
-  async create(address: string, byteSize: number, contentType: string, nowMs: number): Promise<CreateUploadResult> {
-    return this.withAccount(address, () => this.createLocked(address, byteSize, contentType, nowMs));
+  async create(address: string, byteSize: number, contentType: string, nowMs: number, sourceId?: string): Promise<CreateUploadResult> {
+    return this.withAccount(address, async () => {
+      if (sourceId && this.noteJob(address, sourceId)) {
+        const job = this.noteJob(address, sourceId)!;
+        if (job.status === "unresolved") return { ok: false, code: "assemblyai_needs_reconciliation" };
+        const upload = this.uploads.get(job.upload_id);
+        if (upload && upload.owner === address && upload.state === "receiving" && upload.expiresAt <= nowMs)
+          await this.abandonLocked(upload);
+        else if (upload && upload.owner === address) return { ok: true, upload };
+        else if (job.status === "needs_reconciliation") return { ok: false, code: "assemblyai_needs_reconciliation" };
+        else if (job.status === "submitting") return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
+        else return { ok: true, job: this.noteJob(address, sourceId)! };
+      }
+      if (sourceId && this.quarantinedKeys.has(this.noteKey(address, sourceId)))
+        return { ok: false, code: "assemblyai_needs_reconciliation" };
+      return this.createLocked(address, byteSize, contentType, nowMs, sourceId);
+    });
   }
 
-  private async createLocked(address: string, byteSize: number, contentType: string, nowMs: number): Promise<CreateUploadResult> {
+  private async createLocked(address: string, byteSize: number, contentType: string, nowMs: number, sourceId?: string): Promise<CreateUploadResult> {
     if (this.stopping) return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
     const mine = [...this.uploads.values()].find((u) => u.owner === address);
     if (mine?.state === "submitting") return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
@@ -299,6 +561,7 @@ export class HostedUploadStore {
       state: "receiving",
       abort: null,
       submitDeadline: 0,
+      sourceId,
     };
     // Reserve the slot and charge the allowance before the first await, so concurrent creates
     // cannot both pass the checks above.
@@ -307,9 +570,15 @@ export class HostedUploadStore {
     try {
       const handle = await open(path, "wx", 0o600);
       await handle.close();
+      if (sourceId) {
+        const key = this.noteKey(address, sourceId);
+        const job: NoteJob = { address, sourceId, uploadId: id, state: "receiving", bootId: this.bootId, byteSize, contentType };
+        await this.saveNoteJob(key, job);
+      }
     } catch (error) {
       this.uploads.delete(id);
       this.charged.set(dayKey, used);
+      await rm(path, { force: true });
       throw error;
     }
     return { ok: true, upload };
@@ -359,6 +628,7 @@ export class HostedUploadStore {
     return this.withAccount(upload.owner, async () => {
       if (!this.receiving(upload) || upload.expiresAt <= now()) return true;
       if (!(await this.complete(upload))) return false;
+      await this.markNoteSubmitting(upload);
       this.startSubmit(upload, now, submit);
       return true;
     });
@@ -383,14 +653,18 @@ export class HostedUploadStore {
       } catch {
         outcome = { status: "failed", code: "assemblyai_unavailable" };
       }
+      // An unpersisted result must remain uncertain rather than permit a second paid job.
+      await this.settleNote(upload, outcome).catch(() => {});
       // Publish the outcome before release removes the active entry; no lookup can see a gap
       // while the spool deletion is pending (or if deleting the file fails).
       const settledAt = now();
+      const expiresAt = outcome.status === "submitted" && outcome.expiresAt !== undefined
+        ? outcome.expiresAt : (Math.floor(settledAt / 1000) + HANDLE_TTL_SECONDS) * 1000;
       this.settled.set(upload.id, {
         owner: upload.owner,
-        until: settledAt + (outcome.status === "submitted" ? UNCLAIMED_SUBMITTED_TTL_MS : SETTLED_TTL_MS),
-        expiresAt: outcome.status === "submitted" && outcome.expiresAt !== undefined
-          ? outcome.expiresAt : (Math.floor(settledAt / 1000) + HANDLE_TTL_SECONDS) * 1000,
+        until: upload.sourceId && outcome.status === "submitted" ? expiresAt
+          : settledAt + (outcome.status === "submitted" ? UNCLAIMED_SUBMITTED_TTL_MS : SETTLED_TTL_MS),
+        expiresAt,
         claimed: false, outcome,
       });
       await this.release(upload).catch(() => {});
@@ -420,6 +694,10 @@ export class HostedUploadStore {
     const used = this.charged.get(upload.dayKey);
     if (used !== undefined) this.charged.set(upload.dayKey, Math.max(0, used - upload.byteSize));
     await this.release(upload);
+    if (upload.sourceId) {
+      const key = this.noteKey(upload.owner, upload.sourceId);
+      if (this.noteJobs.get(key)?.uploadId === upload.id) await this.removeNoteJob(key);
+    }
     return true;
   }
 
@@ -449,11 +727,13 @@ export class HostedUploadStore {
   private async expireOutcome(id: string, signal?: AbortSignal): Promise<void> {
     const settled = this.settled.get(id);
     if (!settled) return;
-    if (settled.outcome.status === "submitted" && !settled.claimed) {
+    const uploadJob = [...this.noteJobs.values()].find((job) => job.uploadId === id && job.address === settled.owner);
+    if (settled.outcome.status === "submitted" && (!settled.claimed || uploadJob)) {
       // Never advertise terminal cleanup until upstream deletion succeeds. A failed delete
       // keeps the handle for the next sweep (and uses the router's fixed, redacted logging).
       if (!this.expireDelete) throw new Error("Hosted expiry deletion is not configured");
       await this.expireDelete(settled.outcome.handle, settled.owner, signal);
+      if (uploadJob) await this.deleteNoteHandle(settled.owner, settled.outcome.handle);
     }
     this.tombstone(id, settled.owner, settled.expiresAt);
     this.settled.delete(id);
@@ -476,7 +756,8 @@ export class HostedUploadStore {
         if (settled.until <= nowMs) await this.expireOutcome(id);
         else if (!settled.claimed) {
           settled.claimed = true;
-          settled.until = Math.min(settled.until, nowMs + SETTLED_TTL_MS);
+          if (![...this.noteJobs.values()].some((job) => job.uploadId === id && job.address === address))
+            settled.until = Math.min(settled.until, nowMs + SETTLED_TTL_MS);
         }
       }
     });
@@ -507,6 +788,11 @@ export class HostedUploadStore {
     for (const [id, settled] of this.settled) {
       if (settled.until <= nowMs) await this.resolve(id, settled.owner, nowMs).catch(() => {});
     }
+    for (const job of [...this.noteJobs.values()]) {
+      if (job.state !== "submitted" || !job.handle || !job.expiresAt || job.expiresAt > nowMs) continue;
+      if (!this.expireDelete) throw new Error("Hosted expiry deletion is not configured");
+      await this.expireDelete(job.handle, job.address).then(() => this.deleteNoteHandle(job.address, job.handle!), () => {});
+    }
     const today = utcDay(nowMs);
     for (const key of this.charged.keys()) if (!key.startsWith(`${today}|`)) this.charged.delete(key);
     return removed;
@@ -526,7 +812,8 @@ export class HostedUploadStore {
       await Promise.allSettled([...this.uploads.values()]
         .filter((upload) => upload.state === "receiving").map((upload) => this.abandonLocked(upload)));
       await this.idle();
-      await Promise.allSettled([...this.settled].map(([id, entry]) => this.withAccount(entry.owner, async () => {
+      await Promise.allSettled([...this.settled].filter(([id, entry]) =>
+        ![...this.noteJobs.values()].some((job) => job.uploadId === id && job.address === entry.owner)).map(([id, entry]) => this.withAccount(entry.owner, async () => {
         if (!controller.signal.aborted) await this.expireOutcome(id, controller.signal);
       })));
     })();
@@ -534,7 +821,9 @@ export class HostedUploadStore {
     await Promise.race([Promise.allSettled([cleanup]), deadline]);
     clearTimeout(timer);
     for (const entry of this.settled.values()) {
-      if (entry.outcome.status === "submitted" && !entry.claimed) {
+      const handle = entry.outcome.status === "submitted" ? entry.outcome.handle : null;
+      if (handle && !entry.claimed &&
+        ![...this.noteJobs.values()].some((job) => job.handle === handle && job.address === entry.owner)) {
         console.error(`[assemblyai-hosted] route=shutdown status=502 code=assemblyai_cleanup_incomplete cid=${randomUUID()}`);
       }
     }

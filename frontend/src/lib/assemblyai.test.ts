@@ -140,6 +140,14 @@ describe("TinyCloud's AssemblyAI account (hosted client)", () => {
     expect(gone.kind).toBe("not-found");
     await hosted(() => json(404, { error: "not_found" })).c.deleteTranscript("h");
   });
+
+  test("a blocked paid note is a typed reconciliation error and does not retry", async () => {
+    const { c, calls } = hosted(() => json(409, { error: "assemblyai_needs_reconciliation" }));
+    const error = await c.createUpload(3, "audio/mp4", "note-1").catch((caught) => caught) as AssemblyAiError;
+    expect(error.kind).toBe("needs-reconciliation");
+    expect(error.message).toBe("Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI.");
+    expect(calls).toHaveLength(1);
+  });
 });
 
 describe("TinyCloud's AssemblyAI account: sending the file on", () => {
