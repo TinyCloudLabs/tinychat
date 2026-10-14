@@ -14,6 +14,7 @@ import { advanceAccountGeneration, currentAccountGeneration } from "./accountCon
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __setVoiceNotesForTests, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { createVoiceNotePipeline } from "./voiceNotePipeline";
+import { voiceNoteAudioKvKey } from "./voiceNoteStore";
 import { pendingStore, whenVoiceNoteSavesIdle } from "./recorderSaves";
 import { VoiceNoteSaveTimeout } from "./saveDeadline";
 import { createVoiceNoteRecorderController } from "@/capture/recorder/voiceNoteRecorderController";
@@ -118,7 +119,8 @@ describe("a note saved by reconcileAll is handed to the transcriber", () => {
     const row = await s.tcw.sql.db(CONNECTORS_SQL_DB_NAME).query("SELECT metadata FROM connector_meeting WHERE source_id = ?", [note.id]);
     expect(row.ok).toBe(true);
     if (row.ok) expect(JSON.parse(String(row.data.rows[0]?.[0])).audio.stored).toBe(false);
-    expect([...s.values.keys()].some((key) => key.includes("/audio/"))).toBe(false);
+    const audioBase = voiceNoteAudioKvKey(note.id);
+    expect([...s.values.keys()].some((key) => key === audioBase || key.startsWith(`${audioBase}/p/`) || key === `${audioBase}/manifest`)).toBe(false);
   });
   test("a Private note left on the phone and saved after sign-in gets one Private job, and relaunching does not send it again", async () => {
     const s = await setup("private-cloud");
