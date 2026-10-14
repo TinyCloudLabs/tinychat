@@ -147,7 +147,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         catch (error) { console.warn("[HostedVoiceNotes] Could not delete the saved remote transcript", error); }
         jobs.set(id, { kind: "done", outcome: prior.outcome }); notify(); return;
       }
-if (!prior) await createRow(account, recording as VoiceNoteRecording, voiceNoteTitle(recording.startedAt), undefined, nativePlatform());
+      if (!prior) await createRow(account, recording as VoiceNoteRecording, voiceNoteTitle(recording.startedAt), undefined, nativePlatform());
       const committed = await readNote(account, id);
       const rowChannels = committed.ok && committed.data && (committed.data.channels === 1 || committed.data.channels === 2)
         ? committed.data.channels : undefined;
