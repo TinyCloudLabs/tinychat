@@ -435,6 +435,10 @@ export async function runPipelineAction(kind: PipelineActionKind, env: PipelineA
                 return null;
               case "private-cloud": {
                 if (!env.transcription) return "Private transcription isn't available here.";
+                if (env.input.transcriptProvider === "powerful") {
+                  env.transcription.onTranscribe(env.id);
+                  return null;
+                }
                 const sizeBytes = env.privateAudioSource?.sizeBytes ?? env.native?.recording?.sizeBytes ?? null;
                 const refusal = privateRefusal(env.transcription, env.durationSecs ?? null, sizeBytes, env.privateAudioSource);
                 if (refusal !== null) return privateRefusalCopy(refusal);
@@ -773,7 +777,7 @@ export interface NotePipelineView {
   actionError: string | null;
 }
 
-interface PipelineState { input: NotePipelineInput; pipeline: NotePipeline; native: NativeNote | null }
+interface PipelineState { input: NotePipelineInput; pipeline: NotePipeline; native: NativeNote | null; rowMetadata: Record<string, unknown> | null }
 
 /** Each note's input and pipeline, off one set of subscriptions. Notes the reads have not answered for are left out. */
 /** Desktop Whisper is a Tauri queue; Capacitor's native-plugin availability cannot gate it. */
@@ -936,7 +940,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
         const key = autoTranscriptKey(tcw, id, "record");
         if (!autoSync.settled.has(key)) wantsTranscriptSync.push({ tcw, id, key, kind: "record", recording: nativeRecording, context: captureAccountContext(tcw) });
       }
-      out.set(id, { input, pipeline: notePipeline(input), native });
+      out.set(id, { input, pipeline: notePipeline(input), native, rowMetadata: facts.rowMetadata });
     }
     return { states: out, autoSyncs: wantsSync, autoTranscriptSyncs: wantsTranscriptSync };
     // The store versions say the per-key getters read above have new answers.
@@ -1003,6 +1007,18 @@ function useNotePipelinesWithLedger(entries: readonly { id: string; source: Note
     const source = current.find((entry) => entry.id === id)?.source;
     if (source === undefined) return;
     setFailures((before) => { const next = new Map(before); next.delete(id); return next; });
+    const rowMetadata = source.metadata ?? state.rowMetadata;
+    const capture = rowMetadata?.capture;
+    const captureDurationMs = capture !== null && typeof capture === "object" && !Array.isArray(capture)
+      && typeof (capture as { duration_ms?: unknown }).duration_ms === "number"
+      ? (capture as { duration_ms: number }).duration_ms : null;
+    const recording = state.native?.recording;
+    const metadataSource = privateAudioSourceFromMetadata(rowMetadata);
+    const privateAudioSource = {
+      capturePlatform: metadataSource.capturePlatform ?? (state.input.device === "browser" ? "web" : null),
+      mimeType: metadataSource.mimeType ?? recording?.mimeType ?? null,
+      sizeBytes: metadataSource.sizeBytes ?? recording?.sizeBytes ?? null,
+    };
     void runPipelineAction(kind, {
       id,
       tcw: source.tcw,
@@ -1011,10 +1027,12 @@ function useNotePipelinesWithLedger(entries: readonly { id: string; source: Note
       native: state.native,
       transcription: rec.transcription,
       latestTranscription: () => latest.current.recorder.transcription,
-      durationSecs: source.durationSecs ?? null,
-      privateAudioSource: privateAudioSourceFromMetadata(source.metadata ?? null),
+      durationSecs: source.durationSecs ?? (captureDurationMs === null ? null : captureDurationMs / 1000)
+        ?? (recording === undefined ? null : recording.durationMs / 1000),
+      privateAudioSource,
       saveNow: rec.retryPending,
       signIn: rec.signIn,
+      reviewConsent: rec.reviewPrivateConsent,
       reread: () => latest.current.reread(),
     }).then((reason) => {
       if (!live.current) return;

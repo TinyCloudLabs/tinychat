@@ -413,15 +413,40 @@ describe("actions", () => {
     expect(saves).toBe(1);
   });
 
-  test("retry on a private-cloud transcript sends the note to the transcriber", async () => {
+  test("Powerful Retry keeps the provider-aware hosted dispatch instead of Private", async () => {
+    const hosted: string[] = [];
+    const privateCalls: string[] = [];
+    const env = envFor(
+      { saved: true, native: { transcriber: "assemblyai", stt: null }, rowMetadata: { capture: { options: { transcriber: "assemblyai" } } },
+        cloudJob: { kind: "failed", message: "no", retryable: true } as never },
+      { transcription: transcription({
+        maxSeconds: 1,
+        maxBytes: 1,
+        onTranscribe: (id) => { hosted.push(id); },
+        onTranscribePrivately: (id) => { privateCalls.push(id); return null; },
+      }), durationSecs: 9_999 },
+    );
+    expect(env.pipeline.current).toBe("transcript");
+    expect(env.input.transcriptProvider).toBe("powerful");
+    expect(await runPipelineAction("retry", env)).toBeNull();
+    expect(hosted).toEqual([ID]);
+    expect(privateCalls).toEqual([]);
+  });
+
+  test("retry on a private-cloud transcript sends the note to Private only", async () => {
+    const hosted: string[] = [];
     const sent: string[] = [];
     const env = envFor(
       { saved: true, native: { transcriber: "private-cloud", stt: null }, cloudJob: { kind: "failed", message: "no", retryable: true } as never },
-      { transcription: transcription({ onTranscribePrivately: (id: string) => { sent.push(id); } }) },
+      { transcription: transcription({
+        onTranscribe: (id) => { hosted.push(id); },
+        onTranscribePrivately: (id: string) => { sent.push(id); },
+      }) },
     );
     expect(env.pipeline.current).toBe("transcript");
     expect(await runPipelineAction("retry", env)).toBeNull();
     expect(sent).toEqual([ID]);
+    expect(hosted).toEqual([]);
   });
   test("pipeline Retry refuses an oversized client WAV before dispatch and returns the browser copy", async () => {
     const dispatched: string[] = [];

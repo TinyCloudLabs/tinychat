@@ -313,7 +313,7 @@ describe("the Transcribe action", () => {
       cloud: {
         capabilities: async () => ({
           max_bytes: 120_960_000,
-          max_duration_seconds: 7_200,
+          max_duration_seconds: 11_101,
           content_types: ["audio/webm"],
           admission: "open",
           diarization: true,
@@ -362,7 +362,7 @@ describe("the Transcribe action", () => {
     OnDeviceStt.cancel = async () => { localState = "cancelled"; };
     const transcriber = createVoiceNoteTranscriber({
       cloud: {
-        capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/webm"], admission: "open", diarization: true }),
+        capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 11_101, content_types: ["audio/webm"], admission: "open", diarization: true }),
         pendingSourceIds: () => [],
       } as never,
       consent: { get: () => true, set: noop },

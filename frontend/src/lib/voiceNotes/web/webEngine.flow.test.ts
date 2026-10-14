@@ -35,7 +35,7 @@ const TRANSCRIPT: PrivateCloudTranscript = {
   segments: [{ id: "seg_0001", speaker_id: "channel_0", channel: 0, start: 0, end: 2, text: "hello from the browser" }],
   text: "Speaker 1: hello from the browser",
 };
-const CAPS = { max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/wav"], admission: "open" as const };
+const CAPS = { max_bytes: 120_960_000, max_duration_seconds: 11_101, content_types: ["audio/wav"], admission: "open" as const };
 
 function memoryStorage() {
   const map = new Map<string, string>();

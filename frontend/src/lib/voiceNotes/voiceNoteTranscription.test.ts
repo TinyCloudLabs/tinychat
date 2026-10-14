@@ -96,11 +96,12 @@ const CAP2 = "tcu_zyxwvutsrqponmlk9876543210";
 const ORIGIN = "https://ptx.example";
 const CAPS: PrivateCloudCapabilities = {
   max_bytes: 120_960_000,
-  max_duration_seconds: 7_200,
+  max_duration_seconds: 11_101,
   content_types: ["audio/mpeg", "audio/wav", "audio/ogg"],
   admission: "open",
   diarization: true,
 };
+const LEGACY_OVER_MS = Math.round((CAPS.max_duration_seconds! - PRIVATE_DURATION_MARGIN_SECONDS) * 1000) + 1;
 const AUDIO = { mimeType: "audio/mp4", base64: bytesToBase64(new Uint8Array([1, 2, 3, 4])) };
 test("accepted PTX content types drop parameters and normalize case", () => {
   expect(acceptedContentTypes({ ...CAPS, content_types: ["Audio/WebM;codecs=opus"] }))
@@ -1394,12 +1395,12 @@ describe("transcribeVoiceNote (one note end to end)", () => {
   });
   test("a saved fractional duration is refused from the row before any PTX job; a note with no duration at all is left to PTX", async () => {
     const tooLong = sqliteSpace();
-    expect((await saveVoiceNote(tooLong.tcw, { ...RECORDING, durationMs: 7_201_250 }, AUDIO, "web")).ok).toBe(true);
+    expect((await saveVoiceNote(tooLong.tcw, { ...RECORDING, durationMs: LEGACY_OVER_MS }, AUDIO, "web")).ok).toBe(true);
     const rejected = harness({});
     const refusal = await transcribeVoiceNote({ tcw: tooLong.tcw, cloud: rejected.cloud, capabilities: CAPS, explicit: true,
       sourceId: "rec-1", report: () => {} }).catch((caught: unknown) => caught);
     expect(refusal).toBeInstanceOf(PrivateCloudRefusedError);
-    expect(refusal).toMatchObject({ refusal: { kind: "duration", limitSeconds: CAPS.max_duration_seconds, durationSeconds: 7_201.25 } });
+    expect(refusal).toMatchObject({ refusal: { kind: "duration", limitSeconds: CAPS.max_duration_seconds, durationSeconds: LEGACY_OVER_MS / 1000 } });
     expect(rejected.creates).toHaveLength(0);
 
     _resetConnectorSchemaMemoForTests();
@@ -1979,7 +1980,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
 
   test("the note's own length is checked against PTX before its audio is read", async () => {
     const space = sqliteSpace();
-    await saveVoiceNote(space.tcw, { ...RECORDING, durationMs: 7_201_000 }, AUDIO, "android");
+    await saveVoiceNote(space.tcw, { ...RECORDING, durationMs: LEGACY_OVER_MS }, AUDIO, "android");
     const h = harness({});
     let loads = 0;
     const realGet = (space.tcw as { kv: { get: (k: string) => Promise<unknown> } }).kv.get;
@@ -2977,7 +2978,7 @@ describe("admission at a nonstandard advertised ceiling (real cloud, transcriber
       cloud: h.cloud, consent: localStorageVoiceNoteConsentStore(DID, storage), tcw: () => space.tcw,
       holds: localStorageVoiceNoteHoldStore(DID, storage), choices: localStorageVoiceNotePrivateChoiceStore(DID, storage),
     });
-    return { h, launch, choices: localStorageVoiceNotePrivateChoiceStore(DID, storage) };
+    return { h, launch, choices: localStorageVoiceNotePrivateChoiceStore(DID, storage), space };
   }
 
   test("auto: a save past the ceiling less the margin is refused before any PTX job, and no choice is kept for it", async () => {
@@ -3077,6 +3078,131 @@ describe("admission at a nonstandard advertised ceiling (real cloud, transcriber
     expect(h.creates).toHaveLength(1);
     expect(h.puts).toHaveLength(1);
     expect(transcriber.snapshot().jobs.get("rec-1")).toEqual({ kind: "done", outcome: "transcribed" });
+  });
+  test("an account exit during a nonempty native scan releases recovery so a returned account re-admits the stranded intent", async () => {
+    let caps: PrivateCloudCapabilities = { ...ADVERTISED, accepted_max_duration_seconds: 100 };
+    const { h, launch } = await build([["stranded", 80_000]], { capabilities: () => caps });
+    const listingStarted = Promise.withResolvers<void>();
+    const releaseListing = Promise.withResolvers<void>();
+    const accountExitObserved = Promise.withResolvers<void>();
+    let listings = 0;
+    let account = true;
+    let absentChecks = 0;
+    const current = () => {
+      if (account) return true;
+      absentChecks++;
+      if (absentChecks === 2) {
+        account = true;
+        accountExitObserved.resolve();
+      }
+      return false;
+    };
+    const native = { ...RECORDING, id: "native-eligible", durationMs: 1_000, source: "in_app",
+      options: { transcriber: "private-cloud", identifySpeakers: false },
+      ledger: { audio: { state: "saved", rowId: "native-eligible", at: null },
+        transcript: { state: "pending", outcome: null, reason: null, attempts: 0, nextAttemptAt: null } } } as unknown as VoiceNoteRecording;
+    VoiceNotes.listPending = async () => {
+      listings++;
+      if (listings === 1) {
+        listingStarted.resolve();
+        await releaseListing.promise;
+        return { recordings: [native] };
+      }
+      return { recordings: [] };
+    };
+    const transcriber = launch();
+    await transcriber.check({ current });
+    await listingStarted.promise;
+
+    account = false;
+    transcriber.noteSaved({ id: "stranded", durationMs: 80_000, source: "in_app", options: { transcriber: "private-cloud" } });
+    releaseListing.resolve();
+    await accountExitObserved.promise;
+    caps = { ...caps, accepted_max_duration_seconds: 101 };
+    await transcriber.check({ current });
+    await untilFinished(transcriber, "stranded");
+
+    expect(listings).toBeGreaterThanOrEqual(2);
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+    expect(transcriber.snapshot().jobs.get("stranded")).toEqual({ kind: "done", outcome: "transcribed" });
+  });
+
+  test("a native listing failure releases recovery so a later check retries and admits the saved intent once", async () => {
+    let caps: PrivateCloudCapabilities = { ...ADVERTISED, accepted_max_duration_seconds: 60 };
+    const { h, launch, choices } = await build([["stranded", 80_000]], { capabilities: () => caps });
+    choices.add("stranded");
+    const listingFailed = Promise.withResolvers<void>();
+    let listings = 0;
+    VoiceNotes.listPending = async () => {
+      listings++;
+      if (listings === 1) {
+        listingFailed.resolve();
+        throw new Error("native listing failed");
+      }
+      return { recordings: [] };
+    };
+    const transcriber = launch();
+    await transcriber.check();
+    await listingFailed.promise;
+    expect(h.creates).toHaveLength(0);
+
+    caps = { ...caps, accepted_max_duration_seconds: 100 };
+    await transcriber.check();
+    await untilFinished(transcriber, "stranded");
+    expect(listings).toBeGreaterThanOrEqual(2);
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+    expect(transcriber.snapshot().jobs.get("stranded")).toEqual({ kind: "done", outcome: "transcribed" });
+  });
+  test("an explicit queued Retry retains a persisted failed-row intent through unknown caps and recovers once", async () => {
+    let caps: PrivateCloudCapabilities = { ...ADVERTISED, accepted_max_duration_seconds: 100 };
+    const pollStarted = Promise.withResolvers<void>();
+    const releasePoll = Promise.withResolvers<void>();
+    let paused = false;
+    const clock = {
+      now: () => 0,
+      sleep: async () => {
+        if (paused) return;
+        paused = true;
+        pollStarted.resolve();
+        await releasePoll.promise;
+      },
+      random: () => 0.5,
+    };
+    const { h, launch, space } = await build([["first", 10_000], ["retry", 10_000]], {
+      capabilities: () => caps,
+      clock,
+      creates: [
+        { id: ID, status: "awaiting_upload", upload: { path: `/uploads/${ID}`, capability: CAP } },
+        { id: ID2, status: "awaiting_upload", upload: { path: `/uploads/${ID2}`, capability: CAP2 } },
+      ],
+      puts: [{ status: 201, body: { status: "queued" } }, { status: 201, body: { status: "queued" } }],
+      jobs: [job("queued"), job("completed"), job("completed")],
+    });
+    space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata,
+      '$.transcription_outcome', 'failed', '$.transcription_error_code', 'server_error') WHERE source_id = 'retry'`).run();
+    const transcriber = launch();
+    await transcriber.check();
+    transcriber.transcribePrivately("first", 10);
+    await pollStarted.promise;
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+
+    expect(transcriber.transcribePrivately("retry", 10)).toBeNull();
+    caps = { ...caps, max_duration_seconds: undefined, accepted_max_duration_seconds: undefined };
+    await transcriber.check();
+    releasePoll.resolve();
+    await untilFinished(transcriber, "first");
+    while (transcriber.snapshot().jobs.get("retry")?.kind !== "blocked") await nextChange(transcriber);
+    expect(transcriber.snapshot().jobs.get("retry")).toEqual({ kind: "blocked", reason: "limits-unknown" });
+
+    caps = { ...caps, accepted_max_duration_seconds: 100 };
+    await transcriber.check();
+    await untilFinished(transcriber, "retry");
+    expect(transcriber.snapshot().jobs.get("retry")).toEqual({ kind: "done", outcome: "transcribed" });
+    expect(h.creates).toHaveLength(2);
+    expect(h.puts).toHaveLength(2);
   });
 
 

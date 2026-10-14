@@ -1800,7 +1800,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       if (!result.ok) return null;
       if (result.data === null) return false;
       const note = result.data;
-      if (note.transcript.status !== "pending") {
+      const explicitRetry = chosenPrivate.has(sourceId);
+      if (note.transcript.status !== "pending" && !(note.transcript.status === "failed" && explicitRetry)) {
         choices.remove(sourceId);
         return false;
       }
@@ -1833,83 +1834,89 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     if (!force && (!recoveryNeeded || now() < nextRecoveryAt)) return;
     recoveryNeeded = false;
     let retry = false;
-    strandedRecovery = (async () => {
-      let cloudPending: Set<string>;
+    strandedRecovery = Promise.resolve().then(async () => {
       try {
-        cloudPending = new Set(cloud.pendingSourceIds());
-      } catch (err) {
-        logPipelineError("[VoiceNotes] Could not list pending Private jobs for recovery", err);
-        retry = true;
-        return;
-      }
-      const ids = new Set([...cloudPending, ...choices.ids(), ...[...jobs].flatMap(([id, job]) => job.kind === "blocked" ? [id] : [])]);
-      for (const sourceId of ids) {
-        if (!identityCurrent() || !on()) {
+        let cloudPending: Set<string>;
+        try {
+          cloudPending = new Set(cloud.pendingSourceIds());
+        } catch (err) {
+          logPipelineError("[VoiceNotes] Could not list pending Private jobs for recovery", err);
           retry = true;
           return;
         }
-        const current = jobs.get(sourceId);
-        if (current?.kind === "active" || current?.kind === "done" || current?.kind === "failed" || isHeld(sourceId)) continue;
-        const pendingInSpace = await stillPendingInSpace(sourceId);
-        if (pendingInSpace === false) {
-          if (cloudPending.has(sourceId) && identityCurrent()) {
-            try { await cloud.finish(sourceId); }
-            catch (err) { logPipelineError("Cleaning up a stale private cloud job failed", err, sourceId); }
+        const ids = new Set([...cloudPending, ...choices.ids(), ...[...jobs].flatMap(([id, job]) => job.kind === "blocked" ? [id] : [])]);
+        for (const sourceId of ids) {
+          if (!identityCurrent() || !on()) {
+            retry = true;
+            return;
           }
-          continue;
+          const current = jobs.get(sourceId);
+          if (current?.kind === "active" || current?.kind === "done" || current?.kind === "failed" || isHeld(sourceId)) continue;
+          const pendingInSpace = await stillPendingInSpace(sourceId);
+          if (pendingInSpace === false) {
+            if (cloudPending.has(sourceId) && identityCurrent()) {
+              try { await cloud.finish(sourceId); }
+              catch (err) { logPipelineError("Cleaning up a stale private cloud job failed", err, sourceId); }
+            }
+            continue;
+          }
+          if (pendingInSpace === null) {
+            retry = true;
+            if (!cloudPending.has(sourceId)) continue;
+          }
+          enqueue(sourceId, undefined, chosenPrivate.has(sourceId));
         }
-        if (pendingInSpace === null) {
-          retry = true;
-          if (!cloudPending.has(sourceId)) continue;
-        }
-        enqueue(sourceId, undefined, false);
-      }
 
-      let recordings: VoiceNoteRecording[];
-      try {
-        recordings = (await VoiceNotes.listPending()).recordings;
-      } catch (err) {
-        logPipelineError("[VoiceNotes] Could not scan this device's saved Private notes for recovery", err);
-        retry = true;
-        return;
-      }
-      for (const recording of recordings) {
-        if (!identityCurrent() || !on()) {
+        let recordings: VoiceNoteRecording[];
+        try {
+          recordings = (await VoiceNotes.listPending()).recordings;
+        } catch (err) {
+          logPipelineError("[VoiceNotes] Could not scan this device's saved Private notes for recovery", err);
           retry = true;
           return;
         }
-        if (recording.source !== "in_app" || recording.options?.transcriber !== "private-cloud"
-          || recording.ledger?.audio.state !== "saved"
-          || recording.ledger.transcript.state !== "pending" || recording.ledger.transcript.attempts !== 0
-          || !privateCloudAccepts(recording.durationMs / 1000, state.capabilities)) continue;
-        const current = jobs.get(recording.id);
-        if (isHeld(recording.id) || current?.kind === "active" || current?.kind === "done" || current?.kind === "failed"
-          || cloudPending.has(recording.id) || choices.has(recording.id)) continue;
-        const stillPending = await stillPendingInSpace(recording.id, true);
-        if (stillPending === null) {
-          retry = true;
-          continue;
+        for (const recording of recordings) {
+          if (!identityCurrent() || !on()) {
+            retry = true;
+            return;
+          }
+          if (recording.source !== "in_app" || recording.options?.transcriber !== "private-cloud"
+            || recording.ledger?.audio.state !== "saved"
+            || recording.ledger.transcript.state !== "pending" || recording.ledger.transcript.attempts !== 0
+            || !privateCloudAccepts(recording.durationMs / 1000, state.capabilities)) continue;
+          const current = jobs.get(recording.id);
+          if (isHeld(recording.id) || current?.kind === "active" || current?.kind === "done" || current?.kind === "failed"
+            || cloudPending.has(recording.id) || choices.has(recording.id)) continue;
+          const stillPending = await stillPendingInSpace(recording.id, true);
+          if (stillPending === null) {
+            retry = true;
+            continue;
+          }
+          if (stillPending) enqueue(recording.id, undefined, false);
         }
-        if (stillPending) enqueue(recording.id, undefined, false);
+      } catch (err) {
+        logPipelineError("[VoiceNotes] Private recovery scan failed", err);
+        retry = true;
+      } finally {
+        strandedRecovery = null;
+        if (recoveryRescanRequested) {
+          recoveryRescanRequested = false;
+          recoveryNeeded = true;
+          nextRecoveryAt = now();
+          resume(true);
+        } else if (retry) {
+          recoveryNeeded = true;
+          const delays = deps.recoveryBackoffMs ?? failedBackoffMs;
+          const delay = delays[Math.min(recoveryFailures, delays.length - 1)] ?? 0;
+          recoveryFailures++;
+          nextRecoveryAt = now() + delay;
+        } else {
+          recoveryNeeded = false;
+          recoveryFailures = 0;
+          nextRecoveryAt = Number.POSITIVE_INFINITY;
+        }
       }
-      strandedRecovery = null;
-      if (recoveryRescanRequested) {
-        recoveryRescanRequested = false;
-        recoveryNeeded = true;
-        nextRecoveryAt = now();
-        resume(true);
-      } else if (retry) {
-        recoveryNeeded = true;
-        const delays = deps.recoveryBackoffMs ?? failedBackoffMs;
-        const delay = delays[Math.min(recoveryFailures, delays.length - 1)] ?? 0;
-        recoveryFailures++;
-        nextRecoveryAt = now() + delay;
-      } else {
-        recoveryNeeded = false;
-        recoveryFailures = 0;
-        nextRecoveryAt = Number.POSITIVE_INFINITY;
-      }
-    })();
+    });
   };
 
   const transcriber: VoiceNoteTranscriber = {
@@ -2037,6 +2044,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       const limit = privateCloudRefusal(durationSecs, sizeBytes, privateCloudLimits(state.capabilities));
       if (on() && limit !== null && limit.kind !== "unknown") {
         choices.add(sourceId);
+        chosenPrivate.add(sourceId);
         jobs.set(sourceId, { kind: "blocked", reason: "limits-exceeded" });
         emit();
         return limit;
