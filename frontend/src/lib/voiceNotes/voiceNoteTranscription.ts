@@ -1231,13 +1231,15 @@ export async function transcribeVoiceNote(args: {
       throw err;
     }
     // Silence is an outcome, not a failure: recorded so the note is not offered again.
+    const prepared = noSpeechTranscript(transcribedAt(), rev, { transcription_stats_missing: true });
     try {
-      await save(noSpeechTranscript(transcribedAt(), rev));
+      await save(prepared);
     } catch (saveError) {
       await persistFailure(saveError);
       throw saveError;
     }
     await finish(err instanceof PrivateCloudError ? err.transcriptionId : null);
+    logPipelineCount("transcription_stats_missing", "committed");
     logPipeline("transcription", sourceId, "done", { engine: "private-cloud" });
     return "no_speech";
   }
@@ -1252,10 +1254,7 @@ export async function transcribeVoiceNote(args: {
     await finish(transcriptionId);
     throw incomplete;
   }
-  const duration = transcript.duration_seconds;
-  const audioSeconds = transcript.stats?.tinfoil_audio_seconds;
-  const statsMissing = !(typeof duration === "number" && Number.isFinite(duration) && duration >= 0)
-    && !(typeof audioSeconds === "number" && Number.isFinite(audioSeconds) && audioSeconds >= 0);
+  const statsMissing = statsMetadata.transcription_duration_seconds === undefined;
   const commitStatsMetadata: VoiceNoteTranscriptionStatsMetadata = {
     ...statsMetadata,
     transcription_stats_missing: statsMissing ? true : null,

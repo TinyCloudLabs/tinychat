@@ -108,12 +108,13 @@ test("a space-only note uses its space audio and can resume without a native rec
   expect(calls.indexOf("space:save")).toBeLessThan(calls.indexOf("DELETE /hosted/transcripts/handle-1"));
 });
 
-test("Powerful keeps a no-speech result before deleting the server copy", async () => {
-  const { calls, recording, track, getLocal } = harness(undefined, true);
+test("hosted AssemblyAI no_speech never sets PTX missing-stats metadata", async () => {
+  const { calls, recording, track, getLocal, getSavedMetadata } = harness(undefined, true);
   const lane = track(); lane.consent();
   await lane.run(recording);
   expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "no_speech" });
   expect(getLocal()?.outcome).toBe("no_speech");
+  expect(getSavedMetadata()).not.toHaveProperty("transcription_stats_missing");
   expect(calls.indexOf("space:save")).toBeLessThan(calls.indexOf("DELETE /hosted/transcripts/handle-1"));
 });
 test("Powerful keeps a saved outcome when remote transcript deletion fails", async () => {

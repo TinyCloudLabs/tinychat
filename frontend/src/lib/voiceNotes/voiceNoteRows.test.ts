@@ -956,6 +956,28 @@ test("Mac Whisper transcript sync never sets PTX missing-stats metadata", async 
     expect((await resolveVoiceNoteRow(tcw, id))?.metadata).not.toHaveProperty("transcription_stats_missing");
   } finally { __setVoiceNotesForTests(original, { available: null }); }
 });
+test("on-device no_speech transcript sync never sets PTX missing-stats metadata", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const id = "on-device-no-speech";
+  await ensureSchema(tcw);
+  await createVoiceNoteRow(tcw, { id, startedAt: 0, durationMs: 1_000, mimeType: "audio/mp4",
+    sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Silent note");
+  const transcript = {
+    version: 1, noteId: id, transcriber: "on-device", rev: 1, engine: "apple-speech", model: null, language: "en",
+    outcome: "no_speech", diarized: false, segments: [], createdAt: "2026-10-03T10:00:00.000Z",
+  };
+  __setVoiceNotesForTests({
+    listPending: async () => ({ recordings: [{ id, owner: tcw.did, rev: 1, ledger: { audio: { state: "saved" } } }] }),
+    getTranscript: async () => ({ transcript }),
+    updateLedger: async () => ({}),
+  } as unknown as typeof VoiceNotes, { available: true });
+  try {
+    await syncOnDeviceTranscript(tcw, { id, owner: tcw.did, ledger: { audio: { state: "saved" } } });
+    expect(await readTranscriptCommit(tcw, id)).toMatchObject({ outcome: "no_speech" });
+    expect((await resolveVoiceNoteRow(tcw, id))?.metadata).not.toHaveProperty("transcription_stats_missing");
+  } finally { __setVoiceNotesForTests(original, { available: null }); }
+});
 
 test("another account's retained notes do not delay a fresh Stop with a space preflight", async () => {
   const previous = VoiceNotes;

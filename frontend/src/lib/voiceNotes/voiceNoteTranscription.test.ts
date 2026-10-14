@@ -14,6 +14,7 @@
 //   8. turning transcription off stops anything not yet sent, and consent and jobs are per account;
 //   9. a note whose outcome is saved is never transcribed again, even if its PTX delete failed.
 
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { captureEvents } from "@/capture/captureEvents";
 import { advanceAccountGeneration, currentAccountGeneration, mountVoiceNoteAccount } from "./accountContext";
@@ -1196,7 +1197,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     expect(event).toMatchObject({ count: 1, source_id: null, phase: "committed" });
     expect(JSON.stringify(event)).not.toContain("rec-1");
   });
-  test("PTX with no usable stats commits, marks the row, logs a count without identifiers, then clears on a stats commit", async () => {
+  test("PTX with no usable stats commits, marks the row, logs a count without identifiers, then clears on a stats-free later commit", async () => {
     const space = sqliteSpace();
     expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "web")).ok).toBe(true);
     const lines: string[] = [];
@@ -1212,9 +1213,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
       .find((event) => event.operation === "transcription_stats_missing");
     expect(missingEvent).toMatchObject({ count: 1, source_id: null, phase: "committed" });
     expect(JSON.stringify(missingEvent)).not.toContain("rec-1");
-    const prepared = prepareVoiceNoteTranscript({ ...TRANSCRIPT, duration_seconds: 9,
-      stats: { tinfoil_audio_seconds: 9 } } as PrivateCloudTranscript,
-    "2026-10-03T10:00:00.000Z", 2, { transcription_audio_seconds: 9, transcription_duration_seconds: 9 });
+    const prepared = prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z", 2);
     expect((await saveVoiceNoteTranscript(space.tcw, "rec-1", prepared)).ok).toBe(true);
     expect((await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata.transcription_stats_missing).toBeUndefined();
   });
@@ -1241,7 +1240,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
       expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ outcome: "transcribed" });
       const metadata = (await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata;
       expect(metadata).toMatchObject(expectedMetadata);
-      if (stats === undefined) expect(metadata).not.toHaveProperty("transcription_stats_missing");
+      if (stats === undefined) expect(metadata?.transcription_stats_missing).toBe(true);
       expect(h.removed).toEqual([ID]);
     }
   });
@@ -1350,16 +1349,65 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     });
   }
 
-  test("no speech is saved as an outcome (the note is not offered again) and the job is deleted", async () => {
+  test("PTX no_speech failure saves its terminal outcome, marks missing stats, and logs a count", async () => {
     const space = sqliteSpace();
     await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios");
+    const lines: string[] = [];
+    const info = console.info;
+    console.info = ((line?: unknown) => { lines.push(String(line)); }) as typeof console.info;
     const h = harness({ jobs: [job("failed", { error: { code: "no_speech", message: "No speech was found in the recording." } })] });
-    const outcome = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} });
-    expect(outcome).toBe("no_speech");
+    try {
+      const outcome = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+        sourceId: "rec-1", report: () => {} });
+      expect(outcome).toBe("no_speech");
+    } finally { console.info = info; }
     expect(space.kv.get(transcriptKvKey(VOICE_NOTE_SOURCE, "rec-1"))).toBe("[]");
+    expect(h.calls).not.toContain(`result:${ID}`);
     const listed = await listVoiceNotes(space.tcw);
     expect(listed.ok && listed.data[0]!.transcript).toEqual({ status: "no_speech", preview: null });
+    expect((await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata.transcription_stats_missing).toBe(true);
+    const event = lines.map((line) => JSON.parse(line) as Record<string, unknown>)
+      .find((entry) => entry.operation === "transcription_stats_missing");
+    expect(event).toMatchObject({ count: 1, source_id: null, phase: "committed" });
+    expect(JSON.stringify(event)).not.toContain("rec-1");
     expect(h.removed).toEqual([ID]);
+  });
+
+  test("completed empty PTX transcript commits no_speech through the result path without missing stats", async () => {
+    const space = sqliteSpace();
+    await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios");
+    const lines: string[] = [];
+    const info = console.info;
+    console.info = ((line?: unknown) => { lines.push(String(line)); }) as typeof console.info;
+    const h = harness({ result: { ...TRANSCRIPT, segments: [], text: "", stats: { tinfoil_audio_seconds: 9 } } });
+    try {
+      const outcome = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+        sourceId: "rec-1", report: () => {} });
+      expect(outcome).toBe("no_speech");
+    } finally { console.info = info; }
+    expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ outcome: "no_speech" });
+    expect(h.calls).toContain(`result:${ID}`);
+    const metadata = (await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata;
+    expect(metadata).not.toHaveProperty("transcription_stats_missing");
+    expect(lines.map((line) => JSON.parse(line) as Record<string, unknown>)
+      .some((entry) => entry.operation === "transcription_stats_missing")).toBe(false);
+    expect(h.removed).toEqual([ID]);
+  });
+
+  test("PTX partial stats mark the coverage pair missing", async () => {
+    for (const transcript of [
+      { ...TRANSCRIPT, duration_seconds: 9, stats: undefined },
+      { ...TRANSCRIPT, duration_seconds: undefined, stats: { tinfoil_audio_seconds: 9 } },
+      { ...TRANSCRIPT, duration_seconds: undefined, stats: null },
+    ] as unknown as PrivateCloudTranscript[]) {
+      _resetConnectorSchemaMemoForTests();
+      const space = sqliteSpace();
+      await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios");
+      const h = harness({ result: transcript });
+      expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+        sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+      expect((await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata.transcription_stats_missing).toBe(true);
+    }
   });
 
   test("an active account job deferral leaves the note pending", async () => {
