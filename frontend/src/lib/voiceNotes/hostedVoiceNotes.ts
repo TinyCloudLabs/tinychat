@@ -357,10 +357,10 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
           }
           throw error;
         } finally { clearInterval(heartbeat); }
-      });
+      }
       if (!handle) return;
       persist(id, { handle });
-      const transcript = await pollAssemblyAiTranscript(client, handle, {
+      transcript = await pollAssemblyAiTranscript(client, handle, {
         clock: services.clock,
         durationSeconds: recording.durationMs / 1000,
         guard,

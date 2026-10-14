@@ -1312,4 +1312,58 @@ describe("desktop recorder adapter", () => {
     expect(bridge.files.get("note-1")).toEqual(Uint8Array.of(8, 9, 10));
     second.dispose();
   });
+
+  test("recovery with uploadAudio preference OFF creates session with uploadAudio: false", async () => {
+    const bridge = new FakeBridge();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null });
+    await store.setCaptureDefaults({ accountDid: null, transitionGen: 0, transcriber: "on-device",
+      identifySpeakers: false, uploadAudio: false });
+    store.close();
+    bridge.recover = { id: "note-1", startedAt: bridge.now, recordedMs: 5000, pausedMs: 0, maxDurationMs: 3600000 };
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3, 4));
+    const engine = await rig(bridge, dbName, env);
+    const result = await engine.recoverInterrupted();
+    expect(result.recovered).toHaveLength(1);
+    const recordings = (await engine.plugin.listPending()).recordings;
+    expect(recordings.find((r) => r.id === "note-1")?.options?.uploadAudio).toBe(false);
+    engine.dispose();
+  });
+
+  test("recovery with uploadAudio preference ON creates session with uploadAudio: true", async () => {
+    const bridge = new FakeBridge();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null });
+    await store.setCaptureDefaults({ accountDid: null, transitionGen: 0, transcriber: "on-device",
+      identifySpeakers: false, uploadAudio: true });
+    store.close();
+    bridge.recover = { id: "note-1", startedAt: bridge.now, recordedMs: 5000, pausedMs: 0, maxDurationMs: 3600000 };
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3, 4));
+    const engine = await rig(bridge, dbName, env);
+    const result = await engine.recoverInterrupted();
+    expect(result.recovered).toHaveLength(1);
+    const recordings = (await engine.plugin.listPending()).recordings;
+    expect(recordings.find((r) => r.id === "note-1")?.options?.uploadAudio).toBe(true);
+    engine.dispose();
+  });
+
+  test("recovery with no uploadAudio preference creates session with uploadAudio: false", async () => {
+    const bridge = new FakeBridge();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null });
+    await store.setCaptureDefaults({ accountDid: null, transitionGen: 0, transcriber: "on-device",
+      identifySpeakers: false });
+    store.close();
+    bridge.recover = { id: "note-1", startedAt: bridge.now, recordedMs: 5000, pausedMs: 0, maxDurationMs: 3600000 };
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3, 4));
+    const engine = await rig(bridge, dbName, env);
+    const result = await engine.recoverInterrupted();
+    expect(result.recovered).toHaveLength(1);
+    const recordings = (await engine.plugin.listPending()).recordings;
+    expect(recordings.find((r) => r.id === "note-1")?.options?.uploadAudio).toBe(false);
+    engine.dispose();
+  });
 });
