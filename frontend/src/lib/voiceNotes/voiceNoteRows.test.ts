@@ -10,6 +10,7 @@ import { CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connec
 import { readVoiceNoteTranscriptState } from "./voiceNoteStore";
 import { SQL_MEETING_METADATA_QUERY } from "../meetingChat/corpus";
 import { legacyTranscriptWinner, readTranscriptCommit, voiceNoteTranscriptLocator } from "./voiceNoteCommits";
+import { whisperLocalTranscript } from "./desktop/whisperTranscript";
 import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio,
   patchVoiceNoteTranscriptionFailure, reconcileDuplicates, resolveVoiceNoteRow, sweepArchived, transcriptHash, transcriptRevKvKey } from "./voiceNoteRows";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
@@ -896,6 +897,7 @@ test("the mounted pending saver runs the real pipeline on sign-in and forced-swa
     } });
     await syncOnDeviceTranscript(tcw, { id: initial.id, ledger: { audio: { state: "saved" } } });
     expect(await readTranscriptCommit(tcw, initial.id)).toMatchObject({ rev: 1 });
+    expect((await resolveVoiceNoteRow(tcw, initial.id))?.metadata).not.toHaveProperty("transcription_stats_missing");
     expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: initial.id },
       { source: VOICE_NOTE_SOURCE, sourceId: initial.id },
       { source: VOICE_NOTE_SOURCE, sourceId: initial.id }]);
@@ -933,6 +935,26 @@ test("the mounted pending saver runs the real pipeline on sign-in and forced-swa
     Reflect.set(globalThis, "window", previousWindow);
     Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
   }
+});
+test("Mac Whisper transcript sync never sets PTX missing-stats metadata", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const id = "desktop-whisper";
+  await ensureSchema(tcw);
+  await createVoiceNoteRow(tcw, { id, startedAt: 0, durationMs: 1_000, mimeType: "audio/mpeg",
+    sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Whisper note");
+  const transcript = whisperLocalTranscript({ id, durationMs: 1_000 }, "base" as never, {
+    results: { channels: [{ alternatives: [{ transcript: "Saved by desktop Whisper", words: [] }] }] },
+  } as never);
+  __setVoiceNotesForTests({
+    listPending: async () => ({ recordings: [{ id, owner: tcw.did, rev: 1, ledger: { audio: { state: "saved" } } }] }),
+    getTranscript: async () => ({ transcript }),
+    updateLedger: async () => ({}),
+  } as unknown as typeof VoiceNotes, { available: true });
+  try {
+    await syncOnDeviceTranscript(tcw, { id, owner: tcw.did, ledger: { audio: { state: "saved" } } });
+    expect((await resolveVoiceNoteRow(tcw, id))?.metadata).not.toHaveProperty("transcription_stats_missing");
+  } finally { __setVoiceNotesForTests(original, { available: null }); }
 });
 
 test("another account's retained notes do not delay a fresh Stop with a space preflight", async () => {

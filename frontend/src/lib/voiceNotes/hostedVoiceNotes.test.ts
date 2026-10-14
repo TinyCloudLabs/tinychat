@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { StoreResult, UpsertMeetingOutcome } from "../connectors/connectorStore";
 import { createHostedAssemblyAiClient } from "../assemblyai";
 import { bytesToBase64 } from "./voiceNoteAudio";
 import { createHostedVoiceNoteTrack } from "./hostedVoiceNotes";
@@ -25,6 +26,7 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
   const audio = new Uint8Array([1, 2, 3, 4]);
   let failed = false;
   let local: LocalTranscript | null = null;
+  let savedMetadata: Record<string, unknown> | null = null;
   let commit: TranscriptCommit | null = null;
   let submitted = false;
   const recording = { id: "note-1", owner: "did:test:one", source: "in_app", startedAt: 1,
@@ -85,12 +87,13 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
     loadAudio: async () => ({ ok: true, data: { mimeType: "audio/mp4", base64: bytesToBase64(audio) } }) as Awaited<ReturnType<typeof import("./voiceNoteStore").loadVoiceNoteAudio>>,
     save: async (_account, _id, transcript) => {
       calls.push("space:save");
-      if (failAt === "space" && !failed) { failed = true; return { ok: false, error: new Error("offline") } as Awaited<ReturnType<typeof import("./voiceNoteStore").saveVoiceNoteTranscript>>; }
+      savedMetadata = transcript.metadata;
+      if (failAt === "space" && !failed) { failed = true; return { ok: false, error: new Error("offline") } as StoreResult<UpsertMeetingOutcome>; }
       commit = { rev: transcript.rev, outcome: noSpeech ? "no_speech" : "transcribed" } as TranscriptCommit;
-      return { ok: true } as Awaited<ReturnType<typeof import("./voiceNoteStore").saveVoiceNoteTranscript>>;
+      return { ok: true } as StoreResult<UpsertMeetingOutcome>;
     }, sleep: async () => {},
   });
-  return { calls, recording, track, getLocal: () => local };
+  return { calls, recording, track, getLocal: () => local, getSavedMetadata: () => savedMetadata };
 }
 
 test("a space-only note uses its space audio and can resume without a native recording", async () => {
@@ -127,6 +130,12 @@ test("Powerful accepts webm with codec parameters and sends the base MIME type",
   const lane = track(); lane.consent();
   await lane.run(recording);
   expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
+});
+test("hosted AssemblyAI commits never set PTX-only missing-stats metadata", async () => {
+  const { recording, track, getSavedMetadata } = harness();
+  const lane = track(); lane.consent();
+  await lane.run(recording);
+  expect(getSavedMetadata()).not.toHaveProperty("transcription_stats_missing");
 });
 
 test("Powerful waits for the account's Upload audio submission before creating an upload", async () => {

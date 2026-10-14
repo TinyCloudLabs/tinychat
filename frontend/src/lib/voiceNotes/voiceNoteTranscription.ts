@@ -1,4 +1,4 @@
-import { logPipeline, logPipelineError } from "@/lib/debugLog";
+import { logPipeline, logPipelineCount, logPipelineError } from "@/lib/debugLog";
 import { readableError } from "@/lib/readableError";
 // Private transcription for Exo voice notes. The backend creates and tracks
 // jobs; this device uploads a local file directly to PTX when it has one.
@@ -428,17 +428,13 @@ export function voiceNoteSentences(transcript: Pick<PrivateCloudTranscript, "seg
 export const MIN_INCOMPLETE_TRANSCRIPT_DURATION_SECONDS = 600;
 export const MIN_INCOMPLETE_TRANSCRIPT_COVERAGE_RATIO = 0.35;
 export const VAD_DROP_REJECT_PCT = 10;
-export const VAD_DROP_REJECTION_ENABLED = false;
 
-/**
- * TODO(TC-1045): enable only after ptx #93 deploys and Miller confirms the field semantics.
- * PTX defines this as the percent of non-silent audio (frames >= -50 dBFS) not sent;
- * silence does not dilute it, and completed post-deploy jobs should be <= 10.
- * `voiced_seconds` sums across channels and can exceed duration on separate stereo.
- */
-export function shouldRejectForVadDrop(stats: PrivateCloudTranscriptionStats | null | undefined): boolean {
+/** Older PTX or backend versions may not return the VAD-drop metric. */
+function shouldRejectIncompleteTranscript(stats: PrivateCloudTranscriptionStats | null | undefined,
+  metadata: VoiceNoteTranscriptionStatsMetadata): boolean {
   const dropped = stats?.dropped_above_floor_pct;
-  return typeof dropped === "number" && Number.isFinite(dropped) && dropped > VAD_DROP_REJECT_PCT;
+  const exceedsDropThreshold = typeof dropped === "number" && Number.isFinite(dropped) && dropped > VAD_DROP_REJECT_PCT;
+  return exceedsDropThreshold || rejectsForIncompleteCoverage(metadata);
 }
 
 function transcriptStatsMetadata(transcript: PrivateCloudTranscript): VoiceNoteTranscriptionStatsMetadata {
@@ -1246,8 +1242,7 @@ export async function transcribeVoiceNote(args: {
     return "no_speech";
   }
   const statsMetadata = transcriptStatsMetadata(transcript);
-  if (rejectsForIncompleteCoverage(statsMetadata)
-    || (VAD_DROP_REJECTION_ENABLED && shouldRejectForVadDrop(transcript.stats))) {
+  if (shouldRejectIncompleteTranscript(transcript.stats, statsMetadata)) {
     const incomplete = new PrivateCloudError(
       "transcript_incomplete",
       "Private Transcription returned a transcript that may be incomplete. Try again later.",
@@ -1257,7 +1252,15 @@ export async function transcribeVoiceNote(args: {
     await finish(transcriptionId);
     throw incomplete;
   }
-  const prepared = prepareVoiceNoteTranscript(transcript, transcribedAt(), rev, statsMetadata);
+  const duration = transcript.duration_seconds;
+  const audioSeconds = transcript.stats?.tinfoil_audio_seconds;
+  const statsMissing = !(typeof duration === "number" && Number.isFinite(duration) && duration >= 0)
+    && !(typeof audioSeconds === "number" && Number.isFinite(audioSeconds) && audioSeconds >= 0);
+  const commitStatsMetadata: VoiceNoteTranscriptionStatsMetadata = {
+    ...statsMetadata,
+    transcription_stats_missing: statsMissing ? true : null,
+  };
+  const prepared = prepareVoiceNoteTranscript(transcript, transcribedAt(), rev, commitStatsMetadata);
   try {
     await save(prepared);
   } catch (err) {
@@ -1267,6 +1270,8 @@ export async function transcribeVoiceNote(args: {
     throw err;
   }
   await finish(transcriptionId);
+  if (statsMissing) logPipelineCount("transcription_stats_missing", "committed");
+  if (transcript.stats?.vad_fallback === true) logPipelineCount("transcription_vad_fallback", "committed");
   logPipeline("transcription", sourceId, "done", { engine: "private-cloud" });
   return prepared.sentences.length > 0 ? "transcribed" : "no_speech";
 }
