@@ -27,4 +27,5 @@ Integration branch: `dev/0.8.0`
 | #351 | 760a64fa | 92ff5241 | Yes | **PRIVACY INVARIANT**: voiceNoteStore.ts local-only early return (line ~424) precedes ALL audio upload code. When uploadAudio=false: (1) empty transcript key, (2) patchVoiceNoteLocalOnly, (3) note sync, (4) return - NO putVoiceNoteAudio reached. Conflicts in 5 files resolved. |
 | #368 | 52d8380a | e5937afe | Yes | TimestampedTranscript + T1 fixes. #363 deduped. Kept HEAD's isPrivateCloud/MAX_TURN_SECONDS timing throughout. Phone baselines will change (TimestampedTranscript). |
 | #364 | dbf87049 | b8a3daf2 | No | Clean merge - iOS test fix (CaptureEngineTests.swift async stop event) |
+| Integration fix | 41159ec4 | - | N/A | **P1 PRIVACY FIX** (reviewer 29b814e5): crash-recovered sessions uploaded audio even when preference was off. Changed uploadAudio !== false to uploadAudio === true (fail closed), added uploadAudio: false to recovery sites. |
 
