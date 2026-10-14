@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.7.3-beta.3
+
+### Patch Changes
+
+- 60e745c: Reduce PTX and hosted transcription status polling after the initial fast phase, honor rate-limit retry deadlines, expose limiter headers to browser clients, and keep throttling separate from failure budgets.
+
 ## 0.7.3-beta.2
 
 ### Patch Changes
