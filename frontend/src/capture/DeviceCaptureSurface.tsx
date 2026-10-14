@@ -17,6 +17,7 @@ import { LibraryRow } from "./library/LibraryRow";
 import { LibraryListView } from "./library/LibraryListView";
 import type { LibraryFilter } from "./library/libraryKinds";
 import { NoteDetailView } from "./library/NoteDetailView";
+import { transcriptWithTimestamps } from "./library/transcriptSegments";
 import { VoiceNotesTranscriberSettings } from "@/chat/VoiceNotesTranscriberSettings";
 import { useRecorder } from "./recorder/RecorderProvider";
 import { SoftHomeProvider } from "./home/softHome";
@@ -121,6 +122,7 @@ function DeviceNoteDetail({ id, item, onBack }: { id: string | null; item: Retur
       transcript={transcript === undefined ? undefined : sentences ? { status: "ok", sentences } : { status: "absent" }}
       audio={id ? { localUrl: async () => Capacitor.convertFileSrc((await VoiceNotes.localAudioUrl({ id })).url) } : null}
       copyState="idle" onCopy={() => { if (sentences) void navigator.clipboard.writeText(sentences.map((part) => part.text).join("\n")); }}
+      onCopyWithTimestamps={() => { if (sentences) void navigator.clipboard.writeText(transcriptWithTimestamps(sentences)); }}
       onRetry={() => { if (id) void VoiceNotes.getTranscript({ id }).then((result) => setTranscript(result.transcript)); }}
       pushed onBack={onBack} />
   </div>;
