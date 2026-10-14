@@ -246,6 +246,16 @@ describe("a voice note's transcription", () => {
     expect(render()).toContain("No transcript.");
   });
 
+  test("a pending Private note without a live job always has an action or recovery explanation", () => {
+    const pending = { status: "ok" as const, metadata: { capture: { options: { transcriber: "private-cloud" } }, transcription_outcome: "pending" } };
+    const available = render({ metadata: pending, transcription: transcription() });
+    expect(available).toContain('data-testid="transcribe-button"');
+
+    const unavailable = render({ metadata: pending, transcription: transcription({ availability: "failed" }) });
+    expect(unavailable).toContain('data-testid="voice-note-private-unavailable"');
+    expect(unavailable).toContain("Private cloud isn’t reachable");
+  });
+
   test("available but not yet consented: Transcribe with Private, which asks for consent when pressed", () => {
     const html = render({ transcription: transcription({ consented: false }) });
     expect(html).toContain('data-testid="transcribe-button"');
@@ -366,7 +376,7 @@ describe("a voice note's transcription", () => {
     expect(render({ transcription: job({ kind: "active", status: { kind: "processing", completed: 4, total: 9 } }) })).toContain('title="Recordings are transcribed in parts"');
     expect(render({ transcription: job({ kind: "active", status: { kind: "processing", completed: 9, total: 9 } }) })).toContain("9 of 9 parts done");
     expect(render({ transcription: job({ kind: "active", status: { kind: "processing", completed: 2, total: 0 } }) })).toContain("Transcribing");
-    expect(render({ transcription: job({ kind: "done", outcome: "transcribed" }) })).toContain("Saving the transcript to your TinyCloud space…");
+    expect(render({ transcription: job({ kind: "done", outcome: "transcribed" }) })).toContain("Transcript saved.");
     const failed = (retryable: boolean) =>
       job({ kind: "failed", code: "upload_interrupted", message: "The upload did not complete.", retryable, reference: "cid-7" });
     const retry = render({ transcription: failed(true) });
@@ -600,4 +610,36 @@ describe("the transcript placeholder while the note's pipeline is not done", () 
     expect(withContext(allDone())).not.toContain('data-testid="note-transcript-pipeline"');
     expect(render({ item: onPhone, metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" }, transcription: undefined })).toContain("No transcript yet.");
   });
+});
+
+const gap = { start: 41, end: 52, speaker_name: "Kenny Tucker" };
+test("meeting gaps appear inline in time order with subtle accessible provenance labels", () => {
+  const html = render({ item: MEETING, metadata: { status: "ok", metadata: { partial: true, gaps: [gap] } },
+    transcript: { status: "ok", sentences: [
+      { index: 0, speaker_name: null, text: "Before gap.", start_time: 30, end_time: 40, source: "fallback" },
+      { index: 1, speaker_name: null, text: "After gap.", start_time: 53, end_time: 55, source: "recording" },
+    ] } });
+  expect(html).toContain("0:41–0:52 could not be transcribed — Kenny Tucker");
+  expect(html.indexOf("Before gap.")).toBeLessThan(html.indexOf("0:41–0:52"));
+  expect(html.indexOf("0:41–0:52")).toBeLessThan(html.indexOf("After gap."));
+  expect(html).toContain("Fallback transcript");
+  expect(html).toContain("Recovered from recording");
+});
+
+test("completed gaps-only meeting shows gaps instead of the empty state, omitting null speakers", () => {
+  const html = render({ item: MEETING, metadata: { status: "ok", metadata: { partial: true,
+    gaps: [gap, { start: 60, end: 70, speaker_name: null }] } } });
+  expect(html).toContain("0:41–0:52 could not be transcribed — Kenny Tucker");
+  expect(html).toContain("1:00–1:10 could not be transcribed</p>");
+  expect(html).not.toContain("No transcript stored yet.");
+});
+
+test("legacy meeting transcript has no gap or provenance additions", () => {
+  const html = render({ item: MEETING, metadata: { status: "ok", metadata: {} }, transcript: { status: "ok", sentences: [
+    { index: 0, speaker_name: "Alice", text: "Legacy words.", start_time: 0, end_time: 1 },
+  ] } });
+  expect(html).toContain("Legacy words.");
+  expect(html).not.toContain('data-testid="transcript-gap"');
+  expect(html).not.toContain("Fallback transcript");
+  expect(html).not.toContain("Recovered from recording");
 });

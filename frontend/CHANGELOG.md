@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.7.4-beta.1
+
+### Patch Changes
+
+- f4a2184: TC-760: Preserve partial transcript gaps and provenance, and show missing and recovered speech in Library notes.
+
 ## 0.7.4-beta.0
 
 ### Patch Changes

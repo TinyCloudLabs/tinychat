@@ -46,7 +46,8 @@ import { OnDeviceStt } from "./onDeviceStt";
 import { getDesktopWhisperQueue } from "./desktop/desktopWhisper";
 import { readTranscriptCommit, requireVoiceNoteTranscriptCommit, type TranscriptCommit } from "./voiceNoteCommits";
 import { preserveVoiceNoteTranscriptHistory } from "./voiceNoteTranscriptHistory";
-import { whenVoiceNoteSavesIdle } from "./recorderSaves";
+import { pendingStore } from "./recorderSaves";
+import { voiceNoteCallDeadlineMs, withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "./transcriptionErrors";
 import { privatePartsDone } from "./notePipelineCopy";
 import type { VoiceNoteTranscriptionFailure } from "./transcriptionErrors";
@@ -1154,6 +1155,9 @@ export async function transcribeVoiceNote(args: {
   report: (status: VoiceNoteTranscriptionStatus) => void;
   now?: () => Date;
   account?: VoiceNoteTranscriptAccount;
+  /** Per-note audio readiness bounds; production uses a 90-second stall window. */
+  audioReadyStallMs?: number;
+  audioReadyPollMs?: number;
 }): Promise<"transcribed" | "no_speech"> {
   if (args.explicitRerun && !args.explicit)
     throw new PrivateCloudError("transcription_off", "A transcript rerun requires an explicit user action");
@@ -1235,20 +1239,36 @@ export async function transcribeVoiceNote(args: {
   if (!args.explicit && note.data.captureSource !== "in_app")
     throw new PrivateCloudError("note_held", "This note did not begin in the app, so it waits for the user to transcribe it");
 
-  let localAudioRecording: VoiceNoteRecording | undefined;
+  let localAudioRecording: VoiceNoteRecording | undefined = nativeNote;
   const loadSpaceAudio = async (): Promise<VoiceNoteAudio> => {
-    // A row can exist before its audio. Wait for queued save work and require a committed ledger
-    // when one exists before reading the space copy.
-    if (!localAudioRecording || (localAudioRecording.ledger?.audio && localAudioRecording.ledger.audio.state !== "saved")) {
-      await whenVoiceNoteSavesIdle();
+    // Wait only for this note's ledger. Other notes may continue saving independently.
+    if (localAudioRecording?.ledger?.audio?.state === "pending") {
+      const stallMs = args.audioReadyStallMs ?? voiceNoteCallDeadlineMs();
+      const pollMs = args.audioReadyPollMs ?? 250;
+      let lastProgressAt = Date.now();
+      let lastProgress = "";
       try {
-        localAudioRecording = (await VoiceNotes.listPending()).recordings.find((recording) => recording.id === sourceId);
+        while (true) {
+          const progress = pendingStore.snapshot().notes?.find((note) => note.id === sourceId)?.upload;
+          const progressKey = progress ? `${progress.state}:${progress.bytes}:${progress.total}` : "";
+          if (progressKey !== lastProgress) {
+            lastProgress = progressKey;
+            lastProgressAt = Date.now();
+          }
+          const remaining = stallMs - (Date.now() - lastProgressAt);
+          if (remaining <= 0) throw new Error("This note's audio save stalled");
+          const recordings = await withVoiceNoteSaveDeadline(
+            `checking whether ${sourceId} audio is saved`,
+            () => VoiceNotes.listPending().then((result) => result.recordings),
+            remaining,
+          );
+          localAudioRecording = recordings.find((recording) => recording.id === sourceId);
+          if (!localAudioRecording || localAudioRecording.ledger?.audio?.state === "saved") break;
+          await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, remaining)));
+        }
       } catch (cause) {
         logPipelineError("[VoiceNotes] Could not confirm the audio save before transcription", cause);
         throw new VoiceNoteAudioError("audio_read_failed", "Could not confirm this note's audio save");
-      }
-      if (localAudioRecording?.ledger?.audio && localAudioRecording.ledger.audio.state !== "saved") {
-        throw new VoiceNoteAudioError("audio_upload_pending", "This note's audio is still being saved to your space");
       }
     }
     const res = await loadVoiceNoteAudio(tcw, sourceId, { maxBytes: args.capabilities.max_bytes });
@@ -1455,6 +1475,13 @@ export interface VoiceNoteTranscriber {
    */
   noteSaved(recording: Pick<VoiceNoteRecording, "id" | "durationMs" | "options" | "source">, audio?: VoiceNoteAudio): void;
 }
+export function recheckVoiceNoteAvailabilityAutomatically(
+  transcriber: Pick<VoiceNoteTranscriber, "check">,
+  current?: () => boolean,
+): Promise<void> {
+  return transcriber.check({ automatic: true, ...(current ? { current } : {}) });
+}
+
 
 export interface VoiceNoteTranscriberDeps {
   /** Null when this build lacks its required PTX origin. */
@@ -1475,6 +1502,8 @@ export interface VoiceNoteTranscriberDeps {
   freshMs?: number;
   /** Waits before an automatic check may try again after the 1st, 2nd, ... failed check; the last repeats. */
   failedBackoffMs?: readonly number[];
+  /** Delay before another recovery scan after transient local re-read failure. */
+  recoveryBackoffMs?: readonly number[];
   now?: () => number;
 }
 
@@ -1516,12 +1545,18 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   };
   let snapshot: VoiceNoteTranscriberSnapshot = { ...state, jobs: new Map(jobs) };
   let chain: Promise<void> = Promise.resolve();
-  let resumed = false;
+  let recoveryNeeded = false;
   let checking: Promise<void> | null = null;
   /** The newest caller's "this account is still signed in"; none until a hook-managed check names one. */
   let accountCurrent: (() => boolean) | null = null;
   let settledAt: number | null = null;
   let failedChecks = 0;
+  let recoveryFailures = 0;
+  let nextRecoveryAt = 0;
+  let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+  let strandedRecovery: Promise<void> | null = null;
+  let explicitRerunsCleared = false;
+  let triggerAutomaticRecheck: () => void = () => undefined;
 
   const emit = (event: VoiceNoteTranscriberEvent = { kind: "changed" }) => {
     refreshBlocked();
@@ -1578,9 +1613,9 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   /** Keep the in-memory choice for same-session retry; settleChoice clears the persisted resume choice. */
   const chosenPrivate = new Set<string>();
   const isChosen = (sourceId: string) => chosenPrivate.has(sourceId) || choices.has(sourceId);
-  /** The persisted choice is cleared once done, terminal, or awaiting an explicit retry. */
-  const settleChoice = (sourceId: string) => {
-    if (cloud !== null && !cloud.pendingSourceIds().includes(sourceId)) choices.remove(sourceId);
+  /** Failed outcomes force-clear intent even when a cloud job remains pending. */
+  const settleChoice = (sourceId: string, force = false) => {
+    if (force || cloud !== null && !cloud.pendingSourceIds().includes(sourceId)) choices.remove(sourceId);
   };
 
   /** A note that did not begin in the app: kept from every automatic job until the user's own Transcribe on it. */
@@ -1628,7 +1663,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       if (!on() || state.capabilities === null) {
         jobs.delete(sourceId);
         if (!identityCurrent()) {
-          resumed = false;
+          recoveryNeeded = true;
+          nextRecoveryAt = now();
           console.warn("[Transcription] Not starting a private cloud job: its account is no longer the signed-in one", sourceId);
         }
         emit();
@@ -1660,11 +1696,13 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         if (voiceNoteErrorCode(err) === "note_held") {
           console.warn("[VoiceNotes] Held a note back from private-cloud transcription: it did not begin in the app", { id: sourceId });
           hold(sourceId);
+          settleChoice(sourceId, true);
           return;
         }
         // Whatever stopped a note after the user turned transcription off is not a failure to show.
         if (!identityCurrent()) {
-          resumed = false;
+          recoveryNeeded = true;
+          nextRecoveryAt = now();
           jobs.delete(sourceId);
           console.warn("[Transcription] Stopped a private cloud job: its account is no longer the signed-in one", sourceId);
         } else if (!state.consented || voiceNoteErrorCode(err) === "transcription_off") {
@@ -1672,13 +1710,10 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           settleChoice(sourceId);
         } else {
           logPipelineError("transcription", err, sourceId);
-          const code = voiceNoteErrorCode(err);
           const failure = voiceNoteTranscriptionFailure(err);
           jobs.set(sourceId, { kind: "failed", ...failure });
           // Incomplete coverage is retryable only by explicit tap; do not restart it on relaunch.
-          if (!failure.retryable || code === "transcript_incomplete") {
-            settleChoice(sourceId);
-          }
+          settleChoice(sourceId, true);
         }
         emit();
       }
@@ -1686,15 +1721,128 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     return null;
   };
 
-  /** Notes a previous run left in flight, first (one active job per account). Once per transcriber. */
-  const resume = () => {
-    if (resumed || !on() || cloud === null) return;
-    resumed = true;
-    cloud.clearExplicitReruns?.();
-    for (const sourceId of new Set([...cloud.pendingSourceIds(), ...choices.ids()])) enqueue(sourceId, undefined, false);
+  /** Re-read opted-in recovery candidates before re-offering them, including their transcript commit. */
+  const stillPendingInSpace = async (sourceId: string, requirePrivateCommit = false): Promise<boolean | null> => {
+    if (!identityCurrent()) return false;
+    try {
+      const tcw = deps.tcw();
+      const result = await readVoiceNoteForTranscription(tcw, sourceId);
+      if (!identityCurrent()) return false;
+      if (!result.ok) return null;
+      if (result.data === null) return false;
+      const note = result.data;
+      if (note.transcript.status !== "pending") {
+        choices.remove(sourceId);
+        return false;
+      }
+      const commit = await readTranscriptCommit(tcw, sourceId);
+      if (!identityCurrent()) return false;
+      if (commit !== null) {
+        choices.remove(sourceId);
+        return false;
+      }
+      if (note.captureSource !== "in_app" && holdStates.get(sourceId) !== "released") {
+        hold(sourceId);
+        return false;
+      }
+      if (!privateCloudAccepts(note.durationSeconds, state.capabilities)) {
+        choices.remove(sourceId);
+        return false;
+      }
+      return !requirePrivateCommit || (note.captureSource === "in_app" && note.captureTranscriber === "private-cloud");
+    } catch (err) {
+      logPipelineError("[VoiceNotes] Could not re-check a saved Private note before recovery", err, sourceId);
+      return null;
+    }
   };
 
-  return {
+  /** Reconsider durable intents and this device's eligible stranded saves on each recovery opportunity. */
+  const resume = (force = false) => {
+    if (!on() || cloud === null || strandedRecovery !== null) return;
+    if (!explicitRerunsCleared) {
+      cloud.clearExplicitReruns?.();
+      explicitRerunsCleared = true;
+    }
+    if (!force && (!recoveryNeeded || now() < nextRecoveryAt)) return;
+    recoveryNeeded = false;
+    let retry = false;
+    strandedRecovery = (async () => {
+      let cloudPending: Set<string>;
+      try {
+        cloudPending = new Set(cloud.pendingSourceIds());
+      } catch (err) {
+        logPipelineError("[VoiceNotes] Could not list pending Private jobs for recovery", err);
+        retry = true;
+        return;
+      }
+      const ids = new Set([...cloudPending, ...choices.ids()]);
+      for (const sourceId of ids) {
+        if (!identityCurrent() || !on()) {
+          retry = true;
+          return;
+        }
+        const current = jobs.get(sourceId);
+        if (current?.kind === "active" || current?.kind === "done" || current?.kind === "failed" || isHeld(sourceId)) continue;
+        const pendingInSpace = await stillPendingInSpace(sourceId);
+        if (pendingInSpace === false) {
+          if (cloudPending.has(sourceId) && identityCurrent()) {
+            try { await cloud.finish(sourceId); }
+            catch (err) { logPipelineError("Cleaning up a stale private cloud job failed", err, sourceId); }
+          }
+          continue;
+        }
+        if (pendingInSpace === null) {
+          retry = true;
+          if (!cloudPending.has(sourceId)) continue;
+        }
+        enqueue(sourceId, undefined, false);
+      }
+
+      let recordings: VoiceNoteRecording[];
+      try {
+        recordings = (await VoiceNotes.listPending()).recordings;
+      } catch (err) {
+        logPipelineError("[VoiceNotes] Could not scan this device's saved Private notes for recovery", err);
+        retry = true;
+        return;
+      }
+      for (const recording of recordings) {
+        if (!identityCurrent() || !on()) {
+          retry = true;
+          return;
+        }
+        if (recording.source !== "in_app" || recording.options?.transcriber !== "private-cloud"
+          || recording.stt?.rerunRev != null
+          || recording.ledger?.audio.state !== "saved"
+          || recording.ledger.transcript.state !== "pending" || recording.ledger.transcript.attempts !== 0
+          || !privateCloudAccepts(recording.durationMs / 1000, state.capabilities)) continue;
+        const current = jobs.get(recording.id);
+        if (isHeld(recording.id) || current?.kind === "active" || current?.kind === "done" || current?.kind === "failed"
+          || cloudPending.has(recording.id) || choices.has(recording.id)) continue;
+        const stillPending = await stillPendingInSpace(recording.id, true);
+        if (stillPending === null) {
+          retry = true;
+          continue;
+        }
+        if (stillPending) enqueue(recording.id, undefined, false);
+      }
+    })().finally(() => {
+      strandedRecovery = null;
+      if (retry) {
+        recoveryNeeded = true;
+        const delays = deps.recoveryBackoffMs ?? failedBackoffMs;
+        const delay = delays[Math.min(recoveryFailures, delays.length - 1)] ?? 0;
+        recoveryFailures++;
+        nextRecoveryAt = now() + delay;
+      } else {
+        recoveryNeeded = false;
+        recoveryFailures = 0;
+        nextRecoveryAt = Number.POSITIVE_INFINITY;
+      }
+    });
+  };
+
+  const transcriber: VoiceNoteTranscriber = {
     snapshot: () => snapshot,
     subscribe(listener) {
       listeners.add(listener);
@@ -1710,8 +1858,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       if (options.automatic && settledAt !== null && state.availability !== "checking") {
         const wait = state.availability === "failed" ? failedBackoffMs[Math.min(failedChecks, failedBackoffMs.length) - 1] ?? 0 : freshMs;
         if (now() - settledAt < wait) {
-          // Reusing the answer still reactivates this account's work an earlier departure paused.
-          resume();
+          if (recoveryNeeded && now() >= nextRecoveryAt) resume();
           return Promise.resolve();
         }
       }
@@ -1732,7 +1879,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         }
       };
       const stale = () => {
-        resumed = false;
+        recoveryNeeded = true;
+        nextRecoveryAt = now();
         console.warn("[Transcription] Dropped a private cloud check: its account is no longer the signed-in one");
       };
       checking = (async () => {
@@ -1743,6 +1891,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           result = await attempt();
         }
         if (result.availability === "stale" || !identityCurrent()) return stale();
+        const availabilityChanged = state.availability !== result.availability;
         failedChecks = result.availability === "failed" ? failedChecks + 1 : 0;
         settledAt = now();
         state = {
@@ -1752,8 +1901,24 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           checkError: result.availability === "failed" ? result.error : undefined,
           checkErrorCode: result.availability === "failed" ? result.code : undefined,
         };
+        if (result.availability === "failed") {
+          recoveryNeeded = true;
+          nextRecoveryAt = now();
+        }
         emit();
-        resume();
+        if (result.availability === "available"
+          && (availabilityChanged || recoveryNeeded && now() >= nextRecoveryAt)) resume(availabilityChanged);
+        if (result.availability === "failed" && failedBackoffMs.length > 0) {
+          clearTimeout(recoveryTimer);
+          const delay = failedBackoffMs[Math.min(failedChecks - 1, failedBackoffMs.length - 1)] ?? 0;
+          recoveryTimer = setTimeout(() => {
+            recoveryTimer = undefined;
+            triggerAutomaticRecheck();
+          }, delay);
+        } else {
+          clearTimeout(recoveryTimer);
+          recoveryTimer = undefined;
+        }
       })().finally(() => {
         checking = null;
       });
@@ -1763,8 +1928,10 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     consent() {
       deps.consent.set(true);
       state = { ...state, consented: true };
+      recoveryNeeded = true;
+      nextRecoveryAt = now();
       emit();
-      resume();
+      resume(true);
     },
 
     async turnOff() {
@@ -1774,7 +1941,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       waiting.clear();
       // A failure shown with Retry is no longer actionable once off.
       for (const [sourceId, job] of jobs) if (job.kind === "failed") jobs.delete(sourceId);
-      resumed = false;
+      recoveryNeeded = false;
+      nextRecoveryAt = Number.POSITIVE_INFINITY;
       // Turning private cloud off revokes the choices too.
       chosenPrivate.clear();
       for (const sourceId of choices.ids()) choices.remove(sourceId);
@@ -1818,8 +1986,13 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         hold(recording.id);
         return;
       }
+      const current = jobs.get(recording.id);
+      if (current?.kind === "active" || current?.kind === "done" || current?.kind === "failed") return;
+      if (state.availability === "available" && !privateCloudAccepts(recording.durationMs / 1000, state.capabilities)) return;
+      choices.add(recording.id);
       if (!on()) {
-        if (!state.consented) choices.add(recording.id);
+        recoveryNeeded = true;
+        if (nextRecoveryAt === Number.POSITIVE_INFINITY) nextRecoveryAt = now();
         block(recording.id);
         return;
       }
@@ -1827,6 +2000,10 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       enqueue(recording.id, audio, false);
     },
   };
+  triggerAutomaticRecheck = () => {
+    void recheckVoiceNoteAvailabilityAutomatically(transcriber, accountCurrent ?? undefined);
+  };
+  return transcriber;
 }
 
 /**

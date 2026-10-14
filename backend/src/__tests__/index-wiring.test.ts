@@ -732,14 +732,14 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: { top: () => ({}) }, paidChatLimiter: noop }), logGlobalBucketRoutes: noop },
     "./security.js": { applySecurityDefaults: noop },
     "./routes/nras-proxy.js": { createNrasProxyRouter: router },
-    "./routes/assemblyai-hosted.js": { ASSEMBLYAI_HOSTED_MOUNT: "/api/assemblyai", createAssemblyAiHostedRouter: router },
+    "./routes/assemblyai-hosted.js": { ASSEMBLYAI_HOSTED_MOUNT: "/api/assemblyai", createAssemblyAiHostedRouter: router, reconcileHostedJobs: async () => {} },
     "./routes/assemblyai-delete.js": { ASSEMBLYAI_DELETE_MOUNT: "/api/assemblyai/delete", createAssemblyAiDeleteRouter: router },
     "./billing/ledger-flusher.js": { LedgerFlusher: class { start() {} stop() {} } },
     "./billing/ledger-rehydrate.js": { LedgerRehydrator: class {} },
     "./services/connector-drain.js": { ConnectorDrainWorker: class { stop() {} }, startConnectorQueueMaintenanceTimer: () => ({ stop() {} }), drainIntervalFromEnv: () => 60_000, createWebhookConfigDirectory: noop },
     "./services/connector-queue.js": { ConnectorQueue: class {} },
     "./services/backend-storage-lane.js": { BackendStorageLane: class {} },
-    "./services/transcriber-index.js": { KvTranscriberIndexStore: class {} },
+    "./services/transcriber-index.js": { KvJsonKv: class {}, KvTranscriberIndexStore: class {} },
     "./services/google-calendar.js": { ExternalOperationLimiter: class {} },
     "./services/calendar-autojoin-worker.js": { CalendarAutojoinWorker: class { start() {} stop() { return stop.calendar?.() ?? Promise.resolve(); } } },
     "./services/ingest-instance.js": { IngestInstanceSupervisor: class { start() {} stop() { return stop.ingest?.() ?? Promise.resolve(); } } },
@@ -939,6 +939,7 @@ describe("backend entry-point HTTP and lifecycle guards", () => {
       TRANSCRIPTION_API_KEY: "test-api-key",
       ASSEMBLYAI_API_KEY: randomBytes(32).toString("hex"),
       ASSEMBLYAI_HOSTED_HANDLE_KEY: randomBytes(32).toString("hex"),
+      ASSEMBLYAI_HOSTED_SPOOL_DIR: "/test-hosted-spool",
     }, {
       billingEvent: async () => {
         requestStarted.resolve();

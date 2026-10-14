@@ -80,7 +80,15 @@ export interface NormalizedMeeting {
   metadata: Record<string, unknown>;
 }
 
+export interface TranscriptGap {
+  start: number;
+  end: number;
+  speaker_name: string | null;
+}
+
 export interface TranscriptSentence {
+  source?: "recording" | "fallback";
+  attribution?: "identified" | "unknown" | "overlap";
   index: number;
   speaker_name: string | null;
   text: string;
@@ -111,7 +119,9 @@ export interface TranscriberTranscriptJson {
   fallback_from?: string | null;
   fallback_reason?: string | null;
   speakers?: { id: string; name: string | null }[];
-  segments?: { speaker_name: string | null; text: string; start: number; end: number }[];
+  partial?: boolean;
+  gaps?: TranscriptGap[];
+  segments?: { speaker_name: string | null; text: string; start: number; end: number; source?: TranscriptSentence["source"]; attribution?: TranscriptSentence["attribution"] }[];
   text?: string;
 }
 
@@ -154,6 +164,8 @@ export async function normalizeTranscriberTranscript(
   const segments = Array.isArray(transcript.segments) ? transcript.segments : [];
   const sentences: TranscriptSentence[] = segments.map((s, index) => ({
     index,
+    ...(s.source !== undefined ? { source: s.source } : {}),
+    ...(s.attribution !== undefined ? { attribution: s.attribution } : {}),
     speaker_name: transcriberSpeakerName(s.speaker_name),
     text: s.text,
     start_time: Number.isFinite(s.start) ? s.start : 0,
@@ -194,6 +206,8 @@ export async function normalizeTranscriberTranscript(
       meetingType: null,
       metadata: {
         ...meeting.metadata,
+        ...(transcript.partial !== undefined ? { partial: transcript.partial } : {}),
+        ...(transcript.gaps !== undefined ? { gaps: transcript.gaps } : {}),
         meeting_url: meeting.meeting_url,
         platform: meeting.platform,
         language: transcript.language ?? null,

@@ -163,7 +163,7 @@ changeset.
 - **Beta.** After each merge that adds changesets, the `Release` workflow
   versions betas (for example `0.3.0-beta.2`), commits them to main with
   `[skip ci]`, and tags each bumped unit `<name>@<version>`. Betas do not
-  deploy web or backend. A major web/desktop bump is refused until someone
+  deploy web or backend, and build no desktop release (run `desktop-release.yml` by hand, see Desktop releases). A major web/desktop bump is refused until someone
   runs the `Release` workflow with `confirm=major-beta`.
 - **Stable.** The workflow keeps a **chore(release): release stable** PR open
   that only flips `.changeset/pre.json` to `"exit"` and records the plan in
@@ -203,10 +203,12 @@ the rulesets and their residual risk.
 workflow copies it into `desktop/src-tauri/Cargo.toml` and `Cargo.lock`.
 `bun run release:check` fails if they drift.
 
-**Desktop releases.** For every new `exo-desktop@<version>` tag the `Release`
-workflow runs `Desktop release (Exo)` **from main** with the tag as an input
-(`gh workflow run desktop-release.yml --ref main -f tag=exo-desktop@<version>`,
-which is also how to retry). It refuses any other ref, requires the tag to point
+**Desktop releases.** For every new stable `exo-desktop@<version>` tag the
+`Release` workflow runs `Desktop release (Exo)` **from main** with the tag as an
+input. Betas are manual: a merge that versions a beta builds no desktop release,
+so a release coordinator runs
+`gh workflow run desktop-release.yml --ref main -f tag=exo-desktop@<version>`
+(for example `exo-desktop@0.2.0-beta.3`), which is also how to retry any release. It refuses any other ref, requires the tag to point
 at a commit of `main`, builds exactly that commit with the same job as desktop
 CI (`.github/workflows/desktop-build.yml`) and publishes a GitHub Release with
 no manual step:

@@ -38,7 +38,7 @@ import { TranscribeAction } from "./TranscribeAction";
 import { privateCloudFits } from "./transcribeProviders";
 import { HowThisGotHere } from "./HowThisGotHere";
 import { librarySourceLabel } from "./libraryKinds";
-import { TimestampedTranscript } from "./TimestampedTranscript";
+import { TimestampedTranscript, type TranscriptGap } from "./TimestampedTranscript";
 import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptMarkdown } from "./transcriptSegments";
 import type { TranscriptProvenance } from "@/lib/voiceNotes/voiceNoteCommits";
 import type { LibraryItem } from "./LibraryRow";
@@ -146,7 +146,7 @@ export function VoiceNoteTranscriptionStatus(props: {
   if (job?.kind === "done") {
     return (
       <p data-testid="voice-note-transcription-done" className="text-callout text-muted-foreground">
-        {job.outcome === "no_speech" ? "No speech found" : "Saving the transcript to your TinyCloud space…"}
+        {job.outcome === "no_speech" ? "No speech found" : "Transcript saved."}
       </p>
     );
   }
@@ -194,9 +194,24 @@ export function VoiceNoteTranscriptionStatus(props: {
     );
   }
 
-  // Nothing to choose from: Local needs the phone's engine, Private needs private cloud on offer (or unreachable, with its own Check again).
+  // Local needs the phone's engine; Private needs an available (or checkable) cloud service.
   const localCapable = captureCapabilities().localTranscription;
   const choosable = transcription?.availability === "available" || (transcription?.availability === "failed" && transcription.consented);
+  const pendingWithoutLiveJob = props.outcome === "pending" && (job === undefined || job.kind === "blocked");
+  if (pendingWithoutLiveJob && props.provider === "private" && !item.onPhone
+    && !localCapable && transcription?.availability !== "available") {
+    return (
+      <div className="flex flex-col gap-2" data-testid="voice-note-private-unavailable">
+        <p className="text-callout text-muted-foreground">
+          {transcription?.availability === "failed"
+            ? "Private cloud isn’t reachable — we’ll retry."
+            : "Private cloud availability is being checked — we’ll retry."}
+        </p>
+        {transcription?.consented
+          && <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} />}
+      </div>
+    );
+  }
   if (!localCapable && !choosable) return null;
   if (!localCapable && transcription && item.durationSecs !== null && !privateCloudFits(transcription, item.durationSecs)) {
     return (
@@ -296,6 +311,11 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
     && hasPrivateCloudTimingProvenance(metadata?.status === "ok" ? metadata.metadata : null, props.transcriptProvenance);
   const sentences = localSyncPending && local ? localTranscriptToSave(local).sentences : remoteSentences.length > 0 ? remoteSentences
     : local?.outcome === "transcribed" ? localTranscriptToSave(local).sentences : [];
+  const savedGaps = metadata?.status === "ok" ? metadata.metadata.gaps : null;
+  const gaps = Array.isArray(savedGaps) ? savedGaps.filter((gap): gap is TranscriptGap =>
+    gap !== null && typeof gap === "object" && Number.isFinite(gap.start) && Number.isFinite(gap.end)
+    && gap.start >= 0 && gap.end > gap.start && (gap.speaker_name === null || typeof gap.speaker_name === "string")) : [];
+  const hasProvenance = sentences.some((sentence) => sentence.source !== undefined);
   const timed = hasSegmentTimes(sentences, isPrivateCloud);
   const exportMarkdown = async () => {
     const markdown = transcriptMarkdown(item.title ?? "Voice note", item.startedAt, sentences, isPrivateCloud);
@@ -352,14 +372,14 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {props.copyState === "copied" ? "Transcript copied to clipboard" : ""}
       </span>
-      {sentences.length > 0 ? (
+      {sentences.length > 0 || gaps.length > 0 ? (
         <div className="flex max-w-[68ch] flex-col gap-4 [-webkit-touch-callout:default] select-text">
           {localSyncPending && <p className="text-callout text-muted-foreground">Saved on {deviceName(props.platform ?? "web")} · syncing to your TinyCloud space</p>}
           {spaceReadFailed && <div className="flex flex-wrap items-center gap-2" data-testid="note-transcript-local-space-error">
             <p className="text-callout text-muted-foreground">On this device · Couldn’t check your space.</p>
             <Button type="button" variant="outline" onClick={props.onRetry}>Try again</Button>
           </div>}
-          {timed ? <TimestampedTranscript sentences={sentences} hasAudio={props.audio !== null} isPrivateCloud={isPrivateCloud} /> : transcriptBlocks(sentences).map((block, index) => (
+          {timed || gaps.length > 0 || hasProvenance ? <TimestampedTranscript gaps={gaps} sentences={sentences} hasAudio={props.audio !== null} isPrivateCloud={isPrivateCloud} /> : transcriptBlocks(sentences).map((block, index) => (
             <div key={index}>
               {block.speaker && <p className="text-meta font-semibold text-muted-foreground">{block.speaker}</p>}
               <p className="whitespace-pre-wrap break-words text-body">{block.text}</p>
