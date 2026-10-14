@@ -275,6 +275,12 @@ export interface VoiceNoteTranscriptionStatsMetadata {
   transcription_duration_seconds?: number;
   transcription_vad_dropped_above_floor_pct?: number;
   transcription_vad_fallback?: boolean;
+  transcription_vad_mode?: "primary" | "fallback" | "quiet";
+  transcription_noise_floor_dbfs?: number;
+  transcription_median_dbfs?: number;
+  transcription_p99_dbfs?: number;
+  transcription_speech_peak_s?: number;
+  transcription_vad_dropped_above_noise_pct?: number;
   transcription_stats_missing?: true | null;
 }
 

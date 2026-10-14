@@ -8,8 +8,10 @@ import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "b
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { fakeVoiceNoteStore } from "@/harness/fakeVoiceNoteStore";
-import { __setVoiceNotesForTests, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
+import { __setVoiceNotesForTests, VoiceNotes, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 import { currentAccountGeneration } from "./accountContext";
+
+const originalVoiceNotes = VoiceNotes;
 
 const realStore = { ...(await import("./voiceNoteStore")) };
 mock.module("./voiceNoteStore", () => ({
@@ -216,6 +218,7 @@ beforeEach(() => {
   fakeVoiceNoteStore.save = ok;
 });
 afterEach(() => {
+  __setVoiceNotesForTests(originalVoiceNotes, { available: null });
   fakeVoiceNoteStore.save = null;
   delete (globalThis as { localStorage?: unknown }).localStorage;
 });
