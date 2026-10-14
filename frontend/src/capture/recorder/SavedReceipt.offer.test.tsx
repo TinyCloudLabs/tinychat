@@ -6,7 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { honestSourceRoute, NeedsOnDeviceModel, onDeviceOffer, SavedReceipt } from "./SavedReceipt";
 import { voiceNoteRoute } from "./RouteLine";
 import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
-import { allDone, signedOut, uploading, waitingForModel } from "@/capture/pipeline/pipelineFixtures";
+import { allDone, pipelineOf, signedOut, uploading, waitingForModel } from "@/capture/pipeline/pipelineFixtures";
 import { RECEIPT_ACTION_MS, RECEIPT_MS, receiptWindowMs } from "./RecorderProvider";
 
 const noop = () => {};
@@ -204,6 +204,16 @@ describe("the receipt's pipeline stepper", () => {
 
   test("a rejected action's message shows in the blocker line", () => {
     expect(render(signedOut(), {}, "Sign-in failed: offline")).toContain("Sign-in failed: offline");
+  });
+
+  test("a receipt with ongoing notes sync keeps the durable coverage reason in its only status line", () => {
+    const pipeline = pipelineOf({ route: "off", hasNotesOrMoments: true,
+      space: { saved: true, pending: null, lane: { busy: false, depth: 0 } },
+      transcript: { inSpace: null, persistedState: "failed", errorCode: "transcript_incomplete", cloud: null, onDevice: null },
+      notes: { state: "syncing" } });
+    const html = render(pipeline, { outcome: "saved", transcriber: "off", route: voiceNoteRoute("off") });
+    expect(html).toContain('data-testid="voice-note-receipt-pipeline"');
+    expect(html.match(/Private Transcription returned a transcript that may be incomplete/g)).toHaveLength(1);
   });
 
   test("done shows no stepper and the landed state", () => {

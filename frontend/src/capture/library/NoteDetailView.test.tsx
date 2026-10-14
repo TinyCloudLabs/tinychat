@@ -208,6 +208,35 @@ describe("a voice note's transcription", () => {
     expect(html).toContain('data-testid="transcribe-button"');
   });
 
+  test("a live incomplete failure keeps the mapped explanation and only offers a retry when allowed", () => {
+    const failed = (retryable: boolean) => render({ transcription: transcription({ jobs: new Map([["rec-1", {
+      kind: "failed", code: "transcript_incomplete", message: "Generic job error", retryable, reference: "cid-7",
+    }]]) }) });
+    const copy = "Private Transcription returned a transcript that may be incomplete. Try again later.";
+    expect(failed(true)).toContain(copy);
+    expect(failed(true)).toContain('data-testid="transcribe-button"');
+    expect(failed(false)).toContain(copy);
+    expect(failed(false)).not.toContain('data-testid="transcribe-button"');
+  });
+
+  test("a durable failure explains itself once below Transcript while the header keeps its state", () => {
+    const pipeline = pipelineOf({ route: "off", hasNotesOrMoments: false,
+      space: { saved: true, pending: null, lane: { busy: false, depth: 0 } },
+      transcript: { inSpace: null, persistedState: "failed", errorCode: "transcript_incomplete", cloud: null, onDevice: null } });
+    const view = { pipeline, onAction: noop, actionError: null };
+    const html = renderToStaticMarkup(
+      <NotePipelineContext.Provider value={view}>
+        <MemoryRouter><NoteDetailView item={VOICE} listStatus="ready"
+          metadata={{ status: "ok", metadata: { transcription_outcome: "failed", transcription_error_code: "transcript_incomplete" } }}
+          transcript={{ status: "absent" }} audio={audio} transcription={transcription()} activityView={view} platform="ios"
+          copyState="idle" onCopy={noop} onRetry={noop} pushed onBack={noop} /></MemoryRouter>
+      </NotePipelineContext.Provider>,
+    );
+    expect(html).toContain("Transcript Failed");
+    expect(html.match(/Private Transcription returned a transcript that may be incomplete/g)).toHaveLength(1);
+    expect(html.match(/data-testid="transcribe-button"/g)).toHaveLength(1);
+  });
+
   test("no speech, progress, just saved, and a failure with Retry only when it can help", () => {
     const silent = render({ metadata: { status: "ok", metadata: { transcription_outcome: "no_speech" } }, transcription: transcription() });
     expect(silent).toContain("No speech found");
@@ -222,13 +251,13 @@ describe("a voice note's transcription", () => {
     const retry = render({ transcription: failed(true) });
     expect(retry).toContain("Reference: cid-7");
     expect(retry).toContain("Copy details");
-    expect(retry).toContain("Transcription didn&#x27;t finish.");
+    expect(retry).toContain("The upload did not complete.");
     expect(retry).toContain('data-testid="transcribe-button"');
     expect(retry).toContain("Try again");
-    expect(render({ transcription: failed(false) })).toContain('data-testid="transcribe-button"');
+    expect(render({ transcription: failed(false) })).not.toContain('data-testid="transcribe-button"');
     // Private cloud unavailable right now: the failure is told, but Retry can't help.
     const unavailable = render({ transcription: transcription({ jobs: new Map([["rec-1", { kind: "failed", code: "upload_interrupted", message: "The upload did not complete.", retryable: true, reference: "cid-7" }]]), availability: "failed" }) });
-    expect(unavailable).toContain("Transcription didn&#x27;t finish.");
+    expect(unavailable).toContain("The upload did not complete.");
     expect(unavailable).not.toContain('data-testid="transcribe-button"');
     expect(unavailable).toContain('data-testid="transcribe-private-recheck"');
   });

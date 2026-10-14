@@ -60,7 +60,8 @@ function SavedNoteContent({
   const rowMetadata = metadata?.status === "ok" ? metadata.metadata : null;
   const stepperShown = pipeline !== null && !pipeline.pipeline.done;
   const jobs = activityForNote(pipeline ?? undefined, platform);
-  const status = noteStatus(jobs, pipeline?.pipeline);
+  // The Transcript fallback owns the durable failure's explanation and retry action.
+  const status = noteStatus(jobs, pipeline?.pipeline, false);
   const actions = jobs.flatMap((job) => job.action ? [job.action] : job.retry ? [{ label: "Try again", run: job.retry }] : []);
   const cloudFailedWithoutRetry = pipeline?.input?.route === "private-cloud" && pipeline.pipeline.steps.some((step) => step.key === "transcript" && step.state === "failed" && !step.blocker?.action);
   const view = {

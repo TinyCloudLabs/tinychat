@@ -67,6 +67,7 @@ test("durable transcript outcomes have honest note statuses without phantom Acti
     const jobs = activityForNote(current, "ios");
     expect(jobs).toEqual([]);
     expect(noteStatus(jobs, current.pipeline)).toBe(expected);
+    if (state === "failed") expect(noteStatus(jobs, current.pipeline, false)).toBe("Transcript Failed");
   }
   const syncing = view({
     route: "off",

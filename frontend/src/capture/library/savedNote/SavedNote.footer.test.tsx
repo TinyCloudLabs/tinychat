@@ -133,10 +133,20 @@ describe("the saved note's footer", () => {
     expect(retries).toBe(1);
   });
 
-  test("once the pipeline is done the footer is drawn", async () => {
+  test("a durable pending transcript stays visible after the pipeline is done and the footer returns", async () => {
     recordings = [recording("off", null)];
     const container = await mount();
-    expect(present(container, '[data-testid="note-detail-status"]')).toBe(false);
+    expect(container.querySelector('[data-testid="note-detail-status"]')?.textContent).toContain("Transcript Pending");
     expect(present(container, '[data-testid="how-this-got-here"]')).toBe(true);
+  });
+
+  test("the saved note status leaves a durable coverage explanation to the transcript", async () => {
+    recordings = [recording("off", null)];
+    const container = await mount({ metadata: { status: "ok", metadata: {
+      transcription_outcome: "failed", transcription_error_code: "transcript_incomplete",
+    } } });
+    const status = container.querySelector('[data-testid="note-detail-status"]')?.textContent;
+    expect(status).toContain("Transcript Failed");
+    expect(status).not.toContain("may be incomplete");
   });
 });

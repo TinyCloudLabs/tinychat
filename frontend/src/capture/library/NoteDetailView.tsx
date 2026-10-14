@@ -25,7 +25,7 @@ import type { AppPlatform } from "@/lib/platform";
 import { activityForNote, deviceName, noteStatus } from "../activity/activitySelector";
 import type { LocalTranscript } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { transcriptionStatusText } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { voiceNoteTranscriptionFailureForCode } from "@/lib/voiceNotes/transcriptionErrors";
+import { transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "@/lib/voiceNotes/transcriptionErrors";
 import { localTranscriptToSave, voiceNoteTitle, voiceNoteTranscriptState, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 import { detailWhen, formatSpokenDuration } from "./formatters";
@@ -161,13 +161,14 @@ export function VoiceNoteTranscriptionStatus(props: {
     );
   }
   if (job?.kind === "failed") {
+    const failure = voiceNoteTranscriptionFailureForCode(job.code);
     return (
       <div className="flex flex-col gap-2" data-testid="voice-note-transcription-failed">
         <p role="alert" className="min-w-0 text-callout text-destructive">
-          {job.code === "recording_too_long" ? "This recording is too long to transcribe." : provider === "powerful" ? "Powerful transcription didn't finish." : provider === "unknown" ? "Transcription didn't finish." : "Private transcription didn't finish."}
+          {transcriptionErrorCopy(job.code) ?? job.message}
         </p>
         {job.reference && <ReferenceDetails reference={job.reference} />}
-        <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} label="Try again" />
+        {job.retryable && failure.retryable && <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} label="Try again" />}
       </div>
     );
   }
@@ -378,7 +379,8 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
 export function NoteDetailView(props: NoteDetailViewProps) {
   const { item, metadata } = props;
   const activityJobs = props.activityView && props.platform ? activityForNote(props.activityView, props.platform) : [];
-  const activityStatus = noteStatus(activityJobs, props.activityView?.pipeline);
+  // The Transcript fallback owns the durable failure's explanation and retry action.
+  const activityStatus = noteStatus(activityJobs, props.activityView?.pipeline, false);
   const activityRetry = activityJobs.find((job) => job.retry)?.retry;
   if (item === null) {
     return (

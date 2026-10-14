@@ -138,8 +138,8 @@ export function activityForFileUpload(upload: UploadState | null, paused: Paused
   return { title, jobs: [{ kind, state: failed || upload.stage === "saved" ? "needs-attention" : upload.stage === "elsewhere" || upload.stage === "queued" ? "waiting" : "running", label: kind === "transcribe" ? "Transcribe" : kind === "sync" ? "Sync" : "Upload audio", destination: kind === "sync" || upload.stage === "saved" ? "your TinyCloud space" : destination, detail, progress: upload.stage === "uploading" && upload.uploadPct != null ? upload.uploadPct / 100 : undefined, diagnostics: upload.error ? `${upload.error.message}${upload.error.reference ? ` · ${upload.error.reference}` : ""}` : undefined, action: failed && upload.error?.retry ? { label: "Retry", run: actions.retry } : { label: "Open upload", run: actions.open } }] };
 }
 
-export function noteStatus(jobs: readonly ActivityJob[], pipeline?: NotePipeline): string | null {
-  const transcriptStatus = pipeline ? pipelineTranscriptStatus(pipeline) : null;
+export function noteStatus(jobs: readonly ActivityJob[], pipeline?: NotePipeline, includeTranscriptFailureReason = true): string | null {
+  const transcriptStatus = pipeline ? pipelineTranscriptStatus(pipeline, includeTranscriptFailureReason) : null;
   const failed = jobs.find((job) => job.state === "needs-attention");
   if (failed) return [ `Needs attention · ${failed.detail}`, transcriptStatus ].filter(Boolean).join(" · ");
   const running = jobs.filter((job) => job.state === "running");
