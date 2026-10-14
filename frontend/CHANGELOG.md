@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.7.2-beta.6
+
+### Patch Changes
+
+- 6f5605d: Show stored transcript timings in note detail with seek, playback follow, timestamped copy, and Markdown export.
+
 ## 0.7.2-beta.5
 
 ### Patch Changes
