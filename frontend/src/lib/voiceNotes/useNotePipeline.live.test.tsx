@@ -192,7 +192,7 @@ describe("a read that fails is shown with its cause, never read as done", () => 
     const { seen } = await mountOne(SIGNED_OUT);
     const pipeline = seen.view!.pipeline;
     expect(stepOf(pipeline, "transcript").state).toBe("failed");
-    expect(pipeline.blocker?.cause).toBe("Couldn't check this note's transcript · The phone's note list wouldn't open: Couldn't complete this step. Try again.");
+    expect(pipeline.blocker?.cause).toBe("Couldn't check this note's transcript");
     expect(pipeline.blocker?.action?.kind).toBe("retry");
     expect(pipeline.done).toBe(false);
   });
@@ -214,7 +214,7 @@ describe("a read that fails is shown with its cause, never read as done", () => 
     refuseListening.set("transcribed", new Error("bridge closed"));
     const { seen } = await mountOne(SIGNED_OUT);
     const pipeline = seen.view!.pipeline;
-    expect(pipeline.blocker?.cause).toBe("Couldn't check this note's transcript · Updates from the phone failed to start: Couldn't complete this step. Try again.");
+    expect(pipeline.blocker?.cause).toBe("Couldn't check this note's transcript");
     expect(pipeline.done).toBe(false);
   });
 
@@ -224,7 +224,7 @@ describe("a read that fails is shown with its cause, never read as done", () => 
     const { seen } = await mountOne(SIGNED_OUT);
     const pipeline = seen.view!.pipeline;
     expect(stepOf(pipeline, "notes").state).toBe("failed");
-    expect(pipeline.blocker?.cause).toBe("Couldn't read this note's text on this phone · The note's text wouldn't open on this phone: Couldn't complete this step. Try again.");
+    expect(pipeline.blocker?.cause).toBe("Couldn't read this note's text on this browser");
     expect(pipeline.done).toBe(false);
   });
 
@@ -293,7 +293,7 @@ describe("a Local note's job ending after the phone dropped it from its queue", 
     await settle();
     expect(phone.reads).toBe(reads + 1);
     expect(stepOf(seen.view!.pipeline, "transcript").state).toBe("failed");
-    expect(seen.view!.pipeline.blocker?.cause).toBe("Couldn't transcribe on this phone");
+    expect(seen.view!.pipeline.blocker?.cause).toBe("Couldn't transcribe on this browser");
   });
 
   test("an event for another note does not read the phone again", async () => {
@@ -350,7 +350,7 @@ describe("actions", () => {
     expect(seen.view!.pipeline.blocker?.action?.kind).toBe("check-again");
     await act(async () => seen.view!.onAction("check-again"));
     await settle();
-    expect(seen.view!.actionError).toBe("Couldn't complete this step. Try again.");
+    expect(seen.view!.actionError).toBe("Couldn't complete that action. Try again.");
   });
 });
 
@@ -372,7 +372,7 @@ describe("the list hook", () => {
     expect(views.get(ID)!.pipeline.blocker?.action?.kind).toBe("check-again");
     await act(async () => views.get(ID)!.onAction("check-again"));
     await settle();
-    expect(views.get(ID)!.actionError).toBe("Couldn't complete this step. Try again.");
+    expect(views.get(ID)!.actionError).toBe("Couldn't complete that action. Try again.");
     expect(views.get(OTHER)!.actionError).toBeNull();
   });
 
@@ -396,7 +396,7 @@ describe("the list hook", () => {
     await settle();
     const pipeline = seen.at(-1)!.pipeline;
     expect(pipeline.done).toBe(false);
-    expect(pipeline.blocker?.cause).toContain("Your space's copy of this note wouldn't open");
+    expect(pipeline.blocker?.cause).toBe("Couldn't check this note's transcript");
   });
 });
 
@@ -407,7 +407,7 @@ describe("a failed read that other evidence outranks is still shown", () => {
     const { seen } = await mountOne(SIGNED_OUT);
     const pipeline = seen.view!.pipeline;
     expect(pipeline.done).toBe(false);
-    expect(pipeline.blocker?.cause).toBe("Couldn't check for recordings that failed to save · Couldn't complete this step. Try again.");
+    expect(pipeline.blocker?.cause).toBe("Couldn't check for recordings that failed to save");
     expect(pipeline.blocker?.action?.kind).toBe("reread");
     const reads = phone.quarantineReads;
     phone.quarantineError = null;
@@ -434,7 +434,7 @@ describe("a failed read that other evidence outranks is still shown", () => {
     await settle();
     const failed = seen.view!.pipeline;
     expect(failed.done).toBe(false);
-    expect(failed.blocker?.cause).toBe("Couldn't check for recordings that failed to save · Couldn't complete this step. Try again.");
+    expect(failed.blocker?.cause).toBe("Couldn't check for recordings that failed to save");
     expect(failed.blocker?.action?.kind).toBe("reread");
     const reads = phone.quarantineReads;
     phone.quarantineError = null;
@@ -451,7 +451,7 @@ describe("a failed read that other evidence outranks is still shown", () => {
     const { seen } = await mountOne(withTranscript);
     const pipeline = seen.view!.pipeline;
     expect(pipeline.done).toBe(false);
-    expect(pipeline.blocker?.cause).toBe("Some details about this note couldn't be read · The phone's note list wouldn't open: Couldn't complete this step. Try again.");
+    expect(pipeline.blocker?.cause).toBe("Some details about this note couldn't be read");
     expect(pipeline.blocker?.action?.kind).toBe("reread");
     expect(stepOf(pipeline, "transcript").state).toBe("done");
     phone.listError = null;
@@ -467,7 +467,7 @@ describe("a failed read that other evidence outranks is still shown", () => {
     const { seen } = await mountOne(SIGNED_OUT, { transcription: checkFailing("the service is down") });
     const pipeline = seen.view!.pipeline;
     expect(pipeline.blocker?.action?.kind).toBe("check-again");
-    expect(pipeline.notice).toBe("Couldn't check for recordings that failed to save · Couldn't complete this step. Try again.");
+    expect(pipeline.notice).toBe("Couldn't check for recordings that failed to save");
     expect(pipeline.done).toBe(false);
   });
 });
@@ -575,7 +575,7 @@ describe("a list of 100 notes without row metadata", () => {
     await settleUntil(() => space.log.rowQueries.length > 1);
     expect(space.log.rowQueries).toHaveLength(2);
     expect(space.log.rowQueries[1]).toEqual([IDS[7]]);
-    expect(views.get(IDS[7]!)!.pipeline.blocker?.cause).toBe("Couldn't transcribe on this phone");
+    expect(views.get(IDS[7]!)!.pipeline.blocker?.cause).toBe("Couldn't transcribe on this browser");
   });
 
   test("another account's cache is not reused: the same notes under a new identity are read once more, in one query", async () => {
@@ -747,7 +747,7 @@ describe("the space read is bounded (P6 r1 blocker 1, r2)", () => {
     await waitFor(() => space.log.schemaChecks >= 2 && seen.view !== null && stepOf(seen.view.pipeline, "transcript").state === "failed");
     const step = stepOf(seen.view!.pipeline, "transcript");
     expect(step.state).toBe("failed");
-    expect(step.blocker?.cause).toContain("couldn't be loaded in time");
+    expect(step.blocker?.cause).toBe("Couldn't check this note's transcript");
     expect(step.blocker?.action?.kind).toBe("retry");
     expect(space.log.schemaChecks).toBe(2);
     // No attempt is made on a guess about a space that could not be read.
@@ -840,7 +840,7 @@ describe("a read queued behind uploads is not a failed read (P6 r2)", () => {
     const { seen } = await mountOne({ tcw: space.tcw, rowExists: true, audioSaved: true });
     await waitFor(() => stepOf(seen.view!.pipeline, "transcript").state === "failed");
     const step = stepOf(seen.view!.pipeline, "transcript");
-    expect(step.blocker?.cause).toBe("Couldn't check this note's transcript · Your space's copy of this note wouldn't open: Saving is waiting for another sync to finish. Try again shortly.");
+    expect(step.blocker?.cause).toBe("Couldn't check this note's transcript");
     expect(step.blocker?.action?.kind).toBe("retry");
     // The lane is still held: the one automatic read waits for it to be idle.
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 150)); });
@@ -874,7 +874,7 @@ describe("a transcript in the space that the phone's ledger never recorded (P6 r
     await settleUntil(() => seen.view !== null && seen.view.pipeline.blocker !== undefined);
     const pipeline = seen.view!.pipeline;
     expect(stepOf(pipeline, "transcript").state).toBe("done");
-    expect(pipeline.blocker?.cause).toBe("The transcript is in your space, but this phone couldn't record it.");
+    expect(pipeline.blocker?.cause).toBe("The transcript is in your space, but this browser couldn't record it.");
     expect(pipeline.blocker?.action?.kind).toBe("retry");
     expect(pipeline.done).toBe(false);
     expect(phone.ledgerWrites).toEqual([]);

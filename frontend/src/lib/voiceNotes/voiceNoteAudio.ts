@@ -9,6 +9,8 @@
 // Cost: the WAV is 32 KB per second (1.9 MB per minute), about 4× the AAC,
 // and the decode holds the whole note in memory. Keep accepted formats as-is.
 
+import { deviceName } from "@/lib/platform";
+
 /** The rate PTX decodes every upload to. */
 export const TRANSCRIPTION_SAMPLE_RATE = 16_000;
 export const WAV_CONTENT_TYPE = "audio/wav";
@@ -57,7 +59,7 @@ export const webAudioDecoder: AudioDecoder = async (bytes, sampleRate) => {
   try {
     buffer = await new Ctor(1, 1, sampleRate).decodeAudioData(bytes);
   } catch {
-    throw new VoiceNoteAudioError("decode_failed", "This phone could not read the recording to transcribe it.");
+    throw new VoiceNoteAudioError("decode_failed", `Exo could not read the recording on ${deviceName()} to transcribe it.`);
   }
   const channels: Float32Array[] = [];
   for (let i = 0; i < buffer.numberOfChannels; i++) channels.push(buffer.getChannelData(i));

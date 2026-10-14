@@ -1,5 +1,6 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { readableError } from "@/lib/readableError";
+import { deviceName } from "@/lib/platform";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
 import { CONNECTORS_KV_PREFIX, CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connectors/connectorStore";
 import { runOnSpaceLane, SpaceLaneQueueWaitTimeout, spaceLaneSnapshot, subscribeSpaceLane } from "../spaceWriteLane";
@@ -63,7 +64,7 @@ function identityFailure(e: unknown): IdentityResult {
   if (isAuthorization(e)) return { status: "needs_authorization", reason: readableError(e), cause: e };
   const detail = `${(e as { code?: string }).code ?? ""} ${(e as { message?: string }).message ?? ""}`;
   if (/QUOTA|STORAGE.*(FULL|GROW)|SPACE.*FULL/i.test(detail))
-    return { status: "storage_full", reason: "Your TinyCloud storage is full; this note remains on your phone", cause: e };
+    return { status: "storage_full", reason: `Your TinyCloud storage is full; this note is safe on ${deviceName()}`, cause: e };
   return { status: "retry", reason: readableError(e), cause: e };
 }
 const identityInFlight = new WeakMap<TinyCloudWeb, { key: string; promise: Promise<IdentityResult>;

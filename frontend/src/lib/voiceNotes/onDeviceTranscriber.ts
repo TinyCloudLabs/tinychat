@@ -6,6 +6,7 @@
 // there and the account is signed in — the same step the private-cloud path's `prepareVoiceNoteTranscript`
 // does for its own source.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { deviceName } from "@/lib/platform";
 
 import { localTranscriptToSave, patchVoiceNoteTranscriptionFailure, saveVoiceNoteTranscript } from "./voiceNoteStore";
 import { VoiceNotes, type LocalTranscript, type NoteSttState, type VoiceNoteRecording } from "./nativeVoiceNotes";
@@ -274,8 +275,8 @@ async function recordTranscriptSaved(tcw: TinyCloudWeb, id: string, transcript: 
     });
     checkpoint(tcw, ctx)();
     const note = pending.recordings.find((recording) => recording.id === id);
-    if (!note?.ledger || note.rev === undefined) throw new Error("This phone has no ledger entry for the note to record the transcript in");
-    if (note.owner !== ctx.did) throw new Error("This note belongs to another account on this phone");
+    if (!note?.ledger || note.rev === undefined) throw new Error(`This note has no ledger entry on ${deviceName()} to record the transcript in`);
+    if (note.owner !== ctx.did) throw new Error(`This note belongs to another account on ${deviceName()}`);
     const { transcriptSync } = note.ledger;
     if (transcriptSync.state === "saved" && transcriptSync.rev >= transcript.rev && note.ledger.transcript.outcome === transcript.outcome) return;
     const patch = {

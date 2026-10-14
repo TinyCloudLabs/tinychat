@@ -17,6 +17,8 @@ import { groupByDay } from "./formatters";
 import { LIBRARY_FILTERS, emptyFilterText, matchesFilter, type LibraryFilter } from "./libraryKinds";
 import { LibraryRow, type LibraryItem } from "./LibraryRow";
 import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
+import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
+import type { AppPlatform } from "@/lib/platform";
 
 export type LibraryStatus = "loading" | "ready" | "failed";
 
@@ -30,6 +32,8 @@ export interface LibraryListViewProps {
   /** The note open beside the list (wide screens). */
   selectedId?: string | null;
   pipelines?: ReadonlyMap<string, NotePipeline>;
+  activityViews?: ReadonlyMap<string, NotePipelineView>;
+  platform?: AppPlatform;
 }
 
 /**
@@ -133,7 +137,7 @@ export function LibraryListView(props: LibraryListViewProps) {
               <h3 className="sticky top-13 z-[5] bg-background py-1.5 text-meta font-semibold text-muted-foreground">{group.label}</h3>
               <ul className="flex flex-col">
                 {group.items.map((item) => (
-                  <LibraryRow key={item.id} item={item} now={now} grouped selected={props.selectedId === item.id} pipeline={props.pipelines?.get(item.sourceId)} />
+                  <LibraryRow key={item.id} item={item} now={now} grouped selected={props.selectedId === item.id} pipeline={props.pipelines?.get(item.sourceId)} activityView={props.activityViews?.get(item.sourceId)} platform={props.platform} />
                 ))}
               </ul>
             </section>

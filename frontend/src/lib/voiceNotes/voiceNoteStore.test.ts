@@ -348,7 +348,7 @@ describe("saveVoiceNote", () => {
       await saveNote(withNote.id, "# Edit E1");
       const e1 = syncRecordingNote(space.tcw, withNote.id);
       await started;
-      await expect(e1).rejects.toThrow("saving it is taking too long");
+      await expect(e1).rejects.toThrow("Saving to your TinyCloud space is slow");
       await saveNote(withNote.id, "# Edit E2");
       const e2 = syncRecordingNote(space.tcw, withNote.id);
       await new Promise((resolve) => setTimeout(resolve, 5));
@@ -358,7 +358,7 @@ describe("saveVoiceNote", () => {
       expect(e2Puts).toBe(1);
       expect(space.kv.get(noteKey)).toContain("# Edit E2");
       expect((await readRecordingNoteFromSpace(space.tcw, withNote.id))?.md).toBe("# Edit E2");
-    } finally { setVoiceNoteSaveDeadlineForTests(null); }
+    } finally { resolveE1?.(); setVoiceNoteSaveDeadlineForTests(null); }
   });
 
   test("sync carries the saved-edit time to the space and a recorder write after it does not clear it", async () => {

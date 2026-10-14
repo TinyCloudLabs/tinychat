@@ -43,7 +43,7 @@ export async function stateForResolvedUrl(resolveUrl: () => Promise<string>): Pr
   try {
     return { phase: "ready", url: await resolveUrl() };
   } catch (error) {
-    console.error("[Audio] Could not resolve this phone's audio", error);
+    console.error("[Audio] Could not resolve local audio", error);
     return { phase: "failed", reason: PHONE_AUDIO_UNAVAILABLE };
   }
 }

@@ -1,3 +1,4 @@
+import { deviceName } from "@/lib/platform";
 import { readableError } from "@/lib/readableError";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -16,7 +17,7 @@ export function EarlierVersionNotes({ notes, did, onChange, onDelete }: {
       <p>Voice note · {new Date(note.startedAt).toLocaleString()}</p>
       <div className="mt-2 flex gap-2">
         {did && <Button onClick={() => attempt(async () => { await VoiceNotes.claim({ id: note.id, did, evidence: "user_choice" }); await onChange(); })}>Save to this account</Button>}
-        <Button variant="outline" onClick={() => attempt(() => onDelete(note.id))}>Delete from this phone</Button>
+        <Button variant="outline" onClick={() => attempt(() => onDelete(note.id))}>Delete from {deviceName()}</Button>
       </div>
     </div>)}
     {error && <p role="alert">{error}</p>}

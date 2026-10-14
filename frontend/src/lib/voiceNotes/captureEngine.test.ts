@@ -7,6 +7,7 @@ import {
   __resetCaptureEngineForTests,
   __setInstalledEngineForTests,
   captureCapabilities,
+  captureDeviceName,
   captureEngineAvailable,
   captureEngineInstallPending,
   captureEngineKind,
@@ -76,6 +77,17 @@ describe("captureEngineKind: native x tauri internals x MediaRecorder x register
     registerCaptureEngine("web", async () => engine());
     expect(captureEngineKind()).toBeNull();
   });
+});
+
+test("recording copy follows the capture engine in a browser harness", () => {
+  setShell({ native: true, tauri: false, mediaRecorder: true, mediaDevices: true });
+  registerCaptureEngine("web", async () => engine());
+  expect(captureDeviceName()).toBe("this phone");
+  setShell({ native: false, tauri: false, mediaRecorder: true, mediaDevices: true });
+  expect(captureDeviceName()).toBe("this browser");
+  setShell({ native: false, tauri: true, mediaRecorder: false, mediaDevices: false });
+  registerCaptureEngine("tauri", async () => engine());
+  expect(captureDeviceName()).toBe("this Mac");
 });
 
 describe("native", () => {
